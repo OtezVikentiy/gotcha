@@ -339,3 +339,235 @@ func TestAuthzBehaviorStrangerRejectedOnScopedRoutes(t *testing.T) {
 		t.Errorf("victim perf-issue mutated by stranger: got=%+v err=%v", got, err)
 	}
 }
+
+// TestAuthzBehaviorMemberRejectedOnAdminRoutes — K14-2: тест выше ловит
+// ЧУЖАКА (нулевое членство в организации жертвы), но не проверяет вторую
+// половину той же матрицы — СВОЕГО участника организации, у которого просто
+// не хватает роли. Разрыв: карта прав (routeAuthz, authz_map_test.go)
+// декларирует admin/owner/instance_admin уровень для десятков маршрутов, но
+// ни один сторож не бьётся о requireOrgRole/requireProjectRole/
+// requireOrgOwner/requireInstanceAdminForSSO РЕАЛЬНЫМ участником с ролью
+// member — только полным чужаком, для которого 404 гарантирован уже на
+// уровне «нет членства», ещё до проверки роли.
+//
+// Перебор — ПО КАРТЕ routeAuthz (тот же источник истины, что у
+// TestRoutesDeclareAuthzLevel), а не списком маршрутов, набранным руками:
+// новый admin-маршрут, объявленный в карте без гейта роли в хендлере, ловится
+// автоматически, без правки этого теста.
+//
+// Два актёра — участник и «оператор» (участник + team-attachment к проекту
+// жертвы, тот самый canOperateProject/CanAccessProject): у обоих role=member
+// в организации, но identical-role недостаточно нарочно — задача теста
+// доказать, что operate-доступ (через команду) не даёт administer-доступа.
+func TestAuthzBehaviorMemberRejectedOnAdminRoutes(t *testing.T) {
+	s := newUptimeStack(t)
+	// alerts/channels/* (lvlAdmin) сначала проверяют h.Alerts на nil и
+	// только потом гейт роли (тот же порядок, что объяснён в шапке файла) —
+	// без него участник получал бы 404 от nil-guard'а, не долетев до
+	// requireProjectRole, который и обязан проверить этот тест.
+	s.h.Alerts = alert.NewService(s.pool)
+	s.h.Outbox = notify.NewOutbox(s.pool)
+
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+	ctx := context.Background()
+
+	// Расходуем bootstrap instance-admin слот на одноразового пользователя
+	// (см. комментарий у orgSettingsRegister выше) — иначе owner/member ниже
+	// сами стали бы инстанс-админом и легитимно проходили бы SSO-ручки.
+	orgSettingsRegister(t, authSvc, "k14-bootstrap-sink@example.com")
+
+	ownerID, _ := orgSettingsRegister(t, authSvc, "k14-owner@example.com")
+	victimOrg, err := orgSvc.CreateOrg(ctx, "k14-org", "K14 Org", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	victimProject, err := orgSvc.CreateProject(ctx, victimOrg.ID, "k14-proj", "K14 Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	victimTeam, err := orgSvc.CreateTeam(ctx, victimOrg.ID, "k14-team", "K14 Team")
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+
+	// Все admin/owner/instance_admin маршруты карты адресуют только проект,
+	// организацию или команду (см. проверку ниже) — монитор/статус-
+	// страница/issue/perf-issue victimIDs остаются нулевыми осознанно, они
+	// этой матрицей не затрагиваются.
+	v := victimIDs{orgID: victimOrg.ID, projectID: victimProject.ID, teamID: victimTeam.ID}
+
+	type actor struct {
+		label  string
+		cookie *http.Cookie
+	}
+	var actors []actor
+
+	memberID, memberCookie := orgSettingsRegister(t, authSvc, "k14-member@example.com")
+	if err := orgSvc.AddMember(ctx, victimOrg.ID, memberID, org.RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	actors = append(actors, actor{"участник (role=member)", memberCookie})
+
+	operatorID, operatorCookie := orgSettingsRegister(t, authSvc, "k14-operator@example.com")
+	if err := orgSvc.AddMember(ctx, victimOrg.ID, operatorID, org.RoleMember); err != nil {
+		t.Fatalf("add operator as member: %v", err)
+	}
+	if err := orgSvc.AddTeamMember(ctx, victimTeam.ID, operatorID); err != nil {
+		t.Fatalf("add operator to team: %v", err)
+	}
+	if err := orgSvc.AttachTeam(ctx, victimProject.ID, victimTeam.ID); err != nil {
+		t.Fatalf("attach team to project: %v", err)
+	}
+	actors = append(actors, actor{"оператор (team-attached, role=member, canOperateProject=true)", operatorCookie})
+
+	tested := 0
+	for _, a := range actors {
+		for _, route := range s.h.RegisteredRoutes() {
+			method, path, ok := strings.Cut(route, " ")
+			if !ok || !isStrangerScopedRoute(path) {
+				continue
+			}
+			lvl, known := routeAuthz[route]
+			if !known || (lvl != lvlAdmin && lvl != lvlOwner && lvl != lvlInstanceAdmin) {
+				continue
+			}
+			tested++
+			concrete := concreteVictimPath(t, path, v)
+
+			var resp *http.Response
+			switch method {
+			case http.MethodGet:
+				resp = getWithCookie(t, s.srv, concrete, a.cookie)
+			case http.MethodPost:
+				resp = postForm(t, s.srv, concrete, url.Values{}, s.srv.URL, a.cookie)
+			default:
+				t.Fatalf("маршрут %q: неожиданный метод %q — обнови тест", route, method)
+				continue
+			}
+			code := statusOf(t, resp)
+			if code != http.StatusNotFound && code != http.StatusForbidden {
+				t.Errorf("%s %s (%s, своя организация, недостаточная роль) статус = %d, ожидали 404 или 403 — ГЕЙТ ПРОПУСТИЛ УЧАСТНИКА НА ADMIN-МАРШРУТ", method, concrete, a.label, code)
+			}
+		}
+	}
+	if tested == 0 {
+		t.Fatal("не найдено ни одного admin/owner/instance_admin маршрута с адресацией по id в routeAuthz — фильтр или карта сломаны?")
+	}
+}
+
+// TestAuthzBehaviorRoleNotSharedAcrossOrgs — K14-3: один и тот же пользователь
+// (dual) — admin в организации A и рядовой member в организации B. Классический
+// источник межарендной утечки: где-то роль резолвится/кешируется без привязки
+// к КОНКРЕТНОЙ организации ("этот юзер вообще admin?" вместо "admin ЭТОЙ
+// организации?"), и права из A протекают в B. Проверка — не на одном
+// маршруте, а на тройке разных по природе действий: чтение (доступ к чужому
+// для роли member проекту через легитимный team-attachment), изменение
+// (мутация внутри уже доступного проекта — уровень участника, не админа) и
+// административное действие (rename проекта). Последнее проверяется дважды —
+// в СВОЕЙ организации A (позитивный контроль: admin действительно может, иначе
+// отказ в B ничего не доказывает) и в ЧУЖОЙ B (должен быть отказ).
+func TestAuthzBehaviorRoleNotSharedAcrossOrgs(t *testing.T) {
+	s := newUptimeStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+	ctx := context.Background()
+
+	// Расходуем bootstrap instance-admin слот, как в остальных тестах файла.
+	orgSettingsRegister(t, authSvc, "k14x-bootstrap-sink@example.com")
+
+	dualID, dualCookie := orgSettingsRegister(t, authSvc, "k14x-dual@example.com")
+
+	// Организация A: dual — admin.
+	ownerA, _ := orgSettingsRegister(t, authSvc, "k14x-owner-a@example.com")
+	orgA, err := orgSvc.CreateOrg(ctx, "k14x-org-a", "K14x Org A", ownerA)
+	if err != nil {
+		t.Fatalf("create org A: %v", err)
+	}
+	if err := orgSvc.AddMember(ctx, orgA.ID, dualID, org.RoleAdmin); err != nil {
+		t.Fatalf("add dual as admin of A: %v", err)
+	}
+	projA, err := orgSvc.CreateProject(ctx, orgA.ID, "k14x-proj-a", "K14x Proj A", "go")
+	if err != nil {
+		t.Fatalf("create project A: %v", err)
+	}
+
+	// Организация B (жертва): dual — обычный member, доступ к проекту только
+	// через команду, как у любого рядового участника (та же граница, что и у
+	// оператора в тесте выше).
+	ownerB, _ := orgSettingsRegister(t, authSvc, "k14x-owner-b@example.com")
+	orgB, err := orgSvc.CreateOrg(ctx, "k14x-org-b", "K14x Org B", ownerB)
+	if err != nil {
+		t.Fatalf("create org B: %v", err)
+	}
+	if err := orgSvc.AddMember(ctx, orgB.ID, dualID, org.RoleMember); err != nil {
+		t.Fatalf("add dual as member of B: %v", err)
+	}
+	projB, err := orgSvc.CreateProject(ctx, orgB.ID, "k14x-proj-b", "K14x Proj B", "go")
+	if err != nil {
+		t.Fatalf("create project B: %v", err)
+	}
+	teamB, err := orgSvc.CreateTeam(ctx, orgB.ID, "k14x-team-b", "K14x Team B")
+	if err != nil {
+		t.Fatalf("create team B: %v", err)
+	}
+	if err := orgSvc.AddTeamMember(ctx, teamB.ID, dualID); err != nil {
+		t.Fatalf("attach dual to team B: %v", err)
+	}
+	if err := orgSvc.AttachTeam(ctx, projB.ID, teamB.ID); err != nil {
+		t.Fatalf("attach team B to project B: %v", err)
+	}
+
+	// Инвариант на уровне сервиса, отдельно от web: роль резолвится ПО
+	// ОРГАНИЗАЦИИ, а не по пользователю — сентинел на случай, если Role()
+	// когда-нибудь обзаведётся кешем/срезом без ключа по org_id.
+	if role, rerr := orgSvc.Role(ctx, orgA.ID, dualID); rerr != nil || role != org.RoleAdmin {
+		t.Fatalf("Role(orgA, dual) = %v, %v, want RoleAdmin, nil", role, rerr)
+	}
+	if role, rerr := orgSvc.Role(ctx, orgB.ID, dualID); rerr != nil || role != org.RoleMember {
+		t.Fatalf("Role(orgB, dual) = %v, %v, want RoleMember, nil", role, rerr)
+	}
+
+	// --- Чтение: dual видит проект B, потому что реально в нём состоит
+	// (team-attachment) — легитимный member-доступ, не утечка. Список пуст
+	// (issue заводим ниже) — сознательно: страница считает CH-спарклайны
+	// только когда issues есть (h.Events здесь не поднят, как и в остальных
+	// тестах файла без ClickHouse-зависимых страниц), а сама проверка
+	// касается только доступа к списку, не его содержимого. ---
+	issuesBPath := "/projects/" + strconv.FormatInt(projB.ID, 10) + "/issues"
+	if code := statusOf(t, getWithCookie(t, s.srv, issuesBPath, dualCookie)); code != http.StatusOK {
+		t.Errorf("GET %s (dual, легитимный team-доступ в B) = %d, want 200", issuesBPath, code)
+	}
+
+	// --- Изменение: мутация внутри уже доступного проекта B — уровень
+	// участника (CanAccessProject), не админа. ---
+	issueB, err := s.h.Issues.Upsert(ctx, projB.ID, "k14x-fp", "K14x issue", "k14x.Culprit", "error", "", time.Now())
+	if err != nil {
+		t.Fatalf("seed issue B: %v", err)
+	}
+	issueStatusPath := "/issues/" + strconv.FormatInt(issueB.IssueID, 10) + "/status"
+	statusResp := postForm(t, s.srv, issueStatusPath, url.Values{"status": {"resolved"}}, s.srv.URL, dualCookie)
+	if code := statusOf(t, statusResp); code != http.StatusSeeOther {
+		t.Errorf("POST %s (dual, легитимный team-доступ в B) = %d, want 303", issueStatusPath, code)
+	}
+
+	// --- Административное действие в СВОЕЙ организации (позитивный
+	// контроль): admin действительно может переименовать проект A — если бы
+	// это не проходило, отказ по проекту B ниже ничего бы не доказывал. ---
+	renamePathA := "/projects/" + strconv.FormatInt(projA.ID, 10) + "/settings/rename"
+	renameA := postForm(t, s.srv, renamePathA, url.Values{"name": {"K14x Proj A Renamed"}}, s.srv.URL, dualCookie)
+	if code := statusOf(t, renameA); code != http.StatusSeeOther {
+		t.Fatalf("POST %s (dual, реальный admin организации A) = %d, want 303 — контроль сломан, дальнейший результат недостоверен", renamePathA, code)
+	}
+
+	// --- Административное действие в ЧУЖОЙ организации: dual — admin
+	// организации A, но не B, и не должен мочь переименовать проект B. ---
+	renamePathB := "/projects/" + strconv.FormatInt(projB.ID, 10) + "/settings/rename"
+	renameB := postForm(t, s.srv, renamePathB, url.Values{"name": {"k14x-hijacked"}}, s.srv.URL, dualCookie)
+	if code := statusOf(t, renameB); code != http.StatusNotFound && code != http.StatusForbidden {
+		t.Errorf("POST %s (dual, admin ЧУЖОЙ организации A) статус = %d, ожидали 404 или 403 — РОЛЬ ИЗ ОРГАНИЗАЦИИ A ПРОТЕКЛА В B", renamePathB, code)
+	}
+	if got, gerr := orgSvc.GetProject(ctx, projB.ID); gerr != nil || got.Name != projB.Name {
+		t.Errorf("project B переименован admin'ом чужой организации: got=%+v err=%v", got, gerr)
+	}
+}

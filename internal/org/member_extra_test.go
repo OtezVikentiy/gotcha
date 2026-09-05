@@ -57,8 +57,13 @@ func TestRemoveMemberCancelledCtx(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := svc.RemoveMember(ctx, 1, 1); err == nil {
-		t.Fatal("RemoveMember on cancelled ctx: got nil, want error")
+	// errors.Is, не просто err != nil: pool.Begin на отменённом ctx обязан
+	// вернуть именно context.Canceled (обёрнутый %w) — голое "err != nil"
+	// пропустило бы тест и при подмене на произвольную другую ошибку (ту же
+	// ErrNotMember, если бы RemoveMember сломался и стал возвращать её раньше
+	// срока), не поймав реальную порчу поведения.
+	if err := svc.RemoveMember(ctx, 1, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("RemoveMember on cancelled ctx: got %v, want context.Canceled", err)
 	}
 }
 
@@ -118,8 +123,10 @@ func TestRemoveMemberAsCancelledCtx(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := svc.RemoveMemberAs(ctx, 1, 1, 2); err == nil {
-		t.Fatal("RemoveMemberAs on cancelled ctx: got nil, want error")
+	// Тот же принцип, что у TestRemoveMemberCancelledCtx: проверяем именно
+	// класс ошибки, не просто её наличие.
+	if err := svc.RemoveMemberAs(ctx, 1, 1, 2); !errors.Is(err, context.Canceled) {
+		t.Fatalf("RemoveMemberAs on cancelled ctx: got %v, want context.Canceled", err)
 	}
 }
 
