@@ -1676,6 +1676,68 @@ func TestKnownFailureReasonKeyWhitelistsOnlyTheThreeReasons(t *testing.T) {
 	}
 }
 
+// raceDirEntry оборачивает os.DirEntry, полученный настоящим os.ReadDir, и
+// удаляет свой файл прямо в момент вызова Info() — непосредственно ПЕРЕД
+// делегированием настоящему Info(). Это воспроизводит именно гонку с
+// джанитором (K4-6): файл существовал на момент обхода каталога (иначе
+// ReadDir его бы не вернул), но исчез до Stat конкретно этой записи.
+// Ошибка, которую в итоге видит sizeOfEntries, — настоящий ENOENT от
+// настоящего lstat на настоящем удалённом файле, а не сконструированная.
+type raceDirEntry struct {
+	os.DirEntry
+	path string
+}
+
+func (r raceDirEntry) Info() (os.FileInfo, error) {
+	if err := os.Remove(r.path); err != nil {
+		return nil, err
+	}
+	return r.DirEntry.Info()
+}
+
+// TestSizeOfEntriesSkipsFileRemovedBetweenReadDirAndInfo — K4-6: отдельный
+// файл, исчезнувший между os.ReadDir и Info() (параллельный джанитор
+// подчищает .part/просроченные файлы независимо от подсчёта бюджета
+// текущей заявки, janitor.go), не должен валить всю заявку ошибкой — он
+// просто больше не занимает место, значит его нечего учитывать.
+func TestSizeOfEntriesSkipsFileRemovedBetweenReadDirAndInfo(t *testing.T) {
+	dir := t.TempDir()
+	keepPath := filepath.Join(dir, "keep.csv")
+	vanishPath := filepath.Join(dir, "vanish.csv")
+	if err := os.WriteFile(keepPath, []byte("0123456789"), 0o600); err != nil {
+		t.Fatalf("write keep: %v", err)
+	}
+	if err := os.WriteFile(vanishPath, []byte("этот файл исчезнет до Info()"), 0o600); err != nil {
+		t.Fatalf("write vanish: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	found := false
+	for i, e := range entries {
+		if e.Name() == "vanish.csv" {
+			entries[i] = raceDirEntry{DirEntry: e, path: vanishPath}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("vanish.csv не попал в список записей каталога — тест не воспроизводит гонку")
+	}
+
+	got, err := sizeOfEntries(entries)
+	if err != nil {
+		t.Fatalf("sizeOfEntries: удалённый параллельным джанитором файл не должен валить подсчёт: %v", err)
+	}
+	if want := int64(len("0123456789")); got != want {
+		t.Fatalf("total=%d, want %d (учтён только keep.csv, vanish.csv уже удалён к моменту Stat)", got, want)
+	}
+	if _, err := os.Stat(vanishPath); !os.IsNotExist(err) {
+		t.Fatalf("vanish.csv должен быть реально удалён к этому моменту — иначе гонка не воспроизведена")
+	}
+}
+
 func writeFiller(t *testing.T, dir string, size int64) {
 	t.Helper()
 	f, err := os.Create(filepath.Join(dir, "filler.bin"))

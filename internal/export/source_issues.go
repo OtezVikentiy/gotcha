@@ -68,22 +68,31 @@ func (s *issueSource) Stream(ctx context.Context, projectID int64, includePII bo
 		Until:       p.Until,
 	}
 	return s.svc.StreamForExport(ctx, projectID, f, func(it issue.Issue) error {
-		assigneeEmail := it.AssigneeEmail
-		if !includePII {
-			_, assigneeEmail = MaskUser("", assigneeEmail)
-		}
-		return fn(Record{
-			"id":             it.ID,
-			"title":          it.Title,
-			"culprit":        it.Culprit,
-			"level":          it.Level,
-			"status":         it.Status,
-			"times_seen":     it.TimesSeen,
-			"first_seen":     it.FirstSeen,
-			"last_seen":      it.LastSeen,
-			"environments":   strings.Join(it.Environments, ", "),
-			"assignee_email": assigneeEmail,
-			"url":            IssueURL(s.baseURL, it.ID),
-		})
+		return fn(s.toRecord(it, includePII))
 	})
+}
+
+// toRecord — маппинг issue.Issue в Record выгрузки issues (§6 спеки), тот же
+// набор колонок, что и IssueColumns(). Вынесено из Stream отдельным методом
+// ради теста контракта K4-7 аудита (TestExportContract* в
+// contract_version_test.go): тест обязан прогнать РЕАЛЬНЫЙ маппинг на
+// фикстуре issue.Issue, а не воспроизводить эту логику собственной копией.
+func (s *issueSource) toRecord(it issue.Issue, includePII bool) Record {
+	assigneeEmail := it.AssigneeEmail
+	if !includePII {
+		_, assigneeEmail = MaskUser("", assigneeEmail)
+	}
+	return Record{
+		"id":             it.ID,
+		"title":          it.Title,
+		"culprit":        it.Culprit,
+		"level":          it.Level,
+		"status":         it.Status,
+		"times_seen":     it.TimesSeen,
+		"first_seen":     it.FirstSeen,
+		"last_seen":      it.LastSeen,
+		"environments":   strings.Join(it.Environments, ", "),
+		"assignee_email": assigneeEmail,
+		"url":            IssueURL(s.baseURL, it.ID),
+	}
 }

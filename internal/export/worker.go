@@ -702,6 +702,23 @@ func dirSize(dir string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	return sizeOfEntries(entries)
+}
+
+// sizeOfEntries суммирует размеры уже полученного списка записей каталога.
+// Вынесено из dirSize отдельной функцией ради детерминированного теста
+// гонки: тест подменяет один DirEntry на такой, чей Info() удаляет
+// собственный файл непосредственно перед вызовом настоящего Info() — тем
+// самым воспроизводит настоящий ENOENT от настоящего lstat, а не
+// сконструированную ошибку.
+//
+// K4-6 аудита: файл, удалённый параллельным джанитором между os.ReadDir и
+// Info() (janitor.go подчищает .part/просроченные файлы фоново, независимо
+// от подсчёта бюджета здесь), — это НЕ отказ текущей заявки на выгрузку.
+// Заявка отказывает только если РЕАЛЬНО не осталось бюджета; отсутствие
+// отдельного файла, который джанитор и так уже убрал (то есть больше не
+// занимает место), пропускается, а не валит process() ошибкой.
+func sizeOfEntries(entries []os.DirEntry) (int64, error) {
 	var total int64
 	for _, e := range entries {
 		if e.IsDir() {
@@ -709,6 +726,9 @@ func dirSize(dir string) (int64, error) {
 		}
 		info, err := e.Info()
 		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
 			return 0, err
 		}
 		total += info.Size()

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/google/uuid"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
@@ -535,5 +536,66 @@ func TestStreamForExportDoesNotSortByComputedKey(t *testing.T) {
 		t.Error("query.go снова сортирует по вычисляемому ключу (transform(...)) — " +
 			"это исключает optimize_read_in_order и заставляет ClickHouse " +
 			"материализовать и сортировать весь отфильтрованный набор целиком (I2)")
+	}
+}
+
+// countingQueryConn оборачивает реальное соединение ClickHouse и считает
+// вызовы Query — ровно столько же делает StreamForExport на список групп
+// (см. её докблок: один точечный запрос по PK на группу, включая пустые,
+// вместо одного общего запроса с вычисляемым ключом сортировки).
+type countingQueryConn struct {
+	driver.Conn
+	n int
+}
+
+func (c *countingQueryConn) Query(ctx context.Context, query string, args ...any) (driver.Rows, error) {
+	c.n++
+	return c.Conn.Query(ctx, query, args...)
+}
+
+// TestStreamForExportQueriesExactlyOncePerGroup — «хвост волны 1» устранения
+// аудита перед 1.0: докблок StreamForExport (query.go) уже измеряет и
+// сознательно принимает цену обхода групп (обход по одной группе за раз —
+// точечный поиск по PK, дешёвый даже на огромной таблице, взамен ЕДИНОГО
+// запроса с ORDER BY transform(...), который на большом проекте рискует
+// MEMORY_LIMIT_EXCEEDED, см. её докблок и TestStreamForExportDoesNotSort
+// ByComputedKey выше) — но эта цена была прозой без числа, которое ловит
+// регресс. Тест закрепляет её числом: РОВНО один Query() на КАЖДУЮ группу
+// списка issueIDs, включая пустые (обход не схлопывается в общий запрос —
+// count не может быть 1 — и не заводит скрытый N+1 внутри одной группы —
+// count не может быть больше числа групп).
+func TestStreamForExportQueriesExactlyOncePerGroup(t *testing.T) {
+	ctx := context.Background()
+	real := testenv.MigratedCH(t)
+	const projectID = int64(51006)
+	const issueWithEvents = int64(940201)
+	t0 := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+
+	b := event.NewBatcher(real)
+	go b.Run()
+	b.Add(event.Event{ID: uuid.NewString(), ProjectID: projectID, IssueID: issueWithEvents, Timestamp: t0, Level: "error", Message: "m"})
+	if err := b.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Девять пустых групп вперемешку с единственной непустой — итого 10
+	// групп в списке, ни одна не запрошена дважды и ни одна не пропущена.
+	issueIDs := []int64{940301, 940302, 940303, issueWithEvents, 940304, 940305, 940306, 940307, 940308, 940309}
+
+	conn := &countingQueryConn{Conn: real}
+	q := event.NewQuery(conn)
+	var rows int
+	err := q.StreamForExport(ctx, projectID, issueIDs, t0, t0.Add(time.Hour), 100, func(event.Stored) error {
+		rows++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamForExport: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("получено строк: %d, want 1 (единственное реально записанное событие)", rows)
+	}
+	if conn.n != len(issueIDs) {
+		t.Fatalf("запросов ClickHouse: %d, want %d (ровно один на группу, включая пустые)", conn.n, len(issueIDs))
 	}
 }
