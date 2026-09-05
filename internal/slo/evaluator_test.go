@@ -147,6 +147,10 @@ func TestSLOEvaluatorOpensAndCloses(t *testing.T) {
 
 	notifier := &capturingNotifier{store: st}
 	e := &slo.Evaluator{
+		// Interval задан явно: тикер не используем (Tick дёргается вручную), но от
+		// него считается бюджет тика — с дефолтом бюджет упирается в пол 10s, и на
+		// нагруженной машине (полный прогон, контейнеры) запрос в CH не укладывается.
+		Interval:  time.Hour,
 		Pool:      pool,
 		Store:     st,
 		Providers: slo.Providers(trace.NewQuery(conn), nil, nil, 90),

@@ -117,6 +117,10 @@ func TestSLOUptimeMemberSilenced(t *testing.T) {
 
 	notifier := &capturingNotifier{store: st}
 	e := &slo.Evaluator{
+		// Interval задан явно: тикер не используем (Tick дёргается вручную), но от
+		// него считается бюджет тика — с дефолтом бюджет упирается в пол 10s, и на
+		// нагруженной машине (полный прогон, контейнеры) запрос в CH не укладывается.
+		Interval:       time.Hour,
 		Pool:           pool,
 		Store:          st,
 		Providers:      map[slo.SLIKind]slo.Provider{slo.SLIUptime: burningProvider{}},
@@ -187,6 +191,10 @@ func TestSLONonUptimeOutsideGroups(t *testing.T) {
 
 	notifier := &capturingNotifier{store: st}
 	e := &slo.Evaluator{
+		// Interval задан явно: тикер не используем (Tick дёргается вручную), но от
+		// него считается бюджет тика — с дефолтом бюджет упирается в пол 10s, и на
+		// нагруженной машине (полный прогон, контейнеры) запрос в CH не укладывается.
+		Interval:       time.Hour,
 		Pool:           pool,
 		Store:          st,
 		Providers:      map[slo.SLIKind]slo.Provider{slo.SLIAvailability: burningProvider{}},
