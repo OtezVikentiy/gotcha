@@ -209,7 +209,7 @@ func (h *Handler) sloCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 
@@ -349,11 +349,11 @@ func (h *Handler) sloDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	sloID, err := strconv.ParseInt(r.PathValue("sloID"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad slo id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	if r.FormValue("confirmed") != "yes" {

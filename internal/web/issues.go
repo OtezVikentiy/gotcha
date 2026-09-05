@@ -410,12 +410,12 @@ func (h *Handler) issuesBulk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	status, ok := bulkActionStatus[r.FormValue("action")]
 	if !ok {
-		http.Error(w, "bad action", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	ids := parseIDs(r.Form["ids"])

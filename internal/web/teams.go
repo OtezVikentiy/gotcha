@@ -191,7 +191,7 @@ func (h *Handler) teamsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	slug := r.FormValue("slug")
@@ -234,7 +234,7 @@ func (h *Handler) teamRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	name := r.FormValue("name")
@@ -273,12 +273,12 @@ func (h *Handler) teamMembersAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	targetID, err := strconv.ParseInt(r.FormValue("user_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad user_id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	if err := h.Org.AddTeamMember(r.Context(), teamID, targetID); err != nil {
@@ -308,12 +308,12 @@ func (h *Handler) teamMembersRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	targetID, err := strconv.ParseInt(r.FormValue("user_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad user_id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
@@ -355,12 +355,12 @@ func (h *Handler) teamProjectsAttach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	projectID, err := strconv.ParseInt(r.FormValue("project_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad project_id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	projectOrgID, err := h.Org.ProjectOrg(r.Context(), projectID)
@@ -405,12 +405,12 @@ func (h *Handler) teamProjectsDetach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	projectID, err := strconv.ParseInt(r.FormValue("project_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad project_id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	// Двухшаговое подтверждение (№61): отвязка мгновенно отбирает у всей

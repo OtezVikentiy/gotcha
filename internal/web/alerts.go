@@ -208,7 +208,7 @@ func (h *Handler) alertsRulesSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 
@@ -271,7 +271,7 @@ func (h *Handler) alertsChannelCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	c := alert.Channel{
@@ -336,12 +336,12 @@ func (h *Handler) alertsChannelUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	channelID, err := strconv.ParseInt(r.FormValue("channel_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad channel_id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	channels, err := h.Alerts.Channels(r.Context(), projectID)
@@ -444,12 +444,12 @@ func (h *Handler) alertsChannelDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	channelID, err := strconv.ParseInt(r.FormValue("channel_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad channel_id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	channels, err := h.Alerts.Channels(r.Context(), projectID)
@@ -511,12 +511,12 @@ func (h *Handler) alertsChannelTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	channelID, err := strconv.ParseInt(r.FormValue("channel_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad channel_id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	channels, err := h.Alerts.Channels(r.Context(), projectID)

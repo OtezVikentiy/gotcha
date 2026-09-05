@@ -217,12 +217,12 @@ func (h *Handler) escalationsSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	severity := r.FormValue("severity")
 	if severity != escalation.SeverityCritical && severity != escalation.SeverityWarning {
-		http.Error(w, "bad severity", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 

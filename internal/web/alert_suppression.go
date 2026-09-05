@@ -420,7 +420,7 @@ func (h *Handler) alertSuppressionSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 
@@ -468,11 +468,11 @@ func (h *Handler) alertSuppressionUpdate(w http.ResponseWriter, r *http.Request)
 	}
 	depID, err := strconv.ParseInt(r.PathValue("depID"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad dependency id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 
@@ -517,7 +517,7 @@ func (h *Handler) alertSuppressionDelete(w http.ResponseWriter, r *http.Request)
 	}
 	depID, err := strconv.ParseInt(r.PathValue("depID"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad dependency id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не

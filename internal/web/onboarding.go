@@ -73,7 +73,7 @@ func (h *Handler) onboardingSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	orgSlug := r.FormValue("org_slug")
@@ -164,12 +164,12 @@ func (h *Handler) projectCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	orgID, err := strconv.ParseInt(r.FormValue("org_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad org_id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {

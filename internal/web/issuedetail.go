@@ -208,13 +208,13 @@ func (h *Handler) issueSetStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	status := r.FormValue("status")
 	if err := h.Issues.SetStatus(r.Context(), it.ID, status); err != nil {
 		if errors.Is(err, issue.ErrInvalidStatus) {
-			http.Error(w, "bad status", http.StatusUnprocessableEntity)
+			h.renderError(w, r, http.StatusUnprocessableEntity, i18n.T(r.Context(), "error.issue.invalid_status"))
 			return
 		}
 		if errors.Is(err, issue.ErrNotFound) {
@@ -246,7 +246,7 @@ func (h *Handler) issueAssign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 
@@ -255,7 +255,7 @@ func (h *Handler) issueAssign(w http.ResponseWriter, r *http.Request) {
 	if raw != "" {
 		id, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil {
-			http.Error(w, "bad assignee", http.StatusUnprocessableEntity)
+			h.renderError(w, r, http.StatusUnprocessableEntity, i18n.T(r.Context(), "error.bad_request"))
 			return
 		}
 		orgID, err := h.Org.ProjectOrg(r.Context(), it.ProjectID)
@@ -269,7 +269,7 @@ func (h *Handler) issueAssign(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !isOrgMember(members, id) {
-			http.Error(w, "assignee is not a member of the project's organization", http.StatusUnprocessableEntity)
+			h.renderError(w, r, http.StatusUnprocessableEntity, i18n.T(r.Context(), "error.issue.assignee_not_member"))
 			return
 		}
 		assigneeID = &id
