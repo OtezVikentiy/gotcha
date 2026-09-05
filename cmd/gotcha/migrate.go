@@ -78,6 +78,23 @@ func applyMigrations(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 	lockWaitStart := time.Now()
 	return db.WithMigrationLock(ctx, pg, func() error {
 		slog.Info("migration lock acquired", "waited", time.Since(lockWaitStart))
+		// Гейт опережения PG нужен ДО стадии PG-миграции и в обеих ветках
+		// ниже: golang-migrate на схеме впереди встроенного максимума падает
+		// собственной невнятной ошибкой ("no migration found for version N:
+		// read down for version N ... file does not exist") раньше, чем
+		// управление доходит до пост-миграционного CheckSchemaCurrent —
+		// откат бинаря назад на репетиции превращался в краш-луп с этой
+		// ошибкой библиотеки вместо подготовленного текста гейта. Отставание
+		// и dirty эта проверка не трогает — их по-прежнему разбирают
+		// миграция и CheckSchemaCurrent. Читает только PG (loadSchemaCompat
+		// живёт в PG для обеих схем), поэтому не зависит от доступности
+		// ClickHouse — CH-аналог ставится отдельно, перед db.MigrateCH ниже
+		// (см. комментарий там), а не здесь: иначе временная недоступность
+		// ClickHouse блокировала бы даже PG-миграцию, ломая инвариант
+		// «сорванная CH-миграция не должна мешать PG» (W3-D, запись 5).
+		if err := db.CheckSchemaAhead(ctx, pg, cfg.PostgresDSN); err != nil {
+			return err
+		}
 		// ARCH-M3: авто-миграцию можно отключить (GOTCHA_AUTO_MIGRATE_ENABLED=false) и
 		// выносить в отдельный init-job, чтобы app-реплики не клинили все разом.
 		if cfg.AutoMigrate {
@@ -101,6 +118,14 @@ func applyMigrations(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			}); err != nil {
 				return err
 			}
+			// CH-аналог гейта опережения выше, симметрично поставленный
+			// перед db.MigrateCH по той же причине: без него откат бинаря
+			// назад на схему, где CH ушла вперёд, крашился бы невнятной
+			// ошибкой golang-migrate вместо текста гейта. Ставится именно
+			// здесь, а не рядом с PG-гейтом до if — см. комментарий там.
+			if err := db.CheckSchemaAheadCH(ctx, pg, cfg.ClickHouseDSN); err != nil {
+				return err
+			}
 			if err := migrationStage("clickhouse schema migration", func() error {
 				return db.MigrateCH(cfg.ClickHouseDSN)
 			}); err != nil {
@@ -113,14 +138,13 @@ func applyMigrations(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			}); err != nil {
 				return err
 			}
-			// Проверка схемы нужна И ЗДЕСЬ, после успешной миграции. Гейт ловит
-			// не только отставание, но и ОПЕРЕЖЕНИЕ: схема новее встроенной —
-			// значит бинарь откатили после неудачного релиза. Для m.Up() такая
-			// схема выглядит как ErrNoChange, то есть старый бинарь стартовал
-			// молча и падал уже на вставках. А upgrade.md обещает оператору
-			// ровно обратное — внятную ошибку при старте. AUTO_MIGRATE включён
-			// по умолчанию, так что до этой правки обещание не выполнялось в
-			// самой частой конфигурации.
+			// Проверка схемы нужна И ЗДЕСЬ, после успешной миграции: она
+			// по-прежнему ловит отставание и dirty. Опережение теперь отсекает
+			// CheckSchemaAhead/CheckSchemaAheadCH выше, до MigratePG/MigrateCH —
+			// расчёт на то, что m.Up() на опередившей схеме вернёт ErrNoChange
+			// и сюда просто дойдёт управление, не оправдался: библиотека в этой
+			// ситуации падает собственной ошибкой ("no migration found for
+			// version N..."), и до этого места код не доходил вовсе.
 			if err := db.CheckSchemaCurrent(ctx, pg, cfg.PostgresDSN); err != nil {
 				return err
 			}

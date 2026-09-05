@@ -405,17 +405,26 @@ Every migration carries a backward-compatibility marker, and applying it records
 
 What to do:
 
-1. **Roll the application back** — switch to the previous commit/tag and rebuild:
+1. **Roll back `.env` along with the binary.** This is mandatory below v0.34.0: that release renamed seventeen server-side variables (see above), and an older binary has never heard of the new names — it won't refuse to start, it will quietly fall back to the default for whichever old name is now missing from `.env`. The riskiest of the seventeen:
+   - `GOTCHA_REGISTRATION` → `GOTCHA_REGISTRATION_MODE` — the old binary misses the restriction and opens public registration;
+   - `GOTCHA_SCRUB_KEYS` → `GOTCHA_SCRUB_DENY_KEYS` — PII scrubbing in logs and events stops working;
+   - `GOTCHA_RETENTION_DAYS` → `GOTCHA_EVENT_RETENTION_DAYS` — retention silently falls back to the 90-day default, and older data starts getting deleted;
+   - `GOTCHA_ADDR` → `GOTCHA_LISTEN_ADDR` — the listen address reverts to its default.
+
+   The full list across all three renaming waves (v0.23.0, v0.34.0, and the agent/compose variables) lives in `internal/envcontract/renamed.go` in the repository.
+2. **Roll the application back** — switch to the previous commit/tag and rebuild:
    ```bash
    git checkout <previous-tag-or-commit>
    make up-rebuild
    ```
-2. **Read the startup log.** A line like "schema version N is ahead of the built-in M; version … is marked backward-compatible, running against it" means the rollback worked and the instance is running against a newer schema. That is a supported state, but a temporary one: finish the job — either go back to the new version, or restore the backup taken before the upgrade.
-3. **If startup is refused** with an incompatible-schema message, rolling the binary back is not possible: **restore the backup** taken before the upgrade (see [Backup & Restore](/docs/backup-restore)) and bring up the previous version against it.
+3. **Read the startup log.** A line like "schema version N is ahead of the built-in M; version … is marked backward-compatible, running against it" means the rollback worked and the instance is running against a newer schema. That is a supported state, but a temporary one: finish the job — either go back to the new version, or restore the backup taken before the upgrade.
+4. **If startup is refused** with an incompatible-schema message, rolling the binary back is not possible: **restore the backup** taken before the upgrade (see [Backup & Restore](/docs/backup-restore)) and bring up the previous version against it.
+
+Step 4 assumes you actually see that message. Binaries released before version 1.0 don't show it under the default settings (`GOTCHA_AUTO_MIGRATE_ENABLED=true`, which is everyone who hasn't turned auto-migration off by hand): auto-migration runs before the ahead-of-schema check, and the migration library doesn't fail quietly when the schema is ahead of what it knows — it errors out with something like `no migration found for version N: read down for version N ... file does not exist`. The outcome is the same as step 4 — the binary can't roll back, restore the backup — but instead of a clear incompatibility message you get a raw library error that mentions neither the schema, nor rolling back, nor a backup. Starting with version 1.0, the ahead-of-schema check runs before auto-migration is attempted, and you get the message described in step 4.
 
 Compatibility markers did not exist from the first release — `CHANGELOG.md` in the repository names the one that introduced them. You cannot roll back **through** that upgrade: schema versions applied by earlier releases carry no marker, so starting against them is refused.
 
-The second limit is one `schema_compat` knows nothing about: **secrets**. Since 0.25.0, everything encrypted at rest (SSO provider client secrets, alert channel secrets — the Telegram bot token and the webhook HMAC key, HTTP monitor headers) is stored in an `enc:v2:<key-id>:…` envelope, and the backfill into that format runs on **every** start: whatever the binary can read is re-saved under the current key. So once a 0.25.0-or-newer binary has started even once, a rollback to a release **below 0.25.0** is not refused by the compatibility marker — the old binary starts, but doesn't recognize the `enc:v2:` envelope as ciphertext: it treats the value as a plain-text secret and sends it out as-is. Alert delivery and SSO sign-in break **silently**, with nothing in the startup log. The only way below 0.25.0 is **restoring the backup taken before the upgrade** — rolling the binary alone back won't do it.
+The second limit is one `schema_compat` knows nothing about at all: **secrets**. Since 0.25.0, everything encrypted at rest (SSO provider client secrets, alert channel secrets — the Telegram bot token and the webhook HMAC key, HTTP monitor headers) is stored in an `enc:v2:<key-id>:…` envelope, and the backfill into that format runs on **every** start: whatever the binary can read is re-saved under the current key. That makes **rolling back below version 0.25.0 impossible, full stop** — not merely discouraged: once a 0.25.0-or-newer binary has started even once, the compatibility marker does not block that rollback (the gate sees the schema version number, not the data format inside its columns), so the old binary starts up looking perfectly healthy — but it doesn't recognize the `enc:v2:` envelope as ciphertext: it treats the value as a plain-text secret and sends it out as-is. Alert delivery and SSO sign-in break silently, with nothing in the startup log. The only way below v0.25.0 is restoring the backup taken before the upgrade — rolling the binary alone back won't do it.
 
 This is why "take a backup before upgrading" at the top of this page stays mandatory: some rollbacks work without it, but not all.
 

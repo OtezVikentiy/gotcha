@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Rolling the binary back onto a database with a newer schema now shows the
+  prepared schema-version error at startup instead of a crash loop, including
+  with automatic migration enabled (the default) — the schema-ahead check now
+  runs before the migration step, not only after it.
+
 ## [0.35.0] - 2026-09-05
 
 ### Added
