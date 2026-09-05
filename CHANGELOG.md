@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-09-05
+
 ### Added
 - The project settings page now shows when a sender is still using a
   deprecated ingest address. Key rejections from the last hour — an invalid
