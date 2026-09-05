@@ -84,24 +84,10 @@ func TestFormBodyGeneralLimitDoesNotOverrideStricterAuthLimit(t *testing.T) {
 	}
 }
 
-// TestConfirmHandlerOversizedBodyReturns413 — фикс-раунд 1/5 T4, находка 1:
-// двухшаговые confirm-хендлеры (profileDelete и ещё 11 таких же) читали
-// "confirmed" через r.FormValue, который сам глотает ошибку ParseForm, — не
-// вызывая h.parseForm вовсе, они молча трактовали тело сверх лимита как
-// "не подтверждено" и показывали страницу подтверждения (200), а не 413.
-// На опасном действии (удаление аккаунта) это был fail-safe (удаления не
-// происходило), но контракт "413, а не молчаливое усечение" был нарушен.
-// profileDelete выбран как представитель класса и как цель мутации ниже.
-func TestConfirmHandlerOversizedBodyReturns413(t *testing.T) {
-	s := newStack(t)
-	authSvc := auth.NewService(s.pool)
-	_, cookie := orgSettingsRegister(t, authSvc, "confirm-413@example.com")
-
-	huge := strings.Repeat("x", 70_000) // > formBodyMaxBytes (64 КиБ)
-	resp := postForm(t, s.srv, "/profile/delete", url.Values{"confirmed": {"yes"}, "pad": {huge}}, s.srv.URL, cookie)
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusRequestEntityTooLarge {
-		t.Fatalf("status = %d, want 413 (было: 200, страница подтверждения вместо отказа по размеру): %s", resp.StatusCode, body)
-	}
-}
+// Находка 1 фикс-раунда 1/5 (12 confirm-хендлеров молча обходили 413) и её
+// мутационная проверка на profileDelete теперь покрыты табличным тестом по
+// ВСЕМ 14 маршрутам — internal/web/confirm_body_limit_test.go
+// (TestConfirmAndSwitchHandlersOversizedBodyReturns413). Прежний
+// одиночный TestConfirmHandlerOversizedBodyReturns413 (только profileDelete)
+// убран как дублирующий частный случай — фикс-раунд 2/5, находка «дыра
+// покрытия: тест есть только у одного обработчика из четырнадцати».
