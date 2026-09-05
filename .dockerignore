@@ -7,12 +7,19 @@ docker-compose.yml
 
 # Build output (mirrors .gitignore)
 /devseed
+/gotcha-agent
 
 # Go artifacts
 *.out
 
 # Local planning & docs (not part of the published repo)
 /docs
+/cld/
 
 # Editor / IDE
 .vscode/
+
+# Tooling / agent caches (mirrors .gitignore; none of it is needed for the build)
+.remember/
+.superpowers/
+.playwright-mcp/
