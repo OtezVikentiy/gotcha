@@ -1,9 +1,11 @@
 package web_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -361,6 +363,61 @@ func TestWebPurgeSubject(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("POST %s (purge error) status = %d, want 500", purgePath, resp.StatusCode)
+	}
+}
+
+// TestWebPurgeSubjectAuditLogListsSpans (T8, находка ревью соседней задачи
+// волны 3) — аудит-лог «subject data purged» перечисляет удалённое по видам
+// (events/transactions/metric_points/logs), но ИТОГ (total) включает и
+// спаны (telemetry.PurgeResult.Spans, purge.go) — без своего поля в логе
+// сумма расходилась бы со слагаемыми, и разбирающий инцидент решил бы, что
+// лог врёт. Проверяем это, а не просто «total правильный»: до фикса total
+// уже был верным (res.Total() считает Spans), только перечисление — нет.
+func TestWebPurgeSubjectAuditLogListsSpans(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+	fp := &fakePurger{subjectResult: telemetry.PurgeResult{
+		Events: 1, Transactions: 2, Spans: 3, MetricPoints: 4, Logs: 5,
+	}}
+	s.h.Purger = fp
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "purge-spans-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "purge-spans-co", "Purge Spans Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := orgSvc.CreateProject(context.Background(), o.ID, "purge-spans-proj", "Purge Spans Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	purgePath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings/purge-subject"
+	resp := postForm(t, s.srv, purgePath, url.Values{
+		"confirmed":  {"yes"},
+		"project_id": {strconv.FormatInt(proj.ID, 10)},
+		"email":      {"subject@example.com"},
+	}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s status = %d, want 303", purgePath, resp.StatusCode)
+	}
+
+	logLine := buf.String()
+	if !strings.Contains(logLine, "subject data purged") {
+		t.Fatalf("аудит-лог очистки ПДн не написан: %s", logLine)
+	}
+	if !strings.Contains(logLine, "spans=3") {
+		t.Fatalf("аудит-лог не перечисляет спаны (spans=3): %s", logLine)
+	}
+	if !strings.Contains(logLine, "total=15") {
+		t.Fatalf("аудит-лог: total не совпадает с суммой видов (1+2+3+4+5=15): %s", logLine)
 	}
 }
 

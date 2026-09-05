@@ -958,7 +958,7 @@ func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request
 	// ним не совпадает ни с чем, работает только user_id.
 	slog.Info("subject data purged",
 		"org_id", orgID, "project_id", projectID, "criteria", subjectCriteria(sub),
-		"events", res.Events, "transactions", res.Transactions,
+		"events", res.Events, "transactions", res.Transactions, "spans", res.Spans,
 		"metric_points", res.MetricPoints, "logs", res.Logs, "total", res.Total())
 
 	// Итог показывается сообщением, а не query-параметром: параметр оставался в

@@ -1030,3 +1030,39 @@ func TestWebIssuesEmptyStateShowsKeyRejectsAfterGettingStartedHidden(t *testing.
 		t.Errorf("GET %s empty-state notice missing key-reject reason %q: %s", issuesPath, wantReason, body)
 	}
 }
+
+// TestWebIssuesCanAccessProjectQueryError (T8, хвост волны 2) — сбой самого
+// запроса доступа к проекту (не «доступа нет», а поломка БД) на странице
+// issues обязан отдать 500, а не молча 403/404: та же путаница, которую
+// TestOverviewCanAccessProjectQueryError (overview_test.go) закрывает для
+// overview, и TestRequireProjectOperatorCanOperateQueryError (operate_test.go)
+// — для requireProjectOperator.
+//
+// issuesList проверяет доступ ДВАЖДЫ одним и тем же предикатом: canAccess
+// (issues.go~41, гейтит всю страницу) и следом canOperateProject
+// (issues.go~158, гейтит только видимость чек-листа/кнопок экспорта —
+// см. докблок там же: canOperateProject буквально зовёт CanAccessProject).
+// Ломаем org_members.role — колонку первой половины accessCondition
+// (owner/admin); поскольку обе проверки читают её ОДНИМ И ТЕМ ЖЕ текстом
+// запроса, ошибка обязана всплыть уже на первой (canAccess) — здесь честно
+// проверяем именно это наблюдаемое поведение страницы, а не какая из двух
+// одинаковых веток технически исполнилась.
+func TestWebIssuesCanAccessProjectQueryError(t *testing.T) {
+	s := newIssuesStack(t)
+	ctx := context.Background()
+	uid, cookie := registerAndLogin(t, s, "issues-accesserr@example.com")
+	project := createProject(t, s, uid, "issues-accesserr-org", "issues-accesserr-proj")
+
+	if _, err := s.pool.Exec(ctx, "ALTER TABLE org_members RENAME COLUMN role TO role_broken_for_test"); err != nil {
+		t.Fatalf("break org_members.role: %v", err)
+	}
+
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+	resp := getWithCookie(t, s.srv, issuesPath, cookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("GET %s с поломанной БД: status = %d, want 500 (не 403/404 — отказ проверки прав, не отказ в правах): %s",
+			issuesPath, resp.StatusCode, body)
+	}
+}

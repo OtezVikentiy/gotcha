@@ -27,6 +27,23 @@ var (
 	ErrInstanceAdminBlocked = errors.New("auth: instance admin cannot self-delete while other users exist")
 )
 
+// instanceAdminBootstrapLockClass — classID двухаргументной формы
+// pg_advisory_xact_lock(classid, objid), сериализующей Register (user.go,
+// вычисление is_instance_admin через NOT EXISTS) с DeleteSelfAccount ниже:
+// обе стороны держат этот xact-лок (objID фиксирован — 0, лок один на весь
+// инстанс, не per-сущность) до COMMIT/ROLLBACK своей транзакции, поэтому
+// NOT EXISTS в Register больше не может увидеть ещё не закоммiченную строку
+// админа, которого в этот же момент удаляет DeleteSelfAccount (хвост
+// волны 1, T8: до этого лока такая гонка оставляла инстанс вовсе без
+// администратора — Register получал is_instance_admin=false по устаревшему
+// снапшоту, а старый админ тем временем удалялся).
+//
+// classID=3 — отдельно от enqueueLockClassProject/enqueueLockClassUser
+// (export/store.go, 1 и 2): двухаргументная форма структурно не пересекает
+// разные классы даже при совпадении objID, поэтому пересечение исключено
+// независимо от выбранных чисел (тот же принцип, что там же).
+const instanceAdminBootstrapLockClass = 3
+
 // Identity — привязка внешней личности к аккаунту (для страницы профиля).
 type Identity struct {
 	Provider  string
@@ -172,16 +189,27 @@ func (s *Service) DeleteUser(ctx context.Context, userID int64) error {
 // отдельным запросом до неё: иначе между чтением флага в веб-слое и удалением
 // остаётся окно гонки (устранение находки I1 волны 1). `FOR UPDATE` на
 // собственной строке закрывает гонку с конкурентной передачей роли
-// (TransferInstanceAdmin меняет ровно эту строку) — но не с конкурентной
+// (TransferInstanceAdmin меняет ровно эту строку); с конкурентной
 // РЕГИСТРАЦИЕЙ второго пользователя, случившейся строго между SELECT и
-// COMMIT этой транзакции: полная защита от неё потребовала бы SERIALIZABLE
-// или лока, разделяемого с Register, что выходит за рамки этой правки.
+// COMMIT этой транзакции, закрывает instanceAdminBootstrapLockClass — общий
+// с Register xact-лок (см. его докблок выше): без него Register мог
+// вычислить NOT EXISTS по ещё не удалённой строке этого пользователя и не
+// стать админом, хотя после COMMIT этой транзакции инстанс оказывался пуст
+// (хвост волны 1, T8 — до этого лока инстанс оставался вовсе без
+// администратора).
 func (s *Service) DeleteSelfAccount(ctx context.Context, userID int64) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("auth: delete self account: begin: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	// Лок держится до конца транзакции (Commit/Rollback снимает его
+	// автоматически) — Register не начнёт вычислять свой NOT EXISTS раньше,
+	// чем эта транзакция определится с судьбой строки userID.
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1, 0)", instanceAdminBootstrapLockClass); err != nil {
+		return fmt.Errorf("auth: delete self account: bootstrap lock: %w", err)
+	}
 
 	var admin bool
 	if err := tx.QueryRow(ctx,

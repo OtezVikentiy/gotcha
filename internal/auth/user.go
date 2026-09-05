@@ -64,12 +64,41 @@ func (s *Service) Register(ctx context.Context, email, password string) (int64, 
 	if err != nil {
 		return 0, err
 	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("auth: register: begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// instanceAdminBootstrapLockClass (identity.go, см. докблок там же) —
+	// сериализация с DeleteSelfAccount: без общего лока NOT EXISTS ниже мог
+	// увидеть ещё не удалённую (в чужой незакоммiченной транзакции) строку
+	// админа, которого в этот же момент удаляет DeleteSelfAccount, и не
+	// поставить себе флаг — хотя после чужого COMMIT инстанс оказывался
+	// вовсе без администратора (хвост волны 1, T8).
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1, 0)", instanceAdminBootstrapLockClass); err != nil {
+		return 0, fmt.Errorf("auth: register: bootstrap lock: %w", err)
+	}
+
 	// PROD-B1: первый пользователь инстанса становится инстанс-админом.
-	// Флаг вычисляется атомарно в том же операторе через NOT EXISTS; при
-	// гоночной первой регистрации вторую вставку с true отсечёт частичный
-	// уникальный индекс one_instance_admin.
+	// Флаг вычисляется атомарно в том же операторе через NOT EXISTS. Лок
+	// выше заодно сериализует и ДВЕ параллельные первые регистрации между
+	// собой (обе метят один objID) — вторая дожидается COMMIT первой и уже
+	// видит её строку, так что NOT EXISTS для неё честно возвращает false.
+	// Частичный уникальный индекс one_instance_admin остаётся рубежом на
+	// случай, если это когда-нибудь перестанет быть так (иной путь вставки,
+	// либо лок снят выше по стеку) — а не рабочей веткой при нормальной
+	// работе.
+	//
+	// SAVEPOINT — на случай проигранной гонки за право быть первым админом:
+	// без него ошибка 23505 переводит ВСЮ транзакцию в aborted-состояние
+	// (25P02), и повторная вставка ниже упала бы вместо честного ретрая.
+	if _, err := tx.Exec(ctx, "SAVEPOINT register_insert"); err != nil {
+		return 0, fmt.Errorf("auth: register: savepoint: %w", err)
+	}
 	var id int64
-	err = s.pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`INSERT INTO users (email, password_hash, is_instance_admin)
 		 VALUES ($1, $2, NOT EXISTS (SELECT 1 FROM users))
 		 RETURNING id`,
@@ -82,7 +111,10 @@ func (s *Service) Register(ctx context.Context, email, password string) (int64, 
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		if pgErr.ConstraintName == "one_instance_admin" {
-			err = s.pool.QueryRow(ctx,
+			if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT register_insert"); rbErr != nil {
+				return 0, fmt.Errorf("auth: register: rollback to savepoint: %w", rbErr)
+			}
+			err = tx.QueryRow(ctx,
 				`INSERT INTO users (email, password_hash, is_instance_admin)
 				 VALUES ($1, $2, false)
 				 RETURNING id`,
@@ -94,12 +126,18 @@ func (s *Service) Register(ctx context.Context, email, password string) (int64, 
 			if err != nil {
 				return 0, fmt.Errorf("auth: register: %w", err)
 			}
+			if err := tx.Commit(ctx); err != nil {
+				return 0, fmt.Errorf("auth: register: commit: %w", err)
+			}
 			return id, nil
 		}
 		return 0, ErrEmailTaken
 	}
 	if err != nil {
 		return 0, fmt.Errorf("auth: register: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("auth: register: commit: %w", err)
 	}
 	return id, nil
 }

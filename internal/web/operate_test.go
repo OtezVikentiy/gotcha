@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -88,5 +89,61 @@ func TestRequireProjectOperatorReturnsAuthz(t *testing.T) {
 	}
 	if !authz.CanManage {
 		t.Errorf("admin: CanManage = false, want true")
+	}
+}
+
+// TestRequireProjectOperatorCanOperateQueryError (T8, хвост волны 2) — сбой
+// самого запроса canOperateProject (не «оператора нет», а поломка БД) обязан
+// отдать 500 и ok=false, а НЕ отрендерить 403/404: иначе пользователь решил
+// бы, что ему не хватает прав, хотя проверку прав просто не удалось выполнить
+// (та же путаница, которую TestOverviewCanAccessProjectQueryError закрывает
+// для CanAccessProject).
+//
+// canOperateProject буквально зовёт CanAccessProject (operate.go), поэтому
+// ломаем то же самое — org_members.role, которую трогает первая половина
+// accessCondition (owner/admin). projectOrgOr404 (первый запрос
+// requireProjectOperator, до canOperateProject) эту колонку не читает вовсе
+// — ALTER бьёт ровно по второй проверке, что и позволяет отличить эту находку
+// от «проект не резолвится».
+func TestRequireProjectOperatorCanOperateQueryError(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	authSvc := auth.NewService(pool)
+	orgSvc := org.NewService(pool, 1_000_000)
+	h := &Handler{Org: orgSvc}
+	ctx := context.Background()
+
+	ownerID, err := authSvc.Register(ctx, "authz-operr-owner@example.com", "hunter2hunter2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err := orgSvc.CreateOrg(ctx, "authz-operr-co", "Authz OpErr Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := orgSvc.CreateProject(ctx, o.ID, "authz-operr-proj", "Authz OpErr Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, "ALTER TABLE org_members RENAME COLUMN role TO role_broken_for_test"); err != nil {
+		t.Fatalf("break org_members.role: %v", err)
+	}
+
+	// Прямой вызов canOperateProject: ошибка должна дойти как error, а не
+	// молча схлопнуться в (false, nil) — иначе requireProjectOperator (и
+	// issues.go, у которого свой такой же inline-вызов) не отличили бы её от
+	// честного «не оператор».
+	if _, err := h.canOperateProject(ctx, proj.ID, ownerID); err == nil {
+		t.Fatal("canOperateProject проглотил ошибку БД, вернул nil error")
+	}
+
+	r := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	authz, ok := h.requireProjectOperator(rec, r, proj.ID, ownerID)
+	if ok {
+		t.Fatalf("requireProjectOperator ok = true при сломанной БД, want false (authz=%+v)", authz)
+	}
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("requireProjectOperator: status = %d, want 500 (не 403/404 — отказ БД, не отказ доступа)", rec.Code)
 	}
 }
