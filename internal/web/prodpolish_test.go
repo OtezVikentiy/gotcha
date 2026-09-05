@@ -111,7 +111,7 @@ func TestWebProjectSettingsRevokeConfirm(t *testing.T) {
 	if !strings.Contains(string(body), "последний активный ключ") {
 		t.Fatalf("POST %s (unconfirmed, sole key) missing last-of-kind warning: %s", revokePath, body)
 	}
-	if strings.Contains(string(body), "получат 403") {
+	if strings.Contains(string(body), "получат отказ при приёме") {
 		t.Fatalf("POST %s (unconfirmed, sole key) unexpectedly shows the ordinary message: %s", revokePath, body)
 	}
 	if !strings.Contains(string(body), `name="confirmed" value="yes"`) {
@@ -138,7 +138,7 @@ func TestWebProjectSettingsRevokeConfirm(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST %s (unconfirmed, paired key) status = %d, want 200: %s", revokePath, resp.StatusCode, body)
 	}
-	if !strings.Contains(string(body), "получат 403") {
+	if !strings.Contains(string(body), "получат отказ при приёме") {
 		t.Fatalf("POST %s (unconfirmed, paired key) missing ordinary confirm message: %s", revokePath, body)
 	}
 	if strings.Contains(string(body), "последний активный ключ") {

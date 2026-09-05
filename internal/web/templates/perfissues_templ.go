@@ -535,8 +535,9 @@ func PerfIssuesList(projectID int64, issues []trace.PerfIssue, filter string, us
 }
 
 // perfStatusBadgeClass — бейдж статуса perf-проблемы: unresolved подсвечивается
-// как "требует внимания" (danger), resolved — good, ignored — нейтральный (тот
-// же приём, что statusBadgeClass в issues.templ).
+// как "требует внимания" (warn), resolved — good, ignored — нейтральный — тот
+// же приём и те же классы, что у statusBadgeClass в issues.templ
+// (TestPerfStatusBadgeClassMatchesIssues держит их в паре).
 func perfStatusBadgeClass(status string) string {
 	switch status {
 	case "resolved":
@@ -544,7 +545,7 @@ func perfStatusBadgeClass(status string) string {
 	case "ignored":
 		return "badge badge-neutral"
 	default:
-		return "badge badge-danger"
+		return "badge badge-warn"
 	}
 }
 

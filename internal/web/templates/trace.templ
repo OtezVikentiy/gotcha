@@ -160,12 +160,44 @@ templ TraceExpired(d TraceExpiredData, userEmail string) {
 	}
 }
 
+// TraceUnavailable — GET /traces/{trace_id} при отказе ClickHouse: та же
+// оболочка и крошки, что у TraceExpired, вместо waterfall — «данные временно
+// недоступны». Ответ 200: это отказ источника данных, а не отсутствие
+// страницы. Проект может быть неизвестен (ProjectID==0 — не ответил уже
+// ProjectForTrace): тогда крошка к списку транзакций не рисуется, ссылка
+// на несуществующий проект хуже её отсутствия.
+templ TraceUnavailable(d TraceExpiredData, userEmail string) {
+	@layout(d.TraceID, userEmail) {
+		<div class="trace-detail">
+			switch d.From {
+				case "perf-issue":
+					@breadcrumbBack(templ.URL(perfIssuePath(d.FromID)), i18n.T(ctx, "nav.perf_issues"))
+				case "issue":
+					@breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.errors"))
+				case "endpoint":
+					if d.ProjectID != 0 {
+						@breadcrumbBack(templ.URL(endpointPath(d.ProjectID, d.FromTransaction)), i18n.T(ctx, "nav.transactions"))
+					}
+				default:
+					if d.ProjectID != 0 {
+						@breadcrumbBack(templ.URL(performancePath(d.ProjectID)), i18n.T(ctx, "nav.transactions"))
+					}
+			}
+			<h1>{ d.TraceID }</h1>
+			@emptyState("activity", "trace.error.title", "trace.error.body", "", "", 2)
+		</div>
+	}
+}
+
 // TraceFlameData — страница flamegraph трейса (profiling-in-context, этап 8).
 type TraceFlameData struct {
 	TraceID string
 	Chart   templ.Component
 	// HasData — см. ProfileFlameVM.HasData.
 	HasData bool
+	// LoadFailed — ClickHouse не ответил: вместо флеймграфа — «данные
+	// временно недоступны», ссылка на waterfall остаётся.
+	LoadFailed bool
 }
 
 // TraceFlame — GET /traces/{trace_id}/flame: flamegraph профиля, снятого во
@@ -181,11 +213,15 @@ templ TraceFlame(d TraceFlameData, userEmail string) {
 					<div class="stat-value">{ d.TraceID }</div>
 				</div>
 			</div>
-			@scrollRegion("card flamegraph-wrap", "trace.flame.title") {
-				@d.Chart
-			}
-			if d.HasData {
-				<p class="hint">{ i18n.T(ctx, "profile.flame.hint") }</p>
+			if d.LoadFailed {
+				@emptyState("activity", "trace.error.title", "trace.error.body", "", "", 2)
+			} else {
+				@scrollRegion("card flamegraph-wrap", "trace.flame.title") {
+					@d.Chart
+				}
+				if d.HasData {
+					<p class="hint">{ i18n.T(ctx, "profile.flame.hint") }</p>
+				}
 			}
 		}
 	}

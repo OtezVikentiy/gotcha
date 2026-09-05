@@ -105,6 +105,9 @@ func TestWebOrgSettings(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST %s status = %d, want 303", rolePath, resp.StatusCode)
 	}
+	if !hasFlashCookie(resp, "ok|flash.saved") {
+		t.Errorf("после смены роли нет flash-cookie (K7-9): %v", resp.Header.Values("Set-Cookie"))
+	}
 	if role, err := orgSvc.Role(context.Background(), o.ID, memberID); err != nil || role != org.RoleAdmin {
 		t.Fatalf("role after change = %v, %v, want admin, nil", role, err)
 	}
@@ -529,6 +532,9 @@ func TestWebOrgSettingsQuota(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST %s status = %d, want 303", quotaPath, resp.StatusCode)
+	}
+	if !hasFlashCookie(resp, "ok|flash.saved") {
+		t.Errorf("после сохранения квоты нет flash-cookie (K7-9): %v", resp.Header.Values("Set-Cookie"))
 	}
 	if got, err := orgSvc.Get(context.Background(), o.ID); err != nil || got.EventQuota != 500 {
 		t.Fatalf("quota after valid POST = %+v, err=%v, want 500", got, err)

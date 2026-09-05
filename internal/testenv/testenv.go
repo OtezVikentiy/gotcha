@@ -15,13 +15,16 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go"
@@ -269,4 +272,63 @@ func randHex(n int) string {
 		panic(err)
 	}
 	return hex.EncodeToString(b)
+}
+
+// BrokenCH выдаёт соединение с ClickHouse, у которого любой запрос
+// гарантированно и быстро завершается ошибкой: клиент собран на адрес
+// локального порта, на котором никто не слушает, — connection refused
+// приходит сразу, без ожидания dial-таймаута. Нужен тестам деградации
+// страниц при отказе ClickHouse: реальный драйвер и реальный сетевой отказ
+// вместо интерфейсов-подмен в продуктовом коде (h.Metrics/h.Trace и прочие
+// в web.Handler — конкретные типы, подставить им что-то иное некуда).
+// Контейнеров не требует: пропускать по -short не нужно.
+func BrokenCH(t *testing.T) driver.Conn {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve closed port: %v", err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+	return openBrokenCH(t, addr)
+}
+
+// BrokenCHCounting — BrokenCH, считающий попытки подключения: на локальном
+// порту слушает сокет, который принимает соединение и тут же закрывает его
+// (драйвер получает EOF на рукопожатии). Счётчик — число принятых
+// соединений; по нему тест видит, сколько раз страница ходила в ClickHouse
+// после первого отказа («первый отказ прекращает опрос»).
+func BrokenCHCounting(t *testing.T) (driver.Conn, *atomic.Int64) {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	var attempts atomic.Int64
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			attempts.Add(1)
+			_ = c.Close()
+		}
+	}()
+	t.Cleanup(func() { _ = l.Close() })
+	return openBrokenCH(t, l.Addr().String()), &attempts
+}
+
+func openBrokenCH(t *testing.T, addr string) driver.Conn {
+	t.Helper()
+	conn, err := clickhouse.Open(&clickhouse.Options{
+		Addr:        []string{addr},
+		Auth:        clickhouse.Auth{Database: "gotcha", Username: "gotcha", Password: "gotcha"},
+		DialTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("open broken clickhouse: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
 }

@@ -225,13 +225,18 @@ templ environmentOption(value, label string, selected string) {
 // раскрытых формах экспорта (спека §7/§8; находка аудита P2-UX-3 — раньше
 // эта галка не показывалась на точках входа вовсе, только на генерической
 // форме страницы «Выгрузки», которая не несёт scope_issue_id/фильтров).
-templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int, total int64, userEmail string, environments []string, banner *QuotaBanner, gs GettingStartedVM, canOperate bool, canManagePII bool) {
+// sparklinesFailed — ClickHouse не ответил: список (PostgreSQL) на месте,
+// колонка спарклайнов пустая, над таблицей — подсказка.
+templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int, total int64, userEmail string, environments []string, banner *QuotaBanner, gs GettingStartedVM, canOperate bool, canManagePII bool, sparklinesFailed bool) {
 	@layout(i18n.T(ctx, "nav.errors"), userEmail) {
 		<div class="issues">
 			@quotaBannerView(banner)
 			@gettingStartedChecklist(gs)
 			<h1>{ i18n.T(ctx, "nav.errors") }</h1>
 			@helpPanel("issues", "issues")
+			if sparklinesFailed && len(rows) > 0 {
+				<p class="hint">{ i18n.T(ctx, "issues.sparklines.error") }</p>
+			}
 			<form method="get" action={ templ.URL(issuesPath(projectID)) } class="issues-filters">
 				<input type="text" name="q" class="input" placeholder={ i18n.T(ctx, "issues.filter.query_placeholder") } value={ filter.Query } aria-label={ i18n.T(ctx, "filter.search") }/>
 				<select name="status" class="select" aria-label={ i18n.T(ctx, "filter.status") }>

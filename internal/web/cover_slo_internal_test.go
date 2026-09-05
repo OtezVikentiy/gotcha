@@ -60,13 +60,17 @@ func (p *fakeSLOProvider) Buckets(ctx context.Context, s slo.SLO, from, to time.
 
 func (p *fakeSLOProvider) RetentionCap() time.Duration { return p.retentionCap }
 
+func (p *fakeSLOProvider) BucketsExcluding(ctx context.Context, s slo.SLO, from, to time.Time, step time.Duration, _ []uptime.Window) ([]slo.Bucket, error) {
+	return p.Buckets(ctx, s, from, to, step)
+}
+
 // TestSLORowNoProvider — SLO с типом, для которого в h.SLOProviders нет
 // провайдера (карта пуста или nil): sloRow обязана вернуть базовую строку без
 // данных, а не паниковать на нулевом провайдере.
 func TestSLORowNoProvider(t *testing.T) {
 	h := &Handler{}
 	s := slo.SLO{ID: 1, Name: "checkout", Kind: slo.SLIAvailability, Target: 0.99}
-	row := h.sloRow(context.Background(), s)
+	row := h.sloRow(context.Background(), s, nil, false)
 	if row.HasData {
 		t.Fatalf("HasData = true без провайдера, want false: %+v", row)
 	}
@@ -85,7 +89,7 @@ func TestSLORowProviderError(t *testing.T) {
 	p := &fakeSLOProvider{buckets: []slo.Bucket{{Good: 1, Total: 1}}, err: errors.New("clickhouse: connection refused")}
 	h := &Handler{SLOProviders: map[slo.SLIKind]slo.Provider{slo.SLIAvailability: p}}
 	s := slo.SLO{ID: 2, Kind: slo.SLIAvailability, Target: 0.99, WindowDays: 30}
-	row := h.sloRow(context.Background(), s)
+	row := h.sloRow(context.Background(), s, nil, false)
 	if row.HasData {
 		t.Fatalf("HasData = true при ошибке провайдера, want false: %+v", row)
 	}
@@ -101,7 +105,7 @@ func TestSLORowNoEvents(t *testing.T) {
 	p := &fakeSLOProvider{buckets: []slo.Bucket{}}
 	h := &Handler{SLOProviders: map[slo.SLIKind]slo.Provider{slo.SLIAvailability: p}}
 	s := slo.SLO{ID: 3, Kind: slo.SLIAvailability, Target: 0.99, WindowDays: 30}
-	row := h.sloRow(context.Background(), s)
+	row := h.sloRow(context.Background(), s, nil, false)
 	if row.HasData {
 		t.Fatalf("HasData = true без событий, want false: %+v", row)
 	}
@@ -114,7 +118,7 @@ func TestSLORowWithData(t *testing.T) {
 	p := &fakeSLOProvider{buckets: []slo.Bucket{{Good: 970, Total: 1000}}}
 	h := &Handler{SLOProviders: map[slo.SLIKind]slo.Provider{slo.SLIAvailability: p}}
 	s := slo.SLO{ID: 4, Kind: slo.SLIAvailability, Target: 0.99, WindowDays: 30}
-	row := h.sloRow(context.Background(), s)
+	row := h.sloRow(context.Background(), s, nil, false)
 	if !row.HasData {
 		t.Fatalf("HasData = false с данными, want true: %+v", row)
 	}
@@ -135,7 +139,7 @@ func TestSLORowRetentionClip(t *testing.T) {
 	p := &fakeSLOProvider{buckets: []slo.Bucket{{Good: 1, Total: 1}}, retentionCap: 24 * time.Hour}
 	h := &Handler{SLOProviders: map[slo.SLIKind]slo.Provider{slo.SLIAvailability: p}}
 	s := slo.SLO{ID: 5, Kind: slo.SLIAvailability, Target: 0.99, WindowDays: 90}
-	h.sloRow(context.Background(), s)
+	h.sloRow(context.Background(), s, nil, false)
 	if p.calls != 1 {
 		t.Fatalf("Buckets вызван %d раз, want 1", p.calls)
 	}
@@ -152,7 +156,7 @@ func TestSLORowNoClipWithoutCap(t *testing.T) {
 	p := &fakeSLOProvider{buckets: []slo.Bucket{{Good: 1, Total: 1}}, retentionCap: 0}
 	h := &Handler{SLOProviders: map[slo.SLIKind]slo.Provider{slo.SLIAvailability: p}}
 	s := slo.SLO{ID: 6, Kind: slo.SLIAvailability, Target: 0.99, WindowDays: 5}
-	h.sloRow(context.Background(), s)
+	h.sloRow(context.Background(), s, nil, false)
 	age := p.lastTo.Sub(p.lastFrom)
 	if age < 119*time.Hour || age > 121*time.Hour {
 		t.Errorf("окно = %v, want ~120h (5 дней) без клипа", age)
@@ -260,6 +264,10 @@ func (p *twoCallSLOProvider) Buckets(ctx context.Context, s slo.SLO, from, to ti
 }
 
 func (p *twoCallSLOProvider) RetentionCap() time.Duration { return 0 }
+
+func (p *twoCallSLOProvider) BucketsExcluding(ctx context.Context, s slo.SLO, from, to time.Time, step time.Duration, _ []uptime.Window) ([]slo.Bucket, error) {
+	return p.Buckets(ctx, s, from, to, step)
+}
 
 // TestMonitorInProject покрывает все ветки monitorInProject: h.Uptime==nil,
 // монитор найден, монитор из другого проекта (не найден), ошибка List

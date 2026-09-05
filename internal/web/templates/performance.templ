@@ -135,7 +135,9 @@ templ perfEnvOption(value, label, selected string) {
 // перцентилями, failure rate, Apdex (порог T = apdexT мс) и спарклайном p95.
 // total — полное число эндпойнтов до усечения списка (len(rows) — показанные):
 // если total больше, показывается пометка об усечении (как у waterfall).
-templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter PerfFilter, environments []string, apdexT int, cardinality []CardinalityNotice, userEmail string) {
+// loadFailed — ClickHouse не ответил: фильтры на месте, вместо таблицы —
+// «данные временно недоступны».
+templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter PerfFilter, environments []string, apdexT int, cardinality []CardinalityNotice, userEmail string, loadFailed bool) {
 	// Канон имени раздела — «Транзакции» (№24): рейл, сайдбар, h1, <title> и
 	// крошки зовут его одинаково. «Эндпойнты» (perf.endpoints) остаётся
 	// термином ДАННЫХ — заголовком таблицы ниже, но не именем раздела.
@@ -160,7 +162,9 @@ templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter Per
 				}
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "perf.filter.apply") }</button>
 			</form>
-			if len(rows) == 0 {
+			if loadFailed {
+				@emptyState("zap", "perf.error.title", "perf.error.body", "", "", 2)
+			} else if len(rows) == 0 {
 				@emptyState("zap", "perf.empty.title", "perf.empty.body", "perf.empty.cta", "/docs/performance", 2)
 			} else {
 				<p class="apdex-note">{ i18n.Tf(ctx, "perf.apdex_note", "t", strconv.Itoa(apdexT)) }</p>

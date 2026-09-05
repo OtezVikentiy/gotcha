@@ -41,6 +41,10 @@ type EndpointDetailData struct {
 
 	Slowest    []SlowestTraceRow
 	PerfIssues []trace.PerfIssue
+	// LoadFailed — ClickHouse не ответил: вместо графиков, виталов и
+	// медленных трейсов — «данные временно недоступны»; шапка и связанные
+	// проблемы (PostgreSQL) остаются.
+	LoadFailed bool
 
 	// Vitals — панель Web Vitals (этап 4, план 2, задача 2): непустой слайс →
 	// у транзакции есть web vitals и панель рендерится; nil → панели нет.
@@ -107,6 +111,9 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 				</div>
 			</div>
 
+			if d.LoadFailed {
+				@emptyState("zap", "perf.error.title", "perf.error.body", "", "", 2)
+			} else {
 			if len(d.Vitals) > 0 {
 				<h2>{ i18n.T(ctx, "perf.webvitals") }</h2>
 				// Таблица виталов — в собственном скролл-регионе, как остальные
@@ -199,6 +206,7 @@ templ EndpointDetail(d EndpointDetailData, userEmail string) {
 				</div>
 			}
 
+			}
 			<h2>{ i18n.T(ctx, "perf.related_issues") }</h2>
 			if len(d.PerfIssues) == 0 {
 				@emptyState("zap", "perf.related_issues.empty.title", "perf.related_issues.empty.body", "", "", 3)

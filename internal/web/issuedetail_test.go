@@ -146,6 +146,9 @@ func TestWebIssueDetail(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST %s status = %d, want 303", statusPath, resp.StatusCode)
 	}
+	if !hasFlashCookie(resp, "ok|flash.issue_status_saved") {
+		t.Errorf("после смены статуса нет flash-cookie (K7-9): %v", resp.Header.Values("Set-Cookie"))
+	}
 	got, err := s.issues.Get(context.Background(), r1.IssueID)
 	if err != nil {
 		t.Fatalf("get issue: %v", err)
@@ -170,6 +173,9 @@ func TestWebIssueDetail(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST %s status = %d, want 303", assignPath, resp.StatusCode)
+	}
+	if !hasFlashCookie(resp, "ok|flash.issue_assigned") {
+		t.Errorf("после назначения нет flash-cookie (K7-9): %v", resp.Header.Values("Set-Cookie"))
 	}
 	got, err = s.issues.Get(context.Background(), r1.IssueID)
 	if err != nil {

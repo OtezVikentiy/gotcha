@@ -9,7 +9,11 @@
 //    серверном переоткрытии после ошибки валидации — тоже, иначе клавиатура
 //    остаётся в начале страницы и модалку «не видит»;
 //  - при закрытии фокус возвращается на элемент, с которого открывали
-//    (образец — close(refocus) в daterange.js).
+//    (образец — close(refocus) в daterange.js);
+//  - Tab/Shift+Tab циклят по фокусируемым элементам внутри открытой модалки:
+//    фон не изолирован ([inert] нет, aria-modal намеренно не выставлен — см.
+//    modalShell), и без ловушки Tab с последнего поля уходил на десятки
+//    фокусируемых элементов позади диалога.
 (function () {
 	"use strict";
 
@@ -28,6 +32,62 @@
 		var h = modal.querySelector(".modal-card > .card-header");
 		if (h) {
 			h.focus();
+		}
+	}
+
+	// openModal — открытая модалка: либо та, на которую указывает адресная
+	// строка (:target), либо открытая сервером (modal--open).
+	function openModal() {
+		return modalFromHash() || document.querySelector(".modal.modal--open");
+	}
+
+	// focusables — элементы карточки диалога, достижимые по Tab, в порядке
+	// DOM. Заголовок (tabindex=-1) и всё, что скрыто CSS (getClientRects
+	// пуст), не считаются; фон-якорь .modal-backdrop лежит вне .modal-card.
+	function focusables(modal) {
+		var card = modal.querySelector(".modal-card") || modal;
+		var all = card.querySelectorAll(
+			'a[href], button, input, select, textarea, [tabindex]'
+		);
+		var out = [];
+		for (var i = 0; i < all.length; i++) {
+			var el = all[i];
+			if (el.disabled || el.tabIndex < 0 || el.type === "hidden") {
+				continue;
+			}
+			if (el.getClientRects().length === 0) {
+				continue;
+			}
+			out.push(el);
+		}
+		return out;
+	}
+
+	// trapTab — цикл фокуса: Tab с последнего элемента → на первый, Shift+Tab
+	// с первого → на последний; фокус вне диалога (или на заголовке при
+	// Shift+Tab, когда перед ним ничего нет) возвращается в цикл.
+	function trapTab(ev) {
+		var modal = openModal();
+		if (!modal) {
+			return;
+		}
+		var list = focusables(modal);
+		if (list.length === 0) {
+			ev.preventDefault();
+			return;
+		}
+		var first = list[0];
+		var last = list[list.length - 1];
+		var active = document.activeElement;
+		var inside = modal.contains(active);
+		if (ev.shiftKey) {
+			if (!inside || active === first || active === modal.querySelector(".modal-card > .card-header")) {
+				ev.preventDefault();
+				last.focus();
+			}
+		} else if (!inside || active === last) {
+			ev.preventDefault();
+			first.focus();
 		}
 	}
 
@@ -68,7 +128,14 @@
 	});
 
 	document.addEventListener("keydown", function (ev) {
-		if (ev.key !== "Escape" || ev.defaultPrevented) {
+		if (ev.defaultPrevented) {
+			return;
+		}
+		if (ev.key === "Tab") {
+			trapTab(ev);
+			return;
+		}
+		if (ev.key !== "Escape") {
 			return;
 		}
 		var anchor = closeAnchor();

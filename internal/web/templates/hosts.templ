@@ -342,7 +342,9 @@ templ hostsTable(projectID int64, rows []HostRowVM) {
 	</table>
 }
 
-templ HostsList(projectID int64, rows []HostRowVM, truncated bool, limit int, filter HostsFilterVM, facets HostsFacets, sections []HostSection, installCmd, config, agentReason, userEmail string) {
+// metricsFailed — ClickHouse не ответил: список хостов (PostgreSQL) на месте,
+// колонки метрик пустые, над таблицей — «метрики временно недоступны».
+templ HostsList(projectID int64, rows []HostRowVM, truncated bool, limit int, filter HostsFilterVM, facets HostsFacets, sections []HostSection, installCmd, config, agentReason, userEmail string, metricsFailed bool) {
 	@layout(i18n.T(ctx, "nav.hosts"), userEmail) {
 		<div class="hosts">
 			<h1>{ i18n.T(ctx, "nav.hosts") }</h1>
@@ -352,6 +354,9 @@ templ HostsList(projectID int64, rows []HostRowVM, truncated bool, limit int, fi
 				@hostsOnboarding(projectID, installCmd, config, agentReason)
 			} else {
 				@hostsFilterBar(projectID, filter, facets)
+				if metricsFailed {
+					<p class="hint">{ i18n.T(ctx, "hosts.metrics.error") }</p>
+				}
 				if truncated {
 					<p class="hint">{ i18n.Tf(ctx, "hosts.limit_notice", "limit", strconv.Itoa(limit)) }</p>
 				}

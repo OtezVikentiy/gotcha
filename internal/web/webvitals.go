@@ -1,6 +1,7 @@
 package web
 
 import (
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -60,22 +61,24 @@ func (h *Handler) webVitalsList(w http.ResponseWriter, r *http.Request) {
 
 	from, now := tr.From, tr.To
 
+	// Отказ ClickHouse — НЕ 500: фильтры и оболочка остаются, на месте
+	// таблицы — «данные временно недоступны» (единый приём CH-страниц,
+	// образец — logsList). Первый отказ прекращает опрос хранилища.
 	pages, err := h.Trace.WebVitalsPages(r.Context(), projectID, from, now, environment)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
+	var environments []string
+	if err == nil {
+		environments, err = h.Trace.Environments(r.Context(), projectID, from, now)
 	}
-
-	environments, err := h.Trace.Environments(r.Context(), projectID, from, now)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
+	loadFailed := err != nil
+	if loadFailed {
+		slog.Warn("perf: web vitals list failed", "project_id", projectID, "err", err)
+		pages, environments = nil, nil
 	}
 
 	sortPageVitals(pages, sortKey)
 
 	filter := templates.PerfFilter{Range: timeRangeVM(tr), Environment: environment, Sort: sortKey}
-	_ = templates.WebVitalsList(projectID, pages, filter, environments, h.currentEmail(r)).
+	_ = templates.WebVitalsList(projectID, pages, filter, environments, h.currentEmail(r), loadFailed).
 		Render(r.Context(), w)
 }
 

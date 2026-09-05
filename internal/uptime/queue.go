@@ -219,30 +219,86 @@ func (s *Service) LeaseForProbe(ctx context.Context, probe Probe, limit int) ([]
 // другую организацию. Организация берётся из самой пробы (JOIN probes), так что
 // вызывающему нечего забыть передать.
 func (s *Service) LeasedJob(ctx context.Context, queueID, probeID int64) (Job, error) {
+	jobs, err := s.LeasedJobs(ctx, []int64{queueID}, probeID)
+	if err != nil {
+		return Job{}, err
+	}
+	j, ok := jobs[queueID]
+	if !ok {
+		return Job{}, ErrNotFound
+	}
+	return j, nil
+}
+
+// LeasedJobs — LeasedJob для пачки результатов одним запросом: ключ —
+// queue_id. Чего в карте нет — чужое, протухшее или уже выполненное задание
+// (для одиночного вызова это ErrNotFound). POST /probe/results так ищет
+// задания всех результатов разом, а не по запросу на каждый.
+func (s *Service) LeasedJobs(ctx context.Context, queueIDs []int64, probeID int64) (map[int64]Job, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+leasedJobColumns+`
 		FROM check_queue q
 		JOIN monitors m ON m.id = q.monitor_id
-		WHERE q.id = $1 AND q.leased_by = $2 AND q.lease_until > now()
+		WHERE q.id = ANY($1) AND q.leased_by = $2 AND q.lease_until > now()
 		  AND EXISTS (
 				SELECT 1 FROM projects p
 				JOIN probes pr ON pr.org_id = p.org_id
 				WHERE p.id = m.project_id AND pr.id = $2 AND pr.revoked_at IS NULL)`,
-		queueID, probeID)
+		queueIDs, probeID)
 	if err != nil {
-		return Job{}, fmt.Errorf("uptime: leased job: %w", err)
+		return nil, fmt.Errorf("uptime: leased job: %w", err)
 	}
 	defer rows.Close()
 
 	jobs, err := scanLeasedJobs(rows)
 	if err != nil {
-		return Job{}, fmt.Errorf("uptime: leased job: %w", err)
-	}
-	if len(jobs) == 0 {
-		return Job{}, ErrNotFound
+		return nil, fmt.Errorf("uptime: leased job: %w", err)
 	}
 	s.decryptJobs(jobs)
-	return jobs[0], nil
+	out := make(map[int64]Job, len(jobs))
+	for _, j := range jobs {
+		out[j.QueueID] = j
+	}
+	return out, nil
+}
+
+// JobClaim — пара (queue_id, lease_until) для ClaimJobs; lease_until — тот
+// же сторож «задание не перевыдано», что и у ClaimJob.
+type JobClaim struct {
+	QueueID    int64
+	LeaseUntil time.Time
+}
+
+// ClaimJobs — ClaimJob для пачки результатов одним DELETE. В ответе — только
+// фактически изъятые queue_id; чего нет — задание уже забрано или перевыдано
+// с новым lease_until, результат надо отбросить, как и при ClaimJob=false.
+func (s *Service) ClaimJobs(ctx context.Context, claims []JobClaim) (map[int64]bool, error) {
+	ids := make([]int64, len(claims))
+	leases := make([]time.Time, len(claims))
+	for i, c := range claims {
+		ids[i], leases[i] = c.QueueID, c.LeaseUntil
+	}
+	rows, err := s.pool.Query(ctx, `
+		DELETE FROM check_queue q
+		USING unnest($1::bigint[], $2::timestamptz[]) AS c(id, lease_until)
+		WHERE q.id = c.id AND q.lease_until = c.lease_until
+		RETURNING q.id`, ids, leases)
+	if err != nil {
+		return nil, fmt.Errorf("uptime: claim jobs: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[int64]bool, len(claims))
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("uptime: claim jobs: %w", err)
+		}
+		out[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("uptime: claim jobs: %w", err)
+	}
+	return out, nil
 }
 
 // ClaimJob atomically claims job queueID for the holder of the lease that

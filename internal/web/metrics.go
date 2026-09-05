@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/url"
@@ -71,13 +72,17 @@ func (h *Handler) metricsList(w http.ResponseWriter, r *http.Request) {
 	}
 	environment := r.URL.Query().Get("environment")
 	metrics, err := h.Metrics.ListMetrics(r.Context(), projectID, environment)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
+	// Отказ ClickHouse — НЕ 500: оболочка страницы остаётся живой, на месте
+	// списка — «данные временно недоступны» (тот же приём, что у логов,
+	// см. logsList).
+	loadFailed := err != nil
+	if loadFailed {
+		slog.Warn("metrics: list failed", "project_id", projectID, "err", err)
+		metrics = nil
 	}
 	showSystem := r.URL.Query().Get("system") == "1"
 	visible, hiddenCount := filterSystemMetrics(metrics, showSystem)
-	_ = templates.MetricsList(projectID, visible, environment, h.currentEmail(r), showSystem, hiddenCount).Render(r.Context(), w)
+	_ = templates.MetricsList(projectID, visible, environment, h.currentEmail(r), showSystem, hiddenCount, loadFailed).Render(r.Context(), w)
 }
 
 // metricChartWidth/metricChartHeight — размер графика ряда на странице метрики.
@@ -120,7 +125,11 @@ func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
 	// (project_id, name) вместо скана всех метрик проекта ради одной.
 	info, found, err := h.Metrics.MetricInfoByName(r.Context(), projectID, name)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		// Отказ ClickHouse: страница метрики без данных, но с оболочкой и
+		// крошкой назад (см. metricsList). Различать «нет такой метрики»
+		// (404 ниже) и отказ хранилища здесь можно по err — found=false без
+		// ошибки означает именно отсутствие.
+		h.renderMetricUnavailable(w, r, projectID, name, err)
 		return
 	}
 	if !found {
@@ -143,7 +152,7 @@ func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
 	step := autoStep(tr.Window(), time.Minute, 0, metricChartBuckets)
 	points, err := h.Metrics.Series(r.Context(), projectID, name, environment, "", matchers, agg, from, now, step)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderMetricUnavailable(w, r, projectID, name, err)
 		return
 	}
 	// Дозаполняем окно: пустые корзины помечаем NaN — линия рвётся на них, а
@@ -153,12 +162,12 @@ func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
 		func(t time.Time) metric.Point { return metric.Point{T: t, V: math.NaN()} })
 	labels, err := h.Metrics.Labels(r.Context(), projectID, name, from, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderMetricUnavailable(w, r, projectID, name, err)
 		return
 	}
 	environments, err := h.Metrics.Environments(r.Context(), projectID, name, from, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderMetricUnavailable(w, r, projectID, name, err)
 		return
 	}
 	// Маркеры деплоев на графике метрики (C5), выкладки проекта за то же окно.
@@ -178,6 +187,21 @@ func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
 		LabelValue:   matcher.Value,
 		Chart:        metricSeriesSVG(r.Context(), points, info.Unit, h.metricThresholdsFor(r.Context(), projectID, name, agg), deploys, metricChartWidth, metricChartHeight),
 		Percentiles:  info.Type == "histogram",
+	}
+	_ = templates.MetricDetail(vm, h.currentEmail(r)).Render(r.Context(), w)
+}
+
+// renderMetricUnavailable — страница метрики при отказе ClickHouse: оболочка,
+// крошка к списку и имя метрики на месте, вместо графика и фильтров —
+// «данные временно недоступны». 200, а не 500: отказ источника данных одного
+// блока не должен лишать пользователя навигации (единый приём для всех
+// CH-страниц, образец — logsList).
+func (h *Handler) renderMetricUnavailable(w http.ResponseWriter, r *http.Request, projectID int64, name string, err error) {
+	slog.Warn("metrics: detail failed", "project_id", projectID, "metric", name, "err", err)
+	vm := templates.MetricDetailVM{
+		ProjectID:  projectID,
+		Info:       metric.MetricInfo{Name: name},
+		LoadFailed: true,
 	}
 	_ = templates.MetricDetail(vm, h.currentEmail(r)).Render(r.Context(), w)
 }

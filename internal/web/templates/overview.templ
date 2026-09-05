@@ -21,7 +21,10 @@ import (
 // разница между «спокойно» и «нечем измерить» здесь не имеет отдельного
 // действия для читателя).
 type StatusLine struct {
-	Uptime             uptime.UptimeStat
+	Uptime uptime.UptimeStat
+	// UptimeUnavailable — ClickHouse не ответил: плитка аптайма показывает
+	// «недоступно» вместо значения.
+	UptimeUnavailable  bool
 	HostsOverThreshold int
 	NewIssues24h       int64
 }
@@ -72,7 +75,11 @@ templ statusLine(projectID int64, sl StatusLine) {
 	<div class="monitor-meta">
 		<a class="stat-tile" href={ templ.URL(monitorsPath(projectID)) }>
 			<div class="stat-label">{ i18n.T(ctx, "overview.status.uptime") }</div>
-			<div class="stat-value">{ uptimeStatTextCtx(ctx, sl.Uptime) }</div>
+			if sl.UptimeUnavailable {
+				<div class="stat-value">{ i18n.T(ctx, "overview.status.uptime_unavailable") }</div>
+			} else {
+				<div class="stat-value">{ uptimeStatTextCtx(ctx, sl.Uptime) }</div>
+			}
 		</a>
 		<a class="stat-tile" href={ templ.URL(hostsBasePath(projectID)) }>
 			<div class="stat-label">{ i18n.T(ctx, "overview.status.hosts_over_threshold") }</div>

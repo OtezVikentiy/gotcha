@@ -305,18 +305,6 @@ func (h *Handler) alertsChannelCreate(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, alertsPath(projectID), http.StatusSeeOther)
 }
 
-// channelBelongsToProject — тот же приём, что и keyBelongsToProject
-// (projsettings.go): не даём удалить канал, принадлежащий чужому проекту, по
-// подобранному id.
-func channelBelongsToProject(channels []alert.Channel, channelID int64) bool {
-	for _, c := range channels {
-		if c.ID == channelID {
-			return true
-		}
-	}
-	return false
-}
-
 // alertsChannelUpdate — POST /projects/{id}/alerts/channels/update:
 // channel_id, target, secret, enabled.
 //
@@ -419,6 +407,19 @@ func channelKind(channels []alert.Channel, channelID int64) (string, bool) {
 	return "", false
 }
 
+// findChannel — канал из уже загруженного списка проекта: тот же приём, что
+// и keyBelongsToProject (projsettings.go) — не даём удалить канал чужого
+// проекта по подобранному id, — а заодно даёт сам канал для страницы
+// подтверждения удаления (она называет тип и адрес канала, K7-3).
+func findChannel(channels []alert.Channel, channelID int64) (alert.Channel, bool) {
+	for _, c := range channels {
+		if c.ID == channelID {
+			return c, true
+		}
+	}
+	return alert.Channel{}, false
+}
+
 // alertsChannelDelete — POST /projects/{id}/alerts/channels/delete:
 // channel_id. Канал должен принадлежать проекту из пути, иначе 404.
 func (h *Handler) alertsChannelDelete(w http.ResponseWriter, r *http.Request) {
@@ -456,17 +457,21 @@ func (h *Handler) alertsChannelDelete(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	if !channelBelongsToProject(channels, channelID) {
+	c, ok := findChannel(channels, channelID)
+	if !ok {
 		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 		return
 	}
 	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
 	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
-	// показываем страницу подтверждения вместо необратимого действия.
+	// показываем страницу подтверждения вместо необратимого действия. У
+	// канала нет имени — вопрос называет тип и адрес (те же колонки, что в
+	// таблице каналов), иначе по hidden channel_id опечатку не заметить (K7-3).
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.channel_delete.message", "confirm.delete",
+		h.renderConfirmf(w, r, "confirm.title", "confirm.channel_delete.message", "confirm.delete",
 			alertsPath(projectID), alertsChannelsDeletePath(projectID),
-			[]templates.HiddenField{{Name: "channel_id", Value: strconv.FormatInt(channelID, 10)}})
+			[]templates.HiddenField{{Name: "channel_id", Value: strconv.FormatInt(channelID, 10)}},
+			"kind", i18n.T(r.Context(), "alerts.channels.kind."+c.Kind), "target", c.Target)
 		return
 	}
 	if err := h.Alerts.DeleteChannel(r.Context(), projectID, channelID); err != nil {

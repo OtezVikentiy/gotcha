@@ -339,6 +339,7 @@ templ exportsForm(projectID int64, canManagePII bool, errMsg string, form FormSt
 templ Exports(projectID int64, rows []ExportView, canManagePII bool, userEmail string, enabled bool, errMsg string, form FormState) {
 	@layout(i18n.T(ctx, "exports.title"), userEmail) {
 		<h1>{ i18n.T(ctx, "exports.title") }</h1>
+		@helpPanel("exports", "exports")
 		if !enabled {
 			@emptyState("file-text", "exports.disabled.title", "exports.disabled.body", "", "", 2)
 		} else {

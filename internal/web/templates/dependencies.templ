@@ -65,6 +65,7 @@ templ DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilte
 	@layout(i18n.T(ctx, "deps.title"), userEmail) {
 		<div class="deps">
 			<h1>{ i18n.T(ctx, "deps.title") }</h1>
+			@helpPanel("dependencies", "dependencies")
 			<form method="get" action={ templ.URL(dependenciesPath(projectID)) } class="deps-filters">
 				@timeRangeFields(filter.Range)
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "deps.apply") }</button>

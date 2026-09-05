@@ -478,6 +478,7 @@ func (h *Handler) orgSettingsRole(w http.ResponseWriter, r *http.Request) {
 		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "", nil)
 		return
 	}
+	h.flashOK(w, "flash.saved", 0)
 	http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
 }
 
@@ -783,6 +784,7 @@ func (h *Handler) orgSettingsQuota(w http.ResponseWriter, r *http.Request) {
 		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "", nil)
 		return
 	}
+	h.flashOK(w, "flash.saved", 0)
 	http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
 }
 
@@ -818,9 +820,20 @@ func (h *Handler) orgSettingsDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	// Двухшаговое подтверждение (см. orgSettingsLeave/renderConfirm): без
 	// confirmed=yes показываем страницу подтверждения вместо удаления орга.
+	// Имя организации — в тексте вопроса (K7-3, как у hostDelete).
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.org_delete.message", "org.danger.delete_org.button",
-			orgSettingsPath(orgID), orgSettingsDeletePath(orgID), nil)
+		o, err := h.Org.Get(r.Context(), orgID)
+		if err != nil {
+			if errors.Is(err, org.ErrNotFound) {
+				h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+				return
+			}
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.org_delete.message", "org.danger.delete_org.button",
+			orgSettingsPath(orgID), orgSettingsDeletePath(orgID), nil,
+			"name", o.Name)
 		return
 	}
 	if err := h.Org.DeleteOrg(r.Context(), orgID); err != nil {

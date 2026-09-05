@@ -13,6 +13,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/slo"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
+	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
 // capturingNotifier копит SLOEvent, чтобы тест проверил, что уведомление ушло
@@ -228,6 +229,10 @@ func (p *stuckProvider) Buckets(ctx context.Context, _ slo.SLO, _, _ time.Time, 
 }
 
 func (p *stuckProvider) RetentionCap() time.Duration { return 0 }
+
+func (p *stuckProvider) BucketsExcluding(ctx context.Context, s slo.SLO, from, to time.Time, step time.Duration, _ []uptime.Window) ([]slo.Bucket, error) {
+	return p.Buckets(ctx, s, from, to, step)
+}
 
 // TestSLOEvaluatorTickStopsOnBudget — K15-1: повисший провайдер (ClickHouse-
 // запрос без собственного таймаута) не блокирует Tick дольше бюджета тика.

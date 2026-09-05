@@ -146,7 +146,8 @@ func TestChartBarsTooltip(t *testing.T) {
 	if strings.Count(out, "<title>") != 1 {
 		t.Errorf("ожидалась одна подсказка на один столбик: %s", out)
 	}
-	for _, want := range []string{"18.07 15:00", "5 событий"} {
+	// K9-15: время подсказки — через humanize.Time (дата, время, пояс).
+	for _, want := range []string{"2026-07-18 15:00 UTC", "5 событий"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("подсказка без %q: %s", want, out)
 		}
@@ -276,7 +277,13 @@ func TestChartBarsDayLabelsShareXLabelPlacement(t *testing.T) {
 		{T: base.AddDate(0, 0, 1), N: 5},
 		{T: base.AddDate(0, 0, 2), N: 4},
 	}
-	const narrowW = 150 // x0=chartPadL=40, x1=narrowW-chartPadR=140 — дни ложатся близко
+	// x0=chartPadL=40, x1=narrowW-chartPadR=56 — дни ложатся вплотную. Ширина
+	// руны пропорциональна холсту (svgCharWidthPerVB), поэтому «близко»
+	// достигается только очень узким холстом: подпись дня (5 рун) с якорем
+	// middle наезжает на первую при w < ~70, а починить это сменой якоря на
+	// start ещё можно при w ≥ ~62 (x второй ≥ правого края первой) — окно
+	// 62..69, иначе вторая подпись подавляется вовсе.
+	const narrowW = 66
 	out := chartBars(context.Background(), points, narrowW, chartHeight)
 
 	// Подписи дней рисуются на одной и той же y = chartHeight-7 = 173.0 —
@@ -299,7 +306,7 @@ func TestChartBarsDayLabelsShareXLabelPlacement(t *testing.T) {
 		t.Fatalf("якорь второй подписи дня = %q, ожидался start (сдвиг первой не учтён — наехала бы)", anchor1)
 	}
 
-	width0 := estimateTextWidth("01.07")
+	width0 := estimateTextWidth(narrowW, "01.07")
 	rightFirst := x0 + width0 // якорь start растёт вправо от x
 	leftSecond := x1          // тоже start — левый край подписи = сама x
 	if gap := leftSecond - rightFirst; gap < 0 {

@@ -69,7 +69,7 @@ func TestIssueDetailBareFrame(t *testing.T) {
 	// Системный кадр (InApp=false) с модулем — рендерится через <details>.
 	frames := []Frame{{Function: "runtime.main", Module: "runtime", Filename: "", Lineno: 0, InApp: false}}
 	ev := event.Stored{ID: "e9", Level: "info", Message: "just a message"}
-	out := renderTo(t, IssueDetail(it, nil, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "e9", &ev, frames, "u@e.com", false, false, "", "", true, true))
+	out := renderTo(t, IssueDetail(it, nil, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "e9", &ev, frames, "u@e.com", false, false, "", "", true, true, false))
 	if !strings.Contains(out, "runtime.main") || !strings.Contains(out, "frame-system") {
 		t.Error("системный кадр не из приложения должен отрендериться через <details>")
 	}
@@ -108,7 +108,7 @@ func TestMetricDetailPlain(t *testing.T) {
 func TestMonitorDetailPausedDisabled(t *testing.T) {
 	m := uptime.Monitor{ID: 9, Name: "paused-mon", Kind: uptime.KindTCP, Enabled: false, IntervalSeconds: 120}
 	stat := uptime.UptimeStat{}
-	out := renderTo(t, MonitorDetail(m, "paused", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, true, true, "https://x", "u@e.com"))
+	out := renderTo(t, MonitorDetail(m, "paused", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, true, true, "https://x", "u@e.com", false))
 	if !strings.Contains(out, "paused-mon") {
 		t.Error("выключенный монитор должен отрендериться")
 	}
@@ -162,13 +162,13 @@ const emptyStateMarker = `class="empty-state"`
 func TestEmptyStates(t *testing.T) {
 	o := org.Org{ID: 1, Slug: "acme", Name: "Acme"}
 	empties := map[string]string{
-		"issues":       renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, false, false)),
-		"monitors":     renderTo(t, MonitorsList(7, nil, true, "u@e.com")),
-		"performance":  renderTo(t, PerformanceList(7, nil, 0, PerfFilter{}, nil, 0, nil, "u@e.com")),
-		"webvitals":    renderTo(t, WebVitalsList(7, nil, PerfFilter{}, nil, "u@e.com")),
+		"issues":       renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, false, false, false)),
+		"monitors":     renderTo(t, MonitorsList(7, nil, true, "u@e.com", false)),
+		"performance":  renderTo(t, PerformanceList(7, nil, 0, PerfFilter{}, nil, 0, nil, "u@e.com", false)),
+		"webvitals":    renderTo(t, WebVitalsList(7, nil, PerfFilter{}, nil, "u@e.com", false)),
 		"perfissues":   renderTo(t, PerfIssuesList(7, nil, "unresolved", "u@e.com")),
-		"profiles":     renderTo(t, ProfilesList(7, nil, TimeRangeVM{Key: "24h"}, "", "u@e.com")),
-		"metrics":      renderTo(t, MetricsList(7, nil, "", "u@e.com", false, 0)),
+		"profiles":     renderTo(t, ProfilesList(7, nil, TimeRangeVM{Key: "24h"}, "", "u@e.com", false)),
+		"metrics":      renderTo(t, MetricsList(7, nil, "", "u@e.com", false, 0, false)),
 		"incidents":    renderTo(t, IncidentsList(7, nil, 1, 0, "u@e.com")),
 		"regressions":  renderTo(t, RegressionsList(7, nil, nil, "open", "u@e.com", false, true)),
 		"profileregs":  renderTo(t, ProfileRegressionsList(7, nil, "open", "u@e.com", true)),

@@ -44,6 +44,18 @@ func parseTextTags(t *testing.T, svg string) []textTag {
 
 // labelBounds — горизонтальные границы подписи по её якорю: "start" растёт
 // вправо от x, "end" — влево, "middle" — поровну в обе стороны.
+// calW — ширина холста, при которой svgCharWidthPx даёт ≈6.0 на руну:
+// сценарии ниже (сдвиги якорей, пороги обрезки) посчитаны под ширину руны 6,
+// как и до перевода калибровки на пропорцию к ширине viewBox
+// (svgCharWidthPerVB). Точность держит TestCalWCharWidth.
+const calW = 478
+
+func TestCalWCharWidth(t *testing.T) {
+	if cw := svgCharWidthPx(calW); math.Abs(cw-6) > 0.01 {
+		t.Fatalf("svgCharWidthPx(%d) = %.4f, тесты ниже рассчитаны на ≈6.0", calW, cw)
+	}
+}
+
 func labelBounds(x float64, anchor string, width float64) (left, right float64) {
 	switch anchor {
 	case "start":
@@ -132,9 +144,9 @@ func TestYScaleHeadroom(t *testing.T) {
 // подписи хватает и на то, чтобы прижаться к x=0, и на то, чтобы остаться
 // внутри поля слева от x0 (width < x0) — оба края проверяются числами.
 func TestWriteYGridClampsLongLabelToCanvas(t *testing.T) {
-	g := chartGeom{w: 300, h: 100, x0: 100, x1: 290, y0: 10, y1: 90}
+	g := chartGeom{w: calW, h: 100, x0: 100, x1: 290, y0: 10, y1: 90}
 	s := yScale{top: 0, step: 1}         // один тик, v=0 — геометрия подписи не зависит от значения
-	const longLabel = "1234567890123456" // 16 рун — шире x0-6=94, уже, чем x0=100
+	const longLabel = "1234567890123456" // 16 рун ≈ 96 — шире x0-6=94, уже, чем x0=100
 	var sb strings.Builder
 	writeYGrid(&sb, g, s, func(float64) string { return longLabel })
 
@@ -146,7 +158,7 @@ func TestWriteYGridClampsLongLabelToCanvas(t *testing.T) {
 	if tag.anchor != "end" {
 		t.Fatalf("якорь подписи оси Y = %q, ожидался end", tag.anchor)
 	}
-	width := estimateTextWidth(longLabel)
+	width := estimateTextWidth(g.w, longLabel)
 	leftEdge := tag.x - width
 	if leftEdge < -0.05 {
 		t.Errorf("левый край подписи оси Y = %.2f (x=%.2f, ширина=%.2f) — уходит за x=0", leftEdge, tag.x, width)
@@ -179,9 +191,9 @@ func TestWriteYGridClampsLongLabelToCanvas(t *testing.T) {
 // рун; тест ниже проверяет и это число, а не только то, что правый край
 // защищён.
 func TestWriteYGridRightEdgeStaysOutOfPlotArea(t *testing.T) {
-	g := chartGeom{w: 400, h: 100, x0: 58, x1: 390, y0: 10, y1: 90}
+	g := chartGeom{w: calW, h: 100, x0: 58, x1: 390, y0: 10, y1: 90}
 	s := yScale{top: 0, step: 1}
-	const longLabel = "12.3K megabytes" // 15 рун, ширина 90 > x0=58
+	const longLabel = "12.3K megabytes" // 15 рун, ширина ≈90 > x0=58
 	var sb strings.Builder
 	writeYGrid(&sb, g, s, func(float64) string { return longLabel })
 
@@ -201,13 +213,13 @@ func TestWriteYGridRightEdgeStaysOutOfPlotArea(t *testing.T) {
 	}
 	// Записанный компромисс: левый край (x - ширина) в этом сценарии
 	// действительно уходит за 0 — обрезается вьюбоксом. Число не «примерно
-	// отрицательное», а точное: x0(58) - width(90) = -32.
-	width := estimateTextWidth(longLabel)
-	if width != 90 {
-		t.Fatalf("подставная подпись даёт ширину %.1f, ожидалось 90 — число -32 ниже посчитано под неё", width)
+	// отрицательное», а точное: x0(58) - width(≈90) ≈ -32.
+	width := estimateTextWidth(g.w, longLabel)
+	if math.Abs(width-90) > 0.05 {
+		t.Fatalf("подставная подпись даёт ширину %.2f, ожидалось ≈90 — число -32 ниже посчитано под неё", width)
 	}
-	if leftEdge := tag.x - width; math.Abs(leftEdge-(-32)) > 0.05 {
-		t.Errorf("левый край подписи = %.2f, ожидалось -32.00 (записанный компромисс: обрезка слева вместо наложения на график)", leftEdge)
+	if leftEdge := tag.x - width; math.Abs(leftEdge-(g.x0-width)) > 0.05 || leftEdge > -31.9 {
+		t.Errorf("левый край подписи = %.2f, ожидалось ≈-32 (записанный компромисс: обрезка слева вместо наложения на график)", leftEdge)
 	}
 }
 
@@ -216,17 +228,17 @@ func TestWriteYGridRightEdgeStaysOutOfPlotArea(t *testing.T) {
 // ровно x0/svgCharWidthPx рун — подпись ещё помещается, x0/svgCharWidthPx+1
 // рун — уже нет. При x0=60 порог — 10 рун ровно.
 func TestWriteYGridLeftClipThreshold(t *testing.T) {
-	g := chartGeom{w: 400, h: 100, x0: 60, x1: 390, y0: 10, y1: 90}
+	g := chartGeom{w: calW, h: 100, x0: 60, x1: 390, y0: 10, y1: 90}
 	s := yScale{top: 0, step: 1}
 
-	fits := "1234567890" // 10 рун, ширина 60 == x0 — левый край ровно 0, не обрезан
+	fits := "1234567890" // 10 рун, ширина ≈60 == x0 — левый край ровно 0, не обрезан
 	var sbFits strings.Builder
 	writeYGrid(&sbFits, g, s, func(float64) string { return fits })
 	tagsFits := parseTextTags(t, sbFits.String())
 	if len(tagsFits) != 1 {
 		t.Fatalf("ожидалась 1 подпись, получено %d", len(tagsFits))
 	}
-	if leftEdge := tagsFits[0].x - estimateTextWidth(fits); leftEdge < -0.05 {
+	if leftEdge := tagsFits[0].x - estimateTextWidth(g.w, fits); leftEdge < -0.05 {
 		t.Errorf("10-рунная подпись при x0=60 не должна обрезаться слева: левый край = %.2f", leftEdge)
 	}
 
@@ -237,7 +249,7 @@ func TestWriteYGridLeftClipThreshold(t *testing.T) {
 	if len(tagsClipped) != 1 {
 		t.Fatalf("ожидалась 1 подпись, получено %d", len(tagsClipped))
 	}
-	if leftEdge := tagsClipped[0].x - estimateTextWidth(clipped); math.Abs(leftEdge-(-6)) > 0.05 {
+	if leftEdge := tagsClipped[0].x - estimateTextWidth(g.w, clipped); math.Abs(leftEdge-(-6)) > 0.05 {
 		t.Errorf("11-рунная подпись при x0=60: левый край = %.2f, ожидалось -6.00 (обрезка на 1 руну = 6 единиц)", leftEdge)
 	}
 }
@@ -266,7 +278,7 @@ func TestWriteYGridShortLabelUnclamped(t *testing.T) {
 // (P1-7). Сценарий: узкий холст, первый тик ровно на x0 с длинной подписью,
 // второй — недалеко от первого с обычной подписью времени.
 func TestWriteXTicksAccountsForAnchorShift(t *testing.T) {
-	g := chartGeom{w: 220, h: 120, x0: 50, x1: 210, y0: 10, y1: 90}
+	g := chartGeom{w: calW, h: 120, x0: 50, x1: 468, y0: 10, y1: 90}
 	ticks := []xTick{
 		{x: 50, text: "2026-08-27"}, // 10 рун — заведомо длинная подпись у самого края
 		{x: 120, text: "18:00"},     // обычная подпись времени, недалеко от первой
@@ -289,7 +301,7 @@ func TestWriteXTicksAccountsForAnchorShift(t *testing.T) {
 		t.Fatalf("якорь второй подписи = %q, ожидался start (иначе наезд на первую — сдвиг не учтён)", second.anchor)
 	}
 
-	w0, w1 := estimateTextWidth(ticks[0].text), estimateTextWidth(ticks[1].text)
+	w0, w1 := estimateTextWidth(g.w, ticks[0].text), estimateTextWidth(g.w, ticks[1].text)
 	_, rightFirst := labelBounds(first.x, first.anchor, w0)
 	leftSecond, _ := labelBounds(second.x, second.anchor, w1)
 	if gap := leftSecond - rightFirst; gap < 0 {
@@ -307,21 +319,22 @@ func TestWriteXTicksAccountsForAnchorShift(t *testing.T) {
 // увело бы подпись ещё дальше за x1), поэтому единственный целевой исход —
 // не рисовать подпись вовсе (draw=false), а не молча накладывать текст.
 func TestXLabelPlacementEndAnchorChecksPrevRight(t *testing.T) {
-	// text шириной 42 (7 рун × 6px) для круглых чисел.
+	// text шириной ≈42 (7 рун × ≈6 при calW) для круглых чисел.
 	const text = "HELLO12"
-	if w := estimateTextWidth(text); w != 42 {
-		t.Fatalf("подставная подпись даёт ширину %.1f, ожидалось 42 — числа ниже подобраны под неё", w)
+	w := estimateTextWidth(calW, text)
+	if math.Abs(w-42) > 0.05 {
+		t.Fatalf("подставная подпись даёт ширину %.2f, ожидалось ≈42 — числа ниже подобраны под неё", w)
 	}
 	x0, x1 := 0.0, 100.0
 	prevRight := 75.0
 	x := 88.0 // x+half=109>x1 → якорь неизбежно "end"; x+w=130>x1 → эскалация в "start" невозможна
 
-	anchor, left, right, draw := xLabelPlacement(x0, x1, prevRight, x, text)
+	anchor, left, right, draw := xLabelPlacement(calW, x0, x1, prevRight, x, text)
 	if anchor != "end" {
 		t.Fatalf("якорь = %q, ожидался end (тик у правого края холста)", anchor)
 	}
-	if left != x-42 || right != x {
-		t.Fatalf("границы = [%.1f, %.1f], ожидалось [%.1f, %.1f]", left, right, x-42, x)
+	if math.Abs(left-(x-w)) > 1e-9 || right != x {
+		t.Fatalf("границы = [%.1f, %.1f], ожидалось [%.1f, %.1f]", left, right, x-w, x)
 	}
 	if left >= prevRight {
 		t.Fatalf("тестовый сценарий сломан: left=%.1f должен быть < prevRight=%.1f, иначе наезда нет и draw=false ничего не проверяет", left, prevRight)

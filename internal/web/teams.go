@@ -136,19 +136,26 @@ func (h *Handler) renderTeamsPage(w http.ResponseWriter, r *http.Request, status
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	// Участники и проекты всех команд — двумя запросами на страницу, а не по
+	// два на каждую команду (аудит 2026-09-04, K8-2); порядок строк — как у
+	// TeamMembers/TeamProjects.
+	teamIDs := make([]int64, len(teams))
+	for i, tm := range teams {
+		teamIDs[i] = tm.ID
+	}
+	membersByTeam, err := h.Org.TeamMembersOf(r.Context(), teamIDs)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	projectsByTeam, err := h.Org.TeamProjectsOf(r.Context(), teamIDs)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
 	views := make([]templates.TeamView, len(teams))
 	for i, tm := range teams {
-		members, err := h.Org.TeamMembers(r.Context(), tm.ID)
-		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-			return
-		}
-		projects, err := h.Org.TeamProjects(r.Context(), tm.ID)
-		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-			return
-		}
-		views[i] = templates.TeamView{Team: tm, Members: members, Projects: projects}
+		views[i] = templates.TeamView{Team: tm, Members: membersByTeam[tm.ID], Projects: projectsByTeam[tm.ID]}
 	}
 	orgMembers, err := h.Org.MembersOf(r.Context(), orgID)
 	if err != nil {

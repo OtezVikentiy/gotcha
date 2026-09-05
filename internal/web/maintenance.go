@@ -145,8 +145,7 @@ func oneOffEndRequired(win uptime.Window, indefinite bool) bool {
 }
 
 // windowBelongsToProject — тот же приём, что и keyBelongsToProject/
-// channelBelongsToProject: не даём удалить окно чужого проекта по
-// подобранному id.
+// findChannel: не даём удалить окно чужого проекта по подобранному id.
 func windowBelongsToProject(windows []uptime.Window, windowID int64) bool {
 	for _, w := range windows {
 		if w.ID == windowID {

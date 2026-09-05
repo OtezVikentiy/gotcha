@@ -3,6 +3,7 @@ package web
 import (
 	"html"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -92,29 +93,93 @@ func writeFrame(sb *strings.Builder, g chartGeom) {
 	axisLine(sb, g.x0, g.y1, g.x1, g.y1)
 }
 
-// svgCharWidthPx — грубая оценка ширины одной руны подписи в единицах
-// viewBox. Та же методика, что и обрезка подписей флеймграфа
-// (truncateRunes в svg.go: строка обрезается по ширине w/svgCharWidthPx) —
-// единственная оценка ширины текста в пакете, переиспользуется здесь и в
-// xLabelPlacement, а не заводится заново под каждый генератор.
+// svgCharWidthPerVB — ширина одной руны подписи оси на единицу ширины
+// viewBox. Кегль подписей задаёт CSS по классу chart-vb<N> (svgRoot,
+// app.css), и ступени кегля пропорциональны N («значения для N = значения
+// для 720 × N/720»), поэтому ширина руны в единицах viewBox тоже
+// пропорциональна N: одна константа накрывает все тиры (720/960/1200) по
+// построению, а не один из них. Та же методика, что и обрезка подписей
+// флеймграфа (truncateRunes в svg.go) — единственная оценка ширины текста в
+// пакете, переиспользуется здесь и в xLabelPlacement/writeDeployMarker.
 //
-// Калибровка ОДНОГО тира, не средняя по всем: замер getComputedTextLength()
-// на --font-mono даёт ширину руны ≈0.6024×кегль, а кегль подписей зависит от
-// вьюпорта и класса chart-vb<N> (см. svgRoot и app.css). 6.0 совпадает с
-// chart-vb720 при вьюпорте ≥1300px (кегль 10px → 6.022, расхождение 0.4%) —
-// это САМЫЙ мелкий кегль из всех тиров. На остальных тирах реальная ширина
-// руны БОЛЬШЕ, местами в разы (chart-vb1200 базовый тир: кегль 57px → 34.32
-// на руну, ×5.7 от заложенных 6.0). Любой вывод в этом файле, посчитанный
-// через estimateTextWidth, верен в пределах этой калибровки (десктопный
-// тир) и не переносится на узкие вьюпорты без неё — см. оговорку у
-// xLabelPlacement. Развести оценку по тирам — отдельная задача (SVG рисуется
-// один раз на сервере и не знает, каким CSS-тиром его покажут), не патч.
-const svgCharWidthPx = 6.0
+// Калибровка: замер getComputedTextLength() на --font-mono даёт ширину руны
+// ≈0.6024×кегль. Опорная ступень — @media(min-width:700px): САМЫЙ крупный
+// кегль из тех, при которых график рисуется в своей естественной ширине
+// (15 у chart-vb720 → 9.04 на руну; 25 у chart-vb1200 → 15.06). Прежняя
+// константа 6.0 была снята с самой МЕЛКОЙ ступени (chart-vb720 при ≥1300px,
+// кегль 10) и на тире chart-vb1200 при 1000-1300px занижала ширину руны
+// вдвое: подписи оси Y «200ms» резались слева, подписи версий деплоя
+// слипались (аудит 09-04 K9-4, повтор 08-27 P1-6/P1-7). На более широких
+// окнах кегль мельче, и оценка консервативна: подписи разрежены чуть
+// сильнее, чем строго необходимо, но никогда не наезжают. Ступень без
+// @media (<700px) сюда не входит: там SVG держит min-width 480px и
+// собственный кегль 40/32 (app.css, .issue-chart и семья), а
+// прореживание ниже этой ширины — задача CSS, не генератора: SVG рисуется
+// один раз на сервере и не знает ширину окна. Соответствие ступени и
+// константы держит TestSvgCharWidthMatchesCSSTier (css_chart_vb_test.go).
+const svgCharWidthPerVB = 0.6024 * 15.0 / 720.0
 
-// estimateTextWidth — приближённая ширина подписи в единицах viewBox (см.
-// svgCharWidthPx).
-func estimateTextWidth(s string) float64 {
-	return float64(utf8.RuneCountInString(s)) * svgCharWidthPx
+// svgCharWidthPx — ширина руны подписи для графика шириной vbW единиц.
+func svgCharWidthPx(vbW int) float64 {
+	return float64(vbW) * svgCharWidthPerVB
+}
+
+// estimateTextWidth — приближённая ширина подписи в единицах viewBox графика
+// шириной vbW (см. svgCharWidthPerVB).
+func estimateTextWidth(vbW int, s string) float64 {
+	return float64(utf8.RuneCountInString(s)) * svgCharWidthPx(vbW)
+}
+
+// textWidth — estimateTextWidth для холста g.
+func (g chartGeom) textWidth(s string) float64 {
+	return estimateTextWidth(g.w, s)
+}
+
+// yLabelGap — зазор между правым краем подписи оси Y и самой осью.
+const yLabelGap = 6
+
+// yLabelPadMaxShare — предел, до которого левое поле растёт под подписи оси
+// Y: четверть холста (≈20 рун при любой ширине, потому что и ширина руны, и
+// предел пропорциональны vbW). Дальше подпись (патологически длинный unit из
+// OTLP) обрезается слева — компромисс writeYGrid, а не съеденный график.
+const yLabelPadMaxShare = 0.25
+
+// yAxisPadL — левое поле под подписи оси Y: не меньше padL из геометрии и не
+// меньше самой широкой подписи с зазором yLabelGap (в пределах
+// yLabelPadMaxShare). Поля 48-64, заданные вызывающими под мелкий тир,
+// на тире chart-vb1200 при 700-1300px не вмещали «200ms» (75 единиц) —
+// подпись резалась левым краем вьюбокса (K9-4). Общая для chartGeom
+// (fitYLabels) и chartBars (svg.go), у которого своя шкала.
+func yAxisPadL(vbW int, padL float64, labels []string) float64 {
+	need := 0.0
+	for _, s := range labels {
+		if w := estimateTextWidth(vbW, s); w > need {
+			need = w
+		}
+	}
+	need += yLabelGap
+	if max := float64(vbW) * yLabelPadMaxShare; need > max {
+		need = max
+	}
+	if need > padL {
+		return need
+	}
+	return padL
+}
+
+// fitYLabels — копия g с левым полем, вмещающим все подписи шкалы s
+// (yAxisPadL). Вызывается сразу после построения шкалы и ДО любого
+// рисования: ось, сетка и данные должны лечь уже на сдвинутый x0.
+func (g chartGeom) fitYLabels(s yScale, label func(v float64) string) chartGeom {
+	if s.step <= 0 {
+		return g
+	}
+	var labels []string
+	for v := 0.0; v <= s.top+s.step/2; v += s.step {
+		labels = append(labels, label(v))
+	}
+	g.x0 = yAxisPadL(g.w, g.x0, labels)
+	return g
 }
 
 // writeYGrid рисует горизонтальные линии шкалы и подписывает каждую. label
@@ -140,15 +205,16 @@ func writeYGrid(sb *strings.Builder, g chartGeom, s yScale, label func(v float64
 		// unit), приоритет — не залезать на график, а не идеальный левый
 		// край.
 		//
-		// Это компромисс, не устранение: когда estimateTextWidth(text) > g.x0,
+		// Это компромисс, не устранение: когда g.textWidth(text) > g.x0,
 		// оба ограничения одновременно неудовлетворимы, и левый край ВСЁ
 		// РАВНО обрезается вьюбоксом (пользователь видит подпись, обрезанную
 		// слева) — просто без наложения на график. Порог начала обрезки —
-		// длина подписи в рунах > g.x0/svgCharWidthPx; при типичном g.x0=58
-		// (padL из svg.go/svg_slo.go) это от 10 рун (например
-		// "kilobytes/sec" или "12.3K megabytes" из TestWriteYGridRightEdgeStaysOutOfPlotArea).
-		lx := g.x0 - 6
-		if w := estimateTextWidth(text); lx-w < 0 {
+		// длина подписи в рунах > g.x0/svgCharWidthPx(g.w); при поле,
+		// расширенном fitYLabels до предела yLabelPadMaxShare, это от ~20 рун
+		// (например "12.3K megabytes/sec" из
+		// TestWriteYGridRightEdgeStaysOutOfPlotArea).
+		lx := g.x0 - yLabelGap
+		if w := g.textWidth(text); lx-w < 0 {
 			lx = w
 		}
 		if lx > g.x0 {
@@ -178,7 +244,7 @@ func writeXTicks(sb *strings.Builder, g chartGeom, ticks []xTick) {
 		if i > 0 && t.x > g.x0+0.5 {
 			axisLine(sb, t.x, g.y0, t.x, g.y1)
 		}
-		anchor, _, right, draw := xLabelPlacement(g.x0, g.x1, prevRight, t.x, t.text)
+		anchor, _, right, draw := xLabelPlacement(g.w, g.x0, g.x1, prevRight, t.x, t.text)
 		if !draw {
 			continue
 		}
@@ -216,21 +282,17 @@ func writeXTicks(sb *strings.Builder, g chartGeom, ticks []xTick) {
 // chartBars (svg.go) — раньше это были две копии одного порога, которые
 // могли разойтись.
 //
-// draw=false в writeXTicks — защита на будущее, а не наблюдаемое сегодня
-// поведение: текст там ограничен форматами "02.01"/"15:04" (максимум 5 рун),
-// а зазор между тиками гарантирован timeAxis'ом (minGapPx=70 во всех 5
-// местах вызова в svg.go). НО этот вывод верен ТОЛЬКО в пределах калибровки
-// svgCharWidthPx (см. её докблок) — десктопный тир chart-vb720 при вьюпорте
-// ≥1300px, где ширина 5-рунной подписи ≈30 (нужно 60 при зазоре 70,
-// запас есть). На более узких вьюпортах CSS даёт кегль КРУПНЕЕ (у базового
-// тира chart-vb1200 — в 5.7 раза), реальная ширина той же подписи «20.08»
-// там ≈171, а не 30, и вывод «недостижимо» на неё не переносится: SVG
-// рисуется один раз на сервере и не знает, каким тиром его покажут (та же
-// причина, по которой развести оценку по тирам — отдельная задача, а не
-// патч в этом файле). Условие также перестанет быть недостижимым в пределах
-// калибровки, если появится вызывающий с меньшим зазором или более длинными
-// подписями — тогда защита сработает по построению, без правки этой
-// функции.
+// draw=false в writeXTicks достижимо, но редко: текст там ограничен
+// форматами "02.01"/"15:04" (максимум 5 рун), а зазор между тиками
+// гарантирован timeAxis'ом (minGapPx=70 во всех 5 местах вызова в svg.go).
+// По калибровке svgCharWidthPerVB 5 рун — это 45 единиц на chart-vb720 и 75
+// на chart-vb1200: на широком холсте подпись шире минимального зазора, и
+// если timeAxis выдал тики вплотную (окно ~48ч с шагом 3ч на 1200), вторая
+// из пары эскалируется в "start" или подавляется — вместо каши. На типичных
+// окнах (тики на границах часов/суток идут через 100+ единиц) подавления
+// нет. Оценка снята с самой крупной ступени естественной ширины
+// (≥700px); на ступени без @media (<700px) кегль ещё крупнее, и там
+// подписи держит CSS (min-width холста и свой кегль), не генератор.
 //
 // В chartBars (подписи дней) draw=false, наоборот, ДОСТИЖИМО и наблюдается
 // на проде: пресет «24h» (issueChartBuckets=56, autoStep(24h, 5m, 0, 56) ≈
@@ -249,8 +311,8 @@ func writeXTicks(sb *strings.Builder, g chartGeom, ticks []xTick) {
 // «каша хуже пропущенной подписи», задекларированный выше, здесь и
 // применяется. Изменение поведения (было: две налезающие подписи; стало:
 // одна) — заметное, см. CHANGELOG.
-func xLabelPlacement(x0, x1, prevRight, x float64, text string) (anchor string, left, right float64, draw bool) {
-	w := estimateTextWidth(text)
+func xLabelPlacement(vbW int, x0, x1, prevRight, x float64, text string) (anchor string, left, right float64, draw bool) {
+	w := estimateTextWidth(vbW, text)
 	half := w / 2
 
 	anchor, left, right = "middle", x-half, x+half
@@ -349,17 +411,22 @@ func writeDeployMarker(sb *strings.Builder, g chartGeom, times []time.Time, depl
 	if span <= 0 {
 		return
 	}
-	// Порог у правого края: подпись версии свежего деплоя (маркер у x1) с якорем
-	// start вылезла бы за холст и обрезалась — прижимаем её к правому краю, как
-	// writeXTicks поступает с меткой последнего тика.
-	const labelEdgePx = 40
-	// Антиколлизия подписей: на плотном окне выкладок версии наехали бы друг на
-	// друга в сплошную кашу. Линии рисуем ВСЕ (маркер важнее подписи), а подпись
-	// пропускаем, если её x ближе minGap к предыдущей НАРИСОВАННОЙ. Так кап по
-	// числу не нужен: на любой плотности остаётся читаемый разреженный ряд.
-	const labelMinGapPx = 44
-	lastLabelX := -1e9
-	for _, d := range deploys {
+	// Подпись версии: ширина считается по калибровке тира (textWidth), а не
+	// фиксированным порогом — при кегле 22-25 (chart-vb1200 на 700-1300px)
+	// «v1.2.2» занимает 80-90 единиц, и прежние константы (порог у края 40,
+	// зазор 44, снятые с мелкого тира) давали слипшиеся «v1.2.2v1.2.3»
+	// (аудит 09-04 K9-4, повтор 08-27 P1-7). Антиколлизия: линии рисуем ВСЕ
+	// (маркер важнее подписи), а подпись пропускаем, если её левый край
+	// наезжает на предыдущую НАРИСОВАННУЮ. Так кап по числу не нужен: на любой
+	// плотности остаётся читаемый разреженный ряд. Деплои обходятся в порядке
+	// времени, чтобы «предыдущая» была соседней слева, а не той, что раньше
+	// встретилась в списке.
+	const labelPad = 2
+	sorted := make([]deploy.Deployment, len(deploys))
+	copy(sorted, deploys)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].DeployedAt.Before(sorted[j].DeployedAt) })
+	lastLabelRight := math.Inf(-1)
+	for _, d := range sorted {
 		off := d.DeployedAt.Sub(times[0]).Seconds()
 		if off < 0 {
 			// Деплой левее окна графика: точки с таким временем на графике нет,
@@ -385,20 +452,19 @@ func writeDeployMarker(sb *strings.Builder, g chartGeom, times []time.Time, depl
 		sb.WriteString(html.EscapeString(d.Version + " · " + d.DeployedAt.UTC().Format("02.01 15:04")))
 		sb.WriteString(`</title></line>`)
 
-		gap := x - lastLabelX
-		if gap < 0 {
-			gap = -gap
+		w := g.textWidth(d.Version)
+		// Якорь подписи: start (вправо от линии); у правого края, где текст
+		// вылез бы за x1, — end (влево от линии), как и writeXTicks.
+		anchor, lx := "start", x+labelPad
+		left, right := lx, lx+w
+		if right > g.x1 {
+			anchor, lx = "end", x-labelPad
+			left, right = lx-w, lx
 		}
-		if gap < labelMinGapPx {
+		if left < lastLabelRight+labelPad {
 			continue
 		}
-		lastLabelX = x
-		// Якорь подписи: у правого края разворачиваем на end (текст влево от
-		// линии), иначе start (вправо) — сверено с writeXTicks.
-		anchor, lx := "start", x+2
-		if x > g.x1-labelEdgePx {
-			anchor, lx = "end", x-2
-		}
+		lastLabelRight = right
 		sb.WriteString(`<text class="chart-deploy-label" text-anchor="` + anchor + `" x="`)
 		sb.WriteString(formatCoord(lx))
 		sb.WriteString(`" y="`)
@@ -424,6 +490,13 @@ func formatUSAxis(us float64) string {
 	default:
 		return trimZero(strconv.FormatFloat(us, 'f', 0, 64)) + "µs"
 	}
+}
+
+// formatCountAxis — счётчик на оси (throughput, гистограмма, объём логов):
+// целое без дробной части. Одна функция на три графика — она же нужна
+// fitYLabels, чтобы померить подписи до рисования.
+func formatCountAxis(v float64) string {
+	return strconv.FormatFloat(v, 'f', 0, 64)
 }
 
 // formatMsAxis — длительность оси для рядов в миллисекундах (проверки uptime

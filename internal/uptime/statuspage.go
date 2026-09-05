@@ -284,23 +284,37 @@ func (s *Service) StatusPageByID(ctx context.Context, id int64) (StatusPage, err
 
 // StatusPageMonitors returns a status page's monitors ordered by position.
 func (s *Service) StatusPageMonitors(ctx context.Context, statusPageID int64) ([]StatusPageMonitor, error) {
+	byPage, err := s.StatusPageMonitorsOf(ctx, []int64{statusPageID})
+	if err != nil {
+		return nil, err
+	}
+	return byPage[statusPageID], nil
+}
+
+// StatusPageMonitorsOf — StatusPageMonitors для нескольких страниц одним
+// запросом: ключ — id страницы, порядок внутри страницы тот же (по position).
+// Страница без мониторов в карте отсутствует. Настройки статус-страниц
+// проекта грузят так все страницы разом, а не по запросу на строку.
+func (s *Service) StatusPageMonitorsOf(ctx context.Context, statusPageIDs []int64) (map[int64][]StatusPageMonitor, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT monitor_id, display_name, position
-		FROM status_page_monitors WHERE status_page_id = $1 ORDER BY position`, statusPageID)
+		SELECT status_page_id, monitor_id, display_name, position
+		FROM status_page_monitors WHERE status_page_id = ANY($1)
+		ORDER BY status_page_id, position`, statusPageIDs)
 	if err != nil {
 		return nil, fmt.Errorf("uptime: status page monitors: %w", err)
 	}
 	defer rows.Close()
-	var monitors []StatusPageMonitor
+	out := make(map[int64][]StatusPageMonitor)
 	for rows.Next() {
+		var pageID int64
 		var m StatusPageMonitor
-		if err := rows.Scan(&m.MonitorID, &m.DisplayName, &m.Position); err != nil {
+		if err := rows.Scan(&pageID, &m.MonitorID, &m.DisplayName, &m.Position); err != nil {
 			return nil, fmt.Errorf("uptime: status page monitors: %w", err)
 		}
-		monitors = append(monitors, m)
+		out[pageID] = append(out[pageID], m)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("uptime: status page monitors: %w", err)
 	}
-	return monitors, nil
+	return out, nil
 }

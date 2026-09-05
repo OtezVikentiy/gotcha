@@ -103,10 +103,15 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Спарклайны — единственное чтение ClickHouse на странице; сам список
+	// ошибок — PostgreSQL. Отказ CH не роняет страницу (единый приём
+	// CH-страниц, образец — logsList): строки на месте, колонка пустая, над
+	// таблицей — «графики временно недоступны».
 	sparklines, err := h.sparklinesFor(r.Context(), projectID, items)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
+	sparklinesFailed := err != nil
+	if sparklinesFailed {
+		slog.Warn("issues: sparklines failed", "project_id", projectID, "err", err)
+		sparklines = nil
 	}
 
 	rows := make([]templates.IssueRow, len(items))
@@ -141,27 +146,36 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 			rng.Key != RangeAll,
 	}
 	banner := h.quotaBanner(r.Context(), orgID, canManage)
-	// canAccess здесь эквивалентен canOperateProject (C5): последний сегодня
-	// буквально вызывает CanAccessProject (см. operate.go), а доступ к
-	// странице issues уже подтверждён им выше — второй поход в БД не нужен.
-	gs := h.gettingStarted(r.Context(), uid, projectID, orgID, canManage, canAccess)
+	// Operate-право — через тот же хелпер, что и у остальных страниц
+	// (canOperateProject, operate.go), а не через canAccess. Сегодня предикаты
+	// совпадают (canOperateProject буквально зовёт CanAccessProject), и
+	// подстановка canAccess была верна по факту — но делала конъюнкт
+	// CanOperate в checklistVisible() (help.templ) недостижимым по построению:
+	// доступ к странице уже подтверждён, значит значение всегда true. При
+	// расхождении предикатов (ужесточение «оперировать» относительно
+	// «видеть») чек-лист и кнопки экспорта обязаны следовать за operate-правом
+	// сами, без правки этого места — цена: один лишний запрос на странице.
+	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	gs := h.gettingStarted(r.Context(), uid, projectID, orgID, canManage, canOperate)
 	// canManage больше не передаётся (№117): шаблон его не использовал —
 	// роль питает QuotaBanner и GettingStartedVM выше.
 	//
-	// canAccess как canOperate (E1, задача 11): гейтит кнопки экспорта на
-	// списке — тот же predicate, что canOperateProject использует для
-	// requireProjectOperator (см. её докблок в operate.go и комментарий выше
-	// про canAccess/gettingStarted). Дополнительно — h.Exports != nil: на
-	// инстансе без каталога выгрузок воркер не стартует, кнопка «Выгрузить»
-	// поведёт на 404 (ревью веб-части E1, п.3).
-	canExport := canAccess && h.Exports != nil
+	// canOperate гейтит кнопки экспорта на списке (E1, задача 11) — тот же
+	// predicate, что и у requireProjectOperator. Дополнительно —
+	// h.Exports != nil: на инстансе без каталога выгрузок воркер не
+	// стартует, кнопка «Выгрузить» поведёт на 404 (ревью веб-части E1, п.3).
+	canExport := canOperate && h.Exports != nil
 	// canManagePII — та же роль (owner/admin), что и authz.CanManage в
 	// exports.go: галка «выгрузить как есть» на раскрытых формах экспорта
 	// видна только ей (спека §7/§8), оператору include_pii молча
 	// игнорируется на бэкенде (exports.go:exportsCreate) — здесь просто не
 	// рендерим контрол, которым нельзя воспользоваться (находка аудита
 	// P2-UX-3).
-	_ = templates.IssuesList(projectID, rows, tplFilter, page, total, h.currentEmail(r), environments, banner, gs, canExport, canManage).Render(r.Context(), w)
+	_ = templates.IssuesList(projectID, rows, tplFilter, page, total, h.currentEmail(r), environments, banner, gs, canExport, canManage, sparklinesFailed).Render(r.Context(), w)
 }
 
 // gettingStarted собирает вьюмодель чек-листа «Первые шаги» (задача 5,

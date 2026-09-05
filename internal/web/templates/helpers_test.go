@@ -141,12 +141,12 @@ func TestPerfKindBadgeClass(t *testing.T) {
 }
 
 // TestPerfStatusBadgeClass — статус perf-issue: resolved хорошо, ignored
-// нейтрально, открытый — опасный.
+// нейтрально, открытый — требует внимания (warn, как у issue; K9-11).
 func TestPerfStatusBadgeClass(t *testing.T) {
 	cases := map[string]string{
 		"resolved":   "badge badge-good",
 		"ignored":    "badge badge-neutral",
-		"unresolved": "badge badge-danger",
+		"unresolved": "badge badge-warn",
 	}
 	for in, want := range cases {
 		if got := perfStatusBadgeClass(in); got != want {
@@ -537,5 +537,20 @@ func TestErrorKeys(t *testing.T) {
 	}
 	if errorTitleKey(418) != "" || errorBodyKey(418) != "" {
 		t.Error("неизвестный статус должен давать пустые ключи")
+	}
+}
+
+// TestPerfStatusBadgeClassMatchesIssues — K9-11: perf-проблемы и issue
+// раскрашивают один и тот же статус одинаково (докблок perfStatusBadgeClass
+// обещает «тот же приём»); раньше unresolved у perf был danger против warn у
+// issue. Сверяем по каждому статусу канона, а не по одному default.
+func TestPerfStatusBadgeClassMatchesIssues(t *testing.T) {
+	for _, st := range append(append([]string{}, issue.Statuses...), "") {
+		if got, want := perfStatusBadgeClass(st), statusBadgeClass(st); got != want {
+			t.Errorf("perfStatusBadgeClass(%q) = %q, statusBadgeClass = %q — бейджи разошлись", st, got, want)
+		}
+	}
+	if got := perfStatusBadgeClass("unresolved"); got != "badge badge-warn" {
+		t.Errorf("unresolved perf-проблема: %q, want badge-warn", got)
 	}
 }

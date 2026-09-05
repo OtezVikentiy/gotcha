@@ -224,7 +224,7 @@ func escalationChannelLabels(ctx context.Context, ids []int64, channels []alert.
 // delay=0, иначе «через N мин».
 func escalationDryRunStepText(ctx context.Context, step escalation.Step, channels []alert.Channel) string {
 	chans := escalationChannelLabels(ctx, step.ChannelIDs, channels)
-	no := strconv.Itoa(step.StepNo)
+	no := strconv.Itoa(step.StepNo + 1)
 	if step.DelayMinutes == 0 {
 		return i18n.Tf(ctx, "escalations.dryrun.step_immediate", "step", no, "channels", chans)
 	}
@@ -368,9 +368,9 @@ func escalationStepFields(step EscalationStepForm, channels []alert.Channel) tem
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var6 string
-		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "escalations.step.legend", "no", strconv.Itoa(step.StepNo)))
+		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "escalations.step.legend", "no", strconv.Itoa(step.StepNo+1)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 273, Col: 104}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 273, Col: 106}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {
@@ -811,7 +811,20 @@ func Escalations(projectID int64, channels []alert.Channel, critical, warning Es
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 43, "</p>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 43, "</p><p>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var32 string
+				templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "escalations.issue_note"))
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 349, Col: 46}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 44, "</p>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -829,7 +842,7 @@ func Escalations(projectID int64, channels []alert.Channel, critical, warning Es
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 44, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 45, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

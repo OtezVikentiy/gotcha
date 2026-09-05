@@ -28,7 +28,7 @@ import (
 const flameRowHeight = 18
 
 // flameCharWidthPx — ширина символа подписи флеймграфа в единицах viewBox.
-// Не svgCharWidthPx (6.0): та рассчитана на подписи осей, чей кегль задают
+// Не svgCharWidthPx: та рассчитана на подписи осей, чей кегль задают
 // тиры .chart-vbN text по ширине окна. У флеймграфа кегль фиксирован правилом
 // svg.flamegraph text (11px моноширинного, app.css) — измерено 6.6 на символ.
 // Усечение считается от этой ширины; разойдутся — подписи вылезут за кадр.
@@ -142,7 +142,12 @@ func flameDepth(n *profile.FlameNode) int {
 // viewBox; total — Value корня (для доли в подписи); path — путь узла от корня
 // по именам (у корня nil), из него строятся ссылки детей.
 func flameRow(sb *strings.Builder, n *profile.FlameNode, x, w float64, depth int, total uint64, path []string, link func(path []string) string) {
-	if w < 0.5 {
+	// n.Value == 0 — узел без сэмплов (сюда попадает фокус на пустой узел:
+	// ширину ему даёт зум, а не доля). Рисовать нечего, а деление на
+	// n.Value ниже дало бы детям NaN/Inf, который guard по ширине не
+	// отсекает (NaN < 0.5 — false) и который уехал бы в разметку как
+	// width="NaN".
+	if w < 0.5 || n.Value == 0 {
 		return
 	}
 	flameNode(sb, n, x, w, depth, total, path, link, false)
@@ -271,11 +276,6 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 	var sb strings.Builder
 	sb.WriteString(svgRoot("metric-chart", w, h, i18n.T(ctx, "a11y.chart.metric")))
 
-	// Рамка осей (левая вертикаль + нижняя горизонталь).
-	sb.WriteString(`<g class="chart-axis">`)
-	axisLine(&sb, x0, y0, x0, y1)
-	axisLine(&sb, x0, y1, x1, y1)
-
 	// Домен значений: данные (пропуская пустые NaN-корзины дозаполнения окна) +
 	// пороги (чтобы пороговые линии попадали в область). Пустые корзины ряд
 	// покрывает разрывом, а не нулём — иначе на пропусках линия падала бы в 0.
@@ -302,6 +302,14 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 		}
 	}
 	if !haveData {
+		// Рамка осей — и у пустого графика, с полем по умолчанию (подписей
+		// оси Y нет, раздвигать нечего). Группа открывается ЗДЕСЬ, а не
+		// общим кодом выше: для данных она идёт после расчёта поля
+		// (yAxisPadL ниже), и ранний выход без своей группы оставлял
+		// осиротевший </g> — невалидный SVG (ревью задачи 9).
+		sb.WriteString(`<g class="chart-axis">`)
+		axisLine(&sb, x0, y0, x0, y1)
+		axisLine(&sb, x0, y1, x1, y1)
 		sb.WriteString(`<text x="`)
 		sb.WriteString(formatCoord((x0 + x1) / 2))
 		sb.WriteString(`" y="`)
@@ -339,15 +347,29 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 	if dataMin == dataMax {
 		yValues = []float64{dataMax}
 	}
-	for _, v := range yValues {
+	// Поле под подписи — до рамки: unit из OTLP («12.3K bytes/sec») шире
+	// padL, и без yAxisPadL подпись резалась левым краем (K9-4, тот же
+	// приём, что fitYLabels у генераторов на writeYGrid).
+	yLabels := make([]string, len(yValues))
+	for i, v := range yValues {
+		yLabels[i] = formatAxisValue(v, unit)
+	}
+	x0 = yAxisPadL(w, x0, yLabels)
+
+	// Рамка осей (левая вертикаль + нижняя горизонталь).
+	sb.WriteString(`<g class="chart-axis">`)
+	axisLine(&sb, x0, y0, x0, y1)
+	axisLine(&sb, x0, y1, x1, y1)
+
+	for i, v := range yValues {
 		yv := yFor(v)
 		axisLine(&sb, x0, yv, x1, yv)
 		sb.WriteString(`<text x="`)
-		sb.WriteString(formatCoord(x0 - 6))
+		sb.WriteString(formatCoord(x0 - yLabelGap))
 		sb.WriteString(`" y="`)
 		sb.WriteString(formatCoord(yv))
 		sb.WriteString(`" text-anchor="end" dominant-baseline="middle" fill="currentColor">`)
-		sb.WriteString(html.EscapeString(formatAxisValue(v, unit)))
+		sb.WriteString(html.EscapeString(yLabels[i]))
 		sb.WriteString(`</text>`)
 	}
 
@@ -432,7 +454,7 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 			x = x0 + float64(i)/float64(n-1)*(x1-x0)
 		}
 		writeHoverBand(&sb, g, x-band/2, band,
-			p.T.UTC().Format("02.01 15:04")+" — "+formatAxisValue(p.V, unit))
+			humanize.Time(ctx, p.T, time.UTC)+" — "+formatAxisValue(p.V, unit))
 	}
 
 	// Маркеры деплоев (C5): вертикали в моменты выкладок по срезу времён точек.
@@ -523,10 +545,12 @@ func multiSeriesMarkup(ctx context.Context, series []NamedSeries, unit string, t
 	}
 
 	scale := newYScaleFloat(max, 3)
+	yLabel := func(v float64) string { return formatAxisValue(v, unit) }
+	g = g.fitYLabels(scale, yLabel)
 
 	sb.WriteString(`<g class="chart-axis">`)
 	writeFrame(&sb, g)
-	writeYGrid(&sb, g, scale, func(v float64) string { return formatAxisValue(v, unit) })
+	writeYGrid(&sb, g, scale, yLabel)
 
 	// Ось X строится по самому длинному ряду: на практике все ряды приходят
 	// с одной и той же сетки времени (общий запрос metric.Query.Series), и
@@ -1028,6 +1052,7 @@ func latencyLinesMarkup(ctx context.Context, points []trace.LatencyPoint, deploy
 
 	g := newChartGeom(w, h, 64, 16, 26, 26)
 	scale := newYScaleFloat(float64(max), 3)
+	g = g.fitYLabels(scale, formatUSAxis)
 	n := len(points)
 
 	var sb strings.Builder
@@ -1061,7 +1086,7 @@ func latencyLinesMarkup(ctx context.Context, points []trace.LatencyPoint, deploy
 	band := (g.x1 - g.x0) / float64(n)
 	for i, p := range points {
 		writeHoverBand(&sb, g, g.xForIndex(i, n)-band/2, band,
-			p.T.UTC().Format("02.01 15:04")+" · p50 "+formatUSAxis(float64(p.P50))+
+			humanize.Time(ctx, p.T, time.UTC)+" · p50 "+formatUSAxis(float64(p.P50))+
 				" · p95 "+formatUSAxis(float64(p.P95))+" · "+
 				i18n.Tn(ctx, "chart.bar.transactions", int(p.Count)))
 	}
@@ -1096,6 +1121,7 @@ func throughputBarsMarkup(ctx context.Context, points []trace.LatencyPoint, depl
 
 	g := newChartGeom(w, h, 48, 16, 26, 26)
 	scale := newYScale(max, 3)
+	g = g.fitYLabels(scale, formatCountAxis)
 	n := len(points)
 	barW := g.barWidth(n)
 	gap := barW * 0.15
@@ -1105,9 +1131,7 @@ func throughputBarsMarkup(ctx context.Context, points []trace.LatencyPoint, depl
 
 	sb.WriteString(`<g class="chart-axis">`)
 	writeFrame(&sb, g)
-	writeYGrid(&sb, g, scale, func(v float64) string {
-		return strconv.FormatFloat(v, 'f', 0, 64)
-	})
+	writeYGrid(&sb, g, scale, formatCountAxis)
 	times := make([]time.Time, n)
 	for i, p := range points {
 		times[i] = p.T
@@ -1126,7 +1150,7 @@ func throughputBarsMarkup(ctx context.Context, points []trace.LatencyPoint, depl
 		sb.WriteString(`" height="`)
 		sb.WriteString(formatCoord(g.y1 - y))
 		sb.WriteString(`" fill="currentColor"><title>`)
-		sb.WriteString(html.EscapeString(p.T.UTC().Format("02.01 15:04") + " — " +
+		sb.WriteString(html.EscapeString(humanize.Time(ctx, p.T, time.UTC) + " — " +
 			i18n.Tn(ctx, "chart.bar.transactions", int(p.Count))))
 		sb.WriteString(`</title></rect>`)
 	}
@@ -1165,6 +1189,7 @@ func durationHistogramMarkup(ctx context.Context, buckets []trace.DurationBucket
 
 	g := newChartGeom(w, h, 48, 16, 26, 26)
 	scale := newYScale(max, 3)
+	g = g.fitYLabels(scale, formatCountAxis)
 	n := len(buckets)
 	barW := g.barWidth(n)
 	gap := barW * 0.15
@@ -1174,9 +1199,7 @@ func durationHistogramMarkup(ctx context.Context, buckets []trace.DurationBucket
 
 	sb.WriteString(`<g class="chart-axis">`)
 	writeFrame(&sb, g)
-	writeYGrid(&sb, g, scale, func(v float64) string {
-		return strconv.FormatFloat(v, 'f', 0, 64)
-	})
+	writeYGrid(&sb, g, scale, formatCountAxis)
 	// Подписи по X — верхние границы корзин, но не каждая: их до двадцати, и
 	// подписи наезжали бы друг на друга.
 	lastX := -1e9
@@ -1284,6 +1307,26 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 	x0, x1 := float64(chartPadL), float64(w-chartPadR)
 	y0, y1 := float64(chartPadT), float64(h-chartPadB)
 
+	var max uint64
+	for _, p := range points {
+		if p.N > max {
+			max = p.N
+		}
+	}
+	// Шкала Y считается ДО осей: левое поле растёт под самую широкую подпись
+	// (yAxisPadL, см. svgaxis.go), и ось должна встать уже на сдвинутый x0.
+	// Верх шкалы — строго выше максимума, см. комментарий у сетки ниже.
+	var step, top uint64
+	if max > 0 {
+		step = niceStep(max, 3)
+		top = (max/step + 1) * step
+		var labels []string
+		for v := uint64(0); v <= top; v += step {
+			labels = append(labels, strconv.FormatUint(v, 10))
+		}
+		x0 = yAxisPadL(w, x0, labels)
+	}
+
 	var sb strings.Builder
 	// Пропорции сохраняем (preserveAspectRatio по умолчанию): у графика есть
 	// текстовые подписи осей, и неравномерное растяжение растягивало бы вместе
@@ -1297,12 +1340,6 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 	axisLine(&sb, x0, y0, x0, y1)
 	axisLine(&sb, x0, y1, x1, y1)
 
-	var max uint64
-	for _, p := range points {
-		if p.N > max {
-			max = p.N
-		}
-	}
 	if len(points) == 0 || max == 0 {
 		sb.WriteString(`<text x="`)
 		sb.WriteString(formatCoord(x0 - 6))
@@ -1317,8 +1354,6 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 	// верх совпадает с максимумом, самый высокий столбик упирается в рамку и
 	// график читается как сплошной забор; небольшой запас сверху задаёт
 	// «шапку», по которой видно, что пик — это пик.
-	step := niceStep(max, 3)
-	top := (max/step + 1) * step
 	yFor := func(v uint64) float64 {
 		return y1 - float64(v)/float64(top)*(y1-y0)
 	}
@@ -1373,7 +1408,7 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 		// (P1-7 — первая подпись наезжала на вторую). draw=false, если наезд
 		// не удалось починить сменой якоря (не рисуем — линия сетки выше
 		// уже нарисована).
-		anchor, _, right, draw := xLabelPlacement(x0, x1, prevDayLabelRight, x, text)
+		anchor, _, right, draw := xLabelPlacement(w, x0, x1, prevDayLabelRight, x, text)
 		if !draw {
 			continue
 		}
@@ -1405,7 +1440,7 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 		sb.WriteString(`" height="`)
 		sb.WriteString(formatCoord(barH))
 		sb.WriteString(`" fill="currentColor"><title>`)
-		sb.WriteString(html.EscapeString(p.T.UTC().Format("02.01 15:04")))
+		sb.WriteString(html.EscapeString(humanize.Time(ctx, p.T, time.UTC)))
 		sb.WriteString(` — `)
 		sb.WriteString(html.EscapeString(i18n.Tn(ctx, "chart.bar.events", int(p.N))))
 		sb.WriteString(`</title></rect>`)
@@ -1822,7 +1857,7 @@ func vitalSeriesMarkup(ctx context.Context, points []trace.VitalPoint, w, h int,
 		last := points[len(points)-1]
 		sb.WriteString(`<title>`)
 		sb.WriteString(html.EscapeString(
-			points[0].T.UTC().Format("02.01") + " – " + last.T.UTC().Format("02.01") +
+			humanize.Time(ctx, points[0].T, time.UTC) + " – " + humanize.Time(ctx, last.T, time.UTC) +
 				" · min " + format(lo) + " · max " + format(hi) + " · " + format(last.P75)))
 		sb.WriteString(`</title>`)
 	}
@@ -1890,6 +1925,7 @@ func latencyStackedMarkup(ctx context.Context, points []uptime.LatencyPoint, dep
 
 	g := newChartGeom(w, h, 48, 16, 26, 26)
 	scale := newYScaleFloat(float64(maxPhase), 3)
+	g = g.fitYLabels(scale, formatMsAxis)
 	n := len(points)
 	barW := g.barWidth(n)
 	gap := barW * 0.15
@@ -1958,7 +1994,7 @@ func latencyStackedMarkup(ctx context.Context, points []uptime.LatencyPoint, dep
 
 		// Полоса наведения на весь слот: подсказка появляется в любом месте над
 		// часом, даже если фазы нулевые (таймаут).
-		title := p.T.UTC().Format("02.01 15:04")
+		title := humanize.Time(ctx, p.T, time.UTC)
 		for si, ms := range segments {
 			title += " · " + latencySegmentNames[si] + " " + strconv.FormatUint(uint64(ms), 10) + "ms"
 		}
@@ -2023,6 +2059,7 @@ func logHistogramMarkup(ctx context.Context, times []time.Time, series map[strin
 
 	g := newChartGeom(w, h, 48, 16, 26, 26)
 	scale := newYScale(uint64(maxSum), 3)
+	g = g.fitYLabels(scale, formatCountAxis)
 	barW := g.barWidth(n)
 	gap := barW * 0.15
 	plotH := g.y1 - g.y0
@@ -2039,7 +2076,7 @@ func logHistogramMarkup(ctx context.Context, times []time.Time, series map[strin
 
 	sb.WriteString(`<g class="chart-axis">`)
 	writeFrame(&sb, g)
-	writeYGrid(&sb, g, scale, func(v float64) string { return strconv.FormatFloat(v, 'f', 0, 64) })
+	writeYGrid(&sb, g, scale, formatCountAxis)
 	writeXTicks(&sb, g, timeAxis(times, func(i int) float64 { return g.x0 + float64(i)*barW }, 70))
 	sb.WriteString(`</g>`)
 
@@ -2053,7 +2090,7 @@ func logHistogramMarkup(ctx context.Context, times []time.Time, series map[strin
 		bw := barW - gap
 		bottom := g.y1
 
-		title := times[i].UTC().Format("02.01 15:04")
+		title := humanize.Time(ctx, times[i], time.UTC)
 		for _, sev := range log.Severities {
 			c := series[sev][i]
 			if c == 0 {

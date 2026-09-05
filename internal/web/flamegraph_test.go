@@ -287,3 +287,27 @@ func TestFlameLink(t *testing.T) {
 		t.Fatalf("bare focus link = %q", got)
 	}
 }
+
+// TestFlamegraphSVGZeroValueFocusNoNaN — K9-22: фокус на узле без сэмплов
+// (Value == 0, ширину ему даёт зум) делил ширину детей на ноль: NaN/Inf
+// проходил guard `w < 0.5` и уезжал в разметку как width="NaN". Теперь такой
+// узел не рисуется вовсе: ни NaN, ни Inf, ни его кадра.
+func TestFlamegraphSVGZeroValueFocusNoNaN(t *testing.T) {
+	root := &profile.FlameNode{Name: "all", Value: 10, Children: []*profile.FlameNode{
+		{Name: "busy", Value: 10},
+		{Name: "idle", Value: 0, Children: []*profile.FlameNode{{Name: "idlechild", Value: 0}}},
+	}}
+	out := renderFlame(t, root, []string{"idle"}, 600)
+	for _, bad := range []string{"NaN", "Inf"} {
+		if strings.Contains(out, bad) {
+			t.Fatalf("zero-value focus leaked %q into markup: %s", bad, out)
+		}
+	}
+	if strings.Contains(out, "idlechild") || strings.Contains(out, `<title>idle `) {
+		t.Errorf("node without samples must not be drawn: %s", out)
+	}
+	// Предок (корень) при зуме остаётся полупрозрачной строкой.
+	if !strings.Contains(out, "all") {
+		t.Errorf("ancestor row missing: %s", out)
+	}
+}

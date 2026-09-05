@@ -121,6 +121,11 @@ func TestWebDeleteProject(t *testing.T) {
 	if !strings.Contains(string(body), `name="confirmed" value="yes"`) {
 		t.Fatalf("POST %s (owner, unconfirmed) missing confirm page hidden field: %s", deletePath, body)
 	}
+	// Вопрос называет проект (K7-3): без имени страница не страхует от
+	// вкладки не того проекта.
+	if !strings.Contains(string(body), "«DelProj Proj»") {
+		t.Fatalf("POST %s (owner, unconfirmed) confirm page does not name the project: %s", deletePath, body)
+	}
 	if projects, err := orgSvc.ProjectsOf(context.Background(), o.ID); err != nil {
 		t.Fatalf("ProjectsOf: %v", err)
 	} else {
@@ -224,6 +229,10 @@ func TestWebDeleteOrg(t *testing.T) {
 	}
 	if !strings.Contains(string(body), `name="confirmed" value="yes"`) {
 		t.Fatalf("POST %s (owner, unconfirmed) missing confirm page hidden field: %s", deletePath, body)
+	}
+	// Вопрос называет организацию (K7-3).
+	if !strings.Contains(string(body), "«DelOrg Co»") {
+		t.Fatalf("POST %s (owner, unconfirmed) confirm page does not name the org: %s", deletePath, body)
 	}
 	if _, err := orgSvc.Role(context.Background(), o.ID, ownerID); err != nil {
 		t.Fatalf("org unexpectedly gone after unconfirmed delete: %v", err)

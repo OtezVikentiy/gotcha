@@ -61,7 +61,7 @@ func TestPerformanceTableColumnOrder(t *testing.T) {
 		Stat:      trace.EndpointStat{Transaction: "GET /api", Count: 10, P50: 1, P75: 2, P95: 3, P99: 4},
 		Sparkline: stub(),
 	}}
-	out := renderTo(t, PerformanceList(7, rows, 1, PerfFilter{Range: TimeRangeVM{Key: "24h"}}, nil, 500, nil, "u@e.com"))
+	out := renderTo(t, PerformanceList(7, rows, 1, PerfFilter{Range: TimeRangeVM{Key: "24h"}}, nil, 500, nil, "u@e.com", false))
 	got := tableHeaders(t, out)
 
 	want := []string{"Эндпойнт", "Окружение", "События", "Трафик", "p50", "p75", "p95", "p99", "Ошибки", "Apdex"}
@@ -79,7 +79,7 @@ func TestPerformanceTableColumnOrder(t *testing.T) {
 // поверхность разбора, и «уровень» под заголовком «статус» меняет смысл
 // каждой строки.
 func TestIssuesTableColumnOrder(t *testing.T) {
-	out := renderTo(t, IssuesList(7, nil, IssuesFilter{Range: TimeRangeVM{Key: "all", AllowAll: true}}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, false, false))
+	out := renderTo(t, IssuesList(7, nil, IssuesFilter{Range: TimeRangeVM{Key: "all", AllowAll: true}}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, false, false, false))
 	if !strings.Contains(out, "<thead>") {
 		t.Skip("пустой список рендерится без таблицы — порядок проверяется на непустом наборе")
 	}

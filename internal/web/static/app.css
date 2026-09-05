@@ -24,7 +24,24 @@
 	   Бренд-градиент знака (#3d7bff→#7c5cff в icons.templ/favicon.svg) НЕ трогаем:
 	   это графика, а не текст на подложке, там действует правило 3:1. */
 	--accent: #3169e8;
-	--accent-hover: #5a90ff;
+	/* Hover ТЕМНЕЕ покоя, а не светлее: прежний #5a90ff под белой подписью
+	   давал 3.06:1 — каждая кнопка продукта при наведении проваливалась
+	   ниже 4.5:1 (WCAG 1.4.3). Светлее #3169e8 с белым текстом порог не
+	   пройти вовсе (сам --accent уже на 4.87). Полоса допустимого узкая:
+	   относительная яркость ≤0.183 (4.5:1 с белым) и ≥0.146 (3:1 к
+	   --surface-2 #1b2130, граница элемента по 1.4.11). #2862e7 — тот же
+	   оттенок, яркость 0.150: 5.26:1 с --accent-fg, 3.05:1 к --surface-2,
+	   3.24:1 к --surface, 3.53:1 к --bg. Покой #3169e8: 3.30 к --surface-2,
+	   3.50 к --surface. Цена — различимость покой↔hover всего 1.08:1.
+	   Фокус и активное состояние остаются на --accent. */
+	--accent-hover: #2862e7;
+	/* Второй признак hover (см. button:hover): фон покоя и hover различимы
+	   лишь на 1.08:1, поэтому наведение дублируется кольцом box-shadow
+	   вокруг кнопки. Кольцо лежит на подложке, а не на кнопке, отсюда
+	   контраст к подложкам: #79aaff — 7.98 к --bg, 7.30 к --surface, 6.89 к
+	   --surface-2; к кольцу фокуса --accent — 2.09:1 (плюс у фокуса зазор
+	   outline-offset 2px, у hover кольцо вплотную). */
+	--accent-ring: #79aaff;
 	--accent-fg: #ffffff;
 	--accent-soft: rgba(96, 132, 255, .12);
 	--rail: #0c0f16;
@@ -120,8 +137,13 @@
 	--text-dim: #5a6472;
 	/* 3.87:1 на рейле — ниже порога; #5f6878 даёт 4.61 там и 5.0+ на остальных. */
 	--text-mute: #5f6878;
-	--accent: #2f6bff;
+	/* #2f6bff под белой подписью — 4.4988:1, формально ниже 4.5 (WCAG
+	   1.4.3); #2c68ff = 4.63:1, hover #1f5aff = 5.30:1. */
+	--accent: #2c68ff;
 	--accent-hover: #1f5aff;
+	/* Кольцо hover: 9.33 к --bg, 9.92 к --surface, 8.83 к --surface-2;
+	   к кольцу фокуса --accent 2.14:1. */
+	--accent-ring: #0d3a9e;
 	--accent-fg: #ffffff;
 	--accent-soft: rgba(47, 107, 255, .10);
 	/* Рейл заметно глубже полотна и сайдбара: на светлой теме он иначе
@@ -180,8 +202,9 @@
 		--text-dim: #5a6472;
 		/* 3.87:1 на рейле — ниже порога; #5f6878 даёт 4.61 там и 5.0+ на остальных. */
 	--text-mute: #5f6878;
-		--accent: #2f6bff;
+		--accent: #2c68ff;
 		--accent-hover: #1f5aff;
+		--accent-ring: #0d3a9e;
 		--accent-fg: #ffffff;
 		--accent-soft: rgba(47, 107, 255, .10);
 		--rail: #e4e9f2;
@@ -249,6 +272,18 @@ h1 {
 	font-weight: 650;
 	line-height: 1.25;
 	margin: 0 0 10px;
+}
+/* Заголовки несут имена пользовательских сущностей (монитор, команда,
+   issue), в которых точек переноса может не быть вовсе: имя из 120 символов
+   без пробелов в <h1> не переносилось и не обрезалось, раздувая
+   documentElement.scrollWidth до +1350px на 360px (замерено на /monitors/335
+   стенда). Семейство — все уровни заголовков и шапка карточки (.card-header,
+   в т.ч. её flex-вариант с действием), а не точечные классы под найденные
+   места. anywhere, а не break-word: у flex-потомка min-content без него не
+   ужимается, и слово всё равно распирает контейнер. Идиома та же, что у
+   <code> ниже. */
+h1, h2, h3, .card-header {
+	overflow-wrap: anywhere;
 }
 h2 {
 	font-size: 18px;
@@ -781,7 +816,16 @@ a:hover {
    контентная колонка (единственным скроллером был .app-content), утаскивая с
    собой заголовок страницы и фильтры: на 375px таблица эндпойнтов шириной 745px
    в колонке 216px делала страницу непригодной. Таблица скроллится сама. */
-.table-scroll {
+/* Прокрутка — по СЕМЕЙСТВУ скролл-регионов, а не по одному классу:
+   scrollRegion (scroll.templ) — единственный источник пары
+   role="region"+tabindex="0", и каждый такой контейнер обязан прокручиваться
+   сам. .deps-table на /dependencies класса .table-scroll не имел, и таблица
+   тащила вбок всю страницу (+162px на 360px, аудит 09-04 K9-1); одиночные
+   правила overflow-x у .endpoint-chart/.deps-map-wrap и т.д. ниже это лишь
+   повторяют. Литерал .table-scroll оставлен для контейнеров вне
+   scrollRegion. */
+.table-scroll,
+[role="region"][tabindex="0"] {
 	overflow-x: auto;
 	max-width: 100%;
 }
@@ -1150,6 +1194,26 @@ button {
 }
 button:hover {
 	background: var(--accent-hover);
+}
+/* Второй признак наведения — для всех кнопок одним правилом. Смена фона
+   покой→hover у первичной кнопки различима лишь на 1.08:1 (hover зажат
+   между 4.5:1 к белой подписи и 3:1 к --surface-2, см. --accent-hover), у
+   .btn-ghost на подложке --surface-2 её не видно вовсе, у .btn-danger
+   brightness(.92) едва заметен. Кольцо box-shadow снаружи кнопки: раскладку
+   не двигает (не в потоке), видно на всех подложках (--accent-ring, числа у
+   токена), в обеих темах. Отличимо от :focus-visible: тот — outline цвета
+   --accent с зазором 2px, это — кольцо --accent-ring вплотную; при обоих
+   состояниях рисуются оба. Исключения ниже — у сегментных переключателей
+   (lang/theme, сегменты стоят встык, кольцо резалось бы соседями) и кнопки
+   выхода в рейле свой второй признак уже есть: цвет текста/рамки. */
+button:hover,
+.btn:hover {
+	box-shadow: 0 0 0 2px var(--accent-ring);
+}
+.lang-switcher button:hover,
+.theme-toggle button:hover,
+.rail-logout-btn:hover {
+	box-shadow: none;
 }
 
 /* Текст берёт --danger-ink, а не сырой --danger: последний рассчитан как ФОН
@@ -2984,7 +3048,11 @@ form.inline {
 .btn-danger-ghost {
 	background: none;
 	color: var(--danger);
-	border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+	/* Полная запись border, а не только border-color: у базовой .btn
+	   border: none, и одна лишь border-color рамки не даёт ни при каком
+	   цвете — так «тонкая красная рамка» два раунда подряд оставалась
+	   невидимой. */
+	border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
 }
 .btn-danger-ghost:hover {
 	background: color-mix(in srgb, var(--danger) 12%, transparent);
@@ -3912,7 +3980,10 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
    индекс — визуальной посадочной с группировкой. */
 .docs-index-groups {
 	display: grid;
-	grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+	/* min(280px, 100%): голый minmax(280px, 1fr) при доступных ~237px на
+	   360px делал каждую из карточек шире колонки — /docs получал
+	   горизонтальный скролл всей страницы (аудит 09-04 K9-2). */
+	grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
 	gap: 16px;
 	align-items: start;
 }
@@ -4206,6 +4277,29 @@ svg.flamegraph text {
 .trace-waterfall,
 .trace-flame {
 	overflow-x: auto;
+}
+/* Тот же приём, что у .issue-chart (см. @media(max-width:560px) выше): без
+   нижнего предела ширины SVG с width:100% на 360px сжимался пропорционально
+   (замерено: scrollWidth==clientWidth у .endpoint-chart/.metric-chart-wrap/
+   .trace-waterfall — прокручивать нечего), и overflow-x:auto выше не
+   срабатывал (аудит 09-04 K9-4). Кегль подписей — по той же формуле, что
+   40 у .issue-chart: экранные 16px при рендере в 480px, то есть N/30 единиц
+   viewBox для тира chart-vbN (1200 → 40, 960 → 32). У вотерфола трейса
+   подписей осей нет — ему нужен только предел ширины. */
+@media (max-width: 560px) {
+	.endpoint-chart .chart-freq,
+	.endpoint-chart .latency-chart,
+	.metric-chart-wrap .metric-chart,
+	.trace-waterfall .waterfall {
+		min-width: 480px;
+	}
+	.endpoint-chart .chart-freq text,
+	.endpoint-chart .latency-chart text {
+		font-size: 40px;
+	}
+	.metric-chart-wrap .metric-chart text {
+		font-size: 32px;
+	}
 }
 /* .trace-flame — единственная из них без .card: отступ задаём сами. */
 .trace-flame {

@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/slo"
+	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
@@ -80,9 +82,13 @@ func (h *Handler) renderSLOs(w http.ResponseWriter, r *http.Request, status int,
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	// Окна обслуживания проекта — один раз на страницу, а не в провайдере на
+	// каждую строку (аудит 2026-09-04, K8-2): sloRow отдаёт их провайдеру
+	// через BucketsExcluding.
+	windows, windowsLoaded := h.sloMaintenanceWindows(r.Context(), projectID)
 	rows := make([]templates.SLORow, 0, len(slos))
 	for _, s := range slos {
-		rows = append(rows, h.sloRow(r.Context(), s))
+		rows = append(rows, h.sloRow(r.Context(), s, windows, windowsLoaded))
 	}
 	// Мониторы проекта — для выбора в форме uptime-SLO. Ошибка чтения (или
 	// отсутствие Uptime-сервиса на этом стенде) не должна ронять страницу:
@@ -105,7 +111,8 @@ func (h *Handler) renderSLOs(w http.ResponseWriter, r *http.Request, status int,
 // либо за окно нет событий (total==0) → HasData=false: страница показывает
 // прочерк, а не мнимые 0%. Ошибку провайдера трактуем как «нет данных», а не
 // 500: список не должен падать целиком из-за одного SLO без телеметрии.
-func (h *Handler) sloRow(ctx context.Context, s slo.SLO) templates.SLORow {
+// windows/windowsLoaded — см. sloMaintenanceWindows.
+func (h *Handler) sloRow(ctx context.Context, s slo.SLO, windows []uptime.Window, windowsLoaded bool) templates.SLORow {
 	row := templates.SLORow{
 		ID:        s.ID,
 		Name:      s.Name,
@@ -125,7 +132,13 @@ func (h *Handler) sloRow(ctx context.Context, s slo.SLO) templates.SLORow {
 			from = earliest
 		}
 	}
-	bs, err := p.Buckets(ctx, s, from, to, time.Hour)
+	var bs []slo.Bucket
+	var err error
+	if windowsLoaded {
+		bs, err = p.BucketsExcluding(ctx, s, from, to, time.Hour, windows)
+	} else {
+		bs, err = p.Buckets(ctx, s, from, to, time.Hour)
+	}
 	if err != nil {
 		return row
 	}
@@ -139,6 +152,22 @@ func (h *Handler) sloRow(ctx context.Context, s slo.SLO) templates.SLORow {
 	row.BudgetRemainingPct = rem * 100
 	row.Status = sloStatus(rem)
 	return row
+}
+
+// sloMaintenanceWindows — окна обслуживания проекта для списка SLO.
+// loaded=false — стенд без h.Uptime: провайдер читает окна сам (Buckets),
+// как и прежде. Ошибка чтения — то же, что «окон нет» (loaded=true, nil):
+// так же трактует её и сам провайдер в excludeMaintenance.
+func (h *Handler) sloMaintenanceWindows(ctx context.Context, projectID int64) (windows []uptime.Window, loaded bool) {
+	if h.Uptime == nil {
+		return nil, false
+	}
+	ws, err := h.Uptime.Windows(ctx, projectID)
+	if err != nil {
+		slog.Warn("slo: maintenance windows failed", "project_id", projectID, "err", err)
+		return nil, true
+	}
+	return ws, true
 }
 
 // sloStatus — статус бюджета по доле остатка: исчерпан (≤0), горит (тонкий

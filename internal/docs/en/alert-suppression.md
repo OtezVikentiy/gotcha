@@ -84,7 +84,7 @@ thresholds on the [Hosts](/docs/hosts) page.
 
 The same grace — the same `GOTCHA_DEPENDENCY_SETTLE_SECONDS` value — is
 also used by the [escalation](/docs/escalations) scheduler and the uptime
-detector for a monitor with a declared parent: step zero of a dependent
+detector for a monitor with a declared parent: step one of a dependent
 node's escalation ladder is held for the same period.
 
 ## Preview

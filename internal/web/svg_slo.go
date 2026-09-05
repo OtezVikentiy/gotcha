@@ -98,6 +98,21 @@ func sloBudgetBurndownMarkup(ctx context.Context, points []slo.Bucket, target fl
 		return g.y1 - (v-bottom)/(top-bottom)*(g.y1-g.y0)
 	}
 
+	// Уровни сетки Y (100/50/0%) и поле под их подписи — ДО первого
+	// рисования: зона перерасхода и рамка идут от g.x0, и «100%» на тире
+	// chart-vb1200 (≈60 единиц) в поле 58 не помещался — резался левым краем
+	// (K9-4, тот же приём, что fitYLabels у остальных генераторов).
+	var levels []float64
+	var yLabels []string
+	for _, lvl := range []float64{1.0, 0.5, 0.0} {
+		if lvl > top || lvl < bottom {
+			continue
+		}
+		levels = append(levels, lvl)
+		yLabels = append(yLabels, sloBudgetPct(lvl))
+	}
+	g.x0 = yAxisPadL(g.w, g.x0, yLabels)
+
 	// Красная зона перерасхода: всё ниже линии 0% (бюджет исчерпан). Рисуем
 	// только когда остаток реально уходил в минус — иначе узкая полоса запаса под
 	// нулём пугала бы зря. Зона идёт первой (под сеткой и линией данных).
@@ -117,14 +132,11 @@ func sloBudgetBurndownMarkup(ctx context.Context, points []slo.Bucket, target fl
 	// Оси и сетка: рамка + горизонтали 100/50/0% с подписями в процентах.
 	sb.WriteString(`<g class="chart-axis">`)
 	writeFrame(&sb, g)
-	for _, lvl := range []float64{1.0, 0.5, 0.0} {
-		if lvl > top || lvl < bottom {
-			continue
-		}
+	for _, lvl := range levels {
 		y := yFor(lvl)
 		axisLine(&sb, g.x0, y, g.x1, y)
 		sb.WriteString(`<text x="`)
-		sb.WriteString(formatCoord(g.x0 - 6))
+		sb.WriteString(formatCoord(g.x0 - yLabelGap))
 		sb.WriteString(`" y="`)
 		sb.WriteString(formatCoord(y))
 		sb.WriteString(`" text-anchor="end" dominant-baseline="middle" fill="currentColor">`)

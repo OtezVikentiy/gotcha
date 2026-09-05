@@ -134,13 +134,18 @@ type MonitorRow struct {
 // проекта, не только owner/admin; спека 2026-08-08). Ссылки на
 // Incidents/Maintenance/Status pages не дублируются здесь — они уже есть в
 // боковой панели app-shell (nav.Subsections для area "uptime").
-templ MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail string) {
+// statsFailed — ClickHouse не ответил: мониторы и статусы (PostgreSQL) на
+// месте, колонки аптайма/задержки — «нет данных», над таблицей — подсказка.
+templ MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail string, statsFailed bool) {
 	@layout(i18n.T(ctx, "nav.monitors"), userEmail) {
 		<div class="monitors">
 			<h1>{ i18n.T(ctx, "nav.monitors") }</h1>
 			@helpPanel("uptime", "uptime")
 			if canOperate {
 				<p><a class="btn btn-primary" href={ templ.URL(monitorNewPath(projectID)) }>{ i18n.T(ctx, "uptime.monitors.new") }</a></p>
+			}
+			if statsFailed && len(rows) > 0 {
+				<p class="hint">{ i18n.T(ctx, "uptime.monitors.stats.error") }</p>
 			}
 			if len(rows) == 0 {
 				if canOperate {

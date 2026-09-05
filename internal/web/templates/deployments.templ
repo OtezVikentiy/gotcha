@@ -34,6 +34,7 @@ templ DeploymentsScreen(projectID int64, deps []DeploymentRow, userEmail string)
 	@layout(i18n.T(ctx, "deploy.title"), userEmail) {
 		<div class="deployments">
 			<h1>{ i18n.T(ctx, "deploy.title") }</h1>
+			@helpPanel("deployments", "deployments")
 			if len(deps) == 0 {
 				@emptyState("server", "deploy.empty.title", "deploy.empty.body", "deploy.empty.cta", "/docs/deployments", 2)
 			} else {

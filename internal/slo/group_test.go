@@ -13,6 +13,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/incidentgroup"
 	"gitflic.ru/otezvikentiy/gotcha/internal/slo"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
+	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
 // newSLOGrouper — РЕАЛЬНЫЙ incidentgroup.Grouper поверх реального
@@ -79,6 +80,10 @@ func (burningProvider) Buckets(_ context.Context, _ slo.SLO, from, to time.Time,
 }
 
 func (burningProvider) RetentionCap() time.Duration { return 0 }
+
+func (p burningProvider) BucketsExcluding(ctx context.Context, s slo.SLO, from, to time.Time, step time.Duration, _ []uptime.Window) ([]slo.Bucket, error) {
+	return p.Buckets(ctx, s, from, to, step)
+}
 
 // TestSLOUptimeMemberSilenced — «uptime down → slo-uptime молчит» (сценарий
 // брифа): монитор с открытым УВЕДОМЛЁННЫМ uptime-инцидентом, uptime-SLO на

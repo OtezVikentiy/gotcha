@@ -249,26 +249,14 @@ const maxPermanentFormatExemptions = 36
 // списка вовсе — ровно тот класс дыры, ради которого схема менялась (см.
 // докблок ContentAnchor в exempt.go).
 var debtFormatExemptions = []Exemption{
-	// internal/web/svg.go: подписи графиков (тултип точки, подписи оси X) —
-	// три разных человекочитаемых макета "день.месяц час:минута" /
+	// internal/web/svg.go: подписи ОСИ X — два человекочитаемых макета
 	// "день.месяц" / "час:минута" для одной и той же задачи в одном файле,
-	// девять мест.
-	{Value: ContentAnchor("internal/web/svg.go", "metricSeriesMarkup", `p.T.UTC().Format("02.01 15:04")+" — "+formatAxisValue(p.V, unit))`), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки графика (тултип), человекочитаемый макет вне humanize`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
+	// три места. Тултипы точек того же файла (семь мест, макет "день.месяц
+	// час:минута") переведены на humanize.Time задачей 10 волны 2 аудита
+	// 2026-09-04 (K9-15), их записи отсюда удалены.
 	{Value: ContentAnchor("internal/web/svg.go", "metricTimeLabel", `return t.Format("02.01")`), Why: `return t.Format("02.01") — подпись оси X (короткая дата)`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
 	{Value: ContentAnchor("internal/web/svg.go", "metricTimeLabel", `return t.Format("15:04")`), Why: `return t.Format("15:04") — подпись оси X (только время)`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: ContentAnchor("internal/web/svg.go", "latencyLinesMarkup", `p.T.UTC().Format("02.01 15:04")+" · p50 "+formatUSAxis(float64(p.P50))+`), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки графика перцентилей (p50)`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: ContentAnchor("internal/web/svg.go", "throughputBarsMarkup", `sb.WriteString(html.EscapeString(p.T.UTC().Format("02.01 15:04") + " — " +`), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки графика в HTML-экранированном тултипе`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
 	{Value: ContentAnchor("internal/web/svg.go", "chartBars", `text := points[idx].T.UTC().Format("02.01")`), Why: `points[idx].T.UTC().Format("02.01") — подпись оси X во flame/vitals-графике`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: ContentAnchor("internal/web/svg.go", "chartBars", `sb.WriteString(html.EscapeString(p.T.UTC().Format("02.01 15:04")))`), Why: `p.T.UTC().Format("02.01 15:04") — подпись точки в другом графике того же файла`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: ContentAnchor("internal/web/svg.go", "vitalSeriesMarkup", `points[0].T.UTC().Format("02.01") + " – " + last.T.UTC().Format("02.01") +`), Why: `points[0].T.UTC().Format("02.01") ... last.T.UTC().Format("02.01") — граница диапазона в заголовке <title>, два вызова на одной строке`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	{Value: ContentAnchor("internal/web/svg.go", "latencyStackedMarkup", `title := p.T.UTC().Format("02.01 15:04")`), Why: `title := p.T.UTC().Format("02.01 15:04") — заголовок точки графика`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
-	// Гистограмма объёма логов (T3, C2) — тот же тултип-макет "день.месяц
-	// час:минута", что и у остальных девяти мест выше в этом же файле: новый
-	// график unavoidably повторяет открытый долг C8 (единого human-friendly
-	// хелпера для этого макета в internal/humanize пока нет), а не изобретать
-	// свой обходной путь для одного места, оставляя девять соседних как есть.
-	// Потолок ниже поднят на 1 осознанно (не тихим "почините находки").
-	{Value: ContentAnchor("internal/web/svg.go", "logHistogramMarkup", `title := times[i].UTC().Format("02.01 15:04")`), Why: `title := times[i].UTC().Format("02.01 15:04") — заголовок корзины гистограммы объёма логов`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},
 
 	// internal/web/templates/timerange.templ: prettyBound больше не находится
 	// здесь — задача C8 починила его, переведя на humanize.Time (см. докблок
@@ -317,7 +305,11 @@ var debtFormatExemptions = []Exemption{
 // добавил ОДНО место того же уже открытого долга C8 (человекочитаемый макет
 // "02.01 15:04" в svgaxis.go), путь тот же осознанный «+1 под починку», не
 // тихое пополнение про запас.
-const maxDebtFormatExemptions = 13
+// Потолок опущен с 13 до 6 задачей 10 волны 2 аудита 2026-09-04 (K9-15):
+// семь тултипов графиков в svg.go переехали на humanize.Time, их записи
+// выше удалены; число — по факту прогона (len(debtFormatExemptions)), не
+// вычитанием из прежнего.
+const maxDebtFormatExemptions = 6
 
 // minFormatCallsFound — нижний порог: сколько вызовов форматирования времени
 // (все четыре признака — .Format("литерал"), .Format(нелитерал),
@@ -365,7 +357,16 @@ const maxDebtFormatExemptions = 13
 // leakDebtExemptions/maxLeakDebtExemptions снижают по мере починки в
 // i18n_leak_test.go — большой запас вниз здесь маскировал бы собственную
 // поломку обхода не хуже, чем её маскирует пропавший .templ.
-const minFormatCallsFound = 31
+//
+// Свежий пересчёт (задача 10 волны 2 аудита 2026-09-04, K9-15): после
+// перевода семи тултипов svg.go на humanize.Time сканер находит 42
+// совпадения (до правки — 50: минус 8 сырых .Format(...) на семи строках,
+// vitalSeriesMarkup несла два вызова; машинных мест «по замыслу» с момента
+// докблока выше стало заметно больше, см. рост maxPermanentFormatExemptions).
+// Порог поставлен РОВНО по факту прогона, а не «с запасом снизу»: следующая
+// починка долга обязана опустить его вместе со списком, следующая поломка
+// обхода — упереться в него сразу.
+const minFormatCallsFound = 42
 
 // TestNoRawTimeFormattingOutsideHumanize — форматирование времени для
 // человека разрешено только в internal/humanize (см. докблок

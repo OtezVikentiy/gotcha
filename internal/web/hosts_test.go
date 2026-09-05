@@ -409,7 +409,7 @@ func renderHostsListOnboarding(t *testing.T, installCmd, config, agentReason str
 	t.Helper()
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	var sb strings.Builder
-	if err := templates.HostsList(1, nil, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, installCmd, config, agentReason, "").Render(ctx, &sb); err != nil {
+	if err := templates.HostsList(1, nil, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, installCmd, config, agentReason, "", false).Render(ctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	return sb.String()
@@ -537,7 +537,7 @@ func TestHostsListFiltersRendersChipsAndRows(t *testing.T) {
 	facets := templates.NewHostsFacets(rctx, 1, filter, []string{"prod", "staging"}, []string{"web", "db"})
 
 	var sb strings.Builder
-	if err := templates.HostsList(1, rows, false, hostsListLimit, filter, facets, nil, "", "", "", "").Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, rows, false, hostsListLimit, filter, facets, nil, "", "", "", "", false).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()
@@ -593,7 +593,7 @@ func TestHostNewBadgeBoundary(t *testing.T) {
 		{Name: "web-3", StatusKind: "ok", IsNew: now.Sub(now.Add(-24*time.Hour)) < hostNewWindow},
 	}
 	var sb strings.Builder
-	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", "", "", "").Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", "", "", "", false).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()
@@ -622,7 +622,7 @@ func TestHostsListFilterEmptyShowsResetNotOnboarding(t *testing.T) {
 	facets := templates.NewHostsFacets(rctx, 1, filter, []string{"prod"}, []string{"web"})
 
 	var sb strings.Builder
-	if err := templates.HostsList(1, nil, false, hostsListLimit, filter, facets, nil, "", "", "", "").Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, nil, false, hostsListLimit, filter, facets, nil, "", "", "", "", false).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()
@@ -693,7 +693,7 @@ func TestHostsListGroupRendersSections(t *testing.T) {
 	sections := groupHostRows(rctx, rows, "env")
 
 	var sb strings.Builder
-	if err := templates.HostsList(1, rows, false, hostsListLimit, filter, facets, sections, "", "", "", "").Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, rows, false, hostsListLimit, filter, facets, sections, "", "", "", "", false).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()
@@ -748,7 +748,7 @@ func TestHostsTableStatusKinds(t *testing.T) {
 		{Name: "o-1", StatusKind: "ok"},
 	}
 	var sb strings.Builder
-	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", "", "", "").Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", "", "", "", false).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()
@@ -781,7 +781,7 @@ func TestHostsTableMetricsValues(t *testing.T) {
 		{Name: "web-1", StatusKind: "ok", CPU: &cpu, Mem: &mem, Disk: &disk, LoadPerCore: &load},
 	}
 	var sb strings.Builder
-	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", "", "", "").Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", "", "", "", false).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()
@@ -808,7 +808,7 @@ func TestHostsFilterBarNewOnlyAndGroupRole(t *testing.T) {
 	facets := templates.NewHostsFacets(rctx, 1, filter, []string{"prod"}, []string{"web"})
 
 	var sb strings.Builder
-	if err := templates.HostsList(1, rows, false, hostsListLimit, filter, facets, nil, "", "", "", "").Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, rows, false, hostsListLimit, filter, facets, nil, "", "", "", "", false).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()
@@ -834,7 +834,7 @@ func TestHostsListCollectorConfigDetailsInstallCmd(t *testing.T) {
 	config := collectorConfig("https://g.example", "pk_x")
 
 	var sb strings.Builder
-	if err := templates.HostsList(1, rows, true, 1, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, installCmd, config, "", "").Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, rows, true, 1, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, installCmd, config, "", "", false).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()
@@ -861,7 +861,7 @@ func TestHostsListCollectorConfigDetailsDist(t *testing.T) {
 	config := collectorConfig("https://g.example", "pk_x")
 
 	var sb strings.Builder
-	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", config, "dist", "").Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", config, "dist", "", false).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()
@@ -877,7 +877,7 @@ func TestHostsListCollectorConfigDetailsInsecure(t *testing.T) {
 	config := collectorConfig("http://gotcha.example", "pk_x")
 
 	var sb strings.Builder
-	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", config, "insecure", "").Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", config, "insecure", "", false).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()

@@ -55,29 +55,37 @@ func TestHeartbeatCronSnippetMatchesTemplateCopy(t *testing.T) {
 		templates.TimeRangeVM{Key: "24h"},
 		nil, nil, 1, 0,
 		true, true,
-		baseURL, "u@example.com",
+		baseURL, "u@example.com", false,
 	).Render(ctx, &sb)
 	if err != nil {
 		t.Fatalf("render MonitorDetail: %v", err)
 	}
 	html := sb.String()
 
-	templateSnippet := extractCronSnippetFromHTML(t, html)
+	templatePing, templateSnippet := extractHeartbeatSnippetsFromHTML(t, html)
 
+	// Ping URL живёт в тех же двух копиях (heartbeatPingURL) — сверяем и его,
+	// тем же точным равенством с web-копией.
+	if webPing := heartbeatPingURL(baseURL, token); templatePing != webPing {
+		t.Errorf("копии heartbeatPingURL разошлись:\n  web-пакет:      %q\n  templates-копия: %q",
+			webPing, templatePing)
+	}
 	if templateSnippet != webSnippet {
 		t.Errorf("копии heartbeatCronSnippet разошлись:\n  web-пакет:      %q\n  templates-копия: %q",
 			webSnippet, templateSnippet)
 	}
 }
 
-// extractCronSnippetFromHTML достаёт содержимое второго <code>...</code> в
-// карточке heartbeat (первый — ping URL, второй — cron-сниппет, см.
-// monitordetail.templ) и снимает HTML-экранирование, которое templ применяет
-// к текстовому узлу (сниппет содержит ">" в "curl ... >/dev/null", в HTML это
-// "&gt;").
-func extractCronSnippetFromHTML(t *testing.T, html string) string {
+// extractHeartbeatSnippetsFromHTML достаёт из карточки heartbeat оба
+// сниппета — ping URL и cron-строку. С задачи 10 волны 2 аудита 2026-09-04
+// (K9-9) они рендерятся не голым <code>, а через @copyBlock: видимый текст
+// блока — <pre class="copy-preview">…</pre> (copyblock.templ), первый —
+// ping URL, второй — cron. Снимает HTML-экранирование, которое templ
+// применяет к текстовому узлу (сниппет содержит ">" в "curl ... >/dev/null",
+// в HTML это "&gt;").
+func extractHeartbeatSnippetsFromHTML(t *testing.T, html string) (ping, cron string) {
 	t.Helper()
-	const openTag, closeTag = "<code>", "</code>"
+	const openTag, closeTag = `<pre class="copy-preview">`, "</pre>"
 
 	var blocks []string
 	rest := html
@@ -89,20 +97,24 @@ func extractCronSnippetFromHTML(t *testing.T, html string) string {
 		rest = rest[i+len(openTag):]
 		j := strings.Index(rest, closeTag)
 		if j < 0 {
-			t.Fatalf("незакрытый <code> в рендере MonitorDetail")
+			t.Fatalf("незакрытый <pre class=\"copy-preview\"> в рендере MonitorDetail")
 		}
 		blocks = append(blocks, rest[:j])
 		rest = rest[j+len(closeTag):]
 	}
 	if len(blocks) != 2 {
-		t.Fatalf("в карточке heartbeat найдено %d блоков <code>, want 2 (ping URL + cron-сниппет): %v", len(blocks), blocks)
+		t.Fatalf("в карточке heartbeat найдено %d copy-блоков, want 2 (ping URL + cron-сниппет): %v", len(blocks), blocks)
 	}
 
-	snippet := htmlUnescapeMinimal(blocks[1])
-	if !strings.Contains(snippet, "curl") {
-		t.Fatalf("второй <code>-блок не похож на cron-сниппет: %q", snippet)
+	ping = htmlUnescapeMinimal(blocks[0])
+	if !strings.HasPrefix(ping, "http") {
+		t.Fatalf("первый copy-блок не похож на ping URL: %q", ping)
 	}
-	return snippet
+	cron = htmlUnescapeMinimal(blocks[1])
+	if !strings.Contains(cron, "curl") {
+		t.Fatalf("второй copy-блок не похож на cron-сниппет: %q", cron)
+	}
+	return ping, cron
 }
 
 // htmlUnescapeMinimal раскрывает ровно те HTML-сущности, которые templ может

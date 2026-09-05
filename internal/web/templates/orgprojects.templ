@@ -30,13 +30,18 @@ templ orgProjectCard(p org.Project) {
 //
 // Модалка создания перенесена из ProjectsList (renderProjectsList,
 // onboarding.go) без переписывания — те же поля и то же действие
-// POST /projects/new. FormState здесь не нужен: страница не участвует в
-// перерисовке формы на 422 — тот сценарий остаётся у плоского списка (см.
-// renderProjectsList).
-templ OrgProjects(o org.Org, items []org.Project, canCreate []OrgOption, userEmail string) {
+// POST /projects/new. Hidden-поле origin=org_projects говорит хендлеру, что
+// отправка пришла с этой страницы: на 422 он перерисовывает ЕЁ ЖЕ (K7-2:
+// renderOrgProjects, orgprojects.go) с открытой модалкой, сообщением об
+// ошибке и сохранённым вводом (form/errMsg — тот же контракт, что у
+// ProjectsList), а не плоский список проектов всех организаций.
+templ OrgProjects(o org.Org, items []org.Project, canCreate []OrgOption, form FormState, errMsg, userEmail string) {
 	@layout(i18n.Tf(ctx, "org.projects.title", "org", o.Name), userEmail) {
 		<div class="org-projects">
 			<h1>{ i18n.Tf(ctx, "org.projects.title", "org", o.Name) }</h1>
+			if errMsg != "" && !form.Has() {
+				<p class="error">{ errMsg }</p>
+			}
 			if len(canCreate) > 0 {
 				@createTrigger("new-project", "project.create.title")
 			}
@@ -54,8 +59,15 @@ templ OrgProjects(o org.Org, items []org.Project, canCreate []OrgOption, userEma
 				</div>
 			}
 			if len(canCreate) > 0 {
-				@createModalOpen("new-project", "project.create.title", false, false) {
+				@createModalOpen("new-project", "project.create.title", false, form.Opens("new-project")) {
 					<form method="post" action="/projects/new" class="project-create-form">
+						<input type="hidden" name="origin" value="org_projects"/>
+						// Без role="alert": фокус в модалку переносит modal.js (№80),
+						// ошибка привязана к полю slug через aria-describedby — как у
+						// ProjectsList.
+						if errMsg != "" && form.Opens("new-project") {
+							<p class="error" id="new-project-error">{ errMsg }</p>
+						}
 						<div class="field">
 							<label>
 								{ i18n.T(ctx, "project.create.org") }
@@ -69,14 +81,25 @@ templ OrgProjects(o org.Org, items []org.Project, canCreate []OrgOption, userEma
 						<div class="field">
 							<label>
 								{ i18n.T(ctx, "project.create.slug") }
-								<input type="text" name="slug" required class="input" placeholder="backend-api"/>
+								<input
+									type="text"
+									name="slug"
+									required
+									class="input"
+									placeholder="backend-api"
+									value={ form.Get("slug", "") }
+									if errMsg != "" && form.Opens("new-project") {
+										aria-invalid="true"
+										aria-describedby="new-project-error"
+									}
+								/>
 							</label>
 							<span class="hint">{ i18n.T(ctx, "project.create.slug_hint") }</span>
 						</div>
 						<div class="field">
 							<label>
 								{ i18n.T(ctx, "project.create.name") }
-								<input type="text" name="name" required class="input"/>
+								<input type="text" name="name" required class="input" value={ form.Get("name", "") }/>
 							</label>
 						</div>
 						<div class="field">
@@ -84,7 +107,7 @@ templ OrgProjects(o org.Org, items []org.Project, canCreate []OrgOption, userEma
 								{ i18n.T(ctx, "project.create.platform") }
 								<select name="platform" required class="select">
 									for _, pl := range org.Platforms {
-										@platformOption(pl, i18n.T(ctx, "platform."+pl), "go")
+										@platformOption(pl, i18n.T(ctx, "platform."+pl), form.Get("platform", "go"))
 									}
 								</select>
 							</label>

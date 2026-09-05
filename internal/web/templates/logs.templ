@@ -621,6 +621,8 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 	@layout(i18n.T(ctx, "logs.title"), userEmail) {
 		<div class="logs">
 			<h1>{ i18n.T(ctx, "logs.title") }</h1>
+			@helpPanel("logs", "logs")
+
 			<form method="get" action={ templ.URL(logsPath(projectID)) } class="logs-filters">
 				<fieldset class="logs-severity-filter">
 					<legend>{ i18n.T(ctx, "logs.filter.severity_all") }</legend>

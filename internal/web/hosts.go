@@ -160,35 +160,36 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 	// Двухуровневая агрегация (§5.2, B1): CPU busy% = 1 − idle-доля усреднённая
 	// по ядрам (subKey="cpu", subAgg=avg); худший диск = max по mountpoint'ам;
 	// load/core делится в Go, а не в SQL — обе метрики читаются отдельно.
-	idleByHost, err := h.Metrics.LatestByHost(r.Context(), projectID, hostmetric.CPUUtilization,
-		[]metric.LabelMatcher{{Key: hostmetric.AttrState, Value: "idle"}}, "cpu", "avg", from, now)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-	memByHost, err := h.Metrics.LatestByHost(r.Context(), projectID, hostmetric.MemoryUtilization,
-		[]metric.LabelMatcher{{Key: hostmetric.AttrState, Value: "used"}}, "", "", from, now)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-	diskByHost, err := h.Metrics.LatestByHost(r.Context(), projectID, hostmetric.FilesystemUtilization,
-		nil, hostmetric.AttrMountpoint, "max", from, now)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-	load5mByHost, err := h.Metrics.LatestByHost(r.Context(), projectID, hostmetric.LoadAvg5m,
-		nil, "", "", from, now)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-	coresByHost, err := h.Metrics.LatestByHost(r.Context(), projectID, hostmetric.CPULogicalCount,
-		nil, "", "", from, now)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
+	// Колонки метрик — из ClickHouse; сам список хостов — из PostgreSQL.
+	// Отказ CH не роняет страницу (единый приём CH-страниц, образец —
+	// logsList): хосты и их статусы показываем, колонки метрик пустые, над
+	// таблицей — «метрики временно недоступны». Первый же отказ прекращает
+	// опрос: остальные четыре запроса к тому же хранилищу лишь потянули бы
+	// время ответа.
+	var (
+		idleByHost, memByHost, diskByHost, load5mByHost, coresByHost map[string]float64
+		metricsFailed                                                bool
+	)
+	for _, q := range []struct {
+		dst      *map[string]float64
+		name     string
+		matchers []metric.LabelMatcher
+		groupKey string
+		agg      string
+	}{
+		{&idleByHost, hostmetric.CPUUtilization, []metric.LabelMatcher{{Key: hostmetric.AttrState, Value: "idle"}}, "cpu", "avg"},
+		{&memByHost, hostmetric.MemoryUtilization, []metric.LabelMatcher{{Key: hostmetric.AttrState, Value: "used"}}, "", ""},
+		{&diskByHost, hostmetric.FilesystemUtilization, nil, hostmetric.AttrMountpoint, "max"},
+		{&load5mByHost, hostmetric.LoadAvg5m, nil, "", ""},
+		{&coresByHost, hostmetric.CPULogicalCount, nil, "", ""},
+	} {
+		byHost, err := h.Metrics.LatestByHost(r.Context(), projectID, q.name, q.matchers, q.groupKey, q.agg, from, now)
+		if err != nil {
+			slog.Warn("web: hosts list metrics failed", "project_id", projectID, "metric", q.name, "error", err)
+			metricsFailed = true
+			break
+		}
+		*q.dst = byHost
 	}
 
 	truncated := len(hosts) > hostsListLimit
@@ -245,7 +246,7 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 	facets := templates.NewHostsFacets(r.Context(), projectID, filterVM, envValues, roleValues)
 	sections := groupHostRows(r.Context(), rows, group)
 
-	_ = templates.HostsList(projectID, rows, truncated, hostsListLimit, filterVM, facets, sections, installCmd, config, agentReason, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.HostsList(projectID, rows, truncated, hostsListLimit, filterVM, facets, sections, installCmd, config, agentReason, h.currentEmail(r), metricsFailed).Render(r.Context(), w)
 }
 
 // normalizeHostGroup приводит query-параметр group к одному из {"", "env",
@@ -1058,9 +1059,9 @@ func (h *Handler) hostGroupThresholdSave(w http.ResponseWriter, r *http.Request)
 // hostGroupThresholdDelete — POST /projects/{id}/hosts/settings/groups/delete:
 // удалить групповое правило по scope+label (hidden-поля в форме строки
 // таблицы, groupThresholdRow). Delete идемпотентен (GroupThresholdService.
-// Delete, как и остальные стораджи продукта) — отсутствие строки не ошибка,
-// flash не показывается (нечего было удалять, тот же приём, что hostDelete
-// при deleted=false). Гейт — оператор + sameOrigin.
+// Delete, как и остальные стораджи продукта) — отсутствие строки не ошибка.
+// Пустая пара scope/label — 422 на той же странице, первый POST без
+// confirmed=yes — страница подтверждения. Гейт — оператор + sameOrigin.
 func (h *Handler) hostGroupThresholdDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -1088,13 +1089,31 @@ func (h *Handler) hostGroupThresholdDelete(w http.ResponseWriter, r *http.Reques
 	}
 	scope := r.FormValue("scope")
 	label := r.FormValue("label")
-	if scope != "" && label != "" {
-		if err := h.GroupThresholds.Delete(r.Context(), projectID, scope, label); err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-			return
-		}
-		h.flashOK(w, "flash.deleted", 0)
+	// Пустая или неизвестная пара scope/label — ошибка на той же странице
+	// (K7-8), тем же ключом, что у hostGroupThresholdSave: раньше был голый
+	// редирект — ни удаления, ни объяснения, почему правило на месте.
+	if (scope != "env" && scope != "role") || label == "" {
+		h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, nil,
+			i18n.T(r.Context(), "error.hostsettings.group_scope_label"), nil, "")
+		return
 	}
+	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
+	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
+	// показываем страницу подтверждения, называющую группу (K7-7); пара
+	// scope+label уезжает во второй POST hidden-полями, как channel_id у
+	// alertsChannelDelete.
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirmf(w, r, "confirm.title", "confirm.host_group_threshold_delete.message", "confirm.delete",
+			hostSettingsPath(projectID), hostSettingsPath(projectID)+"/groups/delete",
+			[]templates.HiddenField{{Name: "scope", Value: scope}, {Name: "label", Value: label}},
+			"scope", i18n.T(r.Context(), "host.threshold.scope."+scope), "label", label)
+		return
+	}
+	if err := h.GroupThresholds.Delete(r.Context(), projectID, scope, label); err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	h.flashOK(w, "flash.deleted", 0)
 	http.Redirect(w, r, hostSettingsPath(projectID), http.StatusSeeOther)
 }
 
@@ -1250,10 +1269,14 @@ func (h *Handler) renderHostDetail(w http.ResponseWriter, r *http.Request, statu
 	}
 	statusKind, problemKinds := hostRowStatus(openKinds, hst.LastSeen, time.Now(), eff.Settings)
 
+	// Графики — из ClickHouse; отказ CH не роняет карточку хоста (единый
+	// приём CH-страниц, образец — logsList): шапка, инциденты и действия
+	// остаются, на месте графиков — «данные временно недоступны».
 	charts, err := h.hostDetailCharts(r.Context(), projectID, name, from, to, step, eff.Settings)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
+	chartsFailed := err != nil
+	if chartsFailed {
+		slog.Warn("web: host charts failed", "project_id", projectID, "host", name, "error", err)
+		charts = nil
 	}
 
 	// Аптайм — вспомогательный элемент шапки, не один из семи обязательных
@@ -1322,6 +1345,7 @@ func (h *Handler) renderHostDetail(w http.ResponseWriter, r *http.Request, statu
 		RecentIncidents:      recentIncidents,
 		AckedBy:              ackedBy,
 		Charts:               charts,
+		ChartsFailed:         chartsFailed,
 		CanOperate:           canOperate,
 		Uptime:               uptimeStr,
 		AgentVersion:         hst.AgentVersion,

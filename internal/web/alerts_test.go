@@ -251,6 +251,25 @@ func TestWebAlertsChannels(t *testing.T) {
 		t.Fatalf("POST %s (member) status = %d, want 403", channelsDeletePath, resp.StatusCode)
 	}
 
+	// Без confirmed=yes -> 200, страница подтверждения называет тип и адрес
+	// канала (K7-3: у канала нет имени, по hidden channel_id опечатку не
+	// заметить), канал на месте.
+	resp = postForm(t, s.srv, channelsDeletePath, url.Values{"channel_id": {strconv.FormatInt(channels[0].ID, 10)}}, s.srv.URL, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST %s (unconfirmed) status = %d, want 200: %s", channelsDeletePath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `name="confirmed" value="yes"`) {
+		t.Fatalf("POST %s (unconfirmed) missing confirm page hidden field: %s", channelsDeletePath, body)
+	}
+	if !strings.Contains(string(body), "«"+channels[0].Target+"»") {
+		t.Fatalf("POST %s (unconfirmed) confirm page does not name the channel target %q: %s", channelsDeletePath, channels[0].Target, body)
+	}
+	if c, err := alertSvc.Channels(context.Background(), proj.ID); err != nil || len(c) != 2 {
+		t.Fatalf("channel gone after unconfirmed delete: %+v err=%v", c, err)
+	}
+
 	// Удаление своего канала -> 303, канал исчез.
 	resp = postForm(t, s.srv, channelsDeletePath, url.Values{"confirmed": {"yes"}, "channel_id": {strconv.FormatInt(channels[0].ID, 10)}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)

@@ -154,13 +154,30 @@ func (s *Service) TransferInstanceAdmin(ctx context.Context, fromUID int64, toEm
 	if tag.RowsAffected() == 0 {
 		return 0, ErrNotInstanceAdmin
 	}
-	if _, err := tx.Exec(ctx, "UPDATE users SET is_instance_admin = true WHERE id = $1", toUID); err != nil {
-		return 0, fmt.Errorf("transfer instance admin: grant: %w", err)
+	if err := grantInstanceAdmin(ctx, tx, toUID); err != nil {
+		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("transfer instance admin: commit: %w", err)
 	}
 	return toUID, nil
+}
+
+// grantInstanceAdmin ставит флаг получателю внутри транзакции передачи.
+// RowsAffected 0 — пользователя с таким id уже нет (удалил аккаунт между
+// UserByEmail и этим UPDATE): раньше это выглядело успехом, а инстанс
+// оставался вовсе без администратора — commit проходил, флаг снят с
+// прежнего и никому не поставлен. Ошибка откатывает транзакцию (defer
+// Rollback у вызывающего), прежний админ остаётся админом.
+func grantInstanceAdmin(ctx context.Context, tx pgx.Tx, toUID int64) error {
+	tag, err := tx.Exec(ctx, "UPDATE users SET is_instance_admin = true WHERE id = $1", toUID)
+	if err != nil {
+		return fmt.Errorf("transfer instance admin: grant: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrUserNotFound
+	}
+	return nil
 }
 
 // Authenticate возвращает id пользователя по email+паролю.

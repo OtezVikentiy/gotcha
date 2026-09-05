@@ -199,7 +199,7 @@ templ RecipeDetail(vm RecipeDetailVM, userEmail string) {
 					</p>
 				} else {
 					@scrollRegion("table-scroll", "recipes.thresholds.title") {
-						<table>
+						<table class="data-table">
 							<thead>
 								<tr>
 									<th scope="col">{ i18n.T(ctx, "recipes.table.metric") }</th>

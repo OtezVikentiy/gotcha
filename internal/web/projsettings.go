@@ -695,10 +695,22 @@ func (h *Handler) projectSettingsDelete(w http.ResponseWriter, r *http.Request) 
 	}
 	// Двухшаговое подтверждение (см. projectSettingsKeyRevoke/renderConfirm):
 	// без confirmed=yes показываем страницу подтверждения вместо удаления
-	// проекта.
+	// проекта. Имя проекта — в тексте вопроса (K7-3, как у hostDelete): без
+	// него страница защищает только от случайного клика, но не от вкладки не
+	// того проекта.
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.project_delete.message", "project.settings.danger.delete_submit",
-			projectSettingsPath(projectID), projectSettingsDeletePath(projectID), nil)
+		p, err := h.Org.GetProject(r.Context(), projectID)
+		if err != nil {
+			if errors.Is(err, org.ErrNotFound) {
+				h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+				return
+			}
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.project_delete.message", "project.settings.danger.delete_submit",
+			projectSettingsPath(projectID), projectSettingsDeletePath(projectID), nil,
+			"name", p.Name)
 		return
 	}
 	if err := h.Org.DeleteProject(r.Context(), projectID); err != nil {
