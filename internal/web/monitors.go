@@ -477,6 +477,9 @@ func (h *Handler) monitorDelete(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireProjectOperator(w, r, m.ProjectID, uid); !ok {
 		return
 	}
+	if !h.parseForm(w, r) {
+		return
+	}
 	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
 	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
 	// показываем страницу подтверждения вместо необратимого действия.

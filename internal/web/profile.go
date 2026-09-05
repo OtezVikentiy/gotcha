@@ -44,6 +44,9 @@ func (h *Handler) profileDelete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if !h.parseForm(w, r) {
+		return
+	}
 	// Без confirmed=yes — страница подтверждения вместо удаления.
 	if r.FormValue("confirmed") != "yes" {
 		h.renderConfirm(w, r, "confirm.title", "confirm.account_delete.message",
@@ -370,6 +373,9 @@ func (h *Handler) profileInstanceAdminTransfer(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if !h.requireInstanceAdminForSSO(w, r, uid) {
+		return
+	}
+	if !h.parseForm(w, r) {
 		return
 	}
 	email := strings.TrimSpace(r.PostFormValue("email"))

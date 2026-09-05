@@ -83,6 +83,9 @@ func (h *Handler) themeSwitch(w http.ResponseWriter, r *http.Request) {
 		h.denyCrossOrigin(w, r)
 		return
 	}
+	if !h.parseForm(w, r) {
+		return
+	}
 	t, ok := theme.Parse(r.FormValue("theme"))
 	if ok {
 		setThemeCookie(w, t.Code, h.Secure)

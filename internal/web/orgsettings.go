@@ -209,6 +209,9 @@ func (h *Handler) orgSettingsSSODelete(w http.ResponseWriter, r *http.Request) {
 	if !h.requireInstanceAdminForSSO(w, r, uid) {
 		return
 	}
+	if !h.parseForm(w, r) {
+		return
+	}
 	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
 	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
 	// показываем страницу подтверждения вместо необратимого действия.
@@ -558,6 +561,9 @@ func (h *Handler) orgSettingsLeave(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !h.parseForm(w, r) {
+		return
+	}
 	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
 	// исполняет inline onsubmit="confirm()" — see renderConfirm): без
 	// confirmed=yes показываем страницу подтверждения вместо выхода из орга.
@@ -810,6 +816,9 @@ func (h *Handler) orgSettingsDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.requireOrgOwner(w, r, orgID, uid) {
+		return
+	}
+	if !h.parseForm(w, r) {
 		return
 	}
 	// Двухшаговое подтверждение (см. orgSettingsLeave/renderConfirm): без

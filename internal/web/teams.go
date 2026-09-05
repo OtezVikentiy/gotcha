@@ -450,6 +450,9 @@ func (h *Handler) teamDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !h.parseForm(w, r) {
+		return
+	}
 	if r.FormValue("confirmed") != "yes" {
 		h.renderConfirmf(w, r, "confirm.title", "confirm.team_delete.message",
 			"confirm.delete", orgTeamsPath(orgID), teamDeletePath(teamID), nil,

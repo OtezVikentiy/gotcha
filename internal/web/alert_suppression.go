@@ -518,6 +518,9 @@ func (h *Handler) alertSuppressionDelete(w http.ResponseWriter, r *http.Request)
 		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
+	if !h.parseForm(w, r) {
+		return
+	}
 	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
 	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
 	// показываем страницу подтверждения с именами узлов ребра (K7-7), а не

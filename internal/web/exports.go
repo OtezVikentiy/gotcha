@@ -481,6 +481,9 @@ func (h *Handler) exportsDelete(w http.ResponseWriter, r *http.Request) {
 			i18n.T(r.Context(), "err.export.not_deletable"), nil)
 		return
 	}
+	if !h.parseForm(w, r) {
+		return
+	}
 	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
 	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
 	// показываем страницу подтверждения вместо необратимого действия — тот

@@ -834,6 +834,9 @@ func (h *Handler) statusPagesDelete(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.403.body"))
 		return
 	}
+	if !h.parseForm(w, r) {
+		return
+	}
 	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
 	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
 	// показываем страницу подтверждения вместо необратимого действия.

@@ -688,6 +688,9 @@ func (h *Handler) projectSettingsDelete(w http.ResponseWriter, r *http.Request) 
 	if !h.requireProjectOwner(w, r, projectID, uid) {
 		return
 	}
+	if !h.parseForm(w, r) {
+		return
+	}
 	// Двухшаговое подтверждение (см. projectSettingsKeyRevoke/renderConfirm):
 	// без confirmed=yes показываем страницу подтверждения вместо удаления
 	// проекта. Имя проекта — в тексте вопроса (K7-3, как у hostDelete): без
