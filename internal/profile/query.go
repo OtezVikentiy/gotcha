@@ -269,7 +269,10 @@ type FunctionShare struct {
 	Function string
 	// Share — self-CPU функции, делённое на весь self-CPU окна.
 	Share float64
-	// Samples — суммарный вес окна; по нему проверяется MinSamples.
+	// Samples — число строк (сэмплов) окна; по нему проверяется MinSamples.
+	// Не вес: единица value зависит от типа профиля (для CPU — наносекунды),
+	// и сумма весов за любое непустое окно легко перескакивает и сто, и сто
+	// миллионов — гейт «мало данных» с ней не срабатывал бы никогда.
 	Samples uint64
 }
 
@@ -283,13 +286,16 @@ type FunctionShare struct {
 // Итог окна считается оконной функцией по тем же группам: сумма self по всем
 // функциям равна сумме value по строкам окна, потому что arrayElement(stack, -1)
 // на пустом стеке даёт пустую строку — такая строка попадает в группу «», а не
-// исчезает.
+// исчезает. Число строк окна (total_samples) считается тем же способом, но по
+// count(), а не по sum(value): доля — по весу, гейт MinSamples — по числу
+// сэмплов, единицы разные и путать их нельзя.
 func (q *Query) TopFunctionShares(ctx context.Context, projectID int64, service, profileType string, from, to time.Time, k int) ([]FunctionShare, error) {
 	rows, err := q.conn.Query(ctx, `
-		SELECT fn, self, total FROM (
+		SELECT fn, self, total, total_samples FROM (
 			SELECT arrayElement(stack, -1) AS fn,
 			       sum(value) AS self,
-			       sum(sum(value)) OVER () AS total
+			       sum(sum(value)) OVER () AS total,
+			       sum(count()) OVER () AS total_samples
 			FROM profile_samples
 			WHERE project_id = ? AND service = ? AND profile_type = ? AND ts >= ? AND ts < ?
 			GROUP BY fn
@@ -305,14 +311,14 @@ func (q *Query) TopFunctionShares(ctx context.Context, projectID int64, service,
 	var out []FunctionShare
 	for rows.Next() {
 		var fn string
-		var self, total uint64
-		if err := rows.Scan(&fn, &self, &total); err != nil {
+		var self, total, totalSamples uint64
+		if err := rows.Scan(&fn, &self, &total, &totalSamples); err != nil {
 			return nil, fmt.Errorf("profile: top function shares scan: %w", err)
 		}
 		if total == 0 {
 			continue
 		}
-		out = append(out, FunctionShare{Function: fn, Share: float64(self) / float64(total), Samples: total})
+		out = append(out, FunctionShare{Function: fn, Share: float64(self) / float64(total), Samples: totalSamples})
 	}
 	return out, rows.Err()
 }
@@ -321,10 +327,11 @@ func (q *Query) TopFunctionShares(ctx context.Context, projectID int64, service,
 type BaselineShare struct {
 	// Share — медиана дневной self-доли функции за базовое окно.
 	Share float64
-	// Samples — объём наблюдений именно этой функции за базовое окно (сумма
-	// её self); по нему Decide гейтит открытие по MinSamples. Оконный итог
-	// здесь не годится: свежее окно вложено в базовое, и оконный объём базы
-	// всегда не меньше свежего — такой гейт не срабатывал бы никогда.
+	// Samples — число строк (сэмплов) именно этой функции за базовое окно
+	// (не сумма её веса — единица value зависит от типа профиля); по нему
+	// Decide гейтит открытие по MinSamples. Оконный итог здесь не годится:
+	// свежее окно вложено в базовое, и оконный объём базы всегда не меньше
+	// свежего — такой гейт не срабатывал бы никогда.
 	Samples uint64
 }
 
@@ -341,11 +348,12 @@ func (q *Query) BaselineFunctionShares(ctx context.Context, projectID int64, ser
 	}
 	from := now.AddDate(0, 0, -baselineDays)
 	rows, err := q.conn.Query(ctx, `
-		SELECT fn, quantileExact(0.5)(share) AS median, sum(self) AS samples FROM (
-			SELECT d, fn, self, self / day_total AS share FROM (
+		SELECT fn, quantileExact(0.5)(share) AS median, sum(cnt) AS samples FROM (
+			SELECT d, fn, self, cnt, self / day_total AS share FROM (
 				SELECT toDate(ts) AS d,
 				       arrayElement(stack, -1) AS fn,
 				       sum(value) AS self,
+				       count() AS cnt,
 				       sum(sum(value)) OVER (PARTITION BY toDate(ts)) AS day_total
 				FROM profile_samples
 				WHERE project_id = ? AND service = ? AND profile_type = ? AND ts >= ? AND ts < ?
@@ -394,40 +402,4 @@ func (q *Query) TopFunctionsBySelfShare(ctx context.Context, projectID int64, se
 		out = append(out, fn)
 	}
 	return out, rows.Err()
-}
-
-// RecentFunctionShare — self-доля функции за окно (self-CPU / total) и число
-// сэмплов (total) окна для проверки MinSamples. total==0 → share 0.
-func (q *Query) RecentFunctionShare(ctx context.Context, projectID int64, service, profileType, function string, from, to time.Time) (float64, uint64, error) {
-	var self, total uint64
-	err := q.conn.QueryRow(ctx, `
-		SELECT sumIf(value, arrayElement(stack, -1) = ?), sum(value)
-		FROM profile_samples
-		WHERE project_id = ? AND service = ? AND profile_type = ? AND ts >= ? AND ts < ?`,
-		function, projectID, service, profileType, from, to).Scan(&self, &total)
-	if err != nil {
-		return 0, 0, fmt.Errorf("profile: recent function share: %w", err)
-	}
-	if total == 0 {
-		return 0, 0, nil
-	}
-	return float64(self) / float64(total), total, nil
-}
-
-// BaselineFunctionShare — медиана дневной self-доли функции за baselineDays
-// дней (скользящая база). Нет строк → 0.
-func (q *Query) BaselineFunctionShare(ctx context.Context, projectID int64, service, profileType, function string, baselineDays int, now time.Time) (float64, error) {
-	from := now.AddDate(0, 0, -baselineDays)
-	var median float64
-	err := q.conn.QueryRow(ctx, `
-		SELECT quantileExact(0.5)(daily) FROM (
-			SELECT toDate(ts) d, sumIf(value, arrayElement(stack, -1) = ?) / sum(value) AS daily
-			FROM profile_samples
-			WHERE project_id = ? AND service = ? AND profile_type = ? AND ts >= ? AND ts < ?
-			GROUP BY d)`,
-		function, projectID, service, profileType, from, now).Scan(&median)
-	if err != nil {
-		return 0, fmt.Errorf("profile: baseline function share: %w", err)
-	}
-	return median, nil
 }

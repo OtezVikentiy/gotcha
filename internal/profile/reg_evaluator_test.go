@@ -17,13 +17,29 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
+// seedProfSample сеет v строк функции leaf весом 1 каждая (не одну строку
+// весом v): MinSamples гейтит число строк окна, а не сумму их веса, поэтому
+// вызывающие тесты, читающие v как «v сэмплов», обязаны реально получить v
+// строк. Сумма весов группы (self) от этого не меняется — она равна v что
+// при старой, что при новой раскладке, — поэтому доля (Share) во всех местах
+// вызова остаётся прежней.
 func seedProfSample(t *testing.T, ch driver.Conn, projectID int64, leaf string, v uint64, ago time.Duration) {
 	t.Helper()
-	if err := ch.Exec(context.Background(), `INSERT INTO profile_samples
-		(project_id,profile_type,service,environment,transaction,platform,ts,stack,value,trace_id)
-		VALUES (?,'cpu','api','','','go',?,?,?,'')`,
-		projectID, time.Now().UTC().Add(-ago), []string{"root", leaf}, v); err != nil {
-		t.Fatalf("seed: %v", err)
+	ctx := context.Background()
+	ts := time.Now().UTC().Add(-ago)
+	batch, err := ch.PrepareBatch(ctx, `INSERT INTO profile_samples
+		(project_id,profile_type,service,environment,transaction,platform,ts,stack,value,trace_id)`)
+	if err != nil {
+		t.Fatalf("seed prepare batch: %v", err)
+	}
+	stack := []string{"root", leaf}
+	for i := uint64(0); i < v; i++ {
+		if err := batch.Append(uint64(projectID), "cpu", "api", "", "", "go", ts, stack, uint64(1), ""); err != nil {
+			t.Fatalf("seed append: %v", err)
+		}
+	}
+	if err := batch.Send(); err != nil {
+		t.Fatalf("seed send: %v", err)
 	}
 }
 

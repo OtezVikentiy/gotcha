@@ -6,7 +6,7 @@ type RegressionConfig struct {
 	RecoveryPct   float64 // закрытие: recent ≤ base×(1+RecoveryPct); RecoveryPct < ThresholdPct (гистерезис)
 	WindowMinutes int     // размер свежего окна
 	BaselineDays  int     // окно скользящей базы (медиана дневных долей)
-	MinSamples    int     // минимум сэмплов (total value) в окне, иначе решения нет
+	MinSamples    int     // минимум строк (сэмплов) в окне, иначе решения нет
 	ShareFloor    float64 // абсолютный пол доли: функции ниже не открываем (шум)
 	TopK          int     // сколько верхних функций проверять на сервис
 }
