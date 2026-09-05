@@ -73,7 +73,7 @@ func (s *Service) Register(ctx context.Context, email, password string) (int64, 
 
 	// instanceAdminBootstrapLockClass (identity.go, см. докблок там же) —
 	// сериализация с DeleteSelfAccount: без общего лока NOT EXISTS ниже мог
-	// увидеть ещё не удалённую (в чужой незакоммiченной транзакции) строку
+	// увидеть ещё не удалённую (в чужой незакоммиченной транзакции) строку
 	// админа, которого в этот же момент удаляет DeleteSelfAccount, и не
 	// поставить себе флаг — хотя после чужого COMMIT инстанс оказывался
 	// вовсе без администратора (хвост волны 1, T8).

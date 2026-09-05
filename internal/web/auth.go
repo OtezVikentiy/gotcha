@@ -224,8 +224,19 @@ func (h *Handler) invitedByToken(w http.ResponseWriter, r *http.Request, next, e
 // «получите приглашение» в closed-режиме вводил в заблуждение — там оно не
 // помогает. Адрес в лог не пишется — это ПДн, для разбора хватает причины
 // и IP.
+//
+// Если next всё ещё несёт токен приглашения (пришёл со скрытого поля формы,
+// см. RegisterForm) — перевзводим invite-cookie тем же токеном. Она нужна на
+// следующем шаге: ссылка «войти» на RegisterStub не кладёт токен в query
+// (loginLinkWithNext, K9-19) и опирается только на куку, а её TTL
+// (inviteNextTTL, 10 минут) мог истечь за время, пока человек заполнял
+// форму, — без перевзвода ссылка вела бы в никуда, и вернуться можно было бы
+// только по письму заново.
 func (h *Handler) denyRegistration(w http.ResponseWriter, r *http.Request, next, reason string) {
 	slog.Warn("register: denied", "reason", reason, "ip", h.clientIP(r))
+	if token, ok := inviteTokenFromNext(next); ok {
+		h.setInviteNextCookie(w, token)
+	}
 	msg := i18n.T(r.Context(), "auth.register.invite_required")
 	if h.RegistrationMode == "closed" {
 		msg = i18n.T(r.Context(), "auth.register.closed_denied")

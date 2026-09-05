@@ -81,12 +81,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   administrator rights, rotating the probe key), which previously showed the
   same confirmation screen as if nothing had been submitted. The login form's
   own oversize response no longer reads as a generic bad request.
-- The sign-in link on an invitation email no longer carries its token as a
-  URL query parameter, where it could leak into browser history, reverse-proxy
-  logs and outgoing request headers; it now travels through a short-lived
-  cookie, the same way notification and external sign-in redirects already
-  do. The same token no longer resurfaces on the placeholder screen shown
-  when registration is closed or declined.
+- The "sign in" and "create account" links on the invitation page no longer
+  carry the invite token as a URL query parameter, where it could leak into
+  browser history, reverse-proxy logs and outgoing request headers; it now
+  travels through a short-lived cookie, the same way notification and
+  external sign-in redirects already do. The same token no longer resurfaces
+  on the placeholder screen shown when registration is closed or declined.
 - The sign-in form now keeps the entered email address after a failed login
   instead of clearing the whole form — a wrong password is by far the more
   common mistake, and the password field is never returned.

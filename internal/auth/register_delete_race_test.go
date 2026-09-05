@@ -97,8 +97,8 @@ func TestRegisterVsDeleteSelfAccountRace(t *testing.T) {
 	}()
 
 	// Register обязан застрять — либо на instanceAdminBootstrapLockClass
-	// (с фиксом: делTx держит тот же лок), либо на UNIQUE(email) с
-	// незакоммiченным DELETE (без фикса) — в обоих случаях раньше коммита
+	// (с фиксом: delTx держит тот же лок), либо на UNIQUE(email) с
+	// незакоммиченным DELETE (без фикса) — в обоих случаях раньше коммита
 	// delTx он вернуться не должен.
 	select {
 	case res := <-registerDone:
