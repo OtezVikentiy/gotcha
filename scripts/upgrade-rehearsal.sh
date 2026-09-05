@@ -101,6 +101,68 @@ cmd_compare() {
   echo "инварианты совпали"
 }
 
+cmd_upgrade() {
+  local tag="${1:?тег}"
+  git -C "$REH_DIR" checkout "$tag"
+  dc build gotcha                     # сборка вне даунтайма: на проде она делается заранее
+  local t0 t1
+  t0=$(date +%s.%N)
+  dc up -d --no-build
+  local i=0
+  until curl -sf "http://127.0.0.1:$REH_PORT/readyz" >/dev/null 2>&1; do
+    i=$((i+1))
+    if [ "$i" -gt 900 ]; then           # 900 × 0.2 с = три минуты
+      echo "ПРОВАЛ: не готов за три минуты. Хвост журнала:" >&2
+      dc logs --tail=30 gotcha >&2
+      return 1
+    fi
+    sleep 0.2
+  done
+  t1=$(date +%s.%N)
+  echo "даунтайм до готовности: $(echo "$t1 - $t0" | bc) с (нижняя оценка, стенд не прод)"
+}
+
+cmd_migrate_only() {
+  local t0 t1
+  t0=$(date +%s.%N)
+  dc run --rm --no-deps gotcha --migrate-only
+  t1=$(date +%s.%N)
+  echo "только миграции: $(echo "$t1 - $t0" | bc) с"
+}
+
+cmd_rollback() {
+  local tag="${1:?тег}"
+  git -C "$REH_DIR" checkout "$tag"
+  dc build gotcha
+  dc up -d --no-build || true
+  local i=0 state status
+  while [ "$i" -lt 60 ]; do
+    if curl -sf "http://127.0.0.1:$REH_PORT/readyz" >/dev/null 2>&1; then
+      echo "ПУСТИЛ: $tag стартовал на текущей схеме"; return 0
+    fi
+    state=$(dc ps -a --format '{{.State}}' gotcha 2>/dev/null | head -1)
+    # "restarting" — не менее верный признак отказа, чем "exited": политика
+    # restart:unless-stopped (docker-compose.yml) перезапускает упавший
+    # процесс сразу же, и docker при этом никогда не показывает "exited"
+    # надолго — состояние прыгает "exited"→"restarting" быстрее, чем успевает
+    # попасть в опрос раз в секунду. Без этой ветки любой чистый отказ гейта
+    # (процесс валится немедленно и без остановки) неотличим по коду от
+    # настоящего зависания — оба тонут в одном и том же таймауте НЕЯСНО.
+    # Настоящее зависание (процесс жив, порт не открылся) состояние вообще не
+    # меняет: unhealthy сам по себе перезапуск не запускает (см. комментарий
+    # у healthcheck в docker-compose.yml), значит "running" 60 раз подряд —
+    # надёжный признак именно зависания, а не отказа.
+    if [ "$state" = "exited" ] || [ "$state" = "restarting" ]; then
+      status=$(dc ps -a --format '{{.Status}}' gotcha 2>/dev/null | head -1)
+      echo "ОТКАЗАЛ: $tag не смог стартовать на текущей схеме ($status). Хвост журнала:"
+      dc logs --tail=30 gotcha; return 0
+    fi
+    i=$((i+1)); sleep 1
+  done
+  echo "НЕЯСНО: $tag за 60 с не вышел и не открыл порт — контейнер висит. Хвост журнала:"
+  dc logs --tail=30 gotcha
+}
+
 case "${1:-}" in
   snapshot)     shift; cmd_snapshot "$@" ;;
   compare)      shift; cmd_compare "$@" ;;
