@@ -126,6 +126,62 @@ func force(fsys embed.FS, dir, url string, target uint) error {
 	return nil
 }
 
+// CheckSchemaAhead — узкая проверка «только опережение»: вызывается ДО
+// применения миграций (MigratePG/MigrateCH), потому что golang-migrate на
+// схеме впереди встроенного максимума падает с невнятной библиотечной
+// ошибкой ("no migration found for version N: read down for version N ...
+// file does not exist") раньше, чем управление доходит до
+// пост-миграционного CheckSchemaCurrent. Отставание, точное совпадение и
+// dirty — не её работа: их разбирает миграция (get<=want) либо существующий
+// CheckSchemaCurrent (dirty); вмешательство здесь сломало бы обычное
+// обновление.
+func CheckSchemaAhead(ctx context.Context, pool *pgxpool.Pool, dsn string) error {
+	want, err := maxEmbeddedPGVersion()
+	if err != nil {
+		return err
+	}
+	got, dirty, err := SchemaVersion(dsn)
+	if err != nil {
+		return err
+	}
+	return checkSchemaAhead(ctx, pool, "PG", "pg", got, dirty, want)
+}
+
+// CheckSchemaAheadCH — CH-аналог CheckSchemaAhead.
+func CheckSchemaAheadCH(ctx context.Context, pool *pgxpool.Pool, dsn string) error {
+	want, err := maxEmbeddedCHVersion()
+	if err != nil {
+		return err
+	}
+	got, dirty, err := schemaVersionCH(dsn)
+	if err != nil {
+		return err
+	}
+	return checkSchemaAhead(ctx, pool, "ClickHouse", "ch", got, dirty, want)
+}
+
+// checkSchemaAhead — общая логика CheckSchemaAhead/CheckSchemaAheadCH.
+// Отставание, равенство и dirty возвращают nil сознательно: это не сигнал
+// «всё хорошо», а «это не моя проверка» — соответствующие случаи ловит
+// MigratePG/MigrateCH (get<=want) либо CheckSchemaCurrent (dirty).
+func checkSchemaAhead(ctx context.Context, pool *pgxpool.Pool, label, target string, got uint, dirty bool, want uint) error {
+	if dirty || got <= want {
+		return nil
+	}
+	compat, err := loadSchemaCompat(ctx, pool, target)
+	if err != nil {
+		return err
+	}
+	warning, err := schemaAheadDecision(label, got, want, compat)
+	if err != nil {
+		return err
+	}
+	if warning != "" {
+		slog.Warn(warning)
+	}
+	return nil
+}
+
 // CheckSchemaCurrent сверяет применённую версию PG-схемы со встроенным
 // максимумом (по именам файлов в embed FS). Возвращает ошибку, если схема
 // отстаёт, впереди встроенной или помечена dirty. Предназначена для fail-fast
