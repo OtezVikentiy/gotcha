@@ -133,8 +133,7 @@ func (h *Handler) metricAlertCreate(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	rule, errKey := metricRuleFromForm(r, projectID)
@@ -258,8 +257,7 @@ func (h *Handler) metricAlertUpdate(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	rule, errKey := metricRuleFromForm(r, projectID)
@@ -310,8 +308,7 @@ func (h *Handler) metricAlertDelete(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	ruleID, err := strconv.ParseInt(r.FormValue("rule_id"), 10, 64)

@@ -189,8 +189,7 @@ func (h *Handler) profileIdentityUnlink(w http.ResponseWriter, r *http.Request) 
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	provider := r.FormValue("provider")
@@ -238,8 +237,7 @@ func (h *Handler) profilePasswordSet(w http.ResponseWriter, r *http.Request) {
 		h.renderProfile(w, r, http.StatusTooManyRequests, uid, i18n.T(r.Context(), "err.auth.rate_limited"), "")
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	newPassword := r.FormValue("new")
@@ -284,8 +282,7 @@ func (h *Handler) profilePasswordSubmit(w http.ResponseWriter, r *http.Request) 
 		h.renderProfile(w, r, http.StatusTooManyRequests, uid, i18n.T(r.Context(), "err.auth.rate_limited"), "")
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	oldPassword := r.FormValue("old")

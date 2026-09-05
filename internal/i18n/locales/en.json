@@ -1206,6 +1206,7 @@
     "error.cross_origin": "Request rejected: it came from a different address than GOTCHA_BASE_URL. If this is your own instance, make sure GOTCHA_BASE_URL matches the address you open in the browser",
     "error.not_found": "Page not found",
     "error.bad_request": "Invalid request",
+    "error.body_too_large": "The request body exceeds the allowed size",
     "error.action_failed": "Action failed",
     "error.issue.invalid_status": "Invalid issue status",
     "error.issue.assignee_not_member": "The assignee is not a member of the project's organization",

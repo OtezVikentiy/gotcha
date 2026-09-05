@@ -211,8 +211,7 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, authFormMaxBodyBytes)
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	email := r.FormValue("email")
@@ -281,8 +280,7 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, authFormMaxBodyBytes)
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	email := r.FormValue("email")
@@ -418,8 +416,7 @@ func (h *Handler) ssoSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, authFormMaxBodyBytes)
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	email := r.FormValue("email")

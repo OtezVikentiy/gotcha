@@ -419,8 +419,7 @@ func (h *Handler) alertSuppressionSave(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 
@@ -471,8 +470,7 @@ func (h *Handler) alertSuppressionUpdate(w http.ResponseWriter, r *http.Request)
 		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 

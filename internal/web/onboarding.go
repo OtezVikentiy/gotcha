@@ -72,8 +72,7 @@ func (h *Handler) onboardingSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	orgSlug := r.FormValue("org_slug")
@@ -163,8 +162,7 @@ func (h *Handler) projectCreate(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	orgID, err := strconv.ParseInt(r.FormValue("org_id"), 10, 64)

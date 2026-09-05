@@ -342,8 +342,7 @@ func (h *Handler) projectSettingsRename(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	name := r.FormValue("name")
@@ -374,8 +373,7 @@ func (h *Handler) projectSettingsKeyCreate(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	kind := org.KeyKind(r.FormValue("kind"))
@@ -413,8 +411,7 @@ func (h *Handler) projectSettingsKeyRevoke(w http.ResponseWriter, r *http.Reques
 	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	keyID, err := strconv.ParseInt(r.FormValue("key_id"), 10, 64)
@@ -481,8 +478,7 @@ func (h *Handler) projectSettingsPerformance(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 
@@ -575,8 +571,7 @@ func (h *Handler) projectSettingsRegressions(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 

@@ -586,11 +586,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.HandleFunc("GET /auth/oauth/{provider}/callback", h.oauthCallback)
 
 	// Переключатель языка (задача 6): доступен и анониму — например, на
-	// странице логина, до создания сессии.
-	inner.HandleFunc("POST /settings/locale", h.localeSwitch)
+	// странице логина, до создания сессии. Не под requireUser — limitFormBody
+	// (K7-4) навешан здесь явно, а не только внутри requireUser.
+	inner.Handle("POST /settings/locale", h.limitFormBody(http.HandlerFunc(h.localeSwitch)))
 
 	// Переключатель темы оформления: доступен и анониму (см. локаль выше).
-	inner.HandleFunc("POST /settings/theme", h.themeSwitch)
+	inner.Handle("POST /settings/theme", h.limitFormBody(http.HandlerFunc(h.themeSwitch)))
 
 	staticSub, err := fs.Sub(staticFiles, "static")
 	if err != nil {
@@ -1215,11 +1216,60 @@ func (h *Handler) currentEmailPublic(r *http.Request) string {
 	return email
 }
 
+// formBodyMaxBytes — общий предел тела POST для обычных html-форм продукта
+// (настройки, правила, пороги, метки): раньше (K7-4) на ~50 форм-хендлерах
+// предел не был поставлен явно и держался на неявных 10 МиБ
+// ParseForm/ParseMultipartForm стандартной библиотеки — решение о размере
+// нигде не было записано. Формы этого продукта — это поля настроек и
+// правил, а не файлы; 64 КиБ — щедрый запас над самой тяжёлой легитимной
+// формой (SSO-конфиг, правило алерта с несколькими каналами, http_body
+// синтетического монитора) и на три порядка меньше implicit-дефолта stdlib.
+//
+// Компонуется с более строгими частными пределами (auth 8 КиБ,
+// heartbeatMaxBodyBytes 1 КБ, probeMaxBodyBytes 1 МиБ): вложенные
+// http.MaxBytesReader считают одни и те же байты независимо, поэтому
+// срабатывает наименьший из пределов, а не последний применённый — общий
+// предел не может затереть более строгий частный.
+const formBodyMaxBytes = 64 << 10 // 64 KiB
+
+// limitFormBody ограничивает тело запроса до formBodyMaxBytes прежде, чем
+// next дойдёт до r.ParseForm(). Единая точка применения (K7-4) — здесь, а не
+// копипастой в каждом из ~50 обработчиков: requireUser ниже оборачивает им
+// все аутентифицированные POST-формы, а два публичных form-POST без сессии
+// (settings/locale, settings/theme) оборачиваются им отдельно в Register.
+func (h *Handler) limitFormBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, formBodyMaxBytes)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// parseForm разбирает тело формы и переводит ошибку ParseForm в ответ:
+// превышение предела тела (общего выше или частного — auth/heartbeat/probe
+// ставят свой явно сами) отвечает 413, а не общим 400, иначе клиент не
+// отличит сломанную форму от тела сверх лимита. Возвращает true, если разбор
+// успешен и обработчик может продолжать.
+func (h *Handler) parseForm(w http.ResponseWriter, r *http.Request) bool {
+	if err := r.ParseForm(); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			h.renderError(w, r, http.StatusRequestEntityTooLarge, i18n.T(r.Context(), "error.body_too_large"))
+			return false
+		}
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+		return false
+	}
+	return true
+}
+
 // requireUser оборачивает auth.Service.RequireUser: для htmx-запросов
 // (HX-Request: true) вместо 303-редиректа на /login отдаёт 200 с заголовком
 // HX-Redirect — htmx сам выполнит переход, а не покажет частичный HTML.
+// limitFormBody (K7-4) навешан здесь же: requireUser оборачивает все
+// аутентифицированные POST-формы продукта, так что это единственное место,
+// где нужно поставить общий предел тела разом на все ~50 форм-хендлеров.
 func (h *Handler) requireUser(next http.Handler) http.Handler {
-	inner := h.Auth.RequireUser(next)
+	inner := h.Auth.RequireUser(h.limitFormBody(next))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hx := r.Header.Get("HX-Request") == "true"
 		if !hx {

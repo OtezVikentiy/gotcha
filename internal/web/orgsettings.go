@@ -166,8 +166,7 @@ func (h *Handler) orgSettingsSSO(w http.ResponseWriter, r *http.Request) {
 	if !h.requireInstanceAdminForSSO(w, r, uid) {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	cfg := org.SSOConfig{
@@ -456,8 +455,7 @@ func (h *Handler) orgSettingsRole(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	targetID, err := strconv.ParseInt(r.FormValue("user_id"), 10, 64)
@@ -505,8 +503,7 @@ func (h *Handler) orgSettingsRemove(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	targetID, err := strconv.ParseInt(r.FormValue("user_id"), 10, 64)
@@ -606,8 +603,7 @@ func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
@@ -692,8 +688,7 @@ func (h *Handler) orgSettingsInviteRevoke(w http.ResponseWriter, r *http.Request
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	inviteID, err := strconv.ParseInt(r.FormValue("invite_id"), 10, 64)
@@ -751,8 +746,7 @@ func (h *Handler) orgSettingsQuota(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	// Поля rate-guard и указатели, куда положить распарсенное значение.
@@ -870,8 +864,7 @@ func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request
 	if !h.requireOrgOwner(w, r, orgID, uid) {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	projectID, err := strconv.ParseInt(r.FormValue("project_id"), 10, 64)
@@ -989,8 +982,7 @@ func (h *Handler) orgSettingsExportSubject(w http.ResponseWriter, r *http.Reques
 	if !h.requireOrgOwner(w, r, orgID, uid) {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	projectID, err := strconv.ParseInt(r.FormValue("project_id"), 10, 64)

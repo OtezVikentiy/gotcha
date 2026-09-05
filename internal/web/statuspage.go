@@ -678,8 +678,7 @@ func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusTooManyRequests, i18n.T(r.Context(), "error.statuspage.rate_limited"))
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 
@@ -767,8 +766,7 @@ func (h *Handler) statusPagesUpdate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 

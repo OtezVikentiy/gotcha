@@ -190,8 +190,7 @@ func (h *Handler) teamsCreate(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	slug := r.FormValue("slug")
@@ -233,8 +232,7 @@ func (h *Handler) teamRename(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	name := r.FormValue("name")
@@ -272,8 +270,7 @@ func (h *Handler) teamMembersAdd(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	targetID, err := strconv.ParseInt(r.FormValue("user_id"), 10, 64)
@@ -307,8 +304,7 @@ func (h *Handler) teamMembersRemove(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	targetID, err := strconv.ParseInt(r.FormValue("user_id"), 10, 64)
@@ -354,8 +350,7 @@ func (h *Handler) teamProjectsAttach(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	projectID, err := strconv.ParseInt(r.FormValue("project_id"), 10, 64)
@@ -404,8 +399,7 @@ func (h *Handler) teamProjectsDetach(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	projectID, err := strconv.ParseInt(r.FormValue("project_id"), 10, 64)

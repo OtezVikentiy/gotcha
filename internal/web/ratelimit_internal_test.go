@@ -154,6 +154,11 @@ func authTestHandler(t *testing.T) *Handler {
 // MaxBytesReader) код парсит форму успешно и доходит до реальной
 // аутентификации, так что регрессия должна ловиться на статусе/размере
 // карты, а не панике на nil-лимитере/nil-Auth.
+//
+// Статус — 413 (K7-4): h.parseForm распознаёт http.MaxBytesError и отвечает
+// 413, а не общим 400, — превышение предела тела отличимо от произвольно
+// битой формы. До K7-4 здесь ожидался 400 (h.parseForm ещё не существовал,
+// h.renderError звался напрямую без разбора причины ParseForm).
 func TestLoginSubmitOversizedBodyRejected(t *testing.T) {
 	h := authTestHandler(t)
 
@@ -165,8 +170,8 @@ func TestLoginSubmitOversizedBodyRejected(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.loginSubmit(rec, r)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d (ошибка разбора формы, не 500/паника)", rec.Code, http.StatusBadRequest)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want %d (тело сверх authFormMaxBodyBytes — 413, не 500/паника)", rec.Code, http.StatusRequestEntityTooLarge)
 	}
 	if got := h.loginLimiter.size(); got != 0 {
 		t.Errorf("loginLimiter.size() = %d, want 0 — тело сверх лимита не должно доходить до rateLimitKey", got)

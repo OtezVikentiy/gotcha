@@ -207,8 +207,7 @@ func (h *Handler) alertsRulesSave(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 
@@ -270,8 +269,7 @@ func (h *Handler) alertsChannelCreate(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	c := alert.Channel{
@@ -335,8 +333,7 @@ func (h *Handler) alertsChannelUpdate(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	channelID, err := strconv.ParseInt(r.FormValue("channel_id"), 10, 64)
@@ -443,8 +440,7 @@ func (h *Handler) alertsChannelDelete(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	channelID, err := strconv.ParseInt(r.FormValue("channel_id"), 10, 64)
@@ -510,8 +506,7 @@ func (h *Handler) alertsChannelTest(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+	if !h.parseForm(w, r) {
 		return
 	}
 	channelID, err := strconv.ParseInt(r.FormValue("channel_id"), 10, 64)
