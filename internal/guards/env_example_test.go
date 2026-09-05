@@ -570,14 +570,20 @@ func TestEnvExampleCoversConfig(t *testing.T) {
 // вызова (str/strGuarded/intNum/num/boolEnvDef). boolEnv/getenv/parseBool
 // сознательно исключены: у boolEnv нет второго аргумента вовсе (implicit
 // default — false, см. отдельный проход в collectConfigDefaults ниже);
-// getenv/parseBool — не «дефолт в одно значение» в принципе. GOTCHA_LOGGING_
-// LEVEL/_FORMAT читаются голым getenv(), и пустая строка ("не задано")
-// равнозначна "info"/"text" только ВНУТРИ setupLogging (cmd/gotcha/main.go),
-// а не текстуально — сверять "" с "info" одним равенством означало бы
-// падать на корректном коде. GOTCHA_EVALUATORS_ENABLED читается голым
-// parseBool() напрямую и специально тристабилен (nil/true/false, см. докблок
-// RunEvaluators в loadConfig) — «не задано» это отдельное состояние, а не
-// синоним false, зафиксировать его одним литералом-дефолтом нельзя.
+// getenv/parseBool — не «дефолт в одно значение» в принципе, и восемь
+// переменных, читаемых ими напрямую, этой сверке не подлежат вовсе (имя
+// каждой всё равно проверяет соседний TestEnvExampleCoversConfig):
+// GOTCHA_SECRET_KEY_PREV, GOTCHA_SCRUB_DENY_KEYS, GOTCHA_SCRUB_KEEP_KEYS,
+// GOTCHA_TRUSTED_PROXIES, GOTCHA_TRUSTED_RECIPIENTS — голый getenv(),
+// "не задано" это буквально пустая строка без дальнейшей интерпретации;
+// GOTCHA_LOGGING_LEVEL/_FORMAT — тоже голый getenv(), но пустая строка
+// («не задано») равнозначна "info"/"text" только ВНУТРИ setupLogging
+// (cmd/gotcha/main.go), а не текстуально — сверять "" с "info" одним
+// равенством означало бы падать на корректном коде; GOTCHA_EVALUATORS_ENABLED
+// читается голым parseBool() напрямую и специально тристабилен
+// (nil/true/false, см. докблок RunEvaluators в loadConfig) — «не задано»
+// это отдельное состояние, а не синоним false, зафиксировать его одним
+// литералом-дефолтом нельзя.
 var configDefaultReaders = map[string]bool{
 	"str":        true,
 	"strGuarded": true,
@@ -651,10 +657,17 @@ type configDefault struct {
 // boolEnvDef в текст, напрямую сравнимый со значением после "=" в
 // .env.example: строковые и булевы литералы (true/false — предопределённые
 // идентификаторы Go, не BasicLit), целые (включая "_"-разделители — Go
-// принимает 200_000, .env.example пишет 200000 — и битовые сдвиги вроде
-// 1<<20, единственная небуквальная арифметика дефолтов в config.go на
-// сегодня). Идентификатор, отличный от true/false (defQuota, ssrfAll), —
+// принимает 200_000, .env.example пишет 200000 — и битовый сдвиг влево
+// 1<<20, единственная небуквальная арифметика дефолтов в cmd/gotcha/config.go
+// на сегодня). Идентификатор, отличный от true/false (defQuota, ssrfAll), —
 // не литерал: ok=false, обработка — в nonLiteralConfigDefaults у вызывающего.
+//
+// Только эти формы: унарный минус и +/-/* здесь нарочно не заведены —
+// ни одного дефолта с такой формой в cmd/gotcha/config.go нет, ветка «про
+// запас» никогда не исполнилась бы ни одним реальным вызовом, а
+// невыполнимую ветку не покрыть мутацией. Появится такой дефолт — тест
+// упадёт на "not a recognized literal" (TestEnvExampleDefaultsMatchConfig
+// ниже), и это тот момент, когда сюда стоит добавить нужный case.
 func evalConstExpr(expr ast.Expr) (string, bool) {
 	switch e := expr.(type) {
 	case *ast.BasicLit:
@@ -678,20 +691,10 @@ func evalConstExpr(expr ast.Expr) (string, bool) {
 			return e.Name, true
 		}
 		return "", false
-	case *ast.UnaryExpr:
-		if e.Op != token.SUB {
-			return "", false
-		}
-		v, ok := evalConstExpr(e.X)
-		if !ok {
-			return "", false
-		}
-		n, err := strconv.ParseInt(v, 10, 64)
-		if err != nil {
-			return "", false
-		}
-		return strconv.FormatInt(-n, 10), true
 	case *ast.BinaryExpr:
+		if e.Op != token.SHL {
+			return "", false
+		}
 		lv, lok := evalConstExpr(e.X)
 		rv, rok := evalConstExpr(e.Y)
 		if !lok || !rok {
@@ -702,19 +705,7 @@ func evalConstExpr(expr ast.Expr) (string, bool) {
 		if err1 != nil || err2 != nil {
 			return "", false
 		}
-		switch e.Op {
-		case token.SHL:
-			return strconv.FormatInt(ln<<uint(rn), 10), true
-		case token.SHR:
-			return strconv.FormatInt(ln>>uint(rn), 10), true
-		case token.ADD:
-			return strconv.FormatInt(ln+rn, 10), true
-		case token.SUB:
-			return strconv.FormatInt(ln-rn, 10), true
-		case token.MUL:
-			return strconv.FormatInt(ln*rn, 10), true
-		}
-		return "", false
+		return strconv.FormatInt(ln<<uint(rn), 10), true
 	}
 	return "", false
 }
