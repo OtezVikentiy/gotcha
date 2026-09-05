@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deprecated ingest address. Key rejections from the last hour — an invalid
   or revoked key, a key from another project, a key of the wrong type — are
   now shown on the empty issues list and in the getting-started checklist.
+- The profile regressions page now has an entry in the sidebar navigation, so
+  it no longer requires typing the URL directly; it stays read-only regardless
+  of permissions.
+- Export metadata now includes a schema version, covering both the file's
+  column set and the metadata fields; it's available the same way as the
+  rest of the metadata.
 
 ### Fixed
 - An escalation step running on two replicas could be delivered twice; a channel
@@ -67,6 +73,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   command that can fail; the configuration page gained a table of what each
   `--mode=` runs; the dependency gate's host-only scope and the heartbeat URL
   as the sole ping secret are spelled out.
+- Form validation errors are now shown in the interface language instead of
+  an English literal. The maximum size of a submitted form is now an explicit
+  64 KiB limit, and exceeding it returns an honest oversize error on every
+  route that checks it — including the confirmation step for dangerous
+  actions (deleting an account, organization or team, transferring instance
+  administrator rights, rotating the probe key), which previously showed the
+  same confirmation screen as if nothing had been submitted. The login form's
+  own oversize response no longer reads as a generic bad request.
+- The sign-in link on an invitation email no longer carries its token as a
+  URL query parameter, where it could leak into browser history, reverse-proxy
+  logs and outgoing request headers; it now travels through a short-lived
+  cookie, the same way notification and external sign-in redirects already
+  do. The same token no longer resurfaces on the placeholder screen shown
+  when registration is closed or declined.
+- The sign-in form now keeps the entered email address after a failed login
+  instead of clearing the whole form — a wrong password is by far the more
+  common mistake, and the password field is never returned.
+- Deleting your own account at the same moment someone else was registering
+  could, in a rare race, leave the instance with no administrator and no way
+  back through the normal role-transfer flow; the two operations now share a
+  lock so this can no longer happen.
+- Erasing a data subject's information on request now also removes the spans
+  belonging to that subject's trace transactions, not just the transactions
+  themselves, and the erasure can be safely retried if interrupted partway
+  through.
+- The profile regression gate now requires a minimum number of samples in a
+  window before it can flag a regression, instead of a minimum combined
+  weight, which let a handful of CPU-profile samples pass as though they were
+  billions and effectively never blocked anything.
+- Setting the escalation log retention to zero no longer wipes its entire
+  history table, and a negative value no longer computes a cutoff date in the
+  future — both now require a positive retention period. A delayed
+  dependency-suppression lookup could briefly overwrite a newer cached
+  snapshot with an older one under concurrent load; the cache now only moves
+  forward in time.
+- Database containers are now pinned to a specific image digest instead of a
+  moving tag, so a deployment can no longer silently pick up a different
+  image between two runs. Stopping the stack now gives both databases enough
+  time to shut down cleanly instead of risking termination mid-write.
 
 ## [0.34.0] - 2026-09-03
 
