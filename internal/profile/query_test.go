@@ -161,17 +161,329 @@ func TestSelfShareQueries(t *testing.T) {
 	if err != nil || len(top) == 0 || top[0] != "slow" {
 		t.Fatalf("top = %v err=%v", top, err)
 	}
-	// RecentFunctionShare slow ≈ 0.6, samples 100.
-	share, samples, err := q.RecentFunctionShare(ctx, 9, "api", "cpu", "slow", now.Add(-time.Hour), now.Add(time.Minute))
-	if err != nil || samples != 100 || share < 0.55 || share > 0.65 {
-		t.Fatalf("recent share=%v samples=%d err=%v", share, samples, err)
+}
+
+// TestBaselineFunctionSharesSamples: базовая линия функции несёт объём её
+// наблюдений (Samples = число строк функции за окно, НЕ сумма её веса — единица
+// value зависит от типа профиля) — по нему Decide гейтит открытие. Объём
+// считается по функции, а не по окну: свежее окно вложено в базовое, и оконный
+// объём базы никогда не меньше свежего.
+func TestBaselineFunctionSharesSamples(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
 	}
-	// Baseline slow за 7 дней — медиана дневных долей (60% сегодня, 10% вчера) → 0.1..0.6.
-	base, err := q.BaselineFunctionShare(ctx, 9, "api", "cpu", "slow", 7, now.Add(time.Minute))
+	conn := testenv.MigratedCH(t)
+	q := profile.NewQuery(conn)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	ins := func(fnLeaf string, v uint64, ago time.Duration) {
+		if err := conn.Exec(ctx, `INSERT INTO profile_samples
+			(project_id,profile_type,service,environment,transaction,platform,ts,stack,value,trace_id)
+			VALUES (11,'cpu','api','','','go',?,?,?,'')`,
+			now.Add(-ago), []string{"root", fnLeaf}, v); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	// Сегодня: slow — 3 строки (60 из 100 по весу); вчера: slow — 2 строки
+	// (10 из 100 по весу). Веса те же, что раньше, чтобы доля не поменялась;
+	// строк — намеренно другое число, чтобы Samples не совпадал ни с весом,
+	// ни с числом строк другой функции.
+	ins("slow", 20, 10*time.Minute)
+	ins("slow", 20, 10*time.Minute)
+	ins("slow", 20, 10*time.Minute)
+	ins("fast", 40, 10*time.Minute)
+	ins("slow", 5, 24*time.Hour)
+	ins("slow", 5, 24*time.Hour)
+	ins("fast", 90, 24*time.Hour)
+
+	base, err := q.BaselineFunctionShares(ctx, 11, "api", "cpu", []string{"slow", "missing"}, 7, now.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("baseline: %v", err)
 	}
-	if base <= 0 || base > 0.65 {
-		t.Fatalf("baseline = %v, want within (0,0.65]", base)
+	slow, ok := base["slow"]
+	if !ok {
+		t.Fatalf("no baseline for slow: %+v", base)
+	}
+	if slow.Samples != 5 {
+		t.Fatalf("slow.Samples = %d, want 5 (число строк функции за окно, не вес и не итог окна из 7 строк)", slow.Samples)
+	}
+	// Медиана дневных долей slow (0.6 и 0.1) — в их пределах.
+	if slow.Share < 0.1 || slow.Share > 0.6 {
+		t.Fatalf("slow.Share = %v, want within [0.1,0.6]", slow.Share)
+	}
+	if _, ok := base["missing"]; ok {
+		t.Fatalf("baseline has key for a function absent from the window: %+v", base)
+	}
+	if _, ok := base["fast"]; ok {
+		t.Fatalf("fast вне списка не должна попадать в выдачу: %+v", base)
+	}
+
+	// Другая функция — свой объём (2 строки, а не вес 130 и не 5 строк slow).
+	base, err = q.BaselineFunctionShares(ctx, 11, "api", "cpu", []string{"fast"}, 7, now.Add(time.Minute))
+	if err != nil || base["fast"].Samples != 2 {
+		t.Fatalf("fast = %+v err=%v, want Samples=2", base["fast"], err)
+	}
+
+	// Пустой список — пустая карта без запроса.
+	base, err = q.BaselineFunctionShares(ctx, 11, "api", "cpu", nil, 7, now.Add(time.Minute))
+	if err != nil || len(base) != 0 {
+		t.Fatalf("empty list: %+v err=%v, want empty", base, err)
+	}
+}
+
+// TestRegressionGateOnRowCountNotWeight — сквозная проверка MinSamples от
+// ClickHouse-запросов до Decide: гейт «мало данных» обязан считать строки
+// окна, а не сумму value. Единица value зависит от типа профиля (для CPU —
+// наносекунды), поэтому три строки с огромным весом обязаны остаться «мало
+// сэмплов», а не притвориться сотней тысяч. Если TopFunctionShares/
+// BaselineFunctionShares вернут сумму весов вместо count(), тонкое окно из
+// трёх строк с большим весом ошибочно откроет регрессию — этот тест на такой
+// мутации падает первым.
+func TestRegressionGateOnRowCountNotWeight(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	conn := testenv.MigratedCH(t)
+	q := profile.NewQuery(conn)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	cfg := profile.DefaultProfileRegressionConfig() // MinSamples 100
+
+	insertRows := func(projectID uint64, fn string, value uint64, ts time.Time, n int) {
+		batch, err := conn.PrepareBatch(ctx, `INSERT INTO profile_samples (
+			project_id, profile_type, service, environment, transaction, platform, ts, stack, value, unit, trace_id)`)
+		if err != nil {
+			t.Fatalf("prepare batch: %v", err)
+		}
+		for i := 0; i < n; i++ {
+			if err := batch.Append(projectID, "cpu", "api", "", "", "go", ts,
+				[]string{"root", fn}, value, "nanoseconds", ""); err != nil {
+				t.Fatalf("append: %v", err)
+			}
+		}
+		if err := batch.Send(); err != nil {
+			t.Fatalf("send: %v", err)
+		}
+	}
+
+	// Сценарий A: тонкое окно. Свежее окно — ровно 3 строки функции "hot",
+	// каждая с весом в миллиард наносекунд (секунда CPU на строку); база —
+	// нормальная (150 строк "hot" + 150 строк "filler" в каждый из двух
+	// прошлых дней, доля hot ~10%). Два прошлых дня, а не один: база
+	// неизбежно захватывает и сегодняшний день (свежее окно вложено в
+	// базовое по конструкции), и без второй точки медиана 2 значений
+	// (сегодня ~100%, вчера ~10%) плыла бы непредсказуемо; с тремя точками
+	// (100%, 10%, 10%) медиана уверенно берёт типичный день, а не всплеск.
+	// Сумма весов свежего окна — 3 миллиарда, что при старой семантике
+	// (Samples = sum(value)) многократно превзошло бы MinSamples=100 и
+	// открыло бы регрессию по трём наблюдениям.
+	const thin = 21
+	insertRows(thin, "hot", 1_000_000_000, now.Add(-24*time.Hour), 150)
+	insertRows(thin, "filler", 9_000_000_000, now.Add(-24*time.Hour), 150)
+	insertRows(thin, "hot", 1_000_000_000, now.Add(-48*time.Hour), 150)
+	insertRows(thin, "filler", 9_000_000_000, now.Add(-48*time.Hour), 150)
+	insertRows(thin, "hot", 1_000_000_000, now.Add(-10*time.Minute), 3)
+
+	recentFrom, recentTo := now.Add(-time.Hour), now.Add(time.Minute)
+	shares, err := q.TopFunctionShares(ctx, thin, "api", "cpu", recentFrom, recentTo, 10)
+	if err != nil {
+		t.Fatalf("TopFunctionShares: %v", err)
+	}
+	if len(shares) != 1 || shares[0].Function != "hot" {
+		t.Fatalf("shares = %+v, want single 'hot'", shares)
+	}
+	if shares[0].Samples != 3 {
+		t.Fatalf("thin window Samples = %d, want 3 (число строк, не вес 3_000_000_000)", shares[0].Samples)
+	}
+
+	baselines, err := q.BaselineFunctionShares(ctx, thin, "api", "cpu", []string{"hot"}, 7, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("BaselineFunctionShares: %v", err)
+	}
+	base := baselines["hot"]
+	if base.Samples < uint64(cfg.MinSamples) {
+		t.Fatalf("base.Samples = %d, want >= MinSamples so the gate under test is the recent window's", base.Samples)
+	}
+
+	if got := profile.Decide(base.Share, shares[0].Share, base.Samples, shares[0].Samples, cfg, false).Kind; got != profile.DecisionNone {
+		t.Fatalf("Decide on 3-row window = %v, want DecisionNone (MinSamples must gate on row count)", got)
+	}
+
+	// Сценарий B: то же самое, но свежее окно набрало 150 строк той же
+	// функции — гейт обязан реально пропускать решение, когда сэмплов
+	// действительно достаточно.
+	const full = 22
+	insertRows(full, "hot", 1_000_000_000, now.Add(-24*time.Hour), 150)
+	insertRows(full, "filler", 9_000_000_000, now.Add(-24*time.Hour), 150)
+	insertRows(full, "hot", 1_000_000_000, now.Add(-48*time.Hour), 150)
+	insertRows(full, "filler", 9_000_000_000, now.Add(-48*time.Hour), 150)
+	insertRows(full, "hot", 1_000_000_000, now.Add(-10*time.Minute), 150)
+
+	shares, err = q.TopFunctionShares(ctx, full, "api", "cpu", recentFrom, recentTo, 10)
+	if err != nil {
+		t.Fatalf("TopFunctionShares (full): %v", err)
+	}
+	if len(shares) != 1 || shares[0].Function != "hot" {
+		t.Fatalf("shares (full) = %+v, want single 'hot'", shares)
+	}
+	if shares[0].Samples != 150 {
+		t.Fatalf("full window Samples = %d, want 150", shares[0].Samples)
+	}
+
+	baselines, err = q.BaselineFunctionShares(ctx, full, "api", "cpu", []string{"hot"}, 7, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("BaselineFunctionShares (full): %v", err)
+	}
+	base = baselines["hot"]
+
+	if got := profile.Decide(base.Share, shares[0].Share, base.Samples, shares[0].Samples, cfg, false).Kind; got != profile.DecisionOpen {
+		t.Fatalf("Decide on 150-row window = %v, want DecisionOpen (enough samples, share far above base)", got)
+	}
+}
+
+// TestTopFunctionSharesShareByWeightSamplesByCount — Share и Samples обязаны
+// считаться от РАЗНЫХ знаменателей: Share — от суммы веса окна, Samples — от
+// числа его строк. Обе фикстуры TestRegressionGateOnRowCountNotWeight кладут
+// строки весом 1, поэтому там sum(value) и count() совпадают по построению —
+// подмена одного на другое в Share была бы там не видна ни разу за весь
+// прогон пакета. Здесь вес разновесный по функциям намеренно: A — 2 строки
+// весом 100 (self=200), B — 8 строк весом 1 (self=8). По весам A ≈ 0.96 —
+// подавляющее большинство; по числу строк A была бы всего 2 из 10 (0.2), то
+// есть меньшинством — подмену знаменателя доли пропустить невозможно.
+func TestTopFunctionSharesShareByWeightSamplesByCount(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	conn := testenv.MigratedCH(t)
+	q := profile.NewQuery(conn)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	ins := func(fnLeaf string, v uint64, n int) {
+		for i := 0; i < n; i++ {
+			if err := conn.Exec(ctx, `INSERT INTO profile_samples
+				(project_id,profile_type,service,environment,transaction,platform,ts,stack,value,trace_id)
+				VALUES (31,'cpu','api','','','go',?,?,?,'')`,
+				now.Add(-10*time.Minute), []string{"root", fnLeaf}, v); err != nil {
+				t.Fatalf("insert: %v", err)
+			}
+		}
+	}
+	ins("a", 100, 2)
+	ins("b", 1, 8)
+
+	shares, err := q.TopFunctionShares(ctx, 31, "api", "cpu", now.Add(-time.Hour), now.Add(time.Minute), 10)
+	if err != nil {
+		t.Fatalf("TopFunctionShares: %v", err)
+	}
+	if len(shares) != 2 {
+		t.Fatalf("shares = %+v, want 2 functions", shares)
+	}
+	byFn := map[string]profile.FunctionShare{}
+	for _, sh := range shares {
+		byFn[sh.Function] = sh
+	}
+	a, ok := byFn["a"]
+	if !ok {
+		t.Fatalf("no share for 'a': %+v", shares)
+	}
+	b, ok := byFn["b"]
+	if !ok {
+		t.Fatalf("no share for 'b': %+v", shares)
+	}
+
+	// Share — по весу: a self=200 из total=208 ≈ 0.9615, b self=8 из 208 ≈
+	// 0.0385. Подмена знаменателя на число строк (10) дала бы a=0.2, b=0.8 —
+	// функции поменялись бы местами по величине доли, допуски это исключают.
+	if a.Share < 0.9 || a.Share > 1.0 {
+		t.Fatalf("a.Share = %v, want ~0.9615 (self/total по весу, не 2/10 по числу строк)", a.Share)
+	}
+	if b.Share < 0.0 || b.Share > 0.1 {
+		t.Fatalf("b.Share = %v, want ~0.0385 (self/total по весу, не 8/10 по числу строк)", b.Share)
+	}
+
+	// Samples — число строк окна (2+8=10), одинаково для всех функций окна;
+	// подмена на сумму весов (208) отличается на порядок.
+	if a.Samples != 10 {
+		t.Fatalf("a.Samples = %d, want 10 (число строк окна, не вес 208)", a.Samples)
+	}
+	if b.Samples != 10 {
+		t.Fatalf("b.Samples = %d, want 10 (число строк окна, не вес 208)", b.Samples)
+	}
+}
+
+// TestTopFunctionSharesEmptyFunctionExcludedButWeighsIn — безымянная группа
+// (пустой стек, arrayElement(stack,-1) даёт пустую строку) обязана исчезнуть ИЗ ВЫДАЧИ,
+// но остаться В ЗНАМЕНАТЕЛЕ окна: докблок TopFunctionShares прямо обещает
+// «сумма self по всем функциям равна сумме value по строкам окна», то есть
+// безымянные строки не выброшены из подсчёта, а просто не показаны как
+// отдельная «функция». Смешать оба поведения легко (отфильтровать до расчёта
+// total вместо после) и оба варианта выглядят разумно, пока не сверишь долю
+// с числом.
+func TestTopFunctionSharesEmptyFunctionExcludedButWeighsIn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	conn := testenv.MigratedCH(t)
+	q := profile.NewQuery(conn)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	ts := now.Add(-10 * time.Minute)
+
+	insStack := func(stack []string, v uint64, n int) {
+		for i := 0; i < n; i++ {
+			if err := conn.Exec(ctx, `INSERT INTO profile_samples
+				(project_id,profile_type,service,environment,transaction,platform,ts,stack,value,trace_id)
+				VALUES (32,'cpu','api','','','go',?,?,?,'')`,
+				ts, stack, v); err != nil {
+				t.Fatalf("insert: %v", err)
+			}
+		}
+	}
+	// Именованные функции, вес разный (см. TestTopFunctionSharesShareByWeightSamplesByCount):
+	// a — 2×100 (self=200), b — 8×1 (self=8). Плюс 5 строк с ПУСТЫМ стеком
+	// весом 100 каждая (self=500) — безымянная группа, которая не должна
+	// попасть в выдачу, но обязана войти в знаменатель обеих долей.
+	insStack([]string{"root", "a"}, 100, 2)
+	insStack([]string{"root", "b"}, 1, 8)
+	insStack([]string{}, 100, 5)
+
+	shares, err := q.TopFunctionShares(ctx, 32, "api", "cpu", now.Add(-time.Hour), now.Add(time.Minute), 10)
+	if err != nil {
+		t.Fatalf("TopFunctionShares: %v", err)
+	}
+	byFn := map[string]profile.FunctionShare{}
+	for _, sh := range shares {
+		byFn[sh.Function] = sh
+	}
+	if _, ok := byFn[""]; ok {
+		t.Fatalf("empty-name group leaked into output: %+v", shares)
+	}
+	if len(shares) != 2 {
+		t.Fatalf("shares = %+v, want exactly 2 (a, b), no empty-name entry", shares)
+	}
+	a, ok := byFn["a"]
+	if !ok {
+		t.Fatalf("no share for 'a': %+v", shares)
+	}
+	b, ok := byFn["b"]
+	if !ok {
+		t.Fatalf("no share for 'b': %+v", shares)
+	}
+
+	// Знаменатель — self всего окна, ВКЛЮЧАЯ безымянные строки: 200+8+500=708.
+	// Если бы безымянные строки выбросили ДО подсчёта итога, знаменатель был
+	// бы 208, и a.Share подскочила бы до ~0.9615 — той же величины, что в
+	// соседнем тесте с чистым окном без безымянных строк.
+	if a.Share < 0.27 || a.Share > 0.30 {
+		t.Fatalf("a.Share = %v, want ~0.2825 (self/(named+unnamed)=200/708, не 200/208)", a.Share)
+	}
+	if b.Share < 0.008 || b.Share > 0.02 {
+		t.Fatalf("b.Share = %v, want ~0.0113 (self/(named+unnamed)=8/708, не 8/208)", b.Share)
+	}
+	// Samples — число строк окна, тоже включая безымянные: 2+8+5=15.
+	if a.Samples != 15 || b.Samples != 15 {
+		t.Fatalf("Samples = a:%d b:%d, want 15 for both (2 именованных + 8 + 5 безымянных строк)", a.Samples, b.Samples)
 	}
 }

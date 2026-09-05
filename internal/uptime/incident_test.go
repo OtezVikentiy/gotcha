@@ -303,3 +303,104 @@ func TestIncidentsForMonitorsBatchRespectsPerMonitorLimitAndIsolation(t *testing
 		}
 	}
 }
+
+// TestClearSuppressedByDepIsIdempotent (M3, финревью волны 1 аудита перед
+// 1.0): докблок ClearSuppressedByDep называет повторный вызов идемпотентным
+// — второй Clear на уже снятом подавлении обязан вернуть nil, а не
+// ErrNotFound (раньше отдавал его при RowsAffected()==0), симметрично
+// host.IncidentService.ClearSuppressed, который RowsAffected не смотрит
+// вовсе. На гонке двух реплик Detector.settleHeldIncident проигравшая
+// раньше получала ErrNotFound → Warn → return и пропускала settle этого
+// тика; мутация — вернуть проверку RowsAffected()==0/ErrNotFound — обязана
+// уронить второй вызов ниже.
+func TestClearSuppressedByDepIsIdempotent(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 1, 1)
+
+	inc, _, err := svc.OpenIncident(ctx, mon.ID, "boom", []string{"local"}, false)
+	if err != nil {
+		t.Fatalf("OpenIncident: %v", err)
+	}
+	if err := svc.MarkSuppressedByDep(ctx, inc.ID); err != nil {
+		t.Fatalf("MarkSuppressedByDep: %v", err)
+	}
+
+	if err := svc.ClearSuppressedByDep(ctx, inc.ID); err != nil {
+		t.Fatalf("первый ClearSuppressedByDep: %v", err)
+	}
+	// Повторный вызов на уже снятом подавлении — идемпотентный no-op.
+	if err := svc.ClearSuppressedByDep(ctx, inc.ID); err != nil {
+		t.Fatalf("повторный ClearSuppressedByDep = %v, want nil (идемпотентно)", err)
+	}
+}
+
+// TestResolveIncidentConcurrentOnlyOneWins (K2-5) — зеркало
+// TestOpenIncidentConcurrentOnlyOneWins: из n конкурентных ResolveIncident
+// по одному открытому инциденту ровно один получает ok=true (UPDATE ... WHERE
+// resolved_at IS NULL — атомарный check-and-set, остальные видят уже
+// закрытую строку), ошибок нет, и resolved_at выставлен единожды — временем
+// победителя.
+func TestResolveIncidentConcurrentOnlyOneWins(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 3, 2)
+	if _, _, err := svc.OpenIncident(ctx, mon.ID, "concurrent down", nil, false); err != nil {
+		t.Fatalf("OpenIncident: %v", err)
+	}
+
+	const n = 20
+	base := time.Now().UTC().Truncate(time.Second)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var winners []time.Time
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			// У каждого вызова своё время — чтобы отличить, чьё осталось в базе.
+			at := base.Add(time.Duration(i+1) * time.Second)
+			inc, ok, err := svc.ResolveIncident(ctx, mon.ID, at)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			if ok {
+				mu.Lock()
+				winners = append(winners, *inc.ResolvedAt)
+				mu.Unlock()
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	for _, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent ResolveIncident: %v", err)
+		}
+	}
+	if len(winners) != 1 {
+		t.Fatalf("winners = %d, want exactly 1", len(winners))
+	}
+
+	var openCount int
+	var resolvedAt time.Time
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FILTER (WHERE resolved_at IS NULL), max(resolved_at) FROM incidents WHERE monitor_id = $1",
+		mon.ID).Scan(&openCount, &resolvedAt); err != nil {
+		t.Fatalf("inspect incidents: %v", err)
+	}
+	if openCount != 0 {
+		t.Fatalf("openCount = %d, want 0 after concurrent resolve", openCount)
+	}
+	if !resolvedAt.Equal(winners[0]) {
+		t.Fatalf("resolved_at in db = %v, want the winner's %v (losers must not overwrite it)", resolvedAt, winners[0])
+	}
+}

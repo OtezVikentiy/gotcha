@@ -163,3 +163,51 @@ func TestCardinalityGuardBoundsProjects(t *testing.T) {
 		t.Fatalf("осталось %d проектов — похоже на полный сброс", n)
 	}
 }
+
+// TestCardinalityGuardCollapsedTotalMonotonic — CollapsedTotal это counter за
+// жизнь процесса: растёт ровно на число схлопываний и НЕ проседает при
+// ролловере окна, когда per-field счётчики проекта начинаются заново. Раньше
+// он суммировал их под мьютексом, и rate() по нему врал после каждого окна.
+func TestCardinalityGuardCollapsedTotalMonotonic(t *testing.T) {
+	now := time.Unix(0, 0)
+	g := NewCardinalityGuard(1, time.Minute)
+	g.now = func() time.Time { return now }
+
+	if got := g.CollapsedTotal(); got != 0 {
+		t.Fatalf("до схлопываний счётчик должен быть 0: %d", got)
+	}
+	g.Value(3, FieldTransaction, "GET /a")
+	const n = 5
+	for i := 0; i < n; i++ {
+		if got := g.Value(3, FieldTransaction, "GET /b"+string(rune('0'+i))); got != CardinalityOverflow {
+			t.Fatalf("итерация %d: имя сверх потолка должно схлопнуться: %q", i, got)
+		}
+	}
+	if got := g.CollapsedTotal(); got != n {
+		t.Fatalf("после %d схлопываний счётчик = %d", n, got)
+	}
+
+	// Ролловер окна: набор проекта начинается заново, отчёт пустой, но
+	// накопленный счётчик не убывает.
+	now = now.Add(2 * time.Minute)
+	if got := g.Value(3, FieldTransaction, "GET /b0"); got != "GET /b0" {
+		t.Fatalf("после окна набор должен начаться заново: %q", got)
+	}
+	if rep := g.Report(3); rep != nil {
+		t.Fatalf("после смены окна отчёт должен обнулиться: %+v", rep)
+	}
+	if got := g.CollapsedTotal(); got != n {
+		t.Fatalf("после ролловера окна счётчик просел: %d, want %d", got, n)
+	}
+	if got := g.Value(3, FieldTransaction, "GET /c"); got != CardinalityOverflow {
+		t.Fatalf("в новом окне второе имя должно схлопнуться: %q", got)
+	}
+	if got := g.CollapsedTotal(); got != n+1 {
+		t.Fatalf("схлопывание в новом окне должно продолжить счёт: %d, want %d", got, n+1)
+	}
+
+	var nilGuard *CardinalityGuard
+	if got := nilGuard.CollapsedTotal(); got != 0 {
+		t.Fatalf("nil-ограничитель должен отдавать 0: %d", got)
+	}
+}

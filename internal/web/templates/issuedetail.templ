@@ -607,11 +607,13 @@ templ eventRow(issueID int64, ev event.Stored, selected bool, rng TimeRangeVM) {
 // selectedID — id события из query (для подсветки строки в таблице), может
 // не совпадать ни с одним из events, если событие устарело/удалено — тогда
 // selected/frames приходят пустыми и блок деталей просто не рендерится.
-templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, rng TimeRangeVM, events []event.Stored, selectedID string, selected *event.Stored, frames []Frame, userEmail string, hasTrace bool, showAllFrames bool, copyMD string, copyTXT string, exportsEnabled bool, canManagePII bool) {
-	@layout(it.Title, userEmail) {
+// loadFailed — ClickHouse не ответил: шапка и статус на месте, вместо графика
+// и событий — «данные временно недоступны».
+templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, rng TimeRangeVM, events []event.Stored, selectedID string, selected *event.Stored, frames []Frame, userEmail string, hasTrace bool, showAllFrames bool, copyMD string, copyTXT string, exportsEnabled bool, canManagePII bool, loadFailed bool) {
+	@layout(issueTitle(ctx, it.Title), userEmail) {
 		<div class="issue-detail">
 			@breadcrumbBackTo(templ.URL(issuesPath(it.ProjectID)), i18n.T(ctx, "nav.errors"))
-			<h1>{ it.Title }</h1>
+			<h1>{ issueTitle(ctx, it.Title) }</h1>
 			if it.Culprit != "" {
 				<div class="culprit">{ it.Culprit }</div>
 			}
@@ -695,6 +697,9 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 				@timeRangeFields(rng)
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "perf.filter.apply") }</button>
 			</form>
+			if loadFailed {
+				@emptyState("bug", "issues.detail.error.title", "issues.detail.error.body", "", "", 2)
+			} else {
 			@scrollRegion("issue-chart card", "region.issue.chart") {
 				@chart
 			}
@@ -815,6 +820,7 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 						}
 					</tbody>
 				</table>
+			}
 			}
 		</div>
 	}

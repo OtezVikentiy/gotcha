@@ -18,6 +18,25 @@ Roles are assigned at the organization level and apply across all its projects:
 
 An organization's last owner cannot be demoted or removed — the system always protects against an organization ending up with no owner.
 
+## Instance admin
+
+Separately from organization roles, there's an **instance administrator** flag (`users.is_instance_admin`) — exactly one per instance, unrelated to any role in any organization. It's assigned automatically to the first user registered on the instance.
+
+The instance administrator configures and removes [SSO](/docs/sso) for organizations — that capability isn't granted by the owner role, only by this flag (see the roles table above). While other users exist on the instance, the instance administrator's account cannot be deleted until the role is transferred to one of them — otherwise SSO for every organization would become unreachable to everyone. If the instance administrator is the only user on the instance, they can delete their own account freely: there's no one to transfer the role to, and the next person to register becomes the administrator automatically.
+
+Transfer the role from the "Instance admin" section on `/profile`: enter the email of an existing instance user and confirm the transfer. Once confirmed, the role moves to the recipient immediately, and the previous administrator loses access to SSO configuration and the ability to transfer the role again.
+
+**Recovery** if access to the instance administrator's account is lost: if only the password is forgotten, a regular password reset restores access — the administrator's account still cannot be deleted while other users exist on the instance. If the account is completely unreachable, an operator with access to the instance database assigns a new administrator directly, in one transaction — `BEGIN`/`COMMIT` are required: `psql` autocommits by default, and without them a typo in the email after the first `UPDATE` silently leaves the instance with no administrator at all:
+
+```sql
+BEGIN;
+UPDATE users SET is_instance_admin = false WHERE is_instance_admin;
+UPDATE users SET is_instance_admin = true WHERE email = '<email>';
+COMMIT;
+```
+
+Before `COMMIT`, verify each `UPDATE` reported `UPDATE 1` — `UPDATE 0` on the second command means a typo in the email, and committing in that state leaves the instance with no administrator. The partial unique index `one_instance_admin` prevents two users from ending up as administrator at once.
+
 ## Inviting members
 
 The "Settings" → "Organization" → "Members" page (`/orgs/{id}/settings`, owner/admin only) has a table of current members (email, role, change-role, remove) and an invite form:
@@ -71,10 +90,10 @@ Being on a team attached to a project — an **operator**, in the table below �
 | Status page publication: the "Published" toggle, or deleting a page that's already published | — | — | ✓ | ✓ |
 | Alert rules (new issue / regression / spike) | — | ✓ | ✓ | ✓ |
 | [Escalations](/docs/escalations): per-severity notification ladders ("Critical"/"Warning") | — | ✓ | ✓ | ✓ |
-| [Storm suppression](/docs/alert-suppression): dependency edges — create, delete | — | ✓ | ✓ | ✓ |
+| [Storm suppression](/docs/alert-suppression): dependency edges — create, edit, delete | — | ✓ | ✓ | ✓ |
 | Alert channels: create, edit, delete, "Test" | — | — (sees each channel's kind and a masked target only, enough to tell channels apart when picking one in a rule) | ✓ | ✓ |
 | Delivery log | — | ✓ (targets masked) | ✓ (full) | ✓ (full) |
-| Metric alerts: create, delete | — | ✓ | ✓ | ✓ |
+| [Metric alerts](/docs/metric-alerts): create, edit and disable, delete | — | ✓ | ✓ | ✓ |
 | [SLOs](/docs/slo): create, delete | — | ✓ | ✓ | ✓ |
 | [Recipes](/docs/recipes): turn on a service's recommended thresholds | — | ✓ | ✓ | ✓ |
 | Hosts: project-wide thresholds, environment/role label groups, a per-host threshold override, deleting a host | — | ✓ | ✓ | ✓ |

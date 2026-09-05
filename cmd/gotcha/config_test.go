@@ -2484,6 +2484,61 @@ func TestLoadConfigExportValidatedAtStartup(t *testing.T) {
 			}
 		})
 	}
+
+	// K5-2 (сверка задачи 4 волны 1): экспортная четвёрка валидируется
+	// безусловно, независимо от --mode — export.Config.Validate() выше в
+	// цикле гоняется на дефолтном режиме ("all", args=nil), а именно
+	// --mode=ingest поднимает и export-воркер (internal/export/worker.go),
+	// для которого эта четвёрка нужнее всего: неисправный лимит там раньше
+	// копился в очереди навсегда (см. докблок теста выше).
+	t.Run("mode=ingest", func(t *testing.T) {
+		_, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_EXPORT_MAX_ROWS": "0"}), []string{"--mode=ingest"})
+		if err == nil {
+			t.Fatal("--mode=ingest, GOTCHA_EXPORT_MAX_ROWS=0: want error, got nil")
+		}
+		if !strings.Contains(err.Error(), "GOTCHA_EXPORT_MAX_ROWS") {
+			t.Errorf("--mode=ingest: error %q does not name the variable", err)
+		}
+	})
+}
+
+// TestLoadConfig_ValidationErrorsReportedTogether — K5-1: до этой правки
+// loadConfig отдавала первую попавшуюся ошибку валидации немедленным
+// return'ом (fail-fast), и оператор с несколькими независимыми опечатками в
+// .env чинил их по одной за деплой. Семь ошибок из разных подблоков функции
+// (enum RegistrationMode, enum Locale, range EventRetentionDays, range
+// SMTPPort, "*_ENABLED requires ..." для OIDC, и оба поля validateLogging)
+// заданы ОДНОВРЕМЕННО — итоговая ошибка обязана называть все семь
+// переменных разом, а не только первую по порядку проверок.
+func TestLoadConfig_ValidationErrorsReportedTogether(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_REGISTRATION_MODE":    "weird",
+		"GOTCHA_LOCALE":               "de",
+		"GOTCHA_EVENT_RETENTION_DAYS": "-1",
+		"GOTCHA_SMTP_PORT":            "70000",
+		"GOTCHA_OIDC_ENABLED":         "1",
+		"GOTCHA_LOGGING_LEVEL":        "trace",
+		"GOTCHA_LOGGING_FORMAT":       "xml",
+	}
+	_, err := loadConfig(getenvFrom(env), nil)
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+	msg := err.Error()
+	want := []string{
+		"GOTCHA_REGISTRATION_MODE",
+		"GOTCHA_LOCALE",
+		"GOTCHA_EVENT_RETENTION_DAYS",
+		"GOTCHA_SMTP_PORT",
+		"GOTCHA_OIDC_ENABLED",
+		"GOTCHA_LOGGING_LEVEL",
+		"GOTCHA_LOGGING_FORMAT",
+	}
+	for _, name := range want {
+		if !strings.Contains(msg, name) {
+			t.Errorf("error text is missing %s; full text:\n%s", name, msg)
+		}
+	}
 }
 
 // TestTranslateExportEnvNamesWholeWordOnly — задача 11, минор задачи 4:

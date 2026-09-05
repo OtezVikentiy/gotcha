@@ -234,3 +234,23 @@ func TestRecipesListCards(t *testing.T) {
 		t.Error("заголовок карточки должен вести на страницу рецепта")
 	}
 }
+
+// TestRecipeThresholdsTableIsDataTable — K9-10: таблица порогов рецепта была
+// единственной из таблиц без class="data-table" (числа не прижаты вправо,
+// стилистика выпадала).
+func TestRecipeThresholdsTableIsDataTable(t *testing.T) {
+	rec := mustRecipe(t, "redis")
+	out := renderTo(t, RecipeDetail(RecipeDetailVM{
+		ProjectID:  7,
+		Recipe:     rec,
+		Config:     "receivers: {}",
+		Statuses:   recipes.RuleStatuses(nil, rec),
+		CanOperate: true,
+	}, "u@e.com"))
+	if !strings.Contains(out, `<table class="data-table">`) {
+		t.Errorf("таблица порогов рецепта без class=\"data-table\": %s", out)
+	}
+	if strings.Contains(out, "<table>") {
+		t.Errorf("на странице рецепта осталась таблица без класса: %s", out)
+	}
+}

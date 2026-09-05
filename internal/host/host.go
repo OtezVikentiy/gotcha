@@ -93,7 +93,11 @@ func NewStore(pool *pgxpool.Pool) *Store {
 // версии. Один запрос через unnest. Возвращает число НОВЫХ имён, отброшенных
 // потолком MaxHostsPerProject (уже известные хосты продолжают обновлять
 // last_seen и после упора в потолок — иначе парк, доросший до границы,
-// целиком провалился бы в ложную тишину).
+// целиком провалился бы в ложную тишину). Уже известные хосты проходят всегда
+// (первая ветка allowed), а свободные места среди НОВЫХ имён раздаются в
+// порядке их появления в батче (WITH ORDINALITY), а не по алфавиту: батч —
+// это порядок прихода экспортов, и потолок должен резать последних
+// приехавших, а не отдавать место имени на «a» в ущерб тем, кто пришёл раньше.
 //
 // entries дедуплицируются по Name ЗДЕСЬ (не полагаемся на вызывающих): ON
 // CONFLICT DO UPDATE падает с «cannot affect row a second time», если в одном
@@ -149,10 +153,16 @@ func (s *Store) Upsert(ctx context.Context, projectID int64, entries []TouchEntr
 		envs[i] = e.Environment
 		roles[i] = e.Role
 	}
+	// Уникальность имён на входе уже гарантирована дедупом выше (dedup/idx);
+	// DISTINCT ON (i.name) в CTE input — избыточная страховка на случай, если
+	// запрос когда-нибудь позовут в обход этого дедупа, и потому тестом не
+	// покрыта: сломать её так, чтобы тест покраснел, из Upsert невозможно.
 	tag, err := s.pool.Exec(ctx, `
 		WITH input AS (
-			SELECT DISTINCT ON (i.name) i.name, i.agent_version, i.environment, i.role
-			  FROM unnest($2::text[], $4::text[], $5::text[], $6::text[]) AS i(name, agent_version, environment, role)
+			SELECT DISTINCT ON (i.name) i.name, i.agent_version, i.environment, i.role, i.ord
+			  FROM unnest($2::text[], $4::text[], $5::text[], $6::text[])
+			       WITH ORDINALITY AS i(name, agent_version, environment, role, ord)
+			 ORDER BY i.name, i.ord
 		),
 		room AS (
 			SELECT GREATEST($3::bigint - count(*), 0) AS free FROM hosts WHERE project_id = $1
@@ -163,7 +173,7 @@ func (s *Store) Upsert(ctx context.Context, projectID int64, entries []TouchEntr
 			UNION ALL
 			(SELECT i.name, i.agent_version, i.environment, i.role FROM input i
 			  WHERE NOT EXISTS (SELECT 1 FROM hosts h WHERE h.project_id = $1 AND h.name = i.name)
-			  ORDER BY i.name
+			  ORDER BY i.ord
 			  LIMIT (SELECT free FROM room))
 		)
 		INSERT INTO hosts (project_id, name, agent_version, environment, role)

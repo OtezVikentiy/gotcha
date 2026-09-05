@@ -69,6 +69,17 @@ type ReminderItem struct {
 	Monitor  Monitor
 }
 
+// MaintenanceChecker — живая проверка окна обслуживания на момент отправки
+// напоминания. Эталон и причина — escalation.Scheduler (его одноимённый
+// интерфейс): окно могло начаться уже после того, как инцидент открылся, а
+// снимок incidents.in_maintenance пишется один раз при открытии и этого не
+// видит. Локальный duck-typing интерфейс, а не импорт из escalation:
+// направление зависимостей (escalation → uptime) не меняется; в проде его
+// реализует сам Service (InMaintenance, maintenance.go).
+type MaintenanceChecker interface {
+	InMaintenance(ctx context.Context, projectID int64, at time.Time) (bool, error)
+}
+
 // Watchdog runs the three periodic jobs that active checks alone don't
 // cover: heartbeat monitors don't get probed by Runner (a missed ping is a
 // silence, not a failed request), SSL certificates need re-checking even
@@ -80,6 +91,11 @@ type Watchdog struct {
 	Svc      *Service
 	Detector *Detector // heartbeat misses run through OnResult so incident thresholds/notifications behave like any other check
 	Notifier Notifier  // used directly for ssl_expiring/reminder events, which don't go through Detector
+
+	// Maint — окно обслуживания проекта, проверяемое ЖИВЬЁМ перед каждым
+	// напоминанием (см. checkReminders). nil допустим: режимы без окон и
+	// тесты — «окон нет», напоминания идут как раньше.
+	Maint MaintenanceChecker
 
 	// Writer — запись пропущенного удара в check_results. ОБЯЗАТЕЛЕН для
 	// достоверности аптайма: успешный пинг строку пишет (web/heartbeat.go), а
@@ -342,6 +358,20 @@ func (w *Watchdog) checkSSL(ctx context.Context) {
 // reminder (last_reminded_at = now()) so the next one waits a full
 // remind_every_minutes again.
 //
+// «Non-maintenance» проверяется дважды. Снимок in_maintenance (фильтр в
+// IncidentsDueForReminder) отсекает инциденты, ОТКРЫТЫЕ внутри окна, — по
+// ним напоминаний нет вообще. Живая проверка Maint.InMaintenance здесь
+// отсекает окно, начавшееся ПОСЛЕ открытия инцидента: такое напоминание
+// пропускается БЕЗ клейма, last_reminded_at не двигается, и после окна
+// напоминание уйдёт первым же тиком. Один вызов на проект за тик (кэш
+// inMaint) — окна общие для всех мониторов проекта.
+//
+// Ошибка InMaintenance — slog.Warn и напоминание ОТПРАВЛЯЕТСЯ: здесь, в
+// отличие от escalation.Scheduler.tickOne, отказ падает в сторону оповещения,
+// а не тишины — напоминание идёт по инциденту, о котором уже сообщили, и
+// лишнее напоминание во время обслуживания дешевле пропавшего напоминания об
+// аварии из-за сбоя проверки окна.
+//
 // Claim-before-notify, same rationale as checkSSL: Svc.ClaimReminder is a
 // single atomic UPDATE ... RETURNING keyed on "hasn't been reminded (or
 // opened) within remind_every", so of several `--mode=uptime` replicas racing
@@ -370,7 +400,25 @@ func (w *Watchdog) checkReminders(ctx context.Context) {
 		return
 	}
 	now := time.Now().UTC()
+	inMaint := map[int64]bool{}
 	for _, it := range items {
+		if w.Maint != nil {
+			skip, cached := inMaint[it.Monitor.ProjectID]
+			if !cached {
+				skip, err = w.Maint.InMaintenance(ctx, it.Monitor.ProjectID, now)
+				if err != nil {
+					slog.Warn("uptime: watchdog: maintenance check failed, sending reminder anyway",
+						"incident_id", it.Incident.ID, "project_id", it.Monitor.ProjectID, "error", err)
+					skip = false
+				}
+				inMaint[it.Monitor.ProjectID] = skip
+			}
+			if skip {
+				// Окно идёт сейчас: не клеймим, чтобы напоминание ушло
+				// сразу после окна, а не через полный remind_every.
+				continue
+			}
+		}
 		won, err := w.Svc.ClaimReminder(ctx, it.Incident.ID, it.Monitor.RemindEveryMinutes)
 		if err != nil {
 			slog.Error("uptime: watchdog: claim reminder failed", "incident_id", it.Incident.ID, "error", err)
@@ -533,6 +581,13 @@ func (s *Service) ClaimSSLAlert(ctx context.Context, monitorID int64, thresholds
 // detector.go); notified_open = true — an incident whose "down" was never
 // sent (suppressed, or held back by grace and already recovering) has
 // nothing to remind about yet.
+//
+// m.enabled — пауза монитора глушит напоминания по его открытому инциденту
+// (K2-2). Инцидент при этом НЕ закрывается и не резолвится (SetEnabled —
+// голый UPDATE monitors, и это намеренно): пауза значит «не проверяем и не
+// будим», а не «сервис поднялся» — история инцидента не переписывается. При
+// снятии паузы проверки возобновятся и штатно закроют инцидент, если сервис
+// жив. Та же логика — в OpenUnacked (incident.go) для лесенки эскалации.
 func (s *Service) IncidentsDueForReminder(ctx context.Context) ([]ReminderItem, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT i.id, i.monitor_id, i.started_at, i.resolved_at, i.cause, i.regions,
@@ -546,6 +601,7 @@ func (s *Service) IncidentsDueForReminder(ctx context.Context) ([]ReminderItem, 
 		  AND i.in_maintenance = false
 		  AND i.suppressed_by_dep = false
 		  AND i.notified_open = true
+		  AND m.enabled
 		  AND m.remind_every_minutes > 0
 		  AND COALESCE(i.last_reminded_at, i.started_at)
 		      + make_interval(mins => m.remind_every_minutes)

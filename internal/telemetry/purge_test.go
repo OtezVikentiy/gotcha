@@ -2,6 +2,8 @@ package telemetry_test
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -262,6 +264,127 @@ func TestPurgeSubjectTransactionTags(t *testing.T) {
 	}
 }
 
+// TestPurgeSubjectSpans проверяет косвенное удаление spans субъекта через
+// trace_id его транзакций (у spans нет собственной колонки субъекта — см.
+// docblock PurgeSubject). Спан постороннего трейса и чужого проекта остаются
+// на месте, а "осиротевший" спан без строки в transactions переживает вызов —
+// это задокументированная граница механизма, а не брак.
+func TestPurgeSubjectSpans(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	const p1 = int64(80)
+	const p2 = int64(81)
+	ts := time.Now().UTC()
+
+	// Чужой проект: та же строка trace_id, тот же user_id — не должен быть
+	// затронут, потому что project_id обязателен в условии удаления.
+	seedTransactionTrace(t, ctx, conn, p1, "victim", "tr-victim", ts)
+	seedSpanTrace(t, ctx, conn, p1, "tr-victim", ts)
+
+	// p2: транзакция и спан субъекта.
+	seedTransactionTrace(t, ctx, conn, p2, "victim", "tr-victim", ts)
+	seedSpanTrace(t, ctx, conn, p2, "tr-victim", ts)
+	// p2: транзакция и спан постороннего — должны остаться.
+	seedTransactionTrace(t, ctx, conn, p2, "other", "tr-other", ts)
+	seedSpanTrace(t, ctx, conn, p2, "tr-other", ts)
+	// p2: "осиротевший" спан без строки в transactions — граница механизма:
+	// доживает до собственного TTL, а не удаляется вместе с субъектом.
+	seedSpanTrace(t, ctx, conn, p2, "tr-orphan", ts)
+
+	p := telemetry.NewPurger(conn)
+	res, err := p.PurgeSubject(ctx, p2, telemetry.Subject{UserID: "victim"})
+	if err != nil {
+		t.Fatalf("PurgeSubject: %v", err)
+	}
+	if res.Spans != 1 {
+		t.Errorf("res.Spans = %d, ждали 1 (спан victim)", res.Spans)
+	}
+	if res.Total() < res.Spans {
+		t.Fatalf("res.Total() = %d меньше res.Spans = %d", res.Total(), res.Spans)
+	}
+
+	if got := countSpansByTrace(t, ctx, conn, p2, "tr-victim"); got != 0 {
+		t.Errorf("p2 spans tr-victim: осталось %d, ждали 0", got)
+	}
+	if got := countSpansByTrace(t, ctx, conn, p2, "tr-other"); got == 0 {
+		t.Errorf("p2 spans tr-other удалены, а не должны были")
+	}
+	if got := countSpansByTrace(t, ctx, conn, p2, "tr-orphan"); got == 0 {
+		t.Errorf("p2 spans tr-orphan (без строки в transactions) удалены — граница механизма нарушена")
+	}
+	if got := countSpansByTrace(t, ctx, conn, p1, "tr-victim"); got == 0 {
+		t.Errorf("p1 spans tr-victim удалены, а не должны были (субъект чистится в рамках проекта)")
+	}
+}
+
+// failOnceConn оборачивает driver.Conn и возвращает ошибку на первый Exec,
+// чей текст запроса содержит match, а дальше форвардит все вызовы как есть.
+// Нужен, чтобы воспроизвести сбой ровно в удалении spans, не трогая остальную
+// логику PurgeSubject — остальные методы наследуются встраиванием.
+type failOnceConn struct {
+	driver.Conn
+	match  string
+	failed bool
+}
+
+func (f *failOnceConn) Exec(ctx context.Context, query string, args ...any) error {
+	if !f.failed && strings.Contains(query, f.match) {
+		f.failed = true
+		return errors.New("injected failure")
+	}
+	return f.Conn.Exec(ctx, query, args...)
+}
+
+// TestPurgeSubjectSpansRetryAfterFailure фиксирует правку по ретраю: spans
+// удаляются РАНЬШЕ transactions ровно затем, чтобы сбой на spans не забирал у
+// повторного вызова возможность найти trace_id субъекта заново. Если порядок
+// когда-нибудь перевернут обратно (transactions раньше spans), тот же сбой на
+// spans застанет transactions уже удалёнными — и этот тест поймает это на
+// втором ассерте ("transactions удалены несмотря на сбой").
+func TestPurgeSubjectSpansRetryAfterFailure(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	const p = int64(82)
+	ts := time.Now().UTC()
+
+	seedTransactionTrace(t, ctx, conn, p, "victim", "tr-retry", ts)
+	seedSpanTrace(t, ctx, conn, p, "tr-retry", ts)
+
+	failing := &failOnceConn{Conn: conn, match: "ALTER TABLE spans DELETE"}
+	if _, err := telemetry.NewPurger(failing).PurgeSubject(ctx, p, telemetry.Subject{UserID: "victim"}); err == nil {
+		t.Fatal("PurgeSubject: ждали ошибку от инъекции сбоя в удалении spans")
+	}
+
+	// Сбой на spans не должен успевать стереть transactions — иначе у retry
+	// не останется способа заново найти trace_id субъекта.
+	if got := count(t, ctx, conn, "transactions", p); got == 0 {
+		t.Fatal("transactions удалены несмотря на сбой удаления spans — retry больше невозможен")
+	}
+	if got := countSpansByTrace(t, ctx, conn, p, "tr-retry"); got == 0 {
+		t.Fatal("spans tr-retry удалены несмотря на инъекцию сбоя")
+	}
+
+	// Повтор без инъекции сбоя обязан довести дело до конца: найти те же
+	// trace_id заново (транзакция ещё жива) и удалить и spans, и transactions.
+	res, err := telemetry.NewPurger(conn).PurgeSubject(ctx, p, telemetry.Subject{UserID: "victim"})
+	if err != nil {
+		t.Fatalf("PurgeSubject retry: %v", err)
+	}
+	if res.Spans != 1 {
+		t.Errorf("retry res.Spans = %d, ждали 1", res.Spans)
+	}
+	if got := count(t, ctx, conn, "transactions", p); got != 0 {
+		t.Errorf("transactions p: осталось %d после retry, ждали 0", got)
+	}
+	if got := countSpansByTrace(t, ctx, conn, p, "tr-retry"); got != 0 {
+		t.Errorf("spans tr-retry: осталось %d после retry, ждали 0", got)
+	}
+}
+
 // --- helpers наполнения таблиц (только нужные колонки, остальные по умолчанию) ---
 
 func seedEvents(t *testing.T, ctx context.Context, conn driver.Conn, projectID int64, userID, ip, email string, ts time.Time) {
@@ -300,6 +423,38 @@ func seedSpans(t *testing.T, ctx context.Context, conn driver.Conn, projectID in
 		"INSERT INTO spans (project_id, timestamp) VALUES (?, ?)", projectID, ts); err != nil {
 		t.Fatalf("insert spans: %v", err)
 	}
+}
+
+// seedTransactionTrace вставляет транзакцию с заданными user_id и trace_id —
+// нужна там, где важна конкретная связка trace_id (проверка PurgeSubject по
+// spans, у которых нет собственной колонки субъекта).
+func seedTransactionTrace(t *testing.T, ctx context.Context, conn driver.Conn, projectID int64, userID, traceID string, ts time.Time) {
+	t.Helper()
+	if err := conn.Exec(ctx,
+		"INSERT INTO transactions (project_id, trace_id, span_id, transaction, timestamp, user_id) VALUES (?, ?, 'sp', '/x', ?, ?)",
+		projectID, traceID, ts, userID); err != nil {
+		t.Fatalf("insert transactions with trace_id: %v", err)
+	}
+}
+
+// seedSpanTrace вставляет спан с заданным trace_id.
+func seedSpanTrace(t *testing.T, ctx context.Context, conn driver.Conn, projectID int64, traceID string, ts time.Time) {
+	t.Helper()
+	if err := conn.Exec(ctx,
+		"INSERT INTO spans (project_id, trace_id, timestamp) VALUES (?, ?, ?)", projectID, traceID, ts); err != nil {
+		t.Fatalf("insert spans with trace_id: %v", err)
+	}
+}
+
+// countSpansByTrace возвращает число spans проекта с заданным trace_id.
+func countSpansByTrace(t *testing.T, ctx context.Context, conn driver.Conn, projectID int64, traceID string) uint64 {
+	t.Helper()
+	var n uint64
+	if err := conn.QueryRow(ctx,
+		"SELECT count() FROM spans WHERE project_id = ? AND trace_id = ?", projectID, traceID).Scan(&n); err != nil {
+		t.Fatalf("count spans by trace: %v", err)
+	}
+	return n
 }
 
 func seedMetricPoints(t *testing.T, ctx context.Context, conn driver.Conn, projectID int64, ts time.Time) {

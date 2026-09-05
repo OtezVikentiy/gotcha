@@ -46,6 +46,14 @@ var flashKeys = map[string]bool{
 	"flash.project_delete_queued": true,
 	"flash.org_delete_queued":     true,
 	"flash.recipes_applied":       true,
+	// Мутации, которые раньше отвечали голым редиректом (K7-9): пауза и
+	// возобновление монитора — разными ключами, чтобы сообщение называло
+	// состояние, в котором монитор остался; статус и ответственный issue.
+	"flash.monitor_paused":     true,
+	"flash.monitor_resumed":    true,
+	"flash.issue_status_saved": true,
+	"flash.issue_assigned":     true,
+	"flash.issue_unassigned":   true,
 }
 
 // flashPairKeys — подмножество flashKeys с ДВУМЯ числами в сообщении

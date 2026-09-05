@@ -72,8 +72,7 @@ func (h *Handler) onboardingSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	orgSlug := r.FormValue("org_slug")
@@ -163,13 +162,12 @@ func (h *Handler) projectCreate(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	orgID, err := strconv.ParseInt(r.FormValue("org_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad org_id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
@@ -182,16 +180,26 @@ func (h *Handler) projectCreate(w http.ResponseWriter, r *http.Request) {
 	form := templates.FormState{
 		"org_id": r.FormValue("org_id"), "slug": slug, "name": name, "platform": platform,
 	}.Open("new-project")
+	// Откуда пришла форма — по её hidden-полю origin (K7-2): с карточной
+	// страницы организации ошибка возвращает ТУ ЖЕ страницу этой организации
+	// (renderOrgProjects), а не плоский список проектов всех организаций.
+	// Поле, а не Referer: заголовок необязателен и режется политиками.
+	fromOrgPage := r.FormValue("origin") == "org_projects"
+	renderFailure := func(msg string) {
+		if fromOrgPage {
+			h.renderOrgProjects(w, r, http.StatusUnprocessableEntity, uid, orgID, form, msg)
+			return
+		}
+		h.renderProjectsList(w, r, http.StatusUnprocessableEntity, uid, form, msg)
+	}
 
 	if !org.ValidSlug(slug) {
-		h.renderProjectsList(w, r, http.StatusUnprocessableEntity, uid, form,
-			onboardingErrorMessage(r.Context(), org.ErrInvalidSlug))
+		renderFailure(onboardingErrorMessage(r.Context(), org.ErrInvalidSlug))
 		return
 	}
 	p, err := h.Org.CreateProject(r.Context(), orgID, slug, name, platform)
 	if err != nil {
-		h.renderProjectsList(w, r, http.StatusUnprocessableEntity, uid, form,
-			onboardingErrorMessage(r.Context(), err))
+		renderFailure(onboardingErrorMessage(r.Context(), err))
 		return
 	}
 

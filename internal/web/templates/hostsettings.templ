@@ -87,7 +87,7 @@ templ HostSettings(projectID int64, s host.Settings, installCmd, config, agentRe
 						<div class="field">
 							<label>
 								{ i18n.T(ctx, "hosts.settings.field.disk_threshold") }
-								<input type="number" class="input" name="disk_threshold" min="1" max="100" step="1" required
+								<input type="number" class="input" name="disk_threshold" min="1" max="99" step="1" required
 									value={ form.Get("disk_threshold", settingsPercentDefault(s.DiskThreshold)) }
 									aria-describedby="hint-disk-threshold"/>
 							</label>
@@ -103,7 +103,7 @@ templ HostSettings(projectID int64, s host.Settings, installCmd, config, agentRe
 						<div class="field">
 							<label>
 								{ i18n.T(ctx, "hosts.settings.field.memory_threshold") }
-								<input type="number" class="input" name="memory_threshold" min="1" max="100" step="1" required
+								<input type="number" class="input" name="memory_threshold" min="1" max="99" step="1" required
 									value={ form.Get("memory_threshold", settingsPercentDefault(s.MemoryThreshold)) }
 									aria-describedby="hint-memory-threshold"/>
 							</label>
@@ -499,7 +499,7 @@ templ groupThresholdKindFields(form FormState, s host.Settings, gt host.GroupThr
 		<div class="field th-disk-value">
 			<label>
 				{ i18n.T(ctx, "hosts.settings.field.disk_threshold") }
-				<input type="number" class="input" name="disk_value" min="1" max="100" step="1"
+				<input type="number" class="input" name="disk_value" min="1" max="99" step="1"
 					value={ form.Get("disk_value", thresholdPercentValue(gt.DiskThreshold, s.DiskThreshold)) }/>
 			</label>
 		</div>
@@ -523,7 +523,7 @@ templ groupThresholdKindFields(form FormState, s host.Settings, gt host.GroupThr
 		<div class="field th-memory-value">
 			<label>
 				{ i18n.T(ctx, "hosts.settings.field.memory_threshold") }
-				<input type="number" class="input" name="memory_value" min="1" max="100" step="1"
+				<input type="number" class="input" name="memory_value" min="1" max="99" step="1"
 					value={ form.Get("memory_value", thresholdPercentValue(gt.MemoryThreshold, s.MemoryThreshold)) }/>
 			</label>
 		</div>

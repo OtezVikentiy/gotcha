@@ -54,10 +54,10 @@ func TestRegressionEvaluatorNilNotifier(t *testing.T) {
 	// Свежее окно: slow — 80%. База прошлых дней: 10% → рост ≥ порога → Open.
 	seedProfSample(t, ch, pid, "slow", 80, 5*time.Minute)
 	seedProfSample(t, ch, pid, "other", 20, 5*time.Minute)
-	seedProfSample(t, ch, pid, "slow", 10, 24*time.Hour)
-	seedProfSample(t, ch, pid, "other", 90, 24*time.Hour)
-	seedProfSample(t, ch, pid, "slow", 10, 48*time.Hour)
-	seedProfSample(t, ch, pid, "other", 90, 48*time.Hour)
+	seedProfSample(t, ch, pid, "slow", 30, 24*time.Hour)
+	seedProfSample(t, ch, pid, "other", 270, 24*time.Hour)
+	seedProfSample(t, ch, pid, "slow", 30, 48*time.Hour)
+	seedProfSample(t, ch, pid, "other", 270, 48*time.Hour)
 
 	eval.Tick(ctx)
 

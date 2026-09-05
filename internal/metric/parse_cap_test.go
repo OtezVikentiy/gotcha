@@ -30,30 +30,72 @@ func TestMapOTLPCapsPoints(t *testing.T) {
 
 // TestMapOTLPCapsHistogramBuckets — потолок длины массивов гистограммы: экспорт с
 // гигантскими bucket_counts/explicit_bounds обрезается до maxHistogramBuckets
-// (защита от амплификации памяти/записи недоверенным экспортом).
+// границ (защита от амплификации памяти/записи недоверенным экспортом), но
+// СОГЛАСОВАННО: OTLP-инвариант len(counts) == len(bounds)+1 переживает
+// обрезку, а отрезанный хвост счётчиков складывается в последний
+// (бесконечный) бакет — сумма наблюдений сохраняется. Раньше оба массива
+// резались порознь по одному лимиту, и у обрезанной гистограммы пропадал
+// бесконечный бакет, а histogramQuantile читал границы со сдвигом.
 func TestMapOTLPCapsHistogramBuckets(t *testing.T) {
-	buckets := make([]uint64, maxHistogramBuckets+100)
-	bounds := make([]float64, maxHistogramBuckets+50)
-	for i := range buckets {
-		buckets[i] = uint64(i)
-	}
+	const bucketsIn = 600 // бакетов на входе: 600 границ, 601 счётчик
+	bounds := make([]float64, bucketsIn)
+	buckets := make([]uint64, bucketsIn+1)
+	var sum uint64
 	for i := range bounds {
 		bounds[i] = float64(i)
 	}
+	for i := range buckets {
+		buckets[i] = uint64(i)
+		sum += uint64(i)
+	}
 	rm := []*metricspb.ResourceMetrics{{
 		ScopeMetrics: []*metricspb.ScopeMetrics{{Metrics: []*metricspb.Metric{
-			histMetric("http.duration", "ms", 42, 100.0, buckets, bounds),
+			histMetric("http.duration", "ms", sum, 100.0, buckets, bounds),
 		}}},
 	}}
 	out := MapOTLP(rm, time.Now())
 	if len(out) != 1 {
 		t.Fatalf("points = %d, want 1", len(out))
 	}
-	if got := len(out[0].BucketCounts); got != maxHistogramBuckets {
-		t.Fatalf("BucketCounts len = %d, want %d", got, maxHistogramBuckets)
-	}
 	if got := len(out[0].ExplicitBounds); got != maxHistogramBuckets {
 		t.Fatalf("ExplicitBounds len = %d, want %d", got, maxHistogramBuckets)
+	}
+	if got := len(out[0].BucketCounts); got != len(out[0].ExplicitBounds)+1 {
+		t.Fatalf("BucketCounts len = %d, want len(bounds)+1 = %d", got, len(out[0].ExplicitBounds)+1)
+	}
+	var gotSum uint64
+	for _, c := range out[0].BucketCounts {
+		gotSum += c
+	}
+	if gotSum != sum {
+		t.Fatalf("sum of capped BucketCounts = %d, want %d (tail folded into the last bucket)", gotSum, sum)
+	}
+	var tail uint64
+	for _, c := range buckets[maxHistogramBuckets:] {
+		tail += c
+	}
+	if got := out[0].BucketCounts[maxHistogramBuckets]; got != tail {
+		t.Fatalf("last bucket = %d, want folded tail %d", got, tail)
+	}
+	if got := out[0].BucketCounts[maxHistogramBuckets-1]; got != buckets[maxHistogramBuckets-1] {
+		t.Fatalf("bucket before the tail = %d, want untouched %d", got, buckets[maxHistogramBuckets-1])
+	}
+	if buckets[maxHistogramBuckets] != maxHistogramBuckets {
+		t.Fatalf("input BucketCounts mutated: [%d] = %d", maxHistogramBuckets, buckets[maxHistogramBuckets])
+	}
+}
+
+// TestCapHistogramLeavesShortArraysAlone — гистограмма в пределах потолка
+// возвращается как есть, без копии и без изменений.
+func TestCapHistogramLeavesShortArraysAlone(t *testing.T) {
+	counts := []uint64{1, 2, 3}
+	bounds := []float64{10, 20}
+	gotCounts, gotBounds := capHistogram(counts, bounds)
+	if &gotCounts[0] != &counts[0] || &gotBounds[0] != &bounds[0] {
+		t.Fatalf("short arrays must be returned as-is, got copies")
+	}
+	if len(gotCounts) != 3 || len(gotBounds) != 2 {
+		t.Fatalf("lens = %d/%d, want 3/2", len(gotCounts), len(gotBounds))
 	}
 }
 

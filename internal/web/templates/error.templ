@@ -4,6 +4,7 @@ import (
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/nav"
 )
 
 // errorTitleKey/errorBodyKey — заголовок и текст страницы ошибки по HTTP-
@@ -65,6 +66,14 @@ templ ErrorPage(status int, msg string, userEmail string) {
 				<h1 class="error-title">{ msg }</h1>
 			}
 			<a class="btn btn-primary" href="/">{ i18n.T(ctx, "error.home_link") }</a>
+			// Второй выход — в «Проблемы» текущего проекта: страница
+			// chromeless, без рельсы, и «На главную» (обзор проекта по
+			// cookie) была единственной дорогой назад. Проект берётся из
+			// nav.Shell в ctx (web/shell.go), как у рельсы; без shell
+			// (запрос мимо middleware) ссылки нет — остаётся «На главную».
+			if pid := effectiveProjectID(nav.FromContext(ctx)); pid != 0 {
+				<a class="btn btn-ghost" href={ templ.URL(issuesPath(pid)) }>{ i18n.T(ctx, "error.issues_link") }</a>
+			}
 		</div>
 	}
 }

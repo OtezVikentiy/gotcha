@@ -4,7 +4,7 @@ The "Uptime" section watches the availability of external addresses and services
 
 ## Who runs the checks
 
-Checks are queued by any process that has a database, and executed either by the built-in runner (`--mode=uptime` and `--mode=all`) or by a [remote probe](/docs/probes) in another region.
+Checks are queued by the uptime scheduler, which runs in `--mode=web`, `--mode=uptime`, and `--mode=all` (not in `--mode=ingest`; see [Process modes](/docs/configuration#process-modes-what-each-mode-runs)), and executed either by the built-in runner (`--mode=uptime` and `--mode=all` only) or by a [remote probe](/docs/probes) in another region.
 
 If the instance is split and neither role is present — say only `--mode=web` and `--mode=ingest` — monitors will show as enabled and nothing will check them. Such a process says so at startup: `uptime checks are scheduled here but NOT executed in this mode`.
 
@@ -30,6 +30,8 @@ For a Heartbeat monitor, the personal ping URL of the form `{base_url}/uptime/hb
 ```
 
 Add that to your application's cron/systemd timer — every successful call resets the grace timer. `GET` is also supported and keeps working, but `POST` is the recommended form: the ping URL regularly gets hit by more than your cron job — forwarded in a chat, it gets fetched by a messenger's link-preview bot or scanned by an antivirus proxy — and such automated visits always arrive as `GET` and are recognized by their headers/User-Agent; a request like that is rejected with `204` and never counts as "the service is alive".
+
+**The token in the URL is the ping's only secret.** The `/uptime/hb/{token}` endpoint is deliberately unauthenticated and skips the request-origin check: it is not a browser form but an external call (cron, a systemd timer), and nothing but the address itself can protect it. That means anyone who knows the URL can send the "service is alive" signal — and the address ends up in your proxy's access logs, in browser history, in `crontab -l` output, and in forwarded messages. Treat it like a password: don't publish it, don't paste it into tickets or chats. Rotation is only via **Regenerate token** on the monitor page (a project operator action): the old URL stops working immediately, the new one is shown once. An unknown token gets a `404`, and the endpoint is rate-limited like any public one. `GET` is supported on purpose — so the signal can be sent from cron with a plain `curl`/`wget` and no flags — but the recommendation above to use `POST` still stands.
 
 ## Interval, timeout, thresholds
 

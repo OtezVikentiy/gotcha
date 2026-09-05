@@ -1,10 +1,12 @@
 package metric
 
 import (
+	"log/slog"
 	"math"
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -40,9 +42,9 @@ const maxOTLPMetricPoints = 10000
 // explicit_bounds) на одну точку. Реальные гистограммы столько границ не имеют;
 // без капа недоверенный экспорт с гигантскими массивами раздул бы память и запись
 // в metric_points (тот же приём защиты от амплификации, что maxOTLPMetricPoints).
-// Оба массива обрезаются согласованно: OTLP-контракт — len(bucket_counts) =
-// len(explicit_bounds)+1, но здесь режем независимо по одному лимиту — писателю
-// консистентность массивов не требуется, ему важен лишь конечный размер.
+// Оба массива обрезаются СОГЛАСОВАННО (capHistogram): OTLP-контракт —
+// len(bucket_counts) = len(explicit_bounds)+1, и его читает histogramQuantile:
+// границ не больше maxHistogramBuckets, счётчиков — на один больше.
 const maxHistogramBuckets = 512
 
 func MapOTLP(resourceMetrics []*metricspb.ResourceMetrics, fallbackTS time.Time) []MetricPoint {
@@ -68,9 +70,12 @@ func mapMetric(out []MetricPoint, m *metricspb.Metric, service, environment, hos
 	// чтобы одна метрика не раздувала CH-колонки metric_points.
 	name, unit := capRunes(m.GetName(), 200), capRunes(m.GetUnit(), 200)
 	base := func(ts uint64, attrs []*commonpb.KeyValue, typ string) (MetricPoint, bool) {
-		t, ok := pointTime(ts, fallbackTS)
+		t, ahead, ok := pointTime(ts, fallbackTS)
 		if !ok {
 			return MetricPoint{}, false
+		}
+		if ahead > 0 {
+			clockSkew.note(ahead, host, fallbackTS)
 		}
 		return MetricPoint{
 			Name: name, Type: typ, Unit: unit, Service: service, Environment: environment, Host: host,
@@ -133,8 +138,7 @@ func mapMetric(out []MetricPoint, m *metricspb.Metric, service, environment, hos
 			}
 			p.Value = sum
 			p.Count = dp.GetCount()
-			p.BucketCounts = capBuckets(dp.GetBucketCounts())
-			p.ExplicitBounds = capBounds(dp.GetExplicitBounds())
+			p.BucketCounts, p.ExplicitBounds = capHistogram(dp.GetBucketCounts(), dp.GetExplicitBounds())
 			p.Temporality = temp
 			out = append(out, p)
 		}
@@ -176,21 +180,33 @@ func capRunes(s string, n int) string {
 	return string(r[:n])
 }
 
-// capBuckets/capBounds обрезают массивы гистограммы до maxHistogramBuckets перед
-// записью (см. константу). Отдельные функции, а не дженерик, — типы разные и код
-// тривиален; срез разделяет память исходного массива, лишнее просто не читается.
-func capBuckets(b []uint64) []uint64 {
-	if len(b) > maxHistogramBuckets {
-		return b[:maxHistogramBuckets]
+// capHistogram обрезает массивы гистограммы перед записью: границы — до
+// maxHistogramBuckets, счётчики — до maxHistogramBuckets+1, чтобы OTLP-инвариант
+// len(counts) == len(bounds)+1 пережил обрезку. Раньше оба массива резались
+// порознь по одному лимиту, и у гистограммы длиннее потолка счётчиков
+// становилось столько же, сколько границ: последний (бесконечный) бакет
+// пропадал, а histogramQuantile, считающий бакеты по контракту, читал границы
+// со сдвигом. Хвост счётчиков не выбрасывается, а складывается в последний
+// оставшийся бакет: после обрезки он и есть (bounds[N-1], +inf), и всё, что
+// лежало выше отрезанных границ, по определению попадает именно в него —
+// сумма наблюдений сохраняется, квантили выше потолка честно упираются в
+// последнюю границу. Срезы без обрезки разделяют память исходного массива;
+// при обрезке счётчики копируются, чтобы не портить входной протобуф.
+func capHistogram(counts []uint64, bounds []float64) ([]uint64, []float64) {
+	if len(bounds) > maxHistogramBuckets {
+		bounds = bounds[:maxHistogramBuckets]
 	}
-	return b
-}
-
-func capBounds(b []float64) []float64 {
-	if len(b) > maxHistogramBuckets {
-		return b[:maxHistogramBuckets]
+	if len(counts) > maxHistogramBuckets+1 {
+		capped := make([]uint64, maxHistogramBuckets+1)
+		copy(capped, counts[:maxHistogramBuckets])
+		var tail uint64
+		for _, c := range counts[maxHistogramBuckets:] {
+			tail += c
+		}
+		capped[maxHistogramBuckets] = tail
+		counts = capped
 	}
-	return b
+	return counts, bounds
 }
 
 // numberValue достаёт значение скалярной точки (double или int); NaN/Inf → false.
@@ -290,27 +306,104 @@ func attrString(v *commonpb.AnyValue) string {
 	return ""
 }
 
-// Окно допустимых таймстемпов метрик: [now-90d, now+1d]. Как у событий/трасс
+// Окно допустимых таймстемпов метрик: [now-90d, now]. Как у событий/трасс
 // (см. ingest/timestamp.go), защищает партиции metric_points (PARTITION BY
 // toYYYYMM(ts)) от флуда точками, разнесёнными по десяткам месяцев в одном батче.
+// Верхней границы с допуском нет: любое будущее приводится к моменту приёма
+// (см. pointTime).
+const maxPointAge = 90 * 24 * time.Hour
+
+// clockSkewLogThreshold — опережение, начиная с которого клэмп попадает в лог.
+// Сетевой джиттер и округление таймера экспортёра дают опережение в
+// миллисекунды; клэмпить и считать их нужно, а писать в лог — нет.
+// clockSkewLogInterval — не чаще одной записи в лог на процесс за этот период.
 const (
-	maxPointAge    = 90 * 24 * time.Hour
-	maxPointFuture = 24 * time.Hour
+	clockSkewLogThreshold = time.Minute
+	clockSkewLogInterval  = time.Minute
 )
 
+// clockSkewStats — процесс-локальный учёт точек, пришедших со временем из
+// будущего и приведённых к моменту приёма (K3-1). Без блокировок и без меток:
+// имя хоста — высокая кардинальность, ему место в логе, а не в self-метрике.
+type clockSkewStats struct {
+	total    atomic.Uint64 // всего клэмпнутых точек с начала процесса (self-метрика)
+	pending  atomic.Uint64 // клэмпнуто с момента последней записи в лог
+	maxAhead atomic.Int64  // максимальное опережение (нс) с момента последней записи в лог
+	lastLog  atomic.Int64  // unix-наносекунды последней записи в лог; 0 — ещё не писали
+}
+
+var clockSkew clockSkewStats
+
+// note учитывает одну клэмпнутую точку с опережением ahead. В лог попадает
+// только опережение не меньше clockSkewLogThreshold и не чаще
+// clockSkewLogInterval на процесс: запись забирает накопленное «сколько и
+// насколько» с прошлой записи, так что редкий лог остаётся полным отчётом, а
+// не выборкой одной точки. Право на запись берётся CAS'ом по lastLog —
+// параллельные приёмники не напишут её дважды.
+func (s *clockSkewStats) note(ahead time.Duration, host string, now time.Time) {
+	s.total.Add(1)
+	s.pending.Add(1)
+	for {
+		cur := s.maxAhead.Load()
+		if int64(ahead) <= cur || s.maxAhead.CompareAndSwap(cur, int64(ahead)) {
+			break
+		}
+	}
+	if ahead < clockSkewLogThreshold {
+		return
+	}
+	last := s.lastLog.Load()
+	if last != 0 && now.UnixNano()-last < int64(clockSkewLogInterval) {
+		return
+	}
+	if !s.lastLog.CompareAndSwap(last, now.UnixNano()) {
+		return
+	}
+	slog.Warn("metric ingest: points with a timestamp from the future were clamped to the receive time",
+		"points", s.pending.Swap(0), "max_ahead", time.Duration(s.maxAhead.Swap(0)), "host", host)
+}
+
+// ClockSkewPoints — снимок счётчика точек, пришедших со временем из будущего
+// и приведённых к моменту приёма, с начала процесса. Потокобезопасно и дёшево —
+// self-метрика main читает его как func() int64 при каждом снятии показаний.
+func ClockSkewPoints() int64 {
+	return int64(clockSkew.total.Load())
+}
+
 // pointTime переводит наносекунды OTLP в момент времени. Возвращает ok=false для
-// мусора: ns > MaxInt64 (не влезает в int64) и времени вне окна ретенции — такие
-// точки писатель пропускает. ns == 0 (поле не заполнено) → fallback, ok=true.
-func pointTime(ns uint64, fallback time.Time) (time.Time, bool) {
+// мусора: ns > MaxInt64 (не влезает в int64) и времени старше окна ретенции —
+// такие точки писатель пропускает. ns == 0 (поле не заполнено) → fallback.
+//
+// Время из будущего не дропается и не принимается как есть, а КЛЭМПИТСЯ к
+// fallback (момент приёма); ahead > 0 говорит, на сколько точка опережала.
+// Раньше будущее до суток принималось как есть, а дальше — дропалось. Но все
+// читатели режут окно по часам сервера (host/evaluator.go, metric/query.go —
+// ts < now), и принятая «как есть» точка из будущего для них равна
+// потерянной: хост со спешащими на минуты часами молча не существовал для
+// порогового эвалюатора и графиков, пока его точки не «дозревали». Клэмп
+// делает данные видимыми сразу, а расхождение часов — наблюдаемым: счётчик
+// gotcha_metric_points_clock_skew_total и лог (clockSkewStats).
+//
+// Порядок точек одной серии при клэмпе сохраняется МЕЖДУ батчами (момент
+// приёма растёт монотонно), но не ВНУТРИ батча: несколько опережающих точек
+// одной серии в одном запросе ложатся на один и тот же fallback и становятся
+// неразличимы по ts. Единственное практическое следствие — агрегат last
+// (query.go, argMax(value, ts)) при такой ничьей выберет любую из них.
+// Штатный Go-агент шлёт одну точку на серию в батче, так что случай — это
+// сторонние экспортёры с буферизацией и спешащими часами одновременно.
+func pointTime(ns uint64, fallback time.Time) (ts time.Time, ahead time.Duration, ok bool) {
 	if ns == 0 {
-		return fallback, true
+		return fallback, 0, true
 	}
 	if ns > math.MaxInt64 {
-		return time.Time{}, false
+		return time.Time{}, 0, false
 	}
-	ts := time.Unix(0, int64(ns)).UTC()
-	if ts.Before(fallback.Add(-maxPointAge)) || ts.After(fallback.Add(maxPointFuture)) {
-		return time.Time{}, false
+	ts = time.Unix(0, int64(ns)).UTC()
+	if ts.Before(fallback.Add(-maxPointAge)) {
+		return time.Time{}, 0, false
 	}
-	return ts, true
+	if ts.After(fallback) {
+		return fallback, ts.Sub(fallback), true
+	}
+	return ts, 0, true
 }

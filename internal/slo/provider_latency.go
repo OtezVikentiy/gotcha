@@ -23,6 +23,23 @@ func NewLatencyProvider(q *trace.Query, maint *uptime.Service, retentionDays int
 }
 
 func (p *LatencyProvider) Buckets(ctx context.Context, s SLO, from, to time.Time, step time.Duration) ([]Bucket, error) {
+	bs, err := p.rawBuckets(ctx, s, from, to, step)
+	if err != nil {
+		return nil, err
+	}
+	return excludeMaintenance(ctx, p.maint, s.ProjectID, bs, from, to, step), nil
+}
+
+func (p *LatencyProvider) BucketsExcluding(ctx context.Context, s SLO, from, to time.Time, step time.Duration, windows []uptime.Window) ([]Bucket, error) {
+	bs, err := p.rawBuckets(ctx, s, from, to, step)
+	if err != nil {
+		return nil, err
+	}
+	return excludeWindows(windows, bs, from, to, step), nil
+}
+
+// rawBuckets — корзины из ClickHouse до вырезания окон обслуживания.
+func (p *LatencyProvider) rawBuckets(ctx context.Context, s SLO, from, to time.Time, step time.Duration) ([]Bucket, error) {
 	// Порог мс → мкс (duration_us в CH). ThresholdMS ≤ 0 → порог 0: ни одна
 	// транзакция не быстрее (good=0). Это следствие конфигурации SLO, а не
 	// ошибка провайдера — валидация порога живёт на слое формы.
@@ -34,8 +51,7 @@ func (p *LatencyProvider) Buckets(ctx context.Context, s SLO, from, to time.Time
 	if err != nil {
 		return nil, err
 	}
-	bs := convertTraceBuckets(cbs)
-	return excludeMaintenance(ctx, p.maint, s.ProjectID, bs, from, to, step), nil
+	return convertTraceBuckets(cbs), nil
 }
 
 func (p *LatencyProvider) RetentionCap() time.Duration { return retentionCap(p.retentionDays) }

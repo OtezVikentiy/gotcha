@@ -83,23 +83,30 @@ func (s Settings) KindEnabled(kind string) (enabled, ok bool) {
 // Границы валидации — различимые ошибки, чтобы вызывающий (FormState) знал,
 // какое конкретно поле подсветить.
 var (
-	ErrInvalidDiskThreshold   = errors.New("host: disk threshold must be in (0, 1]")
-	ErrInvalidMemoryThreshold = errors.New("host: memory threshold must be in (0, 1]")
+	ErrInvalidDiskThreshold   = errors.New("host: disk threshold must be in (0, 1)")
+	ErrInvalidMemoryThreshold = errors.New("host: memory threshold must be in (0, 1)")
 	ErrInvalidLoadThreshold   = errors.New("host: load threshold must be > 0")
 	ErrInvalidSilentAfter     = errors.New("host: silent after must be between 180s and 12h")
 )
 
-// Validate проверяет Settings на те же границы, что и CHECK'и миграции
-// 0065 (плюс MinSilentAfter — семантический инвариант, не выразимый в
-// CHECK на секундах без потери читаемости). Значения ВЫКЛЮЧЕННЫХ порогов
-// (Enabled=false) проверяются наравне с включёнными: сохранённое, но
-// временно выключенное значение должно быть валидным само по себе — иначе
-// включение порога назад без повторного ввода тихо активирует мусор.
+// Validate проверяет Settings на границы CHECK'ов миграции 0065, ужесточённые
+// там, где CHECK пропускает значение, которое логика оценки использовать не
+// может. Диск и память — строго (0, 1): applyDecision сравнивает метрику с
+// порогом через metric.Decide "gt" (строго «больше»), а занятость диска и
+// памяти — доля, не превышающая 1.0, поэтому порог 1.0 (100%) не сработал бы
+// никогда — правило выглядело бы включённым, но было бы мёртвым. CHECK в БД
+// (<= 1) остаётся шире валидатора намеренно: уже сохранённые 1.0 не мигрируем,
+// такие строки читаются как есть и получают ошибку при следующем сохранении
+// формы. MinSilentAfter — семантический инвариант, не выразимый в CHECK на
+// секундах без потери читаемости. Значения ВЫКЛЮЧЕННЫХ порогов (Enabled=false)
+// проверяются наравне с включёнными: сохранённое, но временно выключенное
+// значение должно быть валидным само по себе — иначе включение порога назад
+// без повторного ввода тихо активирует мусор.
 func Validate(s Settings) error {
-	if s.DiskThreshold <= 0 || s.DiskThreshold > 1 {
+	if s.DiskThreshold <= 0 || s.DiskThreshold >= 1 {
 		return fmt.Errorf("%w: got %v", ErrInvalidDiskThreshold, s.DiskThreshold)
 	}
-	if s.MemoryThreshold <= 0 || s.MemoryThreshold > 1 {
+	if s.MemoryThreshold <= 0 || s.MemoryThreshold >= 1 {
 		return fmt.Errorf("%w: got %v", ErrInvalidMemoryThreshold, s.MemoryThreshold)
 	}
 	if s.LoadThreshold <= 0 {

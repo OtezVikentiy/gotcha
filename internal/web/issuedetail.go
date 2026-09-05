@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -87,48 +88,55 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events, err := h.Events.EventsForIssue(r.Context(), it.ProjectID, it.ID, issueEventsLimit)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-
 	tr := h.resolveTimeRange(w, r, "7d")
 	step := autoStep(tr.Window(), 5*time.Minute, 0, issueChartBuckets)
-	points, err := h.Events.Series(r.Context(), it.ProjectID, it.ID, tr.From, tr.To, step)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
+	selectedID := r.URL.Query().Get("event")
+
+	// Все чтения ClickHouse карточки (события, график, выбранное событие) —
+	// одним блоком: отказ хранилища не роняет страницу (единый приём
+	// CH-страниц, образец — logsList), шапка, статус и участники (PostgreSQL)
+	// остаются, на месте графика и событий — «данные временно недоступны».
+	// Первый отказ прекращает опрос хранилища.
+	var (
+		events   []event.Stored
+		points   []event.Point
+		selected *event.Stored
+		frames   []templates.Frame
+	)
+	loadErr := func() error {
+		var err error
+		if events, err = h.Events.EventsForIssue(r.Context(), it.ProjectID, it.ID, issueEventsLimit); err != nil {
+			return err
+		}
+		if points, err = h.Events.Series(r.Context(), it.ProjectID, it.ID, tr.From, tr.To, step); err != nil {
+			return err
+		}
+		if selectedID != "" {
+			if _, err := uuid.Parse(selectedID); err == nil {
+				ev, found, err := h.Events.EventByID(r.Context(), it.ProjectID, selectedID)
+				if err != nil {
+					return err
+				}
+				if found {
+					selected = &ev
+					frames = parseStacktraceFrames(ev.Stacktrace)
+				}
+			}
+		}
+		return nil
+	}()
+	loadFailed := loadErr != nil
+	if loadFailed {
+		slog.Warn("issues: detail events failed", "project_id", it.ProjectID, "issue_id", it.ID, "err", loadErr)
+		events, points, selected, frames = nil, nil, nil, nil
 	}
-	// Дозаполняем пустые корзины по всему окну, чтобы ось X частотного графика
-	// шла по выбранному интервалу, а не только по диапазону с данными.
+	// Дозаполняем окно пустыми корзинами, чтобы ось шла по выбранному
+	// интервалу целиком.
 	points = fillSeries(points, tr.From, tr.To, step,
 		func(p event.Point) time.Time { return p.T },
 		func(t time.Time) event.Point { return event.Point{T: t} })
 	chart := chartSVG(r.Context(), points, chartWidth, chartHeight)
 
-	selectedID := r.URL.Query().Get("event")
-	var selected *event.Stored
-	var frames []templates.Frame
-	if selectedID != "" {
-		// Validate event ID is a valid UUID before calling EventByID.
-		// On parse failure, treat as no selection (degrade gracefully).
-		if _, err := uuid.Parse(selectedID); err == nil {
-			ev, found, err := h.Events.EventByID(r.Context(), it.ProjectID, selectedID)
-			if err != nil {
-				h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-				return
-			}
-			if found {
-				selected = &ev
-				frames = parseStacktraceFrames(ev.Stacktrace)
-			}
-		}
-	}
-	// По умолчанию (нет ?event= или выбранное событие устарело/удалено)
-	// показываем последнее событие: стектрейс и структурированные данные
-	// видны сразу при открытии issue, без явного клика — как в Sentry/
-	// GlitchTip. events отсортированы timestamp DESC, значит [0] — свежайшее.
 	if selected == nil && len(events) > 0 {
 		selected = &events[0]
 		selectedID = events[0].ID
@@ -180,7 +188,7 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	canManagePII := role == org.RoleOwner || role == org.RoleAdmin
 
-	_ = templates.IssueDetail(it, members, chart, timeRangeVM(tr), events, selectedID, selected, frames, h.currentEmail(r), hasTrace, showAllFrames, copyMD, copyTXT, exportsEnabled, canManagePII).Render(r.Context(), w)
+	_ = templates.IssueDetail(it, members, chart, timeRangeVM(tr), events, selectedID, selected, frames, h.currentEmail(r), hasTrace, showAllFrames, copyMD, copyTXT, exportsEnabled, canManagePII, loadFailed).Render(r.Context(), w)
 }
 
 // issueSetStatus — POST /issues/{id}/status: status=unresolved|resolved|ignored
@@ -199,14 +207,13 @@ func (h *Handler) issueSetStatus(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	status := r.FormValue("status")
 	if err := h.Issues.SetStatus(r.Context(), it.ID, status); err != nil {
 		if errors.Is(err, issue.ErrInvalidStatus) {
-			http.Error(w, "bad status", http.StatusUnprocessableEntity)
+			h.renderError(w, r, http.StatusUnprocessableEntity, i18n.T(r.Context(), "error.issue.invalid_status"))
 			return
 		}
 		if errors.Is(err, issue.ErrNotFound) {
@@ -216,6 +223,7 @@ func (h *Handler) issueSetStatus(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	h.flashOK(w, "flash.issue_status_saved", 0)
 	http.Redirect(w, r, issueDetailPath(it.ID), http.StatusSeeOther)
 }
 
@@ -236,8 +244,7 @@ func (h *Handler) issueAssign(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 
@@ -246,7 +253,7 @@ func (h *Handler) issueAssign(w http.ResponseWriter, r *http.Request) {
 	if raw != "" {
 		id, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil {
-			http.Error(w, "bad assignee", http.StatusUnprocessableEntity)
+			h.renderError(w, r, http.StatusUnprocessableEntity, i18n.T(r.Context(), "error.bad_request"))
 			return
 		}
 		orgID, err := h.Org.ProjectOrg(r.Context(), it.ProjectID)
@@ -260,7 +267,7 @@ func (h *Handler) issueAssign(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !isOrgMember(members, id) {
-			http.Error(w, "assignee is not a member of the project's organization", http.StatusUnprocessableEntity)
+			h.renderError(w, r, http.StatusUnprocessableEntity, i18n.T(r.Context(), "error.issue.assignee_not_member"))
 			return
 		}
 		assigneeID = &id
@@ -273,6 +280,12 @@ func (h *Handler) issueAssign(w http.ResponseWriter, r *http.Request) {
 		}
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
+	}
+	// Flash различает назначение и снятие ответственного (K7-9).
+	if assigneeID != nil {
+		h.flashOK(w, "flash.issue_assigned", 0)
+	} else {
+		h.flashOK(w, "flash.issue_unassigned", 0)
 	}
 	http.Redirect(w, r, issueDetailPath(it.ID), http.StatusSeeOther)
 }

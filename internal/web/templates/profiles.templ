@@ -29,7 +29,9 @@ func profileFlameLink(projectID int64, s profile.ServiceInfo, rng TimeRangeVM, e
 }
 
 // ProfilesList — GET /projects/{id}/profiles: группы профилей за период.
-templ ProfilesList(projectID int64, services []profile.ServiceInfo, rng TimeRangeVM, environment, userEmail string) {
+// loadFailed — ClickHouse не ответил: фильтры на месте, вместо списка —
+// «данные временно недоступны».
+templ ProfilesList(projectID int64, services []profile.ServiceInfo, rng TimeRangeVM, environment, userEmail string, loadFailed bool) {
 	@layout(i18n.T(ctx, "nav.profiles"), userEmail) {
 		<div class="profiles">
 			<h1>{ i18n.T(ctx, "nav.profiles") }</h1>
@@ -45,7 +47,9 @@ templ ProfilesList(projectID int64, services []profile.ServiceInfo, rng TimeRang
 				@timeRangeFields(rng)
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "perf.filter.apply") }</button>
 			</form>
-			if len(services) == 0 {
+			if loadFailed {
+				@emptyState("activity", "profiles.error.title", "profiles.error.body", "", "", 2)
+			} else if len(services) == 0 {
 				@emptyState("activity", "profiles.empty.title", "profiles.empty.body", "profiles.empty.cta", "/docs/profiling", 2)
 			} else {
 				<div class="card">
@@ -157,6 +161,9 @@ type ProfileFlameVM struct {
 	Environment string
 	Range       TimeRangeVM
 	Chart       templ.Component
+	// LoadFailed — ClickHouse не ответил: вместо флеймграфа — «данные
+	// временно недоступны», фильтры и крошка остаются.
+	LoadFailed bool
 	// HasData — в дереве есть сэмплы; без них график — плейсхолдер, и
 	// подсказка про клик по кадру была бы не к месту.
 	HasData bool
@@ -169,7 +176,10 @@ templ ProfileFlame(vm ProfileFlameVM, userEmail string) {
 			@breadcrumbBackTo(templ.URL(profilesBasePath(vm.ProjectID)), i18n.T(ctx, "nav.profiles"))
 			<h1>{ i18n.T(ctx, "profiles.flame.title") }</h1>
 			<p class="metric-meta">
-				{ profileDisplayService(vm.Service) } · { vm.Type }
+				{ profileDisplayService(vm.Service) }
+				if vm.Type != "" {
+					· { vm.Type }
+				}
 				if vm.Transaction != "" {
 					· { vm.Transaction }
 				}
@@ -186,11 +196,15 @@ templ ProfileFlame(vm ProfileFlameVM, userEmail string) {
 				@timeRangeFields(vm.Range)
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "perf.filter.apply") }</button>
 			</form>
-			@scrollRegion("card flamegraph-wrap", "profiles.flame.title") {
-				@vm.Chart
-			}
-			if vm.HasData {
-				<p class="hint">{ i18n.T(ctx, "profile.flame.hint") }</p>
+			if vm.LoadFailed {
+				@emptyState("activity", "profiles.error.title", "profiles.error.body", "", "", 2)
+			} else {
+				@scrollRegion("card flamegraph-wrap", "profiles.flame.title") {
+					@vm.Chart
+				}
+				if vm.HasData {
+					<p class="hint">{ i18n.T(ctx, "profile.flame.hint") }</p>
+				}
 			}
 		</div>
 	}

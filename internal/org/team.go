@@ -120,26 +120,39 @@ func (s *Service) TeamOrg(ctx context.Context, teamID int64) (int64, error) {
 // Роль берётся из членства в организации (team_members сама роли не хранит —
 // участие в команде без участия в организации невозможно, см. AddTeamMember).
 func (s *Service) TeamMembers(ctx context.Context, teamID int64) ([]Member, error) {
+	byTeam, err := s.TeamMembersOf(ctx, []int64{teamID})
+	if err != nil {
+		return nil, err
+	}
+	return byTeam[teamID], nil
+}
+
+// TeamMembersOf — TeamMembers для нескольких команд одним запросом: ключ —
+// id команды, порядок внутри команды тот же (по email). Команда без участников
+// в карте отсутствует. Страница команд организации грузит так все команды
+// разом, а не по запросу на строку.
+func (s *Service) TeamMembersOf(ctx context.Context, teamIDs []int64) (map[int64][]Member, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT u.id, u.email, m.role
+		SELECT tm.team_id, u.id, u.email, m.role
 		FROM team_members tm
 		JOIN teams t ON t.id = tm.team_id
 		JOIN users u ON u.id = tm.user_id
 		JOIN org_members m ON m.org_id = t.org_id AND m.user_id = u.id
-		WHERE tm.team_id = $1
-		ORDER BY u.email`, teamID)
+		WHERE tm.team_id = ANY($1)
+		ORDER BY tm.team_id, u.email`, teamIDs)
 	if err != nil {
 		return nil, fmt.Errorf("org: team members: %w", err)
 	}
 	defer rows.Close()
 
-	var out []Member
+	out := make(map[int64][]Member)
 	for rows.Next() {
+		var teamID int64
 		var m Member
-		if err := rows.Scan(&m.UserID, &m.Email, &m.Role); err != nil {
+		if err := rows.Scan(&teamID, &m.UserID, &m.Email, &m.Role); err != nil {
 			return nil, fmt.Errorf("org: team members: %w", err)
 		}
-		out = append(out, m)
+		out[teamID] = append(out[teamID], m)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("org: team members: %w", err)
@@ -149,24 +162,36 @@ func (s *Service) TeamMembers(ctx context.Context, teamID int64) ([]Member, erro
 
 // TeamProjects возвращает проекты, к которым у команды есть доступ.
 func (s *Service) TeamProjects(ctx context.Context, teamID int64) ([]Project, error) {
+	byTeam, err := s.TeamProjectsOf(ctx, []int64{teamID})
+	if err != nil {
+		return nil, err
+	}
+	return byTeam[teamID], nil
+}
+
+// TeamProjectsOf — TeamProjects для нескольких команд одним запросом: ключ —
+// id команды, порядок внутри команды тот же (по id проекта). Команда без
+// проектов в карте отсутствует (см. TeamMembersOf).
+func (s *Service) TeamProjectsOf(ctx context.Context, teamIDs []int64) (map[int64][]Project, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT p.id, p.org_id, p.slug, p.name, p.platform
+		SELECT pt.team_id, p.id, p.org_id, p.slug, p.name, p.platform
 		FROM project_teams pt
 		JOIN projects p ON p.id = pt.project_id
-		WHERE pt.team_id = $1
-		ORDER BY p.id`, teamID)
+		WHERE pt.team_id = ANY($1)
+		ORDER BY pt.team_id, p.id`, teamIDs)
 	if err != nil {
 		return nil, fmt.Errorf("org: team projects: %w", err)
 	}
 	defer rows.Close()
 
-	var out []Project
+	out := make(map[int64][]Project)
 	for rows.Next() {
+		var teamID int64
 		var p Project
-		if err := rows.Scan(&p.ID, &p.OrgID, &p.Slug, &p.Name, &p.Platform); err != nil {
+		if err := rows.Scan(&teamID, &p.ID, &p.OrgID, &p.Slug, &p.Name, &p.Platform); err != nil {
 			return nil, fmt.Errorf("org: team projects: %w", err)
 		}
-		out = append(out, p)
+		out[teamID] = append(out[teamID], p)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("org: team projects: %w", err)

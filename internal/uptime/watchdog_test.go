@@ -3,11 +3,14 @@ package uptime_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
@@ -645,5 +648,191 @@ func TestWatchdogSSLCheckBudgetAbortsHungCheck(t *testing.T) {
 	}
 	if !strings.Contains(out, "context deadline exceeded") {
 		t.Errorf("лог не называет причиной истечение бюджета (context deadline exceeded):\n%s", out)
+	}
+}
+
+// reminderMonitor — монитор с напоминаниями раз в 10 минут и уже открытым,
+// доставленным (notified_open) инцидентом, отодвинутым на 30 минут назад:
+// напоминание по нему созрело сразу. Общая заготовка тестов напоминаний.
+func reminderMonitor(t *testing.T, ctx context.Context, pool *pgxpool.Pool, svc *uptime.Service, d *uptime.Detector, pid int64) uptime.Monitor {
+	t.Helper()
+	m := baseHTTPMonitor(pid)
+	m.FailThreshold = 1
+	m.RemindEveryMinutes = 10
+	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
+	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
+	applyAndDetect(t, ctx, svc, d, created, "local", false, "boom", time.Now().UTC(), nil)
+	inc := assertOpenIncident(t, ctx, svc, created.ID)
+	if inc.InMaintenance {
+		t.Fatalf("incident opened with in_maintenance=true, want the snapshot to say false (no window at open time)")
+	}
+	if _, err := pool.Exec(ctx,
+		"UPDATE incidents SET started_at = started_at - interval '30 minutes' WHERE monitor_id = $1 AND resolved_at IS NULL",
+		created.ID); err != nil {
+		t.Fatalf("backdate incident: %v", err)
+	}
+	return created
+}
+
+// dueReminderIDs — идентификаторы инцидентов, которые IncidentsDueForReminder
+// считает созревшими прямо сейчас.
+func dueReminderIDs(t *testing.T, ctx context.Context, svc *uptime.Service) map[int64]bool {
+	t.Helper()
+	items, err := svc.IncidentsDueForReminder(ctx)
+	if err != nil {
+		t.Fatalf("IncidentsDueForReminder: %v", err)
+	}
+	ids := map[int64]bool{}
+	for _, it := range items {
+		ids[it.Incident.ID] = true
+	}
+	return ids
+}
+
+// TestRemindersSkippedDuringMaintenanceWindow (K2-1): окно обслуживания,
+// начавшееся ПОСЛЕ открытия инцидента, глушит напоминания живой проверкой
+// Watchdog.Maint — снимок in_maintenance=false этого окна не видит. Пока окно
+// идёт, напоминание не уходит и last_reminded_at не двигается (клейма нет);
+// как только окно снято, напоминание уходит первым же тиком. Два монитора в
+// одном проекте — чтобы проход прошёл и через живой вызов InMaintenance, и
+// через кэш решения на тик.
+func TestRemindersSkippedDuringMaintenanceWindow(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	notifier := &fakeNotifier{}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
+	first := reminderMonitor(t, ctx, pool, svc, d, pid)
+	second := reminderMonitor(t, ctx, pool, svc, d, pid)
+
+	// Окно начинается после открытия инцидента: снимок остаётся false.
+	start := time.Now().UTC().Add(-time.Minute)
+	end := time.Now().UTC().Add(time.Hour)
+	w, err := svc.CreateWindow(ctx, uptime.Window{
+		ProjectID: pid, Name: "late window", StartsAt: &start, EndsAt: &end, Timezone: "UTC",
+	})
+	if err != nil {
+		t.Fatalf("CreateWindow: %v", err)
+	}
+
+	wd := fastWatchdog(svc, d, notifier)
+	wd.Maint = svc
+	wctx, wcancel := context.WithCancel(ctx)
+	defer wcancel()
+	go wd.Run(wctx)
+
+	// Дождаться хотя бы одного завершённого прохода и дать ещё несколько.
+	waitForRunner(t, func() bool { return wd.LastTickUnix() != 0 })
+	time.Sleep(150 * time.Millisecond)
+
+	if got := notifier.kindEvents("reminder"); len(got) != 0 {
+		t.Fatalf("reminder events during maintenance window = %d, want 0 (live window check must skip them)", len(got))
+	}
+	for _, mon := range []uptime.Monitor{first, second} {
+		inc := assertOpenIncident(t, ctx, svc, mon.ID)
+		if inc.LastRemindedAt != nil {
+			t.Fatalf("monitor %d: LastRemindedAt = %v during maintenance window, want nil (no claim while skipped)", mon.ID, inc.LastRemindedAt)
+		}
+	}
+
+	// Окно снято — напоминания уходят следующим тиком, по одному на инцидент.
+	if err := svc.DeleteWindow(ctx, w.ID, pid); err != nil {
+		t.Fatalf("DeleteWindow: %v", err)
+	}
+	waitForRunner(t, func() bool { return len(notifier.kindEvents("reminder")) >= 2 })
+	wcancel()
+
+	reminders := notifier.kindEvents("reminder")
+	if len(reminders) != 2 {
+		t.Fatalf("reminder events after window = %d, want 2: %+v", len(reminders), reminders)
+	}
+	for _, mon := range []uptime.Monitor{first, second} {
+		inc := assertOpenIncident(t, ctx, svc, mon.ID)
+		if inc.LastRemindedAt == nil {
+			t.Fatalf("monitor %d: LastRemindedAt is nil after window ended, want it set", mon.ID)
+		}
+	}
+}
+
+// failingMaint — проверка окна, которая всегда падает.
+type failingMaint struct{}
+
+func (failingMaint) InMaintenance(context.Context, int64, time.Time) (bool, error) {
+	return false, errors.New("windows unavailable")
+}
+
+// TestRemindersSentWhenMaintenanceCheckFails (K2-1): ошибка живой проверки
+// окна НЕ глушит напоминание — отказ падает в сторону оповещения, не тишины
+// (см. докблок checkReminders), и пишется в журнал предупреждением.
+func TestRemindersSentWhenMaintenanceCheckFails(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	notifier := &fakeNotifier{}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
+	mon := reminderMonitor(t, ctx, pool, svc, d, pid)
+
+	var logs syncBuf
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(prev)
+
+	wd := fastWatchdog(svc, d, notifier)
+	wd.Maint = failingMaint{}
+	wctx, wcancel := context.WithCancel(ctx)
+	defer wcancel()
+	go wd.Run(wctx)
+
+	waitForRunner(t, func() bool { return len(notifier.kindEvents("reminder")) >= 1 })
+	wcancel()
+
+	if inc := assertOpenIncident(t, ctx, svc, mon.ID); inc.LastRemindedAt == nil {
+		t.Fatalf("LastRemindedAt is nil, want the reminder claimed despite the failing maintenance check")
+	}
+	if !strings.Contains(logs.String(), "maintenance check failed") {
+		t.Fatalf("log = %q, want a warning about the failed maintenance check", logs.String())
+	}
+}
+
+// TestRemindersSkippedForDisabledMonitor (K2-2): монитор на паузе не даёт
+// напоминаний по своему открытому инциденту, но инцидент при этом НЕ
+// закрывается; снятие паузы возвращает напоминание в выдачу.
+func TestRemindersSkippedForDisabledMonitor(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	notifier := &fakeNotifier{}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
+	mon := reminderMonitor(t, ctx, pool, svc, d, pid)
+	inc := assertOpenIncident(t, ctx, svc, mon.ID)
+
+	if !dueReminderIDs(t, ctx, svc)[inc.ID] {
+		t.Fatalf("incident %d not due for reminder while monitor enabled, want it listed", inc.ID)
+	}
+
+	if err := svc.SetEnabled(ctx, mon.ID, false); err != nil {
+		t.Fatalf("SetEnabled(false): %v", err)
+	}
+	if dueReminderIDs(t, ctx, svc)[inc.ID] {
+		t.Fatalf("incident %d due for reminder while monitor disabled, want it skipped", inc.ID)
+	}
+	if still := assertOpenIncident(t, ctx, svc, mon.ID); still.ID != inc.ID {
+		t.Fatalf("open incident after pause = %d, want the same %d (pause must not resolve it)", still.ID, inc.ID)
+	}
+
+	if err := svc.SetEnabled(ctx, mon.ID, true); err != nil {
+		t.Fatalf("SetEnabled(true): %v", err)
+	}
+	if !dueReminderIDs(t, ctx, svc)[inc.ID] {
+		t.Fatalf("incident %d not due for reminder after unpause, want it listed again", inc.ID)
 	}
 }

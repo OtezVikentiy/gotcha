@@ -76,9 +76,14 @@ func NewEventSource(q *event.Query, issues *issue.Service) EventSource {
 	return &eventSource{q: q, issues: issues, maxIssueIDs: defaultMaxIssueIDsForEventExport}
 }
 
-// Stream резолвит область выгрузки в список issue_id и стримит события
-// дальше как Record. Порядок строк — по StreamForExport (issue_id,
-// timestamp DESC), тот же, что и в источнике CH.
+// Stream резолвит область выгрузки в список issue_id (resolveIssueIDs:
+// IDsForFilter отдаёт его отсортированным по last_seen DESC, id DESC — самые
+// активные группы первыми) и стримит события дальше как Record. Порядок
+// строк — по StreamForExport: группами в порядке ЭТОГО списка, внутри
+// группы timestamp DESC (K4-2, аудит перед 1.0) — так усечение по
+// eventStreamSafetyLimit/бюджету заявки отбрасывает наименее активные
+// группы, а не произвольные (раньше StreamForExport сортировал по
+// возрастанию issue_id, не связанному с активностью группы).
 func (s *eventSource) Stream(ctx context.Context, projectID, scopeIssueID int64, includePII bool, p Params, fn func(Record) error) error {
 	issueIDs, err := s.resolveIssueIDs(ctx, projectID, scopeIssueID, p)
 	if err != nil {
@@ -101,6 +106,18 @@ func (s *eventSource) Stream(ctx context.Context, projectID, scopeIssueID int64,
 // CH-фильтр без похода в PG: заявка уже указывает конкретный id. «Проект с
 // фильтрами» — id резолвятся из PG тем же Filter, что видел пользователь на
 // экране списка issues (buildIssueFilter, общий с issue.List/StreamForExport).
+//
+// Отсечка StreamForExport по last_seen (рассматривалась, откачена в раунде
+// правок по ревью финревью волны 1 аудита перед 1.0) на этом уровне
+// бессмысленна: buildIssueFilter уже добавляет `issues.last_seen >= $n` из
+// ЭТОГО ЖЕ p.Since (см. Filter.Since ниже), когда он задан — то есть каждая
+// группа, доехавшая до issueIDs, УЖЕ имеет last_seen >= p.Since, и «отсечь
+// группы с last_seen < since» здесь не может сработать ни разу; при
+// p.Since нулевом граница вовсе не задаётся ни на одном уровне. Цена
+// пустых точечных запросов в StreamForExport (см. её докблок — 4.87мс на
+// пустой round-trip, ≈97с на потолке 20 000 групп) реальна, но не лечится
+// отсечкой НА ЭТОМ уровне — годного источника last_seen, который был бы
+// СТРОЖЕ уже применённого PG-фильтра, здесь нет.
 func (s *eventSource) resolveIssueIDs(ctx context.Context, projectID, scopeIssueID int64, p Params) ([]int64, error) {
 	if scopeIssueID != 0 {
 		return []int64{scopeIssueID}, nil

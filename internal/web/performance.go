@@ -1,6 +1,8 @@
 package web
 
 import (
+	"context"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -98,19 +100,14 @@ func (h *Handler) performanceList(w http.ResponseWriter, r *http.Request) {
 
 	from, now := tr.From, tr.To
 
-	stats, err := h.Trace.Endpoints(r.Context(), projectID, from, now, environment, int(project.ApdexThresholdMS))
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
+	// Отказ ClickHouse — НЕ 500: фильтры и оболочка остаются, на месте
+	// таблицы — «данные временно недоступны» (единый приём CH-страниц,
+	// образец — logsList). Первый отказ прекращает опрос хранилища.
+	stats, environments, latencyByTx, loadErr := h.performanceListData(r.Context(), projectID, from, now, tr.Window(), environment, sortKey, int(project.ApdexThresholdMS))
+	loadFailed := loadErr != nil
+	if loadFailed {
+		slog.Warn("perf: endpoints list failed", "project_id", projectID, "err", loadErr)
 	}
-
-	environments, err := h.Trace.Environments(r.Context(), projectID, from, now)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-
-	sortEndpointStats(stats, sortKey)
 
 	// Усечение до top-N ПОСЛЕ сортировки и ДО сборки спарклайнов: спарклайн
 	// каждой строки — отдельный CH-запрос, поэтому число строк ограничиваем
@@ -118,21 +115,6 @@ func (h *Handler) performanceList(w http.ResponseWriter, r *http.Request) {
 	total := len(stats)
 	if len(stats) > perfEndpointLimit {
 		stats = stats[:perfEndpointLimit]
-	}
-
-	// Спарклайн p95 на каждую строку — раньше это было по одному CH-запросу
-	// (EndpointLatency) на строку, до perfEndpointLimit последовательных
-	// round-trip'ов подряд на загрузку страницы. EndpointLatencyBatch читает все
-	// строки ОДНИМ запросом (WHERE transaction IN ?).
-	step := perfBucketStep(tr.Window(), perfSparklineBuckets)
-	transactions := make([]string, len(stats))
-	for i, st := range stats {
-		transactions[i] = st.Transaction
-	}
-	latencyByTx, err := h.Trace.EndpointLatencyBatch(r.Context(), projectID, transactions, from, now, step, environment)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
 	}
 	rows := make([]templates.EndpointRow, len(stats))
 	for i, st := range stats {
@@ -144,8 +126,43 @@ func (h *Handler) performanceList(w http.ResponseWriter, r *http.Request) {
 
 	filter := templates.PerfFilter{Range: timeRangeVM(tr), Environment: environment, Sort: sortKey}
 	_ = templates.PerformanceList(projectID, rows, total, filter, environments, int(project.ApdexThresholdMS),
-		h.cardinalityNotices(projectID), h.currentEmail(r)).
+		h.cardinalityNotices(projectID), h.currentEmail(r), loadFailed).
 		Render(r.Context(), w)
+}
+
+// performanceListData — чтения списка транзакций из ClickHouse: сводка по
+// эндпойнтам (уже отсортированная под sortKey), окружения и спарклайны.
+// Спарклайн p95 на каждую строку — раньше это было по одному CH-запросу
+// (EndpointLatency) на строку, до perfEndpointLimit последовательных
+// round-trip'ов подряд на загрузку страницы. EndpointLatencyBatch читает все
+// строки ОДНИМ запросом (WHERE transaction IN ?) по срезу первых
+// perfEndpointLimit транзакций. Первая же ошибка возвращается как есть —
+// вызывающий переводит страницу в состояние «данные недоступны».
+func (h *Handler) performanceListData(ctx context.Context, projectID int64, from, now time.Time, window time.Duration, environment, sortKey string, apdexT int) ([]trace.EndpointStat, []string, map[string][]trace.LatencyPoint, error) {
+	stats, err := h.Trace.Endpoints(ctx, projectID, from, now, environment, apdexT)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	environments, err := h.Trace.Environments(ctx, projectID, from, now)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	sortEndpointStats(stats, sortKey)
+
+	head := stats
+	if len(head) > perfEndpointLimit {
+		head = head[:perfEndpointLimit]
+	}
+	step := perfBucketStep(window, perfSparklineBuckets)
+	transactions := make([]string, len(head))
+	for i, st := range head {
+		transactions[i] = st.Transaction
+	}
+	latencyByTx, err := h.Trace.EndpointLatencyBatch(ctx, projectID, transactions, from, now, step, environment)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return stats, environments, latencyByTx, nil
 }
 
 // canonicalEndpointSort приводит query-параметр sort к фактически применяемой
@@ -239,37 +256,41 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 	from, now := tr.From, tr.To
 
 	step := perfBucketStep(tr.Window(), perfLatencyBuckets)
-	points, err := h.Trace.EndpointLatency(r.Context(), projectID, transaction, from, now, step, environment)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
+	// Все чтения ClickHouse этой страницы — одним блоком: отказ хранилища
+	// не роняет страницу (единый приём CH-страниц, образец — logsList), на
+	// месте графиков, виталов и медленных трейсов — «данные временно
+	// недоступны», шапка и связанные проблемы (PostgreSQL) остаются. Первый
+	// отказ прекращает опрос хранилища.
+	var (
+		points    []trace.LatencyPoint
+		histogram []trace.DurationBucket
+		slowest   []trace.TraceRow
+		vitals    []templates.VitalPanelRow
+	)
+	loadErr := func() error {
+		var err error
+		if points, err = h.Trace.EndpointLatency(r.Context(), projectID, transaction, from, now, step, environment); err != nil {
+			return err
+		}
+		// Дозаполняем окно пустыми корзинами (Count==0 — разрыв линии/нет
+		// столбика), чтобы оси латентности и трафика шли по выбранному
+		// интервалу целиком.
+		points = fillSeries(points, from, now, step,
+			func(p trace.LatencyPoint) time.Time { return p.T },
+			func(t time.Time) trace.LatencyPoint { return trace.LatencyPoint{T: t} })
+		if histogram, err = h.Trace.DurationHistogram(r.Context(), projectID, transaction, from, now, environment, perfHistogramBuckets); err != nil {
+			return err
+		}
+		if slowest, err = h.Trace.SlowestTraces(r.Context(), projectID, transaction, from, now, perfSlowestLimit); err != nil {
+			return err
+		}
+		vitals, err = h.vitalsPanel(r, projectID, transaction, from, now, tr.Window(), environment)
+		return err
+	}()
+	loadFailed := loadErr != nil
+	if loadFailed {
+		slog.Warn("perf: endpoint detail failed", "project_id", projectID, "transaction", transaction, "err", loadErr)
 	}
-	// Дозаполняем окно пустыми корзинами (Count==0 — разрыв линии/нет столбика),
-	// чтобы оси латентности и трафика шли по выбранному интервалу целиком.
-	points = fillSeries(points, from, now, step,
-		func(p trace.LatencyPoint) time.Time { return p.T },
-		func(t time.Time) trace.LatencyPoint { return trace.LatencyPoint{T: t} })
-
-	histogram, err := h.Trace.DurationHistogram(r.Context(), projectID, transaction, from, now, environment, perfHistogramBuckets)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-
-	slowest, err := h.Trace.SlowestTraces(r.Context(), projectID, transaction, from, now, perfSlowestLimit)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-	// Строки старше h.SpanRetentionDays честно остаются в списке (трейс правда
-	// был медленным — это данные, а не мусор), но ссылка на /traces/{id} для
-	// них ведёт в 404: spans для такого трейса уже вне TTL (transactions живёт
-	// дольше spans). Помечаем их здесь, а не в шаблоне — "сейчас" единственный
-	// раз берём из хендлера. h.SpanRetentionDays <= 0 — TTL не настроен (0 =
-	// вечно) или хендлер не в стенде, где его вообще проставляют: тогда мы не
-	// знаем момент истечения и НЕ помечаем ничего — ссылка остаётся живой
-	// (если спанов у трейса реально уже нет, /traces/{id} сам покажет
-	// «недоступны» по факту, а не по расчётной дате — см. traceWaterfall).
 	slowestRows := make([]templates.SlowestTraceRow, len(slowest))
 	if h.SpanRetentionDays > 0 {
 		cutoff := time.Now().Add(-time.Duration(h.SpanRetentionDays) * 24 * time.Hour)
@@ -306,12 +327,6 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 	// Панель Web Vitals (этап 4, план 2, задача 2): только если у транзакции
 	// есть хоть один web vital за период (иначе vitals == nil и панель не
 	// рендерится).
-	vitals, err := h.vitalsPanel(r, projectID, transaction, from, now, tr.Window(), environment)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-
 	// Маркеры деплоев на графиках латентности и трафика (C5): выкладки этого
 	// проекта в том же окне. nil-guard — стенды без деплоев не рисуют маркеров.
 	var deploys []deploy.Deployment
@@ -333,6 +348,7 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 		Slowest:      slowestRows,
 		PerfIssues:   perfIssues,
 		Vitals:       vitals,
+		LoadFailed:   loadFailed,
 	}
 	_ = templates.EndpointDetail(data, h.currentEmail(r)).Render(r.Context(), w)
 }

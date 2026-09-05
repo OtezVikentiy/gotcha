@@ -400,10 +400,44 @@ func (d *Detector) settleHeldIncident(ctx context.Context, m Monitor, inc Incide
 		d.notifyOpen(ctx, inc.ID, downEvent(m, inc, downRegions, cause))
 		return
 	}
-	if inc.SuppressedByDep || inc.InMaintenance || d.Dep == nil {
-		// уже подавлен / подавлен окном обслуживания (B3, BLOCKER-1: не
-		// воскрешать) / нет dep-сервиса — ничего не делаем.
+	if inc.InMaintenance || d.Dep == nil {
+		// подавлен окном обслуживания (B3, BLOCKER-1: не воскрешать) / нет
+		// dep-сервиса — ничего не делаем.
 		return
+	}
+	if inc.SuppressedByDep {
+		// K1-4 (аудит перед 1.0): раньше подавленный B5 инцидент молчал
+		// навсегда — писателя в suppressed_by_dep=false не было вовсе,
+		// и восстановление родителя не возобновляло эскалацию НИКОГДА, даже
+		// если родитель ожил через минуту после подавления. Теперь на
+		// каждом "всё ещё down" тике проверяем родителя заново; если он
+		// отпустил — снимаем подавление и проваливаемся в ОБЫЧНЫЙ путь
+		// settle (switch ниже): грейс проверяется по исходному
+		// inc.StartedAt — подавление это поле не трогает. Подавление
+		// (case down выше) срабатывает на первом же "всё ещё down" тике, БЕЗ
+		// проверки SettleGrace — значит ребёнок мог не отстоять свой грейс
+		// вовсе (blip родителя короче SettleGrace); уведомлять немедленно
+		// значило бы пейджить ровно тот шум, который грейс должен гасить.
+		down, err := d.Dep.ParentDown(ctx, "monitor", m.ID)
+		if err != nil {
+			slog.Warn("uptime: detector: dep ParentDown failed while releasing suppressed incident",
+				"monitor_id", m.ID, "incident_id", inc.ID, "error", err)
+			return
+		}
+		if down {
+			return // родитель всё ещё лежит — держим
+		}
+		if err := d.Svc.ClearSuppressedByDep(ctx, inc.ID); err != nil {
+			slog.Warn("uptime: detector: clear suppressed by dep failed",
+				"monitor_id", m.ID, "incident_id", inc.ID, "error", err)
+			return
+		}
+		slog.Info("uptime: dependency recovered, incident released", "incident_id", inc.ID, "monitor_id", m.ID)
+		// Дальше — обычный путь settle (switch ниже): грейс проверяется по
+		// inc.StartedAt (моменту, когда ЭТОТ инцидент открылся, до всякого
+		// подавления) — если ребёнок к этому моменту уже отстоял SettleGrace
+		// сам по себе, "down" уходит немедленно; если нет — держим до конца
+		// исходного грейса, как любой другой свежий held-инцидент.
 	}
 	down, err := d.Dep.ParentDown(ctx, "monitor", m.ID)
 	if err != nil {

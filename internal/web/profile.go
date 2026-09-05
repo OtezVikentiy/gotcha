@@ -15,9 +15,13 @@ import (
 
 // profileDelete — POST /profile/delete: самоудаление аккаунта (право субъекта на
 // удаление своих ПДн, 152-ФЗ ст.14 / GDPR art.17). Двухшаговое подтверждение,
-// как у delete-org (под CSP без inline-JS confirm() невозможен). auth.DeleteUser
+// как у delete-org (под CSP без inline-JS confirm() невозможен). auth.DeleteSelfAccount
 // каскадно (FK) удаляет личности/членства/сессии. Блокируется, если юзер —
-// единственный владелец каких-то организаций: иначе они остались бы без владельца.
+// единственный владелец каких-то организаций (иначе они остались бы без владельца),
+// либо если юзер — единственный администратор инстанса, А НА ИНСТАНСЕ ЕСТЬ ДРУГИЕ
+// ПОЛЬЗОВАТЕЛИ (K7-1: передать роль некому, SSO организаций осталась бы недоступна
+// никому). Если пользователь на инстансе один — гейт не срабатывает: запирать
+// некого, а первый следующий зарегистрировавшийся сам станет администратором.
 func (h *Handler) profileDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -40,6 +44,9 @@ func (h *Handler) profileDelete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if !h.parseForm(w, r) {
+		return
+	}
 	// Без confirmed=yes — страница подтверждения вместо удаления.
 	if r.FormValue("confirmed") != "yes" {
 		h.renderConfirm(w, r, "confirm.title", "confirm.account_delete.message",
@@ -47,22 +54,31 @@ func (h *Handler) profileDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Адрес читаем ДО удаления пользователя, а не после: currentEmail делает
-	// SELECT email FROM users WHERE id=$1, и после DeleteUser строки уже нет —
-	// запрос вернул бы пустую строку, а очистка приглашений ниже молча не
+	// SELECT email FROM users WHERE id=$1, и после DeleteSelfAccount строки уже
+	// нет — запрос вернул бы пустую строку, а очистка приглашений ниже молча не
 	// выполнялась бы вовсе (баг был именно таким: строку переставили под
-	// DeleteUser, и ветка не срабатывала ни разу). Если следующий читатель
+	// удаление, и ветка не срабатывала ни разу). Если следующий читатель
 	// снова передвинет чтение вниз «для симметрии» — тест
 	// TestProfileDeletePurgesPendingInvites это поймает.
 	var email string
 	if h.Org != nil {
 		email = h.currentEmail(r)
 	}
-	if token, ok := auth.ReadSessionToken(r, h.Secure); ok {
-		_ = h.Auth.DestroySession(r.Context(), token)
-	}
-	if err := h.Auth.DeleteUser(r.Context(), uid); err != nil {
+	// Гейт «единственный админ инстанса при наличии других пользователей»
+	// (K7-1) проверяется атомарно ВНУТРИ DeleteSelfAccount, в одной транзакции
+	// с самим удалением — поэтому сессию рвём только после успеха: иначе
+	// заблокированный гейтом админ терял бы сессию при попытке удаления,
+	// которая так и не состоялась.
+	if err := h.Auth.DeleteSelfAccount(r.Context(), uid); err != nil {
+		if errors.Is(err, auth.ErrInstanceAdminBlocked) {
+			h.renderError(w, r, http.StatusConflict, i18n.T(r.Context(), "profile.danger.delete_account.instance_admin"))
+			return
+		}
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
+	}
+	if token, ok := auth.ReadSessionToken(r, h.Secure); ok {
+		_ = h.Auth.DestroySession(r.Context(), token)
 	}
 	// Pending-инвайты на email пользователя не связаны с users по FK, поэтому
 	// каскад их не трогает — чистим отдельно (ПДн, минимизация). Best-effort:
@@ -121,6 +137,11 @@ func (h *Handler) renderProfile(w http.ResponseWriter, r *http.Request, status i
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	isInstanceAdmin, err := h.Auth.UserIsInstanceAdmin(r.Context(), uid)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
 	linked := make([]templates.LinkedIdentity, 0, len(ids))
 	linkedNames := make(map[string]bool, len(ids))
 	for _, id := range ids {
@@ -143,7 +164,7 @@ func (h *Handler) renderProfile(w http.ResponseWriter, r *http.Request, status i
 		}
 	}
 	w.WriteHeader(status)
-	_ = templates.Profile(email, errMsg, message, hasPassword, linked, linkable, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.Profile(email, errMsg, message, hasPassword, linked, linkable, isInstanceAdmin, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // providerDisplayName — человекочитаемое имя провайдера по локали зрителя
@@ -171,8 +192,7 @@ func (h *Handler) profileIdentityUnlink(w http.ResponseWriter, r *http.Request) 
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	provider := r.FormValue("provider")
@@ -220,8 +240,7 @@ func (h *Handler) profilePasswordSet(w http.ResponseWriter, r *http.Request) {
 		h.renderProfile(w, r, http.StatusTooManyRequests, uid, i18n.T(r.Context(), "err.auth.rate_limited"), "")
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	newPassword := r.FormValue("new")
@@ -266,8 +285,7 @@ func (h *Handler) profilePasswordSubmit(w http.ResponseWriter, r *http.Request) 
 		h.renderProfile(w, r, http.StatusTooManyRequests, uid, i18n.T(r.Context(), "err.auth.rate_limited"), "")
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	oldPassword := r.FormValue("old")
@@ -335,4 +353,55 @@ func (h *Handler) profileSessionsRevoke(w http.ResponseWriter, r *http.Request) 
 
 func revokedSessionsMessage(ctx context.Context, count int64) string {
 	return i18n.Tf(ctx, "msg.profile.sessions_revoked", "count", strconv.FormatInt(count, 10))
+}
+
+// profileInstanceAdminTransfer — POST /profile/instance-admin/transfer: K7-1,
+// единственный способ передать роль администратора инстанса другому
+// пользователю (см. profileDelete — без передачи аккаунт нельзя удалить).
+// Гейт — тот же requireInstanceAdminForSSO, что закрывает настройку SSO:
+// это один и тот же флаг users.is_instance_admin. Двухшаговое подтверждение,
+// как у profileDelete: без confirmed=yes — страница подтверждения с email
+// получателя, чтобы опечатка в адресе была видна до необратимой передачи.
+func (h *Handler) profileInstanceAdminTransfer(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		h.denyCrossOrigin(w, r)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	if !h.requireInstanceAdminForSSO(w, r, uid) {
+		return
+	}
+	if !h.parseForm(w, r) {
+		return
+	}
+	email := strings.TrimSpace(r.PostFormValue("email"))
+	if email == "" {
+		h.renderProfile(w, r, http.StatusUnprocessableEntity, uid,
+			i18n.T(r.Context(), "profile.instance_admin.err_email_required"), "")
+		return
+	}
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirmf(w, r, "confirm.title", "confirm.instance_admin_transfer.message",
+			"profile.instance_admin.transfer_button", "/profile", "/profile/instance-admin/transfer",
+			[]templates.HiddenField{{Name: "email", Value: email}}, "email", email)
+		return
+	}
+	switch _, err := h.Auth.TransferInstanceAdmin(r.Context(), uid, email); {
+	case err == nil:
+		h.renderProfile(w, r, http.StatusOK, uid, "", i18n.Tf(r.Context(), "profile.instance_admin.transferred", "email", email))
+	case errors.Is(err, auth.ErrUserNotFound):
+		h.renderProfile(w, r, http.StatusUnprocessableEntity, uid,
+			i18n.Tf(r.Context(), "profile.instance_admin.err_not_found", "email", email), "")
+	case errors.Is(err, auth.ErrSelfTransfer):
+		h.renderProfile(w, r, http.StatusUnprocessableEntity, uid,
+			i18n.T(r.Context(), "profile.instance_admin.err_self"), "")
+	case errors.Is(err, auth.ErrNotInstanceAdmin):
+		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "err.org.sso_admin_only"))
+	default:
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+	}
 }

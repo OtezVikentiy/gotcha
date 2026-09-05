@@ -914,7 +914,7 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 	if !strings.Contains(text, `value="150"`) {
 		t.Errorf("422-ответ не вернул введённое значение disk_value=150: %s", text)
 	}
-	if !strings.Contains(text, "Порог диска должен быть от 1 до 100%") {
+	if !strings.Contains(text, "Порог диска должен быть от 1 до 99%") {
 		t.Errorf("422-ответ без сообщения о границах диска: %s", text)
 	}
 	// Пара role/web уже существует — 422 обязан переоткрыть модалку правки
@@ -989,7 +989,50 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 		t.Fatalf("правило удалено без Origin: %+v, err=%v", got, err)
 	}
 
+	// Пустая пара scope/label → 422 с ошибкой на той же странице (K7-8:
+	// раньше — голый редирект без объяснения), правило на месте.
+	for _, bad := range []url.Values{
+		{"scope": {""}, "label": {"web"}},
+		{"scope": {"role"}, "label": {""}},
+		{"scope": {"bogus"}, "label": {"web"}},
+	} {
+		resp = postForm(t, s.srv, deletePath, bad, s.srv.URL, ownerCookie)
+		body, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnprocessableEntity {
+			t.Fatalf("delete %v status = %d, want 422: %s", bad, resp.StatusCode, body)
+		}
+		if !strings.Contains(string(body), "Выберите окружение или роль и метку из списка") {
+			t.Errorf("delete %v: нет сообщения о scope/label: %s", bad, body)
+		}
+	}
+	if got, err := s.groups.List(ctx, project.ID); err != nil || len(got) != 1 {
+		t.Fatalf("правило удалено пустой парой: %+v, err=%v", got, err)
+	}
+
+	// Без confirmed=yes → 200, страница подтверждения называет группу (K7-7),
+	// правило на месте.
+	resp = postForm(t, s.srv, deletePath, delForm, s.srv.URL, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete (unconfirmed) status = %d, want 200: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `name="confirmed" value="yes"`) {
+		t.Fatalf("delete (unconfirmed) missing confirm page hidden field: %s", body)
+	}
+	if !strings.Contains(string(body), "Роль «web»") {
+		t.Fatalf("delete (unconfirmed) confirm page does not name the group: %s", body)
+	}
+	if !strings.Contains(string(body), `name="scope" value="role"`) || !strings.Contains(string(body), `name="label" value="web"`) {
+		t.Fatalf("delete (unconfirmed) confirm page lost scope/label hidden fields: %s", body)
+	}
+	if got, err := s.groups.List(ctx, project.ID); err != nil || len(got) != 1 {
+		t.Fatalf("правило удалено без подтверждения: %+v, err=%v", got, err)
+	}
+
 	// Валидное удаление → 303, flash, правило исчезает из PG и со страницы.
+	delForm.Set("confirmed", "yes")
 	resp = postForm(t, s.srv, deletePath, delForm, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -1843,7 +1886,7 @@ func TestWebHostThresholdsSaveFlow(t *testing.T) {
 	if !strings.Contains(text, `value="150"`) {
 		t.Errorf("422-ответ не вернул введённое значение disk_value=150 в форму: %s", text)
 	}
-	if !strings.Contains(text, "Порог диска должен быть от 1 до 100%") {
+	if !strings.Contains(text, "Порог диска должен быть от 1 до 99%") {
 		t.Errorf("422-ответ без сообщения о границах диска: %s", text)
 	}
 	stillSaved, err := s.overrides.Get(ctx, hst.ID)
@@ -1903,7 +1946,7 @@ func TestWebHostThresholdsSaveInvalidMemoryLoadSilent(t *testing.T) {
 				"disk_mode": {"inherit"}, "memory_mode": {"override"}, "memory_value": {"150"},
 				"load_mode": {"inherit"}, "silent_mode": {"inherit"},
 			},
-			"Порог памяти должен быть от 1 до 100%",
+			"Порог памяти должен быть от 1 до 99%",
 		},
 		{
 			"load не больше 0",

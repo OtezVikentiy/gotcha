@@ -18,6 +18,7 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingestsignal"
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
@@ -186,6 +187,23 @@ type Handler struct {
 	// событие выкладки из CI (*deploy.Store, PG-таблица deployments). nil →
 	// приём деплоев выключен, эндпоинт отвечает 503.
 	Deploy *deploy.Store
+
+	// Signals — per-project учёт сигналов приёма (аудит перед 1.0, K7-5/K7-6):
+	// отказ по ключу и попадание на устаревший путь, отдельно от
+	// процесс-локальных self-метрик, у которых нет метки проекта. nil →
+	// сигналы не пишутся (методы touchSignal/touchDeprecatedSignal nil-safe,
+	// как у остальных опциональных полей выше). *ingestsignal.Recorder ему
+	// удовлетворяет.
+	Signals SignalRecorder
+}
+
+// SignalRecorder принимает попадание одного per-project сигнала приёма.
+// Реализация — *ingestsignal.Recorder; duck-typing интерфейс, а не прямая
+// зависимость от конкретного типа, по тому же поводу, что HostRegistry/
+// MetricSink ниже — пакет ingest не должен знать способ агрегации сигнала,
+// только факт «сигнал случился».
+type SignalRecorder interface {
+	Touch(projectID int64, kind ingestsignal.Kind)
 }
 
 // HostRegistry регистрирует хосты, приславшие метрики (PG-сущность «хост»).
@@ -248,6 +266,14 @@ func (h *Handler) countKeyReject(reason KeyRejectReason, path string) {
 		c.Add(1)
 	}
 	slog.Warn("ingest: key rejected", "reason", string(reason), "path", path)
+}
+
+// touchSignal отмечает per-project сигнал приёма (K7-5/K7-6), если Signals
+// задан. nil-safe, как остальные опциональные поля Handler.
+func (h *Handler) touchSignal(projectID int64, kind ingestsignal.Kind) {
+	if h.Signals != nil {
+		h.Signals.Touch(projectID, kind)
+	}
 }
 
 // KeyRejectedBy — сколько запросов отклонено по конкретной причине отказа по
@@ -364,15 +390,18 @@ func corsPreflight(w http.ResponseWriter, _ *http.Request) {
 
 // scopeReject отвечает 403 и считает отказ по скоупу в ОБЕ метрики: узкую
 // (gotcha_ingest_key_rejections_total{reason="scope"}, с path в логе) и
-// широкую (gotcha_ingest_rejected_total{reason="key_scope",signal}).
+// широкую (gotcha_ingest_rejected_total{reason="key_scope",signal}), плюс
+// per-project сигнал KindKeyScope (K7-5/K7-6) — projectID приходит от
+// вызывающего (authenticate/otlpAuthenticate), там ключ уже резолвлен.
 //
 // 403, а не 401, ВКЛЮЧАЯ OTLP-вход, где соседние ветки отвечают 401:
 // расхождение осознанное и семантически верное — 401 значит «ты не
 // представился», 403 — «представился, но сюда нельзя», а ключ здесь
 // резолвится успешно.
-func (h *Handler) scopeReject(w http.ResponseWriter, r *http.Request, signal IngestSignal) {
+func (h *Handler) scopeReject(w http.ResponseWriter, r *http.Request, signal IngestSignal, projectID int64) {
 	h.countKeyReject(KeyRejectScope, r.URL.Path)
 	h.countRejected(RejectKeyScope, signal)
+	h.touchSignal(projectID, ingestsignal.KindKeyScope)
 	writeJSONError(w, http.StatusForbidden, "key type not allowed for this endpoint")
 }
 
@@ -397,6 +426,9 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, signal In
 	if pub == "" {
 		h.countKeyReject(KeyRejectMissingKey, r.URL.Path)
 		h.countRejected(RejectKeyUnknown, signal)
+		// projectID из URL — ключа нет вовсе, резолвить нечего. Проект мог и
+		// не существовать (перебор id в пути): Store.Bump на такой id — no-op.
+		h.touchSignal(projectID, ingestsignal.KindKeyInvalid)
 		writeJSONError(w, http.StatusUnauthorized, "missing sentry_key")
 		return org.Key{}, false
 	}
@@ -405,6 +437,7 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, signal In
 	case errors.Is(err, org.ErrNotFound):
 		h.countKeyReject(KeyRejectInvalidKey, r.URL.Path)
 		h.countRejected(RejectKeyUnknown, signal)
+		h.touchSignal(projectID, ingestsignal.KindKeyInvalid)
 		writeJSONError(w, http.StatusForbidden, "invalid sentry_key")
 		return org.Key{}, false
 	case err != nil:
@@ -413,15 +446,17 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, signal In
 	case key.ProjectID != projectID:
 		h.countKeyReject(KeyRejectProjectMismatch, r.URL.Path)
 		h.countRejected(RejectKeyUnknown, signal)
+		h.touchSignal(key.ProjectID, ingestsignal.KindKeyProjectMismatch)
 		writeJSONError(w, http.StatusForbidden, "sentry_key does not match project")
 		return org.Key{}, false
 	}
 
 	if !scopeAllowsRoute(key.Kind, signal, also) {
-		h.scopeReject(w, r, signal)
+		h.scopeReject(w, r, signal, key.ProjectID)
 		return org.Key{}, false
 	}
 
+	h.touchDeprecatedSignal(r.Context(), key.ProjectID)
 	return key, true
 }
 

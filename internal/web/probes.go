@@ -152,8 +152,7 @@ func (h *Handler) orgProbesCreate(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
@@ -208,13 +207,12 @@ func (h *Handler) orgProbesRevoke(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	probeID, err := strconv.ParseInt(r.FormValue("probe_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad probe_id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	probes, err := h.Uptime.Probes(r.Context(), orgID)

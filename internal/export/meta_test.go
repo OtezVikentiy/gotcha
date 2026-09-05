@@ -1,6 +1,9 @@
 package export
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 // TestBuildMetaFilterCodeIssue — заявка с заданным ScopeIssueID обязана
 // давать FilterCodeIssue независимо от остальных Params: id одной группы —
@@ -71,5 +74,47 @@ func TestBuildMetaPseudonymNoteOnlyForMaskedEvents(t *testing.T) {
 		if c.wantNote && got.PseudonymNote != PseudonymUniquenessNote {
 			t.Errorf("%s: PseudonymNote = %q, want %q", c.name, got.PseudonymNote, PseudonymUniquenessNote)
 		}
+	}
+}
+
+// TestBuildMetaAlwaysSetsSchemaVersion — K4-7 аудита: SchemaVersion не
+// зависит от Kind/ScopeIssueID/Params — BuildMeta обязана проставлять его
+// на КАЖДОЙ заявке, иначе часть Meta осталась бы неразличимой по версии.
+func TestBuildMetaAlwaysSetsSchemaVersion(t *testing.T) {
+	cases := []Job{
+		{Kind: KindEvents, ScopeIssueID: 123},
+		{Kind: KindIssues, Params: Params{Status: "unresolved"}},
+		{Kind: KindIssues},
+	}
+	for _, job := range cases {
+		if got := BuildMeta(job).SchemaVersion; got != MetaSchemaVersion {
+			t.Errorf("job=%+v: SchemaVersion = %d, want %d", job, got, MetaSchemaVersion)
+		}
+	}
+}
+
+// TestMetaSchemaVersionFieldNameAndValue — сторож на КОНКРЕТНОЕ имя ключа
+// "schema_version" и его значение в сериализованном Meta (K4-7 аудита:
+// несовместимая правка формата после 1.0 обязана быть различима
+// потребителем). Раскодировка идёт в map[string]any, а не обратно в Meta:
+// круговой путь struct->JSON->тот же struct прошёл бы даже при
+// переименованном json-теге, потому что обе стороны читают одно и то же имя
+// поля Go, — потребитель же смотрит на СЫРОЕ имя ключа, значит и тест обязан
+// смотреть туда же.
+func TestMetaSchemaVersionFieldNameAndValue(t *testing.T) {
+	raw, err := json.Marshal(BuildMeta(Job{Kind: KindIssues}))
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	v, ok := m["schema_version"]
+	if !ok {
+		t.Fatalf("ключ \"schema_version\" отсутствует в %s — потребитель не сможет отличить версию схемы Meta", raw)
+	}
+	if n, ok := v.(float64); !ok || n != float64(MetaSchemaVersion) {
+		t.Fatalf("schema_version = %v, want %d", v, MetaSchemaVersion)
 	}
 }

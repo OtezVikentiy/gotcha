@@ -415,6 +415,8 @@ What to do:
 
 Compatibility markers did not exist from the first release — `CHANGELOG.md` in the repository names the one that introduced them. You cannot roll back **through** that upgrade: schema versions applied by earlier releases carry no marker, so starting against them is refused.
 
+The second limit is one `schema_compat` knows nothing about: **secrets**. Since 0.25.0, everything encrypted at rest (SSO provider client secrets, alert channel secrets — the Telegram bot token and the webhook HMAC key, HTTP monitor headers) is stored in an `enc:v2:<key-id>:…` envelope, and the backfill into that format runs on **every** start: whatever the binary can read is re-saved under the current key. So once a 0.25.0-or-newer binary has started even once, a rollback to a release **below 0.25.0** is not refused by the compatibility marker — the old binary starts, but doesn't recognize the `enc:v2:` envelope as ciphertext: it treats the value as a plain-text secret and sends it out as-is. Alert delivery and SSO sign-in break **silently**, with nothing in the startup log. The only way below 0.25.0 is **restoring the backup taken before the upgrade** — rolling the binary alone back won't do it.
+
 This is why "take a backup before upgrading" at the top of this page stays mandatory: some rollbacks work without it, but not all.
 
 ## Agents on hosts are updated separately

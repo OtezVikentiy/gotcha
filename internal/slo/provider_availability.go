@@ -23,12 +23,28 @@ func NewAvailabilityProvider(q *trace.Query, maint *uptime.Service, retentionDay
 }
 
 func (p *AvailabilityProvider) Buckets(ctx context.Context, s SLO, from, to time.Time, step time.Duration) ([]Bucket, error) {
+	bs, err := p.rawBuckets(ctx, s, from, to, step)
+	if err != nil {
+		return nil, err
+	}
+	return excludeMaintenance(ctx, p.maint, s.ProjectID, bs, from, to, step), nil
+}
+
+func (p *AvailabilityProvider) BucketsExcluding(ctx context.Context, s SLO, from, to time.Time, step time.Duration, windows []uptime.Window) ([]Bucket, error) {
+	bs, err := p.rawBuckets(ctx, s, from, to, step)
+	if err != nil {
+		return nil, err
+	}
+	return excludeWindows(windows, bs, from, to, step), nil
+}
+
+// rawBuckets — корзины из ClickHouse до вырезания окон обслуживания.
+func (p *AvailabilityProvider) rawBuckets(ctx context.Context, s SLO, from, to time.Time, step time.Duration) ([]Bucket, error) {
 	cbs, err := p.q.GoodTotalBuckets(ctx, s.ProjectID, s.Transaction, s.Environment, from, to, step)
 	if err != nil {
 		return nil, err
 	}
-	bs := convertTraceBuckets(cbs)
-	return excludeMaintenance(ctx, p.maint, s.ProjectID, bs, from, to, step), nil
+	return convertTraceBuckets(cbs), nil
 }
 
 func (p *AvailabilityProvider) RetentionCap() time.Duration { return retentionCap(p.retentionDays) }

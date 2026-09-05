@@ -35,7 +35,10 @@ type HostDetailVM struct {
 	OpenIncidents   []host.Incident
 	RecentIncidents []host.Incident
 	Charts          []HostChartVM
-	CanOperate      bool
+	// ChartsFailed — ClickHouse не ответил: вместо графиков — «данные
+	// временно недоступны», остальная карточка (PostgreSQL) на месте.
+	ChartsFailed bool
+	CanOperate   bool
 	// AckedBy — email подтвердившего, батчем по OpenIncidents (W2-C находка
 	// 4, см. web.Handler.ackedByEmails). Ключ — id пользователя
 	// (host.Incident.AcknowledgedBy).
@@ -216,7 +219,7 @@ templ hostThresholdsSection(vm HostDetailVM) {
 						<div class="field th-disk-value">
 							<label>
 								{ i18n.T(ctx, "hosts.settings.field.disk_threshold") }
-								<input type="number" class="input" name="disk_value" min="1" max="100" step="1"
+								<input type="number" class="input" name="disk_value" min="1" max="99" step="1"
 									value={ vm.ThresholdsForm.Get("disk_value", thresholdPercentValue(vm.Override.DiskThreshold, vm.Effective.Settings.DiskThreshold)) }/>
 							</label>
 						</div>
@@ -241,7 +244,7 @@ templ hostThresholdsSection(vm HostDetailVM) {
 						<div class="field th-memory-value">
 							<label>
 								{ i18n.T(ctx, "hosts.settings.field.memory_threshold") }
-								<input type="number" class="input" name="memory_value" min="1" max="100" step="1"
+								<input type="number" class="input" name="memory_value" min="1" max="99" step="1"
 									value={ vm.ThresholdsForm.Get("memory_value", thresholdPercentValue(vm.Override.MemoryThreshold, vm.Effective.Settings.MemoryThreshold)) }/>
 							</label>
 						</div>
@@ -466,11 +469,15 @@ templ HostDetail(vm HostDetailVM, userEmail string) {
 				}
 			</section>
 
-			<div class="host-charts">
-				for _, c := range vm.Charts {
-					@hostChartCard(c)
-				}
-			</div>
+			if vm.ChartsFailed {
+				@emptyState("chart", "hosts.charts.error.title", "hosts.charts.error.body", "", "", 2)
+			} else {
+				<div class="host-charts">
+					for _, c := range vm.Charts {
+						@hostChartCard(c)
+					}
+				</div>
+			}
 
 			<section class="host-incidents-recent">
 				<h2>{ i18n.T(ctx, "hosts.detail.incidents_recent") }</h2>

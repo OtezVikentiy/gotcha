@@ -1,8 +1,11 @@
 package notify
 
 import (
+	"context"
+	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 // boundaryOf извлекает MIME-boundary из Content-Type письма (теперь он
@@ -87,5 +90,49 @@ func TestBuildEmailBoundaryInjection(t *testing.T) {
 	// Тело пользователя присутствует целиком как контент plain-части, а не как структура.
 	if !strings.Contains(msg, evil) {
 		t.Fatalf("raw body not preserved verbatim in plain part: %s", msg)
+	}
+}
+
+// TestSetSMTPDeadlineAppliesCtxDeadline — путь успеха: с дедлайном в ctx
+// setSMTPDeadline не возвращает ошибку на живом соединении.
+func TestSetSMTPDeadlineAppliesCtxDeadline(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	if err := setSMTPDeadline(ctx, c1); err != nil {
+		t.Fatalf("setSMTPDeadline: %v", err)
+	}
+}
+
+// TestSetSMTPDeadlineAppliesDefault — путь успеха без дедлайна в ctx:
+// применяется defaultSMTPDeadline, тоже без ошибки на живом соединении.
+func TestSetSMTPDeadlineAppliesDefault(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	if err := setSMTPDeadline(context.Background(), c1); err != nil {
+		t.Fatalf("setSMTPDeadline: %v", err)
+	}
+}
+
+// TestSetSMTPDeadlineErrorPropagates — K1-7: раньше ошибка SetDeadline
+// проглатывалась ("_ = conn.SetDeadline(...)"), и сорвавшийся дедлайн
+// оставлял SMTP-разговор НЕОГРАНИЧЕННЫМ — ровно то, что Send существует,
+// чтобы предотвратить (см. её докблок). Мутация обратно на "_ =" здесь
+// проходит без ошибки: тест ловит именно эту регрессию, требуя, чтобы
+// ошибка SetDeadline вернулась вызывающему, а не была отброшена.
+func TestSetSMTPDeadlineErrorPropagates(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c2.Close()
+	c1.Close() // соединение уже закрыто — SetDeadline на нём обязан отказать
+
+	err := setSMTPDeadline(context.Background(), c1)
+	if err == nil {
+		t.Fatal("setSMTPDeadline on a closed conn = nil, want error")
 	}
 }

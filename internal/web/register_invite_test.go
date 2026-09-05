@@ -322,6 +322,49 @@ func TestRegisterDenialIsIndistinguishable(t *testing.T) {
 	}
 }
 
+// TestRegisterDenialRearmsInviteCookie — устранение находки финревью волны:
+// отказ регистрации (denyRegistration) обязан перевзвести invite-cookie тем
+// же токеном, что пришёл в next, а не просто передать next в шаблон.
+//
+// Сценарий: приглашение просрочено (denyRegistration сработает по причине
+// "bad_token"), а invite-cookie у клиента к моменту POST уже нет — как если
+// бы человек заполнял форму дольше inviteNextTTL (10 минут) и кука, взведённая
+// на GET, успела истечь. Ссылка «войти» на экране отказа (RegisterStub) не
+// кладёт токен в query (loginLinkWithNext, K9-19) и опирается только на
+// куку — без перевзвода она вела бы в никуда, и вернуться можно было бы
+// только по письму заново.
+func TestRegisterDenialRearmsInviteCookie(t *testing.T) {
+	s := newInviteModeStack(t)
+	_, token := seedOrgWithInvite(t, s, "cookie-rearm@corp.example", org.RoleMember)
+	expireInvite(t, s, "cookie-rearm@corp.example")
+	next := "/invite/" + token
+
+	// Кука сознательно не отправляется — сымитирован её истёкший TTL.
+	resp := postForm(t, s.srv, "/register", registerForm("cookie-rearm@corp.example", next), s.srv.URL, nil)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("просроченный токен = %d, want 403", resp.StatusCode)
+	}
+
+	var got *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == "invite_next" {
+			got = c
+		}
+	}
+	if got == nil {
+		t.Fatal("denyRegistration не перевзвёл invite-cookie — адресат теряется после истечения TTL")
+	}
+	if got.Value != token {
+		t.Fatalf("invite-cookie перевзведена с токеном %q, want %q", got.Value, token)
+	}
+	if got.MaxAge <= 0 {
+		t.Fatalf("invite-cookie перевзведена с MaxAge = %d, want > 0 (срок должен отсчитаться заново)", got.MaxAge)
+	}
+}
+
 // emailLimitPerWindow — ёмкость per-EMAIL бакета регистрации/входа. Значение
 // не выведено из наблюдения, а взято из места, где ограничитель создаётся:
 // internal/web/web.go, `emailLimiter: newRateLimiter(time.Now, 50, 15*time.Minute, ...)`.

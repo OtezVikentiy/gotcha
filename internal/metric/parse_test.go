@@ -149,12 +149,11 @@ func gaugeResourceMetrics(t *testing.T, points map[uint64]float64) []*metricspb.
 func TestMapOTLP_DropsOutOfWindowAndOverflowTimestamps(t *testing.T) {
 	now := time.Now().UTC()
 	old := uint64(now.Add(-200 * 24 * time.Hour).UnixNano()) // старше 90д
-	future := uint64(now.Add(48 * time.Hour).UnixNano())     // дальше +1д
 	overflow := uint64(math.MaxInt64) + 1                    // не влезает в int64
 	good := uint64(now.Add(-time.Hour).UnixNano())
 
 	rm := gaugeResourceMetrics(t, map[uint64]float64{
-		old: 1, future: 2, overflow: 3, good: 4,
+		old: 1, overflow: 3, good: 4,
 	})
 	pts := MapOTLP(rm, now)
 

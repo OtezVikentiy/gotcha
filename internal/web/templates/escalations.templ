@@ -216,7 +216,7 @@ func escalationChannelLabels(ctx context.Context, ids []int64, channels []alert.
 // delay=0, иначе «через N мин».
 func escalationDryRunStepText(ctx context.Context, step escalation.Step, channels []alert.Channel) string {
 	chans := escalationChannelLabels(ctx, step.ChannelIDs, channels)
-	no := strconv.Itoa(step.StepNo)
+	no := strconv.Itoa(step.StepNo + 1)
 	if step.DelayMinutes == 0 {
 		return i18n.Tf(ctx, "escalations.dryrun.step_immediate", "step", no, "channels", chans)
 	}
@@ -270,7 +270,7 @@ func escalationUndeliverableReasonKey(c alert.Channel) string {
 // заведомо недоставляемый канал по-прежнему незачем.
 templ escalationStepFields(step EscalationStepForm, channels []alert.Channel) {
 	<fieldset class="escalation-step card">
-		<legend class="card-header">{ i18n.Tf(ctx, "escalations.step.legend", "no", strconv.Itoa(step.StepNo)) }</legend>
+		<legend class="card-header">{ i18n.Tf(ctx, "escalations.step.legend", "no", strconv.Itoa(step.StepNo+1)) }</legend>
 		<div class="field">
 			<label>
 				{ i18n.T(ctx, "escalations.field.delay") }
@@ -346,6 +346,7 @@ templ Escalations(projectID int64, channels []alert.Channel, critical, warning E
 			@helpPanelWith("escalations", "escalations") {
 				<p>{ i18n.T(ctx, "escalations.intro") }</p>
 				<p>{ i18n.T(ctx, "escalations.uptime_note") }</p>
+				<p>{ i18n.T(ctx, "escalations.issue_note") }</p>
 			}
 			@escalationSeveritySection(projectID, critical, channels, ladders[escalation.SeverityCritical], failedSeverity == escalation.SeverityCritical, errMsg)
 			@escalationSeveritySection(projectID, warning, channels, ladders[escalation.SeverityWarning], failedSeverity == escalation.SeverityWarning, errMsg)

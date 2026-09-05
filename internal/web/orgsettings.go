@@ -166,8 +166,7 @@ func (h *Handler) orgSettingsSSO(w http.ResponseWriter, r *http.Request) {
 	if !h.requireInstanceAdminForSSO(w, r, uid) {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	cfg := org.SSOConfig{
@@ -208,6 +207,9 @@ func (h *Handler) orgSettingsSSODelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.requireInstanceAdminForSSO(w, r, uid) {
+		return
+	}
+	if !h.parseForm(w, r) {
 		return
 	}
 	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
@@ -456,13 +458,12 @@ func (h *Handler) orgSettingsRole(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	targetID, err := strconv.ParseInt(r.FormValue("user_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad user_id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	if targetID == uid {
@@ -478,6 +479,7 @@ func (h *Handler) orgSettingsRole(w http.ResponseWriter, r *http.Request) {
 		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "", nil)
 		return
 	}
+	h.flashOK(w, "flash.saved", 0)
 	http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
 }
 
@@ -504,13 +506,12 @@ func (h *Handler) orgSettingsRemove(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	targetID, err := strconv.ParseInt(r.FormValue("user_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad user_id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	// RemoveMemberAs — тот же TOCTOU-фикс, что и у SetRoleAs выше.
@@ -560,6 +561,9 @@ func (h *Handler) orgSettingsLeave(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !h.parseForm(w, r) {
+		return
+	}
 	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
 	// исполняет inline onsubmit="confirm()" — see renderConfirm): без
 	// confirmed=yes показываем страницу подтверждения вместо выхода из орга.
@@ -605,8 +609,7 @@ func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
@@ -691,13 +694,12 @@ func (h *Handler) orgSettingsInviteRevoke(w http.ResponseWriter, r *http.Request
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	inviteID, err := strconv.ParseInt(r.FormValue("invite_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad invite_id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	email := r.FormValue("email")
@@ -750,8 +752,7 @@ func (h *Handler) orgSettingsQuota(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	// Поля rate-guard и указатели, куда положить распарсенное значение.
@@ -783,6 +784,7 @@ func (h *Handler) orgSettingsQuota(w http.ResponseWriter, r *http.Request) {
 		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "", nil)
 		return
 	}
+	h.flashOK(w, "flash.saved", 0)
 	http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
 }
 
@@ -816,11 +818,25 @@ func (h *Handler) orgSettingsDelete(w http.ResponseWriter, r *http.Request) {
 	if !h.requireOrgOwner(w, r, orgID, uid) {
 		return
 	}
+	if !h.parseForm(w, r) {
+		return
+	}
 	// Двухшаговое подтверждение (см. orgSettingsLeave/renderConfirm): без
 	// confirmed=yes показываем страницу подтверждения вместо удаления орга.
+	// Имя организации — в тексте вопроса (K7-3, как у hostDelete).
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.org_delete.message", "org.danger.delete_org.button",
-			orgSettingsPath(orgID), orgSettingsDeletePath(orgID), nil)
+		o, err := h.Org.Get(r.Context(), orgID)
+		if err != nil {
+			if errors.Is(err, org.ErrNotFound) {
+				h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+				return
+			}
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.org_delete.message", "org.danger.delete_org.button",
+			orgSettingsPath(orgID), orgSettingsDeletePath(orgID), nil,
+			"name", o.Name)
 		return
 	}
 	if err := h.Org.DeleteOrg(r.Context(), orgID); err != nil {
@@ -857,8 +873,7 @@ func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request
 	if !h.requireOrgOwner(w, r, orgID, uid) {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	projectID, err := strconv.ParseInt(r.FormValue("project_id"), 10, 64)
@@ -943,7 +958,7 @@ func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request
 	// ним не совпадает ни с чем, работает только user_id.
 	slog.Info("subject data purged",
 		"org_id", orgID, "project_id", projectID, "criteria", subjectCriteria(sub),
-		"events", res.Events, "transactions", res.Transactions,
+		"events", res.Events, "transactions", res.Transactions, "spans", res.Spans,
 		"metric_points", res.MetricPoints, "logs", res.Logs, "total", res.Total())
 
 	// Итог показывается сообщением, а не query-параметром: параметр оставался в
@@ -976,8 +991,7 @@ func (h *Handler) orgSettingsExportSubject(w http.ResponseWriter, r *http.Reques
 	if !h.requireOrgOwner(w, r, orgID, uid) {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	projectID, err := strconv.ParseInt(r.FormValue("project_id"), 10, 64)
@@ -1083,6 +1097,14 @@ func (h *Handler) inviteAcceptPage(w http.ResponseWriter, r *http.Request) {
 		slog.Error("inviteAcceptPage: invite lookup failed", "err", err)
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
+	}
+	if email == "" {
+		// K9-19: страница ниже покажет анониму ссылки «войти»/«создать
+		// аккаунт» БЕЗ next=/invite/{token} в query (см. loginLinkWithNext/
+		// registerLinkWithNext в auth.templ) — токен вместо этого едет в
+		// HttpOnly cookie и его читает resolveAuthNext на GET /login и
+		// /register (auth.go, invitecookie.go).
+		h.setInviteNextCookie(w, token)
 	}
 	_ = templates.InviteAccept(token, "", email, inv).Render(r.Context(), w)
 }

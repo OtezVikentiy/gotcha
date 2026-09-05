@@ -341,7 +341,7 @@ func TestIncidentFeedTableHeadColumns(t *testing.T) {
 	closed := []incidentgroup.FeedItem{{Source: "metric", Title: "m2", StartedAt: time.Now()}}
 	html := renderTo(t, Overview(1, "24h", []GroupCard{group}, outOfGroup, nil, closed, FeedCaps{}, true, StatusLine{}, nil, ""))
 
-	wantHeaders := []string{"Источник", "Название", "Статус", "Начало"}
+	wantHeaders := []string{"Источник", "Название", "Статус", "Начало", "Решено"}
 	// 3 непустых таблицы (состав группы, вне групп, закрытые) — по одной
 	// шапке на каждую: считаем вхождения ровно 3 на колонку, не "хотя бы
 	// одна", иначе мутация, потерявшая @feedTableHead в одном из трёх мест,
@@ -514,6 +514,19 @@ func TestFeedItemRowResolvedBadgeAndTime(t *testing.T) {
 	}
 	if !strings.Contains(resolvedHTML, resolvedDT) {
 		t.Errorf("resolved member row must show its resolved time too, not just started: %s", resolvedHTML)
+	}
+	// K9-14: начало и закрытие — в РАЗНЫХ ячейках под своими заголовками, а
+	// не два относительных времени подряд в одной («3 дня назадтолько что»).
+	// Между двумя datetime обязан стоять закрывающий </td>; у открытой
+	// строки та же пятая ячейка есть, но пустая — ширина таблицы не пляшет.
+	for name, html := range map[string]string{"open": openHTML, "resolved": resolvedHTML} {
+		if got := strings.Count(html, "<td"); got != 5 {
+			t.Errorf("%s row: %d cells, want 5 (source/title/status/started/resolved): %s", name, got, html)
+		}
+	}
+	between := resolvedHTML[strings.Index(resolvedHTML, startedDT):strings.Index(resolvedHTML, resolvedDT)]
+	if !strings.Contains(between, "</td>") {
+		t.Errorf("started and resolved times must sit in separate cells, got them glued in one: %s", resolvedHTML)
 	}
 }
 

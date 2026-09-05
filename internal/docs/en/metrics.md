@@ -109,7 +109,7 @@ Up to 64 labels are accepted per point (extras are dropped deterministically, by
 
 ## Ingest window
 
-A point timestamped more than 90 days in the past, or more than a day in the future relative to ingest time, is dropped (the same ClickHouse partition guard used for events/traces) — an exporter with badly skewed clocks will lose points.
+A point timestamped more than 90 days in the past relative to ingest time is dropped (the same ClickHouse partition guard used for events/traces). A point timestamped in the future is not dropped but clamped to the ingest time: charts and threshold rules only read data up to the server's current time, so a point "from the future" would be lost to them. Such points are counted in `gotcha_metric_points_clock_skew_total` (see [Self-monitoring](/docs/self-monitoring)) — a growing counter means the exporter's clock runs ahead.
 
 ## Metrics list
 

@@ -33,6 +33,17 @@ import (
 // строку осиротевшей без этой чистки — источник (incident_source) в строке
 // тот же, что у любого из шести, отдельного фильтра здесь не нужно.
 func PurgeOldEscalations(ctx context.Context, pool *pgxpool.Pool, olderThan time.Duration) (int64, error) {
+	// olderThan <= 0 сдвинул бы cutoff в настоящее или будущее и удалил бы
+	// ПРАКТИЧЕСКИ ВСЕ строки обеих таблиц одним махом (sent_at/last_attempt_at
+	// любой существующей строки < now()). Сегодня Janitor не тикает с таким
+	// Retention (main.go запускает его только при cfg.IncidentRetentionDays >
+	// 0, симметрично entityRetention.Any()), но olderThan приходит из
+	// конфига, а не константа — молчаливое стирание всего лога эскалаций из-за
+	// будущей ошибки конфигурации/рефакторинга main.go недопустимо: гвард
+	// ставится здесь, а не только на вызывающей стороне.
+	if olderThan <= 0 {
+		return 0, fmt.Errorf("escalation: purge old: olderThan must be positive, got %s", olderThan)
+	}
 	cutoff := time.Now().Add(-olderThan)
 	tag, err := pool.Exec(ctx, "DELETE FROM incident_escalations WHERE sent_at < $1", cutoff)
 	if err != nil {

@@ -18,6 +18,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/export"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingestsignal"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
@@ -71,6 +73,10 @@ func newIssuesStack(t *testing.T) *issuesStack {
 	// заводит их так же, как newStack (auth_test.go) заводит h.Alerts.
 	h.Alerts = alertSvc
 	h.Uptime = uptimeSvc
+	// Signals (аудит перед 1.0, K7-5/K7-6): отказы по ключу на пустом списке
+	// issues и в чек-листе «Первые шаги» читают ту же таблицу, что пишет
+	// Recorder на приёме — тесты бьют по ней напрямую через s.h.Signals.Bump.
+	h.Signals = ingestsignal.NewStore(pool)
 	h.Register(mux)
 
 	return &issuesStack{pool: pool, srv: srv, h: h, org: orgSvc, auth: authSvc, issues: issueSvc, alerts: alertSvc, uptime: uptimeSvc, batcher: batcher}
@@ -865,5 +871,198 @@ func TestWebIssuesListExportButtonsShowPIIOnlyForOwner(t *testing.T) {
 	}
 	if n := strings.Count(operatorBody, `<select name="format"`); n != 2 {
 		t.Errorf("оператору должны остаться обе кнопки экспорта с выбором формата, селекторов format = %d, want 2", n)
+	}
+}
+
+// TestWebIssuesEmptyStateShowsKeyRejects — K7-5/K7-6: проект без единой issue
+// чаще всего означает не «событий ещё не было», а «SDK шлёт, но приём их
+// отбраковывает» — неверный DSN, ключ чужого проекта или неподходящий тип.
+// Отказ, случившийся в последний час, показывается прямо на пустом списке;
+// отказ старше часа — уже не показывается (иначе баннер про "прямо сейчас"
+// никогда бы не гас сам, даже после починки DSN); Signals == nil (стенд без
+// per-project учёта, как в проде до этой правки) не должен ронять страницу —
+// секция просто отсутствует.
+func TestWebIssuesEmptyStateShowsKeyRejects(t *testing.T) {
+	s := newIssuesStack(t)
+	ctx := context.Background()
+
+	ownerID, ownerCookie := registerAndLogin(t, s, "kr-owner@example.com")
+
+	fresh := createProject(t, s, ownerID, "kr-fresh-org", "kr-fresh-proj")
+	if err := s.h.Signals.Bump(ctx, fresh.ID, ingestsignal.KindKeyInvalid, 7, time.Now()); err != nil {
+		t.Fatalf("bump fresh: %v", err)
+	}
+	freshPath := "/projects/" + strconv.FormatInt(fresh.ID, 10) + "/issues"
+	resp := getWithCookie(t, s.srv, freshPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", freshPath, resp.StatusCode, body)
+	}
+	wantReason := i18n.Tf(ctx, "ingest_signals.rejects.key_invalid", "hits", "7")
+	if !strings.Contains(string(body), wantReason) {
+		t.Errorf("GET %s missing key-reject reason %q: %s", freshPath, wantReason, body)
+	}
+	settingsPath := "/projects/" + strconv.FormatInt(fresh.ID, 10) + "/settings"
+	if !strings.Contains(string(body), settingsPath) {
+		t.Errorf("GET %s missing link to project settings %q: %s", freshPath, settingsPath, body)
+	}
+
+	stale := createProject(t, s, ownerID, "kr-stale-org", "kr-stale-proj")
+	if err := s.h.Signals.Bump(ctx, stale.ID, ingestsignal.KindKeyInvalid, 4, time.Now().Add(-2*time.Hour)); err != nil {
+		t.Fatalf("bump stale: %v", err)
+	}
+	stalePath := "/projects/" + strconv.FormatInt(stale.ID, 10) + "/issues"
+	resp = getWithCookie(t, s.srv, stalePath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", stalePath, resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), i18n.T(ctx, "ingest_signals.rejects.title")) {
+		t.Errorf("GET %s shows key-reject notice for a rejection older than 1 hour: %s", stalePath, body)
+	}
+
+	noSignals := createProject(t, s, ownerID, "kr-nosig-org", "kr-nosig-proj")
+	prevSignals := s.h.Signals
+	s.h.Signals = nil
+	t.Cleanup(func() { s.h.Signals = prevSignals })
+	noSignalsPath := "/projects/" + strconv.FormatInt(noSignals.ID, 10) + "/issues"
+	resp = getWithCookie(t, s.srv, noSignalsPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (Signals=nil) status = %d, want 200: %s", noSignalsPath, resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), i18n.T(ctx, "ingest_signals.rejects.title")) {
+		t.Errorf("GET %s (Signals=nil) unexpectedly shows key-reject notice: %s", noSignalsPath, body)
+	}
+
+	// M6: kind вне isKeyRejectKind (deprecated_logs — про устаревший адрес,
+	// не про отказ по ключу) не должен породить эту врезку, даже свежий.
+	s.h.Signals = prevSignals
+	wrongKind := createProject(t, s, ownerID, "kr-wrongkind-org", "kr-wrongkind-proj")
+	if err := s.h.Signals.Bump(ctx, wrongKind.ID, ingestsignal.KindDeprecatedLogs, 6, time.Now()); err != nil {
+		t.Fatalf("bump wrongkind: %v", err)
+	}
+	wrongKindPath := "/projects/" + strconv.FormatInt(wrongKind.ID, 10) + "/issues"
+	resp = getWithCookie(t, s.srv, wrongKindPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", wrongKindPath, resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), i18n.T(ctx, "ingest_signals.rejects.title")) {
+		t.Errorf("GET %s shows key-reject notice for a deprecated-path signal (kind outside isKeyRejectKind): %s", wrongKindPath, body)
+	}
+}
+
+// TestWebGettingStartedChecklistShowsKeyRejects — тот же сигнал (K7-5/K7-6),
+// но под шагом 2 чек-листа «Первые шаги»: пока SDK ещё не прислал ни одного
+// события (шаг 2 не закрыт), отказ по ключу за последний час — самое частое
+// объяснение почему, и должен быть виден рядом с CTA «Подключить».
+func TestWebGettingStartedChecklistShowsKeyRejects(t *testing.T) {
+	s := newIssuesStack(t)
+	ctx := context.Background()
+
+	ownerID, ownerCookie := registerAndLogin(t, s, "kr-gs-owner@example.com")
+	project := createProject(t, s, ownerID, "kr-gs-org", "kr-gs-proj")
+	if err := s.h.Signals.Bump(ctx, project.ID, ingestsignal.KindKeyScope, 2, time.Now()); err != nil {
+		t.Fatalf("bump: %v", err)
+	}
+
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+	resp := getWithCookie(t, s.srv, issuesPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", issuesPath, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `class="card getting-started"`) {
+		t.Fatalf("GET %s missing getting-started checklist: %s", issuesPath, body)
+	}
+	wantReason := i18n.Tf(ctx, "ingest_signals.rejects.key_scope", "hits", "2")
+	if !strings.Contains(string(body), wantReason) {
+		t.Errorf("GET %s checklist missing key-reject reason %q: %s", issuesPath, wantReason, body)
+	}
+}
+
+// TestWebIssuesEmptyStateShowsKeyRejectsAfterGettingStartedHidden — G1
+// (re-review аудита): чек-лист «Первые шаги» несёт ту же врезку об отказах
+// по ключу, что и пустое состояние списка issues, и раньше пустое состояние
+// показывало её только пока чек-лист виден (F5) — команда, скрывшая
+// чек-лист кнопкой «Скрыть» (№71), не видела отказов по ключу нигде вовсе.
+// Теперь скрытие чек-листа переносит врезку в пустое состояние, а не гасит
+// её насовсем.
+func TestWebIssuesEmptyStateShowsKeyRejectsAfterGettingStartedHidden(t *testing.T) {
+	s := newIssuesStack(t)
+	ctx := context.Background()
+
+	ownerID, ownerCookie := registerAndLogin(t, s, "kr-hidden-owner@example.com")
+	project := createProject(t, s, ownerID, "kr-hidden-org", "kr-hidden-proj")
+
+	resp := postForm(t, s.srv, "/profile/getting-started/hide", url.Values{}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST hide status = %d, want 303", resp.StatusCode)
+	}
+
+	if err := s.h.Signals.Bump(ctx, project.ID, ingestsignal.KindKeyInvalid, 5, time.Now()); err != nil {
+		t.Fatalf("bump: %v", err)
+	}
+
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+	resp = getWithCookie(t, s.srv, issuesPath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", issuesPath, resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), `class="card getting-started"`) {
+		t.Fatalf("GET %s should not show the hidden getting-started checklist: %s", issuesPath, body)
+	}
+	if !strings.Contains(string(body), `class="notice notice--warn"`) {
+		t.Fatalf("GET %s missing the empty-state key-reject notice once the checklist is hidden: %s", issuesPath, body)
+	}
+	wantReason := i18n.Tf(ctx, "ingest_signals.rejects.key_invalid", "hits", "5")
+	if !strings.Contains(string(body), wantReason) {
+		t.Errorf("GET %s empty-state notice missing key-reject reason %q: %s", issuesPath, wantReason, body)
+	}
+}
+
+// TestWebIssuesCanAccessProjectQueryError (T8, хвост волны 2) — сбой самого
+// запроса доступа к проекту (не «доступа нет», а поломка БД) на странице
+// issues обязан отдать 500, а не молча 403/404: та же путаница, которую
+// TestOverviewCanAccessProjectQueryError (overview_test.go) закрывает для
+// overview, и TestRequireProjectOperatorCanOperateQueryError (operate_test.go)
+// — для requireProjectOperator.
+//
+// issuesList проверяет доступ ДВАЖДЫ одним и тем же предикатом: canAccess
+// (issues.go~41, гейтит всю страницу) и следом canOperateProject
+// (issues.go~158, гейтит только видимость чек-листа/кнопок экспорта —
+// см. докблок там же: canOperateProject буквально зовёт CanAccessProject).
+// Ломаем org_members.role — колонку первой половины accessCondition
+// (owner/admin); поскольку обе проверки читают её ОДНИМ И ТЕМ ЖЕ текстом
+// запроса, ошибка обязана всплыть уже на первой (canAccess) — здесь честно
+// проверяем именно это наблюдаемое поведение страницы, а не какая из двух
+// одинаковых веток технически исполнилась.
+func TestWebIssuesCanAccessProjectQueryError(t *testing.T) {
+	s := newIssuesStack(t)
+	ctx := context.Background()
+	uid, cookie := registerAndLogin(t, s, "issues-accesserr@example.com")
+	project := createProject(t, s, uid, "issues-accesserr-org", "issues-accesserr-proj")
+
+	if _, err := s.pool.Exec(ctx, "ALTER TABLE org_members RENAME COLUMN role TO role_broken_for_test"); err != nil {
+		t.Fatalf("break org_members.role: %v", err)
+	}
+
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+	resp := getWithCookie(t, s.srv, issuesPath, cookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("GET %s с поломанной БД: status = %d, want 500 (не 403/404 — отказ проверки прав, не отказ в правах): %s",
+			issuesPath, resp.StatusCode, body)
 	}
 }

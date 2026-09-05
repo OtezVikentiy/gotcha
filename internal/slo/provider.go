@@ -23,6 +23,11 @@ type Bucket struct {
 // бюджета к этому пределу.
 type Provider interface {
 	Buckets(ctx context.Context, s SLO, from, to time.Time, step time.Duration) ([]Bucket, error)
+	// BucketsExcluding — то же, что Buckets, но окна обслуживания проекта
+	// переданы снаружи, а не читаются провайдером: список SLO проекта грузит
+	// их один раз на страницу, а не на каждую строку (аудит 2026-09-04,
+	// K8-2). nil/пусто — «окон нет», корзины не вырезаются.
+	BucketsExcluding(ctx context.Context, s SLO, from, to time.Time, step time.Duration, windows []uptime.Window) ([]Bucket, error)
 	RetentionCap() time.Duration
 }
 
@@ -74,7 +79,17 @@ func excludeMaintenance(ctx context.Context, maint *uptime.Service, projectID in
 		return bs
 	}
 	ws, err := maint.Windows(ctx, projectID)
-	if err != nil || len(ws) == 0 {
+	if err != nil {
+		return bs
+	}
+	return excludeWindows(ws, bs, from, to, step)
+}
+
+// excludeWindows — excludeMaintenance с уже загруженными окнами (см.
+// Provider.BucketsExcluding): вырезает корзины, чья середина попадает в
+// интервал обслуживания за [from, to).
+func excludeWindows(ws []uptime.Window, bs []Bucket, from, to time.Time, step time.Duration) []Bucket {
+	if len(ws) == 0 || len(bs) == 0 {
 		return bs
 	}
 	ivs := uptime.WindowIntervals(ws, from, to)

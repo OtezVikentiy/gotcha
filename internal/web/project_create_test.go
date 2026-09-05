@@ -137,3 +137,65 @@ func TestWebProjectCreateForbiddenForMember(t *testing.T) {
 		t.Fatalf("ProjectsOf = %+v err=%v, want none", projects, err)
 	}
 }
+
+// TestWebProjectCreateInvalidSlugFromOrgPageStaysOnOrgPage — K7-2: ошибка
+// валидации формы, отправленной с карточной страницы организации
+// (hidden origin=org_projects), возвращает ТУ ЖЕ страницу ЭТОЙ организации
+// (маркер — её заголовок), а не плоский список проектов всех организаций
+// пользователя; модалка открыта, введённое сохранено, чужая организация в
+// теле не упоминается.
+func TestWebProjectCreateInvalidSlugFromOrgPageStaysOnOrgPage(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "projcreate-orgpage@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "projcreate-orgpage-co", "OrgPage Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	// Вторая организация того же пользователя — плоский список перечислил
+	// бы проекты и её тоже; маркер страницы — корневой блок разметки.
+	if _, err := orgSvc.CreateOrg(context.Background(), "projcreate-orgpage-other", "Other Org", ownerID); err != nil {
+		t.Fatalf("create other org: %v", err)
+	}
+
+	resp := postForm(t, s.srv, "/projects/new", url.Values{
+		"origin": {"org_projects"},
+		"org_id": {strconv.FormatInt(o.ID, 10)}, "slug": {"Не Слаг"}, "name": {"Имя с орг-страницы"}, "platform": {"php"},
+	}, s.srv.URL, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	text := string(body)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST с невалидным slug с орг-страницы = %d, want 422", resp.StatusCode)
+	}
+	if !strings.Contains(text, "Проекты организации «OrgPage Co»") {
+		t.Fatalf("422 не вернул карточную страницу организации (нет её заголовка):\n%s", text)
+	}
+	if !strings.Contains(text, `class="org-projects"`) || strings.Contains(text, `class="projects-list"`) {
+		t.Fatalf("422 вернул плоский список проектов, а не страницу организации:\n%s", text)
+	}
+	if !strings.Contains(text, `id="new-project" class="modal modal--open"`) {
+		t.Fatalf("форма не открыта заново:\n%s", text)
+	}
+	if !strings.Contains(text, `value="Имя с орг-страницы"`) {
+		t.Fatalf("введённое имя потеряно:\n%s", text)
+	}
+	if !strings.Contains(text, `id="new-project-error"`) {
+		t.Fatalf("нет сообщения об ошибке в модалке:\n%s", text)
+	}
+
+	// Без origin (плоская форма) поведение прежнее — плоский список.
+	resp = postForm(t, s.srv, "/projects/new", url.Values{
+		"org_id": {strconv.FormatInt(o.ID, 10)}, "slug": {"Не Слаг"}, "name": {"Имя"}, "platform": {"go"},
+	}, s.srv.URL, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST без origin = %d, want 422", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), `class="projects-list"`) || strings.Contains(string(body), `class="org-projects"`) {
+		t.Fatalf("POST без origin вернул страницу организации вместо плоского списка:\n%s", body)
+	}
+}

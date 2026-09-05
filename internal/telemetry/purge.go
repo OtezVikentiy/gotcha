@@ -51,13 +51,14 @@ type Subject struct {
 type PurgeResult struct {
 	Events       uint64
 	Transactions uint64
+	Spans        uint64
 	MetricPoints uint64
 	Logs         uint64
 }
 
 // Total — сколько всего строк отнесено к субъекту.
 func (r PurgeResult) Total() uint64 {
-	return r.Events + r.Transactions + r.MetricPoints + r.Logs
+	return r.Events + r.Transactions + r.Spans + r.MetricPoints + r.Logs
 }
 
 // Purger удаляет телеметрию из ClickHouse.
@@ -94,6 +95,20 @@ func (p *Purger) PurgeProject(ctx context.Context, projectID int64) error {
 //     (← UserID), tags['user.email']/tags['enduser.email'] (← Email) — OTLP-приём
 //     кладёт атрибуты спана в tags как есть, поэтому субъект по email виден в
 //     transactions только через теги (см. txSubjectConds);
+//   - spans: у таблицы spans (ch/0004_spans.up.sql) вообще нет колонки субъекта —
+//     ни user_id, ни тегов. Субъект адресуется КОСВЕННО, через trace_id его
+//     транзакций: сначала собираются trace_id строк transactions, совпавших с
+//     субъектом по тем же условиям, что и сама очистка transactions
+//     (txSubjectConds), и уже по этому списку удаляются spans с тем же
+//     project_id и trace_id IN (...). Удаление spans идёт ДО удаления
+//     transactions (а не после, хотя оба списка формируются из одних и тех же
+//     trace_id) — ради повторяемости при сбое: если операция не atomic (а она
+//     не atomic — это два независимых ALTER ... DELETE) и упадёт на какой-то
+//     пачке spans, transactions ещё целы, и повторный вызов PurgeSubject
+//     соберёт те же trace_id заново и продолжит. Переставь порядок обратно —
+//     и сбой на spans после того, как transactions уже стёрты, станет
+//     неисправим: retry не найдёт trace_id субъекта, а недоудалённые spans
+//     станут неотличимы от законно осиротевших;
 //   - metric_points: attributes['user.id']/['enduser.id'] (← UserID),
 //     attributes['user.email'] (← Email);
 //   - logs: log_attributes['user.id']/['enduser.id'] (← UserID),
@@ -106,7 +121,18 @@ func (p *Purger) PurgeProject(ctx context.Context, projectID int64) error {
 // logs.body (произвольный текст сообщения приложения — то же самое соображение).
 // Эти поля обезличиваются ретенцией по TTL из миграций ch/: spans — 30 дней,
 // transactions — 90 дней, metric_points — 30 дней, profile_samples — 7 дней,
-// logs — 14 дней.
+// logs — 14 дней. Решение владельца: profile_samples.stack программно не
+// чистится и остаётся на TTL 7 дней даже после удаления субъекта — то же
+// соображение о free-form поле, что и для spans.data/description.
+//
+// Остаток, который переживает вызов (границы механизма, а не забытые случаи):
+//   - спаны трейса, у которого нет строки в transactions (например, транзакция
+//     уже вытеснена ретенцией, а спаны — ещё нет), не находятся по trace_id и
+//     доживают до собственного TTL (30 дней);
+//   - трейс, в котором участвовали несколько субъектов (фоновые задания,
+//     межпользовательские запросы), удаляется ЦЕЛИКОМ, если хотя бы одна его
+//     транзакция принадлежит субъекту — spans не делится по субъектам внутри
+//     трейса, и это считается приемлемым.
 //
 // В events, transactions, metric_points и logs удаляются строки, совпавшие ХОТЯ
 // БЫ по одному непустому критерию субъекта. Пустые поля Subject в условие не
@@ -148,9 +174,35 @@ func (p *Purger) PurgeSubject(ctx context.Context, projectID int64, sub Subject)
 
 	// transactions: субъект живёт в колонке user_id и в тегах (см. txSubjectConds).
 	// Матчим по обоим, иначе субъект, заданный email, не удаляет свои транзакции.
+	//
+	// ПОРЯДОК ОБЯЗАТЕЛЕН, и он не «собрать → удалить транзакции → удалить
+	// spans»: spans удаляются РАНЬШЕ transactions. trace_id собираются один
+	// раз в начале и не меняются, но если удалить транзакции первыми, а потом
+	// упадёт удаление spans (несколько независимых ALTER ... DELETE, не
+	// atomic), повторный вызов PurgeSubject уже не найдёт trace_id субъекта —
+	// транзакций больше нет — и недоудалённые spans останутся в базе
+	// неотличимыми от законно осиротевших. Удаляя spans первыми, сбой на них
+	// оставляет transactions нетронутыми, и retry просто повторяет всю
+	// операцию заново.
 	if txConds, txArgs := txSubjectConds(sub); len(txConds) > 0 {
 		args := append([]any{projectID}, txArgs...)
 		txWhere := "project_id = ? AND (" + strings.Join(txConds, " OR ") + ")"
+
+		traceIDs, err := p.matchingTraceIDs(ctx, txWhere, args)
+		if err != nil {
+			return res, err
+		}
+
+		// spans: субъект в этой таблице не адресуется напрямую (нет ни колонки,
+		// ни тегов) — только косвенно, через trace_id, собранный строкой выше,
+		// пока транзакции ещё на месте. Удаляются ДО transactions — см.
+		// комментарий выше про идемпотентность retry.
+		spansDeleted, err := p.purgeSpansByTraceIDs(ctx, projectID, traceIDs)
+		if err != nil {
+			return res, err
+		}
+		res.Spans = spansDeleted
+
 		n, err := p.countMatching(ctx, "transactions", txWhere, args)
 		if err != nil {
 			return res, err
@@ -231,6 +283,69 @@ func (p *Purger) countMatching(ctx context.Context, table, where string, args []
 		return 0, fmt.Errorf("telemetry: count subject rows in %s: %w", table, err)
 	}
 	return n, nil
+}
+
+// matchingTraceIDs возвращает различные trace_id транзакций, совпавших с
+// условием where (то же условие, что использует само удаление transactions).
+// Вызывается ДО удаления этих строк — потом trace_id субъекта взять уже
+// неоткуда (см. PurgeSubject).
+func (p *Purger) matchingTraceIDs(ctx context.Context, where string, args []any) ([]string, error) {
+	rows, err := p.conn.Query(ctx, "SELECT DISTINCT trace_id FROM transactions WHERE "+where, args...)
+	if err != nil {
+		return nil, fmt.Errorf("telemetry: collect subject trace_id: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("telemetry: scan subject trace_id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("telemetry: collect subject trace_id: %w", err)
+	}
+	return ids, nil
+}
+
+// spanTraceIDBatch — сколько trace_id попадает в один запрос удаления spans.
+// Субъект теоретически мог оставить очень много транзакций за окно хранения
+// (90 дней), и передавать их все одним bind-параметром неограниченного размера
+// рискованно — как по объёму самого запроса, так и по памяти на стороне
+// ClickHouse при его разборе. Резать на пачки этого размера дороже по числу
+// ALTER-мутаций, но каждая остаётся дешёвой и предсказуемой; порог взят с
+// большим запасом над реалистичным числом трейсов одного субъекта.
+const spanTraceIDBatch = 5000
+
+// purgeSpansByTraceIDs считает и удаляет строки spans проекта, чьи trace_id
+// входят в переданный список. Список приходит из matchingTraceIDs и режется на
+// пачки spanTraceIDBatch, чтобы не собирать неограниченно большой IN(...).
+func (p *Purger) purgeSpansByTraceIDs(ctx context.Context, projectID int64, traceIDs []string) (uint64, error) {
+	var total uint64
+	for len(traceIDs) > 0 {
+		batch := traceIDs
+		if len(batch) > spanTraceIDBatch {
+			batch = traceIDs[:spanTraceIDBatch]
+		}
+		traceIDs = traceIDs[len(batch):]
+
+		const where = "project_id = ? AND trace_id IN (?)"
+		args := []any{projectID, batch}
+		n, err := p.countMatching(ctx, "spans", where, args)
+		if err != nil {
+			return total, err
+		}
+		total += n
+
+		q := "ALTER TABLE spans DELETE WHERE " + where +
+			" SETTINGS mutations_sync = 2, max_execution_time = 0"
+		if err := p.conn.Exec(ctx, q, args...); err != nil {
+			return total, fmt.Errorf("telemetry: purge subject spans (project %d): %w", projectID, err)
+		}
+	}
+	return total, nil
 }
 
 // txSubjectConds строит OR-условия и bound-параметры, относящие строку

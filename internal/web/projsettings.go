@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
+	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingestsignal"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -264,7 +268,58 @@ func (h *Handler) renderProjectSettings(w http.ResponseWriter, r *http.Request, 
 		reg = *regOverride
 	}
 	w.WriteHeader(status)
-	_ = templates.ProjectSettings(project, views, errMsg, h.currentEmail(r), perf, reg, h.RetentionDays).Render(r.Context(), w)
+	_ = templates.ProjectSettings(project, views, errMsg, h.currentEmail(r), perf, reg, h.RetentionDays,
+		h.deprecatedPathsView(r.Context(), projectID)).Render(r.Context(), w)
+}
+
+// deprecatedIngestPathWindow — сигнал деприкейтед-пути показывается на
+// странице настроек, только пока отправитель ещё реально им пользуется:
+// 7 дней тем же порядком величины, что окно квоты/дропов (droppedBreakdown),
+// а не сутки — деплой конкретного отправителя, который стучится на устаревший
+// адрес раз в несколько дней (например, батч-джоб по расписанию), не должен
+// пропасть из виду только потому, что заглянули на следующий день.
+const deprecatedIngestPathWindow = 7 * 24 * time.Hour
+
+// deprecatedPathByKind — устаревший адрес приёма, которым бьёт сигнал (K7-5).
+// Соответствие обратное к ingest.deprecatedKinds: web уже импортирует ingest
+// (см. cardinality.go), обратная зависимость (ingest → web) недопустима —
+// так что держим здесь ту же тройку путей текстом ingest.DeprecatedPath, а
+// не заводим в ingest экспортируемую обратную мапу ради одного потребителя.
+var deprecatedPathByKind = map[ingestsignal.Kind]ingest.DeprecatedPath{
+	ingestsignal.KindDeprecatedLogs:        ingest.DeprecatedLogs,
+	ingestsignal.KindDeprecatedPprof:       ingest.DeprecatedProfilePprof,
+	ingestsignal.KindDeprecatedDeployments: ingest.DeprecatedDeployments,
+}
+
+// deprecatedPathsView — callout «проект ещё шлёт по устаревшим адресам»
+// (K7-5): пусто, если h.Signals не настроен (nil-safe, как Deploy/Trace) или
+// сигналов, свежих не старше deprecatedIngestPathWindow, для проекта нет.
+// Ошибка ForProject не роняет страницу настроек — тем же приёмом, что и
+// quotaBanner/gettingStarted: сигнал вспомогательный, а не часть контракта
+// страницы.
+func (h *Handler) deprecatedPathsView(ctx context.Context, projectID int64) []templates.DeprecatedPathView {
+	if h.Signals == nil {
+		return nil
+	}
+	signals, err := h.Signals.ForProject(ctx, projectID)
+	if err != nil {
+		slog.Warn("deprecatedPathsView: for project", "project_id", projectID, "err", err)
+		return nil
+	}
+	cutoff := time.Now().Add(-deprecatedIngestPathWindow)
+	var out []templates.DeprecatedPathView
+	for _, sig := range signals {
+		path, ok := deprecatedPathByKind[sig.Kind]
+		if !ok || sig.LastSeenAt.Before(cutoff) {
+			continue
+		}
+		// docs всегда найдётся: deprecatedPathByKind отдаёт только пути из
+		// закрытой тройки, для которой ingest.DocsPath гарантированно знает
+		// страницу документации (см. ingest.deprecatedTargets).
+		docs, _ := ingest.DocsPath(path)
+		out = append(out, templates.DeprecatedPathView{Path: string(path), LastSeenAt: sig.LastSeenAt, Hits: sig.Hits, Docs: docs})
+	}
+	return out
 }
 
 // projectSettingsRename — POST /projects/{id}/settings/rename: name.
@@ -287,8 +342,7 @@ func (h *Handler) projectSettingsRename(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	name := r.FormValue("name")
@@ -319,8 +373,7 @@ func (h *Handler) projectSettingsKeyCreate(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	kind := org.KeyKind(r.FormValue("kind"))
@@ -358,13 +411,12 @@ func (h *Handler) projectSettingsKeyRevoke(w http.ResponseWriter, r *http.Reques
 	if _, ok := h.requireProjectRole(w, r, projectID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	keyID, err := strconv.ParseInt(r.FormValue("key_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad key_id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	keys, err := h.Org.KeysForProject(r.Context(), projectID)
@@ -426,8 +478,7 @@ func (h *Handler) projectSettingsPerformance(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 
@@ -520,8 +571,7 @@ func (h *Handler) projectSettingsRegressions(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 
@@ -638,12 +688,27 @@ func (h *Handler) projectSettingsDelete(w http.ResponseWriter, r *http.Request) 
 	if !h.requireProjectOwner(w, r, projectID, uid) {
 		return
 	}
+	if !h.parseForm(w, r) {
+		return
+	}
 	// Двухшаговое подтверждение (см. projectSettingsKeyRevoke/renderConfirm):
 	// без confirmed=yes показываем страницу подтверждения вместо удаления
-	// проекта.
+	// проекта. Имя проекта — в тексте вопроса (K7-3, как у hostDelete): без
+	// него страница защищает только от случайного клика, но не от вкладки не
+	// того проекта.
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.project_delete.message", "project.settings.danger.delete_submit",
-			projectSettingsPath(projectID), projectSettingsDeletePath(projectID), nil)
+		p, err := h.Org.GetProject(r.Context(), projectID)
+		if err != nil {
+			if errors.Is(err, org.ErrNotFound) {
+				h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+				return
+			}
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.project_delete.message", "project.settings.danger.delete_submit",
+			projectSettingsPath(projectID), projectSettingsDeletePath(projectID), nil,
+			"name", p.Name)
 		return
 	}
 	if err := h.Org.DeleteProject(r.Context(), projectID); err != nil {

@@ -312,11 +312,19 @@ func (s *IncidentService) Name() string { return "host" }
 // задекларированный родитель, эскалацию не продвигает — планировщик деп-
 // подавления (T5) сам решает, когда его разбудить (грейс + живая проверка
 // родителя), обычному тику эскалации сюда лезть незачем. Флаг ставит
-// Suppressor.MarkSuppressed, а не этот пакет (см. depChecker в evaluator.go).
+// Suppressor.MarkSuppressed, а этот пакет (K1-4, аудит перед 1.0) — снимает,
+// через ClearSuppressed, вызываемый Scheduler.releaseSuppressed.
+//
+// dep_released_at (миграция 0090, K1-4) — третий аргумент того же GREATEST,
+// что уже перезапускает часы лесенки от выхода из группы: инцидент,
+// освобождённый из-под подавления, начинает лесенку заново от момента
+// освобождения, а не от исходного i.started_at — иначе ребёнок, просидевший
+// под упавшим родителем час, получил бы все просроченные ступени лесенки
+// каскадом, по одной за тик.
 func (s *IncidentService) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT i.id, i.project_id,
-		       GREATEST(i.started_at, COALESCE(g.resolved_at, i.started_at)) AS started_at,
+		       GREATEST(i.started_at, COALESCE(g.resolved_at, i.started_at), COALESCE(i.dep_released_at, i.started_at)) AS started_at,
 		       i.severity, i.escalation_level
 		FROM host_incidents i
 		LEFT JOIN incident_groups g ON g.id = i.group_id
@@ -355,6 +363,50 @@ func (s *IncidentService) BumpEscalation(ctx context.Context, id int64, from int
 		return false, fmt.Errorf("host: bump escalation: %w", err)
 	}
 	return true, nil
+}
+
+// OpenSuppressed возвращает открытые неподтверждённые инциденты, подавленные
+// зависимостью (suppressed_by_dep = true) — кандидаты Scheduler.releaseSuppressed
+// на снятие подавления, если их родитель восстановился (K1-4, аудит перед
+// 1.0). Тот же SELECT, что OpenUnacked, но с перевёрнутым фильтром
+// suppressed_by_dep — часы (dep_released_at ещё NULL, суппрессия не снята)
+// здесь не нужны: PendingIncident.StartedAt читателю (DepChecker) не важен,
+// решение принимает releaseSuppressed по ID.
+func (s *IncidentService) OpenSuppressed(ctx context.Context) ([]escalation.PendingIncident, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT i.id, i.project_id, i.started_at, i.severity, i.escalation_level
+		FROM host_incidents i
+		WHERE i.status = 'open' AND i.acknowledged_at IS NULL AND i.suppressed_by_dep = true
+		ORDER BY i.id`)
+	if err != nil {
+		return nil, fmt.Errorf("host: open suppressed incidents: %w", err)
+	}
+	defer rows.Close()
+	var out []escalation.PendingIncident
+	for rows.Next() {
+		var p escalation.PendingIncident
+		if err := rows.Scan(&p.ID, &p.ProjectID, &p.StartedAt, &p.Severity, &p.EscalationLevel); err != nil {
+			return nil, fmt.Errorf("host: open suppressed incidents scan: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ClearSuppressed снимает подавление зависимостью (suppressed_by_dep =
+// false, dep_released_at = now(), миграция 0090) — единственный писатель в
+// false для этого флага (K1-4), симметричный Suppressor.MarkSuppressed
+// (единственный писатель в true). CAS-условие "AND suppressed_by_dep" —
+// идемпотентность: повторный вызов на уже снятом инциденте не трогает
+// dep_released_at второй раз.
+func (s *IncidentService) ClearSuppressed(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE host_incidents SET suppressed_by_dep = false, dep_released_at = now()
+		WHERE id = $1 AND suppressed_by_dep`, id)
+	if err != nil {
+		return fmt.Errorf("host: clear suppressed: %w", err)
+	}
+	return nil
 }
 
 // ListByProject возвращает инциденты проекта, свежайшие первыми (для UI).

@@ -34,6 +34,16 @@ func (h *Handler) orgProjectsPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	h.renderOrgProjects(w, r, http.StatusOK, uid, orgID, nil, "")
+}
+
+// renderOrgProjects — общий рендер карточной страницы проектов ОДНОЙ
+// организации: GET /orgs/{id}/projects (orgProjectsPage) и 422 POST
+// /projects/new, когда форма создания пришла с этой страницы (K7-2,
+// projectCreate) — тогда form/errMsg возвращают модалку открытой с
+// сообщением и введённым, тем же контрактом, что у renderProjectsList.
+// Организация, в которой юзер не состоит, отвечает 404 — см. orgProjectsPage.
+func (h *Handler) renderOrgProjects(w http.ResponseWriter, r *http.Request, status int, uid, orgID int64, form templates.FormState, errMsg string) {
 	role, err := h.Org.Role(r.Context(), orgID, uid)
 	if err != nil {
 		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
@@ -55,8 +65,8 @@ func (h *Handler) orgProjectsPage(w http.ResponseWriter, r *http.Request) {
 	if role == org.RoleOwner || role == org.RoleAdmin {
 		canCreate = []templates.OrgOption{{ID: o.ID, Name: o.Name}}
 	}
-	w.WriteHeader(http.StatusOK)
-	_ = templates.OrgProjects(o, projects, canCreate, h.currentEmail(r)).Render(r.Context(), w)
+	w.WriteHeader(status)
+	_ = templates.OrgProjects(o, projects, canCreate, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 // projectsRedirect — GET /projects: раньше рендерил плоский список всех

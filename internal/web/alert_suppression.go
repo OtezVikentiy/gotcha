@@ -419,8 +419,7 @@ func (h *Handler) alertSuppressionSave(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 
@@ -468,11 +467,10 @@ func (h *Handler) alertSuppressionUpdate(w http.ResponseWriter, r *http.Request)
 	}
 	depID, err := strconv.ParseInt(r.PathValue("depID"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad dependency id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 
@@ -517,7 +515,31 @@ func (h *Handler) alertSuppressionDelete(w http.ResponseWriter, r *http.Request)
 	}
 	depID, err := strconv.ParseInt(r.PathValue("depID"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad dependency id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
+		return
+	}
+	if !h.parseForm(w, r) {
+		return
+	}
+	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
+	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
+	// показываем страницу подтверждения с именами узлов ребра (K7-7), а не
+	// удаляем по одному клику. Ребро ищется в списке проекта: чужой или
+	// несуществующий depID здесь — 404, как у alertsChannelDelete; сам
+	// второй POST остаётся идемпотентным (Store.Delete скоупит по project_id).
+	if r.FormValue("confirmed") != "yes" {
+		parent, child, ok, err := h.suppressionEdgeLabels(r.Context(), projectID, depID)
+		if err != nil {
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
+		if !ok {
+			h.notFound(w, r)
+			return
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.suppression_edge_delete.message", "confirm.delete",
+			alertSuppressionPath(projectID), alertSuppressionPath(projectID)+"/"+strconv.FormatInt(depID, 10)+"/delete", nil,
+			"parent", parent, "child", child)
 		return
 	}
 	if err := h.AlertDeps.Delete(r.Context(), projectID, depID); err != nil {
@@ -526,4 +548,38 @@ func (h *Handler) alertSuppressionDelete(w http.ResponseWriter, r *http.Request)
 	}
 	h.flashOK(w, "flash.deleted", 0)
 	http.Redirect(w, r, alertSuppressionPath(projectID), http.StatusSeeOther)
+}
+
+// suppressionEdgeLabels — подписи родителя и ребёнка ОДНОГО ребра проекта
+// (те же suppressionParentLabel/suppressionChildLabel, что у строк таблицы) —
+// для страницы подтверждения удаления. ok=false — ребра с таким id в проекте
+// нет.
+func (h *Handler) suppressionEdgeLabels(ctx context.Context, projectID, depID int64) (parent, child string, ok bool, err error) {
+	edges, err := h.AlertDeps.List(ctx, projectID)
+	if err != nil {
+		return "", "", false, err
+	}
+	var edge depsuppress.Edge
+	for _, e := range edges {
+		if e.ID == depID {
+			edge, ok = e, true
+			break
+		}
+	}
+	if !ok {
+		return "", "", false, nil
+	}
+	hosts, monitors, err := h.suppressionNodes(ctx, projectID)
+	if err != nil {
+		return "", "", false, err
+	}
+	hostNames := make(map[int64]string, len(hosts))
+	for _, hh := range hosts {
+		hostNames[hh.ID] = hh.Name
+	}
+	monitorNames := make(map[int64]string, len(monitors))
+	for _, m := range monitors {
+		monitorNames[m.ID] = m.Name
+	}
+	return suppressionParentLabel(ctx, edge, hostNames, monitorNames), suppressionChildLabel(ctx, edge, hostNames, monitorNames), true, nil
 }

@@ -275,14 +275,13 @@ func (h *Handler) perfIssueSetStatus(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	status := r.FormValue("status")
 	if err := h.PerfIssues.SetStatus(r.Context(), projectID, id, status); err != nil {
 		if errors.Is(err, trace.ErrInvalidStatus) {
-			http.Error(w, "bad status", http.StatusUnprocessableEntity)
+			h.renderError(w, r, http.StatusUnprocessableEntity, i18n.T(r.Context(), "error.perfissue.invalid_status"))
 			return
 		}
 		if errors.Is(err, trace.ErrNotFound) {

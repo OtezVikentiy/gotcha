@@ -61,8 +61,13 @@ func TestRegisterIgnoresForeignNext(t *testing.T) {
 
 // TestRegisterClosedLinksToLoginWithNext — раунд правок 1: в закрытой ветке
 // (registrationClosed) формы нет вовсе, но ссылка «уже есть аккаунт» на
-// /login обязана нести next дальше — иначе адресат из ссылки-приглашения
+// /login обязана нести next дальше — иначе адресат из глубокой ссылки
 // теряется ровно там же, где раньше терялся при отказе (denyRegistration).
+//
+// Пример — некий защищённый путь приложения, а не /invite/{token}: последний
+// с K9-19 обзавёлся особым случаем ниже (TestRegisterClosedInvitePathAvoidsQuery)
+// именно потому, что путь приглашения в query кладётся отдельно от обычного
+// next и теперь не кладётся вовсе.
 func TestRegisterClosedLinksToLoginWithNext(t *testing.T) {
 	s := newStack(t)
 	s.h.RegistrationMode = "closed"
@@ -79,13 +84,57 @@ func TestRegisterClosedLinksToLoginWithNext(t *testing.T) {
 		t.Fatalf("UserCount = %d, err = %v, want 1", n, err)
 	}
 
+	getResp, err := http.Get(s.srv.URL + "/register?next=" + url.QueryEscape("/profile"))
+	if err != nil {
+		t.Fatalf("GET /register: %v", err)
+	}
+	body, _ := io.ReadAll(getResp.Body)
+	getResp.Body.Close()
+	if !strings.Contains(string(body), `href="/login?next=`+url.QueryEscape("/profile")+`"`) {
+		t.Fatalf("ссылка на /login в закрытой ветке не сохранила адресата:\n%s", body)
+	}
+}
+
+// TestRegisterClosedInvitePathAvoidsQuery — K9-19: тот же сценарий (закрытая
+// ветка регистрации без формы, ссылка «уже есть аккаунт»), но next — путь
+// приглашения. Раньше ссылка несла его в query (next=/invite/{token}) —
+// ровно та находка, которую чинит T7. Токен по-прежнему не теряется: он
+// остаётся годным для восстановления адресата, но едет invite-cookie, а не
+// адресом — здесь это легаси-случай (next в query пришёл как есть, старой
+// ссылкой или руками), и resolveAuthNext зеркалит его в cookie на лету (см.
+// auth.go).
+func TestRegisterClosedInvitePathAvoidsQuery(t *testing.T) {
+	s := newStack(t)
+	s.h.RegistrationMode = "closed"
+
+	resp := postForm(t, s.srv, "/register", regForm("closed-bootstrap2@example.com"), s.srv.URL, nil)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("bootstrap register status = %d, want 303", resp.StatusCode)
+	}
+
 	getResp, err := http.Get(s.srv.URL + "/register?next=" + url.QueryEscape("/invite/tok123"))
 	if err != nil {
 		t.Fatalf("GET /register: %v", err)
 	}
 	body, _ := io.ReadAll(getResp.Body)
 	getResp.Body.Close()
-	if !strings.Contains(string(body), `href="/login?next=`+url.QueryEscape("/invite/tok123")+`"`) {
-		t.Fatalf("ссылка на /login в закрытой ветке не сохранила адресата:\n%s", body)
+	page := string(body)
+
+	if strings.Contains(page, url.QueryEscape("tok123")) {
+		t.Errorf("токен приглашения не должен встречаться в query ссылки «войти»:\n%s", page)
+	}
+	if !strings.Contains(page, `href="/login"`) {
+		t.Errorf("ссылка «войти» должна быть голой (без next в query):\n%s", page)
+	}
+	var inviteCookie *http.Cookie
+	for _, c := range getResp.Cookies() {
+		if c.Name == "invite_next" {
+			inviteCookie = c
+		}
+	}
+	if inviteCookie == nil || inviteCookie.Value != "tok123" {
+		t.Fatal("токен приглашения не зеркалится в invite-cookie — адресат потерян")
 	}
 }

@@ -83,6 +83,9 @@ func (h *Handler) localeSwitch(w http.ResponseWriter, r *http.Request) {
 		h.denyCrossOrigin(w, r)
 		return
 	}
+	if !h.parseForm(w, r) {
+		return
+	}
 	loc, ok := i18n.Parse(r.FormValue("lang"))
 	if ok {
 		setLangCookie(w, loc.Code, h.Secure)

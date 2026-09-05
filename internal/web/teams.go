@@ -136,19 +136,26 @@ func (h *Handler) renderTeamsPage(w http.ResponseWriter, r *http.Request, status
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	// Участники и проекты всех команд — двумя запросами на страницу, а не по
+	// два на каждую команду (аудит 2026-09-04, K8-2); порядок строк — как у
+	// TeamMembers/TeamProjects.
+	teamIDs := make([]int64, len(teams))
+	for i, tm := range teams {
+		teamIDs[i] = tm.ID
+	}
+	membersByTeam, err := h.Org.TeamMembersOf(r.Context(), teamIDs)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
+	projectsByTeam, err := h.Org.TeamProjectsOf(r.Context(), teamIDs)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
 	views := make([]templates.TeamView, len(teams))
 	for i, tm := range teams {
-		members, err := h.Org.TeamMembers(r.Context(), tm.ID)
-		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-			return
-		}
-		projects, err := h.Org.TeamProjects(r.Context(), tm.ID)
-		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-			return
-		}
-		views[i] = templates.TeamView{Team: tm, Members: members, Projects: projects}
+		views[i] = templates.TeamView{Team: tm, Members: membersByTeam[tm.ID], Projects: projectsByTeam[tm.ID]}
 	}
 	orgMembers, err := h.Org.MembersOf(r.Context(), orgID)
 	if err != nil {
@@ -183,8 +190,7 @@ func (h *Handler) teamsCreate(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireOrgRole(w, r, orgID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	slug := r.FormValue("slug")
@@ -226,8 +232,7 @@ func (h *Handler) teamRename(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	name := r.FormValue("name")
@@ -265,13 +270,12 @@ func (h *Handler) teamMembersAdd(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	targetID, err := strconv.ParseInt(r.FormValue("user_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad user_id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	if err := h.Org.AddTeamMember(r.Context(), teamID, targetID); err != nil {
@@ -300,13 +304,12 @@ func (h *Handler) teamMembersRemove(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	targetID, err := strconv.ParseInt(r.FormValue("user_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad user_id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
@@ -347,13 +350,12 @@ func (h *Handler) teamProjectsAttach(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	projectID, err := strconv.ParseInt(r.FormValue("project_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad project_id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	projectOrgID, err := h.Org.ProjectOrg(r.Context(), projectID)
@@ -397,13 +399,12 @@ func (h *Handler) teamProjectsDetach(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	projectID, err := strconv.ParseInt(r.FormValue("project_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad project_id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	// Двухшаговое подтверждение (№61): отвязка мгновенно отбирает у всей
@@ -447,6 +448,9 @@ func (h *Handler) teamDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	orgID, ok := h.requireTeamRole(w, r, teamID, uid)
 	if !ok {
+		return
+	}
+	if !h.parseForm(w, r) {
 		return
 	}
 	if r.FormValue("confirmed") != "yes" {

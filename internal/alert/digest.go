@@ -2,6 +2,7 @@ package alert
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -11,6 +12,16 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
+
+// Enqueuer — интерфейс постановки задачи в очередь, которого Digester
+// требует от своего Outbox. *notify.Outbox реализует его штатно (Enqueue
+// пишет в notification_outbox через pgx). Интерфейс, а не конкретный тип —
+// тот же локальный duck-typing приём, что у escalation.Enqueuer (не
+// импортируем escalation ради одного метода): позволяет тесту подставить
+// фейк, фиксирующий вызовы по каналам, без похода в Postgres.
+type Enqueuer interface {
+	Enqueue(ctx context.Context, channelID int64, payload map[string]any) error
+}
 
 // digestInterval — как часто проверять, не пора ли разослать сводки.
 // Заметно чаще окна бюджета: сводка должна уйти вскоре после того, как окно
@@ -32,7 +43,7 @@ const digestBatch = 50
 // не работает в половине конфигураций.
 type Digester struct {
 	Svc    *Service
-	Outbox *notify.Outbox
+	Outbox Enqueuer
 
 	// BaseURL — префикс ссылки на проект в сводке.
 	BaseURL string
@@ -87,6 +98,14 @@ func (d *Digester) Tick(ctx context.Context) {
 	}
 }
 
+// send рассылает одну сводку по каналам проекта. K1-2 (аудит перед 1.0):
+// раньше первая же провалившаяся Enqueue обрывала цикл через return —
+// канал, идущий по списку ПОСЛЕ битого (истёкший секрет, недоступный
+// вебхук — то, что реально случается с ОДНИМ конкретным каналом, не со
+// всем Outbox), не получал сводку вовсе, хотя сам был совершенно здоров.
+// Эталон — escalation.Dispatch (notifydispatch.go): ошибка одного канала не
+// должна глушить остальные — здесь тот же приём (slog.Error + errors.Join +
+// continue), не return.
 func (d *Digester) send(ctx context.Context, b SuppressedBatch) error {
 	channels, err := d.Svc.Channels(ctx, b.ProjectID)
 	if err != nil {
@@ -108,6 +127,7 @@ func (d *Digester) send(ctx context.Context, b SuppressedBatch) error {
 	body := i18n.Tf(ctx, "notify.digest.body",
 		"count", count, "since", humanize.Time(ctx, b.Since, time.UTC), "url", url)
 
+	var errs error
 	for _, ch := range channels {
 		if !ch.Deliverable() {
 			continue
@@ -130,8 +150,10 @@ func (d *Digester) send(ctx context.Context, b SuppressedBatch) error {
 			payload = notify.RedactExternalPayload(ctx, payload)
 		}
 		if err := d.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
-			return fmt.Errorf("alert: digest enqueue channel %d: %w", ch.ID, err)
+			slog.Error("alert: digest: enqueue failed", "channel_id", ch.ID, "error", err)
+			errs = errors.Join(errs, fmt.Errorf("alert: digest enqueue channel %d: %w", ch.ID, err))
+			continue
 		}
 	}
-	return nil
+	return errs
 }

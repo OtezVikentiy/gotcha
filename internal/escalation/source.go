@@ -29,3 +29,29 @@ type Source interface {
 	OpenUnacked(ctx context.Context) ([]PendingIncident, error)
 	BumpEscalation(ctx context.Context, id int64, from int) (bool, error)
 }
+
+// SuppressedSource — источник, чьи инциденты умеют быть подавлены
+// зависимостью и умеют её отпустить (K1-4, аудит перед 1.0): подавленный
+// инцидент, чей родитель восстановился, обязан возобновить эскалацию, а не
+// молчать до конца времён — до этой правки писателя в false у
+// suppressed_by_dep не было вовсе ни у host, ни у uptime.
+//
+// Необязательный интерфейс: Scheduler.Tick проверяет его через type
+// assertion на каждом Binding.Src, а не требует его от Source напрямую —
+// только host реализует его здесь. uptime подавляется и освобождается ПО
+// ДРУГОМУ пути (Detector.settleHeldIncident, не Scheduler): uptime-инцидент
+// до первой доставки "down" планировщику не виден вовсе (Service.OpenUnacked
+// фильтрует escalation_level > 0, см. её докблок), и подавленный инцидент
+// эскалацию ещё не начинал — снятие подавления для него означает "отправить
+// step0", а не "продолжить лесенку с текущего уровня", поэтому Detector
+// решает это сам, минуя общий гейт планировщика.
+type SuppressedSource interface {
+	// OpenSuppressed возвращает открытые, неподтверждённые, подавленные
+	// зависимостью инциденты (suppressed_by_dep = true) — кандидаты на
+	// освобождение, если их родитель восстановился.
+	OpenSuppressed(ctx context.Context) ([]PendingIncident, error)
+	// ClearSuppressed снимает подавление (suppressed_by_dep = false,
+	// dep_released_at = now(), миграция 0090) — часы лесенки перезапускаются
+	// от момента снятия, как от выхода из группы инцидентов (0067).
+	ClearSuppressed(ctx context.Context, id int64) error
+}

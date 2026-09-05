@@ -133,24 +133,62 @@ func (h *Handler) probeResults(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	var resp uptime.ResultsResponse
+
+	// Задания всей пачки — одним запросом (LeasedJobs), изъятие из очереди —
+	// одним DELETE (ClaimJobs): раньше на каждый результат приходилось по два
+	// round-trip'а к БД ещё до применения, до 2×probeMaxResults на регулярный
+	// POST (аудит 2026-09-04, K8-3). Применение результата к состоянию
+	// монитора (ApplyResult) остаётся построчным: это машина состояний, и
+	// отказ БД на одном результате по-прежнему не роняет остальные.
+	queueIDs := make([]int64, len(req.Results))
+	for i, res := range req.Results {
+		queueIDs[i] = res.QueueID
+	}
+	jobs, err := h.Uptime.LeasedJobs(ctx, queueIDs, probe.ID)
+	if err != nil {
+		slog.Error("probe api: leased jobs lookup failed", "probe_id", probe.ID, "error", err)
+		writeProbeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	claims := make([]uptime.JobClaim, 0, len(jobs))
+	for _, job := range jobs {
+		claims = append(claims, uptime.JobClaim{QueueID: job.QueueID, LeaseUntil: job.LeaseUntil})
+	}
+	claimed, err := h.Uptime.ClaimJobs(ctx, claims)
+	if err != nil {
+		// Как и при построчном claim'е (Ingestor.Accept): отказ БД — результаты
+		// в rejected, пачка остаётся 200. Задания остаются в очереди с живым
+		// lease, проба ничего не теряет.
+		slog.Error("probe api: claim jobs failed", "probe_id", probe.ID, "error", err)
+		resp.Rejected = len(req.Results)
+		writeProbeJSON(w, http.StatusOK, resp)
+		return
+	}
+
 	for _, res := range req.Results {
-		job, err := h.Uptime.LeasedJob(ctx, res.QueueID, probe.ID)
-		if errors.Is(err, uptime.ErrNotFound) {
+		job, ok := jobs[res.QueueID]
+		if !ok {
 			// Чужое, протухшее или уже выполненное задание — молча в rejected.
 			resp.Rejected++
 			continue
 		}
-		if err != nil {
-			slog.Error("probe api: leased job lookup failed", "probe_id", probe.ID, "queue_id", res.QueueID, "error", err)
-			writeProbeError(w, http.StatusInternalServerError, "internal error")
-			return
+		if !claimed[res.QueueID] {
+			// Задание уже забрано: перевыдано после истечения lease, пока проба
+			// ходила по сети, либо тот же queue_id встретился в пачке дважды.
+			// Результат отбрасываем, как Ingestor.Accept при ClaimJob=false —
+			// это не ошибка запроса, а не изъятое задание.
+			slog.Info("uptime: ingest: job already claimed or re-leased, result dropped",
+				"monitor_id", job.MonitorID, "region", job.Region, "queue_id", job.QueueID)
+			resp.Accepted++
+			continue
 		}
+		claimed[res.QueueID] = false
 
-		if err := h.UptimeIngestor.Accept(ctx, job, time.Now().UTC(), res.Result()); err != nil {
-			// БД споткнулась на этом результате. Если это случилось уже после
-			// claim'а, результат потерян — монитор проверится заново, когда
-			// планировщик поставит его в очередь по следующему сроку (см.
-			// Ingestor.Accept). Остальную пачку это ронять не должно.
+		if err := h.UptimeIngestor.AcceptClaimed(ctx, job, time.Now().UTC(), res.Result()); err != nil {
+			// БД споткнулась на этом результате уже после claim'а — результат
+			// потерян, монитор проверится заново, когда планировщик поставит
+			// его в очередь по следующему сроку (см. Ingestor.Accept).
+			// Остальную пачку это ронять не должно.
 			slog.Error("probe api: accept result failed", "probe_id", probe.ID, "queue_id", res.QueueID, "error", err)
 			resp.Rejected++
 			continue

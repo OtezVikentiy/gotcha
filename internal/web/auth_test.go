@@ -14,6 +14,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingestsignal"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
@@ -58,6 +59,10 @@ func newStack(t *testing.T) *stack {
 	// показывает failed-доставки — тот же принцип, что и Alerts выше, заводим
 	// один раз на весь стенд, а не в каждом тесте.
 	h.Outbox = notify.NewOutbox(pool)
+	// Signals (аудит перед 1.0, K7-5/K7-6): callout устаревших путей на
+	// странице настроек проекта (projsettings_test.go) читает эту таблицу
+	// через s.h.Signals.Bump напрямую, тем же приёмом, что и issuesStack.
+	h.Signals = ingestsignal.NewStore(pool)
 	h.Register(mux)
 
 	return &stack{pool: pool, srv: srv, h: h, mux: mux}
@@ -152,6 +157,30 @@ func TestLoginPerIPRateLimit(t *testing.T) {
 	}
 	if last.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("21st login from same IP status = %d, want 429 (per-IP limit)", last.StatusCode)
+	}
+}
+
+// TestLoginBadCredentialsPreservesEmail — K7-12: после неверного пароля поле
+// email в форме не должно пустеть — человек уже набрал его один раз. Пароль,
+// наоборот, никогда не возвращается: поле password остаётся пустым.
+func TestLoginBadCredentialsPreservesEmail(t *testing.T) {
+	s := newStack(t)
+
+	form := url.Values{
+		"email":    {"typed-user@example.com"},
+		"password": {"wrong-password"},
+	}
+	resp := postForm(t, s.srv, "/login", form, s.srv.URL, nil)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("bad credentials status = %d, want 422", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), `value="typed-user@example.com"`) {
+		t.Fatalf("login form after bad credentials должен вернуть введённый email: %s", body)
+	}
+	if strings.Contains(string(body), "wrong-password") {
+		t.Fatalf("login form after bad credentials не должен возвращать пароль: %s", body)
 	}
 }
 

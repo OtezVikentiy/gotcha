@@ -24,6 +24,15 @@ const defaultSLOInterval = 2 * time.Minute
 // тут же откроется снова).
 const defaultCloseStreak = 3
 
+// tickBudgetShare/minTickBudget — та же пара, что host.Evaluator/trace.Evaluator
+// (K15-1): дедлайн тика — доля Interval, но не меньше пола, иначе повисший
+// ClickHouse-запрос (Provider.Buckets здесь без собственного таймаута) держал
+// бы тик (и self-метрику живости LastTickUnix) бесконечно.
+const (
+	tickBudgetShare = 0.8
+	minTickBudget   = 10 * time.Second
+)
+
 // fullWindowStep — шаг корзин при расчёте остатка бюджета за ПОЛНОЕ окно SLO.
 // Час крупнее burn-шага (минуты): полный бюджет считается только в момент
 // перехода (открытие/закрытие), а не каждый тик, поэтому точность до часа
@@ -129,16 +138,40 @@ func (e *Evaluator) LastTickSeconds() float64 {
 	return math.Float64frombits(e.lastTickSeconds.Load())
 }
 
+// tickBudget — дедлайн одного тика (см. tickBudgetShare/minTickBudget). Interval
+// <= 0 (не задан явно — ленивая инициализация литералом в тестах, либо прод-конфиг
+// с дефолтом до подстановки) трактуется как defaultSLOInterval, тот же дефолт, что
+// Run использует для периода тикера.
+func (e *Evaluator) tickBudget() time.Duration {
+	interval := e.Interval
+	if interval <= 0 {
+		interval = defaultSLOInterval
+	}
+	budget := time.Duration(float64(interval) * tickBudgetShare)
+	if budget < minTickBudget {
+		return minTickBudget
+	}
+	return budget
+}
+
 // Tick — один проход по всем включённым SLO. Возвращает число переходов инцидентов
 // (открытий+закрытий) за проход — публичный сигнал для тестов и наблюдаемости.
 // Ошибка по одному SLO не роняет остальные (error-isolation, как у metric.Evaluator).
+//
+// Тик ограничен дедлайном (tickBudget, K15-1): Provider.Buckets бьёт по CH голым
+// запросом без собственного таймаута, и без внешнего дедлайна повисший запрос
+// держал бы тик (и self-метрику живости) бесконечно — тот же контракт, что у
+// trace.Evaluator.tick/host.Evaluator.
 func (e *Evaluator) Tick(ctx context.Context) (int, error) {
 	if e.closeStreak == nil {
 		e.closeStreak = make(map[int64]int)
 	}
 	started := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, e.tickBudget())
+	defer cancel()
 	slos, err := e.Store.ListEnabled(ctx)
 	if err != nil {
+		e.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
 		return 0, err
 	}
 	now := time.Now().UTC()
@@ -149,6 +182,14 @@ func (e *Evaluator) Tick(ctx context.Context) (int, error) {
 		}
 	}
 	e.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
+	if ctx.Err() != nil {
+		// Тик вышел по дедлайну — отметку «последний завершённый проход» не
+		// публикуем, иначе постоянно обрывающийся тик снаружи выглядел бы
+		// здоровым (тот же выбор, что у trace.Evaluator.tick).
+		slog.Warn("slo evaluator: tick did not finish within its budget",
+			"budget", e.tickBudget(), "slos", len(slos))
+		return transitions, nil
+	}
 	e.lastTickUnix.Store(time.Now().Unix())
 	return transitions, nil
 }

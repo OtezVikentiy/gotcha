@@ -9,6 +9,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- The project settings page now shows when a sender is still using a
+  deprecated ingest address. Key rejections from the last hour — an invalid
+  or revoked key, a key from another project, a key of the wrong type — are
+  now shown on the empty issues list and in the getting-started checklist.
+- The profile regressions page now has an entry in the sidebar navigation, so
+  it no longer requires typing the URL directly; it stays read-only regardless
+  of permissions.
+- Export metadata now includes a schema version, covering both the file's
+  column set and the metadata fields; it's available the same way as the
+  rest of the metadata.
+
+### Fixed
+- An escalation step running on two replicas could be delivered twice; a channel
+  claims its step before it is sent now, not after, so only one replica ever sends
+  it. A single failing delivery channel in the suppressed-alerts digest no longer
+  stops the rest of the channels in the same digest from receiving it. An incident
+  suppressed because its dependency was down now resumes escalation once the
+  dependency recovers, instead of staying silent for good.
+- While other users exist on the instance, the instance administrator's account
+  can no longer be deleted until the role is transferred; the transfer form
+  lives on the profile page. The sole user on an instance can still delete
+  their own account freely.
+- The issue export masks the assignee's email by default, like every other
+  direct user identifier. Truncating an event export now drops the least
+  active issue groups instead of arbitrary ones. A ClickHouse cursor that
+  breaks mid-stream during a subject data export is surfaced as an error
+  instead of a silently truncated file. The export janitor now runs under a
+  tick budget and reports its own liveness.
+- Startup configuration errors are all reported together instead of one per
+  restart. The SLO evaluator now runs under a tick budget, like the other
+  periodic evaluators — a hung ClickHouse query no longer holds it forever.
+  A failure to release the migration lock is now logged instead of being
+  silently dropped. The migration test suite now checks that rolling back
+  each individual migration restores the exact prior schema shape, not just
+  that rolling back the whole set leaves an empty database.
+- An uptime incident's reminders now stop when a maintenance window starts
+  after the incident opened, and resume once the window ends; the window is
+  checked live before each reminder, not only from a snapshot taken when the
+  incident opened. Pausing a monitor now silences both reminders and the
+  escalation ladder for its open incident without closing the incident —
+  checks resume and close it as usual once the monitor is enabled again.
+  Incident list pages no longer count the whole incident history on every
+  page load.
+- Metric points with a timestamp from the future are clamped to the receive
+  time instead of being accepted as-is (up to a day) or dropped (beyond it):
+  charts and threshold rules only read up to the server's clock, so a host
+  whose clock ran ahead was silently invisible to them. The new
+  `gotcha_metric_points_clock_skew_total` counter and a rate-limited warning
+  with the host name make the skew visible. Histograms with more than 512
+  buckets are truncated consistently, keeping one more count than bounds and
+  folding the tail into the last bucket, so their percentiles no longer read
+  shifted bounds. Percentiles over histograms with negative bounds no longer
+  fall back to zero as the first bucket's lower edge.
+- Documentation caught up with the code: rolling back below 0.25.0 needs the
+  pre-upgrade backup because of the secrets envelope; the production checklist
+  and hardening page require changing the default database passwords; metric
+  alert rules and suppression edges document editing and disabling (0.33.0),
+  and rule deletion states that it removes the rule's incidents; the flame
+  graph page describes click-to-zoom (0.31.0); the host name is documented as
+  the identity key; the backup script registers its `trap` before the first
+  command that can fail; the configuration page gained a table of what each
+  `--mode=` runs; the dependency gate's host-only scope and the heartbeat URL
+  as the sole ping secret are spelled out.
+- Form validation errors are now shown in the interface language instead of
+  an English literal. The maximum size of a submitted form is now an explicit
+  64 KiB limit, and exceeding it returns an honest oversize error on every
+  route that checks it — including the confirmation step for dangerous
+  actions (deleting an account, organization or team, transferring instance
+  administrator rights, rotating the probe key), which previously showed the
+  same confirmation screen as if nothing had been submitted. The login form's
+  own oversize response no longer reads as a generic bad request.
+- The "sign in" and "create account" links on the invitation page no longer
+  carry the invite token as a URL query parameter, where it could leak into
+  browser history, reverse-proxy logs and outgoing request headers; it now
+  travels through a short-lived cookie, the same way notification and
+  external sign-in redirects already do. The same token no longer resurfaces
+  on the placeholder screen shown when registration is closed or declined.
+- The sign-in form now keeps the entered email address after a failed login
+  instead of clearing the whole form — a wrong password is by far the more
+  common mistake, and the password field is never returned.
+- Deleting your own account at the same moment someone else was registering
+  could, in a rare race, leave the instance with no administrator and no way
+  back through the normal role-transfer flow; the two operations now share a
+  lock so this can no longer happen.
+- Erasing a data subject's information on request now also removes the spans
+  belonging to that subject's trace transactions, not just the transactions
+  themselves, and the erasure can be safely retried if interrupted partway
+  through.
+- The profile regression gate now requires a minimum number of samples in a
+  window before it can flag a regression, instead of a minimum combined
+  weight, which let a handful of CPU-profile samples pass as though they were
+  billions and effectively never blocked anything.
+- Setting the escalation log retention to zero no longer wipes its entire
+  history table, and a negative value no longer computes a cutoff date in the
+  future — both now require a positive retention period. A delayed
+  dependency-suppression lookup could briefly overwrite a newer cached
+  snapshot with an older one under concurrent load; the cache now only moves
+  forward in time.
+- Database containers are now pinned to a specific image digest instead of a
+  moving tag, so a deployment can no longer silently pick up a different
+  image between two runs. Stopping the stack now gives both databases enough
+  time to shut down cleanly instead of risking termination mid-write.
+
 ## [0.34.0] - 2026-09-03
 
 ### Changed

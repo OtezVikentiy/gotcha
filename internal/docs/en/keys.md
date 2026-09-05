@@ -124,6 +124,11 @@ itself](/docs/self-monitoring):
 - a log line naming the endpoint path the wrong key was used against — for a
   type rejection just like for any other key rejection.
 
+Rejections by this project's key — an invalid or revoked key, a key from
+another project, a key of the wrong type — also show up on the project page:
+within the last hour they appear on the empty issues list and in the
+"Getting started" checklist, with no trip to observability required.
+
 A single request with mixed content (say, a browser SDK envelope that
 happens to also carry a profile item) is filtered item by item: whichever
 item the key isn't permitted to send gets dropped, and the rest of the

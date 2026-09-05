@@ -6,15 +6,18 @@ to. The screen configures two independent ladders — "Critical" and
 "Warning" — and applies to all six incident sources: hosts, metrics,
 transaction regressions, profile regressions, SLOs, and uptime. It's reached
 through "Alerts → Delivery → Escalations" in the left rail — `/projects/{id}/escalations`.
+Issue alerts (new issue, regression, spike) do not go through the ladder:
+they go out immediately to every enabled channel in the project as a single
+notification, with no steps or delays — see [Alerts](/docs/alerts).
 
 ## How a ladder is built
 
 An incident's severity decides which of the two ladders fires. Inside a
-ladder there are up to five steps, numbered sequentially starting at zero (a
-gap in numbering — say, step 0 filled and step 1 empty — is rejected on
+ladder there are up to five steps, numbered sequentially starting at one (a
+gap in numbering — say, step 1 filled and step 2 empty — is rejected on
 save). Each step has a delay in minutes from when the incident opened (`0` =
 immediately) and a set of checked channels; later steps typically widen the
-recipient list. A delay on step zero also postpones the very first
+recipient list. A delay on step one also postpones the very first
 notification — that's deliberate: it avoids paging someone over a problem
 that resolves itself within a couple of minutes. A step with no channel
 checked counts as unused; unchecking every channel on a step is how you
@@ -70,8 +73,8 @@ time, nor acknowledged to stop the paging.
 Uptime escalates the same way as the other five sources, with one
 difference: the very first "site is down" notification goes out right away
 (or after the settling grace, if the monitor has a declared parent — see
-[Storm suppression](/docs/alert-suppression)) and ignores step zero's delay
-entirely. Only step 1 onward follows the configured ladder's schedule.
+[Storm suppression](/docs/alert-suppression)) and ignores step one's delay
+entirely. Only step 2 onward follows the configured ladder's schedule.
 
 ## Interaction with maintenance windows and dependencies
 

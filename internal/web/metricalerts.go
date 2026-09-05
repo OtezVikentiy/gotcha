@@ -133,8 +133,7 @@ func (h *Handler) metricAlertCreate(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	rule, errKey := metricRuleFromForm(r, projectID)
@@ -255,11 +254,10 @@ func (h *Handler) metricAlertUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	ruleID, err := strconv.ParseInt(r.PathValue("ruleID"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad rule id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	rule, errKey := metricRuleFromForm(r, projectID)
@@ -310,13 +308,12 @@ func (h *Handler) metricAlertDelete(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	ruleID, err := strconv.ParseInt(r.FormValue("rule_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad rule id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не

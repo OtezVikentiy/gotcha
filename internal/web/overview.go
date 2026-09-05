@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -54,9 +55,13 @@ func (h *Handler) overviewStatusLine(ctx context.Context, projectID int64, range
 			// точность страницы монитора (та вычитает maintenance windows
 			// отдельным запросом): строке состояния «Обзора» это не по
 			// карману на каждый заход.
+			// Аптайм — из ClickHouse; его отказ не роняет обзор (единый приём
+			// CH-страниц, образец — logsList): плитка честно говорит
+			// «недоступно», а не «нет данных», остальное на месте.
 			batch, err := h.UptimeQuery.UptimeBatch(ctx, ids, rangeSince, rangeTo)
 			if err != nil {
-				return templates.StatusLine{}, err
+				slog.Warn("web: overview uptime failed", "project_id", projectID, "error", err)
+				sl.UptimeUnavailable = true
 			}
 			var sum uptime.UptimeStat
 			for _, st := range batch {

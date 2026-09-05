@@ -688,6 +688,169 @@ func TestUptimeChildHeldThenSuppressed(t *testing.T) {
 	}
 }
 
+// TestDetectorReleasesSuppressedIncidentWhenParentRecovers — K1-4 (аудит
+// перед 1.0): раньше a suppressed_by_dep incident stayed silent forever —
+// there was no writer setting the flag back to false, so a parent that came
+// back online minutes later never unblocked its child's notification.
+// settleHeldIncident now re-checks ParentDown on every "still down" tick for
+// an already-suppressed incident; once the parent recovers, it falls through
+// to the ORDINARY settle switch (F1, ревью раунда 1): released incidents do
+// NOT skip SettleGrace a second time — MarkSuppressedByDep (case down)
+// fires on the very first "still down" tick, with no grace check at all, so
+// the child may not have earned its grace yet. This test backdates
+// started_at past SettleGrace BEFORE the recovery tick, so the ordinary
+// switch's `now.Sub(StartedAt) >= SettleGrace` is already true when the
+// parent recovers — see
+// TestDetectorStaysUnnotifiedInsideGraceAfterParentRecovers below for the
+// inverse (recovery inside grace: still silent).
+func TestDetectorReleasesSuppressedIncidentWhenParentRecovers(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 1, 1)
+
+	notifier := &fakeNotifier{}
+	dep := &fakeDepChecker{hasParent: true, parentDown: false}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second, Pool: pool}
+	now := time.Now().UTC()
+
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
+	inc := assertOpenIncident(t, ctx, svc, mon.ID)
+	if inc.NotifiedOpen {
+		t.Fatalf("NotifiedOpen = true, want false: monitor has a declared parent, notify must be held")
+	}
+
+	// Parent goes down: suppressed, same as TestUptimeChildHeldThenSuppressed.
+	dep.setParentDown(true)
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(time.Second), nil)
+	inc = assertOpenIncident(t, ctx, svc, mon.ID)
+	if !inc.SuppressedByDep {
+		t.Fatalf("SuppressedByDep = false, want true once ParentDown=true")
+	}
+
+	// The incident has now "earned" its grace on its OWN clock (started_at,
+	// unrelated to suppression) — clear the 20s SettleGrace deterministically
+	// (same trick as TestUptimeChildNotifiesAfterGrace), THEN recover the
+	// parent: the fall-through switch sees an incident old enough to notify.
+	backdateIncidentStart(t, ctx, pool, mon.ID)
+	dep.setParentDown(false)
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(2*time.Second), nil)
+	inc = assertOpenIncident(t, ctx, svc, mon.ID)
+	if inc.SuppressedByDep {
+		t.Fatalf("SuppressedByDep = true, want false: parent recovered, must be released")
+	}
+	if !inc.NotifiedOpen {
+		t.Fatalf("NotifiedOpen = false, want true: incident already cleared SettleGrace on its own clock")
+	}
+	if got := notifier.kindEvents("down"); len(got) != 1 {
+		t.Fatalf("down events = %d, want 1 (released incident must notify exactly once)", len(got))
+	}
+
+	var depReleasedAt *time.Time
+	if err := pool.QueryRow(ctx, "SELECT dep_released_at FROM incidents WHERE id = $1", inc.ID).Scan(&depReleasedAt); err != nil {
+		t.Fatalf("select dep_released_at: %v", err)
+	}
+	if depReleasedAt == nil {
+		t.Fatal("dep_released_at = NULL after release, want the moment of release stamped")
+	}
+}
+
+// TestDetectorStaysUnnotifiedInsideGraceAfterParentRecovers — F1 (ревью
+// раунда 1): the inverse of the test above. The parent recovers WITHOUT the
+// incident having cleared SettleGrace on its own clock (no backdate) — a
+// parent blip shorter than the grace must not page. The flag is still
+// cleared (dep_released_at stamped, SuppressedByDep=false — the incident is
+// genuinely no longer held for the dependency reason), but NO "down" goes
+// out: the ordinary settle switch holds it, exactly like a fresh incident
+// still inside its grace with no dependency involved at all.
+func TestDetectorStaysUnnotifiedInsideGraceAfterParentRecovers(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 1, 1)
+
+	notifier := &fakeNotifier{}
+	dep := &fakeDepChecker{hasParent: true, parentDown: false}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second, Pool: pool}
+	now := time.Now().UTC()
+
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
+	dep.setParentDown(true)
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(time.Second), nil)
+	inc := assertOpenIncident(t, ctx, svc, mon.ID)
+	if !inc.SuppressedByDep {
+		t.Fatalf("SuppressedByDep = false, want true once ParentDown=true")
+	}
+
+	// Parent recovers on the very next tick (blip shorter than SettleGrace,
+	// no backdate) — release must not bypass the grace it never held itself.
+	dep.setParentDown(false)
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(2*time.Second), nil)
+	inc = assertOpenIncident(t, ctx, svc, mon.ID)
+	if inc.SuppressedByDep {
+		t.Fatalf("SuppressedByDep = true, want false: parent recovered, dependency no longer suppresses it")
+	}
+	if inc.NotifiedOpen {
+		t.Fatalf("NotifiedOpen = true, want false: incident has not cleared SettleGrace on its own clock yet")
+	}
+	if got := notifier.kindEvents("down"); len(got) != 0 {
+		t.Fatalf("down events = %d, want 0: a parent blip shorter than SettleGrace must not page", len(got))
+	}
+
+	var depReleasedAt *time.Time
+	if err := pool.QueryRow(ctx, "SELECT dep_released_at FROM incidents WHERE id = $1", inc.ID).Scan(&depReleasedAt); err != nil {
+		t.Fatalf("select dep_released_at: %v", err)
+	}
+	if depReleasedAt == nil {
+		t.Fatal("dep_released_at = NULL after release, want the moment of release stamped even though notification is still held")
+	}
+}
+
+// TestDetectorStaysSuppressedWhileParentDown — the parent is still down on
+// the next tick after suppression: settleHeldIncident's re-check must keep
+// the incident silent, not release it speculatively.
+func TestDetectorStaysSuppressedWhileParentDown(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 1, 1)
+
+	notifier := &fakeNotifier{}
+	dep := &fakeDepChecker{hasParent: true, parentDown: false}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second, Pool: pool}
+	now := time.Now().UTC()
+
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
+	dep.setParentDown(true)
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(time.Second), nil)
+	inc := assertOpenIncident(t, ctx, svc, mon.ID)
+	if !inc.SuppressedByDep {
+		t.Fatalf("SuppressedByDep = false, want true once ParentDown=true")
+	}
+
+	// Parent still down on the next tick: must stay suppressed and silent.
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(2*time.Second), nil)
+	inc = assertOpenIncident(t, ctx, svc, mon.ID)
+	if !inc.SuppressedByDep {
+		t.Fatalf("SuppressedByDep = false, want true: parent is still down")
+	}
+	if inc.NotifiedOpen {
+		t.Fatalf("NotifiedOpen = true, want false: incident stays suppressed")
+	}
+	if got := notifier.kindEvents("down"); len(got) != 0 {
+		t.Fatalf("down events = %d, want 0: incident must stay silent while the parent is down", len(got))
+	}
+}
+
 // TestUptimeChildNotifiesAfterGrace: a monitor-child whose parent stays up
 // through the settling grace gets its "down" sent late, once
 // now-StartedAt >= SettleGrace — the outage turned out real, not a

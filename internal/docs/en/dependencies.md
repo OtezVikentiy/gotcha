@@ -102,3 +102,9 @@ graph, and it will not show B's own dependencies. Full multi-service
 topology needs distributed tracing that propagates a shared trace context
 across services (a single-service app, or services that don't propagate trace
 headers to each other, won't produce that link).
+
+Nor is it the [storm suppression](/docs/alert-suppression) graph: the
+parent → child edges between hosts and monitors are declared by an operator
+by hand on that page and have no effect on this map — or the other way
+round. The limits of the dependency gate itself (which incident sources it
+applies to) are described there as well.

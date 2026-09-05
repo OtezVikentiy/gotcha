@@ -195,6 +195,12 @@ cd /path/to/gotcha
 mkdir -p backup/clickhouse
 day=$(date +%F)
 
+# Pruning runs from a trap, registered BEFORE the first command that can fail.
+# Otherwise, under set -e, pruning would be skipped exactly when the dump failed:
+# a line at the end of the script would never be reached, and disk would fill up
+# precisely when backups are not being taken anyway.
+trap 'find backup -type f -name "*.tmp" -delete; find backup -type f -mtime +14 -delete' EXIT
+
 # Write to a temporary file and rename only on success. Without this the
 # redirection creates the file BEFORE pg_dump gets to run: it fails, and the
 # directory holds an empty .sql.gz indistinguishable from a real backup until
@@ -210,11 +216,6 @@ for t in events transactions spans metric_points profile_samples check_results l
     > backup/clickhouse/$t-$day.native.tmp
   mv backup/clickhouse/$t-$day.native.tmp backup/clickhouse/$t-$day.native
 done
-
-# Pruning runs from a trap so it happens even when the dump failed: under set -e
-# the script would never reach this line, and disk would fill up exactly when
-# backups are not being taken anyway.
-trap 'find backup -type f -name "*.tmp" -delete; find backup -type f -mtime +14 -delete' EXIT
 ```
 
 Remember to make the script executable (`chmod +x backup.sh`), and — importantly — copy the `backup/` directory's contents **off this same server** (a different disk, S3-compatible storage, another server). A local-only copy won't help if the server itself fails.

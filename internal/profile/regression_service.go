@@ -102,6 +102,33 @@ func (s *RegressionService) OpenFor(ctx context.Context, projectID int64, servic
 	return r, true, nil
 }
 
+// OpenForFunctions возвращает открытые инциденты сервиса по перечисленным
+// функциям одним запросом (ключ — функция; функций без открытого инцидента в
+// карте нет). Оценщик зовёт его раз на сервис вместо OpenFor на каждую из
+// TopK функций — PG-часть тика была N+1 при уже батчированной CH-части.
+func (s *RegressionService) OpenForFunctions(ctx context.Context, projectID int64, service, profileType string, functions []string) (map[string]Regression, error) {
+	out := make(map[string]Regression, len(functions))
+	if len(functions) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx,
+		"SELECT "+regressionColumns+` FROM profile_regressions
+		 WHERE project_id=$1 AND service=$2 AND profile_type=$3 AND function = ANY($4) AND status='open'`,
+		projectID, service, profileType, functions)
+	if err != nil {
+		return nil, fmt.Errorf("profile: open regressions for functions: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		r, err := scanRegression(rows)
+		if err != nil {
+			return nil, fmt.Errorf("profile: open regressions for functions scan: %w", err)
+		}
+		out[r.Function] = r
+	}
+	return out, rows.Err()
+}
+
 // GetByID возвращает регрессию по id (любого статуса). Нужен эскалации (B4,
 // T6): планировщик и StepNotifier знают только incidentID, объект регрессии
 // приходится перегружать заново.

@@ -141,11 +141,14 @@ func TestCoverIssueDetailBranches(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST assign (member) status = %d, want 303", resp.StatusCode)
 	}
-	// Снятие назначения → 303.
+	// Снятие назначения → 303, flash отличает снятие от назначения (K7-9).
 	resp = postForm(t, s.srv, issuePath+"/assign", url.Values{"assignee": {""}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST assign (unassign) status = %d, want 303", resp.StatusCode)
+	}
+	if !hasFlashCookie(resp, "ok|flash.issue_unassigned") {
+		t.Errorf("после снятия ответственного нет flash issue_unassigned: %v", resp.Header.Values("Set-Cookie"))
 	}
 }

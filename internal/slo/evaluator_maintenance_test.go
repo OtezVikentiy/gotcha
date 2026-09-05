@@ -52,6 +52,10 @@ func TestSLOEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 
 	notifier := &capturingNotifier{store: st}
 	e := &slo.Evaluator{
+		// Interval задан явно: тикер не используем (Tick дёргается вручную), но от
+		// него считается бюджет тика — с дефолтом бюджет упирается в пол 10s, и на
+		// нагруженной машине (полный прогон, контейнеры) запрос в CH не укладывается.
+		Interval:  time.Hour,
 		Pool:      pool,
 		Store:     st,
 		Providers: slo.Providers(trace.NewQuery(conn), nil, nil, 90),
@@ -121,6 +125,17 @@ func TestSLOEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 	ctx := context.Background()
 	pid := seedProject(t, pool)
 	st := slo.NewStore(pool)
+	// Дефолт-лесенка эскалации резолвится из РЕАЛЬНЫХ enabled-каналов проекта
+	// (escalation.PolicyStore.defaultLadder) — без единого канала её
+	// ChannelIDs пуст, и claim-before-notify (аудит K1-1) бампит ступень
+	// НАПРЯМУЮ, не зовя notifyStep вовсе (уже нечего занимать/слать). Этому
+	// тесту важно, что notifyStep реально позван при открытии вне окна
+	// обслуживания — нужен хотя бы один канал, как в TestSLOEvaluatorOpensAndCloses.
+	if _, err := alert.NewService(pool).CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	}); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
 
 	s, err := st.Create(ctx, slo.SLO{
 		ProjectID: pid, Name: "checkout nomaint", Kind: slo.SLIAvailability,
@@ -135,6 +150,10 @@ func TestSLOEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 
 	notifier := &capturingNotifier{store: st}
 	e := &slo.Evaluator{
+		// Interval задан явно: тикер не используем (Tick дёргается вручную), но от
+		// него считается бюджет тика — с дефолтом бюджет упирается в пол 10s, и на
+		// нагруженной машине (полный прогон, контейнеры) запрос в CH не укладывается.
+		Interval:  time.Hour,
 		Pool:      pool,
 		Store:     st,
 		Providers: slo.Providers(trace.NewQuery(conn), nil, nil, 90),
@@ -192,6 +211,10 @@ func TestSLOEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.
 	notifier := &capturingNotifier{store: st}
 	inWindow := true
 	e := &slo.Evaluator{
+		// Interval задан явно: тикер не используем (Tick дёргается вручную), но от
+		// него считается бюджет тика — с дефолтом бюджет упирается в пол 10s, и на
+		// нагруженной машине (полный прогон, контейнеры) запрос в CH не укладывается.
+		Interval:  time.Hour,
 		Pool:      pool,
 		Store:     st,
 		Providers: slo.Providers(trace.NewQuery(conn), nil, nil, 90),
@@ -287,6 +310,10 @@ func TestSLOEvaluatorRecoveryReachesWokenChannelAfterMaintenanceWindowEnds(t *te
 	notifier := &capturingNotifier{store: st}
 	inWindow := true
 	e := &slo.Evaluator{
+		// Interval задан явно: тикер не используем (Tick дёргается вручную), но от
+		// него считается бюджет тика — с дефолтом бюджет упирается в пол 10s, и на
+		// нагруженной машине (полный прогон, контейнеры) запрос в CH не укладывается.
+		Interval:  time.Hour,
 		Pool:      pool,
 		Store:     st,
 		Providers: slo.Providers(trace.NewQuery(conn), nil, nil, 90),

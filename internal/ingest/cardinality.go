@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -97,6 +98,13 @@ type CardinalityGuard struct {
 	window   time.Duration
 	now      func() time.Time
 	projects map[int64]*projectCardinality
+	// collapsedTotal — сколько значений схлопнуто за жизнь процесса, по всем
+	// проектам. Инкрементируется в момент схлопывания и никогда не убывает:
+	// per-field счётчики живут в окне и пропадают вместе с проектом при
+	// ролловере или вытеснении, поэтому их сумма — не counter, а `rate()`
+	// по ней врал бы. Атомарный, чтобы /metrics не брал g.mu и не обходил
+	// карту до сотен тысяч полей на каждый скрап.
+	collapsedTotal atomic.Int64
 }
 
 type projectCardinality struct {
@@ -168,6 +176,7 @@ func (g *CardinalityGuard) Value(projectID int64, field, value string) string {
 	}
 
 	f.collapsed++
+	g.collapsedTotal.Add(1)
 	if len(f.samples) < maxCardinalitySamples {
 		f.samples = append(f.samples, value)
 	}
@@ -294,19 +303,13 @@ func (g *CardinalityGuard) Report(projectID int64) []FieldReport {
 
 // CollapsedTotal — сколько значений схлопнуто по всем проектам за жизнь
 // процесса. Для /metrics: оператор обязан видеть, что где-то режется хвост.
+// Монотонный counter: не проседает при ролловере окна и вытеснении проекта,
+// читается без мьютекса и без обхода карты.
 func (g *CardinalityGuard) CollapsedTotal() int64 {
 	if g == nil {
 		return 0
 	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	var n int64
-	for _, p := range g.projects {
-		for _, f := range p.fields {
-			n += f.collapsed
-		}
-	}
-	return n
+	return g.collapsedTotal.Load()
 }
 
 // FieldLabel — человекочитаемое имя поля для интерфейса и документации.

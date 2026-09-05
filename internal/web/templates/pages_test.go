@@ -48,7 +48,7 @@ func TestIssuesListPopulatedVsEmpty(t *testing.T) {
 		{Issue: issue.Issue{ID: 2, Title: "minor warn", Level: "warning", Status: "resolved", TimesSeen: 3, LastSeen: time.Now().Add(-24 * time.Hour), AssigneeEmail: "dev@x.io"}, Sparkline: stub()},
 	}
 	gs := GettingStartedVM{ProjectID: 7, OrgID: 1, Done: 3, Step2Done: true}
-	out := renderTo(t, IssuesList(7, rows, IssuesFilter{Status: "unresolved"}, 1, 2, "u@e.com", []string{"production", "staging"}, &QuotaBanner{Text: "почти лимит", Href: "/x"}, gs, true, true))
+	out := renderTo(t, IssuesList(7, rows, IssuesFilter{Status: "unresolved"}, 1, 2, "u@e.com", []string{"production", "staging"}, &QuotaBanner{Text: "почти лимит", Href: "/x"}, gs, true, true, false))
 	if !strings.Contains(out, "boom error") || !strings.Contains(out, "badge-danger") {
 		t.Error("список issue должен содержать заголовок и бейдж уровня")
 	}
@@ -67,7 +67,7 @@ func TestIssuesListPopulatedVsEmpty(t *testing.T) {
 
 	// Без canOperate тулбар остаётся (массовые действия доступны), а кнопок
 	// экспорта нет — они вели бы на 404.
-	noExport := renderTo(t, IssuesList(7, rows, IssuesFilter{}, 1, 2, "u@e.com", nil, nil, gs, false, false))
+	noExport := renderTo(t, IssuesList(7, rows, IssuesFilter{}, 1, 2, "u@e.com", nil, nil, gs, false, false, false))
 	if !strings.Contains(noExport, `class="card-toolbar"`) {
 		t.Error("непустой список при canOperate=false должен рисовать тулбар с массовыми действиями")
 	}
@@ -75,13 +75,13 @@ func TestIssuesListPopulatedVsEmpty(t *testing.T) {
 		t.Error("при canOperate=false в тулбаре не должно быть кнопок экспорта")
 	}
 
-	empty := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, false, false))
+	empty := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, false, false, false))
 	if strings.Contains(empty, "boom error") {
 		t.Error("пустой список не должен содержать строк")
 	}
 	// На пустом списке нечего ни отмечать, ни выгружать: ни тулбара, ни
 	// bulk-формы, ни точек входа экспорта — даже при canOperate=true.
-	emptyOp := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, true))
+	emptyOp := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, true, false))
 	for name, body := range map[string]string{"canOperate=false": empty, "canOperate=true": emptyOp} {
 		for _, marker := range []string{"card-toolbar", "issues-bulk", "dropdown-control"} {
 			if strings.Contains(body, marker) {
@@ -96,7 +96,7 @@ func TestIssuesListPopulatedVsEmpty(t *testing.T) {
 // Поиск — самое частое действие, и он стоит первым; сортировка — не фильтр,
 // поэтому уходит в конец, перед кнопкой «Применить».
 func TestIssuesListFilterOrder(t *testing.T) {
-	out := renderTo(t, IssuesList(7, nil, IssuesFilter{Range: TimeRangeVM{Key: "24h"}}, 1, 0, "u@e.com", []string{"prod"}, nil, GettingStartedVM{}, false, false))
+	out := renderTo(t, IssuesList(7, nil, IssuesFilter{Range: TimeRangeVM{Key: "24h"}}, 1, 0, "u@e.com", []string{"prod"}, nil, GettingStartedVM{}, false, false, false))
 	start := strings.Index(out, `class="issues-filters"`)
 	if start < 0 {
 		t.Fatal("нет формы фильтров .issues-filters")
@@ -129,7 +129,7 @@ func TestGettingStartedChecklistGatedByCanOperate(t *testing.T) {
 	// Оператор без CanManage: карточка видна, операторские шаги 2/3/4b —
 	// рабочие ссылки, шаг 4a — без ссылки (иначе оператор упрётся в 403).
 	opGS := GettingStartedVM{ProjectID: 7, OrgID: 9, Done: 1, CanOperate: true, CanManage: false}
-	out := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, opGS, false, false))
+	out := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, opGS, false, false, false))
 	if !strings.Contains(out, `class="card getting-started"`) {
 		t.Fatal("оператор (CanOperate=true) должен видеть чек-лист «Первые шаги»")
 	}
@@ -149,10 +149,68 @@ func TestGettingStartedChecklistGatedByCanOperate(t *testing.T) {
 	// именно гейт карточки): чек-лист больше не показывается — раньше он
 	// показывался бы именно так, это и была находка C5.
 	adminOnlyGS := GettingStartedVM{ProjectID: 7, OrgID: 9, Done: 1, CanOperate: false, CanManage: true}
-	out2 := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, adminOnlyGS, false, false))
+	out2 := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, adminOnlyGS, false, false, false))
 	if strings.Contains(out2, `class="card getting-started"`) {
 		t.Error("CanManage без CanOperate не должен показывать чек-лист — гейт карточки теперь CanOperate, а не CanManage")
 	}
+}
+
+// TestKeyRejectsBodyRendersOnceAcrossChecklistAndEmptyState — F5 (аудит
+// перед 1.0): врезка «отказы по ключу» умеет рисоваться в двух местах
+// страницы issues (чек-лист «Первые шаги» и пустое состояние списка), но на
+// одной и той же странице должна показаться только там, где чек-лист
+// реально виден — иначе свежий проект видел бы один и тот же текст дважды.
+// checklistVisible() — общий predicate обоих мест; сценарии здесь
+// используют VM напрямую (а не полный HTTP-стек), потому что на реальной
+// странице issues чек-лист прячется, только когда gs.KeyRejects тоже пуст
+// (см. gettingStarted в web/issues.go) — эта пара условий совместно
+// недостижима через настоящий запрос, только через VM.
+func TestKeyRejectsBodyRendersOnceAcrossChecklistAndEmptyState(t *testing.T) {
+	rejects := []KeyRejectView{{Kind: "key_invalid", Hits: 5, LastSeenAt: time.Now()}}
+	wantReason := i18n.Tf(context.Background(), "ingest_signals.rejects.key_invalid", "hits", "5")
+
+	// Чек-лист виден (Done < 5, CanOperate) → врезка обязана быть ВНУТРИ его
+	// секции, а пустое состояние — не нести свою копию.
+	visible := GettingStartedVM{ProjectID: 7, OrgID: 9, Done: 1, CanOperate: true, KeyRejects: rejects}
+	out := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, visible, false, false, false))
+	section := sectionBetween(t, out, `<section class="card getting-started">`, "</section>")
+	if !strings.Contains(section, wantReason) {
+		t.Errorf("видимый чек-лист должен нести причину отказа %q внутри своей секции: %s", wantReason, section)
+	}
+	if strings.Contains(out, `class="notice notice--warn"`) {
+		t.Error("чек-лист виден — пустое состояние не должно дублировать врезку notice--warn")
+	}
+
+	// Чек-лист не виден (CanOperate=false) → врезка обязана показаться в
+	// пустом состоянии — иначе отказ по ключу нигде не виден вовсе.
+	hidden := GettingStartedVM{ProjectID: 7, OrgID: 9, Done: 1, CanOperate: false, KeyRejects: rejects}
+	out2 := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, hidden, false, false, false))
+	if strings.Contains(out2, `class="card getting-started"`) {
+		t.Fatal("CanOperate=false не должен показывать чек-лист")
+	}
+	notice := sectionBetween(t, out2, `<div class="notice notice--warn">`, "</div>")
+	if !strings.Contains(notice, wantReason) {
+		t.Errorf("чек-лист скрыт — пустое состояние должно нести причину отказа %q: %s", wantReason, notice)
+	}
+}
+
+// sectionBetween — первая подстрока между двумя маркерами; фейлит тест,
+// если открывающий или закрывающий маркер не найден. Используется, чтобы
+// ассертить текст ВНУТРИ конкретной секции разметки, а не по всему телу
+// страницы — иначе поломка одной врезки может маскироваться другой (аудит
+// перед 1.0, M9/M10).
+func sectionBetween(t *testing.T, s, openTag, closeTag string) string {
+	t.Helper()
+	i := strings.Index(s, openTag)
+	if i < 0 {
+		t.Fatalf("маркер %q не найден: %s", openTag, s)
+	}
+	rest := s[i+len(openTag):]
+	j := strings.Index(rest, closeTag)
+	if j < 0 {
+		t.Fatalf("закрывающий маркер %q не найден после %q: %s", closeTag, openTag, s)
+	}
+	return rest[:j]
 }
 
 // TestIssueDetail — деталь issue показывает событие, стектрейс-кадры и
@@ -162,7 +220,7 @@ func TestIssueDetail(t *testing.T) {
 	members := []org.Member{{UserID: 2, Email: "dev@x.io", Role: org.RoleAdmin}}
 	ev := event.Stored{ID: "ev1", Level: "error", ExceptionType: "NPE", ExceptionValue: "nil ptr", Environment: "production", Release: "1.2.3", TraceID: "abc", Tags: map[string]string{"k": "v"}}
 	frames := []Frame{{Function: "main", Module: "app", Filename: "main.go", Lineno: 10, InApp: true}}
-	out := renderTo(t, IssueDetail(it, members, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "ev1", &ev, frames, "u@e.com", true, true, "", "", true, true))
+	out := renderTo(t, IssueDetail(it, members, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "ev1", &ev, frames, "u@e.com", true, true, "", "", true, true, false))
 	if !strings.Contains(out, "NPE") || !strings.Contains(out, "main.go:10") {
 		t.Error("деталь issue должна показать исключение и локацию кадра")
 	}
@@ -181,7 +239,7 @@ func TestPerformanceList(t *testing.T) {
 		// Предупреждение о схлопнутой кардинальности с примерами: без примеров
 		// человек не догадается, что в имя транзакции попал идентификатор.
 		[]CardinalityNotice{{Field: "transaction name", Limit: 10000, Collapsed: 47213,
-			Samples: []string{"GET /users/8812/profile", "GET /users/8813/profile"}}}, "u@e.com"))
+			Samples: []string{"GET /users/8812/profile", "GET /users/8813/profile"}}}, "u@e.com", false))
 	if !strings.Contains(out, "GET /api") {
 		t.Error("список должен содержать транзакцию")
 	}
@@ -194,7 +252,7 @@ func TestPerformanceList(t *testing.T) {
 		t.Error("предупреждение должно вести на страницу документации")
 	}
 
-	empty := renderTo(t, PerformanceList(7, nil, 0, PerfFilter{}, nil, 0, nil, "u@e.com"))
+	empty := renderTo(t, PerformanceList(7, nil, 0, PerfFilter{}, nil, 0, nil, "u@e.com", false))
 	if strings.Contains(empty, "GET /api") {
 		t.Error("пустой список не должен содержать транзакций")
 	}
@@ -252,13 +310,13 @@ func TestMonitorDetail(t *testing.T) {
 		{ID: 2, StartedAt: now.Add(-5 * time.Hour), ResolvedAt: ptrTime(now.Add(-4 * time.Hour)), Cause: "5xx"},
 	}
 	stat := uptime.UptimeStat{Total: 100, OK: 99}
-	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, checks, incidents, 1, int64(len(incidents)), true, true, "https://gotcha.example", "u@e.com"))
+	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, checks, incidents, 1, int64(len(incidents)), true, true, "https://gotcha.example", "u@e.com", false))
 	if !strings.Contains(out, "api") || !strings.Contains(out, "badge-good") || !strings.Contains(out, "badge-danger") {
 		t.Error("деталь монитора должна показать имя и статусы проверок")
 	}
 
 	// Без прав управления — рендер не должен падать и остаётся валидным.
-	noManage := renderTo(t, MonitorDetail(m, "down", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, false, false, "https://x", "u@e.com"))
+	noManage := renderTo(t, MonitorDetail(m, "down", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, false, false, "https://x", "u@e.com", false))
 	if !strings.Contains(noManage, "api") {
 		t.Error("монитор без прав всё равно рендерится")
 	}
@@ -272,11 +330,11 @@ func TestMonitorsList(t *testing.T) {
 		{Monitor: uptime.Monitor{ID: 1, Name: "web", Kind: uptime.KindHTTP}, Status: "up", Uptime24h: uptime.UptimeStat{Total: 10, OK: 10}, AvgLatencyMs: 80, Bars: stub(), LastChecked: &last},
 		{Monitor: uptime.Monitor{ID: 2, Name: "db", Kind: uptime.KindTCP}, Status: "down", Bars: stub()},
 	}
-	out := renderTo(t, MonitorsList(7, rows, true, "u@e.com"))
+	out := renderTo(t, MonitorsList(7, rows, true, "u@e.com", false))
 	if !strings.Contains(out, "web") || !strings.Contains(out, "db") {
 		t.Error("список мониторов должен содержать имена")
 	}
-	empty := renderTo(t, MonitorsList(7, nil, false, "u@e.com"))
+	empty := renderTo(t, MonitorsList(7, nil, false, "u@e.com", false))
 	if strings.Contains(empty, ">web<") {
 		t.Error("пустой список не содержит мониторов")
 	}
@@ -390,11 +448,11 @@ func TestProfilesList(t *testing.T) {
 		{Service: "web", Type: "cpu", Transaction: "GET /", Weight: 2_000_000_000, Unit: "nanoseconds", Samples: 1000, Environments: []string{"production"}},
 		{Service: "web", Type: "alloc_space", Transaction: "POST /", Weight: 5 * 1024 * 1024, Unit: "bytes", Samples: 500},
 	}
-	out := renderTo(t, ProfilesList(7, services, TimeRangeVM{Key: "24h"}, "production", "u@e.com"))
+	out := renderTo(t, ProfilesList(7, services, TimeRangeVM{Key: "24h"}, "production", "u@e.com", false))
 	if !strings.Contains(out, "web") {
 		t.Error("список профилей должен содержать сервис")
 	}
-	empty := renderTo(t, ProfilesList(7, nil, TimeRangeVM{Key: "24h"}, "", "u@e.com"))
+	empty := renderTo(t, ProfilesList(7, nil, TimeRangeVM{Key: "24h"}, "", "u@e.com", false))
 	if strings.Contains(empty, ">GET /<") {
 		t.Error("пустой список профилей")
 	}
@@ -416,7 +474,7 @@ func TestProfileRegressionsList(t *testing.T) {
 // TestMetricsListAndDetail — список метрик и деталь с перцентилями и лейблами.
 func TestMetricsListAndDetail(t *testing.T) {
 	metrics := []metric.MetricInfo{{Name: "http.rps", Type: "gauge", Unit: "1/s"}, {Name: "queue.depth", Type: "histogram", Unit: ""}}
-	out := renderTo(t, MetricsList(7, metrics, "production", "u@e.com", false, 0))
+	out := renderTo(t, MetricsList(7, metrics, "production", "u@e.com", false, 0, false))
 	if !strings.Contains(out, "http.rps") {
 		t.Error("список метрик должен содержать имя")
 	}
@@ -462,11 +520,11 @@ func TestWebVitalsList(t *testing.T) {
 	pages := []trace.PageVitals{
 		{Transaction: "/home", LCP: trace.Vital{Name: "lcp", P75: 2400, Rating: "good"}, INP: trace.Vital{Name: "inp", P75: 300, Rating: "needs-improvement"}, CLS: trace.Vital{Name: "cls", P75: 0.3, Rating: "poor"}, Count: 500, Environments: []string{"production"}},
 	}
-	out := renderTo(t, WebVitalsList(7, pages, PerfFilter{Range: TimeRangeVM{Key: "24h"}}, []string{"production"}, "u@e.com"))
+	out := renderTo(t, WebVitalsList(7, pages, PerfFilter{Range: TimeRangeVM{Key: "24h"}}, []string{"production"}, "u@e.com", false))
 	if !strings.Contains(out, "/home") || !strings.Contains(out, "badge-good") || !strings.Contains(out, "badge-danger") {
 		t.Error("список web-vitals должен содержать страницу и разные бейджи рейтинга")
 	}
-	empty := renderTo(t, WebVitalsList(7, nil, PerfFilter{}, nil, "u@e.com"))
+	empty := renderTo(t, WebVitalsList(7, nil, PerfFilter{}, nil, "u@e.com", false))
 	if strings.Contains(empty, "/home") {
 		t.Error("пустой web-vitals")
 	}
@@ -564,7 +622,7 @@ func TestProjectSettings(t *testing.T) {
 	}
 	perf := PerfSettingsForm{SampleRate: "1.0", ApdexMS: "500", NPlusOneMin: "5", SlowDBMs: "300"}
 	reg := RegressionSettingsForm{ThresholdPct: "20", RecoveryPct: "10", WindowMinutes: "60", MinSamples: "100", Enabled: true}
-	out := renderTo(t, ProjectSettings(project, keys, "", "u@e.com", perf, reg, 30))
+	out := renderTo(t, ProjectSettings(project, keys, "", "u@e.com", perf, reg, 30, nil))
 	if !strings.Contains(out, "pk_live") || !strings.Contains(out, "badge-danger") {
 		t.Error("ключи со статусами должны отрендериться")
 	}
@@ -672,17 +730,29 @@ func TestAlertDeliveriesMaskedHint(t *testing.T) {
 func TestProfilePage(t *testing.T) {
 	linked := []LinkedIdentity{{Provider: "yandex", DisplayName: "Яндекс", Email: "u@ya.ru", CanUnlink: true}}
 	linkable := []LinkableProvider{{Name: "github", DisplayName: "GitHub"}}
-	out := renderTo(t, Profile("u@e.com", "", "сохранено", true, linked, linkable, "u@e.com"))
+	out := renderTo(t, Profile("u@e.com", "", "сохранено", true, linked, linkable, false, "u@e.com"))
 	if !strings.Contains(out, "Яндекс") || !strings.Contains(out, "GitHub") {
 		t.Error("провайдеры должны отрендериться")
 	}
 	if !strings.Contains(out, "сохранено") {
 		t.Error("сообщение должно отрендериться")
 	}
+	if strings.Contains(out, "/profile/instance-admin/transfer") {
+		t.Error("не-админу инстанса секция передачи роли не должна показываться")
+	}
 	// Без пароля и с ошибкой.
-	outErr := renderTo(t, Profile("u@e.com", "ошибка", "", false, nil, linkable, "u@e.com"))
+	outErr := renderTo(t, Profile("u@e.com", "ошибка", "", false, nil, linkable, false, "u@e.com"))
 	if !strings.Contains(outErr, "ошибка") {
 		t.Error("ошибка профиля должна отрендериться")
+	}
+}
+
+// TestProfilePageInstanceAdmin — K7-1: администратору инстанса на /profile
+// показывается секция передачи роли.
+func TestProfilePageInstanceAdmin(t *testing.T) {
+	out := renderTo(t, Profile("u@e.com", "", "", true, nil, nil, true, "u@e.com"))
+	if !strings.Contains(out, "/profile/instance-admin/transfer") {
+		t.Error("администратору инстанса секция передачи роли должна показываться")
 	}
 }
 
@@ -702,5 +772,84 @@ func TestIncidentsPagerOnEmptyPage(t *testing.T) {
 	// total=0 → счётчик «N / M» не показываем.
 	if strings.Contains(out, "5 / 0") {
 		t.Errorf("не должно быть счётчика при total=0:\n%s", out)
+	}
+}
+
+// TestIssuesUntitledFallback — issue с пустым title (событие без exception/
+// message/transaction/logger): список рисует локализованную заглушку и в
+// ссылке, и в aria-label чекбокса массовых действий, деталь — в <h1> и
+// <title>. Пустой aria-label и пустой <h1> недопустимы ни при каком входе.
+func TestIssuesUntitledFallback(t *testing.T) {
+	untitled := i18n.T(i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"}), "issues.untitled")
+	if untitled == "" || untitled == "issues.untitled" {
+		t.Fatalf("ключ issues.untitled должен быть в каталоге: %q", untitled)
+	}
+	now := time.Now()
+
+	rows := []IssueRow{{Issue: issue.Issue{ID: 9, Title: "", Level: "error", Status: "unresolved", TimesSeen: 1, FirstSeen: now, LastSeen: now}, Sparkline: stub()}}
+	list := renderTo(t, IssuesList(7, rows, IssuesFilter{Status: "unresolved"}, 1, 1, "u@e.com", nil, nil, GettingStartedVM{ProjectID: 7, Done: 3, Step2Done: true}, true, true, false))
+	if strings.Contains(list, `aria-label=""`) {
+		t.Error("список: пустой aria-label у чекбокса массовых действий")
+	}
+	if !strings.Contains(list, `aria-label="`+untitled+`"`) {
+		t.Errorf("список: aria-label чекбокса должен нести заглушку %q", untitled)
+	}
+	if !strings.Contains(list, `">`+untitled+`</a>`) {
+		t.Errorf("список: ссылка на issue должна нести заглушку %q", untitled)
+	}
+
+	it := issue.Issue{ID: 9, Title: "", Level: "error", Status: "unresolved", TimesSeen: 1, FirstSeen: now, LastSeen: now}
+	ev := event.Stored{ID: "ev1", Level: "error", Message: ""}
+	detail := renderTo(t, IssueDetail(it, nil, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "ev1", &ev, nil, "u@e.com", false, false, "", "", true, true, false))
+	if strings.Contains(detail, "<h1></h1>") {
+		t.Error("деталь: пустой <h1>")
+	}
+	if !strings.Contains(detail, "<h1>"+untitled+"</h1>") {
+		t.Errorf("деталь: <h1> должен нести заглушку %q", untitled)
+	}
+	if !strings.Contains(detail, "<title>"+untitled+" · Gotcha</title>") {
+		t.Errorf("деталь: <title> должен нести заглушку %q", untitled)
+	}
+
+	// Непустой заголовок заглушкой не подменяется.
+	rows[0].Issue.Title = "NPE"
+	list = renderTo(t, IssuesList(7, rows, IssuesFilter{Status: "unresolved"}, 1, 1, "u@e.com", nil, nil, GettingStartedVM{ProjectID: 7, Done: 3, Step2Done: true}, true, true, false))
+	if !strings.Contains(list, `aria-label="NPE"`) || strings.Contains(list, untitled) {
+		t.Error("список: непустой заголовок должен рисоваться как есть")
+	}
+}
+
+// TestChecklistVisibleTable — checklistVisible() (help.templ) табличкой по
+// всем сочетаниям флагов: карточка видна только при !Hidden && Done < 5 &&
+// CanOperate. Конъюнкт CanOperate раньше был недостижим по построению:
+// issues.go подставлял в него canAccess, уже подтверждённый гейтом страницы
+// (хвост 4 волны 1) — теперь значение идёт через canOperateProject, и
+// predicate обязан держать каждую ветку сам.
+func TestChecklistVisibleTable(t *testing.T) {
+	cases := []struct {
+		name       string
+		hidden     bool
+		done       int
+		canOperate bool
+		want       bool
+	}{
+		{"visible: fresh, operator", false, 0, true, true},
+		{"visible: 4 of 5, operator", false, 4, true, true},
+		{"hidden by user", true, 0, true, false},
+		{"all steps done", false, 5, true, false},
+		{"more than all steps done", false, 6, true, false},
+		{"not operator", false, 0, false, false},
+		{"not operator, 4 of 5", false, 4, false, false},
+		{"hidden and not operator", true, 0, false, false},
+		{"hidden and done", true, 5, true, false},
+		{"done and not operator", false, 5, false, false},
+		{"everything against", true, 5, false, false},
+	}
+	for _, tc := range cases {
+		gs := GettingStartedVM{Hidden: tc.hidden, Done: tc.done, CanOperate: tc.canOperate}
+		if got := gs.checklistVisible(); got != tc.want {
+			t.Errorf("%s: checklistVisible(Hidden=%v, Done=%d, CanOperate=%v) = %v, want %v",
+				tc.name, tc.hidden, tc.done, tc.canOperate, got, tc.want)
+		}
 	}
 }

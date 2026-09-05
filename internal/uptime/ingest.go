@@ -54,7 +54,14 @@ func (i *Ingestor) Accept(ctx context.Context, j Job, at time.Time, r Result) er
 			"monitor_id", j.MonitorID, "region", j.Region, "queue_id", j.QueueID)
 		return nil
 	}
+	return i.AcceptClaimed(ctx, j, at, r)
+}
 
+// AcceptClaimed — Accept для задания, уже изъятого из очереди (ClaimJobs
+// пачкой в POST /probe/results): запись результата и применение к состоянию
+// монитора. Вызывающий обязан сам обеспечить «ровно один раз» — здесь claim
+// не повторяется.
+func (i *Ingestor) AcceptClaimed(ctx context.Context, j Job, at time.Time, r Result) error {
 	if i.Writer != nil {
 		i.Writer.Add(j.Monitor.ProjectID, j.MonitorID, j.Region, at, r)
 	}

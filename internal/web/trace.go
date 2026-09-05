@@ -1,6 +1,7 @@
 package web
 
 import (
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
@@ -42,9 +43,18 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Откуда открыли трейс — нужно и ниже (состояния «спаны истекли» и
+	// «хранилище недоступно»), и в конце функции (обычный waterfall),
+	// поэтому разбираем один раз.
+	origin, originID, originTransaction := traceOrigin(r)
+
+	// «Трейса нет» и «ClickHouse не ответил» — разные состояния: первое —
+	// found=false без ошибки (404 ниже), второе — err (деградация: оболочка
+	// живая, вместо waterfall — «данные временно недоступны»). Проект в этом
+	// случае неизвестен — крошка к списку транзакций не рисуется.
 	projectID, found, err := h.Trace.ProjectForTrace(r.Context(), traceID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderTraceUnavailable(w, r, 0, traceID, origin, originID, originTransaction, err)
 		return
 	}
 	if !found {
@@ -62,13 +72,9 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Откуда открыли трейс — нужно и ниже (состояние «спаны истекли»), и в
-	// конце функции (обычный waterfall), поэтому разбираем один раз.
-	origin, originID, originTransaction := traceOrigin(r)
-
 	root, spans, err := h.Trace.Trace(r.Context(), projectID, traceID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderTraceUnavailable(w, r, projectID, traceID, origin, originID, originTransaction, err)
 		return
 	}
 	if len(spans) == 0 {
@@ -104,7 +110,7 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 	if h.Events != nil {
 		errs, err := h.Events.ByTraceID(r.Context(), projectID, traceID)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderTraceUnavailable(w, r, projectID, traceID, origin, originID, originTransaction, err)
 			return
 		}
 		for _, e := range errs {
@@ -173,6 +179,22 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 	_ = templates.TraceWaterfall(data, h.currentEmail(r)).Render(r.Context(), w)
 }
 
+// renderTraceUnavailable — страница трейса при отказе ClickHouse: крошка
+// назад и trace_id на месте, вместо waterfall — «данные временно
+// недоступны». 200, а не 500 (единый приём CH-страниц, образец — logsList);
+// 404 остаётся за «трейса нет» (ProjectForTrace: found=false без ошибки).
+func (h *Handler) renderTraceUnavailable(w http.ResponseWriter, r *http.Request, projectID int64, traceID, origin string, originID int64, originTransaction string, err error) {
+	slog.Warn("trace: waterfall failed", "project_id", projectID, "trace_id", traceID, "err", err)
+	data := templates.TraceExpiredData{
+		ProjectID:       projectID,
+		TraceID:         traceID,
+		From:            origin,
+		FromID:          originID,
+		FromTransaction: originTransaction,
+	}
+	_ = templates.TraceUnavailable(data, h.currentEmail(r)).Render(r.Context(), w)
+}
+
 // traceFlame — GET /traces/{trace_id}/flame: flamegraph профиля, снятого во
 // время этого трейса (profiling-in-context, этап 8). Тот же контур доступа, что
 // waterfall (ProjectForTrace → 404 чужим/неизвестным). Нет профиля → flamegraph
@@ -193,9 +215,12 @@ func (h *Handler) traceFlame(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
+	// Отказ ClickHouse (а не «трейса нет» — то found=false без ошибки, 404):
+	// оболочка и ссылка на waterfall на месте, вместо флеймграфа — «данные
+	// временно недоступны» (см. renderTraceUnavailable).
 	projectID, found, err := h.Trace.ProjectForTrace(r.Context(), traceID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderTraceFlameUnavailable(w, r, 0, traceID, err)
 		return
 	}
 	if !found {
@@ -213,7 +238,7 @@ func (h *Handler) traceFlame(w http.ResponseWriter, r *http.Request) {
 	}
 	root, err := h.Profiles.FlameForTrace(r.Context(), projectID, traceID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderTraceFlameUnavailable(w, r, projectID, traceID, err)
 		return
 	}
 	data := templates.TraceFlameData{
@@ -221,6 +246,14 @@ func (h *Handler) traceFlame(w http.ResponseWriter, r *http.Request) {
 		Chart:   flamegraphSVG(r.Context(), root, r.URL.Query()["focus"], 960, flameLink(r)),
 		HasData: flameHasData(root),
 	}
+	_ = templates.TraceFlame(data, h.currentEmail(r)).Render(r.Context(), w)
+}
+
+// renderTraceFlameUnavailable — флеймграф трейса при отказе ClickHouse
+// (см. renderTraceUnavailable).
+func (h *Handler) renderTraceFlameUnavailable(w http.ResponseWriter, r *http.Request, projectID int64, traceID string, err error) {
+	slog.Warn("trace: flame failed", "project_id", projectID, "trace_id", traceID, "err", err)
+	data := templates.TraceFlameData{TraceID: traceID, LoadFailed: true}
 	_ = templates.TraceFlame(data, h.currentEmail(r)).Render(r.Context(), w)
 }
 

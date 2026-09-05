@@ -225,6 +225,8 @@ templ feedItemRow(projectID int64, it incidentgroup.FeedItem, closedGroupIDs map
 		</td>
 		<td>
 			@relativeTime(it.StartedAt)
+		</td>
+		<td>
 			if it.ResolvedAt != nil {
 				@relativeTime(*it.ResolvedAt)
 			}
@@ -233,10 +235,12 @@ templ feedItemRow(projectID int64, it incidentgroup.FeedItem, closedGroupIDs map
 }
 
 // feedTableHead — заголовок таблицы, общий для состава группы, внегрупповых
-// и закрытых внегрупповых инцидентов: у всех трёх один набор из 4 колонок
+// и закрытых внегрупповых инцидентов: у всех трёх один набор из 5 колонок
 // (feedItemRow). Источник/статус/начало — переиспользованные ключи (то же
-// слово, что и на соседних страницах), название колонки под источник —
-// только здесь, обособленного ключа под него больше нигде нет.
+// слово, что и на соседних страницах), название колонки под источник и
+// время закрытия — только здесь, обособленного ключа под них больше нигде
+// нет. Начало и закрытие — две колонки, а не два относительных времени в
+// одной ячейке: без разделителя они слипались в «3 дня назадтолько что».
 templ feedTableHead() {
 	<thead>
 		<tr>
@@ -244,6 +248,7 @@ templ feedTableHead() {
 			<th scope="col">{ i18n.T(ctx, "perf.related_issues.table.title") }</th>
 			<th scope="col">{ i18n.T(ctx, "metrics.alerts.table.status") }</th>
 			<th scope="col">{ i18n.T(ctx, "metrics.alerts.table.started") }</th>
+			<th scope="col">{ i18n.T(ctx, "feed.table.resolved_at") }</th>
 		</tr>
 	</thead>
 }

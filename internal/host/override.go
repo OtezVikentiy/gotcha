@@ -35,14 +35,17 @@ type ThresholdOverride struct {
 //   - enabled=true без value — тоже ошибка: нечего сравнивать с метрикой;
 //   - value (заданное, при любом enabled, в т.ч. отсутствующем) обязано быть
 //     в тех же границах, что и Validate для полных Settings — сохранённое,
-//     но временно выключенное значение не должно быть мусором.
+//     но временно выключенное значение не должно быть мусором. Диск и
+//     память — строго (0, 1) по той же причине, что в Validate: каскад
+//     подставляет переопределение в тот же applyDecision со строгим «>»,
+//     и 1.0 на уровне хоста или группы было бы таким же мёртвым порогом.
 func ValidateOverride(ov ThresholdOverride) error {
 	if err := validateKindOverride(ov.DiskEnabled, ov.DiskThreshold,
-		func(v float64) bool { return v > 0 && v <= 1 }, ErrInvalidDiskThreshold); err != nil {
+		func(v float64) bool { return v > 0 && v < 1 }, ErrInvalidDiskThreshold); err != nil {
 		return err
 	}
 	if err := validateKindOverride(ov.MemoryEnabled, ov.MemoryThreshold,
-		func(v float64) bool { return v > 0 && v <= 1 }, ErrInvalidMemoryThreshold); err != nil {
+		func(v float64) bool { return v > 0 && v < 1 }, ErrInvalidMemoryThreshold); err != nil {
 		return err
 	}
 	if err := validateKindOverride(ov.LoadEnabled, ov.LoadThreshold,

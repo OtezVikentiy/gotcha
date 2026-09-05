@@ -101,6 +101,17 @@ func issueLevelLabel(ctx context.Context, level string) string {
 	return level
 }
 
+// issueTitle — заголовок issue для списка и детали. Приём оставляет title
+// пустым, когда у события нет ни exception, ни message, ни transaction, ни
+// logger (данные не подделываются); пустая ссылка и пустой aria-label — это
+// невидимый элемент, поэтому заглушку рисует интерфейс.
+func issueTitle(ctx context.Context, title string) string {
+	if title == "" {
+		return i18n.T(ctx, "issues.untitled")
+	}
+	return title
+}
+
 // issueStatusLabel — локализованное имя статуса issue/perf-issue (unresolved/
 // resolved/ignored). Неизвестный статус возвращается как есть.
 func issueStatusLabel(ctx context.Context, status string) string {
@@ -214,13 +225,18 @@ templ environmentOption(value, label string, selected string) {
 // раскрытых формах экспорта (спека §7/§8; находка аудита P2-UX-3 — раньше
 // эта галка не показывалась на точках входа вовсе, только на генерической
 // форме страницы «Выгрузки», которая не несёт scope_issue_id/фильтров).
-templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int, total int64, userEmail string, environments []string, banner *QuotaBanner, gs GettingStartedVM, canOperate bool, canManagePII bool) {
+// sparklinesFailed — ClickHouse не ответил: список (PostgreSQL) на месте,
+// колонка спарклайнов пустая, над таблицей — подсказка.
+templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int, total int64, userEmail string, environments []string, banner *QuotaBanner, gs GettingStartedVM, canOperate bool, canManagePII bool, sparklinesFailed bool) {
 	@layout(i18n.T(ctx, "nav.errors"), userEmail) {
 		<div class="issues">
 			@quotaBannerView(banner)
 			@gettingStartedChecklist(gs)
 			<h1>{ i18n.T(ctx, "nav.errors") }</h1>
 			@helpPanel("issues", "issues")
+			if sparklinesFailed && len(rows) > 0 {
+				<p class="hint">{ i18n.T(ctx, "issues.sparklines.error") }</p>
+			}
 			<form method="get" action={ templ.URL(issuesPath(projectID)) } class="issues-filters">
 				<input type="text" name="q" class="input" placeholder={ i18n.T(ctx, "issues.filter.query_placeholder") } value={ filter.Query } aria-label={ i18n.T(ctx, "filter.search") }/>
 				<select name="status" class="select" aria-label={ i18n.T(ctx, "filter.status") }>
@@ -256,6 +272,19 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 					@emptyState("filter", "issues.empty.filtered.title", "issues.empty.filtered.body", "issues.empty.filtered.cta", issuesPath(projectID), 2)
 				} else if len(rows) == 0 {
 					@emptyState("bug", "issues.empty.title", "issues.empty.body", "issues.empty.cta", projectSetupPath(projectID), 2)
+					// F5 (аудит перед 1.0): чек-лист «Первые шаги» рисуется
+					// выше на этой же странице (@gettingStartedChecklist) и
+					// уже несёт эту же врезку под шагом 2, когда он виден —
+					// повторять её здесь означало бы показать один и тот же
+					// текст дважды на пустом свежем проекте. Врезка в пустом
+					// состоянии — только запасной путь на случай, когда
+					// чек-лист на странице не рендерится (скрыт пользователем
+					// или все 5 шагов уже закрыты).
+					if len(gs.KeyRejects) > 0 && !gs.checklistVisible() {
+						<div class="notice notice--warn">
+							@keyRejectsBody(gs.KeyRejects, projectSettingsPath(projectID))
+						</div>
+					}
 				} else {
 					<div class="card">
 						// Тулбар над таблицей: слева массовые действия, справа точки
@@ -343,11 +372,11 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 														// aria-label обязателен: без него скринридер объявляет
 														// «флажок, не отмечен», не сказав, о какой проблеме речь,
 														// и массовые действия становятся выбором вслепую.
-														<input type="checkbox" name="ids" value={ strconv.FormatInt(row.Issue.ID, 10) } aria-label={ row.Issue.Title }/>
+														<input type="checkbox" name="ids" value={ strconv.FormatInt(row.Issue.ID, 10) } aria-label={ issueTitle(ctx, row.Issue.Title) }/>
 													</td>
 													<td><span class={ levelBadgeClass(row.Issue.Level) }>{ issueLevelLabel(ctx, row.Issue.Level) }</span></td>
 													<td>
-														<a href={ templ.URL(issueDetailPath(row.Issue.ID)) }>{ row.Issue.Title }</a>
+														<a href={ templ.URL(issueDetailPath(row.Issue.ID)) }>{ issueTitle(ctx, row.Issue.Title) }</a>
 														if row.Issue.Culprit != "" {
 															<div class="culprit">{ row.Issue.Culprit }</div>
 														}

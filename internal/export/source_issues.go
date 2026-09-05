@@ -10,11 +10,12 @@ import (
 
 // IssueSource — источник строк выгрузки kind=issues: превращает группы
 // проекта, отданные keyset-обходом issue.Service.StreamForExport, в Record
-// для писателя (задача 4). PII-маскирование сюда не относится: колонки
-// групп (§6 спеки) не содержат прямых идентификаторов пользователя —
-// они есть только у источника событий.
+// для писателя (задача 4). assignee_email — прямой идентификатор
+// пользователя (email назначенного), как user_email в выгрузке событий:
+// он маскируется тем же MaskUser при includePII == false. Остальные
+// колонки групп (§6 спеки) прямых идентификаторов не содержат.
 type IssueSource interface {
-	Stream(ctx context.Context, projectID int64, p Params, fn func(Record) error) error
+	Stream(ctx context.Context, projectID int64, includePII bool, p Params, fn func(Record) error) error
 }
 
 // IssueColumns — порядок колонок выгрузки issues, одинаковый для всех
@@ -53,8 +54,10 @@ func IssueURL(baseURL string, issueID int64) string {
 
 // Stream переносит Params заявки в issue.Filter (те же имена полей — Params
 // снимает фильтр списка issues на момент постановки заявки в очередь) и
-// стримит группы дальше как Record.
-func (s *issueSource) Stream(ctx context.Context, projectID int64, p Params, fn func(Record) error) error {
+// стримит группы дальше как Record. includePII == false маскирует
+// assignee_email тем же MaskUser, что и user_email/user_ip в источнике
+// событий (source_events.go).
+func (s *issueSource) Stream(ctx context.Context, projectID int64, includePII bool, p Params, fn func(Record) error) error {
 	f := issue.Filter{
 		Status:      p.Status,
 		Level:       p.Level,
@@ -65,18 +68,31 @@ func (s *issueSource) Stream(ctx context.Context, projectID int64, p Params, fn 
 		Until:       p.Until,
 	}
 	return s.svc.StreamForExport(ctx, projectID, f, func(it issue.Issue) error {
-		return fn(Record{
-			"id":             it.ID,
-			"title":          it.Title,
-			"culprit":        it.Culprit,
-			"level":          it.Level,
-			"status":         it.Status,
-			"times_seen":     it.TimesSeen,
-			"first_seen":     it.FirstSeen,
-			"last_seen":      it.LastSeen,
-			"environments":   strings.Join(it.Environments, ", "),
-			"assignee_email": it.AssigneeEmail,
-			"url":            IssueURL(s.baseURL, it.ID),
-		})
+		return fn(s.toRecord(it, includePII))
 	})
+}
+
+// toRecord — маппинг issue.Issue в Record выгрузки issues (§6 спеки), тот же
+// набор колонок, что и IssueColumns(). Вынесено из Stream отдельным методом
+// ради теста контракта K4-7 аудита (TestExportContract* в
+// contract_version_test.go): тест обязан прогнать РЕАЛЬНЫЙ маппинг на
+// фикстуре issue.Issue, а не воспроизводить эту логику собственной копией.
+func (s *issueSource) toRecord(it issue.Issue, includePII bool) Record {
+	assigneeEmail := it.AssigneeEmail
+	if !includePII {
+		_, assigneeEmail = MaskUser("", assigneeEmail)
+	}
+	return Record{
+		"id":             it.ID,
+		"title":          it.Title,
+		"culprit":        it.Culprit,
+		"level":          it.Level,
+		"status":         it.Status,
+		"times_seen":     it.TimesSeen,
+		"first_seen":     it.FirstSeen,
+		"last_seen":      it.LastSeen,
+		"environments":   strings.Join(it.Environments, ", "),
+		"assignee_email": assigneeEmail,
+		"url":            IssueURL(s.baseURL, it.ID),
+	}
 }

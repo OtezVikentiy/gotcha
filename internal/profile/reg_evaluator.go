@@ -35,7 +35,7 @@ const (
 type profileQuery interface {
 	ActiveServices(ctx context.Context, from, to time.Time) ([]ProjectService, error)
 	TopFunctionShares(ctx context.Context, projectID int64, service, profileType string, from, to time.Time, k int) ([]FunctionShare, error)
-	BaselineFunctionShares(ctx context.Context, projectID int64, service, profileType string, functions []string, baselineDays int, now time.Time) (map[string]float64, error)
+	BaselineFunctionShares(ctx context.Context, projectID int64, service, profileType string, functions []string, baselineDays int, now time.Time) (map[string]BaselineShare, error)
 }
 
 type RegressionEvaluator struct {
@@ -135,7 +135,7 @@ func (e *RegressionEvaluator) Tick(ctx context.Context) {
 }
 
 // evalService проверяет один сервис одного проекта: два запроса к
-// profile_samples вместо 1 + 2K.
+// profile_samples вместо 1 + 2K и один запрос к profile_regressions вместо K.
 func (e *RegressionEvaluator) evalService(ctx context.Context, ps ProjectService, recentFrom, now time.Time) {
 	cfg := e.Config
 	shares, err := e.Query.TopFunctionShares(ctx, ps.ProjectID, ps.Service, ps.Type, recentFrom, now, cfg.TopK)
@@ -159,25 +159,28 @@ func (e *RegressionEvaluator) evalService(ctx context.Context, ps ProjectService
 		return
 	}
 
+	opens, err := e.Regressions.OpenForFunctions(ctx, ps.ProjectID, ps.Service, ps.Type, names)
+	if err != nil {
+		slog.Error("profile evaluator: open-for failed",
+			"project_id", ps.ProjectID, "service", ps.Service, "error", err)
+		return
+	}
+
 	for _, sh := range shares {
-		// Функции без базовой линии сравниваются с нулём — так же, как раньше
-		// при пустом результате поштучного запроса.
-		e.evalFunction(ctx, ps, sh, baselines[sh.Function], now)
+		// Функции без базовой линии сравниваются с нулём (нулевое значение
+		// карты) — так же, как раньше при пустом результате поштучного запроса.
+		base := baselines[sh.Function]
+		open, hasOpen := opens[sh.Function]
+		e.evalFunction(ctx, ps, sh, base.Share, base.Samples, open, hasOpen, now)
 	}
 }
 
-func (e *RegressionEvaluator) evalFunction(ctx context.Context, ps ProjectService, sh FunctionShare, base float64, now time.Time) {
+func (e *RegressionEvaluator) evalFunction(ctx context.Context, ps ProjectService, sh FunctionShare, base float64, baseSamples uint64, open Regression, hasOpen bool, now time.Time) {
 	cfg := e.Config
 	projectID, service, profileType, function := ps.ProjectID, ps.Service, ps.Type, sh.Function
 	recent, samples := sh.Share, sh.Samples
 
-	open, hasOpen, err := e.Regressions.OpenFor(ctx, projectID, service, profileType, function)
-	if err != nil {
-		slog.Error("profile evaluator: open-for failed", "project_id", projectID, "function", function, "error", err)
-		return
-	}
-
-	switch Decide(base, recent, samples, cfg, hasOpen).Kind {
+	switch Decide(base, recent, baseSamples, samples, cfg, hasOpen).Kind {
 	case DecisionOpen:
 		inMaint := e.inMaintenance(ctx, projectID, now)
 		rec, created, err := e.Regressions.Open(ctx, projectID, service, profileType, function, base, recent, inMaint)

@@ -150,7 +150,9 @@ templ vitalCell(v trace.Vital) {
 // WebVitalsList — GET /projects/{id}/web-vitals: таблица страниц (pageload-
 // транзакций) с p75 LCP/INP/CLS, цветными бейджами рейтинга и числом замеров.
 // Фильтры окружения/периода и сортировка — как на странице Performance.
-templ WebVitalsList(projectID int64, pages []trace.PageVitals, filter PerfFilter, environments []string, userEmail string) {
+// loadFailed — ClickHouse не ответил: фильтры на месте, вместо таблицы —
+// «данные временно недоступны».
+templ WebVitalsList(projectID int64, pages []trace.PageVitals, filter PerfFilter, environments []string, userEmail string, loadFailed bool) {
 	@layout(i18n.T(ctx, "perf.webvitals"), userEmail) {
 		<div class="web-vitals">
 			<h1>{ i18n.T(ctx, "perf.webvitals") }</h1>
@@ -168,7 +170,9 @@ templ WebVitalsList(projectID int64, pages []trace.PageVitals, filter PerfFilter
 				}
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "perf.filter.apply") }</button>
 			</form>
-			if len(pages) == 0 {
+			if loadFailed {
+				@emptyState("activity", "perf.webvitals.error.title", "perf.webvitals.error.body", "", "", 2)
+			} else if len(pages) == 0 {
 				@emptyState("activity", "perf.webvitals.empty.title", "perf.webvitals.empty.body", "perf.webvitals.empty.cta", "/docs/sdk", 2)
 			} else {
 				<div class="card">

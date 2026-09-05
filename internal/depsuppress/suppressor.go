@@ -9,8 +9,21 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// pgxPool — подмножество *pgxpool.Pool, которое использует Suppressor.
+// Заведено ради тестируемости K1-5 (сужение критической секции getSnapshot):
+// тест на несериализацию конкурентных загрузок подменяет pool инструментированной
+// обёрткой, считающей одновременные запросы, а *pgxpool.Pool этому интерфейсу
+// удовлетворяет структурно, без каких-либо изменений на стороне вызывающих
+// NewSuppressor.
+type pgxPool interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
 
 // cacheTTL — время жизни снимка состояния зависимостей/инцидентов (кеш-на-
 // тик): резолвинг HasParent/ParentDown не бьёт в БД на каждый вызов —
@@ -49,7 +62,7 @@ type snapshot struct {
 // (HasParent/ParentDown) и escalation-scheduler'ом (CheckIncident/
 // MarkSuppressed), у которого нет прямой зависимости на пакет host.
 type Suppressor struct {
-	pool     *pgxpool.Pool
+	pool     pgxPool
 	cacheTTL time.Duration
 	// now — источник текущего времени для кеша-на-тик; в проде time.Now,
 	// в тестах подменяется для детерминируемого истечения TTL.
@@ -209,19 +222,56 @@ func (s *Suppressor) MarkSuppressed(ctx context.Context, source string, incident
 
 // getSnapshot возвращает текущий кеш-на-тик, перезагружая его, если он ещё
 // не был загружен или устарел старше cacheTTL.
+//
+// Мьютекс защищает РОВНО одно: согласованность чтения/записи указателя
+// s.cache (разделяемое состояние). Сам снимок иммутабелен с момента
+// построения (loadSnapshot собирает его в локальную переменную и отдаёт
+// целиком), поэтому вычитывать его можно и после разблокировки — держать
+// мьютекс на время четырёх последовательных запросов к PG (K1-5) не нужно:
+// это сериализовало БЫ конкурентные вызовы на всё время похода в базу, хотя
+// им достаточно не разъехаться по самому кешу.
+//
+// Узкое место, оставшееся сознательно: при устаревшем кеше несколько
+// конкурентных вызовов могут запустить loadSnapshot независимо (без
+// single-flight) — каждый увидит s.cache == nil/протухшим ДО того, как
+// кто-то из них успеет положить свежий снимок обратно. Это не портит данные
+// (снимки эквивалентны с точностью до окна TTL, который и так принят как
+// источник устарелости, см. докблок ParentDown) — только избыточные, но
+// безопасные повторные запросы в редком окне протухания кеша.
+//
+// Гонка «прочитал-затем-записал» по s.cache между двумя разделёнными
+// критическими секциями ВОЗМОЖНА (ревью аудита): loadedAt фиксируется
+// ВНУТРИ loadSnapshot, а запись в s.cache — отдельным, более поздним
+// захватом mu. Горутина A, начавшая загрузку раньше, но вытесненная
+// планировщиком (GC-пауза, нагрузка) между возвратом из loadSnapshot и
+// повторным Lock, может проснуться и перетереть s.cache уже ПОСЛЕ того,
+// как горутина B успела загрузить и записать более свежий снимок — без
+// guard'а ниже это откатило бы кеш назад во времени. Guard "пишем только
+// если наш снимок не старше текущего" не устраняет само вытеснение
+// (оно всё ещё может случиться), но не даёт более старому снимку A
+// затереть более свежий снимок B: после guard'а кеш либо получает A (если
+// A первой добралась до Lock), либо остаётся снимком B (если A опоздала) —
+// в любом случае не откатывается назад. Остаточная устарелость от этого не
+// растёт сверх уже принятого окна cacheTTL.
 func (s *Suppressor) getSnapshot(ctx context.Context) (*snapshot, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.cache != nil && s.now().Sub(s.cache.loadedAt) < s.cacheTTL {
-		return s.cache, nil
+	cache := s.cache
+	fresh := cache != nil && s.now().Sub(cache.loadedAt) < s.cacheTTL
+	s.mu.Unlock()
+	if fresh {
+		return cache, nil
 	}
 
 	snap, err := s.loadSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	s.cache = snap
+
+	s.mu.Lock()
+	if s.cache == nil || snap.loadedAt.After(s.cache.loadedAt) {
+		s.cache = snap
+	}
+	s.mu.Unlock()
 	return snap, nil
 }
 

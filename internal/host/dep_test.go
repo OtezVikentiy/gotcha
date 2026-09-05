@@ -109,6 +109,7 @@ func TestEvaluatorSendsStep0WhenHostHasNoParent(t *testing.T) {
 	ctx := context.Background()
 
 	pid := seedEvalProject(t, pool)
+	seedAlertChannel(t, pool, pid)
 	h := seedEvalHost(t, pool, pid, "web-01")
 	seedHostMetricPoint(t, ch, pid, "system.filesystem.utilization", h.Name, map[string]string{"mountpoint": "/"}, 0.95, time.Minute)
 
@@ -145,6 +146,7 @@ func TestEvaluatorStep0FailSafeOnDepError(t *testing.T) {
 	ctx := context.Background()
 
 	pid := seedEvalProject(t, pool)
+	seedAlertChannel(t, pool, pid)
 	h := seedEvalHost(t, pool, pid, "web-01")
 	seedHostMetricPoint(t, ch, pid, "system.filesystem.utilization", h.Name, map[string]string{"mountpoint": "/"}, 0.95, time.Minute)
 

@@ -58,6 +58,18 @@ templ headTag(title string) {
 	<head>
 		<meta charset="utf-8"/>
 		<meta name="viewport" content="width=device-width, initial-scale=1"/>
+		// theme-color красит системную рамку браузера (адресная строка на
+		// мобильных, обводка PWA-окна): без него над тёмным интерфейсом висела
+		// белая полоса. Явная тема — цвет полотна этой темы; «system» — оба
+		// через media, ровно по тому же prefers-color-scheme, по которому
+		// app.css выбирает палитру. Значения = --bg из app.css; совпадение
+		// держит TestThemeColorMatchesCSS.
+		if theme.FromContext(ctx).Code == "system" {
+			<meta name="theme-color" content={ themeColor("dark") } media="(prefers-color-scheme: dark)"/>
+			<meta name="theme-color" content={ themeColor("light") } media="(prefers-color-scheme: light)"/>
+		} else {
+			<meta name="theme-color" content={ themeColor(theme.FromContext(ctx).Code) }/>
+		}
 		<title>{ title } · Gotcha</title>
 		<link rel="icon" href={ assetURL("/static/favicon.svg") } type="image/svg+xml"/>
 		<link rel="stylesheet" href={ assetURL("/static/app.css") }/>
@@ -74,6 +86,24 @@ templ headTag(title string) {
 		// и у daterange/modal/copy выше.
 		<script src={ assetURL("/static/logs.js") } defer></script>
 	</head>
+}
+
+// themeColorByCode — цвет полотна (--bg в app.css) по коду темы для
+// <meta name="theme-color">. Экспортируется через ThemeColor для сторожа.
+var themeColorByCode = map[string]string{
+	"dark":  "#0f131b",
+	"light": "#f6f8fb",
+}
+
+func themeColor(code string) string {
+	return themeColorByCode[code]
+}
+
+// ThemeColor — цвет полотна темы для <meta name="theme-color"> (пусто для
+// неизвестного кода). Наружу — ради сторожа TestThemeColorMatchesCSS в
+// пакете web, который сверяет его с --bg в app.css.
+func ThemeColor(code string) string {
+	return themeColor(code)
 }
 
 // layoutBody — общее содержимое <head>/<body> для авторизованного app-shell,

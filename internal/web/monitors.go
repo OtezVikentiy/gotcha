@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -188,26 +189,17 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 	// Пакетные запросы по всему набору мониторов вместо N+1 в цикле: uptime,
 	// состояния (PG), латентность и полоски доступности (CH) — по одному запросу
 	// на всех (списочная страница иначе делала ~3N round-trip, из них ~2N в CH).
-	uptimeStats, err := h.UptimeQuery.UptimeBatch(r.Context(), ids, from, now)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
 	statesByMon, err := h.Uptime.StatesBatch(r.Context(), ids)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	latencyByMon, err := h.UptimeQuery.LatencyBatch(r.Context(), ids, from, now, monitorsListWindow/monitorsListBuckets)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-	barsByMon, err := h.UptimeQuery.BarsBatch(r.Context(), ids, from, now, monitorsListBuckets)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
+	// Аптайм, задержка и полосы — из ClickHouse; мониторы и их состояния —
+	// из PostgreSQL. Отказ CH не роняет список (единый приём CH-страниц,
+	// образец — logsList): строки со статусами показываем, колонки статистики
+	// — «нет данных», над таблицей — «статистика временно недоступна».
+	// Первый отказ прекращает опрос хранилища.
+	uptimeStats, latencyByMon, barsByMon, statsFailed := h.monitorsListStats(r.Context(), projectID, ids, from, now)
 
 	rows := make([]templates.MonitorRow, len(monitors))
 	for i, m := range monitors {
@@ -225,7 +217,29 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	_ = templates.MonitorsList(projectID, rows, canOperate, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.MonitorsList(projectID, rows, canOperate, h.currentEmail(r), statsFailed).Render(r.Context(), w)
+}
+
+// monitorsListStats — три батч-запроса списка мониторов к ClickHouse. Любой
+// отказ возвращает failed=true и пустые карты (nil-карта читается как
+// «нет данных» для каждого монитора); ошибка уходит в лог, не в ответ.
+func (h *Handler) monitorsListStats(ctx context.Context, projectID int64, ids []int64, from, now time.Time) (map[int64]uptime.UptimeStat, map[int64][]uptime.LatencyPoint, map[int64][]uptime.UptimeStat, bool) {
+	uptimeStats, err := h.UptimeQuery.UptimeBatch(ctx, ids, from, now)
+	if err != nil {
+		slog.Warn("web: monitors list stats failed", "project_id", projectID, "query", "uptime", "error", err)
+		return nil, nil, nil, true
+	}
+	latencyByMon, err := h.UptimeQuery.LatencyBatch(ctx, ids, from, now, monitorsListWindow/monitorsListBuckets)
+	if err != nil {
+		slog.Warn("web: monitors list stats failed", "project_id", projectID, "query", "latency", "error", err)
+		return nil, nil, nil, true
+	}
+	barsByMon, err := h.UptimeQuery.BarsBatch(ctx, ids, from, now, monitorsListBuckets)
+	if err != nil {
+		slog.Warn("web: monitors list stats failed", "project_id", projectID, "query", "bars", "error", err)
+		return nil, nil, nil, true
+	}
+	return uptimeStats, latencyByMon, barsByMon, false
 }
 
 // loadAccessibleMonitor — общая часть GET/POST monitor-обработчиков: находит
@@ -335,34 +349,40 @@ func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m 
 		return
 	}
 
-	uptime24h, err := h.monitorUptimeStat(r.Context(), m.ID, windows, now.Add(-24*time.Hour), now)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-	uptime7d, err := h.monitorUptimeStat(r.Context(), m.ID, windows, now.Add(-7*24*time.Hour), now)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-	uptime30d, err := h.monitorUptimeStat(r.Context(), m.ID, windows, now.Add(-30*24*time.Hour), now)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-
-	// Три плитки аптайма выше — намеренно фиксированные окна (24ч/7д/30д —
-	// сводка SLA). Селектор диапазона управляет только графиком задержек:
-	// это исследуемый ряд, а не сводка.
 	tr := h.resolveTimeRange(w, r, "24h")
 	latencyStep := autoStep(tr.Window(), 5*time.Minute, 0, monitorLatencyBuckets)
-	latencyPoints, err := h.UptimeQuery.Latency(r.Context(), m.ID, tr.From, tr.To, latencyStep)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
+
+	// Все чтения ClickHouse карточки (аптайм за три окна, задержки, последние
+	// проверки) — одним блоком: отказ хранилища не роняет страницу (единый
+	// приём CH-страниц, образец — logsList), шапка, статус, действия и
+	// инциденты (PostgreSQL) остаются, на месте графика и проверок — «данные
+	// временно недоступны». Первый отказ прекращает опрос хранилища.
+	var (
+		uptime24h, uptime7d, uptime30d uptime.UptimeStat
+		latencyPoints                  []uptime.LatencyPoint
+		checks                         []uptime.CheckRow
+	)
+	statsErr := func() error {
+		var err error
+		if uptime24h, err = h.monitorUptimeStat(r.Context(), m.ID, windows, now.Add(-24*time.Hour), now); err != nil {
+			return err
+		}
+		if uptime7d, err = h.monitorUptimeStat(r.Context(), m.ID, windows, now.Add(-7*24*time.Hour), now); err != nil {
+			return err
+		}
+		if uptime30d, err = h.monitorUptimeStat(r.Context(), m.ID, windows, now.Add(-30*24*time.Hour), now); err != nil {
+			return err
+		}
+		if latencyPoints, err = h.UptimeQuery.Latency(r.Context(), m.ID, tr.From, tr.To, latencyStep); err != nil {
+			return err
+		}
+		checks, err = h.UptimeQuery.Recent(r.Context(), m.ID, monitorDetailChecksLimit)
+		return err
+	}()
+	statsFailed := statsErr != nil
+	if statsFailed {
+		slog.Warn("web: monitor detail stats failed", "monitor_id", m.ID, "error", statsErr)
 	}
-	// Дозаполняем окно пустыми корзинами, чтобы ось графика задержек шла по
-	// выбранному интервалу целиком (пустые корзины — нулевой столбик).
 	latencyPoints = fillSeries(latencyPoints, tr.From, tr.To, latencyStep,
 		func(p uptime.LatencyPoint) time.Time { return p.T },
 		func(t time.Time) uptime.LatencyPoint { return uptime.LatencyPoint{T: t} })
@@ -374,12 +394,6 @@ func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m 
 	}
 	latencyChart := latencyStackedSVG(r.Context(), latencyPoints, deploys, latencyChartWidth, latencyChartHeight)
 
-	checks, err := h.UptimeQuery.Recent(r.Context(), m.ID, monitorDetailChecksLimit)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
-	}
-
 	incPage := parsePage(r.URL.Query().Get("incpage"))
 	if incPage < 1 {
 		incPage = 1
@@ -390,7 +404,7 @@ func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m 
 		return
 	}
 
-	_ = templates.MonitorDetail(m, status, uptime24h, uptime7d, uptime30d, latencyChart, timeRangeVM(tr), checks, incidents, incPage, incTotal, canManage, canOperate, h.BaseURL, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.MonitorDetail(m, status, uptime24h, uptime7d, uptime30d, latencyChart, timeRangeVM(tr), checks, incidents, incPage, incTotal, canManage, canOperate, h.BaseURL, h.currentEmail(r), statsFailed).Render(r.Context(), w)
 }
 
 // monitorSetEnabled — общая часть POST /monitors/{id}/pause и /resume:
@@ -420,6 +434,13 @@ func (h *Handler) monitorSetEnabled(w http.ResponseWriter, r *http.Request, enab
 	if err := h.Uptime.SetEnabled(r.Context(), m.ID, enabled); err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
+	}
+	// Flash различает паузу и возобновление (K7-9): «Сохранено» здесь не
+	// сказало бы, в каком состоянии монитор остался.
+	if enabled {
+		h.flashOK(w, "flash.monitor_resumed", 0)
+	} else {
+		h.flashOK(w, "flash.monitor_paused", 0)
 	}
 	http.Redirect(w, r, monitorDetailPath(m.ID), http.StatusSeeOther)
 }
@@ -456,12 +477,16 @@ func (h *Handler) monitorDelete(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireProjectOperator(w, r, m.ProjectID, uid); !ok {
 		return
 	}
+	if !h.parseForm(w, r) {
+		return
+	}
 	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
 	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
 	// показываем страницу подтверждения вместо необратимого действия.
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.monitor_delete.message", "confirm.delete",
-			monitorDetailPath(m.ID), monitorDeletePath(m.ID), nil)
+		h.renderConfirmf(w, r, "confirm.title", "confirm.monitor_delete.message", "confirm.delete",
+			monitorDetailPath(m.ID), monitorDeletePath(m.ID), nil,
+			"name", m.Name)
 		return
 	}
 	if err := h.Uptime.Delete(r.Context(), m.ID); err != nil {

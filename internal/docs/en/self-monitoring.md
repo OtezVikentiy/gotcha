@@ -164,6 +164,16 @@ it will be removed in 1.0 together with the deprecated paths themselves. Do not
 build a long-lived dashboard or alert on it — unlike the rest of the metrics on
 this page, its name is not part of the 1.0 observability contract.
 
+**`gotcha_metric_points_clock_skew_total`** — metric points that arrived with a
+timestamp from the future and were clamped to the receive time. To charts and
+threshold rules a point from the future is otherwise as good as lost — a host
+whose clock runs ahead would silently drop out of evaluation. Growth means some
+sender's clock (an agent, an exporter) is ahead of the server's; which host is
+in the log: for a lead of a minute or more the product writes a warning (at
+most once a minute) with the host name, the number of points and the largest
+lead over the period. The fix is time synchronisation on the sender
+(`chrony`/`ntpd`).
+
 **`gotcha_pipeline_dropped_tasks_total{reason="…"}`** — events and transactions
 the pipeline threw away. Also unrecoverable. The `reason` label tells you what to
 fix:
@@ -323,6 +333,16 @@ worker's tick — an operator only learned about them by checking the log): ever
 request usually fails for the same reason, typically export directory
 permissions or an exhausted `GOTCHA_EXPORT_DISK_BUDGET_BYTES` (see the last
 attempt's error in the UI's Exports section).
+
+**`gotcha_export_janitor_last_tick_timestamp_seconds`** /
+**`gotcha_export_janitor_tick_duration_seconds`** — when the export janitor
+(removes expired requests' files and rows, purges history older than the
+retention window, sweeps orphan files) last completed a pass, and how long it
+took. A dead or stuck janitor looks like "nothing to clean up" from the
+outside — the export directory's disk budget never frees up, and the request
+history grows without bound. The pass runs once an hour; a gap noticeably
+larger than that means cleanup has stopped. These metrics are absent
+wherever `gotcha_export_queue_*` is absent (`--mode=ingest`).
 
 **`gotcha_memory_limit_bytes`** — the heap ceiling derived from the container's
 memory limit (80% of it). Zero means there is no limit: buffers will grow until

@@ -37,12 +37,14 @@ func metricsSystemToggleURL(projectID int64, environment string, showSystem bool
 // уже отфильтрован по showSystem в metricsList (internal/web/metrics.go);
 // hiddenCount — сколько system.*-метрик скрыто (0, если хостов нет —
 // переключатель тогда не рисуется, поведение без хостов не меняется).
-templ MetricsList(projectID int64, metrics []metric.MetricInfo, environment, userEmail string, showSystem bool, hiddenCount int) {
+templ MetricsList(projectID int64, metrics []metric.MetricInfo, environment, userEmail string, showSystem bool, hiddenCount int, loadFailed bool) {
 	@layout(i18n.T(ctx, "metrics.title"), userEmail) {
 		<div class="metrics">
 			<h1>{ i18n.T(ctx, "metrics.title") }</h1>
 			@helpPanel("metrics", "metrics")
-			if len(metrics) == 0 && hiddenCount == 0 {
+			if loadFailed {
+				@emptyState("chart", "metrics.error.title", "metrics.error.body", "", "", 2)
+			} else if len(metrics) == 0 && hiddenCount == 0 {
 				@emptyState("chart", "metrics.empty.title", "metrics.empty.body", "metrics.empty.cta", "/docs/metrics", 2)
 			} else {
 				<div class="card">
@@ -93,6 +95,9 @@ type MetricDetailVM struct {
 	LabelValue   string
 	Chart        templ.Component
 	Percentiles  bool // histogram → доступны p50/p95/p99
+	// LoadFailed — ClickHouse не ответил: вместо сводки, фильтров и графика
+	// рисуется «данные временно недоступны», оболочка и крошка остаются.
+	LoadFailed bool
 }
 
 // metricUnitText — юнит для показа человеку. "1" по соглашению OTLP означает
@@ -129,6 +134,9 @@ templ MetricDetail(vm MetricDetailVM, userEmail string) {
 		<div class="metric-detail">
 			@breadcrumbBackTo(templ.URL(metricsBasePath(vm.ProjectID)), i18n.T(ctx, "metrics.title"))
 			<h1>{ vm.Info.Name }</h1>
+			if vm.LoadFailed {
+				@emptyState("chart", "metrics.error.title", "metrics.error.body", "", "", 2)
+			} else {
 			<div class="monitor-meta">
 				<div class="stat-tile">
 					<div class="stat-label">{ i18n.T(ctx, "metrics.table.type") }</div>
@@ -190,6 +198,7 @@ templ MetricDetail(vm MetricDetailVM, userEmail string) {
 						</div>
 					}
 				</div>
+			}
 			}
 		</div>
 	}

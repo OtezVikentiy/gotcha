@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/slo"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
+	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
 // capturingNotifier копит SLOEvent, чтобы тест проверил, что уведомление ушло
@@ -145,6 +147,10 @@ func TestSLOEvaluatorOpensAndCloses(t *testing.T) {
 
 	notifier := &capturingNotifier{store: st}
 	e := &slo.Evaluator{
+		// Interval задан явно: тикер не используем (Tick дёргается вручную), но от
+		// него считается бюджет тика — с дефолтом бюджет упирается в пол 10s, и на
+		// нагруженной машине (полный прогон, контейнеры) запрос в CH не укладывается.
+		Interval:  time.Hour,
 		Pool:      pool,
 		Store:     st,
 		Providers: slo.Providers(trace.NewQuery(conn), nil, nil, 90),
@@ -210,5 +216,83 @@ func TestSLOEvaluatorOpensAndCloses(t *testing.T) {
 	}
 	if evs[len(evs)-1].Opened {
 		t.Fatalf("последнее уведомление должно быть закрытием: %+v", evs[len(evs)-1])
+	}
+}
+
+// stuckProvider — Provider (CH за интерфейсом), чей Buckets висит до отмены
+// ctx: имитирует голый ClickHouse-запрос без собственного таймаута (K15-1,
+// см. тот же приём — stuckCH — в internal/trace/evaluator_test.go).
+type stuckProvider struct {
+	calls int32
+}
+
+func (p *stuckProvider) Buckets(ctx context.Context, _ slo.SLO, _, _ time.Time, _ time.Duration) ([]slo.Bucket, error) {
+	atomic.AddInt32(&p.calls, 1)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (p *stuckProvider) RetentionCap() time.Duration { return 0 }
+
+func (p *stuckProvider) BucketsExcluding(ctx context.Context, s slo.SLO, from, to time.Time, step time.Duration, _ []uptime.Window) ([]slo.Bucket, error) {
+	return p.Buckets(ctx, s, from, to, step)
+}
+
+// TestSLOEvaluatorTickStopsOnBudget — K15-1: повисший провайдер (ClickHouse-
+// запрос без собственного таймаута) не блокирует Tick дольше бюджета тика.
+// Interval мал → бюджет упирается в minTickBudget (10s); Tick обязан вернуться
+// заметно быстрее реального Interval и не опубликовать LastTickUnix для
+// оборванного по дедлайну прохода (тот же контракт, что у
+// TestEvaluatorTickBudgetAbortsHungTick в trace и аналогичного теста host).
+func TestSLOEvaluatorTickStopsOnBudget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := seedProject(t, pool)
+	st := slo.NewStore(pool)
+	if _, err := st.Create(ctx, slo.SLO{
+		ProjectID: pid, Name: "stuck", Kind: slo.SLIAvailability,
+		Target: 0.99, WindowDays: 30, BurnThreshold: 14.4,
+		BurnLongMin: 60, BurnShortMin: 5, Enabled: true,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	stuck := &stuckProvider{}
+	e := &slo.Evaluator{
+		Pool:      pool,
+		Store:     st,
+		Providers: map[slo.SLIKind]slo.Provider{slo.SLIAvailability: stuck},
+		// Interval мал — бюджет тика упирается в пол (minTickBudget), как у
+		// аналогичных тестов trace.Evaluator/host.Evaluator.
+		Interval: time.Second,
+	}
+
+	started := time.Now()
+	done := make(chan struct{})
+	go func() {
+		if _, err := e.Tick(ctx); err != nil {
+			t.Errorf("Tick: %v", err)
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(60 * time.Second):
+		t.Fatal("Tick не завершился: повисший провайдер блокирует оценщик")
+	}
+	if elapsed := time.Since(started); elapsed > 30*time.Second {
+		t.Errorf("Tick занял %v, want ограничение бюджетом тика (~minTickBudget)", elapsed)
+	}
+	if atomic.LoadInt32(&stuck.calls) == 0 {
+		t.Error("оценщик не ходил в провайдер вовсе — тест не проверяет то, что должен")
+	}
+	if got := e.LastTickUnix(); got != 0 {
+		t.Errorf("LastTickUnix = %d после оборванного по дедлайну тика, want 0", got)
+	}
+	if got := e.LastTickSeconds(); got <= 0 {
+		t.Errorf("LastTickSeconds = %v, want положительную длительность даже у оборванного тика", got)
 	}
 }

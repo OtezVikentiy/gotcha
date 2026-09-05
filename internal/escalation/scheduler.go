@@ -123,6 +123,7 @@ func (s *Scheduler) Tick(ctx context.Context) {
 				"budget", s.tickBudget())
 			break
 		}
+		s.releaseSuppressed(ctx, b)
 		pending, err := b.Src.OpenUnacked(ctx)
 		if err != nil {
 			slog.Error("escalation scheduler: open unacked failed", "source", b.Src.Name(), "error", err)
@@ -139,6 +140,59 @@ func (s *Scheduler) Tick(ctx context.Context) {
 		return
 	}
 	s.lastTickUnix.Store(time.Now().Unix())
+}
+
+// releaseSuppressed снимает подавление зависимостью для инцидентов
+// биндинга b, чей родитель восстановился (K1-4, аудит перед 1.0) — стоит
+// ПЕРЕД OpenUnacked ТОГО ЖЕ биндинга и в бюджете ЭТОГО ЖЕ тика (общий ctx с
+// дедлайном), чтобы снятый инцидент попал в OpenUnacked этого же тика, а не
+// ждал следующего ради одной только видимости освобождения (часы лесенки
+// перезапускаются от dep_released_at — см. докблок SuppressedSource и
+// GREATEST в host.OpenUnacked). Это НЕ значит, что ступень 0 гарантированно
+// уходит В ЭТОМ ЖЕ тике:
+//   - now в tickOne захвачен ДО ClearSuppressed, а dep_released_at = now()
+//     ставится часами PG, которые почти всегда чуть впереди — elapsed для
+//     свежеосвобождённого инцидента отрицательный или около нуля, и ступень
+//     0 станет due только со следующего тика;
+//   - для EscalationLevel==0 tickOne (см. ниже) держит ступень, пока
+//     now.Sub(StartedAt) < SettleGrace — а StartedAt теперь равен моменту
+//     освобождения, так что host-ребёнок, вышедший из-под подавления,
+//     переотстаивает грейс заново, как и любой свежий инцидент уровня 0.
+//
+// b.Src, не реализующий SuppressedSource (4 из 5 источников — снятие
+// подавления для uptime идёт через Detector, не через Scheduler, см.
+// докблок SuppressedSource), — no-op, как и s.Dep == nil (тесты/сборки без
+// depsuppress): нечем проверить, упал ли родитель.
+func (s *Scheduler) releaseSuppressed(ctx context.Context, b Binding) {
+	ss, ok := b.Src.(SuppressedSource)
+	if !ok || s.Dep == nil {
+		return
+	}
+	list, err := ss.OpenSuppressed(ctx)
+	if err != nil {
+		slog.Error("escalation scheduler: open suppressed failed", "source", b.Src.Name(), "error", err)
+		return
+	}
+	for _, p := range list {
+		hasParent, parentDown, err := s.Dep.CheckIncident(ctx, b.Src.Name(), p.ID)
+		if err != nil {
+			slog.Warn("escalation scheduler: dep check failed while releasing suppressed",
+				"source", b.Src.Name(), "incident_id", p.ID, "error", err)
+			continue
+		}
+		if hasParent && parentDown {
+			continue // родитель всё ещё лежит — держим
+		}
+		// !hasParent — зависимость удалена, пока инцидент был подавлен:
+		// подавлять больше нечем, снимаем так же, как восстановление родителя.
+		if err := ss.ClearSuppressed(ctx, p.ID); err != nil {
+			slog.Warn("escalation scheduler: clear suppressed failed",
+				"source", b.Src.Name(), "incident_id", p.ID, "error", err)
+			continue
+		}
+		slog.Info("escalation scheduler: dependency recovered, incident released",
+			"source", b.Src.Name(), "incident_id", p.ID)
+	}
 }
 
 func (s *Scheduler) tickOne(ctx context.Context, b Binding, p PendingIncident, now time.Time) {

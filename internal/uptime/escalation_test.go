@@ -3,6 +3,9 @@ package uptime_test
 import (
 	"context"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
@@ -114,6 +117,67 @@ func TestServiceOpenUnackedExcludesSuppressedByDep(t *testing.T) {
 	}
 }
 
+// TestServiceOpenUnackedRestartsClockAfterClearSuppressedByDep — F2 (аудит
+// перед 1.0): выжившая мутация «убрать третий аргумент GREATEST
+// (dep_released_at) в uptime OpenUnacked» — инцидент, освобождённый из-под
+// подавления зависимостью, обязан вернуться в OpenUnacked с StartedAt не
+// раньше момента освобождения (dep_released_at), а не с исходным
+// started_at, отставшим на часы, — иначе он получил бы просроченные ступени
+// лесенки каскадом на первом же тике (тот же приём, что уже есть у host,
+// см. TestOpenSuppressedAndClearSuppressed).
+func TestServiceOpenUnackedRestartsClockAfterClearSuppressedByDep(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 1, 1)
+
+	inc, _, err := svc.OpenIncident(ctx, mon.ID, "boom", []string{"local"}, false)
+	if err != nil {
+		t.Fatalf("OpenIncident: %v", err)
+	}
+	// started_at — далеко в прошлом (симулирует старый инцидент), чтобы
+	// GREATEST без dep_released_at дал бы StartedAt значительно РАНЬШЕ
+	// момента освобождения.
+	if _, err := pool.Exec(ctx, "UPDATE incidents SET started_at = now() - interval '2 hours' WHERE id = $1", inc.ID); err != nil {
+		t.Fatalf("backdate started_at: %v", err)
+	}
+	if _, err := svc.BumpEscalation(ctx, inc.ID, 0); err != nil {
+		t.Fatalf("BumpEscalation: %v", err)
+	}
+	if err := svc.MarkSuppressedByDep(ctx, inc.ID); err != nil {
+		t.Fatalf("MarkSuppressedByDep: %v", err)
+	}
+
+	before := timeNow(t, pool)
+	if err := svc.ClearSuppressedByDep(ctx, inc.ID); err != nil {
+		t.Fatalf("ClearSuppressedByDep: %v", err)
+	}
+
+	list, err := svc.OpenUnacked(ctx)
+	if err != nil {
+		t.Fatalf("OpenUnacked: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != inc.ID {
+		t.Fatalf("OpenUnacked = %+v, want [инцидент %d] (подавление снято)", list, inc.ID)
+	}
+	if list[0].StartedAt.Before(before) {
+		t.Fatalf("OpenUnacked[0].StartedAt = %v, want не раньше момента ClearSuppressedByDep (%v) — часы должны перезапуститься от dep_released_at", list[0].StartedAt, before)
+	}
+}
+
+// timeNow — время сервера PG (не хоста теста), которым проставляется
+// dep_released_at = now() внутри ClearSuppressedByDep: сравнивать со
+// StartedAt нужно в одних часах.
+func timeNow(t *testing.T, pool *pgxpool.Pool) time.Time {
+	t.Helper()
+	var now time.Time
+	if err := pool.QueryRow(context.Background(), "SELECT now()").Scan(&now); err != nil {
+		t.Fatalf("select now(): %v", err)
+	}
+	return now
+}
+
 // TestServiceBumpEscalation проверяет атомарность продвижения
 // escalation_level: успешный бамп двигает level и last_escalated_at,
 // повторный бамп с устаревшим from — идемпотентный no-op (ok=false).
@@ -218,5 +282,57 @@ func TestIncidentDeliveryExhausted(t *testing.T) {
 				t.Errorf("DeliveryExhausted() = %v, want %v (failed=%v attempts=%d)", got, c.want, c.failed, c.attempts)
 			}
 		})
+	}
+}
+
+// TestOpenUnackedSkipsDisabledMonitor (K2-2): монитор на паузе не отдаёт
+// свой открытый инцидент лесенке эскалации, но инцидент остаётся открытым;
+// снятие паузы возвращает его планировщику.
+func TestOpenUnackedSkipsDisabledMonitor(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 1, 1)
+
+	inc, created, err := svc.OpenIncident(ctx, mon.ID, "boom", []string{"local"}, false)
+	if err != nil || !created {
+		t.Fatalf("OpenIncident: (%+v,%v,%v)", inc, created, err)
+	}
+	if ok, err := svc.BumpEscalation(ctx, inc.ID, 0); err != nil || !ok {
+		t.Fatalf("BumpEscalation(0): (%v,%v), want (true,nil)", ok, err)
+	}
+
+	pending := func(step string) bool {
+		t.Helper()
+		list, err := svc.OpenUnacked(ctx)
+		if err != nil {
+			t.Fatalf("OpenUnacked %s: %v", step, err)
+		}
+		for _, p := range list {
+			if p.ID == inc.ID {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !pending("enabled") {
+		t.Fatalf("OpenUnacked while monitor enabled: incident %d missing, want it pending", inc.ID)
+	}
+	if err := svc.SetEnabled(ctx, mon.ID, false); err != nil {
+		t.Fatalf("SetEnabled(false): %v", err)
+	}
+	if pending("disabled") {
+		t.Fatalf("OpenUnacked while monitor disabled: incident %d listed, want it skipped", inc.ID)
+	}
+	if still := assertOpenIncident(t, ctx, svc, mon.ID); still.ID != inc.ID || still.ResolvedAt != nil {
+		t.Fatalf("incident after pause = %+v, want the same one still open (pause must not resolve it)", still)
+	}
+	if err := svc.SetEnabled(ctx, mon.ID, true); err != nil {
+		t.Fatalf("SetEnabled(true): %v", err)
+	}
+	if !pending("re-enabled") {
+		t.Fatalf("OpenUnacked after unpause: incident %d missing, want it pending again", inc.ID)
 	}
 }

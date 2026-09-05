@@ -11,8 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingestsignal"
 	"gitflic.ru/otezvikentiy/gotcha/internal/selfmetrics"
+	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
 // Точка входа состоит из проводки, но решения в ней есть, и они меняют
@@ -190,6 +194,23 @@ func TestSetupLoggingRejectsUnknownLevel(t *testing.T) {
 func TestSetupLoggingRejectsUnknownFormat(t *testing.T) {
 	if err := setupLogging("info", "nonsense"); err == nil {
 		t.Error(`setupLogging("info", "nonsense") must fail, got nil error`)
+	}
+}
+
+// TestSetupLoggingUsesValidateLogging — K5-1: setupLogging не заводит свою
+// копию таблицы допустимых level/format, а вызывает validateLogging
+// (cmd/gotcha/config.go) первой строкой — ту же функцию, которую loadConfig
+// зовёт в блоке накопления ошибок. Тест сравнивает ТЕКСТ ошибки: если бы
+// setupLogging вернулась к собственному switch с def-веткой, тексты могли бы
+// разойтись незаметно для остальных тестов (они лишь проверяют err != nil).
+func TestSetupLoggingUsesValidateLogging(t *testing.T) {
+	want := validateLogging("trace", "text")
+	if want == nil {
+		t.Fatal(`validateLogging("trace", "text") = nil, want error`)
+	}
+	got := setupLogging("trace", "text")
+	if got == nil || got.Error() != want.Error() {
+		t.Errorf("setupLogging(%q, %q) = %v, want same error as validateLogging: %v", "trace", "text", got, want)
 	}
 }
 
@@ -526,6 +547,109 @@ func TestWaitGroupWithTimeoutReturnsFalseWithoutBlockingPastWindow(t *testing.T)
 	}
 }
 
+// TestCloseBoundedReturnsTrueWhenCloseFnFinishes (I3, финревью волны 1
+// аудита перед 1.0): closeFn, завершившийся в срок, обязан дать drain()
+// увидеть это сразу, а не всегда упираться в timeout — иначе каждая
+// остановка ждала бы полное окно зря, даже когда uptime.Runner.Close()
+// вернулся мгновенно.
+func TestCloseBoundedReturnsTrueWhenCloseFnFinishes(t *testing.T) {
+	start := time.Now()
+	ok := closeBounded(func() { time.Sleep(5 * time.Millisecond) }, time.Second)
+	elapsed := time.Since(start)
+
+	if !ok {
+		t.Fatal("closeBounded = false, хотя closeFn завершился в срок")
+	}
+	if elapsed >= time.Second {
+		t.Errorf("closeBounded дождался всего окна (%s) вместо возврата сразу после завершения closeFn", elapsed)
+	}
+}
+
+// TestCloseBoundedReturnsFalseWithoutBlockingPastWindow (I3): зависший
+// closeFn (например, uptime.Runner.Close(), который у самого Runner без
+// ctx/дедлайна — см. его докблок) не имеет права держать drain() дольше
+// timeout — ровно тот сценарий, ради которого до фикса I3 сумма ограниченных
+// ожиданий в --mode=all упиралась в stop_grace_period. Мутация — заменить
+// тело closeBounded на голый closeFn() (без select/timeout) — обязана
+// уронить этот тест таймаутом самого теста (горутина never returns) или
+// зависанием.
+func TestCloseBoundedReturnsFalseWithoutBlockingPastWindow(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	start := time.Now()
+	ok := closeBounded(func() { <-release }, 30*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("closeBounded = true, хотя closeFn не завершился")
+	}
+	if elapsed > 200*time.Millisecond {
+		t.Errorf("closeBounded ждал %s — окно (30ms) не ограничило ожидание", elapsed)
+	}
+}
+
+// TestDrainParallelWaitsForEveryBranch (I3, раунд правок по ревью финревью
+// волны 1 аудита перед 1.0): drain() строит из независимых веток список и
+// отдаёт его drainParallel — само свойство «не вернуться, пока не отработала
+// КАЖДАЯ ветка» до этого теста не было закрыто ничем, а именно ради него
+// ветки drain() вообще переведены с последовательного ожидания на
+// sync.WaitGroup (см. докблок drain() в main.go). Мутация — заменить
+// dwg.Wait() на `_ = dwg` — обязана уронить этот тест: drainParallel
+// вернулась бы сразу после запуска горутин, не дождавшись release[2].
+func TestDrainParallelWaitsForEveryBranch(t *testing.T) {
+	const n = 3
+	release := make([]chan struct{}, n)
+	for i := range release {
+		release[i] = make(chan struct{})
+	}
+
+	finished := make(chan struct{})
+	go func() {
+		drainParallel(
+			func() { <-release[0] },
+			func() { <-release[1] },
+			func() { <-release[2] },
+		)
+		close(finished)
+	}()
+
+	// Отпускаем только две ветки из трёх — drainParallel не имеет права
+	// вернуться, пока жива третья.
+	close(release[0])
+	close(release[1])
+	select {
+	case <-finished:
+		t.Fatal("drainParallel вернулась, не дождавшись всех веток")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release[2])
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("drainParallel не вернулась после завершения всех веток")
+	}
+}
+
+// TestIngestSignalsFinalFlushFitsDrainWindow (L, раунд правок по ревью
+// финревью волны 1 аудита перед 1.0): drainIngestSignals ждёт
+// Recorder.Run ingestSignalsDrainWindow, а Run() закрывает свой WaitGroup
+// только ПОСЛЕ финального Flush с бюджетом ingestsignal.FinalFlushTimeout —
+// значит окно ожидания обязано быть строго БОЛЬШЕ бюджета флаша, иначе
+// внешнее ожидание при медленной PG гарантированно проигрывало бы гонку
+// собственному флашу. Сверяет обе стороны отношения напрямую с
+// первоисточниками (константа cmd/gotcha и экспортированная константа
+// ingestsignal), а не копию с копией — правка одной стороны «для симметрии»
+// без другой обязана уронить этот тест.
+func TestIngestSignalsFinalFlushFitsDrainWindow(t *testing.T) {
+	if ingestsignal.FinalFlushTimeout >= ingestSignalsDrainWindow {
+		t.Fatalf("ingestsignal.FinalFlushTimeout (%s) >= ingestSignalsDrainWindow (%s): "+
+			"финальный флаш не успевает уложиться в окно, которым drain() ждёт Recorder.Run",
+			ingestsignal.FinalFlushTimeout, ingestSignalsDrainWindow)
+	}
+}
+
 // fakeWriterStats — писатель, рассказывающий о себе три числа (см. writerStats).
 type fakeWriterStats struct{ buffered, dropped, failures int64 }
 
@@ -607,5 +731,100 @@ func TestCommonServicesEnabled(t *testing.T) {
 		if got := commonServicesEnabled(tc.mode); got != tc.want {
 			t.Errorf("commonServicesEnabled(%q) = %v, want %v", tc.mode, got, tc.want)
 		}
+	}
+}
+
+// TestDrainIngestSignalsWaitsForFinalFlush (I1, аудит перед 1.0, K7-5/K7-6):
+// раньше `go ingestSignals.Run(ctx)` в run() не был обёрнут ничем — drain()
+// шёл к pg.Close() не дожидаясь горутины, и финальный Flush (см.
+// internal/ingestsignal.Recorder.Run) гонялся с закрытием пула. Фикс —
+// drainIngestSignals, тот же приём, что exportWorkersWG/waitGroupWithTimeout.
+//
+// Чтобы проверка не зависела от везения планировщика, пул исчерпывается ДО
+// отмены ctx: Bump внутри финального Flush гарантированно блокируется в
+// Acquire, пока тест не отпустит соединения. Мутация — заменить тело
+// drainIngestSignals на no-op (не ждать вовсе) — обязана уронить первую
+// проверку: без ожидания функция вернётся немедленно, не дав Run дойти до
+// Flush.
+func TestDrainIngestSignalsWaitsForFinalFlush(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+
+	var orgID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO organizations (slug, name, event_quota) VALUES ('ingest-signals-drain', 'Drain Test', 0) RETURNING id").
+		Scan(&orgID); err != nil {
+		t.Fatalf("insert org: %v", err)
+	}
+	var projectID int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO projects (org_id, slug, name) VALUES ($1, 'ingest-signals-drain', 'Drain Test') RETURNING id", orgID).
+		Scan(&projectID); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+
+	st := ingestsignal.NewStore(pool)
+	rec := ingestsignal.NewRecorder(st)
+	rec.FlushEvery = time.Hour // тик не должен успеть сработать сам за время теста
+	rec.Touch(projectID, ingestsignal.KindKeyInvalid)
+
+	// Исчерпать пул: Bump внутри финального Flush не сможет получить
+	// соединение, пока мы не отпустим все Acquire ниже.
+	maxConns := int(pool.Config().MaxConns)
+	held := make([]*pgxpool.Conn, 0, maxConns)
+	for i := 0; i < maxConns; i++ {
+		c, err := pool.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("acquire %d: %v", i, err)
+		}
+		held = append(held, c)
+	}
+	// Release гарантированно один раз и даже при t.Fatal ниже: без этого
+	// зависший Acquire не даёт pool.Close() в t.Cleanup(MigratedPG) вернуться
+	// (Close ждёт возврата ВСЕХ выданных соединений), и тест виснет вместо
+	// того, чтобы упасть.
+	release := sync.OnceFunc(func() {
+		for _, c := range held {
+			c.Release()
+		}
+	})
+	t.Cleanup(release)
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		rec.Run(runCtx)
+	}()
+	cancel() // как в drain(): ctx уже отменён к этому моменту, Run уходит в финальный Flush
+
+	drainDone := make(chan struct{})
+	go func() {
+		drainIngestSignals(&wg)
+		close(drainDone)
+	}()
+
+	// Соединения заняты нами — drainIngestSignals обязан ещё ждать.
+	select {
+	case <-drainDone:
+		t.Fatal("drainIngestSignals вернулся, пока пул исчерпан и Flush не мог завершиться — ожидания нет")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	release()
+
+	select {
+	case <-drainDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("drainIngestSignals не вернулся после освобождения соединений")
+	}
+
+	got, err := st.ForProject(ctx, projectID)
+	if err != nil {
+		t.Fatalf("for project: %v", err)
+	}
+	if len(got) != 1 || got[0].Kind != ingestsignal.KindKeyInvalid || got[0].Hits != 1 {
+		t.Fatalf("сигналов = %+v, want ровно [key_invalid hits=1] — drainIngestSignals обязан был дождаться финального Flush", got)
 	}
 }

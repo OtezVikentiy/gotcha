@@ -195,3 +195,77 @@ func TestRegressionOpenConcurrentOnlyOneWins(t *testing.T) {
 		t.Fatalf("concurrent opens created=true count = %d, want 1", wins)
 	}
 }
+
+// TestRegressionServiceOpenForFunctions: батчевый OpenForFunctions отдаёт
+// открытые инциденты ровно по (проект, сервис, тип) и только по перечисленным
+// функциям; закрытые и чужие сервисы не просачиваются.
+func TestRegressionServiceOpenForFunctions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := profile.NewRegressionService(pool)
+	ctx := context.Background()
+	pid := seedProject(t, pool)
+
+	f1, _, err := svc.Open(ctx, pid, "api", "cpu", "f1", 0.1, 0.3, false)
+	if err != nil {
+		t.Fatalf("open f1: %v", err)
+	}
+	f3, _, err := svc.Open(ctx, pid, "api", "cpu", "f3", 0.1, 0.3, false)
+	if err != nil {
+		t.Fatalf("open f3: %v", err)
+	}
+	// Тот же ключ функции, но другой сервис и другой тип профиля — не наши.
+	if _, _, err := svc.Open(ctx, pid, "web", "cpu", "f2", 0.1, 0.3, false); err != nil {
+		t.Fatalf("open f2/web: %v", err)
+	}
+	if _, _, err := svc.Open(ctx, pid, "api", "alloc", "f2", 0.1, 0.3, false); err != nil {
+		t.Fatalf("open f2/alloc: %v", err)
+	}
+	// Закрытый инцидент по своей функции — не открытый.
+	f4, _, err := svc.Open(ctx, pid, "api", "cpu", "f4", 0.1, 0.3, false)
+	if err != nil {
+		t.Fatalf("open f4: %v", err)
+	}
+	if ok, err := svc.Resolve(ctx, f4.ID, 0.1); err != nil || !ok {
+		t.Fatalf("resolve f4 = (%v,%v)", ok, err)
+	}
+
+	got, err := svc.OpenForFunctions(ctx, pid, "api", "cpu", []string{"f1", "f2", "f3", "f4", "f5"})
+	if err != nil {
+		t.Fatalf("OpenForFunctions: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("OpenForFunctions = %d entries (%v), want exactly f1 and f3", len(got), keysOf(got))
+	}
+	if got["f1"].ID != f1.ID || got["f3"].ID != f3.ID {
+		t.Fatalf("OpenForFunctions ids = f1:%d f3:%d, want f1:%d f3:%d", got["f1"].ID, got["f3"].ID, f1.ID, f3.ID)
+	}
+	if _, ok := got["f4"]; ok {
+		t.Fatal("resolved regression f4 returned as open")
+	}
+	if _, ok := got["f2"]; ok {
+		t.Fatal("regression of another service/type returned under our key")
+	}
+
+	// Функция вне списка не возвращается, даже если открыта.
+	got, err = svc.OpenForFunctions(ctx, pid, "api", "cpu", []string{"f3"})
+	if err != nil || len(got) != 1 || got["f3"].ID != f3.ID {
+		t.Fatalf("OpenForFunctions([f3]) = %v err=%v, want only f3", keysOf(got), err)
+	}
+
+	// Пустой список — пустая карта без запроса и без ошибки.
+	got, err = svc.OpenForFunctions(ctx, pid, "api", "cpu", nil)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("OpenForFunctions(nil) = %v err=%v, want empty", got, err)
+	}
+}
+
+func keysOf(m map[string]profile.Regression) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}

@@ -159,3 +159,49 @@ func TestJanitorRunFirstPassIsImmediate(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// TestPurgeOldEscalationsRejectsNonPositiveRetention — K1-6: olderThan<=0
+// сдвинул бы cutoff в настоящее/будущее и удалил бы практически ВСЕ строки
+// обеих таблиц (любая существующая строка старше "сейчас"). PurgeOldEscalations
+// обязана отказать, а не молча стереть весь лог эскалаций; строки, вставленные
+// перед вызовом, должны пережить и olderThan=0, и отрицательный olderThan.
+func TestPurgeOldEscalationsRejectsNonPositiveRetention(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+
+	pid := newProject(t, pool)
+	ch := newChannel(t, pool, pid, true)
+	if err := escalation.LogStep(ctx, pool, "host", 9991, ch, 0); err != nil {
+		t.Fatalf("LogStep: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO escalation_step_log_failures (incident_source, incident_id, step, attempts, last_attempt_at)
+		VALUES ('host', 9992, 0, 1, now())`); err != nil {
+		t.Fatalf("insert log failure row: %v", err)
+	}
+
+	for _, olderThan := range []time.Duration{0, -time.Hour} {
+		if deleted, err := escalation.PurgeOldEscalations(ctx, pool, olderThan); err == nil {
+			t.Fatalf("PurgeOldEscalations(olderThan=%s) = (%d, nil), want error", olderThan, deleted)
+		}
+	}
+
+	var escCount, failCount int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM incident_escalations WHERE incident_id = 9991").Scan(&escCount); err != nil {
+		t.Fatalf("count incident_escalations: %v", err)
+	}
+	if escCount != 1 {
+		t.Fatalf("incident_escalations удалены при отклонённом вызове: count=%d, want 1", escCount)
+	}
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM escalation_step_log_failures WHERE incident_id = 9992").Scan(&failCount); err != nil {
+		t.Fatalf("count escalation_step_log_failures: %v", err)
+	}
+	if failCount != 1 {
+		t.Fatalf("escalation_step_log_failures удалены при отклонённом вызове: count=%d, want 1", failCount)
+	}
+}

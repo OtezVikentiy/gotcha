@@ -52,6 +52,23 @@ func (s *EmailSender) Configured() bool {
 // no deadline of its own.
 const defaultSMTPDeadline = 30 * time.Second
 
+// setSMTPDeadline applies a deadline derived from ctx (or defaultSMTPDeadline,
+// when ctx carries none) to conn. Extracted out of Send so the failure path
+// is directly testable without a live SMTP server: a real net.Conn can race
+// closed between DialContext returning and this call (peer RST, or the
+// dialer's own timeout firing concurrently), and SetDeadline erroring in
+// that case (K1-7) was previously swallowed with "_ =" — silently leaving
+// the very conversation this function exists to bound unbounded, which
+// defeats the whole point documented on Send. Failing fast here instead
+// means a broken conn is caught before smtp.NewClient ever touches it.
+func setSMTPDeadline(ctx context.Context, conn net.Conn) error {
+	deadline := time.Now().Add(defaultSMTPDeadline)
+	if dl, ok := ctx.Deadline(); ok {
+		deadline = dl
+	}
+	return conn.SetDeadline(deadline)
+}
+
 // Send отправляет письмо на Target.Target с темой и телом из payload.
 //
 // Written against net.Dialer/smtp.NewClient (rather than the simpler
@@ -73,10 +90,9 @@ func (s *EmailSender) Send(ctx context.Context, t Target, payload map[string]any
 	if err != nil {
 		return fmt.Errorf("notify: dial smtp: %w", err)
 	}
-	if dl, ok := ctx.Deadline(); ok {
-		_ = conn.SetDeadline(dl)
-	} else {
-		_ = conn.SetDeadline(time.Now().Add(defaultSMTPDeadline))
+	if err := setSMTPDeadline(ctx, conn); err != nil {
+		conn.Close()
+		return fmt.Errorf("notify: set smtp deadline: %w", err)
 	}
 
 	c, err := smtp.NewClient(conn, s.Host)

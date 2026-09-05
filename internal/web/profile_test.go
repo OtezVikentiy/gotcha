@@ -262,3 +262,226 @@ func TestWebIndexNoAccessibleProjects(t *testing.T) {
 		t.Fatalf("GET / (no orgs) Location = %q, want /onboarding", got)
 	}
 }
+
+// TestWebProfileDeleteBlockedForInstanceAdmin — находка K7-1: единственный
+// администратор инстанса не может удалить свой аккаунт, пока на инстансе
+// есть ДРУГИЕ пользователи (иначе инстанс остаётся без единственного, кому
+// доступна настройка SSO организаций, а передать роль некому). A
+// регистрируется первым и становится админом bootstrap'ом, B — обычный
+// второй пользователь: без него гейт не имеет смысла проверять (см.
+// TestWebProfileDeleteSoleInstanceAdminSucceeds — один пользователь на
+// инстансе удаляется свободно).
+func TestWebProfileDeleteBlockedForInstanceAdmin(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+
+	uidA, cookieA := orgSettingsRegister(t, authSvc, "instadmin-delete@example.com")
+	uidB, _ := orgSettingsRegister(t, authSvc, "instadmin-delete-b@example.com")
+
+	resp := postForm(t, s.srv, "/profile/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, cookieA)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("POST /profile/delete (instance admin) status = %d, want 409: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "Сначала передайте роль") {
+		t.Fatalf("POST /profile/delete (instance admin) body missing explanation: %s", body)
+	}
+
+	// Оба аккаунта всё ещё существуют.
+	if _, err := authSvc.UserEmail(context.Background(), uidA); err != nil {
+		t.Fatalf("UserEmail(A) after blocked delete: %v", err)
+	}
+	if _, err := authSvc.UserEmail(context.Background(), uidB); err != nil {
+		t.Fatalf("UserEmail(B) after blocked delete: %v", err)
+	}
+
+	// A остаётся залогинен: удаление не состоялось, рвать сессию было не за
+	// что (F4, раунд правок по ревью финревью волны 1 аудита перед 1.0) — до
+	// фикса DestroySession звался ДО DeleteSelfAccount, и заблокированный
+	// гейтом админ терял сессию при попытке, которая так и не выполнилась.
+	profResp := getWithCookie(t, s.srv, "/profile", cookieA)
+	profBody, _ := io.ReadAll(profResp.Body)
+	profResp.Body.Close()
+	if profResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /profile после заблокированного удаления status = %d, want 200 (сессия жива): %s",
+			profResp.StatusCode, profBody)
+	}
+}
+
+// TestWebProfileDeleteSoleInstanceAdminSucceeds — решение владельца по I1:
+// гейт K7-1 закрывает ловушку «единственный админ ушёл, команда осталась без
+// владельца», а не «единственный пользователь инстанса не может уйти». Когда
+// удалять некого запирать некого — единственный пользователь (он же
+// bootstrap-админ) удаляет себя свободно, а первый следующий
+// зарегистрировавшийся сам становится instance-admin (NOT EXISTS,
+// user.go:74) — это и есть инвариант bootstrap'а, который здесь проверяется
+// после удаления.
+func TestWebProfileDeleteSoleInstanceAdminSucceeds(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+
+	uidA, cookieA := orgSettingsRegister(t, authSvc, "sole-admin-delete@example.com")
+
+	if admin, err := authSvc.UserIsInstanceAdmin(context.Background(), uidA); err != nil || !admin {
+		t.Fatalf("A IsInstanceAdmin before delete = (%v,%v), want (true,nil)", admin, err)
+	}
+
+	resp := postForm(t, s.srv, "/profile/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, cookieA)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /profile/delete (sole admin) status = %d, want 303", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/login" {
+		t.Fatalf("redirect = %q, want /login", loc)
+	}
+	if _, err := authSvc.UserEmail(context.Background(), uidA); err == nil {
+		t.Fatalf("A still exists after self-delete as sole instance admin")
+	}
+
+	// Инвариант bootstrap'а: следующий зарегистрировавшийся — новый админ.
+	uidC, err := authSvc.Register(context.Background(), "next-after-sole-admin@example.com", "correct-horse-battery")
+	if err != nil {
+		t.Fatalf("register C: %v", err)
+	}
+	if admin, err := authSvc.UserIsInstanceAdmin(context.Background(), uidC); err != nil || !admin {
+		t.Fatalf("C IsInstanceAdmin after sole admin's self-delete = (%v,%v), want (true,nil)", admin, err)
+	}
+}
+
+// TestWebProfileInstanceAdminTransfer — находка K7-1: передача роли
+// администратора инстанса через /profile. A — bootstrap-админ, B — обычный
+// пользователь; секция видна только админу, форма требует подтверждения,
+// после передачи роль фактически переходит и секция у A больше не рендерится.
+func TestWebProfileInstanceAdminTransfer(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+
+	uidA, cookieA := orgSettingsRegister(t, authSvc, "instadmin-a@example.com")
+	uidB, _ := orgSettingsRegister(t, authSvc, "instadmin-b@example.com")
+
+	// Секция передачи видна только админу инстанса.
+	resp := getWithCookie(t, s.srv, "/profile", cookieA)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "/profile/instance-admin/transfer") {
+		t.Fatalf("GET /profile (A, instance admin) body missing transfer form: %s", body)
+	}
+
+	_, cookieB := orgSettingsRegister(t, authSvc, "instadmin-b2@example.com")
+	resp = getWithCookie(t, s.srv, "/profile", cookieB)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if strings.Contains(string(body), "/profile/instance-admin/transfer") {
+		t.Fatalf("GET /profile (non-admin) body has transfer form, want none: %s", body)
+	}
+
+	// POST без Origin -> 403.
+	resp = postForm(t, s.srv, "/profile/instance-admin/transfer", url.Values{"email": {"instadmin-b@example.com"}}, "", cookieA)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST /profile/instance-admin/transfer (no origin) status = %d, want 403", resp.StatusCode)
+	}
+
+	// Без confirmed=yes -> страница подтверждения (200), содержит email получателя.
+	resp = postForm(t, s.srv, "/profile/instance-admin/transfer", url.Values{"email": {"instadmin-b@example.com"}}, s.srv.URL, cookieA)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /profile/instance-admin/transfer (unconfirmed) status = %d, want 200: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `name="confirmed"`) {
+		t.Fatalf("POST /profile/instance-admin/transfer (unconfirmed) body missing confirmation form: %s", body)
+	}
+	if !strings.Contains(string(body), "instadmin-b@example.com") {
+		t.Fatalf("POST /profile/instance-admin/transfer (unconfirmed) body missing target email: %s", body)
+	}
+
+	// Флаг не должен был поменяться до подтверждения.
+	if admin, err := authSvc.UserIsInstanceAdmin(context.Background(), uidA); err != nil || !admin {
+		t.Fatalf("A IsInstanceAdmin before confirm = (%v,%v), want (true,nil)", admin, err)
+	}
+
+	// Собственный email + confirmed=yes -> 422, ErrSelfTransfer.
+	resp = postForm(t, s.srv, "/profile/instance-admin/transfer",
+		url.Values{"email": {"instadmin-a@example.com"}, "confirmed": {"yes"}}, s.srv.URL, cookieA)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST /profile/instance-admin/transfer (self) status = %d, want 422: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "Нельзя передать роль администратора инстанса самому себе") {
+		t.Fatalf("POST /profile/instance-admin/transfer (self) body missing err_self text: %s", body)
+	}
+
+	// Пустой email -> 422, err_email_required, до вызова TransferInstanceAdmin.
+	resp = postForm(t, s.srv, "/profile/instance-admin/transfer",
+		url.Values{"email": {""}, "confirmed": {"yes"}}, s.srv.URL, cookieA)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST /profile/instance-admin/transfer (empty email) status = %d, want 422: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "Укажите email пользователя, которому передаётся роль") {
+		t.Fatalf("POST /profile/instance-admin/transfer (empty email) body missing err_email_required text: %s", body)
+	}
+
+	// Обе попытки отклонены — A всё ещё админ.
+	if admin, err := authSvc.UserIsInstanceAdmin(context.Background(), uidA); err != nil || !admin {
+		t.Fatalf("A IsInstanceAdmin after rejected self/empty transfers = (%v,%v), want (true,nil)", admin, err)
+	}
+
+	// С confirmed=yes -> передача происходит.
+	resp = postForm(t, s.srv, "/profile/instance-admin/transfer",
+		url.Values{"email": {"instadmin-b@example.com"}, "confirmed": {"yes"}}, s.srv.URL, cookieA)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /profile/instance-admin/transfer (confirmed) status = %d, want 200: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "передана") {
+		t.Fatalf("POST /profile/instance-admin/transfer (confirmed) body missing success message: %s", body)
+	}
+	if strings.Contains(string(body), "/profile/instance-admin/transfer") {
+		t.Fatalf("POST /profile/instance-admin/transfer (confirmed) body still has transfer form for former admin: %s", body)
+	}
+
+	if admin, err := authSvc.UserIsInstanceAdmin(context.Background(), uidB); err != nil || !admin {
+		t.Fatalf("B IsInstanceAdmin after transfer = (%v,%v), want (true,nil)", admin, err)
+	}
+	if admin, err := authSvc.UserIsInstanceAdmin(context.Background(), uidA); err != nil || admin {
+		t.Fatalf("A IsInstanceAdmin after transfer = (%v,%v), want (false,nil)", admin, err)
+	}
+
+	// A больше не админ — повторная попытка передачи отклоняется.
+	resp = postForm(t, s.srv, "/profile/instance-admin/transfer",
+		url.Values{"email": {"instadmin-b@example.com"}, "confirmed": {"yes"}}, s.srv.URL, cookieA)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST /profile/instance-admin/transfer (former admin) status = %d, want 403", resp.StatusCode)
+	}
+}
+
+// TestWebProfileInstanceAdminTransferUnknownEmail — email без аккаунта
+// отклоняется 422, флаг действующего админа не трогается.
+func TestWebProfileInstanceAdminTransferUnknownEmail(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+
+	uidA, cookieA := orgSettingsRegister(t, authSvc, "instadmin-unknown@example.com")
+
+	resp := postForm(t, s.srv, "/profile/instance-admin/transfer",
+		url.Values{"email": {"nobody@example.com"}, "confirmed": {"yes"}}, s.srv.URL, cookieA)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST /profile/instance-admin/transfer (unknown email) status = %d, want 422: %s", resp.StatusCode, body)
+	}
+
+	if admin, err := authSvc.UserIsInstanceAdmin(context.Background(), uidA); err != nil || !admin {
+		t.Fatalf("A IsInstanceAdmin after failed transfer = (%v,%v), want (true,nil)", admin, err)
+	}
+}

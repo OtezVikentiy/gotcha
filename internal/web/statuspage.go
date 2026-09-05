@@ -234,6 +234,13 @@ func (h *Handler) statusPage(w http.ResponseWriter, r *http.Request) {
 			// Клиент ушёл, пока мы ждали чужую сборку: писать некому.
 			return
 		}
+		// Отказ ClickHouse здесь — СОЗНАТЕЛЬНО 500, а не единый приём
+		// деградации CH-страниц (оболочка + «данные временно недоступны»,
+		// см. logsList и аудит 2026-09-04, K8-1). Страница публичная и
+		// неаутентифицированная, её содержимое целиком из ClickHouse, ответ
+		// кешируется (statusCache) и опрашивается внешними поллерами статуса:
+		// 200 с заглушкой они прочли бы как «сервис в порядке», а закешированная
+		// заглушка пережила бы сам отказ. Честная ошибка здесь информативнее.
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
@@ -508,21 +515,27 @@ func (h *Handler) renderStatusPages(w http.ResponseWriter, r *http.Request, stat
 		return
 	}
 
+	// Мониторы всех страниц — одним запросом, а не по запросу на страницу
+	// (аудит 2026-09-04, K8-2); порядок — как у StatusPageMonitors.
+	pageIDs := make([]int64, len(pages))
+	for i, sp := range pages {
+		pageIDs[i] = sp.ID
+	}
+	selectedByPage, err := h.Uptime.StatusPageMonitorsOf(r.Context(), pageIDs)
+	if err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
 	newForm := templates.StatusPageForm{Enabled: true, Monitors: statusPageFormMonitors(monitors, nil)}
 	forms := make([]templates.StatusPageForm, 0, len(pages))
 	for _, sp := range pages {
-		selected, err := h.Uptime.StatusPageMonitors(r.Context(), sp.ID)
-		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-			return
-		}
 		forms = append(forms, templates.StatusPageForm{
 			ID:          sp.ID,
 			PublicID:    sp.PublicID,
 			Title:       sp.Title,
 			Description: sp.Description,
 			Enabled:     sp.Enabled,
-			Monitors:    statusPageFormMonitors(monitors, selected),
+			Monitors:    statusPageFormMonitors(monitors, selectedByPage[sp.ID]),
 		})
 	}
 
@@ -665,8 +678,7 @@ func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusTooManyRequests, i18n.T(r.Context(), "error.statuspage.rate_limited"))
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 
@@ -754,8 +766,7 @@ func (h *Handler) statusPagesUpdate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 
@@ -821,6 +832,9 @@ func (h *Handler) statusPagesDelete(w http.ResponseWriter, r *http.Request) {
 	// (находка B4), второй поход в БД не нужен.
 	if sp.Enabled && !authz.CanManage {
 		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.403.body"))
+		return
+	}
+	if !h.parseForm(w, r) {
 		return
 	}
 	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не

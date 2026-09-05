@@ -56,7 +56,7 @@ For every rule: an "Enabled" checkbox, and "Throttle (minutes)" — the minimum 
 
 All three rules are saved with a single form — the **"Save rules"** button at the bottom of the "Rules" section submits all three cards' state at once.
 
-A notification is queued to every enabled channel in the project whenever a rule of the matching kind fires; repeat firings for the same issue and rule are throttled per the configured interval.
+A notification is queued to every enabled channel in the project whenever a rule of the matching kind fires; repeat firings for the same issue and rule are throttled per the configured interval. The [escalation](/docs/escalations) ladder does not apply to issue alerts: they have no steps or delays — the notification goes to every channel at once.
 
 ## How channels attach to rules
 

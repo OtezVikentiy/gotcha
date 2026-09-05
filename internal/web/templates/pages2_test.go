@@ -2,6 +2,7 @@ package templates
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -18,9 +19,21 @@ import (
 // регистрация в закрытом режиме прячет форму.
 func TestAuthPages(t *testing.T) {
 	providers := []OAuthButton{{Name: "yandex", Label: "Войти через Яндекс"}, {Name: "github", Label: "GitHub"}}
-	login := renderTo(t, Login("неверный пароль", "", providers))
+	login := renderTo(t, Login("неверный пароль", "", "a@b.c", providers))
 	if !strings.Contains(login, "неверный пароль") || !strings.Contains(login, "Яндекс") {
 		t.Error("логин должен показать ошибку и OAuth-кнопки")
+	}
+	// K7-12: адрес, набранный до отказа входа, возвращается в поле формы, а
+	// не пропадает — иначе после ошибки его пришлось бы набирать заново.
+	if !strings.Contains(login, `value="a@b.c"`) {
+		t.Error("логин должен вернуть введённый email в поле формы")
+	}
+	// Экранирование значения атрибута (кластер K7-12): "><script> в email не
+	// должен разорвать атрибут value и открыть инъекцию — весь тег остаётся
+	// текстом внутри value.
+	loginXSS := renderTo(t, Login("неверный пароль", "", `"><script>x</script>`, providers))
+	if strings.Contains(loginXSS, "<script>") {
+		t.Error("email в форме логина должен быть экранирован, а не вставлен как HTML")
 	}
 	reg := renderTo(t, RegisterForm("", false, "", providers))
 	if !strings.Contains(reg, "GitHub") {
@@ -61,6 +74,36 @@ func TestErrorPage(t *testing.T) {
 	out2 := renderTo(t, ErrorPage(418, "я чайник", "u@e.com"))
 	if !strings.Contains(out2, "я чайник") {
 		t.Error("неизвестный статус показывает переданное сообщение")
+	}
+	// K9-18: без nav.Shell в ctx выход один — «На главную»; ссылки в
+	// «Проблемы» нет (проект неизвестен).
+	if strings.Contains(out, "/issues") {
+		t.Errorf("без shell в ctx страница ошибки не должна угадывать проект: %s", out)
+	}
+}
+
+// TestErrorPageIssuesExit — K9-18: chromeless-страница ошибки со shell в ctx
+// даёт второй выход — в «Проблемы» текущего проекта (effectiveProjectID:
+// ProjectID, иначе первый проект списка).
+func TestErrorPageIssuesExit(t *testing.T) {
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	ctx = nav.WithShell(ctx, nav.Shell{
+		Projects:  []nav.Project{{ID: 7, Slug: "web", Name: "Веб"}},
+		ProjectID: 7,
+	})
+	var sb strings.Builder
+	if err := ErrorPage(404, "", "u@e.com").Render(ctx, &sb); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	out := sb.String()
+	if !strings.Contains(out, `href="/projects/7/issues"`) {
+		t.Errorf("страница ошибки при известном проекте обязана вести в его «Проблемы»: %s", out)
+	}
+	if !strings.Contains(out, "К проблемам проекта") {
+		t.Errorf("ссылка в «Проблемы» без подписи error.issues_link: %s", out)
+	}
+	if !strings.Contains(out, `href="/"`) {
+		t.Errorf("«На главную» обязана остаться: %s", out)
 	}
 }
 
@@ -118,6 +161,21 @@ func TestProjectSetup(t *testing.T) {
 	if !strings.Contains(out, "composer require sentry/sentry") {
 		t.Error("экран установки должен показать все переданные сниппеты")
 	}
+	// K9-21: сниппеты подставляют разные DSN (browser у JavaScript, server у
+	// остальных) — страница обязана это объяснить одной строкой.
+	if !strings.Contains(out, "DSN браузерного ключа") {
+		t.Error("экран установки должен объяснить разницу browser-/server-DSN у сниппетов")
+	}
+	// K9-18: chromeless-страница обязана давать выход в «Проблемы» проекта,
+	// а не только в список проектов и документацию.
+	if !strings.Contains(out, `href="/projects/7/issues"`) {
+		t.Errorf("экран установки без ссылки в «Проблемы» проекта: %s", out)
+	}
+	// Без сниппетов пояснение про DSN бессмысленно — его нет.
+	empty := renderTo(t, ProjectSetup(project, "", nil, "", "u@e.com"))
+	if strings.Contains(empty, "DSN браузерного ключа") {
+		t.Error("без сниппетов пояснение про виды DSN показывать незачем")
+	}
 }
 
 // TestInviteAccept — экран принятия приглашения с токеном и ошибкой.
@@ -139,6 +197,17 @@ func TestProfileFlame(t *testing.T) {
 	out := renderTo(t, ProfileFlame(vm, "u@e.com"))
 	if !strings.Contains(out, "web") {
 		t.Error("флейм профиля должен содержать сервис")
+	}
+	if !strings.Contains(out, "web · cpu") || !strings.Contains(out, "· GET /") {
+		t.Errorf("при заполненных type/transaction разделители обязаны быть: %s", out)
+	}
+	// K9-20: /flame без параметров — «(unknown)» без висящего разделителя.
+	bare := renderTo(t, ProfileFlame(ProfileFlameVM{ProjectID: 7, Range: TimeRangeVM{Key: "24h"}, Chart: stub()}, "u@e.com"))
+	if !strings.Contains(bare, "(unknown)") {
+		t.Errorf("пустой сервис показывается как (unknown): %s", bare)
+	}
+	if strings.Contains(bare, "(unknown) ·") || regexp.MustCompile(`\(unknown\)\s*·`).MatchString(bare) {
+		t.Errorf("пустые type/transaction не должны оставлять висящий разделитель после (unknown): %s", bare)
 	}
 }
 
@@ -373,7 +442,7 @@ func TestStatusPageIncidentDurationLocalised(t *testing.T) {
 func TestHeartbeatMonitorDetail(t *testing.T) {
 	m := uptime.Monitor{ID: 4, Name: "cron", Kind: uptime.KindHeartbeat, Enabled: false, IntervalSeconds: 3600, HeartbeatToken: "hbtok"}
 	stat := uptime.UptimeStat{Total: 10, OK: 10}
-	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, true, true, "https://gotcha.example", "u@e.com"))
+	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, true, true, "https://gotcha.example", "u@e.com", false))
 	if !strings.Contains(out, "hbtok") {
 		t.Error("деталь heartbeat должна содержать токен пинга")
 	}
@@ -381,6 +450,16 @@ func TestHeartbeatMonitorDetail(t *testing.T) {
 	// неотличим от префетч-бота/антивирусного прокси на стороне клиента).
 	if !strings.Contains(out, "curl -fsS -X POST ") {
 		t.Error("cron-сниппет heartbeat должен содержать \"curl -fsS -X POST \"")
+	}
+	// K9-9: «скопируйте URL сейчас» — значит, копировать есть чем: URL и
+	// cron-строка идут через @copyBlock с кнопкой, а не голым <code>.
+	for _, id := range []string{"heartbeat-ping-url", "heartbeat-cron-line"} {
+		if !strings.Contains(out, `data-copy-target="`+id+`"`) {
+			t.Errorf("heartbeat-блок без кнопки копирования %q: %s", id, out)
+		}
+	}
+	if strings.Contains(out, "<code>https://gotcha.example/uptime/hb/hbtok") {
+		t.Error("URL пинга по-прежнему голым <code> вместо copyBlock")
 	}
 }
 
@@ -396,7 +475,7 @@ func TestLayoutShellRendersRail(t *testing.T) {
 		ProjectID: 7, OrgID: 1, Area: "issues", Path: "/p/7/issues", CanManage: true,
 	})
 	var sb strings.Builder
-	if err := IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, false, false).Render(ctx, &sb); err != nil {
+	if err := IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, false, false, false).Render(ctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	out := sb.String()

@@ -609,8 +609,7 @@ func (h *Handler) monitorCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 
@@ -683,6 +682,9 @@ func (h *Handler) monitorHeartbeatRegenerate(w http.ResponseWriter, r *http.Requ
 		h.notFound(w, r)
 		return
 	}
+	if !h.parseForm(w, r) {
+		return
+	}
 	// Перевыпуск необратим и ломает работающий cron: старый URL перестаёт
 	// отвечать сразу, а восстановить его нельзя — в базе только хеш. Это было
 	// единственное необратимое действие продукта без подтверждения, при том что
@@ -737,8 +739,7 @@ func (h *Handler) monitorUpdate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 

@@ -23,6 +23,23 @@ func NewUptimeProvider(q *uptime.Query, maint *uptime.Service, retentionDays int
 }
 
 func (p *UptimeProvider) Buckets(ctx context.Context, s SLO, from, to time.Time, step time.Duration) ([]Bucket, error) {
+	bs, err := p.rawBuckets(ctx, s, from, to, step)
+	if err != nil {
+		return nil, err
+	}
+	return excludeMaintenance(ctx, p.maint, s.ProjectID, bs, from, to, step), nil
+}
+
+func (p *UptimeProvider) BucketsExcluding(ctx context.Context, s SLO, from, to time.Time, step time.Duration, windows []uptime.Window) ([]Bucket, error) {
+	bs, err := p.rawBuckets(ctx, s, from, to, step)
+	if err != nil {
+		return nil, err
+	}
+	return excludeWindows(windows, bs, from, to, step), nil
+}
+
+// rawBuckets — корзины из ClickHouse до вырезания окон обслуживания.
+func (p *UptimeProvider) rawBuckets(ctx context.Context, s SLO, from, to time.Time, step time.Duration) ([]Bucket, error) {
 	// MonitorID nullable: uptime-SLO без монитора неопределимо. Не паникуем на
 	// разыменовании nil — возвращаем ошибку, оценщик её залогирует и пропустит SLO.
 	if s.MonitorID == nil {
@@ -32,8 +49,7 @@ func (p *UptimeProvider) Buckets(ctx context.Context, s SLO, from, to time.Time,
 	if err != nil {
 		return nil, err
 	}
-	bs := convertUptimeBuckets(cbs)
-	return excludeMaintenance(ctx, p.maint, s.ProjectID, bs, from, to, step), nil
+	return convertUptimeBuckets(cbs), nil
 }
 
 func (p *UptimeProvider) RetentionCap() time.Duration { return retentionCap(p.retentionDays) }

@@ -238,3 +238,46 @@ func TestDeprecatedPathHitsUnknownPath(t *testing.T) {
 		t.Errorf("DeprecatedPathHits(/nowhere) = %d, want 0 (пути нет в наборе)", got)
 	}
 }
+
+// TestDocsPath — экспорт для web.deprecatedPathsView (аудит перед 1.0, F3):
+// известный путь отдаёт страницу СВОЕГО входа (та же, что уходит в заголовок
+// Link deprecatedAlias — см. TestDeprecatedAliasLogs), путь вне закрытого
+// набора — пустую строку и ok=false, а не панику или нулевое значение молча.
+func TestDocsPath(t *testing.T) {
+	cases := []struct {
+		path     DeprecatedPath
+		wantDocs string
+		wantOK   bool
+	}{
+		{DeprecatedLogs, "/docs/logs", true},
+		{DeprecatedProfilePprof, "/docs/profiling", true},
+		{DeprecatedDeployments, "/docs/deployments", true},
+		{DeprecatedPath("/nowhere"), "", false},
+	}
+	for _, c := range cases {
+		docs, ok := DocsPath(c.path)
+		if docs != c.wantDocs || ok != c.wantOK {
+			t.Errorf("DocsPath(%q) = (%q, %v), want (%q, %v)", c.path, docs, ok, c.wantDocs, c.wantOK)
+		}
+	}
+}
+
+// TestDeprecatedTargetsAndKindsHaveSameKeys — minor m2: deprecatedTargets и
+// deprecatedKinds — две независимые карты по одному и тому же набору
+// DeprecatedPath. Новый путь, добавленный в одну карту без другой, давал бы
+// либо nil-Link/docs (если забыт deprecatedTargets), либо молчаливое «сигнал
+// не пишется» (если забыт deprecatedKinds, см. kindForDeprecated: ok=false —
+// no-op без предупреждения). Сторож ловит расхождение сразу, а не когда кто-то
+// заметит пропавший сигнал в проде.
+func TestDeprecatedTargetsAndKindsHaveSameKeys(t *testing.T) {
+	for p := range deprecatedTargets {
+		if _, ok := deprecatedKinds[p]; !ok {
+			t.Errorf("deprecatedTargets содержит %q, а deprecatedKinds — нет", p)
+		}
+	}
+	for p := range deprecatedKinds {
+		if _, ok := deprecatedTargets[p]; !ok {
+			t.Errorf("deprecatedKinds содержит %q, а deprecatedTargets — нет", p)
+		}
+	}
+}

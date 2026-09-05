@@ -505,6 +505,55 @@ func parseIntEnv(getenv func(string) string, key string, def int) (int, error) {
 	return int(n), nil
 }
 
+// logLevels — единственная таблица допустимых значений GOTCHA_LOGGING_LEVEL,
+// с готовым slog.Level для каждого. validateLogging проверяет по ней
+// принадлежность, setupLogging (cmd/gotcha/main.go) читает по ней же
+// slog.Level для уже провалидированного значения — вторую копию этого же
+// списка (которая могла бы разойтись с первой при добавлении уровня) заводить
+// незачем.
+var logLevels = map[string]slog.Level{
+	"":        slog.LevelInfo,
+	"info":    slog.LevelInfo,
+	"debug":   slog.LevelDebug,
+	"warn":    slog.LevelWarn,
+	"warning": slog.LevelWarn,
+	"error":   slog.LevelError,
+}
+
+// logFormats — таблица допустимых значений GOTCHA_LOGGING_FORMAT (см.
+// докблок logLevels — тот же принцип «одна таблица»).
+var logFormats = map[string]bool{
+	"":     true,
+	"text": true,
+	"json": true,
+}
+
+// validateLogging проверяет GOTCHA_LOGGING_LEVEL/GOTCHA_LOGGING_FORMAT по
+// logLevels/logFormats. Вызывается дважды одним и тем же текстом ошибки:
+// из loadConfig (копится в errs вместе с остальной конфигурацией, K5-1) и из
+// setupLogging первой строкой (тот же контракт «невалидное значение — отказ
+// старта» должен сработать и там, если когда-нибудь вызовется в обход
+// loadConfig). level/format здесь ожидаются уже триммленными и в нижнем
+// регистре — как cfg.LogLevel/cfg.LogFormat из loadConfig.
+func validateLogging(level, format string) error {
+	var errs []error
+	if _, ok := logLevels[level]; !ok {
+		errs = append(errs, fmt.Errorf("GOTCHA_LOGGING_LEVEL must be debug, info, warn (alias warning) or error, got %q", level))
+	}
+	if _, ok := logFormats[format]; !ok {
+		errs = append(errs, fmt.Errorf("GOTCHA_LOGGING_FORMAT must be text or json, got %q", format))
+	}
+	// Обе проверки независимы (разные переменные) — копятся обе разом, а не
+	// только первая по порядку: та же логика, что и у остального блока
+	// накопления ошибок в loadConfig (K5-1), но здесь она нужна ВНУТРИ самой
+	// validateLogging, потому что она вызывается один раз с обоими значениями
+	// сразу и возвращает единственную error.
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
 func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// envcontract-P0: старые имена переменных окружения проверяются самой
 	// первой операцией в loadConfig — до разбора флагов и до
@@ -1067,12 +1116,27 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		return Config{}, errors.Join(errs...)
 	}
 
+	// K5-1: с этой точки и до конца функции ошибки КОПЯТСЯ в errs, а не
+	// возвращаются немедленно — тот же принцип, что и в первом накопительном
+	// блоке выше (числовые/булевы опечатки): оператор с семью независимыми
+	// ошибками конфига (enum, range, экспортная четвёрка, HSTS, oauth-провайдер)
+	// правит .env за один проход, а не за семь деплоев. Остаются fail-fast
+	// только проверки ВЫШЕ первого errors.Join (разбор флагов и то, что от
+	// него зависит) — они сделали бы накопление бессмысленным (без --mode
+	// дальнейшие проверки не про что вести). validateLogging — тем же путём,
+	// что и остальные: setupLogging (cmd/gotcha/main.go) вызывает ту же
+	// функцию первой строкой, так что текст ошибки один и тот же что при
+	// старте, что при использовании до сборки логгера.
+	if err := validateLogging(cfg.LogLevel, cfg.LogFormat); err != nil {
+		errs = append(errs, err)
+	}
+
 	// max-age проверяется независимо от HSTSEnabled: отрицательное значение —
 	// всегда опечатка оператора, а не режим.
 	if cfg.HSTSMaxAgeSeconds < 0 {
-		return Config{}, fmt.Errorf(
+		errs = append(errs, fmt.Errorf(
 			"GOTCHA_HSTS_MAX_AGE_SECONDS must be >= 0 (0 sends max-age=0, which un-pins browsers), got %d",
-			cfg.HSTSMaxAgeSeconds)
+			cfg.HSTSMaxAgeSeconds))
 	}
 	// Проверки preload — ТОЛЬКО при включённом HSTS: иначе аварийный откат
 	// («выключить HSTS, флаги оставить как были») упирался бы в отказ старта
@@ -1080,15 +1144,17 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	if cfg.HSTSEnabled && cfg.HSTSPreload {
 		// Заголовок без includeSubDomains или с коротким max-age в preload-список
 		// всё равно не примут, а владелец будет считать, что подал заявку.
+		// Обе проверки независимы (разные переменные) — копятся по отдельности,
+		// оператор увидит сразу обе, если ошибся в обеих.
 		if !cfg.HSTSIncludeSubDomains {
-			return Config{}, fmt.Errorf(
-				"GOTCHA_HSTS_PRELOAD requires GOTCHA_HSTS_INCLUDE_SUBDOMAINS=true: " +
-					"the preload list rejects a header without includeSubDomains")
+			errs = append(errs, fmt.Errorf(
+				"GOTCHA_HSTS_PRELOAD requires GOTCHA_HSTS_INCLUDE_SUBDOMAINS=true: "+
+					"the preload list rejects a header without includeSubDomains"))
 		}
 		if cfg.HSTSMaxAgeSeconds < 31536000 {
-			return Config{}, fmt.Errorf(
+			errs = append(errs, fmt.Errorf(
 				"GOTCHA_HSTS_PRELOAD requires GOTCHA_HSTS_MAX_AGE_SECONDS >= 31536000 (one year), got %d",
-				cfg.HSTSMaxAgeSeconds)
+				cfg.HSTSMaxAgeSeconds))
 		}
 	}
 	if cfg.HSTSEnabled {
@@ -1116,105 +1182,105 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	switch cfg.RegistrationMode {
 	case "open", "invite", "closed":
 	default:
-		return Config{}, fmt.Errorf("GOTCHA_REGISTRATION_MODE must be open, invite or closed, got %q", cfg.RegistrationMode)
+		errs = append(errs, fmt.Errorf("GOTCHA_REGISTRATION_MODE must be open, invite or closed, got %q", cfg.RegistrationMode))
 	}
 
 	switch cfg.Locale {
 	case "ru", "en":
 	default:
-		return Config{}, fmt.Errorf("GOTCHA_LOCALE must be ru or en, got %q", cfg.Locale)
+		errs = append(errs, fmt.Errorf("GOTCHA_LOCALE must be ru or en, got %q", cfg.Locale))
 	}
 
 	switch cfg.Edition {
 	case "oss", "saas":
 	default:
-		return Config{}, fmt.Errorf("GOTCHA_EDITION must be oss or saas, got %q", cfg.Edition)
+		errs = append(errs, fmt.Errorf("GOTCHA_EDITION must be oss or saas, got %q", cfg.Edition))
 	}
 
 	if cfg.RetentionDays < 0 {
-		return Config{}, fmt.Errorf("GOTCHA_EVENT_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.RetentionDays)
+		errs = append(errs, fmt.Errorf("GOTCHA_EVENT_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.RetentionDays))
 	}
 	if cfg.SpanRetentionDays < 0 {
-		return Config{}, fmt.Errorf("GOTCHA_SPAN_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.SpanRetentionDays)
+		errs = append(errs, fmt.Errorf("GOTCHA_SPAN_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.SpanRetentionDays))
 	}
 	if cfg.MetricRetentionDays < 0 {
-		return Config{}, fmt.Errorf("GOTCHA_METRIC_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.MetricRetentionDays)
+		errs = append(errs, fmt.Errorf("GOTCHA_METRIC_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.MetricRetentionDays))
 	}
 	if cfg.AlertBudgetWindowSeconds < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_ALERT_BUDGET_WINDOW_SECONDS must be >= 1, got %d", cfg.AlertBudgetWindowSeconds)
+		errs = append(errs, fmt.Errorf("GOTCHA_ALERT_BUDGET_WINDOW_SECONDS must be >= 1, got %d", cfg.AlertBudgetWindowSeconds))
 	}
 	if cfg.AlertBudgetLimit < 0 {
-		return Config{}, fmt.Errorf("GOTCHA_ALERT_BUDGET_LIMIT must be >= 0 (0 disables the ceiling), got %d", cfg.AlertBudgetLimit)
+		errs = append(errs, fmt.Errorf("GOTCHA_ALERT_BUDGET_LIMIT must be >= 0 (0 disables the ceiling), got %d", cfg.AlertBudgetLimit))
 	}
 	if cfg.IngestRateLimit < 0 {
-		return Config{}, fmt.Errorf("GOTCHA_INGEST_RATE_PER_SEC must be >= 0 (0 disables the limit), got %d", cfg.IngestRateLimit)
+		errs = append(errs, fmt.Errorf("GOTCHA_INGEST_RATE_PER_SEC must be >= 0 (0 disables the limit), got %d", cfg.IngestRateLimit))
 	}
 	if cfg.CardinalityLimit < 0 {
-		return Config{}, fmt.Errorf("GOTCHA_CARDINALITY_LIMIT must be >= 0 (0 disables the limit), got %d", cfg.CardinalityLimit)
+		errs = append(errs, fmt.Errorf("GOTCHA_CARDINALITY_LIMIT must be >= 0 (0 disables the limit), got %d", cfg.CardinalityLimit))
 	}
 	if cfg.CardinalityWindowSeconds < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_CARDINALITY_WINDOW_SECONDS must be >= 1, got %d", cfg.CardinalityWindowSeconds)
+		errs = append(errs, fmt.Errorf("GOTCHA_CARDINALITY_WINDOW_SECONDS must be >= 1, got %d", cfg.CardinalityWindowSeconds))
 	}
 	if cfg.MetricEvalInterval < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_METRIC_EVAL_INTERVAL_SECONDS must be >= 1, got %d", cfg.MetricEvalInterval)
+		errs = append(errs, fmt.Errorf("GOTCHA_METRIC_EVAL_INTERVAL_SECONDS must be >= 1, got %d", cfg.MetricEvalInterval))
 	}
 	if cfg.ProfileRetentionDays < 0 {
-		return Config{}, fmt.Errorf("GOTCHA_PROFILE_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.ProfileRetentionDays)
+		errs = append(errs, fmt.Errorf("GOTCHA_PROFILE_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.ProfileRetentionDays))
 	}
 	if cfg.LogRetentionDays < 0 {
-		return Config{}, fmt.Errorf("GOTCHA_LOG_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.LogRetentionDays)
+		errs = append(errs, fmt.Errorf("GOTCHA_LOG_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.LogRetentionDays))
 	}
 	if cfg.IncidentRetentionDays < 0 {
-		return Config{}, fmt.Errorf("GOTCHA_INCIDENT_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.IncidentRetentionDays)
+		errs = append(errs, fmt.Errorf("GOTCHA_INCIDENT_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.IncidentRetentionDays))
 	}
 	if cfg.DeployRetentionDays < 0 {
-		return Config{}, fmt.Errorf("GOTCHA_DEPLOY_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.DeployRetentionDays)
+		errs = append(errs, fmt.Errorf("GOTCHA_DEPLOY_RETENTION_DAYS must be >= 0 (0 keeps data forever), got %d", cfg.DeployRetentionDays))
 	}
 	if cfg.OutboxRetentionDays < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_OUTBOX_RETENTION_DAYS must be >= 1, got %d", cfg.OutboxRetentionDays)
+		errs = append(errs, fmt.Errorf("GOTCHA_OUTBOX_RETENTION_DAYS must be >= 1, got %d", cfg.OutboxRetentionDays))
 	}
 	if cfg.PurgeReconcileHours < 0 {
-		return Config{}, fmt.Errorf("GOTCHA_PROJECT_PURGE_RECONCILE_HOURS must be >= 0, got %d", cfg.PurgeReconcileHours)
+		errs = append(errs, fmt.Errorf("GOTCHA_PROJECT_PURGE_RECONCILE_HOURS must be >= 0, got %d", cfg.PurgeReconcileHours))
 	}
 	if cfg.NotifyConcurrency < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_NOTIFY_CONCURRENCY must be >= 1, got %d", cfg.NotifyConcurrency)
+		errs = append(errs, fmt.Errorf("GOTCHA_NOTIFY_CONCURRENCY must be >= 1, got %d", cfg.NotifyConcurrency))
 	}
 	if cfg.ProfileEvalInterval < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS must be >= 1, got %d", cfg.ProfileEvalInterval)
+		errs = append(errs, fmt.Errorf("GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS must be >= 1, got %d", cfg.ProfileEvalInterval))
 	}
 	if cfg.HostEvalInterval < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_HOST_EVAL_INTERVAL_SECONDS must be >= 1, got %d", cfg.HostEvalInterval)
+		errs = append(errs, fmt.Errorf("GOTCHA_HOST_EVAL_INTERVAL_SECONDS must be >= 1, got %d", cfg.HostEvalInterval))
 	}
 	if cfg.SLOEvalInterval < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_SLO_EVAL_INTERVAL_SECONDS must be >= 1, got %d", cfg.SLOEvalInterval)
+		errs = append(errs, fmt.Errorf("GOTCHA_SLO_EVAL_INTERVAL_SECONDS must be >= 1, got %d", cfg.SLOEvalInterval))
 	}
 	if cfg.EscalationInterval < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_ESCALATION_INTERVAL_SECONDS must be >= 1, got %d", cfg.EscalationInterval)
+		errs = append(errs, fmt.Errorf("GOTCHA_ESCALATION_INTERVAL_SECONDS must be >= 1, got %d", cfg.EscalationInterval))
 	}
 	if cfg.DependencySettleSeconds < 0 {
-		return Config{}, fmt.Errorf("GOTCHA_DEPENDENCY_SETTLE_SECONDS must be >= 0, got %d", cfg.DependencySettleSeconds)
+		errs = append(errs, fmt.Errorf("GOTCHA_DEPENDENCY_SETTLE_SECONDS must be >= 0, got %d", cfg.DependencySettleSeconds))
 	}
 	// Квоты: 0 = безлимит (легитимно в любой редакции), отрицательные — ошибка.
 	if cfg.DefaultEventQuota < 0 {
-		return Config{}, fmt.Errorf("GOTCHA_DEFAULT_EVENT_QUOTA must be >= 0, got %d", cfg.DefaultEventQuota)
+		errs = append(errs, fmt.Errorf("GOTCHA_DEFAULT_EVENT_QUOTA must be >= 0, got %d", cfg.DefaultEventQuota))
 	}
 	if cfg.DefaultTransactionQuota < 0 {
-		return Config{}, fmt.Errorf("GOTCHA_DEFAULT_TRANSACTION_QUOTA must be >= 0, got %d", cfg.DefaultTransactionQuota)
+		errs = append(errs, fmt.Errorf("GOTCHA_DEFAULT_TRANSACTION_QUOTA must be >= 0, got %d", cfg.DefaultTransactionQuota))
 	}
 	if cfg.DefaultMetricQuota < 0 {
-		return Config{}, fmt.Errorf("GOTCHA_DEFAULT_METRIC_QUOTA must be >= 0, got %d", cfg.DefaultMetricQuota)
+		errs = append(errs, fmt.Errorf("GOTCHA_DEFAULT_METRIC_QUOTA must be >= 0, got %d", cfg.DefaultMetricQuota))
 	}
 	if cfg.DefaultProfileQuota < 0 {
-		return Config{}, fmt.Errorf("GOTCHA_DEFAULT_PROFILE_QUOTA must be >= 0, got %d", cfg.DefaultProfileQuota)
+		errs = append(errs, fmt.Errorf("GOTCHA_DEFAULT_PROFILE_QUOTA must be >= 0, got %d", cfg.DefaultProfileQuota))
 	}
 	if cfg.DefaultLogQuota < 0 {
-		return Config{}, fmt.Errorf("GOTCHA_DEFAULT_LOG_QUOTA must be >= 0, got %d", cfg.DefaultLogQuota)
+		errs = append(errs, fmt.Errorf("GOTCHA_DEFAULT_LOG_QUOTA must be >= 0, got %d", cfg.DefaultLogQuota))
 	}
 	if cfg.MaxEventBytes < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_MAX_EVENT_BYTES must be >= 1, got %d", cfg.MaxEventBytes)
+		errs = append(errs, fmt.Errorf("GOTCHA_MAX_EVENT_BYTES must be >= 1, got %d", cfg.MaxEventBytes))
 	}
 	if cfg.UptimeConcurrency < 1 {
-		return Config{}, fmt.Errorf("GOTCHA_UPTIME_CONCURRENCY must be >= 1, got %d", cfg.UptimeConcurrency)
+		errs = append(errs, fmt.Errorf("GOTCHA_UPTIME_CONCURRENCY must be >= 1, got %d", cfg.UptimeConcurrency))
 	}
 	// GOTCHA_SMTP_PORT — TCP-порт, диапазон 1..65535. Раньше -1/0/99999
 	// проходили старт молча (SMTPHost=="" вообще не трогает почту), а отказ
@@ -1224,7 +1290,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// ли GOTCHA_SMTP_HOST: мусор в порту — опечатка оператора уже сейчас,
 	// а не когда-нибудь потом при первой отправке.
 	if cfg.SMTPPort < 1 || cfg.SMTPPort > 65535 {
-		return Config{}, fmt.Errorf("GOTCHA_SMTP_PORT must be between 1 and 65535, got %d", cfg.SMTPPort)
+		errs = append(errs, fmt.Errorf("GOTCHA_SMTP_PORT must be between 1 and 65535, got %d", cfg.SMTPPort))
 	}
 	// Экспортная четвёрка (GOTCHA_EXPORT_RETENTION_HOURS/_MAX_ROWS/_MAX_BYTES/
 	// _DISK_BUDGET_BYTES) валидируется той же export.Config.Validate(), что
@@ -1241,7 +1307,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		MaxBytes:   cfg.ExportMaxBytes,
 		DiskBudget: cfg.ExportDiskBudgetBytes,
 	}).Validate(); err != nil {
-		return Config{}, errors.New(translateExportEnvNames(err.Error()))
+		errs = append(errs, errors.New(translateExportEnvNames(err.Error())))
 	}
 	// GOTCHA_TELEGRAM_API_BASE — свой Bot API вместо api.telegram.org.
 	// Отправитель дописывает к адресу «/bot{token}/sendMessage», поэтому
@@ -1253,9 +1319,10 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// и Bot API ответил бы 404 на каждое уведомление.
 	normalizedTelegramAPIBase, err := baseurl.Normalize("GOTCHA_TELEGRAM_API_BASE", cfg.TelegramAPIBase)
 	if err != nil {
-		return Config{}, err
+		errs = append(errs, err)
+	} else {
+		cfg.TelegramAPIBase = normalizedTelegramAPIBase
 	}
-	cfg.TelegramAPIBase = normalizedTelegramAPIBase
 
 	// GOTCHA_PROBE_SERVER_URL — формат-проверку (тем же baseurl.Normalize)
 	// гейтим режимом пробы: вне --mode=probe переменную никто не читает, и
@@ -1270,16 +1337,20 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	// от этого есть отдельная защита на точке использования, TrimSuffix — но
 	// контракт замораживается на уровне конфигурации, а не только там).
 	if cfg.Mode == "probe" {
+		// ServerURL и ProbeToken — независимые переменные: ошибка нормализации
+		// первой не мешает проверить вторую (иначе оператор с обеими
+		// незаданными видит только одну ошибку за деплой).
 		normalizedServerURL, err := baseurl.Normalize("GOTCHA_PROBE_SERVER_URL", cfg.ServerURL)
 		if err != nil {
-			return Config{}, err
-		}
-		cfg.ServerURL = normalizedServerURL
-		if cfg.ServerURL == "" {
-			return Config{}, fmt.Errorf("GOTCHA_PROBE_SERVER_URL is required with --mode=probe")
+			errs = append(errs, err)
+		} else {
+			cfg.ServerURL = normalizedServerURL
+			if cfg.ServerURL == "" {
+				errs = append(errs, fmt.Errorf("GOTCHA_PROBE_SERVER_URL is required with --mode=probe"))
+			}
 		}
 		if cfg.ProbeToken == "" {
-			return Config{}, fmt.Errorf("GOTCHA_PROBE_KEY is required with --mode=probe")
+			errs = append(errs, fmt.Errorf("GOTCHA_PROBE_KEY is required with --mode=probe"))
 		}
 	} else if cfg.ServerURL != "" {
 		// Заданный, но бесполезный вне --mode=probe: ничего его не читает,
@@ -1293,15 +1364,21 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 
 	if cfg.OIDCEnabled && (cfg.OIDCIssuer == "" || cfg.OIDCClientID == "" || cfg.OIDCClientSecret == "") {
-		return Config{}, fmt.Errorf("GOTCHA_OIDC_ENABLED requires GOTCHA_OIDC_ISSUER, _CLIENT_ID and _CLIENT_SECRET")
+		errs = append(errs, fmt.Errorf("GOTCHA_OIDC_ENABLED requires GOTCHA_OIDC_ISSUER, _CLIENT_ID and _CLIENT_SECRET"))
 	}
 	if cfg.YandexEnabled && (cfg.YandexClientID == "" || cfg.YandexClientSecret == "") {
-		return Config{}, fmt.Errorf("GOTCHA_YANDEX_ENABLED requires GOTCHA_YANDEX_CLIENT_ID and _CLIENT_SECRET")
+		errs = append(errs, fmt.Errorf("GOTCHA_YANDEX_ENABLED requires GOTCHA_YANDEX_CLIENT_ID and _CLIENT_SECRET"))
 	}
 	if cfg.VKEnabled && (cfg.VKClientID == "" || cfg.VKClientSecret == "") {
-		return Config{}, fmt.Errorf("GOTCHA_VK_ENABLED requires GOTCHA_VK_CLIENT_ID and _CLIENT_SECRET")
+		errs = append(errs, fmt.Errorf("GOTCHA_VK_ENABLED requires GOTCHA_VK_CLIENT_ID and _CLIENT_SECRET"))
 	}
 
+	// Финальная точка возврата всего этого блока: если что-то из выше
+	// накопленного не прошло, отдаём всё разом (см. докблок errors.Join
+	// первого накопительного блока выше — тот же принцип).
+	if len(errs) > 0 {
+		return Config{}, errors.Join(errs...)
+	}
 	return cfg, nil
 }
 
@@ -1436,6 +1513,22 @@ const maxSuggestDistance = 2
 // гарантирует порядок сам по себе (как и находки CheckRenamedAll выше по
 // файлу) — без сортировки текст ошибки менялся бы между запусками при
 // нескольких кандидатах на одном расстоянии.
+//
+// Ищет только среди envcontract.Known (актуальные имена) — сознательно не
+// среди ключей envcontract.Renamed (старые имена). Это не дыра: точное
+// совпадение со старым именем ловится раньше и отдельно, ещё в
+// checkUnknownEnvVars — там же, откуда вызывается эта функция — веткой
+// envcontract.Renamed[name] с собственным явным текстом ошибки
+// (envcontract.RenamedError), до того как имя вообще попадёт в список
+// unknown, который здесь получает подсказки. Единственное, что теоретически
+// осталось бы непокрытым, — ОПЕЧАТКА в старом переименованном имени (не
+// точное совпадение ни с Known, ни с Renamed), и для неё специально не
+// заведён третий источник подсказок: аудиторская проверка прогнала порядка
+// 93 тысяч вариаций опечаток и не нашла ни одной ложной подсказки, а
+// расширение поиска на Renamed добавило бы сложность ради случая, который
+// и так не остаётся без диагностики — сообщение об «unknown» имени всё
+// равно есть, просто без предположения, что оно является опечаткой именно
+// устаревшего имени.
 func suggestKnownNames(name string) []string {
 	type candidate struct {
 		name string

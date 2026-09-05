@@ -588,3 +588,74 @@ func TestIncidentsCascadeDeletedWithHost(t *testing.T) {
 		t.Fatalf("count = %d после удаления хоста, want 0 (ON DELETE CASCADE)", count)
 	}
 }
+
+// TestOpenSuppressedAndClearSuppressed — K1-4 (аудит перед 1.0): подавленный
+// зависимостью инцидент виден OpenSuppressed и невидим OpenUnacked; после
+// ClearSuppressed — наоборот, и часы лесенки перезапущены (StartedAt из
+// OpenUnacked не раньше момента снятия), dep_released_at в БД проставлен.
+func TestOpenSuppressedAndClearSuppressed(t *testing.T) {
+	pool, svc, projectID, hostID := setupIncidentHost(t)
+	ctx := context.Background()
+
+	in, _, err := svc.Open(ctx, projectID, hostID, "disk", 0.95, "", false)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	// До подавления: виден OpenUnacked, не виден OpenSuppressed.
+	if list, err := svc.OpenUnacked(ctx); err != nil || len(list) != 1 {
+		t.Fatalf("до подавления OpenUnacked want 1, got %d (err=%v)", len(list), err)
+	}
+	if list, err := svc.OpenSuppressed(ctx); err != nil || len(list) != 0 {
+		t.Fatalf("до подавления OpenSuppressed want 0, got %d (err=%v)", len(list), err)
+	}
+
+	// Флаг ставит Suppressor/планировщик деп-подавления (не этот пакет) —
+	// сырым SQL, как и в TestOpenUnackedExcludesSuppressed.
+	if _, err := pool.Exec(ctx, `UPDATE host_incidents SET suppressed_by_dep=true WHERE id=$1`, in.ID); err != nil {
+		t.Fatalf("set suppressed flag: %v", err)
+	}
+
+	// Подавлен: виден OpenSuppressed, не виден OpenUnacked.
+	if list, err := svc.OpenUnacked(ctx); err != nil || len(list) != 0 {
+		t.Fatalf("подавлен: OpenUnacked want 0, got %d (err=%v)", len(list), err)
+	}
+	suppressed, err := svc.OpenSuppressed(ctx)
+	if err != nil {
+		t.Fatalf("OpenSuppressed: %v", err)
+	}
+	if len(suppressed) != 1 || suppressed[0].ID != in.ID {
+		t.Fatalf("OpenSuppressed = %+v, want [инцидент %d]", suppressed, in.ID)
+	}
+
+	beforeClear := time.Now()
+	if err := svc.ClearSuppressed(ctx, in.ID); err != nil {
+		t.Fatalf("ClearSuppressed: %v", err)
+	}
+
+	// Снят: виден OpenUnacked, не виден OpenSuppressed.
+	if list, err := svc.OpenSuppressed(ctx); err != nil || len(list) != 0 {
+		t.Fatalf("после снятия: OpenSuppressed want 0, got %d (err=%v)", len(list), err)
+	}
+	unacked, err := svc.OpenUnacked(ctx)
+	if err != nil {
+		t.Fatalf("OpenUnacked после снятия: %v", err)
+	}
+	if len(unacked) != 1 || unacked[0].ID != in.ID {
+		t.Fatalf("OpenUnacked после снятия = %+v, want [инцидент %d]", unacked, in.ID)
+	}
+	// Часы лесенки перезапущены: StartedAt не раньше момента снятия
+	// подавления (GREATEST с dep_released_at).
+	if unacked[0].StartedAt.Before(beforeClear) {
+		t.Fatalf("StartedAt = %v, want не раньше момента снятия %v (часы должны были перезапуститься)",
+			unacked[0].StartedAt, beforeClear)
+	}
+
+	var depReleasedAt *time.Time
+	if err := pool.QueryRow(ctx, "SELECT dep_released_at FROM host_incidents WHERE id=$1", in.ID).Scan(&depReleasedAt); err != nil {
+		t.Fatalf("select dep_released_at: %v", err)
+	}
+	if depReleasedAt == nil {
+		t.Fatal("dep_released_at = NULL после ClearSuppressed, want проставленный момент снятия")
+	}
+}

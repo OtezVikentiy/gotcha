@@ -4,9 +4,11 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -561,6 +563,318 @@ func TestEnvExampleCoversConfig(t *testing.T) {
 	}
 
 	checkConfigurationTableParity(t, tableVars, readers, ruTable, enTable)
+}
+
+// configDefaultReaders — подмножество envReaderFuncs cmd/gotcha/config.go, у
+// которых второй аргумент — буквальный дефолт, записанный прямо в месте
+// вызова (str/strGuarded/intNum/num/boolEnvDef). boolEnv/getenv/parseBool
+// сознательно исключены: у boolEnv нет второго аргумента вовсе (implicit
+// default — false, см. отдельный проход в collectConfigDefaults ниже);
+// getenv/parseBool — не «дефолт в одно значение» в принципе, и восемь
+// переменных, читаемых ими напрямую, этой сверке не подлежат вовсе (имя
+// каждой всё равно проверяет соседний TestEnvExampleCoversConfig):
+// GOTCHA_SECRET_KEY_PREV, GOTCHA_SCRUB_DENY_KEYS, GOTCHA_SCRUB_KEEP_KEYS,
+// GOTCHA_TRUSTED_PROXIES, GOTCHA_TRUSTED_RECIPIENTS — голый getenv(),
+// "не задано" это буквально пустая строка без дальнейшей интерпретации;
+// GOTCHA_LOGGING_LEVEL/_FORMAT — тоже голый getenv(), но пустая строка
+// («не задано») равнозначна "info"/"text" только ВНУТРИ setupLogging
+// (cmd/gotcha/main.go), а не текстуально — сверять "" с "info" одним
+// равенством означало бы падать на корректном коде; GOTCHA_EVALUATORS_ENABLED
+// читается голым parseBool() напрямую и специально тристабилен
+// (nil/true/false, см. докблок RunEvaluators в loadConfig) — «не задано»
+// это отдельное состояние, а не синоним false, зафиксировать его одним
+// литералом-дефолтом нельзя.
+var configDefaultReaders = map[string]bool{
+	"str":        true,
+	"strGuarded": true,
+	"intNum":     true,
+	"num":        true,
+	"boolEnvDef": true,
+}
+
+// nonLiteralConfigDefaults — переменные, чей второй аргумент в
+// configDefaultReaders — не литерал, а идентификатор другой переменной,
+// посчитанной раньше в loadConfig из другого env/издания: defQuota (от
+// GOTCHA_EDITION — oss даёт 0, saas — 1_000_000) и ssrfAll (от
+// GOTCHA_SSRF_ALLOW_PRIVATE, каскадный дефолт для четырёх per-path
+// оверрайдов). У них нет единственного «правильного» значения вне
+// рантюма конкретной инсталляции, поэтому закомментированная строка рядом
+// в .env.example документирует ПРИМЕР переопределения (см. комментарии в
+// файле), а не сам дефолт — сверять их текстом с .env.example нечего.
+//
+// Список закрыт и сверяется ниже с реальным выражением дефолта
+// (types.ExprString): если дефолт в коде перестал быть этим идентификатором
+// (переменную переименовали, дефолт стал литералом) — запись обязана
+// обновиться, иначе тест тихо продолжит пропускать переменную, которая уже
+// может проверяться как обычный литерал.
+var nonLiteralConfigDefaults = map[string]string{
+	"GOTCHA_DEFAULT_EVENT_QUOTA":         "defQuota",
+	"GOTCHA_DEFAULT_TRANSACTION_QUOTA":   "defQuota",
+	"GOTCHA_DEFAULT_METRIC_QUOTA":        "defQuota",
+	"GOTCHA_DEFAULT_PROFILE_QUOTA":       "defQuota",
+	"GOTCHA_DEFAULT_LOG_QUOTA":           "defQuota",
+	"GOTCHA_SSRF_ALLOW_PRIVATE_UPTIME":   "ssrfAll",
+	"GOTCHA_SSRF_ALLOW_PRIVATE_WEBHOOK":  "ssrfAll",
+	"GOTCHA_SSRF_ALLOW_PRIVATE_OIDC":     "ssrfAll",
+	"GOTCHA_SSRF_ALLOW_PRIVATE_TELEGRAM": "ssrfAll",
+}
+
+// exampleOnlyConfigDefaults — переменные с обычным литеральным дефолтом в
+// коде, у которых закомментированная строка .env.example сознательно
+// показывает не этот дефолт, а рабочий пример значения (см. комментарий
+// в .env.example рядом с каждой):
+//
+//   - GOTCHA_MAX_WRITER_BUFFER_BYTES/GOTCHA_MAX_INGEST_QUEUE_BYTES — 0 внутри
+//     Config это сентинел «нет явного потолка, взять автоматический» (см.
+//     докблок num() в loadConfig), а не размер в байтах; .env.example
+//     показывает готовый потолок, который имеет смысл раскомментировать.
+//   - GOTCHA_TELEGRAM_API_BASE — "" означает "https://api.telegram.org" (см.
+//     .env.example: «Empty means https://api.telegram.org»); закомментированная
+//     строка показывает, на что заменить дефолт при отсутствии прямого egress.
+//
+// Значение здесь — ожидаемый ТЕКУЩИЙ дефолт кода (не значение из
+// .env.example): проверка ниже требует его совпадения с
+// evalConstExpr(defaultArg), так что если кто-то поменяет дефолт в коде
+// (например, задаст ненулевой потолок по умолчанию), запись здесь устареет
+// заметно, а не тихо продолжит выдавать зелёный на устаревшем сравнении.
+var exampleOnlyConfigDefaults = map[string]string{
+	"GOTCHA_MAX_WRITER_BUFFER_BYTES": "0",
+	"GOTCHA_MAX_INGEST_QUEUE_BYTES":  "0",
+	"GOTCHA_TELEGRAM_API_BASE":       "",
+}
+
+// configDefault — дефолт одной переменной GOTCHA_*, как его определяет
+// вызов reader'а в cmd/gotcha/config.go. literal валиден только при ok:
+// true; expr — types.ExprString второго аргумента вызова, нужен и для
+// диагностики, и для сверки nonLiteralConfigDefaults на актуальность.
+type configDefault struct {
+	literal string
+	ok      bool
+	expr    string
+}
+
+// evalConstExpr сворачивает буквальные дефолты str/strGuarded/intNum/num/
+// boolEnvDef в текст, напрямую сравнимый со значением после "=" в
+// .env.example: строковые и булевы литералы (true/false — предопределённые
+// идентификаторы Go, не BasicLit), целые (включая "_"-разделители — Go
+// принимает 200_000, .env.example пишет 200000 — и битовый сдвиг влево
+// 1<<20, единственная небуквальная арифметика дефолтов в cmd/gotcha/config.go
+// на сегодня). Идентификатор, отличный от true/false (defQuota, ssrfAll), —
+// не литерал: ok=false, обработка — в nonLiteralConfigDefaults у вызывающего.
+//
+// Только эти формы: унарный минус и +/-/* здесь нарочно не заведены —
+// ни одного дефолта с такой формой в cmd/gotcha/config.go нет, ветка «про
+// запас» никогда не исполнилась бы ни одним реальным вызовом, а
+// невыполнимую ветку не покрыть мутацией. Появится такой дефолт — тест
+// упадёт на "not a recognized literal" (TestEnvExampleDefaultsMatchConfig
+// ниже), и это тот момент, когда сюда стоит добавить нужный case.
+func evalConstExpr(expr ast.Expr) (string, bool) {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		switch e.Kind {
+		case token.STRING:
+			s, err := strconv.Unquote(e.Value)
+			if err != nil {
+				return "", false
+			}
+			return s, true
+		case token.INT:
+			n, err := strconv.ParseInt(strings.ReplaceAll(e.Value, "_", ""), 0, 64)
+			if err != nil {
+				return "", false
+			}
+			return strconv.FormatInt(n, 10), true
+		}
+		return "", false
+	case *ast.Ident:
+		if e.Name == "true" || e.Name == "false" {
+			return e.Name, true
+		}
+		return "", false
+	case *ast.BinaryExpr:
+		if e.Op != token.SHL {
+			return "", false
+		}
+		lv, lok := evalConstExpr(e.X)
+		rv, rok := evalConstExpr(e.Y)
+		if !lok || !rok {
+			return "", false
+		}
+		ln, err1 := strconv.ParseInt(lv, 10, 64)
+		rn, err2 := strconv.ParseInt(rv, 10, 64)
+		if err1 != nil || err2 != nil {
+			return "", false
+		}
+		return strconv.FormatInt(ln<<uint(rn), 10), true
+	}
+	return "", false
+}
+
+// collectConfigDefaults разбирает cmd/gotcha/config.go и возвращает, для
+// каждой переменной GOTCHA_*, прочитанной через configDefaultReaders или
+// голый boolEnv(), её дефолт. Источник истины — сам вызов ридера, а не
+// список, набранный в этом файле руками: TestEnvExampleCoversConfig выше
+// уже проверял имена тем же приёмом (go/ast вместо второй копии, которая
+// разъедется с кодом) — TestEnvExampleDefaultsMatchConfig ниже проверяет их
+// значения тем же способом.
+//
+// Ограничено cmd/gotcha/config.go нарочно, без internal/agent/config.go:
+// там собственные intNum/parseBool с другой сигнатурой (name, raw string) —
+// второй аргумент там уже прочитанное сырое значение, а не дефолт, — и все
+// восемь агентских переменных читаются голым getenv() без второго
+// аргумента вовсе. Сверять там значения тем же кодом означало бы либо
+// неверно трактовать "raw" как дефолт, либо молча ничего не проверять —
+// понятнее явно ограничить область функции, чем притворяться, что она
+// работает универсально.
+func collectConfigDefaults(t *testing.T, root, relFile string) map[string]configDefault {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, filepath.Join(root, relFile), nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", relFile, err)
+	}
+	out := map[string]configDefault{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		fun, ok := call.Fun.(*ast.Ident)
+		if !ok || !configDefaultReaders[fun.Name] || len(call.Args) != 2 {
+			return true
+		}
+		keyLit, ok := call.Args[0].(*ast.BasicLit)
+		if !ok || keyLit.Kind != token.STRING {
+			return true
+		}
+		key := strings.Trim(keyLit.Value, `"`)
+		if !strings.HasPrefix(key, "GOTCHA_") {
+			return true
+		}
+		lit, litOK := evalConstExpr(call.Args[1])
+		out[key] = configDefault{literal: lit, ok: litOK, expr: types.ExprString(call.Args[1])}
+		return true
+	})
+	// boolEnv(key) не входит в configDefaultReaders — структурно у него нет
+	// второго аргумента, который можно было бы прочитать, а не потому что у
+	// него нет дефолта: дефолт есть (false), он просто зашит в саму функцию
+	// (`v, _ := parseBool(key); return v`; parseBool на "" отдаёт (false,
+	// false)), а не в место вызова — собирается отдельным проходом с
+	// фиксированным значением.
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		fun, ok := call.Fun.(*ast.Ident)
+		if !ok || fun.Name != "boolEnv" || len(call.Args) != 1 {
+			return true
+		}
+		keyLit, ok := call.Args[0].(*ast.BasicLit)
+		if !ok || keyLit.Kind != token.STRING {
+			return true
+		}
+		key := strings.Trim(keyLit.Value, `"`)
+		if !strings.HasPrefix(key, "GOTCHA_") {
+			return true
+		}
+		if _, exists := out[key]; !exists {
+			out[key] = configDefault{literal: "false", ok: true, expr: "false (boolEnv implicit default)"}
+		}
+		return true
+	})
+	return out
+}
+
+// envExampleLineValue ищет СТРОКУ (не произвольное вхождение через
+// strings.Contains, как в TestEnvExampleCoversConfig выше — там достаточно
+// доказать присутствие имени, здесь нужно снять точное значение), которая
+// начинается с "NAME=" или "#NAME=", и возвращает всё после "=". Префиксный
+// якорь на всю строку сохраняет то же свойство, что и Contains(v+"=") выше:
+// "GOTCHA_SSRF_ALLOW_PRIVATE=" не является префиксом строки
+// "GOTCHA_SSRF_ALLOW_PRIVATE_UPTIME=true" — короткое имя не ловит чужую
+// строку длинного.
+func envExampleLineValue(lines []string, name string) (string, bool) {
+	plain := name + "="
+	commented := "#" + name + "="
+	for _, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		if v, ok := strings.CutPrefix(line, plain); ok {
+			return v, true
+		}
+		if v, ok := strings.CutPrefix(line, commented); ok {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// TestEnvExampleDefaultsMatchConfig — K5-3: TestEnvExampleCoversConfig выше
+// сверяет только ИМЯ переменной в .env.example, но не её значение — если
+// дефолт в loadConfig разъедется с примером в .env.example (кто-то поправит
+// один файл и забудет другой), тот сторож промолчит, а оператор,
+// поднимающий стенд из .env.example, тихо получит чужие настройки вместо
+// документированных дефолтов. Источник истины — collectConfigDefaults,
+// разбирающий САМ вызов ридера в cmd/gotcha/config.go, а не вторая копия
+// значений, набранная в этом тесте руками (см. её докблок).
+func TestEnvExampleDefaultsMatchConfig(t *testing.T) {
+	tree := Load(t)
+	defaults := collectConfigDefaults(t, tree.Root, filepath.Join("cmd", "gotcha", "config.go"))
+	if len(defaults) < 20 {
+		t.Fatalf("collected only %d config defaults — cmd/gotcha/config.go parsing is broken, or configDefaultReaders stopped matching", len(defaults))
+	}
+
+	example, err := os.ReadFile(filepath.Join(tree.Root, ".env.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	exampleLines := strings.Split(string(example), "\n")
+
+	checked := 0
+	for name, def := range defaults {
+		if wantExpr, isNonLiteral := nonLiteralConfigDefaults[name]; isNonLiteral {
+			if def.expr != wantExpr {
+				t.Errorf("%s: nonLiteralConfigDefaults records its default expression as %q, but cmd/gotcha/config.go now has %q (ok=%v) — update or remove the stale entry", name, wantExpr, def.expr, def.ok)
+			}
+			continue
+		}
+		if !def.ok {
+			t.Errorf("%s: default expression %q is not a recognized literal (string/bool/int, optionally shifted) — extend evalConstExpr, or add it to nonLiteralConfigDefaults with a reason if it is genuinely computed at runtime from another variable", name, def.expr)
+			continue
+		}
+		if wantLiteral, isExampleOnly := exampleOnlyConfigDefaults[name]; isExampleOnly {
+			if wantLiteral != def.literal {
+				t.Errorf("%s: exampleOnlyConfigDefaults records the code default as %q, but cmd/gotcha/config.go now has %q — update the exception (and re-check whether .env.example's worked example next to it still makes sense)", name, wantLiteral, def.literal)
+			}
+			continue
+		}
+
+		value, found := envExampleLineValue(exampleLines, name)
+		if !found {
+			// TestEnvExampleCoversConfig уже проверяет и валит на отсутствии
+			// строки — падать здесь тем же диагнозом второй раз незачем.
+			continue
+		}
+		checked++
+		if value != def.literal {
+			t.Errorf("%s: default in cmd/gotcha/config.go is %q, but .env.example has %q — keep them in sync (a stand seeded from .env.example must land on the same settings an unset env would)", name, def.literal, value)
+		}
+	}
+
+	for name := range nonLiteralConfigDefaults {
+		if _, ok := defaults[name]; !ok {
+			t.Errorf("%s: listed in nonLiteralConfigDefaults but is no longer read via a 2-arg reader in cmd/gotcha/config.go — remove the stale entry", name)
+		}
+	}
+	for name := range exampleOnlyConfigDefaults {
+		if _, ok := defaults[name]; !ok {
+			t.Errorf("%s: listed in exampleOnlyConfigDefaults but is no longer read via a 2-arg reader in cmd/gotcha/config.go — remove the stale entry", name)
+		}
+	}
+
+	if checked < 15 {
+		t.Fatalf("checked only %d variables against .env.example — value-sync coverage looks suspiciously low, is envExampleLineValue matching lines at all?", checked)
+	}
 }
 
 // TestUnitSuffixConvention — юнит-тест конвенции единиц измерения (T1) на

@@ -210,7 +210,44 @@ func TestWebAlertSuppressionSaveAndDelete(t *testing.T) {
 	}
 
 	deletePath := path + "/" + strconv.FormatInt(edges[0].ID, 10) + "/delete"
+	// Без confirmed=yes — страница подтверждения, называющая оба узла ребра
+	// (K7-7: раньше удаление было одним кликом), ребро на месте.
 	resp = postForm(t, s.srv, deletePath, url.Values{}, s.srv.URL, ownerCookie)
+	confirmBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete edge (unconfirmed) status = %d, want 200: %s", resp.StatusCode, confirmBody)
+	}
+	if !strings.Contains(string(confirmBody), `name="confirmed" value="yes"`) {
+		t.Fatalf("delete edge (unconfirmed) missing confirm page hidden field: %s", confirmBody)
+	}
+	if !strings.Contains(string(confirmBody), "«Хост: web-1 → Монитор: ping-gw»") {
+		t.Fatalf("delete edge (unconfirmed) confirm page does not name the edge nodes: %s", confirmBody)
+	}
+	if edges, err := s.h.AlertDeps.List(context.Background(), proj.ID); err != nil || len(edges) != 1 {
+		t.Fatalf("edge gone after unconfirmed delete: %+v err=%v", edges, err)
+	}
+
+	// Несуществующее ребро без confirmed=yes — 404 (нечего подтверждать).
+	resp = postForm(t, s.srv, path+"/999999/delete", url.Values{}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("delete unknown edge (unconfirmed) status = %d, want 404", resp.StatusCode)
+	}
+
+	// Шаг подтверждения гейтится теми же правами, что и само удаление:
+	// чужой для проекта пользователь без confirmed=yes получает 404, а не
+	// страницу подтверждения с именами узлов.
+	_, outsiderCookie := orgSettingsRegister(t, authSvc, "dep-save-outsider@example.com")
+	resp = postForm(t, s.srv, deletePath, url.Values{}, s.srv.URL, outsiderCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("delete edge (unconfirmed, outsider) status = %d, want 404", resp.StatusCode)
+	}
+
+	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
@@ -223,6 +260,15 @@ func TestWebAlertSuppressionSaveAndDelete(t *testing.T) {
 	}
 	if len(edges) != 0 {
 		t.Fatalf("List after delete = %+v, want empty", edges)
+	}
+
+	// Повтор подтверждённого POST по уже удалённому ребру (кнопка «назад»,
+	// вторая вкладка) — идемпотентно, 303 без ошибки (Store.Delete).
+	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("repeat delete edge status = %d, want 303", resp.StatusCode)
 	}
 }
 

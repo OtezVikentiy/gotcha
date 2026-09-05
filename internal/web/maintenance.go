@@ -145,8 +145,7 @@ func oneOffEndRequired(win uptime.Window, indefinite bool) bool {
 }
 
 // windowBelongsToProject — тот же приём, что и keyBelongsToProject/
-// channelBelongsToProject: не даём удалить окно чужого проекта по
-// подобранному id.
+// findChannel: не даём удалить окно чужого проекта по подобранному id.
 func windowBelongsToProject(windows []uptime.Window, windowID int64) bool {
 	for _, w := range windows {
 		if w.ID == windowID {
@@ -245,8 +244,7 @@ func (h *Handler) maintenanceCreate(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 
@@ -297,13 +295,12 @@ func (h *Handler) maintenanceUpdate(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	windowID, err := strconv.ParseInt(r.FormValue("window_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad window_id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 	windows, err := h.Uptime.Windows(r.Context(), projectID)
@@ -367,13 +364,12 @@ func (h *Handler) maintenanceDelete(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 	windowID, err := strconv.ParseInt(r.FormValue("window_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad window_id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 

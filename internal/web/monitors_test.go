@@ -427,6 +427,11 @@ func TestWebMonitorPauseResumeDelete(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST %s (owner) status = %d, want 303", pausePath, resp.StatusCode)
 	}
+	// Flash называет состояние, в котором монитор остался (K7-9): пауза и
+	// возобновление — разные ключи.
+	if !hasFlashCookie(resp, "ok|flash.monitor_paused") {
+		t.Errorf("после паузы нет flash monitor_paused: %v", resp.Header.Values("Set-Cookie"))
+	}
 	got, err := s.uptime.Get(context.Background(), created.ID)
 	if err != nil {
 		t.Fatalf("get after pause: %v", err)
@@ -441,6 +446,9 @@ func TestWebMonitorPauseResumeDelete(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST %s (owner) status = %d, want 303", resumePath, resp.StatusCode)
+	}
+	if !hasFlashCookie(resp, "ok|flash.monitor_resumed") {
+		t.Errorf("после возобновления нет flash monitor_resumed: %v", resp.Header.Values("Set-Cookie"))
 	}
 	got, err = s.uptime.Get(context.Background(), created.ID)
 	if err != nil {
@@ -457,6 +465,24 @@ func TestWebMonitorPauseResumeDelete(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("POST %s (member) status = %d, want 404", deletePath, resp.StatusCode)
+	}
+
+	// Owner без confirmed=yes -> 200, страница подтверждения называет
+	// монитор по имени (K7-3), монитор на месте.
+	resp = postForm(t, s.srv, deletePath, url.Values{}, s.srv.URL, ownerCookie)
+	confirmBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST %s (owner, unconfirmed) status = %d, want 200: %s", deletePath, resp.StatusCode, confirmBody)
+	}
+	if !strings.Contains(string(confirmBody), `name="confirmed" value="yes"`) {
+		t.Fatalf("POST %s (owner, unconfirmed) missing confirm page hidden field: %s", deletePath, confirmBody)
+	}
+	if !strings.Contains(string(confirmBody), "«Pausable»") {
+		t.Fatalf("POST %s (owner, unconfirmed) confirm page does not name the monitor: %s", deletePath, confirmBody)
+	}
+	if _, err := s.uptime.Get(context.Background(), created.ID); err != nil {
+		t.Fatalf("monitor gone after unconfirmed delete: %v", err)
 	}
 
 	// Owner deletes -> 303, monitor gone.

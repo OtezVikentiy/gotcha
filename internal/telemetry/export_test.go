@@ -2,8 +2,11 @@ package telemetry_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/telemetry"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
@@ -178,5 +181,102 @@ func TestExportSubjectLogs(t *testing.T) {
 	}
 	if len(expIP.Logs) != 0 {
 		t.Errorf("logs по IP: получили %d, ждали 0 (логи не сегментируются по IP)", len(expIP.Logs))
+	}
+}
+
+// errAbortedCursor — синтетическая ошибка обрыва курсора, которую видит
+// только Rows.Err() (см. abortingRows ниже).
+var errAbortedCursor = errors.New("telemetry_test: simulated ClickHouse cursor abort")
+
+// abortingRows оборачивает реальный driver.Rows и обрывает курсор ПОСЛЕ
+// keep успешных Next(): дальше Next() возвращает false, как будто строки
+// кончились штатно, Err() отдаёт errAbortedCursor, а Close() — как
+// настоящий обрыв соединения в clickhouse-go (K4-3, аудит перед 1.0) —
+// свою ошибку не поднимает, отдавая nil независимо от исхода реального
+// Close(). Обрыв синтетический (без разрыва настоящего соединения или
+// отмены контекста), поэтому воспроизводится детерминированно и не задевает
+// остальные вызовы Query в том же ExportSubject.
+type abortingRows struct {
+	driver.Rows
+	keep int
+}
+
+func (r *abortingRows) Next() bool {
+	if r.keep <= 0 {
+		return false
+	}
+	r.keep--
+	return r.Rows.Next()
+}
+
+func (r *abortingRows) Err() error { return errAbortedCursor }
+
+func (r *abortingRows) Close() error {
+	_ = r.Rows.Close()
+	return nil
+}
+
+// countingConn оборачивает реальное соединение и подменяет результат
+// failAt-го по счёту вызова Query на abortingRows — курсор ИМЕННО этого
+// вызова обрывается после keepRows строк, остальные вызовы Query того же
+// ExportSubject идут через настоящий Rows без изменений.
+type countingConn struct {
+	driver.Conn
+	n        int
+	failAt   int
+	keepRows int
+}
+
+func (c *countingConn) Query(ctx context.Context, query string, args ...any) (driver.Rows, error) {
+	rows, err := c.Conn.Query(ctx, query, args...)
+	c.n++
+	if err != nil || c.n != c.failAt {
+		return rows, err
+	}
+	return &abortingRows{Rows: rows, keep: c.keepRows}, nil
+}
+
+// TestExportSubjectRowsErrSurfaces проверяет, что обрыв курсора ClickHouse
+// ПОСЛЕ успешного Query — ошибка выгрузки субъекта, а не тихо усечённый
+// результат (K4-3). Четыре подтеста k=1..4 обрывают курсор events/
+// transactions/metric_points/logs соответственно (остальные три вызова
+// Query идут штатно, без единой строки потерь) — каждый доказывает, что
+// СВОЙ цикл SubjectExport проверяет rows.Err(), а не только rows.Close(),
+// которое (см. abortingRows) обрыв не показывает.
+func TestExportSubjectRowsErrSurfaces(t *testing.T) {
+	ctx := context.Background()
+	conn := testenv.MigratedCH(t)
+	const p = int64(600)
+	ts := time.Now().UTC()
+
+	// По 5 строк в каждой таблице — обрыв после keepRows=1 гарантированно
+	// застаёт курсор ДО того, как он успел бы отдать все строки штатно.
+	for i := 0; i < 5; i++ {
+		seedEvents(t, ctx, conn, p, "victim", "1.2.3.4", "victim@x.com", ts)
+		seedTransactions(t, ctx, conn, p, "victim", ts)
+		seedMetricPointAttr(t, ctx, conn, p, map[string]string{"user.id": "victim"}, ts)
+		seedLogAttr(t, ctx, conn, p, map[string]string{"user.id": "victim"}, ts)
+	}
+
+	sub := telemetry.Subject{UserID: "victim", Email: "victim@x.com"}
+
+	tests := []struct {
+		name string
+		k    int
+	}{
+		{"events", 1},
+		{"transactions", 2},
+		{"metric_points", 3},
+		{"logs", 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cc := &countingConn{Conn: conn, failAt: tt.k, keepRows: 1}
+			purger := telemetry.NewPurger(cc)
+
+			if _, err := purger.ExportSubject(ctx, p, sub); !errors.Is(err, errAbortedCursor) {
+				t.Fatalf("ExportSubject: err=%v, want обёрнутую errAbortedCursor — обрыв курсора %s должен всплыть, а не отдать усечённую выгрузку или другую ошибку", err, tt.name)
+			}
+		})
 	}
 }

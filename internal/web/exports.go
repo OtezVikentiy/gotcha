@@ -176,8 +176,7 @@ func (h *Handler) exportsCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad form", http.StatusBadRequest)
+	if !h.parseForm(w, r) {
 		return
 	}
 
@@ -480,6 +479,9 @@ func (h *Handler) exportsDelete(w http.ResponseWriter, r *http.Request) {
 	if !job.Status.Terminal() {
 		h.renderExportsPage(w, r, http.StatusUnprocessableEntity, projectID, uid, authz,
 			i18n.T(r.Context(), "err.export.not_deletable"), nil)
+		return
+	}
+	if !h.parseForm(w, r) {
 		return
 	}
 	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не

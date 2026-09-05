@@ -45,7 +45,7 @@ func (h *Handler) incidentAck(w http.ResponseWriter, r *http.Request) {
 	source := r.PathValue("source")
 	incidentID, err := strconv.ParseInt(r.PathValue("incident_id"), 10, 64)
 	if err != nil {
-		http.Error(w, "bad incident id", http.StatusBadRequest)
+		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
 

@@ -17,6 +17,8 @@ var (
 	ErrWeakPassword       = errors.New("auth: password must be 8..512 characters")
 	ErrInvalidCredentials = errors.New("auth: invalid email or password")
 	ErrInvalidEmail       = errors.New("auth: invalid email")
+	ErrNotInstanceAdmin   = errors.New("auth: user is not the instance admin")
+	ErrSelfTransfer       = errors.New("auth: cannot transfer the instance admin role to yourself")
 )
 
 // reEmail — намеренно простая проверка формата (не полная RFC 5322): один @,
@@ -62,42 +64,67 @@ func (s *Service) Register(ctx context.Context, email, password string) (int64, 
 	if err != nil {
 		return 0, err
 	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("auth: register: begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// instanceAdminBootstrapLockClass (identity.go, см. докблок там же) —
+	// сериализация с DeleteSelfAccount: без общего лока NOT EXISTS ниже мог
+	// увидеть ещё не удалённую (в чужой незакоммиченной транзакции) строку
+	// админа, которого в этот же момент удаляет DeleteSelfAccount, и не
+	// поставить себе флаг — хотя после чужого COMMIT инстанс оказывался
+	// вовсе без администратора (хвост волны 1, T8).
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1, 0)", instanceAdminBootstrapLockClass); err != nil {
+		return 0, fmt.Errorf("auth: register: bootstrap lock: %w", err)
+	}
+
 	// PROD-B1: первый пользователь инстанса становится инстанс-админом.
-	// Флаг вычисляется атомарно в том же операторе через NOT EXISTS; при
-	// гоночной первой регистрации вторую вставку с true отсечёт частичный
-	// уникальный индекс one_instance_admin.
+	// Флаг вычисляется атомарно в том же операторе через NOT EXISTS. Лок
+	// выше сериализует ВСЕ регистрации между собой (все метят один objID) —
+	// вторая дожидается COMMIT первой и уже видит её строку, так что
+	// NOT EXISTS для неё честно возвращает false.
+	//
+	// Раньше здесь был SAVEPOINT и ретрай на случай проигранной гонки за
+	// право быть первым админом (частичный уникальный индекс
+	// one_instance_admin ловил ДВЕ параллельные первые регистрации, обе
+	// увидевшие пустую таблицу разом). Лок выше делает эту гонку
+	// НЕДОСТИЖИМОЙ: ни другой Register (сериализован тем же локом), ни
+	// TransferInstanceAdmin (user.go: работает только на СУЩЕСТВУЮЩЕМ
+	// пользователе-вызывающем — fromUID обязан существовать ДО вызова,
+	// значит таблица никогда не пуста на всём протяжении передачи, а
+	// NOT EXISTS выше в принципе не может вернуть true параллельно с ней)
+	// не может вставить/выставить второй is_instance_admin=true, пока эта
+	// транзакция ждёт своей очереди на лок. T8 фикс-раунд 1: ретрай убран
+	// как мёртвый код (0 попаданий на TestRegister_ConcurrentFirstAdminRace
+	// после лока — см. её докблок); если конфликт всё же случится, это
+	// сигнал сломанного инварианта (лок снят выше по стеку, либо появился
+	// новый путь вставки в обход него), а не штатная гонка — падаем громко,
+	// а не втихую становимся вторым не-админом.
 	var id int64
-	err = s.pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`INSERT INTO users (email, password_hash, is_instance_admin)
 		 VALUES ($1, $2, NOT EXISTS (SELECT 1 FROM users))
 		 RETURNING id`,
 		email, hash).Scan(&id)
 	// RA-L6: 23505 приходит от двух разных индексов. Различаем по имени
-	// констрейнта: unique(email) → email действительно занят; one_instance_admin
-	// → мы проиграли гонку за первого админа (NOT EXISTS увидел пустую таблицу,
-	// но другой запрос уже вставил админа). Во втором случае email свободен —
-	// повторяем вставку уже без претензии на админский флаг.
+	// констрейнта: unique(email) → email действительно занят.
+	// one_instance_admin — см. комментарий выше: при исправной блокировке
+	// недостижимо, а не штатный путь.
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		if pgErr.ConstraintName == "one_instance_admin" {
-			err = s.pool.QueryRow(ctx,
-				`INSERT INTO users (email, password_hash, is_instance_admin)
-				 VALUES ($1, $2, false)
-				 RETURNING id`,
-				email, hash).Scan(&id)
-			// После ретрая 23505 может быть уже только по email.
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-				return 0, ErrEmailTaken
-			}
-			if err != nil {
-				return 0, fmt.Errorf("auth: register: %w", err)
-			}
-			return id, nil
+			return 0, fmt.Errorf("auth: register: unexpected one_instance_admin conflict (bootstrap lock invariant broken): %w", err)
 		}
 		return 0, ErrEmailTaken
 	}
 	if err != nil {
 		return 0, fmt.Errorf("auth: register: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("auth: register: commit: %w", err)
 	}
 	return id, nil
 }
@@ -121,6 +148,61 @@ func (s *Service) UserIsInstanceAdmin(ctx context.Context, userID int64) (bool, 
 		return false, fmt.Errorf("auth: instance admin flag: %w", err)
 	}
 	return admin, nil
+}
+
+// TransferInstanceAdmin передаёт роль администратора инстанса от fromUID
+// пользователю с email toEmail (K7-1: единственный админ инстанса без этого
+// метода не мог передать роль — назначить второго было негде ни в Store, ни
+// в CLI, ни в UI). Одна транзакция: снять флаг у текущего (RowsAffected 0 —
+// он не админ, ErrNotInstanceAdmin), поставить получателю; частичный UNIQUE
+// one_instance_admin (0017_instance_admin) — страховка от гонки двух
+// одновременных передач: второй commit упадёт на этом индексе, транзакция
+// откатится, ошибка вернётся как есть.
+func (s *Service) TransferInstanceAdmin(ctx context.Context, fromUID int64, toEmail string) (int64, error) {
+	toUID, err := s.UserByEmail(ctx, toEmail)
+	if err != nil {
+		return 0, err
+	}
+	if toUID == fromUID {
+		return 0, ErrSelfTransfer
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("transfer instance admin: begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx,
+		"UPDATE users SET is_instance_admin = false WHERE id = $1 AND is_instance_admin", fromUID)
+	if err != nil {
+		return 0, fmt.Errorf("transfer instance admin: release: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return 0, ErrNotInstanceAdmin
+	}
+	if err := grantInstanceAdmin(ctx, tx, toUID); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("transfer instance admin: commit: %w", err)
+	}
+	return toUID, nil
+}
+
+// grantInstanceAdmin ставит флаг получателю внутри транзакции передачи.
+// RowsAffected 0 — пользователя с таким id уже нет (удалил аккаунт между
+// UserByEmail и этим UPDATE): раньше это выглядело успехом, а инстанс
+// оставался вовсе без администратора — commit проходил, флаг снят с
+// прежнего и никому не поставлен. Ошибка откатывает транзакцию (defer
+// Rollback у вызывающего), прежний админ остаётся админом.
+func grantInstanceAdmin(ctx context.Context, tx pgx.Tx, toUID int64) error {
+	tag, err := tx.Exec(ctx, "UPDATE users SET is_instance_admin = true WHERE id = $1", toUID)
+	if err != nil {
+		return fmt.Errorf("transfer instance admin: grant: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrUserNotFound
+	}
+	return nil
 }
 
 // Authenticate возвращает id пользователя по email+паролю.

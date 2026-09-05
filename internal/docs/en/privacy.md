@@ -167,7 +167,7 @@ Sessions (`sessions`) store only a token hash and `user_id` — no IP, no user a
 152-FZ (art. 14) and comparable rules give the subject a right to access and delete their personal data. In Gotcha this is available at the organization level (to the **owner** role):
 
 - **Export subject data** — exports an end user's data (by `user_id` or email), including events, transactions (including by identifiers in tags), metrics, and logs (by identifiers in `log_attributes`).
-- **Delete subject data** — removes the same data from ClickHouse.
+- **Delete subject data** — removes the same data from ClickHouse, plus the spans of traces whose transactions belong to the subject (the spans table has no subject column of its own — it links to a transaction by `trace_id`; see the boundary cases below for a trace with no transaction row, or with more than one participant).
 
 **Deleting a project or an organization.** The PostgreSQL rows are removed by
 cascade immediately, while the ClickHouse telemetry is queued for deletion in the
@@ -182,7 +182,9 @@ attempt is recorded in the request itself.
 
 > **Important: with the default scrubbing on, lookups by email and IP match nothing.** `GOTCHA_SCRUB_IP` and `GOTCHA_SCRUB_EMAIL` are on by default, so `events.user_email` and `events.user_ip` are nulled at ingest — there is nothing left to search by. The same applies to `tags`/`attributes`/`log_attributes` in transactions, metric_points, and logs: the keys `user.email`/`enduser.email` contain "email" and are nulled by the same rule, so a subject cannot be found by email there either. Use **`user_id`** (and its attribute equivalents `user.id`/`enduser.id`): it is deliberately excluded from scrubbing for exactly this right. The export and deletion forms warn about this inline, and deletion reports a count ("deleted N records" or "no records matched") so you can evidence that the request was carried out.
 
-Free text (`spans.data`/`description`, `profile_samples.stack`, `logs.body`) is not deleted per-subject programmatically — a subject cannot be reliably identified inside arbitrary JSON/stack frames/message text. Those fields are cleared by TTL expiry (spans 30 days, transactions 90, metrics 30, profiles 7, logs 14 by default). If such data is sensitive for you, enable free-text scrubbing (below) and configure SDK-side scrubbing.
+Free text (`spans.data`/`description`, `profile_samples.stack`, `logs.body`) is not deleted per-subject programmatically — a subject cannot be reliably identified inside arbitrary JSON/stack frames/message text. Those fields are cleared by TTL expiry (spans 30 days, transactions 90, metrics 30, profiles 7, logs 14 by default); `profile_samples.stack` is a deliberate choice to leave on TTL rather than delete per subject, for the same reason.
+
+Span *rows* (not the content of `data`/`description`, but the records themselves) are still affected by subject deletion — indirectly, through the `trace_id` of the subject's transactions. Two boundaries remain: a span belonging to a trace that no longer has a transaction row (for example, retention evicted it before the spans) survives until the spans' own TTL; and a trace with more than one participant (a background job, a cross-user request) is deleted in full once at least one of its transactions belongs to the subject — a span is not split by subject within a single trace.
 
 **Account self-deletion.** A Gotcha account holder can delete their own account from the profile page — linked sign-in methods, organization memberships, and sessions are removed by cascade. If they are the sole owner of an organization, they must transfer ownership or delete the organization first.
 

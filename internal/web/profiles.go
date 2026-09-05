@@ -1,6 +1,7 @@
 package web
 
 import (
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -41,11 +42,15 @@ func (h *Handler) profilesList(w http.ResponseWriter, r *http.Request) {
 	tr := h.resolveTimeRange(w, r, "24h")
 	environment := r.URL.Query().Get("environment")
 	services, err := h.Profiles.ListServices(r.Context(), projectID, environment, tr.From, tr.To)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
+	// Отказ ClickHouse — НЕ 500: оболочка и фильтры остаются, на месте списка
+	// — «данные временно недоступны» (единый приём CH-страниц, образец —
+	// logsList).
+	loadFailed := err != nil
+	if loadFailed {
+		slog.Warn("profiles: list failed", "project_id", projectID, "err", err)
+		services = nil
 	}
-	_ = templates.ProfilesList(projectID, services, timeRangeVM(tr), environment, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.ProfilesList(projectID, services, timeRangeVM(tr), environment, h.currentEmail(r), loadFailed).Render(r.Context(), w)
 }
 
 // profileFlame — GET /projects/{id}/profiles/flame: flamegraph по фильтрам.
@@ -79,9 +84,12 @@ func (h *Handler) profileFlame(w http.ResponseWriter, r *http.Request) {
 	environment := q.Get("environment")
 	transaction := q.Get("transaction")
 	root, err := h.Profiles.Flame(r.Context(), projectID, service, environment, profileType, transaction, tr.From, tr.To)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
-		return
+	// Отказ ClickHouse: вместо флеймграфа — «данные временно недоступны»
+	// (см. profilesList).
+	loadFailed := err != nil
+	if loadFailed {
+		slog.Warn("profiles: flame failed", "project_id", projectID, "service", service, "err", err)
+		root = nil
 	}
 	vm := templates.ProfileFlameVM{
 		ProjectID:   projectID,
@@ -92,6 +100,7 @@ func (h *Handler) profileFlame(w http.ResponseWriter, r *http.Request) {
 		Range:       timeRangeVM(tr),
 		Chart:       flamegraphSVG(r.Context(), root, q["focus"], 960, flameLink(r)),
 		HasData:     flameHasData(root),
+		LoadFailed:  loadFailed,
 	}
 	_ = templates.ProfileFlame(vm, h.currentEmail(r)).Render(r.Context(), w)
 }
