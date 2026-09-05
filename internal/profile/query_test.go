@@ -412,3 +412,78 @@ func TestTopFunctionSharesShareByWeightSamplesByCount(t *testing.T) {
 		t.Fatalf("b.Samples = %d, want 10 (число строк окна, не вес 208)", b.Samples)
 	}
 }
+
+// TestTopFunctionSharesEmptyFunctionExcludedButWeighsIn — безымянная группа
+// (пустой стек, arrayElement(stack,-1) даёт пустую строку) обязана исчезнуть ИЗ ВЫДАЧИ,
+// но остаться В ЗНАМЕНАТЕЛЕ окна: докблок TopFunctionShares прямо обещает
+// «сумма self по всем функциям равна сумме value по строкам окна», то есть
+// безымянные строки не выброшены из подсчёта, а просто не показаны как
+// отдельная «функция». Смешать оба поведения легко (отфильтровать до расчёта
+// total вместо после) и оба варианта выглядят разумно, пока не сверишь долю
+// с числом.
+func TestTopFunctionSharesEmptyFunctionExcludedButWeighsIn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	conn := testenv.MigratedCH(t)
+	q := profile.NewQuery(conn)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	ts := now.Add(-10 * time.Minute)
+
+	insStack := func(stack []string, v uint64, n int) {
+		for i := 0; i < n; i++ {
+			if err := conn.Exec(ctx, `INSERT INTO profile_samples
+				(project_id,profile_type,service,environment,transaction,platform,ts,stack,value,trace_id)
+				VALUES (32,'cpu','api','','','go',?,?,?,'')`,
+				ts, stack, v); err != nil {
+				t.Fatalf("insert: %v", err)
+			}
+		}
+	}
+	// Именованные функции, вес разный (см. TestTopFunctionSharesShareByWeightSamplesByCount):
+	// a — 2×100 (self=200), b — 8×1 (self=8). Плюс 5 строк с ПУСТЫМ стеком
+	// весом 100 каждая (self=500) — безымянная группа, которая не должна
+	// попасть в выдачу, но обязана войти в знаменатель обеих долей.
+	insStack([]string{"root", "a"}, 100, 2)
+	insStack([]string{"root", "b"}, 1, 8)
+	insStack([]string{}, 100, 5)
+
+	shares, err := q.TopFunctionShares(ctx, 32, "api", "cpu", now.Add(-time.Hour), now.Add(time.Minute), 10)
+	if err != nil {
+		t.Fatalf("TopFunctionShares: %v", err)
+	}
+	byFn := map[string]profile.FunctionShare{}
+	for _, sh := range shares {
+		byFn[sh.Function] = sh
+	}
+	if _, ok := byFn[""]; ok {
+		t.Fatalf("empty-name group leaked into output: %+v", shares)
+	}
+	if len(shares) != 2 {
+		t.Fatalf("shares = %+v, want exactly 2 (a, b), no empty-name entry", shares)
+	}
+	a, ok := byFn["a"]
+	if !ok {
+		t.Fatalf("no share for 'a': %+v", shares)
+	}
+	b, ok := byFn["b"]
+	if !ok {
+		t.Fatalf("no share for 'b': %+v", shares)
+	}
+
+	// Знаменатель — self всего окна, ВКЛЮЧАЯ безымянные строки: 200+8+500=708.
+	// Если бы безымянные строки выбросили ДО подсчёта итога, знаменатель был
+	// бы 208, и a.Share подскочила бы до ~0.9615 — той же величины, что в
+	// соседнем тесте с чистым окном без безымянных строк.
+	if a.Share < 0.27 || a.Share > 0.30 {
+		t.Fatalf("a.Share = %v, want ~0.2825 (self/(named+unnamed)=200/708, не 200/208)", a.Share)
+	}
+	if b.Share < 0.008 || b.Share > 0.02 {
+		t.Fatalf("b.Share = %v, want ~0.0113 (self/(named+unnamed)=8/708, не 8/208)", b.Share)
+	}
+	// Samples — число строк окна, тоже включая безымянные: 2+8+5=15.
+	if a.Samples != 15 || b.Samples != 15 {
+		t.Fatalf("Samples = a:%d b:%d, want 15 for both (2 именованных + 8 + 5 безымянных строк)", a.Samples, b.Samples)
+	}
+}
