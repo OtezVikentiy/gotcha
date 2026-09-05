@@ -14,15 +14,25 @@ import (
 // TestRegister_ConcurrentFirstAdminRace (audit H8) — the first-user-is-admin
 // bootstrap (PROD-B1) must grant instance-admin to AT MOST ONE user even when
 // many registrations race on an empty instance. Each Register computes the
-// admin flag as `NOT EXISTS (SELECT 1 FROM users)`; several goroutines can see
-// the empty table at once, but the partial unique index one_instance_admin
-// lets only one true-insert land — the losers hit 23505 on that constraint and
-// retry as non-admin (RA-L6). This exercises exactly that retry branch, which
-// the sequential TestRegister_FirstUserIsInstanceAdmin never triggers.
+// admin flag as `NOT EXISTS (SELECT 1 FROM users)`.
 //
-// A regression that dropped the index or mishandled the 23505 disambiguation
-// would surface here as either two instance admins (privilege escalation) or a
-// lost registration.
+// T8 фикс-раунд 1: до instanceAdminBootstrapLockClass (identity.go) несколько
+// горутин могли увидеть пустую таблицу РАЗОМ, и только один true-insert
+// проходил партиальный уникальный индекс one_instance_admin — проигравшие
+// ловили 23505 и ретраили как не-админы (RA-L6). Этот тест раньше проверял
+// именно этот ретрай (которого TestRegister_FirstUserIsInstanceAdmin,
+// последовательный, не задевал). Сейчас лок сериализует все n регистраций
+// между собой: каждая ждёт своей очереди и видит уже закоммiченный результат
+// предыдущей, поэтому 23505 по one_instance_admin здесь больше не возникает
+// (ретрай-ветка в Register убрана как мёртвый код — 0 попаданий на этом
+// тесте после лока). Что тест по-прежнему проверяет — сам ИНВАРИАНТ, ради
+// которого раньше существовал ретрай: ровно один инстанс-админ переживает
+// конкурентную первую регистрацию, ни одна регистрация не теряется.
+//
+// A regression that dropped the bootstrap lock would surface here as either
+// two instance admins (privilege escalation, if the old race reopens) or as
+// a hard "unexpected one_instance_admin conflict" error from Register (see
+// its docblock) instead of a clean result.
 func TestRegister_ConcurrentFirstAdminRace(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

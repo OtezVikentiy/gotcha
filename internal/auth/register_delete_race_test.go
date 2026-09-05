@@ -135,3 +135,80 @@ func TestRegisterVsDeleteSelfAccountRace(t *testing.T) {
 			"инстанс остался без администратора — гонка Register/DeleteSelfAccount не закрыта", newAdmin, err)
 	}
 }
+
+// TestDeleteSelfAccountRespectsBootstrapLock (T8, фикс-раунд 1) — критическая
+// находка ревью TestRegisterVsDeleteSelfAccountRace выше: там «удаляющая»
+// сторона ведётся вручную (свой delTx сам берёт лок), поэтому настоящий
+// identity.go никогда не вызывается — снятие лока в реальном
+// DeleteSelfAccount тот тест не ловит вовсе.
+//
+// Этот тест дёргает НАСТОЯЩИЙ svc.DeleteSelfAccount напрямую и проверяет
+// именно его отношение к общему локу: тест сам держит
+// instanceAdminBootstrapLockClass на отдельной транзакции, запускает
+// DeleteSelfAccount в горутине и убеждается, что тот не возвращается, пока
+// лок удерживается, — а после его отпускания успешно завершается и
+// действительно удаляет строку. Тот же приём (select с таймаутом вместо сна
+// вслепую), что и TestDeleteSelfAccountLocksInstanceAdminFlag
+// (instance_admin_test.go) для FOR UPDATE — здесь для advisory-лока.
+func TestDeleteSelfAccountRespectsBootstrapLock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := auth.NewService(pool)
+	bg := context.Background()
+
+	uid, err := svc.Register(bg, "bootstrap-lock-delete@example.com", "password12")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	lockTx, err := pool.Begin(bg)
+	if err != nil {
+		t.Fatalf("begin lockTx: %v", err)
+	}
+	defer lockTx.Rollback(bg)
+	// classID=3 — instanceAdminBootstrapLockClass (identity.go), см. ту же
+	// оговорку в TestRegisterVsDeleteSelfAccountRace выше.
+	const instanceAdminBootstrapLockClass = 3
+	if _, err := lockTx.Exec(bg, "SELECT pg_advisory_xact_lock($1, 0)", instanceAdminBootstrapLockClass); err != nil {
+		t.Fatalf("lockTx: bootstrap lock: %v", err)
+	}
+
+	deleteDone := make(chan error, 1)
+	go func() {
+		deleteDone <- svc.DeleteSelfAccount(bg, uid)
+	}()
+
+	// DeleteSelfAccount обязана застрять на том же локе, пока lockTx его
+	// держит, — иначе идентичный лок в Register не сериализовал бы её с
+	// конкурентной регистрацией (ровно то, что закрывает
+	// TestRegisterVsDeleteSelfAccountRace).
+	select {
+	case err := <-deleteDone:
+		t.Fatalf("DeleteSelfAccount вернулась до отпускания lockTx (err=%v) — не сериализована общим локом", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	if err := lockTx.Commit(bg); err != nil {
+		t.Fatalf("commit lockTx: %v", err)
+	}
+
+	var delErr error
+	select {
+	case delErr = <-deleteDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("DeleteSelfAccount не вернулась после отпускания lockTx")
+	}
+	if delErr != nil {
+		t.Fatalf("DeleteSelfAccount после отпускания lockTx: %v", delErr)
+	}
+
+	count, err := svc.UserCount(bg)
+	if err != nil {
+		t.Fatalf("UserCount: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("UserCount после удаления = %d, want 0", count)
+	}
+}

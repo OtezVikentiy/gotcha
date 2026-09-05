@@ -83,20 +83,26 @@ func (s *Service) Register(ctx context.Context, email, password string) (int64, 
 
 	// PROD-B1: первый пользователь инстанса становится инстанс-админом.
 	// Флаг вычисляется атомарно в том же операторе через NOT EXISTS. Лок
-	// выше заодно сериализует и ДВЕ параллельные первые регистрации между
-	// собой (обе метят один objID) — вторая дожидается COMMIT первой и уже
-	// видит её строку, так что NOT EXISTS для неё честно возвращает false.
-	// Частичный уникальный индекс one_instance_admin остаётся рубежом на
-	// случай, если это когда-нибудь перестанет быть так (иной путь вставки,
-	// либо лок снят выше по стеку) — а не рабочей веткой при нормальной
-	// работе.
+	// выше сериализует ВСЕ регистрации между собой (все метят один objID) —
+	// вторая дожидается COMMIT первой и уже видит её строку, так что
+	// NOT EXISTS для неё честно возвращает false.
 	//
-	// SAVEPOINT — на случай проигранной гонки за право быть первым админом:
-	// без него ошибка 23505 переводит ВСЮ транзакцию в aborted-состояние
-	// (25P02), и повторная вставка ниже упала бы вместо честного ретрая.
-	if _, err := tx.Exec(ctx, "SAVEPOINT register_insert"); err != nil {
-		return 0, fmt.Errorf("auth: register: savepoint: %w", err)
-	}
+	// Раньше здесь был SAVEPOINT и ретрай на случай проигранной гонки за
+	// право быть первым админом (частичный уникальный индекс
+	// one_instance_admin ловил ДВЕ параллельные первые регистрации, обе
+	// увидевшие пустую таблицу разом). Лок выше делает эту гонку
+	// НЕДОСТИЖИМОЙ: ни другой Register (сериализован тем же локом), ни
+	// TransferInstanceAdmin (user.go: работает только на СУЩЕСТВУЮЩЕМ
+	// пользователе-вызывающем — fromUID обязан существовать ДО вызова,
+	// значит таблица никогда не пуста на всём протяжении передачи, а
+	// NOT EXISTS выше в принципе не может вернуть true параллельно с ней)
+	// не может вставить/выставить второй is_instance_admin=true, пока эта
+	// транзакция ждёт своей очереди на лок. T8 фикс-раунд 1: ретрай убран
+	// как мёртвый код (0 попаданий на TestRegister_ConcurrentFirstAdminRace
+	// после лока — см. её докблок); если конфликт всё же случится, это
+	// сигнал сломанного инварианта (лок снят выше по стеку, либо появился
+	// новый путь вставки в обход него), а не штатная гонка — падаем громко,
+	// а не втихую становимся вторым не-админом.
 	var id int64
 	err = tx.QueryRow(ctx,
 		`INSERT INTO users (email, password_hash, is_instance_admin)
@@ -104,32 +110,13 @@ func (s *Service) Register(ctx context.Context, email, password string) (int64, 
 		 RETURNING id`,
 		email, hash).Scan(&id)
 	// RA-L6: 23505 приходит от двух разных индексов. Различаем по имени
-	// констрейнта: unique(email) → email действительно занят; one_instance_admin
-	// → мы проиграли гонку за первого админа (NOT EXISTS увидел пустую таблицу,
-	// но другой запрос уже вставил админа). Во втором случае email свободен —
-	// повторяем вставку уже без претензии на админский флаг.
+	// констрейнта: unique(email) → email действительно занят.
+	// one_instance_admin — см. комментарий выше: при исправной блокировке
+	// недостижимо, а не штатный путь.
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		if pgErr.ConstraintName == "one_instance_admin" {
-			if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT register_insert"); rbErr != nil {
-				return 0, fmt.Errorf("auth: register: rollback to savepoint: %w", rbErr)
-			}
-			err = tx.QueryRow(ctx,
-				`INSERT INTO users (email, password_hash, is_instance_admin)
-				 VALUES ($1, $2, false)
-				 RETURNING id`,
-				email, hash).Scan(&id)
-			// После ретрая 23505 может быть уже только по email.
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-				return 0, ErrEmailTaken
-			}
-			if err != nil {
-				return 0, fmt.Errorf("auth: register: %w", err)
-			}
-			if err := tx.Commit(ctx); err != nil {
-				return 0, fmt.Errorf("auth: register: commit: %w", err)
-			}
-			return id, nil
+			return 0, fmt.Errorf("auth: register: unexpected one_instance_admin conflict (bootstrap lock invariant broken): %w", err)
 		}
 		return 0, ErrEmailTaken
 	}
