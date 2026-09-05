@@ -6,10 +6,14 @@ set -euo pipefail
 REH_DIR="${REH_DIR:-/ssd/pet/gotcha-reh}"
 REH_PROJECT="${REH_PROJECT:-gotcha-reh}"
 REH_PORT="${REH_PORT:-59081}"
-REH_ENV="${REH_ENV:?путь к .env стенда не задан}"
-REH_OVERRIDE="${REH_OVERRIDE:?путь к compose.override.yml не задан}"
+# Проверяются не здесь, а в dc(): compare сравнивает два локальных файла, и
+# требовать от него доступа к стенду незачем.
+REH_ENV="${REH_ENV:-}"
+REH_OVERRIDE="${REH_OVERRIDE:-}"
 
 dc() {
+  : "${REH_ENV:?путь к .env стенда не задан}"
+  : "${REH_OVERRIDE:?путь к compose.override.yml не задан}"
   docker compose -p "$REH_PROJECT" --env-file "$REH_ENV" \
     -f "$REH_DIR/docker-compose.yml" -f "$REH_OVERRIDE" "$@"
 }
