@@ -135,6 +135,12 @@ type Shell struct {
 	// страницу заявок, которые никогда не досчитаются, — введение в
 	// заблуждение, а не полезная ссылка (спека E1 §10: «кнопки скрыты»).
 	ExportsEnabled bool
+	// ProfileRegressionsEnabled — фича регрессий self-CPU профилей
+	// сконфигурирована на инстансе (h.ProfileRegressions != nil в web-слое).
+	// Тот же приём, что и у ExportsEnabled (K7-14): страница
+	// /projects/{id}/profile-regressions без сервиса всегда отвечает 404,
+	// пункт меню на неё показывать незачем.
+	ProfileRegressionsEnabled bool
 	// Back — валидированный same-origin относительный путь «откуда пришёл»
 	// (из заголовка Referer, посчитан в web-слое). Пустой, если Referer
 	// отсутствует, ведёт на текущую же страницу (перезагрузка) или на чужой
@@ -426,6 +432,15 @@ func Subsections(s Shell) []NavItem {
 			{LabelKey: "nav.profiles", Href: "/projects/" + effID + "/profiles"},
 			{LabelKey: "nav.dependencies", Href: "/projects/" + effID + "/dependencies"},
 			{LabelKey: "nav.deployments", Href: "/projects/" + effID + "/deployments"},
+		}
+		// Регрессии профилей (K7-14): раздел существовал без входа из рейла —
+		// та же граница видимости, что у «Выгрузок» в issues выше, тем же
+		// поводом (ProfileRegressionsEnabled сверх доступа к области — сервис
+		// не сконфигурирован на инстансе, страница всегда 404).
+		if s.ProfileRegressionsEnabled {
+			items = append(items,
+				NavItem{LabelKey: "nav.profile_regressions", Href: "/projects/" + effID + "/profile-regressions"},
+			)
 		}
 	case "metrics":
 		items = []NavItem{{LabelKey: "nav.metrics", Href: "/projects/" + effID + "/metrics"}}

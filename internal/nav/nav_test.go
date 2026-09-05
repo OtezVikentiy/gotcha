@@ -327,6 +327,45 @@ func TestSubsectionsIssuesExportsGatedByCanOperate(t *testing.T) {
 	}
 }
 
+// TestSubsectionsPerformanceProfileRegressionsGatedByFlag — K7-14: раздел
+// «Регрессии профилей» существовал (/projects/{id}/profile-regressions,
+// CanAccessProject — доступен и не-оператору), но в подразделах рейла его не
+// было — попасть в него из навигации было нельзя. Пункт гейтится ТОЛЬКО
+// ProfileRegressionsEnabled (h.ProfileRegressions != nil в web-слое) — тем же
+// приёмом, что и «Выгрузки» (TestSubsectionsIssuesExportsGatedByCanOperate),
+// но без требования CanOperate: обычному участнику проекта пункт тоже нужен.
+func TestSubsectionsPerformanceProfileRegressionsGatedByFlag(t *testing.T) {
+	base := Shell{ProjectID: 7, Area: "performance", Path: "/projects/7/performance"}
+
+	without := Subsections(base)
+	if len(without) != 5 {
+		t.Fatalf("без ProfileRegressionsEnabled: len(Subsections) = %d, want 5, got %+v", len(without), without)
+	}
+
+	base.ProfileRegressionsEnabled = true
+	with := Subsections(base)
+	if len(with) != 6 {
+		t.Fatalf("с ProfileRegressionsEnabled: len(Subsections) = %d, want 6, got %+v", len(with), with)
+	}
+	last := with[5]
+	if last.LabelKey != "nav.profile_regressions" || last.Href != "/projects/7/profile-regressions" {
+		t.Errorf("пункт «регрессии профилей» = %+v", last)
+	}
+
+	// Подсветка активного пункта на его собственной странице.
+	base.Path = "/projects/7/profile-regressions"
+	active := Subsections(base)
+	activeIdx := -1
+	for i, it := range active {
+		if it.Active {
+			activeIdx = i
+		}
+	}
+	if activeIdx != 5 {
+		t.Errorf("на /profile-regressions активный индекс = %d, want 5, got %+v", activeIdx, active)
+	}
+}
+
 func TestSubsectionsEffectiveProjectFallback(t *testing.T) {
 	// ProjectID unset, falls back to first project in list.
 	s := Shell{

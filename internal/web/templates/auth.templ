@@ -26,7 +26,14 @@ templ oauthButtons(providers []OAuthButton) {
 // next — куда вернуть человека после входа (уже провалидированный
 // относительный путь этого сайта, см. safeNextPath). Пустая строка — на
 // главную. Едет скрытым полем, чтобы пережить POST формы.
-templ Login(errMsg, next string, providers []OAuthButton) {
+//
+// email — то, что человек уже набрал в форме (K7-12): после отказа входа
+// (лимит, принудительный SSO, неверные данные) поле не должно пустеть, иначе
+// адрес приходится набирать заново. Пароль сюда никогда не попадает — его нет
+// ни в одном вызове этого шаблона. Значение уходит через { } — экранирование
+// атрибута templ-рантайма, инъекция им закрыта; на сообщение об ошибке (уже
+// вычисленное вызывающим) email не влияет — существование учётки не палится.
+templ Login(errMsg, next, email string, providers []OAuthButton) {
 	@chromeless(i18n.T(ctx, "auth.login.title"), "") {
 		<div class="auth-brand">
 			@brandMark()
@@ -44,7 +51,7 @@ templ Login(errMsg, next string, providers []OAuthButton) {
 			<div class="field">
 				<label>
 					{ i18n.T(ctx, "auth.email") }
-					<input type="email" name="email" autocomplete="email" required autofocus class="input"/>
+					<input type="email" name="email" autocomplete="email" required autofocus class="input" value={ email }/>
 				</label>
 			</div>
 			<div class="field">

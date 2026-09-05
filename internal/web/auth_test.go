@@ -160,6 +160,30 @@ func TestLoginPerIPRateLimit(t *testing.T) {
 	}
 }
 
+// TestLoginBadCredentialsPreservesEmail — K7-12: после неверного пароля поле
+// email в форме не должно пустеть — человек уже набрал его один раз. Пароль,
+// наоборот, никогда не возвращается: поле password остаётся пустым.
+func TestLoginBadCredentialsPreservesEmail(t *testing.T) {
+	s := newStack(t)
+
+	form := url.Values{
+		"email":    {"typed-user@example.com"},
+		"password": {"wrong-password"},
+	}
+	resp := postForm(t, s.srv, "/login", form, s.srv.URL, nil)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("bad credentials status = %d, want 422", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), `value="typed-user@example.com"`) {
+		t.Fatalf("login form after bad credentials должен вернуть введённый email: %s", body)
+	}
+	if strings.Contains(string(body), "wrong-password") {
+		t.Fatalf("login form after bad credentials не должен возвращать пароль: %s", body)
+	}
+}
+
 func TestWebAuthFlow(t *testing.T) {
 	s := newStack(t)
 

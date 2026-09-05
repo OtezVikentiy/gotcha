@@ -19,9 +19,21 @@ import (
 // регистрация в закрытом режиме прячет форму.
 func TestAuthPages(t *testing.T) {
 	providers := []OAuthButton{{Name: "yandex", Label: "Войти через Яндекс"}, {Name: "github", Label: "GitHub"}}
-	login := renderTo(t, Login("неверный пароль", "", providers))
+	login := renderTo(t, Login("неверный пароль", "", "a@b.c", providers))
 	if !strings.Contains(login, "неверный пароль") || !strings.Contains(login, "Яндекс") {
 		t.Error("логин должен показать ошибку и OAuth-кнопки")
+	}
+	// K7-12: адрес, набранный до отказа входа, возвращается в поле формы, а
+	// не пропадает — иначе после ошибки его пришлось бы набирать заново.
+	if !strings.Contains(login, `value="a@b.c"`) {
+		t.Error("логин должен вернуть введённый email в поле формы")
+	}
+	// Экранирование значения атрибута (кластер K7-12): "><script> в email не
+	// должен разорвать атрибут value и открыть инъекцию — весь тег остаётся
+	// текстом внутри value.
+	loginXSS := renderTo(t, Login("неверный пароль", "", `"><script>x</script>`, providers))
+	if strings.Contains(loginXSS, "<script>") {
+		t.Error("email в форме логина должен быть экранирован, а не вставлен как HTML")
 	}
 	reg := renderTo(t, RegisterForm("", false, "", providers))
 	if !strings.Contains(reg, "GitHub") {

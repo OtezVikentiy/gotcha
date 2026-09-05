@@ -76,6 +76,7 @@
     "nav.transactions": "Транзакции",
     "nav.webvitals": "Web Vitals",
     "nav.profiles": "Профили",
+    "nav.profile_regressions": "Регрессии профилей",
     "nav.perf_issues": "Узкие места",
     "nav.regressions": "Регрессии",
     "nav.dependencies": "Зависимости",

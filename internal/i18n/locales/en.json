@@ -76,6 +76,7 @@
     "nav.transactions": "Transactions",
     "nav.webvitals": "Web Vitals",
     "nav.profiles": "Profiles",
+    "nav.profile_regressions": "Profile regressions",
     "nav.perf_issues": "Bottlenecks",
     "nav.regressions": "Regressions",
     "nav.dependencies": "Dependencies",

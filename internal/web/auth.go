@@ -76,7 +76,7 @@ func (h *Handler) resolveAuthNext(w http.ResponseWriter, r *http.Request, rawNex
 
 func (h *Handler) loginPage(w http.ResponseWriter, r *http.Request) {
 	next := h.resolveAuthNext(w, r, r.URL.Query().Get("next"))
-	_ = templates.Login("", next, h.oauthButtons(r.Context())).Render(r.Context(), w)
+	_ = templates.Login("", next, "", h.oauthButtons(r.Context())).Render(r.Context(), w)
 }
 
 func (h *Handler) registerPage(w http.ResponseWriter, r *http.Request) {
@@ -266,7 +266,7 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	if !h.ipLimiter.Allow(h.clientIP(r)) || !h.loginLimiter.Allow(h.rateLimitKey(r, email)) ||
 		!h.emailLimiter.Allow(emailKey) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		_ = templates.Login(i18n.T(r.Context(), "err.auth.rate_limited_login"), safeNextPath(r.FormValue("next")), h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.Login(i18n.T(r.Context(), "err.auth.rate_limited_login"), safeNextPath(r.FormValue("next")), email, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
@@ -281,14 +281,14 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	if enforced {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Login(i18n.T(r.Context(), "err.auth.sso_required"), safeNextPath(r.FormValue("next")), h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.Login(i18n.T(r.Context(), "err.auth.sso_required"), safeNextPath(r.FormValue("next")), email, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
 	uid, err := h.Auth.Authenticate(r.Context(), email, password)
 	if err != nil {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.Login(i18n.T(r.Context(), "err.auth.bad_credentials"), safeNextPath(r.FormValue("next")), h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.Login(i18n.T(r.Context(), "err.auth.bad_credentials"), safeNextPath(r.FormValue("next")), email, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
