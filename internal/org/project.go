@@ -231,7 +231,14 @@ func (s *Service) DeleteProject(ctx context.Context, projectID int64) error {
 // (team_members_member_fk делает висячее членство невозможным) и стоит здесь
 // намеренно, вторым рубежом: правило доступа не должно зависеть от того, не
 // сняли ли ограничение будущей миграцией.
-const accessCondition = `
+//
+// Внешние скобки обязательны и не декоративны. Условие — дизъюнкция, а
+// подставляется оно в WHERE рядом с другими предикатами: без скобок
+// "WHERE p.org_id = $2 AND " + accessCondition разбирается как
+// (p.org_id = $2 AND первая ветвь) OR (вторая ветвь), и вторая ветвь остаётся
+// без сужения по организации — ProjectsForUserInOrg отдавал проекты всех
+// организаций, где пользователь состоит хоть в одной команде.
+const accessCondition = `(
 	EXISTS (
 		SELECT 1 FROM org_members m
 		WHERE m.org_id = p.org_id AND m.user_id = $1 AND m.role IN ('owner','admin')
@@ -240,7 +247,8 @@ const accessCondition = `
 		JOIN team_members tm ON tm.team_id = pt.team_id
 		JOIN org_members m2 ON m2.org_id = p.org_id AND m2.user_id = tm.user_id
 		WHERE pt.project_id = p.id AND tm.user_id = $1
-	)`
+	)
+)`
 
 // ProjectsForUser возвращает проекты, доступные пользователю.
 func (s *Service) ProjectsForUser(ctx context.Context, userID int64) ([]Project, error) {

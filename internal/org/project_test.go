@@ -475,3 +475,74 @@ func TestProjectsForUserInOrg(t *testing.T) {
 		t.Fatalf("ProjectsForUserInOrg(orgB) = %+v, err = %v, want only projB", got, err)
 	}
 }
+
+// TestProjectsForUserInOrgIgnoresTeamAccessElsewhere — приоритет операторов в
+// SQL: accessCondition — это «EXISTS(...) OR EXISTS(...)», и подстановка его в
+// "WHERE p.org_id = $2 AND " + accessCondition давала
+// (p.org_id = $2 AND владелец) OR (членство в команде), потому что AND
+// связывает сильнее OR. Вторая ветвь оставалась без сужения по организации, и
+// страница «Проекты организации X» показывала проекты всех организаций, где
+// пользователь состоит хоть в одной команде.
+//
+// TestProjectsForUserInOrg выше эту ветвь не трогает: там владелец без единой
+// команды, а у web-теста TestOrgProjectsScopedToMemberTeams обе организации
+// схлопнуты в одну. Нужна ровно эта пара: владелец здесь И участник команды
+// там.
+func TestProjectsForUserInOrgIgnoresTeamAccessElsewhere(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	user := newUser(t, pool, "crossorg-user@example.com")
+	other := newUser(t, pool, "crossorg-other@example.com")
+
+	mine, err := svc.CreateOrg(ctx, "crossorg-mine", "Mine", user)
+	if err != nil {
+		t.Fatalf("CreateOrg mine: %v", err)
+	}
+	projMine, err := svc.CreateProject(ctx, mine.ID, "mine-proj", "Mine Proj", "go")
+	if err != nil {
+		t.Fatalf("CreateProject mine: %v", err)
+	}
+
+	foreign, err := svc.CreateOrg(ctx, "crossorg-foreign", "Foreign", other)
+	if err != nil {
+		t.Fatalf("CreateOrg foreign: %v", err)
+	}
+	projForeign, err := svc.CreateProject(ctx, foreign.ID, "foreign-proj", "Foreign Proj", "go")
+	if err != nil {
+		t.Fatalf("CreateProject foreign: %v", err)
+	}
+	if err := svc.AddMember(ctx, foreign.ID, user, org.RoleMember); err != nil {
+		t.Fatalf("AddMember foreign: %v", err)
+	}
+	team, err := svc.CreateTeam(ctx, foreign.ID, "crossorg-team", "Crossorg Team")
+	if err != nil {
+		t.Fatalf("CreateTeam: %v", err)
+	}
+	if err := svc.AddTeamMember(ctx, team.ID, user); err != nil {
+		t.Fatalf("AddTeamMember: %v", err)
+	}
+	if err := svc.AttachTeam(ctx, projForeign.ID, team.ID); err != nil {
+		t.Fatalf("AttachTeam: %v", err)
+	}
+
+	got, err := svc.ProjectsForUserInOrg(ctx, user, mine.ID)
+	if err != nil {
+		t.Fatalf("ProjectsForUserInOrg(mine): %v", err)
+	}
+	if len(got) != 1 || got[0].ID != projMine.ID {
+		names := make([]string, 0, len(got))
+		for _, p := range got {
+			names = append(names, p.Name)
+		}
+		t.Fatalf("ProjectsForUserInOrg(mine) вернул %d проектов %v, ожидался только %q: в выборку протёк проект чужой организации", len(got), names, projMine.Name)
+	}
+
+	// Обратная сторона того же правила: в своей организации проект, доступный
+	// по команде, обязан остаться видимым.
+	if got, err := svc.ProjectsForUserInOrg(ctx, user, foreign.ID); err != nil || len(got) != 1 || got[0].ID != projForeign.ID {
+		t.Fatalf("ProjectsForUserInOrg(foreign) = %+v, err = %v, ожидался только %q", got, err, projForeign.Name)
+	}
+}

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- The organization projects page (`/orgs/{id}/projects`) no longer lists
+  projects from other organizations. Operator precedence in the access
+  predicate — `AND` binds tighter than `OR` — left the team-membership branch
+  unscoped, so anyone belonging to a team in another organization saw that
+  organization's projects on this page as well. Access itself was never
+  widened: every project shown was one the viewer could already open. The
+  predicate is now parenthesized at the source, which also protects the two
+  other queries built from it.
+
 ## [0.37.1] - 2026-09-06
 
 ### Security
