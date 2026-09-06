@@ -304,7 +304,9 @@ func TestFeedItemHrefHostReusesHostLink(t *testing.T) {
 }
 
 // TestOverviewHelpPanelAndBackLink — W16/W28: страница объясняет себя
-// (helpPanel со ссылкой на /docs/incident-groups) и ведёт обратно на
+// (helpPanel со ссылкой на собственный гайд /docs/overview — до появления
+// этой страницы панель вела на /docs/incident-groups, ближайший по смыслу
+// раздел) и ведёт обратно на
 // страницу аптайм-инцидентов (/projects/{id}/incidents), а не только
 // наоборот. Подпись ссылки — "Сбои доступности" (nav.incidents), не
 // "Инциденты": прежняя строка ассерта уже разъехалась с каталогом
@@ -317,8 +319,8 @@ func TestOverviewHelpPanelAndBackLink(t *testing.T) {
 	if !strings.Contains(html, `class="help-panel"`) {
 		t.Errorf("page must render the help panel: %s", html)
 	}
-	if !strings.Contains(html, `href="/docs/incident-groups"`) {
-		t.Errorf("help panel must link to the incident-groups guide: %s", html)
+	if !strings.Contains(html, `href="/docs/overview"`) {
+		t.Errorf("help panel must link to the overview guide: %s", html)
 	}
 	wantBackHref := `href="` + incidentsPath(projectID) + `"`
 	if !strings.Contains(html, wantBackHref) {

@@ -149,7 +149,7 @@ templ Overview(projectID int64, rangeKey string, openGroups []GroupCard, outOfGr
 			<p class="hint">{ i18n.T(ctx, "feed.see_incidents_hint") }<a href={ templ.URL(incidentsPath(projectID)) }>{ i18n.T(ctx, "nav.incidents") }</a>{ i18n.T(ctx, "feed.see_incidents_hint_suffix") }</p>
 			@statusLine(projectID, sl)
 			@overviewDeploys(projectID, deploys)
-			@helpPanel("feed", "incident-groups")
+			@helpPanel("feed", "overview")
 			if empty {
 				@emptyState("home", "overview.empty.title", "overview.empty.body", "getting_started.title", projectSetupPath(projectID), 2)
 				@overviewRangeTabs(projectID, rangeKey)

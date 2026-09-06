@@ -33,7 +33,7 @@ edges are set on the ["Alerts → Silence → Storm suppression"](/docs/alert-su
 
 ## Overview
 
-The "Overview" section shows open groups with their
+The ["Overview"](/docs/overview) section shows open groups with their
 composition (expand in place), open out-of-group incidents across all six
 sources, and what recently resolved — the window is switchable (24h/7d).
 
