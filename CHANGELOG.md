@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **1.0: the compatibility contract is now frozen.** Environment variable
+  names, ingest addresses and request body formats, the migration schema, the
+  backup format, the names of non-temporary self-metrics, the outgoing webhook
+  body, the `GOTCHA_AGENT_*` contract and already-published status page URLs
+  change only in a backward-compatible way from here on — anything else waits
+  for a major version. The full promise, and what deliberately stays outside
+  it, is on the [versioning policy](/docs/versioning) page. Before 1.0 the
+  contract could change between releases; it no longer can.
+
 ### Fixed
 - The organization projects page (`/orgs/{id}/projects`) no longer lists
   projects from other organizations. Operator precedence in the access
