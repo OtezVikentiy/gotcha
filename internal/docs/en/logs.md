@@ -249,7 +249,7 @@ of the batch.
 > `POST /logs`. That path still works and behaves identically — same
 > authentication, same rate limit, same quota — but it is deprecated: responses
 > to it carry `Deprecation` and `Link; rel="deprecation"` headers, and it will
-> be removed in 1.0. Point your senders at `/api/v1/logs`. If you run gotcha
+> be removed in 2.0. Point your senders at `/api/v1/logs`. If you run gotcha
 > yourself, `gotcha_ingest_deprecated_path_total{path="/logs"}` tells you
 > whether anything still uses the old path.
 

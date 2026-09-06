@@ -1124,7 +1124,7 @@
     "ingest_signals.deprecated.title": "Проект присылал данные по устаревшим адресам приёма",
     "ingest_signals.deprecated.item": "{path} — последний раз:",
     "ingest_signals.deprecated.item_hits": ", запросов всего: {hits}",
-    "ingest_signals.deprecated.hint": "Адреса удаляются в 1.0 — обновите отправителя.",
+    "ingest_signals.deprecated.hint": "Адреса удаляются в 2.0 — обновите отправителя.",
     "ingest_signals.deprecated.link": "Как перейти на канонические адреса",
     "ingest_signals.rejects.title": "Приём отклонял запросы с ключом этого проекта:",
     "ingest_signals.rejects.key_invalid": "всего {hits} — ключ не найден или отозван: сверьте DSN, последний раз:",

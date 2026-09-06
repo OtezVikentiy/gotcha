@@ -157,12 +157,14 @@ replacements, and the removal deadline live in the
 
 Watch it after upgrading: a non-zero rate means some sender still uses a path
 that will be removed. Once every series here stays flat at zero, you are safe
-for 1.0.
+for their removal.
 
 **This metric is temporary.** It exists only to make that check mechanical, and
-it will be removed in 1.0 together with the deprecated paths themselves. Do not
+it will be removed in 2.0 together with the deprecated paths themselves. Do not
 build a long-lived dashboard or alert on it — unlike the rest of the metrics on
-this page, its name is not part of the 1.0 observability contract.
+this page, its name is deliberately excluded from the frozen observability
+contract, precisely because the metric is temporary and disappears together
+with the aliases in 2.0.
 
 **`gotcha_metric_points_clock_skew_total`** — metric points that arrived with a
 timestamp from the future and were clamped to the receive time. To charts and

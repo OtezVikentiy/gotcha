@@ -10,7 +10,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingestsignal"
 )
 
-// DeprecatedPath — старый путь приёма, оставленный работать алиасом до 1.0.
+// DeprecatedPath — старый путь приёма, оставленный работать алиасом до 2.0.
 // Три собственных входа gotcha исторически жили в чужих неймспейсах: /logs и
 // /profiles/pprof — в корне рядом с SSR catch-all, /api/{project}/deployments/
 // — в неймспейсе совместимости с Sentry SDK. Каноном стал собственный
@@ -22,7 +22,7 @@ import (
 // конкретный URL запроса: у деплоя путь содержит id проекта, и разворачивать
 // его в метку значило бы взорвать кардинальность метрики.
 //
-// Метрика и весь этот файл ВРЕМЕННЫЕ: они умирают вместе с алиасами в 1.0.
+// Метрика и весь этот файл ВРЕМЕННЫЕ: они умирают вместе с алиасами в 2.0.
 // Это сказано и в /docs/self-monitoring обеих локалей, и в CHANGELOG — имя
 // self-метрики после задачи 1 контрактного прохода является обещанием
 // оператору, и обещание «этот счётчик исчезнет» обязано быть дано вслух в тот
@@ -183,7 +183,7 @@ func (h *Handler) deprecatedAlias(p DeprecatedPath, next http.HandlerFunc) http.
 		// старые пути принимают телеметрию с той же частотой, что и новые.
 		if once, ok := h.deprecatedLogged[p]; ok {
 			once.Do(func() {
-				slog.Warn("ingest: deprecated path used, switch the sender before 1.0",
+				slog.Warn("ingest: deprecated path used, switch the sender before 2.0",
 					"path", string(p), "canonical", target.canonical)
 			})
 		}

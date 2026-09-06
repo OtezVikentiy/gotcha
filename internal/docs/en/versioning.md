@@ -102,13 +102,13 @@ As of 1.0, two deprecations are open in the contract:
 
 | What's deprecated | When it's removed |
 |---|---|
-| Three ingest aliases — `/logs`, `/profiles/pprof`, `/api/{project}/deployments/` (replaced by `/api/v1/logs`, `/api/v1/profiles/pprof`, `/api/v1/{project}/deployments`) | at 1.0 |
+| Three ingest aliases — `/logs`, `/profiles/pprof`, `/api/{project}/deployments/` (replaced by `/api/v1/logs`, `/api/v1/profiles/pprof`, `/api/v1/{project}/deployments`) | live until 2.0 |
 | The renamed-environment-variable registry (startup refusal on an old name; full list in [Upgrade](/docs/upgrade)) | lives until 2.0 |
 
 For the three ingest aliases, the `gotcha_ingest_deprecated_path_total{path="…"}`
 counter in [Monitoring gotcha itself](/docs/self-monitoring) shows whether
 anything is still hitting the old path — a non-zero rate after upgrading is
-your signal to move that sender to the new path before 1.0. The same
+your signal to move that sender to the new path before 2.0. The same
 question for a SPECIFIC project (rather than the whole instance) is also
 visible without observability: the project settings page shows whether that
 project has hit a deprecated address in the last 7 days.

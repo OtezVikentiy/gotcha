@@ -1124,7 +1124,7 @@
     "ingest_signals.deprecated.title": "This project has been sending data to deprecated ingest addresses",
     "ingest_signals.deprecated.item": "{path} — last seen:",
     "ingest_signals.deprecated.item_hits": ", requests total: {hits}",
-    "ingest_signals.deprecated.hint": "These addresses are removed in 1.0 — update your sender.",
+    "ingest_signals.deprecated.hint": "These addresses are removed in 2.0 — update your sender.",
     "ingest_signals.deprecated.link": "How to move to the canonical addresses",
     "ingest_signals.rejects.title": "Ingest has been rejecting requests using this project's key:",
     "ingest_signals.rejects.key_invalid": "{hits} total — key not found or revoked: check your DSN, last seen:",

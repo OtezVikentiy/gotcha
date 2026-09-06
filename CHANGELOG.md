@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- The three deprecated ingest aliases (`/logs`, `/profiles/pprof`,
+  `/api/{project}/deployments/`) are now scheduled for removal in 2.0 instead
+  of 1.0, matching our own deprecation policy of at least one full major
+  release between announcing a deprecation and removing it. Nothing about the
+  aliases themselves changes — same headers, same counter, same responses —
+  only the documented removal date. The `gotcha_ingest_deprecated_path_total`
+  metric's help text was updated to match.
+
 ## [0.36.0] - 2026-09-05
 
 ### Fixed
