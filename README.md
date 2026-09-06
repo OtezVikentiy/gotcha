@@ -21,7 +21,7 @@ works.
 - **Deployment markers** — CI reports each release with a single request; deploys show up as markers on performance/metrics/host/uptime charts and are flagged against regressions that started shortly after.
 - **Profiling** — CPU/flamegraph profiles from Sentry profiling payloads and pprof, with regression detection.
 - **Uptime monitoring** — HTTP checks from a built-in local region or remote probes, incident detection, public status pages.
-- **Hosts** — system metrics for your servers (CPU, memory, disk, network, load average, processes) via the native `gotcha-agent` (installed with one command straight from the instance) or an OpenTelemetry Collector; built-in thresholds and incidents.
+- **Hosts** — system metrics for your servers (CPU, memory, disk, network, load average, processes) via the native `gotcha-agent` (installed with one command straight from the instance) or an OpenTelemetry Collector; environment/role labels for filtering and grouping, built-in thresholds (with per-label overrides) and incidents.
 - **SLOs and error budgets** — availability/latency/uptime objectives with two-window burn-rate alerting and an attainment/budget dashboard.
 - **Service monitoring recipes** — ready-made OTel collector configs, live-data detection, prebuilt charts and one-click recommended thresholds for common services (PostgreSQL, nginx, Redis, Docker, MariaDB).
 - **Alerting** — delivery via email, webhook, and Telegram; rules for new issues, spikes, metric thresholds, and performance/uptime regressions.
@@ -31,7 +31,20 @@ works.
 - **Exports** — background CSV/JSON/NDJSON exports of a project's error groups or raw events, filtered by time range/environment and PII-masked by default.
 - **Organizations, teams and RBAC** — multi-tenant organizations, projects, membership roles.
 - **SSO** — OIDC (generic), Yandex ID, and VK ID login, each independently configurable.
+- **Scoped ingest keys** — each DSN key is typed (browser/server/agent) and limited to what that source actually needs, so a publicly-exposed browser key can't register hosts or post deployment markers.
+- **Self-monitoring** — the instance reports its own state: `/healthz`, `/readyz` and `/version` for liveness, readiness and build metadata, and Prometheus counters on `/metrics` for ingest buffers, drops, insert failures and background-evaluator liveness. `/metrics` touches neither database, so it still answers when PostgreSQL or ClickHouse is down — which is exactly when you need it.
 - **Privacy by default** — server-side PII scrubbing (IP/email zeroing, key-based redaction) and SSRF protection for outbound webhook/uptime requests, both on by default.
+
+## Versioning and stability
+
+Before 1.0, gotcha's contract can change between releases without notice —
+see the CHANGELOG and the [Upgrade](internal/docs/en/upgrade.md) guide for
+what moved release to release. Starting at 1.0, part of that contract will
+freeze: environment variable names, ingest endpoints and request body
+formats, the migration schema, and the backup format will only change in a
+backward-compatible way, or with a major version. See the
+[Versioning policy](internal/docs/en/versioning.md) for the full promise and
+what stays out of it.
 
 ## Architecture
 
