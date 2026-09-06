@@ -52,6 +52,7 @@ var registry = []struct{ Slug, Group string }{
 	{"self-monitoring", "docs.group.deploy"},
 	{"cardinality", "docs.group.deploy"},
 	// Разделы
+	{"overview", "docs.group.sections"},
 	{"issues", "docs.group.sections"},
 	{"exports", "docs.group.sections"},
 	{"performance", "docs.group.sections"},

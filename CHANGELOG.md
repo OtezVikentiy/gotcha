@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Documentation page for the project **"Overview"** screen (`/docs/overview`,
+  both locales) — what each of the three status tiles counts and over which
+  window, what the 24h/7d switch does and does not affect, how the three
+  timeline sections are filled and capped, and when the empty state shows.
+  The screen has been the project's entry point since 0.29.0 but had no page
+  of its own; its "More in the documentation" link now leads to that page
+  instead of the incident groups guide.
+
 ### Changed
 - The three deprecated ingest aliases (`/logs`, `/profiles/pprof`,
   `/api/{project}/deployments/`) are now scheduled for removal in 2.0 instead
