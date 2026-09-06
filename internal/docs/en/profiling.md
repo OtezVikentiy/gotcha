@@ -41,7 +41,7 @@ A successful submission returns `202 Accepted`. If profiling is disabled on the 
 > root, at `POST /profiles/pprof`. That path still works and behaves
 > identically — same authentication, same rate limit, same quota — but it is
 > deprecated: responses to it carry `Deprecation` and `Link; rel="deprecation"`
-> headers, and it will be removed in 1.0. Point your senders at
+> headers, and it will be removed in 2.0. Point your senders at
 > `/api/v1/profiles/pprof`. If you run gotcha yourself,
 > `gotcha_ingest_deprecated_path_total{path="/profiles/pprof"}` tells you
 > whether anything still uses the old path.

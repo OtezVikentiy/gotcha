@@ -100,7 +100,7 @@ type Handler struct {
 	// нет.
 	rejected map[IngestRejectionKey]*atomic.Int64
 
-	// deprecated — попадания в старые пути приёма, оставленные алиасами до 1.0
+	// deprecated — попадания в старые пути приёма, оставленные алиасами до 2.0
 	// (см. deprecated.go). Отдельная карта от rejected: та про отказы, эта —
 	// про запросы, пришедшие не туда, куда сегодня зовёт документация. Счётчик
 	// двигается ДО аутентификации и лимитера (см. deprecatedAlias), поэтому
@@ -175,7 +175,7 @@ type Handler struct {
 	Hosts HostRegistry
 
 	// Logs — приёмник логов (C1): /v1/logs (OTLP) и /api/v1/logs (NDJSON, алиас
-	// /logs до 1.0) кладут распарсенные записи сюда (*log.Writer ему
+	// /logs до 2.0) кладут распарсенные записи сюда (*log.Writer ему
 	// удовлетворяет). nil → логи выключены, эндпоинты отвечают успехом без
 	// записи (как Metrics nil).
 	Logs LogSink
@@ -337,7 +337,7 @@ func (h *Handler) Register(mux muxRegistrar) {
 	mux.HandleFunc("POST /v1/metrics", h.otlpMetrics)
 	// Профили pprof (этап 7): свой минимальный эндпоинт (стандарта пуша pprof
 	// нет), Bearer-DSN auth + метаданные из query. Канон — собственный
-	// неймспейс /api/v1/*; корневой /profiles/pprof остаётся алиасом до 1.0.
+	// неймспейс /api/v1/*; корневой /profiles/pprof остаётся алиасом до 2.0.
 	mux.HandleFunc("POST /api/v1/profiles/pprof", h.pprofIngest)
 	mux.HandleFunc("POST /profiles/pprof", h.deprecatedAlias(DeprecatedProfilePprof, h.pprofIngest))
 	// Логи (C1) — OTLP-вход /v1/logs, четвёртая дверь в тот же ingest-mux (своя

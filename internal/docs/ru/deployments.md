@@ -110,7 +110,7 @@ notify-gotcha:
 > адресу `/api/<PROJECT_ID>/deployments/`. Этот путь продолжает работать и
 > ведёт себя точно так же — та же аутентификация, тот же лимит частоты, та же
 > квота, — но объявлен устаревшим: ответы на нём несут заголовки
-> `Deprecation` и `Link; rel="deprecation"`, и в 1.0 он будет удалён.
+> `Deprecation` и `Link; rel="deprecation"`, и в 2.0 он будет удалён.
 > Переведите CI на `/api/v1/<PROJECT_ID>/deployments`. Если вы держите gotcha
 > сами, счётчик
 > `gotcha_ingest_deprecated_path_total{path="/api/{project}/deployments/"}`

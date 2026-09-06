@@ -113,7 +113,7 @@ notify-gotcha:
 > used to live at `/api/<PROJECT_ID>/deployments/`. That path still works and
 > behaves identically — same authentication, same rate limit, same quota —
 > but it is deprecated: responses to it carry `Deprecation` and
-> `Link; rel="deprecation"` headers, and it will be removed in 1.0. Point your
+> `Link; rel="deprecation"` headers, and it will be removed in 2.0. Point your
 > CI at `/api/v1/<PROJECT_ID>/deployments`. If you run gotcha yourself,
 > `gotcha_ingest_deprecated_path_total{path="/api/{project}/deployments/"}`
 > tells you whether anything still uses the old path.
