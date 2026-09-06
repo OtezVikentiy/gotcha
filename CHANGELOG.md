@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-06
+
 ### Added
 - **1.0: the compatibility contract is now frozen.** Environment variable
   names, ingest addresses and request body formats, the migration schema, the
