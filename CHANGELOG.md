@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- `golang.org/x/crypto` bumped to v0.56.0 (from v0.54.0), closing GO-2026-6354
+  and GO-2026-6355 — two denial-of-service advisories in the SSH package. The
+  shipped binary was never exposed to them: the only path reaching that code is
+  the test harness (`internal/testenv` → testcontainers → ssh), and gotcha
+  serves no SSH itself. `golang.org/x/text` moves to v0.41.0 along with it.
+
 ## [0.37.0] - 2026-09-06
 
 ### Added
