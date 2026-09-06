@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-09-06
+
 ### Added
 - Documentation page for the project **"Overview"** screen (`/docs/overview`,
   both locales) — what each of the three status tiles counts and over which
