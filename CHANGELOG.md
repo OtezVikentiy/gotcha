@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.1] - 2026-09-06
+
 ### Security
 - `golang.org/x/crypto` bumped to v0.56.0 (from v0.54.0), closing GO-2026-6354
   and GO-2026-6355 — two denial-of-service advisories in the SSH package. The
