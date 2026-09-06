@@ -13,6 +13,7 @@ works.
 
 ## Features
 
+- **Project overview** — one way in instead of six separate lists: uptime, hosts over threshold, and new issues on a single line, and below them the open incident groups with their members, open incidents outside any group across every source, and whatever resolved within the selected window.
 - **Issues / error tracking** — event ingestion via the Sentry protocol, automatic grouping into issues, stack traces, breadcrumbs, tags/contexts.
 - **Performance / tracing** — distributed traces and transactions, Web Vitals, performance-issue detection, regression detection.
 - **Metrics** — ingestion via OTLP, metric queries, threshold-based alert rules and incidents.
