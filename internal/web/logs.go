@@ -394,8 +394,8 @@ func (h *Handler) logsFacets(ctx context.Context, projectID int64, f log.ListFil
 	}
 	return templates.LogFacets{
 		Severity:    templates.NewSeverityFacet(ctx, projectID, filter, sevValues, sevErr != nil),
-		Service:     templates.NewServiceFacet(projectID, filter, svcValues, svcErr != nil),
-		Environment: templates.NewEnvironmentFacet(projectID, filter, envValues, envErr != nil),
+		Service:     templates.NewServiceFacet(ctx, projectID, filter, svcValues, svcErr != nil),
+		Environment: templates.NewEnvironmentFacet(ctx, projectID, filter, envValues, envErr != nil),
 		Attrs:       h.logsAttrFacets(ctx, projectID, f, filter, expandedAttrKey),
 	}
 }
@@ -433,7 +433,7 @@ func (h *Handler) logsAttrFacets(ctx context.Context, projectID int64, f log.Lis
 		}
 	}
 
-	return templates.NewAttrFacets(projectID, filter, keys, expandedKey, values)
+	return templates.NewAttrFacets(ctx, projectID, filter, keys, expandedKey, values)
 }
 
 // logsHistogramHasData — во всех корзинах всех severity одни нули (окно

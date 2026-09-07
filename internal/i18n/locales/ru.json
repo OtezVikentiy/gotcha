@@ -1920,6 +1920,8 @@
     "logs.facet.attr_search": "Поиск ключа атрибута…",
     "logs.facet.empty": "Нет данных для текущих фильтров",
     "logs.facet.too_much_data": "Слишком много данных, сузьте окно",
+    "logs.facet.exclude_environment": "Исключить окружение {value}",
+    "logs.facet.exclude_attr_value": "Исключить {key}: {value}",
     "a11y.chart.logs_volume": "График объёма логов по времени и уровню",
     "a11y.chart.slo_burndown": "Сжигание бюджета ошибок SLO во времени"
   },

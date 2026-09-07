@@ -88,11 +88,15 @@ type LogFacet struct {
 // LogFacetValue — одно значение фасета: локализованная метка, count и уже
 // готовая ссылка (клик добавляет фильтр, клик по уже активному — снимает
 // именно его). Active — значение уже входит в текущий фильтр filter.
+// ExcludeHref/ExcludeLabel (задача 7) — вторая ссылка рядом, добавляющая
+// значение в f.Not (тот же logExcludeURL, что и у кнопок в строке лога).
 type LogFacetValue struct {
-	Label  string
-	Count  int64
-	Href   string
-	Active bool
+	Label        string
+	Count        int64
+	Href         string
+	Active       bool
+	ExcludeHref  string
+	ExcludeLabel string
 }
 
 // NewSeverityFacet строит вью-модель фасета severity: ссылка — ТОГГЛ в
@@ -103,10 +107,12 @@ func NewSeverityFacet(ctx context.Context, projectID int64, filter LogsFilter, v
 	items := make([]LogFacetValue, len(values))
 	for i, v := range values {
 		items[i] = LogFacetValue{
-			Label:  severityLabel(ctx, v.Value),
-			Count:  v.Count,
-			Href:   logFacetSeverityURL(projectID, filter, v.Value),
-			Active: severitySelected(filter.Severity, v.Value),
+			Label:        severityLabel(ctx, v.Value),
+			Count:        v.Count,
+			Href:         logFacetSeverityURL(projectID, filter, v.Value),
+			Active:       severitySelected(filter.Severity, v.Value),
+			ExcludeHref:  logExcludeURL(projectID, filter, log.Predicate{Field: log.FieldSeverity, Op: log.OpNeq, Value: v.Value}),
+			ExcludeLabel: i18n.Tf(ctx, "logs.row.exclude_severity", "value", severityLabel(ctx, v.Value)),
 		}
 	}
 	return LogFacet{Values: items, TooMuchData: tooMuchData}
@@ -116,16 +122,16 @@ func NewSeverityFacet(ctx context.Context, projectID int64, filter LogsFilter, v
 // (в отличие от мультивыбора severity) — клик ЗАМЕНЯЕТ filter.Service
 // выбранным значением, клик по уже активному — сбрасывает к "" (снимает
 // фильтр).
-func NewServiceFacet(projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool) LogFacet {
-	return newSingleValueFacet(projectID, filter, values, tooMuchData,
+func NewServiceFacet(ctx context.Context, projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool) LogFacet {
+	return newSingleValueFacet(ctx, projectID, filter, values, tooMuchData, log.FieldService, "logs.row.exclude_service",
 		func(f LogsFilter) string { return f.Service },
 		func(f LogsFilter, v string) LogsFilter { f.Service = v; return f },
 	)
 }
 
 // NewEnvironmentFacet — то же самое для environment.
-func NewEnvironmentFacet(projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool) LogFacet {
-	return newSingleValueFacet(projectID, filter, values, tooMuchData,
+func NewEnvironmentFacet(ctx context.Context, projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool) LogFacet {
+	return newSingleValueFacet(ctx, projectID, filter, values, tooMuchData, log.FieldEnvironment, "logs.facet.exclude_environment",
 		func(f LogsFilter) string { return f.Environment },
 		func(f LogsFilter, v string) LogsFilter { f.Environment = v; return f },
 	)
@@ -133,9 +139,10 @@ func NewEnvironmentFacet(projectID int64, filter LogsFilter, values []log.FacetV
 
 // newSingleValueFacet — общая реализация NewServiceFacet/NewEnvironmentFacet:
 // оба фильтра одиночные (в отличие от мультивыбора severity), различаются
-// только тем, какое поле LogsFilter читают/пишут — get/set вынесены
-// параметрами, чтобы не дублировать саму сборку LogFacetValue дважды.
-func newSingleValueFacet(projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool, get func(LogsFilter) string, set func(LogsFilter, string) LogsFilter) LogFacet {
+// только тем, какое поле LogsFilter читают/пишут (get/set) и какое поле
+// log.Predicate/ключ i18n использует ссылка исключения (field/excludeLabelKey,
+// задача 7) — вынесены параметрами, чтобы не дублировать сборку LogFacetValue.
+func newSingleValueFacet(ctx context.Context, projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool, field, excludeLabelKey string, get func(LogsFilter) string, set func(LogsFilter, string) LogsFilter) LogFacet {
 	items := make([]LogFacetValue, len(values))
 	for i, v := range values {
 		active := get(filter) == v.Value
@@ -146,10 +153,12 @@ func newSingleValueFacet(projectID int64, filter LogsFilter, values []log.FacetV
 			next = set(next, v.Value)
 		}
 		items[i] = LogFacetValue{
-			Label:  v.Value,
-			Count:  v.Count,
-			Href:   LogsPageURL(projectID, next, time.Time{}, 0),
-			Active: active,
+			Label:        v.Value,
+			Count:        v.Count,
+			Href:         LogsPageURL(projectID, next, time.Time{}, 0),
+			Active:       active,
+			ExcludeHref:  logExcludeURL(projectID, filter, log.Predicate{Field: field, Op: log.OpNeq, Value: v.Value}),
+			ExcludeLabel: i18n.Tf(ctx, excludeLabelKey, "value", v.Value),
 		}
 	}
 	return LogFacet{Values: items, TooMuchData: tooMuchData}
@@ -212,12 +221,15 @@ type LogAttrKeyFacet struct {
 
 // LogAttrValueFacet — одно значение раскрытого ключа: клик добавляет
 // точечный фильтр log_attributes[key]=value (§3 спеки), клик по уже
-// активному — снимает именно его.
+// активному — снимает именно его. ExcludeHref/ExcludeLabel (задача 7) —
+// вторая ссылка рядом, добавляющая log_attributes[key]!=value в f.Not.
 type LogAttrValueFacet struct {
-	Value  string
-	Count  int64
-	Href   string
-	Active bool
+	Value        string
+	Count        int64
+	Href         string
+	Active       bool
+	ExcludeHref  string
+	ExcludeLabel string
 }
 
 // NewAttrFacets строит вью-модель секции атрибут-фасетов: keys — результат
@@ -241,7 +253,7 @@ type LogAttrValueFacet struct {
 // него посчитан по всему окну+фильтрам, как и values, в отличие от
 // ограниченной выборки AttrKeys, так что сравнивать его Count с остальными
 // было бы некорректно).
-func NewAttrFacets(projectID int64, filter LogsFilter, keys []log.FacetValue, expandedKey string, values []log.FacetValue) LogAttrFacets {
+func NewAttrFacets(ctx context.Context, projectID int64, filter LogsFilter, keys []log.FacetValue, expandedKey string, values []log.FacetValue) LogAttrFacets {
 	items := make([]LogAttrKeyFacet, 0, len(keys)+1)
 	foundExpanded := false
 	for _, k := range keys {
@@ -249,7 +261,7 @@ func NewAttrFacets(projectID int64, filter LogsFilter, keys []log.FacetValue, ex
 		if expanded {
 			foundExpanded = true
 		}
-		items = append(items, newAttrKeyFacetItem(projectID, filter, k.Value, k.Count, expanded, values))
+		items = append(items, newAttrKeyFacetItem(ctx, projectID, filter, k.Value, k.Count, expanded, values))
 	}
 	if expandedKey != "" && !foundExpanded {
 		// Точного Count здесь нет (expandedKey вне выборки AttrKeys) — сумма
@@ -259,7 +271,7 @@ func NewAttrFacets(projectID int64, filter LogsFilter, keys []log.FacetValue, ex
 		for _, v := range values {
 			count += v.Count
 		}
-		items = append([]LogAttrKeyFacet{newAttrKeyFacetItem(projectID, filter, expandedKey, count, true, values)}, items...)
+		items = append([]LogAttrKeyFacet{newAttrKeyFacetItem(ctx, projectID, filter, expandedKey, count, true, values)}, items...)
 	}
 	return LogAttrFacets{Keys: items}
 }
@@ -267,7 +279,7 @@ func NewAttrFacets(projectID int64, filter LogsFilter, keys []log.FacetValue, ex
 // newAttrKeyFacetItem строит один элемент списка ключей атрибут-фасета —
 // общая часть обычных (из keys) и синтетического (expandedKey вне keys, см.
 // комментарий у NewAttrFacets) элементов.
-func newAttrKeyFacetItem(projectID int64, filter LogsFilter, key string, count int64, expanded bool, values []log.FacetValue) LogAttrKeyFacet {
+func newAttrKeyFacetItem(ctx context.Context, projectID int64, filter LogsFilter, key string, count int64, expanded bool, values []log.FacetValue) LogAttrKeyFacet {
 	item := LogAttrKeyFacet{
 		Key:      key,
 		Count:    count,
@@ -278,10 +290,12 @@ func newAttrKeyFacetItem(projectID int64, filter LogsFilter, key string, count i
 		item.Values = make([]LogAttrValueFacet, len(values))
 		for j, v := range values {
 			item.Values[j] = LogAttrValueFacet{
-				Value:  v.Value,
-				Count:  v.Count,
-				Href:   logAttrValueURL(projectID, filter, key, v.Value),
-				Active: logAttrValueActive(filter, key, v.Value),
+				Value:        v.Value,
+				Count:        v.Count,
+				Href:         logAttrValueURL(projectID, filter, key, v.Value),
+				Active:       logAttrValueActive(filter, key, v.Value),
+				ExcludeHref:  logExcludeURL(projectID, filter, log.Predicate{Field: log.FieldAttr, Key: key, Op: log.OpNeq, Value: v.Value}),
+				ExcludeLabel: i18n.Tf(ctx, "logs.facet.exclude_attr_value", "key", key, "value", v.Value),
 			}
 		}
 	}
@@ -910,6 +924,7 @@ templ logAttrFacetSection(projectID int64, filter LogsFilter, facet LogAttrFacet
 										<li class="logs-facet-item">
 											<a class={ logFacetValueClass(v.Active) } href={ templ.URL(v.Href) } if v.Active { aria-current="page" }>{ v.Value }</a>
 											<span class="logs-facet-count">{ strconv.FormatInt(v.Count, 10) }</span>
+											@logRowFieldAction(true, v.ExcludeHref, v.ExcludeLabel)
 										</li>
 									}
 								</ul>
@@ -926,6 +941,8 @@ templ logAttrFacetSection(projectID int64, filter LogsFilter, facet LogAttrFacet
 // counts, либо пометка (нет данных / слишком много данных — TooMuchData).
 // Каждое значение — обычная ссылка (logFacetValueClass/aria-current
 // показывают активность), работает без JS, как остальные фильтры экрана.
+// Рядом со значением — кнопка «исключить» (задача 7, тот же компонент
+// logRowFieldAction, что и у полей строки лога).
 templ logFacetSection(titleKey string, facet LogFacet) {
 	<section class="card logs-facet">
 		<h2 class="logs-facet-title">{ i18n.T(ctx, titleKey) }</h2>
@@ -939,6 +956,7 @@ templ logFacetSection(titleKey string, facet LogFacet) {
 					<li class="logs-facet-item">
 						<a class={ logFacetValueClass(v.Active) } href={ templ.URL(v.Href) } if v.Active { aria-current="page" }>{ v.Label }</a>
 						<span class="logs-facet-count">{ strconv.FormatInt(v.Count, 10) }</span>
+						@logRowFieldAction(true, v.ExcludeHref, v.ExcludeLabel)
 					</li>
 				}
 			</ul>

@@ -156,7 +156,7 @@ func TestNewAttrFacetsExpandedKeyOutsideTop(t *testing.T) {
 		{Value: "staging", Count: 3},
 	}
 
-	got := NewAttrFacets(1, LogsFilter{}, keys, "environment.tier", values)
+	got := NewAttrFacets(ruCtx(), 1, LogsFilter{}, keys, "environment.tier", values)
 
 	if len(got.Keys) != 3 {
 		t.Fatalf("Keys len = %d, want 3 (2 из топа + 1 синтетический): %+v", len(got.Keys), got.Keys)
@@ -203,7 +203,7 @@ func TestNewAttrFacetsExpandedKeyInsideTop(t *testing.T) {
 	}
 	values := []log.FacetValue{{Value: "GET", Count: 5}}
 
-	got := NewAttrFacets(1, LogsFilter{}, keys, "http.method", values)
+	got := NewAttrFacets(ruCtx(), 1, LogsFilter{}, keys, "http.method", values)
 
 	if len(got.Keys) != 2 {
 		t.Fatalf("Keys len = %d, want 2 (без синтетического элемента): %+v", len(got.Keys), got.Keys)
@@ -227,7 +227,7 @@ func TestNewAttrFacetsExpandedKeyInsideTop(t *testing.T) {
 func TestNewAttrFacetsNoExpandedKey(t *testing.T) {
 	keys := []log.FacetValue{{Value: "http.method", Count: 100}}
 
-	got := NewAttrFacets(1, LogsFilter{}, keys, "", nil)
+	got := NewAttrFacets(ruCtx(), 1, LogsFilter{}, keys, "", nil)
 
 	if len(got.Keys) != 1 {
 		t.Fatalf("Keys len = %d, want 1", len(got.Keys))

@@ -658,6 +658,61 @@ func TestWebLogsListFacets(t *testing.T) {
 	}
 }
 
+// TestFacetValueHasExcludeLink — задача 7: у каждого значения встроенных
+// фасетов (severity/service/environment) рядом с обычной ссылкой появляется
+// вторая — «исключить» (logExcludeURL). Проверка идёт ВНУТРИ секции фасета,
+// а не по всей странице: строка лога уже несёт свои собственные ссылки
+// исключения severity/service (задача 6, logRowSeverityActions/
+// logRowServiceActions) — проверка по всей странице не отличила бы вклад
+// фасета от уже существующих кнопок строки. Environment вдобавок и есть тот
+// случай, который у строки лога кнопок исключения не имеет вовсе (колонки
+// под окружение в строке нет, см. докблок разметки logFacetSection) — там
+// такая ссылка может появиться только из фасета.
+func TestFacetValueHasExcludeLink(t *testing.T) {
+	s := newLogsStack(t, true)
+	projectID, cookie, _ := newLogsProject(t, s, "facet-exclude@example.com", "facet-exclude-org", "facet-exclude-proj")
+
+	now := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Minute)
+	s.seedLogs(t, projectID,
+		log.LogRecord{
+			Timestamp: now, ObservedTS: now,
+			Severity: log.SevInfo, SeverityNumber: 9, SeverityText: "INFO",
+			Body: "tick", Service: "cron", Environment: "production",
+		},
+	)
+
+	resp := getWithCookie(t, s.srv, logsBasePath(projectID), cookie)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	page := string(body)
+
+	sections := logFacetSectionRe.FindAllStringSubmatch(page, -1)
+	if len(sections) < 3 {
+		t.Fatalf("ожидалось минимум 3 секции встроенных фасетов (severity/service/environment): найдено %d", len(sections))
+	}
+	svcSection := sections[1][1]
+	envSection := sections[2][1]
+
+	if !strings.Contains(svcSection, "service_not=cron") {
+		t.Fatalf("у значения фасета service «cron» нет ссылки исключения: %s", svcSection)
+	}
+	if !strings.Contains(svcSection, "logs-row-action--exclude") {
+		t.Fatalf("ссылка исключения фасета service не оформлена как кнопка-иконка (logs-row-action--exclude): %s", svcSection)
+	}
+	if !strings.Contains(envSection, "environment_not=production") {
+		t.Fatalf("у значения фасета environment «production» нет ссылки исключения: %s", envSection)
+	}
+	// Собственная сборка URL вместо logExcludeURL/logsPageURLValues (которая
+	// курсор намеренно не включает) потащила бы в ссылку исключения
+	// before/tskip текущей страницы.
+	if strings.Contains(svcSection, "before=") || strings.Contains(svcSection, "tskip=") {
+		t.Errorf("ссылка исключения фасета service тащит курсор пагинации: %s", svcSection)
+	}
+}
+
 // TestWebLogsListAttrFacets — задача 5 плана C2: сайдбар атрибут-фасетов
 // (4-я секция, после severity/service/environment, см. logAttrFacetSection в
 // logs.templ) — авто-обнаруженные ключи со счётчиками видны сразу; клик по
