@@ -530,34 +530,96 @@ func TestLogFiltersInapplicablePayloadShown(t *testing.T) {
 
 // TestLogFilterHandlersRejectForeignOrigin — все четыре хендлера отказывают
 // запросу с чужим Origin (sameOrigin) и не меняют состав фильтров проекта.
+// filterName/filterExists — точечные проверки состояния одного фильтра
+// (в отличие от countFilters, который видит только общее число и не ловит,
+// например, «удаления не было, но имя подменили»).
+func filterName(t *testing.T, pool *pgxpool.Pool, filterID int64) string {
+	t.Helper()
+	var name string
+	if err := pool.QueryRow(context.Background(),
+		"SELECT name FROM log_saved_filters WHERE id = $1", filterID).Scan(&name); err != nil {
+		t.Fatalf("filter name: %v", err)
+	}
+	return name
+}
+
+func filterExists(t *testing.T, pool *pgxpool.Pool, filterID int64) bool {
+	t.Helper()
+	var exists bool
+	if err := pool.QueryRow(context.Background(),
+		"SELECT EXISTS(SELECT 1 FROM log_saved_filters WHERE id = $1)", filterID).Scan(&exists); err != nil {
+		t.Fatalf("filter exists: %v", err)
+	}
+	return exists
+}
+
+// TestLogFilterHandlersRejectForeignOrigin — все четыре хендлера отказывают
+// запросу с чужим Origin (sameOrigin). Состояние ИЗОЛИРОВАНО по маршруту:
+// свой фильтр под update/delete/default (разные имена, никто не переиспользует
+// id после удаления) — иначе прогон через общее имя "чужое" и общий filterID
+// (как было раньше) ловит обход только на create/delete: update глушится
+// побочным ErrNameTaken (имя уже занято предыдущим шагом), а default бьёт по
+// уже удалённому предыдущим шагом id — обе ветки «зелёные» не по защите,
+// а по случайному конфликту состояния (находка ревью, Important).
 func TestLogFilterHandlersRejectForeignOrigin(t *testing.T) {
 	s := newFiltersStack(t)
-	_, cookie, project := newLogsProject(t, s, "csrf@example.com", "csrf-org", "csrf-proj")
+	ownerID, cookie, project := newLogsProject(t, s, "csrf@example.com", "csrf-org", "csrf-proj")
 	projectID := project.ID
 
-	create := postForm(t, s.srv, logsBasePath(projectID)+"/filters",
-		url.Values{"name": {"мой"}, "q_not": {"buffered"}}, s.srv.URL, cookie)
-	create.Body.Close()
-	if create.StatusCode != http.StatusSeeOther {
-		t.Fatalf("создание: статус %d", create.StatusCode)
+	seed := func(name string) int64 {
+		resp := postForm(t, s.srv, logsBasePath(projectID)+"/filters",
+			url.Values{"name": {name}, "q_not": {"buffered"}}, s.srv.URL, cookie)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusSeeOther {
+			t.Fatalf("подготовка фильтра %q: статус %d", name, resp.StatusCode)
+		}
+		return lastFilterID(t, s.pool, projectID)
 	}
-	filterID := lastFilterID(t, s.pool, projectID)
+
+	updateID := seed("для обновления")
+	deleteID := seed("для удаления")
+	defaultID := seed("для умолчания")
 	before := countFilters(t, s.pool, projectID)
 
-	paths := []string{
-		logsBasePath(projectID) + "/filters",
-		fmt.Sprintf("%s/filters/%d/update", logsBasePath(projectID), filterID),
-		fmt.Sprintf("%s/filters/%d/delete", logsBasePath(projectID), filterID),
-		fmt.Sprintf("%s/filters/%d/default", logsBasePath(projectID), filterID),
-	}
-	for _, path := range paths {
-		resp := postForm(t, s.srv, path, url.Values{"name": {"чужое"}}, "https://evil.example", cookie)
-		resp.Body.Close()
-		if resp.StatusCode == http.StatusSeeOther {
-			t.Errorf("%s принял запрос с чужого Origin", path)
-		}
+	createResp := postForm(t, s.srv, logsBasePath(projectID)+"/filters",
+		url.Values{"name": {"чужое создание"}, "q_not": {"buffered"}}, "https://evil.example", cookie)
+	defer createResp.Body.Close()
+	if createResp.StatusCode == http.StatusSeeOther {
+		t.Errorf("create принял запрос с чужого Origin")
 	}
 	if after := countFilters(t, s.pool, projectID); after != before {
-		t.Errorf("состав фильтров изменился после запросов с чужого Origin: было %d, стало %d", before, after)
+		t.Errorf("create с чужого Origin изменил число фильтров: было %d, стало %d", before, after)
+	}
+
+	updateResp := postForm(t, s.srv, fmt.Sprintf("%s/filters/%d/update", logsBasePath(projectID), updateID),
+		url.Values{"name": {"чужое обновление"}}, "https://evil.example", cookie)
+	defer updateResp.Body.Close()
+	if updateResp.StatusCode == http.StatusSeeOther {
+		t.Errorf("update принял запрос с чужого Origin")
+	}
+	if name := filterName(t, s.pool, updateID); name != "для обновления" {
+		t.Errorf("update с чужого Origin изменил имя фильтра: стало %q", name)
+	}
+
+	deleteResp := postForm(t, s.srv, fmt.Sprintf("%s/filters/%d/delete", logsBasePath(projectID), deleteID),
+		url.Values{}, "https://evil.example", cookie)
+	defer deleteResp.Body.Close()
+	if deleteResp.StatusCode == http.StatusSeeOther {
+		t.Errorf("delete принял запрос с чужого Origin")
+	}
+	if !filterExists(t, s.pool, deleteID) {
+		t.Errorf("delete с чужого Origin удалил фильтр")
+	}
+
+	defaultResp := postForm(t, s.srv, fmt.Sprintf("%s/filters/%d/default", logsBasePath(projectID), defaultID),
+		url.Values{}, "https://evil.example", cookie)
+	defer defaultResp.Body.Close()
+	if defaultResp.StatusCode == http.StatusSeeOther {
+		t.Errorf("default принял запрос с чужого Origin")
+	}
+	if _, hasDefault, err := s.h.LogFilters.Default(context.Background(), projectID, ownerID); err != nil {
+		t.Fatalf("чтение умолчания: %v", err)
+	} else if hasDefault {
+		t.Errorf("default с чужого Origin выставил умолчание")
 	}
 }
