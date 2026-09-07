@@ -501,6 +501,40 @@ func TestLogFiltersValidationErrors(t *testing.T) {
 	}
 }
 
+// TestLogFiltersSaveErrorPreservesConditionsAndSkipsDefault — находка
+// финального ревью C2: отказ валидации (занятое имя) обязан перерисовать
+// страницу логов С УСЛОВИЯМИ ИЗ ФОРМЫ (logFilterFormParams(r)), а не из
+// r.URL.Query() — у POST-запроса он пуст, action ведёт на
+// /projects/{id}/logs/filters. До фикса введённое исключение исчезало со
+// страницы 422 (чипа нет вовсе), а пустой query дополнительно включал
+// фильтр по умолчанию поверх — третий набор данных, которого пользователь
+// не запрашивал. Стенд — seedDefaultFilterCase: у проекта УЖЕ есть
+// назначенный фильтр по умолчанию, что и делает вторую часть проверки
+// значимой (без него молчаливое включение умолчания было бы не от чего
+// отличить).
+func TestLogFiltersSaveErrorPreservesConditionsAndSkipsDefault(t *testing.T) {
+	s, projectID, cookie := seedDefaultFilterCase(t)
+
+	// service_not=worker — условие, которого нет у назначенного фильтра по
+	// умолчанию (тот несёт q_not=buffered...), и которое не совпадает по
+	// смыслу с service обеих засеянных записей (обе — nginx) — отсутствие
+	// строк в выдаче не спутать с потерей условия.
+	dup := postForm(t, s.srv, logsBasePath(projectID)+"/filters",
+		url.Values{"name": {"без шума"}, "service_not": {"worker"}}, s.srv.URL, cookie)
+	defer dup.Body.Close()
+	body, _ := io.ReadAll(dup.Body)
+	if dup.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("дублирующееся имя: статус %d, тело: %s", dup.StatusCode, body)
+	}
+	text := string(body)
+	if !strings.Contains(text, "Сервис ≠ worker") {
+		t.Errorf("страница 422 потеряла условие, введённое в форме: %s", text)
+	}
+	if strings.Contains(text, "logs-default-notice") {
+		t.Errorf("страница 422 молча применила фильтр по умолчанию поверх введённых условий: %s", text)
+	}
+}
+
 // TestLogFiltersInapplicablePayloadShown — фильтр с payload неизвестной
 // версии (продукт мог сменить формат) не роняет страницу и не даёт ссылку
 // применения, но остаётся виден в списке с пояснением.

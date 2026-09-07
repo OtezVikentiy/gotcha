@@ -166,7 +166,7 @@ func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	h.renderLogsPage(w, r, http.StatusOK, projectID, uid, "")
+	h.renderLogsPage(w, r, http.StatusOK, projectID, uid, "", r.URL.Query())
 }
 
 // renderLogsPage — тело GET /projects/{id}/logs, вынесенное в переиспользуемую
@@ -177,10 +177,19 @@ func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 // иначе введённые условия терялись бы, а страница логов исчезала бы за
 // стилизованной страницей ошибки, как раньше было с выгрузками (P2-UX-4).
 //
+// params — источник условий отбора: GET-вызов (logsList) передаёт
+// r.URL.Query(), POST-вызов при отказе валидации (logFiltersHandleSaveError)
+// — logFilterFormParams(r). У POST-запроса query-строка пустая (action ведёт
+// на /projects/{id}/logs/filters), поэтому params НЕЛЬЗЯ считать внутри этой
+// функции через r.URL.Query() — тогда 422 показал бы нефильтрованный список
+// (введённые условия потеряны) и вдобавок молча применил бы фильтр по
+// умолчанию (hasLogFilterParams на пустом query всегда false) — третий набор
+// данных, которого пользователь не запрашивал.
+//
 // uid нужен panel (личные фильтры видны только своему владельцу) —
 // logsList уже резолвит его для собственного гейта доступа, здесь его
 // заново не запрашиваем.
-func (h *Handler) renderLogsPage(w http.ResponseWriter, r *http.Request, status int, projectID, uid int64, errMsg string) {
+func (h *Handler) renderLogsPage(w http.ResponseWriter, r *http.Request, status int, projectID, uid int64, errMsg string, params url.Values) {
 	// h.LogQuery может быть nil в стендах без проводки логов (main.go
 	// проставляет его только вместе с ClickHouse) — тогда честный 404, а не
 	// паника на разыменовании (тот же приём, что у h.Metrics/h.Trace).
@@ -196,7 +205,7 @@ func (h *Handler) renderLogsPage(w http.ResponseWriter, r *http.Request, status 
 	// Пресеты UI при этом не трогаем: слишком глубокий пресет просто даёт
 	// обрезанное окно, это осознанное упрощение MVP (см. бриф задачи 2).
 	rng := h.resolveTimeRange(w, r, "24h")
-	q := r.URL.Query()
+	q := params
 	f, rangeClamped := parseLogFilter(q, rng, h.LogRetentionDays)
 
 	// Фильтр по умолчанию (задача 10): применяется, только когда в URL нет

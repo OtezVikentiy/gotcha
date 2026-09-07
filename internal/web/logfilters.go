@@ -295,18 +295,24 @@ func (h *Handler) logFiltersSetDefault(w http.ResponseWriter, r *http.Request) {
 // renderExportsPage у выгрузок, exports.go:290) — редиректа тут нет, чтобы
 // не терять введённые условия. ErrNotFound — фильтр успели удалить в
 // параллельном запросе между loadOwnedLogFilter и Update; остальное — 500.
+//
+// renderLogsPage получает условия ИМЕННО из формы (logFilterFormParams(r)),
+// а не из r.URL.Query() (у POST-запроса он пуст, action ведёт на
+// /projects/{id}/logs/filters) — иначе введённые условия исчезали бы со
+// страницы отказа, а пустой query включал бы фильтр по умолчанию поверх.
 func (h *Handler) logFiltersHandleSaveError(w http.ResponseWriter, r *http.Request, projectID, uid int64, err error) {
+	params := logFilterFormParams(r)
 	var ve *logfilter.ValidationError
 	if errors.As(err, &ve) {
-		h.renderLogsPage(w, r, http.StatusUnprocessableEntity, projectID, uid, i18n.T(r.Context(), "error.logfilter."+ve.Code))
+		h.renderLogsPage(w, r, http.StatusUnprocessableEntity, projectID, uid, i18n.T(r.Context(), "error.logfilter."+ve.Code), params)
 		return
 	}
 	if errors.Is(err, logfilter.ErrNameTaken) {
-		h.renderLogsPage(w, r, http.StatusUnprocessableEntity, projectID, uid, i18n.T(r.Context(), "error.logfilter.name_taken"))
+		h.renderLogsPage(w, r, http.StatusUnprocessableEntity, projectID, uid, i18n.T(r.Context(), "error.logfilter.name_taken"), params)
 		return
 	}
 	if errors.Is(err, logfilter.ErrLimitReached) {
-		h.renderLogsPage(w, r, http.StatusUnprocessableEntity, projectID, uid, i18n.T(r.Context(), "error.logfilter.limit_reached"))
+		h.renderLogsPage(w, r, http.StatusUnprocessableEntity, projectID, uid, i18n.T(r.Context(), "error.logfilter.limit_reached"), params)
 		return
 	}
 	if errors.Is(err, logfilter.ErrNotFound) {
