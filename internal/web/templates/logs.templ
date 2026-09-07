@@ -6,7 +6,6 @@ import (
 	"slices"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
@@ -346,21 +345,35 @@ func logAttrValueActive(filter LogsFilter, key, value string) bool {
 // таблицей атрибутов.
 type LogRow struct {
 	Row   log.LogRow
-	Attrs []ctxRow
+	Attrs []logAttrRow
+}
+
+// logAttrRow — строка таблицы атрибутов записи в развёрнутой строке лога.
+// Key — отображаемый ключ (у атрибутов ресурса с префиксом "resource.",
+// чтобы не путаться с одноимённым ключом атрибута самой записи — тот же
+// приём, что и раньше). Resource/RawKey несут происхождение ЯВНО, с места,
+// где оно ещё точно известно (NewLogRow ниже) — предикат ссылок исключить/
+// оставить только это (logRowAttrPredicate) строится из них, а не разбором
+// префикса в Key: лог-атрибут, буквально названный "resource.foo", дал бы
+// при обратном разборе строки predicate по chujой карте (resource_attrs
+// вместо log_attributes) — кнопка выглядела бы рабочей и молча исключала
+// не то (находка ревью задачи 6).
+type logAttrRow struct {
+	Key      string
+	RawKey   string
+	Val      string
+	Resource bool
 }
 
 // NewLogRow строит вью-строку из log.LogRow: атрибуты записи и атрибуты
-// ресурса сведены в один отсортированный по ключу список ctxRow (тот же
-// компонент contextTable, что и у заголовков запроса в issuedetail.templ) —
-// атрибуты ресурса помечены префиксом "resource.", чтобы не путаться с
-// одноимённым ключом атрибута самой записи.
+// ресурса сведены в один отсортированный по ключу список logAttrRow.
 func NewLogRow(r log.LogRow) LogRow {
-	var attrs []ctxRow
+	var attrs []logAttrRow
 	for _, k := range sortedAttrKeys(r.LogAttributes) {
-		attrs = append(attrs, ctxRow{Key: k, Val: r.LogAttributes[k]})
+		attrs = append(attrs, logAttrRow{Key: k, RawKey: k, Val: r.LogAttributes[k]})
 	}
 	for _, k := range sortedAttrKeys(r.ResourceAttrs) {
-		attrs = append(attrs, ctxRow{Key: "resource." + k, Val: r.ResourceAttrs[k]})
+		attrs = append(attrs, logAttrRow{Key: "resource." + k, RawKey: k, Val: r.ResourceAttrs[k], Resource: true})
 	}
 	return LogRow{Row: r, Attrs: attrs}
 }
@@ -969,22 +982,44 @@ templ logRowServiceActions(projectID int64, f LogsFilter, service string) {
 	}
 }
 
-// logRowAttrPredicate — предикат по атрибуту строки контекста развёрнутой
-// строки лога, обратный тому, что строит NewLogRow: атрибуты ресурса
-// помечены в r.Key префиксом "resource." (см. её докблок в logs.templ), здесь
-// он снимается и восстанавливает исходный ключ и FieldResourceAttr.
-func logRowAttrPredicate(r ctxRow, op log.Op) log.Predicate {
-	if key, ok := strings.CutPrefix(r.Key, "resource."); ok {
-		return log.Predicate{Field: log.FieldResourceAttr, Key: key, Op: op, Value: r.Val}
+// logRowAttrPredicate — предикат по строке таблицы атрибутов развёрнутой
+// строки лога. Поле-источник берётся из r.Resource/r.RawKey (явно записаны
+// в NewLogRow), НЕ разбором отображаемого r.Key — иначе лог-атрибут,
+// буквально названный "resource.foo", подменил бы карту фильтра (см.
+// докблок logAttrRow).
+func logRowAttrPredicate(r logAttrRow, op log.Op) log.Predicate {
+	if r.Resource {
+		return log.Predicate{Field: log.FieldResourceAttr, Key: r.RawKey, Op: op, Value: r.Val}
 	}
-	return log.Predicate{Field: log.FieldAttr, Key: r.Key, Op: op, Value: r.Val}
+	return log.Predicate{Field: log.FieldAttr, Key: r.RawKey, Op: op, Value: r.Val}
 }
 
-// logRowAttrActions — колонка действий таблицы атрибутов записи
-// (contextTableWithActions) в развёрнутой строке лога.
-templ logRowAttrActions(projectID int64, f LogsFilter, r ctxRow) {
+// logRowAttrActions — пара кнопок исключить/оставить только это в колонке
+// действий таблицы атрибутов записи в развёрнутой строке лога.
+templ logRowAttrActions(projectID int64, f LogsFilter, r logAttrRow) {
 	@logRowFieldAction(true, logExcludeURL(projectID, f, logRowAttrPredicate(r, log.OpNeq)), i18n.Tf(ctx, "logs.row.exclude_attr", "key", r.Key))
 	@logRowFieldAction(false, logIncludeURL(projectID, f, logRowAttrPredicate(r, log.OpEq)), i18n.Tf(ctx, "logs.row.include_attr", "key", r.Key))
+}
+
+// logAttrTable — таблица атрибутов записи в развёрнутой строке лога с
+// колонкой действий. Тот же внешний вид (те же классы ctx-*), что и у
+// contextTable на странице ошибки, но со своим типом строки (logAttrRow) —
+// contextTable/ctxRow страницы ошибки не трогаем, там действий нет и не
+// будет.
+templ logAttrTable(rows []logAttrRow, projectID int64, f LogsFilter) {
+	<table class="ctx-table data-table data-table--auto">
+		<tbody>
+			for _, r := range rows {
+				<tr>
+					<td class="ctx-key">{ r.Key }</td>
+					<td class="ctx-val">{ r.Val }</td>
+					<td class="ctx-actions">
+						@logRowAttrActions(projectID, f, r)
+					</td>
+				</tr>
+			}
+		</tbody>
+	</table>
 }
 
 // logRowView — одна строка списка: свёрнутое превью тела разворачивается
@@ -1010,9 +1045,7 @@ templ logRowView(projectID int64, filter LogsFilter, row LogRow) {
 					<pre class="contexts-json">{ row.Row.Body }</pre>
 					if len(row.Attrs) > 0 {
 						<h4 class="ctx-title">{ i18n.T(ctx, "logs.table.attributes") }</h4>
-						@contextTableWithActions(row.Attrs, func(r ctxRow) templ.Component {
-							return logRowAttrActions(projectID, filter, r)
-						})
+						@logAttrTable(row.Attrs, projectID, filter)
 					}
 					if row.Row.TraceID != "" {
 						<p class="log-row-trace">

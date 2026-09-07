@@ -1287,3 +1287,48 @@ func TestLogRowHasExcludeLinks(t *testing.T) {
 		t.Errorf("ссылка исключения тащит курсор пагинации — собрана мимо logsPageURLValues: %s", page)
 	}
 }
+
+// TestLogRowAttrExcludeUsesExplicitOrigin — устранение находки ревью задачи
+// 6: происхождение атрибута (log_attributes/resource_attrs) для ссылки
+// исключения не восстанавливается разбором отображаемого ключа. Запись, у
+// которой атрибут ЗАПИСИ буквально называется "resource.pool" (случайное
+// совпадение с префиксом, которым помечаются в таблице атрибуты РЕСУРСА), и
+// одновременно есть настоящий атрибут ресурса — ссылка на первый обязана
+// остаться attr_not (log_attributes), а не подмениться на resource_attr
+// (res:) через обратный разбор строки "resource.pool".
+func TestLogRowAttrExcludeUsesExplicitOrigin(t *testing.T) {
+	s := newLogsStack(t, true)
+	projectID, cookie, _ := newLogsProject(t, s, "attrorigin@example.com", "attrorigin-org", "attrorigin-proj")
+
+	now := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Minute)
+	s.seedLogs(t, projectID,
+		log.LogRecord{
+			Timestamp: now, ObservedTS: now,
+			Severity: log.SevInfo, SeverityNumber: 9, SeverityText: "INFO",
+			Body: "pooled", Service: "api", Environment: "production",
+			LogAttributes: map[string]string{"resource.pool": "db-1"},
+			ResourceAttrs: map[string]string{"host.name": "web-1"},
+		},
+	)
+
+	resp := getWithCookie(t, s.srv, logsBasePath(projectID), cookie)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	page := string(body)
+
+	if !strings.Contains(page, "attr_not=resource.pool%3Adb-1") {
+		t.Errorf("лог-атрибут resource.pool должен исключаться как обычный attr (attr_not=resource.pool%%3Adb-1): %s", page)
+	}
+	// Так выглядела бы ссылка при обратном разборе отображаемой строки:
+	// префикс "resource." снят, ключ ошибочно принят за resource_attr "pool".
+	if strings.Contains(page, "attr_not=res%3Apool%3Adb-1") {
+		t.Errorf("лог-атрибут resource.pool подменён на resource_attr (res:pool) — происхождение восстановлено разбором отображаемого ключа, а не явным полем: %s", page)
+	}
+	// Настоящий атрибут ресурса по-прежнему должен уходить с префиксом res:.
+	if !strings.Contains(page, "attr_not=res%3Ahost.name%3Aweb-1") {
+		t.Errorf("настоящий атрибут ресурса host.name должен исключаться как resource_attr (res:host.name): %s", page)
+	}
+}

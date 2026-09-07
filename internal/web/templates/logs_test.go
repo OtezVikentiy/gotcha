@@ -309,21 +309,30 @@ func TestIncludeURLAccumulatesAttr(t *testing.T) {
 	}
 }
 
-// TestLogRowAttrPredicateResourcePrefix — logRowAttrPredicate обязана снимать
-// префикс "resource.", которым NewLogRow помечает атрибуты ресурса в Attrs,
-// и восстанавливать FieldResourceAttr с исходным (без префикса) ключом —
-// иначе ссылка на атрибут ресурса ушла бы как обычный log-атрибут с
-// буквальным ключом "resource.host.name".
-func TestLogRowAttrPredicateResourcePrefix(t *testing.T) {
-	got := logRowAttrPredicate(ctxRow{Key: "resource.host.name", Val: "web-1"}, log.OpNeq)
+// TestLogRowAttrPredicate — logRowAttrPredicate строит предикат из явных
+// полей logAttrRow (Resource/RawKey), а не разбором отображаемого Key —
+// см. её докблок и находку ревью задачи 6 (лог-атрибут, буквально названный
+// "resource.foo", не должен уйти как resource_attr).
+func TestLogRowAttrPredicate(t *testing.T) {
+	got := logRowAttrPredicate(logAttrRow{Key: "resource.host.name", RawKey: "host.name", Val: "web-1", Resource: true}, log.OpNeq)
 	want := log.Predicate{Field: log.FieldResourceAttr, Key: "host.name", Op: log.OpNeq, Value: "web-1"}
 	if got != want {
-		t.Fatalf("logRowAttrPredicate(resource.host.name) = %+v, want %+v", got, want)
+		t.Fatalf("logRowAttrPredicate(resource) = %+v, want %+v", got, want)
 	}
 
-	got = logRowAttrPredicate(ctxRow{Key: "source", Val: "nginx"}, log.OpEq)
+	got = logRowAttrPredicate(logAttrRow{Key: "source", RawKey: "source", Val: "nginx"}, log.OpEq)
 	want = log.Predicate{Field: log.FieldAttr, Key: "source", Op: log.OpEq, Value: "nginx"}
 	if got != want {
-		t.Fatalf("logRowAttrPredicate(source) = %+v, want %+v", got, want)
+		t.Fatalf("logRowAttrPredicate(log attr) = %+v, want %+v", got, want)
+	}
+
+	// Лог-атрибут, чей отображаемый ключ СЛУЧАЙНО совпадает с префиксом
+	// "resource." (Resource=false, RawKey сохранил ключ целиком) — не
+	// должен превратиться в resource_attr при обратном разборе строки,
+	// которого здесь больше нет.
+	got = logRowAttrPredicate(logAttrRow{Key: "resource.pool", RawKey: "resource.pool", Val: "db-1"}, log.OpNeq)
+	want = log.Predicate{Field: log.FieldAttr, Key: "resource.pool", Op: log.OpNeq, Value: "db-1"}
+	if got != want {
+		t.Fatalf("logRowAttrPredicate(log attr named resource.pool) = %+v, want %+v", got, want)
 	}
 }
