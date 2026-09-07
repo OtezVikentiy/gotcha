@@ -178,6 +178,16 @@ templ logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRo
 					<button type="submit" class="btn-link" title={ i18n.T(ctx, "logs.savedfilters.update_title") }>{ i18n.T(ctx, "logs.savedfilters.update") }</button>
 				</form>
 				<form method="post" action={ templ.URL(logSavedFilterDeleteURL(projectID, row.Filter.ID)) } class="logs-saved-filter-inline-form">
+					// Условия текущего вида (задача 9, находка финального
+					// ревью C5): без них web.logFilterFormParams(r) видит
+					// пустую форму, и редирект после удаления уходит на
+					// голый /logs — вручную собранный набор исключений
+					// пользователя пропадает, а на его месте молча включается
+					// фильтр по умолчанию. У формы «Сделать умолчанием» выше
+					// это поле намеренно отсутствует: назначение умолчания —
+					// не действие над текущим видом, редирект туда, откуда
+					// пришли, не более уместен, чем на голый /logs.
+					@logFilterConditionFields(filter)
 					<button type="submit" class="btn-link btn-link--danger">{ i18n.T(ctx, "logs.savedfilters.delete") }</button>
 				</form>
 			}
