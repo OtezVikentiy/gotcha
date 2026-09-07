@@ -87,6 +87,9 @@ func (s *Store) Create(ctx context.Context, projectID int64, ownerUserID *int64,
 		return Filter{}, err
 	}
 	preds = log.NormalizePredicates(preds)
+	if err := validatePredicateCount(preds); err != nil {
+		return Filter{}, err
+	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -160,6 +163,9 @@ func (s *Store) Update(ctx context.Context, id int64, name string, preds []log.P
 		return err
 	}
 	preds = log.NormalizePredicates(preds)
+	if err := validatePredicateCount(preds); err != nil {
+		return err
+	}
 
 	raw, err := json.Marshal(payload{V: payloadVersion, Predicates: preds})
 	if err != nil {

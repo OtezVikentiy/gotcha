@@ -111,6 +111,54 @@ func TestStoreLimits(t *testing.T) {
 	}
 }
 
+// TestStoreCreatePredicateLimitCountedAfterDedup — находка финального ревью
+// C6: лимит числа условий (maxPredicates=20) считается ПОСЛЕ
+// log.NormalizePredicates, не до. Двадцать пять ОДИНАКОВЫХ условий
+// (двадцать пять кликов «исключить» по одному и тому же значению) обязаны
+// схлопнуться в одно и пройти — до фикса количество проверялось раньше
+// схлопывания дублей, и такой запрос отклонялся бы ErrLimitReached там, где
+// реально сохраняется единственное условие.
+func TestStoreCreatePredicateLimitCountedAfterDedup(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	s := logfilter.NewStore(pool)
+	projectID, alice, _ := seedFilterFixtures(t, pool)
+
+	preds := make([]log.Predicate, 25)
+	for i := range preds {
+		preds[i] = log.Predicate{Field: log.FieldService, Op: log.OpNeq, Value: "worker"}
+	}
+
+	f, err := s.Create(ctx, projectID, &alice, alice, "дубли схлопнутся", preds)
+	if err != nil {
+		t.Fatalf("25 одинаковых условий отклонены (want схлопывание в одно до проверки лимита): %v", err)
+	}
+	if len(f.Predicates) != 1 {
+		t.Fatalf("после дедупликации осталось %d условий, want 1: %#v", len(f.Predicates), f.Predicates)
+	}
+}
+
+// TestStoreCreatePredicateLimitEnforced — контрастная проверка к тесту выше:
+// потолок реально работает, когда после нормализации остаётся БОЛЬШЕ
+// maxPredicates(20) РАЗЛИЧНЫХ условий (не дублей, схлопнуться нечему).
+func TestStoreCreatePredicateLimitEnforced(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	s := logfilter.NewStore(pool)
+	projectID, alice, _ := seedFilterFixtures(t, pool)
+
+	preds := make([]log.Predicate, 21)
+	for i := range preds {
+		preds[i] = log.Predicate{Field: log.FieldBody, Op: log.OpNotContains, Value: fmt.Sprintf("v%d", i)}
+	}
+
+	_, err := s.Create(ctx, projectID, &alice, alice, "слишком много условий", preds)
+	var ve *logfilter.ValidationError
+	if !errors.As(err, &ve) || ve.Code != "too_many_predicates" {
+		t.Fatalf("21 различное условие принято, want ValidationError{Code: too_many_predicates}, получено %v", err)
+	}
+}
+
 func TestStoreNameTaken(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()

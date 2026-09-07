@@ -79,15 +79,28 @@ func validateName(name string) error {
 	return nil
 }
 
-// validatePredicates проверяет число условий и каждое условие по отдельности.
+// validatePredicates проверяет каждое условие по отдельности. Потолок числа
+// условий сюда НЕ входит — validatePredicateCount вызывается отдельно,
+// ПОСЛЕ log.NormalizePredicates (см. Store.Create/Update): здесь, до
+// схлопывания дублей, count ещё может быть завышен кликами по одному и тому
+// же условию.
 func validatePredicates(preds []log.Predicate) error {
-	if len(preds) > maxPredicates {
-		return &ValidationError{Code: "too_many_predicates", Field: "predicates"}
-	}
 	for _, p := range preds {
 		if err := p.Validate(); err != nil {
 			return &ValidationError{Code: "invalid_predicate", Field: "predicates"}
 		}
+	}
+	return nil
+}
+
+// validatePredicateCount проверяет потолок числа условий в ОДНОМ фильтре.
+// Вызывается ПОСЛЕ log.NormalizePredicates (находка финального ревью C6):
+// до фикса лимит считался ДО нормализации, и двадцать один одинаковый клик
+// «исключить» давал ErrLimitReached/too_many_predicates там, где после
+// схлопывания дублей реально остаётся одно условие.
+func validatePredicateCount(preds []log.Predicate) error {
+	if len(preds) > maxPredicates {
+		return &ValidationError{Code: "too_many_predicates", Field: "predicates"}
 	}
 	return nil
 }
