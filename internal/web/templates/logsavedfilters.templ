@@ -152,7 +152,7 @@ templ logSavedFilterSaveForm(projectID int64, filter LogsFilter, canShare bool) 
 // действия «Обновить условиями текущего вида»/«Удалить». «Сделать
 // умолчанием» показывается всем, кто видит фильтр вообще — это персональная
 // настройка смотрящего, не правка самого фильтра.
-templ logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRow) {
+templ logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRow, canShare bool) {
 	<li class="logs-saved-filter-item">
 		if row.Filter.Applicable {
 			<a href={ templ.URL(logSavedFilterApplyURL(projectID, row.Filter)) }>{ row.Filter.Name }</a>
@@ -169,10 +169,31 @@ templ logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRo
 				</form>
 			}
 			if row.CanEdit {
+				// Переименование и смена видимости (находка финального
+				// ревью C10): §7.3 спеки объявляет их отдельными действиями
+				// панели, хендлеры (logFiltersUpdate) их уже поддерживают и
+				// покрыты тестами через прямой POST — не хватало только
+				// элементов управления. Имя — обычное текстовое поле вместо
+				// скрытого с эхом старого значения (тот же приём, что у
+				// формы сохранения выше). Переключатель видимости — тот же
+				// чекбокс "shared", что и у создания, но с checked по
+				// текущему состоянию, и доступен только при canShare (тот
+				// же уровень, что у создания общего фильтра, — веб-слой
+				// перепроверяет требованием оператора для общего фильтра
+				// ДО и ПОСЛЕ правки, requireLogFilterOperator). row.CanEdit
+				// для общего фильтра гарантирует canOperate==canShare (см.
+				// logFiltersPanel), поэтому переключатель для видимого здесь
+				// общего фильтра всегда доступен; скрытое поле — запасной
+				// путь на случай расхождения инварианта, а не типовой путь.
 				<form method="post" action={ templ.URL(logSavedFilterUpdateURL(projectID, row.Filter.ID)) } class="logs-saved-filter-inline-form">
-					<input type="hidden" name="name" value={ row.Filter.Name }/>
+					<input type="text" name="name" class="input" value={ row.Filter.Name } aria-label={ i18n.T(ctx, "logs.savedfilters.name_placeholder") } maxlength="60" required/>
 					@logFilterConditionFields(filter)
-					if row.Filter.Shared() {
+					if canShare {
+						<label class="checkbox-inline">
+							<input type="checkbox" name="shared" value="1" checked?={ row.Filter.Shared() }/>
+							{ i18n.T(ctx, "logs.savedfilters.shared_checkbox") }
+						</label>
+					} else if row.Filter.Shared() {
 						<input type="hidden" name="shared" value="1"/>
 					}
 					<button type="submit" class="btn-link" title={ i18n.T(ctx, "logs.savedfilters.update_title") }>{ i18n.T(ctx, "logs.savedfilters.update") }</button>
@@ -211,7 +232,7 @@ templ logSavedFiltersSection(projectID int64, filter LogsFilter, panel LogSavedF
 			} else {
 				<ul class="logs-saved-filters-list">
 					for _, row := range panel.Personal {
-						@logSavedFilterRow(projectID, filter, row)
+						@logSavedFilterRow(projectID, filter, row, panel.CanShare)
 					}
 				</ul>
 			}
@@ -223,7 +244,7 @@ templ logSavedFiltersSection(projectID int64, filter LogsFilter, panel LogSavedF
 			} else {
 				<ul class="logs-saved-filters-list">
 					for _, row := range panel.Shared {
-						@logSavedFilterRow(projectID, filter, row)
+						@logSavedFilterRow(projectID, filter, row, panel.CanShare)
 					}
 				</ul>
 			}

@@ -261,6 +261,101 @@ func TestLogFiltersUpdatePersonalRoundTrip(t *testing.T) {
 	}
 }
 
+// filterUpdateFormHTML вырезает разметку формы «Обновить» для КОНКРЕТНОГО
+// filterID из HTML страницы логов — по его action-URL, а не первую
+// попавшуюся форму «Обновить» на странице (их может быть несколько, по
+// одной на редактируемый фильтр).
+func filterUpdateFormHTML(t *testing.T, html string, projectID, filterID int64) string {
+	t.Helper()
+	marker := fmt.Sprintf(`%s/filters/%d/update"`, logsBasePath(projectID), filterID)
+	idx := strings.Index(html, marker)
+	if idx < 0 {
+		t.Fatalf("форма «Обновить» для фильтра %d не найдена: %s", filterID, html)
+	}
+	formStart := strings.LastIndex(html[:idx], "<form")
+	if formStart < 0 {
+		t.Fatalf("не нашли открывающий <form для фильтра %d", filterID)
+	}
+	formEnd := strings.Index(html[idx:], "</form>")
+	if formEnd < 0 {
+		t.Fatalf("не нашли закрывающий </form для фильтра %d", filterID)
+	}
+	return html[formStart : idx+formEnd+len("</form>")]
+}
+
+// TestLogFiltersUpdateFormShowsRenameAndVisibilityControlsForOperator —
+// находка финального ревью C10: §7.3 спеки объявляет переименование и смену
+// видимости отдельными действиями панели; хендлер (logFiltersUpdate) их уже
+// поддерживал (см. TestLogFiltersUpdatePersonalRoundTrip и
+// TestLogFiltersConvertPersonalToSharedRequiresOperator — оба идут прямым
+// POST), но элементов управления в разметке не было. Тест идёт через
+// РЕАЛЬНУЮ страницу (GET), не прямым POST: владелец проекта (оператор)
+// обязан увидеть текстовое поле имени, предзаполненное текущим значением
+// (не скрытое), и переключатель видимости у формы «Обновить» — как для
+// личного, так и для общего фильтра.
+func TestLogFiltersUpdateFormShowsRenameAndVisibilityControlsForOperator(t *testing.T) {
+	s := newFiltersStack(t)
+	_, ownerCookie, project := newLogsProject(t, s, "ui-controls-owner@example.com", "uic-org", "uic-proj")
+	projectID := project.ID
+
+	create := postForm(t, s.srv, logsBasePath(projectID)+"/filters",
+		url.Values{"name": {"мой личный"}, "q_not": {"buffered"}}, s.srv.URL, ownerCookie)
+	create.Body.Close()
+	if create.StatusCode != http.StatusSeeOther {
+		t.Fatalf("создание личного: статус %d", create.StatusCode)
+	}
+	filterID := lastFilterID(t, s.pool, projectID)
+
+	page := getWithCookie(t, s.srv, logsBasePath(projectID), ownerCookie)
+	defer page.Body.Close()
+	body, _ := io.ReadAll(page.Body)
+	form := filterUpdateFormHTML(t, string(body), projectID, filterID)
+
+	if strings.Contains(form, `type="hidden" name="name"`) {
+		t.Errorf("имя всё ещё скрытым полем, переименовать через интерфейс нельзя: %s", form)
+	}
+	if !strings.Contains(form, `type="text" name="name"`) || !strings.Contains(form, `value="мой личный"`) {
+		t.Errorf("нет текстового поля имени, предзаполненного текущим значением: %s", form)
+	}
+	if !strings.Contains(form, `type="checkbox" name="shared"`) {
+		t.Errorf("оператору не показан переключатель видимости: %s", form)
+	}
+}
+
+// TestLogFiltersUpdateFormHidesVisibilityToggleForNonOperator — рядовой
+// участник видит форму «Обновить» СВОЕГО ЖЕ личного фильтра (CanEdit по
+// владению), но переключатель видимости обязан отсутствовать: подмена
+// значения формы всё равно отклонится requireLogFilterOperator на сабмите
+// (см. TestLogFiltersConvertPersonalToSharedRequiresOperator), но элемент
+// управления, ведущий к гарантированному 403, вводит в заблуждение.
+func TestLogFiltersUpdateFormHidesVisibilityToggleForNonOperator(t *testing.T) {
+	s := newFiltersStack(t)
+	_, _, project := newLogsProject(t, s, "ui-controls-owner2@example.com", "uic2-org", "uic2-proj")
+	projectID := project.ID
+	memberID, memberCookie := orgSettingsRegister(t, s.auth, "ui-controls-member@example.com")
+	addProjectMember(t, s, project.OrgID, projectID, memberID)
+
+	create := postForm(t, s.srv, logsBasePath(projectID)+"/filters",
+		url.Values{"name": {"фильтр участника"}, "q_not": {"buffered"}}, s.srv.URL, memberCookie)
+	create.Body.Close()
+	if create.StatusCode != http.StatusSeeOther {
+		t.Fatalf("создание личного участником: статус %d", create.StatusCode)
+	}
+	filterID := lastFilterID(t, s.pool, projectID)
+
+	page := getWithCookie(t, s.srv, logsBasePath(projectID), memberCookie)
+	defer page.Body.Close()
+	body, _ := io.ReadAll(page.Body)
+	form := filterUpdateFormHTML(t, string(body), projectID, filterID)
+
+	if !strings.Contains(form, `type="text" name="name"`) {
+		t.Errorf("рядовому участнику не показано поле переименования собственного фильтра: %s", form)
+	}
+	if strings.Contains(form, `type="checkbox" name="shared"`) {
+		t.Errorf("рядовому участнику показан переключатель видимости: %s", form)
+	}
+}
+
 // TestLogFiltersUpdateSharedRequiresOperator — правка УЖЕ общего фильтра
 // требует оператора, даже когда результат остаётся общим.
 func TestLogFiltersUpdateSharedRequiresOperator(t *testing.T) {
