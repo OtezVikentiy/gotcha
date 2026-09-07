@@ -15,13 +15,13 @@ import (
 var (
 	// ErrNotFound — фильтра с таким id нет, либо он не виден вызывающему
 	// (SetDefault на чужой личный фильтр).
-	ErrNotFound = errors.New("logfilter: фильтр не найден")
+	ErrNotFound = errors.New("logfilter: filter not found")
 	// ErrLimitReached — потолок личных или общих фильтров исчерпан
 	// (см. maxPersonalPerUser/maxSharedPerProject).
-	ErrLimitReached = errors.New("logfilter: лимит фильтров исчерпан")
+	ErrLimitReached = errors.New("logfilter: filter limit reached")
 	// ErrNameTaken — имя занято в той же области видимости (личной у
 	// пользователя либо общей в проекте) без учёта регистра.
-	ErrNameTaken = errors.New("logfilter: имя фильтра уже занято")
+	ErrNameTaken = errors.New("logfilter: filter name already taken")
 )
 
 // filterColumns — список столбцов log_saved_filters в порядке, которого
@@ -102,7 +102,7 @@ func (s *Store) Create(ctx context.Context, projectID int64, ownerUserID *int64,
 		if err := tx.QueryRow(ctx,
 			"SELECT count(*) FROM log_saved_filters WHERE project_id = $1 AND owner_user_id = $2",
 			projectID, *ownerUserID).Scan(&count); err != nil {
-			return Filter{}, fmt.Errorf("logfilter: create: подсчёт личных: %w", err)
+			return Filter{}, fmt.Errorf("logfilter: create: count personal: %w", err)
 		}
 		if count >= maxPersonalPerUser {
 			return Filter{}, ErrLimitReached
@@ -111,7 +111,7 @@ func (s *Store) Create(ctx context.Context, projectID int64, ownerUserID *int64,
 		if err := tx.QueryRow(ctx,
 			"SELECT count(*) FROM log_saved_filters WHERE project_id = $1 AND owner_user_id IS NULL",
 			projectID).Scan(&count); err != nil {
-			return Filter{}, fmt.Errorf("logfilter: create: подсчёт общих: %w", err)
+			return Filter{}, fmt.Errorf("logfilter: create: count shared: %w", err)
 		}
 		if count >= maxSharedPerProject {
 			return Filter{}, ErrLimitReached
@@ -120,7 +120,7 @@ func (s *Store) Create(ctx context.Context, projectID int64, ownerUserID *int64,
 
 	raw, err := json.Marshal(payload{V: payloadVersion, Predicates: preds})
 	if err != nil {
-		return Filter{}, fmt.Errorf("logfilter: create: сериализация payload: %w", err)
+		return Filter{}, fmt.Errorf("logfilter: create: marshal payload: %w", err)
 	}
 
 	f, err := scanFilter(tx.QueryRow(ctx, `
@@ -132,7 +132,7 @@ func (s *Store) Create(ctx context.Context, projectID int64, ownerUserID *int64,
 		if isUniqueViolation(err) {
 			return Filter{}, ErrNameTaken
 		}
-		return Filter{}, fmt.Errorf("logfilter: create: вставка: %w", err)
+		return Filter{}, fmt.Errorf("logfilter: create: insert: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Filter{}, fmt.Errorf("logfilter: create: commit: %w", err)
@@ -169,7 +169,7 @@ func (s *Store) Update(ctx context.Context, id int64, name string, preds []log.P
 
 	raw, err := json.Marshal(payload{V: payloadVersion, Predicates: preds})
 	if err != nil {
-		return fmt.Errorf("logfilter: update: сериализация payload: %w", err)
+		return fmt.Errorf("logfilter: update: marshal payload: %w", err)
 	}
 
 	tx, err := s.pool.Begin(ctx)
@@ -197,7 +197,7 @@ func (s *Store) Update(ctx context.Context, id int64, name string, preds []log.P
 		if _, err := tx.Exec(ctx,
 			"DELETE FROM log_default_filters WHERE filter_id = $1 AND user_id <> $2",
 			id, *ownerUserID); err != nil {
-			return fmt.Errorf("logfilter: update: очистка умолчаний: %w", err)
+			return fmt.Errorf("logfilter: update: clear defaults: %w", err)
 		}
 	}
 
