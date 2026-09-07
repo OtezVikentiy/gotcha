@@ -32,6 +32,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingestsignal"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
+	"gitflic.ru/otezvikentiy/gotcha/internal/logfilter"
 	"gitflic.ru/otezvikentiy/gotcha/internal/memlimit"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
@@ -1476,6 +1477,10 @@ func run() error {
 		// не только справочный дефолт.
 		webHandler.LogQuery = log.NewQuery(ch)
 		webHandler.LogRetentionDays = cfg.LogRetentionDays
+		// LogFilters (задача 9, «исключающие и сохранённые фильтры логов»):
+		// тот же PG-пул, что у остальных Postgres-сторов веб-слоя (Deploy,
+		// Signals ниже) — не отдельное подключение.
+		webHandler.LogFilters = logfilter.NewStore(pg)
 		// Деплои (C5): store читается веб-слоем для маркеров на графиках,
 		// экрана-списка и привязки регрессий (тот же пул, что у ingest.Deploy).
 		webHandler.Deploy = deploy.NewStore(pg)
