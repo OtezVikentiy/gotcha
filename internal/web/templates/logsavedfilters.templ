@@ -103,6 +103,14 @@ func logSavedFilterApplyURL(projectID int64, f logfilter.Filter) string {
 // у каждого редактируемого фильтра списка (одна и та же разметка, два
 // разных action) — то же имя параметров, что читает web.logFilterFormParams
 // по закрытому списку logFilterParams (internal/web/logfilters.go).
+//
+// attr/trace_id/исключения вынесены в общий logFilterHiddenChipFields
+// (logs.templ) — до устранения находки финального ревью C11 этот же тройной
+// блок был написан здесь ещё раз независимо от GET-формы фильтров
+// (LogsScreen), и рисковал разойтись с ней при добавлении следующего
+// параметра отбора. severity/service/environment/q остаются здесь: у
+// GET-формы это ЖИВЫЕ поля с тем же именем — общая функция для них задвоила
+// бы параметр в сабмите (см. докблок logFilterHiddenChipFields).
 templ logFilterConditionFields(filter LogsFilter) {
 	for _, sv := range filter.Severity {
 		<input type="hidden" name="severity" value={ sv }/>
@@ -116,15 +124,7 @@ templ logFilterConditionFields(filter LogsFilter) {
 	if filter.Query != "" {
 		<input type="hidden" name="q" value={ filter.Query }/>
 	}
-	for _, a := range filter.Attrs {
-		<input type="hidden" name="attr" value={ logAttrFilterParam(a) }/>
-	}
-	if filter.TraceID != "" {
-		<input type="hidden" name="trace_id" value={ filter.TraceID }/>
-	}
-	for _, p := range filter.Not {
-		<input type="hidden" name={ logNotParamName(p) } value={ logNotParamValue(p) }/>
-	}
+	@logFilterHiddenChipFields(filter)
 }
 
 // logSavedFilterSaveForm — «Сохранить текущий фильтр»: имя + условия

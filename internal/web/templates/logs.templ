@@ -679,6 +679,30 @@ func logAttrFilterParam(a log.AttrFilter) string {
 	return s
 }
 
+// logFilterHiddenChipFields — скрытые поля условий, у которых в форме нет
+// собственного видимого элемента управления: атрибут-фильтры, жёсткий скоуп
+// по trace_id и исключающие условия (все они живут чипами вне формы, см.
+// logs-active-filters ниже). Общая точка для GET-формы фильтров (LogsScreen,
+// ниже — сабмит «Применить» обязан сохранить их при изменении видимого
+// поля) и POST-форм сохранённых фильтров (logFilterConditionFields,
+// logsavedfilters.templ) — до устранения находки финального ревью C11 оба
+// места писали этот же тройной блок независимо, рискуя разойтись при
+// добавлении следующего параметра отбора. severity/service/environment/q
+// сюда НЕ входят: у GET-формы это видимые поля с тем же именем — добавить
+// их сюда же означало бы задвоить параметр в сабмите (значение из скрытого
+// поля и значение, которое реально ввёл пользователь, под одним name).
+templ logFilterHiddenChipFields(filter LogsFilter) {
+	for _, a := range filter.Attrs {
+		<input type="hidden" name="attr" value={ logAttrFilterParam(a) }/>
+	}
+	if filter.TraceID != "" {
+		<input type="hidden" name="trace_id" value={ filter.TraceID }/>
+	}
+	for _, p := range filter.Not {
+		<input type="hidden" name={ logNotParamName(p) } value={ logNotParamValue(p) }/>
+	}
+}
+
 // logsAttrKeysPath — путь JSON-эндпоинта автокомплита ключей атрибутов
 // (задача 6, C2, §6 спеки, web.logsAttrKeys) — logs.js сам дописывает
 // ?q=<prefix> при запросе.
@@ -820,15 +844,7 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 				// attr/trace_id/исключения живут вне видимых полей формы (чипами
 				// ниже), но сабмит «Применить» обязан их сохранить — иначе они
 				// молча обнуляются на первом же изменении видимого поля.
-				for _, a := range filter.Attrs {
-					<input type="hidden" name="attr" value={ logAttrFilterParam(a) }/>
-				}
-				if filter.TraceID != "" {
-					<input type="hidden" name="trace_id" value={ filter.TraceID }/>
-				}
-				for _, p := range filter.Not {
-					<input type="hidden" name={ logNotParamName(p) } value={ logNotParamValue(p) }/>
-				}
+				@logFilterHiddenChipFields(filter)
 				if filter.DefaultSuppressed {
 					<input type="hidden" name="nodefault" value="1"/>
 				}
