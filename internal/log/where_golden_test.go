@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +28,20 @@ func (c *captureConn) Query(_ context.Context, query string, args ...any) (drive
 	c.query = query
 	c.args = args
 	return nil, errCapture
+}
+
+// containsArg ищет строковое значение среди перехваченных аргументов запроса.
+// Не slices.Contains: go.mod этого модуля фиксирует "go 1.26.6", и в этой
+// связке версий инстанцирование slices.Contains по []any (E=any) не проходит
+// проверку ограничения comparable на этапе компиляции — не имеет отношения
+// к содержимому теста, обходится обычным циклом с явным приведением типа.
+func containsArg(args []any, v string) bool {
+	for _, a := range args {
+		if s, ok := a.(string); ok && s == v {
+			return true
+		}
+	}
+	return false
 }
 
 // goldenFilter — один и тот же набор условий для всех голден-случаев:
@@ -386,55 +399,128 @@ func TestGoldenWhereAttrValues(t *testing.T) {
 	}
 }
 
-// TestGoldenFacetOmitsOwnNegation: фасет по service не должен применять
-// собственное отрицание — иначе исключённое значение "cron" пропадёт
-// из счётчиков вместе с возможностью снять исключение обратным кликом.
-// Отрицание по ДРУГОМУ полю (environment) при этом обязано остаться.
+// TestGoldenFacetOmitsOwnNegation: фасет по колонке не должен применять
+// собственное отрицание — иначе исключённое значение пропадёт из счётчиков
+// вместе с возможностью снять исключение обратным кликом. Отрицание по
+// ДРУГОМУ полю при этом обязано остаться. Прогоняется по ВСЕМ трём колонкам
+// facetColumns (не только service): омит-ключ обязан браться из параметра
+// col, а не совпадать с ним случайно на одной проверенной колонке — иначе
+// хардкод вида `map[string]bool{"service": true}` вместо `{col: true}`
+// прошёл бы незамеченным на service и молча тёк для environment/severity.
 func TestGoldenFacetOmitsOwnNegation(t *testing.T) {
-	f := goldenFilter()
-	f.Not = []Predicate{
-		{Field: FieldService, Op: OpNeq, Value: "cron"},
-		{Field: FieldEnvironment, Op: OpNeq, Value: "staging"},
+	cases := []struct {
+		col       string
+		ownNot    Predicate
+		ownWant   string // подстрока собственного отрицания — обязана отсутствовать
+		otherNot  Predicate
+		otherWant string // подстрока чужого отрицания — обязана присутствовать
+	}{
+		{
+			col:       FieldService,
+			ownNot:    Predicate{Field: FieldService, Op: OpNeq, Value: "cron"},
+			ownWant:   "service != ?",
+			otherNot:  Predicate{Field: FieldEnvironment, Op: OpNeq, Value: "staging"},
+			otherWant: "environment != ?",
+		},
+		{
+			col:       FieldEnvironment,
+			ownNot:    Predicate{Field: FieldEnvironment, Op: OpNeq, Value: "staging"},
+			ownWant:   "environment != ?",
+			otherNot:  Predicate{Field: FieldService, Op: OpNeq, Value: "cron"},
+			otherWant: "service != ?",
+		},
+		{
+			col:       FieldSeverity,
+			ownNot:    Predicate{Field: FieldSeverity, Op: OpNeq, Value: SevDebug},
+			ownWant:   "severity NOT IN (?)",
+			otherNot:  Predicate{Field: FieldService, Op: OpNeq, Value: "cron"},
+			otherWant: "service != ?",
+		},
 	}
 
-	c := &captureConn{}
-	q := NewQuery(c)
-	if _, err := q.Facet(context.Background(), 7, f, FieldService); !errors.Is(err, errCapture) {
-		t.Fatalf("Facet: ожидалась errCapture, получено %v", err)
-	}
+	for _, tc := range cases {
+		t.Run(tc.col, func(t *testing.T) {
+			f := goldenFilter()
+			f.Not = []Predicate{tc.ownNot, tc.otherNot}
 
-	if strings.Contains(c.query, "service != ?") {
-		t.Fatalf("фасет по service применил собственное отрицание:\n%s", c.query)
-	}
-	if !strings.Contains(c.query, "environment != ?") {
-		t.Fatalf("фасет по service обязан применять отрицание по environment:\n%s", c.query)
+			c := &captureConn{}
+			q := NewQuery(c)
+			if _, err := q.Facet(context.Background(), 7, f, tc.col); !errors.Is(err, errCapture) {
+				t.Fatalf("Facet(%s): ожидалась errCapture, получено %v", tc.col, err)
+			}
+
+			if strings.Contains(c.query, tc.ownWant) {
+				t.Fatalf("фасет по %s применил собственное отрицание:\n%s", tc.col, c.query)
+			}
+			if !strings.Contains(c.query, tc.otherWant) {
+				t.Fatalf("фасет по %s обязан применять отрицание по другому полю:\n%s", tc.col, c.query)
+			}
+		})
 	}
 }
 
-// TestGoldenAttrValuesOmitsOwnNegation: та же логика для значений
-// атрибута — раскрытый ключ "source" не применяет своё отрицание,
-// но отрицание по чужому ключу "env" продолжает сужать выборку.
+// TestGoldenAttrValuesOmitsOwnNegation: раскрытый ключ атрибута не
+// применяет своё отрицание, но отрицание по чужому ключу продолжает
+// сужать выборку. Два случая — обычный атрибут и ресурсный, с РАЗНЫМИ
+// ключами (не "source" в обоих): омит-ключ обязан собираться из
+// resource+key параметров вызова, а не совпадать с одним захардкоженным
+// значением случайно на единственной проверенной комбинации.
 func TestGoldenAttrValuesOmitsOwnNegation(t *testing.T) {
-	f := goldenFilter()
-	f.Attrs = nil
-	f.Not = []Predicate{
-		{Field: FieldAttr, Key: "source", Op: OpNeq, Value: "nginx"},
-		{Field: FieldAttr, Key: "env", Op: OpNeq, Value: "dev"},
+	cases := []struct {
+		name       string
+		resource   bool
+		key        string
+		ownNot     Predicate
+		otherNot   Predicate
+		ownField   string // NOT(<col>[?] = ?) — колонка собственного отрицания
+		otherValue string // значение чужого отрицания — обязано остаться в args
+		ownValue   string // значение собственного отрицания — обязано пропасть из args
+	}{
+		{
+			name:       "attr",
+			resource:   false,
+			key:        "source",
+			ownNot:     Predicate{Field: FieldAttr, Key: "source", Op: OpNeq, Value: "nginx"},
+			otherNot:   Predicate{Field: FieldAttr, Key: "env", Op: OpNeq, Value: "dev"},
+			ownField:   "log_attributes",
+			otherValue: "dev",
+			ownValue:   "nginx",
+		},
+		{
+			name:       "resource_attr",
+			resource:   true,
+			key:        "host",
+			ownNot:     Predicate{Field: FieldResourceAttr, Key: "host", Op: OpNeq, Value: "web-2"},
+			otherNot:   Predicate{Field: FieldResourceAttr, Key: "az", Op: OpNeq, Value: "us-east"},
+			ownField:   "resource_attrs",
+			otherValue: "us-east",
+			ownValue:   "web-2",
+		},
 	}
 
-	c := &captureConn{}
-	q := NewQuery(c)
-	if _, err := q.AttrValues(context.Background(), 7, f, false, "source", 10); !errors.Is(err, errCapture) {
-		t.Fatalf("AttrValues: ожидалась errCapture, получено %v", err)
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := goldenFilter()
+			f.Attrs = nil
+			f.Not = []Predicate{tc.ownNot, tc.otherNot}
 
-	if got := strings.Count(c.query, "NOT (log_attributes[?] = ?)"); got != 1 {
-		t.Fatalf("ожидалось ровно одно отрицание по чужому ключу, найдено %d:\n%s", got, c.query)
-	}
-	// Аргументы докажут, что осталось именно "env"/"dev", а не "source"/"nginx".
-	// Ключ "source" сам по себе в args есть всегда (параметр SELECT-проекции
-	// и mapContains), поэтому различает только значение "nginx" отрицания.
-	if !slices.Contains(c.args, "dev") || slices.Contains(c.args, "nginx") {
-		t.Fatalf("отрицание по раскрытому ключу не отброшено: %#v", c.args)
+			c := &captureConn{}
+			q := NewQuery(c)
+			if _, err := q.AttrValues(context.Background(), 7, f, tc.resource, tc.key, 10); !errors.Is(err, errCapture) {
+				t.Fatalf("AttrValues: ожидалась errCapture, получено %v", err)
+			}
+
+			wantClause := "NOT (" + tc.ownField + "[?] = ?)"
+			if got := strings.Count(c.query, wantClause); got != 1 {
+				t.Fatalf("ожидалось ровно одно отрицание по чужому ключу, найдено %d:\n%s", got, c.query)
+			}
+			// Аргументы докажут, что осталось именно чужое значение, а не
+			// собственное. Сам ключ раскрытого атрибута в args есть всегда
+			// (параметр SELECT-проекции и mapContains), поэтому различает
+			// только значение отрицания, а не ключ.
+			if !containsArg(c.args, tc.otherValue) || containsArg(c.args, tc.ownValue) {
+				t.Fatalf("отрицание по раскрытому ключу не отброшено: %#v", c.args)
+			}
+		})
 	}
 }
