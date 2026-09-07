@@ -163,7 +163,7 @@ func NewServiceFacet(ctx context.Context, projectID int64, filter LogsFilter, va
 
 // NewEnvironmentFacet — то же самое для environment.
 func NewEnvironmentFacet(ctx context.Context, projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool) LogFacet {
-	return newSingleValueFacet(ctx, projectID, filter, values, tooMuchData, log.FieldEnvironment, "logs.facet.exclude_environment",
+	return newSingleValueFacet(ctx, projectID, filter, values, tooMuchData, log.FieldEnvironment, "logs.row.exclude_environment",
 		func(f LogsFilter) string { return f.Environment },
 		func(f LogsFilter, v string) LogsFilter { f.Environment = v; return f },
 	)
@@ -327,7 +327,7 @@ func newAttrKeyFacetItem(ctx context.Context, projectID int64, filter LogsFilter
 				Href:         logAttrValueURL(projectID, filter, key, v.Value),
 				Active:       logAttrValueActive(filter, key, v.Value),
 				ExcludeHref:  logExcludeURL(projectID, filter, log.Predicate{Field: log.FieldAttr, Key: key, Op: log.OpNeq, Value: v.Value}),
-				ExcludeLabel: i18n.Tf(ctx, "logs.facet.exclude_attr_value", "key", key, "value", v.Value),
+				ExcludeLabel: i18n.Tf(ctx, "logs.row.exclude_attr_value", "key", key, "value", v.Value),
 			}
 		}
 	}
