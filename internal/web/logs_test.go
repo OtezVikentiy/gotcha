@@ -1245,3 +1245,45 @@ func TestLogsFormCarriesNonFieldFilters(t *testing.T) {
 		t.Errorf("не нашли чип исключения (класс logs-filter-chip--not): %s", page)
 	}
 }
+
+// TestLogRowHasExcludeLinks — задача 6: ссылки «исключить» у уровня, сервиса
+// и атрибута прямо в строке лога собраны из реального запроса, а не заново
+// с нуля (иначе они потеряли бы уже активные фильтры страницы).
+func TestLogRowHasExcludeLinks(t *testing.T) {
+	s := newLogsStack(t, true)
+	projectID, cookie, _ := newLogsProject(t, s, "row@example.com", "row-org", "row-proj")
+
+	now := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Minute)
+	s.seedLogs(t, projectID,
+		log.LogRecord{
+			Timestamp: now, ObservedTS: now,
+			Severity: log.SevError, SeverityNumber: 17, SeverityText: "ERROR",
+			Body: "boom", Service: "api", Environment: "production",
+			LogAttributes: map[string]string{"source": "nginx"},
+		},
+	)
+
+	resp := getWithCookie(t, s.srv, logsBasePath(projectID), cookie)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	page := string(body)
+
+	for _, want := range []string{
+		"severity_not=error",
+		"service_not=api",
+		"attr_not=source%3Anginx",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("в строке нет ссылки исключения с %s: %s", want, page)
+		}
+	}
+	// Собственный сборщик URL вместо logsPageURLValues (которая курсор
+	// намеренно не включает) потащил бы в ссылку исключения before/tskip
+	// текущей страницы и сломал бы выдачу на второй странице.
+	if strings.Contains(page, "before=") || strings.Contains(page, "tskip=") {
+		t.Errorf("ссылка исключения тащит курсор пагинации — собрана мимо logsPageURLValues: %s", page)
+	}
+}

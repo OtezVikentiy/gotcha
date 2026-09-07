@@ -267,3 +267,63 @@ func TestLogTracePath(t *testing.T) {
 		t.Fatalf("logTracePath(%q) = %q, want %q", "abc123", got, want)
 	}
 }
+
+// TestIncludeURLReplacesSingleValueField — задача 6: service и environment
+// одиночные, у них двух значений одновременно быть не может, поэтому клик
+// «оставить только это» замещает прежнее значение, а не накапливает его.
+func TestIncludeURLReplacesSingleValueField(t *testing.T) {
+	f := LogsFilter{Service: "api"}
+	got := logIncludeURL(7, f, log.Predicate{Field: log.FieldService, Op: log.OpEq, Value: "worker"})
+
+	if strings.Count(got, "service=") != 1 {
+		t.Fatalf("сервис должен замещаться, а не накапливаться: %s", got)
+	}
+	if !strings.Contains(got, "service=worker") {
+		t.Fatalf("новое значение не подставлено: %s", got)
+	}
+}
+
+// TestIncludeURLAccumulatesSeverity — severity мультивыбираема: включение
+// нового значения добавляется к уже выбранным, не замещая их (в отличие от
+// service/environment выше).
+func TestIncludeURLAccumulatesSeverity(t *testing.T) {
+	f := LogsFilter{Severity: []string{"info"}}
+	got := logIncludeURL(7, f, log.Predicate{Field: log.FieldSeverity, Value: "error"})
+
+	q := parseLogsLink(t, got, 7)
+	if sev := q["severity"]; len(sev) != 2 || sev[0] != "info" || sev[1] != "error" {
+		t.Fatalf("severity должен накапливаться (info+error), получили %v: %s", sev, got)
+	}
+}
+
+// TestIncludeURLAccumulatesAttr — то же самое для attr-фильтров: клик по
+// значению атрибута из строки лога не должен снимать уже активные attr.
+func TestIncludeURLAccumulatesAttr(t *testing.T) {
+	f := LogsFilter{Attrs: []log.AttrFilter{{Key: "host", Value: "a1"}}}
+	got := logIncludeURL(7, f, log.Predicate{Field: log.FieldAttr, Key: "source", Value: "nginx"})
+
+	for _, want := range []string{"attr=host%3Aa1", "attr=source%3Anginx"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("attr должен накапливаться, не хватает %s: %s", want, got)
+		}
+	}
+}
+
+// TestLogRowAttrPredicateResourcePrefix — logRowAttrPredicate обязана снимать
+// префикс "resource.", которым NewLogRow помечает атрибуты ресурса в Attrs,
+// и восстанавливать FieldResourceAttr с исходным (без префикса) ключом —
+// иначе ссылка на атрибут ресурса ушла бы как обычный log-атрибут с
+// буквальным ключом "resource.host.name".
+func TestLogRowAttrPredicateResourcePrefix(t *testing.T) {
+	got := logRowAttrPredicate(ctxRow{Key: "resource.host.name", Val: "web-1"}, log.OpNeq)
+	want := log.Predicate{Field: log.FieldResourceAttr, Key: "host.name", Op: log.OpNeq, Value: "web-1"}
+	if got != want {
+		t.Fatalf("logRowAttrPredicate(resource.host.name) = %+v, want %+v", got, want)
+	}
+
+	got = logRowAttrPredicate(ctxRow{Key: "source", Val: "nginx"}, log.OpEq)
+	want = log.Predicate{Field: log.FieldAttr, Key: "source", Op: log.OpEq, Value: "nginx"}
+	if got != want {
+		t.Fatalf("logRowAttrPredicate(source) = %+v, want %+v", got, want)
+	}
+}

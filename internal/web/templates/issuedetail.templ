@@ -580,13 +580,29 @@ templ frameView(f Frame, expandSystem bool) {
 }
 
 // contextTable — таблица ключ/значение для группы контекста или Request-карточки.
+// Обёртка над contextTableWithActions без колонки действий — все пять вызовов
+// экрана ошибки остаются на ней, колонка действий им не нужна и не должна
+// протекать сюда с экрана логов (задача 6).
 templ contextTable(rows []ctxRow) {
+	@contextTableWithActions(rows, nil)
+}
+
+// contextTableWithActions — та же таблица ключ/значение, но с необязательной
+// колонкой действий по строке: action==nil — колонки нет (это и есть
+// contextTable), иначе для каждой строки рендерится её результат. Единственный
+// вызывающий с непустым action сегодня — таблица атрибутов записи в развёрнутой
+// строке лога (logRowView, logs.templ): ссылки «исключить»/«оставить только
+// это» существуют только там, экран ошибки исключений логов не знает.
+templ contextTableWithActions(rows []ctxRow, action func(ctxRow) templ.Component) {
 	<table class="ctx-table data-table data-table--auto">
 		<tbody>
 			for _, r := range rows {
 				<tr>
 					<td class="ctx-key">{ r.Key }</td>
 					<td class="ctx-val">{ r.Val }</td>
+					if action != nil {
+						<td class="ctx-actions">@action(r)</td>
+					}
 				</tr>
 			}
 		</tbody>

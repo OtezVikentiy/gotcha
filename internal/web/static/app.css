@@ -2443,6 +2443,12 @@ th {
 .ctx-val {
 	overflow-wrap: anywhere;
 }
+/* Колонка действий contextTableWithActions (задача 6) — только у таблицы
+   атрибутов строки лога (contextTable без действий, экран ошибки, её не
+   рендерит вовсе). white-space:nowrap — пара мелких кнопок не переносится. */
+.ctx-actions {
+	white-space: nowrap;
+}
 .raw-json > summary {
 	cursor: pointer;
 	color: var(--text-dim);
@@ -3653,6 +3659,35 @@ form.inline {
 }
 .logs-filter-chip--not .chip-remove {
 	color: var(--danger-ink);
+}
+
+/* Кнопки «исключить»/«оставить только это» прямо в строке лога (задача 6) —
+   у бейджа уровня, ячейки сервиса и таблицы атрибутов развёрнутой строки.
+   Тот же размер иконки-кнопки, что и .chip-remove, но без фона чипа: это
+   просто пара действий рядом со значением, а не снимаемый чип. */
+.logs-row-actions {
+	display: inline-flex;
+	gap: 2px;
+	margin-left: 6px;
+	vertical-align: middle;
+}
+.logs-row-action {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 18px;
+	height: 18px;
+	border-radius: 999px;
+	color: var(--text-dim);
+	text-decoration: none;
+}
+.logs-row-action:hover {
+	background: var(--surface-2);
+	color: var(--text);
+}
+.logs-row-action .ic {
+	width: 12px;
+	height: 12px;
 }
 
 /* Фильтр списка хостов (B1, T5): фасеты env/role + чип «новые» как обычный

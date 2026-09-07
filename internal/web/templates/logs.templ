@@ -3,8 +3,10 @@ package templates
 import (
 	"context"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
@@ -503,6 +505,31 @@ func logExcludeURL(projectID int64, f LogsFilter, p log.Predicate) string {
 	return logsURLFromValues(projectID, logsPageURLValues(f))
 }
 
+// logIncludeURL — ссылка «оставить только это» у значения в строке лога
+// (задача 6). Для одиночных полей (service, environment) новое значение
+// ЗАМЕЩАЕТ прежнее — двух значений у них одновременно быть не может; severity
+// и атрибуты мультивыбираемы, поэтому там значение добавляется к набору, как
+// у клика по значению фасета (logFacetSeverityURL/logAttrValueURL). p.Op не
+// используется — включающее условие для данного поля всегда одно и то же.
+func logIncludeURL(projectID int64, f LogsFilter, p log.Predicate) string {
+	switch p.Field {
+	case log.FieldService:
+		f.Service = p.Value
+	case log.FieldEnvironment:
+		f.Environment = p.Value
+	case log.FieldSeverity:
+		if !slices.Contains(f.Severity, p.Value) {
+			f.Severity = append(append([]string{}, f.Severity...), p.Value)
+		}
+	case log.FieldAttr, log.FieldResourceAttr:
+		af := log.AttrFilter{Resource: p.Field == log.FieldResourceAttr, Key: p.Key, Value: p.Value}
+		if !slices.Contains(f.Attrs, af) {
+			f.Attrs = append(append([]log.AttrFilter{}, f.Attrs...), af)
+		}
+	}
+	return logsURLFromValues(projectID, logsPageURLValues(f))
+}
+
 // logNotChipRemoveURL — ссылка, снимающая одно отрицательное условие по
 // идентичности предиката, не трогая остальные (тот же приём, что у
 // logAttrChipRemoveURL для положительных attr-фильтров).
@@ -786,7 +813,7 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 									</thead>
 									<tbody>
 										for _, row := range rows {
-											@logRowView(projectID, row)
+											@logRowView(projectID, filter, row)
 										}
 									</tbody>
 								</table>
@@ -906,14 +933,76 @@ templ logFacetSection(titleKey string, facet LogFacet) {
 	</section>
 }
 
+// logRowFieldAction — одна кнопка «исключить» или «оставить только это» у
+// значения поля в строке лога (severity/service): пара таких у каждого поля
+// формирует logRowFieldActions. exclude=true — минус и logExcludeURL,
+// иначе — плюс и logIncludeURL.
+templ logRowFieldAction(exclude bool, href string, label string) {
+	if exclude {
+		<a class="logs-row-action logs-row-action--exclude" href={ templ.URL(href) } title={ label } aria-label={ label }>
+			@icon("minus")
+		</a>
+	} else {
+		<a class="logs-row-action logs-row-action--include" href={ templ.URL(href) } title={ label } aria-label={ label }>
+			@icon("plus")
+		</a>
+	}
+}
+
+// logRowSeverityActions — «исключить»/«оставить только этот уровень» рядом
+// с бейджем уровня в строке лога.
+templ logRowSeverityActions(projectID int64, f LogsFilter, sev string) {
+	<span class="logs-row-actions">
+		@logRowFieldAction(true, logExcludeURL(projectID, f, log.Predicate{Field: log.FieldSeverity, Op: log.OpNeq, Value: sev}), i18n.Tf(ctx, "logs.row.exclude_severity", "value", severityLabel(ctx, sev)))
+		@logRowFieldAction(false, logIncludeURL(projectID, f, log.Predicate{Field: log.FieldSeverity, Value: sev}), i18n.Tf(ctx, "logs.row.include_severity", "value", severityLabel(ctx, sev)))
+	</span>
+}
+
+// logRowServiceActions — то же для сервиса. Пустой сервис (записи без него)
+// кнопок не получает — исключать/оставлять "" как значение поля бессмысленно.
+templ logRowServiceActions(projectID int64, f LogsFilter, service string) {
+	if service != "" {
+		<span class="logs-row-actions">
+			@logRowFieldAction(true, logExcludeURL(projectID, f, log.Predicate{Field: log.FieldService, Op: log.OpNeq, Value: service}), i18n.Tf(ctx, "logs.row.exclude_service", "value", service))
+			@logRowFieldAction(false, logIncludeURL(projectID, f, log.Predicate{Field: log.FieldService, Value: service}), i18n.Tf(ctx, "logs.row.include_service", "value", service))
+		</span>
+	}
+}
+
+// logRowAttrPredicate — предикат по атрибуту строки контекста развёрнутой
+// строки лога, обратный тому, что строит NewLogRow: атрибуты ресурса
+// помечены в r.Key префиксом "resource." (см. её докблок в logs.templ), здесь
+// он снимается и восстанавливает исходный ключ и FieldResourceAttr.
+func logRowAttrPredicate(r ctxRow, op log.Op) log.Predicate {
+	if key, ok := strings.CutPrefix(r.Key, "resource."); ok {
+		return log.Predicate{Field: log.FieldResourceAttr, Key: key, Op: op, Value: r.Val}
+	}
+	return log.Predicate{Field: log.FieldAttr, Key: r.Key, Op: op, Value: r.Val}
+}
+
+// logRowAttrActions — колонка действий таблицы атрибутов записи
+// (contextTableWithActions) в развёрнутой строке лога.
+templ logRowAttrActions(projectID int64, f LogsFilter, r ctxRow) {
+	@logRowFieldAction(true, logExcludeURL(projectID, f, logRowAttrPredicate(r, log.OpNeq)), i18n.Tf(ctx, "logs.row.exclude_attr", "key", r.Key))
+	@logRowFieldAction(false, logIncludeURL(projectID, f, logRowAttrPredicate(r, log.OpEq)), i18n.Tf(ctx, "logs.row.include_attr", "key", r.Key))
+}
+
 // logRowView — одна строка списка: свёрнутое превью тела разворачивается
 // нативным <details> (без JS) в полное тело, таблицу атрибутов и
-// trace_id/span_id.
-templ logRowView(projectID int64, row LogRow) {
+// trace_id/span_id. filter — текущий фильтр страницы (задача 6): нужен, чтобы
+// ссылки «исключить»/«оставить только это» добавляли условие к уже активным,
+// а не строили его с нуля.
+templ logRowView(projectID int64, filter LogsFilter, row LogRow) {
 	<tr>
 		<td>@relativeTime(row.Row.Timestamp)</td>
-		<td><span class={ severityBadgeClass(row.Row.Severity) }>{ severityLabel(ctx, row.Row.Severity) }</span></td>
-		<td>{ row.Row.Service }</td>
+		<td>
+			<span class={ severityBadgeClass(row.Row.Severity) }>{ severityLabel(ctx, row.Row.Severity) }</span>
+			@logRowSeverityActions(projectID, filter, row.Row.Severity)
+		</td>
+		<td>
+			{ row.Row.Service }
+			@logRowServiceActions(projectID, filter, row.Row.Service)
+		</td>
 		<td>
 			<details class="log-row-details">
 				<summary>{ logBodyPreview(row.Row.Body) }</summary>
@@ -921,7 +1010,9 @@ templ logRowView(projectID int64, row LogRow) {
 					<pre class="contexts-json">{ row.Row.Body }</pre>
 					if len(row.Attrs) > 0 {
 						<h4 class="ctx-title">{ i18n.T(ctx, "logs.table.attributes") }</h4>
-						@contextTable(row.Attrs)
+						@contextTableWithActions(row.Attrs, func(r ctxRow) templ.Component {
+							return logRowAttrActions(projectID, filter, r)
+						})
 					}
 					if row.Row.TraceID != "" {
 						<p class="log-row-trace">
