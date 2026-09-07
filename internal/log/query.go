@@ -368,8 +368,13 @@ func (q *Query) Facet(ctx context.Context, projectID int64, f ListFilter, col st
 	// where — тот же набор условий, что у List/Histogram (окно+прочие
 	// фильтры), но БЕЗ курсора/LIMIT списка и без пустых значений самой
 	// фасетной колонки (пустая строка — "атрибут не заполнен", отдельная
-	// строка "" в топе только шумит).
-	opts := whereOpts{BaseExtra: col + " != ''"}
+	// строка "" в топе только шумит). OmitNegative по своей же колонке —
+	// иначе исключённое кликом значение пропадает из счётчиков фасета
+	// вместе с возможностью снять исключение обратным кликом.
+	opts := whereOpts{
+		BaseExtra:    col + " != ''",
+		OmitNegative: map[string]bool{col: true},
+	}
 	if col == FieldSeverity {
 		opts.OmitPositive = map[string]bool{FieldSeverity: true}
 	}
@@ -508,8 +513,16 @@ func (q *Query) AttrValues(ctx context.Context, projectID int64, f ListFilter, r
 
 	// where — тот же набор условий, что у List/Facet (окно+ВСЕ фильтры,
 	// включая f.Attrs — точечные фильтры по ДРУГИМ ключам продолжают сужать
-	// выборку значений этого ключа).
-	where, whereArgs := buildWhere(projectID, f, whereOpts{})
+	// выборку значений этого ключа). Отрицание по САМОМУ раскрытому ключу
+	// пропускается тем же правилом, что и у Facet: иначе исключённое кликом
+	// значение исчезает из списка значений вместе с возможностью его вернуть.
+	omitKey := FieldAttr
+	if resource {
+		omitKey = FieldResourceAttr
+	}
+	where, whereArgs := buildWhere(projectID, f, whereOpts{
+		OmitNegative: map[string]bool{omitKey + ":" + key: true},
+	})
 
 	// Порядок args обязан идти 1:1 с порядком "?" в тексте запроса ниже:
 	// сперва SELECT col[?] (key), затем where-условия, затем mapContains(col,

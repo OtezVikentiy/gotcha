@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -381,5 +383,58 @@ func TestGoldenWhereAttrValues(t *testing.T) {
 		if fmt.Sprintf("%#v", c.args[i]) != fmt.Sprintf("%#v", wantArgs[i]) {
 			t.Errorf("arg[%d] = %#v, ожидалось %#v", i, c.args[i], wantArgs[i])
 		}
+	}
+}
+
+// TestGoldenFacetOmitsOwnNegation: фасет по service не должен применять
+// собственное отрицание — иначе исключённое значение "cron" пропадёт
+// из счётчиков вместе с возможностью снять исключение обратным кликом.
+// Отрицание по ДРУГОМУ полю (environment) при этом обязано остаться.
+func TestGoldenFacetOmitsOwnNegation(t *testing.T) {
+	f := goldenFilter()
+	f.Not = []Predicate{
+		{Field: FieldService, Op: OpNeq, Value: "cron"},
+		{Field: FieldEnvironment, Op: OpNeq, Value: "staging"},
+	}
+
+	c := &captureConn{}
+	q := NewQuery(c)
+	if _, err := q.Facet(context.Background(), 7, f, FieldService); !errors.Is(err, errCapture) {
+		t.Fatalf("Facet: ожидалась errCapture, получено %v", err)
+	}
+
+	if strings.Contains(c.query, "service != ?") {
+		t.Fatalf("фасет по service применил собственное отрицание:\n%s", c.query)
+	}
+	if !strings.Contains(c.query, "environment != ?") {
+		t.Fatalf("фасет по service обязан применять отрицание по environment:\n%s", c.query)
+	}
+}
+
+// TestGoldenAttrValuesOmitsOwnNegation: та же логика для значений
+// атрибута — раскрытый ключ "source" не применяет своё отрицание,
+// но отрицание по чужому ключу "env" продолжает сужать выборку.
+func TestGoldenAttrValuesOmitsOwnNegation(t *testing.T) {
+	f := goldenFilter()
+	f.Attrs = nil
+	f.Not = []Predicate{
+		{Field: FieldAttr, Key: "source", Op: OpNeq, Value: "nginx"},
+		{Field: FieldAttr, Key: "env", Op: OpNeq, Value: "dev"},
+	}
+
+	c := &captureConn{}
+	q := NewQuery(c)
+	if _, err := q.AttrValues(context.Background(), 7, f, false, "source", 10); !errors.Is(err, errCapture) {
+		t.Fatalf("AttrValues: ожидалась errCapture, получено %v", err)
+	}
+
+	if got := strings.Count(c.query, "NOT (log_attributes[?] = ?)"); got != 1 {
+		t.Fatalf("ожидалось ровно одно отрицание по чужому ключу, найдено %d:\n%s", got, c.query)
+	}
+	// Аргументы докажут, что осталось именно "env"/"dev", а не "source"/"nginx".
+	// Ключ "source" сам по себе в args есть всегда (параметр SELECT-проекции
+	// и mapContains), поэтому различает только значение "nginx" отрицания.
+	if !slices.Contains(c.args, "dev") || slices.Contains(c.args, "nginx") {
+		t.Fatalf("отрицание по раскрытому ключу не отброшено: %#v", c.args)
 	}
 }
