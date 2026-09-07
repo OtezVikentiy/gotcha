@@ -128,3 +128,10 @@ func TestApplyPredicatesDedupes(t *testing.T) {
 		t.Fatalf("attrs задвоились: %#v", f.Attrs)
 	}
 }
+
+// LogFilterParamsForTest открывает закрытый список logFilterParams
+// (logfilters.go) внешнему тестовому пакету web_test: тест «фильтр по
+// умолчанию» (logfilters_test.go) обязан пройтись по КАЖДОМУ параметру
+// отбора, а не по ручному подмножеству, которое могло бы молча разойтись
+// со списком при добавлении нового параметра.
+var LogFilterParamsForTest = logFilterParams

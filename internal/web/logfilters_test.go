@@ -15,6 +15,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 	"gitflic.ru/otezvikentiy/gotcha/internal/logfilter"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
 // newFiltersStack — logsStack (logs_test.go) с проведённым LogFilters:
@@ -715,13 +716,15 @@ func TestDefaultFilterAppliesOnBareURL(t *testing.T) {
 func TestDefaultFilterSkippedWhenURLHasFilterParams(t *testing.T) {
 	s, projectID, cookie := seedDefaultFilterCase(t)
 
-	for _, param := range []string{
-		"q=buffered", "severity=warn", "service=nginx", "environment=production",
-		"attr=source%3Anginx", "trace_id=abc", "q_not=нет-такого",
-	} {
-		html := fetchLogsBody(t, s, logsBasePath(projectID)+"?"+param, cookie)
+	// Перебор идёт по самому web.LogFilterParamsForTest (реэкспорт
+	// закрытого logFilterParams, см. logs_internal_test.go), а не по
+	// ручному подмножеству — новый параметр в списке автоматически
+	// попадает в проверку, разойтись молча они не смогут.
+	for _, name := range web.LogFilterParamsForTest {
+		qs := url.Values{name: {"x"}}.Encode()
+		html := fetchLogsBody(t, s, logsBasePath(projectID)+"?"+qs, cookie)
 		if strings.Contains(html, "logs-default-notice") {
-			t.Errorf("при параметре %s умолчание всё равно применилось", param)
+			t.Errorf("при параметре %s умолчание всё равно применилось", name)
 		}
 	}
 }
@@ -741,14 +744,10 @@ func TestDefaultFilterNotSuppressedByPaginationOrRange(t *testing.T) {
 	}
 }
 
-// TestDefaultFilterShowAllLinkSuppressesDefault — ссылка «показать всё» на
-// плашке ведёт на адрес, который умолчание повторно не применит (пустой URL
-// для этого не годится — он снова включил бы умолчание), и на нём видна
-// запись, скрытая умолчанием.
-func TestDefaultFilterShowAllLinkSuppressesDefault(t *testing.T) {
-	s, projectID, cookie := seedDefaultFilterCase(t)
-
-	html := fetchLogsBody(t, s, logsBasePath(projectID), cookie)
+// extractShowAllHref достаёт href ссылки «показать всё» из плашки умолчания
+// в уже отрендеренном HTML (общий разбор для нескольких тестов ниже).
+func extractShowAllHref(t *testing.T, html string) string {
+	t.Helper()
 	idx := strings.Index(html, "logs-default-notice")
 	if idx < 0 {
 		t.Fatalf("плашка не найдена")
@@ -763,7 +762,18 @@ func TestDefaultFilterShowAllLinkSuppressesDefault(t *testing.T) {
 	if end < 0 {
 		t.Fatalf("не удалось прочитать href ссылки")
 	}
-	href := strings.ReplaceAll(html[start:start+end], "&amp;", "&")
+	return strings.ReplaceAll(html[start:start+end], "&amp;", "&")
+}
+
+// TestDefaultFilterShowAllLinkSuppressesDefault — ссылка «показать всё» на
+// плашке ведёт на адрес, который умолчание повторно не применит (пустой URL
+// для этого не годится — он снова включил бы умолчание), и на нём видна
+// запись, скрытая умолчанием.
+func TestDefaultFilterShowAllLinkSuppressesDefault(t *testing.T) {
+	s, projectID, cookie := seedDefaultFilterCase(t)
+
+	html := fetchLogsBody(t, s, logsBasePath(projectID), cookie)
+	href := extractShowAllHref(t, html)
 
 	after := fetchLogsBody(t, s, href, cookie)
 	if strings.Contains(after, "logs-default-notice") {
@@ -771,6 +781,37 @@ func TestDefaultFilterShowAllLinkSuppressesDefault(t *testing.T) {
 	}
 	if !strings.Contains(after, noisyRowSummary) {
 		t.Errorf("ссылка «показать всё» не показала запись, скрытую умолчанием")
+	}
+}
+
+// TestDefaultFilterFormCarriesSuppression — после перехода по ссылке
+// «показать всё» форма фильтров несёт скрытое поле nodefault: подавление
+// умолчания при повторном сабмите формы («Применить» без единого
+// заполненного условия отбора) обязано опираться на этот явный признак,
+// а не на случайность вида «пустые service=/environment=/q= тоже считаются
+// присутствующими параметрами» (web.hasLogFilterParams проверяет наличие
+// ключа, а не непустоту значения) — та случайность исчезла бы при замене
+// текстового поля на виджет, не сериализующий пустое значение.
+func TestDefaultFilterFormCarriesSuppression(t *testing.T) {
+	s, projectID, cookie := seedDefaultFilterCase(t)
+
+	html := fetchLogsBody(t, s, logsBasePath(projectID), cookie)
+	href := extractShowAllHref(t, html)
+
+	after := fetchLogsBody(t, s, href, cookie)
+	if !strings.Contains(after, `name="nodefault" value="1"`) {
+		t.Errorf("форма фильтров не несёт скрытое поле nodefault после «показать всё»: %s", after)
+	}
+
+	// Сабмит формы БЕЗ единого заполненного поля отбора — как если бы
+	// виджет не сериализовал пустые значения вовсе (в отличие от текущих
+	// текстовых <input>, которые браузер отправит пустыми ключами
+	// service=/environment=/q=). Единственное, на что вправе опереться
+	// повторное подавление умолчания в этом запросе, — скрытое поле
+	// nodefault, найденное выше.
+	resubmitted := fetchLogsBody(t, s, logsBasePath(projectID)+"?nodefault=1", cookie)
+	if strings.Contains(resubmitted, "logs-default-notice") {
+		t.Errorf("сабмит формы без заполненных полей воскресил умолчание")
 	}
 }
 

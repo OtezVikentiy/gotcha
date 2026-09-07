@@ -205,13 +205,20 @@ func (h *Handler) renderLogsPage(w http.ResponseWriter, r *http.Request, status 
 	// любого параметра обязано победить умолчание: иначе присланная коллегой
 	// ссылка молча показала бы получателю не то, что видел отправитель.
 	// Параметры пагинации/фасета/окна времени умолчание не подавляют —
-	// окно задано всегда, по нему чистый заход не отличить. nodefault=1 —
-	// отдельный служебный параметр вне этого списка: по нему ведёт ссылка
-	// «показать всё» плашки ниже, пустой URL для этого не годится — он снова
-	// включил бы умолчание.
+	// окно задано всегда, по нему чистый заход не отличить. nodefault —
+	// отдельный служебный параметр вне этого списка (любое непустое
+	// значение подавляет умолчание, конкретное "1" не значимо): по нему
+	// ведёт ссылка «показать всё» плашки ниже, пустой URL для этого не
+	// годится — он снова включил бы умолчание. Форма фильтров эхом несёт
+	// его дальше скрытым полем (см. LogsFilter.DefaultSuppressed) —
+	// подавление держится на явном признаке, а не на случайности вида
+	// «пустые service=/environment=/q= тоже считаются присутствующими»,
+	// которая исчезла бы при замене текстового поля на виджет, не
+	// сериализующий пустое значение.
+	defaultSuppressed := q.Get("nodefault") != ""
 	var defaultFilter *logfilter.Filter
 	var showAllHref string
-	if h.LogFilters != nil && q.Get("nodefault") == "" && !hasLogFilterParams(q) {
+	if h.LogFilters != nil && !defaultSuppressed && !hasLogFilterParams(q) {
 		if def, ok, err := h.LogFilters.Default(r.Context(), projectID, uid); err != nil {
 			slog.Warn("logs: default filter unavailable", "project_id", projectID, "err", err)
 		} else if ok && def.Applicable {
@@ -264,6 +271,7 @@ func (h *Handler) renderLogsPage(w http.ResponseWriter, r *http.Request, status 
 		RetentionDays:      h.LogRetentionDays,
 		DefaultApplied:     defaultFilter,
 		DefaultShowAllHref: showAllHref,
+		DefaultSuppressed:  defaultSuppressed,
 	}
 
 	var olderHref string

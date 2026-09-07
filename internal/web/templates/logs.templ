@@ -57,7 +57,7 @@ type LogsFilter struct {
 	// URL не было ни одного параметра отбора (web.hasLogFilterParams) и сам
 	// фильтр применим (Applicable — иначе payload неизвестной версии молча
 	// превратился бы в «фильтр без условий», см. logfilter.Filter). Ненулевое
-	// значение — сигнал показать плашку logsDefaultFilterNotice: сохранённое
+	// значение — сигнал показать плашку в LogsScreen: сохранённое
 	// исключение, тихо скрывающее логи во время инцидента, — худший сценарий
 	// для системы мониторинга, плашка с явной ссылкой сброса обязательна.
 	DefaultApplied *logfilter.Filter
@@ -65,6 +65,16 @@ type LogsFilter struct {
 	// параметр, явно подавляющий умолчание (web.renderLogsPage). Пустой URL
 	// для этого не годится — он снова включил бы умолчание.
 	DefaultShowAllHref string
+	// DefaultSuppressed — true, если запрос уже нёс параметр, явно
+	// подавляющий умолчание (nodefault): форма фильтров эхом переносит его
+	// дальше скрытым полем (LogsScreen), чтобы сабмит «Применить» без
+	// единого заполненного условия отбора не воскресил умолчание. Опора —
+	// именно это явное поле, а не случайность вида «пустые
+	// service=/environment=/q= тоже считаются присутствующими параметрами»
+	// (web.hasLogFilterParams проверяет наличие ключа, не непустоту
+	// значения) — та случайность исчезла бы при замене текстового поля на
+	// виджет, не сериализующий пустое значение.
+	DefaultSuppressed bool
 }
 
 // LogsHistogram — гистограмма объёма логов по времени и severity (задача 3,
@@ -807,6 +817,9 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 				}
 				for _, p := range filter.Not {
 					<input type="hidden" name={ logNotParamName(p) } value={ logNotParamValue(p) }/>
+				}
+				if filter.DefaultSuppressed {
+					<input type="hidden" name="nodefault" value="1"/>
 				}
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "logs.filter.apply") }</button>
 			</form>
