@@ -7,8 +7,9 @@ package log
 // совпадающая со списком.
 //
 // Возвращает условия БЕЗ ключевого слова WHERE и без хвостов, специфичных
-// для вызывающего (курсор списка, "col != ”" фасета, LIMIT): их вызывающий
-// дописывает сам, добавляя свои аргументы после возвращённых.
+// для вызывающего (курсор списка, условие «col != пустая строка» фасета,
+// LIMIT): их вызывающий дописывает сам, добавляя свои аргументы после
+// возвращённых.
 //
 // opts.OmitPositive / OmitNegative — имена полей, условия по которым не
 // включать. Нужны фасетам: фасет по полю не должен применять фильтр по себе
@@ -48,6 +49,49 @@ func buildWhere(projectID int64, f ListFilter, opts whereOpts) (string, []any) {
 	if f.TraceID != "" && !opts.OmitPositive[FieldTraceID] {
 		where += " AND trace_id = ?"
 		args = append(args, f.TraceID)
+	}
+
+	// Уровни собираются в одно NOT IN — симметрично положительному IN (?)
+	// и на один аргумент вместо N. Остальные отрицания идут по порядку среза,
+	// чтобы текст запроса был детерминирован (от него зависят голден-тесты).
+	var sevNot []string
+	for _, p := range f.Not {
+		if p.Field == FieldSeverity && !opts.OmitNegative[FieldSeverity] {
+			sevNot = append(sevNot, p.Value)
+		}
+	}
+	if len(sevNot) > 0 {
+		where += " AND severity NOT IN (?)"
+		args = append(args, sevNot)
+	}
+
+	for _, p := range f.Not {
+		switch p.Field {
+		case FieldSeverity:
+			continue // уже собраны выше
+		case FieldBody:
+			if opts.OmitNegative[FieldBody] {
+				continue
+			}
+			where += " AND positionCaseInsensitiveUTF8(body, ?) = 0"
+			args = append(args, p.Value)
+		case FieldService, FieldEnvironment:
+			if opts.OmitNegative[p.Field] {
+				continue
+			}
+			where += " AND " + p.Field + " != ?"
+			args = append(args, p.Value)
+		case FieldAttr, FieldResourceAttr:
+			if opts.OmitNegative[p.Field+":"+p.Key] {
+				continue
+			}
+			// NOT (col[?] = ?), а не col[?] != ?: строки, где ключа нет вовсе,
+			// обязаны ОСТАТЬСЯ. В ClickHouse map['нет'] — пустая строка, поэтому
+			// равенство для них ложно, а его отрицание истинно. Это и есть
+			// смысл «исключить те, у кого source=nginx».
+			where += " AND NOT (" + attrColumn(p.Field == FieldResourceAttr) + "[?] = ?)"
+			args = append(args, p.Key, p.Value)
+		}
 	}
 
 	return where, args
