@@ -1945,6 +1945,8 @@
     "logs.savedfilters.name_placeholder": "Filter name",
     "logs.savedfilters.shared_checkbox": "Make shared for the project",
     "logs.savedfilters.save": "Save current filter",
+    "logs.default.applied": "Default filter applied: “{name}”",
+    "logs.default.show_all": "Show all",
     "a11y.chart.logs_volume": "Log volume by time and severity chart",
     "a11y.chart.slo_burndown": "SLO error budget burn-down over time"
   },

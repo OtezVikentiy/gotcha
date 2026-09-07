@@ -8,9 +8,11 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 	"gitflic.ru/otezvikentiy/gotcha/internal/logfilter"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
@@ -621,5 +623,175 @@ func TestLogFilterHandlersRejectForeignOrigin(t *testing.T) {
 		t.Fatalf("чтение умолчания: %v", err)
 	} else if hasDefault {
 		t.Errorf("default с чужого Origin выставил умолчание")
+	}
+}
+
+// noisyRowSummary/usefulRowSummary — точное вхождение строки списка логов
+// (logs.templ: `<summary>{ logBodyPreview(row.Row.Body) }</summary>`), а не
+// голый текст тела: сам текст «buffered to a temporary file» всегда
+// присутствует в HTML отдельно от списка строк — как значение скрытого
+// поля формы «Сохранить текущий фильтр» (logFilterConditionFields
+// зеркалит текущие условия, включая применённое умолчание) — и голый
+// strings.Contains(html, тело) не отличил бы «строка скрыта» от «строка
+// показана».
+const (
+	noisyRowSummary  = "<summary>buffered to a temporary file</summary>"
+	usefulRowSummary = "<summary>полезная запись</summary>"
+)
+
+// seedDefaultFilterCase готовит проект с двумя записями — шумной и
+// полезной — и назначает пользователю умолчанием фильтр, исключающий
+// шумную (задача 10, «фильтр по умолчанию»).
+func seedDefaultFilterCase(t *testing.T) (s *logsStack, projectID int64, cookie *http.Cookie) {
+	t.Helper()
+	s = newFiltersStack(t)
+	_, ownerCookie, project := newLogsProject(t, s, "def@example.com", "def-org", "def-proj")
+	projectID = project.ID
+
+	now := time.Now().UTC().Add(-time.Minute)
+	s.seedLogs(t, projectID,
+		log.LogRecord{
+			Timestamp: now, ObservedTS: now,
+			Severity: log.SevWarn, SeverityNumber: 13, SeverityText: "WARN",
+			Body: "buffered to a temporary file", Service: "nginx", Environment: "production",
+		},
+		log.LogRecord{
+			Timestamp: now, ObservedTS: now,
+			Severity: log.SevWarn, SeverityNumber: 13, SeverityText: "WARN",
+			Body: "полезная запись", Service: "nginx", Environment: "production",
+		},
+	)
+
+	create := postForm(t, s.srv, logsBasePath(projectID)+"/filters",
+		url.Values{"name": {"без шума"}, "q_not": {"buffered to a temporary file"}}, s.srv.URL, ownerCookie)
+	create.Body.Close()
+	if create.StatusCode != http.StatusSeeOther {
+		t.Fatalf("создание фильтра: статус %d", create.StatusCode)
+	}
+	filterID := lastFilterID(t, s.pool, projectID)
+
+	def := postForm(t, s.srv, fmt.Sprintf("%s/filters/%d/default", logsBasePath(projectID), filterID),
+		url.Values{}, s.srv.URL, ownerCookie)
+	def.Body.Close()
+	if def.StatusCode != http.StatusSeeOther {
+		t.Fatalf("назначение умолчания: статус %d", def.StatusCode)
+	}
+	return s, projectID, ownerCookie
+}
+
+func fetchLogsBody(t *testing.T, s *logsStack, path string, cookie *http.Cookie) string {
+	t.Helper()
+	resp := getWithCookie(t, s.srv, path, cookie)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("чтение тела: %v", err)
+	}
+	return string(body)
+}
+
+// TestDefaultFilterAppliesOnBareURL — умолчание применяется на чистом заходе
+// в раздел: шумная запись скрыта, полезная видна, плашка о применении
+// показана (без неё сохранённое исключение тихо прячет логи во время
+// инцидента — худший сценарий для системы мониторинга).
+func TestDefaultFilterAppliesOnBareURL(t *testing.T) {
+	s, projectID, cookie := seedDefaultFilterCase(t)
+
+	html := fetchLogsBody(t, s, logsBasePath(projectID), cookie)
+	if strings.Contains(html, noisyRowSummary) {
+		t.Errorf("умолчание не применилось: шумная запись в выдаче")
+	}
+	if !strings.Contains(html, usefulRowSummary) {
+		t.Errorf("умолчание съело полезную запись")
+	}
+	if !strings.Contains(html, "logs-default-notice") {
+		t.Errorf("нет плашки о применённом умолчании — пользователь не узнает, что часть логов скрыта")
+	}
+}
+
+// TestDefaultFilterSkippedWhenURLHasFilterParams — присутствие любого
+// параметра отбора в URL подавляет умолчание: присланная коллегой ссылка не
+// должна молча показать получателю не то, что видел отправитель.
+func TestDefaultFilterSkippedWhenURLHasFilterParams(t *testing.T) {
+	s, projectID, cookie := seedDefaultFilterCase(t)
+
+	for _, param := range []string{
+		"q=buffered", "severity=warn", "service=nginx", "environment=production",
+		"attr=source%3Anginx", "trace_id=abc", "q_not=нет-такого",
+	} {
+		html := fetchLogsBody(t, s, logsBasePath(projectID)+"?"+param, cookie)
+		if strings.Contains(html, "logs-default-notice") {
+			t.Errorf("при параметре %s умолчание всё равно применилось", param)
+		}
+	}
+}
+
+// TestDefaultFilterNotSuppressedByPaginationOrRange — параметры пагинации
+// (before/tskip), раскрытого фасета (facet) и окна времени (period) не
+// параметры отбора и умолчание не подавляют: по ним чистый заход не
+// отличить (окно задано всегда).
+func TestDefaultFilterNotSuppressedByPaginationOrRange(t *testing.T) {
+	s, projectID, cookie := seedDefaultFilterCase(t)
+
+	for _, param := range []string{"before=1757200000000", "tskip=2", "facet=source", "period=24h"} {
+		html := fetchLogsBody(t, s, logsBasePath(projectID)+"?"+param, cookie)
+		if !strings.Contains(html, "logs-default-notice") {
+			t.Errorf("параметр %s подавил умолчание, хотя не является параметром отбора", param)
+		}
+	}
+}
+
+// TestDefaultFilterShowAllLinkSuppressesDefault — ссылка «показать всё» на
+// плашке ведёт на адрес, который умолчание повторно не применит (пустой URL
+// для этого не годится — он снова включил бы умолчание), и на нём видна
+// запись, скрытая умолчанием.
+func TestDefaultFilterShowAllLinkSuppressesDefault(t *testing.T) {
+	s, projectID, cookie := seedDefaultFilterCase(t)
+
+	html := fetchLogsBody(t, s, logsBasePath(projectID), cookie)
+	idx := strings.Index(html, "logs-default-notice")
+	if idx < 0 {
+		t.Fatalf("плашка не найдена")
+	}
+	const marker = `href="`
+	hrefIdx := strings.Index(html[idx:], marker)
+	if hrefIdx < 0 {
+		t.Fatalf("ссылка «показать всё» не найдена рядом с плашкой")
+	}
+	start := idx + hrefIdx + len(marker)
+	end := strings.Index(html[start:], `"`)
+	if end < 0 {
+		t.Fatalf("не удалось прочитать href ссылки")
+	}
+	href := strings.ReplaceAll(html[start:start+end], "&amp;", "&")
+
+	after := fetchLogsBody(t, s, href, cookie)
+	if strings.Contains(after, "logs-default-notice") {
+		t.Errorf("ссылка «показать всё» снова включила умолчание: %s", href)
+	}
+	if !strings.Contains(after, noisyRowSummary) {
+		t.Errorf("ссылка «показать всё» не показала запись, скрытую умолчанием")
+	}
+}
+
+// TestDefaultFilterNotApplicableSkipped — умолчание с неприменимым payload
+// (Applicable=false, неизвестная версия формата) не применяется и не
+// превращается молча в «фильтр без условий»: список остаётся полным,
+// плашки нет.
+func TestDefaultFilterNotApplicableSkipped(t *testing.T) {
+	s, projectID, cookie := seedDefaultFilterCase(t)
+
+	filterID := lastFilterID(t, s.pool, projectID)
+	if _, err := s.pool.Exec(context.Background(),
+		`UPDATE log_saved_filters SET payload = '{"v":99,"predicates":[]}' WHERE id = $1`, filterID); err != nil {
+		t.Fatalf("испортить версию payload: %v", err)
+	}
+
+	html := fetchLogsBody(t, s, logsBasePath(projectID), cookie)
+	if strings.Contains(html, "logs-default-notice") {
+		t.Errorf("неприменимое умолчание всё равно показало плашку")
+	}
+	if !strings.Contains(html, noisyRowSummary) || !strings.Contains(html, usefulRowSummary) {
+		t.Errorf("неприменимое умолчание скрыло записи вместо игнорирования: %s", html)
 	}
 }

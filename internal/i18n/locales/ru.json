@@ -1945,6 +1945,8 @@
     "logs.savedfilters.name_placeholder": "Имя фильтра",
     "logs.savedfilters.shared_checkbox": "Сделать общим для проекта",
     "logs.savedfilters.save": "Сохранить текущий фильтр",
+    "logs.default.applied": "Применён фильтр по умолчанию «{name}»",
+    "logs.default.show_all": "Показать всё",
     "a11y.chart.logs_volume": "График объёма логов по времени и уровню",
     "a11y.chart.slo_burndown": "Сжигание бюджета ошибок SLO во времени"
   },

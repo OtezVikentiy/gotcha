@@ -10,6 +10,7 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
+	"gitflic.ru/otezvikentiy/gotcha/internal/logfilter"
 )
 
 // LogsFilter — вью-модель фильтров формы + текущего окна времени списка
@@ -51,6 +52,19 @@ type LogsFilter struct {
 	// невозможен, RangeClamped всегда false.
 	RangeClamped  bool
 	RetentionDays int
+	// DefaultApplied — назначенный пользователем фильтр по умолчанию, если
+	// он применён к текущему списку (задача 10): непустой, только когда в
+	// URL не было ни одного параметра отбора (web.hasLogFilterParams) и сам
+	// фильтр применим (Applicable — иначе payload неизвестной версии молча
+	// превратился бы в «фильтр без условий», см. logfilter.Filter). Ненулевое
+	// значение — сигнал показать плашку logsDefaultFilterNotice: сохранённое
+	// исключение, тихо скрывающее логи во время инцидента, — худший сценарий
+	// для системы мониторинга, плашка с явной ссылкой сброса обязательна.
+	DefaultApplied *logfilter.Filter
+	// DefaultShowAllHref — ссылка «показать всё» плашки: текущий URL плюс
+	// параметр, явно подавляющий умолчание (web.renderLogsPage). Пустой URL
+	// для этого не годится — он снова включил бы умолчание.
+	DefaultShowAllHref string
 }
 
 // LogsHistogram — гистограмма объёма логов по времени и severity (задача 3,
@@ -761,6 +775,12 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 			<h1>{ i18n.T(ctx, "logs.title") }</h1>
 			@helpPanel("logs", "logs")
 			@logSavedFiltersSection(projectID, filter, savedFilters, errMsg)
+			if filter.DefaultApplied != nil {
+				<p class="hint logs-default-notice">
+					{ i18n.Tf(ctx, "logs.default.applied", "name", filter.DefaultApplied.Name) }
+					<a href={ templ.URL(filter.DefaultShowAllHref) }>{ i18n.T(ctx, "logs.default.show_all") }</a>
+				</p>
+			}
 
 			<form method="get" action={ templ.URL(logsPath(projectID)) } class="logs-filters">
 				<fieldset class="logs-severity-filter">

@@ -15,6 +15,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
+	"gitflic.ru/otezvikentiy/gotcha/internal/logfilter"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
@@ -198,6 +199,38 @@ func (h *Handler) renderLogsPage(w http.ResponseWriter, r *http.Request, status 
 	q := r.URL.Query()
 	f, rangeClamped := parseLogFilter(q, rng, h.LogRetentionDays)
 
+	// Фильтр по умолчанию (задача 10): применяется, только когда в URL нет
+	// ни одного параметра отбора (logFilterParams, logfilters.go) — это
+	// единственный надёжный признак «чистого» захода в раздел. Присутствие
+	// любого параметра обязано победить умолчание: иначе присланная коллегой
+	// ссылка молча показала бы получателю не то, что видел отправитель.
+	// Параметры пагинации/фасета/окна времени умолчание не подавляют —
+	// окно задано всегда, по нему чистый заход не отличить. nodefault=1 —
+	// отдельный служебный параметр вне этого списка: по нему ведёт ссылка
+	// «показать всё» плашки ниже, пустой URL для этого не годится — он снова
+	// включил бы умолчание.
+	var defaultFilter *logfilter.Filter
+	var showAllHref string
+	if h.LogFilters != nil && q.Get("nodefault") == "" && !hasLogFilterParams(q) {
+		if def, ok, err := h.LogFilters.Default(r.Context(), projectID, uid); err != nil {
+			slog.Warn("logs: default filter unavailable", "project_id", projectID, "err", err)
+		} else if ok && def.Applicable {
+			// Applicable=false (неизвестная версия payload) не применяется,
+			// даже будучи назначенным умолчанием, и не превращается молча
+			// в «фильтр без условий» — Predicates у такого фильтра пуст,
+			// applyPredicates(nil) и так был бы no-op, но условие ok && def.Applicable
+			// делает отказ явным, а не случайным следствием пустого списка.
+			applyPredicates(&f, def.Predicates)
+			defaultFilter = &def
+			showAllQuery := url.Values{}
+			for k, v := range q {
+				showAllQuery[k] = v
+			}
+			showAllQuery.Set("nodefault", "1")
+			showAllHref = templates.LogsURLFromValues(projectID, showAllQuery)
+		}
+	}
+
 	rows, listErr := h.LogQuery.List(r.Context(), projectID, f)
 	// Ошибка чтения ClickHouse — НЕ 500: логи вспомогательный раздел, который
 	// может недомогать независимо от остального продукта (временная
@@ -226,9 +259,11 @@ func (h *Handler) renderLogsPage(w http.ResponseWriter, r *http.Request, status 
 		Range:       timeRangeVM(rng),
 		Active: len(f.Severity) > 0 || f.Service != "" || f.Environment != "" || f.Query != "" || len(f.Attrs) > 0 ||
 			f.TraceID != "" || len(f.Not) > 0 || rng.Key != "24h",
-		Facet:         q.Get("facet"),
-		RangeClamped:  rangeClamped,
-		RetentionDays: h.LogRetentionDays,
+		Facet:              q.Get("facet"),
+		RangeClamped:       rangeClamped,
+		RetentionDays:      h.LogRetentionDays,
+		DefaultApplied:     defaultFilter,
+		DefaultShowAllHref: showAllHref,
 	}
 
 	var olderHref string
@@ -588,6 +623,21 @@ func parseLogAttrFilter(raw string) (log.AttrFilter, bool) {
 		return log.AttrFilter{}, false
 	}
 	return log.AttrFilter{Resource: resource, Key: key, Value: value}, true
+}
+
+// hasLogFilterParams — есть ли в URL хоть один параметр отбора из закрытого
+// списка logFilterParams (logfilters.go, тот же список, которым хендлеры
+// управления сохранёнными фильтрами строят адрес возврата). Параметры
+// пагинации (before/tskip), раскрытого фасета (facet) и окна времени
+// (period/start/end) в список не входят намеренно — они не сужают выборку
+// сами по себе, а окно задано всегда, чистый заход по нему не отличить.
+func hasLogFilterParams(q url.Values) bool {
+	for _, name := range logFilterParams {
+		if len(q[name]) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // applyPredicates раскладывает список предикатов в фильтр: положительные —
