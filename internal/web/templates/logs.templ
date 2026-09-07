@@ -38,6 +38,10 @@ type LogsFilter struct {
 	// TraceID — активный жёсткий скоуп по trace_id (C3): показывается снимаемым
 	// чипом и переносится по всем ссылкам (пагинация/фасеты) через logsPageURLValues.
 	TraceID string
+	// Not — активные исключающие условия (задача 5, «исключающие фильтры
+	// логов»): показываются отдельными чипами (--not) и переносятся по всем
+	// ссылкам через logsPageURLValues наравне с остальными полями фильтра.
+	Not []log.Predicate
 	// RangeClamped/RetentionDays — окно из пресета (Range) урезано снизу по
 	// сроку хранения логов (web.parseLogFilter, правка ревью UX Important #2 /
 	// ops P2): пользователь выбрал, например, 30d, а фактически видит данные
@@ -453,8 +457,84 @@ func logsPageURLValues(f LogsFilter) url.Values {
 	if f.TraceID != "" {
 		q.Set("trace_id", f.TraceID)
 	}
+	for _, p := range f.Not {
+		q.Add(logNotParamName(p), logNotParamValue(p))
+	}
 	f.Range.apply(q)
 	return q
+}
+
+// logNotParamName / logNotParamValue — обратная раскладка предиката в
+// параметр URL (инверсия разбора q_not/severity_not/service_not/
+// environment_not/attr_not в web.parseLogFilter). Держать рядом с разбором:
+// расходятся они молча, и ссылка перестанет воспроизводить своё же состояние.
+func logNotParamName(p log.Predicate) string {
+	switch p.Field {
+	case log.FieldBody:
+		return "q_not"
+	case log.FieldSeverity:
+		return "severity_not"
+	case log.FieldService:
+		return "service_not"
+	case log.FieldEnvironment:
+		return "environment_not"
+	default: // FieldAttr, FieldResourceAttr
+		return "attr_not"
+	}
+}
+
+func logNotParamValue(p log.Predicate) string {
+	switch p.Field {
+	case log.FieldAttr:
+		return p.Key + ":" + p.Value
+	case log.FieldResourceAttr:
+		return "res:" + p.Key + ":" + p.Value
+	default:
+		return p.Value
+	}
+}
+
+// logExcludeURL — ссылка, добавляющая отрицательное условие к текущему
+// набору (задачи 6 и 7 строят её для «исключить» на чипах/строках списка).
+// Дубли схлопывает log.NormalizePredicates на разборе, поэтому повторный
+// клик по одному и тому же значению безвреден.
+func logExcludeURL(projectID int64, f LogsFilter, p log.Predicate) string {
+	f.Not = append(append([]log.Predicate{}, f.Not...), p)
+	return logsURLFromValues(projectID, logsPageURLValues(f))
+}
+
+// logNotChipRemoveURL — ссылка, снимающая одно отрицательное условие по
+// идентичности предиката, не трогая остальные (тот же приём, что у
+// logAttrChipRemoveURL для положительных attr-фильтров).
+func logNotChipRemoveURL(projectID int64, f LogsFilter, p log.Predicate) string {
+	kept := make([]log.Predicate, 0, len(f.Not))
+	for _, x := range f.Not {
+		if x != p {
+			kept = append(kept, x)
+		}
+	}
+	f.Not = kept
+	return logsURLFromValues(projectID, logsPageURLValues(f))
+}
+
+// logNotChipLabel — человекочитаемая подпись чипа исключения: поле фильтра
+// плюс значение, с разными связками для «не равно» (severity/service/
+// environment/attr) и «не содержит» (тело). i18n.T параметров не принимает,
+// поэтому по каждому полю — свой ключ с подстановкой через i18n.Tf, как у
+// logs.chip.trace.
+func logNotChipLabel(ctx context.Context, p log.Predicate) string {
+	switch p.Field {
+	case log.FieldBody:
+		return i18n.Tf(ctx, "logs.exclude.body", "value", p.Value)
+	case log.FieldSeverity:
+		return i18n.Tf(ctx, "logs.exclude.severity", "value", severityLabel(ctx, p.Value))
+	case log.FieldService:
+		return i18n.Tf(ctx, "logs.exclude.service", "value", p.Value)
+	case log.FieldEnvironment:
+		return i18n.Tf(ctx, "logs.exclude.environment", "value", p.Value)
+	default: // FieldAttr, FieldResourceAttr
+		return i18n.Tf(ctx, "logs.exclude.attr", "key", p.Key, "value", p.Value)
+	}
 }
 
 // shortTraceID укорачивает trace_id для подписи чипа (полный — в URL).
@@ -637,9 +717,21 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 				<input type="text" name="environment" class="input" placeholder={ i18n.T(ctx, "logs.filter.environment") } value={ filter.Environment } aria-label={ i18n.T(ctx, "logs.filter.environment") }/>
 				<input type="text" name="q" class="input" placeholder={ i18n.T(ctx, "logs.filter.query") } value={ filter.Query } aria-label={ i18n.T(ctx, "logs.filter.query") }/>
 				@timeRangeFields(filter.Range)
+				// attr/trace_id/исключения живут вне видимых полей формы (чипами
+				// ниже), но сабмит «Применить» обязан их сохранить — иначе они
+				// молча обнуляются на первом же изменении видимого поля.
+				for _, a := range filter.Attrs {
+					<input type="hidden" name="attr" value={ logAttrFilterParam(a) }/>
+				}
+				if filter.TraceID != "" {
+					<input type="hidden" name="trace_id" value={ filter.TraceID }/>
+				}
+				for _, p := range filter.Not {
+					<input type="hidden" name={ logNotParamName(p) } value={ logNotParamValue(p) }/>
+				}
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "logs.filter.apply") }</button>
 			</form>
-			if filter.TraceID != "" || len(filter.Attrs) > 0 {
+			if filter.TraceID != "" || len(filter.Attrs) > 0 || len(filter.Not) > 0 {
 				<div class="logs-active-filters">
 					if filter.TraceID != "" {
 						<span class="logs-filter-chip">
@@ -651,6 +743,12 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 						<span class="logs-filter-chip">
 							{ logAttrChipLabel(a) }
 							<a class="chip-remove" href={ templ.URL(logAttrChipRemoveURL(projectID, filter, a)) } title={ i18n.Tf(ctx, "logs.chip.attr_remove", "key", a.Key) } aria-label={ i18n.Tf(ctx, "logs.chip.attr_remove", "key", a.Key) }>✕</a>
+						</span>
+					}
+					for _, p := range filter.Not {
+						<span class="logs-filter-chip logs-filter-chip--not">
+							{ logNotChipLabel(ctx, p) }
+							<a class="chip-remove" href={ templ.URL(logNotChipRemoveURL(projectID, filter, p)) } title={ i18n.T(ctx, "logs.exclude.chip_remove") } aria-label={ i18n.T(ctx, "logs.exclude.chip_remove") }>✕</a>
 						</span>
 					}
 				</div>

@@ -3643,6 +3643,17 @@ form.inline {
 .chip-remove:hover {
 	background: var(--surface-2);
 }
+/* Чип исключающего условия (задача 5, исключающие фильтры логов) — тот же
+   .logs-filter-chip, перекрашенный в --danger: отличает «не показывать»
+   от включающих условий (trace_id/attr) в том же ряду. */
+.logs-filter-chip--not {
+	background: color-mix(in srgb, var(--danger) 16%, transparent);
+	border-color: var(--danger);
+	color: var(--danger-ink);
+}
+.logs-filter-chip--not .chip-remove {
+	color: var(--danger-ink);
+}
 
 /* Фильтр списка хостов (B1, T5): фасеты env/role + чип «новые» как обычный
    ряд .chip/.chip.is-active (см. выше) — список хостов однa таблица без

@@ -1189,3 +1189,59 @@ func TestWebLogsAttrFilterChip(t *testing.T) {
 		t.Errorf("после снятия attr-чипа список должен снова показывать все строки: %s", text)
 	}
 }
+
+// TestLogsFormCarriesNonFieldFilters — задача 5 («исключающие фильтры
+// логов»): условия, у которых нет своего видимого поля (attr, trace_id, все
+// виды *_not), обязаны быть скрытыми полями ВНУТРИ формы — иначе повторное
+// нажатие «Применить» без изменения видимых полей тихо сбрасывает уже
+// выбранные условия (существующий дефект по attr/trace_id, устранённый
+// заодно с выводом *_not).
+func TestLogsFormCarriesNonFieldFilters(t *testing.T) {
+	s := newLogsStack(t, true)
+	projectID, cookie, _ := newLogsProject(t, s, "form@example.com", "form-org", "form-proj")
+
+	path := logsBasePath(projectID) +
+		"?trace_id=abc123&attr=source%3Anginx&q_not=buffered&service_not=cron"
+	resp := getWithCookie(t, s.srv, path, cookie)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	page := string(body)
+
+	for _, want := range []string{
+		`name="trace_id"`, `value="abc123"`,
+		`name="attr"`, `value="source:nginx"`,
+		`name="q_not"`, `value="buffered"`,
+		`name="service_not"`, `value="cron"`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("форма не переносит %s — сабмит «Применить» потеряет это условие", want)
+		}
+	}
+
+	// Скрытые поля обязаны лежать ВНУТРИ <form>…</form> — иначе браузер их
+	// с GET-сабмитом не отправит, и предыдущая проверка «поле есть в
+	// разметке» ничего не гарантирует.
+	formStart := strings.Index(page, `<form method="get"`)
+	if formStart < 0 {
+		t.Fatalf("не нашли форму фильтров логов в разметке")
+	}
+	formEndRel := strings.Index(page[formStart:], "</form>")
+	if formEndRel < 0 {
+		t.Fatalf("не нашли закрывающий </form> формы фильтров логов")
+	}
+	formEnd := formStart + formEndRel
+	formHTML := page[formStart:formEnd]
+	for _, want := range []string{`value="abc123"`, `value="source:nginx"`, `name="q_not"`, `name="service_not"`} {
+		if !strings.Contains(formHTML, want) {
+			t.Errorf("%s лежит вне <form> — сабмит его не отправит: %s", want, formHTML)
+		}
+	}
+
+	// Чип исключения отображён отдельным модификатором (задача 5, шаг 10).
+	if !strings.Contains(page, "logs-filter-chip--not") {
+		t.Errorf("не нашли чип исключения (класс logs-filter-chip--not): %s", page)
+	}
+}

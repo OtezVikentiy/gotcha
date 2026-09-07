@@ -24,6 +24,12 @@ import (
 // ClickHouse keyset-курсор (log.ListFilter.Before/TieSkip) не считает total.
 const logsListLimit = 100
 
+// maxNegativeConditions — потолок числа отрицательных условий, приходящих
+// из URL. Положительные параметры потолка не получают: они существуют без
+// ограничения с самого начала, и введение лимита задним числом сломало бы
+// уже разосланные ссылки.
+const maxNegativeConditions = 20
+
 // logsHistogramBuckets — целевое число корзин гистограммы объёма (задача 3,
 // C2). График переиспользует viewBox стека задержек монитора (720×160,
 // latencyChartWidth/Height в svg.go) — тот же ориентир числа корзин на
@@ -201,9 +207,10 @@ func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 		Query:       f.Query,
 		Attrs:       f.Attrs,
 		TraceID:     f.TraceID,
+		Not:         f.Not,
 		Range:       timeRangeVM(rng),
 		Active: len(f.Severity) > 0 || f.Service != "" || f.Environment != "" || f.Query != "" || len(f.Attrs) > 0 ||
-			f.TraceID != "" || rng.Key != "24h",
+			f.TraceID != "" || len(f.Not) > 0 || rng.Key != "24h",
 		Facet:         q.Get("facet"),
 		RangeClamped:  rangeClamped,
 		RetentionDays: h.LogRetentionDays,
@@ -506,6 +513,38 @@ func parseLogFilter(q url.Values, rng TimeRange, retentionDays int) (f log.ListF
 		}
 	}
 
+	var not []log.Predicate
+	for _, v := range q["q_not"] {
+		not = append(not, log.Predicate{Field: log.FieldBody, Op: log.OpNotContains, Value: v})
+	}
+	for _, v := range q["severity_not"] {
+		not = append(not, log.Predicate{Field: log.FieldSeverity, Op: log.OpNeq, Value: v})
+	}
+	for _, v := range q["service_not"] {
+		not = append(not, log.Predicate{Field: log.FieldService, Op: log.OpNeq, Value: v})
+	}
+	for _, v := range q["environment_not"] {
+		not = append(not, log.Predicate{Field: log.FieldEnvironment, Op: log.OpNeq, Value: v})
+	}
+	for _, raw := range q["attr_not"] {
+		if af, ok := parseLogAttrFilter(raw); ok {
+			field := log.FieldAttr
+			if af.Resource {
+				field = log.FieldResourceAttr
+			}
+			not = append(not, log.Predicate{Field: field, Key: af.Key, Op: log.OpNeq, Value: af.Value})
+		}
+	}
+	// NormalizePredicates отбрасывает негодные (пустые, неизвестный уровень,
+	// слишком длинные) и схлопывает дубли. Разбор URL мягкий: мусор в ссылке
+	// молча игнорируется, как игнорируется attr без двоеточия, — ссылки правят
+	// руками и пересылают, ронять страницу на них нельзя.
+	not = log.NormalizePredicates(not)
+	if len(not) > maxNegativeConditions {
+		not = not[:maxNegativeConditions]
+	}
+	f.Not = not
+
 	return f, clamped
 }
 
@@ -526,6 +565,72 @@ func parseLogAttrFilter(raw string) (log.AttrFilter, bool) {
 		return log.AttrFilter{}, false
 	}
 	return log.AttrFilter{Resource: resource, Key: key, Value: value}, true
+}
+
+// applyPredicates раскладывает список предикатов в фильтр: положительные —
+// в плоские поля, отрицательные — в Not. Обратная операция к разбору URL
+// (parseLogFilter) и к filterToPredicates; одиночные поля замещаются,
+// мультивыбор и атрибуты накапливаются. Нужна применению сохранённого
+// фильтра (задача 9) и фильтру по умолчанию (задача 10) — живёт рядом с
+// прямым разбором, иначе они разойдутся молча.
+func applyPredicates(f *log.ListFilter, preds []log.Predicate) {
+	for _, p := range preds {
+		switch {
+		case p.Op == log.OpNeq || p.Op == log.OpNotContains:
+			f.Not = append(f.Not, p)
+		case p.Field == log.FieldBody:
+			f.Query = p.Value
+		case p.Field == log.FieldSeverity:
+			if !slices.Contains(f.Severity, p.Value) {
+				f.Severity = append(f.Severity, p.Value)
+			}
+		case p.Field == log.FieldService:
+			f.Service = p.Value
+		case p.Field == log.FieldEnvironment:
+			f.Environment = p.Value
+		case p.Field == log.FieldTraceID:
+			f.TraceID = p.Value
+		case p.Field == log.FieldAttr, p.Field == log.FieldResourceAttr:
+			af := log.AttrFilter{Resource: p.Field == log.FieldResourceAttr, Key: p.Key, Value: p.Value}
+			if !slices.Contains(f.Attrs, af) {
+				f.Attrs = append(f.Attrs, af)
+			}
+		}
+	}
+	f.Not = log.NormalizePredicates(f.Not)
+}
+
+// filterToPredicates — обратное преобразование: плоские положительные поля
+// фильтра сворачиваются в предикаты (OpEq/OpContains), отрицания дописываются
+// как есть. Нужна задаче 9, чтобы сохранить текущий набор условий фильтром
+// в сохранённый фильтр; круговой обход applyPredicates(filterToPredicates(f))
+// — страховка от расхождения прямого и обратного преобразований.
+func filterToPredicates(f log.ListFilter) []log.Predicate {
+	var out []log.Predicate
+	for _, sv := range f.Severity {
+		out = append(out, log.Predicate{Field: log.FieldSeverity, Op: log.OpEq, Value: sv})
+	}
+	if f.Service != "" {
+		out = append(out, log.Predicate{Field: log.FieldService, Op: log.OpEq, Value: f.Service})
+	}
+	if f.Environment != "" {
+		out = append(out, log.Predicate{Field: log.FieldEnvironment, Op: log.OpEq, Value: f.Environment})
+	}
+	if f.Query != "" {
+		out = append(out, log.Predicate{Field: log.FieldBody, Op: log.OpContains, Value: f.Query})
+	}
+	if f.TraceID != "" {
+		out = append(out, log.Predicate{Field: log.FieldTraceID, Op: log.OpEq, Value: f.TraceID})
+	}
+	for _, a := range f.Attrs {
+		field := log.FieldAttr
+		if a.Resource {
+			field = log.FieldResourceAttr
+		}
+		out = append(out, log.Predicate{Field: field, Key: a.Key, Op: log.OpEq, Value: a.Value})
+	}
+	out = append(out, f.Not...)
+	return out
 }
 
 // nextLogCursor вычисляет курсор («before», «tieSkip») для ссылки «показать
