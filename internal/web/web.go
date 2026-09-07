@@ -37,6 +37,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingestsignal"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
+	"gitflic.ru/otezvikentiy/gotcha/internal/logfilter"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
@@ -340,6 +341,13 @@ type Handler struct {
 	// страница /projects/{id}/logs. Как Trace/Metrics — отдельное
 	// необязательное поле; nil → маршрут логов отвечает 404 (nil-guard).
 	LogQuery *log.Query
+	// LogFilters — хранилище сохранённых фильтров логов, личных и общих
+	// (задача 9, «исключающие и сохранённые фильтры логов»): панель
+	// /projects/{id}/logs и её хендлеры управления. Как LogQuery —
+	// необязательное поле; nil → хендлеры отвечают 404, панель рендерится
+	// пустой (nil-guard, тот же принцип, что у остальных опциональных
+	// полей ниже).
+	LogFilters *logfilter.Store
 	// attrKeysCache — кеш ответов logsAttrKeys (задача 6, C2, §6 спеки:
 	// «кеш per-project ~60с»). Заполняется в New() всегда (нужен вне
 	// зависимости от того, проведён ли LogQuery — сам эндпоинт проверяет
@@ -721,6 +729,14 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// специфичный литеральный сегмент "attr-keys" впереди возможных будущих
 	// {name}-шаблонов.
 	inner.Handle("GET /projects/{id}/logs/attr-keys", h.requireUser(http.HandlerFunc(h.logsAttrKeys)))
+
+	// Сохранённые фильтры логов (задача 9): создание/правка/удаление и
+	// умолчание. Право зависит от вида фильтра (личный/общий), не от
+	// маршрута — см. вторичный гейт requireLogFilterOperator в logfilters.go.
+	inner.Handle("POST /projects/{id}/logs/filters", h.requireUser(http.HandlerFunc(h.logFiltersCreate)))
+	inner.Handle("POST /projects/{id}/logs/filters/{filterID}/update", h.requireUser(http.HandlerFunc(h.logFiltersUpdate)))
+	inner.Handle("POST /projects/{id}/logs/filters/{filterID}/delete", h.requireUser(http.HandlerFunc(h.logFiltersDelete)))
+	inner.Handle("POST /projects/{id}/logs/filters/{filterID}/default", h.requireUser(http.HandlerFunc(h.logFiltersSetDefault)))
 
 	inner.Handle("GET /projects/{id}/profiles", h.requireUser(http.HandlerFunc(h.profilesList)))
 	inner.Handle("GET /projects/{id}/profiles/flame", h.requireUser(http.HandlerFunc(h.profileFlame)))

@@ -751,11 +751,16 @@ func LogsPageURL(projectID int64, f LogsFilter, before time.Time, tieSkip int) s
 // таблицы дружелюбное сообщение (гистограмма и фасеты в этом случае тоже не
 // запрашиваются — см. web.logsList — и приходят уже в состоянии отказа).
 // olderHref — пусто, если страницы дальше нет (см. web.nextLogCursor).
-templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bool, olderHref string, histogram LogsHistogram, facets LogFacets, userEmail string) {
+// savedFilters/errMsg (задача 9) — панель «Мои»/«Общие» и сообщение отказа
+// хендлеров управления фильтрами (web.renderLogsPage перерисовывает эту же
+// страницу со статусом 422 при невалидной форме, тот же приём, что у
+// выгрузок).
+templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bool, olderHref string, histogram LogsHistogram, facets LogFacets, userEmail string, savedFilters LogSavedFiltersPanel, errMsg string) {
 	@layout(i18n.T(ctx, "logs.title"), userEmail) {
 		<div class="logs">
 			<h1>{ i18n.T(ctx, "logs.title") }</h1>
 			@helpPanel("logs", "logs")
+			@logSavedFiltersSection(projectID, filter, savedFilters, errMsg)
 
 			<form method="get" action={ templ.URL(logsPath(projectID)) } class="logs-filters">
 				<fieldset class="logs-severity-filter">

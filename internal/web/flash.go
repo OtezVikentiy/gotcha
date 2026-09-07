@@ -54,6 +54,13 @@ var flashKeys = map[string]bool{
 	"flash.issue_status_saved": true,
 	"flash.issue_assigned":     true,
 	"flash.issue_unassigned":   true,
+	// Сохранённые фильтры логов (задача 9): раздельные ключи по действию —
+	// сообщение называет именно то, что произошло, тот же принцип, что у
+	// monitor_paused/monitor_resumed выше.
+	"flash.log_filter_saved":       true,
+	"flash.log_filter_updated":     true,
+	"flash.log_filter_deleted":     true,
+	"flash.log_filter_default_set": true,
 }
 
 // flashPairKeys — подмножество flashKeys с ДВУМЯ числами в сообщении

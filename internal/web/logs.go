@@ -156,19 +156,34 @@ func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// h.LogQuery может быть nil в стендах без проводки логов (main.go
-	// проставляет его только вместе с ClickHouse) — тогда честный 404, а не
-	// паника на разыменовании (тот же приём, что у h.Metrics/h.Trace).
-	if h.LogQuery == nil {
-		h.notFound(w, r)
-		return
-	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !canAccess {
+		h.notFound(w, r)
+		return
+	}
+	h.renderLogsPage(w, r, http.StatusOK, projectID, uid, "")
+}
+
+// renderLogsPage — тело GET /projects/{id}/logs, вынесенное в переиспользуемую
+// функцию (задача 9, тот же приём, что renderExportsPage у выгрузок,
+// exports.go:566): хендлеры управления сохранёнными фильтрами
+// (logfilters.go) при отказе валидации перерисовывают ЭТУ страницу со
+// статусом 422 и сообщением errMsg вместо ухода на общий renderError —
+// иначе введённые условия терялись бы, а страница логов исчезала бы за
+// стилизованной страницей ошибки, как раньше было с выгрузками (P2-UX-4).
+//
+// uid нужен panel (личные фильтры видны только своему владельцу) —
+// logsList уже резолвит его для собственного гейта доступа, здесь его
+// заново не запрашиваем.
+func (h *Handler) renderLogsPage(w http.ResponseWriter, r *http.Request, status int, projectID, uid int64, errMsg string) {
+	// h.LogQuery может быть nil в стендах без проводки логов (main.go
+	// проставляет его только вместе с ClickHouse) — тогда честный 404, а не
+	// паника на разыменовании (тот же приём, что у h.Metrics/h.Trace).
+	if h.LogQuery == nil {
 		h.notFound(w, r)
 		return
 	}
@@ -240,7 +255,15 @@ func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 		facets = h.logsFacets(r.Context(), projectID, f, filter, filter.Facet)
 	}
 
-	_ = templates.LogsScreen(projectID, vmRows, filter, loadFailed, olderHref, histogram, facets, h.currentEmail(r)).Render(r.Context(), w)
+	panel := h.logFiltersPanel(r.Context(), projectID, uid)
+
+	// Content-Type — ЯВНО, до WriteHeader: тот же приём, что в renderError/
+	// renderExportsPage. WriteHeader(status) отправляет заголовки до первой
+	// записи тела, из-за чего автоопределение Content-Type сниффингом
+	// первого Write не срабатывает при статусе, отличном от 200.
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	_ = templates.LogsScreen(projectID, vmRows, filter, loadFailed, olderHref, histogram, facets, h.currentEmail(r), panel, errMsg).Render(r.Context(), w)
 }
 
 // logsAttrKeys — GET /projects/{id}/logs/attr-keys?q=<prefix>: JSON-эндпоинт
