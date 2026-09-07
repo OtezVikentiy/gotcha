@@ -87,3 +87,45 @@ func NormalizePredicates(in []Predicate) []Predicate {
 	}
 	return out
 }
+
+// ApplyPredicates раскладывает список предикатов в фильтр: положительные —
+// в плоские поля, отрицательные — в Not. Обратная операция к сборке предикатов
+// из ListFilter (web.filterToPredicates); одиночные поля замещаются,
+// мультивыбор и атрибуты накапливаются.
+//
+// Живёт в internal/log (а не в internal/web, откуда переехала при устранении
+// находки финального ревью C4), потому что нужна ДВУМ пакетам: web —
+// применению сохранённого фильтра и фильтру по умолчанию (задачи 9/10),
+// templates/logsavedfilters.templ — построению самодостаточной ссылки
+// применения сохранённого фильтра (шаблоны не могут звать web — web и так
+// импортирует templates, обратный импорт дал бы цикл). До переезда шаблон
+// держал собственную копию того же switch — расхождение с этой функцией по
+// severity/service/environment/trace_id/attr/resource_attr прошло бы молча,
+// проверенной осталась только ветка q_not. Единственная функция, вызываемая
+// из обоих мест, устраняет самую возможность разойтись.
+func ApplyPredicates(f *ListFilter, preds []Predicate) {
+	for _, p := range preds {
+		switch {
+		case p.Op == OpNeq || p.Op == OpNotContains:
+			f.Not = append(f.Not, p)
+		case p.Field == FieldBody:
+			f.Query = p.Value
+		case p.Field == FieldSeverity:
+			if !slices.Contains(f.Severity, p.Value) {
+				f.Severity = append(f.Severity, p.Value)
+			}
+		case p.Field == FieldService:
+			f.Service = p.Value
+		case p.Field == FieldEnvironment:
+			f.Environment = p.Value
+		case p.Field == FieldTraceID:
+			f.TraceID = p.Value
+		case p.Field == FieldAttr, p.Field == FieldResourceAttr:
+			af := AttrFilter{Resource: p.Field == FieldResourceAttr, Key: p.Key, Value: p.Value}
+			if !slices.Contains(f.Attrs, af) {
+				f.Attrs = append(f.Attrs, af)
+			}
+		}
+	}
+	f.Not = NormalizePredicates(f.Not)
+}

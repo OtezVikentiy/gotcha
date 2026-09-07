@@ -2,7 +2,6 @@ package templates
 
 import (
 	"net/url"
-	"slices"
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
@@ -72,37 +71,29 @@ func logSavedFilterActionURL(projectID, filterID int64, action string) string {
 // logSavedFilterApplyURL — ссылка применения сохранённого фильтра: условия
 // разворачиваются в обычные query-параметры списка логов, а не прячутся за
 // идентификатором фильтра, поэтому ссылка самодостаточна и переживает
-// удаление фильтра (Produces из брифа задачи 9). Разложение предикатов в
-// поля LogsFilter дублирует переключатель web.applyPredicates НАМЕРЕННО:
-// templates не может звать пакет web (тот и так импортирует templates —
-// обратный импорт дал бы цикл), поэтому та же логика — тот же порядок
-// case'ов, что и у applyPredicates/filterToPredicates в internal/web/logs.go
-// — переопределена здесь. Расхождение между двумя копиями страхует круговой
-// тест применения фильтра (см. logsavedfilters_test.go в web_test).
+// удаление фильтра (Produces из брифа задачи 9). Раскладку предикатов в поля
+// делает log.ApplyPredicates — та же функция, что применяет сохранённый
+// фильтр и фильтр по умолчанию в internal/web/logs.go (задачи 9/10); до
+// устранения находки финального ревью C4 здесь жила независимая копия того
+// же switch (templates не может звать пакет web — тот и так импортирует
+// templates, обратный импорт дал бы цикл), и разошлась с оригиналом по всем
+// веткам, кроме q_not, не будучи покрытой тестом. log.ApplyPredicates
+// живёт в internal/log — пакете, который уже импортируют оба (web и
+// templates), поэтому общая функция не создаёт цикла. Копируется здесь
+// только тривиальное отображение log.ListFilter → LogsFilter (совпадающие
+// по смыслу поля один-в-один, без ветвления по Field/Op) — тот же приём,
+// что и в renderLogsPage (logs.go), где такое же отображение уже есть.
 func logSavedFilterApplyURL(projectID int64, f logfilter.Filter) string {
-	var vm LogsFilter
-	for _, p := range f.Predicates {
-		switch {
-		case p.Op == log.OpNeq || p.Op == log.OpNotContains:
-			vm.Not = append(vm.Not, p)
-		case p.Field == log.FieldBody:
-			vm.Query = p.Value
-		case p.Field == log.FieldSeverity:
-			if !slices.Contains(vm.Severity, p.Value) {
-				vm.Severity = append(vm.Severity, p.Value)
-			}
-		case p.Field == log.FieldService:
-			vm.Service = p.Value
-		case p.Field == log.FieldEnvironment:
-			vm.Environment = p.Value
-		case p.Field == log.FieldTraceID:
-			vm.TraceID = p.Value
-		case p.Field == log.FieldAttr, p.Field == log.FieldResourceAttr:
-			af := log.AttrFilter{Resource: p.Field == log.FieldResourceAttr, Key: p.Key, Value: p.Value}
-			if !slices.Contains(vm.Attrs, af) {
-				vm.Attrs = append(vm.Attrs, af)
-			}
-		}
+	var lf log.ListFilter
+	log.ApplyPredicates(&lf, f.Predicates)
+	vm := LogsFilter{
+		Severity:    lf.Severity,
+		Service:     lf.Service,
+		Environment: lf.Environment,
+		Query:       lf.Query,
+		Attrs:       lf.Attrs,
+		TraceID:     lf.TraceID,
+		Not:         lf.Not,
 	}
 	return logsURLFromValues(projectID, logsPageURLValues(vm))
 }

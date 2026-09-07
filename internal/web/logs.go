@@ -657,37 +657,14 @@ func hasLogFilterParams(q url.Values) bool {
 	return false
 }
 
-// applyPredicates раскладывает список предикатов в фильтр: положительные —
-// в плоские поля, отрицательные — в Not. Обратная операция к разбору URL
-// (parseLogFilter) и к filterToPredicates; одиночные поля замещаются,
-// мультивыбор и атрибуты накапливаются. Нужна применению сохранённого
-// фильтра (задача 9) и фильтру по умолчанию (задача 10) — живёт рядом с
-// прямым разбором, иначе они разойдутся молча.
+// applyPredicates — тонкая обёртка над log.ApplyPredicates (переехала туда
+// при устранении находки финального ревью C4: та же логика нужна и
+// templates/logsavedfilters.templ, шаблоны не могут звать web без цикла
+// импорта). Обёртка оставлена, чтобы не трогать вызывающих (logs.go) и
+// существующие тесты (logs_internal_test.go), которые адресуются к ней по
+// имени пакета web.
 func applyPredicates(f *log.ListFilter, preds []log.Predicate) {
-	for _, p := range preds {
-		switch {
-		case p.Op == log.OpNeq || p.Op == log.OpNotContains:
-			f.Not = append(f.Not, p)
-		case p.Field == log.FieldBody:
-			f.Query = p.Value
-		case p.Field == log.FieldSeverity:
-			if !slices.Contains(f.Severity, p.Value) {
-				f.Severity = append(f.Severity, p.Value)
-			}
-		case p.Field == log.FieldService:
-			f.Service = p.Value
-		case p.Field == log.FieldEnvironment:
-			f.Environment = p.Value
-		case p.Field == log.FieldTraceID:
-			f.TraceID = p.Value
-		case p.Field == log.FieldAttr, p.Field == log.FieldResourceAttr:
-			af := log.AttrFilter{Resource: p.Field == log.FieldResourceAttr, Key: p.Key, Value: p.Value}
-			if !slices.Contains(f.Attrs, af) {
-				f.Attrs = append(f.Attrs, af)
-			}
-		}
-	}
-	f.Not = log.NormalizePredicates(f.Not)
+	log.ApplyPredicates(f, preds)
 }
 
 // filterToPredicates — обратное преобразование: плоские положительные поля
