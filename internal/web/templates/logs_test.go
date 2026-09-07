@@ -257,6 +257,52 @@ func TestLogsPageURLNoFacetWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestLogsPageURLCarriesDefaultSuppression — находка финального ревью C3:
+// nodefault обязан пережить ЛЮБОЙ переход по ссылке, построенной из текущего
+// состояния — конкретно пагинацию «показать старее» (LogsPageURL), а не
+// только самый первый переход по ссылке «показать всё» (та собирается
+// отдельно в web.renderLogsPage, logs.go, и уже была покрыта). До фикса
+// logsPageURLValues не несла nodefault вовсе — умолчание молча возвращалось
+// на второй странице после того, как пользователь его явно отключил.
+func TestLogsPageURLCarriesDefaultSuppression(t *testing.T) {
+	f := LogsFilter{DefaultSuppressed: true}
+	got := LogsPageURL(1, f, time.UnixMilli(1000), 0)
+	q := parseLogsLink(t, got, 1)
+	if q.Get("nodefault") != "1" {
+		t.Fatalf("LogsPageURL(...) = %q, want nodefault=1 сохранённым при переходе на следующую страницу", got)
+	}
+}
+
+// TestLogsPageURLOmitsDefaultSuppressionWhenNotSuppressed — обратная
+// сторона предыдущего теста: умолчание НЕ подавлено — nodefault в ссылке
+// появляться не должен (иначе обычная пагинация без плашки умолчания вела
+// бы себя иначе, чем прежде).
+func TestLogsPageURLOmitsDefaultSuppressionWhenNotSuppressed(t *testing.T) {
+	got := LogsPageURL(1, LogsFilter{}, time.UnixMilli(1000), 0)
+	if strings.Contains(got, "nodefault") {
+		t.Fatalf("LogsPageURL(...) = %q, nodefault не должен появляться без DefaultSuppressed", got)
+	}
+}
+
+// TestLogNotChipRemoveURLCarriesDefaultSuppression — вторая часть находки
+// C3: снятие ПОСЛЕДНЕГО чипа-исключения в подавленном состоянии тоже обязано
+// сохранить nodefault — иначе на опустевшем списке условий
+// web.hasLogFilterParams снова видит «чистый URL» и умолчание молча
+// возвращается ровно там, где пользователь только что убрал последнее
+// условие своими руками.
+func TestLogNotChipRemoveURLCarriesDefaultSuppression(t *testing.T) {
+	p := log.Predicate{Field: log.FieldService, Op: log.OpNeq, Value: "worker"}
+	f := LogsFilter{DefaultSuppressed: true, Not: []log.Predicate{p}}
+	got := logNotChipRemoveURL(1, f, p)
+	q := parseLogsLink(t, got, 1)
+	if len(q["service_not"]) != 0 {
+		t.Fatalf("logNotChipRemoveURL(...) = %q, чип должен быть снят", got)
+	}
+	if q.Get("nodefault") != "1" {
+		t.Fatalf("logNotChipRemoveURL(...) = %q, want nodefault=1 сохранённым после снятия последнего чипа", got)
+	}
+}
+
 // TestLogTracePath — правка ревью UX Important #4: trace_id лога должен
 // вести на реальную страницу трейса (/traces/{trace_id}), не на общий
 // раздел «Производительность».

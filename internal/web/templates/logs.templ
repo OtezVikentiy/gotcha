@@ -513,6 +513,17 @@ func logsPageURLValues(f LogsFilter) url.Values {
 	for _, p := range f.Not {
 		q.Add(logNotParamName(p), logNotParamValue(p))
 	}
+	// nodefault обязан пережить ЛЮБОЙ переход по ссылке, построенной из
+	// текущего состояния (пагинация «показать старее», фасеты, снятие
+	// последнего чипа-исключения) — иначе умолчание молча возвращается на
+	// следующей странице после того, как пользователь его явно отключил
+	// кнопкой «показать всё» (finding C3 финального ревью). f.DefaultSuppressed
+	// уже несёт это состояние из текущего рендера (см. renderLogsPage,
+	// logs.go), здесь только эхо в исходящий URL — тем же приёмом, что и
+	// остальные поля фильтра выше.
+	if f.DefaultSuppressed {
+		q.Set("nodefault", "1")
+	}
 	f.Range.apply(q)
 	return q
 }
