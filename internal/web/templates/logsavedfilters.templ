@@ -142,7 +142,7 @@ templ logSavedFilterSaveForm(projectID int64, filter LogsFilter, canShare bool) 
 				{ i18n.T(ctx, "logs.savedfilters.shared_checkbox") }
 			</label>
 		}
-		<button type="submit" class="btn btn-secondary">{ i18n.T(ctx, "logs.savedfilters.save") }</button>
+		<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "logs.savedfilters.save") }</button>
 	</form>
 }
 
@@ -165,7 +165,7 @@ templ logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRo
 		<span class="logs-saved-filter-actions">
 			if !row.IsDefault {
 				<form method="post" action={ templ.URL(logSavedFilterDefaultURL(projectID, row.Filter.ID)) } class="logs-saved-filter-inline-form">
-					<button type="submit" class="btn-link">{ i18n.T(ctx, "logs.savedfilters.make_default") }</button>
+					<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "logs.savedfilters.make_default") }</button>
 				</form>
 			}
 			if row.CanEdit {
@@ -196,7 +196,7 @@ templ logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRo
 					} else if row.Filter.Shared() {
 						<input type="hidden" name="shared" value="1"/>
 					}
-					<button type="submit" class="btn-link" title={ i18n.T(ctx, "logs.savedfilters.update_title") }>{ i18n.T(ctx, "logs.savedfilters.update") }</button>
+					<button type="submit" class="btn btn-ghost" title={ i18n.T(ctx, "logs.savedfilters.update_title") }>{ i18n.T(ctx, "logs.savedfilters.update") }</button>
 				</form>
 				<form method="post" action={ templ.URL(logSavedFilterDeleteURL(projectID, row.Filter.ID)) } class="logs-saved-filter-inline-form">
 					// Условия текущего вида (задача 9, находка финального
@@ -209,7 +209,7 @@ templ logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRo
 					// не действие над текущим видом, редирект туда, откуда
 					// пришли, не более уместен, чем на голый /logs.
 					@logFilterConditionFields(filter)
-					<button type="submit" class="btn-link btn-link--danger">{ i18n.T(ctx, "logs.savedfilters.delete") }</button>
+					<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "logs.savedfilters.delete") }</button>
 				</form>
 			}
 		</span>

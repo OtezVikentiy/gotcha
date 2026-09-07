@@ -821,7 +821,7 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 			@helpPanel("logs", "logs")
 			@logSavedFiltersSection(projectID, filter, savedFilters, errMsg)
 			if filter.DefaultApplied != nil {
-				<p class="hint logs-default-notice">
+				<p class="notice logs-default-notice">
 					{ i18n.Tf(ctx, "logs.default.applied", "name", filter.DefaultApplied.Name) }
 					<a href={ templ.URL(filter.DefaultShowAllHref) }>{ i18n.T(ctx, "logs.default.show_all") }</a>
 				</p>

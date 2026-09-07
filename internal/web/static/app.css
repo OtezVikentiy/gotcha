@@ -1255,7 +1255,7 @@ button:hover,
 }
 
 /* То же, что у .error: сырой --info на своей подложке давал 3.65:1. */
-.notice {
+.notice, .logs-default-notice {
 	background: color-mix(in srgb, var(--info) 16%, transparent);
 	border: 1px solid var(--info);
 	color: var(--info-ink);
@@ -1263,6 +1263,14 @@ button:hover,
 	padding: 6px 10px;
 	font-size: var(--fs-base);
 	margin: 0;
+}
+/* Плашка «применено сохранённое умолчание» на странице логов (задача 10):
+   сохранённое исключение тихо скрывает логи во время инцидента — худший
+   сценарий для системы мониторинга, поэтому не приглушённый .hint, а тот же
+   заметный .notice, что и у баннера квоты, с margin-bottom — плашка стоит
+   отдельным блоком НАД формой фильтров, не встык. */
+.logs-default-notice {
+	margin-bottom: 16px;
 }
 
 /* Итог удаления ПДн, когда не нашлось ни одной строки: это не ошибка, но и не
@@ -3688,6 +3696,80 @@ form.inline {
 .logs-row-action .ic {
 	width: 12px;
 	height: 12px;
+}
+/* --exclude/--include (задачи 5/6, «исключающие фильтры логов») — тот же
+   нейтральный .logs-row-action, но hover подсказывает знак действия тем же
+   цветом, что и остальной проект: --danger-ink у минуса (тот же токен, что
+   у .logs-filter-chip--not .chip-remove выше), --accent у плюса (обычный
+   цвет активного выбора, см. .logs-facet-value-active). */
+.logs-row-action--exclude:hover {
+	color: var(--danger-ink);
+}
+.logs-row-action--include:hover {
+	color: var(--accent);
+}
+
+/* Панель «Сохранённые фильтры» логов (задача 9, финальное ревью C12): карточка-
+   <details> (.card уже даёт фон/рамку/скругление) с двумя группами («Мои»/
+   «Общие») и формой сохранения текущего вида. Кнопки действий переиспользуют
+   существующие .btn-ghost/.btn-danger-ghost (тот же приём, что у строки
+   выгрузки в exports.templ) — отдельных .btn-link/.btn-link--danger/
+   .btn-secondary заводить не пришлось. */
+.logs-saved-filters summary {
+	cursor: pointer;
+	font-weight: 650;
+}
+.logs-saved-filters-group {
+	margin-top: 12px;
+}
+.logs-saved-filters-group h3 {
+	margin: 0 0 6px;
+	font-size: var(--fs-sm);
+	font-weight: 650;
+	color: var(--text-dim);
+}
+.logs-saved-filters-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+/* Имя (ссылка применения) слева, действия (умолчание/обновить/удалить)
+   прижаты вправо — margin-left:auto у .logs-saved-filter-actions ниже. */
+.logs-saved-filter-item {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+}
+/* Фильтр с payload неизвестной версии (Applicable=false) — не ссылка,
+   обычный приглушённый текст: применить его нельзя (см. logfilter.Filter). */
+.logs-saved-filter-inapplicable {
+	color: var(--text-dim);
+	font-style: italic;
+}
+.logs-saved-filter-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+	margin-left: auto;
+}
+/* Каждое действие строки — своя <form>, которая иначе блочным display
+   переносила бы соседей на новую строку (та же ловушка и то же решение,
+   что у .row-actions form { margin:0 } выше). */
+.logs-saved-filter-inline-form {
+	margin: 0;
+	display: inline-flex;
+}
+.logs-saved-filter-save {
+	margin-top: 12px;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
 }
 
 /* Фильтр списка хостов (B1, T5): фасеты env/role + чип «новые» как обычный
