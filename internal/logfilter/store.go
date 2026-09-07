@@ -146,6 +146,12 @@ func (s *Store) Create(ctx context.Context, projectID int64, ownerUserID *int64,
 // сделает — запись фильтра не удаляется, она меняет владельца, а те, для
 // кого фильтр стал невидим, не должны продолжать ссылаться на него как на
 // умолчание.
+//
+// Update, в отличие от SetDefault, НЕ проверяет, что id принадлежит вызывающему
+// или что вызывающий вообще видит этот фильтр: сигнатура не принимает
+// идентификатор пользователя, чтобы не путать его с ownerUserID (новым
+// владельцем, а не автором правки). Авторизация «этому пользователю разрешено
+// править именно этот фильтр» — ответственность вызывающего (веб-слоя).
 func (s *Store) Update(ctx context.Context, id int64, name string, preds []log.Predicate, ownerUserID *int64) error {
 	if err := validateName(name); err != nil {
 		return err
@@ -197,6 +203,10 @@ func (s *Store) Update(ctx context.Context, id int64, name string, preds []log.P
 
 // Delete удаляет фильтр. Умолчания на него у всех пользователей уходят
 // каскадом (log_default_filters.filter_id ON DELETE CASCADE).
+//
+// Как и Update, авторизацию не делает — принимает только id, без понятия
+// о том, кто вызывает. Проверка права на удаление именно этого фильтра —
+// на веб-слое.
 func (s *Store) Delete(ctx context.Context, id int64) error {
 	tag, err := s.pool.Exec(ctx, "DELETE FROM log_saved_filters WHERE id = $1", id)
 	if err != nil {
@@ -233,7 +243,10 @@ func (s *Store) Visible(ctx context.Context, projectID, userID int64) ([]Filter,
 	return out, rows.Err()
 }
 
-// Get возвращает фильтр по id либо ErrNotFound.
+// Get возвращает фильтр по id либо ErrNotFound. Как и Update/Delete, без
+// проверки, виден ли фильтр вызывающему, — id не привязан к пользователю,
+// это забота веб-слоя. Внутри пакета Get используется и как строительный
+// блок SetDefault, который такую проверку уже делает сам.
 func (s *Store) Get(ctx context.Context, id int64) (Filter, error) {
 	f, err := scanFilter(s.pool.QueryRow(ctx, "SELECT "+filterColumns+" FROM log_saved_filters WHERE id = $1", id))
 	if errors.Is(err, pgx.ErrNoRows) {

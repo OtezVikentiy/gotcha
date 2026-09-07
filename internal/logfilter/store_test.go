@@ -219,6 +219,49 @@ func TestStoreDemoteSharedClearsOtherDefaults(t *testing.T) {
 	}
 }
 
+func TestStoreSetDefaultGuardsAccess(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	s := logfilter.NewStore(pool)
+	projectID, alice, bob := seedFilterFixtures(t, pool)
+	otherProjectID, _, _ := seedFilterFixtures(t, pool)
+	preds := []log.Predicate{{Field: log.FieldBody, Op: log.OpNotContains, Value: "шум"}}
+
+	personal, err := s.Create(ctx, projectID, &alice, alice, "личный алисы", preds)
+	if err != nil {
+		t.Fatalf("create personal: %v", err)
+	}
+	shared, err := s.Create(ctx, projectID, nil, alice, "общий", preds)
+	if err != nil {
+		t.Fatalf("create shared: %v", err)
+	}
+
+	// 1) Боб не может назначить умолчанием чужой личный фильтр Алисы.
+	if err := s.SetDefault(ctx, projectID, bob, personal.ID); !errors.Is(err, logfilter.ErrNotFound) {
+		t.Fatalf("боб назначил умолчанием чужой личный фильтр, ожидался ErrNotFound, получено %v", err)
+	}
+	if _, ok, err := s.Default(ctx, projectID, bob); err != nil || ok {
+		t.Fatalf("после отказа у боба не должно быть умолчания (ok=%v, err=%v)", ok, err)
+	}
+
+	// 2) Фильтр из другого проекта не назначается умолчанием в этом проекте.
+	if err := s.SetDefault(ctx, otherProjectID, alice, shared.ID); !errors.Is(err, logfilter.ErrNotFound) {
+		t.Fatalf("фильтр чужого проекта принят, ожидался ErrNotFound, получено %v", err)
+	}
+	if _, ok, err := s.Default(ctx, otherProjectID, alice); err != nil || ok {
+		t.Fatalf("после отказа у алисы не должно быть умолчания в чужом проекте (ok=%v, err=%v)", ok, err)
+	}
+
+	// 3) Контраст: общий фильтр своего проекта назначается успешно — иначе
+	// тест выше мог бы проходить просто потому, что SetDefault всегда отказывает.
+	if err := s.SetDefault(ctx, projectID, bob, shared.ID); err != nil {
+		t.Fatalf("боб не смог назначить умолчанием общий фильтр своего проекта: %v", err)
+	}
+	if _, ok, err := s.Default(ctx, projectID, bob); err != nil || !ok {
+		t.Fatalf("у боба должно появиться умолчание на общий фильтр (ok=%v, err=%v)", ok, err)
+	}
+}
+
 func TestStoreUnknownPayloadVersion(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
