@@ -3622,11 +3622,14 @@ form.inline {
 /* Ряд активных чипов-фильтров логов (C3): trace_id и attr-фильтры (в т.ч.
    host.name из ссылки «Логи хоста»), каждый со своим ✕. Обёртка-flex, чтобы
    несколько чипов переносились по строке. */
+/* Нижнее поле обязательно: следом идёт карточка гистограммы (.logs-histogram
+   даёт только margin-bottom), и без него ряд чипов упирался в рамку графика
+   вплотную — измерено 0px. */
 .logs-active-filters {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 6px;
-	margin: 8px 0 0;
+	margin: 8px 0 12px;
 }
 /* Активный чип фильтра логов (C3): pill в стиле .chip.is-active с кнопкой
    снятия. Отдельный класс, а не .chip — это не кликабельный фильтр-переключатель,
@@ -3709,24 +3712,79 @@ form.inline {
 	color: var(--accent);
 }
 
-/* Панель «Сохранённые фильтры» логов (задача 9, финальное ревью C12): карточка-
-   <details> (.card уже даёт фон/рамку/скругление) с двумя группами («Мои»/
-   «Общие») и формой сохранения текущего вида. Кнопки действий переиспользуют
-   существующие .btn-ghost/.btn-danger-ghost (тот же приём, что у строки
-   выгрузки в exports.templ) — отдельных .btn-link/.btn-link--danger/
-   .btn-secondary заводить не пришлось. */
+/* Панель «Сохранённые фильтры» логов (задача 9, финальное ревью C12):
+   карточка-<details> (.card уже даёт фон/рамку/скругление) с двумя группами
+   («Мои»/«Общие») и формой сохранения текущего вида. Кнопки действий
+   переиспользуют существующие .btn-ghost/.btn-danger-ghost (тот же приём, что
+   у строки выгрузки в exports.templ) — отдельных .btn-link/.btn-link--danger/
+   .btn-secondary заводить не пришлось.
+
+   Заголовок свёрнутой панели — строка-flex со своей стрелкой (браузерный
+   треугольник спрятан), тот же приём и та же анимация, что у групп ленты
+   инцидентов .incident-feed .feed-group > summary. */
 .logs-saved-filters summary {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	list-style: none;
 	cursor: pointer;
+	padding: 2px 6px;
+	margin: -2px -6px;
+	border-radius: var(--radius);
 	font-weight: 650;
 }
-.logs-saved-filters-group {
+.logs-saved-filters summary::-webkit-details-marker {
+	display: none;
+}
+.logs-saved-filters summary:hover {
+	background: var(--surface-2);
+}
+.logs-saved-filters summary::after {
+	content: "";
+	width: 0;
+	height: 0;
+	margin-left: auto;
+	flex: 0 0 auto;
+	border-left: 4px solid transparent;
+	border-right: 4px solid transparent;
+	border-top: 5px solid var(--text-dim);
+	transition: transform 0.15s ease;
+}
+.logs-saved-filters[open] summary::after {
+	transform: rotate(180deg);
+}
+/* Счётчик в заголовке: сколько фильтров внутри, чтобы закрытую панель не
+   приходилось раскрывать наугад. */
+.logs-saved-filters-count {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 20px;
+	padding: 0 6px;
+	background: var(--surface-2);
+	border-radius: 999px;
+	color: var(--text-dim);
+	font-size: var(--fs-sm);
+	font-weight: 600;
+}
+.logs-saved-filters-body {
 	margin-top: 12px;
+}
+/* Две группы рядом, пока хватает ширины: списки короткие, и одна под другой
+   они растягивали панель на пустое место. minmax(240px,…) роняет их в колонку
+   на узком экране без отдельного media-запроса. */
+.logs-saved-filters-groups {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+	gap: 16px;
 }
 .logs-saved-filters-group h3 {
 	margin: 0 0 6px;
 	font-size: var(--fs-sm);
 	font-weight: 650;
 	color: var(--text-dim);
+	text-transform: uppercase;
+	letter-spacing: .04em;
 }
 .logs-saved-filters-list {
 	list-style: none;
@@ -3734,15 +3792,30 @@ form.inline {
 	padding: 0;
 	display: flex;
 	flex-direction: column;
-	gap: 6px;
+	gap: 2px;
 }
-/* Имя (ссылка применения) слева, действия (умолчание/обновить/удалить)
-   прижаты вправо — margin-left:auto у .logs-saved-filter-actions ниже. */
+/* Имя (ссылка применения) слева, действия (умолчание/изменить/удалить)
+   прижаты вправо — margin-left:auto у .logs-saved-filter-actions ниже.
+   Строка — своя подложка на hover: список из имён с кнопками иначе читается
+   как россыпь кнопок, а не как перечень фильтров. */
 .logs-saved-filter-item {
 	display: flex;
 	flex-wrap: wrap;
 	align-items: center;
 	gap: 8px;
+	padding: 4px 8px;
+	border-radius: var(--radius);
+	min-height: 34px;
+}
+.logs-saved-filter-item:hover {
+	background: var(--surface-2);
+}
+.logs-saved-filter-name {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+	overflow-wrap: anywhere;
 }
 /* Фильтр с payload неизвестной версии (Applicable=false) — не ссылка,
    обычный приглушённый текст: применить его нельзя (см. logfilter.Filter). */
@@ -3750,12 +3823,20 @@ form.inline {
 	color: var(--text-dim);
 	font-style: italic;
 }
+/* Действия строки — компактный кегль: это вторичные команды рядом с именем,
+   а не самостоятельные кнопки формы. Появляются они всегда (не только на
+   hover): скрытые до наведения, они недоступны с клавиатуры и с телефона. */
 .logs-saved-filter-actions {
 	display: flex;
 	flex-wrap: wrap;
 	align-items: center;
-	gap: 4px;
+	gap: 2px;
 	margin-left: auto;
+}
+.logs-saved-filter-actions .btn {
+	padding: 3px 8px;
+	font-size: var(--fs-sm);
+	font-weight: 600;
 }
 /* Каждое действие строки — своя <form>, которая иначе блочным display
    переносила бы соседей на новую строку (та же ловушка и то же решение,
@@ -3764,12 +3845,34 @@ form.inline {
 	margin: 0;
 	display: inline-flex;
 }
+/* Форма правки живёт в модалке (logSavedFilterEditModal) — подсказка про то,
+   что «Обновить» перезапишет условия текущим видом, идёт отдельной строкой
+   над кнопкой. */
+.logs-saved-filter-edit-form .hint {
+	margin: 0 0 12px;
+}
+/* Сохранение текущего вида — подвал панели, отделённый от списков линией:
+   это действие над текущим экраном, а не ещё один элемент перечня. Поле имени
+   не растягивается на всю карточку (.input сам по себе width:100%), иначе
+   кнопка уезжает на отдельную строку даже на широком экране. */
 .logs-saved-filter-save {
-	margin-top: 12px;
+	margin-top: 16px;
+	padding-top: 12px;
+	border-top: 1px solid var(--border);
 	display: flex;
 	flex-wrap: wrap;
 	align-items: center;
 	gap: 8px;
+}
+.logs-saved-filter-save .input {
+	width: auto;
+	flex: 1 1 180px;
+	max-width: 280px;
+	/* min-width:0 обязателен: у <input> собственная внутренняя ширина (около
+	   20 знаков), и без снятия минимума flex-строка на телефоне не ужимает
+	   поле, а выпускает его за край подвала — измерено 221px поля в форме
+	   шириной 205px. */
+	min-width: 0;
 }
 
 /* Фильтр списка хостов (B1, T5): фасеты env/role + чип «новые» как обычный

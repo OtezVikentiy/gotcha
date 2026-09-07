@@ -1,6 +1,9 @@
 package templates
 
 import (
+	"bytes"
+	"context"
+	"strings"
 	"testing"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
@@ -61,5 +64,75 @@ func TestLogSavedFilterApplyURLCombinesPredicates(t *testing.T) {
 	}
 	if got := q["service_not"]; len(got) != 1 || got[0] != "worker" {
 		t.Fatalf("service_not = %v, want [worker]", got)
+	}
+}
+
+// renderLogSavedFiltersSection рендерит панель целиком (заголовок, две группы,
+// форма сохранения) — в отличие от renderLogSavedFilterRow, который берёт одну
+// строку списка.
+func renderLogSavedFiltersSection(t *testing.T, panel LogSavedFiltersPanel) string {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := logSavedFiltersSection(1, LogsFilter{}, panel, "").Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	return buf.String()
+}
+
+// TestLogSavedFiltersSectionCountsFilters — счётчик в заголовке свёрнутой
+// панели считает ОБЕ группы: закрытая панель иначе выглядит одинаково и с
+// фильтрами, и без них, и раскрывать её приходится наугад.
+func TestLogSavedFiltersSectionCountsFilters(t *testing.T) {
+	panel := LogSavedFiltersPanel{
+		Personal: []LogSavedFilterRow{
+			{Filter: logfilter.Filter{ID: 1, Name: "мой A", Applicable: true}},
+			{Filter: logfilter.Filter{ID: 2, Name: "мой B", Applicable: true}},
+		},
+		Shared: []LogSavedFilterRow{
+			{Filter: logfilter.Filter{ID: 3, Name: "общий", Applicable: true}},
+		},
+	}
+	html := renderLogSavedFiltersSection(t, panel)
+	const want = `<span class="logs-saved-filters-count">3</span>`
+	if !strings.Contains(html, want) {
+		t.Errorf("счётчик заголовка: нет %s\n%s", want, html)
+	}
+}
+
+// TestLogSavedFiltersSectionOmitsCountWhenEmpty — на пустой панели счётчика
+// нет вовсе: «0» в заголовке — это шум, а не сведение.
+func TestLogSavedFiltersSectionOmitsCountWhenEmpty(t *testing.T) {
+	html := renderLogSavedFiltersSection(t, LogSavedFiltersPanel{})
+	if strings.Contains(html, "logs-saved-filters-count") {
+		t.Errorf("пустая панель не должна нести счётчик:\n%s", html)
+	}
+}
+
+// TestLogSavedFilterRowPutsEditFormInModal — поля правки (имя, видимость)
+// живут в модалке, а не в строке списка: строка показывает только имя и
+// действия. Проверяем и якорь-триггер, и то, что форма «Обновить» лежит
+// ВНУТРИ разметки модалки — до правки оформления она стояла прямо в <li>,
+// растягивая каждую строку списка полноширинным полем ввода.
+func TestLogSavedFilterRowPutsEditFormInModal(t *testing.T) {
+	row := LogSavedFilterRow{
+		Filter:  logfilter.Filter{ID: 7, Name: "шумный nginx", Applicable: true},
+		CanEdit: true,
+	}
+	html := renderLogSavedFilterRow(t, LogsFilter{}, row, true)
+
+	trigger := `href="#` + logSavedFilterEditModalID(7) + `"`
+	if !strings.Contains(html, trigger) {
+		t.Errorf("нет ссылки-триггера модалки %s\n%s", trigger, html)
+	}
+	modalStart := strings.Index(html, `<div id="`+logSavedFilterEditModalID(7)+`"`)
+	if modalStart < 0 {
+		t.Fatalf("модалка правки не отрисована:\n%s", html)
+	}
+	formStart := strings.Index(html, `/filters/7/update"`)
+	if formStart < 0 {
+		t.Fatalf("форма «Обновить» не найдена:\n%s", html)
+	}
+	if formStart < modalStart {
+		t.Errorf("форма «Обновить» стоит в строке списка, а не внутри модалки:\n%s", html)
 	}
 }

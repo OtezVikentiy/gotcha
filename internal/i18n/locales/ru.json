@@ -1941,6 +1941,8 @@
     "logs.savedfilters.make_default": "Сделать умолчанием",
     "logs.savedfilters.update": "Обновить",
     "logs.savedfilters.update_title": "Сохранить в этом фильтре текущие условия",
+    "logs.savedfilters.edit": "Изменить",
+    "logs.savedfilters.edit.title": "Настройки фильтра",
     "logs.savedfilters.delete": "Удалить",
     "logs.savedfilters.name_placeholder": "Имя фильтра",
     "logs.savedfilters.shared_checkbox": "Сделать общим для проекта",

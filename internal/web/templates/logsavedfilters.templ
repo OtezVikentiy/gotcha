@@ -68,6 +68,16 @@ func logSavedFilterActionURL(projectID, filterID int64, action string) string {
 	return logSavedFiltersCreateURL(projectID) + "/" + strconv.FormatInt(filterID, 10) + "/" + action
 }
 
+// logSavedFilterEditModalID — якорь модалки правки конкретного фильтра.
+// Строка панели показывает только имя и три действия, а поля правки (имя и
+// видимость) живут в модалке — тот же приём, что у окон обслуживания
+// (windowEditModal, maintenance.templ) и правил подавления. Инлайновая форма
+// правки прямо в строке давала ряд из полноширинного .input и четырёх кнопок
+// разной высоты: строка списка переставала читаться как строка списка.
+func logSavedFilterEditModalID(filterID int64) string {
+	return "log-filter-edit-" + strconv.FormatInt(filterID, 10)
+}
+
 // logSavedFilterApplyURL — ссылка применения сохранённого фильтра: условия
 // разворачиваются в обычные query-параметры списка логов, а не прячутся за
 // идентификатором фильтра, поэтому ссылка самодостаточна и переживает
@@ -148,20 +158,25 @@ templ logSavedFilterSaveForm(projectID int64, filter LogsFilter, canShare bool) 
 
 // logSavedFilterRow — одна строка списка «Мои»/«Общие»: ссылка применения
 // (или неактивная подпись, если фильтр Applicable=false — payload неизвестной
-// версии, см. logfilter.Filter.Applicable), бейдж умолчания и, при CanEdit,
-// действия «Обновить условиями текущего вида»/«Удалить». «Сделать
-// умолчанием» показывается всем, кто видит фильтр вообще — это персональная
-// настройка смотрящего, не правка самого фильтра.
+// версии, см. logfilter.Filter.Applicable), бейдж умолчания и действия. Сама
+// строка держит только имя и кнопки: поля правки (имя, видимость) уехали в
+// модалку logSavedFilterEditModal — иначе каждая строка списка тянула за
+// собой полноширинный .input и переносящуюся подпись чекбокса, и список
+// переставал читаться списком. «Сделать умолчанием» показывается всем, кто
+// видит фильтр вообще — это персональная настройка смотрящего, не правка
+// самого фильтра; «Изменить»/«Удалить» — только при CanEdit.
 templ logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRow, canShare bool) {
 	<li class="logs-saved-filter-item">
-		if row.Filter.Applicable {
-			<a href={ templ.URL(logSavedFilterApplyURL(projectID, row.Filter)) }>{ row.Filter.Name }</a>
-		} else {
-			<span class="logs-saved-filter-inapplicable" title={ i18n.T(ctx, "logs.savedfilters.not_applicable") }>{ row.Filter.Name }</span>
-		}
-		if row.IsDefault {
-			<span class="badge badge-neutral">{ i18n.T(ctx, "logs.savedfilters.default_badge") }</span>
-		}
+		<span class="logs-saved-filter-name">
+			if row.Filter.Applicable {
+				<a href={ templ.URL(logSavedFilterApplyURL(projectID, row.Filter)) }>{ row.Filter.Name }</a>
+			} else {
+				<span class="logs-saved-filter-inapplicable" title={ i18n.T(ctx, "logs.savedfilters.not_applicable") }>{ row.Filter.Name }</span>
+			}
+			if row.IsDefault {
+				<span class="badge badge-neutral">{ i18n.T(ctx, "logs.savedfilters.default_badge") }</span>
+			}
+		</span>
 		<span class="logs-saved-filter-actions">
 			if !row.IsDefault {
 				<form method="post" action={ templ.URL(logSavedFilterDefaultURL(projectID, row.Filter.ID)) } class="logs-saved-filter-inline-form">
@@ -169,35 +184,7 @@ templ logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRo
 				</form>
 			}
 			if row.CanEdit {
-				// Переименование и смена видимости (находка финального
-				// ревью C10): §7.3 спеки объявляет их отдельными действиями
-				// панели, хендлеры (logFiltersUpdate) их уже поддерживают и
-				// покрыты тестами через прямой POST — не хватало только
-				// элементов управления. Имя — обычное текстовое поле вместо
-				// скрытого с эхом старого значения (тот же приём, что у
-				// формы сохранения выше). Переключатель видимости — тот же
-				// чекбокс "shared", что и у создания, но с checked по
-				// текущему состоянию, и доступен только при canShare (тот
-				// же уровень, что у создания общего фильтра, — веб-слой
-				// перепроверяет требованием оператора для общего фильтра
-				// ДО и ПОСЛЕ правки, requireLogFilterOperator). row.CanEdit
-				// для общего фильтра гарантирует canOperate==canShare (см.
-				// logFiltersPanel), поэтому переключатель для видимого здесь
-				// общего фильтра всегда доступен; скрытое поле — запасной
-				// путь на случай расхождения инварианта, а не типовой путь.
-				<form method="post" action={ templ.URL(logSavedFilterUpdateURL(projectID, row.Filter.ID)) } class="logs-saved-filter-inline-form">
-					<input type="text" name="name" class="input" value={ row.Filter.Name } aria-label={ i18n.T(ctx, "logs.savedfilters.name_placeholder") } maxlength="60" required/>
-					@logFilterConditionFields(filter)
-					if canShare {
-						<label class="checkbox-inline">
-							<input type="checkbox" name="shared" value="1" checked?={ row.Filter.Shared() }/>
-							{ i18n.T(ctx, "logs.savedfilters.shared_checkbox") }
-						</label>
-					} else if row.Filter.Shared() {
-						<input type="hidden" name="shared" value="1"/>
-					}
-					<button type="submit" class="btn btn-ghost" title={ i18n.T(ctx, "logs.savedfilters.update_title") }>{ i18n.T(ctx, "logs.savedfilters.update") }</button>
-				</form>
+				<a class="btn btn-ghost" href={ templ.SafeURL("#" + logSavedFilterEditModalID(row.Filter.ID)) }>{ i18n.T(ctx, "logs.savedfilters.edit") }</a>
 				<form method="post" action={ templ.URL(logSavedFilterDeleteURL(projectID, row.Filter.ID)) } class="logs-saved-filter-inline-form">
 					// Условия текущего вида (задача 9, находка финального
 					// ревью C5): без них web.logFilterFormParams(r) видит
@@ -213,42 +200,101 @@ templ logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRo
 				</form>
 			}
 		</span>
+		if row.CanEdit {
+			@logSavedFilterEditModal(projectID, filter, row, canShare)
+		}
 	</li>
+}
+
+// logSavedFilterEditModal — правка сохранённого фильтра (находка финального
+// ревью C10, оформление): имя, переключатель видимости и кнопка, которая
+// записывает в фильтр условия ТЕКУЩЕГО вида (об этом же говорит подсказка под
+// полями — до выноса в модалку это знание жило только в title кнопки, то есть
+// не было доступно ни с клавиатуры, ни с телефона).
+//
+// Модалка открывается только якорем (open=false): серверного переоткрытия по
+// ошибке валидации здесь нет — отказ рисуется сообщением над списком, панель
+// при этом раскрыта (см. logSavedFiltersSection). Тот же приём и те же
+// ограничения, что у windowEditModal до появления FormState.
+//
+// Переключатель видимости доступен только при canShare (тот же уровень, что
+// у создания общего фильтра, — веб-слой перепроверяет требованием оператора
+// ДО и ПОСЛЕ правки, requireLogFilterOperator). row.CanEdit для общего
+// фильтра гарантирует canOperate==canShare (см. logFiltersPanel), поэтому
+// переключатель для видимого здесь общего фильтра всегда доступен; скрытое
+// поле — запасной путь на случай расхождения инварианта, а не типовой путь.
+templ logSavedFilterEditModal(projectID int64, filter LogsFilter, row LogSavedFilterRow, canShare bool) {
+	@createModalOpen(logSavedFilterEditModalID(row.Filter.ID), "logs.savedfilters.edit.title", false, false) {
+		<form method="post" action={ templ.URL(logSavedFilterUpdateURL(projectID, row.Filter.ID)) } class="logs-saved-filter-edit-form">
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "logs.savedfilters.name_placeholder") }
+					<input type="text" name="name" class="input" value={ row.Filter.Name } maxlength="60" required/>
+				</label>
+			</div>
+			@logFilterConditionFields(filter)
+			if canShare {
+				<div class="field">
+					<label class="checkbox-inline">
+						<input type="checkbox" name="shared" value="1" checked?={ row.Filter.Shared() }/>
+						{ i18n.T(ctx, "logs.savedfilters.shared_checkbox") }
+					</label>
+				</div>
+			} else if row.Filter.Shared() {
+				<input type="hidden" name="shared" value="1"/>
+			}
+			<p class="hint">{ i18n.T(ctx, "logs.savedfilters.update_title") }</p>
+			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "logs.savedfilters.update") }</button>
+		</form>
+	}
 }
 
 // logSavedFiltersSection — панель «Мои»/«Общие» целиком: карточка-<details>,
 // раскрытая при непустом errMsg (тот же приём, что exportsForm — P2-UX-4),
-// два списка и форма сохранения текущего вида.
+// два списка и форма сохранения текущего вида. Счётчик в свёрнутом заголовке
+// отвечает на единственный вопрос к закрытой панели — «есть ли там что-то»:
+// без него панель выглядит одинаково и с тремя фильтрами, и с пустыми
+// списками, и раскрывать её приходится наугад.
 templ logSavedFiltersSection(projectID int64, filter LogsFilter, panel LogSavedFiltersPanel, errMsg string) {
+	{{ total := len(panel.Personal) + len(panel.Shared) }}
 	<details class="card logs-saved-filters" open?={ errMsg != "" }>
-		<summary>{ i18n.T(ctx, "logs.savedfilters.title") }</summary>
-		if errMsg != "" {
-			<p class="error">{ errMsg }</p>
-		}
-		<div class="logs-saved-filters-group">
-			<h3>{ i18n.T(ctx, "logs.savedfilters.personal") }</h3>
-			if len(panel.Personal) == 0 {
-				<p class="hint">{ i18n.T(ctx, "logs.savedfilters.empty") }</p>
-			} else {
-				<ul class="logs-saved-filters-list">
-					for _, row := range panel.Personal {
-						@logSavedFilterRow(projectID, filter, row, panel.CanShare)
-					}
-				</ul>
+		<summary>
+			{ i18n.T(ctx, "logs.savedfilters.title") }
+			if total > 0 {
+				<span class="logs-saved-filters-count">{ strconv.Itoa(total) }</span>
 			}
-		</div>
-		<div class="logs-saved-filters-group">
-			<h3>{ i18n.T(ctx, "logs.savedfilters.shared") }</h3>
-			if len(panel.Shared) == 0 {
-				<p class="hint">{ i18n.T(ctx, "logs.savedfilters.empty") }</p>
-			} else {
-				<ul class="logs-saved-filters-list">
-					for _, row := range panel.Shared {
-						@logSavedFilterRow(projectID, filter, row, panel.CanShare)
-					}
-				</ul>
+		</summary>
+		<div class="logs-saved-filters-body">
+			if errMsg != "" {
+				<p class="error">{ errMsg }</p>
 			}
+			<div class="logs-saved-filters-groups">
+				<div class="logs-saved-filters-group">
+					<h3>{ i18n.T(ctx, "logs.savedfilters.personal") }</h3>
+					if len(panel.Personal) == 0 {
+						<p class="hint">{ i18n.T(ctx, "logs.savedfilters.empty") }</p>
+					} else {
+						<ul class="logs-saved-filters-list">
+							for _, row := range panel.Personal {
+								@logSavedFilterRow(projectID, filter, row, panel.CanShare)
+							}
+						</ul>
+					}
+				</div>
+				<div class="logs-saved-filters-group">
+					<h3>{ i18n.T(ctx, "logs.savedfilters.shared") }</h3>
+					if len(panel.Shared) == 0 {
+						<p class="hint">{ i18n.T(ctx, "logs.savedfilters.empty") }</p>
+					} else {
+						<ul class="logs-saved-filters-list">
+							for _, row := range panel.Shared {
+								@logSavedFilterRow(projectID, filter, row, panel.CanShare)
+							}
+						</ul>
+					}
+				</div>
+			</div>
+			@logSavedFilterSaveForm(projectID, filter, panel.CanShare)
 		</div>
-		@logSavedFilterSaveForm(projectID, filter, panel.CanShare)
 	</details>
 }

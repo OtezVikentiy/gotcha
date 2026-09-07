@@ -1941,6 +1941,8 @@
     "logs.savedfilters.make_default": "Make default",
     "logs.savedfilters.update": "Update",
     "logs.savedfilters.update_title": "Save the current conditions into this filter",
+    "logs.savedfilters.edit": "Edit",
+    "logs.savedfilters.edit.title": "Filter settings",
     "logs.savedfilters.delete": "Delete",
     "logs.savedfilters.name_placeholder": "Filter name",
     "logs.savedfilters.shared_checkbox": "Make shared for the project",
