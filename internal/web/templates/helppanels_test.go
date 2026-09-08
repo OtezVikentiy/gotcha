@@ -21,7 +21,7 @@ func TestHelpPanelOnRemainingSections(t *testing.T) {
 	}{
 		"dependencies": {renderTo(t, DependenciesScreen(7, nil, DepsFilter{Range: TimeRangeVM{Key: "24h"}}, stub(), false, false, "u@e.com")), "/docs/dependencies"},
 		"deployments":  {renderTo(t, DeploymentsScreen(7, nil, "u@e.com")), "/docs/deployments"},
-		"logs":         {renderTo(t, LogsScreen(7, []LogRow{NewLogRow(log.LogRow{Timestamp: now, Severity: "ERROR", Body: "boom"})}, LogsFilter{Range: TimeRangeVM{Key: "24h"}}, false, "", LogsHistogram{Empty: true}, LogFacets{}, "u@e.com")), "/docs/logs"},
+		"logs":         {renderTo(t, LogsScreen(7, []LogRow{NewLogRow(log.LogRow{Timestamp: now, Severity: "ERROR", Body: "boom"})}, LogsFilter{Range: TimeRangeVM{Key: "24h"}}, false, "", LogsHistogram{Empty: true}, LogFacets{}, "u@e.com", LogSavedFiltersPanel{}, "")), "/docs/logs"},
 		"exports":      {renderTo(t, Exports(7, nil, true, "u@e.com", true, "", nil)), "/docs/exports"},
 	}
 	for name, p := range pages {

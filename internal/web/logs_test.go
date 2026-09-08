@@ -658,6 +658,61 @@ func TestWebLogsListFacets(t *testing.T) {
 	}
 }
 
+// TestFacetValueHasExcludeLink — задача 7: у каждого значения встроенных
+// фасетов (severity/service/environment) рядом с обычной ссылкой появляется
+// вторая — «исключить» (logExcludeURL). Проверка идёт ВНУТРИ секции фасета,
+// а не по всей странице: строка лога уже несёт свои собственные ссылки
+// исключения severity/service (задача 6, logRowSeverityActions/
+// logRowServiceActions) — проверка по всей странице не отличила бы вклад
+// фасета от уже существующих кнопок строки. Environment вдобавок и есть тот
+// случай, который у строки лога кнопок исключения не имеет вовсе (колонки
+// под окружение в строке нет, см. докблок разметки logFacetSection) — там
+// такая ссылка может появиться только из фасета.
+func TestFacetValueHasExcludeLink(t *testing.T) {
+	s := newLogsStack(t, true)
+	projectID, cookie, _ := newLogsProject(t, s, "facet-exclude@example.com", "facet-exclude-org", "facet-exclude-proj")
+
+	now := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Minute)
+	s.seedLogs(t, projectID,
+		log.LogRecord{
+			Timestamp: now, ObservedTS: now,
+			Severity: log.SevInfo, SeverityNumber: 9, SeverityText: "INFO",
+			Body: "tick", Service: "cron", Environment: "production",
+		},
+	)
+
+	resp := getWithCookie(t, s.srv, logsBasePath(projectID), cookie)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	page := string(body)
+
+	sections := logFacetSectionRe.FindAllStringSubmatch(page, -1)
+	if len(sections) < 3 {
+		t.Fatalf("ожидалось минимум 3 секции встроенных фасетов (severity/service/environment): найдено %d", len(sections))
+	}
+	svcSection := sections[1][1]
+	envSection := sections[2][1]
+
+	if !strings.Contains(svcSection, "service_not=cron") {
+		t.Fatalf("у значения фасета service «cron» нет ссылки исключения: %s", svcSection)
+	}
+	if !strings.Contains(svcSection, "logs-row-action--exclude") {
+		t.Fatalf("ссылка исключения фасета service не оформлена как кнопка-иконка (logs-row-action--exclude): %s", svcSection)
+	}
+	if !strings.Contains(envSection, "environment_not=production") {
+		t.Fatalf("у значения фасета environment «production» нет ссылки исключения: %s", envSection)
+	}
+	// Собственная сборка URL вместо logExcludeURL/logsPageURLValues (которая
+	// курсор намеренно не включает) потащила бы в ссылку исключения
+	// before/tskip текущей страницы.
+	if strings.Contains(svcSection, "before=") || strings.Contains(svcSection, "tskip=") {
+		t.Errorf("ссылка исключения фасета service тащит курсор пагинации: %s", svcSection)
+	}
+}
+
 // TestWebLogsListAttrFacets — задача 5 плана C2: сайдбар атрибут-фасетов
 // (4-я секция, после severity/service/environment, см. logAttrFacetSection в
 // logs.templ) — авто-обнаруженные ключи со счётчиками видны сразу; клик по
@@ -1187,5 +1242,148 @@ func TestWebLogsAttrFilterChip(t *testing.T) {
 	}
 	if text := string(body); !strings.Contains(text, "row-other-host") {
 		t.Errorf("после снятия attr-чипа список должен снова показывать все строки: %s", text)
+	}
+}
+
+// TestLogsFormCarriesNonFieldFilters — задача 5 («исключающие фильтры
+// логов»): условия, у которых нет своего видимого поля (attr, trace_id, все
+// виды *_not), обязаны быть скрытыми полями ВНУТРИ формы — иначе повторное
+// нажатие «Применить» без изменения видимых полей тихо сбрасывает уже
+// выбранные условия (существующий дефект по attr/trace_id, устранённый
+// заодно с выводом *_not).
+func TestLogsFormCarriesNonFieldFilters(t *testing.T) {
+	s := newLogsStack(t, true)
+	projectID, cookie, _ := newLogsProject(t, s, "form@example.com", "form-org", "form-proj")
+
+	path := logsBasePath(projectID) +
+		"?trace_id=abc123&attr=source%3Anginx&q_not=buffered&service_not=cron"
+	resp := getWithCookie(t, s.srv, path, cookie)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	page := string(body)
+
+	for _, want := range []string{
+		`name="trace_id"`, `value="abc123"`,
+		`name="attr"`, `value="source:nginx"`,
+		`name="q_not"`, `value="buffered"`,
+		`name="service_not"`, `value="cron"`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("форма не переносит %s — сабмит «Применить» потеряет это условие", want)
+		}
+	}
+
+	// Скрытые поля обязаны лежать ВНУТРИ <form>…</form> — иначе браузер их
+	// с GET-сабмитом не отправит, и предыдущая проверка «поле есть в
+	// разметке» ничего не гарантирует.
+	formStart := strings.Index(page, `<form method="get"`)
+	if formStart < 0 {
+		t.Fatalf("не нашли форму фильтров логов в разметке")
+	}
+	formEndRel := strings.Index(page[formStart:], "</form>")
+	if formEndRel < 0 {
+		t.Fatalf("не нашли закрывающий </form> формы фильтров логов")
+	}
+	formEnd := formStart + formEndRel
+	formHTML := page[formStart:formEnd]
+	for _, want := range []string{`value="abc123"`, `value="source:nginx"`, `name="q_not"`, `name="service_not"`} {
+		if !strings.Contains(formHTML, want) {
+			t.Errorf("%s лежит вне <form> — сабмит его не отправит: %s", want, formHTML)
+		}
+	}
+
+	// Чип исключения отображён отдельным модификатором (задача 5, шаг 10).
+	if !strings.Contains(page, "logs-filter-chip--not") {
+		t.Errorf("не нашли чип исключения (класс logs-filter-chip--not): %s", page)
+	}
+}
+
+// TestLogRowHasExcludeLinks — задача 6: ссылки «исключить» у уровня, сервиса
+// и атрибута прямо в строке лога собраны из реального запроса, а не заново
+// с нуля (иначе они потеряли бы уже активные фильтры страницы).
+func TestLogRowHasExcludeLinks(t *testing.T) {
+	s := newLogsStack(t, true)
+	projectID, cookie, _ := newLogsProject(t, s, "row@example.com", "row-org", "row-proj")
+
+	now := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Minute)
+	s.seedLogs(t, projectID,
+		log.LogRecord{
+			Timestamp: now, ObservedTS: now,
+			Severity: log.SevError, SeverityNumber: 17, SeverityText: "ERROR",
+			Body: "boom", Service: "api", Environment: "production",
+			LogAttributes: map[string]string{"source": "nginx"},
+		},
+	)
+
+	resp := getWithCookie(t, s.srv, logsBasePath(projectID), cookie)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	page := string(body)
+
+	for _, want := range []string{
+		"severity_not=error",
+		"service_not=api",
+		"attr_not=source%3Anginx",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("в строке нет ссылки исключения с %s: %s", want, page)
+		}
+	}
+	// Собственный сборщик URL вместо logsPageURLValues (которая курсор
+	// намеренно не включает) потащил бы в ссылку исключения before/tskip
+	// текущей страницы и сломал бы выдачу на второй странице.
+	if strings.Contains(page, "before=") || strings.Contains(page, "tskip=") {
+		t.Errorf("ссылка исключения тащит курсор пагинации — собрана мимо logsPageURLValues: %s", page)
+	}
+}
+
+// TestLogRowAttrExcludeUsesExplicitOrigin — устранение находки ревью задачи
+// 6: происхождение атрибута (log_attributes/resource_attrs) для ссылки
+// исключения не восстанавливается разбором отображаемого ключа. Запись, у
+// которой атрибут ЗАПИСИ буквально называется "resource.pool" (случайное
+// совпадение с префиксом, которым помечаются в таблице атрибуты РЕСУРСА), и
+// одновременно есть настоящий атрибут ресурса — ссылка на первый обязана
+// остаться attr_not (log_attributes), а не подмениться на resource_attr
+// (res:) через обратный разбор строки "resource.pool".
+func TestLogRowAttrExcludeUsesExplicitOrigin(t *testing.T) {
+	s := newLogsStack(t, true)
+	projectID, cookie, _ := newLogsProject(t, s, "attrorigin@example.com", "attrorigin-org", "attrorigin-proj")
+
+	now := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Minute)
+	s.seedLogs(t, projectID,
+		log.LogRecord{
+			Timestamp: now, ObservedTS: now,
+			Severity: log.SevInfo, SeverityNumber: 9, SeverityText: "INFO",
+			Body: "pooled", Service: "api", Environment: "production",
+			LogAttributes: map[string]string{"resource.pool": "db-1"},
+			ResourceAttrs: map[string]string{"host.name": "web-1"},
+		},
+	)
+
+	resp := getWithCookie(t, s.srv, logsBasePath(projectID), cookie)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	page := string(body)
+
+	if !strings.Contains(page, "attr_not=resource.pool%3Adb-1") {
+		t.Errorf("лог-атрибут resource.pool должен исключаться как обычный attr (attr_not=resource.pool%%3Adb-1): %s", page)
+	}
+	// Так выглядела бы ссылка при обратном разборе отображаемой строки:
+	// префикс "resource." снят, ключ ошибочно принят за resource_attr "pool".
+	if strings.Contains(page, "attr_not=res%3Apool%3Adb-1") {
+		t.Errorf("лог-атрибут resource.pool подменён на resource_attr (res:pool) — происхождение восстановлено разбором отображаемого ключа, а не явным полем: %s", page)
+	}
+	// Настоящий атрибут ресурса по-прежнему должен уходить с префиксом res:.
+	if !strings.Contains(page, "attr_not=res%3Ahost.name%3Aweb-1") {
+		t.Errorf("настоящий атрибут ресурса host.name должен исключаться как resource_attr (res:host.name): %s", page)
 	}
 }

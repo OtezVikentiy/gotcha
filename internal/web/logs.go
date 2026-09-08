@@ -15,6 +15,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
+	"gitflic.ru/otezvikentiy/gotcha/internal/logfilter"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
@@ -23,6 +24,12 @@ import (
 // размера — полноценный постраничный счётчик, как у issues, здесь не нужен:
 // ClickHouse keyset-курсор (log.ListFilter.Before/TieSkip) не считает total.
 const logsListLimit = 100
+
+// maxNegativeConditions — потолок числа отрицательных условий, приходящих
+// из URL. Положительные параметры потолка не получают: они существуют без
+// ограничения с самого начала, и введение лимита задним числом сломало бы
+// уже разосланные ссылки.
+const maxNegativeConditions = 20
 
 // logsHistogramBuckets — целевое число корзин гистограммы объёма (задача 3,
 // C2). График переиспользует viewBox стека задержек монитора (720×160,
@@ -150,19 +157,43 @@ func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// h.LogQuery может быть nil в стендах без проводки логов (main.go
-	// проставляет его только вместе с ClickHouse) — тогда честный 404, а не
-	// паника на разыменовании (тот же приём, что у h.Metrics/h.Trace).
-	if h.LogQuery == nil {
-		h.notFound(w, r)
-		return
-	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if !canAccess {
+		h.notFound(w, r)
+		return
+	}
+	h.renderLogsPage(w, r, http.StatusOK, projectID, uid, "", r.URL.Query())
+}
+
+// renderLogsPage — тело GET /projects/{id}/logs, вынесенное в переиспользуемую
+// функцию (задача 9, тот же приём, что renderExportsPage у выгрузок,
+// exports.go:566): хендлеры управления сохранёнными фильтрами
+// (logfilters.go) при отказе валидации перерисовывают ЭТУ страницу со
+// статусом 422 и сообщением errMsg вместо ухода на общий renderError —
+// иначе введённые условия терялись бы, а страница логов исчезала бы за
+// стилизованной страницей ошибки, как раньше было с выгрузками (P2-UX-4).
+//
+// params — источник условий отбора: GET-вызов (logsList) передаёт
+// r.URL.Query(), POST-вызов при отказе валидации (logFiltersHandleSaveError)
+// — logFilterFormParams(r). У POST-запроса query-строка пустая (action ведёт
+// на /projects/{id}/logs/filters), поэтому params НЕЛЬЗЯ считать внутри этой
+// функции через r.URL.Query() — тогда 422 показал бы нефильтрованный список
+// (введённые условия потеряны) и вдобавок молча применил бы фильтр по
+// умолчанию (hasLogFilterParams на пустом query всегда false) — третий набор
+// данных, которого пользователь не запрашивал.
+//
+// uid нужен panel (личные фильтры видны только своему владельцу) —
+// logsList уже резолвит его для собственного гейта доступа, здесь его
+// заново не запрашиваем.
+func (h *Handler) renderLogsPage(w http.ResponseWriter, r *http.Request, status int, projectID, uid int64, errMsg string, params url.Values) {
+	// h.LogQuery может быть nil в стендах без проводки логов (main.go
+	// проставляет его только вместе с ClickHouse) — тогда честный 404, а не
+	// паника на разыменовании (тот же приём, что у h.Metrics/h.Trace).
+	if h.LogQuery == nil {
 		h.notFound(w, r)
 		return
 	}
@@ -174,8 +205,47 @@ func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 	// Пресеты UI при этом не трогаем: слишком глубокий пресет просто даёт
 	// обрезанное окно, это осознанное упрощение MVP (см. бриф задачи 2).
 	rng := h.resolveTimeRange(w, r, "24h")
-	q := r.URL.Query()
+	q := params
 	f, rangeClamped := parseLogFilter(q, rng, h.LogRetentionDays)
+
+	// Фильтр по умолчанию (задача 10): применяется, только когда в URL нет
+	// ни одного параметра отбора (logFilterParams, logfilters.go) — это
+	// единственный надёжный признак «чистого» захода в раздел. Присутствие
+	// любого параметра обязано победить умолчание: иначе присланная коллегой
+	// ссылка молча показала бы получателю не то, что видел отправитель.
+	// Параметры пагинации/фасета/окна времени умолчание не подавляют —
+	// окно задано всегда, по нему чистый заход не отличить. nodefault —
+	// отдельный служебный параметр вне этого списка (любое непустое
+	// значение подавляет умолчание, конкретное "1" не значимо): по нему
+	// ведёт ссылка «показать всё» плашки ниже, пустой URL для этого не
+	// годится — он снова включил бы умолчание. Форма фильтров эхом несёт
+	// его дальше скрытым полем (см. LogsFilter.DefaultSuppressed) —
+	// подавление держится на явном признаке, а не на случайности вида
+	// «пустые service=/environment=/q= тоже считаются присутствующими»,
+	// которая исчезла бы при замене текстового поля на виджет, не
+	// сериализующий пустое значение.
+	defaultSuppressed := q.Get("nodefault") != ""
+	var defaultFilter *logfilter.Filter
+	var showAllHref string
+	if h.LogFilters != nil && !defaultSuppressed && !hasLogFilterParams(q) {
+		if def, ok, err := h.LogFilters.Default(r.Context(), projectID, uid); err != nil {
+			slog.Warn("logs: default filter unavailable", "project_id", projectID, "err", err)
+		} else if ok && def.Applicable {
+			// Applicable=false (неизвестная версия payload) не применяется,
+			// даже будучи назначенным умолчанием, и не превращается молча
+			// в «фильтр без условий» — Predicates у такого фильтра пуст,
+			// applyPredicates(nil) и так был бы no-op, но условие ok && def.Applicable
+			// делает отказ явным, а не случайным следствием пустого списка.
+			applyPredicates(&f, def.Predicates)
+			defaultFilter = &def
+			showAllQuery := url.Values{}
+			for k, v := range q {
+				showAllQuery[k] = v
+			}
+			showAllQuery.Set("nodefault", "1")
+			showAllHref = templates.LogsURLFromValues(projectID, showAllQuery)
+		}
+	}
 
 	rows, listErr := h.LogQuery.List(r.Context(), projectID, f)
 	// Ошибка чтения ClickHouse — НЕ 500: логи вспомогательный раздел, который
@@ -201,12 +271,16 @@ func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 		Query:       f.Query,
 		Attrs:       f.Attrs,
 		TraceID:     f.TraceID,
+		Not:         f.Not,
 		Range:       timeRangeVM(rng),
 		Active: len(f.Severity) > 0 || f.Service != "" || f.Environment != "" || f.Query != "" || len(f.Attrs) > 0 ||
-			f.TraceID != "" || rng.Key != "24h",
-		Facet:         q.Get("facet"),
-		RangeClamped:  rangeClamped,
-		RetentionDays: h.LogRetentionDays,
+			f.TraceID != "" || len(f.Not) > 0 || rng.Key != "24h",
+		Facet:              q.Get("facet"),
+		RangeClamped:       rangeClamped,
+		RetentionDays:      h.LogRetentionDays,
+		DefaultApplied:     defaultFilter,
+		DefaultShowAllHref: showAllHref,
+		DefaultSuppressed:  defaultSuppressed,
 	}
 
 	var olderHref string
@@ -233,7 +307,15 @@ func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 		facets = h.logsFacets(r.Context(), projectID, f, filter, filter.Facet)
 	}
 
-	_ = templates.LogsScreen(projectID, vmRows, filter, loadFailed, olderHref, histogram, facets, h.currentEmail(r)).Render(r.Context(), w)
+	panel := h.logFiltersPanel(r.Context(), projectID, uid)
+
+	// Content-Type — ЯВНО, до WriteHeader: тот же приём, что в renderError/
+	// renderExportsPage. WriteHeader(status) отправляет заголовки до первой
+	// записи тела, из-за чего автоопределение Content-Type сниффингом
+	// первого Write не срабатывает при статусе, отличном от 200.
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	_ = templates.LogsScreen(projectID, vmRows, filter, loadFailed, olderHref, histogram, facets, h.currentEmail(r), panel, errMsg).Render(r.Context(), w)
 }
 
 // logsAttrKeys — GET /projects/{id}/logs/attr-keys?q=<prefix>: JSON-эндпоинт
@@ -387,8 +469,8 @@ func (h *Handler) logsFacets(ctx context.Context, projectID int64, f log.ListFil
 	}
 	return templates.LogFacets{
 		Severity:    templates.NewSeverityFacet(ctx, projectID, filter, sevValues, sevErr != nil),
-		Service:     templates.NewServiceFacet(projectID, filter, svcValues, svcErr != nil),
-		Environment: templates.NewEnvironmentFacet(projectID, filter, envValues, envErr != nil),
+		Service:     templates.NewServiceFacet(ctx, projectID, filter, svcValues, svcErr != nil),
+		Environment: templates.NewEnvironmentFacet(ctx, projectID, filter, envValues, envErr != nil),
 		Attrs:       h.logsAttrFacets(ctx, projectID, f, filter, expandedAttrKey),
 	}
 }
@@ -426,7 +508,7 @@ func (h *Handler) logsAttrFacets(ctx context.Context, projectID int64, f log.Lis
 		}
 	}
 
-	return templates.NewAttrFacets(projectID, filter, keys, expandedKey, values)
+	return templates.NewAttrFacets(ctx, projectID, filter, keys, expandedKey, values)
 }
 
 // logsHistogramHasData — во всех корзинах всех severity одни нули (окно
@@ -506,6 +588,38 @@ func parseLogFilter(q url.Values, rng TimeRange, retentionDays int) (f log.ListF
 		}
 	}
 
+	var not []log.Predicate
+	for _, v := range q["q_not"] {
+		not = append(not, log.Predicate{Field: log.FieldBody, Op: log.OpNotContains, Value: v})
+	}
+	for _, v := range q["severity_not"] {
+		not = append(not, log.Predicate{Field: log.FieldSeverity, Op: log.OpNeq, Value: v})
+	}
+	for _, v := range q["service_not"] {
+		not = append(not, log.Predicate{Field: log.FieldService, Op: log.OpNeq, Value: v})
+	}
+	for _, v := range q["environment_not"] {
+		not = append(not, log.Predicate{Field: log.FieldEnvironment, Op: log.OpNeq, Value: v})
+	}
+	for _, raw := range q["attr_not"] {
+		if af, ok := parseLogAttrFilter(raw); ok {
+			field := log.FieldAttr
+			if af.Resource {
+				field = log.FieldResourceAttr
+			}
+			not = append(not, log.Predicate{Field: field, Key: af.Key, Op: log.OpNeq, Value: af.Value})
+		}
+	}
+	// NormalizePredicates отбрасывает негодные (пустые, неизвестный уровень,
+	// слишком длинные) и схлопывает дубли. Разбор URL мягкий: мусор в ссылке
+	// молча игнорируется, как игнорируется attr без двоеточия, — ссылки правят
+	// руками и пересылают, ронять страницу на них нельзя.
+	not = log.NormalizePredicates(not)
+	if len(not) > maxNegativeConditions {
+		not = not[:maxNegativeConditions]
+	}
+	f.Not = not
+
 	return f, clamped
 }
 
@@ -526,6 +640,64 @@ func parseLogAttrFilter(raw string) (log.AttrFilter, bool) {
 		return log.AttrFilter{}, false
 	}
 	return log.AttrFilter{Resource: resource, Key: key, Value: value}, true
+}
+
+// hasLogFilterParams — есть ли в URL хоть один параметр отбора из закрытого
+// списка logFilterParams (logfilters.go, тот же список, которым хендлеры
+// управления сохранёнными фильтрами строят адрес возврата). Параметры
+// пагинации (before/tskip), раскрытого фасета (facet) и окна времени
+// (period/start/end) в список не входят намеренно — они не сужают выборку
+// сами по себе, а окно задано всегда, чистый заход по нему не отличить.
+func hasLogFilterParams(q url.Values) bool {
+	for _, name := range logFilterParams {
+		if len(q[name]) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// applyPredicates — тонкая обёртка над log.ApplyPredicates (переехала туда
+// при устранении находки финального ревью C4: та же логика нужна и
+// templates/logsavedfilters.templ, шаблоны не могут звать web без цикла
+// импорта). Обёртка оставлена, чтобы не трогать вызывающих (logs.go) и
+// существующие тесты (logs_internal_test.go), которые адресуются к ней по
+// имени пакета web.
+func applyPredicates(f *log.ListFilter, preds []log.Predicate) {
+	log.ApplyPredicates(f, preds)
+}
+
+// filterToPredicates — обратное преобразование: плоские положительные поля
+// фильтра сворачиваются в предикаты (OpEq/OpContains), отрицания дописываются
+// как есть. Нужна задаче 9, чтобы сохранить текущий набор условий фильтром
+// в сохранённый фильтр; круговой обход applyPredicates(filterToPredicates(f))
+// — страховка от расхождения прямого и обратного преобразований.
+func filterToPredicates(f log.ListFilter) []log.Predicate {
+	var out []log.Predicate
+	for _, sv := range f.Severity {
+		out = append(out, log.Predicate{Field: log.FieldSeverity, Op: log.OpEq, Value: sv})
+	}
+	if f.Service != "" {
+		out = append(out, log.Predicate{Field: log.FieldService, Op: log.OpEq, Value: f.Service})
+	}
+	if f.Environment != "" {
+		out = append(out, log.Predicate{Field: log.FieldEnvironment, Op: log.OpEq, Value: f.Environment})
+	}
+	if f.Query != "" {
+		out = append(out, log.Predicate{Field: log.FieldBody, Op: log.OpContains, Value: f.Query})
+	}
+	if f.TraceID != "" {
+		out = append(out, log.Predicate{Field: log.FieldTraceID, Op: log.OpEq, Value: f.TraceID})
+	}
+	for _, a := range f.Attrs {
+		field := log.FieldAttr
+		if a.Resource {
+			field = log.FieldResourceAttr
+		}
+		out = append(out, log.Predicate{Field: field, Key: a.Key, Op: log.OpEq, Value: a.Value})
+	}
+	out = append(out, f.Not...)
+	return out
 }
 
 // nextLogCursor вычисляет курсор («before», «tieSkip») для ссылки «показать

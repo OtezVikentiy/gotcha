@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,16 +30,42 @@ func blackholePool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("listen: %v", err)
 	}
 	t.Cleanup(func() { ln.Close() })
+	// Принятые соединения ОБЯЗАНЫ храниться, а не выбрасываться: net.conn
+	// вешает на свой netFD рантайм-финализатор (net/fd_posix.go, setAddr),
+	// и сборщик мусора закрывает брошенный сокет сам. Закрытие сокета с
+	// непрочитанным стартовым пакетом в приёмном буфере отправляет клиенту
+	// RST, pgx немедленно возвращает "read: connection reset by peer" — и
+	// «недоступный PostgreSQL» превращается в «мгновенно отвечающий
+	// ошибкой», то есть заглушка перестаёт быть заглушкой. Тесты бюджета
+	// (TestWatchdogTickBudgetAbortsHungTick и соседи) от этого флейкали:
+	// проход укладывался в бюджет и штатно проставлял LastTickUnix.
+	// Проверено: с принудительным runtime.GC() в цикле опроса ДО этой
+	// правки RST приходил на каждом тике, после — ни одного.
+	var (
+		mu    sync.Mutex
+		conns []net.Conn
+	)
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			c.Close()
+		}
+	})
 	go func() {
 		for {
 			// Accepted connections are deliberately never read from or
-			// written to (not even closed): the startup packet the client
-			// sends sits unacknowledged until the caller's ctx is done.
-			// Closing ln.Cleanup unblocks Accept and ends this goroutine;
-			// the OS reclaims the leaked half-open sockets on process exit.
-			if _, err := ln.Accept(); err != nil {
+			// written to: the startup packet the client sends sits
+			// unacknowledged until the caller's ctx is done. Closing ln in
+			// Cleanup unblocks Accept and ends this goroutine; the sockets
+			// themselves закрываются там же, списком выше.
+			c, err := ln.Accept()
+			if err != nil {
 				return
 			}
+			mu.Lock()
+			conns = append(conns, c)
+			mu.Unlock()
 		}
 	}()
 	dsn := fmt.Sprintf("postgres://nobody:nobody@%s/none?sslmode=disable", ln.Addr().String())

@@ -969,3 +969,97 @@ func TestQueryTraceIDScope(t *testing.T) {
 		}
 	})
 }
+
+// TestListNegatedAttrKeepsRowsWithoutKey проверяет главный инвариант
+// отрицания по атрибуту: строки, где исключаемого ключа нет вовсе, обязаны
+// остаться в выдаче. NOT (col[?] = ?) даёт это свойство, col[?] != ? — нет
+// (в ClickHouse отсутствующий ключ карты читается как пустая строка).
+func TestListNegatedAttrKeepsRowsWithoutKey(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+
+	const projectID = int64(90)
+	w := log.NewWriter(conn)
+	go w.Run()
+
+	base := time.Now().UTC().Truncate(time.Hour).Add(-2 * time.Hour)
+	add := func(body string, attrs map[string]string) {
+		w.Add(projectID, log.LogRecord{
+			Timestamp: base, ObservedTS: base,
+			Severity: log.SevError, SeverityNumber: 17, SeverityText: "ERROR",
+			Body: body, Service: "api", Environment: "production",
+			LogAttributes: attrs,
+		})
+	}
+	add("шум nginx", map[string]string{"source": "nginx"})
+	add("полезное от php", map[string]string{"source": "php"})
+	add("вообще без ключа", nil)
+
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	q := log.NewQuery(conn)
+	rows, err := q.List(ctx, projectID, log.ListFilter{
+		From: base.Add(-time.Minute), To: base.Add(time.Minute),
+		Not: []log.Predicate{{Field: log.FieldAttr, Key: "source", Op: log.OpNeq, Value: "nginx"}},
+	})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("получено %d строк, ожидалось 2 (php и запись без ключа)", len(rows))
+	}
+	for _, r := range rows {
+		if r.LogAttributes["source"] == "nginx" {
+			t.Errorf("исключённая строка осталась в выдаче: %q", r.Body)
+		}
+	}
+}
+
+// TestListNegatedBodyIsCaseInsensitive проверяет, что исключение по телу
+// нечувствительно к регистру — как и обычный поиск по телу (Query).
+func TestListNegatedBodyIsCaseInsensitive(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+
+	const projectID = int64(91)
+	w := log.NewWriter(conn)
+	go w.Run()
+
+	base := time.Now().UTC().Truncate(time.Hour).Add(-2 * time.Hour)
+	for _, body := range []string{
+		"Buffered to a temporary file",
+		"buffered to a TEMPORARY file",
+		"нормальная строка",
+	} {
+		w.Add(projectID, log.LogRecord{
+			Timestamp: base, ObservedTS: base,
+			Severity: log.SevWarn, SeverityNumber: 13, SeverityText: "WARN",
+			Body: body, Service: "nginx", Environment: "production",
+		})
+	}
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	q := log.NewQuery(conn)
+	rows, err := q.List(ctx, projectID, log.ListFilter{
+		From: base.Add(-time.Minute), To: base.Add(time.Minute),
+		Not: []log.Predicate{{
+			Field: log.FieldBody, Op: log.OpNotContains,
+			Value: "BUFFERED TO A TEMPORARY FILE",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("получено %d строк, ожидалась 1 — исключение по телу должно быть регистронезависимым, как и поиск", len(rows))
+	}
+	if rows[0].Body != "нормальная строка" {
+		t.Fatalf("осталась не та строка: %q", rows[0].Body)
+	}
+}

@@ -156,7 +156,7 @@ func TestNewAttrFacetsExpandedKeyOutsideTop(t *testing.T) {
 		{Value: "staging", Count: 3},
 	}
 
-	got := NewAttrFacets(1, LogsFilter{}, keys, "environment.tier", values)
+	got := NewAttrFacets(ruCtx(), 1, LogsFilter{}, keys, "environment.tier", values)
 
 	if len(got.Keys) != 3 {
 		t.Fatalf("Keys len = %d, want 3 (2 из топа + 1 синтетический): %+v", len(got.Keys), got.Keys)
@@ -203,7 +203,7 @@ func TestNewAttrFacetsExpandedKeyInsideTop(t *testing.T) {
 	}
 	values := []log.FacetValue{{Value: "GET", Count: 5}}
 
-	got := NewAttrFacets(1, LogsFilter{}, keys, "http.method", values)
+	got := NewAttrFacets(ruCtx(), 1, LogsFilter{}, keys, "http.method", values)
 
 	if len(got.Keys) != 2 {
 		t.Fatalf("Keys len = %d, want 2 (без синтетического элемента): %+v", len(got.Keys), got.Keys)
@@ -227,7 +227,7 @@ func TestNewAttrFacetsExpandedKeyInsideTop(t *testing.T) {
 func TestNewAttrFacetsNoExpandedKey(t *testing.T) {
 	keys := []log.FacetValue{{Value: "http.method", Count: 100}}
 
-	got := NewAttrFacets(1, LogsFilter{}, keys, "", nil)
+	got := NewAttrFacets(ruCtx(), 1, LogsFilter{}, keys, "", nil)
 
 	if len(got.Keys) != 1 {
 		t.Fatalf("Keys len = %d, want 1", len(got.Keys))
@@ -257,6 +257,52 @@ func TestLogsPageURLNoFacetWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestLogsPageURLCarriesDefaultSuppression — находка финального ревью C3:
+// nodefault обязан пережить ЛЮБОЙ переход по ссылке, построенной из текущего
+// состояния — конкретно пагинацию «показать старее» (LogsPageURL), а не
+// только самый первый переход по ссылке «показать всё» (та собирается
+// отдельно в web.renderLogsPage, logs.go, и уже была покрыта). До фикса
+// logsPageURLValues не несла nodefault вовсе — умолчание молча возвращалось
+// на второй странице после того, как пользователь его явно отключил.
+func TestLogsPageURLCarriesDefaultSuppression(t *testing.T) {
+	f := LogsFilter{DefaultSuppressed: true}
+	got := LogsPageURL(1, f, time.UnixMilli(1000), 0)
+	q := parseLogsLink(t, got, 1)
+	if q.Get("nodefault") != "1" {
+		t.Fatalf("LogsPageURL(...) = %q, want nodefault=1 сохранённым при переходе на следующую страницу", got)
+	}
+}
+
+// TestLogsPageURLOmitsDefaultSuppressionWhenNotSuppressed — обратная
+// сторона предыдущего теста: умолчание НЕ подавлено — nodefault в ссылке
+// появляться не должен (иначе обычная пагинация без плашки умолчания вела
+// бы себя иначе, чем прежде).
+func TestLogsPageURLOmitsDefaultSuppressionWhenNotSuppressed(t *testing.T) {
+	got := LogsPageURL(1, LogsFilter{}, time.UnixMilli(1000), 0)
+	if strings.Contains(got, "nodefault") {
+		t.Fatalf("LogsPageURL(...) = %q, nodefault не должен появляться без DefaultSuppressed", got)
+	}
+}
+
+// TestLogNotChipRemoveURLCarriesDefaultSuppression — вторая часть находки
+// C3: снятие ПОСЛЕДНЕГО чипа-исключения в подавленном состоянии тоже обязано
+// сохранить nodefault — иначе на опустевшем списке условий
+// web.hasLogFilterParams снова видит «чистый URL» и умолчание молча
+// возвращается ровно там, где пользователь только что убрал последнее
+// условие своими руками.
+func TestLogNotChipRemoveURLCarriesDefaultSuppression(t *testing.T) {
+	p := log.Predicate{Field: log.FieldService, Op: log.OpNeq, Value: "worker"}
+	f := LogsFilter{DefaultSuppressed: true, Not: []log.Predicate{p}}
+	got := logNotChipRemoveURL(1, f, p)
+	q := parseLogsLink(t, got, 1)
+	if len(q["service_not"]) != 0 {
+		t.Fatalf("logNotChipRemoveURL(...) = %q, чип должен быть снят", got)
+	}
+	if q.Get("nodefault") != "1" {
+		t.Fatalf("logNotChipRemoveURL(...) = %q, want nodefault=1 сохранённым после снятия последнего чипа", got)
+	}
+}
+
 // TestLogTracePath — правка ревью UX Important #4: trace_id лога должен
 // вести на реальную страницу трейса (/traces/{trace_id}), не на общий
 // раздел «Производительность».
@@ -265,5 +311,74 @@ func TestLogTracePath(t *testing.T) {
 	want := "/traces/abc123"
 	if got != want {
 		t.Fatalf("logTracePath(%q) = %q, want %q", "abc123", got, want)
+	}
+}
+
+// TestIncludeURLReplacesSingleValueField — задача 6: service и environment
+// одиночные, у них двух значений одновременно быть не может, поэтому клик
+// «оставить только это» замещает прежнее значение, а не накапливает его.
+func TestIncludeURLReplacesSingleValueField(t *testing.T) {
+	f := LogsFilter{Service: "api"}
+	got := logIncludeURL(7, f, log.Predicate{Field: log.FieldService, Op: log.OpEq, Value: "worker"})
+
+	if strings.Count(got, "service=") != 1 {
+		t.Fatalf("сервис должен замещаться, а не накапливаться: %s", got)
+	}
+	if !strings.Contains(got, "service=worker") {
+		t.Fatalf("новое значение не подставлено: %s", got)
+	}
+}
+
+// TestIncludeURLAccumulatesSeverity — severity мультивыбираема: включение
+// нового значения добавляется к уже выбранным, не замещая их (в отличие от
+// service/environment выше).
+func TestIncludeURLAccumulatesSeverity(t *testing.T) {
+	f := LogsFilter{Severity: []string{"info"}}
+	got := logIncludeURL(7, f, log.Predicate{Field: log.FieldSeverity, Value: "error"})
+
+	q := parseLogsLink(t, got, 7)
+	if sev := q["severity"]; len(sev) != 2 || sev[0] != "info" || sev[1] != "error" {
+		t.Fatalf("severity должен накапливаться (info+error), получили %v: %s", sev, got)
+	}
+}
+
+// TestIncludeURLAccumulatesAttr — то же самое для attr-фильтров: клик по
+// значению атрибута из строки лога не должен снимать уже активные attr.
+func TestIncludeURLAccumulatesAttr(t *testing.T) {
+	f := LogsFilter{Attrs: []log.AttrFilter{{Key: "host", Value: "a1"}}}
+	got := logIncludeURL(7, f, log.Predicate{Field: log.FieldAttr, Key: "source", Value: "nginx"})
+
+	for _, want := range []string{"attr=host%3Aa1", "attr=source%3Anginx"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("attr должен накапливаться, не хватает %s: %s", want, got)
+		}
+	}
+}
+
+// TestLogRowAttrPredicate — logRowAttrPredicate строит предикат из явных
+// полей logAttrRow (Resource/RawKey), а не разбором отображаемого Key —
+// см. её докблок и находку ревью задачи 6 (лог-атрибут, буквально названный
+// "resource.foo", не должен уйти как resource_attr).
+func TestLogRowAttrPredicate(t *testing.T) {
+	got := logRowAttrPredicate(logAttrRow{Key: "resource.host.name", RawKey: "host.name", Val: "web-1", Resource: true}, log.OpNeq)
+	want := log.Predicate{Field: log.FieldResourceAttr, Key: "host.name", Op: log.OpNeq, Value: "web-1"}
+	if got != want {
+		t.Fatalf("logRowAttrPredicate(resource) = %+v, want %+v", got, want)
+	}
+
+	got = logRowAttrPredicate(logAttrRow{Key: "source", RawKey: "source", Val: "nginx"}, log.OpEq)
+	want = log.Predicate{Field: log.FieldAttr, Key: "source", Op: log.OpEq, Value: "nginx"}
+	if got != want {
+		t.Fatalf("logRowAttrPredicate(log attr) = %+v, want %+v", got, want)
+	}
+
+	// Лог-атрибут, чей отображаемый ключ СЛУЧАЙНО совпадает с префиксом
+	// "resource." (Resource=false, RawKey сохранил ключ целиком) — не
+	// должен превратиться в resource_attr при обратном разборе строки,
+	// которого здесь больше нет.
+	got = logRowAttrPredicate(logAttrRow{Key: "resource.pool", RawKey: "resource.pool", Val: "db-1"}, log.OpNeq)
+	want = log.Predicate{Field: log.FieldAttr, Key: "resource.pool", Op: log.OpNeq, Value: "db-1"}
+	if got != want {
+		t.Fatalf("logRowAttrPredicate(log attr named resource.pool) = %+v, want %+v", got, want)
 	}
 }

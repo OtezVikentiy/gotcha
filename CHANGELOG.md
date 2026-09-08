@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- The logs page now supports exclude conditions alongside the existing
+  positive filters — a chip next to each severity, service, environment, and
+  attribute value, plus a text exclusion for the body — so a known-noisy
+  line (a recurring nginx warning, say) can be removed from the view instead
+  of only narrowed down to. Filters can also be saved, personal or shared
+  with the whole project, and one saved filter can be set as the default
+  applied on a bare visit to the section; a "show all" link always overrides
+  it for that visit.
+
 ## [1.0.0] - 2026-09-06
 
 ### Added

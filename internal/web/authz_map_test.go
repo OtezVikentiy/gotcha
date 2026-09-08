@@ -191,35 +191,39 @@ var routeAuthz = map[string]string{
 	// loadAccessibleIssue/loadAccessibleMonitor/loadAccessiblePerfIssue/
 	// ProjectForTrace): просмотр открыт любому участнику организации
 	// проекта, та же граница, что у issue/perf-issue статусов выше. ---
-	"GET /projects/{id}/setup":                        lvlAccess,
-	"GET /projects/{id}/issues":                       lvlAccess,
-	"GET /issues/{id}":                                lvlAccess,
-	"GET /projects/{id}/metrics":                      lvlAccess,
-	"GET /projects/{id}/metrics/{name}":               lvlAccess,
-	"GET /projects/{id}/recipes":                      lvlAccess, // рецепты B6: просмотр — как /metrics
-	"GET /projects/{id}/recipes/{slug}":               lvlAccess,
-	"GET /projects/{id}/hosts":                        lvlAccess,
-	"GET /projects/{id}/hosts/{name}":                 lvlAccess,
-	"GET /projects/{id}/logs":                         lvlAccess,
-	"GET /projects/{id}/logs/attr-keys":               lvlAccess, // задача 6 (автокомплит): тот же гейт, что у самого списка логов
-	"GET /projects/{id}/profiles":                     lvlAccess,
-	"GET /projects/{id}/profiles/flame":               lvlAccess,
-	"GET /projects/{id}/profile-regressions":          lvlAccess,
-	"GET /projects/{id}/monitors":                     lvlAccess,
-	"GET /monitors/{id}":                              lvlAccess,
-	"GET /projects/{id}/incidents":                    lvlAccess,
-	"GET /projects/{id}/overview":                     lvlAccess, // «Обзор», задача 6 nav-ia — та же граница, что у incident-feed ниже (заменяет её)
-	"GET /projects/{id}/incident-feed":                lvlAccess, // редирект на overview, но CanAccessProject проверяется ДО него (ревью фикс-раунда 2: раньше редиректил вообще без проверки — TestAuthzBehaviorStrangerRejectedOnScopedRoutes)
-	"GET /projects/{id}/performance":                  lvlAccess,
-	"GET /projects/{id}/performance/{transaction...}": lvlAccess,
-	"GET /projects/{id}/dependencies":                 lvlAccess,
-	"GET /projects/{id}/web-vitals":                   lvlAccess,
-	"GET /projects/{id}/perf-issues":                  lvlAccess,
-	"GET /perf-issues/{id}":                           lvlAccess,
-	"GET /projects/{id}/regressions":                  lvlAccess,
-	"GET /projects/{id}/deployments":                  lvlAccess,
-	"GET /traces/{trace_id}":                          lvlAccess,
-	"GET /traces/{trace_id}/flame":                    lvlAccess,
+	"GET /projects/{id}/setup":                            lvlAccess,
+	"GET /projects/{id}/issues":                           lvlAccess,
+	"GET /issues/{id}":                                    lvlAccess,
+	"GET /projects/{id}/metrics":                          lvlAccess,
+	"GET /projects/{id}/metrics/{name}":                   lvlAccess,
+	"GET /projects/{id}/recipes":                          lvlAccess, // рецепты B6: просмотр — как /metrics
+	"GET /projects/{id}/recipes/{slug}":                   lvlAccess,
+	"GET /projects/{id}/hosts":                            lvlAccess,
+	"GET /projects/{id}/hosts/{name}":                     lvlAccess,
+	"GET /projects/{id}/logs":                             lvlAccess,
+	"GET /projects/{id}/logs/attr-keys":                   lvlAccess, // задача 6 (автокомплит): тот же гейт, что у самого списка логов
+	"POST /projects/{id}/logs/filters":                    lvlAccess, // задача 9: право зависит от вида фильтра, не от маршрута — см. requireLogFilterOperator
+	"POST /projects/{id}/logs/filters/{filterID}/update":  lvlAccess,
+	"POST /projects/{id}/logs/filters/{filterID}/delete":  lvlAccess,
+	"POST /projects/{id}/logs/filters/{filterID}/default": lvlAccess,
+	"GET /projects/{id}/profiles":                         lvlAccess,
+	"GET /projects/{id}/profiles/flame":                   lvlAccess,
+	"GET /projects/{id}/profile-regressions":              lvlAccess,
+	"GET /projects/{id}/monitors":                         lvlAccess,
+	"GET /monitors/{id}":                                  lvlAccess,
+	"GET /projects/{id}/incidents":                        lvlAccess,
+	"GET /projects/{id}/overview":                         lvlAccess, // «Обзор», задача 6 nav-ia — та же граница, что у incident-feed ниже (заменяет её)
+	"GET /projects/{id}/incident-feed":                    lvlAccess, // редирект на overview, но CanAccessProject проверяется ДО него (ревью фикс-раунда 2: раньше редиректил вообще без проверки — TestAuthzBehaviorStrangerRejectedOnScopedRoutes)
+	"GET /projects/{id}/performance":                      lvlAccess,
+	"GET /projects/{id}/performance/{transaction...}":     lvlAccess,
+	"GET /projects/{id}/dependencies":                     lvlAccess,
+	"GET /projects/{id}/web-vitals":                       lvlAccess,
+	"GET /projects/{id}/perf-issues":                      lvlAccess,
+	"GET /perf-issues/{id}":                               lvlAccess,
+	"GET /projects/{id}/regressions":                      lvlAccess,
+	"GET /projects/{id}/deployments":                      lvlAccess,
+	"GET /traces/{trace_id}":                              lvlAccess,
+	"GET /traces/{trace_id}/flame":                        lvlAccess,
 
 	// --- Оператор мониторинга (requireProjectOperator): страницы алертов,
 	// метрик-алертов, форм монитора, статус-страниц и окон обслуживания —

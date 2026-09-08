@@ -1,0 +1,300 @@
+package templates
+
+import (
+	"net/url"
+	"strconv"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/log"
+	"gitflic.ru/otezvikentiy/gotcha/internal/logfilter"
+)
+
+// LogsPath / LogsURLFromValues — экспортированные обёртки вокруг
+// unexported logsPath/logsURLFromValues (задача 9, «сохранённые фильтры
+// логов»): хендлерам управления фильтрами (пакет web) нужно собрать адрес
+// возврата POST-Redirect-GET из url.Values параметров формы, а сама склейка
+// пути уже живёт здесь, в templates. Тот же приём, что ExportsPath у
+// выгрузок (exports.templ) — там же объяснение, зачем обёртка вместо
+// прямого экспорта logsPath: путь строится в одном месте, а не в каждом
+// вызывающем пакете отдельно.
+func LogsPath(projectID int64) string {
+	return logsPath(projectID)
+}
+
+func LogsURLFromValues(projectID int64, q url.Values) string {
+	return logsURLFromValues(projectID, q)
+}
+
+// LogSavedFilterRow — один сохранённый фильтр в панели плюс то, что решает
+// веб-слой при построении вью-модели: право редактировать/удалять именно
+// эту запись (владелец личного либо оператор для общего) и является ли
+// фильтр умолчанием текущего пользователя. Сам logfilter.Filter не прячется
+// за отдельным вью-типом (в отличие от ExportView у выгрузок) — пакет
+// templates уже импортирует internal/log ради log.Predicate/AttrFilter,
+// тот же прецедент для internal/logfilter не заводит нового слоя данных
+// там, где перекладывать нечего.
+type LogSavedFilterRow struct {
+	Filter    logfilter.Filter
+	CanEdit   bool
+	IsDefault bool
+}
+
+// LogSavedFiltersPanel — вью-модель панели «Мои»/«Общие» на странице логов.
+// CanShare — праву заводить/править общие фильтры (lvlOperator, вычислено
+// веб-слоем один раз для всей панели, а не на каждую строку отдельно).
+type LogSavedFiltersPanel struct {
+	Personal []LogSavedFilterRow
+	Shared   []LogSavedFilterRow
+	CanShare bool
+}
+
+func logSavedFiltersCreateURL(projectID int64) string {
+	return LogsPath(projectID) + "/filters"
+}
+
+func logSavedFilterUpdateURL(projectID, filterID int64) string {
+	return logSavedFilterActionURL(projectID, filterID, "update")
+}
+
+func logSavedFilterDeleteURL(projectID, filterID int64) string {
+	return logSavedFilterActionURL(projectID, filterID, "delete")
+}
+
+func logSavedFilterDefaultURL(projectID, filterID int64) string {
+	return logSavedFilterActionURL(projectID, filterID, "default")
+}
+
+func logSavedFilterActionURL(projectID, filterID int64, action string) string {
+	return logSavedFiltersCreateURL(projectID) + "/" + strconv.FormatInt(filterID, 10) + "/" + action
+}
+
+// logSavedFilterEditModalID — якорь модалки правки конкретного фильтра.
+// Строка панели показывает только имя и три действия, а поля правки (имя и
+// видимость) живут в модалке — тот же приём, что у окон обслуживания
+// (windowEditModal, maintenance.templ) и правил подавления. Инлайновая форма
+// правки прямо в строке давала ряд из полноширинного .input и четырёх кнопок
+// разной высоты: строка списка переставала читаться как строка списка.
+func logSavedFilterEditModalID(filterID int64) string {
+	return "log-filter-edit-" + strconv.FormatInt(filterID, 10)
+}
+
+// logSavedFilterApplyURL — ссылка применения сохранённого фильтра: условия
+// разворачиваются в обычные query-параметры списка логов, а не прячутся за
+// идентификатором фильтра, поэтому ссылка самодостаточна и переживает
+// удаление фильтра (Produces из брифа задачи 9). Раскладку предикатов в поля
+// делает log.ApplyPredicates — та же функция, что применяет сохранённый
+// фильтр и фильтр по умолчанию в internal/web/logs.go (задачи 9/10); до
+// устранения находки финального ревью C4 здесь жила независимая копия того
+// же switch (templates не может звать пакет web — тот и так импортирует
+// templates, обратный импорт дал бы цикл), и разошлась с оригиналом по всем
+// веткам, кроме q_not, не будучи покрытой тестом. log.ApplyPredicates
+// живёт в internal/log — пакете, который уже импортируют оба (web и
+// templates), поэтому общая функция не создаёт цикла. Копируется здесь
+// только тривиальное отображение log.ListFilter → LogsFilter (совпадающие
+// по смыслу поля один-в-один, без ветвления по Field/Op) — тот же приём,
+// что и в renderLogsPage (logs.go), где такое же отображение уже есть.
+func logSavedFilterApplyURL(projectID int64, f logfilter.Filter) string {
+	var lf log.ListFilter
+	log.ApplyPredicates(&lf, f.Predicates)
+	vm := LogsFilter{
+		Severity:    lf.Severity,
+		Service:     lf.Service,
+		Environment: lf.Environment,
+		Query:       lf.Query,
+		Attrs:       lf.Attrs,
+		TraceID:     lf.TraceID,
+		Not:         lf.Not,
+	}
+	return logsURLFromValues(projectID, logsPageURLValues(vm))
+}
+
+// logFilterConditionFields — скрытые поля текущего набора условий фильтра,
+// переиспользуются формой «Сохранить текущий фильтр» и формой «Обновить»
+// у каждого редактируемого фильтра списка (одна и та же разметка, два
+// разных action) — то же имя параметров, что читает web.logFilterFormParams
+// по закрытому списку logFilterParams (internal/web/logfilters.go).
+//
+// attr/trace_id/исключения вынесены в общий logFilterHiddenChipFields
+// (logs.templ) — до устранения находки финального ревью C11 этот же тройной
+// блок был написан здесь ещё раз независимо от GET-формы фильтров
+// (LogsScreen), и рисковал разойтись с ней при добавлении следующего
+// параметра отбора. severity/service/environment/q остаются здесь: у
+// GET-формы это ЖИВЫЕ поля с тем же именем — общая функция для них задвоила
+// бы параметр в сабмите (см. докблок logFilterHiddenChipFields).
+templ logFilterConditionFields(filter LogsFilter) {
+	for _, sv := range filter.Severity {
+		<input type="hidden" name="severity" value={ sv }/>
+	}
+	if filter.Service != "" {
+		<input type="hidden" name="service" value={ filter.Service }/>
+	}
+	if filter.Environment != "" {
+		<input type="hidden" name="environment" value={ filter.Environment }/>
+	}
+	if filter.Query != "" {
+		<input type="hidden" name="q" value={ filter.Query }/>
+	}
+	@logFilterHiddenChipFields(filter)
+}
+
+// logSavedFilterSaveForm — «Сохранить текущий фильтр»: имя + условия
+// текущего вида (logFilterConditionFields) + чекбокс «сделать общим», если
+// у вызывающего есть право (CanShare). Право реально проверяет веб-слой
+// (requireLogFilterOperator) — чекбокс здесь только для тех, у кого он
+// имеет смысл, честного отказа при подмене значения формы это не отменяет.
+templ logSavedFilterSaveForm(projectID int64, filter LogsFilter, canShare bool) {
+	<form method="post" action={ templ.URL(logSavedFiltersCreateURL(projectID)) } class="logs-saved-filter-save">
+		<input type="text" name="name" class="input" placeholder={ i18n.T(ctx, "logs.savedfilters.name_placeholder") } aria-label={ i18n.T(ctx, "logs.savedfilters.name_placeholder") } maxlength="60" required/>
+		@logFilterConditionFields(filter)
+		if canShare {
+			<label class="checkbox-inline">
+				<input type="checkbox" name="shared" value="1"/>
+				{ i18n.T(ctx, "logs.savedfilters.shared_checkbox") }
+			</label>
+		}
+		<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "logs.savedfilters.save") }</button>
+	</form>
+}
+
+// logSavedFilterRow — одна строка списка «Мои»/«Общие»: ссылка применения
+// (или неактивная подпись, если фильтр Applicable=false — payload неизвестной
+// версии, см. logfilter.Filter.Applicable), бейдж умолчания и действия. Сама
+// строка держит только имя и кнопки: поля правки (имя, видимость) уехали в
+// модалку logSavedFilterEditModal — иначе каждая строка списка тянула за
+// собой полноширинный .input и переносящуюся подпись чекбокса, и список
+// переставал читаться списком. «Сделать умолчанием» показывается всем, кто
+// видит фильтр вообще — это персональная настройка смотрящего, не правка
+// самого фильтра; «Изменить»/«Удалить» — только при CanEdit.
+templ logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRow, canShare bool) {
+	<li class="logs-saved-filter-item">
+		<span class="logs-saved-filter-name">
+			if row.Filter.Applicable {
+				<a href={ templ.URL(logSavedFilterApplyURL(projectID, row.Filter)) }>{ row.Filter.Name }</a>
+			} else {
+				<span class="logs-saved-filter-inapplicable" title={ i18n.T(ctx, "logs.savedfilters.not_applicable") }>{ row.Filter.Name }</span>
+			}
+			if row.IsDefault {
+				<span class="badge badge-neutral">{ i18n.T(ctx, "logs.savedfilters.default_badge") }</span>
+			}
+		</span>
+		<span class="logs-saved-filter-actions">
+			if !row.IsDefault {
+				<form method="post" action={ templ.URL(logSavedFilterDefaultURL(projectID, row.Filter.ID)) } class="logs-saved-filter-inline-form">
+					<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "logs.savedfilters.make_default") }</button>
+				</form>
+			}
+			if row.CanEdit {
+				<a class="btn btn-ghost" href={ templ.SafeURL("#" + logSavedFilterEditModalID(row.Filter.ID)) }>{ i18n.T(ctx, "logs.savedfilters.edit") }</a>
+				<form method="post" action={ templ.URL(logSavedFilterDeleteURL(projectID, row.Filter.ID)) } class="logs-saved-filter-inline-form">
+					// Условия текущего вида (задача 9, находка финального
+					// ревью C5): без них web.logFilterFormParams(r) видит
+					// пустую форму, и редирект после удаления уходит на
+					// голый /logs — вручную собранный набор исключений
+					// пользователя пропадает, а на его месте молча включается
+					// фильтр по умолчанию. У формы «Сделать умолчанием» выше
+					// это поле намеренно отсутствует: назначение умолчания —
+					// не действие над текущим видом, редирект туда, откуда
+					// пришли, не более уместен, чем на голый /logs.
+					@logFilterConditionFields(filter)
+					<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "logs.savedfilters.delete") }</button>
+				</form>
+			}
+		</span>
+		if row.CanEdit {
+			@logSavedFilterEditModal(projectID, filter, row, canShare)
+		}
+	</li>
+}
+
+// logSavedFilterEditModal — правка сохранённого фильтра (находка финального
+// ревью C10, оформление): имя, переключатель видимости и кнопка, которая
+// записывает в фильтр условия ТЕКУЩЕГО вида (об этом же говорит подсказка под
+// полями — до выноса в модалку это знание жило только в title кнопки, то есть
+// не было доступно ни с клавиатуры, ни с телефона).
+//
+// Модалка открывается только якорем (open=false): серверного переоткрытия по
+// ошибке валидации здесь нет — отказ рисуется сообщением над списком, панель
+// при этом раскрыта (см. logSavedFiltersSection). Тот же приём и те же
+// ограничения, что у windowEditModal до появления FormState.
+//
+// Переключатель видимости доступен только при canShare (тот же уровень, что
+// у создания общего фильтра, — веб-слой перепроверяет требованием оператора
+// ДО и ПОСЛЕ правки, requireLogFilterOperator). row.CanEdit для общего
+// фильтра гарантирует canOperate==canShare (см. logFiltersPanel), поэтому
+// переключатель для видимого здесь общего фильтра всегда доступен; скрытое
+// поле — запасной путь на случай расхождения инварианта, а не типовой путь.
+templ logSavedFilterEditModal(projectID int64, filter LogsFilter, row LogSavedFilterRow, canShare bool) {
+	@createModalOpen(logSavedFilterEditModalID(row.Filter.ID), "logs.savedfilters.edit.title", false, false) {
+		<form method="post" action={ templ.URL(logSavedFilterUpdateURL(projectID, row.Filter.ID)) } class="logs-saved-filter-edit-form">
+			<div class="field">
+				<label>
+					{ i18n.T(ctx, "logs.savedfilters.name_placeholder") }
+					<input type="text" name="name" class="input" value={ row.Filter.Name } maxlength="60" required/>
+				</label>
+			</div>
+			@logFilterConditionFields(filter)
+			if canShare {
+				<div class="field">
+					<label class="checkbox-inline">
+						<input type="checkbox" name="shared" value="1" checked?={ row.Filter.Shared() }/>
+						{ i18n.T(ctx, "logs.savedfilters.shared_checkbox") }
+					</label>
+				</div>
+			} else if row.Filter.Shared() {
+				<input type="hidden" name="shared" value="1"/>
+			}
+			<p class="hint">{ i18n.T(ctx, "logs.savedfilters.update_title") }</p>
+			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "logs.savedfilters.update") }</button>
+		</form>
+	}
+}
+
+// logSavedFiltersSection — панель «Мои»/«Общие» целиком: карточка-<details>,
+// раскрытая при непустом errMsg (тот же приём, что exportsForm — P2-UX-4),
+// два списка и форма сохранения текущего вида. Счётчик в свёрнутом заголовке
+// отвечает на единственный вопрос к закрытой панели — «есть ли там что-то»:
+// без него панель выглядит одинаково и с тремя фильтрами, и с пустыми
+// списками, и раскрывать её приходится наугад.
+templ logSavedFiltersSection(projectID int64, filter LogsFilter, panel LogSavedFiltersPanel, errMsg string) {
+	{{ total := len(panel.Personal) + len(panel.Shared) }}
+	<details class="card logs-saved-filters" open?={ errMsg != "" }>
+		<summary>
+			{ i18n.T(ctx, "logs.savedfilters.title") }
+			if total > 0 {
+				<span class="logs-saved-filters-count">{ strconv.Itoa(total) }</span>
+			}
+		</summary>
+		<div class="logs-saved-filters-body">
+			if errMsg != "" {
+				<p class="error">{ errMsg }</p>
+			}
+			<div class="logs-saved-filters-groups">
+				<div class="logs-saved-filters-group">
+					<h3>{ i18n.T(ctx, "logs.savedfilters.personal") }</h3>
+					if len(panel.Personal) == 0 {
+						<p class="hint">{ i18n.T(ctx, "logs.savedfilters.empty") }</p>
+					} else {
+						<ul class="logs-saved-filters-list">
+							for _, row := range panel.Personal {
+								@logSavedFilterRow(projectID, filter, row, panel.CanShare)
+							}
+						</ul>
+					}
+				</div>
+				<div class="logs-saved-filters-group">
+					<h3>{ i18n.T(ctx, "logs.savedfilters.shared") }</h3>
+					if len(panel.Shared) == 0 {
+						<p class="hint">{ i18n.T(ctx, "logs.savedfilters.empty") }</p>
+					} else {
+						<ul class="logs-saved-filters-list">
+							for _, row := range panel.Shared {
+								@logSavedFilterRow(projectID, filter, row, panel.CanShare)
+							}
+						</ul>
+					}
+				</div>
+			</div>
+			@logSavedFilterSaveForm(projectID, filter, panel.CanShare)
+		</div>
+	</details>
+}

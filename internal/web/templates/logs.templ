@@ -3,12 +3,14 @@ package templates
 import (
 	"context"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
+	"gitflic.ru/otezvikentiy/gotcha/internal/logfilter"
 )
 
 // LogsFilter — вью-модель фильтров формы + текущего окна времени списка
@@ -38,6 +40,10 @@ type LogsFilter struct {
 	// TraceID — активный жёсткий скоуп по trace_id (C3): показывается снимаемым
 	// чипом и переносится по всем ссылкам (пагинация/фасеты) через logsPageURLValues.
 	TraceID string
+	// Not — активные исключающие условия (задача 5, «исключающие фильтры
+	// логов»): показываются отдельными чипами (--not) и переносятся по всем
+	// ссылкам через logsPageURLValues наравне с остальными полями фильтра.
+	Not []log.Predicate
 	// RangeClamped/RetentionDays — окно из пресета (Range) урезано снизу по
 	// сроку хранения логов (web.parseLogFilter, правка ревью UX Important #2 /
 	// ops P2): пользователь выбрал, например, 30d, а фактически видит данные
@@ -46,6 +52,29 @@ type LogsFilter struct {
 	// невозможен, RangeClamped всегда false.
 	RangeClamped  bool
 	RetentionDays int
+	// DefaultApplied — назначенный пользователем фильтр по умолчанию, если
+	// он применён к текущему списку (задача 10): непустой, только когда в
+	// URL не было ни одного параметра отбора (web.hasLogFilterParams) и сам
+	// фильтр применим (Applicable — иначе payload неизвестной версии молча
+	// превратился бы в «фильтр без условий», см. logfilter.Filter). Ненулевое
+	// значение — сигнал показать плашку в LogsScreen: сохранённое
+	// исключение, тихо скрывающее логи во время инцидента, — худший сценарий
+	// для системы мониторинга, плашка с явной ссылкой сброса обязательна.
+	DefaultApplied *logfilter.Filter
+	// DefaultShowAllHref — ссылка «показать всё» плашки: текущий URL плюс
+	// параметр, явно подавляющий умолчание (web.renderLogsPage). Пустой URL
+	// для этого не годится — он снова включил бы умолчание.
+	DefaultShowAllHref string
+	// DefaultSuppressed — true, если запрос уже нёс параметр, явно
+	// подавляющий умолчание (nodefault): форма фильтров эхом переносит его
+	// дальше скрытым полем (LogsScreen), чтобы сабмит «Применить» без
+	// единого заполненного условия отбора не воскресил умолчание. Опора —
+	// именно это явное поле, а не случайность вида «пустые
+	// service=/environment=/q= тоже считаются присутствующими параметрами»
+	// (web.hasLogFilterParams проверяет наличие ключа, не непустоту
+	// значения) — та случайность исчезла бы при замене текстового поля на
+	// виджет, не сериализующий пустое значение.
+	DefaultSuppressed bool
 }
 
 // LogsHistogram — гистограмма объёма логов по времени и severity (задача 3,
@@ -83,11 +112,15 @@ type LogFacet struct {
 // LogFacetValue — одно значение фасета: локализованная метка, count и уже
 // готовая ссылка (клик добавляет фильтр, клик по уже активному — снимает
 // именно его). Active — значение уже входит в текущий фильтр filter.
+// ExcludeHref/ExcludeLabel (задача 7) — вторая ссылка рядом, добавляющая
+// значение в f.Not (тот же logExcludeURL, что и у кнопок в строке лога).
 type LogFacetValue struct {
-	Label  string
-	Count  int64
-	Href   string
-	Active bool
+	Label        string
+	Count        int64
+	Href         string
+	Active       bool
+	ExcludeHref  string
+	ExcludeLabel string
 }
 
 // NewSeverityFacet строит вью-модель фасета severity: ссылка — ТОГГЛ в
@@ -98,10 +131,12 @@ func NewSeverityFacet(ctx context.Context, projectID int64, filter LogsFilter, v
 	items := make([]LogFacetValue, len(values))
 	for i, v := range values {
 		items[i] = LogFacetValue{
-			Label:  severityLabel(ctx, v.Value),
-			Count:  v.Count,
-			Href:   logFacetSeverityURL(projectID, filter, v.Value),
-			Active: severitySelected(filter.Severity, v.Value),
+			Label:        severityLabel(ctx, v.Value),
+			Count:        v.Count,
+			Href:         logFacetSeverityURL(projectID, filter, v.Value),
+			Active:       severitySelected(filter.Severity, v.Value),
+			ExcludeHref:  logExcludeURL(projectID, filter, log.Predicate{Field: log.FieldSeverity, Op: log.OpNeq, Value: v.Value}),
+			ExcludeLabel: i18n.Tf(ctx, "logs.row.exclude_severity", "value", severityLabel(ctx, v.Value)),
 		}
 	}
 	return LogFacet{Values: items, TooMuchData: tooMuchData}
@@ -111,16 +146,16 @@ func NewSeverityFacet(ctx context.Context, projectID int64, filter LogsFilter, v
 // (в отличие от мультивыбора severity) — клик ЗАМЕНЯЕТ filter.Service
 // выбранным значением, клик по уже активному — сбрасывает к "" (снимает
 // фильтр).
-func NewServiceFacet(projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool) LogFacet {
-	return newSingleValueFacet(projectID, filter, values, tooMuchData,
+func NewServiceFacet(ctx context.Context, projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool) LogFacet {
+	return newSingleValueFacet(ctx, projectID, filter, values, tooMuchData, log.FieldService, "logs.row.exclude_service",
 		func(f LogsFilter) string { return f.Service },
 		func(f LogsFilter, v string) LogsFilter { f.Service = v; return f },
 	)
 }
 
 // NewEnvironmentFacet — то же самое для environment.
-func NewEnvironmentFacet(projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool) LogFacet {
-	return newSingleValueFacet(projectID, filter, values, tooMuchData,
+func NewEnvironmentFacet(ctx context.Context, projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool) LogFacet {
+	return newSingleValueFacet(ctx, projectID, filter, values, tooMuchData, log.FieldEnvironment, "logs.row.exclude_environment",
 		func(f LogsFilter) string { return f.Environment },
 		func(f LogsFilter, v string) LogsFilter { f.Environment = v; return f },
 	)
@@ -128,9 +163,10 @@ func NewEnvironmentFacet(projectID int64, filter LogsFilter, values []log.FacetV
 
 // newSingleValueFacet — общая реализация NewServiceFacet/NewEnvironmentFacet:
 // оба фильтра одиночные (в отличие от мультивыбора severity), различаются
-// только тем, какое поле LogsFilter читают/пишут — get/set вынесены
-// параметрами, чтобы не дублировать саму сборку LogFacetValue дважды.
-func newSingleValueFacet(projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool, get func(LogsFilter) string, set func(LogsFilter, string) LogsFilter) LogFacet {
+// только тем, какое поле LogsFilter читают/пишут (get/set) и какое поле
+// log.Predicate/ключ i18n использует ссылка исключения (field/excludeLabelKey,
+// задача 7) — вынесены параметрами, чтобы не дублировать сборку LogFacetValue.
+func newSingleValueFacet(ctx context.Context, projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool, field, excludeLabelKey string, get func(LogsFilter) string, set func(LogsFilter, string) LogsFilter) LogFacet {
 	items := make([]LogFacetValue, len(values))
 	for i, v := range values {
 		active := get(filter) == v.Value
@@ -141,10 +177,12 @@ func newSingleValueFacet(projectID int64, filter LogsFilter, values []log.FacetV
 			next = set(next, v.Value)
 		}
 		items[i] = LogFacetValue{
-			Label:  v.Value,
-			Count:  v.Count,
-			Href:   LogsPageURL(projectID, next, time.Time{}, 0),
-			Active: active,
+			Label:        v.Value,
+			Count:        v.Count,
+			Href:         LogsPageURL(projectID, next, time.Time{}, 0),
+			Active:       active,
+			ExcludeHref:  logExcludeURL(projectID, filter, log.Predicate{Field: field, Op: log.OpNeq, Value: v.Value}),
+			ExcludeLabel: i18n.Tf(ctx, excludeLabelKey, "value", v.Value),
 		}
 	}
 	return LogFacet{Values: items, TooMuchData: tooMuchData}
@@ -207,12 +245,15 @@ type LogAttrKeyFacet struct {
 
 // LogAttrValueFacet — одно значение раскрытого ключа: клик добавляет
 // точечный фильтр log_attributes[key]=value (§3 спеки), клик по уже
-// активному — снимает именно его.
+// активному — снимает именно его. ExcludeHref/ExcludeLabel (задача 7) —
+// вторая ссылка рядом, добавляющая log_attributes[key]!=value в f.Not.
 type LogAttrValueFacet struct {
-	Value  string
-	Count  int64
-	Href   string
-	Active bool
+	Value        string
+	Count        int64
+	Href         string
+	Active       bool
+	ExcludeHref  string
+	ExcludeLabel string
 }
 
 // NewAttrFacets строит вью-модель секции атрибут-фасетов: keys — результат
@@ -236,7 +277,7 @@ type LogAttrValueFacet struct {
 // него посчитан по всему окну+фильтрам, как и values, в отличие от
 // ограниченной выборки AttrKeys, так что сравнивать его Count с остальными
 // было бы некорректно).
-func NewAttrFacets(projectID int64, filter LogsFilter, keys []log.FacetValue, expandedKey string, values []log.FacetValue) LogAttrFacets {
+func NewAttrFacets(ctx context.Context, projectID int64, filter LogsFilter, keys []log.FacetValue, expandedKey string, values []log.FacetValue) LogAttrFacets {
 	items := make([]LogAttrKeyFacet, 0, len(keys)+1)
 	foundExpanded := false
 	for _, k := range keys {
@@ -244,7 +285,7 @@ func NewAttrFacets(projectID int64, filter LogsFilter, keys []log.FacetValue, ex
 		if expanded {
 			foundExpanded = true
 		}
-		items = append(items, newAttrKeyFacetItem(projectID, filter, k.Value, k.Count, expanded, values))
+		items = append(items, newAttrKeyFacetItem(ctx, projectID, filter, k.Value, k.Count, expanded, values))
 	}
 	if expandedKey != "" && !foundExpanded {
 		// Точного Count здесь нет (expandedKey вне выборки AttrKeys) — сумма
@@ -254,7 +295,7 @@ func NewAttrFacets(projectID int64, filter LogsFilter, keys []log.FacetValue, ex
 		for _, v := range values {
 			count += v.Count
 		}
-		items = append([]LogAttrKeyFacet{newAttrKeyFacetItem(projectID, filter, expandedKey, count, true, values)}, items...)
+		items = append([]LogAttrKeyFacet{newAttrKeyFacetItem(ctx, projectID, filter, expandedKey, count, true, values)}, items...)
 	}
 	return LogAttrFacets{Keys: items}
 }
@@ -262,7 +303,7 @@ func NewAttrFacets(projectID int64, filter LogsFilter, keys []log.FacetValue, ex
 // newAttrKeyFacetItem строит один элемент списка ключей атрибут-фасета —
 // общая часть обычных (из keys) и синтетического (expandedKey вне keys, см.
 // комментарий у NewAttrFacets) элементов.
-func newAttrKeyFacetItem(projectID int64, filter LogsFilter, key string, count int64, expanded bool, values []log.FacetValue) LogAttrKeyFacet {
+func newAttrKeyFacetItem(ctx context.Context, projectID int64, filter LogsFilter, key string, count int64, expanded bool, values []log.FacetValue) LogAttrKeyFacet {
 	item := LogAttrKeyFacet{
 		Key:      key,
 		Count:    count,
@@ -273,10 +314,12 @@ func newAttrKeyFacetItem(projectID int64, filter LogsFilter, key string, count i
 		item.Values = make([]LogAttrValueFacet, len(values))
 		for j, v := range values {
 			item.Values[j] = LogAttrValueFacet{
-				Value:  v.Value,
-				Count:  v.Count,
-				Href:   logAttrValueURL(projectID, filter, key, v.Value),
-				Active: logAttrValueActive(filter, key, v.Value),
+				Value:        v.Value,
+				Count:        v.Count,
+				Href:         logAttrValueURL(projectID, filter, key, v.Value),
+				Active:       logAttrValueActive(filter, key, v.Value),
+				ExcludeHref:  logExcludeURL(projectID, filter, log.Predicate{Field: log.FieldAttr, Key: key, Op: log.OpNeq, Value: v.Value}),
+				ExcludeLabel: i18n.Tf(ctx, "logs.row.exclude_attr_value", "key", key, "value", v.Value),
 			}
 		}
 	}
@@ -340,21 +383,35 @@ func logAttrValueActive(filter LogsFilter, key, value string) bool {
 // таблицей атрибутов.
 type LogRow struct {
 	Row   log.LogRow
-	Attrs []ctxRow
+	Attrs []logAttrRow
+}
+
+// logAttrRow — строка таблицы атрибутов записи в развёрнутой строке лога.
+// Key — отображаемый ключ (у атрибутов ресурса с префиксом "resource.",
+// чтобы не путаться с одноимённым ключом атрибута самой записи — тот же
+// приём, что и раньше). Resource/RawKey несут происхождение ЯВНО, с места,
+// где оно ещё точно известно (NewLogRow ниже) — предикат ссылок исключить/
+// оставить только это (logRowAttrPredicate) строится из них, а не разбором
+// префикса в Key: лог-атрибут, буквально названный "resource.foo", дал бы
+// при обратном разборе строки predicate по chujой карте (resource_attrs
+// вместо log_attributes) — кнопка выглядела бы рабочей и молча исключала
+// не то (находка ревью задачи 6).
+type logAttrRow struct {
+	Key      string
+	RawKey   string
+	Val      string
+	Resource bool
 }
 
 // NewLogRow строит вью-строку из log.LogRow: атрибуты записи и атрибуты
-// ресурса сведены в один отсортированный по ключу список ctxRow (тот же
-// компонент contextTable, что и у заголовков запроса в issuedetail.templ) —
-// атрибуты ресурса помечены префиксом "resource.", чтобы не путаться с
-// одноимённым ключом атрибута самой записи.
+// ресурса сведены в один отсортированный по ключу список logAttrRow.
 func NewLogRow(r log.LogRow) LogRow {
-	var attrs []ctxRow
+	var attrs []logAttrRow
 	for _, k := range sortedAttrKeys(r.LogAttributes) {
-		attrs = append(attrs, ctxRow{Key: k, Val: r.LogAttributes[k]})
+		attrs = append(attrs, logAttrRow{Key: k, RawKey: k, Val: r.LogAttributes[k]})
 	}
 	for _, k := range sortedAttrKeys(r.ResourceAttrs) {
-		attrs = append(attrs, ctxRow{Key: "resource." + k, Val: r.ResourceAttrs[k]})
+		attrs = append(attrs, logAttrRow{Key: "resource." + k, RawKey: k, Val: r.ResourceAttrs[k], Resource: true})
 	}
 	return LogRow{Row: r, Attrs: attrs}
 }
@@ -453,8 +510,120 @@ func logsPageURLValues(f LogsFilter) url.Values {
 	if f.TraceID != "" {
 		q.Set("trace_id", f.TraceID)
 	}
+	for _, p := range f.Not {
+		q.Add(logNotParamName(p), logNotParamValue(p))
+	}
+	// nodefault обязан пережить ЛЮБОЙ переход по ссылке, построенной из
+	// текущего состояния (пагинация «показать старее», фасеты, снятие
+	// последнего чипа-исключения) — иначе умолчание молча возвращается на
+	// следующей странице после того, как пользователь его явно отключил
+	// кнопкой «показать всё» (finding C3 финального ревью). f.DefaultSuppressed
+	// уже несёт это состояние из текущего рендера (см. renderLogsPage,
+	// logs.go), здесь только эхо в исходящий URL — тем же приёмом, что и
+	// остальные поля фильтра выше.
+	if f.DefaultSuppressed {
+		q.Set("nodefault", "1")
+	}
 	f.Range.apply(q)
 	return q
+}
+
+// logNotParamName / logNotParamValue — обратная раскладка предиката в
+// параметр URL (инверсия разбора q_not/severity_not/service_not/
+// environment_not/attr_not в web.parseLogFilter). Держать рядом с разбором:
+// расходятся они молча, и ссылка перестанет воспроизводить своё же состояние.
+func logNotParamName(p log.Predicate) string {
+	switch p.Field {
+	case log.FieldBody:
+		return "q_not"
+	case log.FieldSeverity:
+		return "severity_not"
+	case log.FieldService:
+		return "service_not"
+	case log.FieldEnvironment:
+		return "environment_not"
+	default: // FieldAttr, FieldResourceAttr
+		return "attr_not"
+	}
+}
+
+func logNotParamValue(p log.Predicate) string {
+	switch p.Field {
+	case log.FieldAttr:
+		return p.Key + ":" + p.Value
+	case log.FieldResourceAttr:
+		return "res:" + p.Key + ":" + p.Value
+	default:
+		return p.Value
+	}
+}
+
+// logExcludeURL — ссылка, добавляющая отрицательное условие к текущему
+// набору (задачи 6 и 7 строят её для «исключить» на чипах/строках списка).
+// Дубли схлопывает log.NormalizePredicates на разборе, поэтому повторный
+// клик по одному и тому же значению безвреден.
+func logExcludeURL(projectID int64, f LogsFilter, p log.Predicate) string {
+	f.Not = append(append([]log.Predicate{}, f.Not...), p)
+	return logsURLFromValues(projectID, logsPageURLValues(f))
+}
+
+// logIncludeURL — ссылка «оставить только это» у значения в строке лога
+// (задача 6). Для одиночных полей (service, environment) новое значение
+// ЗАМЕЩАЕТ прежнее — двух значений у них одновременно быть не может; severity
+// и атрибуты мультивыбираемы, поэтому там значение добавляется к набору, как
+// у клика по значению фасета (logFacetSeverityURL/logAttrValueURL). p.Op не
+// используется — включающее условие для данного поля всегда одно и то же.
+func logIncludeURL(projectID int64, f LogsFilter, p log.Predicate) string {
+	switch p.Field {
+	case log.FieldService:
+		f.Service = p.Value
+	case log.FieldEnvironment:
+		f.Environment = p.Value
+	case log.FieldSeverity:
+		if !slices.Contains(f.Severity, p.Value) {
+			f.Severity = append(append([]string{}, f.Severity...), p.Value)
+		}
+	case log.FieldAttr, log.FieldResourceAttr:
+		af := log.AttrFilter{Resource: p.Field == log.FieldResourceAttr, Key: p.Key, Value: p.Value}
+		if !slices.Contains(f.Attrs, af) {
+			f.Attrs = append(append([]log.AttrFilter{}, f.Attrs...), af)
+		}
+	}
+	return logsURLFromValues(projectID, logsPageURLValues(f))
+}
+
+// logNotChipRemoveURL — ссылка, снимающая одно отрицательное условие по
+// идентичности предиката, не трогая остальные (тот же приём, что у
+// logAttrChipRemoveURL для положительных attr-фильтров).
+func logNotChipRemoveURL(projectID int64, f LogsFilter, p log.Predicate) string {
+	kept := make([]log.Predicate, 0, len(f.Not))
+	for _, x := range f.Not {
+		if x != p {
+			kept = append(kept, x)
+		}
+	}
+	f.Not = kept
+	return logsURLFromValues(projectID, logsPageURLValues(f))
+}
+
+// logNotChipLabel — человекочитаемая подпись чипа исключения: поле фильтра
+// плюс значение, с разными связками для «не равно» (severity/service/
+// environment/attr) и «не содержит» (тело). i18n.T параметров не принимает,
+// поэтому по каждому полю — свой ключ с подстановкой через i18n.Tf, как у
+// logs.chip.trace.
+func logNotChipLabel(ctx context.Context, p log.Predicate) string {
+	switch p.Field {
+	case log.FieldBody:
+		return i18n.Tf(ctx, "logs.exclude.body", "value", p.Value)
+	case log.FieldSeverity:
+		return i18n.Tf(ctx, "logs.exclude.severity", "value", severityLabel(ctx, p.Value))
+	case log.FieldService:
+		return i18n.Tf(ctx, "logs.exclude.service", "value", p.Value)
+	case log.FieldEnvironment:
+		return i18n.Tf(ctx, "logs.exclude.environment", "value", p.Value)
+	default: // FieldAttr, FieldResourceAttr
+		return i18n.Tf(ctx, "logs.exclude.attr", "key", p.Key, "value", p.Value)
+	}
 }
 
 // shortTraceID укорачивает trace_id для подписи чипа (полный — в URL).
@@ -508,6 +677,30 @@ func logAttrFilterParam(a log.AttrFilter) string {
 		return "res:" + s
 	}
 	return s
+}
+
+// logFilterHiddenChipFields — скрытые поля условий, у которых в форме нет
+// собственного видимого элемента управления: атрибут-фильтры, жёсткий скоуп
+// по trace_id и исключающие условия (все они живут чипами вне формы, см.
+// logs-active-filters ниже). Общая точка для GET-формы фильтров (LogsScreen,
+// ниже — сабмит «Применить» обязан сохранить их при изменении видимого
+// поля) и POST-форм сохранённых фильтров (logFilterConditionFields,
+// logsavedfilters.templ) — до устранения находки финального ревью C11 оба
+// места писали этот же тройной блок независимо, рискуя разойтись при
+// добавлении следующего параметра отбора. severity/service/environment/q
+// сюда НЕ входят: у GET-формы это видимые поля с тем же именем — добавить
+// их сюда же означало бы задвоить параметр в сабмите (значение из скрытого
+// поля и значение, которое реально ввёл пользователь, под одним name).
+templ logFilterHiddenChipFields(filter LogsFilter) {
+	for _, a := range filter.Attrs {
+		<input type="hidden" name="attr" value={ logAttrFilterParam(a) }/>
+	}
+	if filter.TraceID != "" {
+		<input type="hidden" name="trace_id" value={ filter.TraceID }/>
+	}
+	for _, p := range filter.Not {
+		<input type="hidden" name={ logNotParamName(p) } value={ logNotParamValue(p) }/>
+	}
 }
 
 // logsAttrKeysPath — путь JSON-эндпоинта автокомплита ключей атрибутов
@@ -617,11 +810,22 @@ func LogsPageURL(projectID int64, f LogsFilter, before time.Time, tieSkip int) s
 // таблицы дружелюбное сообщение (гистограмма и фасеты в этом случае тоже не
 // запрашиваются — см. web.logsList — и приходят уже в состоянии отказа).
 // olderHref — пусто, если страницы дальше нет (см. web.nextLogCursor).
-templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bool, olderHref string, histogram LogsHistogram, facets LogFacets, userEmail string) {
+// savedFilters/errMsg (задача 9) — панель «Мои»/«Общие» и сообщение отказа
+// хендлеров управления фильтрами (web.renderLogsPage перерисовывает эту же
+// страницу со статусом 422 при невалидной форме, тот же приём, что у
+// выгрузок).
+templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bool, olderHref string, histogram LogsHistogram, facets LogFacets, userEmail string, savedFilters LogSavedFiltersPanel, errMsg string) {
 	@layout(i18n.T(ctx, "logs.title"), userEmail) {
 		<div class="logs">
 			<h1>{ i18n.T(ctx, "logs.title") }</h1>
 			@helpPanel("logs", "logs")
+			@logSavedFiltersSection(projectID, filter, savedFilters, errMsg)
+			if filter.DefaultApplied != nil {
+				<p class="notice logs-default-notice">
+					{ i18n.Tf(ctx, "logs.default.applied", "name", filter.DefaultApplied.Name) }
+					<a href={ templ.URL(filter.DefaultShowAllHref) }>{ i18n.T(ctx, "logs.default.show_all") }</a>
+				</p>
+			}
 
 			<form method="get" action={ templ.URL(logsPath(projectID)) } class="logs-filters">
 				<fieldset class="logs-severity-filter">
@@ -637,9 +841,16 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 				<input type="text" name="environment" class="input" placeholder={ i18n.T(ctx, "logs.filter.environment") } value={ filter.Environment } aria-label={ i18n.T(ctx, "logs.filter.environment") }/>
 				<input type="text" name="q" class="input" placeholder={ i18n.T(ctx, "logs.filter.query") } value={ filter.Query } aria-label={ i18n.T(ctx, "logs.filter.query") }/>
 				@timeRangeFields(filter.Range)
+				// attr/trace_id/исключения живут вне видимых полей формы (чипами
+				// ниже), но сабмит «Применить» обязан их сохранить — иначе они
+				// молча обнуляются на первом же изменении видимого поля.
+				@logFilterHiddenChipFields(filter)
+				if filter.DefaultSuppressed {
+					<input type="hidden" name="nodefault" value="1"/>
+				}
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "logs.filter.apply") }</button>
 			</form>
-			if filter.TraceID != "" || len(filter.Attrs) > 0 {
+			if filter.TraceID != "" || len(filter.Attrs) > 0 || len(filter.Not) > 0 {
 				<div class="logs-active-filters">
 					if filter.TraceID != "" {
 						<span class="logs-filter-chip">
@@ -651,6 +862,12 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 						<span class="logs-filter-chip">
 							{ logAttrChipLabel(a) }
 							<a class="chip-remove" href={ templ.URL(logAttrChipRemoveURL(projectID, filter, a)) } title={ i18n.Tf(ctx, "logs.chip.attr_remove", "key", a.Key) } aria-label={ i18n.Tf(ctx, "logs.chip.attr_remove", "key", a.Key) }>✕</a>
+						</span>
+					}
+					for _, p := range filter.Not {
+						<span class="logs-filter-chip logs-filter-chip--not">
+							{ logNotChipLabel(ctx, p) }
+							<a class="chip-remove" href={ templ.URL(logNotChipRemoveURL(projectID, filter, p)) } title={ i18n.T(ctx, "logs.exclude.chip_remove") } aria-label={ i18n.T(ctx, "logs.exclude.chip_remove") }>✕</a>
 						</span>
 					}
 				</div>
@@ -688,7 +905,7 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 									</thead>
 									<tbody>
 										for _, row := range rows {
-											@logRowView(projectID, row)
+											@logRowView(projectID, filter, row)
 										}
 									</tbody>
 								</table>
@@ -772,6 +989,7 @@ templ logAttrFacetSection(projectID int64, filter LogsFilter, facet LogAttrFacet
 										<li class="logs-facet-item">
 											<a class={ logFacetValueClass(v.Active) } href={ templ.URL(v.Href) } if v.Active { aria-current="page" }>{ v.Value }</a>
 											<span class="logs-facet-count">{ strconv.FormatInt(v.Count, 10) }</span>
+											@logRowFieldAction(true, v.ExcludeHref, v.ExcludeLabel)
 										</li>
 									}
 								</ul>
@@ -788,6 +1006,8 @@ templ logAttrFacetSection(projectID int64, filter LogsFilter, facet LogAttrFacet
 // counts, либо пометка (нет данных / слишком много данных — TooMuchData).
 // Каждое значение — обычная ссылка (logFacetValueClass/aria-current
 // показывают активность), работает без JS, как остальные фильтры экрана.
+// Рядом со значением — кнопка «исключить» (задача 7, тот же компонент
+// logRowFieldAction, что и у полей строки лога).
 templ logFacetSection(titleKey string, facet LogFacet) {
 	<section class="card logs-facet">
 		<h2 class="logs-facet-title">{ i18n.T(ctx, titleKey) }</h2>
@@ -801,6 +1021,7 @@ templ logFacetSection(titleKey string, facet LogFacet) {
 					<li class="logs-facet-item">
 						<a class={ logFacetValueClass(v.Active) } href={ templ.URL(v.Href) } if v.Active { aria-current="page" }>{ v.Label }</a>
 						<span class="logs-facet-count">{ strconv.FormatInt(v.Count, 10) }</span>
+						@logRowFieldAction(true, v.ExcludeHref, v.ExcludeLabel)
 					</li>
 				}
 			</ul>
@@ -808,14 +1029,98 @@ templ logFacetSection(titleKey string, facet LogFacet) {
 	</section>
 }
 
+// logRowFieldAction — одна кнопка «исключить» или «оставить только это» у
+// значения поля в строке лога (severity/service): пара таких у каждого поля
+// формирует logRowFieldActions. exclude=true — минус и logExcludeURL,
+// иначе — плюс и logIncludeURL.
+templ logRowFieldAction(exclude bool, href string, label string) {
+	if exclude {
+		<a class="logs-row-action logs-row-action--exclude" href={ templ.URL(href) } title={ label } aria-label={ label }>
+			@icon("minus")
+		</a>
+	} else {
+		<a class="logs-row-action logs-row-action--include" href={ templ.URL(href) } title={ label } aria-label={ label }>
+			@icon("plus")
+		</a>
+	}
+}
+
+// logRowSeverityActions — «исключить»/«оставить только этот уровень» рядом
+// с бейджем уровня в строке лога.
+templ logRowSeverityActions(projectID int64, f LogsFilter, sev string) {
+	<span class="logs-row-actions">
+		@logRowFieldAction(true, logExcludeURL(projectID, f, log.Predicate{Field: log.FieldSeverity, Op: log.OpNeq, Value: sev}), i18n.Tf(ctx, "logs.row.exclude_severity", "value", severityLabel(ctx, sev)))
+		@logRowFieldAction(false, logIncludeURL(projectID, f, log.Predicate{Field: log.FieldSeverity, Value: sev}), i18n.Tf(ctx, "logs.row.include_severity", "value", severityLabel(ctx, sev)))
+	</span>
+}
+
+// logRowServiceActions — то же для сервиса. Пустой сервис (записи без него)
+// кнопок не получает — исключать/оставлять "" как значение поля бессмысленно.
+templ logRowServiceActions(projectID int64, f LogsFilter, service string) {
+	if service != "" {
+		<span class="logs-row-actions">
+			@logRowFieldAction(true, logExcludeURL(projectID, f, log.Predicate{Field: log.FieldService, Op: log.OpNeq, Value: service}), i18n.Tf(ctx, "logs.row.exclude_service", "value", service))
+			@logRowFieldAction(false, logIncludeURL(projectID, f, log.Predicate{Field: log.FieldService, Value: service}), i18n.Tf(ctx, "logs.row.include_service", "value", service))
+		</span>
+	}
+}
+
+// logRowAttrPredicate — предикат по строке таблицы атрибутов развёрнутой
+// строки лога. Поле-источник берётся из r.Resource/r.RawKey (явно записаны
+// в NewLogRow), НЕ разбором отображаемого r.Key — иначе лог-атрибут,
+// буквально названный "resource.foo", подменил бы карту фильтра (см.
+// докблок logAttrRow).
+func logRowAttrPredicate(r logAttrRow, op log.Op) log.Predicate {
+	if r.Resource {
+		return log.Predicate{Field: log.FieldResourceAttr, Key: r.RawKey, Op: op, Value: r.Val}
+	}
+	return log.Predicate{Field: log.FieldAttr, Key: r.RawKey, Op: op, Value: r.Val}
+}
+
+// logRowAttrActions — пара кнопок исключить/оставить только это в колонке
+// действий таблицы атрибутов записи в развёрнутой строке лога.
+templ logRowAttrActions(projectID int64, f LogsFilter, r logAttrRow) {
+	@logRowFieldAction(true, logExcludeURL(projectID, f, logRowAttrPredicate(r, log.OpNeq)), i18n.Tf(ctx, "logs.row.exclude_attr", "key", r.Key))
+	@logRowFieldAction(false, logIncludeURL(projectID, f, logRowAttrPredicate(r, log.OpEq)), i18n.Tf(ctx, "logs.row.include_attr", "key", r.Key))
+}
+
+// logAttrTable — таблица атрибутов записи в развёрнутой строке лога с
+// колонкой действий. Тот же внешний вид (те же классы ctx-*), что и у
+// contextTable на странице ошибки, но со своим типом строки (logAttrRow) —
+// contextTable/ctxRow страницы ошибки не трогаем, там действий нет и не
+// будет.
+templ logAttrTable(rows []logAttrRow, projectID int64, f LogsFilter) {
+	<table class="ctx-table data-table data-table--auto">
+		<tbody>
+			for _, r := range rows {
+				<tr>
+					<td class="ctx-key">{ r.Key }</td>
+					<td class="ctx-val">{ r.Val }</td>
+					<td class="ctx-actions">
+						@logRowAttrActions(projectID, f, r)
+					</td>
+				</tr>
+			}
+		</tbody>
+	</table>
+}
+
 // logRowView — одна строка списка: свёрнутое превью тела разворачивается
 // нативным <details> (без JS) в полное тело, таблицу атрибутов и
-// trace_id/span_id.
-templ logRowView(projectID int64, row LogRow) {
+// trace_id/span_id. filter — текущий фильтр страницы (задача 6): нужен, чтобы
+// ссылки «исключить»/«оставить только это» добавляли условие к уже активным,
+// а не строили его с нуля.
+templ logRowView(projectID int64, filter LogsFilter, row LogRow) {
 	<tr>
 		<td>@relativeTime(row.Row.Timestamp)</td>
-		<td><span class={ severityBadgeClass(row.Row.Severity) }>{ severityLabel(ctx, row.Row.Severity) }</span></td>
-		<td>{ row.Row.Service }</td>
+		<td>
+			<span class={ severityBadgeClass(row.Row.Severity) }>{ severityLabel(ctx, row.Row.Severity) }</span>
+			@logRowSeverityActions(projectID, filter, row.Row.Severity)
+		</td>
+		<td>
+			{ row.Row.Service }
+			@logRowServiceActions(projectID, filter, row.Row.Service)
+		</td>
 		<td>
 			<details class="log-row-details">
 				<summary>{ logBodyPreview(row.Row.Body) }</summary>
@@ -823,7 +1128,7 @@ templ logRowView(projectID int64, row LogRow) {
 					<pre class="contexts-json">{ row.Row.Body }</pre>
 					if len(row.Attrs) > 0 {
 						<h4 class="ctx-title">{ i18n.T(ctx, "logs.table.attributes") }</h4>
-						@contextTable(row.Attrs)
+						@logAttrTable(row.Attrs, projectID, filter)
 					}
 					if row.Row.TraceID != "" {
 						<p class="log-row-trace">

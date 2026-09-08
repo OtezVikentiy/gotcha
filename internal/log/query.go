@@ -55,6 +55,11 @@ type ListFilter struct {
 	Query       string // подстрока body, регистронезависимо
 	Attrs       []AttrFilter
 
+	// Not — отрицательные условия (см. predicate.go). Положительные условия
+	// остаются полями выше; отрицательные списком, потому что их произвольное
+	// количество по любому полю.
+	Not []Predicate
+
 	// TraceID — жёсткий скоуп по trace_id (C3, logs in context): при непустом
 	// добавляет "AND trace_id = ?" во ВСЕ запросы логов, включая подзапрос
 	// AttrKeys (в отличие от прочих фильтров f, которые AttrKeys игнорирует, —
@@ -134,37 +139,7 @@ func (q *Query) List(ctx context.Context, projectID int64, f ListFilter) ([]LogR
 	// автоопределения типа драйвером — аргумент из time.Time становится
 	// string), а toDateTime64(?, 3) в SQL кастует её обратно с нужной
 	// точностью на стороне ClickHouse.
-	where := "project_id = ? AND timestamp >= toDateTime64(?, 3) AND timestamp < toDateTime64(?, 3)"
-	args := []any{uint64(projectID), chTimeArg(f.From), chTimeArg(f.To)}
-
-	if len(f.Severity) > 0 {
-		where += " AND severity IN (?)"
-		args = append(args, f.Severity)
-	}
-	if f.Service != "" {
-		where += " AND service = ?"
-		args = append(args, f.Service)
-	}
-	if f.Environment != "" {
-		where += " AND environment = ?"
-		args = append(args, f.Environment)
-	}
-	if f.Query != "" {
-		where += " AND positionCaseInsensitiveUTF8(body, ?) > 0"
-		args = append(args, f.Query)
-	}
-	for _, a := range f.Attrs {
-		col := "log_attributes"
-		if a.Resource {
-			col = "resource_attrs"
-		}
-		where += " AND " + col + "[?] = ?"
-		args = append(args, a.Key, a.Value)
-	}
-	if f.TraceID != "" {
-		where += " AND trace_id = ?"
-		args = append(args, f.TraceID)
-	}
+	where, args := buildWhere(projectID, f, whereOpts{})
 
 	queryLimit := limit
 	if !f.Before.IsZero() {
@@ -283,37 +258,8 @@ func (q *Query) Histogram(ctx context.Context, projectID int64, f ListFilter, bu
 
 	// where — 1:1 с List (см. её комментарий про chTimeArg/toDateTime64), но
 	// без блока курсора и без LIMIT.
-	where := "project_id = ? AND timestamp >= toDateTime64(?, 3) AND timestamp < toDateTime64(?, 3)"
-	args := []any{stepSec, uint64(projectID), chTimeArg(f.From), chTimeArg(f.To)}
-
-	if len(f.Severity) > 0 {
-		where += " AND severity IN (?)"
-		args = append(args, f.Severity)
-	}
-	if f.Service != "" {
-		where += " AND service = ?"
-		args = append(args, f.Service)
-	}
-	if f.Environment != "" {
-		where += " AND environment = ?"
-		args = append(args, f.Environment)
-	}
-	if f.Query != "" {
-		where += " AND positionCaseInsensitiveUTF8(body, ?) > 0"
-		args = append(args, f.Query)
-	}
-	for _, a := range f.Attrs {
-		col := "log_attributes"
-		if a.Resource {
-			col = "resource_attrs"
-		}
-		where += " AND " + col + "[?] = ?"
-		args = append(args, a.Key, a.Value)
-	}
-	if f.TraceID != "" {
-		where += " AND trace_id = ?"
-		args = append(args, f.TraceID)
-	}
+	where, whereArgs := buildWhere(projectID, f, whereOpts{})
+	args := append([]any{stepSec}, whereArgs...)
 
 	// SETTINGS max_execution_time = 10 (тот же приём, что у List/Facet выше и
 	// ниже) — Histogram считает по ВСЕМУ окну без LIMIT (см. докблок), поэтому
@@ -422,38 +368,17 @@ func (q *Query) Facet(ctx context.Context, projectID int64, f ListFilter, col st
 	// where — тот же набор условий, что у List/Histogram (окно+прочие
 	// фильтры), но БЕЗ курсора/LIMIT списка и без пустых значений самой
 	// фасетной колонки (пустая строка — "атрибут не заполнен", отдельная
-	// строка "" в топе только шумит).
-	where := "project_id = ? AND timestamp >= toDateTime64(?, 3) AND timestamp < toDateTime64(?, 3) AND " + col + " != ''"
-	args := []any{uint64(projectID), chTimeArg(f.From), chTimeArg(f.To)}
-
-	if len(f.Severity) > 0 && col != "severity" {
-		where += " AND severity IN (?)"
-		args = append(args, f.Severity)
+	// строка "" в топе только шумит). OmitNegative по своей же колонке —
+	// иначе исключённое кликом значение пропадает из счётчиков фасета
+	// вместе с возможностью снять исключение обратным кликом.
+	opts := whereOpts{
+		BaseExtra:    col + " != ''",
+		OmitNegative: map[string]bool{col: true},
 	}
-	if f.Service != "" {
-		where += " AND service = ?"
-		args = append(args, f.Service)
+	if col == FieldSeverity {
+		opts.OmitPositive = map[string]bool{FieldSeverity: true}
 	}
-	if f.Environment != "" {
-		where += " AND environment = ?"
-		args = append(args, f.Environment)
-	}
-	if f.Query != "" {
-		where += " AND positionCaseInsensitiveUTF8(body, ?) > 0"
-		args = append(args, f.Query)
-	}
-	for _, a := range f.Attrs {
-		attrCol := "log_attributes"
-		if a.Resource {
-			attrCol = "resource_attrs"
-		}
-		where += " AND " + attrCol + "[?] = ?"
-		args = append(args, a.Key, a.Value)
-	}
-	if f.TraceID != "" {
-		where += " AND trace_id = ?"
-		args = append(args, f.TraceID)
-	}
+	where, args := buildWhere(projectID, f, opts)
 	args = append(args, facetLimit)
 
 	rows, err := q.conn.Query(ctx, `
@@ -588,38 +513,16 @@ func (q *Query) AttrValues(ctx context.Context, projectID int64, f ListFilter, r
 
 	// where — тот же набор условий, что у List/Facet (окно+ВСЕ фильтры,
 	// включая f.Attrs — точечные фильтры по ДРУГИМ ключам продолжают сужать
-	// выборку значений этого ключа).
-	where := "project_id = ? AND timestamp >= toDateTime64(?, 3) AND timestamp < toDateTime64(?, 3)"
-	whereArgs := []any{uint64(projectID), chTimeArg(f.From), chTimeArg(f.To)}
-
-	if len(f.Severity) > 0 {
-		where += " AND severity IN (?)"
-		whereArgs = append(whereArgs, f.Severity)
+	// выборку значений этого ключа). Отрицание по САМОМУ раскрытому ключу
+	// пропускается тем же правилом, что и у Facet: иначе исключённое кликом
+	// значение исчезает из списка значений вместе с возможностью его вернуть.
+	omitKey := FieldAttr
+	if resource {
+		omitKey = FieldResourceAttr
 	}
-	if f.Service != "" {
-		where += " AND service = ?"
-		whereArgs = append(whereArgs, f.Service)
-	}
-	if f.Environment != "" {
-		where += " AND environment = ?"
-		whereArgs = append(whereArgs, f.Environment)
-	}
-	if f.Query != "" {
-		where += " AND positionCaseInsensitiveUTF8(body, ?) > 0"
-		whereArgs = append(whereArgs, f.Query)
-	}
-	for _, a := range f.Attrs {
-		attrCol := "log_attributes"
-		if a.Resource {
-			attrCol = "resource_attrs"
-		}
-		where += " AND " + attrCol + "[?] = ?"
-		whereArgs = append(whereArgs, a.Key, a.Value)
-	}
-	if f.TraceID != "" {
-		where += " AND trace_id = ?"
-		whereArgs = append(whereArgs, f.TraceID)
-	}
+	where, whereArgs := buildWhere(projectID, f, whereOpts{
+		OmitNegative: map[string]bool{omitKey + ":" + key: true},
+	})
 
 	// Порядок args обязан идти 1:1 с порядком "?" в тексте запроса ниже:
 	// сперва SELECT col[?] (key), затем where-условия, затем mapContains(col,
