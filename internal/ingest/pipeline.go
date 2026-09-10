@@ -396,15 +396,27 @@ type task struct {
 	bytes int64
 }
 
+// NewPipeline строит Pipeline. batcher нарочно проверяется на nil ЗДЕСЬ, а не
+// присваивается полю p.batcher (eventSink) напрямую: параметр типизирован
+// конкретным *event.Batcher, и присвоение nil-указателя интерфейсному полю
+// завернуло бы его в НЕ-nil интерфейс (typed-nil) — тогда saturationOf(p.batcher)
+// прошёл бы type-assert и запаниковал бы внутри Saturation() на разыменовании
+// нулевого приёмника. Тесты пакета собирают Pipeline через NewPipeline(_, nil),
+// когда запись в CH не нужна (см. EventSaturation) — эта развилка держит
+// p.batcher настоящим nil-интерфейсом в таком случае, и saturationOf остаётся
+// простым (без reflect на горячем пути каждого запроса приёма).
 func NewPipeline(issues *issue.Service, batcher *event.Batcher) *Pipeline {
-	return &Pipeline{
+	p := &Pipeline{
 		issues:  issues,
-		batcher: batcher,
 		queue:   make(chan task, 1000),
 		workers: 4,
 		dropped: newDropCounters(),
 		dropAgg: make(map[dropAggKey]int64),
 	}
+	if batcher != nil {
+		p.batcher = batcher
+	}
+	return p
 }
 
 // defaultMaxQueueBytes — байтовый потолок очереди по умолчанию.
@@ -556,6 +568,30 @@ func queueSaturation(num, den int64) float64 {
 		return 0
 	}
 	return float64(num) / float64(den)
+}
+
+// EventSaturation — заполненность буфера ПОСТАНОВКИ СОБЫТИЙ в долях единицы:
+// максимум из очереди пайплайна (QueueSaturation — общая стадия upsert issue
+// для событий и транзакций) и буфера батчера записи в CH (p.batcher). Для
+// preflight-проверки приёма (см. Handler.overloaded): элемент, прошедший обе
+// стадии живым, дальше начал бы вытеснять более старые данные из той, что
+// ближе к потолку.
+//
+// p.batcher — ОБЯЗАТЕЛЬНАЯ зависимость Pipeline (не nil-safe, в отличие от
+// Spans/Perf/Alerts — см. process()), поэтому saturationOf здесь используется
+// не ради nil-проверки батчера, а ради узкого контракта eventSink: метода
+// Saturation() в нём нет и не будет (см. докблок saturationSource).
+func (p *Pipeline) EventSaturation() float64 {
+	return max(p.QueueSaturation(), saturationOf(p.batcher))
+}
+
+// TransactionSaturation — то же самое для ТРАНЗАКЦИЙ: очередь пайплайна и
+// буфер SpanWriter (p.Spans). p.Spans == nil (трейсинг выключен) не отличается
+// от отсутствия способности Saturation() — saturationOf вернёт 0, что верно:
+// отключённый сигнал уже отвечает успехом без записи (см.
+// Pipeline.TracingEnabled), и overloaded preflight не должен его трогать.
+func (p *Pipeline) TransactionSaturation() float64 {
+	return max(p.QueueSaturation(), saturationOf(p.Spans))
 }
 
 // release возвращает бюджет после обработки задачи.

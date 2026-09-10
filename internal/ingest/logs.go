@@ -37,6 +37,9 @@ func (h *Handler) otlpLogs(w http.ResponseWriter, r *http.Request) {
 	if h.rateLimited(w, key.OrgID, key.ProjectID, SignalLog) {
 		return
 	}
+	if h.overloaded(w, key.OrgID, key.ProjectID, SignalLog, saturationOf(h.Logs)) {
+		return
+	}
 	body, closeBody, err := h.body(w, r)
 	if err != nil {
 		h.countRejected(RejectMalformed, SignalLog)
@@ -86,6 +89,9 @@ func (h *Handler) logsNDJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.rateLimited(w, key.OrgID, key.ProjectID, SignalLog) {
+		return
+	}
+	if h.overloaded(w, key.OrgID, key.ProjectID, SignalLog, saturationOf(h.Logs)) {
 		return
 	}
 	body, closeBody, err := h.body(w, r)

@@ -16,7 +16,7 @@ import "sync/atomic"
 // Набор ЗАКРЫТ и является контрактом self-метрики
 // gotcha_ingest_rejected_total{reason,signal}: после 1.0 расширять его
 // дорого (см. internal/guards — каждое имя self-метрики пиннится литералом,
-// а свежая метка reason ломает дашборды, построенные на перечислении). Семь
+// а свежая метка reason ломает дашборды, построенные на перечислении). Восемь
 // значений:
 //   - key_unknown — ключ приёма не резолвится ни в один проект: клиент не
 //     прислал sentry_key/bearer вовсе, прислал опечатанный/несуществующий
@@ -54,6 +54,16 @@ import "sync/atomic"
 //     производный от него лимит: сжатое тело, декомпрессированное pprof).
 //   - malformed — тело прочитано, но не разобралось: битый JSON/protobuf,
 //     повреждённый gzip/zstd-заголовок, пустой envelope.
+//   - overloaded — буфер приёма (очередь пайплайна, батчер CH, писатель
+//     спанов/метрик/логов/профилей — см. Handler.overloaded) заполнен настолько,
+//     что дальше начался бы drop-oldest: отказано ДО постановки, ретраибельным
+//     503. Отличается от rate_limit и quota тем, ЧТО является причиной отказа:
+//     те две — про лимиты, назначенные КЛИЕНТУ (частота запросов) и
+//     ОРГАНИЗАЦИИ (месячный бюджет телеметрии), а overloaded — про состояние
+//     самого ПРИЁМНИКА: он захлёбывается независимо от того, укладывается ли
+//     клиент в свои лимиты. deploy этой причины не производит — деплои пишутся
+//     в PG синхронно и уже отвечают 503 при отказе записи, отдельного буфера в
+//     RAM у них нет (см. ingestRejectionPairs).
 type IngestRejectReason string
 
 const (
@@ -64,6 +74,7 @@ const (
 	RejectQuota      IngestRejectReason = "quota"
 	RejectTooLarge   IngestRejectReason = "too_large"
 	RejectMalformed  IngestRejectReason = "malformed"
+	RejectOverloaded IngestRejectReason = "overloaded"
 )
 
 // IngestSignal — вид телеметрии, к которому относится отказ. Значения
@@ -103,6 +114,11 @@ type IngestRejectionKey struct {
 // deploy отсутствует у reason=quota: деплои не расходуют месячную квоту
 // (см. deploymentsIngest) — только auth/rate-limit/размер тела/разбор.
 //
+// deploy отсутствует и у reason=overloaded по той же причине, что и у quota,
+// но с другой стороны медали: деплои пишутся в PG синхронно и уже отвечают
+// 503 при отказе записи (см. deploymentsIngest) — у них нет буфера в RAM,
+// который мог бы насытиться.
+//
 // Пары key_scope сюда НЕ выписаны литералом — они вычисляются из
 // keyScopeMatrix (см. keyScopeRejectionPairs) и дописываются ниже. Матрица
 // живёт в scope.go и меняется отдельно от этого файла; выписывать её пары
@@ -128,6 +144,10 @@ var ingestRejectionPairs = append([]IngestRejectionKey{
 	{RejectQuota, SignalEvent}, {RejectQuota, SignalTransaction},
 	{RejectQuota, SignalMetric}, {RejectQuota, SignalProfile},
 	{RejectQuota, SignalLog},
+
+	{RejectOverloaded, SignalEvent}, {RejectOverloaded, SignalTransaction},
+	{RejectOverloaded, SignalMetric}, {RejectOverloaded, SignalProfile},
+	{RejectOverloaded, SignalLog},
 }, keyScopeRejectionPairs()...)
 
 // IngestRejectionPairs — копия ingestRejectionPairs для main (та же защита

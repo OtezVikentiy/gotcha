@@ -128,6 +128,16 @@ type Handler struct {
 	// тонкой настройки. nil → лимит выключен.
 	rate *rateLimiter
 
+	// overloadLogMu/lastOverloadLog — throttle предупреждения overloaded по
+	// signal'у (см. overloadLogInterval). В отличие от rateLimited (тот бьёт
+	// один флудящий ключ, объём лога ограничен его же лимитом), overloaded
+	// срабатывает на КАЖДЫЙ запрос КАЖДОГО клиента, пока просажен общий буфер
+	// (например, лежит ClickHouse) — без троттлинга лог сам стал бы нагрузкой
+	// в момент, когда система и так не справляется (см. event.Batcher.lastDropLog,
+	// тот же приём).
+	overloadLogMu   sync.Mutex
+	lastOverloadLog map[IngestSignal]time.Time
+
 	// TxQuota — квота ТРАНЗАКЦИЙ, отдельная от quota (квоты ошибок): у них
 	// разные лимиты и разные счётчики, исчерпание одной не закрывает приём по
 	// другой. nil → транзакции не квотируются.
@@ -250,6 +260,8 @@ func NewHandler(keys *KeyCache, quota QuotaChecker, pipeline *Pipeline, maxEvent
 		keyRejected: newKeyRejectCounters(),
 		rejected:    newIngestRejectCounters(),
 
+		lastOverloadLog: make(map[IngestSignal]time.Time),
+
 		deprecated:       newDeprecatedCounters(),
 		deprecatedLogged: newDeprecatedLogOnce(),
 	}
@@ -310,6 +322,109 @@ func (h *Handler) rateLimited(w http.ResponseWriter, orgID, projectID int64, sig
 	w.Header().Set("Retry-After", "1")
 	writeJSONError(w, http.StatusTooManyRequests, "rate limit exceeded")
 	return true
+}
+
+// overloadThreshold — заполненность буфера (см. saturationSource), начиная с
+// которой приём отвечает отказом вместо приёма-с-потерей (см. overloaded).
+// Не переменная окружения: это не настройка эксплуатации, а точка, за которой
+// буфер начинает выбрасывать данные (drop-oldest у event.Batcher/trace.
+// SpanWriter/metric.Writer/log.Writer/profile.Writer, drop у Pipeline.queue) —
+// значение технического поведения буфера, а не решение оператора.
+const overloadThreshold = 0.95
+
+// saturationSource — опциональная способность приёмника сообщить, насколько
+// полон его буфер. Отдельный интерфейс, а не метод Saturation() на eventSink/
+// SpanSink/MetricSink/ProfileSink/LogSink: те контракты реализованы кучей
+// тестовых двойников по всему пакету (fakeBatcher, fakeSpanSink,
+// collectMetricSink и т.п.), и добавление метода в контракт сломало бы их
+// разом. Способность спрашивается опционально через type-assert (см.
+// saturationOf), а не расширением контракта.
+type saturationSource interface{ Saturation() float64 }
+
+// saturationOf возвращает заполненность буфера v в долях единицы, если v умеет
+// её сообщать, и 0 иначе — в том числе когда v нетипизированно nil (сигнал
+// выключен: h.Logs/h.Metrics/h.Profiles == nil) или не реализует
+// saturationSource (существующие тестовые двойники пакета, не знающие о
+// Saturation).
+//
+// Проверка на typed-nil (указатель за интерфейсом ненулевой, а сам указатель
+// нулевой) здесь намеренно НЕ нужна: единственный источник такого значения в
+// пакете — поле Pipeline.batcher, а оно строится ТОЛЬКО через NewPipeline,
+// которая принимает конкретный *event.Batcher и уже сама решает не заворачивать
+// nil в интерфейс (см. её докблок). saturationOf — общий хелпер на горячем
+// пути всех семи входов приёма; дороже reflect на каждый запрос — держать её
+// nil-безопасной для конкретного типа, о котором остальной пакет ничего не
+// знает.
+//
+// Нулевая заполненность у выключенного/немого/нулевого сигнала — намеренно:
+// overloaded не должен отбивать то, что и так отвечает успехом без записи
+// (см. otlpMetrics/otlpLogs/pprofIngest — h.Metrics/h.Logs/h.Profiles == nil
+// уже отвечают успехом раньше, чем дело доходит до preflight).
+func saturationOf(v any) float64 {
+	if v == nil {
+		return 0
+	}
+	s, ok := v.(saturationSource)
+	if !ok {
+		return 0
+	}
+	return s.Saturation()
+}
+
+// overloaded проверяет заполненность буфера signal'а ДО постановки элемента и,
+// если она достигла overloadThreshold, отвечает 503 вместо приёма-с-потерей.
+// Возвращает true, если запрос НАДО отклонить (ответ уже записан) — тот же
+// протокол, что у rateLimited.
+//
+// Вызывающий ОБЯЗАН звать overloaded ДО h.grant: иначе отказ списал бы квоту
+// организации за элемент, который дальше всё равно выбросит переполненный
+// буфер, и списал бы её ЕЩЁ РАЗ при ретрае клиента на 503 — организация
+// платила бы дважды за один и тот же непринятый элемент. Проверка стоит ДО
+// постановки и по той же причине: ни один элемент запроса не принят, и
+// повторная доставка клиентом не создаёт дублей (дедупликации по event_id в
+// продукте нет).
+//
+// Retry-After — 5 секунд: буфер разгружается воркерами пайплайна/периодическим
+// флашем писателя на порядки быстрее месячного окна квоты (в отличие от
+// writeQuotaExceeded, где ретраить раньше начала следующего месяца бессмысленно).
+func (h *Handler) overloaded(w http.ResponseWriter, orgID, projectID int64, signal IngestSignal, saturation float64) bool {
+	if saturation < overloadThreshold {
+		return false
+	}
+	h.logOverloaded(signal, saturation, orgID, projectID)
+	h.countRejected(RejectOverloaded, signal)
+	w.Header().Set("Retry-After", "5")
+	writeJSONError(w, http.StatusServiceUnavailable, "ingest overloaded")
+	return true
+}
+
+// overloadLogInterval — не чаще одного предупреждения на signal за интервал
+// (см. lastOverloadLog). rateLimited (сосед) логирует безусловно на каждый
+// отказ, потому что бьёт один флудящий ключ — объём лога ограничен его же
+// лимитом запросов. overloaded так не может: он срабатывает на каждый запрос
+// КАЖДОГО клиента, пока просажен общий буфер (например, лежит ClickHouse), и
+// без троттлинга сам стал бы нагрузкой ровно тогда, когда система и так не
+// справляется.
+const overloadLogInterval = 5 * time.Second
+
+// logOverloaded пишет предупреждение об отказе по overloaded не чаще одного
+// раза в overloadLogInterval на signal. Счётчик gotcha_ingest_rejected_total
+// (countRejected) растёт при КАЖДОМ отказе независимо от троттлинга лога —
+// дежурный видит точный объём по self-метрике, лог лишь даёт пример «что
+// именно и насколько насыщено» без флуда.
+func (h *Handler) logOverloaded(signal IngestSignal, saturation float64, orgID, projectID int64) {
+	h.overloadLogMu.Lock()
+	last, seen := h.lastOverloadLog[signal]
+	log := !seen || time.Since(last) > overloadLogInterval
+	if log {
+		h.lastOverloadLog[signal] = time.Now()
+	}
+	h.overloadLogMu.Unlock()
+	if !log {
+		return
+	}
+	slog.Warn("ingest: buffer overloaded, rejecting instead of dropping",
+		"signal", signal, "saturation", saturation, "project_id", projectID, "org_id", orgID)
 }
 
 // muxRegistrar — то, что Register нужно от мультиплексора. Сужение ради
@@ -722,17 +837,95 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 			projectID, h.parseTransactions(projectID, env.Transactions))
 	}
 	hasTx := len(txSelected) > 0
+	hasProfiles := len(env.Profiles) > 0
+
+	// overload preflight envelope'а сложнее, чем у остальных шести входов: он
+	// несёт до трёх независимых классов (события/транзакции/профили), и у
+	// каждого свой буфер. «Присутствующий» — класс, у которого в ЭТОМ
+	// envelope'е реально есть элементы (hasTx — уже ПОСЛЕ отбора/семплирования:
+	// несемплированное отброшено намеренно и к насыщению буфера отношения не
+	// имеет). Насыщенность считаем один раз, до развилок ниже, чтобы решение
+	// «что пропустить» и лог принятого значения не разъезжались на гонке.
+	eventSat := h.pipeline.EventSaturation()
+	txSat := h.pipeline.TransactionSaturation()
+	profSat := saturationOf(h.Profiles)
+	eventOverloaded := hasEvents && eventSat >= overloadThreshold
+	txOverloaded := hasTx && txSat >= overloadThreshold
+	profOverloaded := hasProfiles && profSat >= overloadThreshold
+	// Насыщены буферы ВСЕХ присутствующих классов разом: принимать нечего —
+	// целиком отказываем 503 ДО постановки и ДО списания квоты, как и у
+	// остальных шести входов (см. Handler.overloaded). signal выбирается тем
+	// же правилом, что уже применяет соседний отказ по квоте ниже: event, если
+	// события есть, иначе класс, который есть.
+	if (hasEvents || hasTx || hasProfiles) &&
+		(!hasEvents || eventOverloaded) && (!hasTx || txOverloaded) && (!hasProfiles || profOverloaded) {
+		signal, saturation := SignalEvent, eventSat
+		switch {
+		case hasEvents:
+		case hasTx:
+			signal, saturation = SignalTransaction, txSat
+		default:
+			signal, saturation = SignalProfile, profSat
+		}
+		h.overloaded(w, key.OrgID, projectID, signal, saturation)
+		return
+	}
+	// Смешанный случай: хотя бы один присутствующий класс НЕ насыщен —
+	// envelope принимается частично. Насыщенный класс квоту не тратит (грант
+	// на него попросту не запрашивается — см. eventsGranted/txGranted ниже):
+	// иначе организация платила бы за элемент, который дальше и так выбросит
+	// переполненный буфер, а при ретрае клиента — ещё раз.
+	//
+	// eventQuotaRelevant/txQuotaRelevant — присутствующий и НЕ насыщенный
+	// класс: только такие участвуют в решении «квота исчерпана по ВСЕМ
+	// присутствующим типам» ниже. Насыщенный класс из этого решения исключён:
+	// у него отдельная причина отказа (overloaded, не quota), и он не должен
+	// провоцировать 429 «квота исчерпана» там, где на самом деле переполнен
+	// буфер, а второй присутствующий класс (или профили, которые в 429 никогда
+	// не участвовали) принят нормально.
+	eventQuotaRelevant := hasEvents && !eventOverloaded
+	txQuotaRelevant := hasTx && !txOverloaded
 	// Квота списывается ЗА ЭЛЕМЕНТ. Списание частичное: если до квоты осталось
 	// меньше, чем в конверте, принимаем сколько влезло, остаток идёт в дропы —
 	// организация получает ровно свою квоту, а не «последний конверт целиком
 	// мимо», и org_usage остаётся точным.
-	eventsGranted := h.grant(r.Context(), h.quota, key.OrgID, "event", len(env.Events))
-	txGranted := h.grant(r.Context(), h.TxQuota, key.OrgID, "transaction", len(txSelected))
+	var eventsGranted int
+	if eventQuotaRelevant {
+		eventsGranted = h.grant(r.Context(), h.quota, key.OrgID, "event", len(env.Events))
+	}
+	var txGranted int
+	if txQuotaRelevant {
+		txGranted = h.grant(r.Context(), h.TxQuota, key.OrgID, "transaction", len(txSelected))
+	}
 	eventsAllowed := eventsGranted > 0
 	txAllowed := txGranted > 0
+	// Стык двух причин отказа: оба присутствующих класса отбиты, но по РАЗНЫМ
+	// причинам — один насыщен (eventOverloaded/txOverloaded), другой честно
+	// выбил месячную квоту. Выигрывает ПЕРЕХОДНАЯ причина — 503, а не 429: у
+	// 429 Retry-After считается до 1-го числа следующего месяца
+	// (writeQuotaExceeded), и такой ответ хоронил бы насыщенный класс, который
+	// приёмник принял бы уже через 5 секунд, вместе с честно исчерпанным.
+	// Решение ДО учёта дропов ниже — под 503 не принято НИЧЕГО, включая класс,
+	// исчерпавший квоту (он получит свой отказ заново при ретрае и ничего не
+	// потратит повторно, grant вернёт 0), и countDrop не должен считать это
+	// дропом: то, что раньше тихо уходило туда под 429, теперь просто не
+	// принято. Ветка «оба отбиты, но НИ ОДИН не насыщен» сюда не попадает
+	// (условие ниже) и остаётся прежним 429 бит-в-бит.
+	if (eventQuotaRelevant || txQuotaRelevant) && !eventsAllowed && !txAllowed &&
+		(eventOverloaded || txOverloaded) {
+		signal, saturation := SignalTransaction, txSat
+		if eventOverloaded {
+			signal, saturation = SignalEvent, eventSat
+		}
+		h.overloaded(w, key.OrgID, projectID, signal, saturation)
+		return
+	}
 	// Учёт дропов до развилки ответа: отклонённое считаем и когда 429 по ВСЕМ
 	// типам (ранний return ниже), и когда 200 по смешанному конверту, и когда
-	// принята лишь часть.
+	// принята лишь часть. Насыщенный класс здесь тоже попадает в счёт —
+	// eventsGranted/txGranted у него принудительно 0 (грант не звался), и
+	// разница len(...)-0 корректно списывает ВСЕ его элементы в дропы. До этой
+	// строки код не доходит, если сработала переходная 503 (см. выше).
 	if dropped := len(env.Events) - eventsGranted; hasEvents && dropped > 0 {
 		h.countDrop(r.Context(), dropEvent, key.OrgID, dropped)
 	}
@@ -743,27 +936,37 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 	if dropped := len(txSelected) - txGranted; dropped > 0 {
 		h.countDrop(r.Context(), dropTransaction, key.OrgID, dropped)
 	}
-	if (hasEvents || hasTx) && !eventsAllowed && !txAllowed {
+	if (eventQuotaRelevant || txQuotaRelevant) && !eventsAllowed && !txAllowed {
 		detail := "event quota exceeded"
 		signal := SignalEvent
-		if !hasEvents {
+		if !eventQuotaRelevant {
 			detail = "transaction quota exceeded"
 			signal = SignalTransaction
 		}
 		h.writeQuotaExceeded(w, signal, detail)
 		return
 	}
-	// Смешанный envelope, где по ОДНОМУ классу квота исчерпана: отвечаем 200 (по
-	// второму классу приняли), но выброшенный класс обязан быть виден в логах —
-	// иначе оператор не отличит «ошибок не было» от «ошибки молча выброшены».
+	// Смешанный envelope, где по ОДНОМУ классу квота исчерпана ИЛИ буфер
+	// насыщен: отвечаем 200 (по второму классу приняли), но выброшенный класс
+	// обязан быть виден в логах — иначе оператор не отличит «ошибок не было»
+	// от «ошибки молча выброшены», а по overloaded-классу вдобавок не отличит
+	// его от обычного quota-дропа.
 	if dropped := len(env.Events) - eventsGranted; hasEvents && dropped > 0 {
-		slog.Warn("ingest: quota exceeded, dropping items from envelope",
-			"class", "event", "dropped", dropped, "accepted", eventsGranted,
+		reason := "quota exceeded"
+		if eventOverloaded {
+			reason = "buffer overloaded"
+		}
+		slog.Warn("ingest: dropping items from envelope",
+			"reason", reason, "class", "event", "dropped", dropped, "accepted", eventsGranted,
 			"project_id", projectID, "org_id", key.OrgID)
 	}
 	if dropped := len(txSelected) - txGranted; dropped > 0 {
-		slog.Warn("ingest: quota exceeded, dropping items from envelope",
-			"class", "transaction", "dropped", dropped, "accepted", txGranted,
+		reason := "quota exceeded"
+		if txOverloaded {
+			reason = "buffer overloaded"
+		}
+		slog.Warn("ingest: dropping items from envelope",
+			"reason", reason, "class", "transaction", "dropped", dropped, "accepted", txGranted,
 			"project_id", projectID, "org_id", key.OrgID)
 	}
 
@@ -786,23 +989,34 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 	}
 	// Профили (этап 7) — best-effort: своя квота, отдельная от событий/транзакций;
 	// её исчерпание или битый профиль не меняют статус ответа по остальным типам.
-	if len(env.Profiles) > 0 && h.Profiles != nil {
-		profGranted := h.grant(r.Context(), h.ProfileQuota, key.OrgID, "profile", len(env.Profiles))
-		if dropped := len(env.Profiles) - profGranted; dropped > 0 {
-			slog.Warn("ingest: profile quota exceeded, dropping profiles",
-				"dropped", dropped, "accepted", profGranted,
+	// Насыщенный буфер профилей (profOverloaded) — та же дисциплина, что у
+	// событий/транзакций выше: квоту не трогаем (h.grant не зовём), все
+	// элементы уходят в дроп, класс виден в логе отдельной причиной.
+	if hasProfiles && h.Profiles != nil {
+		if profOverloaded {
+			slog.Warn("ingest: dropping items from envelope",
+				"reason", "buffer overloaded", "class", "profile",
+				"dropped", len(env.Profiles), "accepted", 0,
 				"project_id", projectID, "org_id", key.OrgID)
-			h.countDrop(r.Context(), dropProfile, key.OrgID, dropped)
-		}
-		for _, raw := range env.Profiles[:profGranted] {
-			prof, err := profile.ParseSentry(raw, time.Now().UTC())
-			if err != nil {
-				slog.Warn("ingest: bad sentry profile, skipped", "project_id", projectID, "error", err)
-				continue
+			h.countDrop(r.Context(), dropProfile, key.OrgID, len(env.Profiles))
+		} else {
+			profGranted := h.grant(r.Context(), h.ProfileQuota, key.OrgID, "profile", len(env.Profiles))
+			if dropped := len(env.Profiles) - profGranted; dropped > 0 {
+				slog.Warn("ingest: profile quota exceeded, dropping profiles",
+					"dropped", dropped, "accepted", profGranted,
+					"project_id", projectID, "org_id", key.OrgID)
+				h.countDrop(r.Context(), dropProfile, key.OrgID, dropped)
 			}
-			h.scrubProfile(&prof)
-			h.limitProfileCardinality(projectID, &prof)
-			h.Profiles.Add(key.ProjectID, prof)
+			for _, raw := range env.Profiles[:profGranted] {
+				prof, err := profile.ParseSentry(raw, time.Now().UTC())
+				if err != nil {
+					slog.Warn("ingest: bad sentry profile, skipped", "project_id", projectID, "error", err)
+					continue
+				}
+				h.scrubProfile(&prof)
+				h.limitProfileCardinality(projectID, &prof)
+				h.Profiles.Add(key.ProjectID, prof)
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": id})
@@ -942,6 +1156,9 @@ func (h *Handler) store(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.rateLimited(w, key.OrgID, key.ProjectID, SignalEvent) {
+		return
+	}
+	if h.overloaded(w, key.OrgID, key.ProjectID, SignalEvent, h.pipeline.EventSaturation()) {
 		return
 	}
 	if h.grant(r.Context(), h.quota, key.OrgID, "event", 1) == 0 {
