@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- When any in-memory buffer on an ingest signal's path (the pipeline queue,
+  the ClickHouse batcher, a span/metric/log/profile writer) is saturated,
+  ingest now answers `503` with a `Retry-After` header instead of `200` —
+  accepting nothing from the request rather than accepting it and then
+  dropping the oldest buffered data to make room. This applies to every
+  ingest input, including all of them while ClickHouse is unreachable and the
+  buffer behind it fills up. `gotcha_ingest_rejected_total` gained a new
+  `reason=overloaded` value for this case.
+
 ## [1.1.0] - 2026-09-08
 
 ### Added
