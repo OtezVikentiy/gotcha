@@ -406,6 +406,40 @@ func (w *SpanWriter) Buffered() int64 {
 	return int64(len(w.txBuf) + len(w.spanBuf))
 }
 
+// Saturation — заполненность писателя в долях единицы: 0 — пусто, 1 —
+// потолок, дальше начинается drop-oldest (см. trimTxLocked/trimSpansLocked).
+// У SpanWriter четыре независимых плеча — счёт и байты у транзакций, счёт и
+// байты у спанов — и упереться достаточно в любое одно: значение считается
+// как максимум по всем четырём, а не по их сумме или среднему. Так спановое
+// плечо (одна транзакция с тысячами спанов) видно даже когда транзакционный
+// буфер почти пуст. Значение НЕ обрезается единицей: между append и trim*
+// буфер физически перебирает потолок, и это должно быть видно.
+func (w *SpanWriter) Saturation() float64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	sat := bufSaturation(int64(len(w.txBuf)), int64(w.maxBuf))
+	if s := bufSaturation(int64(len(w.spanBuf)), int64(w.maxSpanBuf)); s > sat {
+		sat = s
+	}
+	if s := bufSaturation(w.txBytes, w.maxBufBytes); s > sat {
+		sat = s
+	}
+	if s := bufSaturation(w.spanBytes, w.maxBufBytes); s > sat {
+		sat = s
+	}
+	return sat
+}
+
+// bufSaturation считает долю num/den. den<=0 — потолок выключен нулём и
+// значит «этим лимитом не ограничены», а не «делить не на что»: такой
+// потолок не должен ни паниковать, ни искусственно показывать насыщение.
+func bufSaturation(num, den int64) float64 {
+	if den <= 0 {
+		return 0
+	}
+	return float64(num) / float64(den)
+}
+
 // InsertFailures — сколько флашей провалилось за время жизни процесса.
 // Отличается от Dropped: неудачная вставка возвращает пачку в буфер и
 // повторяется, потеря наступает только при переполнении буфера.

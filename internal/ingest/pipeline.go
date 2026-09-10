@@ -529,6 +529,35 @@ func (p *Pipeline) admit(size int64) bool {
 // количеству.
 func (p *Pipeline) QueuedBytes() int64 { return p.queueBytes.Load() }
 
+// QueueSaturation — заполненность очереди в долях единицы: 0 — пусто, 1 —
+// потолок, дальше начинается дроп новых задач (см. admit/Enqueue). Считается
+// как максимум по обоим действующим потолкам очереди (задачи и байты) —
+// упереться достаточно в один, а хендлеру нужен худший из двух, чтобы
+// заранее ответить честным 503 вместо приёма в заведомо переполненную
+// очередь. Состояние очереди атомарное (len(p.queue), p.queueBytes), поэтому
+// closeMu здесь не берётся: метод читает моментальный снимок, не координируясь
+// с Enqueue/Close, и для самотелеметрии/бэкпрешера этого достаточно. Значение
+// НЕ обрезается единицей: очередь физически может перебрать потолок между
+// проверкой admit и постановкой, и это должно быть видно.
+func (p *Pipeline) QueueSaturation() float64 {
+	rows := queueSaturation(int64(len(p.queue)), int64(cap(p.queue)))
+	bytes := queueSaturation(p.QueuedBytes(), p.queueLimit())
+	if bytes > rows {
+		return bytes
+	}
+	return rows
+}
+
+// queueSaturation считает долю num/den. den<=0 — потолок выключен нулём и
+// значит «этим лимитом не ограничены», а не «делить не на что»: такой
+// потолок не должен ни паниковать, ни искусственно показывать насыщение.
+func queueSaturation(num, den int64) float64 {
+	if den <= 0 {
+		return 0
+	}
+	return float64(num) / float64(den)
+}
+
 // release возвращает бюджет после обработки задачи.
 func (p *Pipeline) release(size int64) { p.queueBytes.Add(-size) }
 
