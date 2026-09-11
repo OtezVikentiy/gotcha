@@ -298,6 +298,28 @@ docker compose logs -f clickhouse
 ```
 A common cause is a configuration error message (e.g. the requirement to set `GOTCHA_SECRET_KEY`, see step 5) right there in the `gotcha` log.
 
+**`gotcha` dies with `exec /usr/local/bin/gotcha: operation not permitted` while `postgres` and `clickhouse` stay `Up`.**
+The image is not at fault: that line is printed by Docker, not by the app — the process never got to start. It is how an AppArmor refusal looks on a host where `dockerd` itself runs under a security profile, i.e. **Docker was installed from snap**. The kernel forbids such a `dockerd` from switching a container into another profile while the container has `no-new-privileges` set, and that flag is on the `gotcha` service alone — which is why the databases come up fine.
+
+One command checks it, with Gotcha out of the picture:
+```bash
+docker run --rm --security-opt no-new-privileges:true alpine:3.21 echo ok
+snap list docker      # tells you whether Docker came from snap
+```
+If it prints `exec /bin/echo: operation not permitted` instead of `ok`, this is your cause.
+
+The fix is to reinstall Docker from the official source instead of snap. Be aware that **`snap remove docker` also deletes every image, container and volume the snap Docker created** — save anything valuable first.
+```bash
+sudo snap remove docker
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER     # then log out and back in
+```
+If changing the Docker installation is not an option, drop the flag in `.env` and bring the stack back up:
+```env
+GOTCHA_COMPOSE_NO_NEW_PRIVS=false
+```
+This weakens one layer out of several: the container still runs as an unprivileged user, with no capabilities at all and a read-only filesystem.
+
 **Port already in use** (`bind: address already in use`).
 Something on the server is already listening on 59080. Pick a different host port via `.env`:
 ```env

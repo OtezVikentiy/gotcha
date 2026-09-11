@@ -103,6 +103,7 @@ These four are **Docker Compose substitution variables**, not configuration of t
 | `GOTCHA_COMPOSE_NET_MTU` | `1500` | MTU of the container network. A last resort for one specific failure — see below; a mismatch on its own is not a reason to touch it. |
 | `GOTCHA_COMPOSE_BIND` | `127.0.0.1` | Host address the app port is published on. Loopback only by default — the port isn't reachable from outside the server until you explicitly set `0.0.0.0` (see [Installation](/docs/installation)). |
 | `GOTCHA_COMPOSE_PORT` | `59080` | Host port the app container is published on (the container's own port, `8080`, doesn't change). Change it if `59080` on the host is already taken by another service. |
+| `GOTCHA_COMPOSE_NO_NEW_PRIVS` | `true` | The `no-new-privileges` flag on the app container. Setting it to `false` makes sense in exactly one situation: the container dies at startup with `exec /usr/local/bin/gotcha: operation not permitted` while `postgres` and `clickhouse` are healthy. That is an AppArmor refusal on a host where `dockerd` itself is confined (Docker from snap), not a broken image — the walkthrough and the one-line check are under "Troubleshooting" in [Installation](/docs/installation). The proper fix is Docker not from snap; this switch gets you running until then. The rest of the container's isolation (non-root user, `cap_drop: ALL`, `read_only`) is unchanged. |
 
 ### Build-only variables (`Makefile` build-args)
 

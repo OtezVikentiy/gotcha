@@ -53,7 +53,16 @@ services:
     # Приложению не нужны capabilities и запись в свою ФС (логи в stderr, состояние
     # в базах). Ужимаем поверхность для чужого кода. tmpfs /tmp — на случай рантайма.
     security_opt:
-      - no-new-privileges:true
+      # Дефолт — включено; переключатель нужен ровно для одного случая. Если сам
+      # dockerd работает под профилем AppArmor (так устроена сборка из snap),
+      # ядро отказывает в переходе в профиль контейнера при выставленном
+      # NO_NEW_PRIVS, и контейнер падает на exec с «operation not permitted» ещё
+      # до первой строки лога — снаружи это выглядит как «образ битый», хотя
+      # дело в хосте. Ограничение snapd известно и не закрыто; правильный выход
+      # — Docker не из snap, а GOTCHA_COMPOSE_NO_NEW_PRIVS=false в .env даёт
+      # запуститься здесь и сейчас. Остальная изоляция (non-root uid 10001,
+      # cap_drop ALL, read_only) при этом остаётся на месте.
+      - "no-new-privileges:${GOTCHA_COMPOSE_NO_NEW_PRIVS:-true}"
     cap_drop:
       - ALL
     read_only: true

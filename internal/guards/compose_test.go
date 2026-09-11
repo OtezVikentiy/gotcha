@@ -128,14 +128,28 @@ func TestComposeServicesAreBounded(t *testing.T) {
 	// Ужесточение приложения: у gotcha нет причин иметь capabilities, запись
 	// в свою ФС или неограниченное число процессов.
 	gotcha := cf.Services["gotcha"]
+	// Допустимых форм ровно две: литерал и подстановка С ДЕФОЛТОМ true.
+	// Переключатель ${GOTCHA_COMPOSE_NO_NEW_PRIVS:-true} существует для хостов,
+	// где dockerd сам confined под AppArmor (сборка из snap) и ядро отказывает
+	// в переходе в профиль контейнера при NO_NEW_PRIVS — там контейнер падает
+	// на exec ещё до первой строки лога. Снять ужесточение оператор может
+	// осознанно через .env, но ДЕФОЛТ ПОСТАВКИ обязан оставаться true: форма
+	// без дефолта (${…}) или с дефолтом false выключила бы его молча и у всех,
+	// а это ровно тот класс «ослабили и не заметили», против которого сторож.
+	const (
+		nnpLiteral = "no-new-privileges:true"
+		nnpSubst   = "no-new-privileges:${GOTCHA_COMPOSE_NO_NEW_PRIVS:-true}"
+	)
 	hasNNP := false
 	for _, o := range gotcha.SecurityOpt {
-		if o == "no-new-privileges:true" {
+		if o == nnpLiteral || o == nnpSubst {
 			hasNNP = true
 		}
 	}
 	if !hasNNP {
-		t.Error("docker-compose.yml: gotcha без security_opt no-new-privileges:true")
+		t.Errorf("docker-compose.yml: у gotcha нет security_opt %q и нет %q "+
+			"(security_opt=%q) — дефолт поставки обязан включать no-new-privileges",
+			nnpLiteral, nnpSubst, gotcha.SecurityOpt)
 	}
 	hasAll := false
 	for _, c := range gotcha.CapDrop {
