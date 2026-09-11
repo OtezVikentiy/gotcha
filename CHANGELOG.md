@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-09-11
+
 ### Added
 - `GOTCHA_COMPOSE_NO_NEW_PRIVS` switches the app container's
   `no-new-privileges` flag off for hosts that cannot run with it. It is on by
