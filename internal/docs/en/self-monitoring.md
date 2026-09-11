@@ -210,13 +210,22 @@ front door and that buffer: without this wait, a worker would push tasks into
 the full buffer unconditionally, and the buffer drops the oldest one on
 overflow — an event the client already got a `200` for would be gone within
 seconds of ClickHouse being down. The wait is capped in seconds (it does not
-wait for the store to recover) and is cut short immediately on shutdown — a
-growing counter is exactly the point: ingest is honestly answering `503` per
-`gotcha_pipeline_queue_depth` instead of silently dropping events behind
-`gotcha_pipeline_dropped_tasks_total`'s back. Wait time growing noticeably
-faster than the wait count means workers are usually using up the whole
-budget without the buffer ever freeing up — look at ClickHouse throughput
-then, not at the pipeline itself.
+wait for the store to recover) and is cut short immediately on shutdown, so
+stuck workers don't eat into the drain budget.
+
+A nonzero counter is best read together with where ingest's `503` actually
+comes from: `Pipeline.EventSaturation`/`TransactionSaturation` is the maximum
+of the intake queue's depth and this particular write buffer's fill level,
+and the overload preflight (`503` + `Retry-After`) fires on that maximum. So
+`503` can perfectly well show up while `gotcha_pipeline_queue_depth` looks
+calm and nowhere near `gotcha_pipeline_queue_capacity` — the cause sits in the
+write buffer, not the queue, and without the `backpressure_waits`/
+`backpressure_wait_seconds` pair it wouldn't be visible at all. A growing
+counter is exactly the point: ingest is honestly answering `503` instead of
+silently dropping events behind `gotcha_pipeline_dropped_tasks_total`'s back.
+Wait time growing noticeably faster than the wait count means workers are
+usually using up the whole budget without the buffer ever freeing up — look
+at ClickHouse throughput then, not at the pipeline itself.
 
 **`gotcha_cardinality_collapsed_total`** / **`gotcha_cardinality_tracked_values`**
 — the cardinality guard at work: how many open-field values (transaction names,
