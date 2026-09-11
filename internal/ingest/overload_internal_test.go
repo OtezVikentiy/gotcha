@@ -936,3 +936,368 @@ func TestOverloadEnvelopeBothQuotaExceededStaysOldBehavior(t *testing.T) {
 		t.Errorf("IncDroppedTransactions = %d, want 1", got)
 	}
 }
+
+// envelopeProfileItem — item профиля Sentry-формата для тестов ниже: те же
+// два JSON-документа (type + payload), что шлёт SDK.
+const envelopeProfileItem = `{"type":"profile"}
+{"platform":"python","transaction":{"name":"GET /x"},"profile":{"frames":[{"function":"main"},{"function":"slow"}],"stacks":[[1,0]],"samples":[{"stack_id":0},{"stack_id":0}]}}
+`
+
+// --- T4: профили — полноправный класс конверта, не приложение к нему ---
+
+// TestProfileAcceptedDespiteTransientOverloadQuotaClash — стык событий/
+// транзакций (один насыщен, другой честно выбил квоту) сам по себе отвечает
+// переходной 503 (см. TestOverloadEnvelopeOverloadBeatsQuota), но профиль в
+// том же конверте — полноправный класс СО СВОЕЙ квотой и СВОИМ буфером:
+// если у него всё в порядке (буфер свободен, квота есть), он не должен
+// гибнуть из-за чужого стыка причин отказа. Раз хоть один класс фактически
+// принят (профиль), «под 503 не принято НИЧЕГО» уже неверно — ответ 200,
+// событие и транзакция дропнуты и залогированы как обычно, профиль дошёл до
+// синка и списал свою квоту.
+func TestProfileAcceptedDespiteTransientOverloadQuotaClash(t *testing.T) {
+	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
+{"type":"event"}
+{"message":"e"}
+` + envelopeTxItem + envelopeProfileItem
+
+	p, ev, sp := newSatPipeline(1.0, 0.5) // события насыщены, транзакции свободны
+	dc := newFakeDropCounter()
+	sink := &satProfileSink{sat: 0}
+	q := &fixedBudgetCountingQuota{n: 10} // квота профилей есть и должна быть использована
+	h := NewHandler(overloadKeyCache(), nil, p, 1<<20)
+	h.TxQuota = denyingQuota{}
+	h.ProfileQuota = q
+	h.DropCounter = dc
+	h.Profiles = sink
+	p.Start()
+	w := httptest.NewRecorder()
+	h.envelope(w, envelopeRequest(body))
+	p.Close(context.Background())
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (профиль принят, значит НЕ «ничего не принято»), body=%s", w.Code, w.Body.String())
+	}
+	if ev.count() != 0 || sp.count() != 0 {
+		t.Errorf("до приёмников дошло: events=%d tx=%d, want 0/0 (событие насыщено, транзакция без квоты)", ev.count(), sp.count())
+	}
+	if sink.count() != 1 {
+		t.Errorf("ProfileSink увидел %d профилей, want 1 (у профиля своя здоровая квота и буфер)", sink.count())
+	}
+	if got := q.count(); got != 1 {
+		t.Errorf("h.grant для профилей вызван %d раз, want 1", got)
+	}
+	if got := dc.profilesCalls; got != 0 {
+		t.Errorf("IncDroppedProfiles вызван %d раз, want 0 (профиль принят, не дропнут)", got)
+	}
+}
+
+// TestProfileTransitionalClashEventOverloadedProfileQuotaExhausted —
+// сценарий (а) достройки транзитной 503 профилем: событие насыщено (буфер),
+// профиль честно выбил квоту, транзакций нет. Оба присутствующих класса
+// отбиты, причины РАЗНЫЕ (насыщение vs квота) — выигрывает переходная 503, а
+// не 429: у профиля тот же статус ретраибельного класса, что у событий и
+// транзакций. Профильная квота не списывается сверх того, что уже было (её
+// не было — grant вызывается, возвращает 0, доп. списания нет), профиль не
+// принят.
+func TestProfileTransitionalClashEventOverloadedProfileQuotaExhausted(t *testing.T) {
+	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
+{"type":"event"}
+{"message":"e"}
+` + envelopeProfileItem
+
+	p, ev, _ := newSatPipeline(1.0, 0) // событие насыщено
+	dc := newFakeDropCounter()
+	sink := &satProfileSink{sat: 0}
+	h := NewHandler(overloadKeyCache(), nil, p, 1<<20)
+	h.ProfileQuota = denyingQuota{}
+	h.DropCounter = dc
+	h.Profiles = sink
+	p.Start()
+	w := httptest.NewRecorder()
+	h.envelope(w, envelopeRequest(body))
+	p.Close(context.Background())
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (переходная причина), body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Retry-After"); got != "5" {
+		t.Errorf("Retry-After = %q, want 5", got)
+	}
+	if got := h.RejectedBy(RejectOverloaded, SignalEvent); got != 1 {
+		t.Errorf("RejectedBy(overloaded, event) = %d, want 1 (насыщенный класс — причина ответа)", got)
+	}
+	if ev.count() != 0 {
+		t.Errorf("батчер событий увидел %d, want 0", ev.count())
+	}
+	if sink.count() != 0 {
+		t.Errorf("ProfileSink увидел %d профилей, want 0 (под 503 не принято ничего)", sink.count())
+	}
+	if got := dc.profilesCalls; got != 0 {
+		t.Errorf("IncDroppedProfiles вызван %d раз, want 0 (под 503 дроп не считается — честный шанс при ретрае)", got)
+	}
+}
+
+// TestProfileTransitionalClashProfileOverloadedEventQuotaExhausted —
+// сценарий (б): буфер профилей насыщен, событие честно выбило квоту,
+// транзакций нет. Единственный НАСЫЩЕННЫЙ присутствующий класс — профиль,
+// поэтому по правилу «событие, иначе транзакция, иначе профиль» (то же, что
+// уже применяет overload preflight выше) сигнал переходной 503 — профиль:
+// именно он ретраится через 5с, событие честно исчерпало месячную квоту, но
+// проигрывает профилю как менее срочная причина отказа для ЭТОГО конверта.
+func TestProfileTransitionalClashProfileOverloadedEventQuotaExhausted(t *testing.T) {
+	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
+{"type":"event"}
+{"message":"e"}
+` + envelopeProfileItem
+
+	p, ev, _ := newSatPipeline(0, 0)
+	sink := &satProfileSink{sat: 1.0} // буфер профилей насыщен
+	h := NewHandler(overloadKeyCache(), denyingQuota{}, p, 1<<20)
+	h.Profiles = sink
+	p.Start()
+	w := httptest.NewRecorder()
+	h.envelope(w, envelopeRequest(body))
+	p.Close(context.Background())
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (переходная причина), body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Retry-After"); got != "5" {
+		t.Errorf("Retry-After = %q, want 5", got)
+	}
+	if got := h.RejectedBy(RejectOverloaded, SignalProfile); got != 1 {
+		t.Errorf("RejectedBy(overloaded, profile) = %d, want 1 (насыщенный класс — причина ответа)", got)
+	}
+	if ev.count() != 0 {
+		t.Errorf("батчер событий увидел %d, want 0", ev.count())
+	}
+	if sink.count() != 0 {
+		t.Errorf("ProfileSink увидел %d профилей, want 0 (буфер насыщен)", sink.count())
+	}
+}
+
+// TestProfilesSurviveEventAndTxQuotaExhaustion — конверт «события + транзакции
+// + профили», квоты событий и транзакций исчерпаны, квота профилей есть:
+// профиль обязан дойти до h.Profiles НЕЗАВИСИМО от судьбы событий/транзакций,
+// ответ 200, события и транзакции по-прежнему учтены в дропах и логах. До T4
+// блок профилей стоял ПОСЛЕ этой развилки и до него просто не доходил код.
+func TestProfilesSurviveEventAndTxQuotaExhaustion(t *testing.T) {
+	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
+{"type":"event"}
+{"message":"e"}
+` + envelopeTxItem + envelopeProfileItem
+
+	p, ev, sp := newSatPipeline(0, 0) // насыщения буферов нет — обе причины отказа честно квотные
+	dc := newFakeDropCounter()
+	sink := &satProfileSink{sat: 0}
+	h := NewHandler(overloadKeyCache(), denyingQuota{}, p, 1<<20)
+	h.TxQuota = denyingQuota{}
+	h.DropCounter = dc
+	h.Profiles = sink
+	p.Start()
+	w := httptest.NewRecorder()
+	h.envelope(w, envelopeRequest(body))
+	p.Close(context.Background())
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	if sink.count() != 1 {
+		t.Errorf("ProfileSink увидел %d профилей, want 1 (профиль не должен пропасть из-за чужой квоты)", sink.count())
+	}
+	if ev.count() != 0 || sp.count() != 0 {
+		t.Errorf("до приёмников дошло: events=%d tx=%d, want 0/0 (обе квоты честно исчерпаны)", ev.count(), sp.count())
+	}
+	if got := dc.events[1]; got != 1 {
+		t.Errorf("IncDroppedEvents = %d, want 1", got)
+	}
+	if got := dc.transactions[1]; got != 1 {
+		t.Errorf("IncDroppedTransactions = %d, want 1", got)
+	}
+}
+
+// TestProfilesDroppedWhenAllThreeQuotasExhausted — тот же конверт, но
+// исчерпаны ВСЕ ТРИ квоты: 429, профиль не принят, дроп профиля учтён —
+// профильное плечо участвует в правиле «429 по ВСЕМ присутствующим классам»
+// наравне с событиями и транзакциями.
+func TestProfilesDroppedWhenAllThreeQuotasExhausted(t *testing.T) {
+	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
+{"type":"event"}
+{"message":"e"}
+` + envelopeTxItem + envelopeProfileItem
+
+	p, ev, sp := newSatPipeline(0, 0)
+	dc := newFakeDropCounter()
+	sink := &satProfileSink{sat: 0}
+	h := NewHandler(overloadKeyCache(), denyingQuota{}, p, 1<<20)
+	h.TxQuota = denyingQuota{}
+	h.ProfileQuota = denyingQuota{}
+	h.DropCounter = dc
+	h.Profiles = sink
+	p.Start()
+	w := httptest.NewRecorder()
+	h.envelope(w, envelopeRequest(body))
+	p.Close(context.Background())
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429, body=%s", w.Code, w.Body.String())
+	}
+	if sink.count() != 0 {
+		t.Errorf("ProfileSink увидел %d профилей, want 0 (квота профилей тоже исчерпана)", sink.count())
+	}
+	if ev.count() != 0 || sp.count() != 0 {
+		t.Errorf("до приёмников дошло: events=%d tx=%d, want 0/0", ev.count(), sp.count())
+	}
+	if got := dc.profilesCalls; got != 1 {
+		t.Errorf("IncDroppedProfiles вызван %d раз, want 1 (дроп профиля обязан быть учтён)", got)
+	}
+}
+
+// TestProfileOnlyEnvelopeQuotaExceededNowRejects — конверт ИЗ ОДНИХ профилей,
+// квота профилей исчерпана: НОВОЕ поведение — 429 вместо прежнего тихого 200.
+// Раньше такой клиент получал успех и не узнавал, что его профили выброшены;
+// это та же честность, что уже действует для событий и транзакций.
+func TestProfileOnlyEnvelopeQuotaExceededNowRejects(t *testing.T) {
+	body := "{}\n" + envelopeProfileItem
+	p, _, _ := newSatPipeline(0, 0)
+	dc := newFakeDropCounter()
+	sink := &satProfileSink{sat: 0}
+	h := NewHandler(overloadKeyCache(), nil, p, 1<<20)
+	h.ProfileQuota = denyingQuota{}
+	h.DropCounter = dc
+	h.Profiles = sink
+	p.Start()
+	w := httptest.NewRecorder()
+	h.envelope(w, envelopeRequest(body))
+	p.Close(context.Background())
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 (новое поведение T4), body=%s", w.Code, w.Body.String())
+	}
+	if sink.count() != 0 {
+		t.Errorf("ProfileSink увидел %d профилей, want 0", sink.count())
+	}
+	if got := dc.profilesCalls; got != 1 {
+		t.Errorf("IncDroppedProfiles вызван %d раз, want 1", got)
+	}
+	if got := h.RejectedBy(RejectQuota, SignalProfile); got != 1 {
+		t.Errorf("RejectedBy(quota, profile) = %d, want 1", got)
+	}
+}
+
+// TestProfileOnlyEnvelopeQuotaAvailableAccepted — сторож обычного пути:
+// конверт из одних профилей, квота есть → 200, профиль принят.
+func TestProfileOnlyEnvelopeQuotaAvailableAccepted(t *testing.T) {
+	body := "{}\n" + envelopeProfileItem
+	p, _, _ := newSatPipeline(0, 0)
+	sink := &satProfileSink{sat: 0}
+	h := NewHandler(overloadKeyCache(), nil, p, 1<<20)
+	h.Profiles = sink
+	p.Start()
+	w := httptest.NewRecorder()
+	h.envelope(w, envelopeRequest(body))
+	p.Close(context.Background())
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	if sink.count() != 1 {
+		t.Errorf("ProfileSink увидел %d профилей, want 1", sink.count())
+	}
+}
+
+// TestProfileOverloadedBufferIgnoresQuotaRule — сторож 1.2.0: насыщенный
+// буфер профилей при живых квотах ведёт себя РОВНО как прежде — тихий дроп
+// профиля, статус ответа решают остальные классы (T4 профильное плечо
+// 429-правила его не касается: profQuotaRelevant исключает насыщенный класс
+// тем же способом, что и eventQuotaRelevant/txQuotaRelevant).
+func TestProfileOverloadedBufferIgnoresQuotaRule(t *testing.T) {
+	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
+{"type":"event"}
+{"message":"e"}
+` + envelopeProfileItem
+
+	p, ev, _ := newSatPipeline(0, 0)
+	dc := newFakeDropCounter()
+	sink := &satProfileSink{sat: 1.0} // буфер профилей насыщен, квоты ни при чём
+	h := NewHandler(overloadKeyCache(), nil, p, 1<<20)
+	h.DropCounter = dc
+	h.Profiles = sink
+	p.Start()
+	w := httptest.NewRecorder()
+	h.envelope(w, envelopeRequest(body))
+	p.Close(context.Background())
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (событие свободно, насыщение профиля не должно давать 429/503), body=%s", w.Code, w.Body.String())
+	}
+	if ev.count() != 1 {
+		t.Errorf("батчер событий увидел %d, want 1", ev.count())
+	}
+	if sink.count() != 0 {
+		t.Errorf("ProfileSink увидел %d профилей, want 0 (буфер насыщен)", sink.count())
+	}
+	if h.ProfileQuota != nil {
+		t.Fatalf("тест предполагает h.ProfileQuota == nil (грант не должен зваться при насыщении)")
+	}
+	if got := dc.profilesCalls; got != 1 {
+		t.Errorf("IncDroppedProfiles вызван %d раз, want 1", got)
+	}
+}
+
+// fixedBudgetCountingQuota — как fixedQuotaChecker (выдаёт ровно n единиц,
+// остаток исчерпан), но вдобавок считает обращения: нужен там, где важно не
+// только СКОЛЬКО выдано, но и СКОЛЬКО РАЗ квоту вообще спрашивали — двойной
+// вызов должен быть виден, даже если оба раза квоты хватило бы.
+type fixedBudgetCountingQuota struct {
+	mu    sync.Mutex
+	n     int64
+	calls int
+}
+
+func (q *fixedBudgetCountingQuota) CheckAndCount(_ context.Context, _ int64, want int64) (int64, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.calls++
+	granted := want
+	if granted > q.n {
+		granted = q.n
+	}
+	q.n -= granted
+	return granted, nil
+}
+
+func (q *fixedBudgetCountingQuota) count() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.calls
+}
+
+// TestProfileQuotaGrantedExactlyOnce — перенос блока профилей (T4) не должен
+// приводить к повторному списанию профильной квоты: h.grant для профилей
+// обязан вызываться РОВНО один раз на запрос. Квота — биллинговый счётчик
+// организации, лишний вызов означает, что клиент платит за один и тот же
+// профиль дважды.
+func TestProfileQuotaGrantedExactlyOnce(t *testing.T) {
+	body := "{}\n" + envelopeProfileItem
+	p, _, _ := newSatPipeline(0, 0)
+	sink := &satProfileSink{sat: 0}
+	q := &fixedBudgetCountingQuota{n: 10}
+	h := NewHandler(overloadKeyCache(), nil, p, 1<<20)
+	h.ProfileQuota = q
+	h.Profiles = sink
+	p.Start()
+	w := httptest.NewRecorder()
+	h.envelope(w, envelopeRequest(body))
+	p.Close(context.Background())
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	if sink.count() != 1 {
+		t.Errorf("ProfileSink увидел %d профилей, want 1", sink.count())
+	}
+	if got := q.count(); got != 1 {
+		t.Errorf("h.grant для профилей вызван %d раз, want 1 (двойное списание квоты)", got)
+	}
+}

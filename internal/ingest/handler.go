@@ -885,6 +885,15 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 	// не участвовали) принят нормально.
 	eventQuotaRelevant := hasEvents && !eventOverloaded
 	txQuotaRelevant := hasTx && !txOverloaded
+	// profQuotaRelevant — присутствующий и НЕ насыщенный класс профилей,
+	// зеркало eventQuotaRelevant/txQuotaRelevant: посчитан здесь же, ДО
+	// развилок ниже, чтобы участвовать и в переходной 503 (следующий блок), и
+	// в решении «квота исчерпана по ВСЕМ присутствующим типам» на равных с
+	// событиями и транзакциями. h.Profiles == nil (приём профилей не
+	// сконфигурирован) исключён тем же способом, что и из самой обработки
+	// профилей ниже: класс, который приёмник не умеет принимать, не может
+	// стать причиной отказа.
+	profQuotaRelevant := hasProfiles && h.Profiles != nil && !profOverloaded
 	// Квота списывается ЗА ЭЛЕМЕНТ. Списание частичное: если до квоты осталось
 	// меньше, чем в конверте, принимаем сколько влезло, остаток идёт в дропы —
 	// организация получает ровно свою квоту, а не «последний конверт целиком
@@ -897,25 +906,48 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 	if txQuotaRelevant {
 		txGranted = h.grant(r.Context(), h.TxQuota, key.OrgID, "transaction", len(txSelected))
 	}
+	// profGranted считается ЗДЕСЬ же, наравне с eventsGranted/txGranted — до
+	// развилки переходной 503 ниже, а не в блоке обработки профилей дальше по
+	// функции. Профиль — такой же ретраибельный класс со своей квотой и своим
+	// буфером, что и события с транзакциями: его исчерпание квоты обязано
+	// участвовать в выборе между 503 и 429 на общих основаниях, а не только в
+	// самом 429. Фактическая постановка профиля в h.Profiles (парсинг,
+	// скрабинг, ограничение кардинальности) по-прежнему в блоке ниже — там же
+	// остаётся весь дроп-лог; здесь только списание квоты.
+	var profGranted int
+	if profQuotaRelevant {
+		profGranted = h.grant(r.Context(), h.ProfileQuota, key.OrgID, "profile", len(env.Profiles))
+	}
 	eventsAllowed := eventsGranted > 0
 	txAllowed := txGranted > 0
-	// Стык двух причин отказа: оба присутствующих класса отбиты, но по РАЗНЫМ
-	// причинам — один насыщен (eventOverloaded/txOverloaded), другой честно
-	// выбил месячную квоту. Выигрывает ПЕРЕХОДНАЯ причина — 503, а не 429: у
-	// 429 Retry-After считается до 1-го числа следующего месяца
-	// (writeQuotaExceeded), и такой ответ хоронил бы насыщенный класс, который
-	// приёмник принял бы уже через 5 секунд, вместе с честно исчерпанным.
-	// Решение ДО учёта дропов ниже — под 503 не принято НИЧЕГО, включая класс,
-	// исчерпавший квоту (он получит свой отказ заново при ретрае и ничего не
-	// потратит повторно, grant вернёт 0), и countDrop не должен считать это
-	// дропом: то, что раньше тихо уходило туда под 429, теперь просто не
-	// принято. Ветка «оба отбиты, но НИ ОДИН не насыщен» сюда не попадает
-	// (условие ниже) и остаётся прежним 429 бит-в-бит.
-	if (eventQuotaRelevant || txQuotaRelevant) && !eventsAllowed && !txAllowed &&
-		(eventOverloaded || txOverloaded) {
-		signal, saturation := SignalTransaction, txSat
-		if eventOverloaded {
+	profAllowed := profGranted > 0
+	// Стык двух причин отказа: все присутствующие классы отбиты, но по РАЗНЫМ
+	// причинам — хотя бы один насыщен (eventOverloaded/txOverloaded/
+	// profOverloaded), другой (другие) честно выбили месячную квоту.
+	// Выигрывает ПЕРЕХОДНАЯ причина — 503, а не 429: у 429 Retry-After
+	// считается до 1-го числа следующего месяца (writeQuotaExceeded), и такой
+	// ответ хоронил бы насыщенный класс, который приёмник принял бы уже через
+	// 5 секунд, вместе с честно исчерпанным. Решение ДО учёта дропов ниже —
+	// под 503 не принято НИЧЕГО, включая класс, исчерпавший квоту (он получит
+	// свой отказ заново при ретрае и ничего не потратит повторно, grant
+	// вернёт 0, что уже посчитано выше и ничего не спишет дополнительно), и
+	// countDrop не должен считать это дропом: то, что раньше тихо уходило
+	// туда под 429, теперь просто не принято. Ветка «все отбиты, но НИ ОДИН
+	// не насыщен» сюда не попадает (условие ниже) и остаётся прежним 429
+	// бит-в-бит, включая профильный detail.
+	//
+	// signal выбирается по насыщенному классу в фиксированном порядке:
+	// событие, иначе транзакция, иначе профиль — тот же порядок, что уже
+	// применяет overload preflight выше (all-saturated ветка).
+	if (eventQuotaRelevant || txQuotaRelevant || profQuotaRelevant) &&
+		!eventsAllowed && !txAllowed && !profAllowed &&
+		(eventOverloaded || txOverloaded || profOverloaded) {
+		signal, saturation := SignalProfile, profSat
+		switch {
+		case eventOverloaded:
 			signal, saturation = SignalEvent, eventSat
+		case txOverloaded:
+			signal, saturation = SignalTransaction, txSat
 		}
 		h.overloaded(w, key.OrgID, projectID, signal, saturation)
 		return
@@ -936,12 +968,68 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 	if dropped := len(txSelected) - txGranted; dropped > 0 {
 		h.countDrop(r.Context(), dropTransaction, key.OrgID, dropped)
 	}
-	if (eventQuotaRelevant || txQuotaRelevant) && !eventsAllowed && !txAllowed {
+	// Профили (этап 7) обрабатываются ЗДЕСЬ — до развилки ответа по квоте
+	// событий/транзакций ниже, а не после постановки событий/транзакций в
+	// очередь, как было раньше. Раньше блок стоял в самом конце, и конверт, у
+	// которого исчерпаны квоты И событий, И транзакций, отвечал 429 ранним
+	// возвратом (см. ниже), даже не дойдя до профилей: они пропадали молча,
+	// ни в дроп, ни в лог, никуда — при том, что у профилей своя отдельная
+	// квота и свой отдельный буфер, и они не должны гибнуть из-за чужого
+	// лимита. Перенос делает профили полноправным классом конверта: приняты
+	// они или нет, решается независимо от судьбы событий и транзакций, а не
+	// как приложение к ним. Транзитную 503 выше (переходная причина отказа)
+	// это тоже уже касается — профиль там полноправный участник (см. блок
+	// выше), и до этой строки код не доходит, если 503 сработал.
+	//
+	// Насыщенный буфер профилей (profOverloaded) — та же дисциплина, что у
+	// событий/транзакций выше: квоту не трогаем (h.grant уже не звался и
+	// здесь не зовётся — profGranted посчитан выше), все элементы уходят в
+	// дроп, класс виден в логе отдельной причиной. Битый профиль по-прежнему
+	// пропускается без влияния на статус — это дефект данных клиента, а не
+	// отказ приёмника. Эту часть T4 не меняет.
+	if hasProfiles && h.Profiles != nil {
+		if profOverloaded {
+			slog.Warn("ingest: dropping items from envelope",
+				"reason", "buffer overloaded", "class", "profile",
+				"dropped", len(env.Profiles), "accepted", 0,
+				"project_id", projectID, "org_id", key.OrgID)
+			h.countDrop(r.Context(), dropProfile, key.OrgID, len(env.Profiles))
+		} else {
+			if dropped := len(env.Profiles) - profGranted; dropped > 0 {
+				slog.Warn("ingest: profile quota exceeded, dropping profiles",
+					"dropped", dropped, "accepted", profGranted,
+					"project_id", projectID, "org_id", key.OrgID)
+				h.countDrop(r.Context(), dropProfile, key.OrgID, dropped)
+			}
+			for _, raw := range env.Profiles[:profGranted] {
+				prof, err := profile.ParseSentry(raw, time.Now().UTC())
+				if err != nil {
+					slog.Warn("ingest: bad sentry profile, skipped", "project_id", projectID, "error", err)
+					continue
+				}
+				h.scrubProfile(&prof)
+				h.limitProfileCardinality(projectID, &prof)
+				h.Profiles.Add(key.ProjectID, prof)
+			}
+		}
+	}
+	// eventQuotaRelevant/txQuotaRelevant/profQuotaRelevant и eventsAllowed/
+	// txAllowed/profAllowed уже посчитаны выше (наравне с переходной 503).
+	// Следствие, принятое сознательно: конверт из ОДНИХ профилей с исчерпанной
+	// квотой профилей теперь получает 429 вместо прежнего 200 — раньше такой
+	// клиент получал успех и не узнавал, что его профили выброшены. Это та же
+	// честность, что уже действует для событий и транзакций.
+	if (eventQuotaRelevant || txQuotaRelevant || profQuotaRelevant) && !eventsAllowed && !txAllowed && !profAllowed {
 		detail := "event quota exceeded"
 		signal := SignalEvent
-		if !eventQuotaRelevant {
+		switch {
+		case eventQuotaRelevant:
+		case txQuotaRelevant:
 			detail = "transaction quota exceeded"
 			signal = SignalTransaction
+		default:
+			detail = "profile quota exceeded"
+			signal = SignalProfile
 		}
 		h.writeQuotaExceeded(w, signal, detail)
 		return
@@ -986,38 +1074,6 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 	}
 	if txGranted > 0 {
 		h.enqueueTransactions(projectID, key.OrgID, txSelected[:txGranted])
-	}
-	// Профили (этап 7) — best-effort: своя квота, отдельная от событий/транзакций;
-	// её исчерпание или битый профиль не меняют статус ответа по остальным типам.
-	// Насыщенный буфер профилей (profOverloaded) — та же дисциплина, что у
-	// событий/транзакций выше: квоту не трогаем (h.grant не зовём), все
-	// элементы уходят в дроп, класс виден в логе отдельной причиной.
-	if hasProfiles && h.Profiles != nil {
-		if profOverloaded {
-			slog.Warn("ingest: dropping items from envelope",
-				"reason", "buffer overloaded", "class", "profile",
-				"dropped", len(env.Profiles), "accepted", 0,
-				"project_id", projectID, "org_id", key.OrgID)
-			h.countDrop(r.Context(), dropProfile, key.OrgID, len(env.Profiles))
-		} else {
-			profGranted := h.grant(r.Context(), h.ProfileQuota, key.OrgID, "profile", len(env.Profiles))
-			if dropped := len(env.Profiles) - profGranted; dropped > 0 {
-				slog.Warn("ingest: profile quota exceeded, dropping profiles",
-					"dropped", dropped, "accepted", profGranted,
-					"project_id", projectID, "org_id", key.OrgID)
-				h.countDrop(r.Context(), dropProfile, key.OrgID, dropped)
-			}
-			for _, raw := range env.Profiles[:profGranted] {
-				prof, err := profile.ParseSentry(raw, time.Now().UTC())
-				if err != nil {
-					slog.Warn("ingest: bad sentry profile, skipped", "project_id", projectID, "error", err)
-					continue
-				}
-				h.scrubProfile(&prof)
-				h.limitProfileCardinality(projectID, &prof)
-				h.Profiles.Add(key.ProjectID, prof)
-			}
-		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": id})
 }
