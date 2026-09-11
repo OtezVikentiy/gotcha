@@ -361,6 +361,12 @@ func (h *Handler) sloDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.SLO.Delete(r.Context(), projectID, sloID); err != nil {
+		// Устаревшая страница или чужой проект: SLO уже нет. Это не отказ сервера —
+		// 404, иначе пользователь видит 500 там, где просто нечего удалять.
+		if errors.Is(err, slo.ErrNotFound) {
+			h.notFound(w, r)
+			return
+		}
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}

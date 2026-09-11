@@ -25,6 +25,12 @@ const maxSLOsPerProject = 100
 // web-слой отличил её от прочих ошибок и отдал 422, а не 500.
 var ErrTooManySLOs = errors.New("slo: too many slos for project")
 
+// ErrNotFound — записи нет (или она принадлежит другому проекту). Возвращается
+// удалением, когда DELETE не затронул ни строки: без этого «удалили ничего»
+// неотличимо от успеха, и web-слой рапортует 303 по несуществующему SLO.
+// Соседи ведут себя так же — uptime.Service.Delete, DeleteWindow, DeleteStatusPage.
+var ErrNotFound = errors.New("slo: not found")
+
 // capStr — обрезка строки до n рун. Имя НЕ `cap`: тот шадовит builtin.
 func capStr(s string, n int) string {
 	r := []rune(s)
@@ -153,10 +159,13 @@ func (s *Store) ListEnabled(ctx context.Context) ([]SLO, error) {
 // Delete удаляет SLO проекта (scoped по projectID — чужое не удалить). Инциденты
 // уходят каскадом (ON DELETE CASCADE).
 func (s *Store) Delete(ctx context.Context, projectID, id int64) error {
-	_, err := s.pool.Exec(ctx,
+	tag, err := s.pool.Exec(ctx,
 		"DELETE FROM slos WHERE project_id = $1 AND id = $2", projectID, id)
 	if err != nil {
 		return fmt.Errorf("slo: delete: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

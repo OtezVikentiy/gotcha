@@ -253,3 +253,48 @@ func TestSLOStoreAcknowledgeForeignProject(t *testing.T) {
 		t.Fatalf("после чужого Acknowledge: list=%+v err=%v, want AcknowledgedAt nil", list, err)
 	}
 }
+
+// TestSLOStoreDeleteNotFound — Delete обязан отличать «удалил» от «удалять было
+// нечего». До правки метод игнорировал RowsAffected и возвращал nil всегда:
+// удаление по устаревшему id или из чужого проекта выглядело успехом, а web-слой
+// на такой «успех» отдавал 303 и рисовал список, где запись оставалась на месте.
+func TestSLOStoreDeleteNotFound(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := seedProject(t, pool)
+	st := slo.NewStore(pool)
+
+	def, err := st.Create(ctx, slo.SLO{ProjectID: pid, Name: "to delete", Kind: slo.SLIAvailability,
+		Target: 0.99, WindowDays: 30, Transaction: "GET /", BurnThreshold: 14.4, BurnLongMin: 60,
+		BurnShortMin: 5, Enabled: true})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Несуществующий id.
+	if err := st.Delete(ctx, pid, def.ID+100500); !errors.Is(err, slo.ErrNotFound) {
+		t.Fatalf("Delete несуществующего = %v, want ErrNotFound", err)
+	}
+
+	// Чужой проект: id реальный, но не наш — удалять нечего, и запись обязана выжить.
+	if err := st.Delete(ctx, int64(999999), def.ID); !errors.Is(err, slo.ErrNotFound) {
+		t.Fatalf("Delete из чужого проекта = %v, want ErrNotFound", err)
+	}
+	if list, err := st.List(ctx, pid); err != nil || len(list) != 1 {
+		t.Fatalf("после чужого Delete list=%+v err=%v, want 1 запись", list, err)
+	}
+
+	// Свой — удаляется, второй раз уже нечего.
+	if err := st.Delete(ctx, pid, def.ID); err != nil {
+		t.Fatalf("Delete своего: %v", err)
+	}
+	if list, err := st.List(ctx, pid); err != nil || len(list) != 0 {
+		t.Fatalf("после Delete list=%+v err=%v, want пусто", list, err)
+	}
+	if err := st.Delete(ctx, pid, def.ID); !errors.Is(err, slo.ErrNotFound) {
+		t.Fatalf("повторный Delete = %v, want ErrNotFound", err)
+	}
+}
