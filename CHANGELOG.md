@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-11
+
 ### Changed
 - Profiles in a Sentry envelope are no longer silently lost once an
   organization has exhausted its event and transaction quotas — profiles now
