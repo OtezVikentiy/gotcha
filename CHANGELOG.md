@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-11
+
 ### Changed
 - When any in-memory buffer on an ingest signal's path (the pipeline queue,
   the ClickHouse batcher, a span/metric/log/profile writer) is saturated,
