@@ -202,6 +202,22 @@ fix:
 The split matters because the first two are cured by queue size and the third is
 not: no queue is large enough to make an unavailable database available.
 
+**`gotcha_pipeline_backpressure_waits_total`** / **`gotcha_pipeline_backpressure_wait_seconds_total`**
+— how many times an ingest worker waited for room in a saturated write buffer
+(the event batcher or the SpanWriter) before writing to it, and how long it
+waited in total. A queue of a thousand already-accepted tasks sits between the
+front door and that buffer: without this wait, a worker would push tasks into
+the full buffer unconditionally, and the buffer drops the oldest one on
+overflow — an event the client already got a `200` for would be gone within
+seconds of ClickHouse being down. The wait is capped in seconds (it does not
+wait for the store to recover) and is cut short immediately on shutdown — a
+growing counter is exactly the point: ingest is honestly answering `503` per
+`gotcha_pipeline_queue_depth` instead of silently dropping events behind
+`gotcha_pipeline_dropped_tasks_total`'s back. Wait time growing noticeably
+faster than the wait count means workers are usually using up the whole
+budget without the buffer ever freeing up — look at ClickHouse throughput
+then, not at the pipeline itself.
+
 **`gotcha_cardinality_collapsed_total`** / **`gotcha_cardinality_tracked_values`**
 — the cardinality guard at work: how many open-field values (transaction names,
 environments, metric names, services, operations) were collapsed into the

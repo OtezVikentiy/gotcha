@@ -148,8 +148,64 @@ type Pipeline struct {
 	// testPerfBudget подменяет perfDetectBudget в тестах; 0 — обычный бюджет.
 	testPerfBudget time.Duration
 
+	// testBackpressureBudget/testBackpressurePoll подменяют
+	// backpressureWaitBudget/backpressurePollInterval в тестах — тот же
+	// приём, что testPerfBudget выше для perfDetectBudget. Без него тесту
+	// ожидания пришлось бы либо реально стоять секундами бюджета по
+	// умолчанию на каждый прогон (пакет и так ~130с, см. CLAUDE.md), либо
+	// мочь опираться на точные миллисекунды константы — а это ровно то, от
+	// чего предостерегает бриф T6 (флейк на загруженной машине). 0 —
+	// обычные константы.
+	testBackpressureBudget time.Duration
+	testBackpressurePoll   time.Duration
+
 	closeMu sync.RWMutex
 	closed  bool
+
+	// stopping сигналит воркеру, ждущему место в насыщенном буфере записи
+	// (см. waitForRoom), что пайплайн останавливается. Дренаж в Close обязан
+	// слить очередь как можно быстрее: он может застать в очереди почти
+	// тысячу задач разом, и если каждая станет ждать свой бюджет перед
+	// Add, дренаж съест этот бюджет тысячекратно и упрётся в
+	// stop_grace_period (90с в compose) — правка против потери телеметрии
+	// сама станет её причиной.
+	//
+	// Атомарный флаг, а не канал: канал требовал бы поля, инициализируемого
+	// в NewPipeline, и у Pipeline{}, собранного тестовым литералом в обход
+	// конструктора (process/processTransaction без Start/Close — см.
+	// scrub_integration_test.go), остался бы nil — select на nil-канале
+	// никогда не срабатывает, и Close такого литерала вставал бы на весь
+	// backpressureBudget() на каждой насыщенной задаче вместо немедленного
+	// возврата. У atomic.Bool нулевое значение — валидный "не останавливаемся",
+	// ровно как для остальных полей Pipeline: поведение литерала и
+	// собранного NewPipeline пайплайна совпадает без специального случая.
+	//
+	// Store(true) — не close(): вызов идемпотентен сам по себе (повторный
+	// Store(true) не паникует), но Close всё равно вызывает его РОВНО один
+	// раз — под тем же closeMu, что и close(p.queue), защищённый проверкой
+	// p.closed.
+	//
+	// Проверяется внутри цикла опроса waitForRoom на каждый тик
+	// backpressurePoll() (50мс по умолчанию), а не немедленно по сигналу:
+	// цикл и так тикает с этим шагом ради проверки насыщенности, и
+	// задержка до полполлинга пренебрежима на фоне 90-секундного бюджета
+	// дренажа. waitForRoom сам closeMu не берёт (см. её докблок) —
+	// координация не нужна: атомарное чтение безопасно сколько угодно раз
+	// без гонки, а удержание closeMu на время ожидания заблокировало бы
+	// Enqueue у всех остальных in-flight запросов, ровно то, что не даёт
+	// делать preflight.
+	stopping atomic.Bool
+
+	// backpressureWaits/backpressureWaitNanos — самотелеметрия ожидания
+	// перед записью в насыщенный буфер (см. waitForRoom): сколько раз
+	// воркер ждал и сколько суммарно прождал. По образцу dropped ниже —
+	// процесс-локальные атомарные счётчики без атрибуции по организации:
+	// они отвечают не «чьи данные», а «почему приём сейчас честно отвечает
+	// 503, хотя очередь неполная» — без этой пары дежурный не отличит
+	// воркеры, стоящие в ожидании, от воркеров, просто медленно
+	// работающих (см. gotcha_pipeline_backpressure_waits_total).
+	backpressureWaits     atomic.Int64
+	backpressureWaitNanos atomic.Int64
 
 	// dropped — потери по причинам. ПРОЦЕСС-ЛОКАЛЬНЫЙ счётчик для
 	// самотелеметрии (gotcha_pipeline_dropped_tasks_total): живёт, пока жив
@@ -375,6 +431,25 @@ func (p *Pipeline) DroppedBy(reason DropReason) int64 {
 // регистрирует по метрике на причину.
 func DropReasons() []DropReason { return append([]DropReason(nil), dropReasons...) }
 
+// BackpressureWaits — сколько раз воркер ждал место в насыщенном буфере
+// записи перед Add (см. waitForRoom), за время жизни процесса. Самотелеметрия
+// наравне с Dropped выше: gotcha_pipeline_dropped_tasks_total говорит, что уже
+// потеряно, а эта метрика — почему приём мог честно отвечать 503, хотя
+// очередь пайплайна не полна: воркеры стоят перед батчером/SpanWriter, а не
+// простаивают и не заняты чем-то ещё.
+func (p *Pipeline) BackpressureWaits() int64 { return p.backpressureWaits.Load() }
+
+// BackpressureWaitSeconds — суммарное время всех ожиданий из
+// BackpressureWaits, в секундах, за время жизни процесса. Соотношение с
+// BackpressureWaits диагностирует ХАРАКТЕР насыщенности: растёт
+// пропорционально числу ожиданий — воркер обычно дожидается места быстрее
+// backpressureWaitBudget (флашер догоняет); растёт заметно быстрее — воркеры
+// чаще выбирают полный бюджет, не дождавшись освобождения, и стоит смотреть
+// на throughput ClickHouse, а не на сам пайплайн.
+func (p *Pipeline) BackpressureWaitSeconds() float64 {
+	return time.Duration(p.backpressureWaitNanos.Load()).Seconds()
+}
+
 // Queued — сколько задач ждёт обработки прямо сейчас.
 func (p *Pipeline) Queued() int64 { return int64(len(p.queue)) }
 
@@ -597,6 +672,94 @@ func (p *Pipeline) TransactionSaturation() float64 {
 // release возвращает бюджет после обработки задачи.
 func (p *Pipeline) release(size int64) { p.queueBytes.Add(-size) }
 
+// backpressureWaitBudget — бюджет ожидания ОДНОЙ задачи перед записью в
+// насыщенный буфер записи (батчер событий/SpanWriter), см. waitForRoom.
+// Умышленно НЕ соотнесён с интервалом флаша батчера (5с, event.Batcher) как
+// «подождать до тика»: цель ожидания — не дождаться выздоровления
+// хранилища (батчер может не разгрузиться ни за 5с, ни за минуту, пока
+// ClickHouse лежит, — ждать этого в воркере бессмысленно, см. бриф T6), а
+// дать очереди ПЕРЕД воркерами время заполниться, чтобы входная дверь
+// (Handler.overloaded, handler.go) начала честно отвечать 503 вместо приёма
+// с гарантированной последующей потерей. Секунды, не десятки: воркеров
+// четыре, и каждая лишняя секунда ожидания на воркер — секунда, которую эти
+// четыре воркера не разбирают очередь при деградации, то есть очередь
+// заполняется медленнее и дверь остаётся ложно открытой дольше.
+const backpressureWaitBudget = 2 * time.Second
+
+// backpressurePollInterval — шаг опроса насыщенности приёмника внутри
+// backpressureWaitBudget. Мельче — дороже (Saturation() не бесплатна, хоть и
+// не ходит в сеть, см. её реализации у батчера/SpanWriter); крупнее — грубее
+// ловит момент освобождения места и удерживает воркер дольше нужного при
+// быстрой разгрузке буфера.
+const backpressurePollInterval = 50 * time.Millisecond
+
+// backpressureBudget — бюджет ожидания; отдельный метод, чтобы тесты
+// подменяли его через поле (testBackpressureBudget), не трогая константу и
+// не ожидая реальными секундами на каждый прогон. Тот же приём, что у
+// perfBudget для perfDetectBudget.
+func (p *Pipeline) backpressureBudget() time.Duration {
+	if p.testBackpressureBudget > 0 {
+		return p.testBackpressureBudget
+	}
+	return backpressureWaitBudget
+}
+
+// backpressurePoll — шаг опроса; см. докблок backpressureBudget.
+func (p *Pipeline) backpressurePoll() time.Duration {
+	if p.testBackpressurePoll > 0 {
+		return p.testBackpressurePoll
+	}
+	return backpressurePollInterval
+}
+
+// waitForRoom ждёт, пока насыщенность sink (батчера событий или Spans) не
+// опустится ниже 1.0, но не дольше backpressureBudget() и не дольше, чем
+// идёт остановка пайплайна (см. p.stopping и докблок Close) — остановка
+// замечается на ближайшем тике опроса, с задержкой не больше
+// backpressurePoll(). Preflight 1.2.0 закрывает входную дверь при заполнении
+// буфера записи на 95%, но
+// между дверью и буфером стоит очередь на тысячу уже принятых задач —
+// без этого ожидания воркер безусловно толкает их в переполненный
+// батчер/SpanWriter, а тот на переполнении дропает самое старое: строка,
+// на которую клиенту уже ответили 200, гибнет через секунды простоя
+// ClickHouse (см. бриф T6). sink без метода Saturation() (тестовые
+// двойники пакета, не реализующие saturationSource) — saturationOf вернёт
+// 0, цикл ожидания вообще не откроется, горячий путь не подорожает.
+//
+// Не берёт ни closeMu, ни мьютексов приёмника: удержание closeMu на секунды
+// ожидания заблокировало бы Enqueue у всех остальных in-flight запросов —
+// ровно то, чему честный 503 от preflight должен был помешать, то есть
+// свело бы правку на нет.
+//
+// Возвращается ВСЕГДА, каким бы ни было условие выхода: истёк бюджет,
+// пришёл сигнал остановки или sink освободился. Drop-oldest
+// батчера/SpanWriter остаётся последним рубежом (решение владельца, T6) —
+// задача после waitForRoom идёт на запись как раньше в любом случае:
+// ожидание только сокращает окно лжи, а не отменяет потерю совсем.
+func (p *Pipeline) waitForRoom(sink any) {
+	if saturationOf(sink) < 1.0 {
+		return
+	}
+	start := time.Now()
+	p.backpressureWaits.Add(1)
+	defer func() { p.backpressureWaitNanos.Add(int64(time.Since(start))) }()
+
+	ticker := time.NewTicker(p.backpressurePoll())
+	defer ticker.Stop()
+	deadline := time.NewTimer(p.backpressureBudget())
+	defer deadline.Stop()
+	for {
+		select {
+		case <-deadline.C:
+			return
+		case <-ticker.C:
+			if p.stopping.Load() || saturationOf(sink) < 1.0 {
+				return
+			}
+		}
+	}
+}
+
 func (p *Pipeline) Start() {
 	for i := 0; i < p.workers; i++ {
 		p.wg.Add(1)
@@ -739,6 +902,15 @@ func (p *Pipeline) Close(ctx context.Context) error {
 	}
 	p.closed = true
 	close(p.queue)
+	// Обрывает ожидание в waitForRoom на ближайшем тике опроса (см. её
+	// докблок и докблок p.stopping) — без этого дренаж мог бы стоять на
+	// КАЖДОЙ из тысячи задач, найденных в очереди, по backpressureBudget().
+	// Store(true), а не close(канала): atomic.Bool валиден и у Pipeline{},
+	// собранного тестовым литералом в обход NewPipeline (такие пайплайны
+	// Close сегодня не зовут, но полагаться на это молча не стоит) — в
+	// отличие от канала, здесь нет случая, требующего nil-проверки или
+	// оставляющего литерал без работающей остановки.
+	p.stopping.Store(true)
 	p.closeMu.Unlock()
 
 	done := make(chan struct{})
@@ -870,6 +1042,9 @@ func (p *Pipeline) process(t task) {
 	ev.Message = p.Scrub.ScrubMessage(ev.Message)
 	excValue = p.Scrub.ScrubMessage(excValue)
 
+	// T6: батчер уже насыщен — дать флашеру шанс разгрузиться, прежде чем
+	// безусловно толкать событие в переполненный буфер (см. waitForRoom).
+	p.waitForRoom(p.batcher)
 	p.batcher.Add(event.Event{
 		ID:             ev.EventID,
 		OrgID:          t.orgID,
@@ -925,6 +1100,10 @@ func (p *Pipeline) processTransaction(orgID, projectID int64, tx trace.Transacti
 		tx.Spans[i].Description = p.Scrub.ScrubMessage(tx.Spans[i].Description)
 	}
 
+	// T6: SpanWriter уже насыщен — дать флашеру шанс разгрузиться, прежде
+	// чем безусловно толкать транзакцию в переполненный буфер (см.
+	// waitForRoom и её докблок у события выше в process).
+	p.waitForRoom(p.Spans)
 	p.Spans.Add(orgID, projectID, tx)
 	p.detectPerfIssues(projectID, tx)
 }

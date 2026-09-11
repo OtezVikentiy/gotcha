@@ -75,6 +75,8 @@ var wantSelfMetrics = []selfMetricSpec{
 	{"gotcha_notify_queue_oldest_seconds", "Gauge"},
 	{"gotcha_notify_retried_total", "Counter"},
 	{"gotcha_notify_sent_total", "Counter"},
+	{"gotcha_pipeline_backpressure_wait_seconds_total", "Counter"},
+	{"gotcha_pipeline_backpressure_waits_total", "Counter"},
 	{"gotcha_pipeline_dropped_tasks_total", "Counter"},
 	{"gotcha_pipeline_queue_bytes", "Gauge"},
 	{"gotcha_pipeline_queue_capacity", "Gauge"},

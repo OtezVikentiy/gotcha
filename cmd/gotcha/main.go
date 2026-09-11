@@ -1261,6 +1261,18 @@ func run() error {
 				map[string]string{"reason": string(reason)},
 				func() int64 { return pipeline.DroppedBy(reason) })
 		}
+		// T6: воркер ждёт свободное место в насыщенном батчере/SpanWriter перед
+		// записью, прежде чем толкнуть в него задачу безусловно (см.
+		// ingest.Pipeline.waitForRoom). Без этой пары дежурный не отличит
+		// "приём отвечает 503, потому что воркеры реально стоят в ожидании" от
+		// "воркеры просто отстают" — оба выглядят одинаково по одной только
+		// gotcha_pipeline_queue_depth.
+		selfMetrics.AddInt(selfmetrics.Counter, "gotcha_pipeline_backpressure_waits_total",
+			"How many times an ingest worker waited for room in a saturated write buffer before writing.",
+			nil, pipeline.BackpressureWaits)
+		selfMetrics.Add(selfmetrics.Counter, "gotcha_pipeline_backpressure_wait_seconds_total",
+			"Total time ingest workers spent waiting for room in a saturated write buffer.",
+			nil, pipeline.BackpressureWaitSeconds)
 		pipeline.Alerts = evaluator
 		pipeline.Spans = spanWriter
 		pipeline.Perf = trace.NewIssueService(pg)
