@@ -135,6 +135,23 @@ func TestWebSLOsList(t *testing.T) {
 		t.Fatalf("uptime no-monitor status = %d, want 422", resp.StatusCode)
 	}
 
+	// Первый шаг удаления: POST без confirmed обязан отдать страницу подтверждения,
+	// а не удалить. Проверяется именно тело: тест, который сразу шлёт confirmed=yes,
+	// ходит в обход шаблона и не заметит, если форма и хендлер разойдутся.
+	delPath := base + "/" + strconv.FormatInt(list[0].ID, 10) + "/delete"
+	resp = postForm(t, s.srv, delPath, url.Values{}, s.srv.URL, ownerCookie)
+	confirmBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete без confirmed status = %d, want 200: %s", resp.StatusCode, confirmBody)
+	}
+	if !strings.Contains(string(confirmBody), `name="confirmed" value="yes"`) {
+		t.Fatalf("страница подтверждения без скрытого поля confirmed: %s", confirmBody)
+	}
+	if list1, _ := s.slo.List(ctx, project.ID); len(list1) != 2 {
+		t.Fatalf("SLO исчез после неподтверждённого удаления: %d, want 2", len(list1))
+	}
+
 	// Удаление SLO (двухшаговое подтверждение: confirmed=yes).
 	del := url.Values{"confirmed": {"yes"}, "slo_id": {strconv.FormatInt(list[0].ID, 10)}}
 	resp = postForm(t, s.srv, base+"/"+strconv.FormatInt(list[0].ID, 10)+"/delete", del, s.srv.URL, ownerCookie)
@@ -145,6 +162,15 @@ func TestWebSLOsList(t *testing.T) {
 	}
 	if list2, _ := s.slo.List(ctx, project.ID); len(list2) != 1 {
 		t.Fatalf("after delete slos = %d, want 1", len(list2))
+	}
+
+	// Повтор по той же (уже устаревшей) странице: удалять нечего — 404, а не 303
+	// «как будто удалили» и не 500. Держится на slo.ErrNotFound из store.
+	resp = postForm(t, s.srv, delPath, del, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("повторное удаление status = %d, want 404", resp.StatusCode)
 	}
 
 	// Член организации без команды на проекте → 404 (requireProjectOperator).
