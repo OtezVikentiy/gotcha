@@ -1,0 +1,125 @@
+# Черновик GitHub Release на каждый пуш тега.
+#
+# Теги ставятся `make release`, а публикация релиза была ручным шагом в вебе -
+# и отставала уже четырежды: на пять версий, на десять, а 1.1.0 и 1.2.0 своих
+# страниц не получили вовсе. Страница Releases при этом единственное место, где
+# читают предупреждения об обновлении: ломающие переименования переменных
+# 0.34.0 без неё не видит никто.
+#
+# Черновик, а не публикация: заголовок и вводную пишет человек, тело собирается
+# само из CHANGELOG.md и CHANGELOG.ru.md - в той же двуязычной форме, в какой
+# релизы оформляются руками (английский текст, русский под <details>).
+#
+# Ручной запуск (workflow_dispatch с именем тега) нужен для тегов, которые уже
+# стоят: на них push-событие не сработает никогда, а долг по ним закрывать
+# как-то надо.
+name: Release draft
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Тег, для которого собрать черновик (например v1.3.1)'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-draft-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Check the tag name
+        run: |
+          set -euo pipefail
+          # Защита от ручного запуска с именем ветки: тело собирается из
+          # changelog по номеру версии, и на ветке это молча даст мусор.
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::'$TAG' не похоже на тег версии (ожидается vX.Y.Z)" >&2; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - name: Extract the section for this tag from both changelogs
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+
+          # Секция версии: от "## [X.Y.Z]" до следующего "## [" или конца файла.
+          extract() {
+            awk -v v="$2" '
+              $0 ~ "^## \\[" v "\\]" { inside = 1; next }
+              inside && /^## \[/     { exit }
+              inside                 { print }
+            ' "$1"
+          }
+
+          extract CHANGELOG.md "$version" > /tmp/notes.md
+          if [ ! -s /tmp/notes.md ]; then
+            echo "::error::CHANGELOG.md не содержит секции [$version] - тег поставлен раньше записи в changelog" >&2
+            exit 1
+          fi
+
+          # Русская часть не обязательна: если её нет, черновик выходит
+          # одноязычным, но выходит. Ронять сборку из-за перевода незачем.
+          : > /tmp/notes.ru.md
+          if [ -f CHANGELOG.ru.md ]; then
+            extract CHANGELOG.ru.md "$version" > /tmp/notes.ru.md || true
+          fi
+          if [ -s /tmp/notes.ru.md ]; then
+            {
+              echo
+              echo '<details>'
+              echo '<summary><b>Читать по-русски</b></summary>'
+              echo
+              cat /tmp/notes.ru.md
+              echo
+              echo '</details>'
+            } >> /tmp/notes.md
+          else
+            echo "::warning::CHANGELOG.ru.md не содержит секции [$version] - черновик будет только на английском"
+          fi
+
+          {
+            echo
+            echo "---"
+            echo
+            echo "**Full changelog:** ${{ github.server_url }}/${{ github.repository }}/blob/${TAG}/CHANGELOG.md"
+          } >> /tmp/notes.md
+
+      - name: Create the draft, or refresh it while it is still a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft --title "$TAG" --notes-file /tmp/notes.md
+            echo "::notice::Черновик релиза $TAG создан - допишите заголовок и вводную перед публикацией"
+            exit 0
+          fi
+
+          # Релиз уже есть. Перезаписывать тело можно ТОЛЬКО пока это черновик:
+          # опубликованные релизы здесь пишутся руками и бывают на десяток
+          # килобайт (сводные заметки, благодарности, разбор ломающих
+          # изменений). Затереть такое автогенерацией при повторном пуше тега -
+          # потеря, которую ничем не восстановить.
+          if [ "$(gh release view "$TAG" --json isDraft -q .isDraft)" = "true" ]; then
+            gh release edit "$TAG" --notes-file /tmp/notes.md
+            echo "::notice::Черновик релиза $TAG обновлён"
+          else
+            echo "::notice::Релиз $TAG уже опубликован - тело не трогаю"
+          fi
