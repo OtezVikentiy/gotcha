@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `GOTCHA_COMPOSE_NO_NEW_PRIVS` switches the app container's
+  `no-new-privileges` flag off for hosts that cannot run with it. It is on by
+  default and should stay that way: the one host that needs it off is one
+  where `dockerd` itself is confined by AppArmor — the snap build of Docker —
+  because the kernel then refuses the container's profile switch and the
+  container dies on exec with `operation not permitted` before writing a
+  single log line. Installation troubleshooting now names that symptom, gives
+  a one-line check that does not involve Gotcha at all, and points at the real
+  fix (Docker not from snap) with the switch as the stopgap.
+
 ## [1.3.0] - 2026-09-11
 
 ### Changed

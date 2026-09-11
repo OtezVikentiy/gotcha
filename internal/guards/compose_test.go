@@ -128,14 +128,29 @@ func TestComposeServicesAreBounded(t *testing.T) {
 	// Ужесточение приложения: у gotcha нет причин иметь capabilities, запись
 	// в свою ФС или неограниченное число процессов.
 	gotcha := cf.Services["gotcha"]
-	hasNNP := false
-	for _, o := range gotcha.SecurityOpt {
-		if o == "no-new-privileges:true" {
-			hasNNP = true
-		}
-	}
-	if !hasNNP {
-		t.Error("docker-compose.yml: gotcha без security_opt no-new-privileges:true")
+	// Допустимых форм ровно две: литерал и подстановка С ДЕФОЛТОМ true.
+	// Переключатель ${GOTCHA_COMPOSE_NO_NEW_PRIVS:-true} существует для хостов,
+	// где dockerd сам confined под AppArmor (сборка из snap) и ядро отказывает
+	// в переходе в профиль контейнера при NO_NEW_PRIVS — там контейнер падает
+	// на exec ещё до первой строки лога. Снять ужесточение оператор может
+	// осознанно через .env, но ДЕФОЛТ ПОСТАВКИ обязан оставаться true: форма
+	// без дефолта (${…}) или с дефолтом false выключила бы его молча и у всех,
+	// а это ровно тот класс «ослабили и не заметили», против которого сторож.
+	const (
+		nnpLiteral = "no-new-privileges:true"
+		nnpSubst   = "no-new-privileges:${GOTCHA_COMPOSE_NO_NEW_PRIVS:-true}"
+	)
+	// Сверяется ВЕСЬ список, а не наличие нужной записи в нём: security_opt —
+	// ровно то место, куда ослабление дописывается следующей строкой
+	// (apparmor=unconfined, seccomp=unconfined), и проверка «нужное на месте»
+	// такое дописывание пропускает молча. Понадобится законная вторая опция —
+	// её впишут сюда осознанно, вместе с обоснованием.
+	if len(gotcha.SecurityOpt) != 1 ||
+		(gotcha.SecurityOpt[0] != nnpLiteral && gotcha.SecurityOpt[0] != nnpSubst) {
+		t.Errorf("docker-compose.yml: security_opt сервиса gotcha = %q, а обязан состоять "+
+			"ровно из одной записи — %q или %q (дефолт поставки включает no-new-privileges, "+
+			"а посторонних опций в списке быть не должно)",
+			gotcha.SecurityOpt, nnpLiteral, nnpSubst)
 	}
 	hasAll := false
 	for _, c := range gotcha.CapDrop {
