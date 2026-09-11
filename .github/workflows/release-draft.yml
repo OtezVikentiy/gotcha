@@ -1,18 +1,3 @@
-# Черновик GitHub Release на каждый пуш тега.
-#
-# Теги ставятся `make release`, а публикация релиза была ручным шагом в вебе -
-# и отставала уже четырежды: на пять версий, на десять, а 1.1.0 и 1.2.0 своих
-# страниц не получили вовсе. Страница Releases при этом единственное место, где
-# читают предупреждения об обновлении: ломающие переименования переменных
-# 0.34.0 без неё не видит никто.
-#
-# Черновик, а не публикация: заголовок и вводную пишет человек, тело собирается
-# само из CHANGELOG.md и CHANGELOG.ru.md - в той же двуязычной форме, в какой
-# релизы оформляются руками (английский текст, русский под <details>).
-#
-# Ручной запуск (workflow_dispatch с именем тега) нужен для тегов, которые уже
-# стоят: на них push-событие не сработает никогда, а долг по ним закрывать
-# как-то надо.
 name: Release draft
 
 on:
@@ -102,9 +87,14 @@ jobs:
 
       - name: Create the draft, or refresh it while it is still a draft
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || github.token }}
+          HAS_PAT: ${{ secrets.RELEASE_PAT != '' }}
         run: |
           set -euo pipefail
+
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::warning::Секрет RELEASE_PAT не задан - черновик будет создан от имени github-actions[bot]"
+          fi
 
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --draft --title "$TAG" --notes-file /tmp/notes.md
