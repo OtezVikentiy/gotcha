@@ -198,7 +198,21 @@ func (h *Handler) otlpTraces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.enqueueTransactions(projectID, key.OrgID, kept[:granted])
+	// enqueued==0 при granted>0 значит: было что ставить, но ёмкости не
+	// хватило именно на постановке (окно между preflight-проверкой заполненности
+	// выше и этим вызовом — см. T5, докблок Enqueue) — ничего не записано,
+	// повтор коллектора безопасен. Квота уже списана этим запросом, но
+	// h.grant тратит её за элемент, готовый к записи, а не за факт записи —
+	// пересчитывать списание здесь не нужно: организация не платит за
+	// повторную попытку, она платит один раз за попытку постановки, что уже
+	// сделано. granted==0 сюда не заходит НИКОГДА как "ёмкостный" случай: при
+	// нём kept[:0] пуст, enqueueTransactions не проходит по циклу и
+	// capacityDropped остаётся false.
+	enqueued, capacityDropped := h.enqueueTransactions(projectID, key.OrgID, kept[:granted])
+	if enqueued == 0 && capacityDropped {
+		h.overloaded(w, key.OrgID, projectID, SignalTransaction, 1.0)
+		return
+	}
 	writeOTLPResponse(w, enc)
 }
 

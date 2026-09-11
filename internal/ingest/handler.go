@@ -1060,7 +1060,16 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 
 	id := env.EventID
 	// Принимаем ровно столько, сколько списала квота: остальное уже посчитано
-	// в дропы выше.
+	// в дропы выше. eventsEnqueued/eventCapacityDropped — честный учёт РЕЗУЛЬТАТА
+	// постановки (T5): между preflight-проверкой заполненности выше и этим
+	// вызовом есть окно, в котором соседний запрос успевает добрать очередь, и
+	// Enqueue вернёт false уже после того, как квота списана и решение
+	// «принимаем» вроде бы принято. eventCapacityDropped — именно ЁМКОСТНАЯ
+	// причина (Enqueue вернул false), а не битый item: последний просто
+	// пропускается continue'ом и в capacityDropped не попадает — иначе клиент,
+	// приславший мусор, получал бы 503 и ретраил бы его вечно.
+	var eventsEnqueued int
+	var eventCapacityDropped bool
 	for _, raw := range env.Events[:eventsGranted] {
 		pe, err := ParseEvent(raw)
 		if err != nil {
@@ -1070,10 +1079,30 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 			id = pe.EventID
 		}
 		pe.Environment = h.Cardinality.Value(projectID, FieldEnvironment, pe.Environment)
-		h.pipeline.Enqueue(projectID, key.OrgID, pe)
+		if h.pipeline.Enqueue(projectID, key.OrgID, pe) {
+			eventsEnqueued++
+		} else {
+			eventCapacityDropped = true
+		}
 	}
+	var txEnqueued int
+	var txCapacityDropped bool
 	if txGranted > 0 {
-		h.enqueueTransactions(projectID, key.OrgID, txSelected[:txGranted])
+		txEnqueued, txCapacityDropped = h.enqueueTransactions(projectID, key.OrgID, txSelected[:txGranted])
+	}
+	// Ничего реально не встало в очередь, и хотя бы одна из причин — именно
+	// ёмкость (не квота, не скоуп, не битые item'ы, не семплирование): повтор
+	// клиента в этом случае безопасен, дублировать нечего, а молчаливая потеря
+	// под видом 200 — ровно то, что T5 закрывает. Профили сюда не входят: их
+	// приёмник не отказывает, а вытесняет старое (см. Pipeline.Add у T6), и
+	// понятия «не удалось поставить» у них нет.
+	if eventsEnqueued == 0 && txEnqueued == 0 && (eventCapacityDropped || txCapacityDropped) {
+		signal := SignalTransaction
+		if eventCapacityDropped {
+			signal = SignalEvent
+		}
+		h.overloaded(w, key.OrgID, projectID, signal, 1.0)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": id})
 }
@@ -1153,12 +1182,24 @@ func (h *Handler) sampleTransactions(ctx context.Context, projectID int64, txs [
 
 // enqueueTransactions отдаёт отобранное и оплаченное в пайплайн. orgID нужен
 // пайплайну только для per-org учёта дропов (см. Pipeline.DropCounter).
-func (h *Handler) enqueueTransactions(projectID, orgID int64, txs []trace.Transaction) {
+//
+// Возвращает enqueued — сколько транзакций реально встало в очередь, и
+// capacityDropped — был ли среди них хоть один дроп именно по ёмкости
+// (EnqueueTransaction вернул false). Вызывающие (envelope, otlpTraces) решают
+// по этой паре, честен ли ответ 200: если из присутствующих транзакций не
+// встало ни одной, а причина — ёмкость, повтор клиента безопасен и должен
+// получить 503, а не молчаливую потерю (см. T5).
+func (h *Handler) enqueueTransactions(projectID, orgID int64, txs []trace.Transaction) (enqueued int, capacityDropped bool) {
 	for i := range txs {
 		tx := txs[i]
 		h.limitCardinality(projectID, &tx)
-		h.pipeline.EnqueueTransaction(projectID, orgID, tx)
+		if h.pipeline.EnqueueTransaction(projectID, orgID, tx) {
+			enqueued++
+		} else {
+			capacityDropped = true
+		}
 	}
+	return enqueued, capacityDropped
 }
 
 // limitCardinality схлопывает значения, которыми проект уже исчерпал потолок
@@ -1248,7 +1289,17 @@ func (h *Handler) store(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "malformed event")
 		return
 	}
-	h.pipeline.Enqueue(projectID, key.OrgID, pe)
+	// store несёт ровно одно событие: если Enqueue вернул false, это событие —
+	// единственное содержимое запроса, и ничего не встало в очередь целиком
+	// (см. T5, докблок Enqueue). Ответ честно становится 503 вместо прежнего
+	// 200: повтор безопасен, ставить было нечего, кроме этого события.
+	// saturation=1.0 — не измерение, а констатация уже случившегося факта
+	// отказа постановки, которую preflight выше не увидел (окно между
+	// проверкой заполненности и этим вызовом).
+	if !h.pipeline.Enqueue(projectID, key.OrgID, pe) {
+		h.overloaded(w, key.OrgID, projectID, SignalEvent, 1.0)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": pe.EventID})
 }
 

@@ -812,11 +812,22 @@ func (p *Pipeline) processGuarded(t task) {
 // событие тоже дропается — send в закрытый канал иначе паникует, если
 // in-flight HTTP-хендлер зовёт Enqueue параллельно с drain'ом.
 //
+// Возвращает true, если задача реально встала в очередь, и false при любом из
+// трёх дропов (закрытый пайплайн, исчерпанный байтовый бюджет, полная
+// очередь) — вызывающий (Handler) обязан знать этот факт: между preflight-
+// проверкой заполненности и этим вызовом есть окно, в котором соседний запрос
+// успевает добрать очередь, и решение «приняли» и «встало в очередь» могут
+// разойтись. Раньше дроп был виден только счётчику и логу, а клиенту уходил
+// 200 — то есть терялись данные, которые он не узнавал ретраить. Сам факт
+// дропа по-прежнему учитывается здесь же (countDropped/countDroppedOrg/лог) —
+// возвращаемое значение ничего не меняет в этой части, только делает решение
+// видимым снаружи.
+//
 // orgID — организация задачи (handler знает key.OrgID из аутентификации,
 // сделанной выше по стеку); нужен только для per-org учёта дропов (см.
 // countDroppedOrg) — на сам приём не влияет. 0 у вызывающих, которым
 // атрибутировать некуда (в проде такого не бывает).
-func (p *Pipeline) Enqueue(projectID, orgID int64, ev *ParsedEvent) {
+func (p *Pipeline) Enqueue(projectID, orgID int64, ev *ParsedEvent) bool {
 	p.closeMu.RLock()
 	defer p.closeMu.RUnlock()
 	if p.closed {
@@ -824,7 +835,7 @@ func (p *Pipeline) Enqueue(projectID, orgID int64, ev *ParsedEvent) {
 		p.countDroppedOrg(orgID, dropEvent, 1)
 		slog.Warn("ingest pipeline closed, dropping event",
 			"project_id", projectID, "event_id", ev.EventID)
-		return
+		return false
 	}
 	t := task{projectID: projectID, orgID: orgID, ev: ev}
 	t.bytes = taskBytes(t)
@@ -833,16 +844,18 @@ func (p *Pipeline) Enqueue(projectID, orgID int64, ev *ParsedEvent) {
 		p.countDroppedOrg(orgID, dropEvent, 1)
 		slog.Warn("ingest queue byte budget exhausted, dropping event",
 			"project_id", projectID, "event_id", ev.EventID, "task_bytes", t.bytes)
-		return
+		return false
 	}
 	select {
 	case p.queue <- t:
+		return true
 	default:
 		p.release(t.bytes)
 		p.countDropped(DropQueueFull)
 		p.countDroppedOrg(orgID, dropEvent, 1)
 		slog.Warn("ingest queue full, dropping event",
 			"project_id", projectID, "event_id", ev.EventID)
+		return false
 	}
 }
 
@@ -855,7 +868,10 @@ func (p *Pipeline) TracingEnabled() bool {
 
 // EnqueueTransaction — как Enqueue, но для транзакции: не блокирует, дропает
 // с warn-логом при полной очереди или после Close. orgID — см. докблок Enqueue.
-func (p *Pipeline) EnqueueTransaction(projectID, orgID int64, tx trace.Transaction) {
+// Возвращаемое bool — тот же протокол, что у Enqueue: true — задача встала в
+// очередь, false — дропнута одной из тех же трёх причин, и вызывающий обязан
+// это увидеть (см. докблок Enqueue).
+func (p *Pipeline) EnqueueTransaction(projectID, orgID int64, tx trace.Transaction) bool {
 	p.closeMu.RLock()
 	defer p.closeMu.RUnlock()
 	if p.closed {
@@ -863,7 +879,7 @@ func (p *Pipeline) EnqueueTransaction(projectID, orgID int64, tx trace.Transacti
 		p.countDroppedOrg(orgID, dropTransaction, 1)
 		slog.Warn("ingest pipeline closed, dropping transaction",
 			"project_id", projectID, "trace_id", tx.TraceID)
-		return
+		return false
 	}
 	t := task{projectID: projectID, orgID: orgID, tx: &tx}
 	t.bytes = taskBytes(t)
@@ -872,16 +888,18 @@ func (p *Pipeline) EnqueueTransaction(projectID, orgID int64, tx trace.Transacti
 		p.countDroppedOrg(orgID, dropTransaction, 1)
 		slog.Warn("ingest queue byte budget exhausted, dropping transaction",
 			"project_id", projectID, "trace_id", tx.TraceID, "task_bytes", t.bytes)
-		return
+		return false
 	}
 	select {
 	case p.queue <- t:
+		return true
 	default:
 		p.release(t.bytes)
 		p.countDropped(DropQueueFull)
 		p.countDroppedOrg(orgID, dropTransaction, 1)
 		slog.Warn("ingest queue full, dropping transaction",
 			"project_id", projectID, "trace_id", tx.TraceID)
+		return false
 	}
 }
 
