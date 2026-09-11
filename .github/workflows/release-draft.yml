@@ -49,7 +49,7 @@ jobs:
             *) echo "::error::'$TAG' не похоже на тег версии (ожидается vX.Y.Z)" >&2; exit 1 ;;
           esac
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref_name }}
 
