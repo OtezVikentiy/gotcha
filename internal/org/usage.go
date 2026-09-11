@@ -327,9 +327,50 @@ func (s *Service) CheckAndCountEvents(ctx context.Context, orgID int64, month ti
 	return s.checkAndCount(ctx, "events_count", orgID, month, quota, want)
 }
 
+// refund — общий UPSERT «вернуть n единиц счётчика месяца, не уходя ниже
+// нуля». Закрывает обратную сторону checkAndCount (T8): приём списывает квоту
+// ДО постановки в очередь, а по ёмкости отказывает ПОСЛЕ, и без возврата
+// организация платит за то, что мы попытались принять, а не за то, что
+// реально встало в очередь. col — доверенное имя колонки из фиксированного
+// набора (не из пользовательского ввода), n<=0 — no-op без похода в БД.
+//
+// GREATEST(col - n, 0) — защита от рассинхрона (двойной возврат, гонка с
+// параллельным списанием того же месяца), а не украшение: без неё возврат
+// мог бы увести счётчик в отрицательные значения и тем самым завысить
+// оставшуюся квоту организации сверх факта.
+//
+// В отличие от incDropped/checkAndCount, здесь нет ветки INSERT: возврат не
+// бывает раньше первого списания того же месяца, поэтому строка org_usage к
+// моменту возврата уже существует, а UPDATE без совпавшей строки — это
+// no-op, а не потерянный возврат (нечего заводить).
+func (s *Service) refund(ctx context.Context, col string, orgID int64, month time.Time, n int64) error {
+	if n <= 0 {
+		return nil
+	}
+	sql := `
+		UPDATE org_usage SET ` + col + ` = GREATEST(` + col + ` - $3, 0)
+		WHERE org_id = $1 AND period_month = $2`
+	if _, err := s.pool.Exec(ctx, sql, orgID, monthStart(month), n); err != nil {
+		return fmt.Errorf("org: refund %s: %w", col, err)
+	}
+	return nil
+}
+
+// RefundEvents возвращает n ранее списанных checkAndCount единиц счётчика
+// событий за месяц (не ниже нуля). Вызывается приёмником, когда списанное по
+// квоте не удалось поставить в очередь по ёмкости — см. ingest.QuotaChecker.
+func (s *Service) RefundEvents(ctx context.Context, orgID int64, month time.Time, n int64) error {
+	return s.refund(ctx, "events_count", orgID, month, n)
+}
+
 // CheckAndCountTransactions — то же для счётчика транзакций (независимая квота).
 func (s *Service) CheckAndCountTransactions(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error) {
 	return s.checkAndCount(ctx, "transactions_count", orgID, month, quota, want)
+}
+
+// RefundTransactions — возврат для счётчика транзакций, см. RefundEvents.
+func (s *Service) RefundTransactions(ctx context.Context, orgID int64, month time.Time, n int64) error {
+	return s.refund(ctx, "transactions_count", orgID, month, n)
 }
 
 // CheckAndCountMetrics — то же для счётчика метрик (независимая квота).
@@ -337,14 +378,29 @@ func (s *Service) CheckAndCountMetrics(ctx context.Context, orgID int64, month t
 	return s.checkAndCount(ctx, "metrics_count", orgID, month, quota, want)
 }
 
+// RefundMetrics — возврат для счётчика метрик, см. RefundEvents.
+func (s *Service) RefundMetrics(ctx context.Context, orgID int64, month time.Time, n int64) error {
+	return s.refund(ctx, "metrics_count", orgID, month, n)
+}
+
 // CheckAndCountProfiles — то же для счётчика профилей (независимая квота).
 func (s *Service) CheckAndCountProfiles(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error) {
 	return s.checkAndCount(ctx, "profiles_count", orgID, month, quota, want)
 }
 
+// RefundProfiles — возврат для счётчика профилей, см. RefundEvents.
+func (s *Service) RefundProfiles(ctx context.Context, orgID int64, month time.Time, n int64) error {
+	return s.refund(ctx, "profiles_count", orgID, month, n)
+}
+
 // CheckAndCountLogs — то же для счётчика логов (независимая квота).
 func (s *Service) CheckAndCountLogs(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error) {
 	return s.checkAndCount(ctx, "logs_count", orgID, month, quota, want)
+}
+
+// RefundLogs — возврат для счётчика логов, см. RefundEvents.
+func (s *Service) RefundLogs(ctx context.Context, orgID int64, month time.Time, n int64) error {
+	return s.refund(ctx, "logs_count", orgID, month, n)
 }
 
 // SetProfileQuota меняет месячную квоту профилей организации. Quota >= 0 required

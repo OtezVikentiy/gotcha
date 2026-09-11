@@ -330,3 +330,90 @@ func TestCheckAndCountPartialGrant(t *testing.T) {
 		t.Fatalf("usage после пустых пачек = %d, want 1010", n)
 	}
 }
+
+// TestRefundEvents — возврат (T8) уменьшает счётчик месяца ровно на n: та же
+// строка org_usage, что писал CheckAndCountEvents, тот же счётчик
+// (events_count), тот же способ вычисления месяца (см. monthStart).
+func TestRefundEvents(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx := context.Background()
+	ownerID := newUser(t, pool, "refund-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "refund", "Refund", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	now := time.Now()
+
+	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 100, 10); err != nil || granted != 10 {
+		t.Fatalf("списание: granted=%d err=%v, want 10", granted, err)
+	}
+	if err := svc.RefundEvents(ctx, o.ID, now, 4); err != nil {
+		t.Fatalf("refund: %v", err)
+	}
+	if n, _ := svc.Usage(ctx, o.ID, now); n != 6 {
+		t.Fatalf("usage после возврата 4 из 10 = %d, want 6", n)
+	}
+}
+
+// TestRefundClampsAtZero — возврат больше списанного не уводит счётчик ниже
+// нуля (GREATEST(...,0) в SQL — защита от рассинхрона, не украшение): гонка
+// параллельных запросов или ошибка вызывающего не обязаны портить usage,
+// который для оператора — источник правды по потреблению.
+func TestRefundClampsAtZero(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx := context.Background()
+	ownerID := newUser(t, pool, "refund-clamp-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "refund-clamp", "Refund Clamp", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	now := time.Now()
+
+	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 100, 3); err != nil || granted != 3 {
+		t.Fatalf("списание: granted=%d err=%v, want 3", granted, err)
+	}
+	if err := svc.RefundEvents(ctx, o.ID, now, 999); err != nil {
+		t.Fatalf("refund: %v", err)
+	}
+	if n, _ := svc.Usage(ctx, o.ID, now); n != 0 {
+		t.Fatalf("usage после избыточного возврата = %d, want 0 (не ниже нуля)", n)
+	}
+}
+
+// TestRefundNonPositiveNoop — возврат нулевого/отрицательного n не трогает
+// счётчик: вызывающий (Handler.refund) и так фильтрует n<=0 до вызова, но
+// сам метод обязан быть безопасен и при прямом вызове с таким n.
+func TestRefundNonPositiveNoop(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx := context.Background()
+	ownerID := newUser(t, pool, "refund-noop-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "refund-noop", "Refund Noop", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	now := time.Now()
+
+	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 100, 5); err != nil || granted != 5 {
+		t.Fatalf("списание: granted=%d err=%v, want 5", granted, err)
+	}
+	for _, n := range []int64{0, -1} {
+		if err := svc.RefundEvents(ctx, o.ID, now, n); err != nil {
+			t.Fatalf("refund(%d): %v", n, err)
+		}
+	}
+	if n, _ := svc.Usage(ctx, o.ID, now); n != 5 {
+		t.Fatalf("usage после no-op возвратов = %d, want 5 (без изменений)", n)
+	}
+}

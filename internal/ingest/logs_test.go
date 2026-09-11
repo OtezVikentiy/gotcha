@@ -475,16 +475,21 @@ func TestLogsQuotaExhausted(t *testing.T) {
 // орги — 0): достаточно для проверки частичного списания в один запрос.
 type fixedQuotaChecker struct{ n int64 }
 
-func (q *fixedQuotaChecker) CheckAndCount(_ context.Context, _ int64, want int64) (int64, error) {
+func (q *fixedQuotaChecker) CheckAndCount(_ context.Context, _ int64, want int64) (int64, time.Time, error) {
 	if want <= q.n {
 		granted := want
 		q.n -= granted
-		return granted, nil
+		return granted, time.Time{}, nil
 	}
 	granted := q.n
 	q.n = 0
-	return granted, nil
+	return granted, time.Time{}, nil
 }
+
+// Refund — логи не имеют ёмкостного отказа постановки (LogSink.Add, в
+// отличие от Enqueue, ничего не отклоняет), поэтому возврат в тестах этого
+// файла не наступает и пустая реализация достаточна.
+func (q *fixedQuotaChecker) Refund(context.Context, int64, int64, time.Time) error { return nil }
 
 // TestLogsQuotaPartial: квота впритык на 1 запись из 2 → 200 (по 1 записи
 // принято), остаток дропнут и посчитан через countDrop(dropLog) →

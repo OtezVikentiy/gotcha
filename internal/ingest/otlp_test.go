@@ -1480,9 +1480,13 @@ func (f *fakeHostRegistry) getEntries(projectID int64) []host.TouchEntry {
 // сценарию (в) — Touch обязан сработать даже когда приём отвечает 429.
 type zeroQuotaChecker struct{}
 
-func (zeroQuotaChecker) CheckAndCount(context.Context, int64, int64) (int64, error) {
-	return 0, nil
+func (zeroQuotaChecker) CheckAndCount(context.Context, int64, int64) (int64, time.Time, error) {
+	return 0, time.Time{}, nil
 }
+
+// Refund — грант всегда 0, значит возврату никогда нечего вернуть; пустая
+// реализация.
+func (zeroQuotaChecker) Refund(context.Context, int64, int64, time.Time) error { return nil }
 
 // resourceMetricWithHost — один ResourceMetrics с одним gauge-датапойнтом;
 // host="" — резурс без host.name (метрика приложения).

@@ -137,12 +137,18 @@ type countingQuota struct {
 	calls int
 }
 
-func (q *countingQuota) CheckAndCount(context.Context, int64, int64) (int64, error) {
+func (q *countingQuota) CheckAndCount(context.Context, int64, int64) (int64, time.Time, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.calls++
-	return 1 << 30, nil
+	return 1 << 30, time.Time{}, nil
 }
+
+// Refund — эти тесты проверяют только вызовы CheckAndCount (преflight должен
+// отбить запрос ДО них), возврат в сценариях этого файла не наступает, поэтому
+// пустая реализация.
+func (q *countingQuota) Refund(context.Context, int64, int64, time.Time) error { return nil }
+
 func (q *countingQuota) count() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -814,7 +820,10 @@ func TestOverloadEnvelopeOnlyEventSaturated(t *testing.T) {
 // denyingQuota — QuotaChecker, всегда отказывающий (квота исчерпана).
 type denyingQuota struct{}
 
-func (denyingQuota) CheckAndCount(context.Context, int64, int64) (int64, error) { return 0, nil }
+func (denyingQuota) CheckAndCount(context.Context, int64, int64) (int64, time.Time, error) {
+	return 0, time.Time{}, nil
+}
+func (denyingQuota) Refund(context.Context, int64, int64, time.Time) error { return nil }
 
 // TestOverloadEnvelopeOverloadBeatsQuota — стык двух причин отказа: один
 // присутствующий класс насыщен, другой честно исчерпал месячную квоту. Оба
@@ -1255,7 +1264,7 @@ type fixedBudgetCountingQuota struct {
 	calls int
 }
 
-func (q *fixedBudgetCountingQuota) CheckAndCount(_ context.Context, _ int64, want int64) (int64, error) {
+func (q *fixedBudgetCountingQuota) CheckAndCount(_ context.Context, _ int64, want int64) (int64, time.Time, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.calls++
@@ -1264,8 +1273,14 @@ func (q *fixedBudgetCountingQuota) CheckAndCount(_ context.Context, _ int64, wan
 		granted = q.n
 	}
 	q.n -= granted
-	return granted, nil
+	return granted, time.Time{}, nil
 }
+
+// Refund — профильная квота (единственная, где используется этот двойник) не
+// участвует в возврате по ёмкости: профили вытесняются, а не отклоняются
+// постановкой (см. Handler.enqueueTransactions/refund), поэтому пустая
+// реализация.
+func (q *fixedBudgetCountingQuota) Refund(context.Context, int64, int64, time.Time) error { return nil }
 
 func (q *fixedBudgetCountingQuota) count() int {
 	q.mu.Lock()

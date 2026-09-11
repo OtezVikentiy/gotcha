@@ -28,7 +28,7 @@ func (h *Handler) pprofIngest(w http.ResponseWriter, r *http.Request) {
 	if h.overloaded(w, key.OrgID, key.ProjectID, SignalProfile, saturationOf(h.Profiles)) {
 		return
 	}
-	if h.grant(r.Context(), h.ProfileQuota, key.OrgID, "profile", 1) == 0 {
+	if granted, _ := h.grant(r.Context(), h.ProfileQuota, key.OrgID, "profile", 1); granted == 0 {
 		h.countDrop(r.Context(), dropProfile, key.OrgID, 1)
 		h.writeQuotaExceeded(w, SignalProfile, "profile quota exceeded")
 		return
