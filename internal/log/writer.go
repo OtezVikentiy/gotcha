@@ -215,6 +215,34 @@ func (w *Writer) InsertFailures() int64 {
 	return w.insertFails
 }
 
+// Saturation — заполненность буфера в долях единицы: 0 — пусто, 1 — потолок,
+// дальше начинается drop-oldest (см. trimLocked). Считается как максимум по
+// обоим действующим потолкам буфера (строки и байты) — упереться достаточно в
+// один, поэтому в самотелеметрию и в решение хендлера о честном 503 должен
+// попасть худший из двух. Значение НЕ обрезается единицей: между append и
+// trimLocked буфер физически перебирает потолок, и это должно быть видно —
+// иначе backpressure узнаёт о переполнении на тик позже, чем оно случилось.
+func (w *Writer) Saturation() float64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	rows := bufSaturation(int64(len(w.buf)), int64(w.maxBuf))
+	bytes := bufSaturation(w.bufBytes, w.maxBufBytes)
+	if bytes > rows {
+		return bytes
+	}
+	return rows
+}
+
+// bufSaturation считает долю num/den. den<=0 — потолок выключен нулём и
+// значит «этим лимитом не ограничены», а не «делить не на что»: такой
+// потолок не должен ни паниковать, ни искусственно показывать насыщение.
+func bufSaturation(num, den int64) float64 {
+	if den <= 0 {
+		return 0
+	}
+	return float64(num) / float64(den)
+}
+
 func (w *Writer) buffered() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()

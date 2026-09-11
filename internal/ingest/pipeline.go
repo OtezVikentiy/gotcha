@@ -396,15 +396,27 @@ type task struct {
 	bytes int64
 }
 
+// NewPipeline строит Pipeline. batcher нарочно проверяется на nil ЗДЕСЬ, а не
+// присваивается полю p.batcher (eventSink) напрямую: параметр типизирован
+// конкретным *event.Batcher, и присвоение nil-указателя интерфейсному полю
+// завернуло бы его в НЕ-nil интерфейс (typed-nil) — тогда saturationOf(p.batcher)
+// прошёл бы type-assert и запаниковал бы внутри Saturation() на разыменовании
+// нулевого приёмника. Тесты пакета собирают Pipeline через NewPipeline(_, nil),
+// когда запись в CH не нужна (см. EventSaturation) — эта развилка держит
+// p.batcher настоящим nil-интерфейсом в таком случае, и saturationOf остаётся
+// простым (без reflect на горячем пути каждого запроса приёма).
 func NewPipeline(issues *issue.Service, batcher *event.Batcher) *Pipeline {
-	return &Pipeline{
+	p := &Pipeline{
 		issues:  issues,
-		batcher: batcher,
 		queue:   make(chan task, 1000),
 		workers: 4,
 		dropped: newDropCounters(),
 		dropAgg: make(map[dropAggKey]int64),
 	}
+	if batcher != nil {
+		p.batcher = batcher
+	}
+	return p
 }
 
 // defaultMaxQueueBytes — байтовый потолок очереди по умолчанию.
@@ -528,6 +540,59 @@ func (p *Pipeline) admit(size int64) bool {
 // счётчику дропов, а он не отличает переполнение по объёму от переполнения по
 // количеству.
 func (p *Pipeline) QueuedBytes() int64 { return p.queueBytes.Load() }
+
+// QueueSaturation — заполненность очереди в долях единицы: 0 — пусто, 1 —
+// потолок, дальше начинается дроп новых задач (см. admit/Enqueue). Считается
+// как максимум по обоим действующим потолкам очереди (задачи и байты) —
+// упереться достаточно в один, а хендлеру нужен худший из двух, чтобы
+// заранее ответить честным 503 вместо приёма в заведомо переполненную
+// очередь. Состояние очереди атомарное (len(p.queue), p.queueBytes), поэтому
+// closeMu здесь не берётся: метод читает моментальный снимок, не координируясь
+// с Enqueue/Close, и для самотелеметрии/бэкпрешера этого достаточно. Значение
+// НЕ обрезается единицей: очередь физически может перебрать потолок между
+// проверкой admit и постановкой, и это должно быть видно.
+func (p *Pipeline) QueueSaturation() float64 {
+	rows := queueSaturation(int64(len(p.queue)), int64(cap(p.queue)))
+	bytes := queueSaturation(p.QueuedBytes(), p.queueLimit())
+	if bytes > rows {
+		return bytes
+	}
+	return rows
+}
+
+// queueSaturation считает долю num/den. den<=0 — потолок выключен нулём и
+// значит «этим лимитом не ограничены», а не «делить не на что»: такой
+// потолок не должен ни паниковать, ни искусственно показывать насыщение.
+func queueSaturation(num, den int64) float64 {
+	if den <= 0 {
+		return 0
+	}
+	return float64(num) / float64(den)
+}
+
+// EventSaturation — заполненность буфера ПОСТАНОВКИ СОБЫТИЙ в долях единицы:
+// максимум из очереди пайплайна (QueueSaturation — общая стадия upsert issue
+// для событий и транзакций) и буфера батчера записи в CH (p.batcher). Для
+// preflight-проверки приёма (см. Handler.overloaded): элемент, прошедший обе
+// стадии живым, дальше начал бы вытеснять более старые данные из той, что
+// ближе к потолку.
+//
+// p.batcher — ОБЯЗАТЕЛЬНАЯ зависимость Pipeline (не nil-safe, в отличие от
+// Spans/Perf/Alerts — см. process()), поэтому saturationOf здесь используется
+// не ради nil-проверки батчера, а ради узкого контракта eventSink: метода
+// Saturation() в нём нет и не будет (см. докблок saturationSource).
+func (p *Pipeline) EventSaturation() float64 {
+	return max(p.QueueSaturation(), saturationOf(p.batcher))
+}
+
+// TransactionSaturation — то же самое для ТРАНЗАКЦИЙ: очередь пайплайна и
+// буфер SpanWriter (p.Spans). p.Spans == nil (трейсинг выключен) не отличается
+// от отсутствия способности Saturation() — saturationOf вернёт 0, что верно:
+// отключённый сигнал уже отвечает успехом без записи (см.
+// Pipeline.TracingEnabled), и overloaded preflight не должен его трогать.
+func (p *Pipeline) TransactionSaturation() float64 {
+	return max(p.QueueSaturation(), saturationOf(p.Spans))
+}
 
 // release возвращает бюджет после обработки задачи.
 func (p *Pipeline) release(size int64) { p.queueBytes.Add(-size) }

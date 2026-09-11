@@ -130,8 +130,9 @@ but coarser and across ALL rejection reasons at once, with a telemetry-signal
 label (`signal`: `event`, `transaction`, `metric`, `profile`, `log`,
 `deploy`). The metric above only breaks down key rejections and cannot say
 which of the six inputs it concerns; rate limiting (`rate_limit`), an
-organization's quota (`quota`) and body size (`too_large`) were not visible in
-metrics at all — only in that one endpoint's log. `reason` is a closed set:
+organization's quota (`quota`), body size (`too_large`), and a saturated
+ingest buffer (`overloaded`) were not visible in metrics at all — only in
+that one endpoint's log. `reason` is a closed set:
 
 | `reason` | What happened |
 |---|---|
@@ -139,6 +140,7 @@ metrics at all — only in that one endpoint's log. `reason` is a closed set:
 | `key_revoked` | reserved, never seen today: the key resolver does not distinguish "never existed" from "revoked" (both return `org.ErrNotFound`) |
 | `rate_limit` | the per-DSN rate limit was exceeded (see `GOTCHA_INGEST_RATE_PER_SEC`) |
 | `quota` | the organization exhausted this signal's monthly quota — the request was FULLY rejected (429); partial quota debits on a mixed envelope do not count here, only a full reject does |
+| `overloaded` | this signal's ingest buffer is 95% full or more — the request is rejected WHOLE (503, `Retry-After`), nothing from the body was accepted, and a retry can't create duplicates. Unlike `rate_limit` and `quota` — limits on the client and the organization — `overloaded` is about the receiver's own state: the only one of the three that means "the server can't keep up" |
 | `too_large` | the body exceeded the size limit |
 | `malformed` | the body was read but did not parse: broken JSON/protobuf, a corrupt gzip/zstd header |
 | `key_scope` | the same key-type rejection as `scope` on `gotcha_ingest_key_rejections_total` above, but labeled with `signal` — which telemetry kind that key type was denied |
@@ -146,6 +148,15 @@ metrics at all — only in that one endpoint's log. `reason` is a closed set:
 The two key-rejection metrics deliberately coexist: one is narrow and exact
 about the key itself, the other is broad and comparable across telemetry
 signals.
+
+The `overloaded` warning in the log is throttled — at most once every 5
+seconds per signal, so that a flood of rejections doesn't itself add load
+right when the system is already struggling. The counter still increments on
+EVERY rejection, no exceptions. Sizing an overload by counting log lines
+undercounts by an order of magnitude: under real overload there can be
+hundreds of rejections a second, while the log shows at most one line every
+five seconds. The metric, not the log, is the only reliable count of
+rejections.
 
 **`gotcha_ingest_deprecated_path_total{path="…"}`** — requests that arrived on
 an ingest path that has been replaced. Three intake endpoints moved into

@@ -130,6 +130,9 @@ func (h *Handler) otlpTraces(w http.ResponseWriter, r *http.Request) {
 	if h.rateLimited(w, key.OrgID, key.ProjectID, SignalTransaction) {
 		return
 	}
+	if h.overloaded(w, key.OrgID, key.ProjectID, SignalTransaction, h.pipeline.TransactionSaturation()) {
+		return
+	}
 	// Лимит тела и распаковка — общий Handler.body: коллектор по умолчанию жмёт
 	// gzip'ом, и защита от «бомбы» здесь ровно та же, что у Sentry-входа.
 	body, closeBody, err := h.body(w, r)
@@ -218,6 +221,9 @@ func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.rateLimited(w, key.OrgID, key.ProjectID, SignalMetric) {
+		return
+	}
+	if h.overloaded(w, key.OrgID, key.ProjectID, SignalMetric, saturationOf(h.Metrics)) {
 		return
 	}
 	body, closeBody, err := h.body(w, r)

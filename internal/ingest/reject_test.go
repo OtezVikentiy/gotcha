@@ -62,15 +62,17 @@ func otlpLogsRequest(body io.Reader, contentType, contentEncoding string) *http.
 // gotcha_ingest_rejected_total{reason,signal}: набор отдаётся КОПИЕЙ (чужая
 // мутация не должна портить общий слайс, на котором main регистрирует
 // self-метрики), key_revoked зарезервирован и в наборе отсутствовать обязан,
-// (quota, deploy) невозможна (деплои не расходуют месячную квоту), у каждой
-// пары набора есть живой счётчик, а пара ВНЕ набора молча игнорируется.
+// (quota, deploy) и (overloaded, deploy) невозможны (деплои не расходуют
+// месячную квоту и не буферизуются в RAM), у каждой пары набора есть живой
+// счётчик, а пара ВНЕ набора молча игнорируется.
 func TestIngestRejectionPairsContract(t *testing.T) {
 	pairs := IngestRejectionPairs()
-	// 29 (5 сигналов × 4 причины + 5 quota-сигналов, без deploy) + 6 пар
-	// key_scope (по одной на каждый сигнал — вычислены из keyScopeMatrix,
-	// см. keyScopeRejectionPairs).
-	if len(pairs) != 35 {
-		t.Fatalf("пар в наборе = %d, want 35 (29 старых + 6 key_scope)", len(pairs))
+	// 29 (5 сигналов × 4 причины + 5 quota-сигналов, без deploy) + 5 пар
+	// overloaded (те же пять сигналов, тоже без deploy — см. докблок
+	// ingestRejectionPairs) + 6 пар key_scope (по одной на каждый сигнал —
+	// вычислены из keyScopeMatrix, см. keyScopeRejectionPairs).
+	if len(pairs) != 40 {
+		t.Fatalf("пар в наборе = %d, want 40 (29 старых + 5 overloaded + 6 key_scope)", len(pairs))
 	}
 
 	// Копия, а не общий слайс: порча вернувшегося набора не должна доезжать
@@ -88,6 +90,9 @@ func TestIngestRejectionPairsContract(t *testing.T) {
 		}
 		if p.Reason == RejectQuota && p.Signal == SignalDeploy {
 			t.Errorf("(quota, deploy) в наборе: деплои не расходуют месячную квоту")
+		}
+		if p.Reason == RejectOverloaded && p.Signal == SignalDeploy {
+			t.Errorf("(overloaded, deploy) в наборе: деплои не буферизуются в RAM")
 		}
 	}
 
