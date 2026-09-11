@@ -139,7 +139,12 @@ func TestEnqueueAfterCloseDoesNotPanic(t *testing.T) {
 			t.Fatalf("Enqueue after Close panicked: %v", r)
 		}
 	}()
-	p.Enqueue(1, 1, &ParsedEvent{EventID: "x"})
+	if p.Enqueue(1, 1, &ParsedEvent{EventID: "x"}) {
+		t.Error("Enqueue после Close вернул true, want false — задача не встала в очередь")
+	}
+	if p.EnqueueTransaction(1, 1, nPlusOneTx()) {
+		t.Error("EnqueueTransaction после Close вернул true, want false — задача не встала в очередь")
+	}
 }
 
 // TestDoubleCloseDoesNotPanic — Close должен быть идемпотентным (закрытие

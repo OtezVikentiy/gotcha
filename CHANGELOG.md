@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Profiles in a Sentry envelope are no longer silently lost once an
+  organization has exhausted its event and transaction quotas — profiles now
+  get their own capacity and quota decision on equal footing with events and
+  transactions, instead of being handled only after those two are settled.
+  One visible consequence: an envelope made up entirely of profiles against
+  an exhausted profile quota now answers `429`, where it used to answer `200`
+  and drop the profiles unseen.
+- A request that enqueued nothing at all because the ingest worker had no
+  room to write it now gets `503` instead of `200` — retrying it is safe,
+  since nothing from it was actually accepted. A request that got part of
+  its envelope queued still answers `200`; retrying a partially-accepted
+  envelope would duplicate the part that already went through, and there is
+  no event-id deduplication to catch that.
+- An ingest worker now waits briefly for room in a saturated write buffer
+  (the event batcher or the span writer) before writing to it, instead of
+  writing immediately and letting drop-oldest evict an item the client
+  already got a `200` for. Two new self-metrics,
+  `gotcha_pipeline_backpressure_waits_total` and
+  `gotcha_pipeline_backpressure_wait_seconds_total`, expose how often and how
+  long this wait fires.
+
+### Fixed
+- A client retrying an ingest request that got rejected for lack of capacity
+  no longer has its organization's monthly quota charged again on every
+  retry. Quota is now charged only for items that actually made it into the
+  write queue; items dropped for lack of capacity have their charge refunded,
+  while items rejected for the client's own fault (a malformed payload) are
+  never refunded — quota in this product also acts as an abuse limiter, and
+  refunding garbage would make flooding it free.
+
 ## [1.2.0] - 2026-09-11
 
 ### Changed

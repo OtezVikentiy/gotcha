@@ -330,3 +330,286 @@ func TestCheckAndCountPartialGrant(t *testing.T) {
 		t.Fatalf("usage после пустых пачек = %d, want 1010", n)
 	}
 }
+
+// TestRefundEvents — возврат (T8) уменьшает счётчик месяца ровно на n: та же
+// строка org_usage, что писал CheckAndCountEvents, тот же счётчик
+// (events_count), тот же способ вычисления месяца (см. monthStart).
+func TestRefundEvents(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx := context.Background()
+	ownerID := newUser(t, pool, "refund-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "refund", "Refund", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	now := time.Now()
+
+	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 100, 10); err != nil || granted != 10 {
+		t.Fatalf("списание: granted=%d err=%v, want 10", granted, err)
+	}
+	if err := svc.RefundEvents(ctx, o.ID, now, 4); err != nil {
+		t.Fatalf("refund: %v", err)
+	}
+	if n, _ := svc.Usage(ctx, o.ID, now); n != 6 {
+		t.Fatalf("usage после возврата 4 из 10 = %d, want 6", n)
+	}
+}
+
+// TestRefundClampsAtZero — возврат больше списанного не уводит счётчик ниже
+// нуля (GREATEST(...,0) в SQL — защита от рассинхрона, не украшение): гонка
+// параллельных запросов или ошибка вызывающего не обязаны портить usage,
+// который для оператора — источник правды по потреблению.
+func TestRefundClampsAtZero(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx := context.Background()
+	ownerID := newUser(t, pool, "refund-clamp-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "refund-clamp", "Refund Clamp", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	now := time.Now()
+
+	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 100, 3); err != nil || granted != 3 {
+		t.Fatalf("списание: granted=%d err=%v, want 3", granted, err)
+	}
+	if err := svc.RefundEvents(ctx, o.ID, now, 999); err != nil {
+		t.Fatalf("refund: %v", err)
+	}
+	if n, _ := svc.Usage(ctx, o.ID, now); n != 0 {
+		t.Fatalf("usage после избыточного возврата = %d, want 0 (не ниже нуля)", n)
+	}
+}
+
+// TestRefundNonPositiveNoop — возврат нулевого/отрицательного n не трогает
+// счётчик: вызывающий (Handler.refund) и так фильтрует n<=0 до вызова, но
+// сам метод обязан быть безопасен и при прямом вызове с таким n.
+func TestRefundNonPositiveNoop(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx := context.Background()
+	ownerID := newUser(t, pool, "refund-noop-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "refund-noop", "Refund Noop", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	now := time.Now()
+
+	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 100, 5); err != nil || granted != 5 {
+		t.Fatalf("списание: granted=%d err=%v, want 5", granted, err)
+	}
+	for _, n := range []int64{0, -1} {
+		if err := svc.RefundEvents(ctx, o.ID, now, n); err != nil {
+			t.Fatalf("refund(%d): %v", n, err)
+		}
+	}
+	if n, _ := svc.Usage(ctx, o.ID, now); n != 5 {
+		t.Fatalf("usage после no-op возвратов = %d, want 5 (без изменений)", n)
+	}
+}
+
+// refundCounters — снимок всех пяти независимых счётчиков org_usage одной
+// организации за месяц: события, транзакции, метрики, профили, логи.
+type refundCounters struct {
+	events, transactions, metrics, profiles, logs int64
+}
+
+// readRefundCounters читает все пять счётчиков разом — нужно, чтобы после
+// возврата ОДНОГО из них убедиться, что остальные ЧЕТЫРЕ не тронуты. Это
+// главная проверка против опечатки в имени колонки внутри RefundTransactions/
+// RefundMetrics/RefundProfiles/RefundLogs: каждый из них — тонкая обёртка над
+// общим refund(col=...), и подмена col на соседний вернёт квоту НЕ ТОМУ
+// счётчику молча (все запросы отработают без ошибки).
+func readRefundCounters(t *testing.T, svc *org.Service, ctx context.Context, orgID int64, month time.Time) refundCounters {
+	t.Helper()
+	var c refundCounters
+	var err error
+	if c.events, err = svc.Usage(ctx, orgID, month); err != nil {
+		t.Fatalf("Usage: %v", err)
+	}
+	if c.transactions, err = svc.TransactionUsage(ctx, orgID, month); err != nil {
+		t.Fatalf("TransactionUsage: %v", err)
+	}
+	if c.metrics, err = svc.MetricUsage(ctx, orgID, month); err != nil {
+		t.Fatalf("MetricUsage: %v", err)
+	}
+	if c.profiles, err = svc.ProfileUsage(ctx, orgID, month); err != nil {
+		t.Fatalf("ProfileUsage: %v", err)
+	}
+	if c.logs, err = svc.LogUsage(ctx, orgID, month); err != nil {
+		t.Fatalf("LogUsage: %v", err)
+	}
+	return c
+}
+
+// chargeAllRefundCounters списывает n единиц в КАЖДЫЙ из пяти счётчиков одной
+// строки org_usage — база для тестов RefundTransactions/RefundMetrics/
+// RefundProfiles/RefundLogs: если возврат одного счётчика заденет соседний,
+// это будет видно по readRefundCounters сразу после.
+func chargeAllRefundCounters(t *testing.T, svc *org.Service, ctx context.Context, orgID int64, month time.Time, n int64) {
+	t.Helper()
+	if granted, err := svc.CheckAndCountEvents(ctx, orgID, month, 0, n); err != nil || granted != n {
+		t.Fatalf("списание events: granted=%d err=%v, want %d", granted, err, n)
+	}
+	if granted, err := svc.CheckAndCountTransactions(ctx, orgID, month, 0, n); err != nil || granted != n {
+		t.Fatalf("списание transactions: granted=%d err=%v, want %d", granted, err, n)
+	}
+	if granted, err := svc.CheckAndCountMetrics(ctx, orgID, month, 0, n); err != nil || granted != n {
+		t.Fatalf("списание metrics: granted=%d err=%v, want %d", granted, err, n)
+	}
+	if granted, err := svc.CheckAndCountProfiles(ctx, orgID, month, 0, n); err != nil || granted != n {
+		t.Fatalf("списание profiles: granted=%d err=%v, want %d", granted, err, n)
+	}
+	if granted, err := svc.CheckAndCountLogs(ctx, orgID, month, 0, n); err != nil || granted != n {
+		t.Fatalf("списание logs: granted=%d err=%v, want %d", granted, err, n)
+	}
+}
+
+// TestRefundTransactions — RefundTransactions обязан уменьшить ИМЕННО
+// transactions_count и не тронуть остальные четыре счётчика той же строки
+// org_usage (сторож против опечатки в имени колонки — см. readRefundCounters).
+func TestRefundTransactions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx := context.Background()
+	ownerID := newUser(t, pool, "refund-tx-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "refund-tx", "Refund Tx", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	now := time.Now()
+	chargeAllRefundCounters(t, svc, ctx, o.ID, now, 10)
+
+	if err := svc.RefundTransactions(ctx, o.ID, now, 4); err != nil {
+		t.Fatalf("refund: %v", err)
+	}
+	got := readRefundCounters(t, svc, ctx, o.ID, now)
+	want := refundCounters{events: 10, transactions: 6, metrics: 10, profiles: 10, logs: 10}
+	if got != want {
+		t.Fatalf("счётчики после RefundTransactions(4) = %+v, want %+v", got, want)
+	}
+}
+
+// TestRefundMetrics — зеркало TestRefundTransactions для metrics_count.
+func TestRefundMetrics(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx := context.Background()
+	ownerID := newUser(t, pool, "refund-metrics-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "refund-metrics", "Refund Metrics", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	now := time.Now()
+	chargeAllRefundCounters(t, svc, ctx, o.ID, now, 10)
+
+	if err := svc.RefundMetrics(ctx, o.ID, now, 4); err != nil {
+		t.Fatalf("refund: %v", err)
+	}
+	got := readRefundCounters(t, svc, ctx, o.ID, now)
+	want := refundCounters{events: 10, transactions: 10, metrics: 6, profiles: 10, logs: 10}
+	if got != want {
+		t.Fatalf("счётчики после RefundMetrics(4) = %+v, want %+v", got, want)
+	}
+}
+
+// TestRefundProfiles — зеркало TestRefundTransactions для profiles_count.
+func TestRefundProfiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx := context.Background()
+	ownerID := newUser(t, pool, "refund-profiles-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "refund-profiles", "Refund Profiles", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	now := time.Now()
+	chargeAllRefundCounters(t, svc, ctx, o.ID, now, 10)
+
+	if err := svc.RefundProfiles(ctx, o.ID, now, 4); err != nil {
+		t.Fatalf("refund: %v", err)
+	}
+	got := readRefundCounters(t, svc, ctx, o.ID, now)
+	want := refundCounters{events: 10, transactions: 10, metrics: 10, profiles: 6, logs: 10}
+	if got != want {
+		t.Fatalf("счётчики после RefundProfiles(4) = %+v, want %+v", got, want)
+	}
+}
+
+// TestRefundLogs — зеркало TestRefundTransactions для logs_count.
+func TestRefundLogs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx := context.Background()
+	ownerID := newUser(t, pool, "refund-logs-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "refund-logs", "Refund Logs", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	now := time.Now()
+	chargeAllRefundCounters(t, svc, ctx, o.ID, now, 10)
+
+	if err := svc.RefundLogs(ctx, o.ID, now, 4); err != nil {
+		t.Fatalf("refund: %v", err)
+	}
+	got := readRefundCounters(t, svc, ctx, o.ID, now)
+	want := refundCounters{events: 10, transactions: 10, metrics: 10, profiles: 10, logs: 6}
+	if got != want {
+		t.Fatalf("счётчики после RefundLogs(4) = %+v, want %+v", got, want)
+	}
+}
+
+// TestRefundQueryError — ветка ошибки общего refund: пул недоступен (пул уже
+// закрыт), UPDATE обязан вернуть обёрнутую ошибку, а не проглотить её. Без
+// этого теста единственная ошибочная ветка refund оставалась непокрытой, хотя
+// это тот же путь, что делает возврат best-effort у Handler.refund заметным
+// (см. ingest.Handler.refund — он обязан залогировать именно эту ошибку).
+func TestRefundQueryError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx := context.Background()
+	ownerID := newUser(t, pool, "refund-err-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "refund-err", "Refund Err", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	now := time.Now()
+	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 100, 5); err != nil || granted != 5 {
+		t.Fatalf("списание: granted=%d err=%v, want 5", granted, err)
+	}
+
+	cancelledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := svc.RefundEvents(cancelledCtx, o.ID, now, 1); err == nil {
+		t.Fatal("refund с отменённым контекстом = nil error, want ошибку")
+	}
+	// Счётчик не должен был измениться — запрос не выполнился вовсе.
+	if n, _ := svc.Usage(ctx, o.ID, now); n != 5 {
+		t.Fatalf("usage после ошибочного refund = %d, want 5 (без изменений)", n)
+	}
+}

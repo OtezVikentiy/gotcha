@@ -101,11 +101,11 @@ func TestOrgQuotaUsesInjectedClock(t *testing.T) {
 	ctx := context.Background()
 
 	now = time.Date(2026, time.January, 31, 23, 59, 59, 0, time.UTC)
-	if granted, err := q.CheckAndCount(ctx, 7, 1); err != nil || granted != 1 {
+	if granted, _, err := q.CheckAndCount(ctx, 7, 1); err != nil || granted != 1 {
 		t.Fatalf("январь: granted=%v err=%v", granted, err)
 	}
 	now = time.Date(2026, time.February, 1, 0, 0, 1, 0, time.UTC)
-	if granted, err := q.CheckAndCount(ctx, 7, 1); err != nil || granted != 1 {
+	if granted, _, err := q.CheckAndCount(ctx, 7, 1); err != nil || granted != 1 {
 		t.Fatalf("февраль: granted=%v err=%v", granted, err)
 	}
 
@@ -119,5 +119,55 @@ func TestOrgQuotaUsesInjectedClock(t *testing.T) {
 	}
 	if seen[0].Month() == seen[1].Month() {
 		t.Errorf("оба вызова попали в %v — граница месяца не переехала (часы реальные?)", seen[0].Month())
+	}
+}
+
+// TestOrgQuotaRefundUsesChargedAtNotFreshNow — сердце фикса T8 на уровне
+// OrgQuota (не двойника): Refund обязан списать из ТОЙ ЖЕ строки org_usage,
+// что и парный CheckAndCount, даже если между ними успели переехать часы.
+// Часы двигаются на границу месяца между вызовами — с багом (Refund зовёт
+// собственный q.now()) возврат ушёл бы в февраль, хотя списание было в
+// январе, и refundCount увидел бы январский granted-месяц лишь у CheckAndCount,
+// а Refund — уже другой.
+func TestOrgQuotaRefundUsesChargedAtNotFreshNow(t *testing.T) {
+	var now time.Time
+	var refundMonth time.Time
+	q := &OrgQuota{
+		svc:         &fakeQuotaResolver{quota: 1000},
+		ttl:         time.Hour,
+		quotaNegTTL: time.Hour,
+		now:         func() time.Time { return now },
+		quotaOf:     func(o org.Org) int64 { return o.EventQuota },
+		checkCount: func(_ context.Context, _ int64, _ time.Time, _, want int64) (int64, error) {
+			return want, nil
+		},
+		refundCount: func(_ context.Context, _ int64, month time.Time, _ int64) error {
+			refundMonth = month
+			return nil
+		},
+		entries:   map[int64]quotaEntry{},
+		exhausted: map[int64]time.Time{},
+	}
+	ctx := context.Background()
+
+	now = time.Date(2026, time.January, 31, 23, 59, 59, 0, time.UTC)
+	_, chargedAt, err := q.CheckAndCount(ctx, 7, 1)
+	if err != nil {
+		t.Fatalf("CheckAndCount: %v", err)
+	}
+
+	// Часы уходят за границу месяца ДО возврата — имитирует реальную задержку
+	// между списанием квоты и решением об отказе по ёмкости.
+	now = time.Date(2026, time.February, 1, 0, 0, 1, 0, time.UTC)
+	if err := q.Refund(ctx, 7, 1, chargedAt); err != nil {
+		t.Fatalf("Refund: %v", err)
+	}
+
+	if !refundMonth.Equal(chargedAt) {
+		t.Fatalf("refundCount получил месяц %v, want %v (месяц списания) — "+
+			"возврат пересчитал текущее время вместо переданного chargedAt", refundMonth, chargedAt)
+	}
+	if refundMonth.Month() == now.Month() {
+		t.Fatalf("возврат попал в текущий месяц %v вместо месяца списания — граница переехала", refundMonth.Month())
 	}
 }

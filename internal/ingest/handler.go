@@ -588,20 +588,29 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, signal In
 //
 // quotaKind — вид телеметрии для КВОТЫ (event/transaction/...); не путать с
 // org.KeyKind, типом ключа приёма.
-func (h *Handler) grant(ctx context.Context, q QuotaChecker, orgID int64, quotaKind string, want int) int {
+//
+// Второй результат — chargedAt: момент, которым CheckAndCount фактически
+// посчитал списание (T8). Вызывающий обязан пронести его без изменений в
+// парный h.refund, а не подставлять собственное время — иначе запрос,
+// пришедший на границе месяца, спишется в одном месяце и вернётся в другом.
+// При q==nil или ошибке проверки ничего реально не списано в БД, поэтому
+// возвращается нулевое время: если позже всё же понадобится refund (fail-open
+// путь редок, но возможен), он адресуется в несуществующую строку и станет
+// безопасным no-op — ровно то поведение, которое нужно, раз списания не было.
+func (h *Handler) grant(ctx context.Context, q QuotaChecker, orgID int64, quotaKind string, want int) (int, time.Time) {
 	if want <= 0 {
-		return 0
+		return 0, time.Time{}
 	}
 	if q == nil {
-		return want
+		return want, time.Time{}
 	}
-	granted, err := q.CheckAndCount(ctx, orgID, int64(want))
+	granted, chargedAt, err := q.CheckAndCount(ctx, orgID, int64(want))
 	if err != nil {
 		slog.Warn("ingest: quota check failed, allowing items",
 			"org_id", orgID, "kind", quotaKind, "want", want, "error", err)
-		return want
+		return want, time.Time{}
 	}
-	return int(granted)
+	return int(granted), chargedAt
 }
 
 // dropKind — класс отклонённой единицы для countDrop.
@@ -639,6 +648,34 @@ func (h *Handler) countDrop(ctx context.Context, kind dropKind, orgID int64, n i
 	if err != nil {
 		slog.Warn("ingest: drop counter update failed",
 			"org_id", orgID, "kind", kind, "n", n, "error", err)
+	}
+}
+
+// refund возвращает n единиц квоты, списанных ранее h.grant в момент
+// chargedAt (то самое значение, что h.grant вернул вторым результатом), но не
+// поставленных в очередь ИМЕННО по нехватке ёмкости приёмника (T8): организация
+// платит за то, что встало в очередь, а не за то, что мы попытались принять.
+//
+// chargedAt передаётся, а не пересчитывается: списание и отказ по ёмкости
+// разнесены по времени, и если бы возврат брал текущий момент, запрос на
+// границе месяца списался бы в одном месяце, а вернулся в другом — счёт
+// прошлого месяца был бы завышен навсегда.
+//
+// Граница «наша вина / вина клиента» проводится ВЫЗЫВАЮЩИМ, а не здесь: битые
+// item'ы (не прошедшие разбор) и всё, что отсеяно семплированием, никогда не
+// попадают в n — иначе квота перестала бы работать как ограничитель
+// злоупотребления, и поток мусора стал бы бесплатным.
+//
+// Best-effort, как countDrop рядом: nil-квота или n<=0 — no-op, ошибка
+// логируется, но не меняет статус ответа клиенту — данные уже приняты, и
+// отказывать в ответе из-за сбоя одного лишь возврата квоты бессмысленно.
+func (h *Handler) refund(ctx context.Context, q QuotaChecker, orgID int64, quotaKind string, n int, chargedAt time.Time) {
+	if q == nil || n <= 0 {
+		return
+	}
+	if err := q.Refund(ctx, orgID, int64(n), chargedAt); err != nil {
+		slog.Warn("ingest: quota refund failed",
+			"org_id", orgID, "kind", quotaKind, "n", n, "error", err)
 	}
 }
 
@@ -885,37 +922,74 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 	// не участвовали) принят нормально.
 	eventQuotaRelevant := hasEvents && !eventOverloaded
 	txQuotaRelevant := hasTx && !txOverloaded
+	// profQuotaRelevant — присутствующий и НЕ насыщенный класс профилей,
+	// зеркало eventQuotaRelevant/txQuotaRelevant: посчитан здесь же, ДО
+	// развилок ниже, чтобы участвовать и в переходной 503 (следующий блок), и
+	// в решении «квота исчерпана по ВСЕМ присутствующим типам» на равных с
+	// событиями и транзакциями. h.Profiles == nil (приём профилей не
+	// сконфигурирован) исключён тем же способом, что и из самой обработки
+	// профилей ниже: класс, который приёмник не умеет принимать, не может
+	// стать причиной отказа.
+	profQuotaRelevant := hasProfiles && h.Profiles != nil && !profOverloaded
 	// Квота списывается ЗА ЭЛЕМЕНТ. Списание частичное: если до квоты осталось
 	// меньше, чем в конверте, принимаем сколько влезло, остаток идёт в дропы —
 	// организация получает ровно свою квоту, а не «последний конверт целиком
 	// мимо», и org_usage остаётся точным.
 	var eventsGranted int
+	var eventsChargedAt time.Time
 	if eventQuotaRelevant {
-		eventsGranted = h.grant(r.Context(), h.quota, key.OrgID, "event", len(env.Events))
+		eventsGranted, eventsChargedAt = h.grant(r.Context(), h.quota, key.OrgID, "event", len(env.Events))
 	}
 	var txGranted int
+	var txChargedAt time.Time
 	if txQuotaRelevant {
-		txGranted = h.grant(r.Context(), h.TxQuota, key.OrgID, "transaction", len(txSelected))
+		txGranted, txChargedAt = h.grant(r.Context(), h.TxQuota, key.OrgID, "transaction", len(txSelected))
+	}
+	// profGranted считается ЗДЕСЬ же, наравне с eventsGranted/txGranted — до
+	// развилки переходной 503 ниже, а не в блоке обработки профилей дальше по
+	// функции. Профиль — такой же ретраибельный класс со своей квотой и своим
+	// буфером, что и события с транзакциями: его исчерпание квоты обязано
+	// участвовать в выборе между 503 и 429 на общих основаниях, а не только в
+	// самом 429. Фактическая постановка профиля в h.Profiles (парсинг,
+	// скрабинг, ограничение кардинальности) по-прежнему в блоке ниже — там же
+	// остаётся весь дроп-лог; здесь только списание квоты.
+	var profGranted int
+	if profQuotaRelevant {
+		// Второй результат (chargedAt) профилям не нужен: профили не имеют
+		// понятия «не удалось поставить» — они вытесняются, а не отклоняются
+		// (см. Pipeline.Add у T6), поэтому для них нет парного refund.
+		profGranted, _ = h.grant(r.Context(), h.ProfileQuota, key.OrgID, "profile", len(env.Profiles))
 	}
 	eventsAllowed := eventsGranted > 0
 	txAllowed := txGranted > 0
-	// Стык двух причин отказа: оба присутствующих класса отбиты, но по РАЗНЫМ
-	// причинам — один насыщен (eventOverloaded/txOverloaded), другой честно
-	// выбил месячную квоту. Выигрывает ПЕРЕХОДНАЯ причина — 503, а не 429: у
-	// 429 Retry-After считается до 1-го числа следующего месяца
-	// (writeQuotaExceeded), и такой ответ хоронил бы насыщенный класс, который
-	// приёмник принял бы уже через 5 секунд, вместе с честно исчерпанным.
-	// Решение ДО учёта дропов ниже — под 503 не принято НИЧЕГО, включая класс,
-	// исчерпавший квоту (он получит свой отказ заново при ретрае и ничего не
-	// потратит повторно, grant вернёт 0), и countDrop не должен считать это
-	// дропом: то, что раньше тихо уходило туда под 429, теперь просто не
-	// принято. Ветка «оба отбиты, но НИ ОДИН не насыщен» сюда не попадает
-	// (условие ниже) и остаётся прежним 429 бит-в-бит.
-	if (eventQuotaRelevant || txQuotaRelevant) && !eventsAllowed && !txAllowed &&
-		(eventOverloaded || txOverloaded) {
-		signal, saturation := SignalTransaction, txSat
-		if eventOverloaded {
+	profAllowed := profGranted > 0
+	// Стык двух причин отказа: все присутствующие классы отбиты, но по РАЗНЫМ
+	// причинам — хотя бы один насыщен (eventOverloaded/txOverloaded/
+	// profOverloaded), другой (другие) честно выбили месячную квоту.
+	// Выигрывает ПЕРЕХОДНАЯ причина — 503, а не 429: у 429 Retry-After
+	// считается до 1-го числа следующего месяца (writeQuotaExceeded), и такой
+	// ответ хоронил бы насыщенный класс, который приёмник принял бы уже через
+	// 5 секунд, вместе с честно исчерпанным. Решение ДО учёта дропов ниже —
+	// под 503 не принято НИЧЕГО, включая класс, исчерпавший квоту (он получит
+	// свой отказ заново при ретрае и ничего не потратит повторно, grant
+	// вернёт 0, что уже посчитано выше и ничего не спишет дополнительно), и
+	// countDrop не должен считать это дропом: то, что раньше тихо уходило
+	// туда под 429, теперь просто не принято. Ветка «все отбиты, но НИ ОДИН
+	// не насыщен» сюда не попадает (условие ниже) и остаётся прежним 429
+	// бит-в-бит, включая профильный detail.
+	//
+	// signal выбирается по насыщенному классу в фиксированном порядке:
+	// событие, иначе транзакция, иначе профиль — тот же порядок, что уже
+	// применяет overload preflight выше (all-saturated ветка).
+	if (eventQuotaRelevant || txQuotaRelevant || profQuotaRelevant) &&
+		!eventsAllowed && !txAllowed && !profAllowed &&
+		(eventOverloaded || txOverloaded || profOverloaded) {
+		signal, saturation := SignalProfile, profSat
+		switch {
+		case eventOverloaded:
 			signal, saturation = SignalEvent, eventSat
+		case txOverloaded:
+			signal, saturation = SignalTransaction, txSat
 		}
 		h.overloaded(w, key.OrgID, projectID, signal, saturation)
 		return
@@ -936,12 +1010,68 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 	if dropped := len(txSelected) - txGranted; dropped > 0 {
 		h.countDrop(r.Context(), dropTransaction, key.OrgID, dropped)
 	}
-	if (eventQuotaRelevant || txQuotaRelevant) && !eventsAllowed && !txAllowed {
+	// Профили (этап 7) обрабатываются ЗДЕСЬ — до развилки ответа по квоте
+	// событий/транзакций ниже, а не после постановки событий/транзакций в
+	// очередь, как было раньше. Раньше блок стоял в самом конце, и конверт, у
+	// которого исчерпаны квоты И событий, И транзакций, отвечал 429 ранним
+	// возвратом (см. ниже), даже не дойдя до профилей: они пропадали молча,
+	// ни в дроп, ни в лог, никуда — при том, что у профилей своя отдельная
+	// квота и свой отдельный буфер, и они не должны гибнуть из-за чужого
+	// лимита. Перенос делает профили полноправным классом конверта: приняты
+	// они или нет, решается независимо от судьбы событий и транзакций, а не
+	// как приложение к ним. Транзитную 503 выше (переходная причина отказа)
+	// это тоже уже касается — профиль там полноправный участник (см. блок
+	// выше), и до этой строки код не доходит, если 503 сработал.
+	//
+	// Насыщенный буфер профилей (profOverloaded) — та же дисциплина, что у
+	// событий/транзакций выше: квоту не трогаем (h.grant уже не звался и
+	// здесь не зовётся — profGranted посчитан выше), все элементы уходят в
+	// дроп, класс виден в логе отдельной причиной. Битый профиль по-прежнему
+	// пропускается без влияния на статус — это дефект данных клиента, а не
+	// отказ приёмника. Эту часть T4 не меняет.
+	if hasProfiles && h.Profiles != nil {
+		if profOverloaded {
+			slog.Warn("ingest: dropping items from envelope",
+				"reason", "buffer overloaded", "class", "profile",
+				"dropped", len(env.Profiles), "accepted", 0,
+				"project_id", projectID, "org_id", key.OrgID)
+			h.countDrop(r.Context(), dropProfile, key.OrgID, len(env.Profiles))
+		} else {
+			if dropped := len(env.Profiles) - profGranted; dropped > 0 {
+				slog.Warn("ingest: profile quota exceeded, dropping profiles",
+					"dropped", dropped, "accepted", profGranted,
+					"project_id", projectID, "org_id", key.OrgID)
+				h.countDrop(r.Context(), dropProfile, key.OrgID, dropped)
+			}
+			for _, raw := range env.Profiles[:profGranted] {
+				prof, err := profile.ParseSentry(raw, time.Now().UTC())
+				if err != nil {
+					slog.Warn("ingest: bad sentry profile, skipped", "project_id", projectID, "error", err)
+					continue
+				}
+				h.scrubProfile(&prof)
+				h.limitProfileCardinality(projectID, &prof)
+				h.Profiles.Add(key.ProjectID, prof)
+			}
+		}
+	}
+	// eventQuotaRelevant/txQuotaRelevant/profQuotaRelevant и eventsAllowed/
+	// txAllowed/profAllowed уже посчитаны выше (наравне с переходной 503).
+	// Следствие, принятое сознательно: конверт из ОДНИХ профилей с исчерпанной
+	// квотой профилей теперь получает 429 вместо прежнего 200 — раньше такой
+	// клиент получал успех и не узнавал, что его профили выброшены. Это та же
+	// честность, что уже действует для событий и транзакций.
+	if (eventQuotaRelevant || txQuotaRelevant || profQuotaRelevant) && !eventsAllowed && !txAllowed && !profAllowed {
 		detail := "event quota exceeded"
 		signal := SignalEvent
-		if !eventQuotaRelevant {
+		switch {
+		case eventQuotaRelevant:
+		case txQuotaRelevant:
 			detail = "transaction quota exceeded"
 			signal = SignalTransaction
+		default:
+			detail = "profile quota exceeded"
+			signal = SignalProfile
 		}
 		h.writeQuotaExceeded(w, signal, detail)
 		return
@@ -972,7 +1102,17 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 
 	id := env.EventID
 	// Принимаем ровно столько, сколько списала квота: остальное уже посчитано
-	// в дропы выше.
+	// в дропы выше. eventsEnqueued/eventsCapacityDropped — честный учёт РЕЗУЛЬТАТА
+	// постановки (T5): между preflight-проверкой заполненности выше и этим
+	// вызовом есть окно, в котором соседний запрос успевает добрать очередь, и
+	// Enqueue вернёт false уже после того, как квота списана и решение
+	// «принимаем» вроде бы принято. eventsCapacityDropped — СЧЁТЧИК именно
+	// ЁМКОСТНЫХ отказов (Enqueue вернул false), а не битых item'ов: последние
+	// просто пропускаются continue'ом и в eventsCapacityDropped не попадают —
+	// иначе клиент, приславший мусор, получал бы 503 и ретраил бы его вечно, а
+	// возврат квоты ниже (T8) стал бы бесплатным пропуском для брака.
+	var eventsEnqueued int
+	var eventsCapacityDropped int
 	for _, raw := range env.Events[:eventsGranted] {
 		pe, err := ParseEvent(raw)
 		if err != nil {
@@ -982,42 +1122,38 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 			id = pe.EventID
 		}
 		pe.Environment = h.Cardinality.Value(projectID, FieldEnvironment, pe.Environment)
-		h.pipeline.Enqueue(projectID, key.OrgID, pe)
-	}
-	if txGranted > 0 {
-		h.enqueueTransactions(projectID, key.OrgID, txSelected[:txGranted])
-	}
-	// Профили (этап 7) — best-effort: своя квота, отдельная от событий/транзакций;
-	// её исчерпание или битый профиль не меняют статус ответа по остальным типам.
-	// Насыщенный буфер профилей (profOverloaded) — та же дисциплина, что у
-	// событий/транзакций выше: квоту не трогаем (h.grant не зовём), все
-	// элементы уходят в дроп, класс виден в логе отдельной причиной.
-	if hasProfiles && h.Profiles != nil {
-		if profOverloaded {
-			slog.Warn("ingest: dropping items from envelope",
-				"reason", "buffer overloaded", "class", "profile",
-				"dropped", len(env.Profiles), "accepted", 0,
-				"project_id", projectID, "org_id", key.OrgID)
-			h.countDrop(r.Context(), dropProfile, key.OrgID, len(env.Profiles))
+		if h.pipeline.Enqueue(projectID, key.OrgID, pe) {
+			eventsEnqueued++
 		} else {
-			profGranted := h.grant(r.Context(), h.ProfileQuota, key.OrgID, "profile", len(env.Profiles))
-			if dropped := len(env.Profiles) - profGranted; dropped > 0 {
-				slog.Warn("ingest: profile quota exceeded, dropping profiles",
-					"dropped", dropped, "accepted", profGranted,
-					"project_id", projectID, "org_id", key.OrgID)
-				h.countDrop(r.Context(), dropProfile, key.OrgID, dropped)
-			}
-			for _, raw := range env.Profiles[:profGranted] {
-				prof, err := profile.ParseSentry(raw, time.Now().UTC())
-				if err != nil {
-					slog.Warn("ingest: bad sentry profile, skipped", "project_id", projectID, "error", err)
-					continue
-				}
-				h.scrubProfile(&prof)
-				h.limitProfileCardinality(projectID, &prof)
-				h.Profiles.Add(key.ProjectID, prof)
-			}
+			eventsCapacityDropped++
 		}
+	}
+	var txEnqueued, txCapacityDropped int
+	if txGranted > 0 {
+		txEnqueued, txCapacityDropped = h.enqueueTransactions(projectID, key.OrgID, txSelected[:txGranted])
+	}
+	// Возврат квоты (T8): списано, но не поставлено в очередь ИМЕННО по
+	// ёмкости — наша вина, приёмник не справился, а не клиент. Одна и та же
+	// сверка «списано минус поставлено по ёмкости» покрывает и ветку ниже
+	// (503, поставлено 0 — вернётся всё) и обычный смешанный 200 (вернётся
+	// частично). Битые item'ы выше и семплированное в txSelected сюда не
+	// попадают: за брак клиента и за намеренно не отобранное квота не
+	// возвращается.
+	h.refund(r.Context(), h.quota, key.OrgID, "event", eventsCapacityDropped, eventsChargedAt)
+	h.refund(r.Context(), h.TxQuota, key.OrgID, "transaction", txCapacityDropped, txChargedAt)
+	// Ничего реально не встало в очередь, и хотя бы одна из причин — именно
+	// ёмкость (не квота, не скоуп, не битые item'ы, не семплирование): повтор
+	// клиента в этом случае безопасен, дублировать нечего, а молчаливая потеря
+	// под видом 200 — ровно то, что T5 закрывает. Профили сюда не входят: их
+	// приёмник не отказывает, а вытесняет старое (см. Pipeline.Add у T6), и
+	// понятия «не удалось поставить» у них нет.
+	if eventsEnqueued == 0 && txEnqueued == 0 && (eventsCapacityDropped > 0 || txCapacityDropped > 0) {
+		signal := SignalTransaction
+		if eventsCapacityDropped > 0 {
+			signal = SignalEvent
+		}
+		h.overloaded(w, key.OrgID, projectID, signal, 1.0)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": id})
 }
@@ -1097,12 +1233,26 @@ func (h *Handler) sampleTransactions(ctx context.Context, projectID int64, txs [
 
 // enqueueTransactions отдаёт отобранное и оплаченное в пайплайн. orgID нужен
 // пайплайну только для per-org учёта дропов (см. Pipeline.DropCounter).
-func (h *Handler) enqueueTransactions(projectID, orgID int64, txs []trace.Transaction) {
+//
+// Возвращает enqueued — сколько транзакций реально встало в очередь, и
+// capacityDropped — СКОЛЬКО из них отклонено именно по ёмкости
+// (EnqueueTransaction вернул false). Вызывающие (envelope, otlpTraces)
+// используют эту пару для двух целей: решить, честен ли ответ 200 (если из
+// присутствующих транзакций не встало ни одной, а причина — ёмкость, повтор
+// клиента безопасен и должен получить 503, см. T5), и вернуть организации
+// квоту за capacityDropped единиц — списанное, но не поставленное по нашей
+// вине, а не вине клиента (T8).
+func (h *Handler) enqueueTransactions(projectID, orgID int64, txs []trace.Transaction) (enqueued, capacityDropped int) {
 	for i := range txs {
 		tx := txs[i]
 		h.limitCardinality(projectID, &tx)
-		h.pipeline.EnqueueTransaction(projectID, orgID, tx)
+		if h.pipeline.EnqueueTransaction(projectID, orgID, tx) {
+			enqueued++
+		} else {
+			capacityDropped++
+		}
 	}
+	return enqueued, capacityDropped
 }
 
 // limitCardinality схлопывает значения, которыми проект уже исчерпал потолок
@@ -1161,7 +1311,8 @@ func (h *Handler) store(w http.ResponseWriter, r *http.Request) {
 	if h.overloaded(w, key.OrgID, key.ProjectID, SignalEvent, h.pipeline.EventSaturation()) {
 		return
 	}
-	if h.grant(r.Context(), h.quota, key.OrgID, "event", 1) == 0 {
+	eventGranted, eventChargedAt := h.grant(r.Context(), h.quota, key.OrgID, "event", 1)
+	if eventGranted == 0 {
 		h.countDrop(r.Context(), dropEvent, key.OrgID, 1)
 		h.writeQuotaExceeded(w, SignalEvent, "event quota exceeded")
 		return
@@ -1192,7 +1343,20 @@ func (h *Handler) store(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "malformed event")
 		return
 	}
-	h.pipeline.Enqueue(projectID, key.OrgID, pe)
+	// store несёт ровно одно событие: если Enqueue вернул false, это событие —
+	// единственное содержимое запроса, и ничего не встало в очередь целиком
+	// (см. T5, докблок Enqueue). Ответ честно становится 503 вместо прежнего
+	// 200: повтор безопасен, ставить было нечего, кроме этого события.
+	// saturation=1.0 — не измерение, а констатация уже случившегося факта
+	// отказа постановки, которую preflight выше не увидел (окно между
+	// проверкой заполненности и этим вызовом).
+	if !h.pipeline.Enqueue(projectID, key.OrgID, pe) {
+		// T8: списанная выше единица не встала в очередь по ёмкости — не вина
+		// клиента (событие уже прошло разбор), поэтому возвращаем организации.
+		h.refund(r.Context(), h.quota, key.OrgID, "event", 1, eventChargedAt)
+		h.overloaded(w, key.OrgID, projectID, SignalEvent, 1.0)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": pe.EventID})
 }
 

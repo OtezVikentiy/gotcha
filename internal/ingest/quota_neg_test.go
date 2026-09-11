@@ -34,6 +34,15 @@ func (f *fakeQuotaResolver) CheckAndCountProfiles(_ context.Context, _ int64, _ 
 func (f *fakeQuotaResolver) CheckAndCountLogs(_ context.Context, _ int64, _ time.Time, _, want int64) (int64, error) {
 	return want, nil
 }
+func (f *fakeQuotaResolver) RefundEvents(context.Context, int64, time.Time, int64) error { return nil }
+func (f *fakeQuotaResolver) RefundTransactions(context.Context, int64, time.Time, int64) error {
+	return nil
+}
+func (f *fakeQuotaResolver) RefundMetrics(context.Context, int64, time.Time, int64) error { return nil }
+func (f *fakeQuotaResolver) RefundProfiles(context.Context, int64, time.Time, int64) error {
+	return nil
+}
+func (f *fakeQuotaResolver) RefundLogs(context.Context, int64, time.Time, int64) error { return nil }
 
 // TestQuotaNegativeCacheShortCircuits: после первого over-quota повторные
 // проверки той же орги в пределах TTL НЕ ходят в PG (ни checkCount, ни Get).
@@ -57,7 +66,7 @@ func TestQuotaNegativeCacheShortCircuits(t *testing.T) {
 	ctx := context.Background()
 
 	// Первый вызов реально ходит в PG (Get + checkCount) и кладёт негатив.
-	if granted, err := q.CheckAndCount(ctx, 7, 1); err != nil || granted != 0 {
+	if granted, _, err := q.CheckAndCount(ctx, 7, 1); err != nil || granted != 0 {
 		t.Fatalf("first: granted=%v err=%v, want false/nil", granted, err)
 	}
 	if checkCalls != 1 || fake.getCalls != 1 {
@@ -66,7 +75,7 @@ func TestQuotaNegativeCacheShortCircuits(t *testing.T) {
 
 	// Следующие 3 в пределах TTL — из кеша, без PG.
 	for i := 0; i < 3; i++ {
-		if granted, _ := q.CheckAndCount(ctx, 7, 1); granted != 0 {
+		if granted, _, _ := q.CheckAndCount(ctx, 7, 1); granted != 0 {
 			t.Fatalf("cached call %d allowed, want denied", i)
 		}
 	}
@@ -76,7 +85,7 @@ func TestQuotaNegativeCacheShortCircuits(t *testing.T) {
 
 	// За пределами TTL кеш протухает — снова идём в PG.
 	now = now.Add(6 * time.Second)
-	if granted, _ := q.CheckAndCount(ctx, 7, 1); granted != 0 {
+	if granted, _, _ := q.CheckAndCount(ctx, 7, 1); granted != 0 {
 		t.Fatal("after TTL: allowed, want denied")
 	}
 	if checkCalls != 2 {
@@ -105,7 +114,7 @@ func TestQuotaPositiveNeverCached(t *testing.T) {
 	}
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
-		if granted, err := q.CheckAndCount(ctx, 7, 1); err != nil || granted != 1 {
+		if granted, _, err := q.CheckAndCount(ctx, 7, 1); err != nil || granted != 1 {
 			t.Fatalf("call %d: granted=%v err=%v, want true/nil", i, granted, err)
 		}
 	}

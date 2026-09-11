@@ -130,7 +130,7 @@ func (h *Handler) logsNDJSON(w http.ResponseWriter, r *http.Request) {
 // санитизирует и кладёт в LogSink. Общий хвост otlpLogs и logsNDJSON — разбор
 // тела и формат ответа у них разный, а дальше поток идентичен otlpMetrics.
 func (h *Handler) grantAndSanitizeLogs(ctx context.Context, orgID, projectID int64, records []log.LogRecord) int {
-	granted := h.grant(ctx, h.LogQuota, orgID, "log", len(records))
+	granted, _ := h.grant(ctx, h.LogQuota, orgID, "log", len(records))
 	if dropped := len(records) - granted; dropped > 0 {
 		h.countDrop(ctx, dropLog, orgID, dropped)
 		slog.Warn("ingest: log quota exceeded, dropping records",

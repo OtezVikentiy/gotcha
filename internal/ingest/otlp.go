@@ -181,7 +181,7 @@ func (h *Handler) otlpTraces(w http.ResponseWriter, r *http.Request) {
 	// что будет записано. Раньше квота списывалась за все разобранные
 	// транзакции, и лишь потом семплирование отбрасывало несохраняемые.
 	kept := h.sampleTransactions(r.Context(), projectID, txs)
-	granted := h.grant(r.Context(), h.TxQuota, key.OrgID, "transaction", len(kept))
+	granted, chargedAt := h.grant(r.Context(), h.TxQuota, key.OrgID, "transaction", len(kept))
 	// Уменьшаемое — число отобранных: отсеянное семплированием отброшено по
 	// настройке проекта намеренно и потерей по квоте не является.
 	if dropped := len(kept) - granted; dropped > 0 {
@@ -198,7 +198,24 @@ func (h *Handler) otlpTraces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.enqueueTransactions(projectID, key.OrgID, kept[:granted])
+	// enqueued==0 при granted>0 значит: было что ставить, но ёмкости не
+	// хватило именно на постановке (окно между preflight-проверкой заполненности
+	// выше и этим вызовом — см. T5, докблок Enqueue) — ничего не записано,
+	// повтор коллектора безопасен. Квота уже списана этим запросом, но
+	// h.grant тратит её за элемент, готовый к записи, а не за факт записи —
+	// сверка со списанным идёт НИЖЕ через h.refund (T8): организация платит за
+	// то, что встало в очередь, а не за саму попытку постановки. granted==0
+	// сюда не заходит НИКОГДА как "ёмкостный" случай: при нём kept[:0] пуст,
+	// enqueueTransactions не проходит по циклу и capacityDropped остаётся 0.
+	enqueued, capacityDropped := h.enqueueTransactions(projectID, key.OrgID, kept[:granted])
+	// Возврат квоты (T8): capacityDropped списано, но не поставлено ИМЕННО по
+	// ёмкости — та же дисциплина, что на envelope-пути (см. Handler.envelope)
+	// и та же best-effort гарантия (см. Handler.refund).
+	h.refund(r.Context(), h.TxQuota, key.OrgID, "transaction", capacityDropped, chargedAt)
+	if enqueued == 0 && capacityDropped > 0 {
+		h.overloaded(w, key.OrgID, projectID, SignalTransaction, 1.0)
+		return
+	}
 	writeOTLPResponse(w, enc)
 }
 
@@ -339,7 +356,7 @@ func (h *Handler) otlpMetrics(w http.ResponseWriter, r *http.Request) {
 			h.Hosts.Touch(r.Context(), key.ProjectID, hosts)
 		}
 	}
-	granted := h.grant(r.Context(), h.MetricQuota, key.OrgID, "metric", len(points))
+	granted, _ := h.grant(r.Context(), h.MetricQuota, key.OrgID, "metric", len(points))
 	if dropped := len(points) - granted; dropped > 0 {
 		h.countDrop(r.Context(), dropMetric, key.OrgID, dropped)
 		slog.Warn("ingest: metric quota exceeded, dropping points from OTLP export",
