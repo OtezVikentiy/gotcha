@@ -140,16 +140,17 @@ func TestComposeServicesAreBounded(t *testing.T) {
 		nnpLiteral = "no-new-privileges:true"
 		nnpSubst   = "no-new-privileges:${GOTCHA_COMPOSE_NO_NEW_PRIVS:-true}"
 	)
-	hasNNP := false
-	for _, o := range gotcha.SecurityOpt {
-		if o == nnpLiteral || o == nnpSubst {
-			hasNNP = true
-		}
-	}
-	if !hasNNP {
-		t.Errorf("docker-compose.yml: у gotcha нет security_opt %q и нет %q "+
-			"(security_opt=%q) — дефолт поставки обязан включать no-new-privileges",
-			nnpLiteral, nnpSubst, gotcha.SecurityOpt)
+	// Сверяется ВЕСЬ список, а не наличие нужной записи в нём: security_opt —
+	// ровно то место, куда ослабление дописывается следующей строкой
+	// (apparmor=unconfined, seccomp=unconfined), и проверка «нужное на месте»
+	// такое дописывание пропускает молча. Понадобится законная вторая опция —
+	// её впишут сюда осознанно, вместе с обоснованием.
+	if len(gotcha.SecurityOpt) != 1 ||
+		(gotcha.SecurityOpt[0] != nnpLiteral && gotcha.SecurityOpt[0] != nnpSubst) {
+		t.Errorf("docker-compose.yml: security_opt сервиса gotcha = %q, а обязан состоять "+
+			"ровно из одной записи — %q или %q (дефолт поставки включает no-new-privileges, "+
+			"а посторонних опций в списке быть не должно)",
+			gotcha.SecurityOpt, nnpLiteral, nnpSubst)
 	}
 	hasAll := false
 	for _, c := range gotcha.CapDrop {
