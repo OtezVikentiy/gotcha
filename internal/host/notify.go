@@ -43,6 +43,11 @@ type HostNotifier struct {
 	Hosts     *Store
 	Settings  *SettingsService
 
+	// nil — каскад не резолвится, порог в уведомлении берётся из Settings как есть
+	// (тестовые и Retirer-инстансы, которым эскалация не звонит NotifyStep).
+	Overrides *HostOverrideService
+	Groups    *GroupThresholdService
+
 	Pool *pgxpool.Pool
 
 	// nil — строки нет; Retirer оставляет пустым нарочно, шлёт только retire/close.
@@ -157,6 +162,31 @@ func (n *HostNotifier) depsLine(ctx context.Context, in Incident, h Host) string
 	return i18n.Tf(ctx, "notify.host.deps_affected", "count", strconv.Itoa(cnt))
 }
 
+// Тот же каскад, что у Evaluator (ThresholdResolver) — иначе повтор уведомления при
+// эскалации показал бы порог проекта хосту, у которого он пришпилен оверрайдом.
+func (n *HostNotifier) effectiveSettings(ctx context.Context, projectID int64, h Host) (Settings, error) {
+	proj, exists, err := n.Settings.GetWithExists(ctx, projectID)
+	if err != nil {
+		return Settings{}, err
+	}
+	resolver := ThresholdResolver{Project: proj, ProjectExists: exists}
+	if n.Overrides != nil {
+		ov, err := n.Overrides.Get(ctx, h.ID)
+		if err != nil {
+			return Settings{}, err
+		}
+		resolver.Overrides = map[int64]ThresholdOverride{h.ID: ov}
+	}
+	if n.Groups != nil {
+		groups, err := n.Groups.List(ctx, projectID)
+		if err != nil {
+			return Settings{}, err
+		}
+		resolver.Groups = groups
+	}
+	return resolver.Effective(h).Settings, nil
+}
+
 // Лог incident_escalations пишет оркестрация (SendStepIfDue), не этот метод.
 // channelIDs nil/пусто — все deliverable-каналы проекта.
 func (n *HostNotifier) NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) ([]int64, error) {
@@ -175,7 +205,7 @@ func (n *HostNotifier) NotifyStep(ctx context.Context, incidentID int64, channel
 		return nil, fmt.Errorf("host: notify step: host %d not found", in.HostID)
 	}
 	h := hosts[0]
-	s, err := n.Settings.Get(ctx, in.ProjectID)
+	s, err := n.effectiveSettings(ctx, in.ProjectID, h)
 	if err != nil {
 		return nil, fmt.Errorf("host: notify step: load settings: %w", err)
 	}

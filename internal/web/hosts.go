@@ -107,7 +107,7 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	settings, err := h.HostSettings.Get(r.Context(), projectID)
+	settings, settingsExist, err := h.HostSettings.GetWithExists(r.Context(), projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
@@ -160,6 +160,36 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 	if truncated {
 		hosts = hosts[:hostsListLimit]
 	}
+
+	// Тот же каскад, что у Evaluator/карточки хоста — иначе бейдж «тишина» и сортировка
+	// расходятся с тем, что реально действует на хосте.
+	var overrides map[int64]host.ThresholdOverride
+	if h.HostOverrides != nil && len(hosts) > 0 {
+		ids := make([]int64, len(hosts))
+		for i, hst := range hosts {
+			ids[i] = hst.ID
+		}
+		overrides, err = h.HostOverrides.GetForHosts(r.Context(), ids)
+		if err != nil {
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
+	}
+	var groups []host.GroupThreshold
+	if h.GroupThresholds != nil {
+		groups, err = h.GroupThresholds.List(r.Context(), projectID)
+		if err != nil {
+			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			return
+		}
+	}
+	resolver := host.ThresholdResolver{
+		Project:       settings,
+		ProjectExists: settingsExist,
+		Groups:        groups,
+		Overrides:     overrides,
+	}
+
 	rows := make([]templates.HostRowVM, 0, len(hosts))
 	for _, hst := range hosts {
 		row := templates.HostRowVM{
@@ -187,7 +217,8 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 				row.LoadPerCore = &perCore
 			}
 		}
-		row.StatusKind, row.OpenKinds = hostRowStatus(openKindsByHost[hst.ID], hst.LastSeen, now, settings)
+		eff := resolver.Effective(hst)
+		row.StatusKind, row.OpenKinds = hostRowStatus(openKindsByHost[hst.ID], hst.LastSeen, now, eff.Settings)
 		rows = append(rows, row)
 	}
 	sortHostRows(rows)
@@ -715,7 +746,9 @@ func (h *Handler) hostSettingsSave(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if h.Metrics == nil || h.HostSettings == nil {
+	// Hosts/HostOverrides обязательны здесь: без них resolveDisabledKindIncidents не может
+	// посчитать каскад и не имеет права тихо откатиться к закрытию по всему проекту.
+	if h.Metrics == nil || h.HostSettings == nil || h.Hosts == nil || h.HostOverrides == nil {
 		h.notFound(w, r)
 		return
 	}
@@ -854,19 +887,92 @@ func (h *Handler) hostGroupThresholdDelete(w http.ResponseWriter, r *http.Reques
 	http.Redirect(w, r, hostSettingsPath(projectID), http.StatusSeeOther)
 }
 
-// Без этого выключение порога не имеет обратной силы: Evaluator пропускает выключенный вид
-// целиком, а ручного закрытия инцидента в интерфейсе нет.
+// Страница обхода хостов при закрытии — не MaxHostsPerProject: обход не должен зависеть
+// от этого потолка как от границы выборки.
+const resolveDisabledKindPageSize = 500
+
+// Запас над MaxHostsPerProject/resolveDisabledKindPageSize — страховка от бесконечного
+// цикла при поломке курсора, не ожидаемая длина обхода.
+const maxResolveDisabledKindPages = 100
+
+// Закрывает по каскаду ThresholdResolver.Effective, одним UPDATE на вид —
+// не на каждую пару «хост × вид».
 func (h *Handler) resolveDisabledKindIncidents(ctx context.Context, projectID int64, settings host.Settings) {
-	// nil-safe: гейт hostSettingsSave проверяет только Metrics/HostSettings.
+	// nil-safe: в отличие от Hosts/HostOverrides, обязательных по гейту hostSettingsSave.
 	if h.HostIncidents == nil {
 		return
 	}
+	var disabledKinds []string
 	for _, kind := range host.Kinds {
 		enabled, ok := settings.KindEnabled(kind)
-		if !ok || enabled {
-			continue
+		if ok && !enabled {
+			disabledKinds = append(disabledKinds, kind)
 		}
-		n, err := h.HostIncidents.ResolveOpenByProjectKind(ctx, projectID, kind)
+	}
+	if len(disabledKinds) == 0 {
+		return
+	}
+
+	var groups []host.GroupThreshold
+	if h.GroupThresholds != nil {
+		var err error
+		groups, err = h.GroupThresholds.List(ctx, projectID)
+		if err != nil {
+			slog.Error("web: resolve incidents of disabled host threshold: groups",
+				"project_id", projectID, "error", err)
+			return
+		}
+	}
+
+	toClose := make(map[string][]int64, len(disabledKinds))
+	after := ""
+	for page := 0; ; page++ {
+		if page >= maxResolveDisabledKindPages {
+			slog.Error("web: resolve incidents of disabled host threshold: page limit exceeded",
+				"project_id", projectID, "pages", page)
+			return
+		}
+		hosts, err := h.Hosts.ListPage(ctx, projectID, after, resolveDisabledKindPageSize)
+		if err != nil {
+			slog.Error("web: resolve incidents of disabled host threshold: list hosts",
+				"project_id", projectID, "error", err)
+			return
+		}
+		if len(hosts) == 0 {
+			break
+		}
+		ids := make([]int64, len(hosts))
+		for i, hst := range hosts {
+			ids[i] = hst.ID
+		}
+		overrides, err := h.HostOverrides.GetForHosts(ctx, ids)
+		if err != nil {
+			slog.Error("web: resolve incidents of disabled host threshold: overrides",
+				"project_id", projectID, "error", err)
+			return
+		}
+		resolver := host.ThresholdResolver{
+			Project:       settings,
+			ProjectExists: true,
+			Groups:        groups,
+			Overrides:     overrides,
+		}
+		for _, hst := range hosts {
+			eff := resolver.Effective(hst)
+			for _, kind := range disabledKinds {
+				if enabled, _ := eff.Settings.KindEnabled(kind); !enabled {
+					toClose[kind] = append(toClose[kind], hst.ID)
+				}
+			}
+		}
+		if len(hosts) < resolveDisabledKindPageSize {
+			break
+		}
+		after = hosts[len(hosts)-1].Name
+	}
+
+	for kind, ids := range toClose {
+		n, err := h.HostIncidents.ResolveOpenByHostsKind(ctx, ids, kind)
 		if err != nil {
 			slog.Error("web: resolve incidents of disabled host threshold",
 				"project_id", projectID, "kind", kind, "error", err)

@@ -413,6 +413,59 @@ func TestIncidentServiceResolveOpenByProjectKind(t *testing.T) {
 	}
 }
 
+func TestIncidentServiceResolveOpenByHostsKind(t *testing.T) {
+	pool, svc, projectID, hostID := setupIncidentHost(t)
+	ctx := context.Background()
+	otherID := secondHost(t, pool, projectID, "web-hosts-02")
+	thirdID := secondHost(t, pool, projectID, "web-hosts-03")
+
+	diskA, _, err := svc.Open(ctx, projectID, hostID, "disk", 0.95, "/var", false)
+	if err != nil {
+		t.Fatalf("Open disk A: %v", err)
+	}
+	diskB, _, err := svc.Open(ctx, projectID, otherID, "disk", 0.99, "/", false)
+	if err != nil {
+		t.Fatalf("Open disk B: %v", err)
+	}
+	// Третий хост не в списке ниже — его инцидент не должен закрыться заодно.
+	diskC, _, err := svc.Open(ctx, projectID, thirdID, "disk", 0.9, "", false)
+	if err != nil {
+		t.Fatalf("Open disk C: %v", err)
+	}
+	mem, _, err := svc.Open(ctx, projectID, hostID, "memory", 0.93, "", false)
+	if err != nil {
+		t.Fatalf("Open memory: %v", err)
+	}
+
+	n, err := svc.ResolveOpenByHostsKind(ctx, []int64{hostID, otherID}, "disk")
+	if err != nil {
+		t.Fatalf("ResolveOpenByHostsKind: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("закрыто %d инцидентов, want 2 (disk на hostID и otherID из списка)", n)
+	}
+
+	for _, id := range []int64{diskA.ID, diskB.ID} {
+		var status string
+		if err := pool.QueryRow(ctx, "SELECT status FROM host_incidents WHERE id = $1", id).Scan(&status); err != nil {
+			t.Fatalf("read incident %d: %v", id, err)
+		}
+		if status != "resolved" {
+			t.Errorf("инцидент %d: status=%q, want resolved", id, status)
+		}
+	}
+	if got, ok, err := svc.OpenFor(ctx, thirdID, "disk"); err != nil || !ok || got.ID != diskC.ID {
+		t.Errorf("закрыт инцидент хоста, которого не было в списке: ok=%v err=%v", ok, err)
+	}
+	if got, ok, err := svc.OpenFor(ctx, hostID, "memory"); err != nil || !ok || got.ID != mem.ID {
+		t.Errorf("инцидент соседнего вида memory закрыт заодно: ok=%v err=%v", ok, err)
+	}
+
+	if n, err := svc.ResolveOpenByHostsKind(ctx, nil, "disk"); err != nil || n != 0 {
+		t.Errorf("пустой список хостов: n=%d err=%v, want 0/nil", n, err)
+	}
+}
+
 func TestIncidentServiceAcknowledge(t *testing.T) {
 	pool, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()

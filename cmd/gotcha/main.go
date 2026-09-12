@@ -1377,6 +1377,8 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			Incidents: host.NewIncidentService(pg),
 			Hosts:     host.NewStore(pg),
 			Settings:  host.NewSettingsService(pg),
+			Overrides: host.NewHostOverrideService(pg),
+			Groups:    host.NewGroupThresholdService(pg),
 			Pool:      pg,
 			// У Retirer-экземпляра (entityJanitor) поле остаётся nil намеренно —
 			// он шлёт только retire/close.

@@ -158,6 +158,21 @@ func (s *IncidentService) ResolveOpenByHostKind(ctx context.Context, hostID int6
 	return tag.RowsAffected(), nil
 }
 
+// Один UPDATE на весь список хостов — вызывающий группирует по kind сам,
+// не гонит round-trip на каждую пару «хост × вид».
+func (s *IncidentService) ResolveOpenByHostsKind(ctx context.Context, hostIDs []int64, kind string) (int64, error) {
+	if len(hostIDs) == 0 {
+		return 0, nil
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE host_incidents SET status = 'resolved', resolved_at = now()
+		WHERE host_id = ANY($1) AND kind = $2 AND status = 'open'`, hostIDs, kind)
+	if err != nil {
+		return 0, fmt.Errorf("host: resolve open incidents by hosts kind: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 func (s *IncidentService) ListOpenKindsForHosts(ctx context.Context, hostIDs []int64) (map[int64]map[string]bool, error) {
 	out := make(map[int64]map[string]bool, len(hostIDs))
 	if len(hostIDs) == 0 {

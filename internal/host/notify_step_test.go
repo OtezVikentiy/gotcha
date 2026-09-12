@@ -176,3 +176,140 @@ func TestHostNotifierRecoveryDispatchesWithoutLog(t *testing.T) {
 		t.Fatalf("incident_escalations rows = %d, want 0 (recovery не логирует)", count)
 	}
 }
+
+func TestHostNotifierStepUsesHostOverrideThreshold(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	asvc := alert.NewService(pool)
+	ob := notify.NewOutbox(pool)
+	ctx := context.Background()
+	projectID := seedEvalProject(t, pool)
+	h := seedEvalHost(t, pool, projectID, "step-override-host")
+
+	if _, err := asvc.CreateChannel(ctx, alert.Channel{ProjectID: projectID, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/c1"}); err != nil {
+		t.Fatalf("CreateChannel c1: %v", err)
+	}
+
+	settings := host.NewSettingsService(pool)
+	if err := settings.Save(ctx, projectID, host.Settings{
+		DiskEnabled: true, DiskThreshold: 0.9,
+		MemoryEnabled: true, MemoryThreshold: 0.9,
+		LoadEnabled: true, LoadThreshold: 2.0,
+		SilentEnabled: true, SilentAfter: host.MinSilentAfter,
+	}); err != nil {
+		t.Fatalf("save project settings: %v", err)
+	}
+	overrides := host.NewHostOverrideService(pool)
+	overrideEnabled := true
+	overrideThreshold := 0.5
+	if err := overrides.Save(ctx, h.ID, host.ThresholdOverride{
+		DiskEnabled: &overrideEnabled, DiskThreshold: &overrideThreshold,
+	}); err != nil {
+		t.Fatalf("save host override: %v", err)
+	}
+
+	incidents := host.NewIncidentService(pool)
+	in, _, err := incidents.Open(ctx, projectID, h.ID, "disk", 0.95, "", false)
+	if err != nil {
+		t.Fatalf("Open incident: %v", err)
+	}
+
+	n := &host.HostNotifier{
+		Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example",
+		Details:   alert.NewDetailPolicy("", nil, true),
+		Incidents: incidents, Hosts: host.NewStore(pool), Settings: settings,
+		Overrides: overrides,
+		Pool:      pool,
+	}
+
+	if _, err := n.NotifyStep(ctx, in.ID, nil, 1); err != nil {
+		t.Fatalf("NotifyStep: %v", err)
+	}
+
+	jobs, err := ob.Claim(ctx, 10)
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("jobs = %d, want 1", len(jobs))
+	}
+	got, _ := jobs[0].Payload["threshold"].(float64)
+	if got != overrideThreshold {
+		t.Errorf("threshold в повторном уведомлении = %v, want %v (эффективный порог оверрайда хоста, не проектный 0.9)",
+			got, overrideThreshold)
+	}
+}
+
+func TestHostNotifierStepUsesGroupThreshold(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	asvc := alert.NewService(pool)
+	ob := notify.NewOutbox(pool)
+	ctx := context.Background()
+	projectID := seedEvalProject(t, pool)
+
+	store := host.NewStore(pool)
+	if _, err := store.Upsert(ctx, projectID, []host.TouchEntry{{Name: "step-group-host", Role: "db"}}); err != nil {
+		t.Fatalf("upsert host: %v", err)
+	}
+	h, ok, err := store.Get(ctx, projectID, "step-group-host")
+	if err != nil || !ok {
+		t.Fatalf("get host: ok=%v err=%v", ok, err)
+	}
+
+	if _, err := asvc.CreateChannel(ctx, alert.Channel{ProjectID: projectID, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/c1"}); err != nil {
+		t.Fatalf("CreateChannel c1: %v", err)
+	}
+
+	settings := host.NewSettingsService(pool)
+	if err := settings.Save(ctx, projectID, host.Settings{
+		DiskEnabled: true, DiskThreshold: 0.9,
+		MemoryEnabled: true, MemoryThreshold: 0.9,
+		LoadEnabled: true, LoadThreshold: 2.0,
+		SilentEnabled: true, SilentAfter: host.MinSilentAfter,
+	}); err != nil {
+		t.Fatalf("save project settings: %v", err)
+	}
+	groups := host.NewGroupThresholdService(pool)
+	groupEnabled := true
+	groupThreshold := 0.4
+	if err := groups.Upsert(ctx, projectID, "role", "db", host.ThresholdOverride{
+		DiskEnabled: &groupEnabled, DiskThreshold: &groupThreshold,
+	}); err != nil {
+		t.Fatalf("save group threshold: %v", err)
+	}
+
+	incidents := host.NewIncidentService(pool)
+	in, _, err := incidents.Open(ctx, projectID, h.ID, "disk", 0.95, "", false)
+	if err != nil {
+		t.Fatalf("Open incident: %v", err)
+	}
+
+	n := &host.HostNotifier{
+		Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example",
+		Details:   alert.NewDetailPolicy("", nil, true),
+		Incidents: incidents, Hosts: store, Settings: settings,
+		Groups: groups,
+		Pool:   pool,
+	}
+
+	if _, err := n.NotifyStep(ctx, in.ID, nil, 1); err != nil {
+		t.Fatalf("NotifyStep: %v", err)
+	}
+
+	jobs, err := ob.Claim(ctx, 10)
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("jobs = %d, want 1", len(jobs))
+	}
+	got, _ := jobs[0].Payload["threshold"].(float64)
+	if got != groupThreshold {
+		t.Errorf("threshold в уведомлении = %v, want %v (групповой порог role=db, не проектный 0.9)", got, groupThreshold)
+	}
+}

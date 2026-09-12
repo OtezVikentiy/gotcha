@@ -346,6 +346,123 @@ func TestWebHostsSilentBadgeConsistentAcrossSources(t *testing.T) {
 	}
 }
 
+// Строка хоста в таблице — один <tr>...</tr>; ищем по нему, а не по всему телу, иначе
+// бейдж соседнего хоста в другой строке дал бы ложное совпадение.
+func hostRowText(t *testing.T, body, hostName string) string {
+	t.Helper()
+	for _, row := range strings.Split(body, "<tr>") {
+		if strings.Contains(row, ">"+hostName+"<") {
+			return row
+		}
+	}
+	t.Fatalf("строка хоста %q не найдена в списке: %s", hostName, body)
+	return ""
+}
+
+func TestWebHostsListSilentBadgeFollowsCascade(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	stale := time.Now().UTC().Add(-1 * time.Hour)
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hosts-cascade-owner@example.com")
+
+	// P1: проектная настройка «тишина» ВЫКЛЮЧЕНА — оверрайд хоста должен её включить,
+	// хост без оверрайда остаётся здоровым.
+	o1, err := s.org.CreateOrg(ctx, "hcasc1-co", "HCasc1 Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org 1: %v", err)
+	}
+	p1, err := s.org.CreateProject(ctx, o1.ID, "hcasc1-proj", "HCasc1 Proj", "go")
+	if err != nil {
+		t.Fatalf("create project 1: %v", err)
+	}
+	if err := s.settings.Save(ctx, p1.ID, host.Settings{
+		DiskEnabled: true, DiskThreshold: 0.9,
+		MemoryEnabled: true, MemoryThreshold: 0.9,
+		LoadEnabled: true, LoadThreshold: 2.0,
+		SilentEnabled: false, SilentAfter: host.MinSilentAfter,
+	}); err != nil {
+		t.Fatalf("save settings p1: %v", err)
+	}
+	if _, err := s.hosts.Upsert(ctx, p1.ID, []host.TouchEntry{{Name: "override-on"}, {Name: "no-override-off"}}); err != nil {
+		t.Fatalf("upsert hosts p1: %v", err)
+	}
+	overrideOnHost, ok, err := s.hosts.Get(ctx, p1.ID, "override-on")
+	if err != nil || !ok {
+		t.Fatalf("get override-on: ok=%v err=%v", ok, err)
+	}
+	silentOn := true
+	silentOnAfter := host.MinSilentAfter
+	if err := s.overrides.Save(ctx, overrideOnHost.ID, host.ThresholdOverride{
+		SilentEnabled: &silentOn, SilentAfter: &silentOnAfter,
+	}); err != nil {
+		t.Fatalf("save override (silent on): %v", err)
+	}
+	s.setHostLastSeen(t, p1.ID, "override-on", stale)
+	s.setHostLastSeen(t, p1.ID, "no-override-off", stale)
+
+	listPath1 := "/projects/" + strconv.FormatInt(p1.ID, 10) + "/hosts"
+	resp := getWithCookie(t, s.srv, listPath1, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", listPath1, resp.StatusCode, body)
+	}
+	text := string(body)
+	if row := hostRowText(t, text, "override-on"); !strings.Contains(row, "Тихий") {
+		t.Errorf("проект «тишина» выкл, оверрайд хоста вкл: бейдж не «Тихий»: %s", row)
+	}
+	if row := hostRowText(t, text, "no-override-off"); strings.Contains(row, "Тихий") {
+		t.Errorf("хост без оверрайда при выключенной проектной «тишине» показывает «Тихий»: %s", row)
+	}
+
+	// P2: проектная настройка «тишина» ВКЛЮЧЕНА — оверрайд хоста должен её выключить,
+	// хост без оверрайда наследует проектную (включённую).
+	o2, err := s.org.CreateOrg(ctx, "hcasc2-co", "HCasc2 Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org 2: %v", err)
+	}
+	p2, err := s.org.CreateProject(ctx, o2.ID, "hcasc2-proj", "HCasc2 Proj", "go")
+	if err != nil {
+		t.Fatalf("create project 2: %v", err)
+	}
+	if err := s.settings.Save(ctx, p2.ID, host.Settings{
+		DiskEnabled: true, DiskThreshold: 0.9,
+		MemoryEnabled: true, MemoryThreshold: 0.9,
+		LoadEnabled: true, LoadThreshold: 2.0,
+		SilentEnabled: true, SilentAfter: host.MinSilentAfter,
+	}); err != nil {
+		t.Fatalf("save settings p2: %v", err)
+	}
+	if _, err := s.hosts.Upsert(ctx, p2.ID, []host.TouchEntry{{Name: "override-off"}, {Name: "no-override-on"}}); err != nil {
+		t.Fatalf("upsert hosts p2: %v", err)
+	}
+	overrideOffHost, ok, err := s.hosts.Get(ctx, p2.ID, "override-off")
+	if err != nil || !ok {
+		t.Fatalf("get override-off: ok=%v err=%v", ok, err)
+	}
+	silentOff := false
+	if err := s.overrides.Save(ctx, overrideOffHost.ID, host.ThresholdOverride{SilentEnabled: &silentOff}); err != nil {
+		t.Fatalf("save override (silent off): %v", err)
+	}
+	s.setHostLastSeen(t, p2.ID, "override-off", stale)
+	s.setHostLastSeen(t, p2.ID, "no-override-on", stale)
+
+	listPath2 := "/projects/" + strconv.FormatInt(p2.ID, 10) + "/hosts"
+	resp = getWithCookie(t, s.srv, listPath2, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", listPath2, resp.StatusCode, body)
+	}
+	text = string(body)
+	if row := hostRowText(t, text, "override-off"); strings.Contains(row, "Тихий") {
+		t.Errorf("проект «тишина» вкл, оверрайд хоста выкл: бейдж всё равно «Тихий»: %s", row)
+	}
+	if row := hostRowText(t, text, "no-override-on"); !strings.Contains(row, "Тихий") {
+		t.Errorf("хост без оверрайда при включённой проектной «тишине» не показывает «Тихий»: %s", row)
+	}
+}
+
 func TestWebHostsListNilMetrics(t *testing.T) {
 	s := newHostsStack(t, false)
 	ctx := context.Background()
@@ -476,6 +593,55 @@ func TestWebHostSettingsGate(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("outsider POST status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// Без Hosts/HostOverrides каскад не посчитать — отказ обязан быть явным (404), а не
+// тихим откатом к закрытию инцидентов по всему проекту.
+func TestWebHostSettingsSaveGateRequiresCascadeDeps(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	authSvc := auth.NewService(pool)
+	orgSvc := org.NewService(pool, 1_000_000)
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	h := web.New(authSvc, orgSvc, nil, nil, srv.URL)
+	h.Metrics = metric.NewQuery(ch)
+	h.HostSettings = host.NewSettingsService(pool)
+	h.HostIncidents = host.NewIncidentService(pool)
+	// Hosts/HostOverrides нарочно оставлены nil.
+	h.Register(mux)
+
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "hset-nodeps-owner@example.com")
+	o, err := orgSvc.CreateOrg(ctx, "hsnd-co", "HSND Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := orgSvc.CreateProject(ctx, o.ID, "hsnd-proj", "HSND Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	// Полная валидная форма — иначе parseHostSettingsForm вернёт 422 раньше, чем
+	// дойдёт до гейта зависимостей каскада, и мутация гейта осталась бы незамеченной.
+	path := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts/settings"
+	form := url.Values{
+		"disk_threshold": {"90"},
+		"memory_enabled": {"1"}, "memory_threshold": {"90"},
+		"load_enabled": {"1"}, "load_threshold": {"2"},
+		"silent_enabled": {"1"}, "silent_after": {"5"},
+	}
+	resp := postForm(t, srv, path, form, srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("без Hosts/HostOverrides status = %d, want 404 (не тихий откат к закрытию по всему проекту)", resp.StatusCode)
 	}
 }
 
@@ -1302,6 +1468,151 @@ func TestWebHostSettingsSaveResolvesDisabledKindIncidents(t *testing.T) {
 		if in.NotifiedClose {
 			t.Errorf("закрытие по выключению порога отправило уведомление (notified_close=true) — это шум о действии самого оператора")
 		}
+	}
+}
+
+func TestWebHostSettingsSaveKeepsOverriddenIncidentOpen(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hset-override-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "hso-co", "HSO Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hso-proj", "HSO Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if err := s.settings.Save(ctx, project.ID, host.Settings{
+		DiskEnabled: true, DiskThreshold: 0.9,
+		MemoryEnabled: true, MemoryThreshold: 0.9,
+		LoadEnabled: true, LoadThreshold: 2.0,
+		SilentEnabled: true, SilentAfter: host.MinSilentAfter,
+	}); err != nil {
+		t.Fatalf("save initial settings: %v", err)
+	}
+
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: "web-override"}, {Name: "web-plain"}}); err != nil {
+		t.Fatalf("upsert hosts: %v", err)
+	}
+	overridden, ok, err := s.hosts.Get(ctx, project.ID, "web-override")
+	if err != nil || !ok {
+		t.Fatalf("get web-override: ok=%v err=%v", ok, err)
+	}
+	plain, ok, err := s.hosts.Get(ctx, project.ID, "web-plain")
+	if err != nil || !ok {
+		t.Fatalf("get web-plain: ok=%v err=%v", ok, err)
+	}
+
+	diskOverrideOn := true
+	diskOverrideThreshold := 0.5
+	if err := s.overrides.Save(ctx, overridden.ID, host.ThresholdOverride{
+		DiskEnabled: &diskOverrideOn, DiskThreshold: &diskOverrideThreshold,
+	}); err != nil {
+		t.Fatalf("save host override: %v", err)
+	}
+
+	if _, _, err := s.incidents.Open(ctx, project.ID, overridden.ID, "disk", 0.95, "", false); err != nil {
+		t.Fatalf("open disk incident (host с оверрайдом): %v", err)
+	}
+	if _, _, err := s.incidents.Open(ctx, project.ID, plain.ID, "disk", 0.95, "", false); err != nil {
+		t.Fatalf("open disk incident (host без оверрайда): %v", err)
+	}
+
+	path := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts/settings"
+	form := url.Values{
+		// disk_enabled опущен — выключаем диск на уровне проекта.
+		"disk_threshold": {"90"},
+		"memory_enabled": {"1"}, "memory_threshold": {"90"},
+		"load_enabled": {"1"}, "load_threshold": {"2"},
+		"silent_enabled": {"1"}, "silent_after": {"5"},
+	}
+	resp := postForm(t, s.srv, path, form, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST настроек status = %d, want 303", resp.StatusCode)
+	}
+
+	if _, stillOpen, err := s.incidents.OpenFor(ctx, overridden.ID, "disk"); err != nil || !stillOpen {
+		t.Errorf("хост с оверрайдом disk=on: инцидент закрылся сохранением проектной настройки: open=%v err=%v", stillOpen, err)
+	}
+	if _, stillOpen, err := s.incidents.OpenFor(ctx, plain.ID, "disk"); err != nil || stillOpen {
+		t.Errorf("хост без оверрайда: инцидент выключенного порога остался открытым: open=%v err=%v", stillOpen, err)
+	}
+}
+
+func TestWebHostSettingsSaveKeepsGroupOverriddenIncidentOpen(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hset-group-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "hsgr-co", "HSGr Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hsgr-proj", "HSGr Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if err := s.settings.Save(ctx, project.ID, host.Settings{
+		DiskEnabled: true, DiskThreshold: 0.9,
+		MemoryEnabled: true, MemoryThreshold: 0.9,
+		LoadEnabled: true, LoadThreshold: 2.0,
+		SilentEnabled: true, SilentAfter: host.MinSilentAfter,
+	}); err != nil {
+		t.Fatalf("save initial settings: %v", err)
+	}
+
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{
+		{Name: "db-01", Role: "db"},
+		{Name: "web-01", Role: "web"},
+	}); err != nil {
+		t.Fatalf("upsert hosts: %v", err)
+	}
+	dbHost, ok, err := s.hosts.Get(ctx, project.ID, "db-01")
+	if err != nil || !ok {
+		t.Fatalf("get db-01: ok=%v err=%v", ok, err)
+	}
+	webHost, ok, err := s.hosts.Get(ctx, project.ID, "web-01")
+	if err != nil || !ok {
+		t.Fatalf("get web-01: ok=%v err=%v", ok, err)
+	}
+
+	groupDiskEnabled := true
+	groupDiskThreshold := 0.5
+	if err := s.groups.Upsert(ctx, project.ID, "role", "db", host.ThresholdOverride{
+		DiskEnabled: &groupDiskEnabled, DiskThreshold: &groupDiskThreshold,
+	}); err != nil {
+		t.Fatalf("save group threshold: %v", err)
+	}
+
+	if _, _, err := s.incidents.Open(ctx, project.ID, dbHost.ID, "disk", 0.95, "", false); err != nil {
+		t.Fatalf("open disk incident (хост в группе role=db): %v", err)
+	}
+	if _, _, err := s.incidents.Open(ctx, project.ID, webHost.ID, "disk", 0.95, "", false); err != nil {
+		t.Fatalf("open disk incident (хост без группового порога): %v", err)
+	}
+
+	path := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts/settings"
+	form := url.Values{
+		// disk_enabled опущен — выключаем диск на уровне проекта.
+		"disk_threshold": {"90"},
+		"memory_enabled": {"1"}, "memory_threshold": {"90"},
+		"load_enabled": {"1"}, "load_threshold": {"2"},
+		"silent_enabled": {"1"}, "silent_after": {"5"},
+	}
+	resp := postForm(t, s.srv, path, form, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST настроек status = %d, want 303", resp.StatusCode)
+	}
+
+	if _, stillOpen, err := s.incidents.OpenFor(ctx, dbHost.ID, "disk"); err != nil || !stillOpen {
+		t.Errorf("хост в группе role=db (групповой порог вкл): инцидент закрылся сохранением проектной настройки: open=%v err=%v", stillOpen, err)
+	}
+	if _, stillOpen, err := s.incidents.OpenFor(ctx, webHost.ID, "disk"); err != nil || stillOpen {
+		t.Errorf("хост без группового порога: инцидент выключенного порога остался открытым: open=%v err=%v", stillOpen, err)
 	}
 }
 
