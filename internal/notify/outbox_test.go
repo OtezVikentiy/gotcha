@@ -319,3 +319,60 @@ func TestOutboxPurgeOld(t *testing.T) {
 		t.Fatalf("remaining = %d, want 2 (pending + fresh sent)", remaining)
 	}
 }
+
+func TestEnqueueIdempotent(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ob := notify.NewOutbox(pool)
+	ctx := context.Background()
+	channelID := newChannel(t, pool)
+
+	t.Run("empty key behaves like Enqueue", func(t *testing.T) {
+		enqueued, err := ob.EnqueueIdempotent(ctx, channelID, map[string]any{"n": 1}, "")
+		if err != nil {
+			t.Fatalf("EnqueueIdempotent: %v", err)
+		}
+		if !enqueued {
+			t.Fatalf("enqueued = false, want true")
+		}
+		enqueued2, err := ob.EnqueueIdempotent(ctx, channelID, map[string]any{"n": 2}, "")
+		if err != nil {
+			t.Fatalf("EnqueueIdempotent: %v", err)
+		}
+		if !enqueued2 {
+			t.Fatalf("second empty-key call: enqueued = false, want true (без ключа дедупа нет)")
+		}
+	})
+
+	t.Run("conflicting key gives enqueued=false without error", func(t *testing.T) {
+		key := "test:dup:1"
+		enqueued, err := ob.EnqueueIdempotent(ctx, channelID, map[string]any{"n": 1}, key)
+		if err != nil {
+			t.Fatalf("first EnqueueIdempotent: %v", err)
+		}
+		if !enqueued {
+			t.Fatalf("first call: enqueued = false, want true")
+		}
+		enqueued2, err := ob.EnqueueIdempotent(ctx, channelID, map[string]any{"n": 2}, key)
+		if err != nil {
+			t.Fatalf("second EnqueueIdempotent (same key): %v", err)
+		}
+		if enqueued2 {
+			t.Fatalf("second call with same key: enqueued = true, want false")
+		}
+		var count int
+		if err := pool.QueryRow(ctx,
+			"SELECT count(*) FROM notification_outbox WHERE idempotency_key = $1", key).Scan(&count); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		if count != 1 {
+			t.Fatalf("rows with key %q = %d, want 1", key, count)
+		}
+	})
+
+	t.Run("db error propagates", func(t *testing.T) {
+		const bogusChannel = int64(999_999_999)
+		if _, err := ob.EnqueueIdempotent(ctx, bogusChannel, map[string]any{"n": 1}, "test:err:1"); err == nil {
+			t.Fatalf("EnqueueIdempotent с несуществующим channel_id: want error, got nil")
+		}
+	})
+}

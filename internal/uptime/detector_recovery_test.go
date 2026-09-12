@@ -136,7 +136,9 @@ func TestDetectorRecoverySilentWhenNoChannelSawDown(t *testing.T) {
 	}
 }
 
-func TestDetectorRetriesStepZeroLogAfterTransientFailure(t *testing.T) {
+// claim (incident_escalations) идёт до отправки — недоступность таблицы
+// клейма обязана отложить уведомление, а не отправить его в обход клейма.
+func TestDetectorRetriesNotifyOpenAfterClaimFailure(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	usvc := uptime.NewService(pool)
 	asvc := alert.NewService(pool)
@@ -171,8 +173,11 @@ func TestDetectorRetriesStepZeroLogAfterTransientFailure(t *testing.T) {
 
 	applyAndDetect(t, ctx, usvc, d, mon, "local", false, "boom", time.Now().UTC(), nil)
 	inc := assertOpenIncident(t, ctx, usvc, mon.ID)
-	if !inc.NotifiedOpen {
-		t.Fatalf("test setup: NotifiedOpen = false, want true (доставка не должна была пострадать от constraint на ДРУГОЙ таблице)")
+	if inc.NotifiedOpen {
+		t.Fatalf("NotifiedOpen = true, want false: claim на incident_escalations должен был провалиться до отправки")
+	}
+	if !inc.NotifyOpenFailed || inc.NotifyOpenAttempts != 1 {
+		t.Fatalf("NotifyOpenFailed=%v NotifyOpenAttempts=%d, want true/1", inc.NotifyOpenFailed, inc.NotifyOpenAttempts)
 	}
 
 	var loggedCount int
@@ -182,29 +187,23 @@ func TestDetectorRetriesStepZeroLogAfterTransientFailure(t *testing.T) {
 		t.Fatalf("select incident_escalations: %v", err)
 	}
 	if loggedCount != 0 {
-		t.Fatalf("test setup: incident_escalations rows = %d, want 0 (LogStep должен был провалиться)", loggedCount)
+		t.Fatalf("incident_escalations rows = %d, want 0 (клейм должен был провалиться целиком)", loggedCount)
 	}
 
-	var attempts int
-	if err := pool.QueryRow(ctx,
-		"SELECT attempts FROM escalation_step_log_failures WHERE incident_source='uptime' AND incident_id=$1 AND step=0",
-		inc.ID).Scan(&attempts); err != nil {
-		t.Fatalf("select escalation_step_log_failures: %v", err)
+	downJobs, err := ob.Claim(ctx, 10)
+	if err != nil {
+		t.Fatalf("claim down jobs: %v", err)
 	}
-	if attempts != 1 {
-		t.Errorf("attempts = %d, want 1", attempts)
-	}
-
-	var pending []int64
-	if err := pool.QueryRow(ctx, "SELECT notify_open_channels FROM incidents WHERE id=$1", inc.ID).Scan(&pending); err != nil {
-		t.Fatalf("select notify_open_channels: %v", err)
-	}
-	if len(pending) != 1 || pending[0] != ch {
-		t.Fatalf("notify_open_channels = %v, want [%d] (снимок должен пережить провал лога)", pending, ch)
+	if len(downJobs) != 0 {
+		t.Fatalf("down jobs = %d, want 0: без выигранного клейма отправки не должно было быть", len(downJobs))
 	}
 
 	dropConstraint()
 	applyAndDetect(t, ctx, usvc, d, mon, "local", false, "boom", time.Now().UTC().Add(time.Second), nil)
+	inc = assertOpenIncident(t, ctx, usvc, mon.ID)
+	if !inc.NotifiedOpen {
+		t.Fatalf("NotifiedOpen = false после ретрая, want true")
+	}
 
 	if err := pool.QueryRow(ctx,
 		"SELECT count(*) FROM incident_escalations WHERE incident_source='uptime' AND incident_id=$1 AND step=0 AND channel_id=$2",
@@ -212,33 +211,15 @@ func TestDetectorRetriesStepZeroLogAfterTransientFailure(t *testing.T) {
 		t.Fatalf("select incident_escalations after retry: %v", err)
 	}
 	if loggedCount != 1 {
-		t.Fatalf("incident_escalations rows after retry = %d, want 1 (ретрай обязан был дописать шаг 0)", loggedCount)
+		t.Fatalf("incident_escalations rows after retry = %d, want 1", loggedCount)
 	}
 
-	var remainingFailures int
-	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM escalation_step_log_failures WHERE incident_source='uptime' AND incident_id=$1 AND step=0",
-		inc.ID).Scan(&remainingFailures); err != nil {
-		t.Fatalf("select escalation_step_log_failures after retry: %v", err)
-	}
-	if remainingFailures != 0 {
-		t.Errorf("escalation_step_log_failures rows after retry = %d, want 0 (сброшено)", remainingFailures)
-	}
-
-	var pendingAfter []int64
-	if err := pool.QueryRow(ctx, "SELECT notify_open_channels FROM incidents WHERE id=$1", inc.ID).Scan(&pendingAfter); err != nil {
-		t.Fatalf("select notify_open_channels after retry: %v", err)
-	}
-	if pendingAfter != nil {
-		t.Errorf("notify_open_channels after retry = %v, want NULL (очищено)", pendingAfter)
-	}
-
-	downJobs, err := ob.Claim(ctx, 10)
+	downJobs, err = ob.Claim(ctx, 10)
 	if err != nil {
-		t.Fatalf("claim down jobs: %v", err)
+		t.Fatalf("claim down jobs after retry: %v", err)
 	}
 	if len(downJobs) != 1 {
-		t.Fatalf("down jobs = %d, want exactly 1 (ретрай лога не должен переотправлять \"down\")", len(downJobs))
+		t.Fatalf("down jobs после ретрая = %d, want ровно 1", len(downJobs))
 	}
 
 	applyAndDetect(t, ctx, usvc, d, mon, "local", true, "", time.Now().UTC().Add(2*time.Second), nil)
@@ -250,5 +231,121 @@ func TestDetectorRetriesStepZeroLogAfterTransientFailure(t *testing.T) {
 	}
 	if len(upJobs) != 1 || upJobs[0].ChannelID != ch {
 		t.Fatalf("up jobs = %+v, want exactly 1 for channel %d", upJobs, ch)
+	}
+}
+
+// Отправка проходит, а MarkNotified проваливается — детектор обязан завести
+// это как провал (для ретрая), но не переслать уже ушедшее уведомление снова.
+func TestNotifyOpenMarksFailedWithoutDuplicateWhenMarkNotifiedFails(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	usvc := uptime.NewService(pool)
+	asvc := alert.NewService(pool)
+	ob := notify.NewOutbox(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	ch, err := asvc.CreateChannel(ctx, alert.Channel{ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook"})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	mon := createMonitor(t, usvc, pid, 1, 1)
+
+	notifier := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true), Locale: i18n.Locale{Code: "en"}}
+	d := &uptime.Detector{Svc: usvc, Notifier: notifier, Pool: pool}
+
+	if _, err := pool.Exec(ctx, "ALTER TABLE incidents ADD CONSTRAINT test_force_mark_notified_fail CHECK (NOT notified_open)"); err != nil {
+		t.Fatalf("add forcing constraint: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := pool.Exec(context.Background(),
+			"ALTER TABLE incidents DROP CONSTRAINT IF EXISTS test_force_mark_notified_fail"); err != nil {
+			t.Errorf("drop forcing constraint: %v", err)
+		}
+	})
+
+	applyAndDetect(t, ctx, usvc, d, mon, "local", false, "boom", time.Now().UTC(), nil)
+
+	inc := assertOpenIncident(t, ctx, usvc, mon.ID)
+	if inc.NotifiedOpen {
+		t.Fatalf("NotifiedOpen = true, want false: MarkNotified должен был провалиться на constraint")
+	}
+	if !inc.NotifyOpenFailed {
+		t.Fatalf("NotifyOpenFailed = false, want true")
+	}
+	if inc.NotifyOpenAttempts != 1 {
+		t.Fatalf("NotifyOpenAttempts = %d, want 1", inc.NotifyOpenAttempts)
+	}
+
+	jobs, err := ob.Claim(ctx, 10)
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("jobs = %d, want ровно 1: отправка прошла до провала MarkNotified, дубля быть не должно", len(jobs))
+	}
+	if jobs[0].ChannelID != ch {
+		t.Fatalf("job channel = %d, want %d", jobs[0].ChannelID, ch)
+	}
+}
+
+// Закрытый инцидент — новая строка с новым id; идемпотентный ключ несёт
+// этот id и не должен подавить уведомление по новому падению.
+func TestNotifyOpenSendsAgainAfterIncidentReopens(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	usvc := uptime.NewService(pool)
+	asvc := alert.NewService(pool)
+	ob := notify.NewOutbox(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	ch, err := asvc.CreateChannel(ctx, alert.Channel{ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook"})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	mon := createMonitor(t, usvc, pid, 1, 1)
+
+	notifier := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true), Locale: i18n.Locale{Code: "en"}}
+	d := &uptime.Detector{Svc: usvc, Notifier: notifier, Pool: pool}
+	now := time.Now().UTC()
+
+	applyAndDetect(t, ctx, usvc, d, mon, "local", false, "boom", now, nil)
+	first := assertOpenIncident(t, ctx, usvc, mon.ID)
+	if !first.NotifiedOpen {
+		t.Fatalf("first incident: NotifiedOpen = false, want true")
+	}
+	firstJobs, err := ob.Claim(ctx, 10)
+	if err != nil {
+		t.Fatalf("claim first down jobs: %v", err)
+	}
+	if len(firstJobs) != 1 {
+		t.Fatalf("first down jobs = %d, want 1", len(firstJobs))
+	}
+
+	applyAndDetect(t, ctx, usvc, d, mon, "local", true, "", now.Add(time.Second), nil)
+	assertNoOpenIncident(t, ctx, usvc, mon.ID)
+	if _, err := ob.Claim(ctx, 10); err != nil { // осушаем recovery-job, он не по счёту этого теста
+		t.Fatalf("claim recovery job: %v", err)
+	}
+
+	applyAndDetect(t, ctx, usvc, d, mon, "local", false, "boom again", now.Add(2*time.Second), nil)
+	second := assertOpenIncident(t, ctx, usvc, mon.ID)
+	if second.ID == first.ID {
+		t.Fatalf("second incident id = %d, want a new id distinct from the first (%d)", second.ID, first.ID)
+	}
+	if !second.NotifiedOpen {
+		t.Fatalf("second incident: NotifiedOpen = false, want true — reopen must page again")
+	}
+
+	secondJobs, err := ob.Claim(ctx, 10)
+	if err != nil {
+		t.Fatalf("claim second down jobs: %v", err)
+	}
+	if len(secondJobs) != 1 {
+		t.Fatalf("second down jobs = %d, want 1 (переоткрытие обязано пейджить снова, не молчать)", len(secondJobs))
+	}
+	if secondJobs[0].ChannelID != ch {
+		t.Fatalf("second job channel = %d, want %d", secondJobs[0].ChannelID, ch)
 	}
 }

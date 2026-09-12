@@ -23,7 +23,13 @@ type Event struct {
 type Notifier interface {
 	Notify(ctx context.Context, ev Event) error
 
-	NotifyOpenStep0(ctx context.Context, ev Event) ([]int64, error)
+	// OpenStep0Channels резолвит каналы шага 0 для ev, не отправляя — Detector
+	// клеймит их до NotifyOpenStep0, не после.
+	OpenStep0Channels(ctx context.Context, ev Event) ([]int64, error)
+
+	// NotifyOpenStep0 шлёт только в channelIDs (уже выигранные клеймом) и
+	// возвращает подмножество, реально поставленное в очередь.
+	NotifyOpenStep0(ctx context.Context, ev Event, channelIDs []int64) ([]int64, error)
 
 	NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error
 }
@@ -57,6 +63,10 @@ type groupHook interface {
 }
 
 const maxNotifyOpenAttempts = 5
+
+// Минута — заведомо больше обычной отправки и заметно меньше времени
+// реакции оператора на пейдж; после неё клейм шага 0 можно перезабрать.
+const notifyOpenLease = time.Minute
 
 type aggStatus int
 
@@ -252,7 +262,18 @@ func (d *Detector) settleHeldIncident(ctx context.Context, m Monitor, inc Incide
 		d.notifyOpen(ctx, inc.ID, downEvent(m, inc, downRegions, cause))
 		return
 	}
-	if inc.InMaintenance || d.Dep == nil {
+	if inc.InMaintenance {
+		return
+	}
+	if d.Dep == nil {
+		// Без Dep придержки не бывает — сюда доходят только конкурентный
+		// клейм и клейм, повисший после смерти клеймившего процесса.
+		if d.Notifier == nil {
+			return
+		}
+		downRegions := regionsWithStatus(states, "down")
+		cause := causeFrom(st, states)
+		d.notifyOpen(ctx, inc.ID, downEvent(m, inc, downRegions, cause))
 		return
 	}
 	if inc.SuppressedByDep {
@@ -337,15 +358,53 @@ func (d *Detector) resolveIncident(ctx context.Context, m Monitor, now time.Time
 	}
 }
 
+// Каналы шага 0 клеймятся в incident_escalations ДО отправки, не после —
+// как escalation.SendStepIfDue для остальных ступеней.
 func (d *Detector) notifyOpen(ctx context.Context, incidentID int64, ev Event) {
-	enqueued, err := d.Notifier.NotifyOpenStep0(ctx, ev)
-	if d.Pool != nil && len(enqueued) > 0 {
-		if serr := d.Svc.SetNotifyOpenChannels(ctx, incidentID, enqueued); serr != nil {
-			slog.Error("uptime: detector: set notify open channels failed", "incident_id", incidentID, "error", serr)
+	chs, err := d.Notifier.OpenStep0Channels(ctx, ev)
+	if err != nil {
+		slog.Error("uptime: detector: resolve notify open channels failed", "incident_id", incidentID, "error", err)
+		if merr := d.Svc.MarkNotifyOpenFailed(ctx, incidentID); merr != nil {
+			slog.Error("uptime: detector: mark notify open failed failed", "incident_id", incidentID, "error", merr)
 		}
-		if done, _ := escalation.LogStepChannels(ctx, d.Pool, "uptime", incidentID, 0, enqueued); done {
-			if cerr := d.Svc.ClearNotifyOpenChannels(ctx, incidentID); cerr != nil {
-				slog.Error("uptime: detector: clear notify open channels failed", "incident_id", incidentID, "error", cerr)
+		return
+	}
+
+	won := chs
+	if d.Pool != nil && len(chs) > 0 {
+		won, err = escalation.ClaimStepChannelsWithLease(ctx, d.Pool, "uptime", incidentID, 0, chs, notifyOpenLease)
+		if err != nil {
+			slog.Error("uptime: detector: claim notify open channels failed", "incident_id", incidentID, "error", err)
+			if merr := d.Svc.MarkNotifyOpenFailed(ctx, incidentID); merr != nil {
+				slog.Error("uptime: detector: mark notify open failed failed", "incident_id", incidentID, "error", merr)
+			}
+			return
+		}
+		if len(won) == 0 {
+			// Клейм ещё не истёк — держит его конкурентный вызов или
+			// notifyOpenLease с прошлого клейма не прошёл; слать нечего.
+			return
+		}
+	}
+
+	enqueued, err := d.Notifier.NotifyOpenStep0(ctx, ev, won)
+	if d.Pool != nil {
+		var unsent []int64
+		for _, ch := range won {
+			if !escalation.ContainsID(enqueued, ch) {
+				unsent = append(unsent, ch)
+			}
+		}
+		if len(unsent) > 0 {
+			// Каналы были заняты, но не встали в очередь — следующий тик
+			// увидит их свободными и повторит именно их.
+			if rerr := escalation.ReleaseStepChannels(ctx, d.Pool, "uptime", incidentID, 0, unsent); rerr != nil {
+				slog.Error("uptime: detector: release notify open channels failed", "incident_id", incidentID, "channels", unsent, "error", rerr)
+			}
+		}
+		if len(enqueued) > 0 {
+			if serr := d.Svc.SetNotifyOpenChannels(ctx, incidentID, enqueued); serr != nil {
+				slog.Error("uptime: detector: set notify open channels failed", "incident_id", incidentID, "error", serr)
 			}
 		}
 	}
@@ -360,6 +419,11 @@ func (d *Detector) notifyOpen(ctx context.Context, incidentID int64, ev Event) {
 	}
 	if err := d.Svc.MarkNotified(ctx, incidentID, true); err != nil {
 		slog.Error("uptime: detector: mark notified failed", "incident_id", incidentID, "error", err)
+		// Отправка уже прошла — повторный notifyOpen не даст дубль,
+		// EnqueueIdempotent в NotifyOpenStep0 отличает клейм от отправки.
+		if merr := d.Svc.MarkNotifyOpenFailed(ctx, incidentID); merr != nil {
+			slog.Error("uptime: detector: mark notify open failed failed", "incident_id", incidentID, "error", merr)
+		}
 	}
 }
 

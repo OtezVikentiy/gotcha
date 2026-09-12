@@ -18,6 +18,7 @@ type fakeNotifier struct {
 	events     []uptime.Event
 	recoveries []recoveryCall
 	err        error
+	resolveErr error // ошибка OpenStep0Channels — отдельно от err (ошибки отправки)
 	svc        *uptime.Service
 }
 
@@ -28,14 +29,21 @@ func (f *fakeNotifier) Notify(_ context.Context, ev uptime.Event) error {
 	return f.err
 }
 
-func (f *fakeNotifier) NotifyOpenStep0(_ context.Context, ev uptime.Event) ([]int64, error) {
+func (f *fakeNotifier) OpenStep0Channels(context.Context, uptime.Event) ([]int64, error) {
+	if f.resolveErr != nil {
+		return nil, f.resolveErr
+	}
+	return []int64{1}, nil
+}
+
+func (f *fakeNotifier) NotifyOpenStep0(_ context.Context, ev uptime.Event, channelIDs []int64) ([]int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.events = append(f.events, ev)
 	if f.err != nil {
 		return nil, f.err
 	}
-	return []int64{1}, nil
+	return channelIDs, nil
 }
 
 func (f *fakeNotifier) NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error {
@@ -422,6 +430,35 @@ func TestNotifyErrorDoesNotBreakDetection(t *testing.T) {
 	}
 	if len(notifier.Events()) != 1 {
 		t.Fatalf("Notify attempts = %d, want 1", len(notifier.Events()))
+	}
+}
+
+// Провал резолва каналов до клейма обязан закрываться как провал отправки:
+// NotifyOpenFailed, ретрай следующим тиком, а не тихая потеря инцидента.
+func TestNotifyOpenChannelResolveErrorMarksFailedWithoutSending(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 1, 1)
+
+	notifier := &fakeNotifier{resolveErr: errors.New("channel lookup down")}
+	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
+	now := time.Now().UTC()
+
+	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
+
+	inc := assertOpenIncident(t, ctx, svc, mon.ID)
+	if inc.NotifiedOpen {
+		t.Fatalf("NotifiedOpen = true, want false: OpenStep0Channels вернул ошибку")
+	}
+	if !inc.NotifyOpenFailed || inc.NotifyOpenAttempts != 1 {
+		t.Fatalf("NotifyOpenFailed=%v NotifyOpenAttempts=%d, want true/1", inc.NotifyOpenFailed, inc.NotifyOpenAttempts)
+	}
+	if len(notifier.Events()) != 0 {
+		t.Fatalf("Events = %d, want 0: NotifyOpenStep0 не должен был вызываться после провала резолва", len(notifier.Events()))
 	}
 }
 

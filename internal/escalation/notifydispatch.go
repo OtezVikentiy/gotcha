@@ -54,6 +54,9 @@ func (p OrgProjectNamer) ProjectName(ctx context.Context, projectID int64) (stri
 // прогоняет реальный Dispatch без похода в Postgres, подставив фейк.
 type Enqueuer interface {
 	Enqueue(ctx context.Context, channelID int64, payload map[string]any) error
+	// EnqueueIdempotent — только при непустом DispatchInput.IdempotencyKeyPrefix;
+	// enqueued=false — уже в очереди, не провал канала.
+	EnqueueIdempotent(ctx context.Context, channelID int64, payload map[string]any, key string) (enqueued bool, err error)
 }
 
 type DispatchDeps struct {
@@ -85,6 +88,9 @@ type DispatchInput struct {
 	// фильтр по членству ПОСЛЕ Deliverable-гейта (ContainsID).
 	ChannelIDs []int64
 	Channels   []DispatchChannel
+	// IdempotencyKeyPrefix: непусто — ключ "<prefix>:<channelID>" через
+	// EnqueueIdempotent, конфликт не провал. Пусто — обычный Enqueue.
+	IdempotencyKeyPrefix string
 }
 
 // Возвращает ID каналов, в которые задача РЕАЛЬНО поставлена — логировать их
@@ -132,6 +138,18 @@ func Dispatch(ctx context.Context, deps DispatchDeps, in DispatchInput) ([]int64
 				payload["url_redacted"] = in.RedactedURL
 			}
 			payload = notify.RedactExternalPayload(ctx, payload)
+		}
+		if in.IdempotencyKeyPrefix != "" {
+			key := fmt.Sprintf("%s:%d", in.IdempotencyKeyPrefix, ch.ID)
+			if _, err := deps.Outbox.EnqueueIdempotent(ctx, ch.ID, payload, key); err != nil {
+				slog.Error(deps.LogTag+": notify: enqueue idempotent failed", "channel_id", ch.ID, "key", key, "error", err)
+				errs = errors.Join(errs, fmt.Errorf("%s: notify: enqueue channel %d: %w", deps.LogTag, ch.ID, err))
+				continue
+			}
+			// enqueued=false здесь означает "уже стоит в очереди по этому
+			// ключу" — канал всё равно обработан, не провалившийся.
+			enqueued = append(enqueued, ch.ID)
+			continue
 		}
 		if err := deps.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
 			slog.Error(deps.LogTag+": notify: enqueue failed", "channel_id", ch.ID, "error", err)

@@ -82,6 +82,33 @@ func ClaimStepChannels(ctx context.Context, pool *pgxpool.Pool, source string, i
 	return won, rows.Err()
 }
 
+// Как ClaimStepChannels, но конфликт не глушится навечно — клейм старше
+// lease считается брошенным и его можно перезабрать.
+func ClaimStepChannelsWithLease(ctx context.Context, pool *pgxpool.Pool, source string, incidentID int64, step int, chs []int64, lease time.Duration) (won []int64, err error) {
+	if len(chs) == 0 {
+		return nil, nil
+	}
+	rows, err := pool.Query(ctx, `
+		INSERT INTO incident_escalations (incident_source, incident_id, step, channel_id, sent_at)
+		SELECT $1, $2, $3, unnest($4::bigint[]), now()
+		ON CONFLICT (incident_source, incident_id, channel_id, step) DO UPDATE
+		SET sent_at = now()
+		WHERE incident_escalations.sent_at < now() - make_interval(secs => $5)
+		RETURNING channel_id`, source, incidentID, step, chs, lease.Seconds())
+	if err != nil {
+		return nil, fmt.Errorf("escalation: claim step channels with lease: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ch int64
+		if err := rows.Scan(&ch); err != nil {
+			return nil, fmt.Errorf("escalation: claim step channels with lease scan: %w", err)
+		}
+		won = append(won, ch)
+	}
+	return won, rows.Err()
+}
+
 // Каналы chs были заняты ClaimStepChannels, но не поставлены в очередь —
 // следующий тик увидит ступень для них свободной и повторит.
 func ReleaseStepChannels(ctx context.Context, pool *pgxpool.Pool, source string, incidentID int64, step int, chs []int64) error {

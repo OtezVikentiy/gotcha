@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -43,6 +44,30 @@ func (o *Outbox) Enqueue(ctx context.Context, channelID int64, payload map[strin
 		return fmt.Errorf("notify: enqueue: %w", err)
 	}
 	return nil
+}
+
+// Конфликт по key — норма, не ошибка: enqueued=false значит задачу уже
+// поставили, вызывающий обязан трактовать это как успех.
+func (o *Outbox) EnqueueIdempotent(ctx context.Context, channelID int64, payload map[string]any, key string) (enqueued bool, err error) {
+	if key == "" {
+		if err := o.Enqueue(ctx, channelID, payload); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	var id int64
+	err = o.pool.QueryRow(ctx, `
+		INSERT INTO notification_outbox (channel_id, payload, idempotency_key)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+		RETURNING id`, channelID, payload, key).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("notify: enqueue idempotent: %w", err)
+	}
+	return true, nil
 }
 
 // Лиза обязана покрывать обработку всего батча с запасом — иначе дубли уйдут
