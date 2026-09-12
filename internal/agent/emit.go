@@ -28,9 +28,13 @@ const (
 	directionTransmit = "transmit"
 )
 
-// Возвращает MetricsData, не ExportMetricsServiceRequest: сервер анмаршалит
-// тело именно в MetricsData, а последняя тащит grpc+grpc-gateway в зависимости.
-func BuildExport(hostname, environment, role string, s Sample) *metricspb.MetricsData {
+// Не hostmetrics semconv (namespace gotcha.agent.*, общий с AgentVersionAttr) —
+// у коллектора-альтернативы этой метрики нет, это самонаблюдение агента.
+const DroppedPointsMetric = "gotcha.agent.metrics_dropped"
+
+// Возвращает MetricsData, не ExportMetricsServiceRequest — сервер анмаршалит
+// именно её. startedAtNano — старт процесса агента, а не хоста (не bootNano).
+func BuildExport(hostname, environment, role string, s Sample, droppedPoints int64, startedAtNano uint64) *metricspb.MetricsData {
 	ts := uint64(s.Time.UnixNano())
 	bootNano := uint64(s.BootTime.UnixNano())
 
@@ -51,6 +55,9 @@ func BuildExport(hostname, environment, role string, s Sample) *metricspb.Metric
 		gaugeMetric(hostmetric.LoadAvg15m, []*metricspb.NumberDataPoint{doubleDataPoint(ts, s.Load15, nil)}),
 		sumMetric(hostmetric.ProcessesCount, false, statusDataPoints(s.Procs, ts)),
 		gaugeMetric(hostmetric.Uptime, []*metricspb.NumberDataPoint{doubleDataPoint(ts, s.UptimeSec, nil)}),
+		sumMetric(DroppedPointsMetric, true, []*metricspb.NumberDataPoint{
+			intDataPoint(ts, startedAtNano, droppedPoints, nil),
+		}),
 	)
 
 	attrs := []*commonpb.KeyValue{
@@ -74,6 +81,25 @@ func BuildExport(hostname, environment, role string, s Sample) *metricspb.Metric
 			}},
 		}},
 	}
+}
+
+// Считает точки уже построенного экспорта, кроме единственной точки
+// DroppedPointsMetric — самореференция потерянных точек не нужна.
+func exportPointCount(req *metricspb.MetricsData) int {
+	n := 0
+	for _, rm := range req.GetResourceMetrics() {
+		for _, sm := range rm.GetScopeMetrics() {
+			for _, m := range sm.GetMetrics() {
+				switch d := m.GetData().(type) {
+				case *metricspb.Metric_Gauge:
+					n += len(d.Gauge.GetDataPoints())
+				case *metricspb.Metric_Sum:
+					n += len(d.Sum.GetDataPoints())
+				}
+			}
+		}
+	}
+	return n - 1
 }
 
 // Приёмник (internal/ingest/otlp.go) распаковывает по Content-Encoding: gzip —

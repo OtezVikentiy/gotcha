@@ -68,23 +68,28 @@ func allMetricNames(req *metricspb.MetricsData) []string {
 }
 
 func TestBuildExportParity(t *testing.T) {
-	req := BuildExport("host1", "", "", fullSample())
+	req := BuildExport("host1", "", "", fullSample(), 0, 0)
 	got := allMetricNames(req)
+	// +1 — DroppedPointsMetric: самонаблюдение агента, не hostmetrics
+	// semconv, поэтому вне hostmetric.AllMetrics() (тот зеркалит коллектор).
 	want := hostmetric.AllMetrics()
-	if len(got) != len(want) {
-		t.Fatalf("метрик = %d (%v), want %d (%v)", len(got), got, len(want), want)
+	if len(got) != len(want)+1 {
+		t.Fatalf("метрик = %d (%v), want %d (%v +1 самометрика)", len(got), got, len(want)+1, want)
 	}
 	for _, name := range want {
 		if metricByName(req, name) == nil {
 			t.Errorf("метрика %q отсутствует в экспорте", name)
 		}
 	}
+	if metricByName(req, DroppedPointsMetric) == nil {
+		t.Errorf("метрика %q отсутствует в экспорте", DroppedPointsMetric)
+	}
 }
 
 func TestBuildExportFirstTick(t *testing.T) {
 	s := fullSample()
 	s.CPU = nil
-	req := BuildExport("host1", "", "", s)
+	req := BuildExport("host1", "", "", s, 0, 0)
 	if m := metricByName(req, hostmetric.CPUUtilization); m != nil {
 		t.Errorf("%s присутствует на первом тике без CPU-дельты", hostmetric.CPUUtilization)
 	}
@@ -99,7 +104,7 @@ func TestBuildExportFirstTick(t *testing.T) {
 }
 
 func TestBuildExportResource(t *testing.T) {
-	req := BuildExport("myhost.local", "", "", fullSample())
+	req := BuildExport("myhost.local", "", "", fullSample(), 0, 0)
 	if len(req.GetResourceMetrics()) != 1 {
 		t.Fatalf("ResourceMetrics = %d, want 1", len(req.GetResourceMetrics()))
 	}
@@ -123,7 +128,7 @@ func TestBuildExportResource(t *testing.T) {
 }
 
 func TestBuildExportLabels(t *testing.T) {
-	req := BuildExport("h1", "prod", "web", Sample{Time: time.Unix(1, 0), BootTime: time.Unix(0, 0)})
+	req := BuildExport("h1", "prod", "web", Sample{Time: time.Unix(1, 0), BootTime: time.Unix(0, 0)}, 0, 0)
 	attrs := req.GetResourceMetrics()[0].GetResource().GetAttributes()
 	got := map[string]string{}
 	for _, kv := range attrs {
@@ -132,7 +137,7 @@ func TestBuildExportLabels(t *testing.T) {
 	if got["deployment.environment"] != "prod" || got["host.role"] != "web" {
 		t.Fatalf("resource labels=%v", got)
 	}
-	req2 := BuildExport("h1", "", "", Sample{Time: time.Unix(1, 0), BootTime: time.Unix(0, 0)})
+	req2 := BuildExport("h1", "", "", Sample{Time: time.Unix(1, 0), BootTime: time.Unix(0, 0)}, 0, 0)
 	for _, kv := range req2.GetResourceMetrics()[0].GetResource().GetAttributes() {
 		if kv.GetKey() == "deployment.environment" || kv.GetKey() == "host.role" {
 			t.Fatalf("пустая метка %q попала в resource", kv.GetKey())
@@ -142,7 +147,7 @@ func TestBuildExportLabels(t *testing.T) {
 
 func TestBuildExportCumulative(t *testing.T) {
 	s := fullSample()
-	req := BuildExport("host1", "", "", s)
+	req := BuildExport("host1", "", "", s, 0, 0)
 	wantStart := uint64(s.BootTime.UnixNano())
 
 	diskM := metricByName(req, hostmetric.DiskIO)
@@ -206,7 +211,7 @@ func TestBuildExportCumulative(t *testing.T) {
 
 func TestBuildExportGaugeAttrs(t *testing.T) {
 	s := fullSample()
-	req := BuildExport("host1", "", "", s)
+	req := BuildExport("host1", "", "", s, 0, 0)
 
 	cpuM := metricByName(req, hostmetric.CPUUtilization)
 	if cpuM == nil {
@@ -284,7 +289,7 @@ func TestBuildExportGaugeAttrs(t *testing.T) {
 }
 
 func TestEncodeBodyGzipRoundTrip(t *testing.T) {
-	req := BuildExport("host1", "", "", fullSample())
+	req := BuildExport("host1", "", "", fullSample(), 0, 0)
 	body, err := EncodeBody(req)
 	if err != nil {
 		t.Fatalf("EncodeBody: %v", err)
@@ -305,5 +310,46 @@ func TestEncodeBodyGzipRoundTrip(t *testing.T) {
 	}
 	if !proto.Equal(&got, req) {
 		t.Errorf("round-trip разошёлся: got %v, want %v", &got, req)
+	}
+}
+
+func TestBuildExportDroppedPointsMetric(t *testing.T) {
+	s := fullSample()
+	req := BuildExport("host1", "", "", s, 42, 500)
+
+	m := metricByName(req, DroppedPointsMetric)
+	if m == nil {
+		t.Fatal("gotcha.agent.metrics_dropped отсутствует в экспорте")
+	}
+	sum := m.GetSum()
+	if sum == nil {
+		t.Fatal("gotcha.agent.metrics_dropped должен быть Sum")
+	}
+	if !sum.GetIsMonotonic() {
+		t.Error("gotcha.agent.metrics_dropped должен быть монотонным (только растёт)")
+	}
+	if sum.GetAggregationTemporality() != metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE {
+		t.Errorf("temporality = %v, want CUMULATIVE", sum.GetAggregationTemporality())
+	}
+	if len(sum.GetDataPoints()) != 1 {
+		t.Fatalf("datapoints = %d, want 1", len(sum.GetDataPoints()))
+	}
+	dp := sum.GetDataPoints()[0]
+	if dp.GetAsInt() != 42 {
+		t.Errorf("value = %d, want 42 (кумулятивный счётчик с запуска процесса)", dp.GetAsInt())
+	}
+	if dp.GetStartTimeUnixNano() != 500 {
+		t.Errorf("StartTimeUnixNano = %d, want 500 (старт процесса, не хоста)", dp.GetStartTimeUnixNano())
+	}
+	if dp.GetTimeUnixNano() != uint64(s.Time.UnixNano()) {
+		t.Errorf("TimeUnixNano = %d, want %d", dp.GetTimeUnixNano(), s.Time.UnixNano())
+	}
+}
+
+func TestBuildExportDroppedPointsMetricZeroWhenHealthy(t *testing.T) {
+	req := BuildExport("host1", "", "", fullSample(), 0, 0)
+	dp := metricByName(req, DroppedPointsMetric).GetSum().GetDataPoints()[0]
+	if dp.GetAsInt() != 0 {
+		t.Errorf("value = %d, want 0 — без потерь метрика едет нулём, не пропадает", dp.GetAsInt())
 	}
 }

@@ -44,6 +44,11 @@ type runner struct {
 
 	deliveredOnce bool // первая успешная доставка уже залогирована
 	buffering     bool // сейчас в состоянии «сервер недоступен, копим буфер» (для логов перехода)
+
+	dropped          int64 // точек за всё время жизни процесса — едет сервером как DroppedPointsMetric
+	droppedUndrained int   // точек с момента, когда буфер последний раз опустел, — для честности «recovered»
+
+	startedAtNano uint64 // StartTimeUnixNano для DroppedPointsMetric — с запуска процесса, не хоста
 }
 
 // Хеш hostname расходится по хосту, PID — по рестарту одного хоста; не
@@ -71,14 +76,15 @@ func Run(ctx context.Context, cfg Config, logger *slog.Logger) error {
 	probes := DefaultProbes()
 	probes.Procs = throttledProcs(probes.Procs, time.Now, procsProbeInterval)
 	r := &runner{
-		hostname:    hostname,
-		environment: cfg.Environment,
-		role:        cfg.Role,
-		collector:   NewCollector(probes),
-		sender:      sender,
-		buffer:      NewBuffer(bufferMaxBatches, bufferMaxBytes),
-		log:         logger,
-		rng:         rand.New(rand.NewSource(seedFromHost(hostname, os.Getpid()))),
+		hostname:      hostname,
+		environment:   cfg.Environment,
+		role:          cfg.Role,
+		collector:     NewCollector(probes),
+		sender:        sender,
+		buffer:        NewBuffer(bufferMaxBatches, bufferMaxBytes),
+		log:           logger,
+		rng:           rand.New(rand.NewSource(seedFromHost(hostname, os.Getpid()))),
+		startedAtNano: uint64(time.Now().UnixNano()),
 	}
 
 	// Один раз при старте — иначе оператор не отличит «работает тихо» от
@@ -116,20 +122,41 @@ func (r *runner) tick(ctx context.Context, now time.Time) {
 		r.log.Warn("agent: all content probes empty for this tick, skipping")
 		return
 	}
-	body, err := EncodeBody(BuildExport(r.hostname, r.environment, r.role, s))
+	md := BuildExport(r.hostname, r.environment, r.role, s, r.dropped, r.startedAtNano)
+	points := exportPointCount(md)
+	body, err := EncodeBody(md)
 	if err != nil {
 		r.log.Error("agent: export encoding failed", "error", err)
 		return
 	}
 	if now.Before(r.notBefore) {
 		// пол бэкоффа/Retry-After ещё не истёк — не долбим сервер, копим.
-		r.buffer.Push(body)
+		r.pushBuffered(body, points)
 		return
 	}
-	r.sendCurrent(ctx, now, body)
+	r.sendCurrent(ctx, now, body, points)
 }
 
-func (r *runner) sendCurrent(ctx context.Context, now time.Time, body []byte) {
+// Единственный путь класть батч в буфер — переполнение считается и логируется
+// с причиной, а не проглатывается молча.
+func (r *runner) pushBuffered(body []byte, points int) {
+	r.buffer.Push(body, points)
+	oversized, evicted := r.buffer.TakeDropped()
+	if oversized > 0 {
+		r.dropped += int64(oversized)
+		r.droppedUndrained += oversized
+		r.log.Error("agent: batch dropped, exceeds buffer size limit",
+			"points", oversized, "total_dropped_points", r.dropped)
+	}
+	if evicted > 0 {
+		r.dropped += int64(evicted)
+		r.droppedUndrained += evicted
+		r.log.Error("agent: batch dropped, buffer full",
+			"points", evicted, "total_dropped_points", r.dropped)
+	}
+}
+
+func (r *runner) sendCurrent(ctx context.Context, now time.Time, body []byte, points int) {
 	result, floor, err := r.sender.Send(ctx, body)
 	switch result {
 	case SendOK:
@@ -138,7 +165,7 @@ func (r *runner) sendCurrent(ctx context.Context, now time.Time, body []byte) {
 		r.drain(ctx, now)
 		r.noteRecoveredIfDrained()
 	case SendRetry:
-		r.buffer.Push(body)
+		r.pushBuffered(body, points)
 		r.backoffAfterFailure(now, floor)
 		r.noteBuffering()
 		r.log.Warn("agent: send failed, batch buffered", "error", err)
@@ -218,13 +245,19 @@ func (r *runner) noteBuffering() {
 	r.log.Info("agent: entering buffered mode, server unavailable", "buffered_batches", r.buffer.Len())
 }
 
-// Только после периода буферизации и при пустом буфере — иначе «recovered»
-// писалось бы на каждом здоровом тике.
+// Только после буферизации и при пустом буфере — иначе «recovered» писалось
+// бы на каждом здоровом тике.
 func (r *runner) noteRecoveredIfDrained() {
 	if !r.buffering || r.buffer.Len() != 0 {
 		return
 	}
 	r.buffering = false
+	lost := r.droppedUndrained
+	r.droppedUndrained = 0
+	if lost > 0 {
+		r.log.Warn("agent: buffer drained, delivery resumed with data loss", "dropped_points", lost)
+		return
+	}
 	r.log.Info("agent: buffer drained, delivery recovered")
 }
 
