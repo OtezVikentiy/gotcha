@@ -612,6 +612,84 @@ func TestLoadConfigOAuthProviders(t *testing.T) {
 	}
 }
 
+func TestLoadConfigOIDCTrustEmailDefaultsFalse(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_OIDC_ENABLED":       "true",
+		"GOTCHA_OIDC_ISSUER":        "https://idp.example",
+		"GOTCHA_OIDC_CLIENT_ID":     "cid",
+		"GOTCHA_OIDC_CLIENT_SECRET": "sec",
+	}
+	cfg, err := loadConfig(getenvFrom(env), []string{"--mode=web"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.OIDCTrustEmail {
+		t.Fatal("GOTCHA_OIDC_TRUST_EMAIL must default to false (fail-closed)")
+	}
+}
+
+func TestLoadConfigOIDCTrustEmailEnabled(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_OIDC_ENABLED":       "true",
+		"GOTCHA_OIDC_ISSUER":        "https://idp.example",
+		"GOTCHA_OIDC_CLIENT_ID":     "cid",
+		"GOTCHA_OIDC_CLIENT_SECRET": "sec",
+		"GOTCHA_OIDC_TRUST_EMAIL":   "true",
+	}
+	cfg, err := loadConfig(getenvFrom(env), []string{"--mode=web"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !cfg.OIDCTrustEmail {
+		t.Fatal("GOTCHA_OIDC_TRUST_EMAIL=true must set cfg.OIDCTrustEmail")
+	}
+}
+
+func TestLoadConfigOIDCTrustEmailWarnsWhenUntrusted(t *testing.T) {
+	baseEnv := map[string]string{
+		"GOTCHA_OIDC_ENABLED":       "true",
+		"GOTCHA_OIDC_ISSUER":        "https://idp.example",
+		"GOTCHA_OIDC_CLIENT_ID":     "cid",
+		"GOTCHA_OIDC_CLIENT_SECRET": "sec",
+	}
+	hasWarn := func(records []slog.Record) bool {
+		for _, r := range records {
+			if r.Level == slog.LevelWarn && strings.Contains(r.Message, "GOTCHA_OIDC_TRUST_EMAIL") {
+				return true
+			}
+		}
+		return false
+	}
+
+	var records []slog.Record
+	prev := slog.Default()
+	slog.SetDefault(slog.New(capturingLogHandler{records: &records}))
+	if _, err := loadConfig(getenvFrom(baseEnv), []string{"--mode=web"}); err != nil {
+		slog.SetDefault(prev)
+		t.Fatalf("loadConfig: %v", err)
+	}
+	slog.SetDefault(prev)
+	if !hasWarn(records) {
+		t.Error("нет предупреждения о GOTCHA_OIDC_TRUST_EMAIL при включённом OIDC без доверия")
+	}
+
+	trustedEnv := map[string]string{}
+	for k, v := range baseEnv {
+		trustedEnv[k] = v
+	}
+	trustedEnv["GOTCHA_OIDC_TRUST_EMAIL"] = "true"
+	records = nil
+	slog.SetDefault(slog.New(capturingLogHandler{records: &records}))
+	if _, err := loadConfig(getenvFrom(trustedEnv), []string{"--mode=web"}); err != nil {
+		slog.SetDefault(prev)
+		t.Fatalf("loadConfig: %v", err)
+	}
+	slog.SetDefault(prev)
+	if hasWarn(records) {
+		t.Error("предупреждение о GOTCHA_OIDC_TRUST_EMAIL выдано, хотя доверие включено")
+	}
+}
+
 func TestLoadConfigOAuthMissingSecretFails(t *testing.T) {
 	env := map[string]string{
 		"GOTCHA_OIDC_ENABLED":   "true",

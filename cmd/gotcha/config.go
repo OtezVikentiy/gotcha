@@ -189,6 +189,7 @@ type Config struct {
 	OIDCClientSecret   string
 	OIDCScopes         string
 	OIDCName           string
+	OIDCTrustEmail     bool
 	YandexEnabled      bool
 	YandexClientID     string
 	YandexClientSecret string
@@ -537,6 +538,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	cfg.OIDCClientSecret = str("GOTCHA_OIDC_CLIENT_SECRET", "")
 	cfg.OIDCScopes = str("GOTCHA_OIDC_SCOPES", "")
 	cfg.OIDCName = str("GOTCHA_OIDC_DISPLAY_NAME", "")
+	cfg.OIDCTrustEmail = boolEnv("GOTCHA_OIDC_TRUST_EMAIL")
 	cfg.YandexEnabled = boolEnv("GOTCHA_YANDEX_ENABLED")
 	cfg.YandexClientID = str("GOTCHA_YANDEX_CLIENT_ID", "")
 	cfg.YandexClientSecret = str("GOTCHA_YANDEX_CLIENT_SECRET", "")
@@ -856,6 +858,11 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 
 	if cfg.OIDCEnabled && (cfg.OIDCIssuer == "" || cfg.OIDCClientID == "" || cfg.OIDCClientSecret == "") {
 		errs = append(errs, fmt.Errorf("GOTCHA_OIDC_ENABLED requires GOTCHA_OIDC_ISSUER, _CLIENT_ID and _CLIENT_SECRET"))
+	}
+	if cfg.OIDCEnabled && !cfg.OIDCTrustEmail {
+		slog.Warn("GOTCHA_OIDC_ENABLED is on but GOTCHA_OIDC_TRUST_EMAIL is not — " +
+			"self-registration and account auto-linking by email via this OIDC provider are disabled; " +
+			"set GOTCHA_OIDC_TRUST_EMAIL=true only if this IdP is single-tenant and you control who can sign up on it")
 	}
 	if cfg.YandexEnabled && (cfg.YandexClientID == "" || cfg.YandexClientSecret == "") {
 		errs = append(errs, fmt.Errorf("GOTCHA_YANDEX_ENABLED requires GOTCHA_YANDEX_CLIENT_ID and _CLIENT_SECRET"))

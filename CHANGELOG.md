@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Self-registration and email-based auto-linking through a generic OIDC
+  provider (`GOTCHA_OIDC_ENABLED`) now require explicitly opting in with
+  `GOTCHA_OIDC_TRUST_EMAIL=true`. Without it, that provider only works for
+  accounts already linked to it — new accounts and auto-linking by email stay
+  disabled, because an arbitrary generic OIDC provider can forge
+  `email_verified`. Enable the new variable only for a single-tenant IdP you
+  control yourself; never for a public multi-tenant one. Yandex ID and VK ID
+  are unaffected — they already confirm the address themselves.
+
 ## [1.3.1] - 2026-09-11
 
 ### Added

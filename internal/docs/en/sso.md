@@ -18,6 +18,8 @@ The callback (redirect URI) you need to register in the provider's application s
 
 where `{provider}` is `oidc`, `yandex`, or `vk` depending on the provider, and `{GOTCHA_BASE_URL}` is the same address configured in the server's `GOTCHA_BASE_URL` (e.g. `https://gotcha.example.com`). For generic OIDC, that's `https://gotcha.example.com/auth/oauth/oidc/callback`. The URI isn't separately configurable — it's always built this way, so make sure you register the exact same address with the provider.
 
+Yandex ID and VK ID confirm the user's address themselves, so both auto-provisioning a new account and auto-linking a login to an existing account by email are allowed for them. A generic OIDC provider's claimed `email`/`email_verified` can be forged by the IdP itself, so by default (`GOTCHA_OIDC_TRUST_EMAIL=false`) logging in through it only works for accounts already linked — self-registration and email-based auto-linking need to be turned on explicitly, see below.
+
 ## Generic OIDC — step by step
 
 1. In your IdP's console (Keycloak, Authentik, Auth0, Zitadel, etc.), create a new OAuth/OIDC application (client) of type "confidential"/"web".
@@ -37,6 +39,14 @@ GOTCHA_OIDC_DISPLAY_NAME=Corp SSO                 # optional — the button labe
 5. Restart the server. The `/login` page will show a "Sign in with {GOTCHA_OIDC_DISPLAY_NAME or OIDC}" button.
 
 Gotcha fetches `{issuer}/.well-known/openid-configuration` itself to discover the authorization/token endpoints and the JWKS — you don't need to set those manually.
+
+By default, this is only enough for signing in people whose account is already linked to this provider. To let people SELF-REGISTER through this same OIDC provider (open registration or an invite) or have a login auto-linked to an existing account by matching email, add:
+
+```bash
+GOTCHA_OIDC_TRUST_EMAIL=true
+```
+
+Only turn this on if the IdP is your own, single-tenant one (your own Keycloak/Authentik/Zitadel, etc.) where you control who can create an account. **Do not enable it** for a public multi-tenant IdP (a shared Google tenant, a general-purpose Auth0 tenant, etc.) — there, anyone can sign up and claim someone else's email address, and `GOTCHA_OIDC_TRUST_EMAIL=true` would make Gotcha take that claim at face value and hand over access to the account with that address.
 
 ## Yandex ID
 

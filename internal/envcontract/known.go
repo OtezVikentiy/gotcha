@@ -54,6 +54,7 @@ var Known = map[string]bool{
 	"GOTCHA_OIDC_ENABLED":                     true,
 	"GOTCHA_OIDC_ISSUER":                      true,
 	"GOTCHA_OIDC_SCOPES":                      true,
+	"GOTCHA_OIDC_TRUST_EMAIL":                 true,
 	"GOTCHA_OUTBOX_RETENTION_DAYS":            true,
 	"GOTCHA_PG_DSN":                           true,
 	"GOTCHA_PROBE_KEY":                        true,

@@ -63,6 +63,32 @@ func TestOIDCExchangeVerifiedEmail(t *testing.T) {
 	}
 }
 
+func TestOIDCExchangeTrustEmailControlsTrustedIssuer(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	for _, tc := range []struct {
+		name       string
+		trustEmail bool
+	}{
+		{"по умолчанию (false) — issuer не доверенный", false},
+		{"TrustEmail=true — issuer доверенный", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := fakeOIDC(t, key, map[string]any{
+				"sub": "oidc-sub-trust", "email": "trust@corp.com", "email_verified": true,
+				"nonce": "N1",
+			})
+			p := NewOIDC(OIDCConfig{Issuer: srv.URL, ClientID: "client-1", ClientSecret: "secret", TrustEmail: tc.trustEmail})
+			id, err := p.Exchange(context.Background(), "code-xyz", "VERIFIER", "https://gotcha/cb", "N1")
+			if err != nil {
+				t.Fatalf("Exchange: %v", err)
+			}
+			if id.TrustedIssuer != tc.trustEmail {
+				t.Fatalf("TrustedIssuer = %v, want %v", id.TrustedIssuer, tc.trustEmail)
+			}
+		})
+	}
+}
+
 func TestOIDCExchangeExpiryLeeway(t *testing.T) {
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
 
