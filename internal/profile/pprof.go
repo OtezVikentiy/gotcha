@@ -27,6 +27,7 @@ func ParsePprof(raw []byte, sampleType string, now time.Time) (Profile, error) {
 	typ := p.SampleType[idx].Type
 	unit := p.SampleType[idx].Unit
 
+	budget := maxStackBytes
 	var samples []Sample
 	for _, s := range p.Sample {
 		if idx >= len(s.Value) {
@@ -36,11 +37,14 @@ func ParsePprof(raw []byte, sampleType string, now time.Time) (Profile, error) {
 		if v <= 0 {
 			continue
 		}
+		if len(samples) >= maxStacks || budget <= 0 {
+			break
+		}
 		stack := make([]Frame, 0, min(len(s.Location), maxFrames))
 		for i := len(s.Location) - 1; i >= 0; i-- {
 			loc := s.Location[i]
 			for j := len(loc.Line) - 1; j >= 0; j-- {
-				if len(stack) >= maxFrames {
+				if len(stack) >= maxFrames || budget <= 0 {
 					break
 				}
 				ln := loc.Line[j]
@@ -48,18 +52,20 @@ func ParsePprof(raw []byte, sampleType string, now time.Time) (Profile, error) {
 				if fn == nil {
 					continue
 				}
+				name := capRunes(fn.Name, maxFrameField)
+				file := capRunes(fn.Filename, maxFrameField)
+				// как в ParseSentry: бюджет списывается по факту байт имён, а не по
+				// счётным капам, которые перемножаются на вложенных Location×Line.
+				budget -= len(name) + len(file) + frameOverheadBytes
 				stack = append(stack, Frame{
-					Function: capRunes(fn.Name, maxFrameField),
-					File:     capRunes(fn.Filename, maxFrameField),
+					Function: name,
+					File:     file,
 					Line:     int32(ln.Line),
 				})
 			}
 		}
 		if len(stack) == 0 {
 			continue
-		}
-		if len(samples) >= maxStacks {
-			break
 		}
 		samples = append(samples, Sample{Stack: stack, Value: uint64(v)})
 	}
