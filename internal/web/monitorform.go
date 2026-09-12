@@ -411,6 +411,7 @@ func (h *Handler) renderMonitorForm(w http.ResponseWriter, r *http.Request, stat
 	data.AllRegions = regions
 	data.AllChannels = channels
 	data.CanManage = canManage
+	data.SecretKeyInsecure = h.SecretKeyInsecure
 	w.WriteHeader(status)
 	_ = templates.MonitorForm(data, userEmail).Render(r.Context(), w)
 }

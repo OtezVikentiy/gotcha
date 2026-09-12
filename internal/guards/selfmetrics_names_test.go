@@ -61,6 +61,7 @@ var wantSelfMetrics = []selfMetricSpec{
 	{"gotcha_projects_purged_total", "Counter"},
 	{"gotcha_purge_queue_depth", "Gauge"},
 	{"gotcha_purge_queue_oldest_seconds", "Gauge"},
+	{"gotcha_secret_key_insecure", "Gauge"},
 	{"gotcha_slo_evaluator_last_tick_timestamp_seconds", "Gauge"},
 	{"gotcha_slo_evaluator_tick_duration_seconds", "Gauge"},
 	{"gotcha_storage_free_bytes", "Gauge"},

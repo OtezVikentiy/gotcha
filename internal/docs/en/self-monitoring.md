@@ -457,6 +457,15 @@ build carries git metadata: `stamped="false"` means the image was built outside
 `make`, its version string is the source default, and "deployed exactly what
 you think" cannot be verified from it.
 
+**`gotcha_secret_key_insecure`** — 1 while `GOTCHA_SECRET_KEY` is unset (the
+built-in dev default): alert channel secrets, SSO `client_secret` and uptime
+HTTP monitor headers are stored in PostgreSQL as plaintext. Doesn't depend on
+`GOTCHA_BASE_URL` — stays at 1 regardless of which address the instance is
+given, unlike the startup refusal (see
+[Privacy and personal data](/docs/privacy)), which only fires for a
+non-local `GOTCHA_BASE_URL`. The only sign of this state that survives the
+container's log rotation — the startup `slog.Warn` doesn't.
+
 **`gotcha_uptime_heartbeat_ignored_total{reason="…"}`** — pings on
 `/uptime/hb/{token}` that were received but NOT counted as a sign of monitor
 life. The ping URL is a plain link that regularly gets hit by non-humans:

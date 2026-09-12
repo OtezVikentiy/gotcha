@@ -358,7 +358,8 @@ func (h *Handler) quotaBanner(ctx context.Context, orgID int64, canManage bool) 
 // client_secret обратно не отдаём — показываем только «настроено».
 func (h *Handler) ssoSettingsVM(r *http.Request, orgID, uid int64) templates.SSOSettings {
 	vm := templates.SSOSettings{
-		RedirectURI: h.BaseURL + "/auth/oauth/" + ssoProviderPrefix + strconv.FormatInt(orgID, 10) + "/callback",
+		RedirectURI:       h.BaseURL + "/auth/oauth/" + ssoProviderPrefix + strconv.FormatInt(orgID, 10) + "/callback",
+		SecretKeyInsecure: h.SecretKeyInsecure,
 	}
 	if role, err := h.Org.Role(r.Context(), orgID, uid); err == nil && role == org.RoleOwner {
 		vm.IsOwner = true

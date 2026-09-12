@@ -551,6 +551,38 @@ func TestRegisterWriterMetricsReadsValuesLazily(t *testing.T) {
 	}
 }
 
+func TestSecretKeyInsecureMatchesDevDefault(t *testing.T) {
+	if !secretKeyInsecure(devSecretKey) {
+		t.Errorf("secretKeyInsecure(devSecretKey) = false, want true")
+	}
+	if secretKeyInsecure("a-strong-random-secret-key-value-32-bytes-plus") {
+		t.Errorf("secretKeyInsecure(<strong key>) = true, want false")
+	}
+}
+
+func TestRegisterSecretKeyMetricFlagsDevKey(t *testing.T) {
+	var r selfmetrics.Registry
+	registerSecretKeyMetric(&r, devSecretKey)
+
+	got := r.Gather()
+	if !strings.Contains(got, "\ngotcha_secret_key_insecure 1\n") {
+		t.Errorf("dev-ключ не отражён как 1 в gotcha_secret_key_insecure:\n%s", got)
+	}
+}
+
+func TestRegisterSecretKeyMetricClearsOnStrongKey(t *testing.T) {
+	var r selfmetrics.Registry
+	registerSecretKeyMetric(&r, "a-strong-random-secret-key-value-32-bytes-plus")
+
+	got := r.Gather()
+	if !strings.Contains(got, "\ngotcha_secret_key_insecure 0\n") {
+		t.Errorf("сильный ключ не сбросил gotcha_secret_key_insecure в 0:\n%s", got)
+	}
+	if strings.Contains(got, "\ngotcha_secret_key_insecure 1\n") {
+		t.Errorf("сильный ключ всё равно даёт 1 в gotcha_secret_key_insecure:\n%s", got)
+	}
+}
+
 func TestCommonServicesEnabled(t *testing.T) {
 	for _, tc := range []struct {
 		mode string

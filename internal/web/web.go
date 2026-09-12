@@ -59,6 +59,10 @@ type Handler struct {
 	// пустое значение — дефолт из secret().
 	SecretKey string
 
+	// true, когда шифрование at-rest выключено (dev-ключ) — секреты форм ниже
+	// уходят в PG открытым текстом; тот же признак, что у gotcha_secret_key_insecure.
+	SecretKeyInsecure bool
+
 	// XFF доверяем только от пиров отсюда — иначе игнорируется, ключ лимитера RemoteAddr.
 	TrustedProxies []*net.IPNet
 

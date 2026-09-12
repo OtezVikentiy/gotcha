@@ -95,7 +95,7 @@ func (h *Handler) renderAlerts(w http.ResponseWriter, r *http.Request, status in
 		return
 	}
 	w.WriteHeader(status)
-	_ = templates.Alerts(projectID, rules, channels, h.EmailEnabled, canManage, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.Alerts(projectID, rules, channels, h.EmailEnabled, canManage, h.SecretKeyInsecure, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 func (h *Handler) alertDeliveriesPage(w http.ResponseWriter, r *http.Request) {

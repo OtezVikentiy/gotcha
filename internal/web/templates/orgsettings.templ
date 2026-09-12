@@ -139,6 +139,9 @@ type SSOSettings struct {
 	DefaultRole string
 	Enforced    bool
 	RedirectURI string
+	// тот же признак, что у gotcha_secret_key_insecure — client_secret лежит
+	// в PG открытым текстом, пока он true.
+	SecretKeyInsecure bool
 }
 
 type QuotaVM struct {
@@ -426,6 +429,9 @@ templ ssoSection(orgID int64, sso SSOSettings) {
 						<input type="password" name="client_secret" required class="input" autocomplete="new-password" data-1p-ignore="true" data-lpignore="true" data-bwignore="true"/>
 					}
 				</label>
+				if sso.SecretKeyInsecure {
+					<p class="warning">{ i18n.T(ctx, "secret.insecure_warning") }</p>
+				}
 			</div>
 			<div class="field">
 				<label>

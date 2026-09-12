@@ -26,6 +26,27 @@ reject_newline() {
     esac
 }
 
+# Класс проверки обязан совпадать с agentBaseURLSecure в internal/web/hosts.go.
+# localhost/127.0.0.1/::1 освобождены: там endpoint не пересекает сеть вовсе.
+require_secure_endpoint() {
+    case "$1" in
+        https://*) return 0 ;;
+    esac
+    host=$(printf '%s' "$1" | sed -e 's~^[a-zA-Z][a-zA-Z0-9+.-]*://~~' -e 's~[/?#].*~~' -e 's~^[^@]*@~~')
+    case "$host" in
+        '['*)
+            host=$(printf '%s' "$host" | sed -e 's~^\[~~' -e 's~\].*~~')
+            ;;
+        *)
+            host=$(printf '%s' "$host" | sed -e 's~:[0-9]*$~~')
+            ;;
+    esac
+    case "$host" in
+        localhost | 127.0.0.1 | ::1) return 0 ;;
+    esac
+    fail "GOTCHA_AGENT_ENDPOINT=$1 is plain HTTP on a non-local host — the SHA-256 sums travel over the same connection as the binary, so anyone on the network path can swap both; use https://, or an http:// localhost/127.0.0.1/::1 endpoint for a dev stand"
+}
+
 main() {
     [ "$(uname -s)" = Linux ] || fail "only Linux is supported"
     command -v systemctl >/dev/null 2>&1 || fail "systemd is required"
@@ -96,6 +117,8 @@ main() {
     else
         fail "both GOTCHA_AGENT_ENDPOINT and GOTCHA_AGENT_INGEST_KEY are required (partial values are rejected; to change a single setting, edit $CONF and run systemctl restart gotcha-agent)"
     fi
+
+    require_secure_endpoint "$endpoint"
 
     tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
     # "--" отделяет опции curl от URL: endpoint приходит из окружения

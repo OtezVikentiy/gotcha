@@ -120,7 +120,7 @@ func EditChannelModalID(channelID int64) string {
 	return "edit-channel-" + strconv.FormatInt(channelID, 10)
 }
 
-templ channelRow(projectID int64, c alert.Channel, form FormState, errMsg string, canManage bool) {
+templ channelRow(projectID int64, c alert.Channel, form FormState, errMsg string, canManage, secretKeyInsecure bool) {
 	<tr>
 		<td><span class="badge badge-neutral">{ channelKindLabel(ctx, c.Kind) }</span></td>
 		<td>{ c.Target }</td>
@@ -138,7 +138,7 @@ templ channelRow(projectID int64, c alert.Channel, form FormState, errMsg string
 						<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "alerts.channels.delete") }</button>
 					</form>
 				</div>
-				@channelEditModal(projectID, c, form, errMsg)
+				@channelEditModal(projectID, c, form, errMsg, secretKeyInsecure)
 			</td>
 		}
 	</tr>
@@ -146,7 +146,7 @@ templ channelRow(projectID int64, c alert.Channel, form FormState, errMsg string
 
 // тип канала не редактируется: у email/webhook/telegram разный смысл адреса
 // и секрета, «сменить тип» — это другой канал.
-templ channelEditModal(projectID int64, c alert.Channel, form FormState, errMsg string) {
+templ channelEditModal(projectID int64, c alert.Channel, form FormState, errMsg string, secretKeyInsecure bool) {
 	{{ open := form.Opens(EditChannelModalID(c.ID)) }}
 	@createModalOpen(EditChannelModalID(c.ID), "alerts.channels.edit.title", true, open) {
 		<form method="post" action={ templ.URL(alertsChannelsUpdatePath(projectID)) } class="channel-edit-form">
@@ -183,6 +183,9 @@ templ channelEditModal(projectID int64, c alert.Channel, form FormState, errMsg 
 					<span class="hint hint--warn">{ i18n.T(ctx, "alerts.channels.edit.secret_broken_hint") }</span>
 				} else {
 					<span class="hint">{ i18n.T(ctx, "alerts.channels.edit.secret_hint") }</span>
+				}
+				if secretKeyInsecure {
+					<p class="warning">{ i18n.T(ctx, "secret.insecure_warning") }</p>
 				}
 			</div>
 			<label class="checkbox-inline">
@@ -226,7 +229,7 @@ func channelBoxChecked(form FormState, open bool, name string, fallback bool) bo
 	return form.Get(name, "") != ""
 }
 
-templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emailEnabled bool, canManage bool, form FormState, errMsg, userEmail string) {
+templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emailEnabled, canManage, secretKeyInsecure bool, form FormState, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "nav.rules_errors"), userEmail) {
 		<div class="alerts">
 			<h1>{ i18n.T(ctx, "nav.rules_errors") }</h1>
@@ -275,7 +278,7 @@ templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emai
 									</thead>
 									<tbody>
 										for _, c := range channels {
-											@channelRow(projectID, c, form, errMsg, canManage)
+											@channelRow(projectID, c, form, errMsg, canManage, secretKeyInsecure)
 										}
 									</tbody>
 								</table>
@@ -336,6 +339,9 @@ templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emai
 								<input type="password" name="secret" class="input" autocomplete="new-password" data-1p-ignore/>
 							</label>
 							<span class="hint">{ i18n.T(ctx, "alerts.channels.new.secret_hint") }</span>
+							if secretKeyInsecure {
+								<p class="warning">{ i18n.T(ctx, "secret.insecure_warning") }</p>
+							}
 						</div>
 						<label class="checkbox-inline">
 							<input type="checkbox" name="enabled" checked/>

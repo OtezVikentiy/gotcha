@@ -195,7 +195,7 @@ func TestPerformanceList(t *testing.T) {
 	out := renderTo(t, PerformanceList(7, rows, 1, PerfFilter{Range: TimeRangeVM{Key: "24h"}, Sort: "throughput"}, []string{"production"}, 500,
 		// без примеров человек не догадается, что в имя транзакции попал идентификатор.
 		[]CardinalityNotice{{Field: "transaction name", Limit: 10000, Collapsed: 47213,
-			Samples: []string{"GET /users/8812/profile", "GET /users/8813/profile"}}}, "u@e.com", false))
+			Samples: []string{"GET /users/8812/profile", "GET /users/8813/profile"}}}, "u@e.com", false, false))
 	if !strings.Contains(out, "GET /api") {
 		t.Error("список должен содержать транзакцию")
 	}
@@ -206,7 +206,12 @@ func TestPerformanceList(t *testing.T) {
 		t.Error("предупреждение должно вести на страницу документации")
 	}
 
-	empty := renderTo(t, PerformanceList(7, nil, 0, PerfFilter{}, nil, 0, nil, "u@e.com", false))
+	capped := renderTo(t, PerformanceList(7, rows, 1, PerfFilter{Range: TimeRangeVM{Key: "24h"}}, []string{"production"}, 500, nil, "u@e.com", false, true))
+	if !strings.Contains(capped, "больше 20 000 разных эндпойнтов") {
+		t.Error("при capped=true должно показываться предупреждение об усечении окна CH-запросом")
+	}
+
+	empty := renderTo(t, PerformanceList(7, nil, 0, PerfFilter{}, nil, 0, nil, "u@e.com", false, false))
 	if strings.Contains(empty, "GET /api") {
 		t.Error("пустой список не должен содержать транзакций")
 	}
@@ -323,13 +328,28 @@ func TestAlerts(t *testing.T) {
 		{ID: 1, Kind: "email", Enabled: true, Target: "team@x.io"},
 		{ID: 2, Kind: "webhook", Enabled: false, Target: "https://hook"},
 	}
-	out := renderTo(t, Alerts(7, rules, channels, true, true, nil, "", "u@e.com"))
+	out := renderTo(t, Alerts(7, rules, channels, true, true, false, nil, "", "u@e.com"))
 	if !strings.Contains(out, "team@x.io") || !strings.Contains(out, "https://hook") {
 		t.Error("каналы должны отрендериться")
 	}
-	outErr := renderTo(t, Alerts(7, nil, nil, false, true, nil, "ошибка сохранения", "u@e.com"))
+	outErr := renderTo(t, Alerts(7, nil, nil, false, true, false, nil, "ошибка сохранения", "u@e.com"))
 	if !strings.Contains(outErr, "ошибка сохранения") {
 		t.Error("ошибка должна отрендериться")
+	}
+}
+
+func TestAlertsSecretKeyInsecureWarning(t *testing.T) {
+	channels := []alert.Channel{{ID: 1, Kind: "telegram", Enabled: true, Target: "@ch"}}
+	warnText := i18n.T(i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"}), "secret.insecure_warning")
+
+	insecure := renderTo(t, Alerts(7, nil, channels, true, true, true, nil, "", "u@e.com"))
+	if !strings.Contains(insecure, warnText) {
+		t.Error("на dev-ключе предупреждение о секретах отсутствует")
+	}
+
+	secure := renderTo(t, Alerts(7, nil, channels, true, true, false, nil, "", "u@e.com"))
+	if strings.Contains(secure, warnText) {
+		t.Error("на сильном ключе предупреждение о секретах не должно рендериться")
 	}
 }
 
@@ -355,6 +375,24 @@ func TestOrgSettings(t *testing.T) {
 	out2 := renderTo(t, OrgSettings(o, members, 2, quotas, false, "боом", "", SSOSettings{}, "admin@x.io", &QuotaBanner{Text: "лимит", Href: "/x"}, SubjectPurgeVM{}, nil, nil))
 	if !strings.Contains(out2, "боом") {
 		t.Error("ошибка орга должна отрендериться")
+	}
+}
+
+func TestOrgSettingsSecretKeyInsecureWarning(t *testing.T) {
+	o := org.Org{ID: 1, Slug: "acme", Name: "Acme"}
+	members := []org.Member{{UserID: 1, Email: "owner@x.io", Role: org.RoleOwner}}
+	warnText := i18n.T(i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"}), "secret.insecure_warning")
+
+	insecureSSO := SSOSettings{CanConfigure: true, SecretKeyInsecure: true}
+	insecure := renderTo(t, OrgSettings(o, members, 1, nil, true, "", "", insecureSSO, "owner@x.io", nil, SubjectPurgeVM{}, nil, nil))
+	if !strings.Contains(insecure, warnText) {
+		t.Error("на dev-ключе предупреждение о client_secret отсутствует")
+	}
+
+	secureSSO := SSOSettings{CanConfigure: true, SecretKeyInsecure: false}
+	secure := renderTo(t, OrgSettings(o, members, 1, nil, true, "", "", secureSSO, "owner@x.io", nil, SubjectPurgeVM{}, nil, nil))
+	if strings.Contains(secure, warnText) {
+		t.Error("на сильном ключе предупреждение о client_secret не должно рендериться")
 	}
 }
 

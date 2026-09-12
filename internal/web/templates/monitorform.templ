@@ -32,6 +32,9 @@ type MonitorFormData struct {
 	SelectedChannels map[int64]bool
 	// не-admin видит замаскированный c.Target (channelsForView); поле только для объясняющей подсказки.
 	CanManage bool
+	// тот же признак, что у gotcha_secret_key_insecure — заголовки HTTP-мониторов
+	// (в т.ч. Authorization) лежат в PG открытым текстом, пока он true.
+	SecretKeyInsecure bool
 
 	HTTPMethod          string
 	HTTPURL             string
@@ -117,6 +120,9 @@ templ httpFields(d MonitorFormData) {
 			</label>
 			if d.HeadersMasked {
 				<span class="hint">{ i18n.T(ctx, "uptime.form.http.headers_masked_hint") }</span>
+			}
+			if d.SecretKeyInsecure {
+				<p class="warning">{ i18n.T(ctx, "secret.insecure_warning") }</p>
 			}
 		</div>
 		<div class="field">

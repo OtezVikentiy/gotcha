@@ -120,6 +120,25 @@ func registerWriterMetrics(r *selfmetrics.Registry, name string, w writerStats) 
 		"Failed batch inserts. The batch is retried, so this is not data loss by itself.", lbl, w.InsertFailures)
 }
 
+// Единственный источник истины для gotcha_secret_key_insecure и Handler.SecretKeyInsecure:
+// повторять сравнение на своей стороне нельзя, метрика и предупреждение разойдутся.
+func secretKeyInsecure(secretKey string) bool {
+	return secretKey == devSecretKey
+}
+
+func registerSecretKeyMetric(r *selfmetrics.Registry, secretKey string) {
+	r.AddInt(selfmetrics.Gauge, "gotcha_secret_key_insecure",
+		"1 when GOTCHA_SECRET_KEY is unset (the public dev default): channel secrets, "+
+			"SSO client_secret and monitor headers are stored in PostgreSQL as plaintext "+
+			"in modes that touch them.",
+		nil, func() int64 {
+			if secretKeyInsecure(secretKey) {
+				return 1
+			}
+			return 0
+		})
+}
+
 // Доля потолка кучи, отдаваемая СУММЕ писательских буферов; остаток — на
 // HTTP-приём, разбор JSON, клиент PostgreSQL, сам рантайм поверх GC-паузы.
 const autoBufferSafeShare = 0.6
@@ -363,6 +382,7 @@ func run() error {
 			"stamped": strconv.FormatBool(version.Stamped()),
 		},
 		func() float64 { return 1 })
+	registerSecretKeyMetric(&selfMetrics, cfg.SecretKey)
 	// Не зависит от cfg.Mode: i18n.T зовётся и из web, и из notify независимо
 	// от режима процесса.
 	for _, locale := range i18n.SupportedLocales() {
@@ -1025,6 +1045,7 @@ func run() error {
 		webHandler.ProfileRegressions = profile.NewRegressionService(pg)
 		webHandler.OAuth = buildRegistry(cfg)
 		webHandler.SecretKey = deriveCookieKey(cfg.SecretKey)
+		webHandler.SecretKeyInsecure = secretKeyInsecure(cfg.SecretKey)
 		webHandler.TrustedProxies = cfg.TrustedProxies
 		webHandler.RegistrationMode = cfg.RegistrationMode
 		webHandler.HSTSHeader = web.HSTSHeaderValue(

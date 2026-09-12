@@ -140,6 +140,36 @@ keys (`GOTCHA_SECRET_KEY=<old>`, `GOTCHA_SECRET_KEY_PREV=<new>`) rolls the
 instance back the same way. Fear of irreversibility shouldn't be the reason
 rotation gets postponed — it doesn't need to be.
 
+### Secrets written on the dev key: rotation doesn't undo this
+
+If the instance ran on the built-in dev key for a while (the usual path: try
+it out, then "set it up for real"), the procedure above doesn't apply at
+all — the app refuses `GOTCHA_SECRET_KEY_PREV` set to the dev key at
+startup, because nothing was ever encrypted with it, so there's nothing to
+rotate from. That doesn't mean nothing happened, though. Every secret
+written or changed during that time went into the database as plaintext,
+and already passed through PostgreSQL's WAL, landing in any snapshot,
+`pg_dump`, or replica taken during that period. Setting a real key encrypts
+what's in the database NOW — it doesn't touch, and cannot touch, backups and
+WAL archives already made, no matter how many keys you set afterward.
+
+The only fix here is not re-encryption but revoking and reissuing the
+secret at its source. If the instance ran on the dev key for any length of
+time, revoke and reissue:
+
+- the Telegram bot token for every alert channel with `kind = "telegram"`
+  (reissue via `@BotFather`'s `/revoke`);
+- the webhook HMAC signing secret for every alert channel with
+  `kind = "webhook"`;
+- the `client_secret` for every OIDC/Yandex ID/VK ID application wired up as
+  SSO (reissue in the provider's console);
+- the HTTP header values (`Authorization` and any other secret headers) on
+  uptime HTTP monitors — reissue with whoever issued the token or key.
+
+This list is short for a typical instance (a channel or two, one SSO
+provider), and the cost of skipping an item is a credential readable from
+the next backup.
+
 ## What personal data is processed
 
 | Category | Where it lives | Examples |

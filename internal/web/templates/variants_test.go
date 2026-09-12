@@ -82,6 +82,21 @@ func TestMonitorFormTCPandDNS(t *testing.T) {
 	}
 }
 
+func TestMonitorFormSecretKeyInsecureWarning(t *testing.T) {
+	warnText := i18n.T(i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"}), "secret.insecure_warning")
+
+	insecure := MonitorFormData{ProjectID: 7, Kind: uptime.KindHTTP, Name: "http-mon", HTTPMethod: "GET", SecretKeyInsecure: true}
+	if out := renderTo(t, MonitorForm(insecure, "u@e.com")); !strings.Contains(out, warnText) {
+		t.Error("на dev-ключе предупреждение о заголовках HTTP-монитора отсутствует")
+	}
+
+	secure := insecure
+	secure.SecretKeyInsecure = false
+	if out := renderTo(t, MonitorForm(secure, "u@e.com")); strings.Contains(out, warnText) {
+		t.Error("на сильном ключе предупреждение о заголовках HTTP-монитора не должно рендериться")
+	}
+}
+
 func TestMetricDetailPlain(t *testing.T) {
 	vm := MetricDetailVM{ProjectID: 7, Info: metric.MetricInfo{Name: "cpu", Type: "gauge", Unit: ""}, Range: TimeRangeVM{Key: "1h"}, Agg: "avg", Chart: stub(), Percentiles: false}
 	out := renderTo(t, MetricDetail(vm, "u@e.com"))
@@ -127,7 +142,7 @@ func TestEmptyStates(t *testing.T) {
 	empties := map[string]string{
 		"issues":       renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, false, false, false)),
 		"monitors":     renderTo(t, MonitorsList(7, nil, true, "u@e.com", false)),
-		"performance":  renderTo(t, PerformanceList(7, nil, 0, PerfFilter{}, nil, 0, nil, "u@e.com", false)),
+		"performance":  renderTo(t, PerformanceList(7, nil, 0, PerfFilter{}, nil, 0, nil, "u@e.com", false, false)),
 		"webvitals":    renderTo(t, WebVitalsList(7, nil, PerfFilter{}, nil, "u@e.com", false)),
 		"perfissues":   renderTo(t, PerfIssuesList(7, nil, "unresolved", "u@e.com")),
 		"profiles":     renderTo(t, ProfilesList(7, nil, TimeRangeVM{Key: "24h"}, "", "u@e.com", false)),
@@ -135,7 +150,7 @@ func TestEmptyStates(t *testing.T) {
 		"incidents":    renderTo(t, IncidentsList(7, nil, 1, 0, "u@e.com")),
 		"regressions":  renderTo(t, RegressionsList(7, nil, nil, "open", "u@e.com", false, true)),
 		"profileregs":  renderTo(t, ProfileRegressionsList(7, nil, "open", "u@e.com", true)),
-		"alerts":       renderTo(t, Alerts(7, nil, nil, false, true, nil, "", "u@e.com")),
+		"alerts":       renderTo(t, Alerts(7, nil, nil, false, true, false, nil, "", "u@e.com")),
 		"teams":        renderTo(t, Teams(o, nil, nil, nil, nil, "", "u@e.com")),
 		"deliveries":   renderTo(t, AlertDeliveries(7, nil, true, "u@e.com")),
 		"metricalerts": renderTo(t, MetricAlerts(7, nil, nil, nil, nil, "", "u@e.com")),
@@ -156,7 +171,7 @@ func TestChannelStatusBadgeKinds(t *testing.T) {
 		{ID: 2, Kind: alert.ChannelWebhook, Enabled: false, Target: "https://h"},
 		{ID: 3, Kind: alert.ChannelTelegram, Enabled: true, Target: "@ch"},
 	}
-	out := renderTo(t, Alerts(7, nil, channels, true, true, nil, "", "u@e.com"))
+	out := renderTo(t, Alerts(7, nil, channels, true, true, false, nil, "", "u@e.com"))
 	if !strings.Contains(out, "@ch") || !strings.Contains(out, "https://h") {
 		t.Error("каналы всех типов должны отрендериться")
 	}
