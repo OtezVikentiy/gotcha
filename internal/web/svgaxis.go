@@ -39,8 +39,8 @@ func (g chartGeom) barWidth(n int) float64 {
 	return (g.x1 - g.x0) / float64(n)
 }
 
-// верх строго выше максимума — иначе самый высокий столбик упирается в
-// рамку и график читается как сплошной забор.
+// верх строго выше максимума — иначе самый высокий столбик упирается в рамку;
+// у самой границы float64 запаса над максимумом не существует, там верх равен ему.
 type yScale struct {
 	top  float64
 	step float64
@@ -51,15 +51,31 @@ func newYScale(max uint64, targetLines int) yScale {
 	return yScale{top: float64((max/step + 1) * step), step: float64(step)}
 }
 
+// потолок делений оси; targetLines обычно 3-4 — предохранитель от денормализованного
+// step, не рабочий диапазон.
+const maxAxisScaleSteps = 64
+
 // шаг из того же ряда 1/2/5×10ⁿ, что у newYScale, но без округления до целых.
 func newYScaleFloat(max float64, targetLines int) yScale {
-	if max <= 0 {
+	if max <= 0 || math.IsNaN(max) || math.IsInf(max, 0) {
 		return yScale{top: 1, step: 1}
 	}
 	step := niceStepFloat(max, targetLines)
+	if step <= 0 || math.IsNaN(step) || math.IsInf(step, 0) {
+		step = max
+	}
 	top := step
-	for top <= max {
-		top += step
+	// max у самой границы float64 (~1.8e308) — top+step переполняется в +Inf раньше,
+	// чем перегонит max; останавливаемся на последнем конечном top, а не копим Inf.
+	for i := 0; top <= max && i < maxAxisScaleSteps; i++ {
+		next := top + step
+		if math.IsInf(next, 0) || math.IsNaN(next) {
+			break
+		}
+		top = next
+	}
+	if top <= max || math.IsInf(top, 0) || math.IsNaN(top) {
+		top = max
 	}
 	return yScale{top: top, step: step}
 }
@@ -117,22 +133,40 @@ func yAxisPadL(vbW int, padL float64, labels []string) float64 {
 	return padL
 }
 
+// делений оси от 0 до top, тем же шагом, что рисует сетку; потолок и обрыв по
+// неконечному v — свой предохранитель для yScale, собранного не через newYScaleFloat.
+func yAxisTicks(s yScale) []float64 {
+	if s.step <= 0 || math.IsNaN(s.step) || math.IsInf(s.step, 0) {
+		return nil
+	}
+	limit := s.top + s.step/2
+	ticks := make([]float64, 0, maxAxisScaleSteps)
+	for v := 0.0; v <= limit && len(ticks) < maxAxisScaleSteps; v += s.step {
+		if math.IsInf(v, 0) || math.IsNaN(v) {
+			break
+		}
+		ticks = append(ticks, v)
+	}
+	return ticks
+}
+
 // вызывать сразу после построения шкалы и до любого рисования — ось, сетка
 // и данные должны лечь уже на сдвинутый x0.
 func (g chartGeom) fitYLabels(s yScale, label func(v float64) string) chartGeom {
-	if s.step <= 0 {
+	ticks := yAxisTicks(s)
+	if ticks == nil {
 		return g
 	}
-	var labels []string
-	for v := 0.0; v <= s.top+s.step/2; v += s.step {
-		labels = append(labels, label(v))
+	labels := make([]string, len(ticks))
+	for i, v := range ticks {
+		labels[i] = label(v)
 	}
 	g.x0 = yAxisPadL(g.w, g.x0, labels)
 	return g
 }
 
 func writeYGrid(sb *strings.Builder, g chartGeom, s yScale, label func(v float64) string) {
-	for v := 0.0; v <= s.top+s.step/2; v += s.step {
+	for _, v := range yAxisTicks(s) {
 		y := s.yFor(g, v)
 		if v > 0 {
 			axisLine(sb, g.x0, y, g.x1, y)

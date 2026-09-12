@@ -6,10 +6,29 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/hostmetric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
+	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
+
+// Копия seedGaugeHost из internal/metric — тот неэкспортируемый, а хостовые метрики
+// сюда идут только через group-запрос с атрибутом статуса.
+func seedHostMetricPoint(t *testing.T, ch driver.Conn, projectID int64, name, hostName string, ts time.Time, val float64, attrs map[string]string) {
+	t.Helper()
+	if attrs == nil {
+		attrs = map[string]string{}
+	}
+	if err := ch.Exec(context.Background(), `
+		INSERT INTO metric_points (project_id, name, type, unit, service, environment, host, attributes, ts, value, count, bucket_counts, explicit_bounds, monotonic, temporality)
+		VALUES (?, ?, 'gauge', '1', 'agent', 'prod', ?, ?, ?, ?, 0, [], [], 0, '')`,
+		projectID, name, hostName, attrs, ts, val); err != nil {
+		t.Fatalf("seed host metric point %s: %v", name, err)
+	}
+}
 
 func chartGrid() (from, to time.Time, step time.Duration) {
 	step = time.Minute
@@ -158,4 +177,33 @@ func TestLocalizeGroupLabelsKeepsUnknownValues(t *testing.T) {
 	if series[1].Label != "hypervisor-hiccup" || legend[1].Label != "hypervisor-hiccup" {
 		t.Errorf("unknown value must stay raw: series=%q legend=%q", series[1].Label, legend[1].Label)
 	}
+}
+
+// Субнормаль может оказаться в ClickHouse и минуя приёмный конвейер: рендер обязан
+// оставаться безопасным сам по себе, не только за счёт нормализации на приёме.
+func TestHostProcChartSubnormalValueRenders(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	ch := testenv.MigratedCH(t)
+	h := &Handler{Metrics: metric.NewQuery(ch)}
+	ctx := context.Background()
+	const pid = int64(880066)
+	const hostName = "web-1"
+
+	from, to, step := chartGrid()
+	seedHostMetricPoint(t, ch, pid, hostmetric.ProcessesCount, hostName, from, math.SmallestNonzeroFloat64,
+		map[string]string{hostmetric.AttrStatus: "running"})
+	seedHostMetricPoint(t, ch, pid, hostmetric.ProcessesCount, hostName, from.Add(step), math.SmallestNonzeroFloat64,
+		map[string]string{hostmetric.AttrStatus: "running"})
+
+	runWithDeadline(t, 5*time.Second, func() {
+		vm, err := h.hostProcChart(ctx, pid, hostName, from, to, step, nil)
+		if err != nil {
+			t.Fatalf("hostProcChart: %v", err)
+		}
+		if vm.Empty {
+			t.Error("proc chart Empty при засеянных точках")
+		}
+	})
 }

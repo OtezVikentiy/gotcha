@@ -171,7 +171,16 @@ func capHistogram(counts []uint64, bounds []float64) ([]uint64, []float64) {
 	return counts, bounds
 }
 
-// NaN/Inf → ok=false.
+// Порог нормалей IEEE-754 double (2⁻¹⁰²²): ниже него значение — субнормаль,
+// бессмысленная как измерение и способная зациклить расчёт шкалы графика на отрисовке.
+const minNormalFloat64 = 2.2250738585072014e-308
+
+// Ни одна реальная метрика такой величины не достигает, а запас до math.MaxFloat64
+// (~1.8e308) не даёт переполниться расчёту шкалы графика (targetLines=3) на входах ниже.
+const maxSaneMagnitude = 1e300
+
+// NaN/Inf/заведомо нефизичная величина → ok=false; субнормаль (включая денормализованный
+// ноль) нормализуется в 0.
 func numberValue(dp *metricspb.NumberDataPoint) (float64, bool) {
 	var v float64
 	switch dp.GetValue().(type) {
@@ -182,8 +191,11 @@ func numberValue(dp *metricspb.NumberDataPoint) (float64, bool) {
 	default:
 		return 0, false
 	}
-	if math.IsNaN(v) || math.IsInf(v, 0) {
+	if math.IsNaN(v) || math.IsInf(v, 0) || math.Abs(v) >= maxSaneMagnitude {
 		return 0, false
+	}
+	if v != 0 && math.Abs(v) < minNormalFloat64 {
+		v = 0
 	}
 	return v, true
 }

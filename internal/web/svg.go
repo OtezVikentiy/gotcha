@@ -1082,13 +1082,20 @@ func niceStep(max uint64, targetLines int) uint64 {
 	return uint64(10 * mag)
 }
 
-// тот же ряд 1/2/5×10ⁿ, но без округления шага до целого.
+// тот же ряд 1/2/5×10ⁿ, но без округления шага до целого. Шаг всегда строго
+// положителен и конечен — на субнормалях raw/mag могут округлиться в 0.
 func niceStepFloat(max float64, targetLines int) float64 {
-	if max <= 0 || targetLines <= 0 {
+	if max <= 0 || math.IsNaN(max) || math.IsInf(max, 0) || targetLines <= 0 {
 		return 1
 	}
 	raw := max / float64(targetLines)
+	if raw <= 0 {
+		return max
+	}
 	mag := math.Pow(10, math.Floor(math.Log10(raw)))
+	if mag <= 0 {
+		return raw
+	}
 	for _, m := range []float64{1, 2, 5, 10} {
 		if step := m * mag; step >= raw {
 			return step
