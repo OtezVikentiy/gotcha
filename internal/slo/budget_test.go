@@ -126,11 +126,20 @@ func TestDecideBurn(t *testing.T) {
 		t.Fatalf("burn ровно на пороге → open (граница ≥), got %+v", dThr)
 	}
 
+	// нет данных в коротком окне — не «остыло», а неизвестно: не открываем и
+	// не закрываем, иначе обрыв потока read как ложное recovery.
 	dEmpty := slo.DecideBurn(hot, nil, target, thr)
-	if dEmpty.OpenSignal || !dEmpty.CloseSignal {
-		t.Fatalf("пустое короткое → !open close, got %+v", dEmpty)
+	if dEmpty.OpenSignal || dEmpty.CloseSignal {
+		t.Fatalf("нет данных в коротком окне → !open !close, got %+v", dEmpty)
 	}
-	if dEmpty.BurnShort != 0 {
-		t.Fatalf("BurnShort пустого = %v, want 0", dEmpty.BurnShort)
+
+	dEmptyLong := slo.DecideBurn(nil, cool, target, thr)
+	if dEmptyLong.OpenSignal || dEmptyLong.CloseSignal {
+		t.Fatalf("нет данных в длинном окне → !open !close, got %+v", dEmptyLong)
+	}
+
+	dEmptyBoth := slo.DecideBurn(nil, nil, target, thr)
+	if dEmptyBoth.OpenSignal || dEmptyBoth.CloseSignal {
+		t.Fatalf("нет данных вовсе → !open !close, got %+v", dEmptyBoth)
 	}
 }

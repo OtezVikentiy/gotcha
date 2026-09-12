@@ -121,7 +121,10 @@ func TestSLOEvaluatorOpensAndCloses(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC().Add(-10*time.Minute), goodBadSpecs(100, 20, "production"))
+	// без обратного сдвига: short — последние shortMin минут, не «последняя
+	// выжившая корзина», и отступ в минуту рискует уехать в соседнюю CH-корзину
+	// на границе 5-минутной сетки.
+	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC(), goodBadSpecs(100, 20, "production"))
 
 	notifier := &capturingNotifier{store: st}
 	e := &slo.Evaluator{
@@ -158,7 +161,7 @@ func TestSLOEvaluatorOpensAndCloses(t *testing.T) {
 		t.Fatalf("повторный тик при открытом инциденте: переходов %d err=%v, want 0", n2, err)
 	}
 
-	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC().Add(-1*time.Minute), goodBadSpecs(100, 0, "production"))
+	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC(), goodBadSpecs(100, 0, "production"))
 
 	for i := 0; i < 2; i++ {
 		n3, err := e.Tick(ctx)
@@ -188,6 +191,125 @@ func TestSLOEvaluatorOpensAndCloses(t *testing.T) {
 	}
 	if evs[len(evs)-1].Opened {
 		t.Fatalf("последнее уведомление должно быть закрытием: %+v", evs[len(evs)-1])
+	}
+}
+
+// отдаёт заранее заданные корзины по номеру вызова — детерминированная имитация
+// обрыва потока check_results/transactions без зависимости от таймингов CH.
+type scriptedProvider struct {
+	calls int
+	seqs  []func(to time.Time) []slo.Bucket
+}
+
+func (p *scriptedProvider) Buckets(_ context.Context, _ slo.SLO, _, to time.Time, _ time.Duration) ([]slo.Bucket, error) {
+	i := p.calls
+	if i >= len(p.seqs) {
+		i = len(p.seqs) - 1
+	}
+	p.calls++
+	return p.seqs[i](to), nil
+}
+
+func (p *scriptedProvider) BucketsExcluding(ctx context.Context, s slo.SLO, from, to time.Time, step time.Duration, _ []uptime.Window) ([]slo.Bucket, error) {
+	return p.Buckets(ctx, s, from, to, step)
+}
+
+func (p *scriptedProvider) RetentionCap() time.Duration { return 0 }
+
+func hotSLOBucket(to time.Time) []slo.Bucket  { return []slo.Bucket{{T: to, Good: 1, Total: 1000}} }
+func coolSLOBucket(to time.Time) []slo.Bucket { return []slo.Bucket{{T: to, Good: 1000, Total: 1000}} }
+func noSLOBuckets(time.Time) []slo.Bucket     { return nil }
+
+// K3: обрыв потока данных (умер Runner, лёг ClickHouse) не должен читаться как
+// «SLO восстановлен» — инцидент остаётся open и recovery-уведомление не уходит,
+// сколько бы тиков подряд не пришло без данных.
+func TestSLOEvaluatorNoDataLeavesIncidentOpen(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := seedProject(t, pool)
+	st := slo.NewStore(pool)
+	if _, err := alert.NewService(pool).CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	}); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	s, err := st.Create(ctx, slo.SLO{
+		ProjectID: pid, Name: "checkout", Kind: slo.SLIAvailability,
+		Target: 0.99, WindowDays: 30, Transaction: "GET /checkout",
+		BurnThreshold: 14.4, BurnLongMin: 60, BurnShortMin: 5, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	provider := &scriptedProvider{seqs: []func(time.Time) []slo.Bucket{hotSLOBucket, noSLOBuckets}}
+	notifier := &capturingNotifier{store: st}
+	e := &slo.Evaluator{
+		Interval:  time.Hour,
+		Pool:      pool,
+		Store:     st,
+		Providers: map[slo.SLIKind]slo.Provider{slo.SLIAvailability: provider},
+		Notifier:  notifier,
+		Policy:    escalation.NewPolicyStore(pool),
+	}
+
+	if n, err := e.Tick(ctx); err != nil || n != 1 {
+		t.Fatalf("Tick(open): n=%d err=%v, want 1", n, err)
+	}
+	incs, err := st.Incidents(ctx, pid, s.ID, 10)
+	if err != nil || len(incs) != 1 || incs[0].Status != "open" {
+		t.Fatalf("инцидент не открыт: %+v err=%v", incs, err)
+	}
+
+	// поток прекратился на дольше, чем defaultCloseStreak — «нет данных» не
+	// накапливает остывание и не закрывает инцидент, сколько тиков ни пройдёт.
+	for i := 0; i < 5; i++ {
+		if n, err := e.Tick(ctx); err != nil || n != 0 {
+			t.Fatalf("тик %d без данных: переходов %d err=%v, want 0", i+1, n, err)
+		}
+		cur, _ := st.Incidents(ctx, pid, s.ID, 10)
+		if len(cur) == 0 || cur[0].Status != "open" {
+			t.Fatalf("тик %d без данных закрыл инцидент: %+v", i+1, cur)
+		}
+	}
+	if evs := notifier.snapshot(); len(evs) != 1 {
+		t.Fatalf("отсутствие данных отправило notify сверх открытия: %+v", evs)
+	}
+
+	// реальное остывание после возврата данных — не быстрее и не медленнее
+	// обычного гистерезиса, «слепые» тики выше в счётчик не пошли.
+	provider.seqs = []func(time.Time) []slo.Bucket{coolSLOBucket}
+	provider.calls = 0
+	for i := 0; i < 2; i++ {
+		if n, err := e.Tick(ctx); err != nil || n != 0 {
+			t.Fatalf("тик %d остывания: переходов %d err=%v, want 0 (рано закрывать)", i+1, n, err)
+		}
+		cur, _ := st.Incidents(ctx, pid, s.ID, 10)
+		if len(cur) == 0 || cur[0].Status != "open" {
+			t.Fatalf("инцидент закрыт раньше defaultCloseStreak тиков остывания: %+v", cur)
+		}
+	}
+	if n, err := e.Tick(ctx); err != nil || n != 1 {
+		t.Fatalf("Tick(close): n=%d err=%v, want 1", n, err)
+	}
+	closed, _ := st.Incidents(ctx, pid, s.ID, 10)
+	if len(closed) == 0 || closed[0].Status != "resolved" {
+		t.Fatalf("инцидент не закрыт после реального остывания: %+v", closed)
+	}
+
+	evs := notifier.snapshot()
+	if len(evs) != 2 {
+		t.Fatalf("want пару уведомлений open+close, got %+v", evs)
+	}
+	if !evs[0].Opened {
+		t.Fatalf("первое уведомление должно быть открытием: %+v", evs[0])
+	}
+	if evs[1].Opened {
+		t.Fatalf("последнее уведомление должно быть закрытием (recovery), а не повторным открытием: %+v", evs[1])
 	}
 }
 

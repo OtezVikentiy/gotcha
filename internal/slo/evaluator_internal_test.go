@@ -1,9 +1,88 @@
 package slo
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
+
+// отдаёт фиксированный набор корзин независимо от from/to/step — burnWindows
+// сам вычисляет long/short из того, что вернул Provider.
+type fixedBucketsProvider struct{ bs []Bucket }
+
+func (p fixedBucketsProvider) Buckets(context.Context, SLO, time.Time, time.Time, time.Duration) ([]Bucket, error) {
+	return p.bs, nil
+}
+
+func (p fixedBucketsProvider) BucketsExcluding(context.Context, SLO, time.Time, time.Time, time.Duration, []uptime.Window) ([]Bucket, error) {
+	return p.bs, nil
+}
+
+func (fixedBucketsProvider) RetentionCap() time.Duration { return 0 }
+
+// K66: дырка в последних shortMin минутах не должна тихо растягивать короткое
+// окно в прошлое — short обязан остаться пустым, а не откатиться к старой корзине.
+func TestSLOEvaluatorBurnWindowsShortIsRecentNotLastSurvivor(t *testing.T) {
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	s := SLO{BurnLongMin: 60, BurnShortMin: 5}
+
+	p := fixedBucketsProvider{bs: []Bucket{
+		{T: now.Add(-55 * time.Minute), Good: 90, Total: 100},
+		{T: now.Add(-10 * time.Minute), Good: 1, Total: 100}, // последняя выжившая, но старше 5 минут
+	}}
+	e := &Evaluator{}
+	long, short, err := e.burnWindows(context.Background(), p, s, now)
+	if err != nil {
+		t.Fatalf("burnWindows: %v", err)
+	}
+	if len(long) != 2 {
+		t.Fatalf("long = %v, want весь ряд из 2 корзин", long)
+	}
+	if len(short) != 0 {
+		t.Fatalf("short = %v, дырка в последних 5 минутах должна давать пустое окно, а не старую корзину", short)
+	}
+
+	fresh := fixedBucketsProvider{bs: []Bucket{
+		{T: now.Add(-55 * time.Minute), Good: 90, Total: 100},
+		{T: now.Add(-2 * time.Minute), Good: 1, Total: 100}, // внутри последних 5 минут
+	}}
+	long2, short2, err := e.burnWindows(context.Background(), fresh, s, now)
+	if err != nil {
+		t.Fatalf("burnWindows: %v", err)
+	}
+	if len(long2) != 2 {
+		t.Fatalf("long2 = %v, want весь ряд из 2 корзин", long2)
+	}
+	if len(short2) != 1 || short2[0].T != now.Add(-2*time.Minute) {
+		t.Fatalf("short2 = %v, want последнюю корзину внутри 5 минут", short2)
+	}
+}
+
+// T — начало интервала корзины, не момент последних данных в ней: свежесть
+// решает конец интервала (T+step) против начала окна (now-step), т.е. строго
+// T > now-2*step. Оба граничных числа даны ревьюером буквально.
+func TestSLOEvaluatorRecentBucketsBoundary(t *testing.T) {
+	now := time.Date(2026, 9, 12, 9, 5, 1, 0, time.UTC)
+	step := 5 * time.Minute
+
+	// интервал корзины [09:00:00, 09:05:00) пересекает окно свежести
+	// [09:00:01, 09:05:01) — начало корзины вне окна, но данные в ней могут быть
+	// не старше пары секунд. Должна войти в short.
+	overlapping := []Bucket{{T: now.Add(-step).Add(-time.Second), Good: 1, Total: 1}}
+	if got := recentBuckets(overlapping, now, step); len(got) != 1 {
+		t.Fatalf("recentBuckets(T=now-step-1s) = %v, корзина пересекает окно и обязана войти в short", got)
+	}
+
+	// K66-граница: интервал корзины [08:55:00, 09:00:00) кончается РОВНО на
+	// начале окна свежести — самые свежие данные в ней пятиминутной давности.
+	// Не должна войти: нестрогое >= вернёт растянутое «короткое» окно (K66).
+	stale := []Bucket{{T: now.Add(-2 * step), Good: 1, Total: 1}}
+	if got := recentBuckets(stale, now, step); len(got) != 0 {
+		t.Fatalf("recentBuckets(T=now-2*step) = %v, конец корзины на границе окна не свежесть — K66 не должен вернуться", got)
+	}
+}
 
 // tickBudget неэкспортирован — файл живёт в package slo, а не slo_test, как остальные.
 func TestSLOEvaluatorTickBudget(t *testing.T) {

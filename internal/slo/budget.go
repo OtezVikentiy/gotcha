@@ -63,9 +63,15 @@ type BurnDecision struct {
 
 // оба окна должны гореть — отсекает случайные всплески. Гистерезис флапа
 // (N тиков перед закрытием) живёт в evaluator, не здесь: это момент времени.
+//
+// нет данных хотя бы в одном окне (ok=false) — решение нулевое: не открываем
+// и не закрываем, единообразно с internal/metric.Evaluator.evalRule.
 func DecideBurn(long, short []Bucket, target, threshold float64) BurnDecision {
-	burnLong, _ := BurnRate(long, target)
-	burnShort, _ := BurnRate(short, target)
+	burnLong, longOK := BurnRate(long, target)
+	burnShort, shortOK := BurnRate(short, target)
+	if !longOK || !shortOK {
+		return BurnDecision{}
+	}
 	return BurnDecision{
 		OpenSignal:  burnLong >= threshold && burnShort >= threshold,
 		CloseSignal: burnShort < threshold,

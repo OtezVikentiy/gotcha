@@ -37,7 +37,7 @@ func TestSLOEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC().Add(-10*time.Minute), goodBadSpecs(100, 20, "production"))
+	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC(), goodBadSpecs(100, 20, "production"))
 
 	notifier := &capturingNotifier{store: st}
 	e := &slo.Evaluator{
@@ -70,7 +70,7 @@ func TestSLOEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 		t.Errorf("notify events after open tick = %d, want 0 (suppressed by maintenance)", len(evs))
 	}
 
-	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC().Add(-1*time.Minute), goodBadSpecs(100, 0, "production"))
+	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC(), goodBadSpecs(100, 0, "production"))
 
 	for i := 0; i < 2; i++ {
 		if n3, err := e.Tick(ctx); err != nil || n3 != 0 {
@@ -120,7 +120,7 @@ func TestSLOEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC().Add(-10*time.Minute), goodBadSpecs(100, 20, "production"))
+	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC(), goodBadSpecs(100, 20, "production"))
 
 	notifier := &capturingNotifier{store: st}
 	e := &slo.Evaluator{
@@ -173,7 +173,7 @@ func TestSLOEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.
 		t.Fatalf("Create: %v", err)
 	}
 
-	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC().Add(-10*time.Minute), goodBadSpecs(100, 20, "production"))
+	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC(), goodBadSpecs(100, 20, "production"))
 
 	notifier := &capturingNotifier{store: st}
 	inWindow := true
@@ -209,7 +209,7 @@ func TestSLOEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.
 
 	inWindow = false
 
-	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC().Add(-1*time.Minute), goodBadSpecs(100, 0, "production"))
+	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC(), goodBadSpecs(100, 0, "production"))
 
 	for i := 0; i < 2; i++ {
 		if n3, err := e.Tick(ctx); err != nil || n3 != 0 {
@@ -262,7 +262,7 @@ func TestSLOEvaluatorRecoveryReachesWokenChannelAfterMaintenanceWindowEnds(t *te
 		t.Fatalf("Create: %v", err)
 	}
 
-	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC().Add(-10*time.Minute), goodBadSpecs(100, 20, "production"))
+	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC(), goodBadSpecs(100, 20, "production"))
 
 	notifier := &capturingNotifier{store: st}
 	inWindow := true
@@ -303,7 +303,7 @@ func TestSLOEvaluatorRecoveryReachesWokenChannelAfterMaintenanceWindowEnds(t *te
 
 	inWindow = false
 
-	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC().Add(-1*time.Minute), goodBadSpecs(100, 0, "production"))
+	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC(), goodBadSpecs(100, 0, "production"))
 
 	for i := 0; i < 2; i++ {
 		if n3, err := e.Tick(ctx); err != nil || n3 != 0 {

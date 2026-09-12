@@ -178,7 +178,9 @@ func (e *Evaluator) evalSLO(ctx context.Context, s SLO, now time.Time) bool {
 	}
 }
 
-// long — весь ряд корзин (slow-окно), short — последняя корзина (fast-под-окно).
+// long — весь ряд корзин (slow-окно), short — корзины из последних shortMin
+// минут. Не «последняя выжившая корзина»: дырка в потоке (умер Runner, лёг CH)
+// не должна тихо растягивать fast-окно в прошлое — тогда short остаётся пуст.
 func (e *Evaluator) burnWindows(ctx context.Context, p Provider, s SLO, now time.Time) (long, short []Bucket, err error) {
 	longMin, shortMin := s.BurnLongMin, s.BurnShortMin
 	if longMin <= 0 {
@@ -194,10 +196,22 @@ func (e *Evaluator) burnWindows(ctx context.Context, p Provider, s SLO, now time
 		return nil, nil, err
 	}
 	long = bs
-	if len(bs) > 0 {
-		short = bs[len(bs)-1:]
-	}
+	short = recentBuckets(bs, now, step)
 	return long, short, nil
+}
+
+// bs идёт по возрастанию T; T — начало интервала корзины, не момент последних
+// данных в ней, поэтому в short входит корзина, чей КОНЕЦ (T+step) позже начала
+// окна свежести (now-step) — эквивалентно строгому T > now-2*step. Строго: конец
+// корзины ровно на границе окна не считается свежим, иначе K66 (растянутое
+// «короткое» окно) вернётся под видом запаса на выравнивание сетки.
+func recentBuckets(bs []Bucket, now time.Time, step time.Duration) []Bucket {
+	cutoff := now.Add(-2 * step)
+	i := len(bs)
+	for i > 0 && bs[i-1].T.After(cutoff) {
+		i--
+	}
+	return bs[i:]
 }
 
 // проверка OpenIncidentFor впереди гарантирует, что дорогой запрос за полным
