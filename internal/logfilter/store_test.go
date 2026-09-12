@@ -15,9 +15,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// randSlug — короткий случайный суффикс для уникальных slug/email между
-// тестами общей БД (testenv поднимает один контейнер на пакет). По образцу
-// internal/export/store_test.go.
+// Короткий случайный суффикс для уникальных slug/email между тестами общей БД, по образцу internal/export/store_test.go.
 func randSlug(t *testing.T) string {
 	t.Helper()
 	b := make([]byte, 6)
@@ -27,10 +25,8 @@ func randSlug(t *testing.T) string {
 	return hex.EncodeToString(b)
 }
 
-// seedFilterFixtures заводит организацию, проект и двух пользователей —
-// минимальный набор внешних ссылок для log_saved_filters (те же
-// project_id/users, что и у export_jobs, набор колонок взят из
-// internal/export/store_test.go).
+// Минимальный набор внешних ссылок для log_saved_filters (те же project_id/users, что и у export_jobs),
+// набор колонок взят из internal/export/store_test.go.
 func seedFilterFixtures(t *testing.T, pool *pgxpool.Pool) (projectID, alice, bob int64) {
 	t.Helper()
 	ctx := context.Background()
@@ -111,13 +107,8 @@ func TestStoreLimits(t *testing.T) {
 	}
 }
 
-// TestStoreCreatePredicateLimitCountedAfterDedup — находка финального ревью
-// C6: лимит числа условий (maxPredicates=20) считается ПОСЛЕ
-// log.NormalizePredicates, не до. Двадцать пять ОДИНАКОВЫХ условий
-// (двадцать пять кликов «исключить» по одному и тому же значению) обязаны
-// схлопнуться в одно и пройти — до фикса количество проверялось раньше
-// схлопывания дублей, и такой запрос отклонялся бы ErrLimitReached там, где
-// реально сохраняется единственное условие.
+// 25 одинаковых условий (кликов «исключить» по одному значению) обязаны схлопнуться в одно до проверки
+// лимита maxPredicates — иначе они отклонялись бы ErrLimitReached там, где реально одно условие.
 func TestStoreCreatePredicateLimitCountedAfterDedup(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -138,9 +129,8 @@ func TestStoreCreatePredicateLimitCountedAfterDedup(t *testing.T) {
 	}
 }
 
-// TestStoreCreatePredicateLimitEnforced — контрастная проверка к тесту выше:
-// потолок реально работает, когда после нормализации остаётся БОЛЬШЕ
-// maxPredicates(20) РАЗЛИЧНЫХ условий (не дублей, схлопнуться нечему).
+// Контраст к тесту выше: потолок реально работает, когда после нормализации остаётся БОЛЬШЕ maxPredicates
+// РАЗЛИЧНЫХ условий (не дублей, схлопнуться нечему).
 func TestStoreCreatePredicateLimitEnforced(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -254,7 +244,6 @@ func TestStoreDemoteSharedClearsOtherDefaults(t *testing.T) {
 		}
 	}
 
-	// Понижение общего до личного: владельцем становится тот, кто понижает.
 	if err := s.Update(ctx, shared.ID, "общий", preds, &alice); err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -284,7 +273,6 @@ func TestStoreSetDefaultGuardsAccess(t *testing.T) {
 		t.Fatalf("create shared: %v", err)
 	}
 
-	// 1) Боб не может назначить умолчанием чужой личный фильтр Алисы.
 	if err := s.SetDefault(ctx, projectID, bob, personal.ID); !errors.Is(err, logfilter.ErrNotFound) {
 		t.Fatalf("боб назначил умолчанием чужой личный фильтр, ожидался ErrNotFound, получено %v", err)
 	}
@@ -292,7 +280,6 @@ func TestStoreSetDefaultGuardsAccess(t *testing.T) {
 		t.Fatalf("после отказа у боба не должно быть умолчания (ok=%v, err=%v)", ok, err)
 	}
 
-	// 2) Фильтр из другого проекта не назначается умолчанием в этом проекте.
 	if err := s.SetDefault(ctx, otherProjectID, alice, shared.ID); !errors.Is(err, logfilter.ErrNotFound) {
 		t.Fatalf("фильтр чужого проекта принят, ожидался ErrNotFound, получено %v", err)
 	}
@@ -300,8 +287,8 @@ func TestStoreSetDefaultGuardsAccess(t *testing.T) {
 		t.Fatalf("после отказа у алисы не должно быть умолчания в чужом проекте (ok=%v, err=%v)", ok, err)
 	}
 
-	// 3) Контраст: общий фильтр своего проекта назначается успешно — иначе
-	// тест выше мог бы проходить просто потому, что SetDefault всегда отказывает.
+	// Контраст: общий фильтр своего проекта должен пройти — иначе тест выше мог бы проходить просто потому,
+	// что SetDefault всегда отказывает.
 	if err := s.SetDefault(ctx, projectID, bob, shared.ID); err != nil {
 		t.Fatalf("боб не смог назначить умолчанием общий фильтр своего проекта: %v", err)
 	}

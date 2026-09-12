@@ -8,8 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestPurgeExpiredInvites — очистка накопленных ПДн приглашённых (L15):
-// просроченные и принятые инвайты удаляются, живой pending-инвайт остаётся.
 func TestPurgeExpiredInvites(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -23,7 +21,6 @@ func TestPurgeExpiredInvites(t *testing.T) {
 		t.Fatalf("create org: %v", err)
 	}
 
-	// Три инвайта: живой, просроченный, принятый.
 	if _, err := svc.Invite(ctx, o.ID, "live@example.com", org.RoleMember); err != nil {
 		t.Fatalf("invite live: %v", err)
 	}
@@ -33,7 +30,6 @@ func TestPurgeExpiredInvites(t *testing.T) {
 	if _, err := svc.Invite(ctx, o.ID, "accepted@example.com", org.RoleMember); err != nil {
 		t.Fatalf("invite accepted: %v", err)
 	}
-	// Форсируем состояния напрямую (в обход TTL/accept-флоу).
 	if _, err := pool.Exec(ctx,
 		"UPDATE org_invites SET expires_at = now() - interval '1 day' WHERE email = 'expired@example.com'"); err != nil {
 		t.Fatalf("force expire: %v", err)
@@ -51,7 +47,6 @@ func TestPurgeExpiredInvites(t *testing.T) {
 		t.Fatalf("purged = %d, want 2 (expired + accepted)", n)
 	}
 
-	// Живой инвайт остался — считаем оставшиеся строки.
 	var remaining int
 	if err := pool.QueryRow(ctx,
 		"SELECT count(*) FROM org_invites WHERE org_id = $1", o.ID).Scan(&remaining); err != nil {

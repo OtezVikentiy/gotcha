@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-// frameSourceLines должен собрать pre+current+post со сквозной нумерацией и
-// пометить строку ошибки Current — иначе подсветка/номера в стектрейсе врут.
 func TestFrameSourceLines(t *testing.T) {
 	f := Frame{
 		Lineno:      10,
@@ -19,7 +17,7 @@ func TestFrameSourceLines(t *testing.T) {
 	if len(lines) != 5 {
 		t.Fatalf("строк = %d, want 5", len(lines))
 	}
-	wantNo := []int{8, 9, 10, 11, 12} // pre=8,9; current=10; post=11,12
+	wantNo := []int{8, 9, 10, 11, 12}
 	for i, l := range lines {
 		if l.No != wantNo[i] {
 			t.Fatalf("line[%d].No = %d, want %d", i, l.No, wantNo[i])
@@ -48,7 +46,6 @@ func TestFrameSourceLinesEmpty(t *testing.T) {
 	}
 }
 
-// prettyJSON форматирует валидный JSON с отступами; невалидный отдаёт как есть.
 func TestPrettyJSON(t *testing.T) {
 	got := prettyJSON(`{"os":{"name":"Linux"},"runtime":{"version":"8.4"}}`)
 	if !strings.Contains(got, "\n") {
@@ -62,7 +59,6 @@ func TestPrettyJSON(t *testing.T) {
 	}
 }
 
-// in-app фрейм с исходником: рендерит блок кода, подсветку строки ошибки и номер.
 func TestFrameViewRendersSource(t *testing.T) {
 	f := Frame{
 		InApp:       true,
@@ -85,7 +81,6 @@ func TestFrameViewRendersSource(t *testing.T) {
 	}
 }
 
-// system-фрейм с исходником: свёрнут в <details>, но исходник внутри есть.
 func TestFrameViewSystemRendersSource(t *testing.T) {
 	f := Frame{
 		Function:    "vendor\\thing",
@@ -103,7 +98,6 @@ func TestFrameViewSystemRendersSource(t *testing.T) {
 	}
 }
 
-// frameVars разбирает JSON локальных переменных в строки; пустые → false.
 func TestFrameVars(t *testing.T) {
 	f := Frame{Vars: `{"user_id":42,"email":"a@b.io"}`}
 	if !frameHasVars(f) {

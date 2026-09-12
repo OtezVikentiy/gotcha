@@ -32,7 +32,6 @@ func TestRegressionConfigFromJSON(t *testing.T) {
 			},
 		},
 		{
-			// Отсутствующие ключи остаются дефолтными, заданные — перекрывают.
 			name: "частичный конфиг: только threshold_pct",
 			raw:  `{"threshold_pct":0.4}`,
 			want: RegressionConfig{
@@ -43,7 +42,6 @@ func TestRegressionConfigFromJSON(t *testing.T) {
 			},
 		},
 		{
-			// enabled=false задан явно — не перезаписывается дефолтом true.
 			name: "enabled=false явно",
 			raw:  `{"enabled":false}`,
 			want: RegressionConfig{
@@ -54,7 +52,6 @@ func TestRegressionConfigFromJSON(t *testing.T) {
 			},
 		},
 		{
-			// vital_floor перекрывает только заданные метрики, прочие — дефолт.
 			name: "частичный vital_floor",
 			raw:  `{"vital_floor":{"lcp":500}}`,
 			want: RegressionConfig{
@@ -95,7 +92,6 @@ func TestSeasonalConfigDefaultsAndParse(t *testing.T) {
 	if d.SeasonalEnabled != false || d.SeasonalWeeks != 4 {
 		t.Fatalf("дефолты сезонности = %v/%d, want false/4", d.SeasonalEnabled, d.SeasonalWeeks)
 	}
-	// старый конфиг без полей → seasonal off, weeks=дефолт 4 (back-compat)
 	c, err := RegressionConfigFromJSON([]byte(`{"threshold_pct":0.3}`))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -103,18 +99,15 @@ func TestSeasonalConfigDefaultsAndParse(t *testing.T) {
 	if c.SeasonalEnabled != false || c.SeasonalWeeks != 4 {
 		t.Fatalf("back-compat: seasonal=%v weeks=%d, want false/4", c.SeasonalEnabled, c.SeasonalWeeks)
 	}
-	// явные значения
 	c2, _ := RegressionConfigFromJSON([]byte(`{"seasonal_enabled":true,"seasonal_weeks":6}`))
 	if !c2.SeasonalEnabled || c2.SeasonalWeeks != 6 {
 		t.Fatalf("explicit: seasonal=%v weeks=%d, want true/6", c2.SeasonalEnabled, c2.SeasonalWeeks)
 	}
-	// симметрия Marshal→Unmarshal
 	b, _ := json.Marshal(c2)
 	c3, _ := RegressionConfigFromJSON(b)
 	if c3.SeasonalWeeks != 6 || !c3.SeasonalEnabled {
 		t.Fatalf("roundtrip потерял сезонность: %+v", c3)
 	}
-	// защитный клампинг: битый jsonb вне [2,12] → дефолт 4
 	c4, _ := RegressionConfigFromJSON([]byte(`{"seasonal_weeks":1}`))
 	if c4.SeasonalWeeks != 4 {
 		t.Fatalf("clamp <2: weeks=%d, want 4", c4.SeasonalWeeks)
@@ -140,8 +133,6 @@ func TestRegressionConfigFloor(t *testing.T) {
 	if got := cfg.Floor("cls"); got != 0.05 {
 		t.Errorf(`Floor("cls") = %v, want 0.05`, got)
 	}
-	// Неизвестная метрика получает разумный дефолт, а не 0 (пол 0 = «срабатывать
-	// всегда»).
 	if got := cfg.Floor("unknown"); got <= 0 {
 		t.Errorf(`Floor("unknown") = %v, want > 0`, got)
 	}

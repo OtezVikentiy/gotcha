@@ -10,10 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestUpdateChannelKeepsSecret — пустой секрет в форме правки означает
-// «оставить прежний». Существует потому, что секрет вводится вслепую
-// (type=password) и в форму не возвращается: если бы пустое поле затирало его,
-// правка опечатки в адресе молча ломала бы доставку в Telegram.
 func TestUpdateChannelKeepsSecret(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -50,11 +46,6 @@ func TestUpdateChannelKeepsSecret(t *testing.T) {
 	}
 }
 
-// TestChannelTrustedRoundTrip — отметка «получатель мой» переживает запись,
-// чтение и правку. Дефолт при создании — false: политика деталей строится на
-// умолчании «не доверяем», и новый канал не должен получать детали оттого, что
-// поле забыли передать. Отдельно проверяется путь правки с ПУСТЫМ секретом —
-// он идёт другим UPDATE, и отметка обязана доехать по обоим.
 func TestChannelTrustedRoundTrip(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -78,7 +69,6 @@ func TestChannelTrustedRoundTrip(t *testing.T) {
 		t.Fatal("новый канал доверенный по умолчанию — политика деталей обязана начинать с недоверия")
 	}
 
-	// Правка без секрета: тот же UPDATE, что и при исправлении опечатки.
 	if err := svc.UpdateChannel(ctx, alert.Channel{
 		ID: id, ProjectID: pid, Kind: alert.ChannelTelegram, Enabled: true, Target: "12345", Trusted: true,
 	}); err != nil {
@@ -88,7 +78,6 @@ func TestChannelTrustedRoundTrip(t *testing.T) {
 		t.Fatalf("после установки отметки = %+v err=%v, want Trusted", chs, err)
 	}
 
-	// И обратно, уже вместе со сменой секрета — второй UPDATE.
 	if err := svc.UpdateChannel(ctx, alert.Channel{
 		ID: id, ProjectID: pid, Kind: alert.ChannelTelegram, Enabled: true, Target: "12345", Secret: "new-tok",
 	}); err != nil {
@@ -98,7 +87,6 @@ func TestChannelTrustedRoundTrip(t *testing.T) {
 		t.Fatalf("после снятия отметки = %+v err=%v, want !Trusted", chs, err)
 	}
 
-	// Создание с явной отметкой — тот же путь, что и форма с галочкой.
 	if _, err := svc.CreateChannel(ctx, alert.Channel{
 		ProjectID: pid, Kind: alert.ChannelEmail, Enabled: true, Target: "me@corp.example", Trusted: true,
 	}); err != nil {
@@ -110,8 +98,6 @@ func TestChannelTrustedRoundTrip(t *testing.T) {
 	}
 }
 
-// TestUpdateChannelReplacesSecret — непустой секрет заменяет прежний и, как при
-// создании, ложится в базу зашифрованным, а не открытым текстом.
 func TestUpdateChannelReplacesSecret(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -149,9 +135,6 @@ func TestUpdateChannelReplacesSecret(t *testing.T) {
 	}
 }
 
-// TestUpdateChannelScopedToProject — id канала приходит из формы, поэтому
-// project_id стоит в условии UPDATE. Без него владелец одного проекта правил бы
-// канал соседнего, подобрав id.
 func TestUpdateChannelScopedToProject(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -182,8 +165,6 @@ func TestUpdateChannelScopedToProject(t *testing.T) {
 	}
 }
 
-// TestUpdateChannelValidates — правка проходит ту же валидацию, что и создание:
-// иначе адрес можно было бы испортить через правку в обход проверок.
 func TestUpdateChannelValidates(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -208,10 +189,6 @@ func TestUpdateChannelValidates(t *testing.T) {
 	}
 }
 
-// TestChannelTelegramTargetMustBeChatID — chat_id проверяется как целое число.
-// Найдено на приёмке: правка Telegram-канала приняла получателя «не-урл» и
-// сохранила его, а узнать об этом можно было только из лога неудачных доставок
-// — то есть уже после того, как алерт не пришёл.
 func TestChannelTelegramTargetMustBeChatID(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -230,7 +207,6 @@ func TestChannelTelegramTargetMustBeChatID(t *testing.T) {
 		}
 	}
 
-	// Групповой chat_id отрицательный — он должен проходить.
 	id, err := svc.CreateChannel(ctx, alert.Channel{
 		ProjectID: pid, Kind: alert.ChannelTelegram, Enabled: true, Target: "-1001234567890", Secret: "bot-token",
 	})
@@ -238,7 +214,6 @@ func TestChannelTelegramTargetMustBeChatID(t *testing.T) {
 		t.Fatalf("CreateChannel with group chat_id: %v", err)
 	}
 
-	// Правка проходит ту же проверку.
 	if err := svc.UpdateChannel(ctx, alert.Channel{
 		ID: id, ProjectID: pid, Kind: alert.ChannelTelegram, Enabled: true, Target: "не-урл",
 	}); !errors.Is(err, alert.ErrInvalidChannel) {
@@ -246,14 +221,6 @@ func TestChannelTelegramTargetMustBeChatID(t *testing.T) {
 	}
 }
 
-// TestChannelEmailTargetNormalized — адрес с отображаемым именем сохраняется
-// только своей адресной частью.
-//
-// mail.ParseAddress принимает «Ops Team <ops@corp.example>», и раньше эта
-// строка попадала в базу целиком. Дальше ломались обе стороны сразу:
-// отправитель кладёт Target прямо в SMTP-команду RCPT TO — сервер отвечает
-// отказом, а политика раскрытия деталей видела домен «corp.example>» и не
-// признавала его своим, даже если corp.example перечислен как доверенный.
 func TestChannelEmailTargetNormalized(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -278,13 +245,11 @@ func TestChannelEmailTargetNormalized(t *testing.T) {
 		t.Fatalf("Target = %q, want адрес без отображаемого имени", chs[0].Target)
 	}
 
-	// Политика теперь видит нормальный домен и признаёт его своим.
 	p := alert.NewDetailPolicy("https://gotcha.example", []string{"corp.example"}, false)
 	if !p.AllowsDetails(chs[0]) {
 		t.Error("доверенный домен не распознан после сохранения канала")
 	}
 
-	// Та же нормализация при правке.
 	if err := svc.UpdateChannel(ctx, alert.Channel{
 		ID: id, ProjectID: pid, Kind: alert.ChannelEmail, Enabled: true,
 		Target: "  Дежурный <duty@corp.example>  ",
@@ -297,15 +262,6 @@ func TestChannelEmailTargetNormalized(t *testing.T) {
 	}
 }
 
-// TestChannelWithBrokenSecretStaysVisible — канал с нечитаемым секретом
-// остаётся в списке, помеченным, но не доставляет.
-//
-// Раньше он молча выпадал из выдачи Channels, и это делало его невидимым
-// дважды: уведомления по нему переставали ставиться в очередь (ни следа в
-// журнале доставок, ни отметки в интерфейсе — «тишина в Telegram»
-// неотличима от «инцидентов не было»), а починить или удалить его из
-// интерфейса было нельзя: проверка принадлежности строится поверх того же
-// списка и отвечала 404.
 func TestChannelWithBrokenSecretStaysVisible(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -314,7 +270,6 @@ func TestChannelWithBrokenSecretStaysVisible(t *testing.T) {
 	ctx := context.Background()
 	pid := newEvalProject(t, pool, "brokensecret")
 
-	// Канал заведён под одним мастер-ключом...
 	svc := alert.NewService(pool)
 	svc.SetKeyring(mustKeyring(t, "original-master-key-for-channel-secrets"))
 	id, err := svc.CreateChannel(ctx, alert.Channel{
@@ -325,8 +280,7 @@ func TestChannelWithBrokenSecretStaysVisible(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	// ...а читается под другим — ровно то, что происходит при смене
-	// GOTCHA_SECRET_KEY.
+	// Читается под другим ключом — имитирует смену GOTCHA_SECRET_KEY.
 	rotated := alert.NewService(pool)
 	rotated.SetKeyring(mustKeyring(t, "a-completely-different-master-key-value"))
 
@@ -348,7 +302,6 @@ func TestChannelWithBrokenSecretStaysVisible(t *testing.T) {
 		t.Error("канал считается пригодным к доставке — уйдёт вебхук без подписи")
 	}
 
-	// Починить его можно: правка секрета работает, потому что канал виден.
 	if err := rotated.UpdateChannel(ctx, alert.Channel{
 		ID: id, ProjectID: pid, Kind: alert.ChannelTelegram, Enabled: true,
 		Target: "-100500", Secret: "new-bot-token",

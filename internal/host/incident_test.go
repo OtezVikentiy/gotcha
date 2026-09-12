@@ -13,11 +13,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// setupIncidentHost — своя заготовка (не переиспользует setupProject/
-// setupSettingsProject: slug должен отличаться, иначе UNIQUE(slug)
-// организаций столкнёт тесты, случайно запущенные в одном пакете). Заводит
-// организацию, проект и один хост — возвращает пул, IncidentService,
-// projectID и hostID.
 func setupIncidentHost(t *testing.T) (*pgxpool.Pool, *host.IncidentService, int64, int64) {
 	t.Helper()
 	pool := testenv.MigratedPG(t)
@@ -48,9 +43,6 @@ func setupIncidentHost(t *testing.T) (*pgxpool.Pool, *host.IncidentService, int6
 	return pool, host.NewIncidentService(pool), projectID, h.ID
 }
 
-// TestIncidentServiceOpenNewReturnsCreatedTrue — открытие инцидента на
-// хосте, где такого (kind) ещё не было — created=true, поля вставки
-// (peak=current, detail, status='open') сохранены как переданы.
 func TestIncidentServiceOpenNewReturnsCreatedTrue(t *testing.T) {
 	_, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
@@ -79,9 +71,6 @@ func TestIncidentServiceOpenNewReturnsCreatedTrue(t *testing.T) {
 	}
 }
 
-// TestIncidentServiceOpenConcurrentOnlyOneWins — параллельные Open той же
-// пары (host_id, kind) — ровно один создаёт запись, остальные получают
-// created=false и того же победителя (частичный уникальный индекс 0066).
 func TestIncidentServiceOpenConcurrentOnlyOneWins(t *testing.T) {
 	pool, svc, projectID, hostID := setupIncidentHost(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -135,9 +124,6 @@ func TestIncidentServiceOpenConcurrentOnlyOneWins(t *testing.T) {
 	}
 }
 
-// TestIncidentServiceOpenDifferentKindIsSeparateIncident — открытие другого
-// вида (kind) на том же хосте не блокируется уже открытым disk-инцидентом:
-// ключ конфликта — (host_id, kind), а не только host_id.
 func TestIncidentServiceOpenDifferentKindIsSeparateIncident(t *testing.T) {
 	_, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
@@ -167,8 +153,6 @@ func TestIncidentServiceOpenDifferentKindIsSeparateIncident(t *testing.T) {
 	}
 }
 
-// TestIncidentServiceBumpUpdatesCurrentAndPeak — Bump на открытом инциденте
-// обновляет current/peak; на закрытом/несуществующем — ErrIncidentNotFound.
 func TestIncidentServiceBumpUpdatesCurrentAndPeak(t *testing.T) {
 	_, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
@@ -200,8 +184,6 @@ func TestIncidentServiceBumpUpdatesCurrentAndPeak(t *testing.T) {
 	}
 }
 
-// TestIncidentServiceResolveTwiceSecondReturnsFalse — Resolve дважды: первый
-// закрывает (ok=true), второй — идемпотентно ok=false, без ошибки.
 func TestIncidentServiceResolveTwiceSecondReturnsFalse(t *testing.T) {
 	_, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
@@ -235,7 +217,6 @@ func TestIncidentServiceResolveTwiceSecondReturnsFalse(t *testing.T) {
 		t.Fatal("Resolve 2: ok = true, want false (уже закрыт)")
 	}
 
-	// Открытие того же (host, kind) после Resolve — новая запись, не переиспользование id.
 	in2, created, err := svc.Open(ctx, projectID, hostID, "silent", 0, "", false)
 	if err != nil {
 		t.Fatalf("Open после Resolve: %v", err)
@@ -248,9 +229,6 @@ func TestIncidentServiceResolveTwiceSecondReturnsFalse(t *testing.T) {
 	}
 }
 
-// TestIncidentServiceMarkNotified — MarkNotified(open=true) ставит
-// notified_open, MarkNotified(open=false) — notified_close, независимо друг
-// от друга; неизвестный id — ErrIncidentNotFound.
 func TestIncidentServiceMarkNotified(t *testing.T) {
 	_, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
@@ -287,8 +265,6 @@ func TestIncidentServiceMarkNotified(t *testing.T) {
 	}
 }
 
-// TestIncidentServiceListByProjectFreshestFirst — ListByProject отдаёт
-// инциденты проекта по убыванию started_at.
 func TestIncidentServiceListByProjectFreshestFirst(t *testing.T) {
 	_, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
@@ -312,9 +288,6 @@ func TestIncidentServiceListByProjectFreshestFirst(t *testing.T) {
 	}
 }
 
-// secondHost добавляет проекту ещё один хост и возвращает его id — нужен
-// тестам «по проекту», где важно, что метод собирает инциденты РАЗНЫХ хостов
-// (свернуть их по host_id — работа вызывающего).
 func secondHost(t *testing.T, pool *pgxpool.Pool, projectID int64, name string) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -329,14 +302,6 @@ func secondHost(t *testing.T, pool *pgxpool.Pool, projectID int64, name string) 
 	return h.ID
 }
 
-// TestIncidentServiceListOpenByProject — ListOpenByProject отдаёт ТОЛЬКО
-// открытые инциденты проекта, по всем его хостам, свежайшие первыми.
-//
-// Ревью I3: список хостов раньше сворачивал открытые виды из ListByProject с
-// лимитом, то есть из «последних N любого статуса» — при закрытых инцидентах
-// сверх лимита открытый в выборку не попадал вовсе, и хост с живой проблемой
-// показывался спокойным. Здесь это воспроизведено буквально: закрытый инцидент
-// СВЕЖЕЕ открытого, и выборка обязана вернуть именно открытый.
 func TestIncidentServiceListOpenByProject(t *testing.T) {
 	pool, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
@@ -377,9 +342,6 @@ func TestIncidentServiceListOpenByProject(t *testing.T) {
 	}
 }
 
-// TestIncidentServiceResolveOpenByProjectKind — ревью I2: выключение порога
-// закрывает открытые инциденты ИМЕННО этого вида на всех хостах проекта,
-// соседние виды не трогает, повторный вызов идемпотентен (0 строк).
 func TestIncidentServiceResolveOpenByProjectKind(t *testing.T) {
 	pool, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
@@ -451,10 +413,6 @@ func TestIncidentServiceResolveOpenByProjectKind(t *testing.T) {
 	}
 }
 
-// TestIncidentServiceAcknowledge — B4: Acknowledge на открытом инциденте
-// ставит acknowledged_at/acknowledged_by и возвращает ok=true; повторный
-// вызов и вызов на закрытом инциденте — идемпотентно ok=false. scan (List)
-// после ack отдаёт заполненные поля, до ack — nil.
 func TestIncidentServiceAcknowledge(t *testing.T) {
 	pool, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
@@ -495,7 +453,6 @@ func TestIncidentServiceAcknowledge(t *testing.T) {
 		t.Fatalf("после Acknowledge: AcknowledgedBy = %v, want %d", list[0].AcknowledgedBy, userID)
 	}
 
-	// Повторный ack — идемпотентно ok=false.
 	ok2, err := svc.Acknowledge(ctx, in.ID, projectID, userID)
 	if err != nil {
 		t.Fatalf("повторный Acknowledge: %v", err)
@@ -504,7 +461,6 @@ func TestIncidentServiceAcknowledge(t *testing.T) {
 		t.Fatal("повторный Acknowledge: ok = true, want false (идемпотентность)")
 	}
 
-	// Acknowledge закрытого инцидента — ok=false.
 	other, _, err := svc.Open(ctx, projectID, hostID, "memory", 0.9, "", false)
 	if err != nil {
 		t.Fatalf("Open memory: %v", err)
@@ -521,10 +477,6 @@ func TestIncidentServiceAcknowledge(t *testing.T) {
 	}
 }
 
-// TestIncidentServiceAcknowledgeForeignProject — project_id — часть WHERE
-// Acknowledge (defense-in-depth, зеркало uptime.DeleteWindow, B3): оператор
-// проекта B не подтвердит инцидент проекта A подобранным id, даже если
-// вызывающий хендлер когда-нибудь забудет свериться заранее.
 func TestIncidentServiceAcknowledgeForeignProject(t *testing.T) {
 	pool, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
@@ -557,9 +509,6 @@ func TestIncidentServiceAcknowledgeForeignProject(t *testing.T) {
 	}
 }
 
-// TestIncidentsCascadeDeletedWithHost — удаление хоста (ON DELETE CASCADE
-// host_incidents.host_id) уносит за собой все его инциденты, открытые и
-// закрытые.
 func TestIncidentsCascadeDeletedWithHost(t *testing.T) {
 	pool, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
@@ -589,10 +538,6 @@ func TestIncidentsCascadeDeletedWithHost(t *testing.T) {
 	}
 }
 
-// TestOpenSuppressedAndClearSuppressed — K1-4 (аудит перед 1.0): подавленный
-// зависимостью инцидент виден OpenSuppressed и невидим OpenUnacked; после
-// ClearSuppressed — наоборот, и часы лесенки перезапущены (StartedAt из
-// OpenUnacked не раньше момента снятия), dep_released_at в БД проставлен.
 func TestOpenSuppressedAndClearSuppressed(t *testing.T) {
 	pool, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
@@ -602,7 +547,6 @@ func TestOpenSuppressedAndClearSuppressed(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 
-	// До подавления: виден OpenUnacked, не виден OpenSuppressed.
 	if list, err := svc.OpenUnacked(ctx); err != nil || len(list) != 1 {
 		t.Fatalf("до подавления OpenUnacked want 1, got %d (err=%v)", len(list), err)
 	}
@@ -610,13 +554,11 @@ func TestOpenSuppressedAndClearSuppressed(t *testing.T) {
 		t.Fatalf("до подавления OpenSuppressed want 0, got %d (err=%v)", len(list), err)
 	}
 
-	// Флаг ставит Suppressor/планировщик деп-подавления (не этот пакет) —
-	// сырым SQL, как и в TestOpenUnackedExcludesSuppressed.
+	// Флаг ставит внешний планировщик деп-подавления — здесь сырым SQL, в обход этого пакета.
 	if _, err := pool.Exec(ctx, `UPDATE host_incidents SET suppressed_by_dep=true WHERE id=$1`, in.ID); err != nil {
 		t.Fatalf("set suppressed flag: %v", err)
 	}
 
-	// Подавлен: виден OpenSuppressed, не виден OpenUnacked.
 	if list, err := svc.OpenUnacked(ctx); err != nil || len(list) != 0 {
 		t.Fatalf("подавлен: OpenUnacked want 0, got %d (err=%v)", len(list), err)
 	}
@@ -633,7 +575,6 @@ func TestOpenSuppressedAndClearSuppressed(t *testing.T) {
 		t.Fatalf("ClearSuppressed: %v", err)
 	}
 
-	// Снят: виден OpenUnacked, не виден OpenSuppressed.
 	if list, err := svc.OpenSuppressed(ctx); err != nil || len(list) != 0 {
 		t.Fatalf("после снятия: OpenSuppressed want 0, got %d (err=%v)", len(list), err)
 	}

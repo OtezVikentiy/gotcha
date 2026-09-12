@@ -16,12 +16,8 @@ func hostSettingsFormPath(projectID int64) string {
 	return hostsBasePath(projectID) + "/settings"
 }
 
-// settingsBoolDefault/settingsPercentDefault/settingsFloatDefault/
-// settingsMinutesDefault — значения host.Settings как строки формы: fallback
-// для form.Get, когда форма ещё не отправлялась (GET, form == nil) или поле
-// не было предметом ошибки предыдущей отправки. Доли (0..1] показываются
-// человеку процентами (§4.2 дизайна — «в UI диск/RAM — проценты, храним
-// долями»), конверсия строго на этой границе.
+// доли (0..1] показываются человеку процентами, храним долями — конверсия
+// строго на этой границе.
 func settingsBoolDefault(b bool) string {
 	if b {
 		return "1"
@@ -29,12 +25,8 @@ func settingsBoolDefault(b bool) string {
 	return "0"
 }
 
-// settingsPercentDefault округляет процент до 1 знака ПЕРЕД форматированием
-// (T6 косметика): 0.28*100 без округления даёт двоичный мусор
-// "28.000000000000004" (FormatFloat с precision=-1 печатает кратчайшее
-// РОВНОЕ представление, а не красивое число) — округление до десятых убирает
-// артефакт, не теряя данных: на сабмите форма делит обратно на 100, точности
-// десятой доли процента более чем достаточно для порога диска/памяти.
+// округление до десятых перед форматированием: 0.28*100 без него даёт
+// двоичный мусор "28.000000000000004" (FormatFloat печатает кратчайшее РОВНОЕ представление).
 func settingsPercentDefault(frac float64) string {
 	return strconv.FormatFloat(math.Round(frac*100*10)/10, 'f', -1, 64)
 }
@@ -47,28 +39,6 @@ func settingsMinutesDefault(d time.Duration) string {
 	return strconv.Itoa(int(d / time.Minute))
 }
 
-// HostSettings — GET/POST /projects/{id}/hosts/settings: форма порогов
-// встроенных инцидентов хоста (§5.5 дизайна) + свёрнутые блоки команды
-// установки агента и конфига коллектора (hostsCollectorConfigDetails, тот
-// же компонент, что на непустом списке хостов, HostsList — T14).
-//
-// form — введённые значения при повторной отрисовке после ошибки валидации
-// (см. FormState); при первом открытии (GET) form == nil, и все поля берут
-// значения из s (сервис уже вернул DefaultSettings, если строки настроек ещё
-// нет). installCmd/config — пустые одновременно, если в проекте нет ни
-// одного активного ключа типа agent (h.hostInstallBlocks, hosts.go, общий
-// liveKeyFor-путь) — тогда вместо copyBlock показывается подсказка, где
-// ключ завести. agentReason — почему installCmd пуст при непустом config
-// (rem-A sec-M1/sec-M4): см. комментарий hostInstallBlocks и
-// hostsCollectorConfigDetails (hosts.templ, тот же компонент рендерит блоки
-// здесь).
-//
-// У каждого числового поля своя подсказка, связанная с полем через
-// aria-describedby (UX-аудит A1, P2-6): подпись «Порог, %» не говорит, ЧТО
-// сравнивается с порогом и за какое окно, а «Порог, на ядро» не объясняла
-// даже, что речь про load average, делённый на число логических ядер. Тексты —
-// краткий пересказ таблицы порогов из docs/hosts.md, туда же ведёт ссылка
-// внизу страницы.
 templ HostSettings(projectID int64, s host.Settings, installCmd, config, agentReason string, form FormState, errMsg string, groups HostGroupThresholdsVM, userEmail string) {
 	@layout(i18n.T(ctx, "nav.host_thresholds"), userEmail) {
 		<div class="host-settings">
@@ -152,31 +122,15 @@ templ HostSettings(projectID int64, s host.Settings, installCmd, config, agentRe
 	}
 }
 
-// HostGroupThresholdsVM — блок «Пороги по окружению/роли» (B2, T7): список
-// уже сохранённых групповых правил проекта + состояние формы добавления/
-// редактирования. Отдельная мини-VM, а не ещё пяток параметров у HostSettings
-// — тот же приём, что HostChartVM/HostDetailVM у карточки хоста.
 type HostGroupThresholdsVM struct {
-	// Groups — все групповые правила проекта (host.GroupThresholdService.List,
-	// уже отсортированы scope/label). nil, если GroupThresholds/Hosts ещё не
-	// проведены в Handler (см. renderHostSettings) — секция тогда просто не
-	// предлагает добавление (Envs/Roles тоже пусты).
+	// nil, если GroupThresholds/Hosts ещё не проведены в Handler — секция
+	// тогда просто не предлагает добавление.
 	Groups []host.GroupThreshold
-	// Envs/Roles — значения меток проекта (host.Store.FacetValues, B1) —
-	// источник опций select'а метки формы добавления. Пустой список у одного
-	// из них скрывает соответствующий scope из сегмент-контрола: предлагать
-	// «окружение», когда ни один хост его не проставил, было бы пустой
-	// опцией без единого варианта метки.
+	// пустой список у одного скрывает соответствующий scope из
+	// сегмент-контрола формы добавления.
 	Envs, Roles []string
-	// Form — введённые значения формы группового правила при переотрисовке
-	// после ошибки валидации (см. FormState) вместе со служебной меткой
-	// __modal — какую модалку (создания или правки конкретного правила)
-	// открыть заново; nil на первом открытии. Кто помечает какую —
-	// renderHostSettings, hosts.go.
-	Form FormState
-	// ErrMsg — сообщение об ошибке валидации формы группового правила (не
-	// путать с errMsg у HostSettings — это ошибка ДРУГОЙ формы на той же
-	// странице, ошибка одной не трогает другую).
+	Form        FormState
+	// ошибка ДРУГОЙ формы на той же странице, не errMsg у HostSettings.
 	ErrMsg string
 }
 
@@ -188,27 +142,15 @@ func groupThresholdDeleteSettingsPath(projectID int64) string {
 	return groupThresholdSettingsPath(projectID) + "/delete"
 }
 
-// GroupThresholdCreateModalID — якорь модалки создания группового правила:
-// на него ведёт createTrigger в шапке секции, его же обработчик открывает
-// заново после ошибки валидации (renderHostSettings).
 const GroupThresholdCreateModalID = "new-group-threshold"
 
-// EditGroupThresholdModalID — якорь модалки правки группового правила. Одна
-// модалка на строку таблицы (CSS :target — якорь обязан быть уникальным), а
-// естественный ключ правила — пара scope+label (Upsert идемпотентен по ней).
-// Метка — произвольная строка пользователя, и в HTML-id/фрагменте URL ей
-// делать нечего, поэтому вместо неё — детерминированный хеш: сервер обязан
-// вычислить ТОТ ЖЕ якорь при переоткрытии модалки после 422
-// (renderHostSettings). Scope в якоре остаётся читаемым — он всегда одно из
-// двух известных слов. Экспортирована затем же, что EditWindowModalID.
+// label — произвольная строка пользователя, ей не место в HTML-id/URL-фрагменте,
+// поэтому якорь строится по детерминированному хешу, а не по самой метке.
 func EditGroupThresholdModalID(scope, label string) string {
 	sum := sha256.Sum256([]byte(label))
 	return "edit-group-threshold-" + scope + "-" + hex.EncodeToString(sum[:8])
 }
 
-// groupScopeDefault — какой scope предвыбран в сегмент-контроле модалки
-// создания: первый с непустым списком меток (scope без меток в контроле не
-// показывается вовсе, см. groupThresholdCreateModal).
 func groupScopeDefault(envs []string) string {
 	if len(envs) > 0 {
 		return "env"
@@ -216,10 +158,6 @@ func groupScopeDefault(envs []string) string {
 	return "role"
 }
 
-// groupKindPart/groupThresholdParts — «Диск: 80%», «Тишина: выключено» и
-// т.п. для ТОЛЬКО заданных (non-nil Enabled) видов правила — список того, что
-// это правило реально переопределяет (ненаследуемые виды в перечень не
-// попадают, тем же смыслом, что и "inherit" на карточке хоста, T6).
 func groupKindPart(ctx context.Context, kind string, enabled *bool, value *float64) string {
 	if enabled == nil {
 		return ""
@@ -260,7 +198,6 @@ func groupThresholdParts(ctx context.Context, gt host.GroupThreshold) []string {
 	return parts
 }
 
-// groupThresholdKinds — ячейка «заданные виды» строки таблицы.
 templ groupThresholdKinds(gt host.GroupThreshold) {
 	if gt.DiskEnabled == nil && gt.MemoryEnabled == nil && gt.LoadEnabled == nil && gt.SilentEnabled == nil {
 		{ i18n.T(ctx, "host.group_threshold.none_set") }
@@ -274,15 +211,6 @@ templ groupThresholdKinds(gt host.GroupThreshold) {
 	}
 }
 
-// groupThresholdRow — строка таблицы существующих правил: scope+label+
-// заданные виды, «Редактировать» вторичной кнопкой-якорем (открывает модалку
-// правки этой же строки, как windowRow у окон обслуживания) и форма удаления
-// (тот же приём без confirm-страницы, что у metricAlertsBasePath+"/delete",
-// metricalerts.templ — правило одно из многих в списке, а не необратимое
-// per-хост действие вроде hostDelete). Пара действий оформлена как на
-// соседнем «Подавлении шторма» (suppressionEdgeRow): .row-actions,
-// btn-ghost + btn-danger. s нужен модалке правки — fallback числовых полей,
-// см. groupThresholdKindFields.
 templ groupThresholdRow(projectID int64, s host.Settings, gt host.GroupThreshold, form FormState, errMsg string) {
 	<tr>
 		<td>{ i18n.T(ctx, "host.threshold.scope."+gt.Scope) }</td>
@@ -314,16 +242,6 @@ templ groupThresholdRow(projectID int64, s host.Settings, gt host.GroupThreshold
 	</tr>
 }
 
-// hostGroupThresholdSection — блок «Пороги по окружению/роли» (B2, T7):
-// таблица существующих правил, кнопка «Добавить» с модалкой создания и
-// модалка правки на каждую строку. Раньше форма правила жила всегда
-// развёрнутой внизу страницы (четыре fieldset на пол-экрана, правка — GET с
-// ?gt_scope=&gt_label= и якорем на ту же форму); теперь это тот же паттерн
-// модалок, что у каналов/окон обслуживания (alerts/maintenance.templ).
-//
-// Кнопка «Добавить» скрыта целиком, если проект ещё не накопил ни одной
-// метки env/role — предлагать форму раньше нечего выбирать в select'е метки
-// (groups.Envs/Roles пусты одновременно).
 templ hostGroupThresholdSection(projectID int64, s host.Settings, groups HostGroupThresholdsVM) {
 	<section class="host-group-thresholds">
 		<h2>{ i18n.T(ctx, "host.group_threshold.title") }</h2>
@@ -352,10 +270,8 @@ templ hostGroupThresholdSection(projectID int64, s host.Settings, groups HostGro
 			}
 		}
 		if len(groups.Envs) == 0 && len(groups.Roles) == 0 {
-			// Ошибка групповой формы обычно живёт внутри переоткрытой модалки,
-			// но без меток модалки создания на странице нет — 422 по прямому
-			// POST (несуществующая пара при пустых FacetValues) остался бы без
-			// видимого сообщения.
+			// без меток модалки создания на странице нет — 422 показывается
+			// здесь напрямую, а не внутри переоткрытой модалки.
 			if groups.ErrMsg != "" && groups.Form.Opens(GroupThresholdCreateModalID) {
 				<p class="error">{ groups.ErrMsg }</p>
 			}
@@ -366,12 +282,6 @@ templ hostGroupThresholdSection(projectID int64, s host.Settings, groups HostGro
 	</section>
 }
 
-// groupThresholdFormValues — введённые человеком значения, если 422 вернулась
-// именно из этой модалки, иначе nil (поля возьмут собственные fallback'и: у
-// правки — значения правила, у создания — "inherit" и эффективные пороги
-// проекта). Модалок на странице N+1, а состояние формы одно — без этой
-// развилки введённое попало бы во все сразу (тот же приём, что
-// windowFormValues у окон обслуживания).
 func groupThresholdFormValues(form FormState, open bool) FormState {
 	if open {
 		return form
@@ -379,19 +289,13 @@ func groupThresholdFormValues(form FormState, open bool) FormState {
 	return nil
 }
 
-// groupThresholdCreateModal — модалка создания группового правила: scope
-// сегмент-контролом, метка select'ом (виден только select выбранного scope —
-// CSS :has по radio, .gt-label-env/.gt-label-role в app.css, поэтому класс
-// host-group-threshold-form остаётся на форме и внутри модалки), четыре вида
-// — общим фрагментом groupThresholdKindFields. wide — форма с четырьмя
-// fieldset, узкая модалка её сплющивает.
+// виден только select выбранного scope — CSS :has по radio,
+// .gt-label-env/.gt-label-role в app.css.
 templ groupThresholdCreateModal(projectID int64, s host.Settings, groups HostGroupThresholdsVM) {
 	{{ open := groups.Form.Opens(GroupThresholdCreateModalID) }}
 	{{ form := groupThresholdFormValues(groups.Form, open) }}
 	@createModalOpen(GroupThresholdCreateModalID, "host.group_threshold.new.title", true, open) {
 		<form method="post" action={ templ.URL(groupThresholdSettingsPath(projectID)) } class="host-group-threshold-form">
-			// Без role="alert": фокус в модалку переносит modal.js (№80), как
-			// у остальных модалок с формами.
 			if open && groups.ErrMsg != "" {
 				<p class="error" id={ GroupThresholdCreateModalID + "-error" }>{ groups.ErrMsg }</p>
 			}
@@ -438,14 +342,8 @@ templ groupThresholdCreateModal(projectID int64, s host.Settings, groups HostGro
 	}
 }
 
-// groupThresholdEditModal — модалка правки одного правила. Scope и метка —
-// естественный КЛЮЧ правила и здесь намеренно не редактируются: Upsert
-// идемпотентен по (project_id, scope, label), и редактируемая пара молча
-// создавала бы ВТОРОЕ правило рядом со старым вместо «переименования». Пара
-// показана read-only текстом, а в POST уходит hidden-полями — тем именем
-// (label_env/label_role), которое hostGroupThresholdSave читает для этого
-// scope. CSS-логика .gt-label-* модалке правки не нужна: select'ов метки в
-// ней нет вовсе.
+// scope и метка не редактируются: Upsert идемпотентен по (project_id, scope,
+// label), правка пары молча создала бы ВТОРОЕ правило вместо переименования.
 templ groupThresholdEditModal(projectID int64, s host.Settings, gt host.GroupThreshold, form FormState, errMsg string) {
 	{{ modalID := EditGroupThresholdModalID(gt.Scope, gt.Label) }}
 	{{ open := form.Opens(modalID) }}
@@ -468,17 +366,8 @@ templ groupThresholdEditModal(projectID int64, s host.Settings, gt host.GroupThr
 	}
 }
 
-// groupThresholdKindFields — четыре вида правила (диск/память/load/тишина),
-// общие для модалок создания и правки: пер-видовое наследовать/переопределить/
-// выключить — тот же контрол, что у порогов одного хоста
-// (hostThresholdsSection, T6). form — см. groupThresholdFormValues; gt —
-// правило-источник значений по умолчанию (нулевое у формы создания — все
-// виды "inherit"); s — настройки проекта, fallback числового поля при
-// переключении на «Переопределить» (thresholdPercentValue/
-// thresholdFloatValue/thresholdMinutesValue — редактирование начинается не с
-// нуля, а с уже действующего числа). id у radio/полей нет намеренно (label
-// оборачивает input): модалок с этим фрагментом на странице N+1, любой id
-// здесь давал бы дубли в документе.
+// id у radio/полей нет намеренно: модалок с этим фрагментом на странице N+1,
+// любой id здесь давал бы дубли в документе.
 templ groupThresholdKindFields(form FormState, s host.Settings, gt host.GroupThreshold) {
 	<fieldset class="card th-kind">
 		<legend class="card-header">{ i18n.T(ctx, "host.threshold.disk") }</legend>

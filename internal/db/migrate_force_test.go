@@ -12,10 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestForcePG — контракт db.ForcePG: снимает dirty-флаг, но только в двух
-// разрешённых точках — текущая версия (миграция доделана руками) и текущая−1
-// (миграция откачена руками). Всё остальное — опечатка, которая молча сдвинула
-// бы точку отсчёта всех будущих миграций.
 func TestForcePG(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -60,7 +56,6 @@ func TestForcePG(t *testing.T) {
 		}
 	}
 
-	// N = current: флаг снят, версия не изменилась.
 	if err := db.ForcePG(dsn, current); err != nil {
 		t.Fatalf("force to current: %v", err)
 	}
@@ -68,7 +63,6 @@ func TestForcePG(t *testing.T) {
 		t.Fatalf("after force: v=%d dirty=%v err=%v, want v=%d dirty=false", v, d, err, current)
 	}
 
-	// N = current−1: ручной откат — версия сдвигается.
 	setDirtyPG()
 	if err := db.ForcePG(dsn, current-1); err != nil {
 		t.Fatalf("force to current-1: %v", err)
@@ -78,10 +72,8 @@ func TestForcePG(t *testing.T) {
 	}
 }
 
-// TestForceCH — тот же контракт для ClickHouse. Таблица schema_migrations
-// CH-драйвера golang-migrate — журнал: каждая смена версии дописывает строку
-// (version, dirty, sequence), читается последняя по sequence. Dirty
-// выставляется здесь той же вставкой, какую оставила бы оборвавшаяся миграция.
+// Таблица schema_migrations CH — журнал: каждая смена версии дописывает строку, читается последняя
+// по sequence. Dirty здесь выставляется той же вставкой, что оставила бы оборвавшаяся миграция.
 func TestForceCH(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")

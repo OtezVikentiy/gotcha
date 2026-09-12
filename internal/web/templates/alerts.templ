@@ -20,7 +20,6 @@ func alertsChannelsPath(projectID int64) string {
 	return alertsPath(projectID) + "/channels"
 }
 
-// alertsChannelsUpdatePath — POST-приёмник формы правки канала.
 func alertsChannelsUpdatePath(projectID int64) string {
 	return alertsPath(projectID) + "/channels/update"
 }
@@ -29,18 +28,12 @@ func alertsChannelsDeletePath(projectID int64) string {
 	return alertsChannelsPath(projectID) + "/delete"
 }
 
-// alertsChannelsTestPath — POST-приёмник тестовой отправки в канал (№69).
 func alertsChannelsTestPath(projectID int64) string {
 	return alertsChannelsPath(projectID) + "/test"
 }
 
-// ruleByKind ищет правило нужного kind среди уже сохранённых; для ещё не
-// заведённого правила возвращает дефолт для полей формы. spike — особый
-// случай: alert.Service.validateRule требует Threshold>0 и WindowMinutes>0
-// ВСЕГДА (даже когда правило выключено), поэтому ещё не сохранённому
-// spike-правилу подставляются ненулевые дефолты — иначе первое же
-// сохранение формы с нетронутыми (нулевыми) полями threshold/window
-// свалилось бы в ErrInvalidRule.
+// validateRule требует Threshold>0 и WindowMinutes>0 всегда, даже для
+// выключенного правила — несохранённому spike нужны ненулевые дефолты.
 func ruleByKind(rules []alert.Rule, kind string) alert.Rule {
 	for _, r := range rules {
 		if r.Kind == kind {
@@ -97,9 +90,6 @@ templ spikeRuleFields(r alert.Rule) {
 	</fieldset>
 }
 
-// channelKindLabel — человекочитаемая подпись типа канала (email/webhook/
-// telegram); неизвестный (в норме невозможный — валидируется при создании)
-// kind возвращается как есть, чтобы не потерять данные из вида.
 func channelKindLabel(ctx context.Context, kind string) string {
 	switch kind {
 	case alert.ChannelEmail:
@@ -113,14 +103,8 @@ func channelKindLabel(ctx context.Context, kind string) string {
 	}
 }
 
-// channelStatusBadge — бейдж состояния канала (включён/выключен), тот же
-// принцип, что и ruleEnabledBadge в metricalerts.templ.
 templ channelStatusBadge(c alert.Channel) {
 	if c.SecretBroken {
-		// Секрет не расшифровывается — уведомления по этому каналу не уходят.
-		// Показываем это прямо в строке: раньше канал просто исчезал из
-		// таблицы, и «тишина в Telegram» была неотличима от «инцидентов не
-		// было».
 		<span class="badge badge-danger">{ i18n.T(ctx, "alerts.channels.status.secret_broken") }</span>
 	} else if c.Enabled {
 		<span class="badge badge-good">{ i18n.T(ctx, "alerts.channels.status.enabled") }</span>
@@ -128,19 +112,10 @@ templ channelStatusBadge(c alert.Channel) {
 		<span class="badge badge-neutral">{ i18n.T(ctx, "alerts.channels.status.disabled") }</span>
 	}
 	if c.Trusted {
-		// Второй бейдж рядом с состоянием: по этому каналу уезжают детали
-		// события, включая то, что может оказаться персональными данными.
-		// Решение принято однажды в форме, а видеть его нужно постоянно —
-		// иначе состав получателей ПДн приходится выяснять, открывая каждый
-		// канал по очереди.
 		<span class="badge badge-warn">{ i18n.T(ctx, "alerts.channels.status.trusted") }</span>
 	}
 }
 
-// EditChannelModalID — якорь модалки правки канала. Модалка на строку таблицы:
-// они построены на CSS :target, а якорь обязан быть уникальным на странице.
-// Экспортирована, потому что обработчик в пакете web должен сказать, какую
-// именно модалку открыть заново после ошибки валидации.
 func EditChannelModalID(channelID int64) string {
 	return "edit-channel-" + strconv.FormatInt(channelID, 10)
 }
@@ -154,8 +129,6 @@ templ channelRow(projectID int64, c alert.Channel, form FormState, errMsg string
 			<td>
 				<div class="row-actions">
 					<a class="btn btn-ghost" href={ templ.SafeURL("#" + EditChannelModalID(c.ID)) }>{ i18n.T(ctx, "alerts.channels.edit") }</a>
-					// №69: синхронная тест-отправка — канал проверяется сразу,
-					// не дожидаясь реального алерта.
 					<form method="post" action={ templ.URL(alertsChannelsTestPath(projectID)) } class="channel-test-form">
 						<input type="hidden" name="channel_id" value={ strconv.FormatInt(c.ID, 10) }/>
 						<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "alerts.channel.test") }</button>
@@ -171,16 +144,14 @@ templ channelRow(projectID int64, c alert.Channel, form FormState, errMsg string
 	</tr>
 }
 
-// channelEditModal — правка канала: адрес, секрет и включённость. Тип канала
-// показан подписью и не редактируется: у email, webhook и telegram разный смысл
-// адреса и секрета, и «сменить тип» — это другой канал.
+// тип канала не редактируется: у email/webhook/telegram разный смысл адреса
+// и секрета, «сменить тип» — это другой канал.
 templ channelEditModal(projectID int64, c alert.Channel, form FormState, errMsg string) {
 	{{ open := form.Opens(EditChannelModalID(c.ID)) }}
 	@createModalOpen(EditChannelModalID(c.ID), "alerts.channels.edit.title", true, open) {
 		<form method="post" action={ templ.URL(alertsChannelsUpdatePath(projectID)) } class="channel-edit-form">
-			// Без role="alert": живой регион в статической разметке молчит, а
-			// фокус в модалку уже переносит modal.js (№80). Ошибка привязана к
-			// полю через aria-describedby ниже.
+			// без role="alert": живой регион в статической разметке молчит,
+			// ошибка привязана к полю через aria-describedby ниже.
 			if errMsg != "" && open {
 				<p class="error" id={ EditChannelModalID(c.ID) + "-error" }>{ errMsg }</p>
 			}
@@ -238,10 +209,8 @@ templ channelEditModal(projectID int64, c alert.Channel, form FormState, errMsg 
 	}
 }
 
-// formValueFor — значение поля из состояния формы, но только если это форма
-// той самой строки. Модалок правки на странице столько же, сколько каналов, а
-// состояние формы одно: без этой проверки введённый адрес попал бы во все
-// формы сразу.
+// модалок правки на странице столько же, сколько каналов, а состояние формы
+// одно — без проверки open введённое попало бы во все формы сразу.
 func formValueFor(form FormState, open bool, name, fallback string) string {
 	if !open {
 		return fallback
@@ -249,8 +218,7 @@ func formValueFor(form FormState, open bool, name, fallback string) string {
 	return form.Get(name, fallback)
 }
 
-// channelBoxChecked — та же логика для чекбокса; снятый флажок приходит
-// пустой строкой, поэтому сравниваем именно с ней, а не с наличием ключа.
+// снятый чекбокс приходит пустой строкой, а не отсутствием ключа.
 func channelBoxChecked(form FormState, open bool, name string, fallback bool) bool {
 	if !open {
 		return fallback
@@ -258,23 +226,13 @@ func channelBoxChecked(form FormState, open bool, name string, fallback bool) bo
 	return form.Get(name, "") != ""
 }
 
-// Alerts — GET/POST /projects/{id}/alerts: правила алертинга (new_issue,
-// regression — enabled+throttle; spike — enabled+threshold+window+throttle)
-// одной формой сохранения, таблица каналов доставки и форма добавления
-// канала. Лог неудачных доставок вынесен на отдельную страницу — см.
-// AlertDeliveries (alertdeliveries.templ). errMsg — сообщение об ошибке
-// последнего POST (ErrInvalidRule / ErrInvalidChannel), рендерится с тем же
-// статусом 422, что и ответ — тот же принцип, что и у
-// ProjectSettings/OrgSettings. canManage — оператор без прав admin/owner
-// видит правила и (уже замаскированную хендлером) цель канала, но не CRUD
-// каналов: создание, правку, тест и удаление (спека 2026-08-08).
 templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emailEnabled bool, canManage bool, form FormState, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "nav.rules_errors"), userEmail) {
 		<div class="alerts">
 			<h1>{ i18n.T(ctx, "nav.rules_errors") }</h1>
 			@helpPanel("alerts", "alerts")
-			// Ошибка формы создания канала показывается внутри модалки, рядом с
-			// полями; здесь остаются ошибки прочих действий страницы (правила).
+			// ошибка формы создания канала показывается внутри модалки; здесь
+			// остаются ошибки прочих действий страницы (правила).
 			if errMsg != "" && !form.Has() {
 				<p class="error">{ errMsg }</p>
 			}
@@ -297,10 +255,6 @@ templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emai
 			<section class="alerts-section">
 				<h2>{ i18n.T(ctx, "alerts.channels.title") }</h2>
 				if !canManage && len(channels) > 0 {
-					// C3: без этой строки замаскированный адрес читается как баг
-					// («почему тут мусор вместо получателя?»), а не как намеренная
-					// приватность — teams.md обещал маску, но нигде в UI её не
-					// объяснял.
 					<p class="hint">{ i18n.T(ctx, "alerts.channels.target_masked_hint") }</p>
 				}
 				if len(channels) == 0 {
@@ -333,8 +287,7 @@ templ Alerts(projectID int64, rules []alert.Rule, channels []alert.Channel, emai
 			if canManage {
 				@createModalOpen("new-channel", "alerts.channels.new.title", true, form.Opens("new-channel")) {
 					<form method="post" action={ templ.URL(alertsChannelsPath(projectID)) } class="channel-create-form">
-						// Без role="alert": фокус в модалку переносит modal.js (№80),
-						// ошибка привязана к полю адреса через aria-describedby.
+						// без role="alert": ошибка привязана к полю адреса через aria-describedby.
 						if errMsg != "" && form.Opens("new-channel") {
 							<p class="error" id="new-channel-error">{ errMsg }</p>
 						}

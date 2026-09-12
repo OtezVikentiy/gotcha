@@ -14,8 +14,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// newNotifierMonitor создаёт монитор в проекте pid, привязанный к channelIDs
-// (может быть пустым — тогда у монитора нет своих каналов).
 func newNotifierMonitor(t *testing.T, svc *uptime.Service, pid int64, channelIDs []int64) uptime.Monitor {
 	t.Helper()
 	ctx := context.Background()
@@ -130,7 +128,6 @@ func TestOutboxNotifierFallsBackToProjectChannels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	// Монитор без своих каналов.
 	m := newNotifierMonitor(t, usvc, pid, nil)
 
 	n := &uptime.OutboxNotifier{Alerts: asvc, Uptime: usvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true), Locale: i18n.Locale{Code: "en"}}
@@ -212,8 +209,6 @@ func TestOutboxNotifierSkipsDisabledChannel(t *testing.T) {
 	}
 }
 
-// TestOutboxNotifierSubjectsPerKind проверяет форматы subject для всех
-// видов Event через один и тот же канал.
 func TestOutboxNotifierSubjectsPerKind(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	usvc := uptime.NewService(pool)
@@ -280,7 +275,6 @@ func TestServiceMonitorChannelsOnlyEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel disabled: %v", err)
 	}
-	// Канал проекта, не привязанный к монитору — не должен попасть в выборку.
 	if _, err := asvc.CreateChannel(ctx, alert.Channel{
 		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/unlinked",
 	}); err != nil {
@@ -288,12 +282,8 @@ func TestServiceMonitorChannelsOnlyEnabled(t *testing.T) {
 	}
 	m := newNotifierMonitor(t, usvc, pid, []int64{enabledCh, disabledCh})
 
-	// MonitorChannelIDs отдаёт СОБСТВЕННЫЕ каналы монитора, включая выключенные:
-	// пустой результат означает «своих каналов нет» и включает фолбэк на каналы
-	// проекта. Если бы выключенные отсеивались здесь, монитор с единственным
-	// выключенным каналом выглядел бы как «без своих каналов» и его уведомления
-	// уехали бы ВО ВСЕ каналы проекта — ровно в те, что оператор исключил.
-	// Выключенные пропускает сам Notify (см. TestOutboxNotifierAllOwnChannelsDisabled).
+	// включает выключенные каналы — пустой результат здесь значит «своих нет»
+	// и включает фолбэк на каналы проекта; отсеивать выключенные должен Notify.
 	ids, err := usvc.MonitorChannelIDs(ctx, m.ID)
 	if err != nil {
 		t.Fatalf("MonitorChannelIDs: %v", err)
@@ -317,9 +307,6 @@ func TestServiceMonitorChannelsOnlyEnabled(t *testing.T) {
 	}
 }
 
-// TestOutboxNotifierAllOwnChannelsDisabled фиксирует суть правки: монитор,
-// у которого ВСЕ собственные каналы выключены, не должен уведомлять никуда —
-// и уж точно не должен рассылать по всем каналам проекта.
 func TestOutboxNotifierAllOwnChannelsDisabled(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -335,7 +322,6 @@ func TestOutboxNotifierAllOwnChannelsDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel disabled: %v", err)
 	}
-	// Канал проекта, НЕ привязанный к монитору: именно он уезжал бы по фолбэку.
 	if _, err := asvc.CreateChannel(ctx, alert.Channel{
 		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/project-wide",
 	}); err != nil {
@@ -361,9 +347,6 @@ func TestOutboxNotifierAllOwnChannelsDisabled(t *testing.T) {
 	}
 }
 
-// Трансграничный гейт: при политике без доверия получателю во внешние каналы не должно
-// уезжать имя монитора/причина падения (тело/subject/monitor_name/cause);
-// при true — уезжает, как раньше.
 func TestOutboxNotifierExternalDetailsGate(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	usvc := uptime.NewService(pool)
@@ -451,21 +434,6 @@ func TestOutboxNotifierExternalDetailsGate(t *testing.T) {
 	})
 }
 
-// TestOutboxNotifierOwnChannelRoutingAndNoSecretInQueue закрывает два дефекта
-// сразу, оба про собственные каналы монитора при включённом мастер-ключе.
-//
-// Первый: uptime читал alert_channels.secret своим запросом, а ключ есть
-// только у alert.Service — расшифровать было нечем, и в Telegram уезжала
-// строка "enc:AAAA…" в качестве токена бота. Молча: попытки расшифровать не
-// было, значит не было и ошибки в логе.
-//
-// Второй: секрет клали в notification_outbox.payload — обычный jsonb, — и
-// `SELECT payload->>'secret'` отдавал живые токены за всё окно хранения
-// очереди, обесценивая шифрование at-rest целиком.
-//
-// Поэтому здесь проверяется, что задача уходит именно в СВОЙ канал монитора,
-// что секрета в очереди нет вовсе, и что по channel_id секрет достаётся
-// расшифрованным — тем самым путём, которым его берёт notify.Worker.
 func TestOutboxNotifierOwnChannelRoutingAndNoSecretInQueue(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	usvc := uptime.NewService(pool)
@@ -484,7 +452,6 @@ func TestOutboxNotifierOwnChannelRoutingAndNoSecretInQueue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	// Секрет обязан лежать в базе зашифрованным — иначе тест ничего не proves.
 	var stored string
 	if err := pool.QueryRow(ctx, `SELECT secret FROM alert_channels WHERE id = $1`, ownCh).Scan(&stored); err != nil {
 		t.Fatalf("read stored secret: %v", err)
@@ -510,8 +477,6 @@ func TestOutboxNotifierOwnChannelRoutingAndNoSecretInQueue(t *testing.T) {
 		t.Fatalf("секрет попал в payload очереди: %+v", jobs[0].Payload)
 	}
 
-	// Путь доставки: воркер спрашивает секрет по channel_id и получает
-	// расшифрованный токен, а не хранимый шифротекст.
 	secret, err := asvc.ChannelSecret(ctx, jobs[0].ChannelID)
 	if err != nil {
 		t.Fatalf("ChannelSecret: %v", err)
@@ -521,11 +486,6 @@ func TestOutboxNotifierOwnChannelRoutingAndNoSecretInQueue(t *testing.T) {
 	}
 }
 
-// TestOutboxNotifierNotifyStepFiltersAndReturnsEnqueued — W2-C находка 2:
-// NotifyStep перезагружает инцидент+монитор по ID (Scheduler знает только
-// incidentID), фильтрует каналы по ladder[level].ChannelIDs ПОСЛЕ
-// Deliverable-гейта (как остальные 5 нотифаеров) и возвращает РЕАЛЬНО
-// заенкенные каналы, не полный список каналов монитора.
 func TestOutboxNotifierNotifyStepFiltersAndReturnsEnqueued(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	usvc := uptime.NewService(pool)
@@ -579,10 +539,6 @@ func TestOutboxNotifierNotifyStepFiltersAndReturnsEnqueued(t *testing.T) {
 	}
 }
 
-// TestOutboxNotifierNotifyStepUnknownIncidentErrors — NotifyStep обязан
-// вернуть ошибку, а не молча ничего не сделать, если incidentID не
-// резолвится (например, инцидент был удалён между постановкой шага в
-// планировщике и его исполнением).
 func TestOutboxNotifierNotifyStepUnknownIncidentErrors(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	usvc := uptime.NewService(pool)

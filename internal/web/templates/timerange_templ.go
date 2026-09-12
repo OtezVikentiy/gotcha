@@ -17,29 +17,17 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// TimeRangeVM — состояние единого селектора окна времени для шаблона. Строится
-// в web-слое из web.TimeRange: границы уже отформатированы под значение
-// <input type="datetime-local"> (на пресетах — пустые, чтобы форма не уводила
-// в произвольный диапазон при переключении пресета).
+// на пресетах Start/End пустые — иначе форма переключения пресета вела бы в произвольный диапазон.
 type TimeRangeVM struct {
-	// Key — активный пресет ("1h"/"24h"/"7d"/"30d") или "custom".
 	Key    string
 	Custom bool
-	// Start/End — value= для полей произвольного диапазона; пусты на пресетах.
-	Start string
-	End   string
-	// AllowAll — показывать пункт «за всё время».
-	//
-	// Осмыслен не везде: у графика без границ нет оси. Список проблем, наоборот,
-	// без него бесполезен — большинство групп старше суток, и окно по умолчанию
-	// прятало бы их за фильтр.
+	Start  string
+	End    string
+	// не для всех страниц осмыслен: у графика без границ нет оси.
+	// для списка проблем нужен — без него старые группы (>суток) прятались бы за окно по умолчанию.
 	AllowAll bool
 }
 
-// apply переносит текущее окно в query-параметры ссылки, чтобы соседние
-// переходы страницы (смена сортировки/окружения, под-навигация) сохраняли
-// выбранный диапазон, а не сбрасывали его на дефолт. Для произвольного
-// диапазона несёт period=custom + start/end, для пресета — только period.
 func (r TimeRangeVM) apply(q url.Values) {
 	if r.Key == "all" {
 		q.Set("period", "all")
@@ -52,25 +40,14 @@ func (r TimeRangeVM) apply(q url.Values) {
 		return
 	}
 	if r.Key == "" {
-		// Пустой ключ — это «состояние не задано», а не окно: писать
-		// «period=» в ссылку значит превращать чистый адрес в мусорный.
+		// пустой Key — «состояние не задано», не окно: писать period= значит мусорить чистый адрес.
 		return
 	}
 	q.Set("period", r.Key)
 }
 
-// timeRangeLabel — человекочитаемая подпись текущего окна для плиток/заголовков
-// (там, где раньше печатался сырой period). Пресет — локализованная короткая
-// подпись, произвольный диапазон — «с – по» в читаемом числовом формате
-// (ГГГГ-ММ-ДД ЧЧ:ММ).
-//
-// Раньше границы печатались как "02.01.2006 15:04" безусловно, в обеих
-// локалях. В английском интерфейсе "02.01.2026" читается и как второе января,
-// и как первое февраля — подпись диапазона неоднозначна ровно там, где
-// точность важнее всего (разбор инцидента). ГГГГ-ММ-ДД однозначен в любой
-// локали и совпадает по виду с остальными абсолютными метками времени в
-// интерфейсе (humanize.Time), поэтому prettyBound делегирует ей вместо
-// собственного Format — раздельного макета для этого одного места не нужно.
+// пресет — короткая локализованная подпись; произвольный диапазон — «с – по» в ГГГГ-ММ-ДД ЧЧ:ММ.
+// формат числовой: «02.01.2026» в английском можно прочесть и как 2 января, и как 1 февраля.
 func timeRangeLabel(r TimeRangeVM) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -95,7 +72,7 @@ func timeRangeLabel(r TimeRangeVM) templ.Component {
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(timeRangeLabelText(ctx, r))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 67, Col: 29}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 44, Col: 29}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
@@ -105,18 +82,7 @@ func timeRangeLabel(r TimeRangeVM) templ.Component {
 	})
 }
 
-// timeRangeLabelText — та же подпись строкой: для мест, где она подставляется
-// в чужой перевод параметром (заголовок «Задержка ({range})» на странице
-// монитора), а не рендерится компонентом. Единственный источник подписи —
-// селектор (timeRangeFields) и заголовки показывают одно и то же.
-//
-// Зона UTC обязательна: сервер и хранилище работают в UTC, оси графиков
-// подписаны в UTC, и введённое в пикере настенное время трактуется как UTC.
-// Без пометки пользователь в UTC+3 читает подпись как местное время и
-// ошибается на величину смещения. Раньше суффикс "UTC" дописывался один
-// раз в конец всей подписи (range.utc_note); теперь его пишет сама
-// humanize.Time на КАЖДОЙ границе — внешний суффикс убран, иначе на конце
-// получилось бы задвоенное "UTC UTC".
+// UTC на каждой границе пишет humanize.Time — не добавлять свой суффикс: будет «UTC UTC».
 func timeRangeLabelText(ctx context.Context, r TimeRangeVM) string {
 	if r.Custom {
 		return prettyBound(ctx, r.Start) + " – " + prettyBound(ctx, r.End)
@@ -124,12 +90,8 @@ func timeRangeLabelText(ctx context.Context, r TimeRangeVM) string {
 	return i18n.T(ctx, "range."+r.Key)
 }
 
-// prettyBound переформатирует границу диапазона из формата datetime-local
-// ("2006-01-02T15:04") для подписи. Значение с пикера трактуется как UTC (см.
-// timeRangeLabel), поэтому зона передана явно как time.UTC. Скрытые поля
-// переноса (cstart/cend) остаются в исходном формате — там важен round-trip,
-// а не вид. Нераспарсенная строка возвращается как есть — тот же fallback,
-// что был у собственного Format, на случай не-datetime-local значения.
+// значение с пикера трактуется как UTC — зона передаётся явно (time.UTC).
+// нераспарсенная строка возвращается как есть — фолбэк для не-datetime-local значений.
 func prettyBound(ctx context.Context, s string) string {
 	if t, err := time.Parse("2006-01-02T15:04", s); err == nil {
 		return humanize.Time(ctx, t, time.UTC)
@@ -137,17 +99,8 @@ func prettyBound(ctx context.Context, s string) string {
 	return s
 }
 
-// timeRangeFields — общий блок выбора окна: пресеты 1ч/24ч/7д/30д одним
-// <select> плюс два поля datetime-local для произвольного диапазона.
-// Встраивается в GET-форму фильтров каждой страницы с графиками. Работает без
-// JS: submit формы применяет выбор.
-//
-// Произвольный диапазон включается САМИМ вводом дат — отдельно выбирать «свой
-// диапазон» в списке не нужно (см. parseTimeRange, приоритет видимых start/end).
-// Поэтому видимые поля всегда пусты (под ввод нового диапазона), а активный
-// произвольный диапазон показывается подписью и переносится скрытыми cstart/
-// cend — так смена окружения/сортировки его не сбрасывает, а выбор пресета в
-// списке уводит обратно на пресет.
+// произвольный диапазон включается вводом дат, не пунктом списка — видимые поля всегда пусты.
+// активный диапазон переносится скрытыми cstart/cend, иначе смена сортировки/окружения его сбросит.
 func timeRangeFields(r TimeRangeVM) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -176,7 +129,7 @@ func timeRangeFields(r TimeRangeVM) templ.Component {
 		var templ_7745c5c3_Var4 string
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "range.picker.apply"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 120, Col: 50}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 70, Col: 50}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var4)
 		if templ_7745c5c3_Err != nil {
@@ -189,7 +142,7 @@ func timeRangeFields(r TimeRangeVM) templ.Component {
 		var templ_7745c5c3_Var5 string
 		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "range.picker.cancel"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 121, Col: 52}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 71, Col: 52}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var5)
 		if templ_7745c5c3_Err != nil {
@@ -202,7 +155,7 @@ func timeRangeFields(r TimeRangeVM) templ.Component {
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "range.picker.hint"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 122, Col: 48}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 72, Col: 48}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var6)
 		if templ_7745c5c3_Err != nil {
@@ -215,7 +168,7 @@ func timeRangeFields(r TimeRangeVM) templ.Component {
 		var templ_7745c5c3_Var7 string
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "range.picker.trigger"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 123, Col: 54}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 73, Col: 54}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var7)
 		if templ_7745c5c3_Err != nil {
@@ -228,7 +181,7 @@ func timeRangeFields(r TimeRangeVM) templ.Component {
 		var templ_7745c5c3_Var8 string
 		templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "range.picker.dialog"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 124, Col: 52}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 74, Col: 52}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var8)
 		if templ_7745c5c3_Err != nil {
@@ -241,7 +194,7 @@ func timeRangeFields(r TimeRangeVM) templ.Component {
 		var templ_7745c5c3_Var9 string
 		templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "range.picker.prev_month"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 125, Col: 54}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 75, Col: 54}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var9)
 		if templ_7745c5c3_Err != nil {
@@ -254,7 +207,7 @@ func timeRangeFields(r TimeRangeVM) templ.Component {
 		var templ_7745c5c3_Var10 string
 		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "range.picker.next_month"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 126, Col: 54}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 76, Col: 54}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var10)
 		if templ_7745c5c3_Err != nil {
@@ -267,7 +220,7 @@ func timeRangeFields(r TimeRangeVM) templ.Component {
 		var templ_7745c5c3_Var11 string
 		templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "filter.period"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 128, Col: 80}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 78, Col: 80}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var11)
 		if templ_7745c5c3_Err != nil {
@@ -297,7 +250,7 @@ func timeRangeFields(r TimeRangeVM) templ.Component {
 			var templ_7745c5c3_Var12 string
 			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "range.custom"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 136, Col: 65}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 86, Col: 65}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 			if templ_7745c5c3_Err != nil {
@@ -325,7 +278,7 @@ func timeRangeFields(r TimeRangeVM) templ.Component {
 		var templ_7745c5c3_Var13 string
 		templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "range.set_dates"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 144, Col: 71}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 92, Col: 71}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 		if templ_7745c5c3_Err != nil {
@@ -338,7 +291,7 @@ func timeRangeFields(r TimeRangeVM) templ.Component {
 		var templ_7745c5c3_Var14 string
 		templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "range.start"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 150, Col: 44}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 98, Col: 44}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var14)
 		if templ_7745c5c3_Err != nil {
@@ -351,7 +304,7 @@ func timeRangeFields(r TimeRangeVM) templ.Component {
 		var templ_7745c5c3_Var15 string
 		templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "range.end"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 157, Col: 42}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 105, Col: 42}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var15)
 		if templ_7745c5c3_Err != nil {
@@ -362,7 +315,7 @@ func timeRangeFields(r TimeRangeVM) templ.Component {
 			return templ_7745c5c3_Err
 		}
 		if r.Custom {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "   <span class=\"time-range-active\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "<span class=\"time-range-active\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -377,7 +330,7 @@ func timeRangeFields(r TimeRangeVM) templ.Component {
 			var templ_7745c5c3_Var16 string
 			templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.ResolveAttributeValue(r.Start)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 164, Col: 55}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 109, Col: 55}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var16)
 			if templ_7745c5c3_Err != nil {
@@ -390,7 +343,7 @@ func timeRangeFields(r TimeRangeVM) templ.Component {
 			var templ_7745c5c3_Var17 string
 			templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.ResolveAttributeValue(r.End)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 165, Col: 51}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 110, Col: 51}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var17)
 			if templ_7745c5c3_Err != nil {
@@ -409,8 +362,6 @@ func timeRangeFields(r TimeRangeVM) templ.Component {
 	})
 }
 
-// timeRangePresetOpt — <option> пресета с локализованной подписью и отметкой
-// выбранного (только когда активен именно пресет, не произвольный диапазон).
 func timeRangePresetOpt(value string, r TimeRangeVM) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -440,7 +391,7 @@ func timeRangePresetOpt(value string, r TimeRangeVM) templ.Component {
 			var templ_7745c5c3_Var19 string
 			templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.ResolveAttributeValue(value)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 176, Col: 23}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 119, Col: 23}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var19)
 			if templ_7745c5c3_Err != nil {
@@ -453,7 +404,7 @@ func timeRangePresetOpt(value string, r TimeRangeVM) templ.Component {
 			var templ_7745c5c3_Var20 string
 			templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "range."+value))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 176, Col: 64}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 119, Col: 64}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 			if templ_7745c5c3_Err != nil {
@@ -471,7 +422,7 @@ func timeRangePresetOpt(value string, r TimeRangeVM) templ.Component {
 			var templ_7745c5c3_Var21 string
 			templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.ResolveAttributeValue(value)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 178, Col: 23}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 121, Col: 23}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var21)
 			if templ_7745c5c3_Err != nil {
@@ -484,7 +435,7 @@ func timeRangePresetOpt(value string, r TimeRangeVM) templ.Component {
 			var templ_7745c5c3_Var22 string
 			templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "range."+value))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 178, Col: 55}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/timerange.templ`, Line: 121, Col: 55}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 			if templ_7745c5c3_Err != nil {

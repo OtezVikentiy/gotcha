@@ -2,9 +2,6 @@ package metric
 
 import "testing"
 
-// TestScalarAggExpr — SQL-выражение агрегации по типу метрики: у histogram
-// не-перцентиль даёт среднее наблюдение, у прочих — выбранную функцию, а
-// неизвестная агрегация падает в avg.
 func TestScalarAggExpr(t *testing.T) {
 	cases := []struct{ typ, agg, want string }{
 		{"histogram", "avg", "if(sum(count) = 0, 0, sum(value) / sum(count))"},
@@ -22,7 +19,6 @@ func TestScalarAggExpr(t *testing.T) {
 	}
 }
 
-// TestPercentileValue / TestIsPercentile — перцентильные агрегации.
 func TestPercentileValue(t *testing.T) {
 	for agg, want := range map[string]float64{"p50": 0.5, "p95": 0.95, "p99": 0.99, "avg": 0.5} {
 		if got := percentileValue(agg); got != want {
@@ -39,8 +35,6 @@ func TestPercentileValue(t *testing.T) {
 	}
 }
 
-// TestWorse — «хуже» зависит от направления сравнения: для lt меньшее хуже,
-// иначе большее.
 func TestWorse(t *testing.T) {
 	if worse("lt", 10, 5) != 5 {
 		t.Error("lt: 5 хуже 10")
@@ -56,8 +50,6 @@ func TestWorse(t *testing.T) {
 	}
 }
 
-// TestMatchersClause — пустой срез матчеров не добавляет ни SQL, ни
-// аргументов; N матчеров дают N AND-условий и 2N аргументов.
 func TestMatchersClause(t *testing.T) {
 	if matchersClause(nil) != "" {
 		t.Error("пустой срез матчеров должен давать пустой clause")
@@ -79,7 +71,6 @@ func TestMatchersClause(t *testing.T) {
 	}
 }
 
-// TestCompactMatchers — пустой Key отфильтровывается, непустой остаётся.
 func TestCompactMatchers(t *testing.T) {
 	if got := compactMatchers(nil); len(got) != 0 {
 		t.Errorf("compactMatchers(nil) = %v, want пусто", got)

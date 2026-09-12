@@ -7,8 +7,6 @@ import (
 	"testing"
 )
 
-// contextGroups парсит contexts-JSON в группы, сортирует по ключу и разворачивает
-// вложенность точечными ключами.
 func TestContextGroups(t *testing.T) {
 	js := `{"os":{"name":"Linux","version":"4.18"},"runtime":{"name":"php","version":"8.4"},"trace":{"op":"http.server","data":{"http.url":"https://x/y","route":"r"}}}`
 	groups := contextGroups(js)
@@ -58,7 +56,6 @@ func TestContextGroupsEmpty(t *testing.T) {
 	}
 }
 
-// requestRows вытаскивает суть запроса из trace.data в фиксированном порядке.
 func TestRequestRows(t *testing.T) {
 	js := `{"trace":{"data":{"http.request.method":"GET","http.url":"https://x/y","route":"gotcha_test_boom"}}}`
 	rows := requestRows(js)
@@ -79,7 +76,7 @@ func TestRequestRows(t *testing.T) {
 func TestJSONScalar(t *testing.T) {
 	cases := map[string]string{
 		`"hi"`:      "hi",
-		`42`:        "42", // целое без .0
+		`42`:        "42",
 		`3.5`:       "3.5",
 		`true`:      "true",
 		`["a","b"]`: `["a","b"]`,
@@ -92,7 +89,6 @@ func TestJSONScalar(t *testing.T) {
 	}
 }
 
-// parseBreadcrumbs понимает {"values":[…]} и прямой массив; label падает на type.
 func TestParseBreadcrumbs(t *testing.T) {
 	js := `{"values":[{"category":"query","level":"info","message":"SELECT 1"},{"type":"http","message":"GET /x","data":{"status":200}}]}`
 	bc := parseBreadcrumbs(js)

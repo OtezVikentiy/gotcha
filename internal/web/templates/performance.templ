@@ -14,28 +14,20 @@ func performancePath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/performance"
 }
 
-// endpointPath — ссылка на страницу эндпойнта. Имя транзакции недоверенное и
-// может содержать слэши, пробелы и произвольные символы, поэтому едет в пути
-// %-экранированным (PathEscape экранирует и «/» → «%2F», так что имя остаётся
-// одним сегментом пути); обработчик декодирует его обратно (url.PathUnescape).
+// имя транзакции недоверенное, может содержать «/» — PathEscape держит его одним сегментом пути.
+// обработчик декодирует обратно через url.PathUnescape.
 func endpointPath(projectID int64, transaction string) string {
 	return performancePath(projectID) + "/" + url.PathEscape(transaction)
 }
 
-// PerfFilter — состояние фильтров списка эндпойнтов (окно времени, окружение,
-// сортировка), нужно и для GET-формы фильтров, и для ссылок сортировки колонок.
 type PerfFilter struct {
 	Range       TimeRangeVM
 	Environment string
 	Sort        string
 }
 
-// sortAria — значение aria-sort для заголовка колонки: "none", если список
-// отсортирован не по ней, иначе направление. Совпадает с sortEndpointStats/
-// sortVitalPages: имя и apdex по возрастанию, метрики — по убыванию (сначала
-// худшие/самые нагруженные). CSS рисует стрелку через ::after по этому же
-// атрибуту, поэтому индикатор направления и семантика для скринридера — из
-// одного источника.
+// совпадает с sortEndpointStats/sortVitalPages: имя/apdex по возрастанию, метрики — по убыванию.
+// CSS рисует стрелку через ::after по этому же атрибуту — не менять его отдельно от направления.
 func sortAria(active, col string) string {
 	if active != col {
 		return "none"
@@ -46,8 +38,6 @@ func sortAria(active, col string) string {
 	return "descending"
 }
 
-// perfListSortURL — ссылка на список с заданной сортировкой, сохраняя окно и
-// окружение фильтра (клик по заголовку колонки).
 func perfListSortURL(projectID int64, f PerfFilter, sort string) string {
 	q := url.Values{}
 	f.Range.apply(q)
@@ -58,8 +48,6 @@ func perfListSortURL(projectID int64, f PerfFilter, sort string) string {
 	return performancePath(projectID) + "?" + q.Encode()
 }
 
-// formatDurationUS форматирует длительность из микросекунд человекочитаемо:
-// µs → ms → s. Перцентили и Apdex — колонки таблицы.
 func formatDurationUS(us uint32) string {
 	switch {
 	case us == 0:
@@ -73,10 +61,7 @@ func formatDurationUS(us uint32) string {
 	}
 }
 
-// formatThroughput — трафик с единицей по величине. Фиксированные «в минуту»
-// давали «0.0/min» во всех строках: при десятке транзакций за сутки это
-// 0.007/мин, и один знак после запятой всё схлопывал в ноль — колонка
-// переставала отвечать на вопрос «сколько запросов».
+// фиксированные «в минуту» давали «0.0/min» при малом трафике — единица подбирается по величине.
 func formatThroughput(ctx context.Context, perMin float64) string {
 	switch {
 	case perMin >= 1:
@@ -88,8 +73,7 @@ func formatThroughput(ctx context.Context, perMin float64) string {
 	}
 }
 
-// envList — окружения эндпойнта одной строкой. Пусто быть не должно (строка
-// существует, только если транзакции были), но подстраховываемся прочерком.
+// пусто быть не должно — подстраховка прочерком.
 func envList(envs []string) string {
 	if len(envs) == 0 {
 		return "—"
@@ -97,32 +81,25 @@ func envList(envs []string) string {
 	return strings.Join(envs, ", ")
 }
 
-// formatFailureRate — доля ошибок (0..1) в процентах с одним знаком.
 func formatFailureRate(rate float64) string {
 	return strconv.FormatFloat(rate*100, 'f', 1, 64) + "%"
 }
 
-// formatApdex — Apdex-балл (0..1) с двумя знаками.
 func formatApdex(score float64) string {
 	return strconv.FormatFloat(score, 'f', 2, 64)
 }
 
-// EndpointRow — строка списка эндпойнтов: агрегаты (trace.EndpointStat) плюс
-// уже собранный в web/performance.go SVG-спарклайн p95 (тот же приём, что и
-// MonitorRow: числовая агрегация в web-пакете, шаблон только форматирует).
+// спарклайн p95 уже собран в web/performance.go — тот же приём, что у MonitorRow.
 type EndpointRow struct {
 	Stat      trace.EndpointStat
 	Sparkline templ.Component
 }
 
-// metricHead — заголовок колонки-метрики с всплывающей расшифровкой (native
-// title, без JS, как у Web Vitals). Пунктир + курсор-help подсказывают, что на
-// метрику можно навести. Оборачивается в ссылку сортировки на месте вызова.
+// native title, без JS — пунктир и курсор-help подсказывают, что на метрику можно навести.
 templ metricHead(labelKey, helpKey string) {
 	<abbr class="metric-abbr" title={ i18n.T(ctx, helpKey) }>{ i18n.T(ctx, labelKey) }</abbr>
 }
 
-// perfEnvOption — <option> окружения с отметкой выбранного.
 templ perfEnvOption(value, label, selected string) {
 	if value == selected {
 		<option value={ value } selected>{ label }</option>
@@ -131,23 +108,16 @@ templ perfEnvOption(value, label, selected string) {
 	}
 }
 
-// PerformanceList — GET /projects/{id}/performance: таблица эндпойнтов проекта с
-// перцентилями, failure rate, Apdex (порог T = apdexT мс) и спарклайном p95.
-// total — полное число эндпойнтов до усечения списка (len(rows) — показанные):
-// если total больше, показывается пометка об усечении (как у waterfall).
-// loadFailed — ClickHouse не ответил: фильтры на месте, вместо таблицы —
-// «данные временно недоступны».
+// total — полное число до усечения списка (len(rows) — показанные).
+// loadFailed — ClickHouse не ответил: фильтры на месте, вместо таблицы «данные временно недоступны».
 templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter PerfFilter, environments []string, apdexT int, cardinality []CardinalityNotice, userEmail string, loadFailed bool) {
-	// Канон имени раздела — «Транзакции» (№24): рейл, сайдбар, h1, <title> и
-	// крошки зовут его одинаково. «Эндпойнты» (perf.endpoints) остаётся
-	// термином ДАННЫХ — заголовком таблицы ниже, но не именем раздела.
+	// раздел называется «Транзакции» везде (рейл/сайдбар/h1/title/крошки).
+	// «Эндпойнты» (perf.endpoints) — термин данных, не имя раздела.
 	@layout(i18n.T(ctx, "nav.transactions"), userEmail) {
 		<div class="performance">
 			<h1>{ i18n.T(ctx, "nav.transactions") }</h1>
 			@helpPanel("performance", "performance")
-			// Предупреждение о схлопнутом хвосте — ЗДЕСЬ, а не в логах: человек
-			// смотрит на список эндпойнтов, и именно тут он замечает, что часть
-			// имён пропала.
+			// предупреждение о кардинальности — здесь, не в логах: тут видно, что часть имён пропала.
 			@cardinalityNoticeView(cardinality)
 			<form method="get" action={ templ.URL(performancePath(projectID)) } class="performance-filters">
 				<select name="environment" class="select" aria-label={ i18n.T(ctx, "filter.environment") }>

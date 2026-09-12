@@ -8,9 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/incidentgroup"
 )
 
-// TestFeedItemHrefKnownSources — feedItemHref обязан переиспользовать
-// билдеры путей родного экрана каждого источника (§6.1): проверяем все 6
-// известных веток switch'а по отдельности.
 func TestFeedItemHrefKnownSources(t *testing.T) {
 	const projectID = int64(42)
 	cases := []struct {
@@ -35,9 +32,6 @@ func TestFeedItemHrefKnownSources(t *testing.T) {
 	}
 }
 
-// TestFeedItemHrefUnknownSourceFallsBackToOverviewPath — источник, не
-// входящий ни в одну из 6 известных веток, обязан упасть в default: ссылка
-// на «Обзор» (overviewPath), а не паника/пустая строка.
 func TestFeedItemHrefUnknownSourceFallsBackToOverviewPath(t *testing.T) {
 	const projectID = int64(42)
 	got := feedItemHref(projectID, incidentgroup.FeedItem{Source: "bogus"})
@@ -50,10 +44,6 @@ func TestFeedItemHrefUnknownSourceFallsBackToOverviewPath(t *testing.T) {
 	}
 }
 
-// TestNewGroupCardCounts — счётчики карточки группы считаются по Source
-// членов (host N · uptime N · metric N · slo N); неизвестный source (не
-// должен встречаться в реальных данных, но defensive) не должен ломать счёт
-// и не должен попасть ни в одну из 4 корзин.
 func TestNewGroupCardCounts(t *testing.T) {
 	members := []incidentgroup.FeedItem{
 		{Source: "host"}, {Source: "host"},
@@ -71,8 +61,6 @@ func TestNewGroupCardCounts(t *testing.T) {
 	}
 }
 
-// TestGroupCardResolvedBadge — бейдж «решена» рисуется только когда у
-// группы проставлен ResolvedAt; счётчики состава попадают в подсказку.
 func TestGroupCardResolvedBadge(t *testing.T) {
 	base := incidentgroup.GroupRow{
 		Group:    incidentgroup.Group{RootSource: "host", StartedAt: time.Now()},
@@ -86,7 +74,6 @@ func TestGroupCardResolvedBadge(t *testing.T) {
 	if !strings.Contains(openHTML, "всего 2 (Хост 1 · Аптайм 1)") {
 		t.Errorf("open group card missing composition hint: %s", openHTML)
 	}
-	// Нулевые источники (metric/slo) не должны попадать в подсказку (W12).
 	if strings.Contains(openHTML, "Метрика 0") || strings.Contains(openHTML, "SLO 0") {
 		t.Errorf("composition hint must omit zero-count sources: %s", openHTML)
 	}
@@ -103,9 +90,6 @@ func TestGroupCardResolvedBadge(t *testing.T) {
 	}
 }
 
-// TestGroupCardEmptyMembers — группа без состава (гипотетически, для
-// устойчивости шаблона к пустому срезу): рендерится без паники, таблица без
-// строк.
 func TestGroupCardEmptyMembers(t *testing.T) {
 	c := NewGroupCard(incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "uptime", StartedAt: time.Now()}}, nil)
 	html := renderTo(t, groupCard(1, c, true))
@@ -117,10 +101,6 @@ func TestGroupCardEmptyMembers(t *testing.T) {
 	}
 }
 
-// TestFeedItemRowBadgesAndSubKind — feedItemRow: SubKind-подсказка,
-// suppressed-by-dep и acked-бейджи рисуются независимо друг от друга и
-// только когда соответствующее поле выставлено; severity-бейдж не рисуется
-// при пустой Severity.
 func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 	base := incidentgroup.FeedItem{Source: "host", Title: "web-1", StartedAt: time.Now()}
 
@@ -135,8 +115,6 @@ func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 	withSubKind := base
 	withSubKind.SubKind = "disk"
 	subKindHTML := renderTo(t, feedItemRow(1, withSubKind, nil, true))
-	// W13: SubKind рисуется переведённым (hosts.kind.disk), не сырым
-	// значением из БД.
 	if !strings.Contains(subKindHTML, "· Диск") {
 		t.Errorf("row with SubKind must render the translated hint: %s", subKindHTML)
 	}
@@ -173,8 +151,6 @@ func TestFeedItemRowBadgesAndSubKind(t *testing.T) {
 	}
 }
 
-// TestFeedItemRowSeverityBadge — Severity="" — бейдж severity не рисуется
-// вовсе; непустая Severity — рисуется (класс danger для critical).
 func TestFeedItemRowSeverityBadge(t *testing.T) {
 	noSeverity := renderTo(t, feedItemRow(1, incidentgroup.FeedItem{Source: "host", StartedAt: time.Now()}, nil, true))
 	if strings.Contains(noSeverity, "badge-danger") || strings.Contains(noSeverity, "badge-warn") {
@@ -187,8 +163,6 @@ func TestFeedItemRowSeverityBadge(t *testing.T) {
 	}
 }
 
-// TestIncidentFeedOpenGroupsSection — секция «Открытые группы» непуста:
-// карточка рендерится, заглушка «Открытых групп нет» отсутствует.
 func TestIncidentFeedOpenGroupsSection(t *testing.T) {
 	group := NewGroupCard(
 		incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "host", StartedAt: time.Now()}},
@@ -201,7 +175,6 @@ func TestIncidentFeedOpenGroupsSection(t *testing.T) {
 	if !strings.Contains(html, "Хост недоступен") {
 		t.Errorf("open group card must render its root label: %s", html)
 	}
-	// Остальные две секции по-прежнему пусты.
 	if !strings.Contains(html, "Открытых инцидентов вне групп нет") {
 		t.Errorf("out-of-group section must still show its empty state: %s", html)
 	}
@@ -210,8 +183,6 @@ func TestIncidentFeedOpenGroupsSection(t *testing.T) {
 	}
 }
 
-// TestIncidentFeedOutOfGroupAllSixSources — все 6 источников во «вне групп»
-// рендерятся строками таблицы с локализованной подписью источника.
 func TestIncidentFeedOutOfGroupAllSixSources(t *testing.T) {
 	sources := []string{"host", "uptime", "metric", "slo", "trace", "profile"}
 	labels := map[string]string{
@@ -238,10 +209,6 @@ func TestIncidentFeedOutOfGroupAllSixSources(t *testing.T) {
 	}
 }
 
-// TestIncidentFeedClosedGroupsWithoutOutOfGroupItems — closedGroups непуст,
-// но closed (внегрупповые закрытые) пуст: карточки закрытых групп рисуются,
-// но НИ заглушка «ничего не решалось», НИ отдельная таблица внегрупповых
-// закрытых не рисуются (ветка else-if len(closed)>0 не срабатывает).
 func TestIncidentFeedClosedGroupsWithoutOutOfGroupItems(t *testing.T) {
 	resolvedAt := time.Now()
 	closedGroup := NewGroupCard(
@@ -260,9 +227,6 @@ func TestIncidentFeedClosedGroupsWithoutOutOfGroupItems(t *testing.T) {
 	}
 }
 
-// TestIncidentFeedClosedOutOfGroupWithoutGroups — обратная комбинация:
-// closedGroups пуст, closed (внегрупповые) непуст — таблица внегрупповых
-// закрытых рисуется, заглушка отсутствует, карточек групп нет.
 func TestIncidentFeedClosedOutOfGroupWithoutGroups(t *testing.T) {
 	closed := []incidentgroup.FeedItem{{Source: "host", Title: "closed-lone", StartedAt: time.Now()}}
 	html := renderTo(t, Overview(1, "24h", nil, nil, nil, closed, FeedCaps{}, true, StatusLine{}, nil, ""))
@@ -274,8 +238,6 @@ func TestIncidentFeedClosedOutOfGroupWithoutGroups(t *testing.T) {
 	}
 }
 
-// TestIncidentFeedProjectIDInLinks — projectID прокидывается в ссылки строк
-// (feedItemHref), а не теряется по пути в IncidentFeed -> feedItemRow.
 func TestIncidentFeedProjectIDInLinks(t *testing.T) {
 	const projectID = int64(777)
 	items := []incidentgroup.FeedItem{{Source: "metric", Title: "m1", StartedAt: time.Now()}}
@@ -289,10 +251,6 @@ func TestIncidentFeedProjectIDInLinks(t *testing.T) {
 	}
 }
 
-// TestFeedItemHrefHostReusesHostLink — W23: ссылка на хост-источник обязана
-// приходить из hostLink (hosts.templ), а не из собственного дубля пути —
-// иначе побитовое совпадение с TestFeedItemHrefKnownSources было бы просто
-// совпадением значений, а не доказательством переиспользования.
 func TestFeedItemHrefHostReusesHostLink(t *testing.T) {
 	const projectID = int64(9)
 	item := incidentgroup.FeedItem{Source: "host", RefName: "db/replica 1"}
@@ -303,16 +261,6 @@ func TestFeedItemHrefHostReusesHostLink(t *testing.T) {
 	}
 }
 
-// TestOverviewHelpPanelAndBackLink — W16/W28: страница объясняет себя
-// (helpPanel со ссылкой на собственный гайд /docs/overview — до появления
-// этой страницы панель вела на /docs/incident-groups, ближайший по смыслу
-// раздел) и ведёт обратно на
-// страницу аптайм-инцидентов (/projects/{id}/incidents), а не только
-// наоборот. Подпись ссылки — "Сбои доступности" (nav.incidents), не
-// "Инциденты": прежняя строка ассерта уже разъехалась с каталогом
-// (nav.incidents переименован в более раннем разделе фичи) и была
-// самотавтологичной находкой — здесь она литералом, попутно с переносом
-// теста на Overview.
 func TestOverviewHelpPanelAndBackLink(t *testing.T) {
 	const projectID = int64(5)
 	html := renderTo(t, Overview(projectID, "24h", nil, nil, nil, nil, FeedCaps{}, true, StatusLine{}, nil, ""))
@@ -331,9 +279,6 @@ func TestOverviewHelpPanelAndBackLink(t *testing.T) {
 	}
 }
 
-// TestIncidentFeedTableHeadColumns — W19: таблицы состава группы, вне групп
-// и закрытых внегрупповых обязаны нести подписи колонок (thead), а не
-// голые 4 колонки без заголовка.
 func TestIncidentFeedTableHeadColumns(t *testing.T) {
 	group := NewGroupCard(
 		incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "host", StartedAt: time.Now()}},
@@ -344,19 +289,12 @@ func TestIncidentFeedTableHeadColumns(t *testing.T) {
 	html := renderTo(t, Overview(1, "24h", []GroupCard{group}, outOfGroup, nil, closed, FeedCaps{}, true, StatusLine{}, nil, ""))
 
 	wantHeaders := []string{"Источник", "Название", "Статус", "Начало", "Решено"}
-	// 3 непустых таблицы (состав группы, вне групп, закрытые) — по одной
-	// шапке на каждую: считаем вхождения ровно 3 на колонку, не "хотя бы
-	// одна", иначе мутация, потерявшая @feedTableHead в одном из трёх мест,
-	// прошла бы незамеченной.
 	for _, h := range wantHeaders {
 		want := `<th scope="col">` + h + `</th>`
 		if got := strings.Count(html, want); got != 3 {
 			t.Errorf("column header %q: found %d times, want 3 (group/out-of-group/closed): %s", h, got, html)
 		}
 	}
-	// Мутация, снимающая контейнер <thead>/</thead> и оставляющая голые
-	// <th>, не должна проходить незамеченной: считаем сам контейнер отдельно
-	// от подписей колонок, ровно 3 раза (по таблице на секцию).
 	for _, tag := range []string{"<thead>", "</thead>"} {
 		if got := strings.Count(html, tag); got != 3 {
 			t.Errorf("%s: found %d times, want 3 (group/out-of-group/closed): %s", tag, got, html)
@@ -364,9 +302,6 @@ func TestIncidentFeedTableHeadColumns(t *testing.T) {
 	}
 }
 
-// TestIncidentFeedDistinctAriaLabels — W20: скролл-регионы состава группы,
-// внегрупповых и закрытых обязаны иметь РАЗНЫЕ aria-label, иначе диктор не
-// отличает их друг от друга (раньше все три несли "Лента инцидентов").
 func TestIncidentFeedDistinctAriaLabels(t *testing.T) {
 	group := NewGroupCard(
 		incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "host", StartedAt: time.Now()}},
@@ -389,9 +324,6 @@ func TestIncidentFeedDistinctAriaLabels(t *testing.T) {
 	}
 }
 
-// TestIncidentFeedEmptyStatesUseEmptyStateComponent — W18: пустые секции
-// рендерятся через @emptyState (иконка + заголовок + текст), а не голым
-// <p class="hint">.
 func TestOverviewPartialEmptySectionsUseEmptyStateComponent(t *testing.T) {
 	openGroups := []GroupCard{NewGroupCard(
 		incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "host", StartedAt: time.Now()}},
@@ -404,18 +336,11 @@ func TestOverviewPartialEmptySectionsUseEmptyStateComponent(t *testing.T) {
 	if got := strings.Count(html, `href="#i-activity"`); got != 2 {
 		t.Errorf("empty sections must use the activity icon: got %d uses, want 2: %s", got, html)
 	}
-	// Единственный оставшийся <p class="hint"> — ссылка назад на /incidents
-	// под <h1> (не относится к пустым состояниям); если бы эмпти-стейты
-	// откатились на старый голый абзац, счёт вырос бы до 3.
 	if got := strings.Count(html, `<p class="hint">`); got != 1 {
 		t.Errorf("only the back-link hint paragraph should remain, empty sections must use @emptyState: got %d <p class=\"hint\"> blocks, want 1: %s", got, html)
 	}
 }
 
-// TestOverviewEmptyProjectShowsGettingStartedInvite — задача 6 nav-ia:
-// проект без единого инцидента ни в одной из четырёх выборок получает не три
-// «нет данных» подряд (выглядело бы как поломка на первом же экране
-// проекта), а одно приглашение подключить SDK со ссылкой на «Первые шаги».
 func TestOverviewEmptyProjectShowsGettingStartedInvite(t *testing.T) {
 	const projectID = int64(11)
 	html := renderTo(t, Overview(projectID, "24h", nil, nil, nil, nil, FeedCaps{}, true, StatusLine{}, nil, ""))
@@ -434,9 +359,6 @@ func TestOverviewEmptyProjectShowsGettingStartedInvite(t *testing.T) {
 	}
 }
 
-// TestFeedItemSubKindTranslatesTraceMetric — W13: trace-подвид (perf_regressions.metric)
-// рисуется через regressionMetricLabel (тот же помощник, что и regressions.templ),
-// не сырым значением metric.
 func TestFeedItemSubKindTranslatesTraceMetric(t *testing.T) {
 	item := incidentgroup.FeedItem{Source: "trace", Title: "t1", SubKind: "duration", StartedAt: time.Now()}
 	html := renderTo(t, feedItemRow(1, item, nil, true))
@@ -448,10 +370,6 @@ func TestFeedItemSubKindTranslatesTraceMetric(t *testing.T) {
 	}
 }
 
-// TestFeedItemSubKindProfilePassesThroughRaw — W13: profile_type нигде в
-// продукте не переводится (profileregressions.templ печатает его как есть)
-// — лента обязана быть с этим согласована, а не внезапно завести перевод,
-// которого нет на родной странице источника.
 func TestFeedItemSubKindProfilePassesThroughRaw(t *testing.T) {
 	item := incidentgroup.FeedItem{Source: "profile", Title: "svc", SubKind: "cpu", StartedAt: time.Now()}
 	html := renderTo(t, feedItemRow(1, item, nil, true))
@@ -460,10 +378,6 @@ func TestFeedItemSubKindProfilePassesThroughRaw(t *testing.T) {
 	}
 }
 
-// TestFeedItemRowHeldByGroupBadge — W15: бейдж «молчит — уведомляет корень»
-// рисуется только при HeldByGroup=true, независимо от SuppressedByDep (уже
-// покрыт TestFeedItemRowBadgesAndSubKind) — оба могут стоять одновременно,
-// ни один не подменяет другой.
 func TestFeedItemRowHeldByGroupBadge(t *testing.T) {
 	base := incidentgroup.FeedItem{Source: "metric", Title: "m1", StartedAt: time.Now()}
 	plainHTML := renderTo(t, feedItemRow(1, base, nil, true))
@@ -486,10 +400,6 @@ func TestFeedItemRowHeldByGroupBadge(t *testing.T) {
 	}
 }
 
-// TestFeedItemRowResolvedBadgeAndTime — W14: закрывшийся член ОТКРЫТОЙ
-// группы обязан нести и бейдж «Решён», и время закрытия — не только время
-// начала. Проверяем через datetime-атрибут relativeTime (детерминированный,
-// в отличие от "N часов назад").
 func TestFeedItemRowResolvedBadgeAndTime(t *testing.T) {
 	started := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
 	resolved := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -517,10 +427,6 @@ func TestFeedItemRowResolvedBadgeAndTime(t *testing.T) {
 	if !strings.Contains(resolvedHTML, resolvedDT) {
 		t.Errorf("resolved member row must show its resolved time too, not just started: %s", resolvedHTML)
 	}
-	// K9-14: начало и закрытие — в РАЗНЫХ ячейках под своими заголовками, а
-	// не два относительных времени подряд в одной («3 дня назадтолько что»).
-	// Между двумя datetime обязан стоять закрывающий </td>; у открытой
-	// строки та же пятая ячейка есть, но пустая — ширина таблицы не пляшет.
 	for name, html := range map[string]string{"open": openHTML, "resolved": resolvedHTML} {
 		if got := strings.Count(html, "<td"); got != 5 {
 			t.Errorf("%s row: %d cells, want 5 (source/title/status/started/resolved): %s", name, got, html)
@@ -532,11 +438,6 @@ func TestFeedItemRowResolvedBadgeAndTime(t *testing.T) {
 	}
 }
 
-// TestFeedItemRowWasGroupedBadge — бейдж «была в группе» рисуется только
-// при FormerGroupID != 0; ссылка на якорь карточки — только когда её ID
-// входит в closedGroupIDs (карточка реально отрендерена на странице), иначе
-// голый текст без ссылки; пустое FormerGroupRootName (группа удалена
-// janitor'ом целиком) переиспользует тот же фолбэк, что и W22.
 func TestFeedItemRowWasGroupedBadge(t *testing.T) {
 	plain := incidentgroup.FeedItem{Source: "host", Title: "m1", StartedAt: time.Now()}
 	plainHTML := renderTo(t, feedItemRow(1, plain, nil, true))
@@ -569,9 +470,6 @@ func TestFeedItemRowWasGroupedBadge(t *testing.T) {
 	}
 }
 
-// TestGroupCardRootSeverityBadge — W24: severity-бейдж корня в шапке
-// карточки; пустая RootSeverity (uptime-корень, у incidents нет колонки
-// severity) бейдж не рисует вовсе.
 func TestGroupCardRootSeverityBadge(t *testing.T) {
 	critical := NewGroupCard(incidentgroup.GroupRow{
 		Group:        incidentgroup.Group{RootSource: "host", StartedAt: time.Now()},
@@ -591,10 +489,6 @@ func TestGroupCardRootSeverityBadge(t *testing.T) {
 	}
 }
 
-// TestGroupCardShowsResolvedTimeNotStartedAt — W21: закрытая группа
-// показывает в шапке время ЗАКРЫТИЯ (тот же ключ, по которому отсортирована
-// секция «закрытые» — ClosedGroupsSince ORDER BY resolved_at DESC), а не
-// время начала — иначе порядок карточек на странице выглядит случайным.
 func TestGroupCardShowsResolvedTimeNotStartedAt(t *testing.T) {
 	started := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
 	resolved := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -617,10 +511,6 @@ func TestGroupCardShowsResolvedTimeNotStartedAt(t *testing.T) {
 	}
 }
 
-// TestGroupCardDeletedRootFallback — W22: корень с пустым RootName (узел
-// удалён) обязан показать текстовый фолбэк, а не пустую строку, и не
-// рисовать вырожденную ссылку (host — на /projects/{id}/hosts/, monitor —
-// на несуществующую карточку).
 func TestGroupCardDeletedRootFallback(t *testing.T) {
 	c := NewGroupCard(incidentgroup.GroupRow{
 		Group:    incidentgroup.Group{RootSource: "host", RootNodeKind: "host", StartedAt: time.Now()},
@@ -635,12 +525,6 @@ func TestGroupCardDeletedRootFallback(t *testing.T) {
 	}
 }
 
-// TestFeedItemRowDeletedMemberFallback — W22 (симметрия для члена группы,
-// а не только корня): пустой it.Title обязан показать текстовый фолбэк
-// (тот же feed.group.root_deleted, что и у корня) и не рисовать вырожденную
-// ссылку с пустым текстом (<a href="...">< /a>). На проде недостижимо (FK
-// ON DELETE CASCADE у всех 4 источников-членов, см. докблок feedMemberSelect
-// в group.go), но рендер обязан оставаться защитным.
 func TestFeedItemRowDeletedMemberFallback(t *testing.T) {
 	it := incidentgroup.FeedItem{Source: "host", Title: "", RefName: "", StartedAt: time.Now()}
 	html := renderTo(t, feedItemRow(1, it, nil, true))
@@ -655,9 +539,6 @@ func TestFeedItemRowDeletedMemberFallback(t *testing.T) {
 	}
 }
 
-// TestGroupCardRootNameLinksToHostDetail — W22 (positive case): непустое
-// имя корня — ссылка на родную страницу узла (hostLink, тот же билдер, что
-// и feedItemHref/hosts.templ), не голый текст.
 func TestGroupCardRootNameLinksToHostDetail(t *testing.T) {
 	c := NewGroupCard(incidentgroup.GroupRow{
 		Group:    incidentgroup.Group{RootSource: "host", RootNodeKind: "host", StartedAt: time.Now()},
@@ -670,11 +551,6 @@ func TestGroupCardRootNameLinksToHostDetail(t *testing.T) {
 	}
 }
 
-// TestIncidentFeedWasGroupedBadgeLinksToRenderedClosedGroup — интеграционно
-// (уровень IncidentFeed, не голого feedItemRow): closedGroupIDSet реально
-// прокидывается из closedGroups в строки «вне групп», а не теряется по
-// дороге — иначе TestFeedItemRowWasGroupedBadge проверял бы helper в
-// вакууме, а не то, что видит пользователь на странице.
 func TestIncidentFeedWasGroupedBadgeLinksToRenderedClosedGroup(t *testing.T) {
 	closedGroup := NewGroupCard(
 		incidentgroup.GroupRow{Group: incidentgroup.Group{ID: 42, RootSource: "host", StartedAt: time.Now()}, RootName: "root-1"},
@@ -693,12 +569,6 @@ func TestIncidentFeedWasGroupedBadgeLinksToRenderedClosedGroup(t *testing.T) {
 	}
 }
 
-// TestFeedItemLinkable — W9: только metric/slo зависят от canOperate. Оба
-// источника ведут на lvlOperator-страницы (/projects/{id}/metrics/alerts,
-// /projects/{id}/slos — authz_map_test.go), лента же отдаётся любому
-// участнику проекта с доступом (lvlAccess) — без гейта рядовой участник
-// видел бы ссылку, закрывающуюся 404. Остальные 4 источника ведут на
-// lvlAccess-страницы и не зависят от canOperate вовсе.
 func TestFeedItemLinkable(t *testing.T) {
 	cases := []struct {
 		source              string
@@ -725,10 +595,6 @@ func TestFeedItemLinkable(t *testing.T) {
 	}
 }
 
-// TestFeedItemRowHidesOperatorOnlyLinkForNonOperator — рендер-уровень W9:
-// non-operator видит имя metric/slo-инцидента как голый текст, БЕЗ <a href>
-// на operator-страницу; host виден со ссылкой независимо от canOperate
-// (его родная страница — lvlAccess, canOperate её не касается).
 func TestFeedItemRowHidesOperatorOnlyLinkForNonOperator(t *testing.T) {
 	const projectID = int64(7)
 	metricItem := incidentgroup.FeedItem{Source: "metric", Title: "cpu.load rule", StartedAt: time.Now()}

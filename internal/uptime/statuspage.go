@@ -13,7 +13,6 @@ import (
 
 var ErrInvalidStatusPage = errors.New("uptime: invalid status page")
 
-// StatusPage — публичная страница статуса проекта.
 type StatusPage struct {
 	ID          int64
 	ProjectID   int64
@@ -23,18 +22,14 @@ type StatusPage struct {
 	Enabled     bool
 }
 
-// StatusPageMonitor — монитор, показанный на статус-странице.
 type StatusPageMonitor struct {
 	MonitorID   int64
 	DisplayName string
 	Position    int
 }
 
-// newStatusPagePublicID — непрозрачный публичный ключ страницы: "p_" + 24 hex
-// (12 случайных байт). Неугадываемо, URL-safe; префикс "p_" отделяет ключ от
-// legacy-slug'ов в резолве публичного маршрута. Формат совпадает с DEFAULT на
-// колонке public_id (миграция 0062) — тот DEFAULT для INSERT старого бинаря на
-// переходном окне, а этот генератор — явный путь для нового кода.
+// префикс "p_" отличает от legacy-slug при резолве; формат совпадает с
+// DEFAULT колонки public_id (миграция 0062) для INSERT старым бинарём.
 func newStatusPagePublicID() (string, error) {
 	raw := make([]byte, 12)
 	if _, err := rand.Read(raw); err != nil {
@@ -43,9 +38,6 @@ func newStatusPagePublicID() (string, error) {
 	return "p_" + hex.EncodeToString(raw), nil
 }
 
-// validateStatusPage — с T5 (миграция 0063 удалила колонку slug) поле Slug
-// у StatusPage больше не существует, публичный адрес страницы — только
-// public_id; единственное, что здесь проверяется — непустой Title.
 func validateStatusPage(sp StatusPage) error {
 	if sp.Title == "" {
 		return fmt.Errorf("%w: title must not be empty", ErrInvalidStatusPage)
@@ -67,17 +59,10 @@ func replaceStatusPageMonitors(ctx context.Context, tx pgx.Tx, statusPageID int6
 	return nil
 }
 
-// statusPagePublicIDConstraint — имя UNIQUE-constraint'а на public_id
-// (миграция 0062: `ALTER TABLE status_pages ADD CONSTRAINT
-// status_pages_public_id_key UNIQUE (public_id)`). Используется, чтобы
-// отличить настоящую коллизию public_id от ЛЮБОЙ другой 23505-ошибки внутри
-// той же попытки — см. CreateStatusPage.
+// используется, чтобы отличить настоящую коллизию public_id от любой
+// другой 23505-ошибки внутри той же попытки — см. CreateStatusPage.
 const statusPagePublicIDConstraint = "status_pages_public_id_key"
 
-// CreateStatusPage creates a status page together with its monitor list in
-// one transaction. Публичный адрес страницы — сгенерированный public_id;
-// поля slug у StatusPage больше нет (T5, миграция 0063 удалила колонку). На
-// коллизии public_id — новый ключ и повтор, см. createStatusPageAttempt.
 func (s *Service) CreateStatusPage(ctx context.Context, sp StatusPage, monitors []StatusPageMonitor) (StatusPage, error) {
 	if err := validateStatusPage(sp); err != nil {
 		return StatusPage{}, err
@@ -91,27 +76,19 @@ func (s *Service) CreateStatusPage(ctx context.Context, sp StatusPage, monitors 
 		if err == nil {
 			return created, nil
 		}
-		// Ретраим ТОЛЬКО настоящую коллизию public_id — по имени constraint'а,
-		// а не по коду 23505: тот же код даёт и PK-нарушение
-		// status_page_monitors_pkey (дубль monitor_id во входных мониторах,
-		// см. replaceStatusPageMonitors), и его нельзя молча трактовать как
-		// "повезло, возьмём другой ключ" — иначе цикл сожжёт все попытки на
-		// детерминированно повторяющейся ошибке и вернёт неверный диагноз.
+		// ретраим только коллизию public_id — по имени constraint'а, не по коду
+		// 23505: тот же код даёт и PK-нарушение status_page_monitors_pkey (дубль monitor_id).
 		var pgErr *pgconn.PgError
 		if !errors.As(err, &pgErr) || pgErr.ConstraintName != statusPagePublicIDConstraint {
 			return StatusPage{}, err
 		}
-		// коллизия public_id: 12 случайных байт делают её практически
-		// невероятной, но генератор не гарантирует уникальность сам по
-		// себе — берём новый ключ и повторяем вставку.
+		// коллизия почти невероятна (12 случайных байт), но генератор её не гарантирует.
 	}
 	return StatusPage{}, fmt.Errorf("uptime: create status page: public id collision after %d attempts: %w", maxPublicIDAttempts, err)
 }
 
-// createStatusPageAttempt — одна попытка вставки status page с новым
-// public_id, в собственной транзакции (после unique-violation транзакция
-// испорчена до ROLLBACK, поэтому повтор для той же tx невозможен —
-// CreateStatusPage начинает новую попытку с нуля).
+// своя транзакция на попытку: после unique-violation tx испорчена до
+// ROLLBACK, повторить в той же tx нельзя — CreateStatusPage начинает заново.
 func (s *Service) createStatusPageAttempt(ctx context.Context, sp StatusPage, monitors []StatusPageMonitor) (StatusPage, error) {
 	publicID, err := newStatusPagePublicID()
 	if err != nil {
@@ -144,8 +121,7 @@ func (s *Service) createStatusPageAttempt(ctx context.Context, sp StatusPage, mo
 	return sp, nil
 }
 
-// UpdateStatusPage replaces a status page's fields and monitor list.
-// Публичный адрес — public_id, он неизменяем и Update его не трогает.
+// public_id неизменяем — Update его не трогает.
 func (s *Service) UpdateStatusPage(ctx context.Context, sp StatusPage, monitors []StatusPageMonitor) error {
 	if err := validateStatusPage(sp); err != nil {
 		return err
@@ -178,7 +154,6 @@ func (s *Service) UpdateStatusPage(ctx context.Context, sp StatusPage, monitors 
 	return nil
 }
 
-// DeleteStatusPage deletes a status page by id.
 func (s *Service) DeleteStatusPage(ctx context.Context, id int64) error {
 	tag, err := s.pool.Exec(ctx, "DELETE FROM status_pages WHERE id = $1", id)
 	if err != nil {
@@ -190,18 +165,14 @@ func (s *Service) DeleteStatusPage(ctx context.Context, id int64) error {
 	return nil
 }
 
-// statusPageColumns — общий список колонок и порядок для scanStatusPage.
+// порядок совпадает со scanStatusPage.
 const statusPageColumns = "id, project_id, public_id, title, description, enabled"
 
-// scanStatusPage сканирует одну строку status_pages (порядок колонок —
-// statusPageColumns) в sp.
 func scanStatusPage(row interface{ Scan(dest ...any) error }, sp *StatusPage) error {
 	return row.Scan(&sp.ID, &sp.ProjectID, &sp.PublicID, &sp.Title, &sp.Description, &sp.Enabled)
 }
 
-// StatusPagesOf returns projectID's status pages (enabled and disabled),
-// ordered by title (slug больше не годится как порядок — новые страницы его
-// не задают).
+// сортировка по title, не по slug — новые страницы slug не задают.
 func (s *Service) StatusPagesOf(ctx context.Context, projectID int64) ([]StatusPage, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+statusPageColumns+`
@@ -221,10 +192,8 @@ func (s *Service) StatusPagesOf(ctx context.Context, projectID int64) ([]StatusP
 	return out, rows.Err()
 }
 
-// StatusPageByPublicID returns an enabled status page and its monitors by
-// public_id (the public, unauthenticated lookup). Disabled pages and unknown
-// keys both yield ErrNotFound — a disabled page must be indistinguishable
-// from one that doesn't exist.
+// disabled и несуществующий public_id оба дают ErrNotFound — выключенную
+// страницу нельзя отличить снаружи от той, которой не существует.
 func (s *Service) StatusPageByPublicID(ctx context.Context, publicID string) (StatusPage, []StatusPageMonitor, error) {
 	var sp StatusPage
 	row := s.pool.QueryRow(ctx, `
@@ -245,8 +214,7 @@ func (s *Service) StatusPageByPublicID(ctx context.Context, publicID string) (St
 	return sp, monitors, nil
 }
 
-// StatusPageForRedirect: legacy slug → public_id для 301, ТОЛЬКО enabled-страница
-// (выключенную по старому адресу не палим — 404, единообразно с ByPublicID).
+// только enabled — выключенную по старому адресу не палим, единообразно с ByPublicID.
 func (s *Service) StatusPageForRedirect(ctx context.Context, legacySlug string) (string, bool, error) {
 	var publicID string
 	err := s.pool.QueryRow(ctx, `
@@ -263,10 +231,8 @@ func (s *Service) StatusPageForRedirect(ctx context.Context, legacySlug string) 
 	return publicID, true, nil
 }
 
-// StatusPageByID returns a status page by id regardless of enabled (the
-// settings lookup: POST /statuspages/{id} resolves the owning project from
-// the page itself, so a page of a foreign project can 404 without the caller
-// having to trust a project id from the form).
+// не фильтрует по enabled: вызывающий сверяет project_id самой страницы,
+// не доверяя project id из формы — так чужая страница просто 404.
 func (s *Service) StatusPageByID(ctx context.Context, id int64) (StatusPage, error) {
 	var sp StatusPage
 	row := s.pool.QueryRow(ctx, `
@@ -282,7 +248,6 @@ func (s *Service) StatusPageByID(ctx context.Context, id int64) (StatusPage, err
 	return sp, nil
 }
 
-// StatusPageMonitors returns a status page's monitors ordered by position.
 func (s *Service) StatusPageMonitors(ctx context.Context, statusPageID int64) ([]StatusPageMonitor, error) {
 	byPage, err := s.StatusPageMonitorsOf(ctx, []int64{statusPageID})
 	if err != nil {
@@ -291,10 +256,8 @@ func (s *Service) StatusPageMonitors(ctx context.Context, statusPageID int64) ([
 	return byPage[statusPageID], nil
 }
 
-// StatusPageMonitorsOf — StatusPageMonitors для нескольких страниц одним
-// запросом: ключ — id страницы, порядок внутри страницы тот же (по position).
-// Страница без мониторов в карте отсутствует. Настройки статус-страниц
-// проекта грузят так все страницы разом, а не по запросу на строку.
+// страница без мониторов в карте отсутствует; порядок внутри страницы —
+// по position, как у StatusPageMonitors.
 func (s *Service) StatusPageMonitorsOf(ctx context.Context, statusPageIDs []int64) (map[int64][]StatusPageMonitor, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT status_page_id, monitor_id, display_name, position

@@ -1,5 +1,3 @@
-// Package templates — SSR-шаблоны Gotcha (templ). Локализация — i18n.T(ctx,...),
-// локаль в контексте кладёт web-миддлвара withLocale.
 package templates
 
 import (
@@ -30,11 +28,6 @@ templ layout(title string, userEmail string) {
 	}
 }
 
-// chromeless — минимальный layout для анонимных/setup-страниц (login,
-// register, invite-accept, error, onboarding): тот же <head>, что и у
-// authenticated layout (см. headTag), но без icon-рейла и контекстного
-// сайдбара — только тонкая верхняя полоса с логотипом и переключателями
-// языка/темы.
 templ chromeless(title string, userEmail string) {
 	<!DOCTYPE html>
 	if theme.FromContext(ctx).Code != "system" {
@@ -52,18 +45,12 @@ templ chromeless(title string, userEmail string) {
 	}
 }
 
-// headTag — общий <head>, вынесен отдельно, чтобы не дублироваться между
-// layoutBody и chromelessBody.
 templ headTag(title string) {
 	<head>
 		<meta charset="utf-8"/>
 		<meta name="viewport" content="width=device-width, initial-scale=1"/>
-		// theme-color красит системную рамку браузера (адресная строка на
-		// мобильных, обводка PWA-окна): без него над тёмным интерфейсом висела
-		// белая полоса. Явная тема — цвет полотна этой темы; «system» — оба
-		// через media, ровно по тому же prefers-color-scheme, по которому
-		// app.css выбирает палитру. Значения = --bg из app.css; совпадение
-		// держит TestThemeColorMatchesCSS.
+		// theme-color красит системную рамку браузера — без него на тёмной теме висела белая полоса.
+		// Значения = --bg из app.css; совпадение держит TestThemeColorMatchesCSS.
 		if theme.FromContext(ctx).Code == "system" {
 			<meta name="theme-color" content={ themeColor("dark") } media="(prefers-color-scheme: dark)"/>
 			<meta name="theme-color" content={ themeColor("light") } media="(prefers-color-scheme: light)"/>
@@ -73,23 +60,15 @@ templ headTag(title string) {
 		<title>{ title } · Gotcha</title>
 		<link rel="icon" href={ assetURL("/static/favicon.svg") } type="image/svg+xml"/>
 		<link rel="stylesheet" href={ assetURL("/static/app.css") }/>
-		// Прогрессивное улучшение селектора окна времени в единый попап-пикер
-		// диапазона. Не обязателен: без него .time-range работает нативно
-		// (пресеты + два поля datetime-local). Тот же origin — CSP разрешает.
+		// Прогрессивное улучшение: без скрипта .time-range работает нативно (пресеты + datetime-local).
 		<script src={ assetURL("/static/daterange.js") } defer></script>
 		<script src={ assetURL("/static/modal.js") } defer></script>
 		<script src={ assetURL("/static/copy.js") } defer></script>
-		// Прогрессивное улучшение поиска ключа атрибута на экране логов
-		// (задача 6, C2): без него поле — обычный текстовый инпут, ничего не
-		// подсказывающий. Общий блок скриптов, а не ручной <script> в
-		// logs.templ — единая точка версионирования (assetURL/assetVer), как
-		// и у daterange/modal/copy выше.
+		// Прогрессивное улучшение поиска атрибута логов; без скрипта — обычный текстовый инпут.
 		<script src={ assetURL("/static/logs.js") } defer></script>
 	</head>
 }
 
-// themeColorByCode — цвет полотна (--bg в app.css) по коду темы для
-// <meta name="theme-color">. Экспортируется через ThemeColor для сторожа.
 var themeColorByCode = map[string]string{
 	"dark":  "#0f131b",
 	"light": "#f6f8fb",
@@ -99,40 +78,26 @@ func themeColor(code string) string {
 	return themeColorByCode[code]
 }
 
-// ThemeColor — цвет полотна темы для <meta name="theme-color"> (пусто для
-// неизвестного кода). Наружу — ради сторожа TestThemeColorMatchesCSS в
-// пакете web, который сверяет его с --bg в app.css.
+// Наружу — ради сторожа TestThemeColorMatchesCSS в пакете web.
 func ThemeColor(code string) string {
 	return themeColor(code)
 }
 
-// layoutBody — общее содержимое <head>/<body> для авторизованного app-shell,
-// вынесено отдельно, чтобы не дублировать всю разметку между двумя вариантами
-// открывающего тега <html> (с data-theme и без — см. layout). Тело — icon-
-// рейл (области нав-структуры) + контекстный сайдбар (подразделы текущей
-// области + переключатель проекта) + верхняя панель (breadcrumb + переключатели).
 templ layoutBody(title string, userEmail string) {
 	@headTag(title)
 	<body>
 		@iconSprite()
-		// Skip-link (WCAG 2.4.1, уровень A): до <main> идёт 8-30 навигационных
-		// ссылок (рейл + контекстный сайдбар), и без этой ссылки пользователь
-		// клавиатуры и скринридера протабливает их НА КАЖДОЙ странице. Видима
-		// только при фокусе (см. .skip-link в app.css).
+		// Skip-link (WCAG 2.4.1): без него таб проходит все 8-30 ссылок рейла на каждой странице.
+		// Виден только в фокусе (.skip-link в app.css).
 		<a class="skip-link" href="#main">{ i18n.T(ctx, "a11y.skip_to_content") }</a>
 		<div class="app-shell">
-			// <nav>, а не <aside>: это основная навигация. <aside> объявляет
-			// «дополнительный контент», поэтому пользователь скринридера не мог
-			// перейти к меню через список ориентиров — на 27 из 29 страниц
-			// ориентира navigation не было вовсе.
+			// <nav>, не <aside>: aside читается как «доп. контент» — меню не находилось через ориентиры.
 			<nav class="rail" aria-label={ i18n.T(ctx, "nav.primary") }>
 				<a class="rail-logo" href="/" title="Gotcha">@brandMark()</a>
 				{{ spacerDone := false }}
 				if shell := nav.FromContext(ctx); len(shell.Projects) > 0 {
-					// Разделитель перед «Оповещениями» отбивает ярус настройки
-					// алертинга от рабочих областей выше; распорка перед первой
-					// footer-областью («Настройки») прижимает подвал (настройки,
-					// документация) вниз, к аватару и выходу.
+					// Разделитель — перед «Оповещениями», отделяет алертинг от рабочих областей выше.
+					// Распорка — перед первой footer-областью, прижимает подвал вниз, к аватару и выходу.
 					for _, a := range nav.Areas(shell) {
 						if a.ID == "alerts" {
 							<div class="rail-sep"></div>
@@ -188,13 +153,7 @@ templ layoutBody(title string, userEmail string) {
 	</body>
 }
 
-// ctxNav — содержимое контекстного сайдбара: подразделы текущей области и
-// ссылка на настройки проекта (или кнопка создания проекта, если проектов
-// ещё нет). Переключатель проекта здесь больше не живёт — переехал в топбар
-// (задача 4 nav-ia, см. whereAmI): два селекта в разных местах экрана иначе
-// спорили бы за то, какой из них главный. Вынесено отдельным компонентом,
-// чтобы переиспользовать разметку и в desktop .ctx-sidebar, и в мобильном
-// no-JS disclosure-меню топбара (см. layoutBody).
+// Переключатель проекта не здесь, он в топбаре: два селекта в разных местах спорили бы за главный.
 templ ctxNav(shell nav.Shell) {
 	if len(shell.Projects) > 0 {
 		for _, g := range nav.GroupedSubsections(shell) {
@@ -211,8 +170,7 @@ templ ctxNav(shell nav.Shell) {
 				</a>
 			}
 		}
-		// В самой области настроек ссылку в футере не показываем: там она уже
-		// есть первым пунктом списка подразделов, и дублировать её незачем.
+		// В области настроек не дублируем ссылку — она уже первый пункт списка подразделов.
 		if shell.CanManage && shell.Area != "settings" {
 			<a class="ctx-settings" href={ templ.SafeURL("/projects/" + itoa(effectiveProjectID(shell)) + "/settings") }>
 				@icon("settings")
@@ -224,12 +182,8 @@ templ ctxNav(shell nav.Shell) {
 	}
 }
 
-// whereAmI — «где я» в топбаре (задача 4 nav-ia): селект организации (когда
-// их у пользователя больше одной — единственная у одной организации просто
-// подписана) над переключателем проекта, суженным выбранной организацией
-// (nav.Shell.Projects уже отфильтрован в web/shell.go). Дверь к
-// "/orgs/{id}/projects" (задача 5) — единственный способ сменить
-// организацию и единственный способ завести второй проект.
+// /orgs/{id}/projects — единственный способ сменить организацию или завести второй проект.
+// Проектный список уже отфильтрован выбранной организацией (nav.Shell.Projects, web/shell.go).
 templ whereAmI(shell nav.Shell) {
 	if len(shell.Orgs) > 1 {
 		<details class="org-switch">
@@ -247,10 +201,8 @@ templ whereAmI(shell nav.Shell) {
 		<span class="org-name">{ shell.Orgs[0].Name }</span>
 	}
 	if len(shell.Projects) > 0 {
-		// Проектный селект НЕ схлопывается даже при единственном проекте:
-		// в нём живёт пункт «Все проекты», а на той странице — создание
-		// проекта. Схлопни его — и пользователь с одним проектом не сможет
-		// завести второй (см. TestTopbarKeepsAllProjectsDoorWithSingleProject).
+		// Не схлопывать даже при одном проекте: тут «Все проекты»/создание — иначе некуда завести второй.
+		// Держит TestTopbarKeepsAllProjectsDoorWithSingleProject.
 		<details class="proj-switch">
 			<summary>
 				<span class="proj-switch-name">{ currentProjectName(shell) }</span>
@@ -258,13 +210,10 @@ templ whereAmI(shell nav.Shell) {
 			</summary>
 			<ul>
 				for _, p := range shell.Projects {
-					// №60: смена проекта держит текущий раздел (nav.ProjectSwitchHref);
-					// раздел, недоступный у целевого проекта, откатывается на issues.
+					// Смена проекта держит текущий раздел; недоступный у целевого проекта — откат на issues.
 					<li><a href={ templ.SafeURL(nav.ProjectSwitchHref(shell, p.ID)) }>{ p.Name }</a></li>
 				}
-				// OrgID резолвится best-effort (web/shell.go): ProjectOrg
-				// может ошибиться, тогда OrgID==0 и "/orgs/0/projects" 404-ит
-				// — пункт рендерится только при разрешённой организации.
+				// OrgID резолвится best-effort: при OrgID==0 путь /orgs/0/projects 404-ит, пункт не рендерится.
 				if shell.OrgID != 0 {
 					<li class="proj-switch-all"><a href={ templ.SafeURL("/orgs/" + itoa(shell.OrgID) + "/projects") }>{ i18n.T(ctx, "nav.all_projects") }</a></li>
 				}
@@ -273,8 +222,6 @@ templ whereAmI(shell nav.Shell) {
 	}
 }
 
-// currentOrgName — имя организации в селекте: текущая по OrgID, иначе
-// первая из списка, иначе пусто. По образцу currentProjectName ниже.
 func currentOrgName(s nav.Shell) string {
 	for _, o := range s.Orgs {
 		if o.ID == s.OrgID {
@@ -287,8 +234,6 @@ func currentOrgName(s nav.Shell) string {
 	return ""
 }
 
-// chromelessBody — тело минимального layout для анонимных/setup-страниц: без
-// рейла и сайдбара, только тонкая верхняя полоса с логотипом и переключателями.
 templ chromelessBody(title string, userEmail string) {
 	@headTag(title)
 	<body class="chromeless">
@@ -298,9 +243,7 @@ templ chromelessBody(title string, userEmail string) {
 			<div class="topbar-spacer"></div>
 			@langSwitcher()
 			@themeToggle()
-			// Выход и без рейла (№21): залогиненный без проектов/организаций
-			// иначе не мог даже разлогиниться. Анонимные chromeless-страницы
-			// (логин/регистрация) передают пустой userEmail — кнопки нет.
+			// Кнопка выхода — иначе залогиненный без проектов/организаций не может разлогиниться.
 			if userEmail != "" {
 				<form method="post" action="/logout" class="chromeless-logout">
 					<button type="submit" class="btn btn-ghost">
@@ -317,7 +260,6 @@ templ chromelessBody(title string, userEmail string) {
 	</body>
 }
 
-// railAreaClass — класс рейл-пункта, is-active подсвечивает текущую область.
 func railAreaClass(active bool) string {
 	if active {
 		return "rail-area is-active"
@@ -325,8 +267,6 @@ func railAreaClass(active bool) string {
 	return "rail-area"
 }
 
-// ctxItemClass — класс пункта контекстного сайдбара, is-active подсвечивает
-// текущий подраздел.
 func ctxItemClass(active bool) string {
 	if active {
 		return "ctx-item is-active"
@@ -334,7 +274,6 @@ func ctxItemClass(active bool) string {
 	return "ctx-item"
 }
 
-// initials — 1-2 заглавные буквы для аватара из email (до "@").
 func initials(email string) string {
 	local := email
 	if i := strings.IndexByte(email, '@'); i > 0 {
@@ -351,13 +290,10 @@ func initials(email string) string {
 	return strings.ToUpper(string(r[0:2]))
 }
 
-// itoa — форматирование int64 для построения href-ов в шаблонах.
 func itoa(n int64) string {
 	return strconv.FormatInt(n, 10)
 }
 
-// currentProjectName — имя проекта в переключателе: текущий проект по
-// ProjectID, иначе первый из списка, иначе пусто.
 func currentProjectName(s nav.Shell) string {
 	for _, p := range s.Projects {
 		if p.ID == s.ProjectID {
@@ -370,8 +306,6 @@ func currentProjectName(s nav.Shell) string {
 	return ""
 }
 
-// effectiveProjectID — ProjectID, если задан, иначе ID первого проекта,
-// иначе 0.
 func effectiveProjectID(s nav.Shell) int64 {
 	if s.ProjectID != 0 {
 		return s.ProjectID
@@ -382,8 +316,6 @@ func effectiveProjectID(s nav.Shell) int64 {
 	return 0
 }
 
-// langSwitcher — переключатель языка (форма POST, работает без JS). Активный
-// язык помечен классом is-active.
 templ langSwitcher() {
 	<form method="post" action="/settings/locale" class="lang-switcher">
 		<button type="submit" name="lang" value="ru" class={ langBtnClass(ctx, "ru") } aria-pressed={ langPressed(ctx, "ru") }>{ i18n.T(ctx, "lang.ru") }</button>
@@ -398,9 +330,7 @@ func langBtnClass(ctx context.Context, code string) string {
 	return "lang-btn"
 }
 
-// langPressed — aria-pressed для кнопки языка: визуально выбранный язык
-// отличает только цвет, скринридеру нужно состояние (№84) — тот же принцип,
-// что themePressed ниже.
+// aria-pressed нужен: активный язык отличает только цвет, скринридеру этого не видно.
 func langPressed(ctx context.Context, code string) string {
 	if i18n.FromContext(ctx).Code == code {
 		return "true"
@@ -408,10 +338,8 @@ func langPressed(ctx context.Context, code string) string {
 	return "false"
 }
 
-// themeToggle — переключатель темы оформления (форма POST, работает без JS).
-// Иконочный: три текстовых кнопки занимали четверть топбара и спорили с
-// основными действиями страницы. @icon печатает aria-hidden, поэтому имя
-// кнопки задаётся aria-label, а title даёт подсказку по наведению.
+// Иконки, не текстовые кнопки: три текста занимали четверть топбара.
+// @icon aria-hidden, поэтому имя кнопки — aria-label, title — подсказка при наведении.
 templ themeToggle() {
 	<form method="post" action="/settings/theme" class="theme-toggle">
 		@themeBtn("dark", "moon", "theme.dark")
@@ -434,8 +362,7 @@ templ themeBtn(code, iconName, labelKey string) {
 	</button>
 }
 
-// themePressed — aria-pressed для сегмента: без него скринридер не отличит
-// выбранную тему от невыбранной, потому что визуально это делает только цвет.
+// aria-pressed нужен: выбранную тему отличает только цвет, скринридеру этого не видно.
 func themePressed(ctx context.Context, code string) string {
 	if theme.FromContext(ctx).Code == code {
 		return "true"

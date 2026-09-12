@@ -12,9 +12,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// fakeEnqueuer — Enqueuer в памяти, фиксирующий вызовы по каналам и умеющий
-// провалиться для заданного channelID (K1-2: дискриминирует "один битый
-// канал не должен глушить остальные" от Digester.send).
 type fakeEnqueuer struct {
 	failFor map[int64]error
 	calls   []int64
@@ -28,8 +25,8 @@ func (f *fakeEnqueuer) Enqueue(ctx context.Context, channelID int64, payload map
 	return nil
 }
 
-// newDigestProject — whitebox-сид (package alert, недоступны хелперы
-// alert_test), тот же приём, что и rewrap_secrets_internal_test.go.
+// Whitebox-сид (package alert, недоступны хелперы alert_test) — тот же приём,
+// что rewrap_secrets_internal_test.go.
 func newDigestProject(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -45,12 +42,6 @@ func newDigestProject(t *testing.T, pool *pgxpool.Pool) int64 {
 	return projectID
 }
 
-// TestDigesterSendContinuesAfterEnqueueFailure — K1-2 (аудит перед 1.0):
-// раньше первая же провалившаяся Enqueue обрывала send через return — канал,
-// идущий по списку ПОСЛЕ битого, не получал сводку вовсе, хотя сам был
-// исправен. Два включённых webhook-канала, первый — падает на Enqueue:
-// второй обязан получить вызов Enqueue всё равно, а итоговая ошибка —
-// быть ненулевой и называть id первого канала.
 func TestDigesterSendContinuesAfterEnqueueFailure(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

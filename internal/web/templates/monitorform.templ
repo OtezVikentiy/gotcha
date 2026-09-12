@@ -8,12 +8,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// MonitorFormData — вью-модель формы создания/редактирования монитора
-// (GET/POST /projects/{id}/monitors/new и /monitors/{id}/edit). Все
-// типо-специфичные и общие числовые поля хранятся как строки — это ровно то,
-// что пришло из запроса (или было отформатировано из уже сохранённого
-// монитора web/monitorform.go): при 422 форма перерисовывается буквально с
-// тем, что ввёл пользователь, а не с округлённым/перепарсенным значением.
+// числовые поля — строки: то же, что пришло из запроса, чтобы 422 не перезаписал ввод округлением.
 type MonitorFormData struct {
 	ProjectID int64
 	MonitorID int64
@@ -35,17 +30,13 @@ type MonitorFormData struct {
 	SelectedRegions  map[string]bool
 	AllChannels      []alert.Channel
 	SelectedChannels map[int64]bool
-	// CanManage — C3: не-admin видит замаскированный c.Target в
-	// channelCheckbox (channelsForView уже это делает); поле нужно только
-	// чтобы показать рядом объясняющую подсказку — почему это не баг.
+	// не-admin видит замаскированный c.Target (channelsForView); поле только для объясняющей подсказки.
 	CanManage bool
 
 	HTTPMethod          string
 	HTTPURL             string
 	HTTPHeaders         string
-	// HeadersMasked — значения заголовков показаны оператору маской (A2b):
-	// рисуем подсказку «пусто/**** = оставить прежнее». Ставится только на GET
-	// edit для не-admin с непустыми заголовками (web/monitorform.go).
+	// только на GET edit для не-admin с непустыми заголовками — подсказка «пусто/**** = оставить прежнее».
 	HeadersMasked       bool
 	HTTPBody            string
 	HTTPExpectedStatus  string
@@ -230,8 +221,6 @@ templ heartbeatFields(d MonitorFormData) {
 	</fieldset>
 }
 
-// kindFields — типо-специфичный fieldset при редактировании: тип зафиксирован
-// (d.Kind известен из сохранённого монитора), показываем только его.
 templ kindFields(d MonitorFormData) {
 	switch d.Kind {
 		case uptime.KindHTTP:
@@ -245,12 +234,8 @@ templ kindFields(d MonitorFormData) {
 	}
 }
 
-// kindPicker — выбор типа проверки при создании монитора. Радиокнопки-вкладки
-// (name="kind") и четыре fieldset'а лежат прямыми детьми .kind-picker, поэтому
-// CSS-правило `#kf-…:checked ~ .kind-fields--…` показывает поля только
-// выбранного типа — прогрессивное раскрытие без JS (см. .kind-picker в app.css).
-// Радио идут перед fieldset'ами, иначе комбинатор `~` не сработает. Пустой
-// d.Kind (новая форма) → по умолчанию выбран HTTP.
+// радио перед fieldset'ами — CSS `~` комбинатор в .kind-picker иначе не сработает (app.css).
+// пустой d.Kind (новая форма) — по умолчанию выбран HTTP.
 templ kindPicker(d MonitorFormData) {
 	<div class="kind-picker">
 		<span class="kind-picker-label">{ i18n.T(ctx, "uptime.form.field.type") }</span>
@@ -277,11 +262,7 @@ templ kindPicker(d MonitorFormData) {
 	</div>
 }
 
-// MonitorForm — GET/POST /projects/{id}/monitors/new и GET/POST
-// /monitors/{id}/edit,/monitors/{id}: одна форма, переиспользуемая для
-// создания и редактирования. IsEdit решает: тип — select (создание) либо
-// readonly-поле (редактирование, кнопки Pause/Resume/Delete живут на
-// странице монитора, не здесь).
+// IsEdit — select при создании, readonly при правке; Pause/Resume/Delete живут на странице монитора.
 templ MonitorForm(d MonitorFormData, userEmail string) {
 	@layout(i18n.T(ctx, monitorFormTitleKey(d)), userEmail) {
 		<div class="monitor-form">

@@ -17,9 +17,6 @@ func ruTestCtx() context.Context {
 	return i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 }
 
-// TestAlertSuppressionErrorMessage — каждая доменная ошибка depsuppress.Store
-// переводится в свой собственный i18n-текст, неизвестная — в общий
-// error.action_failed, а не пустую строку/панику на errors.Is(nil,...).
 func TestAlertSuppressionErrorMessage(t *testing.T) {
 	ctx := ruTestCtx()
 	cases := []struct {
@@ -41,9 +38,6 @@ func TestAlertSuppressionErrorMessage(t *testing.T) {
 	}
 }
 
-// TestSuppressionParentRef — родитель-хост/монитор резолвится в NodeRef по
-// картам имён; отсутствие в карте (узел удалён из проекта) — ok=false, а не
-// NodeRef с пустым именем.
 func TestSuppressionParentRef(t *testing.T) {
 	hostNames := map[int64]string{1: "gw"}
 	monNames := map[int64]string{2: "ping"}
@@ -73,8 +67,6 @@ func TestSuppressionParentRef(t *testing.T) {
 	}
 }
 
-// TestSuppressionNodeRefLabel — "Monitor: x" для kind=monitor, "Host: x" по
-// умолчанию (в т.ч. kind=host).
 func TestSuppressionNodeRefLabel(t *testing.T) {
 	ctx := ruTestCtx()
 	if got, want := suppressionNodeRefLabel(ctx, depsuppress.NodeRef{Kind: "monitor", Name: "ping"}),
@@ -87,8 +79,6 @@ func TestSuppressionNodeRefLabel(t *testing.T) {
 	}
 }
 
-// TestSuppressionHostMonitorLabel — известный id даёт "Kind: имя", удалённый
-// (нет в карте) — "Kind #id (удалён)".
 func TestSuppressionHostMonitorLabel(t *testing.T) {
 	ctx := ruTestCtx()
 	names := map[int64]string{1: "gw"}
@@ -107,8 +97,6 @@ func TestSuppressionHostMonitorLabel(t *testing.T) {
 	}
 }
 
-// TestSuppressionParentLabel — делегирует на host/monitor-версию по тому,
-// какой из указателей заполнен; ни один — пустая строка (не паника).
 func TestSuppressionParentLabel(t *testing.T) {
 	ctx := ruTestCtx()
 	hostNames := map[int64]string{1: "gw"}
@@ -128,8 +116,6 @@ func TestSuppressionParentLabel(t *testing.T) {
 	}
 }
 
-// TestSuppressionChildLabel — host/monitor/label-селектор ветки switch'а, и
-// default (ни один способ не задан) — пустая строка.
 func TestSuppressionChildLabel(t *testing.T) {
 	ctx := ruTestCtx()
 	hostNames := map[int64]string{1: "web1"}
@@ -152,17 +138,11 @@ func TestSuppressionChildLabel(t *testing.T) {
 	if got := suppressionChildLabel(ctx, depsuppress.Edge{}, hostNames, monNames); got != "" {
 		t.Errorf("edge with no child set = %q, want empty", got)
 	}
-	// Store.validateShape требует ОБА указателя сразу — но suppressionChildLabel
-	// не должен доверять этому и разыменовывать ChildLabelValue без проверки:
-	// одинокий ChildLabelScope (без value) обязан упасть в default, а не
-	// паниковать на nil-указателе.
 	if got := suppressionChildLabel(ctx, depsuppress.Edge{ChildLabelScope: &scope}, hostNames, monNames); got != "" {
 		t.Errorf("edge with ChildLabelScope but no ChildLabelValue = %q, want empty (defensive default)", got)
 	}
 }
 
-// TestSuppressionScopeLabel — env/role — локализованные подписи, неизвестный
-// scope (defensive) — возвращается как есть.
 func TestSuppressionScopeLabel(t *testing.T) {
 	ctx := ruTestCtx()
 	if got, want := suppressionScopeLabel(ctx, "env"), "Окружение"; got != want {
@@ -176,9 +156,6 @@ func TestSuppressionScopeLabel(t *testing.T) {
 	}
 }
 
-// formRequest — POST-запрос с урlencoded-телом для тестов formInt64/
-// alertSuppressionEdgeFromForm; ParseForm вызывается тут же, как в реальных
-// обработчиках.
 func formRequest(t *testing.T, values url.Values) *http.Request {
 	t.Helper()
 	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(values.Encode()))
@@ -189,8 +166,6 @@ func formRequest(t *testing.T, values url.Values) *http.Request {
 	return r
 }
 
-// TestFormInt64 — валидное число парсится, отсутствующее/пустое/нечисловое
-// поле — (0,false), а не паника/молчаливый 0.
 func TestFormInt64(t *testing.T) {
 	r := formRequest(t, url.Values{"id": {"42"}, "blank": {""}, "garbage": {"abc"}})
 	if id, ok := formInt64(r, "id"); !ok || id != 42 {
@@ -207,9 +182,6 @@ func TestFormInt64(t *testing.T) {
 	}
 }
 
-// TestAlertSuppressionEdgeFromForm — все 6 комбинаций parent_kind x
-// child_kind (host/monitor родитель, host/monitor/label ребёнок), плюс
-// пустой label (scope/value не оба заполнены) не заполняет ChildLabel*.
 func TestAlertSuppressionEdgeFromForm(t *testing.T) {
 	const projectID = 7
 
@@ -240,7 +212,6 @@ func TestAlertSuppressionEdgeFromForm(t *testing.T) {
 		t.Errorf("label child edge = %+v, want scope=env value=prod (trimmed)", e)
 	}
 
-	// label с пустым value после TrimSpace — оба указателя должны остаться nil.
 	r = formRequest(t, url.Values{
 		"parent_kind": {"host"}, "parent_host_id": {"1"},
 		"child_kind": {"label"}, "child_label_scope": {"env"}, "child_label_value": {"   "},
@@ -250,7 +221,6 @@ func TestAlertSuppressionEdgeFromForm(t *testing.T) {
 		t.Errorf("blank label value must leave ChildLabel* nil, got %+v", e)
 	}
 
-	// Неизвестный/пустой parent_kind — родитель не заполнен вовсе.
 	r = formRequest(t, url.Values{"child_kind": {"host"}, "child_host_id": {"5"}})
 	e = alertSuppressionEdgeFromForm(r, projectID)
 	if e.ParentHostID != nil || e.ParentMonitorID != nil {
@@ -258,10 +228,6 @@ func TestAlertSuppressionEdgeFromForm(t *testing.T) {
 	}
 }
 
-// TestSuppressionEdgeFormDefaults — предзаполнение модалки правки из самого
-// ребра: те же имена полей, что читает alertSuppressionEdgeFromForm, по одной
-// ветке на каждую форму родителя/ребёнка; незадействованные ветки остаются
-// без ключа (их поля берут пустые fallback'и).
 func TestSuppressionEdgeFormDefaults(t *testing.T) {
 	hostID, monID := int64(11), int64(22)
 	scope, value := "role", "web"

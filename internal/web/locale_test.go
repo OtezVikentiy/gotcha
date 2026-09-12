@@ -13,20 +13,17 @@ import (
 )
 
 func TestResolveLocaleNoUser(t *testing.T) {
-	// cookie lang имеет приоритет
 	r := httptest.NewRequest("GET", "/", nil)
 	r.Header.Set("Accept-Language", "en-US,en")
 	r.AddCookie(&http.Cookie{Name: "lang", Value: "ru"})
 	if loc, _ := resolveLocaleNoUser(r); loc.Code != "ru" {
 		t.Fatalf("cookie wins: %q", loc.Code)
 	}
-	// без cookie — Accept-Language
 	r2 := httptest.NewRequest("GET", "/", nil)
 	r2.Header.Set("Accept-Language", "en-US,en")
 	if loc, _ := resolveLocaleNoUser(r2); loc.Code != "en" {
 		t.Fatalf("accept-language: %q", loc.Code)
 	}
-	// пусто — дефолт ru
 	r3 := httptest.NewRequest("GET", "/", nil)
 	if loc, _ := resolveLocaleNoUser(r3); loc.Code != "ru" {
 		t.Fatalf("default: %q", loc.Code)
@@ -49,7 +46,6 @@ func TestWithLocaleSetsContextAndSkipsStatic(t *testing.T) {
 		t.Fatalf("ctx locale = %q, want en", seen)
 	}
 
-	// /static/* — миддлвара пропускает без резолвинга (остаётся дефолт)
 	seen = ""
 	rs := httptest.NewRequest("GET", "/static/app.css", nil)
 	rs.Header.Set("Accept-Language", "en")

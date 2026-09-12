@@ -15,16 +15,12 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// TestWebProfileDelete — самоудаление аккаунта (M5): единственный владелец орга
-// блокируется (409), обычный участник проходит двухшаговое подтверждение и
-// удаляется; после удаления сессия недействительна.
 func TestWebProfileDelete(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
 	orgSvc := org.NewService(s.pool, 1_000_000)
 	ctx := context.Background()
 
-	// owner — единственный владелец организации → удаление запрещено (409).
 	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "pdel-owner@example.com")
 	o, err := orgSvc.CreateOrg(ctx, "pdel-org", "PDel", ownerID)
 	if err != nil {
@@ -37,13 +33,11 @@ func TestWebProfileDelete(t *testing.T) {
 		t.Fatalf("owner delete: status = %d, want 409 (sole owner)", resp.StatusCode)
 	}
 
-	// member — не владелец, может удалиться.
 	memberID, memberCookie := orgSettingsRegister(t, authSvc, "pdel-member@example.com")
 	if err := orgSvc.AddMember(ctx, o.ID, memberID, org.RoleMember); err != nil {
 		t.Fatalf("add member: %v", err)
 	}
 
-	// Без confirmed — страница подтверждения (200), удаления ещё нет.
 	resp = postForm(t, s.srv, "/profile/delete", url.Values{}, s.srv.URL, memberCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -54,7 +48,6 @@ func TestWebProfileDelete(t *testing.T) {
 		t.Fatalf("confirm page missing delete action form: %s", body)
 	}
 
-	// confirmed=yes — удаление, редирект на /login.
 	resp = postForm(t, s.srv, "/profile/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -65,7 +58,6 @@ func TestWebProfileDelete(t *testing.T) {
 		t.Fatalf("redirect = %q, want /login", loc)
 	}
 
-	// Аккаунт удалён: старая сессия больше не пускает на /profile.
 	resp = getWithCookie(t, s.srv, "/profile", memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -74,11 +66,6 @@ func TestWebProfileDelete(t *testing.T) {
 	}
 }
 
-// TestProfileDeletePurgesPendingInvites: адрес читался ПОСЛЕ удаления строки
-// пользователя, поэтому возвращался пустым и удаление ожидающих приглашений не
-// выполнялось ни разу. Приглашение переживало удаление аккаунта до истечения
-// своего срока — при том что комментарий рядом объясняет, зачем ветка нужна для
-// минимизации персональных данных.
 func TestProfileDeletePurgesPendingInvites(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -96,11 +83,9 @@ func TestProfileDeletePurgesPendingInvites(t *testing.T) {
 	if err := orgSvc.AddMember(ctx, o.ID, memberID, org.RoleMember); err != nil {
 		t.Fatalf("add member: %v", err)
 	}
-	// Приглашение на ТОТ ЖЕ адрес: именно оно должно исчезнуть вместе с аккаунтом.
 	if _, err := orgSvc.Invite(ctx, o.ID, victim, org.RoleMember); err != nil {
 		t.Fatalf("invite: %v", err)
 	}
-	// Приглашение на чужой адрес — контроль: его трогать нельзя.
 	const bystander = "inv-bystander@example.com"
 	if _, err := orgSvc.Invite(ctx, o.ID, bystander, org.RoleMember); err != nil {
 		t.Fatalf("invite bystander: %v", err)
@@ -131,22 +116,6 @@ func TestProfileDeletePurgesPendingInvites(t *testing.T) {
 	}
 }
 
-// TestProfileDeleteLogsWhenEmailReadFails (раунд правок 1): пустой email в
-// этой точке — НЕ «пользователя нет» (личность уже проверена auth.UserID
-// выше, строка в users на момент чтения была на месте), а сбой самого
-// чтения. currentEmail превращает в "" любую ошибку UserEmail — не только
-// «юзера нет», но и обрыв БД, битую схему и т.п. (см. её докблок в web.go).
-// Без явного лога такой сбой неотличим от «email не нашли, значит нечего
-// чистить»: аккаунт удалён, приглашение осталось, в логе ни строчки — ровно
-// тот класс тишины, ради которого существует весь подпроект.
-//
-// Ломаем именно чтение email, не удаляя пользователя: переименовываем
-// колонку users.email прямо в тестовой БД. testenv.MigratedPG(t) выдаёт
-// каждому тесту свою изолированную базу (видно по именам t_<hash> в логах
-// падений при перегрузке инфраструктуры), поэтому ALTER TABLE здесь не
-// аукается ни в соседних тестах, ни при параллельном запуске пакета.
-// SoleOwnedOrgNames, DestroySession и DeleteUser колонку email не трогают
-// (проверено по их SQL) — обломанная колонка бьёт ровно по currentEmail.
 func TestProfileDeleteLogsWhenEmailReadFails(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)

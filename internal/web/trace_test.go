@@ -24,9 +24,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// traceStack — стенд задачи 3: и spans (trace.SpanWriter → waterfall), и
-// events (event.Batcher → маркеры ошибок и ссылка «Смотреть трейс» на странице
-// issue). Wires h.Trace (waterfall/доступ) и h.Events (ByTraceID, EventByID).
 type traceStack struct {
 	pool    *pgxpool.Pool
 	ch      driver.Conn
@@ -36,8 +33,7 @@ type traceStack struct {
 	issues  *issue.Service
 	spans   *trace.SpanWriter
 	batcher *event.Batcher
-	// h — сам хендлер, нужен тестам, которые настраивают h.SpanRetentionDays
-	// (TTL spans, GOTCHA_SPAN_RETENTION_DAYS) явно, а не полагаются на дефолт.
+	// нужен тестам, которые настраивают SpanRetentionDays явно, вместо дефолта.
 	h *web.Handler
 }
 
@@ -76,8 +72,7 @@ func newTraceStack(t *testing.T) *traceStack {
 	return &traceStack{pool: pool, ch: ch, srv: srv, org: orgSvc, auth: authSvc, issues: issueSvc, spans: spans, batcher: batcher, h: h}
 }
 
-// flush синхронно выгружает оба буфера (spans и events) в ClickHouse до
-// последующих GET. Close идемпотентен — повторный вызов из Cleanup безопасен.
+// Close идемпотентен — повторный вызов из Cleanup безопасен.
 func (s *traceStack) flush(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -90,9 +85,6 @@ func (s *traceStack) flush(t *testing.T) {
 	}
 }
 
-// TestWebTraceWaterfall — трейс с 3 спанами → waterfall (<svg + 3 <rect); спан
-// с привязанной ошибкой → красный маркер со ссылкой на issue; чужой проект →
-// 404; несуществующий trace_id → 404.
 func TestWebTraceWaterfall(t *testing.T) {
 	s := newTraceStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "trace-owner@example.com")
@@ -107,7 +99,6 @@ func TestWebTraceWaterfall(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	// issue, к которому привяжем ошибку на спане.
 	now := time.Now().UTC()
 	iss, err := s.issues.Upsert(context.Background(), proj.ID, "fp-trace", "DBError", "GET /api/checkout", "error", "", now)
 	if err != nil {
@@ -120,7 +111,6 @@ func TestWebTraceWaterfall(t *testing.T) {
 	const httpSpan = "wf-span-http"
 	start := now.Add(-5 * time.Minute)
 
-	// Транзакция «GET /api/checkout»: корень + 2 дочерних спана (db, http).
 	s.spans.Add(proj.ID, proj.ID, trace.Transaction{
 		TraceID:     traceID,
 		SpanID:      rootSpan,
@@ -152,7 +142,6 @@ func TestWebTraceWaterfall(t *testing.T) {
 		},
 	})
 
-	// Событие-ошибка на dbSpan этого трейса → красный маркер со ссылкой на issue.
 	s.batcher.Add(event.Event{
 		ID:        uuid.NewString(),
 		ProjectID: proj.ID,
@@ -168,7 +157,6 @@ func TestWebTraceWaterfall(t *testing.T) {
 
 	tracePath := "/traces/" + traceID
 
-	// Owner: 200, <svg, >= 3 <rect (3 спана), ссылка на issue, имя транзакции.
 	resp := getWithCookie(t, s.srv, tracePath, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -189,7 +177,6 @@ func TestWebTraceWaterfall(t *testing.T) {
 		t.Fatalf("GET %s missing transaction name: %s", tracePath, body)
 	}
 
-	// Чужой проект → 404.
 	resp = getWithCookie(t, s.srv, tracePath, outsiderCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -197,10 +184,8 @@ func TestWebTraceWaterfall(t *testing.T) {
 		t.Fatalf("GET %s (outsider) status = %d, want 404", tracePath, resp.StatusCode)
 	}
 
-	// trace_id в другом регистре (P2-5 из аудита 2026-08-12): в БД trace_id
-	// всегда лоуркейснут ingest.normalizeID, так что запрос с тем же id, но в
-	// верхнем регистре, должен резолвиться в тот же трейс, а не давать ложный
-	// 404.
+	// в БД trace_id лоуркейснут — тот же id в другом регистре должен
+	// резолвиться в тот же трейс, а не давать ложный 404.
 	upperPath := "/traces/" + strings.ToUpper(traceID)
 	resp = getWithCookie(t, s.srv, upperPath, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
@@ -212,7 +197,6 @@ func TestWebTraceWaterfall(t *testing.T) {
 		t.Fatalf("GET %s (uppercase trace_id) missing <svg: %s", upperPath, body)
 	}
 
-	// Несуществующий trace_id → 404.
 	resp = getWithCookie(t, s.srv, "/traces/nope-nope", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -221,11 +205,6 @@ func TestWebTraceWaterfall(t *testing.T) {
 	}
 }
 
-// TestWebTraceWaterfallLogsLink — задача 4 C3: на странице трейса всегда есть
-// ссылка «Логи этого трейса» на /logs с фильтром по trace_id и временным
-// окном (start/end, unix-секунды) вокруг трейса. Фикстура — трейс БЕЗ
-// профиля: ссылка на логи не должна зависеть от наличия flamegraph
-// (в отличие от ссылки на flamegraph, которая рисуется только при HasProfile).
 func TestWebTraceWaterfallLogsLink(t *testing.T) {
 	s := newTraceStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "trace-logs-owner@example.com")
@@ -269,15 +248,12 @@ func TestWebTraceWaterfallLogsLink(t *testing.T) {
 	if !hasLogsLinkWindow(string(body)) {
 		t.Fatalf("GET %s logs link missing start/end window: %s", tracePath, body)
 	}
-	// Без профиля — ссылка на логи всё равно должна быть (не под if d.HasProfile).
+	// ссылка на логи не завязана на HasProfile, в отличие от ссылки на flamegraph.
 	if strings.Contains(string(body), "Смотреть flamegraph") {
 		t.Fatalf("GET %s must not show flamegraph link without a profile: %s", tracePath, body)
 	}
 }
 
-// TestWebIssueDetailTraceLink — событие с trace_id → на странице issue есть
-// ссылка «Смотреть трейс» на /traces/{trace_id}; событие без trace_id → ссылки
-// нет.
 func TestWebIssueDetailTraceLink(t *testing.T) {
 	s := newTraceStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "tracelink-owner@example.com")
@@ -348,7 +324,6 @@ func TestWebIssueDetailTraceLink(t *testing.T) {
 
 	issuePath := "/issues/" + strconv.FormatInt(iss.IssueID, 10)
 
-	// Событие с trace_id → ссылка «Смотреть трейс» на /traces/{trace_id}.
 	resp := getWithCookie(t, s.srv, issuePath+"?event="+withTraceID, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -362,7 +337,6 @@ func TestWebIssueDetailTraceLink(t *testing.T) {
 		t.Fatalf("GET %s (event with trace) missing trace link: %s", issuePath, body)
 	}
 
-	// Событие без trace_id → ссылки нет.
 	resp = getWithCookie(t, s.srv, issuePath+"?event="+noTraceID, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -383,9 +357,6 @@ func TestWebIssueDetailTraceLink(t *testing.T) {
 	}
 }
 
-// TestWebTraceProfilingInContext — этап 8: при наличии профиля для трейса
-// waterfall показывает ссылку «Смотреть flamegraph», а /traces/{id}/flame отдаёт
-// flamegraph. Без профиля ссылки нет.
 func TestWebTraceProfilingInContext(t *testing.T) {
 	s := newTraceStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "pic-owner@example.com")
@@ -402,7 +373,6 @@ func TestWebTraceProfilingInContext(t *testing.T) {
 	})
 	s.flush(t)
 
-	// Без профиля — кнопки нет.
 	resp := getWithCookie(t, s.srv, "/traces/"+traceID, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -410,7 +380,6 @@ func TestWebTraceProfilingInContext(t *testing.T) {
 		t.Fatalf("flamegraph link shown without a profile")
 	}
 
-	// Без профиля страница flamegraph — плейсхолдер, подсказки про зум нет.
 	resp = getWithCookie(t, s.srv, "/traces/"+traceID+"/flame", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -421,7 +390,6 @@ func TestWebTraceProfilingInContext(t *testing.T) {
 		t.Fatalf("zoom hint must not be shown under the empty placeholder: %s", body)
 	}
 
-	// Засеять профиль этого трейса.
 	if err := s.ch.Exec(ctx, `INSERT INTO profile_samples
 		(project_id,profile_type,service,environment,transaction,platform,ts,stack,value,trace_id)
 		VALUES (?,'cpu','api','prod','GET /pic','go',?,?,?,?)`,
@@ -429,7 +397,6 @@ func TestWebTraceProfilingInContext(t *testing.T) {
 		t.Fatalf("seed profile: %v", err)
 	}
 
-	// Теперь кнопка есть.
 	resp = getWithCookie(t, s.srv, "/traces/"+traceID, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -437,7 +404,6 @@ func TestWebTraceProfilingInContext(t *testing.T) {
 		t.Fatalf("flamegraph link missing with a profile: %s", body)
 	}
 
-	// /traces/{id}/flame отдаёт SVG.
 	resp = getWithCookie(t, s.srv, "/traces/"+traceID+"/flame", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -448,8 +414,6 @@ func TestWebTraceProfilingInContext(t *testing.T) {
 		t.Fatalf("flame without focus must render the root without ancestors and with the hint: %s", body)
 	}
 
-	// Зум: ?focus=root&focus=handler — «all» и «root» строками-предками, ссылка
-	// корня без focus.
 	resp = getWithCookie(t, s.srv, "/traces/"+traceID+"/flame?focus=root&focus=handler", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -460,7 +424,6 @@ func TestWebTraceProfilingInContext(t *testing.T) {
 		t.Fatalf("root row must link to the flame page without focus: %s", body)
 	}
 
-	// Чужой → 404.
 	resp = getWithCookie(t, s.srv, "/traces/"+traceID+"/flame", outsiderCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -469,20 +432,9 @@ func TestWebTraceProfilingInContext(t *testing.T) {
 	}
 }
 
-// TestWebTraceCrossOrgStranger — регресс на маршрут /traces/{trace_id} для
-// актора stranger-матрицы (аудит security P2-4 / architecture P1-4): владелец
-// СВОЕГО орга, с нулевым членством в орге жертвы. Механический свип B3
-// (authz_behavior_test.go) этот маршрут не покрыл — trace_id не суррогатный
-// числовой id, его перебор не заводит данных в ClickHouse, поэтому гейт
-// (traceWaterfall → ProjectForTrace → CanAccessProject) остался без точечного
-// регресс-теста именно на чужака-владельца. TestWebTraceWaterfall выше уже
-// проверяет аутсайдера-без-орга; здесь актор строже — полноценный владелец
-// другой организации, как в crossorg_idor_test.go. И waterfall, и flame, и
-// несуществующий трейс дают одинаковую 404 (не палим существование трейса).
 func TestWebTraceCrossOrgStranger(t *testing.T) {
 	s := newTraceStack(t)
 
-	// Жертва: владелец орга B с проектом, в котором лежит трейс.
 	victimID, victimCookie := orgSettingsRegister(t, s.auth, "trace-victim@example.com")
 	victimOrg, err := s.org.CreateOrg(context.Background(), "trace-victim-co", "Trace Victim Co", victimID)
 	if err != nil {
@@ -493,7 +445,6 @@ func TestWebTraceCrossOrgStranger(t *testing.T) {
 		t.Fatalf("create victim project: %v", err)
 	}
 
-	// Атакующий: владелец СВОЕГО орга A, в орге B — ноль членства.
 	attackerID, attackerCookie := orgSettingsRegister(t, s.auth, "trace-attacker@example.com")
 	if _, err := s.org.CreateOrg(context.Background(), "trace-attacker-co", "Trace Attacker Co", attackerID); err != nil {
 		t.Fatalf("create attacker org: %v", err)
@@ -513,8 +464,7 @@ func TestWebTraceCrossOrgStranger(t *testing.T) {
 	})
 	s.flush(t)
 
-	// Санити: трейс реально существует и виден владельцу-жертве (иначе 404
-	// ниже был бы ложноположительным — «не нашли, потому что не завели»).
+	// санити: иначе 404 ниже был бы ложноположительным («не нашли, потому что не завели»).
 	resp := getWithCookie(t, s.srv, "/traces/"+traceID, victimCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -522,7 +472,6 @@ func TestWebTraceCrossOrgStranger(t *testing.T) {
 		t.Fatalf("victim owner trace status = %d, want 200 (трейс должен существовать)", resp.StatusCode)
 	}
 
-	// Чужак-владелец: и waterfall, и flame — 404, как и несуществующий трейс.
 	for _, path := range []string{"/traces/" + traceID, "/traces/" + traceID + "/flame", "/traces/xorg-nope"} {
 		resp := getWithCookie(t, s.srv, path, attackerCookie)
 		io.Copy(io.Discard, resp.Body)
@@ -533,19 +482,6 @@ func TestWebTraceCrossOrgStranger(t *testing.T) {
 	}
 }
 
-// TestWebTraceWaterfallExpiredSpans — трейс, для которого в transactions
-// строка ещё жива (значит попадает в списки и даёт кликабельную ссылку), но
-// spans для него уже пусты — waterfall рисовать нечем. Раньше это давало
-// голый 404 («страницы не существует» — та же заглушка, что и для трейса,
-// которого нет вовсе); теперь — осмысленное состояние с trace_id и пояснением
-// (i18n trace.expired.*), всё ещё с кодом 404, но НЕ error.internal и НЕ общей
-// заглушкой error.404. Текст пояснения зависит от h.SpanRetentionDays
-// (настраиваемый TTL, GOTCHA_SPAN_RETENTION_DAYS) — НЕ от захардкоженного
-// trace.SpanRetentionDays: >0 → «хранятся N дней» с верным plural, <=0 (TTL
-// не задан, спаны хранятся вечно) → нейтральный текст без чисел (спаны
-// пропали не по TTL — ручная очистка/запрос на удаление). Трейс, которого нет
-// вовсе, по-прежнему даёт обычный notFound — этот регресс проверяется здесь
-// же, а межорговый обход уже покрыт TestWebTraceCrossOrgStranger выше.
 func TestWebTraceWaterfallExpiredSpans(t *testing.T) {
 	s := newTraceStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "trace-expired-owner@example.com")
@@ -574,9 +510,7 @@ func TestWebTraceWaterfallExpiredSpans(t *testing.T) {
 	})
 	s.flush(t)
 
-	// Симулируем истечение TTL spans напрямую (реальный TTL ждать дни
-	// нельзя): строка транзакции остаётся, спаны трейса удаляем синхронной
-	// мутацией — тот же приём, что и ручная очистка в internal/telemetry/purge.go.
+	// реальный TTL ждать дни нельзя — спаны трейса удаляем синхронной мутацией.
 	if err := s.ch.Exec(context.Background(),
 		"ALTER TABLE spans DELETE WHERE trace_id = ? SETTINGS mutations_sync = 2", traceID); err != nil {
 		t.Fatalf("simulate span TTL: %v", err)
@@ -584,9 +518,7 @@ func TestWebTraceWaterfallExpiredSpans(t *testing.T) {
 
 	tracePath := "/traces/" + traceID
 
-	// h.SpanRetentionDays=30 (типичный конфиг) — текст называет срок с верным
-	// plural, а не «30 дней» дословно из старого хардкода: проверяем именно
-	// склонённую форму, которую даёт i18n.Tn.
+	// проверяем именно склонённую форму (i18n.Tn), а не «30 дней» буквально.
 	s.h.SpanRetentionDays = 30
 	resp := getWithCookie(t, s.srv, tracePath, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
@@ -604,9 +536,7 @@ func TestWebTraceWaterfallExpiredSpans(t *testing.T) {
 		t.Fatalf("GET %s must not fall back to the generic 404 page: %s", tracePath, body)
 	}
 
-	// h.SpanRetentionDays=0 (TTL не задан, спаны хранятся вечно) — тот же
-	// трейс без спанов теперь описывается как «удалены вручную», а не как
-	// «истёк TTL» (говорить о днях хранения было бы неправдой при TTL=0).
+	// при SpanRetentionDays=0 текст говорит «удалены вручную», не «истёк TTL».
 	s.h.SpanRetentionDays = 0
 	resp = getWithCookie(t, s.srv, tracePath, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
@@ -623,7 +553,6 @@ func TestWebTraceWaterfallExpiredSpans(t *testing.T) {
 
 	s.h.SpanRetentionDays = 30
 
-	// Чужой проект — по-прежнему обычный 404 (не палим существование трейса).
 	resp = getWithCookie(t, s.srv, tracePath, outsiderCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -631,8 +560,7 @@ func TestWebTraceWaterfallExpiredSpans(t *testing.T) {
 		t.Fatalf("GET %s (outsider) status = %d, want 404", tracePath, resp.StatusCode)
 	}
 
-	// Трейс, которого нет вовсе, — обычный notFound с общей заглушкой, не
-	// trace.expired (не должен путать «нет спанов» с «нет трейса»).
+	// обычный notFound, не trace.expired: не путаем «нет спанов» с «нет трейса».
 	resp = getWithCookie(t, s.srv, "/traces/never-existed", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()

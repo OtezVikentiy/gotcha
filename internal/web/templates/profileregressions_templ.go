@@ -29,18 +29,14 @@ func profileRegStatusURL(projectID int64, status string) string {
 	return profileRegressionsBasePath(projectID) + "?status=" + status
 }
 
-// profileRegShare — доля в процентах (0.2 → "20.0%").
 func profileRegShare(share float64) string {
 	return strconv.FormatFloat(share*100, 'f', 1, 64) + "%"
 }
 
-// profileRegRange — «база → пик» долей.
 func profileRegRange(r profile.Regression) string {
 	return profileRegShare(r.BaselineShare) + " → " + profileRegShare(r.PeakShare)
 }
 
-// profileRegIncreasePct — рост от ПИКА над базой в процентах (как этап 4). База
-// <= 0 → «—».
 func profileRegIncreasePct(r profile.Regression) string {
 	if r.BaselineShare <= 0 {
 		return "—"
@@ -54,11 +50,6 @@ func profileRegIncreasePct(r profile.Regression) string {
 	return sign + strconv.FormatInt(rounded, 10) + "%"
 }
 
-// profileRegDuration — «ongoing» для открытой регрессии, иначе
-// человекочитаемая длительность между started_at и resolved_at.
-//
-// Раньше здесь стоял time.Duration.String() — та же находка №62, что и в
-// regressionDurationText (regressions.templ): «23m0s» вместо «23 минуты».
 func profileRegDuration(ctx context.Context, r profile.Regression) string {
 	if r.ResolvedAt == nil {
 		return i18n.T(ctx, "perf.regressions.ongoing")
@@ -116,7 +107,7 @@ func profileRegStatusTab(projectID int64, value, label, active string) templ.Com
 		var templ_7745c5c3_Var4 templ.SafeURL
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(profileRegStatusURL(projectID, value)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 66, Col: 108}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 57, Col: 108}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
@@ -139,7 +130,7 @@ func profileRegStatusTab(projectID int64, value, label, active string) templ.Com
 		var templ_7745c5c3_Var5 string
 		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 66, Col: 161}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 57, Col: 161}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
@@ -153,8 +144,6 @@ func profileRegStatusTab(projectID int64, value, label, active string) templ.Com
 	})
 }
 
-// ProfileRegressionsList — GET /projects/{id}/profile-regressions: таблица
-// регрессий self-CPU функций с фильтром по статусу. Только чтение, без JS.
 func ProfileRegressionsList(projectID int64, regressions []profile.Regression, filter, userEmail string, canOperate bool, ackedByOpt ...map[int64]string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -204,7 +193,7 @@ func ProfileRegressionsList(projectID int64, regressions []profile.Regression, f
 			var templ_7745c5c3_Var8 string
 			templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "profiles.regressions.title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 76, Col: 50}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 65, Col: 50}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 			if templ_7745c5c3_Err != nil {
@@ -225,7 +214,7 @@ func ProfileRegressionsList(projectID int64, regressions []profile.Regression, f
 			var templ_7745c5c3_Var9 string
 			templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "filter.status"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 78, Col: 62}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 67, Col: 62}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var9)
 			if templ_7745c5c3_Err != nil {
@@ -280,7 +269,7 @@ func ProfileRegressionsList(projectID int64, regressions []profile.Regression, f
 					var templ_7745c5c3_Var11 string
 					templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "profiles.regressions.table.function"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 91, Col: 76}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 80, Col: 76}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 					if templ_7745c5c3_Err != nil {
@@ -293,7 +282,7 @@ func ProfileRegressionsList(projectID int64, regressions []profile.Regression, f
 					var templ_7745c5c3_Var12 string
 					templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "profiles.regressions.table.service_type"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 92, Col: 80}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 81, Col: 80}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 					if templ_7745c5c3_Err != nil {
@@ -306,7 +295,7 @@ func ProfileRegressionsList(projectID int64, regressions []profile.Regression, f
 					var templ_7745c5c3_Var13 string
 					templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "perf.regressions.table.increase"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 93, Col: 84}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 82, Col: 84}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 					if templ_7745c5c3_Err != nil {
@@ -319,7 +308,7 @@ func ProfileRegressionsList(projectID int64, regressions []profile.Regression, f
 					var templ_7745c5c3_Var14 string
 					templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "perf.regressions.table.range"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 94, Col: 81}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 83, Col: 81}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 					if templ_7745c5c3_Err != nil {
@@ -332,7 +321,7 @@ func ProfileRegressionsList(projectID int64, regressions []profile.Regression, f
 					var templ_7745c5c3_Var15 string
 					templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "issues.table.status"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 95, Col: 60}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 84, Col: 60}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 					if templ_7745c5c3_Err != nil {
@@ -345,7 +334,7 @@ func ProfileRegressionsList(projectID int64, regressions []profile.Regression, f
 					var templ_7745c5c3_Var16 string
 					templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "incidents.table.severity"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 96, Col: 65}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 85, Col: 65}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 					if templ_7745c5c3_Err != nil {
@@ -358,7 +347,7 @@ func ProfileRegressionsList(projectID int64, regressions []profile.Regression, f
 					var templ_7745c5c3_Var17 string
 					templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "perf.regressions.table.started"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 97, Col: 71}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 86, Col: 71}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 					if templ_7745c5c3_Err != nil {
@@ -371,7 +360,7 @@ func ProfileRegressionsList(projectID int64, regressions []profile.Regression, f
 					var templ_7745c5c3_Var18 string
 					templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "perf.regressions.table.duration"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 98, Col: 84}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 87, Col: 84}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 					if templ_7745c5c3_Err != nil {
@@ -389,7 +378,7 @@ func ProfileRegressionsList(projectID int64, regressions []profile.Regression, f
 						var templ_7745c5c3_Var19 string
 						templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(reg.Function)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 105, Col: 27}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 94, Col: 27}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 						if templ_7745c5c3_Err != nil {
@@ -402,7 +391,7 @@ func ProfileRegressionsList(projectID int64, regressions []profile.Regression, f
 						var templ_7745c5c3_Var20 string
 						templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinStringErrs(profileRegServiceType(reg))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 106, Col: 41}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 95, Col: 41}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 						if templ_7745c5c3_Err != nil {
@@ -415,7 +404,7 @@ func ProfileRegressionsList(projectID int64, regressions []profile.Regression, f
 						var templ_7745c5c3_Var21 string
 						templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(profileRegIncreasePct(reg))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 107, Col: 53}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 96, Col: 53}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 						if templ_7745c5c3_Err != nil {
@@ -428,7 +417,7 @@ func ProfileRegressionsList(projectID int64, regressions []profile.Regression, f
 						var templ_7745c5c3_Var22 string
 						templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(profileRegRange(reg))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 108, Col: 47}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 97, Col: 47}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 						if templ_7745c5c3_Err != nil {
@@ -463,7 +452,7 @@ func ProfileRegressionsList(projectID int64, regressions []profile.Regression, f
 						var templ_7745c5c3_Var25 string
 						templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(regressionStatusLabel(ctx, reg.Status))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 109, Col: 108}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 98, Col: 108}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 						if templ_7745c5c3_Err != nil {
@@ -492,7 +481,7 @@ func ProfileRegressionsList(projectID int64, regressions []profile.Regression, f
 						var templ_7745c5c3_Var26 string
 						templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinStringErrs(profileRegDuration(ctx, reg))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 112, Col: 55}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/profileregressions.templ`, Line: 101, Col: 55}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 						if templ_7745c5c3_Err != nil {

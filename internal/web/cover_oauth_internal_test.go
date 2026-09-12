@@ -12,8 +12,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
 )
 
-// emptyAuthURLProvider — провайдер, чей AuthURL пуст: oauthStart должен ответить
-// 502 (провайдер недоступен), а не редиректить в никуда.
 type emptyAuthURLProvider struct{}
 
 func (emptyAuthURLProvider) Name() string                     { return "empty" }
@@ -27,9 +25,6 @@ func noRedirect() *http.Client {
 	return &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
-// TestCoverOAuthStartHappyPath — GET /auth/oauth/oidc/start выставляет
-// flow-cookie и редиректит на страницу согласия провайдера (весь happy-path
-// oauthStart: state/nonce/PKCE/signFlow/SetCookie/redirect).
 func TestCoverOAuthStartHappyPath(t *testing.T) {
 	s := newCallbackStack(t)
 	resp, err := noRedirect().Get(s.srv.URL + "/auth/oauth/oidc/start")
@@ -51,8 +46,6 @@ func TestCoverOAuthStartHappyPath(t *testing.T) {
 	}
 }
 
-// TestCoverOAuthStartLinkNoSession — GET /auth/oauth/oidc/start?link=1 без
-// активной сессии → 303 /login (поток привязки требует залогиненного юзера).
 func TestCoverOAuthStartLinkNoSession(t *testing.T) {
 	s := newCallbackStack(t)
 	resp, err := noRedirect().Get(s.srv.URL + "/auth/oauth/oidc/start?link=1")
@@ -66,7 +59,6 @@ func TestCoverOAuthStartLinkNoSession(t *testing.T) {
 	}
 }
 
-// TestCoverOAuthStartEmptyAuthURL — провайдер с пустым AuthURL → 502.
 func TestCoverOAuthStartEmptyAuthURL(t *testing.T) {
 	h := New(nil, nil, nil, nil, "http://localhost:8080")
 	h.SecretKey = "test-secret"
@@ -86,7 +78,6 @@ func TestCoverOAuthStartEmptyAuthURL(t *testing.T) {
 	}
 }
 
-// TestCoverOAuthCallbackNoCode — callback без параметра code → oauthFail (502).
 func TestCoverOAuthCallbackNoCode(t *testing.T) {
 	s := newCallbackStack(t)
 	flow := oauthFlow{Provider: "oidc", State: "STATE", IssuedAt: time.Now().Unix()}
@@ -106,7 +97,6 @@ func TestCoverOAuthCallbackNoCode(t *testing.T) {
 	}
 }
 
-// TestCoverOAuthCallbackExchangeError — обмен кода провалился → oauthFail (502).
 func TestCoverOAuthCallbackExchangeError(t *testing.T) {
 	s := newCallbackStack(t)
 	s.mp.err = errors.New("exchange boom")
@@ -117,9 +107,6 @@ func TestCoverOAuthCallbackExchangeError(t *testing.T) {
 	}
 }
 
-// TestCoverOAuthCallbackLinkAlreadyLinked — юзер уже имеет провайдера oidc
-// (другой субъект); поток привязки нового субъекта → UNIQUE (user_id,provider)
-// → ErrAlreadyLinked → редирект /profile (без ошибки).
 func TestCoverOAuthCallbackLinkAlreadyLinked(t *testing.T) {
 	s := newCallbackStack(t)
 	ctx := context.Background()
@@ -127,7 +114,6 @@ func TestCoverOAuthCallbackLinkAlreadyLinked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	// Уже привязанный oidc с субъектом sub-existing.
 	if err := s.auth.LinkIdentity(ctx, uid, "oidc", "sub-existing", "already@corp.com"); err != nil {
 		t.Fatalf("link existing: %v", err)
 	}
@@ -135,7 +121,6 @@ func TestCoverOAuthCallbackLinkAlreadyLinked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("session: %v", err)
 	}
-	// Новый, ещё не привязанный субъект (IdentityUser → ErrNoIdentity, дальше link).
 	s.mp.id = oauth.Identity{Subject: "sub-new", Email: "already@corp.com", EmailVerified: true}
 	resp := s.doCallbackSession(t, oauthFlow{Link: true, UID: uid}, token)
 	defer resp.Body.Close()
@@ -145,8 +130,6 @@ func TestCoverOAuthCallbackLinkAlreadyLinked(t *testing.T) {
 	}
 }
 
-// TestCoverOAuthProvisionUnverifiedEmail — неизвестный email c EmailVerified=false
-// уходит в oauthProvision, где отвергается с 403 (provider_no_email).
 func TestCoverOAuthProvisionUnverifiedEmail(t *testing.T) {
 	s := newCallbackStack(t)
 	s.mp.id = oauth.Identity{Subject: "sub-unverified-new", Email: "unknown@corp.com", EmailVerified: false}

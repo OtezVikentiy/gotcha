@@ -17,14 +17,12 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/incidentgroup"
 )
 
-// GroupCard — группа с составом и посчитанными счётчиками по источникам.
 type GroupCard struct {
 	Group                        incidentgroup.GroupRow
 	Members                      []incidentgroup.FeedItem
 	Hosts, Uptime, Metrics, SLOs int
 }
 
-// NewGroupCard считает счётчики состава (host N · uptime N · metric N · slo N).
 func NewGroupCard(g incidentgroup.GroupRow, members []incidentgroup.FeedItem) GroupCard {
 	c := GroupCard{Group: g, Members: members}
 	for _, m := range members {
@@ -42,13 +40,6 @@ func NewGroupCard(g incidentgroup.GroupRow, members []incidentgroup.FeedItem) Gr
 	return c
 }
 
-// groupCompositionHint — W12: подсказка состава карточки группы. Раньше
-// собиралась конкатенацией нетранслируемых литералов ("host " + N + " ·
-// uptime " + N + " · metric " + N + " · slo " + N) — в русском интерфейсе
-// печатала латиницу вперемешку с нулями незадействованных источников
-// ("host 2 · uptime 0 · metric 1 · slo 0") и не отвечала на вопрос «сколько
-// их всего». Теперь: только источники с ненулевым счётом, через feed.source.*
-// (тот же ключ, что и в шапке таблицы состава), плюс общее число членов.
 func groupCompositionHint(ctx context.Context, c GroupCard) string {
 	parts := make([]string, 0, 4)
 	if c.Hosts > 0 {
@@ -65,18 +56,12 @@ func groupCompositionHint(ctx context.Context, c GroupCard) string {
 	}
 	partsStr := strings.Join(parts, " · ")
 	if partsStr == "" {
-		partsStr = "—" // защитный случай: группа без единого члена не должна встречаться в проде (W4), но не должна и падать
+		partsStr = "—" // защита: группа без единого члена не должна возникать, но не должна и падать
 	}
 	return i18n.Tf(ctx, "feed.group.composition", "total", strconv.Itoa(len(c.Members)), "parts", partsStr)
 }
 
-// feedItemHref — ссылка на родную страницу источника (§6.1): переиспользует
-// те же билдеры путей, что и родные списки/детали каждого источника. host/
-// uptime/slo ведут на карточку конкретного объекта (slo — sloDetailPath по
-// RefID = si.slo_id, W23). metric/trace/profile детальной страницы под
-// отдельный инцидент не имеют (алерты/регрессии/профили открываются только
-// списком в контексте правила/сервиса, а не по id инцидента) — для них ссылка
-// нарочно ведёт на список источника, это не недосмотр.
+// trace/profile без детальной страницы инцидента — ссылка нарочно ведёт на список, не недосмотр.
 func feedItemHref(projectID int64, it incidentgroup.FeedItem) string {
 	switch it.Source {
 	case "host":
@@ -96,22 +81,12 @@ func feedItemHref(projectID int64, it incidentgroup.FeedItem) string {
 	}
 }
 
-// overviewPath — путь до «Обзора» проекта (задача 6 nav-ia): ссылка по
-// умолчанию для источника ленты без родной страницы (default-ветка выше) и
-// цель редиректа со старого адреса /incident-feed (см. web/overview.go).
+// Также цель редиректа со старого адреса /incident-feed (см. web/overview.go).
 func overviewPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/overview"
 }
 
-// feedItemSubKind — человекочитаемый подвид инцидента (W13): раньше везде
-// печатался сырым значением из БД ("web-01 · silent"). host — переведённый
-// вид (hosts.kind.*, тот же ключ, что и hostdetail.templ:
-// hostOpenIncidentRow/hostIncidentRow), trace — человекочитаемое имя метрики
-// (regressionMetricLabel, тот же помощник, что и regressions.templ). У
-// uptime/metric/slo своего подвида нет (SubKind всегда ""). У profile
-// SubKind — profile_type, который нигде в продукте не переводится (см.
-// profileregressions.templ: r.Service + " · " + r.ProfileType, сырым) —
-// печатаем как есть, для единообразия с родной страницей источника.
+// profile_type нигде не переводится — печатаем как есть, для единообразия с родной страницей.
 func feedItemSubKind(ctx context.Context, it incidentgroup.FeedItem) string {
 	if it.SubKind == "" {
 		return ""
@@ -126,28 +101,16 @@ func feedItemSubKind(ctx context.Context, it incidentgroup.FeedItem) string {
 	}
 }
 
-// resolvedBadgeClass — тот же класс, что incidentStatusBadgeClass рисует для
-// резолвнутого uptime-инцидента; своя копия, а не вызов оригинала — тот
-// принимает uptime.Incident, а строка ленты объединяет 6 источников в
-// incidentgroup.FeedItem, ничего похожего на uptime.Incident не несущий.
+// Дублирует incidentStatusBadgeClass, не зовёт его — тот принимает uptime.Incident, а не FeedItem.
 func resolvedBadgeClass() string {
 	return "badge badge-good"
 }
 
-// groupAnchorID — id карточки группы для якорной ссылки бейджа «была в
-// группе» (см. wasGroupedLabel/feedItemRow) на соответствующую (свёрнутую)
-// карточку ниже по той же странице.
 func groupAnchorID(groupID int64) string {
 	return "group-" + strconv.FormatInt(groupID, 10)
 }
 
-// wasGroupedLabel — подпись бейджа «была в группе» (FormerGroupID/
-// FormerGroupRootName, заведены соседней задачей в incidentgroup.FeedItem):
-// открытый или закрытый инцидент, чья группа успела резолвнуться или была
-// удалена janitor'ом (W1), — не член ни одной ОТКРЫТОЙ группы сейчас, но
-// когда-то был. FormerGroupRootName пуст только когда сама группа удалена
-// (сведений о корне не осталось нигде) — переиспользуем тот же фолбэк, что
-// и пустое имя корня в шапке карточки (W22, feed.group.root_deleted).
+// root пуст только когда группа удалена целиком — тот же фолбэк, что и у корня карточки.
 func wasGroupedLabel(ctx context.Context, it incidentgroup.FeedItem) string {
 	root := it.FormerGroupRootName
 	if root == "" {
@@ -156,11 +119,7 @@ func wasGroupedLabel(ctx context.Context, it incidentgroup.FeedItem) string {
 	return i18n.Tf(ctx, "feed.badge.was_grouped", "root", root)
 }
 
-// closedGroupIDs — множество ID групп, чьи (свёрнутые) карточки отрендерены
-// на ЭТОЙ странице в секции «закрытые» (§6.1/3): бейдж «была в группе»
-// ссылается на карточку якорем, только когда она реально присутствует на
-// странице — иначе (группа резолвилась раньше окна суток, или её карточка
-// не рендерится вовсе) ссылка вела бы в никуда.
+// Ссылка якорем — только когда карточка реально на странице, иначе она вела бы в никуда.
 func closedGroupIDSet(closedGroups []GroupCard) map[int64]bool {
 	out := make(map[int64]bool, len(closedGroups))
 	for _, c := range closedGroups {
@@ -169,14 +128,7 @@ func closedGroupIDSet(closedGroups []GroupCard) map[int64]bool {
 	return out
 }
 
-// feedItemLinkable — W9: ссылка на родную страницу источника рисуется,
-// только если её реально можно открыть. metric/slo ведут на
-// /projects/{id}/metrics/alerts и /projects/{id}/slos (обе lvlOperator,
-// authz_map_test.go) — лента же отдаётся любому участнику проекта с
-// доступом (lvlAccess, incidentfeed.go): без этой проверки рядовой участник
-// видел бы имя, severity и время metric/slo-инцидента и ссылку, которая
-// закроется 404. Остальные 4 источника ведут на lvlAccess-страницы —
-// canOperate их не касается.
+// metric/slo — lvlOperator-страницы, лента отдаётся lvlAccess: без проверки ссылка закроется 404.
 func feedItemLinkable(it incidentgroup.FeedItem, canOperate bool) bool {
 	if canOperate {
 		return true
@@ -184,12 +136,7 @@ func feedItemLinkable(it incidentgroup.FeedItem, canOperate bool) bool {
 	return it.Source != "metric" && it.Source != "slo"
 }
 
-// feedItemRow — строка состава/вне групп/закрытых. it.Title == "" на проде
-// недостижимо (у всех 4 источников-членов справочник — FK ON DELETE CASCADE,
-// см. докблок feedMemberSelect в group.go): исчезновение host/rule/slo уносит
-// каскадом и сам инцидент. Фолбэк ниже — тот же приём и тот же ключ
-// (feed.group.root_deleted), что и у корня группы (groupRootHref, W22): без
-// имени рисовать ссылку/пустой текст ссылки бессмысленно.
+// it.Title == "" на проде недостижимо (FK CASCADE); фолбэк — тот же ключ, что и у корня группы.
 func feedItemRow(projectID int64, it incidentgroup.FeedItem, closedGroupIDs map[int64]bool, canOperate bool) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -218,7 +165,7 @@ func feedItemRow(projectID int64, it incidentgroup.FeedItem, closedGroupIDs map[
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "feed.source."+it.Source))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 187, Col: 45}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 134, Col: 45}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
@@ -237,7 +184,7 @@ func feedItemRow(projectID int64, it incidentgroup.FeedItem, closedGroupIDs map[
 				var templ_7745c5c3_Var3 templ.SafeURL
 				templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(feedItemHref(projectID, it)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 191, Col: 53}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 138, Col: 53}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 				if templ_7745c5c3_Err != nil {
@@ -250,7 +197,7 @@ func feedItemRow(projectID int64, it incidentgroup.FeedItem, closedGroupIDs map[
 				var templ_7745c5c3_Var4 string
 				templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(it.Title)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 191, Col: 66}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 138, Col: 66}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 				if templ_7745c5c3_Err != nil {
@@ -264,7 +211,7 @@ func feedItemRow(projectID int64, it incidentgroup.FeedItem, closedGroupIDs map[
 				var templ_7745c5c3_Var5 string
 				templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(it.Title)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 193, Col: 15}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 140, Col: 15}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 				if templ_7745c5c3_Err != nil {
@@ -279,7 +226,7 @@ func feedItemRow(projectID int64, it incidentgroup.FeedItem, closedGroupIDs map[
 			var templ_7745c5c3_Var6 string
 			templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "feed.group.root_deleted"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 196, Col: 44}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 143, Col: 44}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 			if templ_7745c5c3_Err != nil {
@@ -298,7 +245,7 @@ func feedItemRow(projectID int64, it incidentgroup.FeedItem, closedGroupIDs map[
 			var templ_7745c5c3_Var7 string
 			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(" · " + label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 199, Col: 39}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 146, Col: 39}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 			if templ_7745c5c3_Err != nil {
@@ -325,7 +272,7 @@ func feedItemRow(projectID int64, it incidentgroup.FeedItem, closedGroupIDs map[
 			var templ_7745c5c3_Var8 string
 			templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "incident.badge.suppressed_by_dep"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 205, Col: 73}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 152, Col: 73}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 			if templ_7745c5c3_Err != nil {
@@ -344,7 +291,7 @@ func feedItemRow(projectID int64, it incidentgroup.FeedItem, closedGroupIDs map[
 			var templ_7745c5c3_Var9 string
 			templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "feed.badge.held_by_group"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 208, Col: 65}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 155, Col: 65}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 			if templ_7745c5c3_Err != nil {
@@ -363,7 +310,7 @@ func feedItemRow(projectID int64, it incidentgroup.FeedItem, closedGroupIDs map[
 			var templ_7745c5c3_Var10 string
 			templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "incidents.ack.confirmed"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 211, Col: 64}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 158, Col: 64}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 			if templ_7745c5c3_Err != nil {
@@ -387,7 +334,7 @@ func feedItemRow(projectID int64, it incidentgroup.FeedItem, closedGroupIDs map[
 				var templ_7745c5c3_Var11 templ.SafeURL
 				templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL("#" + groupAnchorID(it.FormerGroupID)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 216, Col: 64}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 163, Col: 64}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 				if templ_7745c5c3_Err != nil {
@@ -400,7 +347,7 @@ func feedItemRow(projectID int64, it incidentgroup.FeedItem, closedGroupIDs map[
 				var templ_7745c5c3_Var12 string
 				templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(wasGroupedLabel(ctx, it))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 216, Col: 93}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 163, Col: 93}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 				if templ_7745c5c3_Err != nil {
@@ -414,7 +361,7 @@ func feedItemRow(projectID int64, it incidentgroup.FeedItem, closedGroupIDs map[
 				var templ_7745c5c3_Var13 string
 				templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(wasGroupedLabel(ctx, it))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 218, Col: 32}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 165, Col: 32}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 				if templ_7745c5c3_Err != nil {
@@ -452,7 +399,7 @@ func feedItemRow(projectID int64, it incidentgroup.FeedItem, closedGroupIDs map[
 			var templ_7745c5c3_Var16 string
 			templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.incident.status_resolved"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 223, Col: 89}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 170, Col: 89}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 			if templ_7745c5c3_Err != nil {
@@ -489,13 +436,7 @@ func feedItemRow(projectID int64, it incidentgroup.FeedItem, closedGroupIDs map[
 	})
 }
 
-// feedTableHead — заголовок таблицы, общий для состава группы, внегрупповых
-// и закрытых внегрупповых инцидентов: у всех трёх один набор из 5 колонок
-// (feedItemRow). Источник/статус/начало — переиспользованные ключи (то же
-// слово, что и на соседних страницах), название колонки под источник и
-// время закрытия — только здесь, обособленного ключа под них больше нигде
-// нет. Начало и закрытие — две колонки, а не два относительных времени в
-// одной ячейке: без разделителя они слипались в «3 дня назадтолько что».
+// Начало и закрытие — отдельные колонки, иначе относительные времена слипаются в одну строку.
 func feedTableHead() templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -524,7 +465,7 @@ func feedTableHead() templ.Component {
 		var templ_7745c5c3_Var18 string
 		templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "feed.table.source"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 247, Col: 53}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 188, Col: 53}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 		if templ_7745c5c3_Err != nil {
@@ -537,7 +478,7 @@ func feedTableHead() templ.Component {
 		var templ_7745c5c3_Var19 string
 		templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "perf.related_issues.table.title"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 248, Col: 67}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 189, Col: 67}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 		if templ_7745c5c3_Err != nil {
@@ -550,7 +491,7 @@ func feedTableHead() templ.Component {
 		var templ_7745c5c3_Var20 string
 		templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "metrics.alerts.table.status"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 249, Col: 63}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 190, Col: 63}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 		if templ_7745c5c3_Err != nil {
@@ -563,7 +504,7 @@ func feedTableHead() templ.Component {
 		var templ_7745c5c3_Var21 string
 		templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "metrics.alerts.table.started"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 250, Col: 64}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 191, Col: 64}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 		if templ_7745c5c3_Err != nil {
@@ -576,7 +517,7 @@ func feedTableHead() templ.Component {
 		var templ_7745c5c3_Var22 string
 		templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "feed.table.resolved_at"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 251, Col: 58}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 192, Col: 58}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 		if templ_7745c5c3_Err != nil {
@@ -590,13 +531,7 @@ func feedTableHead() templ.Component {
 	})
 }
 
-// groupRootHref — ссылка на родную страницу корневого узла группы (host —
-// hostLink по имени, monitor — monitorDetailPath по ID, не по имени: имя
-// монитора, в отличие от хоста, не участвует в его адресе). Зовётся только
-// когда RootName непуст (см. groupCard) — на пустом имени вызывать незачем:
-// у удалённого хоста ссылка по пустому имени выродилась бы в адрес списка
-// хостов целиком (W22), у удалённого монитора переход на несуществующую
-// карточку так же бессмыслен.
+// host — по имени (hostLink), monitor — по ID: имя монитора не участвует в его адресе.
 func groupRootHref(projectID int64, g incidentgroup.GroupRow) string {
 	if g.RootNodeKind == "monitor" {
 		return monitorDetailPath(g.RootNodeID)
@@ -632,7 +567,7 @@ func groupCard(projectID int64, c GroupCard, canOperate bool) templ.Component {
 		var templ_7745c5c3_Var24 string
 		templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.ResolveAttributeValue(groupAnchorID(c.Group.ID))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 271, Col: 40}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 206, Col: 40}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var24)
 		if templ_7745c5c3_Err != nil {
@@ -645,7 +580,7 @@ func groupCard(projectID int64, c GroupCard, canOperate bool) templ.Component {
 		var templ_7745c5c3_Var25 string
 		templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "feed.group.root."+c.Group.RootSource) + ": ")
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 274, Col: 63}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 209, Col: 63}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 		if templ_7745c5c3_Err != nil {
@@ -663,7 +598,7 @@ func groupCard(projectID int64, c GroupCard, canOperate bool) templ.Component {
 			var templ_7745c5c3_Var26 templ.SafeURL
 			templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(groupRootHref(projectID, c.Group)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 276, Col: 59}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 211, Col: 59}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 			if templ_7745c5c3_Err != nil {
@@ -676,7 +611,7 @@ func groupCard(projectID int64, c GroupCard, canOperate bool) templ.Component {
 			var templ_7745c5c3_Var27 string
 			templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinStringErrs(c.Group.RootName)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 276, Col: 80}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 211, Col: 80}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 			if templ_7745c5c3_Err != nil {
@@ -690,7 +625,7 @@ func groupCard(projectID int64, c GroupCard, canOperate bool) templ.Component {
 			var templ_7745c5c3_Var28 string
 			templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "feed.group.root_deleted"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 278, Col: 45}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 213, Col: 45}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 			if templ_7745c5c3_Err != nil {
@@ -712,7 +647,7 @@ func groupCard(projectID int64, c GroupCard, canOperate bool) templ.Component {
 		var templ_7745c5c3_Var29 string
 		templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs(groupCompositionHint(ctx, c))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 282, Col: 52}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 217, Col: 52}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 		if templ_7745c5c3_Err != nil {
@@ -756,7 +691,7 @@ func groupCard(projectID int64, c GroupCard, canOperate bool) templ.Component {
 			var templ_7745c5c3_Var32 string
 			templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "feed.group.resolved"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 285, Col: 77}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/incidentfeed.templ`, Line: 220, Col: 77}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
 			if templ_7745c5c3_Err != nil {
@@ -824,13 +759,7 @@ func groupCard(projectID int64, c GroupCard, canOperate bool) templ.Component {
 	})
 }
 
-// FeedCaps — потолки четырёх независимых запросов «Обзора» (R4, W7/W8,
-// перенесены из бывшей /incident-feed задачей 6 nav-ia без изменений):
-// открытые группы, открытые внегрупповые, закрытые группы, закрытые
-// внегрупповые. Числа приходят из overview.go (incidentgroup.MaxOpen* для
-// открытых секций, overviewClosed*Limit для закрытых) — шаблон только
-// печатает подпись рядом с заголовком секции, само число не выбирает:
-// иначе подпись и SQL-потолок могли бы разъехаться молча.
+// Числа приходят из overview.go, шаблон только печатает — иначе подпись и потолок разъедутся.
 type FeedCaps struct {
 	OpenGroups   int
 	OutOfGroup   int

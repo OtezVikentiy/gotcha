@@ -9,17 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestRemoveMemberRevokesTeamProjectAccess — исключение из организации
-// отзывает доступ к проектам её команд.
-//
-// Ловит: снятие team_members_member_fk, откат accessCondition, возврат
-// RemoveMember к удалению только из org_members.
-//
-// Дискриминация теста проверена руками (не в этом коде): если убрать из
-// accessCondition JOIN org_members m2, тест всё равно PASS — инвариант держит
-// схема. Если дополнительно временно снять ограничение
-// team_members_member_fk, тест краснеет — без обеих защит доступ не отзывается.
-// Значит второй рубеж в accessCondition действительно второй, а не единственный.
 func TestRemoveMemberRevokesTeamProjectAccess(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -77,9 +66,6 @@ func TestRemoveMemberRevokesTeamProjectAccess(t *testing.T) {
 	}
 }
 
-// TestRemoveMemberAsRevokesTeamProjectAccess — тот же сценарий, но участника
-// исключает не он сам, а актёр-владелец через RemoveMemberAs (актёрозависимый
-// вариант с TOCTOU-фиксом, см. checkOwnerLevelGuard в member.go).
 func TestRemoveMemberAsRevokesTeamProjectAccess(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -137,9 +123,6 @@ func TestRemoveMemberAsRevokesTeamProjectAccess(t *testing.T) {
 	}
 }
 
-// TestLeaveOrgRevokesTeamProjectAccess — участник выходит из организации сам
-// (orgSettingsLeave в web-слое зовёт именно RemoveMember с self в качестве
-// userID — отдельного сервисного метода для самостоятельного выхода нет).
 func TestLeaveOrgRevokesTeamProjectAccess(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -177,7 +160,6 @@ func TestLeaveOrgRevokesTeamProjectAccess(t *testing.T) {
 		t.Fatalf("до выхода доступ должен быть: ok=%v err=%v", ok, err)
 	}
 
-	// Сам участник выходит из организации: orgID и userID совпадают с memberID.
 	if err := svc.RemoveMember(ctx, o.ID, memberID); err != nil {
 		t.Fatalf("leave org: %v", err)
 	}
@@ -198,8 +180,6 @@ func TestLeaveOrgRevokesTeamProjectAccess(t *testing.T) {
 	}
 }
 
-// TestTeamMembershipRequiresOrgMembership — инвариант держит база, а не код:
-// прямая вставка в обход сервиса обязана упасть на ограничении.
 func TestTeamMembershipRequiresOrgMembership(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -230,8 +210,6 @@ func TestTeamMembershipRequiresOrgMembership(t *testing.T) {
 	}
 }
 
-// TestTeamMemberCannotBelongToForeignOrg — участника нельзя приписать к
-// команде чужой организации даже прямой вставкой.
 func TestTeamMemberCannotBelongToForeignOrg(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -255,8 +233,6 @@ func TestTeamMemberCannotBelongToForeignOrg(t *testing.T) {
 		t.Fatalf("create team: %v", err)
 	}
 
-	// bOwner — участник orgB, команда принадлежит orgA. Пара (org_id, user_id)
-	// валидна, пара (team_id, org_id) — нет.
 	_, err = pool.Exec(ctx,
 		"INSERT INTO team_members (team_id, org_id, user_id) VALUES ($1, $2, $3)",
 		teamA.ID, orgB.ID, bOwner)

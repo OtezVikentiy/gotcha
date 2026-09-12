@@ -10,9 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0075HostGroupThresholds — групповое правило порогов по метке
-// (scope/label) для проекта, каскадное удаление от projects, откат снимает
-// таблицу.
 func TestMigrate0075HostGroupThresholds(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -57,7 +54,6 @@ func TestMigrate0075HostGroupThresholds(t *testing.T) {
 		t.Fatalf("group threshold = (%v,%v,%v,%v,%v), want (role,web,true,4,nil)", scope, label, le, lt, de)
 	}
 
-	// CASCADE: удаление проекта снимает групповое правило.
 	if _, err := pool.Exec(ctx, "DELETE FROM projects WHERE id=$1", proj); err != nil {
 		t.Fatalf("del project: %v", err)
 	}
@@ -70,7 +66,6 @@ func TestMigrate0075HostGroupThresholds(t *testing.T) {
 		t.Fatalf("группа не удалена каскадом: %d", cnt)
 	}
 
-	// Откат.
 	if err := db.MigratePGTo(dsn, 74); err != nil {
 		t.Fatalf("down to 74: %v", err)
 	}

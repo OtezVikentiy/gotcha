@@ -10,12 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0078AlertDependencies — таблица alert_dependencies (рёбра
-// зависимостей узел→узел для подавления шторма алертов) и флаг
-// suppressed_by_dep на host_incidents/incidents. Проверяет: дефолт флага на
-// существующем инциденте, валидное ребро (родитель-монитор → ребёнок-хост),
-// CHECK «ровно один родитель», CHECK «ровно один способ ребёнка», CHECK
-// «label-пара scope/value вместе или никак», откат down-миграции.
 func TestMigrate0078AlertDependencies(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -49,7 +43,6 @@ func TestMigrate0078AlertDependencies(t *testing.T) {
 		t.Fatalf("migrate to 78: %v", err)
 	}
 
-	// 1) Дефолт флага на существующем инциденте = false.
 	var flag bool
 	if err := pool.QueryRow(ctx,
 		"SELECT suppressed_by_dep FROM host_incidents WHERE id=$1", incidentID).Scan(&flag); err != nil {
@@ -59,31 +52,26 @@ func TestMigrate0078AlertDependencies(t *testing.T) {
 		t.Fatalf("suppressed_by_dep default = %v, want false", flag)
 	}
 
-	// 2) Валидное ребро вставляется (родитель-монитор → ребёнок-хост).
 	if _, err := pool.Exec(ctx, `INSERT INTO alert_dependencies (project_id, parent_monitor_id, child_host_id)
 		VALUES ($1,$2,$3)`, projectID, monitorID, hostID); err != nil {
 		t.Fatalf("insert valid edge: %v", err)
 	}
 
-	// 3) CHECK «ровно один родитель» отвергает два родителя.
 	if _, err := pool.Exec(ctx, `INSERT INTO alert_dependencies (project_id, parent_host_id, parent_monitor_id, child_host_id)
 		VALUES ($1,$2,$3,$4)`, projectID, hostID, monitorID, hostID); err == nil {
 		t.Fatal("insert with two parents: want CHECK violation, got nil")
 	}
 
-	// 4) CHECK «ровно один способ ребёнка» отвергает ноль способов.
 	if _, err := pool.Exec(ctx, `INSERT INTO alert_dependencies (project_id, parent_monitor_id) VALUES ($1,$2)`,
 		projectID, monitorID); err == nil {
 		t.Fatal("insert with no child: want CHECK violation, got nil")
 	}
 
-	// 5) Label-пара: scope без value отвергается.
 	if _, err := pool.Exec(ctx, `INSERT INTO alert_dependencies (project_id, parent_monitor_id, child_label_scope)
 		VALUES ($1,$2,'env')`, projectID, monitorID); err == nil {
 		t.Fatal("insert label scope without value: want CHECK violation, got nil")
 	}
 
-	// 6) Down откатывается.
 	if err := db.MigratePGTo(dsn, 77); err != nil {
 		t.Fatalf("migrate down to 77: %v", err)
 	}

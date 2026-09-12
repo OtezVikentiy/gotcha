@@ -17,17 +17,11 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// wireRecipes заводит на стенде RuleService порогов — страницы рецептов
-// считают по нему статусы «создан/будет создан», а POST создаёт правила.
-// h.Metrics (ClickHouse) сознательно НЕ проводится: путь «данные приходят»
-// требует живого CH и проверяется в T5, здесь везде ветка «ждём данные»
-// (пер-задачному ревью T4 это не пробел, а границa задачи).
+// h.Metrics (ClickHouse) сознательно не проводится — везде ветка «ждём данные».
 func wireRecipes(s *stack) {
 	s.h.MetricRules = metric.NewRuleService(s.pool)
 }
 
-// recipesSeedProject — организация+проект под owner'ом; возвращает проект и
-// cookie владельца (owner организации = оператор проекта).
 func recipesSeedProject(t *testing.T, s *stack, slugPrefix string) (org.Project, *http.Cookie, *org.Service) {
 	t.Helper()
 	authSvc := auth.NewService(s.pool)
@@ -44,9 +38,6 @@ func recipesSeedProject(t *testing.T, s *stack, slugPrefix string) (org.Project,
 	return proj, ownerCookie, orgSvc
 }
 
-// TestWebRecipesListPage — GET списка под оператором: 200, все 4 карточки
-// рецептов с бейджем статуса данных (CH на стенде нет — у всех «ждём»);
-// member без командного доступа — 404 (existence-oracle, как metrics).
 func TestWebRecipesListPage(t *testing.T) {
 	s := newStack(t)
 	wireRecipes(s)
@@ -54,7 +45,6 @@ func TestWebRecipesListPage(t *testing.T) {
 
 	authSvc := auth.NewService(s.pool)
 	memberID, memberCookie := orgSettingsRegister(t, authSvc, "rcp-list-member@example.com")
-	// member организации БЕЗ команды, прикреплённой к проекту, — доступа нет.
 	orgID := proj.OrgID
 	if err := orgSvc.AddMember(context.Background(), orgID, memberID, org.RoleMember); err != nil {
 		t.Fatalf("add member: %v", err)
@@ -68,8 +58,7 @@ func TestWebRecipesListPage(t *testing.T) {
 		t.Fatalf("GET %s (owner) status = %d, want 200: %s", path, resp.StatusCode, body)
 	}
 	bodyStr := string(body)
-	// Карточки рецептов идут внутри обёртки вертикального ритма .card-stack —
-	// без неё section.card слипаются (ни .card, ни <section> margin не несут).
+	// Без обёртки .card-stack карточки слипаются — margin не несут ни .card, ни <section>.
 	stackAt := strings.Index(bodyStr, `<div class="card-stack">`)
 	if stackAt < 0 {
 		t.Errorf("GET %s: нет обёртки card-stack вокруг карточек рецептов", path)
@@ -83,8 +72,6 @@ func TestWebRecipesListPage(t *testing.T) {
 			t.Errorf("GET %s: карточка %s стоит до открытия card-stack — вне стека", path, rec.ID)
 		}
 	}
-	// Без ClickHouse на стенде статус у всех рецептов — «ждём данные»
-	// (ровно 4 бейджа), «данные приходят» не встречается ни разу.
 	if got := strings.Count(bodyStr, "Ждём данные"); got != len(recipes.All()) {
 		t.Errorf("GET %s: бейджей «Ждём данные» = %d, want %d", path, got, len(recipes.All()))
 	}
@@ -100,9 +87,6 @@ func TestWebRecipesListPage(t *testing.T) {
 	}
 }
 
-// TestWebRecipesDetailSnippet — страница redis: без ключа проекта сниппет
-// скрыт с подсказкой, после выпуска ключа конфиг содержит сам ключ;
-// неизвестный slug — 404.
 func TestWebRecipesDetailSnippet(t *testing.T) {
 	s := newStack(t)
 	wireRecipes(s)
@@ -110,7 +94,6 @@ func TestWebRecipesDetailSnippet(t *testing.T) {
 
 	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/recipes/redis"
 
-	// Ключа ещё нет — вместо сниппета подсказка «выпустите ключ».
 	resp := getWithCookie(t, s.srv, path, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -120,8 +103,7 @@ func TestWebRecipesDetailSnippet(t *testing.T) {
 	if !strings.Contains(string(body), "выпустите активный публичный ключ") {
 		t.Errorf("GET %s (no key): нет подсказки про выпуск ключа: %s", path, body)
 	}
-	// Деталка тоже в стеке .card-stack: без него блок шагов и блок порогов
-	// слипались, когда между ними не отрисованы графики (Charts == nil).
+	// Блок шагов и порогов слипались без .card-stack, когда графики не отрисованы (Charts == nil).
 	if !strings.Contains(string(body), `<div class="card-stack">`) {
 		t.Errorf("GET %s: нет обёртки card-stack между блоками деталки", path)
 	}
@@ -144,7 +126,6 @@ func TestWebRecipesDetailSnippet(t *testing.T) {
 	if !strings.Contains(bodyStr, "receivers:") {
 		t.Errorf("GET %s: нет YAML-конфига коллектора", path)
 	}
-	// Пороги redis ещё не созданы — все строки таблицы «будет создан».
 	rec, _ := recipes.ByID("redis")
 	if got := strings.Count(bodyStr, "Будет создан"); got != len(rec.Rules) {
 		t.Errorf("GET %s: строк «Будет создан» = %d, want %d", path, got, len(rec.Rules))
@@ -158,17 +139,8 @@ func TestWebRecipesDetailSnippet(t *testing.T) {
 	}
 }
 
-// TestWebRecipesDetailCanOperate — гейт кнопки «Создать рекомендованные
-// пороги» (аудит UX/QA P1: зрителю кнопка вела в 404 requireProjectOperator).
-//
-// ВАЖНО про предикаты: сегодня CanOperate == CanAccessProject
-// (canOperateProject в operate.go — прямой алиас, случая «доступ есть,
-// оператор — нет» не существует), поэтому НАСТОЯЩИЙ участник команды с
-// доступом к проекту видит кнопку, и живого пользователя с CanOperate=false
-// на открытой странице не существует. HTTP-часть фиксирует это совпадение
-// (участник команды видит кнопку), а ветку зрителя (hint вместо формы)
-// проверяем прямым рендером шаблона с CanOperate=false — она сработает в
-// тот момент, когда предикаты разойдутся.
+// CanOperate == CanAccessProject сегодня (нет случая «доступ есть, оператор — нет»), так что
+// ветку зрителя проверяем прямым рендером шаблона, а не через HTTP.
 func TestWebRecipesDetailCanOperate(t *testing.T) {
 	s := newStack(t)
 	wireRecipes(s)
@@ -179,8 +151,6 @@ func TestWebRecipesDetailCanOperate(t *testing.T) {
 	if err := orgSvc.AddMember(context.Background(), proj.OrgID, memberID, org.RoleMember); err != nil {
 		t.Fatalf("add member: %v", err)
 	}
-	// Доступ члена — через команду проекта (lvlAccess): member видит только
-	// проекты своих команд.
 	addTeamAccess(t, orgSvc, proj.OrgID, proj.ID, memberID, "rcp-oper-team")
 
 	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/recipes/redis"
@@ -199,8 +169,6 @@ func TestWebRecipesDetailCanOperate(t *testing.T) {
 		t.Errorf("hint «только оператору» показан оператору: %s", body)
 	}
 
-	// Ветка зрителя — прямой рендер шаблона (как renderHostDetail):
-	// CanOperate=false при незакрытых порогах — hint вместо формы POST.
 	rec, _ := recipes.ByID("redis")
 	vm := templates.RecipeDetailVM{
 		ProjectID: proj.ID,
@@ -220,11 +188,6 @@ func TestWebRecipesDetailCanOperate(t *testing.T) {
 	}
 }
 
-// TestWebRecipesNilService — h.MetricRules не проведён (узкий тестовый
-// стенд): без RuleService не посчитать статусы порогов, а POST создания
-// мёртв — раздел целиком отвечает 404 (тот же nil-guard, что у
-// TestWebAlertSuppressionNilService / escalationsPage / slosPage).
-// wireRecipes здесь НАРОЧНО не зовётся.
 func TestWebRecipesNilService(t *testing.T) {
 	s := newStack(t)
 	proj, ownerCookie, _ := recipesSeedProject(t, s, "rcp-nil")
@@ -247,11 +210,6 @@ func TestWebRecipesNilService(t *testing.T) {
 	}
 }
 
-// TestWebRecipesThresholdsCreate — POST под оператором создаёт ровно
-// len(Rules) правил и редиректит на страницу рецепта; ПОВТОРНЫЙ POST правил
-// не добавляет (идемпотентность T3 через HTTP); member без командного
-// доступа получает 404 (requireProjectOperator — единый existence-oracle:
-// не-оператор не видит и сам проект, как у alert-suppression/escalations).
 func TestWebRecipesThresholdsCreate(t *testing.T) {
 	s := newStack(t)
 	wireRecipes(s)
@@ -266,7 +224,6 @@ func TestWebRecipesThresholdsCreate(t *testing.T) {
 	base := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/recipes/redis"
 	path := base + "/thresholds"
 
-	// Не-оператор: правила не создаются, ответ — 404 (existence-oracle).
 	resp := postForm(t, s.srv, path, url.Values{}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -298,8 +255,7 @@ func TestWebRecipesThresholdsCreate(t *testing.T) {
 	if loc != base {
 		t.Errorf("POST %s Location = %q, want %q", path, loc, base)
 	}
-	// Флеш «создано N, пропущено M» уехал в redirect-cookie: created=3,
-	// skipped=0 кодируется без хвоста |m (см. setFlash, парный формат).
+	// created=3, skipped=0 кодируется без хвоста |m (см. setFlash, парный формат).
 	if got, err := url.QueryUnescape(flashVal); err != nil || got != "ok|flash.recipes_applied|3" {
 		t.Errorf("flash-cookie после POST = %q (%v), want ok|flash.recipes_applied|3", got, err)
 	}
@@ -311,7 +267,6 @@ func TestWebRecipesThresholdsCreate(t *testing.T) {
 		t.Fatalf("после POST правил = %d, want %d", len(rules), len(rec.Rules))
 	}
 
-	// Повторный POST — правил ровно столько же (skip, не дубли).
 	resp = postForm(t, s.srv, path, url.Values{}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -326,7 +281,6 @@ func TestWebRecipesThresholdsCreate(t *testing.T) {
 		t.Fatalf("после повторного POST правил = %d, want %d (идемпотентность)", len(rules), len(rec.Rules))
 	}
 
-	// Неизвестный slug — 404 и никаких новых правил (recipes.ByID до гейта).
 	resp = postForm(t, s.srv, "/projects/"+strconv.FormatInt(proj.ID, 10)+"/recipes/nope/thresholds",
 		url.Values{}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)

@@ -10,8 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// TestEscalationsErrorMessage — ErrInvalidPolicy переводится в свой текст,
-// неизвестная ошибка — в общий error.action_failed.
 func TestEscalationsErrorMessage(t *testing.T) {
 	ctx := ruTestCtx()
 	if got, want := escalationsErrorMessage(ctx, escalation.ErrInvalidPolicy),
@@ -24,9 +22,6 @@ func TestEscalationsErrorMessage(t *testing.T) {
 	}
 }
 
-// TestSafeExternalHref — только http/https проходят как есть; пустая
-// строка, невалидный URL и прочие схемы (javascript:, file:, data:) —
-// ok=false (защита от javascript:-XSS в ссылке на внешний CI-прогон).
 func TestSafeExternalHref(t *testing.T) {
 	cases := []struct {
 		in       string
@@ -49,11 +44,8 @@ func TestSafeExternalHref(t *testing.T) {
 	}
 }
 
-// TestIsRuneBoundary — границы 0 и len(s) всегда считаются границами руны
-// (defensive: capDump зовёт с limit, который может дойти до края);
-// байт-продолжение UTF-8 (10xxxxxx) — не граница, ведущий байт — граница.
 func TestIsRuneBoundary(t *testing.T) {
-	s := "a" + "€" // 'a' (1 байт) + евро (3 байта: e2 82 ac)
+	s := "a" + "€"
 	if !isRuneBoundary(s, 0) {
 		t.Error("i=0 must always be a boundary")
 	}
@@ -71,9 +63,6 @@ func TestIsRuneBoundary(t *testing.T) {
 	}
 }
 
-// TestCapDump — s короче/равен потолку возвращается как есть; длиннее —
-// обрезается ДО границы руны с добавлением маркера, не разрывая
-// многобайтовый символ пополам.
 func TestCapDump(t *testing.T) {
 	short := "hello"
 	if got := capDump(short); got != short {
@@ -85,11 +74,7 @@ func TestCapDump(t *testing.T) {
 		t.Errorf("capDump(exactly maxDumpBytes) must be unchanged, got len=%d", len(got))
 	}
 
-	// Строка длиннее потолка, где граница обрезки (maxDumpBytes-len(marker))
-	// приходится РОВНО в середину многобайтового символа: '€' — 3 байта,
-	// строка из одних '€' длиной больше потолка гарантированно ловит такой
-	// случай на каком-то смещении около границы.
-	long := strings.Repeat("€", maxDumpBytes) // намного длиннее потолка в байтах
+	long := strings.Repeat("€", maxDumpBytes)
 	got := capDump(long)
 	if !strings.HasSuffix(got, capDumpMarker) {
 		t.Fatalf("capDump(long) must end with the truncation marker, got tail: %q", got[max(0, len(got)-20):])
@@ -103,8 +88,6 @@ func TestCapDump(t *testing.T) {
 	}
 }
 
-// TestSanitizeControl — \n/\t проходят как есть, прочие control-руны
-// заменяются пробелом, обычный текст не трогается.
 func TestSanitizeControl(t *testing.T) {
 	in := "line1\nline2\ttab\x01\x02end"
 	want := "line1\nline2\ttab  end"
@@ -113,9 +96,6 @@ func TestSanitizeControl(t *testing.T) {
 	}
 }
 
-// TestPrettyJSON — пустая строка/{}/null — "" (нечего показывать); невалидный
-// JSON — "" (не паника); валидный — с отступами, без экранирования HTML-
-// символов (raw '&'/'<'/'>' — дамп для LLM, не для встраивания в HTML).
 func TestPrettyJSON(t *testing.T) {
 	if got := prettyJSON(""); got != "" {
 		t.Errorf("prettyJSON(empty) = %q, want empty", got)

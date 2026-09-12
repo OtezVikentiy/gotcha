@@ -10,10 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestTransferInstanceAdmin: находка K7-1 — единственный админ инстанса не
-// должен остаться без пути передачи роли. A регистрируется первым (bootstrap
-// делает его админом), B — обычный пользователь; TransferInstanceAdmin
-// переносит флаг на B.
 func TestTransferInstanceAdmin(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -47,8 +43,7 @@ func TestTransferInstanceAdmin(t *testing.T) {
 	}
 }
 
-// TestTransferInstanceAdminCaseInsensitiveEmail: email — citext, передача по
-// email в другом регистре обязана резолвиться на тот же аккаунт.
+// Email — citext, поэтому регистр не должен влиять на резолюцию аккаунта.
 func TestTransferInstanceAdminCaseInsensitiveEmail(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -76,8 +71,6 @@ func TestTransferInstanceAdminCaseInsensitiveEmail(t *testing.T) {
 	}
 }
 
-// TestTransferInstanceAdminRejectsUnknownEmail: неизвестный email — ErrUserNotFound,
-// флаг текущего админа не трогается.
 func TestTransferInstanceAdminRejectsUnknownEmail(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -100,8 +93,6 @@ func TestTransferInstanceAdminRejectsUnknownEmail(t *testing.T) {
 	}
 }
 
-// TestTransferInstanceAdminRejectsSelf: передача самому себе бессмысленна и
-// отклоняется отдельной sentinel-ошибкой, не молчаливым no-op.
 func TestTransferInstanceAdminRejectsSelf(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -124,8 +115,6 @@ func TestTransferInstanceAdminRejectsSelf(t *testing.T) {
 	}
 }
 
-// TestTransferInstanceAdminRejectsNonAdmin: B (не админ) пытается передать
-// роль C — ErrNotInstanceAdmin, действующий админ A не меняется.
 func TestTransferInstanceAdminRejectsNonAdmin(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -155,12 +144,6 @@ func TestTransferInstanceAdminRejectsNonAdmin(t *testing.T) {
 	}
 }
 
-// TestTransferInstanceAdminRollsBackWhenGrantFails: если вторая часть
-// передачи (grant получателю) не может выполниться, вся транзакция обязана
-// откатиться — A должен остаться админом, а не потерять флаг без передачи
-// кому-либо. Блокируем строку B внешней транзакцией с FOR UPDATE, чтобы
-// UPDATE ... WHERE id = B внутри TransferInstanceAdmin завис и упал по ctx
-// timeout, и проверяем состояние после Rollback лока.
 func TestTransferInstanceAdminRollsBackWhenGrantFails(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -205,25 +188,8 @@ func TestTransferInstanceAdminRollsBackWhenGrantFails(t *testing.T) {
 	}
 }
 
-// TestDeleteSelfAccountLocksInstanceAdminFlag (F3, раунд правок по ревью
-// финревью волны 1 аудита перед 1.0): FOR UPDATE в SELECT is_instance_admin
-// сериализует DeleteSelfAccount с конкурентной grant-половиной
-// TransferInstanceAdmin. Наивный тест «блокируется ли вызов вообще» мутанта
-// (снятие FOR UPDATE) не отличит: без FOR UPDATE SELECT проходит РАНЬШЕ
-// коммита конкурентной транзакции (читает старое значение), но последующий
-// DELETE FROM users всё равно упирается в тот же лок строки — вызов виснет
-// в обоих случаях. Различие — в ИТОГЕ после коммита: с FOR UPDATE SELECT
-// дожидается коммита, видит is_instance_admin=true и возвращает
-// ErrInstanceAdminBlocked, A не удаляется; без FOR UPDATE проверка уже
-// пройдена по старому (false) значению, и DELETE, дождавшись лока, просто
-// удаляет A.
-//
-// Сценарий: B — единственный админ инстанса (первый зарегистрированный), A —
-// обычный пользователь. Внешняя транзакция делает НЕЗАКОММИЧЕННЫЙ
-// UPDATE users SET is_instance_admin = true WHERE id = A (ровно grant-
-// половина TransferInstanceAdmin, держит эксклюзивный лок строки A);
-// конкурентно вызывается DeleteSelfAccount(A); внешняя транзакция
-// коммитится.
+// Наивная проверка «блокируется ли вызов» не отличит FOR UPDATE от его отсутствия — оба висят на
+// локе строки; разница только в итоге после коммита конкурентной транзакции.
 func TestDeleteSelfAccountLocksInstanceAdminFlag(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -241,9 +207,7 @@ func TestDeleteSelfAccountLocksInstanceAdminFlag(t *testing.T) {
 		t.Fatalf("Register A: %v", err)
 	}
 
-	// one_instance_admin (0017) — частичный UNIQUE на is_instance_admin: как
-	// и настоящий TransferInstanceAdmin, сперва снимаем флаг у B, потом
-	// ставим A — иначе конфликт индекса ещё до коммита.
+	// Частичный UNIQUE на is_instance_admin: снимаем флаг у B до того, как поставить его A.
 	grantTx, err := pool.Begin(bg)
 	if err != nil {
 		t.Fatalf("begin grant tx: %v", err)
@@ -261,9 +225,7 @@ func TestDeleteSelfAccountLocksInstanceAdminFlag(t *testing.T) {
 		deleteDone <- svc.DeleteSelfAccount(bg, uidA)
 	}()
 
-	// DeleteSelfAccount обязана застрять на локе строки A (на SELECT ... FOR
-	// UPDATE — с фиксом; на самом DELETE — без него), пока grantTx не
-	// закоммичена. Короткая пауза исключает случайное прохождение раньше.
+	// Ждём блокировку по локу A до коммита grantTx — пауза страхует от случайного прохождения.
 	select {
 	case err := <-deleteDone:
 		t.Fatalf("DeleteSelfAccount вернулась до коммита grant-транзакции (err=%v) — вызов не заблокирован на строке A", err)

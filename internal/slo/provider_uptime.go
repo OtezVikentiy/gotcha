@@ -8,16 +8,13 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// UptimeProvider — SLI доли успешных проверок uptime-монитора (good/total) из
-// check_results. Монитор берётся из SLO.MonitorID.
 type UptimeProvider struct {
 	q             *uptime.Query
 	maint         *uptime.Service
 	retentionDays int
 }
 
-// NewUptimeProvider собирает провайдер uptime. maint == nil отключает исключение
-// окон обслуживания.
+// maint == nil отключает исключение окон обслуживания.
 func NewUptimeProvider(q *uptime.Query, maint *uptime.Service, retentionDays int) *UptimeProvider {
 	return &UptimeProvider{q: q, maint: maint, retentionDays: retentionDays}
 }
@@ -38,10 +35,8 @@ func (p *UptimeProvider) BucketsExcluding(ctx context.Context, s SLO, from, to t
 	return excludeWindows(windows, bs, from, to, step), nil
 }
 
-// rawBuckets — корзины из ClickHouse до вырезания окон обслуживания.
 func (p *UptimeProvider) rawBuckets(ctx context.Context, s SLO, from, to time.Time, step time.Duration) ([]Bucket, error) {
-	// MonitorID nullable: uptime-SLO без монитора неопределимо. Не паникуем на
-	// разыменовании nil — возвращаем ошибку, оценщик её залогирует и пропустит SLO.
+	// MonitorID nullable: не паникуем на разыменовании, возвращаем ошибку.
 	if s.MonitorID == nil {
 		return nil, fmt.Errorf("slo: uptime provider: SLO %d has no monitor_id", s.ID)
 	}

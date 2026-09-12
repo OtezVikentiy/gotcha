@@ -1,18 +1,12 @@
 -- backward-compatible: yes (новая таблица и ADD COLUMN с дефолтом)
--- Троттлинг алертов о производительности: у них нет ни alert_rules, ни
--- throttle_minutes (в отличие от алертов об ошибках), а КАЖДАЯ новая пара
--- (project_id, fingerprint) шлёт задачу в outbox на каждый канал. Один проект,
--- у которого детекция нашла проблему на двух сотнях эндпойнтов, залил бы
--- дежурному две сотни сообщений за минуты. Окно — «прыгающее» (tumbling):
--- window_start + счётчик, одна строка на проект (см. trace.OutboxNotifier).
+-- Без троттлинга каждая новая (project_id, fingerprint) шлёт задачу в outbox на канал —
+-- сотня находок заливает дежурного сотнями сообщений. Окно — tumbling, одна строка на проект.
 CREATE TABLE perf_alert_throttle (
     project_id   bigint PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
     window_start timestamptz NOT NULL DEFAULT now(),
     sent         int NOT NULL DEFAULT 0
 );
 
--- sample_at — когда в последний раз обновлялись evidence и sample_trace_id.
--- Без этой колонки повторное обнаружение переписывало бы jsonb-evidence на
--- КАЖДОЙ семплированной транзакции (лишний WAL и TOAST на горячей строке);
--- с ней пример освежается не чаще раза в час (см. trace.IssueService.Record).
+-- sample_at ограничивает обновление evidence раз в час — иначе каждая семплированная
+-- транзакция переписывала бы jsonb на горячей строке (лишний WAL/TOAST).
 ALTER TABLE perf_issues ADD COLUMN sample_at timestamptz NOT NULL DEFAULT now();

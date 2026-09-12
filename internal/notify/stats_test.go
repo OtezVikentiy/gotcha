@@ -10,9 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestQueueSnapshotSeesStuckQueue: возраст самой старой ждущей задачи —
-// единственное число, отличающее «очередь пуста, потому что всё доставлено» от
-// «очередь стоит». До него «алерт не пришёл» диагностировался грепом логов.
 func TestQueueSnapshotSeesStuckQueue(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -49,8 +46,6 @@ func TestQueueSnapshotSeesStuckQueue(t *testing.T) {
 	}
 }
 
-// TestQueueSnapshotCountsFailedSeparately: задачи, у которых кончились попытки,
-// не должны считаться ждущими — иначе очередь выглядит вечно занятой.
 func TestQueueSnapshotCountsFailedSeparately(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

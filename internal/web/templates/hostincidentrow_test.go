@@ -10,9 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// TestHostOpenIncidentRowPlainNotSuppressed — открытый инцидент без detail и
-// без подавления зависимостью: бейдж подавления и уточнение в скобках не
-// рисуются, а ackControl (не-оператор) не показывает форму.
 func TestHostOpenIncidentRowPlainNotSuppressed(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	suppressedText := i18n.T(ctx, "incident.badge.suppressed_by_dep")
@@ -29,9 +26,6 @@ func TestHostOpenIncidentRowPlainNotSuppressed(t *testing.T) {
 	}
 }
 
-// TestHostOpenIncidentRowSuppressedWithDetail — подавленный зависимостью
-// инцидент с detail: оба опциональных блока присутствуют, и оператор видит
-// кнопку подтверждения.
 func TestHostOpenIncidentRowSuppressedWithDetail(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	suppressedText := i18n.T(ctx, "incident.badge.suppressed_by_dep")
@@ -49,9 +43,6 @@ func TestHostOpenIncidentRowSuppressedWithDetail(t *testing.T) {
 	}
 }
 
-// TestHostOpenIncidentRowAckedByEmailResolved — AcknowledgedBy резолвится в
-// email через батч-карту ackedBy (W2-C находка 4): ackControl должен
-// показать email, а не только время.
 func TestHostOpenIncidentRowAckedByEmailResolved(t *testing.T) {
 	at := time.Now().Add(-time.Hour)
 	uid := int64(9)
@@ -63,8 +54,6 @@ func TestHostOpenIncidentRowAckedByEmailResolved(t *testing.T) {
 	}
 }
 
-// TestHostIncidentRowSuppressedByDep — историческая строка (таблица
-// инцидентов хоста) с подавлением зависимостью несёт бейдж рядом со статусом.
 func TestHostIncidentRowSuppressedByDep(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	suppressedText := i18n.T(ctx, "incident.badge.suppressed_by_dep")
@@ -75,8 +64,6 @@ func TestHostIncidentRowSuppressedByDep(t *testing.T) {
 	}
 }
 
-// TestHostIncidentRowNotSuppressed — обратная ветка: без SuppressedByDep
-// доп. бейджа рядом со статусом нет (остаётся только бейдж статуса).
 func TestHostIncidentRowNotSuppressed(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	suppressedText := i18n.T(ctx, "incident.badge.suppressed_by_dep")

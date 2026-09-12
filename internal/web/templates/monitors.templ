@@ -21,11 +21,8 @@ func monitorDetailPath(monitorID int64) string {
 	return "/monitors/" + strconv.FormatInt(monitorID, 10)
 }
 
-// monitorStatusBadgeClass — цвет статуса монитора через дизайн-систему:
-// up/down/paused переиспользуют общие .badge-good/-danger/-neutral (тот же
-// набор, что и статусы issues/perf-issues), maintenance — .badge-info,
-// неизвестный статус — .badge-warn. Используется и статус-страницей
-// (statuspage.templ), не только этим пакетом.
+// переиспользует общие классы .badge-good/-danger/-neutral, что и issues/perf-issues.
+// используется и статус-страницей (statuspage.templ), не только этим пакетом.
 func monitorStatusBadgeClass(status string) string {
 	switch status {
 	case "up":
@@ -41,7 +38,6 @@ func monitorStatusBadgeClass(status string) string {
 	}
 }
 
-// monitorStatusTextKey — i18n-ключ человекочитаемого статуса монитора.
 func monitorStatusTextKey(status string) string {
 	switch status {
 	case "up":
@@ -57,13 +53,8 @@ func monitorStatusTextKey(status string) string {
 	}
 }
 
-// uptimeStatText — "no data", если за период не было ни одной проверки
-// (Total == 0, монитор только что создан или ClickHouse ещё не получил
-// строк), иначе процент с двумя знаками после запятой. Не локализуется:
-// используется статус-страницей (statuspage.templ), у которой принципиально
-// нет i18n (публичная страница, всегда на русском через statusLayout) — своей
-// копии этой функции у неё нет. Авторизованные страницы (MonitorsList,
-// MonitorDetail) используют uptimeStatTextCtx ниже, а не эту функцию.
+// не локализуется — использует статус-страница (statuspage.templ), у неё нет i18n.
+// авторизованные страницы берут uptimeStatTextCtx ниже, не эту функцию.
 func uptimeStatText(s uptime.UptimeStat) string {
 	if s.Total == 0 {
 		return "no data"
@@ -71,9 +62,6 @@ func uptimeStatText(s uptime.UptimeStat) string {
 	return strconv.FormatFloat(s.Ratio()*100, 'f', 2, 64) + "%"
 }
 
-// uptimeStatTextCtx — то же самое, но для авторизованных страниц: пустое
-// состояние локализуется через uptime.no_data вместо хардкода "no data" из
-// uptimeStatText (см. её комментарий про статус-страницу).
 func uptimeStatTextCtx(ctx context.Context, s uptime.UptimeStat) string {
 	if s.Total == 0 {
 		return i18n.T(ctx, "uptime.no_data")
@@ -81,8 +69,6 @@ func uptimeStatTextCtx(ctx context.Context, s uptime.UptimeStat) string {
 	return strconv.FormatFloat(s.Ratio()*100, 'f', 2, 64) + "%"
 }
 
-// avgLatencyText — тот же принцип "нет данных", что и uptimeStatText: без
-// проверок в периоде средняя задержка бессмысленна.
 func avgLatencyText(s uptime.UptimeStat, avgMs uint32) string {
 	if s.Total == 0 {
 		return "-"
@@ -90,16 +76,7 @@ func avgLatencyText(s uptime.UptimeStat, avgMs uint32) string {
 	return strconv.Itoa(int(avgMs)) + "ms"
 }
 
-// lastCheckedCell — "нет данных" для свежесозданного монитора, который ещё
-// ни разу не проверялся ни в одном регионе, либо точный момент последней
-// проверки рядом с относительной подписью (см. relativeTime). Используется
-// только авторизованными страницами (MonitorsList) — своей копии для
-// статус-страницы нет, у неё нет колонки "последняя проверка".
-//
-// Возвращает templ.Component вместо string — только так строка "нет данных"
-// и <time> с относительным временем внутри могут делить одну ячейку без
-// ветвления разметки в вызывающем шаблоне (тот же приём, что и
-// probeLastSeenCell в probes.templ).
+// component, не string — ячейка делит «нет данных» и <time> без ветвления в шаблоне.
 func lastCheckedCell(t *time.Time) templ.Component {
 	if t == nil {
 		return noDataLabel()
@@ -107,19 +84,13 @@ func lastCheckedCell(t *time.Time) templ.Component {
 	return relativeTime(*t)
 }
 
-// noDataLabel — "нет данных" текстом, обёрнутая в templ.Component ради
-// единой сигнатуры с relativeTime в lastCheckedCell выше. ctx берётся из
-// контекста рендера неявно (как и везде в этом пакете), отдельным
-// параметром не нужен.
+// component ради общей сигнатуры с relativeTime в lastCheckedCell.
 templ noDataLabel() {
 	{ i18n.T(ctx, "uptime.no_data") }
 }
 
-// MonitorRow — монитор вместе с уже посчитанными для списка данными
-// (web/monitors.go: статус, uptime% за 24ч, средняя задержка, SVG-полоска
-// доступности, время последней проверки) — тот же приём, что и IssueRow в
-// issues.templ: числовая агрегация (PG/ClickHouse) остаётся в web-пакете,
-// этот пакет только форматирует готовые данные.
+// статус/uptime%/задержка/полоска/время посчитаны в web/monitors.go — тот же приём, что у IssueRow.
+// здесь только форматирование готовых данных.
 type MonitorRow struct {
 	Monitor      uptime.Monitor
 	Status       string
@@ -129,13 +100,8 @@ type MonitorRow struct {
 	LastChecked  *time.Time
 }
 
-// MonitorsList — GET /projects/{id}/monitors: таблица мониторов проекта.
-// canOperate управляет видимостью ссылки «New monitor» (с задачи 2 — оператор
-// проекта, не только owner/admin; спека 2026-08-08). Ссылки на
-// Incidents/Maintenance/Status pages не дублируются здесь — они уже есть в
-// боковой панели app-shell (nav.Subsections для area "uptime").
-// statsFailed — ClickHouse не ответил: мониторы и статусы (PostgreSQL) на
-// месте, колонки аптайма/задержки — «нет данных», над таблицей — подсказка.
+// statsFailed — ClickHouse не ответил: мониторы/статусы (PostgreSQL) на месте, метрики — «нет данных».
+// ссылки Incidents/Maintenance/Status не дублируются — они в боковой панели app-shell.
 templ MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail string, statsFailed bool) {
 	@layout(i18n.T(ctx, "nav.monitors"), userEmail) {
 		<div class="monitors">

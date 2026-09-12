@@ -22,14 +22,11 @@ import (
 
 var evalSeq atomic.Int64
 
-// fakeNotifier — фейковая реализация host.Notifier для тестов (T12 ещё не
-// написан): просто копит открытия/закрытия под мьютексом.
 type fakeNotifier struct {
 	mu       sync.Mutex
 	opened   []host.Incident
 	resolved []host.Incident
 
-	// err — что вернуть вызывающему (модель провала постановки в outbox).
 	err error
 }
 
@@ -47,19 +44,6 @@ func (f *fakeNotifier) HostIncidentResolved(_ context.Context, in host.Incident,
 	return f.err
 }
 
-// NotifyStep/NotifyRecovery (B4, T7) — реролл: Evaluator больше не зовёт
-// HostIncidentOpened/Resolved напрямую, а шлёт ступень лесенки/адресный
-// recovery через эти методы (см. host.Evaluator.notifyOpen/notifyClose).
-// Копят в те же opened/resolved слайсы, что и раньше — openedCount()/
-// resolvedCount() остаются верным сигналом «нотифаер позван на открытии/
-// закрытии» для существующих тестов, которым несущественно, каким именно
-// методом интерфейса это случилось.
-//
-// NotifyStep возвращает переданные channelIDs как реально «заенкенные» (T7-
-// fix): лог incident_escalations теперь пишет оркестрация (escalation.
-// SendStepIfDue) по этому возврату, а не сам нотифаер — без него мок не мог
-// бы участвовать в цепочке «open логирует → close находит лог и шлёт
-// recovery», и resolvedCount() навсегда оставался бы нулём.
 func (f *fakeNotifier) NotifyStep(_ context.Context, incidentID int64, channelIDs []int64, _ int) ([]int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -89,8 +73,6 @@ func (f *fakeNotifier) resolvedCount() int {
 	return len(f.resolved)
 }
 
-// seedEvalProject создаёт организацию с проектом. Каждый тест — свой проект:
-// контейнер PostgreSQL переиспользуется между запусками.
 func seedEvalProject(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -109,23 +91,6 @@ func seedEvalProject(t *testing.T, pool *pgxpool.Pool) int64 {
 	return projectID
 }
 
-// seedAlertChannel заводит один включённый webhook-канал проекта. Дефолт-
-// лесенка эскалации (escalation.PolicyStore.Ladder, B4) резолвится из
-// РЕАЛЬНЫХ enabled-каналов проекта — без единого канала её ChannelIDs пуст,
-// и notifyOpen нечего логировать в incident_escalations, а notifyClose
-// (RecoveryChannels) не находит адресата вовсе.
-//
-// Раньше (до claim-before-notify, аудит K1-1) этот хелпер был нужен только
-// тестам RECOVERY (resolvedCount): NotifyStep звался независимо от того,
-// есть ли что логировать, так что openedCount-тестам канал был не нужен.
-// escalation.SendStepIfDue теперь при пустом ChannelIDs ступени бампит
-// уровень НАПРЯМУЮ, не занимая ступень и не вызывая notifyStep вовсе (см. её
-// докблок и escalation.TestSendStepIfDueBumpsWithoutNotifyWhenStepHasNoChannels)
-// — канал без каналов проекта эскалация не клинит, но и не шлёт. Поэтому
-// теперь seedAlertChannel нужен ЛЮБОМУ тесту, которому важно, что NotifyStep
-// реально позван (в т.ч. openedCount) — без него open-уведомление тоже не
-// уйдёт, и это уже не деталь реализации мока, а прямое следствие
-// продуктового поведения.
 func seedAlertChannel(t *testing.T, pool *pgxpool.Pool, projectID int64) {
 	t.Helper()
 	asvc := alert.NewService(pool)
@@ -136,7 +101,6 @@ func seedAlertChannel(t *testing.T, pool *pgxpool.Pool, projectID int64) {
 	}
 }
 
-// seedEvalHost регистрирует хост проекта и возвращает его строку.
 func seedEvalHost(t *testing.T, pool *pgxpool.Pool, projectID int64, name string) host.Host {
 	t.Helper()
 	ctx := context.Background()
@@ -151,12 +115,6 @@ func seedEvalHost(t *testing.T, pool *pgxpool.Pool, projectID int64, name string
 	return h
 }
 
-// setHostLastSeen выставляет last_seen хоста напрямую — для сценария
-// «молчащий хост», который store.Upsert не может смоделировать (он всегда
-// ставит now()). Вместе с last_seen отодвигается и first_seen (сутки до него):
-// оценщик не открывает тишину по хосту, чьё окно наблюдения короче порога
-// (Evaluator.mayOpenSilent — защита от эфемерных подов), а «обычный молчащий
-// сервер» по определению наблюдался долго.
 func setHostLastSeen(t *testing.T, pool *pgxpool.Pool, hostID int64, lastSeen time.Time) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),
@@ -166,8 +124,6 @@ func setHostLastSeen(t *testing.T, pool *pgxpool.Pool, hostID int64, lastSeen ti
 	}
 }
 
-// setHostFirstSeen двигает ТОЛЬКО first_seen — для сценариев вокруг окна
-// наблюдения (эфемерный хост против давно живущего).
 func setHostFirstSeen(t *testing.T, pool *pgxpool.Pool, hostID int64, firstSeen time.Time) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),
@@ -176,7 +132,6 @@ func setHostFirstSeen(t *testing.T, pool *pgxpool.Pool, hostID int64, firstSeen 
 	}
 }
 
-// seedHostMetricPoint пишет точку метрики хоста в ClickHouse.
 func seedHostMetricPoint(t *testing.T, ch driver.Conn, projectID int64, name, hostName string, attrs map[string]string, val float64, ago time.Duration) {
 	t.Helper()
 	if attrs == nil {
@@ -190,10 +145,6 @@ func seedHostMetricPoint(t *testing.T, ch driver.Conn, projectID int64, name, ho
 	}
 }
 
-// newEvaluator — оценщик, который «давно работает»: StartedAt в сутках позади,
-// иначе стартовый грейс (Evaluator.mayOpenSilent) не дал бы открыть тишину ни
-// одному сценарию. Отдельный грейс проверяется в
-// TestEvaluatorSilentGraceAfterStart.
 func newEvaluator(pool *pgxpool.Pool, ch driver.Conn, notifier host.Notifier) *host.Evaluator {
 	return &host.Evaluator{
 		Store:     host.NewStore(pool),
@@ -205,14 +156,11 @@ func newEvaluator(pool *pgxpool.Pool, ch driver.Conn, notifier host.Notifier) *h
 		Notifier:  notifier,
 		Policy:    escalation.NewPolicyStore(pool),
 		Pool:      pool,
-		Interval:  time.Hour, // тикер не используем — дёргаем Tick вручную
+		Interval:  time.Hour,
 		StartedAt: time.Now().UTC().Add(-24 * time.Hour),
 	}
 }
 
-// TestEvaluatorDiskOpensWithWorstMountpointDetail — диск 0.95 при пороге 0.90
-// (дефолт) открывает инцидент с detail худшего mountpoint, нотифаер получает
-// открытие.
 func TestEvaluatorDiskOpensWithWorstMountpointDetail(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -249,8 +197,6 @@ func TestEvaluatorDiskOpensWithWorstMountpointDetail(t *testing.T) {
 	}
 }
 
-// TestEvaluatorDiskRetickBumpsSilently — повторный тик при том же нарушении
-// не открывает новый инцидент и не шлёт повторное уведомление (Bump).
 func TestEvaluatorDiskRetickBumpsSilently(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -284,8 +230,6 @@ func TestEvaluatorDiskRetickBumpsSilently(t *testing.T) {
 	}
 }
 
-// TestEvaluatorDiskRecoveryResolves — значение упало ниже порога →
-// инцидент закрывается, нотифаер получает закрытие.
 func TestEvaluatorDiskRecoveryResolves(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -327,8 +271,6 @@ func TestEvaluatorDiskRecoveryResolves(t *testing.T) {
 	}
 }
 
-// TestEvaluatorNoMetricDataNoIncident — метрики нет вообще → инцидент не
-// открывается.
 func TestEvaluatorNoMetricDataNoIncident(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -356,8 +298,6 @@ func TestEvaluatorNoMetricDataNoIncident(t *testing.T) {
 	}
 }
 
-// TestEvaluatorMemoryRequiresUsedStateMatcher — память оценивается только по
-// матчеру state=used; такое же значение с state=free порог не пробивает.
 func TestEvaluatorMemoryRequiresUsedStateMatcher(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -398,8 +338,6 @@ func TestEvaluatorMemoryRequiresUsedStateMatcher(t *testing.T) {
 	}
 }
 
-// TestEvaluatorLoadDividesByCoresCoresMissingSkips — load делится на число
-// ядер; без метрики числа ядер нагрузка не оценивается.
 func TestEvaluatorLoadDividesByCoresCoresMissingSkips(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -440,9 +378,6 @@ func TestEvaluatorLoadDividesByCoresCoresMissingSkips(t *testing.T) {
 	}
 }
 
-// TestEvaluatorSilentOpensAndResolvesOnUpsert — хост, замолчавший дольше
-// порога, открывает silent-инцидент; Upsert (регистрация хоста заново)
-// обновляет last_seen и закрывает его.
 func TestEvaluatorSilentOpensAndResolvesOnUpsert(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -489,13 +424,6 @@ func TestEvaluatorSilentOpensAndResolvesOnUpsert(t *testing.T) {
 	}
 }
 
-// TestEvaluatorSilentResolvesInsideHysteresisDeadZone — различает «silent через
-// metric.Decide с 5%-полосой» от «silent прямым сравнением» (design.md §4.4
-// требует второе). Дефолтный порог 300с, полоса гистерезиса Decide была бы
-// 5%×300=15с → мёртвая зона восстановления (285с;300с]. Тишина 290с внутри
-// этой зоны: старая (через Decide) реализация держала бы инцидент открытым
-// (Bump, не Resolve — 290 не <= 285), а прямое сравнение обязано закрыть его,
-// поскольку 290 <= порог 300.
 func TestEvaluatorSilentResolvesInsideHysteresisDeadZone(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -508,8 +436,6 @@ func TestEvaluatorSilentResolvesInsideHysteresisDeadZone(t *testing.T) {
 	seedAlertChannel(t, pool, pid)
 	h := seedEvalHost(t, pool, pid, "silent-deadzone")
 
-	// Открываем: тишина 310с — заведомо выше порога 300с и выше верхней
-	// границы будущей дед-зоны.
 	setHostLastSeen(t, pool, h.ID, time.Now().UTC().Add(-310*time.Second))
 	notifier := &fakeNotifier{}
 	eval := newEvaluator(pool, ch, notifier)
@@ -526,8 +452,6 @@ func TestEvaluatorSilentResolvesInsideHysteresisDeadZone(t *testing.T) {
 		t.Fatal("silent incident must open at 310s тишины > порога 300с")
 	}
 
-	// Тишина падает до 290с — внутри мёртвой зоны гистерезиса (285с;300с], но
-	// НЕ превышает порог 300с: прямое сравнение обязано резолвить.
 	setHostLastSeen(t, pool, h.ID, time.Now().UTC().Add(-290*time.Second))
 	if err := eval.Tick(ctx); err != nil {
 		t.Fatalf("Tick dead zone: %v", err)
@@ -545,8 +469,6 @@ func TestEvaluatorSilentResolvesInsideHysteresisDeadZone(t *testing.T) {
 	}
 }
 
-// TestEvaluatorDiskDisabledSettingSkipsEvaluation — disk_enabled=false → диск
-// не оценивается вообще, даже при явном нарушении.
 func TestEvaluatorDiskDisabledSettingSkipsEvaluation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -582,8 +504,6 @@ func TestEvaluatorDiskDisabledSettingSkipsEvaluation(t *testing.T) {
 	}
 }
 
-// TestEvaluatorOneHostFailureDoesNotBlockNeighbor — хост без метрик (тихая
-// «неудача») не мешает соседнему хосту того же тика открыть инцидент.
 func TestEvaluatorOneHostFailureDoesNotBlockNeighbor(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -620,12 +540,6 @@ func TestEvaluatorOneHostFailureDoesNotBlockNeighbor(t *testing.T) {
 	}
 }
 
-// TestEvaluatorSilentGraceAfterStart — тишина, накопленная ДО старта оценщика,
-// ему не принадлежит. Продукт стоял (рестарт, недоступность PostgreSQL) —
-// last_seen у всех хостов устарел, и без грейса первый же тик открыл бы silent
-// РАЗОМ всем, разослав уведомление в каждый канал. Через SilentAfter после
-// старта тот же хост инцидент получает: значит, грейс именно откладывает
-// оценку, а не отменяет её.
 func TestEvaluatorSilentGraceAfterStart(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -640,7 +554,6 @@ func TestEvaluatorSilentGraceAfterStart(t *testing.T) {
 
 	notifier := &fakeNotifier{}
 	eval := newEvaluator(pool, ch, notifier)
-	// Оценщик только что поднялся: наблюдает меньше порога тишины (5 минут).
 	eval.StartedAt = time.Now().UTC().Add(-time.Minute)
 	if err := eval.Tick(ctx); err != nil {
 		t.Fatalf("Tick сразу после старта: %v", err)
@@ -658,8 +571,6 @@ func TestEvaluatorSilentGraceAfterStart(t *testing.T) {
 		t.Errorf("уведомлений об открытии = %d, want 0", notifier.openedCount())
 	}
 
-	// Тот же хост, но оценщик наблюдает уже дольше порога — теперь молчание
-	// действительно его.
 	eval.StartedAt = time.Now().UTC().Add(-30 * time.Minute)
 	if err := eval.Tick(ctx); err != nil {
 		t.Fatalf("Tick после грейса: %v", err)
@@ -673,10 +584,6 @@ func TestEvaluatorSilentGraceAfterStart(t *testing.T) {
 	}
 }
 
-// TestEvaluatorSilentSkipsEphemeralHost — хост, чьё окно наблюдения короче
-// порога тишины (поднявшийся и умерший под), silent-инцидента не получает:
-// это не «замолчавший сервер», а нормальная жизнь эфемерной машины, и каждый
-// такой под иначе становился бы письмом в каждый канал проекта.
 func TestEvaluatorSilentSkipsEphemeralHost(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -687,7 +594,6 @@ func TestEvaluatorSilentSkipsEphemeralHost(t *testing.T) {
 
 	pid := seedEvalProject(t, pool)
 	h := seedEvalHost(t, pool, pid, "pod-ephemeral")
-	// Прожил минуту (порог тишины — 5) и замолчал полчаса назад.
 	lastSeen := time.Now().UTC().Add(-30 * time.Minute)
 	setHostLastSeen(t, pool, h.ID, lastSeen)
 	setHostFirstSeen(t, pool, h.ID, lastSeen.Add(-time.Minute))
@@ -707,7 +613,6 @@ func TestEvaluatorSilentSkipsEphemeralHost(t *testing.T) {
 		t.Fatal("silent открыт по хосту, наблюдавшемуся меньше порога тишины (эфемерный под)")
 	}
 
-	// Тот же хост, но наблюдался сутки — обычный сервер, тишина настоящая.
 	setHostFirstSeen(t, pool, h.ID, lastSeen.Add(-24*time.Hour))
 	if err := eval.Tick(ctx); err != nil {
 		t.Fatalf("Tick 2: %v", err)
@@ -721,11 +626,6 @@ func TestEvaluatorSilentSkipsEphemeralHost(t *testing.T) {
 	}
 }
 
-// TestEvaluatorSilentDoesNotBumpEveryTick — повторный тик по тому же
-// молчащему хосту не переписывает строку инцидента. Проверяется по xmin
-// (системный столбец PostgreSQL, меняющийся на КАЖДОМ UPDATE) — сравнение
-// значений поймало бы только запись другого числа, а цена как раз в самом
-// UPDATE: 1440 записей в сутки на хост ради производной величины.
 func TestEvaluatorSilentDoesNotBumpEveryTick(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -764,7 +664,6 @@ func TestEvaluatorSilentDoesNotBumpEveryTick(t *testing.T) {
 		t.Errorf("строка инцидента переписана на повторном тике (xmin %s → %s)", before, after)
 	}
 
-	// Тишина выросла в разы — вот теперь обновить peak имеет смысл.
 	setHostLastSeen(t, pool, h.ID, time.Now().UTC().Add(-60*time.Minute))
 	if err := eval.Tick(ctx); err != nil {
 		t.Fatalf("Tick 3: %v", err)
@@ -774,10 +673,6 @@ func TestEvaluatorSilentDoesNotBumpEveryTick(t *testing.T) {
 	}
 }
 
-// stuckCH — ClickHouse, который «висит»: любой запрос блокируется до отмены
-// контекста. Ровно так выглядит недоступная база для драйвера с ReadTimeout в
-// 300 секунд. Все прочие методы наследуются от вложенного nil-интерфейса —
-// оценщик их не зовёт, а вызов упал бы паникой и был бы виден.
 type stuckCH struct {
 	driver.Conn
 	calls atomic.Int64
@@ -801,11 +696,6 @@ func (r stuckRow) Err() error           { return r.err }
 func (r stuckRow) Scan(...any) error    { return r.err }
 func (r stuckRow) ScanStruct(any) error { return r.err }
 
-// TestEvaluatorSilentEvaluatedWhileClickHouseHangs — главный сценарий отказа:
-// ClickHouse не отвечает. Тишина считается по одному PostgreSQL и обязана быть
-// оценена ДО первого похода в CH — иначе продукт перестаёт сообщать «сервер
-// лёг» ровно тогда, когда это нужнее всего. Заодно проверяется, что тик
-// заканчивается по дедлайну, а не висит вместе с CH.
 func TestEvaluatorSilentEvaluatedWhileClickHouseHangs(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -817,14 +707,12 @@ func TestEvaluatorSilentEvaluatedWhileClickHouseHangs(t *testing.T) {
 	seedAlertChannel(t, pool, pid)
 	h := seedEvalHost(t, pool, pid, "silent-while-ch-hangs")
 	setHostLastSeen(t, pool, h.ID, time.Now().UTC().Add(-30*time.Minute))
-	seedEvalHost(t, pool, pid, "noisy-neighbour") // живой сосед — его пороги и полезут в CH
+	seedEvalHost(t, pool, pid, "noisy-neighbour")
 
 	stuck := &stuckCH{}
 	notifier := &fakeNotifier{}
 	eval := newEvaluator(pool, nil, notifier)
 	eval.Metrics = metric.NewQuery(stuck)
-	// Бюджет тика упирается в пол (minTickBudget), поэтому тик завершится
-	// примерно через него, а не через долю от Interval.
 	eval.Interval = time.Second
 
 	done := make(chan error, 1)
@@ -841,9 +729,6 @@ func TestEvaluatorSilentEvaluatedWhileClickHouseHangs(t *testing.T) {
 	if stuck.calls.Load() == 0 {
 		t.Error("оценщик не ходил в ClickHouse вовсе — тест не проверяет то, что должен")
 	}
-	// Тик вышел по дедлайну — отметку «последний завершённый проход» он
-	// публиковать не должен: иначе оценщик, каждый раз обрывающийся на
-	// половине парка, снаружи выглядел бы идеально здоровым.
 	if got := eval.LastTickUnix(); got != 0 {
 		t.Errorf("LastTickUnix = %d после оборванного по дедлайну тика, want 0", got)
 	}
@@ -863,8 +748,6 @@ func TestEvaluatorSilentEvaluatedWhileClickHouseHangs(t *testing.T) {
 	}
 }
 
-// countingCH считает запросы типа метрики (any(type) — тело metricType),
-// пропуская всё остальное в настоящий ClickHouse.
 type countingCH struct {
 	driver.Conn
 	typeQueries atomic.Int64
@@ -877,10 +760,6 @@ func (c *countingCH) QueryRow(ctx context.Context, query string, args ...any) dr
 	return c.Conn.QueryRow(ctx, query, args...)
 }
 
-// TestEvaluatorCachesMetricTypePerTick — тип метрики не зависит от хоста,
-// поэтому у проекта с несколькими машинами одинаковые запросы «какого типа
-// system.filesystem.utilization» повторялись на каждый хост. Кеш на тик: два
-// хоста одного проекта — один запрос типа на метрику.
 func TestEvaluatorCachesMetricTypePerTick(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -906,16 +785,11 @@ func TestEvaluatorCachesMetricTypePerTick(t *testing.T) {
 		t.Fatalf("Tick: %v", err)
 	}
 
-	// Четыре метрики × один запрос типа на метрику, независимо от числа хостов.
 	if got := counting.typeQueries.Load(); got != 4 {
 		t.Errorf("запросов типа метрики = %d, want 4 (по одному на метрику на весь тик, а не на каждый хост)", got)
 	}
 }
 
-// TestEvaluatorPublishesTickLiveness — self-метрики живости: после успешного
-// тика оценщик знает, когда тот закончился и сколько шёл. Без этих чисел
-// «оценщик умер» снаружи неотличимо от «на хостах спокойно»: молчание — его
-// нормальный вывод.
 func TestEvaluatorPublishesTickLiveness(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -944,11 +818,6 @@ func TestEvaluatorPublishesTickLiveness(t *testing.T) {
 	}
 }
 
-// cancellingNotifier отменяет контекст тика ровно в момент, когда его зовут на
-// открытии инцидента, — модель «бюджет тика кончился посреди
-// последовательности „инцидент открыт → уведомить → пометить отправленным“».
-// Заодно запоминает, живым ли контекст пришёл ему самому: реальный
-// HostNotifier по этому контексту ставит задачу в outbox.
 type cancellingNotifier struct {
 	fakeNotifier
 	cancel   context.CancelFunc
@@ -970,11 +839,6 @@ func (n *cancellingNotifier) notifierCtxErrs() []error {
 	return append([]error(nil), n.seenErrs...)
 }
 
-// TestEvaluatorNotifiesEvenWhenTickBudgetRunsOut — уведомление и его пометка
-// отвязаны от дедлайна тика. У подсистемы хостов нет досылки по флагу (в
-// отличие от uptime с last_reminded_at), поэтому уведомление, не поставленное
-// в очередь из-за исчерпанного бюджета, не ушло бы НИКОГДА: инцидент открыт,
-// notified_open=false, и «сервер лёг» не узнал бы никто.
 func TestEvaluatorNotifiesEvenWhenTickBudgetRunsOut(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -1004,8 +868,6 @@ func TestEvaluatorNotifiesEvenWhenTickBudgetRunsOut(t *testing.T) {
 		}
 	}
 
-	// Главное: пометка отправки дошла до базы, несмотря на отменённый контекст
-	// тика. Без неё инцидент навсегда остался бы «открыт, но не уведомлён».
 	var notifiedOpen bool
 	if err := pool.QueryRow(context.Background(),
 		"SELECT notified_open FROM host_incidents WHERE host_id = $1 AND kind = 'silent'",
@@ -1017,11 +879,6 @@ func TestEvaluatorNotifiesEvenWhenTickBudgetRunsOut(t *testing.T) {
 	}
 }
 
-// TestEvaluatorKeepsNotifiedFalseWhenNotifierFails — провал нотификатора
-// (постановка в outbox не удалась) НЕ помечает инцидент уведомлённым. Флаг
-// notified_open читает только человек, разбирающий «почему не пришло письмо»:
-// проставленный после провала, он отправляет его искать проблему на своей
-// стороне — там, где её нет.
 func TestEvaluatorKeepsNotifiedFalseWhenNotifierFails(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -1041,8 +898,6 @@ func TestEvaluatorKeepsNotifiedFalseWhenNotifierFails(t *testing.T) {
 		t.Fatalf("Tick: %v", err)
 	}
 
-	// Инцидент открыт (провал уведомления не отменяет самого инцидента), и
-	// нотификатор был позван — иначе тест проверял бы не то.
 	if notifier.openedCount() != 1 {
 		t.Fatalf("вызовов нотификатора об открытии = %d, want 1", notifier.openedCount())
 	}
@@ -1057,11 +912,6 @@ func TestEvaluatorKeepsNotifiedFalseWhenNotifierFails(t *testing.T) {
 	}
 }
 
-// TestEvaluatorHostOverrideOpensBelowProjectThreshold — Task 5: оценщик
-// берёт ЭФФЕКТИВНЫЙ порог из каскада (host-override → group → project →
-// default), а не проектный напрямую. Per-host override диска (0.50) должен
-// открыть инцидент при утилизации 60%, хотя дефолтный проектный порог
-// (0.90) при тех же 60% инцидент бы не открыл.
 func TestEvaluatorHostOverrideOpensBelowProjectThreshold(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -1097,10 +947,6 @@ func TestEvaluatorHostOverrideOpensBelowProjectThreshold(t *testing.T) {
 	}
 }
 
-// TestEvaluatorDisablingViaOverrideResolvesOpenIncident — M-A (брифа Task
-// 5): host-override, выключивший вид, у которого уже есть открытый
-// инцидент, обязан этот инцидент закрыть на следующем тике — иначе он висел
-// бы открытым вечно (ручного закрытия инцидента хоста в интерфейсе нет).
 func TestEvaluatorDisablingViaOverrideResolvesOpenIncident(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -1147,13 +993,6 @@ func TestEvaluatorDisablingViaOverrideResolvesOpenIncident(t *testing.T) {
 	}
 }
 
-// TestEvaluatorGroupThresholdOpensBelowProjectThreshold — QA P2-2 ремедиации:
-// СОХРАНЁННОЕ групповое правило (role/env) реально меняет оценку через Tick,
-// а не только резолвер в изоляции (resolve_test.go проверяет
-// ThresholdResolver.Effective без БД/оценщика). Хост с role="web", групповое
-// правило role/web disk_threshold=0.50 — открывает инцидент при диске 60%,
-// хотя проектный порог (дефолт 0.90) при такой утилизации не открыл бы
-// ничего.
 func TestEvaluatorGroupThresholdOpensBelowProjectThreshold(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -1196,12 +1035,6 @@ func TestEvaluatorGroupThresholdOpensBelowProjectThreshold(t *testing.T) {
 	}
 }
 
-// TestEvaluatorDisablingViaOverrideResolvesOpenSilentIncident — M-A (брифа
-// Task 5), silent-ветка ремедиации QA P2-3:
-// TestEvaluatorDisablingViaOverrideResolvesOpenIncident покрывает только
-// disk, а evalOrCloseKind гейтит ВСЕ четыре вида, включая silent (первый
-// проход Tick) — silent_enabled=false через host-override при уже открытом
-// silent-инциденте обязан закрыть его на следующем тике.
 func TestEvaluatorDisablingViaOverrideResolvesOpenSilentIncident(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -1248,19 +1081,12 @@ func TestEvaluatorDisablingViaOverrideResolvesOpenSilentIncident(t *testing.T) {
 	}
 }
 
-// mockMaint — host.MaintenanceChecker для тестов: func-обёртка вместо
-// полноценного uptime.Service (интерфейс здесь в один метод — реальный
-// сервис с окнами обслуживания и своей БД тестам этого пакета не нужен).
 type mockMaint func(ctx context.Context, projectID int64, at time.Time) (bool, error)
 
 func (m mockMaint) InMaintenance(ctx context.Context, projectID int64, at time.Time) (bool, error) {
 	return m(ctx, projectID, at)
 }
 
-// TestEvaluatorMaintenanceSuppressesThresholdNotify — MAJOR-3 брифа Task 3:
-// пороговый сайт (applyDecision, disk/memory/load). Открытие в окне
-// обслуживания пишет инцидент в БД с in_maintenance=true, но НЕ уведомляет;
-// закрытие того же инцидента (ещё внутри окна) тоже не уведомляет.
 func TestEvaluatorMaintenanceSuppressesThresholdNotify(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -1317,11 +1143,6 @@ func TestEvaluatorMaintenanceSuppressesThresholdNotify(t *testing.T) {
 	}
 }
 
-// TestEvaluatorMaintenanceFalseStillNotifies — Maint заполнен (не nil), но
-// вне окна (InMaintenance→false): поведение обычное, уведомление уходит.
-// Отличает «MaintenanceChecker сконфигурирован и говорит false» от
-// «MaintenanceChecker==nil» (последнее уже покрыто остальными тестами файла
-// back-compat'ом — см. бриф Task 3, nil-guard).
 func TestEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -1359,13 +1180,6 @@ func TestEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 	}
 }
 
-// TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds — дискриминирует
-// close-гейт «по сохранённому флагу инцидента» (!open.InMaintenance) от
-// ошибочного «по текущему окну» (!e.inMaintenance(now)): открываем инцидент В
-// окне (in_maintenance=true), затем окно ЗАКАНЧИВАЕТСЯ (mock переключается на
-// false) — close всё равно должен быть подавлен, т.к. читается сохранённый
-// флаг инцидента, а не текущее состояние окна. Перепиши close-гейт на «сейчас
-// окно» — при mock→false close разуведомит, и этот тест упадёт.
 func TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -1402,9 +1216,6 @@ func TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.T) 
 		t.Fatalf("opened notifications = %d, want 0 (suppressed by maintenance)", notifier.openedCount())
 	}
 
-	// Окно обслуживания закончилось — mock переключаем на false. Close-гейт
-	// обязан смотреть на сохранённый open.InMaintenance (true), а не на
-	// текущее состояние окна.
 	inWindow = false
 
 	if err := ch.Exec(ctx, "TRUNCATE TABLE metric_points"); err != nil {
@@ -1428,15 +1239,6 @@ func TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.T) 
 	}
 }
 
-// TestEvaluatorRecoveryReachesWokenChannelsAfterMaintenanceWindowEnds — M-7
-// (аудит B4, remediation A): инцидент открыт В окне обслуживания
-// (in_maintenance заморожен=true на инциденте, open-гейт не тронут — открытие
-// молчит), но за время жизни инцидента эскалация реально разбудила канал
-// (планировщик T8, здесь симулируем логом эскалации напрямую — вне этого
-// пакета). Окно кончается, инцидент резолвится ВНЕ окна: close ОБЯЗАН
-// прислать recovery разбуженному каналу, несмотря на замороженный
-// InMaintenance=true — старый гейт `!open.InMaintenance` на close-пути гасил
-// именно этот случай (M-7). Дискриминирует: падает, если гейт вернуть.
 func TestEvaluatorRecoveryReachesWokenChannelsAfterMaintenanceWindowEnds(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -1481,14 +1283,10 @@ func TestEvaluatorRecoveryReachesWokenChannelsAfterMaintenanceWindowEnds(t *test
 		t.Fatalf("opened notifications = %d, want 0 (open suppressed by maintenance, open-gate untouched)", notifier.openedCount())
 	}
 
-	// Планировщик (T8, вне этого пакета) реально эскалировал инцидент после
-	// открытия — разбудил канал. Симулируем это логом эскалации напрямую, как
-	// советует бриф remediation A, не поднимая живой планировщик в тесте.
 	if err := escalation.LogStep(ctx, pool, "host", in.ID, chanID, 0); err != nil {
 		t.Fatalf("log step: %v", err)
 	}
 
-	// Окно обслуживания закончилось.
 	inWindow = false
 
 	if err := ch.Exec(ctx, "TRUNCATE TABLE metric_points"); err != nil {

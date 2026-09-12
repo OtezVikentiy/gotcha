@@ -29,11 +29,8 @@ func monitorDetailPath(monitorID int64) string {
 	return "/monitors/" + strconv.FormatInt(monitorID, 10)
 }
 
-// monitorStatusBadgeClass — цвет статуса монитора через дизайн-систему:
-// up/down/paused переиспользуют общие .badge-good/-danger/-neutral (тот же
-// набор, что и статусы issues/perf-issues), maintenance — .badge-info,
-// неизвестный статус — .badge-warn. Используется и статус-страницей
-// (statuspage.templ), не только этим пакетом.
+// переиспользует общие классы .badge-good/-danger/-neutral, что и issues/perf-issues.
+// используется и статус-страницей (statuspage.templ), не только этим пакетом.
 func monitorStatusBadgeClass(status string) string {
 	switch status {
 	case "up":
@@ -49,7 +46,6 @@ func monitorStatusBadgeClass(status string) string {
 	}
 }
 
-// monitorStatusTextKey — i18n-ключ человекочитаемого статуса монитора.
 func monitorStatusTextKey(status string) string {
 	switch status {
 	case "up":
@@ -65,13 +61,8 @@ func monitorStatusTextKey(status string) string {
 	}
 }
 
-// uptimeStatText — "no data", если за период не было ни одной проверки
-// (Total == 0, монитор только что создан или ClickHouse ещё не получил
-// строк), иначе процент с двумя знаками после запятой. Не локализуется:
-// используется статус-страницей (statuspage.templ), у которой принципиально
-// нет i18n (публичная страница, всегда на русском через statusLayout) — своей
-// копии этой функции у неё нет. Авторизованные страницы (MonitorsList,
-// MonitorDetail) используют uptimeStatTextCtx ниже, а не эту функцию.
+// не локализуется — использует статус-страница (statuspage.templ), у неё нет i18n.
+// авторизованные страницы берут uptimeStatTextCtx ниже, не эту функцию.
 func uptimeStatText(s uptime.UptimeStat) string {
 	if s.Total == 0 {
 		return "no data"
@@ -79,9 +70,6 @@ func uptimeStatText(s uptime.UptimeStat) string {
 	return strconv.FormatFloat(s.Ratio()*100, 'f', 2, 64) + "%"
 }
 
-// uptimeStatTextCtx — то же самое, но для авторизованных страниц: пустое
-// состояние локализуется через uptime.no_data вместо хардкода "no data" из
-// uptimeStatText (см. её комментарий про статус-страницу).
 func uptimeStatTextCtx(ctx context.Context, s uptime.UptimeStat) string {
 	if s.Total == 0 {
 		return i18n.T(ctx, "uptime.no_data")
@@ -89,8 +77,6 @@ func uptimeStatTextCtx(ctx context.Context, s uptime.UptimeStat) string {
 	return strconv.FormatFloat(s.Ratio()*100, 'f', 2, 64) + "%"
 }
 
-// avgLatencyText — тот же принцип "нет данных", что и uptimeStatText: без
-// проверок в периоде средняя задержка бессмысленна.
 func avgLatencyText(s uptime.UptimeStat, avgMs uint32) string {
 	if s.Total == 0 {
 		return "-"
@@ -98,16 +84,7 @@ func avgLatencyText(s uptime.UptimeStat, avgMs uint32) string {
 	return strconv.Itoa(int(avgMs)) + "ms"
 }
 
-// lastCheckedCell — "нет данных" для свежесозданного монитора, который ещё
-// ни разу не проверялся ни в одном регионе, либо точный момент последней
-// проверки рядом с относительной подписью (см. relativeTime). Используется
-// только авторизованными страницами (MonitorsList) — своей копии для
-// статус-страницы нет, у неё нет колонки "последняя проверка".
-//
-// Возвращает templ.Component вместо string — только так строка "нет данных"
-// и <time> с относительным временем внутри могут делить одну ячейку без
-// ветвления разметки в вызывающем шаблоне (тот же приём, что и
-// probeLastSeenCell в probes.templ).
+// component, не string — ячейка делит «нет данных» и <time> без ветвления в шаблоне.
 func lastCheckedCell(t *time.Time) templ.Component {
 	if t == nil {
 		return noDataLabel()
@@ -115,10 +92,7 @@ func lastCheckedCell(t *time.Time) templ.Component {
 	return relativeTime(*t)
 }
 
-// noDataLabel — "нет данных" текстом, обёрнутая в templ.Component ради
-// единой сигнатуры с relativeTime в lastCheckedCell выше. ctx берётся из
-// контекста рендера неявно (как и везде в этом пакете), отдельным
-// параметром не нужен.
+// component ради общей сигнатуры с relativeTime в lastCheckedCell.
 func noDataLabel() templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -143,7 +117,7 @@ func noDataLabel() templ.Component {
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.no_data"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 115, Col: 32}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 89, Col: 32}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
@@ -153,11 +127,8 @@ func noDataLabel() templ.Component {
 	})
 }
 
-// MonitorRow — монитор вместе с уже посчитанными для списка данными
-// (web/monitors.go: статус, uptime% за 24ч, средняя задержка, SVG-полоска
-// доступности, время последней проверки) — тот же приём, что и IssueRow в
-// issues.templ: числовая агрегация (PG/ClickHouse) остаётся в web-пакете,
-// этот пакет только форматирует готовые данные.
+// статус/uptime%/задержка/полоска/время посчитаны в web/monitors.go — тот же приём, что у IssueRow.
+// здесь только форматирование готовых данных.
 type MonitorRow struct {
 	Monitor      uptime.Monitor
 	Status       string
@@ -167,13 +138,8 @@ type MonitorRow struct {
 	LastChecked  *time.Time
 }
 
-// MonitorsList — GET /projects/{id}/monitors: таблица мониторов проекта.
-// canOperate управляет видимостью ссылки «New monitor» (с задачи 2 — оператор
-// проекта, не только owner/admin; спека 2026-08-08). Ссылки на
-// Incidents/Maintenance/Status pages не дублируются здесь — они уже есть в
-// боковой панели app-shell (nav.Subsections для area "uptime").
-// statsFailed — ClickHouse не ответил: мониторы и статусы (PostgreSQL) на
-// месте, колонки аптайма/задержки — «нет данных», над таблицей — подсказка.
+// statsFailed — ClickHouse не ответил: мониторы/статусы (PostgreSQL) на месте, метрики — «нет данных».
+// ссылки Incidents/Maintenance/Status не дублируются — они в боковой панели app-shell.
 func MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail string, statsFailed bool) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -214,7 +180,7 @@ func MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail
 			var templ_7745c5c3_Var5 string
 			templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "nav.monitors"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 142, Col: 36}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 108, Col: 36}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 			if templ_7745c5c3_Err != nil {
@@ -236,7 +202,7 @@ func MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail
 				var templ_7745c5c3_Var6 templ.SafeURL
 				templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(monitorNewPath(projectID)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 145, Col: 77}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 111, Col: 77}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 				if templ_7745c5c3_Err != nil {
@@ -249,7 +215,7 @@ func MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail
 				var templ_7745c5c3_Var7 string
 				templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.monitors.new"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 145, Col: 116}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 111, Col: 116}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 				if templ_7745c5c3_Err != nil {
@@ -268,7 +234,7 @@ func MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail
 				var templ_7745c5c3_Var8 string
 				templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.monitors.stats.error"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 148, Col: 64}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 114, Col: 64}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 				if templ_7745c5c3_Err != nil {
@@ -315,7 +281,7 @@ func MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail
 					var templ_7745c5c3_Var10 string
 					templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.monitors.table.name"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 162, Col: 68}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 128, Col: 68}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 					if templ_7745c5c3_Err != nil {
@@ -328,7 +294,7 @@ func MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail
 					var templ_7745c5c3_Var11 string
 					templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.monitors.table.type"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 163, Col: 68}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 129, Col: 68}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 					if templ_7745c5c3_Err != nil {
@@ -341,7 +307,7 @@ func MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail
 					var templ_7745c5c3_Var12 string
 					templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.monitors.table.status"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 164, Col: 70}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 130, Col: 70}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 					if templ_7745c5c3_Err != nil {
@@ -354,7 +320,7 @@ func MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail
 					var templ_7745c5c3_Var13 string
 					templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.monitors.table.uptime_24h"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 165, Col: 86}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 131, Col: 86}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 					if templ_7745c5c3_Err != nil {
@@ -367,7 +333,7 @@ func MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail
 					var templ_7745c5c3_Var14 string
 					templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.monitors.table.avg_latency_24h"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 166, Col: 91}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 132, Col: 91}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 					if templ_7745c5c3_Err != nil {
@@ -380,7 +346,7 @@ func MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail
 					var templ_7745c5c3_Var15 string
 					templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.monitors.table.availability_24h"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 167, Col: 80}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 133, Col: 80}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 					if templ_7745c5c3_Err != nil {
@@ -393,7 +359,7 @@ func MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail
 					var templ_7745c5c3_Var16 string
 					templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.monitors.table.last_check"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 168, Col: 74}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 134, Col: 74}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 					if templ_7745c5c3_Err != nil {
@@ -411,7 +377,7 @@ func MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail
 						var templ_7745c5c3_Var17 templ.SafeURL
 						templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(monitorDetailPath(row.Monitor.ID)))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 174, Col: 68}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 140, Col: 68}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 						if templ_7745c5c3_Err != nil {
@@ -424,7 +390,7 @@ func MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail
 						var templ_7745c5c3_Var18 string
 						templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(row.Monitor.Name)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 174, Col: 89}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 140, Col: 89}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 						if templ_7745c5c3_Err != nil {
@@ -437,7 +403,7 @@ func MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail
 						var templ_7745c5c3_Var19 string
 						templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.kind."+string(row.Monitor.Kind)))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 175, Col: 87}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 141, Col: 87}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 						if templ_7745c5c3_Err != nil {
@@ -472,7 +438,7 @@ func MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail
 						var templ_7745c5c3_Var22 string
 						templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, monitorStatusTextKey(row.Status)))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 176, Col: 113}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 142, Col: 113}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 						if templ_7745c5c3_Err != nil {
@@ -485,7 +451,7 @@ func MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail
 						var templ_7745c5c3_Var23 string
 						templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(uptimeStatTextCtx(ctx, row.Uptime24h))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 177, Col: 65}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 143, Col: 65}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 						if templ_7745c5c3_Err != nil {
@@ -498,7 +464,7 @@ func MonitorsList(projectID int64, rows []MonitorRow, canOperate bool, userEmail
 						var templ_7745c5c3_Var24 string
 						templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinStringErrs(avgLatencyText(row.Uptime24h, row.AvgLatencyMs))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 178, Col: 75}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitors.templ`, Line: 144, Col: 75}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 						if templ_7745c5c3_Err != nil {

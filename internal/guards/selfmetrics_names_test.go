@@ -11,39 +11,14 @@ import (
 	"testing"
 )
 
-// selfMetricsImportPath — путь пакета, чьё присутствие в импортах файла
-// включает проверку «первый аргумент Add/AddInt обязан быть литеральным
-// selfmetrics.<Type>» (см. importsSelfMetrics в collectSelfMetrics).
 const selfMetricsImportPath = "gitflic.ru/otezvikentiy/gotcha/internal/selfmetrics"
 
-// selfMetricSpec — одна пара (имя, тип) золотого списка self-метрик:
-// строка имени и идентификатор selfmetrics.Counter/Gauge, которым метрика
-// заведена в коде.
 type selfMetricSpec struct {
 	name string
-	typ  string // "Counter" или "Gauge" — имя идентификатора пакета selfmetrics
+	typ  string // "Counter" или "Gauge"
 }
 
-// wantSelfMetrics — ПОЛНЫЙ пиннённый список self-метрик продукта (J1,
-// расширен заморозкой контракта E3 типом метрики). До теста на одни имена
-// список нигде не был зафиксирован: новое имя, зарегистрированное где
-// угодно (cmd/gotcha или internal), попадало в вывод /metrics и в дашборды
-// операторов без единой точки, которая заметила бы его появление или
-// исчезновение. Тип пиннится тем же списком, а не отдельной копией: смена
-// counter↔gauge меняет семантику панелей и алертов Grafana ровно так же
-// незаметно, как переименование, — а два параллельных списка (имена
-// отдельно, типы отдельно) завели бы ровно ту дыру, которую заморозка
-// контракта закрывает, — сверку одной копии с другой вместо сверки с кодом.
-// Список отсортирован по имени для читаемого diff'а при правке.
-//
-// Обе стороны сверки обязательны: имя в коде, которого нет здесь, — новая
-// метрика, проскочившая мимо ревью контракта (мутация №2 T6); имя здесь,
-// которого нет в коде, — мёртвая запись, которая годами убеждала бы
-// читателя, что метрика существует (тот же класс дефекта, что и
-// unitlessCounters в env_example_test.go). Несовпадение типа при
-// совпадающем имени — отдельная третья мутация: переименования нет, но
-// оператор получает gauge там, где Grafana ждёт монотонный counter (или
-// наоборот), и ни одна из двух проверок на имя такое не поймает.
+// список отсортирован по имени для читаемого diff'а при правке.
 var wantSelfMetrics = []selfMetricSpec{
 	{"gotcha_build_info", "Gauge"},
 	{"gotcha_cardinality_collapsed_total", "Counter"},
@@ -106,16 +81,6 @@ var wantSelfMetrics = []selfMetricSpec{
 	{"gotcha_writer_insert_failures_total", "Counter"},
 }
 
-// wantQueueCanonNames — подмножество wantSelfMetrics (по имени), которое обязано
-// существовать под именем канона очереди (J1): gotcha_<подсистема>_queue_depth
-// / _queue_oldest_seconds / _queue_failed / _queue_capacity / _queue_bytes.
-// export и notify переименованы под покойный canon у purge; pipeline
-// переименован частично (queued_tasks→queue_depth, queued_bytes→queue_bytes),
-// queue_capacity у него уже был в каноне. Это ПОЗИТИВНАЯ проверка: она ловит
-// ровно ту мутацию, которую просит T6 ("gotcha_export_queue_depth" →
-// "gotcha_export_depth" — переименование МИМО канона теряет сегмент
-// "_queue_", и никакой поиск по живому списку такое отсутствие не найдёт,
-// если не сверять с тем, что ДОЛЖНО быть).
 var wantQueueCanonNames = []string{
 	"gotcha_export_queue_depth",
 	"gotcha_export_queue_oldest_seconds",
@@ -130,22 +95,10 @@ var wantQueueCanonNames = []string{
 	"gotcha_purge_queue_oldest_seconds",
 }
 
-// bareQueueSuffix — ловит имя вида gotcha_<однословная подсистема>_depth (или
-// _oldest_seconds/_failed/_capacity/_bytes) БЕЗ сегмента "_queue_" между
-// подсистемой и словом канона. Ровно эта форма получается, если канонiческое
-// имя переименовать мимо канона, срезав слово "queue" (пример из брифа T6:
-// "gotcha_export_queue_depth" → "gotcha_export_depth"). Проверено, что она НЕ
-// цепляет ни одно из текущих 54 пиннённых имён (gotcha_purge_queue_depth не
-// совпадает — между "purge" и "depth" стоит "_queue_", а не пусто;
-// gotcha_memory_limit_bytes не совпадает — "memory_limit" не однословно, а
-// [a-z]+ подсистемы не захватывает "_").
+// ловит имя без сегмента "_queue_" между однословной подсистемой и словом
+// канона — форма, которая получается при переименовании мимо канона.
 var bareQueueSuffix = regexp.MustCompile(`^gotcha_[a-z]+_(depth|oldest_seconds|failed|capacity|bytes)$`)
 
-// nonLiteralSelfMetricTypeMsg — текст ассерта на нелитеральный тип
-// self-метрики, отдельно называющий dot-импорт: под ним тип метрики выглядит
-// как голый идентификатор (Counter/Gauge) без какого-либо селектора вовсе, а
-// не как "<localPkgName>.<Type>" — localPkgName в этом случае равен ".", и
-// подстановка дала бы нечитаемое "..<Type>" вместо описания формы импорта.
 func nonLiteralSelfMetricTypeMsg(localPkgName string) string {
 	if localPkgName == "." {
 		return "self-metric type is not a literal package selector — the file dot-imports selfmetrics, which turns the type into an unqualified identifier and makes it unrecognizable as a frozen literal"
@@ -153,72 +106,12 @@ func nonLiteralSelfMetricTypeMsg(localPkgName string) string {
 	return fmt.Sprintf("self-metric type is not a literal %s.<Type> selector — registering through a wrapper or a variable takes the metric out from under the name/type freeze", localPkgName)
 }
 
-// selfMetricInventory — единый результат обхода дерева: живой набор
-// self-метрик, потребляемый ВСЕМИ тремя сторожами этого класса —
-// TestSelfMetricNamesPinned/TestSelfMetricQueueNamingCanon (имя и тип) и
-// TestSelfMetricsDocumented, selfmetrics_docs_test.go (какие файлы
-// регистрируют каждое имя, для текста ошибки). Один обход, одна истина: до
-// этой правки TestSelfMetricsDocumented вёл собственный, независимый AST-скан
-// с той же логикой распознавания call-site'а, но без фикса на алиасированный/
-// dot-импорт (правки 1-2 этой задачи) — под алиасом файл целиком выпадал бы
-// из ЕГО скана точно так же, как раньше выпадал из этого, только тихо: он не
-// проверяет полноту (только то, что нашёл, документировано), поэтому пропавшая
-// метрика не роняла бы вообще ничего. Второй независимый сканер одного и того
-// же дерева — тот же класс дефекта, который правки 1-2 закрывали для этого
-// файла: две копии сверяются с кодом порознь и расходятся друг с другом
-// молча, а не с одной общей истиной.
 type selfMetricInventory struct {
 	types     map[string]string   // имя → тип (selfmetrics.Counter/Gauge)
 	callSites int                 // сырое число найденных call-site'ов — "сторож ослеп"
 	files     map[string][]string // имя → файлы, где оно зарегистрировано
 }
 
-// collectSelfMetrics — реально зарегистрированные в дереве self-метрики:
-// имя → тип (первый строковый литерал и первый аргумент-селектор пакета
-// selfmetrics пятиаргументного Add/AddInt), плюс сырое число найденных
-// call-site'ов и файлы регистрации каждого имени.
-//
-// Нелитеральное имя (переменная, конкатенация, fmt.Sprintf) роняет тест
-// сразу, с file:line: контракт замораживает конкретное имя, а не выражение,
-// которое его в рантайме вычисляет, — со строкой-переменной обход дальше
-// невозможен в принципе (t.Errorf, а не return true — все три сторожа,
-// потребляющие этот скан, узнают о находке через общий t). Та же участь —
-// расхождению типа при повторной регистрации одного имени: количество найденных
-// call-site'ов также возвращается отдельно, чтобы вызывающий тест мог
-// поймать «сторож ослеп» (сканер сломан или указывает не туда) отдельно от
-// «золотой список устарел».
-//
-// Нелитеральный ТИП (первый аргумент — не селектор <pkg>.<Ident>, а
-// переменная/параметр) в файле, реально импортирующем selfmetrics, роняет
-// тест той же t.Errorf: обёртка вида
-// func reg(r *selfmetrics.Registry, typ selfmetrics.Type, name string, …)
-// пробрасывала бы typ дальше в r.Add/AddInt без единого литерального
-// selfmetrics.Counter/Gauge на call-site'е — заморозка молча переставала бы
-// действовать на всё, что регистрируется через такую обёртку. Пятиаргументный
-// Add/AddInt чужого, не относящегося к selfmetrics типа в файле БЕЗ импорта
-// пакета false positive не даёт: проверка ограничена importsSelfMetrics.
-//
-// <pkg> — не жёстко "selfmetrics": импорт под алиасом (import sm ".../
-// internal/selfmetrics") меняет локальное имя, под которым файл ссылается на
-// пакет, — сверка идёт с ФАКТИЧЕСКИМ локальным именем из этого же импорта
-// (localPkgName), а не с зашитой строкой. Без этого файл с алиасом либо
-// целиком выпадал бы из скана (метрики через sm.Counter выглядели бы как
-// "чужой тип" и попадали бы в fail-open той же природы, что чинила правка 1,
-// либо, если fail-open починен буквально, ложно считался бы нелитеральным
-// типом — алиас так же легитимен, как и его отсутствие). Слепой (dot-)
-// импорт (import "..."."/internal/selfmetrics") делает localPkgName равным
-// ".", с которым ни один идентификатор совпасть не может, — тип метрики
-// тогда обязан выглядеть как голый Counter/Gauge без селектора вовсе,
-// call.Args[0] окажется *ast.Ident, а не *ast.SelectorExpr, и упадёт в ту же
-// ветку "нелитеральный тип": слепой импорт делает исходный код
-// нечитаемым для этого сканера настолько же, насколько и для человека.
-//
-// Предфильтр по телу файла — не по подстроке "selfmetrics." (её не даёт
-// алиас: файл с "sm.Counter" физически не содержит "selfmetrics." нигде,
-// кроме самой строки импорта), а по фрагменту ПУТИ импорта
-// "internal/selfmetrics\"", который остаётся в тексте импорта независимо от
-// локального имени — это только более дешёвая версия того же условия
-// "импортирует ли файл этот пакет", а не альтернатива AST-проверке ниже.
 func collectSelfMetrics(t *testing.T, tree *Tree) selfMetricInventory {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -237,10 +130,6 @@ func collectSelfMetrics(t *testing.T, tree *Tree) selfMetricInventory {
 		if err != nil {
 			t.Fatalf("parse %s: %v", gf.Path, err)
 		}
-		// importsSelfMetrics/localPkgName снимаются с РЕАЛЬНОГО импорта файла
-		// (f.Imports), а не с догадки по тексту: localPkgName — то имя,
-		// которым файл в действительности ссылается на пакет (алиас, "." для
-		// dot-импорта, иначе голое "selfmetrics").
 		importsSelfMetrics := false
 		localPkgName := "selfmetrics"
 		for _, imp := range f.Imports {
@@ -297,8 +186,6 @@ func collectSelfMetrics(t *testing.T, tree *Tree) selfMetricInventory {
 	return selfMetricInventory{types: types, callSites: callSites, files: files}
 }
 
-// TestSelfMetricNamesPinned — сверяет РЕАЛЬНО зарегистрированные self-метрики
-// (имя и тип) с wantSelfMetrics в обе стороны.
 func TestSelfMetricNamesPinned(t *testing.T) {
 	tree := Load(t)
 	scan := collectSelfMetrics(t, tree)
@@ -344,25 +231,16 @@ func TestSelfMetricNamesPinned(t *testing.T) {
 	}
 }
 
-// TestSelfMetricQueueNamingCanon — J1: любая метрика "глубина/возраст
-// старейшего/отказы/ёмкость/байты" очереди обязана называться
-// gotcha_<подсистема>_queue_<канон>, форма, в которой уже был purge.
 func TestSelfMetricQueueNamingCanon(t *testing.T) {
 	tree := Load(t)
 	live := collectSelfMetrics(t, tree).types
 
-	// Позитив: канонические имена очередей действительно существуют. Ловит
-	// переименование МИМО канона (сегмент "_queue_" пропал) — общий пример
-	// из брифа T6.
 	for _, want := range wantQueueCanonNames {
 		if _, ok := live[want]; !ok {
 			t.Errorf("canonical queue metric %q is not registered — renamed away from canon?", want)
 		}
 	}
 
-	// Негатив: старый, дореформенный словарь очередей нигде не должен
-	// возвращаться (кто-то отменит переименование одной метрики, оставив
-	// остальные в новом виде).
 	bannedSubstrings := []string{
 		"_pending_jobs", "_oldest_pending_age_seconds", "_failed_jobs",
 		"_queued_tasks", "_queued_bytes",

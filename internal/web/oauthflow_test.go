@@ -12,7 +12,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// staticProvider — тестовый провайдер с предсказуемым AuthURL.
 type staticProvider struct{ name, display, authBase string }
 
 func (s staticProvider) Name() string { return s.name }

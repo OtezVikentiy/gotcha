@@ -57,14 +57,11 @@ func newCallbackStack(t *testing.T) *callbackStack {
 	return &callbackStack{h: h, srv: srv, auth: authSvc, org: orgSvc, mp: mp}
 }
 
-// doCallback выставляет валидную flow-cookie и дёргает callback без follow-redirect.
 func (s *callbackStack) doCallback(t *testing.T, flow oauthFlow) *http.Response {
 	t.Helper()
 	return s.doCallbackSession(t, flow, "")
 }
 
-// doCallbackSession — как doCallback, но дополнительно кладёт сессионную cookie
-// (для потока привязки из профиля, где линковка идёт к uid из сессии, а не из flow).
 func (s *callbackStack) doCallbackSession(t *testing.T, flow oauthFlow, sessionToken string) *http.Response {
 	t.Helper()
 	flow.Provider = "oidc"
@@ -91,9 +88,6 @@ func TestCallbackExistingUserVerifiedEmailLinksAndLogsIn(t *testing.T) {
 	s := newCallbackStack(t)
 	ctx := context.Background()
 	uid, _ := s.auth.Register(ctx, "u@corp.com", "password12")
-	// TrustedIssuer=true: неявная привязка к существующему аккаунту допустима
-	// только для доверенных провайдеров (VK/Яндекс сами верифицируют владение
-	// email). Для generic-OIDC см. TestCallbackExistingUserUntrustedIssuerRefused.
 	s.mp.id = oauth.Identity{Subject: "sub-1", Email: "u@corp.com", EmailVerified: true, TrustedIssuer: true}
 
 	resp := s.doCallback(t, oauthFlow{})
@@ -115,11 +109,6 @@ func TestCallbackExistingUserVerifiedEmailLinksAndLogsIn(t *testing.T) {
 	}
 }
 
-// TestCallbackExistingUserUntrustedIssuerRefused — generic-OIDC (TrustedIssuer=
-// false) НЕ должен неявно привязываться к существующему парольному аккаунту по
-// заявленному провайдером email, даже если тот помечен verified: email_verified
-// контролирует произвольный IdP (риск угона аккаунта). Требуется вход паролем и
-// ручная привязка в /profile → 403, identity не создаётся.
 func TestCallbackExistingUserUntrustedIssuerRefused(t *testing.T) {
 	s := newCallbackStack(t)
 	ctx := context.Background()
@@ -175,9 +164,6 @@ func TestCallbackInviteProvisioning(t *testing.T) {
 
 func TestCallbackNoInviteRefused(t *testing.T) {
 	s := newCallbackStack(t)
-	// В open-режиме (дефолт стека) аккаунт с №96 заводится и без приглашения —
-	// это документированное поведение (см. TestOAuthOpenModeProvisionsWithoutInvite).
-	// Отказ незнакомцу — семантика режима invite, его и закрепляем.
 	s.h.RegistrationMode = "invite"
 	s.mp.id = oauth.Identity{Subject: "sub-4", Email: "stranger@corp.com", EmailVerified: true}
 	resp := s.doCallback(t, oauthFlow{})
@@ -208,13 +194,6 @@ func TestCallbackStateMismatch(t *testing.T) {
 	}
 }
 
-// TestOAuthCallback_SSOFailureShowsOrgDomainNotInternalName — P2-9: oauthFail
-// раньше резолвил провайдера через h.OAuth.Get (только env-провайдеры
-// реестра), так что ошибка входа через per-org SSO ("sso-{id}") показывала
-// пользователю сырое внутреннее имя провайдера вместо названия организации.
-// Дёргаем callback без ?code (ветка oauthFail до Exchange — реальный
-// OIDC-issuer не нужен) и проверяем, что страница ошибки называет
-// организацию по домену, а не по внутреннему "sso-<id>".
 func TestOAuthCallback_SSOFailureShowsOrgDomainNotInternalName(t *testing.T) {
 	s := newCallbackStack(t)
 	ctx := context.Background()
@@ -259,7 +238,6 @@ func TestCallbackLinkFlow(t *testing.T) {
 	s := newCallbackStack(t)
 	ctx := context.Background()
 	uid, _ := s.auth.Register(ctx, "linker@corp.com", "password12")
-	// SEC-C1b: линковка идёт к uid из сессии, поэтому нужна валидная сессионная cookie.
 	token, err := s.auth.CreateSession(ctx, uid)
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -275,14 +253,9 @@ func TestCallbackLinkFlow(t *testing.T) {
 	}
 }
 
-// TestOAuthCallback_EnforcedSSOBlocksEnvProvider — SEC-H2: env-провайдер (личный/
-// инстансовый Яндекс/VK/OIDC) не должен выдавать сессию для домена с enforced-SSO.
-// Раньше существующий юзер такого домена логинился по ветке 3; теперь — редирект на
-// /sso, сессия НЕ выдаётся, identity не привязывается.
 func TestOAuthCallback_EnforcedSSOBlocksEnvProvider(t *testing.T) {
 	s := newCallbackStack(t)
 	ctx := context.Background()
-	// enforced-SSO орг для corp.com.
 	ownerID, _ := s.auth.Register(ctx, "owner@corp.com", "password12")
 	o, err := s.org.CreateOrg(ctx, "sso-co", "SSO Co", ownerID)
 	if err != nil {
@@ -294,9 +267,7 @@ func TestOAuthCallback_EnforcedSSOBlocksEnvProvider(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upsert sso: %v", err)
 	}
-	// Существующий юзер этого домена (branch 3 раньше линковал и логинил).
 	uid, _ := s.auth.Register(ctx, "worker@corp.com", "password12")
-	// env-провайдер "oidc" возвращает verified email того же домена, субъект неизвестен.
 	s.mp.id = oauth.Identity{Subject: "env-sub", Email: "worker@corp.com", EmailVerified: true}
 
 	resp := s.doCallback(t, oauthFlow{})
@@ -310,17 +281,11 @@ func TestOAuthCallback_EnforcedSSOBlocksEnvProvider(t *testing.T) {
 			t.Fatal("session cookie must NOT be issued for enforced-sso domain via env provider")
 		}
 	}
-	// Identity не должна быть привязана к юзеру.
 	if got, err := s.auth.IdentityUser(ctx, "oidc", "env-sub"); err == nil {
 		t.Fatalf("identity linked (uid %d) despite enforced sso; must not link (user=%d)", got, uid)
 	}
 }
 
-// TestOAuthCallback_EnforcedSSOUnverifiedEmail — RA-L2: guard enforced-SSO не
-// должен зависеть от id.EmailVerified. Generic-OIDC без email_verified
-// (EmailVerified=false) на enforced-домене раньше проскакивал мимо гейта и мог
-// войти по стабильному субъекту; теперь — редирект на /sso, сессия НЕ выдаётся,
-// вход по субъекту не происходит.
 func TestOAuthCallback_EnforcedSSOUnverifiedEmail(t *testing.T) {
 	s := newCallbackStack(t)
 	ctx := context.Background()
@@ -335,8 +300,6 @@ func TestOAuthCallback_EnforcedSSOUnverifiedEmail(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upsert sso: %v", err)
 	}
-	// Существующий юзер enforced-домена с УЖЕ привязанной identity: без гейта
-	// ветка «login by subject» выдала бы сессию, несмотря на unverified email.
 	uid, _ := s.auth.Register(ctx, "worker2@corp.com", "password12")
 	if err := s.auth.LinkIdentity(ctx, uid, "oidc", "env-sub-2", "worker2@corp.com"); err != nil {
 		t.Fatalf("link identity: %v", err)
@@ -356,18 +319,12 @@ func TestOAuthCallback_EnforcedSSOUnverifiedEmail(t *testing.T) {
 	}
 }
 
-// TestOAuthCallback_LinkIgnoresForgedFlowUID — SEC-C1b: подделанный flow.UID (жертвы)
-// без активной сессии атакующего НЕ должен приводить к линковке identity к жертве.
-// При утёкшем/дефолтном ключе подписи UID в cookie подделывается; доверяем только сессии.
 func TestOAuthCallback_LinkIgnoresForgedFlowUID(t *testing.T) {
 	s := newCallbackStack(t)
 	ctx := context.Background()
-	// Жертва с реальным uid, который атакующий подставляет в flow.UID.
 	victimUID, _ := s.auth.Register(ctx, "victim@corp.com", "password12")
-	// Identity атакующего: субъект неизвестен (IdentityUser → ErrNoIdentity).
 	s.mp.id = oauth.Identity{Subject: "attacker-sub", Email: "attacker@evil.com", EmailVerified: true}
 
-	// Сессии нет (doCallback не кладёт сессионную cookie) — линковки быть не должно.
 	resp := s.doCallback(t, oauthFlow{Link: true, UID: victimUID})
 	defer resp.Body.Close()
 
@@ -375,18 +332,11 @@ func TestOAuthCallback_LinkIgnoresForgedFlowUID(t *testing.T) {
 		t.Fatalf("forged link without session: status/loc = %d/%s, want 303 /login",
 			resp.StatusCode, resp.Header.Get("Location"))
 	}
-	// Identity атакующего не должна быть привязана вообще (тем более к жертве).
 	if got, err := s.auth.IdentityUser(ctx, "oidc", "attacker-sub"); err == nil {
 		t.Fatalf("forged flow.UID linked identity to uid %d (victim=%d); must not link", got, victimUID)
 	}
 }
 
-// TestOAuthCallback_LinkRejectsInjectedFlowCookie фиксирует закрытие захвата
-// аккаунта: атакующий начинает СВОЙ link-поток (cookie подписана легитимно и
-// несёт ЕГО uid), проходит IdP, затем подсовывает эту cookie залогиненной жертве
-// и заманивает её на callback. Раньше uid брался только из сессии, поэтому
-// identity АТАКУЮЩЕГО привязывалась к аккаунту ЖЕРТВЫ — после чего он входил
-// под ней своим же IdP-аккаунтом. Теперь uid из cookie обязан совпасть с сессией.
 func TestOAuthCallback_LinkRejectsInjectedFlowCookie(t *testing.T) {
 	s := newCallbackStack(t)
 	ctx := context.Background()
@@ -394,36 +344,28 @@ func TestOAuthCallback_LinkRejectsInjectedFlowCookie(t *testing.T) {
 	attackerUID, _ := s.auth.Register(ctx, "attacker@evil.com", "password12")
 	victimUID, _ := s.auth.Register(ctx, "victim@corp.com", "password12")
 
-	// Жертва залогинена: именно её сессия придёт вместе с чужой cookie потока.
 	victimToken, err := s.auth.CreateSession(ctx, victimUID)
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	s.mp.id = oauth.Identity{Subject: "attacker-sub", Email: "attacker@evil.com", EmailVerified: true}
 
-	// Поток атакующего (UID атакующего) + сессия жертвы.
 	resp := s.doCallbackSession(t, oauthFlow{Link: true, UID: attackerUID}, victimToken)
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusSeeOther && resp.Header.Get("Location") == "/profile" {
 		t.Fatal("подменённая cookie потока принята: привязка выполнена")
 	}
-	// Главное: identity атакующего не должна оказаться на аккаунте жертвы.
 	if got, err := s.auth.IdentityUser(ctx, "oidc", "attacker-sub"); err == nil && got == victimUID {
 		t.Fatalf("ЗАХВАТ АККАУНТА: identity атакующего привязана к жертве (uid=%d)", victimUID)
 	}
 }
 
-// TestOAuthCallback_ClosedModeBlocksInviteProvisioning фиксирует различие режимов
-// регистрации: closed обещает «регистрация выключена полностью», значит новый
-// аккаунт не должен появляться даже по действующему приглашению. Раньше closed и
-// invite проверялись одинаково (`!= "open"`), и различия между ними не было.
 func TestOAuthCallback_ClosedModeBlocksInviteProvisioning(t *testing.T) {
 	s := newCallbackStack(t)
 	ctx := context.Background()
 	s.h.RegistrationMode = "closed"
 
-	// Действующее приглашение на этот email существует.
 	ownerID, _ := s.auth.Register(ctx, "closed-owner@corp.com", "password12")
 	o, _ := s.org.CreateOrg(ctx, "closed-co", "Closed Co", ownerID)
 	if _, err := s.org.Invite(ctx, o.ID, "invited@corp.com", org.RoleMember); err != nil {

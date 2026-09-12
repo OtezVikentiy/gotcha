@@ -13,100 +13,46 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// tickBudgetShare/minTickBudget — та же пара, что host.Evaluator: дедлайн
-// прохода heartbeat+reminder — доля Interval, но не меньше пола, иначе
-// повисший запрос (StaleHeartbeats/ApplyResult/IncidentsDueForReminder/
-// ClaimReminder — все идут прямо в PG без собственного таймаута на вызов)
-// держал бы проход (и self-метрику живости) бесконечно. Проверку
-// сертификатов (checkSSL, суточный тик) в ЭТУ self-метрику намеренно не
-// берём (нет LastTick*-полей у неё): суточный горизонт нельзя валидно
-// смешивать с минутным, которым интересуется LastTickUnix/LastTickSeconds —
-// «повисло на сутки» и «повисло на минуту» это разные тревоги для разных
-// получателей. У неё свой бюджет — см. sslCheckBudget: без него первый же
-// прогон (см. Run — он безусловный, ДО входа в тикер) вешал бы Watchdog
-// целиком на самом старте процесса, ещё до первого heartbeat/reminder-тика.
+// доля Interval, не меньше пола — иначе повисший запрос держит self-метрику
+// живости бесконечно. checkSSL сюда не входит — суточный бюджет свой, ниже.
 const (
 	tickBudgetShare = 0.8
 	minTickBudget   = 10 * time.Second
 )
 
-// sslCheckBudget — дедлайн ОДНОГО прохода checkSSL (ревью W3-D, финальная
-// находка): без него SSLCandidates/ClaimSSLAlert/Notify — голые PG-запросы
-// и вызов Notifier без своего таймаута — вешали бы проверку сертификатов
-// НАВСЕГДА, а нашли это только потому, что нельзя было написать hung-tick
-// тест на Watchdog без Notifier=nil (иначе первый же безусловный вызов
-// checkSSL в Run зависал бы раньше, чем тест доезжал до бюджетированного
-// tick). Суточный цикл, вставший намертво, молчит о прекращении проверки
-// сертификатов ровно так же тихо, как отсутствие метрики у остальных шести
-// целей записи 1 молчало об их зависании.
-//
-// 30 секунд — не доля SSLEvery (сутки × 0.8 бессмысленны как потолок одного
-// прохода), а фиксированная величина по профилю запроса, как leaseBudget у
-// Runner: SSLCandidates — один скан по индексу ssl_expires_at IS NOT NULL,
-// дальше на каждый созревший порог — ClaimSSLAlert (UPDATE по id) и Notify
-// (вставка в outbox, не синхронный сетевой вызов). Тридцать секунд —
-// тот же порядок, что и process-wide statement_timeout (internal/db/
-// postgres.go): не короче него ни для одного отдельного запроса внутри
-// прохода, но ограничивает ВЕСЬ проход (много мониторов × два запроса
-// каждый) единым потолком, а не оставляет его неограниченным при большом
-// флоте с одновременно истекающими сертификатами.
+// фиксированные 30с, не доля SSLEvery (сутки×0.8 бессмысленны как потолок) —
+// без бюджета первый безусловный прогон в Run вешал бы Watchdog на старте.
 const sslCheckBudget = 30 * time.Second
 
-// heartbeatMissedError — Result.Error/State.LastError recorded for a
-// heartbeat monitor whose grace period expired without a ping. Not a real
-// check error (heartbeat monitors are never actively probed) — it exists so
-// Detector.OnResult's cause/notification text reads sensibly, same as any
-// other checker's Result.Error.
+// не настоящая ошибка проверки (heartbeat не опрашивается активно) — нужна,
+// чтобы текст причины/уведомления Detector.OnResult читался осмысленно.
 const heartbeatMissedError = "no heartbeat within grace period"
 
-// ReminderItem pairs an open incident with its monitor — the unit
-// Service.IncidentsDueForReminder hands to the reminder watchdog, which
-// needs both (the incident to notify/touch, the monitor for
-// Event.Monitor/remind_every_minutes already having been applied by the
-// query).
 type ReminderItem struct {
 	Incident Incident
 	Monitor  Monitor
 }
 
-// MaintenanceChecker — живая проверка окна обслуживания на момент отправки
-// напоминания. Эталон и причина — escalation.Scheduler (его одноимённый
-// интерфейс): окно могло начаться уже после того, как инцидент открылся, а
-// снимок incidents.in_maintenance пишется один раз при открытии и этого не
-// видит. Локальный duck-typing интерфейс, а не импорт из escalation:
-// направление зависимостей (escalation → uptime) не меняется; в проде его
-// реализует сам Service (InMaintenance, maintenance.go).
+// живая проверка перед напоминанием: снимок incidents.in_maintenance не видит
+// окно, начавшееся после открытия инцидента.
 type MaintenanceChecker interface {
 	InMaintenance(ctx context.Context, projectID int64, at time.Time) (bool, error)
 }
 
-// Watchdog runs the three periodic jobs that active checks alone don't
-// cover: heartbeat monitors don't get probed by Runner (a missed ping is a
-// silence, not a failed request), SSL certificates need re-checking even
-// between probes of the same monitor, and open incidents need periodic
-// reminder notifications for as long as they stay open. Zero-value
-// Interval/SSLEvery mean "use the default" (1 minute / 24 hours), matching
-// Runner's ScheduleEvery/LeaseEvery convention.
 type Watchdog struct {
 	Svc      *Service
 	Detector *Detector // heartbeat misses run through OnResult so incident thresholds/notifications behave like any other check
 	Notifier Notifier  // used directly for ssl_expiring/reminder events, which don't go through Detector
 
-	// Maint — окно обслуживания проекта, проверяемое ЖИВЬЁМ перед каждым
-	// напоминанием (см. checkReminders). nil допустим: режимы без окон и
-	// тесты — «окон нет», напоминания идут как раньше.
+	// nil допустим — «окон нет», напоминания идут как обычно.
 	Maint MaintenanceChecker
 
-	// Writer — запись пропущенного удара в check_results. ОБЯЗАТЕЛЕН для
-	// достоверности аптайма: успешный пинг строку пишет (web/heartbeat.go), а
-	// пропущенный без этого не писал ничего, поэтому доля OK/Total у heartbeat-
-	// монитора всегда оставалась 100% — даже когда монитор в down и открыт
-	// инцидент. Нулевой Writer допустим только в тестах.
+	// обязателен в проде: без него пропущенный удар не пишется в check_results,
+	// и доля OK/Total heartbeat-монитора держится 100% даже при открытом инциденте.
 	Writer *ResultWriter
 
-	// Region — the local region a missed heartbeat is recorded under (must
-	// match the region the monitor's active-check regions use, "local" by
-	// default — see cmd/gotcha's cfg.LocalRegion). Empty means DefaultRegion.
+	// должен совпадать с регионом активных проверок монитора (cfg.LocalRegion);
+	// пусто — DefaultRegion.
 	Region string
 
 	Interval time.Duration // heartbeat + reminder tick period, default 1 minute
@@ -116,20 +62,14 @@ type Watchdog struct {
 	lastTickSeconds atomic.Uint64 // длительность последнего прохода, math.Float64bits
 }
 
-// LastTickUnix — unix-время последнего завершённого прохода heartbeat+
-// reminder (0, если ни одного ещё не было). Self-метрика живости, как у
-// host.Evaluator: умерший или отставший Watchdog снаружи выглядит ровно как
-// «пропущенных heartbeat и созревших напоминаний сейчас нет».
+// 0, если ни одного прохода ещё не было. Мёртвый или отставший Watchdog
+// снаружи выглядит как «пропущенных heartbeat и созревших напоминаний сейчас нет».
 func (w *Watchdog) LastTickUnix() int64 { return w.lastTickUnix.Load() }
 
-// LastTickSeconds — длительность последнего прохода heartbeat+reminder в
-// секундах.
 func (w *Watchdog) LastTickSeconds() float64 {
 	return math.Float64frombits(w.lastTickSeconds.Load())
 }
 
-// tickBudget — дедлайн одного прохода heartbeat+reminder (см.
-// tickBudgetShare/minTickBudget).
 func (w *Watchdog) tickBudget() time.Duration {
 	interval := w.Interval
 	if interval <= 0 {
@@ -149,12 +89,8 @@ func (w *Watchdog) region() string {
 	return w.Region
 }
 
-// Run ticks the heartbeat/reminder job every Interval and the SSL job every
-// SSLEvery, until ctx is done. Meant to be started with "go w.Run(ctx)";
-// there is no separate Close — unlike Runner/ResultWriter, Watchdog holds no
-// buffered state that needs draining, so depending on ctx alone (as
-// cmd/gotcha's drain() already assumes — see its comment on the ordering) is
-// enough.
+// в отличие от Runner/ResultWriter отдельного Close нет — Watchdog не
+// держит буферизованное состояние, достаточно ctx (см. drain() в main.go).
 func (w *Watchdog) Run(ctx context.Context) {
 	interval := w.Interval
 	if interval <= 0 {
@@ -170,16 +106,8 @@ func (w *Watchdog) Run(ctx context.Context) {
 	sslTick := time.NewTicker(sslEvery)
 	defer sslTick.Stop()
 
-	// Первый прогон проверки сертификатов — сразу, не дожидаясь тика.
-	// time.NewTicker срабатывает через ПОЛНЫЙ период, а период здесь сутки:
-	// процесс, который перезапускают чаще раза в день (деплой, рестарт
-	// контейнера, обновление образа), не выполнял checkSSL вообще никогда, и
-	// уведомления об истекающем сертификате не уходили. С heartbeat и
-	// напоминаниями этого не видно — там тик минутный.
-	//
-	// Стартовый прогон безопасен для нескольких реплик: порог помечается
-	// доставленным через ClaimSSLAlert, атомарным UPDATE ... RETURNING, и
-	// второй процесс на том же пороге просто не выиграет клейм.
+	// первый прогон checkSSL — сразу, иначе частый рестарт никогда не запускал бы
+	// проверку сертификатов; безопасен для реплик — порог клеймится атомарно.
 	w.checkSSL(ctx)
 
 	for {
@@ -194,8 +122,6 @@ func (w *Watchdog) Run(ctx context.Context) {
 	}
 }
 
-// tick — один проход heartbeat+reminder, ограниченный дедлайном (tickBudget):
-// см. его докблок за тем, почему checkSSL в этот бюджет не входит.
 func (w *Watchdog) tick(ctx context.Context) {
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, w.tickBudget())
@@ -213,13 +139,8 @@ func (w *Watchdog) tick(ctx context.Context) {
 	w.lastTickUnix.Store(time.Now().Unix())
 }
 
-// checkHeartbeats applies a synthetic failed result for every heartbeat
-// monitor whose grace period lapsed without a ping, then runs it through
-// Detector.OnResult exactly like Runner does for an active check's result —
-// so fail_threshold/consensus/incident-opening/notification all behave the
-// same way for a silence as for an explicit failure. A successful ping is
-// handled entirely by the public heartbeat endpoint (internal/web/heartbeat.go);
-// this job only ever sees the failure side.
+// пропущенный удар проходит через Detector.OnResult как обычный отказ —
+// fail_threshold/consensus/инциденты ведут себя одинаково для тишины и провала.
 func (w *Watchdog) checkHeartbeats(ctx context.Context) {
 	monitors, err := w.Svc.StaleHeartbeats(ctx)
 	if err != nil {
@@ -235,9 +156,6 @@ func (w *Watchdog) checkHeartbeats(ctx context.Context) {
 			continue
 		}
 		res := Result{OK: false, Error: heartbeatMissedError}
-		// Пропущенный удар пишется в check_results ровно так же, как успешный
-		// пинг в web/heartbeat.go: иначе в знаменателе аптайма остаются только
-		// успехи и доля никогда не опускается ниже 100%.
 		if w.Writer != nil {
 			w.Writer.Add(m.ProjectID, m.ID, region, at, res)
 		}
@@ -247,9 +165,6 @@ func (w *Watchdog) checkHeartbeats(ctx context.Context) {
 	}
 }
 
-// sslThresholds returns the sorted-descending, deduplicated, positive-only
-// alert thresholds for a monitor: its own ssl_alert_days plus the built-in
-// {7,3,1} — see task brief.
 func sslThresholds(alertDays int) []int {
 	set := map[int]bool{7: true, 3: true, 1: true}
 	if alertDays > 0 {
@@ -263,49 +178,20 @@ func sslThresholds(alertDays int) []int {
 	return out
 }
 
-// daysLeftUntil rounds up the whole+partial days between now and expires —
-// "5 days and 1 hour left" and "5 days and 23 hours left" both count as 5
-// days left having NOT yet elapsed, i.e. still within a 5-day threshold; a
-// cert that expires 30 minutes from now already counts as "1 day left" for
-// alerting purposes, not "0".
+// округляет вверх — 5 дней и 1 час, и 5 дней и 23 часа, оба «осталось 5»;
+// сертификат, истекающий через 30 минут, уже «остался 1 день», не 0.
 func daysLeftUntil(expires, now time.Time) int {
 	return int(math.Ceil(expires.Sub(now).Hours() / 24))
 }
 
-// checkSSL notifies once per monitor per tick for the certificates that just
-// crossed into a new, not-yet-alerted threshold. When daysLeft already
-// satisfies more than one un-alerted threshold at once (e.g. a monitor whose
-// SSL was only just observed close to expiry, jumping straight past a
-// larger threshold to a smaller one) a single Notify call covers all of
-// them, and all of them are recorded — not just the largest — so a later
-// tick at the same (or a larger) daysLeft doesn't re-fire for the smaller
-// one still sitting un-alerted. See task brief's example: ssl_alert_days=14,
-// daysLeft=5 crosses both the 14 and the built-in 7 threshold in the same
-// tick.
-//
-// Claim-before-notify: several `gotcha --mode=uptime` processes (one per
-// region) run against the SAME database, each with its own Watchdog ticking
-// independently. Svc.ClaimSSLAlert is a single atomic UPDATE ... RETURNING —
-// of two replicas racing this method for the same monitor in the same
-// window, only one gets won=true — so Notify only ever runs for the winner,
-// never twice for the same threshold. This trades away the previous
-// notify-then-mark ordering's retry-on-failure behavior: if Notify fails
-// after a successful claim, the claim already landed, so the next tick will
-// NOT retry it (see the Notify error handling below). That's the deliberate
-// price of not double-sending across replicas.
+// один Notify покрывает все пересечённые пороги разом, иначе следующий тик не
+// переалертил бы меньший; claim атомарен (RETURNING) — из гонки реплик побеждает одна.
 func (w *Watchdog) checkSSL(ctx context.Context) {
 	if w.Notifier == nil {
-		// "Incidents only, no notifications" deployment mode: skip entirely,
-		// including the claim. Claiming without notifying would permanently
-		// mark the threshold as alerted, so a Notifier configured later
-		// would never fire for it.
+		// пропускаем claim тоже: клеймом без Notify порог навсегда пометился бы
+		// алертнутым, и подключённый позже Notifier по нему уже не сработает.
 		return
 	}
-	// Ограничен дедлайном (sslCheckBudget): без него повисший SSLCandidates/
-	// ClaimSSLAlert/Notify держал бы проверку сертификатов бесконечно — а
-	// первый прогон (см. Run) безусловный и случается ДО первого
-	// heartbeat/reminder-тика, поэтому без бюджета мог бы повесить Watchdog
-	// на самом старте процесса.
 	ctx, cancel := context.WithTimeout(ctx, sslCheckBudget)
 	defer cancel()
 
@@ -346,48 +232,13 @@ func (w *Watchdog) checkSSL(ctx context.Context) {
 			continue
 		}
 		if err := w.Notifier.Notify(ctx, Event{Kind: "ssl_expiring", Monitor: m, DaysLeft: daysLeft}); err != nil {
-			// See the claim-before-notify trade-off in the doc comment
-			// above: this is NOT retried on the next tick.
 			slog.Warn("uptime: watchdog: ssl notify failed after claim", "monitor_id", m.ID, "days", due, "error", err)
 		}
 	}
 }
 
-// checkReminders notifies once for every open, non-maintenance incident
-// whose monitor wants reminders and is due for one, then claims the
-// reminder (last_reminded_at = now()) so the next one waits a full
-// remind_every_minutes again.
-//
-// «Non-maintenance» проверяется дважды. Снимок in_maintenance (фильтр в
-// IncidentsDueForReminder) отсекает инциденты, ОТКРЫТЫЕ внутри окна, — по
-// ним напоминаний нет вообще. Живая проверка Maint.InMaintenance здесь
-// отсекает окно, начавшееся ПОСЛЕ открытия инцидента: такое напоминание
-// пропускается БЕЗ клейма, last_reminded_at не двигается, и после окна
-// напоминание уйдёт первым же тиком. Один вызов на проект за тик (кэш
-// inMaint) — окна общие для всех мониторов проекта.
-//
-// Ошибка InMaintenance — slog.Warn и напоминание ОТПРАВЛЯЕТСЯ: здесь, в
-// отличие от escalation.Scheduler.tickOne, отказ падает в сторону оповещения,
-// а не тишины — напоминание идёт по инциденту, о котором уже сообщили, и
-// лишнее напоминание во время обслуживания дешевле пропавшего напоминания об
-// аварии из-за сбоя проверки окна.
-//
-// Claim-before-notify, same rationale as checkSSL: Svc.ClaimReminder is a
-// single atomic UPDATE ... RETURNING keyed on "hasn't been reminded (or
-// opened) within remind_every", so of several `--mode=uptime` replicas racing
-// this method for the same incident, only one gets won=true.
-//
-// The cutoff is computed by the DATABASE, not here. It used to be computed
-// from the process clock (now - remind_every) and compared against columns
-// written by the server's now(), while IncidentsDueForReminder picked items by
-// the server clock too — three sources for one decision, and the doc comment
-// claimed they were one. A container whose clock lags the database (no NTP is
-// ordinary) then lost the claim for incidents the query had just selected, and
-// reminders were held back silently until the clocks converged; a clock that
-// runs ahead sent them early instead.
-//
-// As with checkSSL, a Notify failure after a successful claim is NOT
-// retried next tick — the price of not double-sending across replicas.
+// live-проверка InMaintenance ловит только окно, открывшееся после инцидента —
+// более раннее не всплывает; ошибка проверки не блокирует напоминание умышленно.
 func (w *Watchdog) checkReminders(ctx context.Context) {
 	if w.Notifier == nil {
 		// "Incidents only, no notifications" mode — skip entirely, including
@@ -414,8 +265,6 @@ func (w *Watchdog) checkReminders(ctx context.Context) {
 				inMaint[it.Monitor.ProjectID] = skip
 			}
 			if skip {
-				// Окно идёт сейчас: не клеймим, чтобы напоминание ушло
-				// сразу после окна, а не через полный remind_every.
 				continue
 			}
 		}
@@ -438,37 +287,14 @@ func (w *Watchdog) checkReminders(ctx context.Context) {
 			DurationSeconds: duration,
 		}
 		if err := w.Notifier.Notify(ctx, ev); err != nil {
-			// See the claim-before-notify trade-off in the doc comment
-			// above: this is NOT retried on the next tick.
+			// claim уже прошёл — на следующем тике не ретраится (цена анти-дублирования).
 			slog.Warn("uptime: watchdog: reminder notify failed after claim", "incident_id", it.Incident.ID, "error", err)
 		}
 	}
 }
 
-// StaleHeartbeats returns enabled heartbeat monitors whose grace period has
-// lapsed without a ping: last_beat_at (or, if it never pinged, created_at)
-// plus the monitor's own grace_seconds (from its HeartbeatConfig) is in the
-// past. ChannelIDs are not populated (unlike Get) — checkHeartbeats routes
-// its Result through Detector.OnResult/Notifier, neither of which reads
-// Monitor.ChannelIDs.
-//
-// RegionCount IS populated (like Get/List), even though the miss itself is
-// detected centrally from a single last_beat_at column, not per-region: in a
-// multi-region deployment each region runs its own Watchdog
-// (cmd/gotcha's --mode=uptime, one process per region — see checkSSL's
-// comment), and every one of them independently calls ApplyResult under its
-// OWN region once the grace period lapses. aggregate() (detector.go) needs
-// the monitor's configured RegionCount as consensus's denominator, same as
-// any actively-checked monitor — otherwise "all"/"majority" consensus fires
-// on whichever region's Watchdog ticks first, before the others have had a
-// chance to report, exactly the premature-decision bug aggregate's own
-// doc comment describes for regular checks. Previously left at the Go zero
-// value here, RegionCount silently fell back to "total = decided" for every
-// stale heartbeat, so a heartbeat monitor's chosen consensus was only ever
-// honored by the SUCCESSFUL-ping path (web/heartbeat.go, via
-// ByHeartbeatToken -> Get, which does fill it in) — the failure path ignored
-// it. Single-region deployments (the common case) were unaffected, since
-// there decided == RegionCount == 1 either way.
+// ChannelIDs не заполняются, их не читают Detector/Notifier; RegionCount нужен —
+// aggregate() берёт его знаменателем consensus, без него all/majority ломается.
 func (s *Service) StaleHeartbeats(ctx context.Context) ([]Monitor, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, `+monitorColumns+`
@@ -512,10 +338,7 @@ func (s *Service) StaleHeartbeats(ctx context.Context) ([]Monitor, error) {
 	return out, nil
 }
 
-// SSLCandidates returns every monitor with a known certificate expiry
-// (ssl_expires_at IS NOT NULL), regardless of kind — set by any https check
-// via Detector.updateSSL/Service.SetSSLExpiry. Unlike Get/List, it also
-// populates Monitor.SSLAlertedDays (see that field's doc comment).
+// в отличие от Get/List, дополнительно заполняет SSLAlertedDays.
 func (s *Service) SSLCandidates(ctx context.Context) ([]Monitor, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, `+monitorColumns+`, ssl_alerted_days
@@ -540,19 +363,8 @@ func (s *Service) SSLCandidates(ctx context.Context) ([]Monitor, error) {
 	return out, rows.Err()
 }
 
-// ClaimSSLAlert atomically records thresholds as alerted for monitorID and
-// reports whether THIS call won the claim: true when at least one of
-// thresholds wasn't already present in ssl_alerted_days (so the row got
-// updated and RETURNING produced a row), false when every one of them was
-// already recorded (by this call or a concurrent one) — nothing to claim.
-//
-// Race-safety: the check (NOT ssl_alerted_days @> thresholds) and the write
-// (array_agg(DISTINCT ...)) happen in one UPDATE statement, not a
-// read-then-write pair — so of several `gotcha --mode=uptime` replicas
-// racing ClaimSSLAlert for the same monitor/thresholds, exactly one observes
-// won=true; the rest see the row the winner already updated and get no row
-// back. Callers MUST NOT Notify before calling this, and MUST only Notify
-// when won is true — see watchdog.go's checkSSL, this method's only caller.
+// один UPDATE, не read-then-write — из гонки реплик побеждает ровно одна;
+// won=false значит уже отмечено, Notify тогда вызывать нельзя.
 func (s *Service) ClaimSSLAlert(ctx context.Context, monitorID int64, thresholds []int) (bool, error) {
 	var id int64
 	err := s.pool.QueryRow(ctx, `
@@ -571,23 +383,8 @@ func (s *Service) ClaimSSLAlert(ctx context.Context, monitorID int64, thresholds
 	return true, nil
 }
 
-// IncidentsDueForReminder returns (incident, monitor) pairs for every open,
-// non-maintenance, non-suppressed incident whose monitor wants periodic
-// reminders (remind_every_minutes > 0) and hasn't had one recently enough:
-// coalesce(last_reminded_at, started_at) + remind_every_minutes is in the
-// past. Two extra gates (B5): suppressed_by_dep = false — an incident
-// suppressed because its declared parent is down gets no reminders either,
-// same as it gets no open/close notification (see resolveIncident's gate in
-// detector.go); notified_open = true — an incident whose "down" was never
-// sent (suppressed, or held back by grace and already recovering) has
-// nothing to remind about yet.
-//
-// m.enabled — пауза монитора глушит напоминания по его открытому инциденту
-// (K2-2). Инцидент при этом НЕ закрывается и не резолвится (SetEnabled —
-// голый UPDATE monitors, и это намеренно): пауза значит «не проверяем и не
-// будим», а не «сервис поднялся» — история инцидента не переписывается. При
-// снятии паузы проверки возобновятся и штатно закроют инцидент, если сервис
-// жив. Та же логика — в OpenUnacked (incident.go) для лесенки эскалации.
+// m.enabled: пауза глушит напоминания, но не закрывает инцидент — история не
+// переписывается, закроет его живая проверка после снятия паузы.
 func (s *Service) IncidentsDueForReminder(ctx context.Context) ([]ReminderItem, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT i.id, i.monitor_id, i.started_at, i.resolved_at, i.cause, i.regions,
@@ -627,22 +424,8 @@ func (s *Service) IncidentsDueForReminder(ctx context.Context) ([]ReminderItem, 
 	return out, rows.Err()
 }
 
-// ClaimReminder atomically records that a reminder was just sent for
-// incidentID (last_reminded_at = now()) and reports whether THIS call won the
-// claim: true only when the incident is still open (resolved_at IS NULL) and
-// hasn't been reminded (or opened, via COALESCE) within remindEveryMinutes.
-//
-// The cutoff is derived inside the statement, from the server's now(), so this
-// check and the one in IncidentsDueForReminder read the same clock. Passing an
-// absolute cutoff computed by the caller looked tidier and was wrong: the
-// caller's clock is the container's, the columns are written by the database,
-// and the two drift apart in ordinary deployments — see checkReminders.
-//
-// Race-safety: the check-and-set is one UPDATE statement, not a
-// read-then-write pair — so of several `gotcha --mode=uptime` replicas
-// racing ClaimReminder for the same incident, exactly one observes
-// won=true. Callers MUST NOT Notify before calling this, and MUST only
-// Notify when won is true.
+// cutoff считается внутри UPDATE от now() сервера — часы контейнера и БД
+// расходятся на практике; побеждает ровно одна реплика, Notify только при won=true.
 func (s *Service) ClaimReminder(ctx context.Context, incidentID int64, remindEveryMinutes int) (bool, error) {
 	var id int64
 	err := s.pool.QueryRow(ctx, `

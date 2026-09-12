@@ -7,20 +7,6 @@ import (
 	"testing"
 )
 
-// TestSelfMetricsDocumented — №126: каждая метрика, реально зарегистрированная
-// в дереве, обязана упоминаться в self-monitoring.md ОБОИХ языков.
-//
-// Инвентарь берётся из collectSelfMetrics (selfmetrics_names_test.go) — того
-// же обхода, что кормит TestSelfMetricNamesPinned/TestSelfMetricQueueNamingCanon,
-// а не из отдельного, второго AST-скана того же дерева. До этой правки здесь
-// жил собственный, независимый обход с той же логикой распознавания
-// call-site'а, но БЕЗ фикса на алиасированный/dot-импорт (E3, заморозка
-// контракта self-метрик): регистрация через `import sm ".../selfmetrics"`
-// была бы для НЕГО невидима точно так же, как когда-то была невидима для
-// collectSelfMetrics, только тихо — этот тест не проверяет полноту (что
-// найдено, то и сверяется с доками), поэтому пропавшая по алиасу метрика не
-// уронила бы вообще ничего. Нелитеральные имя и тип метрики отдельно уже не
-// проверяются — это делает сам collectSelfMetrics.
 func TestSelfMetricsDocumented(t *testing.T) {
 	tree := Load(t)
 	scan := collectSelfMetrics(t, tree)

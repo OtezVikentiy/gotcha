@@ -27,9 +27,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// issuesStack — в отличие от newStack (auth_test.go), поднимает и PG, и CH:
-// страницы issues читают event.Query.Sparklines, поэтому Events == nil здесь
-// недопустим (в задаче 4 CH вообще не трогался).
+// Поднимает PG и CH, в отличие от newStack: страницы issues читают event.Query.Sparklines,
+// Events == nil здесь недопустим.
 type issuesStack struct {
 	pool    *pgxpool.Pool
 	srv     *httptest.Server
@@ -68,23 +67,17 @@ func newIssuesStack(t *testing.T) *issuesStack {
 	})
 
 	h := web.New(authSvc, orgSvc, issueSvc, eventsQuery, srv.URL)
-	// Alerts/Uptime (задача 5, чек-лист «Первые шаги»): страница issues
-	// определяет закрытые шаги онбординга по этим сервисам, поэтому стенд
-	// заводит их так же, как newStack (auth_test.go) заводит h.Alerts.
+	// Alerts/Uptime заведены: страница issues по ним определяет закрытые шаги «Первые шаги».
 	h.Alerts = alertSvc
 	h.Uptime = uptimeSvc
-	// Signals (аудит перед 1.0, K7-5/K7-6): отказы по ключу на пустом списке
-	// issues и в чек-листе «Первые шаги» читают ту же таблицу, что пишет
-	// Recorder на приёме — тесты бьют по ней напрямую через s.h.Signals.Bump.
+	// Signals: тесты бьют по таблице отказов напрямую через s.h.Signals.Bump.
 	h.Signals = ingestsignal.NewStore(pool)
 	h.Register(mux)
 
 	return &issuesStack{pool: pool, srv: srv, h: h, org: orgSvc, auth: authSvc, issues: issueSvc, alerts: alertSvc, uptime: uptimeSvc, batcher: batcher}
 }
 
-// addEvent кладёт событие в батчер; для попадания в спарклайн теста нужен
-// отдельный flushEvents, чтобы вставка в CH гарантированно завершилась до
-// последующего GET.
+// Отдельный flushEvents нужен, чтобы вставка в CH завершилась до последующего GET.
 func (s *issuesStack) addEvent(projectID, issueID int64, at time.Time) {
 	s.batcher.Add(event.Event{
 		ID:        uuid.NewString(),
@@ -97,9 +90,7 @@ func (s *issuesStack) addEvent(projectID, issueID int64, at time.Time) {
 	})
 }
 
-// flushEvents синхронно доливает буфер батчера в CH (аналогично
-// TestBatcherInsertsIntoClickHouse), не дожидаясь тикера. Close идемпотентен,
-// поэтому повторный вызов в t.Cleanup после этого безопасен.
+// Close идемпотентен, поэтому повторный вызов в t.Cleanup после этого безопасен.
 func (s *issuesStack) flushEvents(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -109,8 +100,6 @@ func (s *issuesStack) flushEvents(t *testing.T) {
 	}
 }
 
-// registerAndLogin — регистрирует нового юзера через auth.Service напрямую
-// (без HTTP) и возвращает его id и cookie сессии для последующих запросов.
 func registerAndLogin(t *testing.T, s *issuesStack, email string) (int64, *http.Cookie) {
 	t.Helper()
 	uid, err := s.auth.Register(context.Background(), email, "correct-horse-battery")
@@ -124,7 +113,6 @@ func registerAndLogin(t *testing.T, s *issuesStack, email string) (int64, *http.
 	return uid, &http.Cookie{Name: auth.CookieName, Value: token}
 }
 
-// createProject — организация + проект, владелец uid.
 func createProject(t *testing.T, s *issuesStack, uid int64, orgSlug, projectSlug string) org.Project {
 	t.Helper()
 	o, err := s.org.CreateOrg(context.Background(), orgSlug, orgSlug, uid)
@@ -162,13 +150,11 @@ func TestWebIssuesList(t *testing.T) {
 
 	now := time.Now().UTC()
 
-	// Issue 1: error, times_seen=1.
 	r1, err := s.issues.Upsert(context.Background(), project.ID, "fp-error", "NullPointerException", "pkg/a.go:10", "error", "", now)
 	if err != nil {
 		t.Fatalf("upsert issue1: %v", err)
 	}
 
-	// Issue 2: warning, times_seen=3 (три Upsert увеличивают счётчик).
 	var r2 issue.UpsertResult
 	for i := 0; i < 3; i++ {
 		r2, err = s.issues.Upsert(context.Background(), project.ID, "fp-warning", "Slow query detected", "pkg/b.go:20", "warning", "", now)
@@ -177,20 +163,17 @@ func TestWebIssuesList(t *testing.T) {
 		}
 	}
 
-	// Issue 3: info, times_seen=1.
 	r3, err := s.issues.Upsert(context.Background(), project.ID, "fp-info", "Deprecated API used", "pkg/c.go:30", "info", "", now)
 	if err != nil {
 		t.Fatalf("upsert issue3: %v", err)
 	}
 
-	// 2 события в CH для issue1 — должны попасть в спарклайн.
 	s.addEvent(project.ID, r1.IssueID, now.Add(-2*time.Hour))
 	s.addEvent(project.ID, r1.IssueID, now.Add(-1*time.Hour))
 	s.flushEvents(t)
 
 	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
 
-	// GET списка → 200, содержит все 3 title и как минимум один <svg (спарклайн).
 	resp := getWithCookie(t, s.srv, issuesPath, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -206,10 +189,6 @@ func TestWebIssuesList(t *testing.T) {
 		t.Fatalf("GET %s body missing <svg sparkline: %s", issuesPath, body)
 	}
 
-	// Компоновка непустого списка: тулбар с массовыми действиями стоит НАД
-	// таблицей, кнопки вынесены из POST-формы и привязаны к ней атрибутом
-	// form= (внутри тулбара лежат формы экспорта, вложенные <form> HTML не
-	// допускает); старого блока .bulk-actions под таблицей больше нет.
 	html := string(body)
 	if n := strings.Count(html, `id="issues-bulk"`); n != 1 {
 		t.Fatalf("GET %s: id=\"issues-bulk\" встречается %d раз, want 1", issuesPath, n)
@@ -232,7 +211,6 @@ func TestWebIssuesList(t *testing.T) {
 		t.Errorf("GET %s: старый блок bulk-actions под таблицей должен исчезнуть", issuesPath)
 	}
 
-	// Resolve issue1, затем ?status=resolved → только он.
 	if _, err := s.issues.SetStatusBulk(context.Background(), project.ID, []int64{r1.IssueID}, "resolved"); err != nil {
 		t.Fatalf("set status bulk: %v", err)
 	}
@@ -249,7 +227,6 @@ func TestWebIssuesList(t *testing.T) {
 		t.Fatalf("GET %s?status=resolved leaked non-resolved issues: %s", issuesPath, body)
 	}
 
-	// ?q= фильтрует по подстроке title/culprit.
 	resp = getWithCookie(t, s.srv, issuesPath+"?q=Slow", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -263,7 +240,6 @@ func TestWebIssuesList(t *testing.T) {
 		t.Fatalf("GET %s?q=Slow leaked non-matching issue: %s", issuesPath, body)
 	}
 
-	// ?level=warning фильтрует по уровню.
 	resp = getWithCookie(t, s.srv, issuesPath+"?level=warning", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -277,7 +253,6 @@ func TestWebIssuesList(t *testing.T) {
 		t.Fatalf("GET %s?level=warning leaked non-matching issue: %s", issuesPath, body)
 	}
 
-	// Bulk resolve двух issues → 303, статусы поменялись.
 	bulkPath := issuesPath + "/bulk"
 	form := url.Values{
 		"action": {"resolve"},
@@ -305,7 +280,6 @@ func TestWebIssuesList(t *testing.T) {
 		t.Fatalf("issue3 status = %q, want resolved", got3.Status)
 	}
 
-	// POST bulk без same-origin Origin/Referer → 403.
 	resp = postForm(t, s.srv, bulkPath, form, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -313,7 +287,6 @@ func TestWebIssuesList(t *testing.T) {
 		t.Fatalf("POST %s (no origin) status = %d, want 403", bulkPath, resp.StatusCode)
 	}
 
-	// Доступ чужим юзером (не участник организации) → 404.
 	_, otherCookie := registerAndLogin(t, s, "issues-outsider@example.com")
 	resp = getWithCookie(t, s.srv, issuesPath, otherCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -322,7 +295,6 @@ func TestWebIssuesList(t *testing.T) {
 		t.Fatalf("GET %s (outsider) status = %d, want 404", issuesPath, resp.StatusCode)
 	}
 
-	// POST bulk чужим юзером → тоже 404 (не должен видеть/трогать issues проекта).
 	resp = postForm(t, s.srv, bulkPath, form, s.srv.URL, otherCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -331,20 +303,13 @@ func TestWebIssuesList(t *testing.T) {
 	}
 }
 
-// TestWebIssuesListHidesExportButtonsWhenExportsDisabled — на инстансе без
-// каталога выгрузок (h.Exports == nil, дефолт newIssuesStack) кнопки
-// «Выгрузить» на списке ошибок не должны рендериться вовсе: они вели бы на
-// 404 (ревью веб-части E1, п.3). Включаем h.Exports обратно и проверяем, что
-// кнопки появляются — гейт именно по h.Exports, не по чему-то ещё.
 func TestWebIssuesListHidesExportButtonsWhenExportsDisabled(t *testing.T) {
 	s := newIssuesStack(t)
 
 	ownerID, ownerCookie := registerAndLogin(t, s, "issues-exports-owner@example.com")
 	project := createProject(t, s, ownerID, "issues-exports-org", "issues-exports-proj")
 	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
-	// Тулбар с кнопками экспорта рисуется только над непустым списком —
-	// без хотя бы одной issue проверка гейта по h.Exports не отличима от
-	// пустого состояния.
+	// Тулбар с кнопками экспорта рисуется только над непустым списком — нужна хотя бы одна issue.
 	if _, err := s.issues.Upsert(context.Background(), project.ID, "fp-exports", "Export me", "pkg/x.go:1", "error", "", time.Now().UTC()); err != nil {
 		t.Fatalf("upsert issue: %v", err)
 	}
@@ -367,10 +332,6 @@ func TestWebIssuesListHidesExportButtonsWhenExportsDisabled(t *testing.T) {
 	}
 }
 
-// TestWebIssuesGettingStartedChecklistFreshProject — задача 5 (docs-onboarding):
-// свежий проект (нет событий/каналов/мониторов, в орге один участник —
-// владелец) должен показывать карточку «Первые шаги» с прогрессом 1/4
-// (шаг 1 «создать проект» уже закрыт) и CTA-ссылками на оставшиеся шаги.
 func TestWebIssuesGettingStartedChecklistFreshProject(t *testing.T) {
 	s := newIssuesStack(t)
 
@@ -390,7 +351,6 @@ func TestWebIssuesGettingStartedChecklistFreshProject(t *testing.T) {
 	if !strings.Contains(string(body), "1/5") {
 		t.Fatalf("GET %s checklist missing 1/5 progress: %s", issuesPath, body)
 	}
-	// CTA-ссылки на оставшиеся шаги (SDK/alerts/org settings).
 	for _, href := range []string{
 		"/projects/" + strconv.FormatInt(project.ID, 10) + "/setup",
 		"/projects/" + strconv.FormatInt(project.ID, 10) + "/alerts",
@@ -401,22 +361,16 @@ func TestWebIssuesGettingStartedChecklistFreshProject(t *testing.T) {
 	}
 }
 
-// TestWebIssuesGettingStartedChecklistAllDone — когда все 5 шагов онбординга
-// закрыты (есть issue, есть канал алертов, в орге больше одного участника,
-// добавлен монитор — шаги 4a/4b раздельные, №71), карточка «Первые шаги»
-// больше не рендерится.
 func TestWebIssuesGettingStartedChecklistAllDone(t *testing.T) {
 	s := newIssuesStack(t)
 
 	ownerID, ownerCookie := registerAndLogin(t, s, "gs-done-owner@example.com")
 	project := createProject(t, s, ownerID, "gs-done-org", "gs-done-proj")
 
-	// Шаг 2: есть хотя бы одна issue (total > 0).
 	if _, err := s.issues.Upsert(context.Background(), project.ID, "fp-done", "Boom", "pkg/a.go:1", "error", "", time.Now().UTC()); err != nil {
 		t.Fatalf("upsert issue: %v", err)
 	}
 
-	// Шаг 3: есть канал доставки алертов.
 	if _, err := s.alerts.CreateChannel(context.Background(), alert.Channel{
 		ProjectID: project.ID,
 		Kind:      alert.ChannelEmail,
@@ -426,7 +380,6 @@ func TestWebIssuesGettingStartedChecklistAllDone(t *testing.T) {
 		t.Fatalf("create channel: %v", err)
 	}
 
-	// Шаг 4: в орге больше одного участника.
 	memberID, _ := registerAndLogin(t, s, "gs-done-member@example.com")
 	orgID, err := s.org.ProjectOrg(context.Background(), project.ID)
 	if err != nil {
@@ -436,7 +389,6 @@ func TestWebIssuesGettingStartedChecklistAllDone(t *testing.T) {
 		t.Fatalf("add member: %v", err)
 	}
 
-	// Шаг 4b: добавлен монитор доступности.
 	if _, err := s.uptime.Create(context.Background(), uptime.Monitor{
 		ProjectID: project.ID, Name: "gs-done-mon", Kind: uptime.KindHTTP, Enabled: true,
 		IntervalSeconds: 60, TimeoutSeconds: 10, FailThreshold: 1, RecoveryThreshold: 1,
@@ -458,13 +410,8 @@ func TestWebIssuesGettingStartedChecklistAllDone(t *testing.T) {
 	}
 }
 
-// TestWebIssuesGettingStartedChecklistOperatorSees — C5: чек-лист «Первые
-// шаги» гейтится на CanOperate, не CanManage, и оператор проекта (участник
-// команды, role=member, без owner/admin) должен его видеть — с рабочими
-// CTA на операторские шаги (SDK, алерт, монитор), но БЕЗ ссылки на шаг 4a
-// «Позвать команду» (requireOrgRole — owner/admin only): рабочая ссылка
-// увела бы оператора на честный 403, поэтому шаг остаётся как неактивный
-// текст (gsStepReadOnly), не мёртвая ссылка.
+// Чек-лист гейтится на CanOperate, не CanManage: оператор видит рабочие CTA, но шаг 4a
+// «Позвать команду» (admin-only) — неактивный текст, не мёртвая ссылка на честный 403.
 func TestWebIssuesGettingStartedChecklistOperatorSees(t *testing.T) {
 	s := newIssuesStack(t)
 
@@ -475,10 +422,8 @@ func TestWebIssuesGettingStartedChecklistOperatorSees(t *testing.T) {
 		t.Fatalf("project org: %v", err)
 	}
 
-	// Оператор: участник организации (role=member) на команде, привязанной
-	// к проекту (тот же приём, что addTeamAccess в monitors_test.go, и
-	// requireProjectOperator в operate_test.go) — RoleMember сам по себе
-	// доступа к проекту не даёт (org.accessCondition), нужна команда.
+	// RoleMember сам по себе доступа к проекту не даёт (org.accessCondition) — нужна команда,
+	// привязанная к проекту.
 	operatorID, operatorCookie := registerAndLogin(t, s, "gs-op-operator@example.com")
 	if err := s.org.AddMember(context.Background(), orgID, operatorID, org.RoleMember); err != nil {
 		t.Fatalf("add member: %v", err)
@@ -504,7 +449,6 @@ func TestWebIssuesGettingStartedChecklistOperatorSees(t *testing.T) {
 	if !strings.Contains(string(body), `class="card getting-started"`) {
 		t.Fatalf("GET %s (operator) missing getting-started checklist: %s", issuesPath, body)
 	}
-	// Операторские шаги — рабочие CTA-ссылки.
 	for _, href := range []string{
 		"/projects/" + strconv.FormatInt(project.ID, 10) + "/setup",
 		"/projects/" + strconv.FormatInt(project.ID, 10) + "/alerts",
@@ -514,26 +458,14 @@ func TestWebIssuesGettingStartedChecklistOperatorSees(t *testing.T) {
 			t.Fatalf("GET %s (operator) checklist missing operator CTA link %q: %s", issuesPath, href, body)
 		}
 	}
-	// Шаг 4a не должен вести на admin-only /orgs/{id}/settings — оператору
-	// некуда там перейти. Здесь он неизбежно уже «сделан» (Step4aDone =
-	// >1 участника в орге, а сам факт присоединения оператора уже даёт
-	// второго участника), так что настоящую неактивную (gs-todo-locked)
-	// отрисовку шага 4a при CanManage=false проверяет отдельный,
-	// белоящичный тест шаблона — TestGettingStartedChecklistGatedByCanOperate
-	// в internal/web/templates/pages_test.go: с реальным HTTP-флоу этого
-	// сочетания (оператор есть, но участников всё ещё один) не бывает.
 	orgSettingsHref := "/orgs/" + strconv.FormatInt(orgID, 10) + "/settings"
 	if strings.Contains(string(body), `href="`+orgSettingsHref+`"`) {
 		t.Fatalf("GET %s (operator) checklist should not link non-manageable step 4a to %q: %s", issuesPath, orgSettingsHref, body)
 	}
 }
 
-// TestWebIssuesGettingStartedChecklistTeamlessMember404 — C5: участник
-// организации без команды на проекте (role=member, не оператор) не должен
-// видеть чек-лист — но не потому, что он спрятан отдельным условием, а
-// потому что сама страница issues для него 404 (CanAccessProject), тот же
-// existence-oracle принцип, что и у полного постороннего (см. тест выше по
-// файлу) и у metricalerts_test.go:123.
+// Не отдельным условием — сама страница issues 404 для него (CanAccessProject), тот же
+// existence-oracle принцип, что и у постороннего.
 func TestWebIssuesGettingStartedChecklistTeamlessMember404(t *testing.T) {
 	s := newIssuesStack(t)
 
@@ -558,9 +490,6 @@ func TestWebIssuesGettingStartedChecklistTeamlessMember404(t *testing.T) {
 	}
 }
 
-// TestWebIssuesEnvironmentAndPeriodFilter проверяет ?env и ?period в списке
-// issues: env сужает до issues с событиями в конкретном environment (по
-// issue_environments), period отсекает issues со старым last_seen.
 func TestWebIssuesEnvironmentAndPeriodFilter(t *testing.T) {
 	s := newIssuesStack(t)
 
@@ -580,7 +509,6 @@ func TestWebIssuesEnvironmentAndPeriodFilter(t *testing.T) {
 
 	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
 
-	// ?env=staging показывает только staging issue.
 	resp := getWithCookie(t, s.srv, issuesPath+"?env=staging", ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -594,7 +522,6 @@ func TestWebIssuesEnvironmentAndPeriodFilter(t *testing.T) {
 		t.Fatalf("GET %s?env=staging leaked prod issue: %s", issuesPath, body)
 	}
 
-	// Подкручиваем last_seen prod issue на 2 суток назад, ?period=24h должен его отсечь.
 	if _, err := s.pool.Exec(context.Background(), "UPDATE issues SET last_seen = $1 WHERE id = $2",
 		now.Add(-48*time.Hour), rProd.IssueID); err != nil {
 		t.Fatalf("backdate prod last_seen: %v", err)
@@ -613,17 +540,14 @@ func TestWebIssuesEnvironmentAndPeriodFilter(t *testing.T) {
 	}
 }
 
-// TestWebIssuesAssigneeColumn проверяет колонку Assignee: "—" без назначения,
-// email назначенного юзера после Assign.
 func TestWebIssuesAssigneeColumn(t *testing.T) {
 	s := newIssuesStack(t)
 
 	ownerID, ownerCookie := registerAndLogin(t, s, "issues-assignee-owner@example.com")
 	project := createProject(t, s, ownerID, "issues-assignee-org", "issues-assignee-proj")
 
-	// Assignee отдельно от owner: owner's email всегда в шапке страницы
-	// (see the logout-form user-email span), так что проверка "email
-	// появился только после назначения" требует другого адреса.
+	// Другой адрес: owner's email уже в шапке страницы, иначе «появился после назначения»
+	// ничего не проверяла бы.
 	assigneeID, _ := registerAndLogin(t, s, "issues-assignee-target@example.com")
 
 	now := time.Now().UTC()
@@ -661,8 +585,6 @@ func TestWebIssuesAssigneeColumn(t *testing.T) {
 	}
 }
 
-// TestWebIssuesPaginationPreservesFilters проверяет, что ссылки пагинации
-// (Next) сохраняют env и period наряду со status/level/q/sort.
 func TestWebIssuesPaginationPreservesFilters(t *testing.T) {
 	s := newIssuesStack(t)
 
@@ -670,7 +592,7 @@ func TestWebIssuesPaginationPreservesFilters(t *testing.T) {
 	project := createProject(t, s, ownerID, "issues-pagefilter-org", "issues-pagefilter-proj")
 
 	now := time.Now().UTC()
-	// 26 issues в prod, чтобы default PerPage=25 дал вторую страницу.
+	// PerPage=25: 26 issues дают вторую страницу.
 	for i := 0; i < 26; i++ {
 		fp := "fp-page-" + strconv.Itoa(i)
 		if _, err := s.issues.Upsert(context.Background(), project.ID, fp, "Prod issue "+strconv.Itoa(i), "", "error", "prod", now); err != nil {
@@ -691,7 +613,6 @@ func TestWebIssuesPaginationPreservesFilters(t *testing.T) {
 	if !strings.Contains(string(body), "page=2") {
 		t.Fatalf("GET %s?env=prod&period=24h missing next-page link: %s", issuesPath, body)
 	}
-	// Пагинация остаётся под таблицей: тулбар переехал наверх, а листалка — нет.
 	tableEnd := strings.Index(string(body), "</table>")
 	pagerIdx := strings.Index(string(body), `class="pagination"`)
 	if tableEnd < 0 || pagerIdx < 0 {
@@ -707,7 +628,6 @@ func TestBulkRedirectTargetRejectsProtocolRelativePaths(t *testing.T) {
 	projectID := int64(42)
 	expectedFallback := "/projects/42/issues"
 
-	// Test case 1: Protocol-relative path (same host as BaseURL) should be rejected
 	req := &http.Request{
 		Header: http.Header{
 			"Referer": []string{"http://example.com//evil.com/x"},
@@ -718,9 +638,6 @@ func TestBulkRedirectTargetRejectsProtocolRelativePaths(t *testing.T) {
 		t.Errorf("protocol-relative referer: got %q, want %q", got, expectedFallback)
 	}
 
-	// Test case 1b: Backslash-prefixed path (browsers normalize "\" to "/",
-	// turning "/\evil.com" into the same protocol-relative "//evil.com" as
-	// test case 1) should also be rejected.
 	reqBackslash := &http.Request{
 		Header: http.Header{
 			"Referer": []string{"http://example.com/\\evil.com"},
@@ -731,7 +648,6 @@ func TestBulkRedirectTargetRejectsProtocolRelativePaths(t *testing.T) {
 		t.Errorf("backslash referer: got %q, want %q", gotBackslash, expectedFallback)
 	}
 
-	// Test case 2: Normal referer with path and query should be preserved
 	req2 := &http.Request{
 		Header: http.Header{
 			"Referer": []string{"http://example.com/projects/42/issues?status=resolved&page=2"},
@@ -744,10 +660,6 @@ func TestBulkRedirectTargetRejectsProtocolRelativePaths(t *testing.T) {
 	}
 }
 
-// TestWebIssuesFilteredEmptyState — пустой список различает «событий ещё не
-// было» и «пусто из-за фильтров» (№23): при активном фильтре — свой текст и
-// CTA «Сбросить фильтры» (ссылка на чистый список), без фильтра — прежний
-// онбординговый текст с подключением DSN.
 func TestWebIssuesFilteredEmptyState(t *testing.T) {
 	s := newIssuesStack(t)
 
@@ -761,7 +673,6 @@ func TestWebIssuesFilteredEmptyState(t *testing.T) {
 
 	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
 
-	// Фильтр, под который ничего не подходит → «ничего не подошло» + сброс.
 	resp := getWithCookie(t, s.srv, issuesPath+"?env=staging", ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -775,7 +686,6 @@ func TestWebIssuesFilteredEmptyState(t *testing.T) {
 		t.Fatalf("filtered-пустота показывает онбординговый текст: %s", body)
 	}
 
-	// Проект без единого события и без фильтров → прежний онбординговый текст.
 	fresh := createProject(t, s, ownerID, "issues-fempty-org2", "issues-fempty-proj2")
 	resp = getWithCookie(t, s.srv, "/projects/"+strconv.FormatInt(fresh.ID, 10)+"/issues", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
@@ -785,8 +695,7 @@ func TestWebIssuesFilteredEmptyState(t *testing.T) {
 	}
 }
 
-// TestWebGettingStartedHide — «Скрыть» убирает чек-лист навсегда (№71): флаг
-// живёт в профиле, а не в cookie, поэтому исчезает и после нового логина.
+// Флаг живёт в профиле, не в cookie — переживает новый логин.
 func TestWebGettingStartedHide(t *testing.T) {
 	s := newIssuesStack(t)
 
@@ -819,16 +728,8 @@ func TestWebGettingStartedHide(t *testing.T) {
 	}
 }
 
-// TestWebIssuesListExportButtonsShowPIIOnlyForOwner — проверка боевой
-// проводки issues.go (не только рендера templ, который уже покрыт
-// TestIssuesListExportFormsGatePIIByCanManage в internal/web/templates):
-// canManagePII, переданный в IssuesList, обязан быть настоящей ролью
-// (owner/admin), а не, например, тем же значением, что canOperate (это и
-// была бы незамеченная регрессия — оператор увидел бы галку include_pii,
-// хотя бэкенд её для него игнорирует, exports.go:exportsCreate). Владелец
-// (CanManage) видит галку include_pii на кнопках экспорта списка ошибок,
-// оператор без CanManage (доступ только через команду) — нет, но сами
-// кнопки (выбор формата) у него остаются.
+// canManagePII должен быть настоящей ролью (owner/admin), не тем же значением, что canOperate —
+// иначе оператор увидел бы галку include_pii, хотя бэкенд её для него игнорирует.
 func TestWebIssuesListExportButtonsShowPIIOnlyForOwner(t *testing.T) {
 	s := newIssuesStack(t)
 
@@ -854,8 +755,6 @@ func TestWebIssuesListExportButtonsShowPIIOnlyForOwner(t *testing.T) {
 	t.Cleanup(func() { s.h.Exports = nil })
 
 	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
-	// Кнопки экспорта живут в тулбаре над таблицей, а он есть только у
-	// непустого списка.
 	if _, err := s.issues.Upsert(context.Background(), project.ID, "fp-pii", "PII issue", "pkg/x.go:1", "error", "", time.Now().UTC()); err != nil {
 		t.Fatalf("upsert issue: %v", err)
 	}
@@ -874,14 +773,8 @@ func TestWebIssuesListExportButtonsShowPIIOnlyForOwner(t *testing.T) {
 	}
 }
 
-// TestWebIssuesEmptyStateShowsKeyRejects — K7-5/K7-6: проект без единой issue
-// чаще всего означает не «событий ещё не было», а «SDK шлёт, но приём их
-// отбраковывает» — неверный DSN, ключ чужого проекта или неподходящий тип.
-// Отказ, случившийся в последний час, показывается прямо на пустом списке;
-// отказ старше часа — уже не показывается (иначе баннер про "прямо сейчас"
-// никогда бы не гас сам, даже после починки DSN); Signals == nil (стенд без
-// per-project учёта, как в проде до этой правки) не должен ронять страницу —
-// секция просто отсутствует.
+// Отказ последнего часа показывается на пустом списке; старше часа — уже нет, иначе баннер
+// не гас бы даже после починки DSN.
 func TestWebIssuesEmptyStateShowsKeyRejects(t *testing.T) {
 	s := newIssuesStack(t)
 	ctx := context.Background()
@@ -938,8 +831,7 @@ func TestWebIssuesEmptyStateShowsKeyRejects(t *testing.T) {
 		t.Errorf("GET %s (Signals=nil) unexpectedly shows key-reject notice: %s", noSignalsPath, body)
 	}
 
-	// M6: kind вне isKeyRejectKind (deprecated_logs — про устаревший адрес,
-	// не про отказ по ключу) не должен породить эту врезку, даже свежий.
+	// kind вне isKeyRejectKind (напр. deprecated_logs) не должен породить эту врезку.
 	s.h.Signals = prevSignals
 	wrongKind := createProject(t, s, ownerID, "kr-wrongkind-org", "kr-wrongkind-proj")
 	if err := s.h.Signals.Bump(ctx, wrongKind.ID, ingestsignal.KindDeprecatedLogs, 6, time.Now()); err != nil {
@@ -957,10 +849,6 @@ func TestWebIssuesEmptyStateShowsKeyRejects(t *testing.T) {
 	}
 }
 
-// TestWebGettingStartedChecklistShowsKeyRejects — тот же сигнал (K7-5/K7-6),
-// но под шагом 2 чек-листа «Первые шаги»: пока SDK ещё не прислал ни одного
-// события (шаг 2 не закрыт), отказ по ключу за последний час — самое частое
-// объяснение почему, и должен быть виден рядом с CTA «Подключить».
 func TestWebGettingStartedChecklistShowsKeyRejects(t *testing.T) {
 	s := newIssuesStack(t)
 	ctx := context.Background()
@@ -987,13 +875,7 @@ func TestWebGettingStartedChecklistShowsKeyRejects(t *testing.T) {
 	}
 }
 
-// TestWebIssuesEmptyStateShowsKeyRejectsAfterGettingStartedHidden — G1
-// (re-review аудита): чек-лист «Первые шаги» несёт ту же врезку об отказах
-// по ключу, что и пустое состояние списка issues, и раньше пустое состояние
-// показывало её только пока чек-лист виден (F5) — команда, скрывшая
-// чек-лист кнопкой «Скрыть» (№71), не видела отказов по ключу нигде вовсе.
-// Теперь скрытие чек-листа переносит врезку в пустое состояние, а не гасит
-// её насовсем.
+// Скрытие чек-листа переносит врезку об отказах по ключу в пустое состояние списка, не гасит её.
 func TestWebIssuesEmptyStateShowsKeyRejectsAfterGettingStartedHidden(t *testing.T) {
 	s := newIssuesStack(t)
 	ctx := context.Background()
@@ -1031,22 +913,8 @@ func TestWebIssuesEmptyStateShowsKeyRejectsAfterGettingStartedHidden(t *testing.
 	}
 }
 
-// TestWebIssuesCanAccessProjectQueryError (T8, хвост волны 2) — сбой самого
-// запроса доступа к проекту (не «доступа нет», а поломка БД) на странице
-// issues обязан отдать 500, а не молча 403/404: та же путаница, которую
-// TestOverviewCanAccessProjectQueryError (overview_test.go) закрывает для
-// overview, и TestRequireProjectOperatorCanOperateQueryError (operate_test.go)
-// — для requireProjectOperator.
-//
-// issuesList проверяет доступ ДВАЖДЫ одним и тем же предикатом: canAccess
-// (issues.go~41, гейтит всю страницу) и следом canOperateProject
-// (issues.go~158, гейтит только видимость чек-листа/кнопок экспорта —
-// см. докблок там же: canOperateProject буквально зовёт CanAccessProject).
-// Ломаем org_members.role — колонку первой половины accessCondition
-// (owner/admin); поскольку обе проверки читают её ОДНИМ И ТЕМ ЖЕ текстом
-// запроса, ошибка обязана всплыть уже на первой (canAccess) — здесь честно
-// проверяем именно это наблюдаемое поведение страницы, а не какая из двух
-// одинаковых веток технически исполнилась.
+// canAccess и canOperateProject читают org_members.role тем же текстом запроса — ломаем её
+// и проверяем, что ошибка всплывает уже на canAccess (гейт всей страницы), не где-то глубже.
 func TestWebIssuesCanAccessProjectQueryError(t *testing.T) {
 	s := newIssuesStack(t)
 	ctx := context.Background()

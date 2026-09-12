@@ -9,7 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// State — состояние проверки монитора в одном регионе (monitor_state).
 type State struct {
 	MonitorID        int64
 	Region           string
@@ -20,21 +19,9 @@ type State struct {
 	LastError        string
 }
 
-// States возвращает состояния монитора по всем регионам, отсортированные
-// по region.
 func (s *Service) States(ctx context.Context, monitorID int64) ([]State, error) {
-	// JOIN по monitor_regions отсекает состояния регионов, которых у монитора
-	// больше нет. Update перезаписывает список регионов, но строку состояния
-	// снятого региона ничто не трогало — и она оставалась навсегда: её никто
-	// уже не перезапишет, потому что задание для этого региона больше не
-	// ставится. Один снятый регион, зафиксированный в состоянии «down», делал
-	// монитор красным НАВСЕГДА: при consensus=any хватает одного down, при
-	// majority сирота ещё и завышала знаменатель. Ветка «всё поднялось»
-	// становилась недостижимой, инцидент не закрывался, а напоминания шли
-	// бесконечно — и то же самое видел посетитель публичной статус-страницы.
-	//
-	// JOIN лечит и уже накопленные сироты в работающих установках, без
-	// миграции данных; сама чистка при снятии региона живёт в Service.Update.
+	// JOIN отсекает состояния регионов, которых у монитора больше нет — иначе
+	// сирота в «down» держит монитор красным навсегда, JOIN лечит и старые сироты без миграции.
 	rows, err := s.pool.Query(ctx, `
 		SELECT s.monitor_id, s.region, s.status, s.consecutive_fails, s.consecutive_oks,
 		       s.last_checked_at, s.last_error
@@ -57,11 +44,8 @@ func (s *Service) States(ctx context.Context, monitorID int64) ([]State, error) 
 	return out, rows.Err()
 }
 
-// StatesBatch — региональные состояния для набора мониторов за один запрос:
-// списочная страница мониторов иначе звала States() в цикле (N запросов в PG).
-// Мониторы без строк состояния присутствуют в карте с nil-слайсом. Строки
-// сортируются по (monitor_id, region), так что порядок регионов внутри монитора
-// тот же, что у States.
+// мониторы без состояния присутствуют в карте с nil-слайсом; порядок
+// регионов внутри монитора тот же, что у States.
 func (s *Service) StatesBatch(ctx context.Context, monitorIDs []int64) (map[int64][]State, error) {
 	out := make(map[int64][]State, len(monitorIDs))
 	if len(monitorIDs) == 0 {
@@ -70,8 +54,7 @@ func (s *Service) StatesBatch(ctx context.Context, monitorIDs []int64) (map[int6
 	for _, id := range monitorIDs {
 		out[id] = nil
 	}
-	// JOIN — тот же, что и в States: состояния снятых регионов не должны
-	// участвовать ни в агрегате статуса, ни в списке мониторов.
+	// тот же JOIN, что в States — снятые регионы не должны попадать в агрегат/список.
 	rows, err := s.pool.Query(ctx, `
 		SELECT s.monitor_id, s.region, s.status, s.consecutive_fails, s.consecutive_oks,
 		       s.last_checked_at, s.last_error
@@ -93,30 +76,8 @@ func (s *Service) StatesBatch(ctx context.Context, monitorIDs []int64) (map[int6
 	return out, rows.Err()
 }
 
-// ApplyResult records one check result for (monitorID, region) and
-// recomputes status from the monitor's fail_threshold/recovery_threshold —
-// all in a single INSERT ... ON CONFLICT DO UPDATE statement, so the
-// increment-then-recompute is atomic even under concurrent probes hitting
-// the same region.
-//
-// This must be a single INSERT ... ON CONFLICT, not "upsert in one CTE,
-// then UPDATE ... FROM that CTE in a second step": a data-modifying CTE and
-// a subsequent statement in the same WITH-query each see the table as it
-// was at the start of the query, so a follow-up UPDATE cannot see a row the
-// CTE just inserted (RETURNING is the only way data crosses between
-// sibling/parent statements). Folding the recompute into the single
-// INSERT's own VALUES (fresh row) and ON CONFLICT DO UPDATE SET (existing
-// row) branches avoids that trap entirely.
-//
-// A failure bumps consecutive_fails and resets consecutive_oks to 0 (and
-// vice-versa for a success); status flips to 'down' once consecutive_fails
-// reaches fail_threshold, or to 'up' once consecutive_oks reaches
-// recovery_threshold. A partial series (below either threshold) leaves
-// status unchanged — e.g. two fails then one success resets the fail
-// streak without ever having gone down. An unknown monitorID makes the
-// thresholds CTE empty, so the INSERT ... SELECT ... FROM thresholds
-// produces no row and RETURNING yields ErrInvalidMonitor rather than a raw
-// FK violation.
+// один INSERT ... ON CONFLICT, не CTE+UPDATE: снэпшот запроса не увидит строку,
+// только что вставленную CTE; неизвестный monitorID даёт ErrNoRows, не FK violation.
 func (s *Service) ApplyResult(ctx context.Context, monitorID int64, region string, ok bool, errText string, at time.Time) (State, error) {
 	var st State
 	err := s.pool.QueryRow(ctx, `

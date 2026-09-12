@@ -10,9 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0074HostThresholdOverrides — таблица host_threshold_overrides
-// принимает частичный override (только disk, остальное NULL = наследовать),
-// хост при удалении каскадно уносит override, откат снимает таблицу.
 func TestMigrate0074HostThresholdOverrides(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -58,7 +55,6 @@ func TestMigrate0074HostThresholdOverrides(t *testing.T) {
 		t.Fatalf("override = (%v,%v,%v), want (true,0.80,nil)", de, dt, me)
 	}
 
-	// CASCADE: удаление хоста снимает override.
 	if _, err := pool.Exec(ctx, "DELETE FROM hosts WHERE id=$1", hostID); err != nil {
 		t.Fatalf("del host: %v", err)
 	}
@@ -71,7 +67,6 @@ func TestMigrate0074HostThresholdOverrides(t *testing.T) {
 		t.Fatalf("override не удалён каскадом: %d", cnt)
 	}
 
-	// Откат.
 	if err := db.MigratePGTo(dsn, 73); err != nil {
 		t.Fatalf("down to 73: %v", err)
 	}

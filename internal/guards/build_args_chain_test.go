@@ -15,48 +15,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// TestBuildArgsChainWired — цепочка проброса версии в образ (задача 9, круг
-// правок 1, находка M5) не была защищена НИ ОДНИМ тестом: переименование
-// `ARG VERSION` → `ARG APP_VERSION` в Dockerfile (без единого литерала из
-// envcontract.Renamed) оставляло build/vet/gofmt/весь остальной набор
-// сторожей зелёными, а `/healthz` в проде тихо показывал бы «dev» вместо
-// версии релиза. `docker compose config`, которым это пытался закрыть
-// первый круг, останавливается на YAML-подстановке и до Dockerfile/ldflags
-// не доходит вовсе.
-//
-// Проверка статическая, реального `make build`/docker нет (докер — дело
-// гейта, не юнит-теста): цепочка разобрана СТАТИЧЕСКИ по звеньям, каждое —
-// свой ассерт с именем звена, именем переменной и файлом, чтобы падение
-// сразу указывало, что именно разъехалось:
-//
-//  1. Makefile: DOCKER_BUILD_ENV выставляет РОВНО набор GOTCHA_BUILD_*
-//     имён — сверяется с истиной, envcontract.InfraOwned/Renamed (та же
-//     таблица, что renamed_env_vars_test.go), а не со вторым списком
-//     руками.
-//  2. docker-compose.yml: у сервиса gotcha в build.args для каждого
-//     GOTCHA_BUILD_X есть ключ, чьё значение подставляет ${GOTCHA_BUILD_X}.
-//     Пары «ключ arg → GOTCHA_BUILD_X» идут дальше в шаг 3.
-//  3. Dockerfile: для каждого ключа arg из шага 2 есть `ARG <ключ>`.
-//  4. Dockerfile: каждый ARG из шага 3 используется в -ldflags как
-//     `-X <importpath>/internal/version.<sym>=${<ключ>}`. Пары «ключ → sym»
-//     идут в шаг 5.
-//  5. internal/version: каждый sym из шага 4 — реально существующая
-//     переменная уровня пакета (go/ast, не грепом), и обработчик
-//     `/healthz` (cmd/gotcha/health.go) реально читает версию через пакет
-//     internal/version (импорт + вызов экспортированного идентификатора,
-//     тоже по AST).
-//
-// Каждое звено ломается НЕЗАВИСИМО от остальных: переименовать ARG, убрать
-// -X, переименовать переменную в internal/version, убрать имя из
-// DOCKER_BUILD_ENV, убрать arg из compose — и падает ассерт именно этого
-// звена, а не «что-то где-то не сошлось».
 func TestBuildArgsChainWired(t *testing.T) {
 	root, err := findRoot()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Звено 1: истина — envcontract.InfraOwned/Renamed, не второй список.
 	buildVars := buildEnvVarsFromContract(t)
 	if len(buildVars) < 3 {
 		t.Fatalf("обход ослеп: envcontract.InfraOwned содержит только %d имён GOTCHA_BUILD_*, ожидалось ≥3", len(buildVars))
@@ -65,10 +29,8 @@ func TestBuildArgsChainWired(t *testing.T) {
 	makefileVars := makefileDockerBuildEnvVars(t, root)
 	assertSameNameSet(t, "Makefile: DOCKER_BUILD_ENV", makefileVars, buildVars)
 
-	// Звено 2: docker-compose.yml build.args сервиса gotcha.
 	argKeyToBuildVar := composeBuildArgsForBuildVars(t, root, buildVars)
 
-	// Звено 3: Dockerfile ARG <ключ> для каждого ключа arg из шага 2.
 	dockerfileRaw, err := os.ReadFile(filepath.Join(root, "Dockerfile"))
 	if err != nil {
 		t.Fatalf("Dockerfile: %v", err)
@@ -82,14 +44,8 @@ func TestBuildArgsChainWired(t *testing.T) {
 		}
 	}
 
-	// Звено 4: каждый ARG из шага 3 используется в -ldflags на символ пакета
-	// internal/version — в RUN-блоке, который собирает СЕРВЕРНЫЙ бинарь
-	// (/out/gotcha), а не в блоке кросс-сборки агента: /healthz — это
-	// серверный процесс, и потеря -X именно в его RUN (а не в соседнем,
-	// собирающем gotcha-agent) — ровно тот регресс, который проверка обязана
-	// поймать. Общий на весь файл разбор пропустил бы такую потерю: те же
-	// три -X встречаются ещё дважды в RUN агента, и глобальный поиск нашёл
-	// бы совпадение там.
+	// -X ищем в RUN-блоке серверной сборки (/out/gotcha), не агента: те же
+	// три символа встречаются и в сборке gotcha-agent.
 	serverBlock := dockerfileServerBuildBlock(t, dockerfile)
 	argKeyToSym := dockerfileLdflagsSymbols(serverBlock)
 	for argKey, buildVar := range argKeyToBuildVar {
@@ -101,14 +57,12 @@ func TestBuildArgsChainWired(t *testing.T) {
 			continue
 		}
 
-		// Звено 5а: sym — реальная переменная уровня пакета internal/version.
 		if !versionPackageVarExists(t, root, sym) {
 			t.Errorf("internal/version: -ldflags Dockerfile целится в internal/version.%s (ARG %s ← %s), "+
 				"но такой переменной уровня пакета в internal/version/version.go нет", sym, argKey, buildVar)
 		}
 	}
 
-	// Звено 5б: /healthz реально читает версию через internal/version.
 	if !healthzUsesVersionPackage(t, root) {
 		t.Error("cmd/gotcha/health.go: обработчик /healthz не импортирует internal/version " +
 			"и не вызывает ни один из его экспортированных идентификаторов — цепочка версии " +
@@ -116,10 +70,6 @@ func TestBuildArgsChainWired(t *testing.T) {
 	}
 }
 
-// buildEnvVarsFromContract — истина звена 1: новые имена из envcontract.Renamed
-// для старых имён envcontract.InfraOwned, отфильтрованные по префиксу
-// GOTCHA_BUILD_ (остальные InfraOwned — GOTCHA_COMPOSE_*, отдельная
-// подсистема, TestComposeVarsNamespaced уже проверяет её отдельно).
 func buildEnvVarsFromContract(t *testing.T) map[string]bool {
 	t.Helper()
 	out := map[string]bool{}
@@ -135,15 +85,11 @@ func buildEnvVarsFromContract(t *testing.T) map[string]bool {
 	return out
 }
 
-// dockerBuildEnvLineRe находит правую часть присваивания DOCKER_BUILD_ENV в
-// Makefile; envAssignRe вытаскивает из неё имена переменных build-окружения.
 var (
 	dockerBuildEnvLineRe = regexp.MustCompile(`(?m)^DOCKER_BUILD_ENV\s*:=\s*(.+)$`)
 	buildEnvAssignRe     = regexp.MustCompile(`\b(GOTCHA_BUILD_[A-Z0-9_]+)=`)
 )
 
-// makefileDockerBuildEnvVars разбирает строку `DOCKER_BUILD_ENV := ...` в
-// Makefile и возвращает набор имён переменных, которые она выставляет.
 func makefileDockerBuildEnvVars(t *testing.T, root string) map[string]bool {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(root, "Makefile"))
@@ -161,8 +107,6 @@ func makefileDockerBuildEnvVars(t *testing.T, root string) map[string]bool {
 	return out
 }
 
-// assertSameNameSet сравнивает два набора имён в обе стороны с понятным
-// текстом ошибки, называющим и звено, и конкретное имя.
 func assertSameNameSet(t *testing.T, link string, got, want map[string]bool) {
 	t.Helper()
 	for name := range want {
@@ -190,11 +134,8 @@ func assertSameNameSet(t *testing.T, link string, got, want map[string]bool) {
 	}
 }
 
-// composeBuildArgsRoot — минимальный разбор docker-compose.yml, достаточный
-// для чтения build.args сервиса gotcha: полная composeFile/composeService
-// (compose_test.go) этой секции не знает, а заводить туда ещё одно поле
-// ради одного теста — плодить связность между сторожами, которым и так есть
-// что проверять порознь.
+// Минимальный разбор build.args: заводить сюда поля полного composeFile
+// (compose_test.go) ради одного теста незачем.
 type composeBuildArgsRoot struct {
 	Services map[string]struct {
 		Build struct {
@@ -203,14 +144,8 @@ type composeBuildArgsRoot struct {
 	} `yaml:"services"`
 }
 
-// composeBuildVarRe вытаскивает GOTCHA_BUILD_* из значения build-arg вида
-// "${GOTCHA_BUILD_VERSION:-dev}".
 var composeBuildVarRe = regexp.MustCompile(`\$\{(GOTCHA_BUILD_[A-Z0-9_]+)(?::[-?][^}]*)?\}`)
 
-// composeBuildArgsForBuildVars читает build.args сервиса gotcha в
-// docker-compose.yml и для каждого имени из buildVars находит ключ arg,
-// чьё значение подставляет именно эту переменную. Возвращает пары
-// «ключ arg → GOTCHA_BUILD_X» — вход звена 3.
 func composeBuildArgsForBuildVars(t *testing.T, root string, buildVars map[string]bool) map[string]string {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(root, "docker-compose.yml"))
@@ -248,8 +183,6 @@ func composeBuildArgsForBuildVars(t *testing.T, root string, buildVars map[strin
 	return argKeyToBuildVar
 }
 
-// dockerfileARGRe находит объявления `ARG NAME` (со значением по умолчанию
-// или без) на верхнем уровне Dockerfile.
 var dockerfileARGRe = regexp.MustCompile(`(?m)^ARG\s+([A-Za-z_][A-Za-z0-9_]*)`)
 
 func dockerfileARGNames(dockerfile string) map[string]bool {
@@ -260,12 +193,8 @@ func dockerfileARGNames(dockerfile string) map[string]bool {
 	return out
 }
 
-// dockerfileServerBuildRe вырезает RUN-блок, который собирает серверный
-// бинарь (-o /out/gotcha ./cmd/gotcha) — первый `go build` в Dockerfile,
-// до того, как начинается кросс-сборка агента (`GOOS=linux GOARCH=... go
-// build ... ./cmd/gotcha-agent`). Именно этот блок определяет, что видит
-// /healthz: агентские бинарники версионируются для СВОЕГО потребителя
-// (раздача через /agent/*), а не для /healthz сервера.
+// Берёт RUN серверной сборки (-o /out/gotcha), не кросс-сборки агента —
+// у неё свои -X для /agent/*.
 var dockerfileServerBuildRe = regexp.MustCompile(`(?s)RUN CGO_ENABLED=0 go build -mod=vendor.*?-o /out/gotcha \./cmd/gotcha`)
 
 func dockerfileServerBuildBlock(t *testing.T, dockerfile string) string {
@@ -277,13 +206,8 @@ func dockerfileServerBuildBlock(t *testing.T, dockerfile string) string {
 	return m
 }
 
-// dockerfileLdflagsRe находит `-X <importpath>/internal/version.<sym>=${<ARG>}`
-// в тексте Dockerfile — ровно тот синтаксис, которым RUN-инструкции
-// прокидывают build-arg в переменную уровня пакета через ldflags.
 var dockerfileLdflagsRe = regexp.MustCompile(`-X\s+\S+/internal/version\.([A-Za-z_][A-Za-z0-9_]*)=\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
-// dockerfileLdflagsSymbols возвращает пары «ARG-ключ → символ internal/version»
-// для каждого совпадения -X ...internal/version.sym=${ARG} в Dockerfile.
 func dockerfileLdflagsSymbols(dockerfile string) map[string]string {
 	out := map[string]string{}
 	for _, m := range dockerfileLdflagsRe.FindAllStringSubmatch(dockerfile, -1) {
@@ -293,11 +217,8 @@ func dockerfileLdflagsSymbols(dockerfile string) map[string]string {
 	return out
 }
 
-// versionPackageVarExists — истинно, если internal/version/version.go
-// объявляет переменную уровня пакета с именем sym (go/ast: `var` внутри
-// GenDecl файла, а не любое совпадение имени идентификатора где угодно —
-// иначе локальная переменная с тем же именем внутри функции создавала бы
-// ложный зелёный).
+// var внутри GenDecl файла, а не любое совпадение имени — иначе локальная
+// переменная той же функции давала бы ложный зелёный.
 func versionPackageVarExists(t *testing.T, root, sym string) bool {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -325,12 +246,7 @@ func versionPackageVarExists(t *testing.T, root, sym string) bool {
 	return false
 }
 
-// healthzUsesVersionPackage — истинно, если cmd/gotcha/health.go импортирует
-// internal/version и хотя бы раз вызывает один из его экспортированных
-// идентификаторов (Version/Get/String/...). AST, а не грепом по тексту:
-// импорт мог остаться неиспользуемым (Go бы не скомпилировался, но проверка
-// импорта отдельно от проверки вызова всё равно точнее называет, какое
-// именно звено порвано).
+// AST, не грепом: важен реальный вызов, а не просто упоминание в импорте.
 func healthzUsesVersionPackage(t *testing.T, root string) bool {
 	t.Helper()
 	fset := token.NewFileSet()

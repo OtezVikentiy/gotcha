@@ -9,12 +9,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// Платформы онбординга — просто строки (project.Platform в БД без
-// CHECK-ограничения), а не отдельный тип Kind/Consensus по образцу
-// internal/uptime: значение из формы, не входящее в Platforms, молча
-// нормализуется на PlatformOther (internal/web/onboarding.go,
-// normalizePlatform) — типизация тут ничего не защитила бы, whitelist уже
-// защищает.
 const (
 	PlatformGo         = "go"
 	PlatformPHP        = "php"
@@ -23,15 +17,8 @@ const (
 	PlatformOther      = "other"
 )
 
-// Platforms — все платформы онбординга, в порядке показа в форме. Источник
-// истины для сторожа динамических ключей (группа i18n "platform.",
-// internal/guards/i18n_dynamic_test.go) и для whitelist-нормализации
-// (internal/web/onboarding.go, allowedPlatforms) — раньше оба списка были
-// независимыми литералами и могли разъехаться незамеченно.
 var Platforms = []string{PlatformGo, PlatformPHP, PlatformJavaScript, PlatformPython, PlatformOther}
 
-// allowedPlatforms — whitelist для NormalizePlatform, строится из Platforms:
-// независимый литерал разъехался бы со списком формы незамеченно.
 var allowedPlatforms = func() map[string]bool {
 	m := make(map[string]bool, len(Platforms))
 	for _, p := range Platforms {
@@ -40,12 +27,6 @@ var allowedPlatforms = func() map[string]bool {
 	return m
 }()
 
-// NormalizePlatform приводит присланную платформу к каталогу Platforms;
-// незнакомое значение (в т.ч. произвольный ввод через подменённый <select>)
-// — PlatformOther. Живёт в домене и вызывается из CreateProject (№73):
-// нормализация принадлежит созданию проекта, а не одному из двух веб-путей
-// (онбординг и модалка «Создать проект») — второй путь передавал сырое
-// значение, и «platform.<мусор>» утекал в UI ключом без перевода.
 func NormalizePlatform(platform string) string {
 	if allowedPlatforms[platform] {
 		return platform
@@ -60,28 +41,16 @@ type Project struct {
 	Name     string
 	Platform string
 
-	// Настройки производительности (этап 3): доля семплируемых транзакций
-	// (0 — не принимать ни одной, 1 — все), порог Apdex в миллисекундах и
-	// конфиг детекторов (JSON; читают детекторы, ingest его не трактует).
 	TransactionSampleRate float64
 	ApdexThresholdMS      int32
 	PerfDetectorConfig    string
 
-	// Конфиг детектора регрессий (этап 4): JSON порогов роста p95/p75 над
-	// скользящей базой (ровно ключи trace.RegressionConfigFromJSON). Это
-	// ОТДЕЛЬНЫЙ механизм от PerfDetectorConfig (N+1/медленные запросы этапа 3).
 	PerfRegressionConfig string
 }
 
-// projectColumns — общий список колонок для всех SELECT'ов проекта: любой
-// прочитанный Project приезжает целиком, чтобы вызывающий не получил
-// TransactionSampleRate=0 (то есть «не семплировать вообще») из-за того, что
-// конкретный запрос забыл колонку.
 const projectColumns = "id, org_id, slug, name, platform, " +
 	"transaction_sample_rate, apdex_threshold_ms, perf_detector_config, perf_regression_config"
 
-// scanProject читает строку в порядке projectColumns (с префиксом таблицы или
-// без — порядок один и тот же).
 func scanProject(row pgx.Row) (Project, error) {
 	var p Project
 	err := row.Scan(&p.ID, &p.OrgID, &p.Slug, &p.Name, &p.Platform,
@@ -89,15 +58,11 @@ func scanProject(row pgx.Row) (Project, error) {
 	return p, err
 }
 
-// CreateProject создаёт проект в организации.
 func (s *Service) CreateProject(ctx context.Context, orgID int64, slug, name, platform string) (Project, error) {
 	if !validSlug(slug) {
 		return Project{}, ErrInvalidSlug
 	}
 	platform = NormalizePlatform(platform)
-	// RETURNING всех колонок: у проекта есть поля со значениями по умолчанию из
-	// БД (transaction_sample_rate и т.д.), и созданный Project обязан приехать
-	// с ними, а не с нулями.
 	p, err := scanProject(s.pool.QueryRow(ctx,
 		"INSERT INTO projects (org_id, slug, name, platform) VALUES ($1, $2, $3, $4) RETURNING "+projectColumns,
 		orgID, slug, name, platform))
@@ -111,7 +76,6 @@ func (s *Service) CreateProject(ctx context.Context, orgID int64, slug, name, pl
 	return p, nil
 }
 
-// AttachTeam даёт команде доступ к проекту.
 func (s *Service) AttachTeam(ctx context.Context, projectID, teamID int64) error {
 	if _, err := s.pool.Exec(ctx,
 		"INSERT INTO project_teams (project_id, team_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
@@ -121,9 +85,6 @@ func (s *Service) AttachTeam(ctx context.Context, projectID, teamID int64) error
 	return nil
 }
 
-// DetachTeam убирает доступ команды к проекту. Идемпотентно — как и
-// AttachTeam, отсутствие связи не считается ошибкой: повторный вызов или
-// detach никогда не существовавшей связи просто ничего не делает.
 func (s *Service) DetachTeam(ctx context.Context, projectID, teamID int64) error {
 	if _, err := s.pool.Exec(ctx,
 		"DELETE FROM project_teams WHERE project_id = $1 AND team_id = $2",
@@ -133,8 +94,6 @@ func (s *Service) DetachTeam(ctx context.Context, projectID, teamID int64) error
 	return nil
 }
 
-// RenameProject меняет отображаемое имя проекта. Пустое имя → ErrInvalidName
-// (до похода в БД); несуществующий проект → ErrNotFound.
 func (s *Service) RenameProject(ctx context.Context, projectID int64, name string) error {
 	if name == "" {
 		return ErrInvalidName
@@ -150,10 +109,6 @@ func (s *Service) RenameProject(ctx context.Context, projectID int64, name strin
 	return nil
 }
 
-// UpdatePerfSettings пишет настройки производительности проекта одним UPDATE:
-// долю семплируемых транзакций, порог Apdex (мс) и JSON конфига детекторов
-// (ровно те ключи, что читает trace.ConfigFromJSON). Значения уже провалидированы
-// вызывающим (форма настроек); несуществующий проект → ErrNotFound.
 func (s *Service) UpdatePerfSettings(ctx context.Context, projectID int64, sampleRate float64, apdexMS int32, detectorConfigJSON string) error {
 	tag, err := s.pool.Exec(ctx,
 		"UPDATE projects SET transaction_sample_rate = $1, apdex_threshold_ms = $2, perf_detector_config = $3 WHERE id = $4",
@@ -167,11 +122,6 @@ func (s *Service) UpdatePerfSettings(ctx context.Context, projectID int64, sampl
 	return nil
 }
 
-// UpdateRegressionConfig пишет JSON конфига детектора регрессий одним UPDATE
-// (ровно те ключи, что читает trace.RegressionConfigFromJSON). Значения уже
-// провалидированы вызывающим (форма настроек «Регрессии»); несуществующий
-// проект → ErrNotFound. Отдельный метод от UpdatePerfSettings: это другая
-// колонка и другой механизм (см. Project.PerfRegressionConfig).
 func (s *Service) UpdateRegressionConfig(ctx context.Context, projectID int64, configJSON string) error {
 	tag, err := s.pool.Exec(ctx,
 		"UPDATE projects SET perf_regression_config = $1 WHERE id = $2",
@@ -185,20 +135,6 @@ func (s *Service) UpdateRegressionConfig(ctx context.Context, projectID int64, c
 	return nil
 }
 
-// DeleteProject удаляет проект. FK на projects (project_keys, monitors,
-// status_pages, maintenance_windows, issues, alert_rules и т.д.) объявлены
-// ON DELETE CASCADE в PG, поэтому зависимые записи снимаются автоматически и
-// осиротевших мониторов не остаётся. Телеметрию в ClickHouse каскад НЕ трогает:
-// её удаляет фоновый исполнитель (telemetry.PurgeWorker) по заявке, которую
-// ставит эта же транзакция.
-//
-// Транзакция здесь не ради скорости, а ради единственного инварианта: либо
-// проект удалён и заявка есть, либо не удалено ничего. Раньше очистка
-// ClickHouse шла синхронно в HTTP-запросе после удаления, и обрыв по таймауту
-// оставлял телеметрию в ClickHouse навсегда — идентификатора удалённого
-// проекта после каскада взять уже негде.
-//
-// Несуществующий projectID → ErrNotFound; откат снимает и заявку.
 func (s *Service) DeleteProject(ctx context.Context, projectID int64) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -224,20 +160,8 @@ func (s *Service) DeleteProject(ctx context.Context, projectID int64) error {
 	return nil
 }
 
-// accessCondition: owner/admin видят все проекты организации,
-// member — проекты команд, в которых состоит.
-//
-// Проверка членства в организации во второй ветви избыточна при целой схеме
-// (team_members_member_fk делает висячее членство невозможным) и стоит здесь
-// намеренно, вторым рубежом: правило доступа не должно зависеть от того, не
-// сняли ли ограничение будущей миграцией.
-//
-// Внешние скобки обязательны и не декоративны. Условие — дизъюнкция, а
-// подставляется оно в WHERE рядом с другими предикатами: без скобок
-// "WHERE p.org_id = $2 AND " + accessCondition разбирается как
-// (p.org_id = $2 AND первая ветвь) OR (вторая ветвь), и вторая ветвь остаётся
-// без сужения по организации — ProjectsForUserInOrg отдавал проекты всех
-// организаций, где пользователь состоит хоть в одной команде.
+// Внешние скобки обязательны: без них "...AND "+accessCondition разбирается как
+// (условие1 AND первая_ветвь) OR вторая_ветвь — вторая теряет сужение по org_id.
 const accessCondition = `(
 	EXISTS (
 		SELECT 1 FROM org_members m
@@ -250,7 +174,6 @@ const accessCondition = `(
 	)
 )`
 
-// ProjectsForUser возвращает проекты, доступные пользователю.
 func (s *Service) ProjectsForUser(ctx context.Context, userID int64) ([]Project, error) {
 	rows, err := s.pool.Query(ctx,
 		"SELECT "+projectColumns+" FROM projects p WHERE "+
@@ -270,11 +193,6 @@ func (s *Service) ProjectsForUser(ctx context.Context, userID int64) ([]Project,
 	return out, rows.Err()
 }
 
-// ProjectsForUserInOrg — то же правило доступа, что и ProjectsForUser, суженное
-// до одной организации: топбар (задача 4 nav-ia) фильтрует список проектов
-// селектом организации, и запрос обязан оставаться буквально accessCondition
-// — иначе расхождение с ProjectsForUser означало бы утечку между
-// организациями (не ослаблять, не переписывать под видом оптимизации).
 func (s *Service) ProjectsForUserInOrg(ctx context.Context, userID, orgID int64) ([]Project, error) {
 	rows, err := s.pool.Query(ctx,
 		"SELECT "+projectColumns+" FROM projects p WHERE p.org_id = $2 AND "+
@@ -294,9 +212,6 @@ func (s *Service) ProjectsForUserInOrg(ctx context.Context, userID, orgID int64)
 	return out, rows.Err()
 }
 
-// GetProject возвращает проект со всеми настройками; несуществующий id →
-// ErrNotFound. Ingest читает его на горячем пути (через кеш, см.
-// ingest.ProjectCache) ради transaction_sample_rate.
 func (s *Service) GetProject(ctx context.Context, projectID int64) (Project, error) {
 	p, err := scanProject(s.pool.QueryRow(ctx,
 		"SELECT "+projectColumns+" FROM projects WHERE id = $1", projectID))
@@ -309,10 +224,6 @@ func (s *Service) GetProject(ctx context.Context, projectID int64) (Project, err
 	return p, nil
 }
 
-// ProjectsOf возвращает все проекты организации, отсортированные по name —
-// нужен странице команд (план 5, задача 3) для select привязки проекта к
-// команде: там важны все проекты организации, а не только доступные
-// конкретному пользователю (в отличие от ProjectsForUser).
 func (s *Service) ProjectsOf(ctx context.Context, orgID int64) ([]Project, error) {
 	rows, err := s.pool.Query(ctx,
 		"SELECT "+projectColumns+" FROM projects WHERE org_id = $1 ORDER BY name", orgID)
@@ -331,9 +242,6 @@ func (s *Service) ProjectsOf(ctx context.Context, orgID int64) ([]Project, error
 	return out, rows.Err()
 }
 
-// ProjectOrg возвращает orgID проекта; несуществующий projectID → ErrNotFound.
-// Нужен странице issue (план 4), чтобы от issue.ProjectID дойти до
-// MembersOf(orgID) для assign-select.
 func (s *Service) ProjectOrg(ctx context.Context, projectID int64) (int64, error) {
 	var orgID int64
 	err := s.pool.QueryRow(ctx, "SELECT org_id FROM projects WHERE id = $1", projectID).Scan(&orgID)
@@ -346,7 +254,6 @@ func (s *Service) ProjectOrg(ctx context.Context, projectID int64) (int64, error
 	return orgID, nil
 }
 
-// CanAccessProject — точечная проверка того же правила доступа.
 func (s *Service) CanAccessProject(ctx context.Context, userID, projectID int64) (bool, error) {
 	var ok bool
 	err := s.pool.QueryRow(ctx,

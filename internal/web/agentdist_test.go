@@ -11,9 +11,8 @@ import (
 	"time"
 )
 
-// writeFakeAgentBinary кладёт в dir один allowlisted файл с заданным
-// содержимым — тест не различает реальный бинарь и фикстуру, важна только
-// стабильность содержимого для sha256-ETag.
+// тест не различает реальный бинарь и фикстуру — важна стабильность
+// содержимого для sha256-ETag.
 func writeFakeAgentBinary(t *testing.T, dir, name, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
@@ -21,10 +20,8 @@ func writeFakeAgentBinary(t *testing.T, dir, name, content string) {
 	}
 }
 
-// newAgentDistServer поднимает Handler с Register(mux) за httptest.Server —
-// без PG/CH: install.sh и /agent/{file} не трогают ни одну из служб, только
-// AgentDistDir на диске. Через настоящий сервер (не прямой вызов хендлера)
-// проходит и штатное path-cleaning net/http (редирект ".." до catch-all 404).
+// настоящий сервер, не прямой вызов хендлера — только так работает штатное
+// path-cleaning net/http (редирект ".." до catch-all 404).
 func newAgentDistServer(t *testing.T, dir string) *httptest.Server {
 	t.Helper()
 	h := &Handler{AgentDistDir: dir, BaseURL: "http://localhost"}
@@ -56,9 +53,8 @@ func TestInstallShServed(t *testing.T) {
 		t.Errorf("body does not start with shebang:\n%s", body)
 	}
 
-	// Обход allowlist через "..": net/http сам чистит путь и редиректит на
-	// /etc/passwd — там ловит catch-all "/" и отдаёт 404. Ни один файл вне
-	// AgentDistDir наружу не уходит.
+	// net/http сам чистит ".." и редиректит на /etc/passwd — там ловит catch-all
+	// "/" и отдаёт 404; ни один файл вне AgentDistDir наружу не уходит.
 	resp2, err := http.Get(srv.URL + "/agent/../../etc/passwd")
 	if err != nil {
 		t.Fatalf("GET traversal: %v", err)
@@ -68,8 +64,6 @@ func TestInstallShServed(t *testing.T) {
 		t.Errorf("traversal status = %d, want 404", resp2.StatusCode)
 	}
 
-	// Имя вне allowlist-мапы — тоже 404, даже если файл с таким именем
-	// физически лежит в AgentDistDir.
 	writeFakeAgentBinary(t, dir, "evil", "should never be served")
 	resp3, err := http.Get(srv.URL + "/agent/evil")
 	if err != nil {
@@ -159,9 +153,6 @@ func TestAgentFileHeaders(t *testing.T) {
 	}
 }
 
-// TestAgentDistRateLimited проверяет, что /agent/{file} и /install.sh резаны
-// НЕЗАВИСИМЫМИ лимитерами (agentLimiter и publicLimiter соответственно,
-// см. Handler.agentLimiter): исчерпание одного не задевает другой роут.
 func TestAgentDistRateLimited(t *testing.T) {
 	dir := t.TempDir()
 	writeFakeAgentBinary(t, dir, "gotcha-agent-linux-amd64", "fake-amd64-binary")
@@ -229,9 +220,6 @@ func TestAgentDistRateLimited(t *testing.T) {
 	})
 }
 
-// TestInstallScriptInvariants — сторож против случайной правки install.sh:
-// ключевые механизмы (обёртка main, сверка целостности, права конфига,
-// hardening юнита) не должны выпасть при рефакторинге скрипта.
 func TestInstallScriptInvariants(t *testing.T) {
 	s := string(installShScript)
 	for _, want := range []string{
@@ -242,11 +230,11 @@ func TestInstallScriptInvariants(t *testing.T) {
 		"install -m 600", // конфиг 0600 root:root ДО записи ключа
 		"NoNewPrivileges=yes",
 		"ProtectSystem=strict",
-		"ProtectHome=read-only",       // не yes: не прятать /var/tmp как раздел (ops-H5/sec-M2)
-		"RestartPreventExitStatus=2",  // код 2 = ошибка конфига — рестарт её не лечит (ops-H3)
-		"--check",                     // валидация конфига до enable (ops-H2)
-		"systemctl is-active --quiet", // подтверждение, что процесс реально жив (ops-H2)
-		"Nice=10",                     // проба процессов не должна конкурировать за CPU (ops-MED)
+		"ProtectHome=read-only",       // не yes: не прятать /var/tmp как раздел
+		"RestartPreventExitStatus=2",  // код 2 = ошибка конфига — рестарт её не лечит
+		"--check",                     // валидация конфига до enable
+		"systemctl is-active --quiet", // подтверждение, что процесс реально жив
+		"Nice=10",                     // проба процессов не должна конкурировать за CPU
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("install.sh потерял инвариант %q", want)
@@ -265,9 +253,7 @@ func TestInstallScriptInvariants(t *testing.T) {
 	}
 }
 
-// readAll читает тело ответа целиком — пакет web_test держит одноимённый
-// хелпер (tenancy_revoke_test.go), но это разные пакеты (package web vs
-// package web_test), общий код между ними не виден.
+// web_test держит одноимённый хелпер, но пакеты разные — общий код не виден.
 func readAll(t *testing.T, resp *http.Response) string {
 	t.Helper()
 	body, err := io.ReadAll(resp.Body)

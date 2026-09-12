@@ -14,7 +14,6 @@ func TestVKExchange(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
-		// VK отдаёт user_id и email рядом с access_token.
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token": "at", "user_id": 777, "email": "u@vk.com",
 		})
@@ -48,7 +47,7 @@ func TestVKExchangeNoEmail(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "at", "user_id": 1}) // без email
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "at", "user_id": 1})
 	})
 	p := NewVK(VKConfig{ClientID: "cid", ClientSecret: "sec"})
 	p.tokenURL = srv.URL + "/token"

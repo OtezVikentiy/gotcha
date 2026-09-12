@@ -19,14 +19,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// Точка входа состоит из проводки, но решения в ней есть, и они меняют
-// поведение продукта: кому уйдут детали события, запускать ли оценщики, каким
-// ключом подписывается oauth-cookie. Раньше пакет не входил в профиль покрытия
-// вовсе — эти решения не проверялись ничем.
-
-// TestRunEvaluatorsDefaultsAndExplicit: молчаливое «не включать» уже приводило
-// к «правило включено и не срабатывает никогда», поэтому дефолт и явный выбор
-// различаются намеренно.
 func TestRunEvaluatorsDefaultsAndExplicit(t *testing.T) {
 	yes, no := true, false
 	cases := []struct {
@@ -52,32 +44,20 @@ func TestRunEvaluatorsDefaultsAndExplicit(t *testing.T) {
 	}
 }
 
-// TestEvaluatorsDisabledWarningNamesAllSixCycles: GOTCHA_EVALUATORS_ENABLED гейтит
-// ШЕСТЬ фоновых циклов (metric/trace(perf)/profile/host-оценщики + slo.Evaluator
-// + escalation.Scheduler, см. startEvaluators), но предупреждение при старте
-// раньше называло только четыре — slo и эскалация молчали о себе так же, как
-// правило по метрике молчит без этого предупреждения (W3-D, запись 8 = находка
-// W3-C). Оператор раздельного развёртывания web+ingest без
-// GOTCHA_EVALUATORS_ENABLED не узнавал, что SLO-алерты и эскалация ВСЕХ пяти
-// источников инцидентов (не только SLO) тоже не работают.
 func TestEvaluatorsDisabledWarningNamesAllSixCycles(t *testing.T) {
 	for _, want := range []string{"metric", "profile", "host", "slo", "escalation"} {
 		if !strings.Contains(evaluatorsDisabledWarning, want) {
 			t.Errorf("evaluatorsDisabledWarning не упоминает %q: %s", want, evaluatorsDisabledWarning)
 		}
 	}
-	// trace-пакет отвечает за регрессии производительности — в тексте
-	// предупреждения (и в UI) он называется "performance"/"regression", не
-	// "trace" (см. соседние Warn/лог сообщения того же файла).
+	// В тексте предупреждения и в UI trace-пакет называется "performance"/
+	// "regression", не "trace".
 	if !strings.Contains(evaluatorsDisabledWarning, "regression") {
 		t.Errorf("evaluatorsDisabledWarning не упоминает регрессии производительности (trace.Evaluator): %s",
 			evaluatorsDisabledWarning)
 	}
 }
 
-// TestDeriveCookieKeyIsDomainSeparated: подключ для подписи oauth-cookie не
-// должен совпадать с мастер-секретом и обязан быть детерминированным —
-// иначе рестарт инстанса рвёт все начатые входы через провайдера.
 func TestDeriveCookieKeyIsDomainSeparated(t *testing.T) {
 	if got := deriveCookieKey(""); got != "" {
 		t.Errorf("пустой мастер-секрет дал ключ %q — web-слой различает эти случаи сам", got)
@@ -98,8 +78,6 @@ func TestDeriveCookieKeyIsDomainSeparated(t *testing.T) {
 	}
 }
 
-// TestDetailPolicyFollowsRecipient: детали события уходят по доверенности
-// ПОЛУЧАТЕЛЯ, а не по виду канала — на этом строится трансграничный гейт.
 func TestDetailPolicyFollowsRecipient(t *testing.T) {
 	cfg := Config{
 		BaseURL:           "https://gotcha.example.com",
@@ -124,18 +102,10 @@ func TestDetailPolicyFollowsRecipient(t *testing.T) {
 	if !open.AllowsDetails(alert.Channel{Kind: alert.ChannelTelegram, Target: "12345"}) {
 		t.Error("при GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=true детали обязаны уходить всем")
 	}
-	// Лог о действующей политике не должен падать ни в одном режиме.
 	logDetailPolicy(cfg)
 	logDetailPolicy(Config{BaseURL: cfg.BaseURL, ExternalChannelDetails: true})
 }
 
-// TestLogDetailPolicyLogsTrustedRecipients — m7 (финальное ревью): разбор
-// GOTCHA_TRUSTED_RECIPIENTS не отказывает старт ни на одном значении
-// (невалидное имя просто ни с чем не совпадёт), так что лог на старте —
-// единственная диагностика опечатки в списке. Список обязан попасть в лог в
-// ОБЕИХ ветках logDetailPolicy, а не только когда список реально фильтрует
-// доставку (default) — GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=true не должен
-// прятать распознанный список от оператора.
 func TestLogDetailPolicyLogsTrustedRecipients(t *testing.T) {
 	cfg := Config{
 		BaseURL:           "https://gotcha.example.com",
@@ -164,10 +134,6 @@ func TestLogDetailPolicyLogsTrustedRecipients(t *testing.T) {
 	}
 }
 
-// TestSetupLoggingAcceptsKnownLevels: каждое распознанное сочетание
-// level/format проходит без ошибки и не паникует. cfg.LogLevel/cfg.LogFormat
-// приходят из config.go уже триммленными и в нижнем регистре — здесь
-// проверяются ровно те значения, что setupLogging реально получает.
 func TestSetupLoggingAcceptsKnownLevels(t *testing.T) {
 	defer setupLogging("", "") // не оставлять хендлер последней итерации глобальным
 	for _, level := range []string{"", "debug", "info", "warn", "warning", "error"} {
@@ -179,30 +145,18 @@ func TestSetupLoggingAcceptsKnownLevels(t *testing.T) {
 	}
 }
 
-// TestSetupLoggingRejectsUnknownLevel — RA-контракт (задача 5, E3): нераспознанный
-// GOTCHA_LOGGING_LEVEL обязан ронять старт, а не тихо откатываться на Info.
-// Раньше `LOG_LEVEL=trace` во время инцидента давал молчаливый Info без
-// единой диагностики, и оператор отлаживал логгер вместо инцидента.
 func TestSetupLoggingRejectsUnknownLevel(t *testing.T) {
 	if err := setupLogging("trace", "text"); err == nil {
 		t.Error(`setupLogging("trace", "text") must fail, got nil error`)
 	}
 }
 
-// TestSetupLoggingRejectsUnknownFormat — тот же контракт для GOTCHA_LOGGING_FORMAT:
-// раньше нераспознанный формат тихо откатывался на text.
 func TestSetupLoggingRejectsUnknownFormat(t *testing.T) {
 	if err := setupLogging("info", "nonsense"); err == nil {
 		t.Error(`setupLogging("info", "nonsense") must fail, got nil error`)
 	}
 }
 
-// TestSetupLoggingUsesValidateLogging — K5-1: setupLogging не заводит свою
-// копию таблицы допустимых level/format, а вызывает validateLogging
-// (cmd/gotcha/config.go) первой строкой — ту же функцию, которую loadConfig
-// зовёт в блоке накопления ошибок. Тест сравнивает ТЕКСТ ошибки: если бы
-// setupLogging вернулась к собственному switch с def-веткой, тексты могли бы
-// разойтись незаметно для остальных тестов (они лишь проверяют err != nil).
 func TestSetupLoggingUsesValidateLogging(t *testing.T) {
 	want := validateLogging("trace", "text")
 	if want == nil {
@@ -214,9 +168,6 @@ func TestSetupLoggingUsesValidateLogging(t *testing.T) {
 	}
 }
 
-// TestSetupLoggingWarningAliasSetsWarnLevel — "warning" (алиас, документирован
-// в обеих локалях) обязан выставлять именно slog.LevelWarn: Info-сообщения
-// после него отфильтрованы, Warn — проходят.
 func TestSetupLoggingWarningAliasSetsWarnLevel(t *testing.T) {
 	defer setupLogging("", "")
 	if err := setupLogging("warning", "text"); err != nil {
@@ -231,12 +182,6 @@ func TestSetupLoggingWarningAliasSetsWarnLevel(t *testing.T) {
 	}
 }
 
-// TestAutoMaxBufferBytesSafeUnderHeapCeiling: находка P0-1 — дефолтный
-// docker-compose.yml (mem_limit 1g, GOTCHA_MAX_WRITER_BUFFER_BYTES не задан) даёт
-// потолок кучи 819 МиБ (0.8×1024 МиБ), а пять буферов-«единиц» по flat
-// defaultMaxBufBytes=256 МиБ (событие+SpanWriter×2+метрика+профиль) суммарно
-// весят 1.25 ГиБ — больше потолка. Авто-дефолт обязан вывести per-writer-cap,
-// при котором сумма пяти единиц укладывается в потолок с запасом.
 func TestAutoMaxBufferBytesSafeUnderHeapCeiling(t *testing.T) {
 	memLimit1g := int64(1024 << 20)
 	heapCeiling := int64(float64(memLimit1g) * 0.8) // как memlimit.heapTarget
@@ -257,9 +202,6 @@ func TestAutoMaxBufferBytesSafeUnderHeapCeiling(t *testing.T) {
 	}
 }
 
-// TestAutoMaxBufferBytesNoLimitFallsBackToPackageDefault: bare-metal без
-// cgroup (memlimit вернул ErrNoLimit → applyMemoryLimit вернул 0) не должен
-// менять поведение — это не регресс, а прежний flat-дефолт пакета-писателя.
 func TestAutoMaxBufferBytesNoLimitFallsBackToPackageDefault(t *testing.T) {
 	for _, heapCeiling := range []int64{0, -1} {
 		if got := autoMaxBufferBytes(heapCeiling); got != 0 {
@@ -268,9 +210,6 @@ func TestAutoMaxBufferBytesNoLimitFallsBackToPackageDefault(t *testing.T) {
 	}
 }
 
-// TestEffectiveMaxBufferBytesRespectsExplicitOverride: явный
-// GOTCHA_MAX_WRITER_BUFFER_BYTES обязан побеждать авто-дефолт в обе стороны — и
-// когда оператор просит больше, и когда меньше того, что вывел бы авто-режим.
 func TestEffectiveMaxBufferBytesRespectsExplicitOverride(t *testing.T) {
 	const heapCeiling = 800 << 20
 	const explicit = 24 << 20 // как в docker-compose.small.yml
@@ -290,8 +229,6 @@ func TestEffectiveMaxBufferBytesRespectsExplicitOverride(t *testing.T) {
 	}
 }
 
-// TestVersionRequested: флаг версии распознаётся до любой инициализации —
-// `gotcha --version` обязан работать без баз и конфигурации.
 func TestVersionRequestedForms(t *testing.T) {
 	for _, args := range [][]string{{"--version"}, {"version"}, {"--mode=web", "--version"}} {
 		if !versionRequested(args) {
@@ -306,12 +243,6 @@ func TestVersionRequestedForms(t *testing.T) {
 	_ = strings.TrimSpace("")
 }
 
-// TestExportRowRetention: Store.PurgeRows чистит терминальные строки заявок
-// на выгрузку по finished_at независимо от expires_at (janitor.go). Если бы
-// retention был жёстко зафиксирован на 30 сутках, оператор, поднявший
-// GOTCHA_EXPORT_RETENTION_HOURS выше 720 (30 суток), получил бы удаление строки
-// ЖИВОЙ (ещё не истёкшей по собственному TTL) заявки раньше её срока —
-// retention обязан расти вместе с TTL, а не оставаться позади него.
 func TestExportRowRetention(t *testing.T) {
 	cases := []struct {
 		name string
@@ -331,14 +262,6 @@ func TestExportRowRetention(t *testing.T) {
 	}
 }
 
-// TestExportsWiringEnabled: --mode=uptime поднимает outbox (нужен
-// уведомителю детектора аптайма), но НЕ строит issueSvc — воркер выгрузок,
-// поднятый на одном "outbox != nil", разыменовывал бы nil *issue.Service на
-// первой же заявке issues/events и ронял процесс паникой. --mode=ingest тоже
-// строит issueSvc, но webHandler там не строится никогда — раздать файл
-// некому, а джанитор чужой реплики топит заявку в expired раньше срока
-// (P1-OPS-2). Гейт обязан требовать И режим, который отдаёт файл
-// (exportModeServesFiles: web|all), И доступный каталог разом.
 func TestExportsWiringEnabled(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -364,10 +287,6 @@ func TestExportsWiringEnabled(t *testing.T) {
 	}
 }
 
-// TestExportModeServesFiles: единственный источник истины для "кто отдаёт
-// файл выгрузки" — этот список литералов, тот же, что гейтит построение
-// webHandler в run(). ingest намеренно снаружи (P1-OPS-2): issueSvc там
-// есть, маршрутов /projects/{id}/exports — нет.
 func TestExportModeServesFiles(t *testing.T) {
 	for _, mode := range []string{"web", "all"} {
 		if !exportModeServesFiles(mode) {
@@ -381,9 +300,6 @@ func TestExportModeServesFiles(t *testing.T) {
 	}
 }
 
-// TestExportDirWritable_WritableDir: каталог, реально доступный на запись
-// этому процессу, проходит пробу — обычный случай (каталог создан этим же
-// MkdirAll с нужным владельцем).
 func TestExportDirWritable_WritableDir(t *testing.T) {
 	dir := t.TempDir()
 	if err := exportDirWritable(dir); err != nil {
@@ -400,12 +316,6 @@ func TestExportDirWritable_WritableDir(t *testing.T) {
 	}
 }
 
-// TestExportDirWritable_ReadOnlyDir: находка P0-OPS-1 — MkdirAll на
-// каталоге, который Docker создал root:root при монтировании свежего тома,
-// возвращает nil (каталог уже существует), хотя писать в него процесс не
-// может. exportDirWritable обязан поймать именно этот случай мутацией
-// врезки: каталог 0o555 (только чтение+исполнение, без записи) существует,
-// но проба обязана вернуть ошибку.
 func TestExportDirWritable_ReadOnlyDir(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root игнорирует биты записи — проба не сработает под root")
@@ -420,15 +330,6 @@ func TestExportDirWritable_ReadOnlyDir(t *testing.T) {
 	}
 }
 
-// TestExportDirWritable_ConcurrentReplicas: несколько web-реплик за
-// балансировщиком на общем томе выгрузок (internal/docs/{ru,en}/exports.md
-// признаёт это поддерживаемым сценарием) стартуют и зовут exportDirWritable
-// параллельно. С фиксированным именем ".probe" одна реплика удаляла файл,
-// который параллельно создала и уже удалила другая, и ловила на своём
-// os.Remove ENOENT — раздел выгрузок ложно выключался на проигравшей
-// реплике до рестарта, хотя каталог доступен на запись. Имя пробы обязано
-// быть уникальным на каждый вызов, поэтому все N конкурентных вызовов на
-// одном каталоге обязаны вернуть nil.
 func TestExportDirWritable_ConcurrentReplicas(t *testing.T) {
 	dir := t.TempDir()
 	const n = 100
@@ -474,11 +375,6 @@ func TestExportDirWritable_ConcurrentReplicas(t *testing.T) {
 	}
 }
 
-// TestEnsureExportDirCreatesWithMode0700: каталог выгрузок — единственное
-// место продукта, где ПДн (см. worker.go, файлы внутри уже 0600) ложатся на
-// диск целым каталогом, а не файлом. Остаток P3-SEC-1: 0755 отдавал листинг
-// каталога и содержимое файлов любому, кто читает с этого же хоста; сосед по
-// процессу не должен иметь права даже на чтение листинга.
 func TestEnsureExportDirCreatesWithMode0700(t *testing.T) {
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "exports")
@@ -495,10 +391,6 @@ func TestEnsureExportDirCreatesWithMode0700(t *testing.T) {
 	}
 }
 
-// TestWaitGroupWithTimeoutReturnsTrueWhenGoroutinesFinish (P2-OPS-5):
-// воркер/джанитор выгрузок, отпущенные отменой ctx, обязаны дать drain()
-// увидеть их завершение — a не всегда упираться в таймаут окна, иначе
-// каждый деплой ждал бы полные 5с зря.
 func TestWaitGroupWithTimeoutReturnsTrueWhenGoroutinesFinish(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -519,12 +411,6 @@ func TestWaitGroupWithTimeoutReturnsTrueWhenGoroutinesFinish(t *testing.T) {
 	}
 }
 
-// TestWaitGroupWithTimeoutReturnsFalseWithoutBlockingPastWindow (P2-OPS-5):
-// зависшая горутина (не отвечает на отмену ctx) не имеет права держать
-// drain() дольше окна — это ровно тот сценарий, ради которого в main.go
-// стоит select с time.After, а не голый wg.Wait(). Мутация — заменить тело
-// на голый wg.Wait() (без select/timeout) — обязана уронить этот тест
-// таймаутом самого теста (goroutine leak detector) или зависанием.
 func TestWaitGroupWithTimeoutReturnsFalseWithoutBlockingPastWindow(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -547,11 +433,6 @@ func TestWaitGroupWithTimeoutReturnsFalseWithoutBlockingPastWindow(t *testing.T)
 	}
 }
 
-// TestCloseBoundedReturnsTrueWhenCloseFnFinishes (I3, финревью волны 1
-// аудита перед 1.0): closeFn, завершившийся в срок, обязан дать drain()
-// увидеть это сразу, а не всегда упираться в timeout — иначе каждая
-// остановка ждала бы полное окно зря, даже когда uptime.Runner.Close()
-// вернулся мгновенно.
 func TestCloseBoundedReturnsTrueWhenCloseFnFinishes(t *testing.T) {
 	start := time.Now()
 	ok := closeBounded(func() { time.Sleep(5 * time.Millisecond) }, time.Second)
@@ -565,14 +446,6 @@ func TestCloseBoundedReturnsTrueWhenCloseFnFinishes(t *testing.T) {
 	}
 }
 
-// TestCloseBoundedReturnsFalseWithoutBlockingPastWindow (I3): зависший
-// closeFn (например, uptime.Runner.Close(), который у самого Runner без
-// ctx/дедлайна — см. его докблок) не имеет права держать drain() дольше
-// timeout — ровно тот сценарий, ради которого до фикса I3 сумма ограниченных
-// ожиданий в --mode=all упиралась в stop_grace_period. Мутация — заменить
-// тело closeBounded на голый closeFn() (без select/timeout) — обязана
-// уронить этот тест таймаутом самого теста (горутина never returns) или
-// зависанием.
 func TestCloseBoundedReturnsFalseWithoutBlockingPastWindow(t *testing.T) {
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
@@ -589,14 +462,6 @@ func TestCloseBoundedReturnsFalseWithoutBlockingPastWindow(t *testing.T) {
 	}
 }
 
-// TestDrainParallelWaitsForEveryBranch (I3, раунд правок по ревью финревью
-// волны 1 аудита перед 1.0): drain() строит из независимых веток список и
-// отдаёт его drainParallel — само свойство «не вернуться, пока не отработала
-// КАЖДАЯ ветка» до этого теста не было закрыто ничем, а именно ради него
-// ветки drain() вообще переведены с последовательного ожидания на
-// sync.WaitGroup (см. докблок drain() в main.go). Мутация — заменить
-// dwg.Wait() на `_ = dwg` — обязана уронить этот тест: drainParallel
-// вернулась бы сразу после запуска горутин, не дождавшись release[2].
 func TestDrainParallelWaitsForEveryBranch(t *testing.T) {
 	const n = 3
 	release := make([]chan struct{}, n)
@@ -614,8 +479,6 @@ func TestDrainParallelWaitsForEveryBranch(t *testing.T) {
 		close(finished)
 	}()
 
-	// Отпускаем только две ветки из трёх — drainParallel не имеет права
-	// вернуться, пока жива третья.
 	close(release[0])
 	close(release[1])
 	select {
@@ -632,16 +495,6 @@ func TestDrainParallelWaitsForEveryBranch(t *testing.T) {
 	}
 }
 
-// TestIngestSignalsFinalFlushFitsDrainWindow (L, раунд правок по ревью
-// финревью волны 1 аудита перед 1.0): drainIngestSignals ждёт
-// Recorder.Run ingestSignalsDrainWindow, а Run() закрывает свой WaitGroup
-// только ПОСЛЕ финального Flush с бюджетом ingestsignal.FinalFlushTimeout —
-// значит окно ожидания обязано быть строго БОЛЬШЕ бюджета флаша, иначе
-// внешнее ожидание при медленной PG гарантированно проигрывало бы гонку
-// собственному флашу. Сверяет обе стороны отношения напрямую с
-// первоисточниками (константа cmd/gotcha и экспортированная константа
-// ingestsignal), а не копию с копией — правка одной стороны «для симметрии»
-// без другой обязана уронить этот тест.
 func TestIngestSignalsFinalFlushFitsDrainWindow(t *testing.T) {
 	if ingestsignal.FinalFlushTimeout >= ingestSignalsDrainWindow {
 		t.Fatalf("ingestsignal.FinalFlushTimeout (%s) >= ingestSignalsDrainWindow (%s): "+
@@ -650,18 +503,12 @@ func TestIngestSignalsFinalFlushFitsDrainWindow(t *testing.T) {
 	}
 }
 
-// fakeWriterStats — писатель, рассказывающий о себе три числа (см. writerStats).
 type fakeWriterStats struct{ buffered, dropped, failures int64 }
 
 func (f *fakeWriterStats) Buffered() int64       { return f.buffered }
 func (f *fakeWriterStats) Dropped() int64        { return f.dropped }
 func (f *fakeWriterStats) InsertFailures() int64 { return f.failures }
 
-// TestRegisterWriterMetricsPublishesAllThree: разбор «часть событий не
-// доезжает» опирается на все три числа сразу — глубина буфера показывает,
-// принимает ли хранилище, отказы вставки говорят почему, потери означают, что
-// данные уже не вернуть. Потерять при регистрации любое из трёх — потерять
-// половину ответа, поэтому проверяются имя, тип и метка каждой метрики.
 func TestRegisterWriterMetricsPublishesAllThree(t *testing.T) {
 	var r selfmetrics.Registry
 	registerWriterMetrics(&r, "event", &fakeWriterStats{buffered: 7, dropped: 3, failures: 11})
@@ -681,10 +528,6 @@ func TestRegisterWriterMetricsPublishesAllThree(t *testing.T) {
 	}
 }
 
-// TestRegisterWriterMetricsSeparatesWritersByLabel: метка writer= — то, ради
-// чего регистрация вынесена в общую функцию. Общее имя без разделяющей метки
-// склеило бы пятерых писателей в одну строку, и «теряет спаны» стало бы
-// неотличимо от «теряет логи».
 func TestRegisterWriterMetricsSeparatesWritersByLabel(t *testing.T) {
 	var r selfmetrics.Registry
 	registerWriterMetrics(&r, "span", &fakeWriterStats{buffered: 1})
@@ -697,10 +540,6 @@ func TestRegisterWriterMetricsSeparatesWritersByLabel(t *testing.T) {
 	}
 }
 
-// TestRegisterWriterMetricsReadsValuesLazily: значения обязаны браться на
-// каждый скрап, а не сниматься один раз при регистрации — снимок на старте
-// показывал бы вечные нули, то есть «всё хорошо» ровно в тот момент, когда
-// буфер растёт.
 func TestRegisterWriterMetricsReadsValuesLazily(t *testing.T) {
 	var r selfmetrics.Registry
 	w := &fakeWriterStats{}
@@ -712,10 +551,6 @@ func TestRegisterWriterMetricsReadsValuesLazily(t *testing.T) {
 	}
 }
 
-// TestCommonServicesEnabled: единственный источник истины для тройки режимов,
-// где run() строит общие сервисы. Расхождение этого списка с проводкой уже
-// давало панику при --mode=uptime (nil issueSvc), поэтому список проверяется
-// целиком, включая режимы, которых в нём быть не должно.
 func TestCommonServicesEnabled(t *testing.T) {
 	for _, tc := range []struct {
 		mode string
@@ -734,18 +569,6 @@ func TestCommonServicesEnabled(t *testing.T) {
 	}
 }
 
-// TestDrainIngestSignalsWaitsForFinalFlush (I1, аудит перед 1.0, K7-5/K7-6):
-// раньше `go ingestSignals.Run(ctx)` в run() не был обёрнут ничем — drain()
-// шёл к pg.Close() не дожидаясь горутины, и финальный Flush (см.
-// internal/ingestsignal.Recorder.Run) гонялся с закрытием пула. Фикс —
-// drainIngestSignals, тот же приём, что exportWorkersWG/waitGroupWithTimeout.
-//
-// Чтобы проверка не зависела от везения планировщика, пул исчерпывается ДО
-// отмены ctx: Bump внутри финального Flush гарантированно блокируется в
-// Acquire, пока тест не отпустит соединения. Мутация — заменить тело
-// drainIngestSignals на no-op (не ждать вовсе) — обязана уронить первую
-// проверку: без ожидания функция вернётся немедленно, не дав Run дойти до
-// Flush.
 func TestDrainIngestSignalsWaitsForFinalFlush(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -779,10 +602,8 @@ func TestDrainIngestSignalsWaitsForFinalFlush(t *testing.T) {
 		}
 		held = append(held, c)
 	}
-	// Release гарантированно один раз и даже при t.Fatal ниже: без этого
-	// зависший Acquire не даёт pool.Close() в t.Cleanup(MigratedPG) вернуться
-	// (Close ждёт возврата ВСЕХ выданных соединений), и тест виснет вместо
-	// того, чтобы упасть.
+	// sync.OnceFunc: без гарантии единственного Release зависший Acquire не
+	// даёт pool.Close() вернуться, и тест виснет вместо падения.
 	release := sync.OnceFunc(func() {
 		for _, c := range held {
 			c.Release()
@@ -797,7 +618,7 @@ func TestDrainIngestSignalsWaitsForFinalFlush(t *testing.T) {
 		defer wg.Done()
 		rec.Run(runCtx)
 	}()
-	cancel() // как в drain(): ctx уже отменён к этому моменту, Run уходит в финальный Flush
+	cancel() // как в drain(): ctx уже отменён, Run уходит в финальный Flush
 
 	drainDone := make(chan struct{})
 	go func() {

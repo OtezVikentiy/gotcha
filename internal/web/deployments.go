@@ -9,16 +9,10 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// deploymentsListLimit — сколько последних деплоев показываем на экране списка.
 const deploymentsListLimit = 100
 
-// safeExternalHref — URL деплоя можно показать ссылкой только если он
-// разбирается и имеет схему http/https (CI присылает произвольную строку). Для
-// любой другой схемы (javascript:, data:, file: …) или неразбираемого значения
-// возвращаем ok=false, и шаблон показывает URL простым текстом, а не активной
-// ссылкой. НЕ isLocalPath (это внешний CI-адрес, не путь приложения) и НЕ
-// доверяем одному templ.URL — тот отдал бы <a> с about:invalid, а нам нужно
-// вовсе не рисовать якорь для небезопасной схемы.
+// Пускаем ссылкой только http/https; иначе ok=false — шаблон покажет URL текстом.
+// templ.URL тут не годится: для плохой схемы он всё равно даст <a href="about:invalid">.
 func safeExternalHref(raw string) (string, bool) {
 	if raw == "" {
 		return "", false
@@ -34,11 +28,6 @@ func safeExternalHref(raw string) (string, bool) {
 	return "", false
 }
 
-// deployments — GET /projects/{id}/deployments: список деплоев проекта (версия,
-// окружение, время, изменения, ссылка на прогон CI). Доступ — CanAccessProject,
-// иначе 404 (тот же принцип, что и regressionsList); только чтение. h.Deploy
-// может быть nil в стендах без приёма деплоев — тогда 404, как и при отсутствии
-// доступа (nil-guard, а не паника).
 func (h *Handler) deployments(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {

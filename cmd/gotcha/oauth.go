@@ -2,9 +2,7 @@ package main
 
 import "gitflic.ru/otezvikentiy/gotcha/internal/oauth"
 
-// buildRegistry собирает включённые OAuth-провайдеры в фиксированном порядке
-// (OIDC, Яндекс, VK — порядок кнопок на /login). Валидация обязательных полей
-// уже сделана в loadConfig, поэтому здесь просто конструируем.
+// Порядок провайдеров — порядок кнопок на /login.
 func buildRegistry(cfg Config) *oauth.Registry {
 	var providers []oauth.Provider
 	if cfg.OIDCEnabled {

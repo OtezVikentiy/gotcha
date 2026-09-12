@@ -14,22 +14,14 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// txBase — момент, от которого строятся timestamp'ы фикстур. Абсолютной даты в
-// фикстуре быть не может: парсер отбрасывает timestamp'ы вне окна хранения
-// (см. ingest.ErrTimestampOutOfWindow), и вшитая константа однажды выпала бы за
-// его границу и «сломала» бы тест сама по себе.
 func txBase() time.Time {
 	return time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
 }
 
-// unixFloat — timestamp в том виде, в каком его шлют sentry-php/sentry-go.
 func unixFloat(t time.Time) string {
 	return fmt.Sprintf("%.6f", float64(t.UnixNano())/1e9)
 }
 
-// testTransactionJSON — канонический payload: timestamps unix-float,
-// contexts.trace несёт trace_id/span_id/op/status. Транзакция длится 500ms,
-// спаны — 100ms и 250ms.
 func testTransactionJSON(base time.Time) string {
 	at := func(ms int) string { return unixFloat(base.Add(time.Duration(ms) * time.Millisecond)) }
 	return fmt.Sprintf(`{
@@ -62,8 +54,6 @@ func testTransactionJSON(base time.Time) string {
 }`, at(100), at(600), at(200), at(300), at(300), at(550))
 }
 
-// testTransactionRFC3339JSON — тот же payload строками: часть SDK
-// (sentry-python/старые sentry-php) шлёт timestamps в RFC3339, а не unix-float.
 func testTransactionRFC3339JSON(base time.Time) string {
 	at := func(ms int) string {
 		return base.Add(time.Duration(ms) * time.Millisecond).Format(time.RFC3339Nano)
@@ -158,9 +148,6 @@ func TestParseTransactionRFC3339Timestamps(t *testing.T) {
 	}
 }
 
-// TestParseTransactionMeasurements — web vitals из блока measurements: value
-// берётся как есть, unit=="second" приводится к миллисекундам, CLS (unit пустой)
-// — как есть; отрицательные значения отбрасываются.
 func TestParseTransactionMeasurements(t *testing.T) {
 	base := txBase()
 	raw := fmt.Sprintf(`{"type":"transaction","transaction":"GET /x",
@@ -195,7 +182,6 @@ func TestParseTransactionMeasurements(t *testing.T) {
 	}
 }
 
-// TestParseTransactionMeasurementsCap — число measurements каппится (40).
 func TestParseTransactionMeasurementsCap(t *testing.T) {
 	base := txBase()
 	parts := make([]string, 0, 60)
@@ -218,8 +204,6 @@ func TestParseTransactionMeasurementsCap(t *testing.T) {
 	}
 }
 
-// TestParseTransactionNoMeasurements — транзакция без measurements → nil, не
-// паника (канонический payload их не несёт).
 func TestParseTransactionNoMeasurements(t *testing.T) {
 	tx, err := ingest.ParseTransaction([]byte(testTransactionJSON(txBase())))
 	if err != nil {
@@ -274,9 +258,6 @@ func TestParseTransactionCapsUntrustedStrings(t *testing.T) {
 	}
 }
 
-// TestParseTransactionCapsSpanCount: спанов в одной транзакции не больше 1000 —
-// раздутый payload не должен утаскивать в CH десятки тысяч строк. Транзакция при
-// этом остаётся: лишние спаны отбрасываются, а не весь item.
 func TestParseTransactionCapsSpanCount(t *testing.T) {
 	base := txBase()
 	var spans []string
@@ -299,15 +280,11 @@ func TestParseTransactionCapsSpanCount(t *testing.T) {
 	if len(tx.Spans) != 1000 {
 		t.Fatalf("spans = %d, want 1000 (cap)", len(tx.Spans))
 	}
-	// Каппим ХВОСТ, а не начало: первый спан payload'а должен уцелеть.
 	if tx.Spans[0].SpanID != fmt.Sprintf("%016x", 0) {
 		t.Errorf("first span = %q, want the first span of the payload", tx.Spans[0].SpanID)
 	}
 }
 
-// TestParseTransactionNormalizesEmptyStatus: SDK часто опускают status у
-// успешных транзакций/спанов, а MV transactions_5m считает провалом всё, что
-// != 'ok', — без нормализации "" → "ok" failure rate был бы 100%.
 func TestParseTransactionNormalizesEmptyStatus(t *testing.T) {
 	base := txBase()
 	raw := fmt.Sprintf(`{"type":"transaction","transaction":"GET /x",
@@ -337,16 +314,11 @@ func TestParseTransactionNormalizesEmptyStatus(t *testing.T) {
 	if tx.Spans[0].Status != "ok" {
 		t.Errorf("span0 Status = %q, want %q", tx.Spans[0].Status, "ok")
 	}
-	// Явный статус не трогаем.
 	if tx.Spans[1].Status != "internal_error" {
 		t.Errorf("span1 Status = %q, want internal_error", tx.Spans[1].Status)
 	}
 }
 
-// TestParseTransactionLowercasesIDs: trace_id/span_id/parent_span_id хранятся в
-// каноническом hex'е нижнего регистра — иначе один и тот же трейс, пришедший из
-// Sentry-SDK и (в будущем) из OTLP, разъедется и в семплировании (trace.Keep), и
-// в join'е spans↔transactions.
 func TestParseTransactionLowercasesIDs(t *testing.T) {
 	base := txBase()
 	raw := fmt.Sprintf(`{"type":"transaction","transaction":"GET /x",
@@ -378,9 +350,6 @@ func TestParseTransactionLowercasesIDs(t *testing.T) {
 	}
 }
 
-// TestParseTransactionRejectsTimestampsOutsideWindow: timestamp вне окна
-// хранения не должен доезжать до писателя — ни транзакцией, ни спаном (см.
-// ingest.ErrTimestampOutOfWindow и TestTransactionTimestampPoisonDoesNotWedgeWriter).
 func TestParseTransactionRejectsTimestampsOutsideWindow(t *testing.T) {
 	now := time.Now().UTC()
 	tx := func(start time.Time) string {
@@ -400,7 +369,6 @@ func TestParseTransactionRejectsTimestampsOutsideWindow(t *testing.T) {
 			t.Errorf("%s: err = %v, want ErrTimestampOutOfWindow", name, err)
 		}
 	}
-	// Внутри окна — принимаем.
 	for name, start := range map[string]time.Time{
 		"just now":       now.Add(-time.Minute),
 		"almost TTL":     now.Add(-89 * 24 * time.Hour),
@@ -411,7 +379,6 @@ func TestParseTransactionRejectsTimestampsOutsideWindow(t *testing.T) {
 		}
 	}
 
-	// Отдельный спан-«отравитель» выкидывается, транзакция остаётся.
 	base := txBase()
 	raw := fmt.Sprintf(`{"type":"transaction","transaction":"GET /x",
 		"start_timestamp":%s,"timestamp":%s,
@@ -434,12 +401,6 @@ func TestParseTransactionRejectsTimestampsOutsideWindow(t *testing.T) {
 	}
 }
 
-// --- интеграция (docker: PG+CH) ---
-
-// freshTransactionJSON — тот же канонический payload, но с timestamp'ами
-// «только что»: у CH-таблиц transactions/spans есть TTL (90/30 дней), и строка
-// с прошлогодним timestamp'ом отбрасывается прямо на вставке.
-// Длительности те же: транзакция 500ms, спан 100ms.
 func freshTransactionJSON() string {
 	end := time.Now().UTC()
 	start := end.Add(-500 * time.Millisecond)
@@ -482,9 +443,6 @@ func transactionEnvelope(payload string) string {
 	return "{}\n{\"type\":\"transaction\"}\n" + strings.ReplaceAll(payload, "\n", "") + "\n"
 }
 
-// nPlusOneTransactionJSON — транзакция с шестью одинаковыми по структуре
-// db-спанами под одним родителем (литералы разные — их схлопнет нормализация):
-// канонический N+1, который детекторы обязаны найти при пороге по умолчанию (5).
 func nPlusOneTransactionJSON() string {
 	end := time.Now().UTC()
 	start := end.Add(-500 * time.Millisecond)
@@ -517,8 +475,6 @@ func nPlusOneTransactionJSON() string {
 	}`, unix(start), unix(end), strings.Join(spans, ","))
 }
 
-// TestTransactionDetectionEndToEnd: envelope с транзакцией из шести одинаковых
-// db-спанов → в PG появляется проблема n_plus_one, а спаны всё равно уезжают в CH.
 func TestTransactionDetectionEndToEnd(t *testing.T) {
 	s := newStack(t)
 	path := fmt.Sprintf("/api/%d/envelope/", s.project.ID)
@@ -546,20 +502,16 @@ func TestTransactionDetectionEndToEnd(t *testing.T) {
 		t.Fatalf("perf_issue: kind=%q description=%q culprit=%q status=%q count=%d trace=%q",
 			kind, description, culprit, status, count, sampleTraceID)
 	}
-	// №132: в строке хранится параметр находки, а не готовый заголовок —
-	// заголовок строится на рендере из kind+description.
 	if !strings.Contains(description, "SELECT") {
 		t.Errorf("description = %q, want нормализованный запрос", description)
 	}
 
-	// Корневой спан + 6 дочерних: детекция не мешает записи в CH.
 	pid := uint64(s.project.ID)
 	if got := waitCH(t, s, "SELECT count(*) FROM spans WHERE project_id = ?", []any{pid}, 7); got != 7 {
 		t.Fatalf("spans rows = %d, want 7", got)
 	}
 }
 
-// waitCH поллит скалярный запрос, пока не получит want (батчер флашится ≤5s).
 func waitCH(t *testing.T, s *stack, query string, args []any, want uint64) uint64 {
 	t.Helper()
 	ctx := context.Background()
@@ -587,7 +539,6 @@ func TestTransactionEnvelopeEndToEnd(t *testing.T) {
 	if got := waitCH(t, s, "SELECT count(*) FROM transactions WHERE project_id = ?", []any{pid}, 1); got != 1 {
 		t.Fatalf("transactions rows = %d, want 1", got)
 	}
-	// Корневой спан + 2 дочерних.
 	if got := waitCH(t, s, "SELECT count(*) FROM spans WHERE project_id = ?", []any{pid}, 3); got != 3 {
 		t.Fatalf("spans rows = %d, want 3", got)
 	}
@@ -606,8 +557,6 @@ func TestTransactionEnvelopeEndToEnd(t *testing.T) {
 	}
 }
 
-// TestTransactionSampleRateZeroWritesNothing: при transaction_sample_rate=0
-// запрос принимается (200), но в CH не попадает НИЧЕГО.
 func TestTransactionSampleRateZeroWritesNothing(t *testing.T) {
 	s := newStack(t)
 	ctx := context.Background()
@@ -622,7 +571,6 @@ func TestTransactionSampleRateZeroWritesNothing(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
-	// Дать пайплайну и батчеру заведомо больше времени, чем нужно на запись.
 	time.Sleep(2 * time.Second)
 	s.pipeline.Close(context.Background())
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -644,9 +592,6 @@ func TestTransactionSampleRateZeroWritesNothing(t *testing.T) {
 	}
 }
 
-// TestTransactionQuotaExhaustedStillAcceptsErrors — половина инварианта
-// «квоты независимы»: транзакции упёрлись в свою квоту (429), а ошибки тем же
-// DSN-ключом по-прежнему принимаются.
 func TestTransactionQuotaExhaustedStillAcceptsErrors(t *testing.T) {
 	s := newStack(t)
 	ctx := context.Background()
@@ -669,19 +614,17 @@ func TestTransactionQuotaExhaustedStillAcceptsErrors(t *testing.T) {
 		t.Error("Retry-After header missing")
 	}
 
-	// Квота ошибок не тронута — событие тем же ключом принимается.
 	resp = s.post(t, path, envelopeBody(testEventJSON), false, s.key.PublicKey)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("error event after transaction quota exhausted: status = %d, want 200", resp.StatusCode)
 	}
 	waitIssue(t, s.pool, s.project.ID, 1)
 
-	// Счётчики в org_usage раздельные: транзакции не тратили бюджет ошибок.
 	txUsed, err := s.orgSvc.TransactionUsage(ctx, s.org.ID, time.Now())
 	if err != nil {
 		t.Fatalf("TransactionUsage: %v", err)
 	}
-	if txUsed != 2 { // ARCH-L1: отбитая третья транзакция НЕ считается в usage
+	if txUsed != 2 {
 		t.Errorf("TransactionUsage = %d, want 2", txUsed)
 	}
 	evUsed, err := s.orgSvc.Usage(ctx, s.org.ID, time.Now())
@@ -693,8 +636,6 @@ func TestTransactionQuotaExhaustedStillAcceptsErrors(t *testing.T) {
 	}
 }
 
-// TestEventQuotaExhaustedStillAcceptsTransactions — вторая половина
-// инварианта: ошибки упёрлись в свою квоту, транзакции принимаются.
 func TestEventQuotaExhaustedStillAcceptsTransactions(t *testing.T) {
 	s := newStack(t)
 	ctx := context.Background()
@@ -722,8 +663,6 @@ func TestEventQuotaExhaustedStillAcceptsTransactions(t *testing.T) {
 	}
 }
 
-// poisonEnvelope — envelope из n транзакций, чьи timestamp'ы разнесены по n
-// РАЗНЫМ месяцам (2000-01, 2000-02, ...).
 func poisonEnvelope(n int) string {
 	var b strings.Builder
 	b.WriteString("{}\n")
@@ -743,16 +682,6 @@ func poisonEnvelope(n int) string {
 	return b.String()
 }
 
-// TestTransactionTimestampPoisonDoesNotWedgeWriter — регрессия на partition
-// poison pill. Публичный DSN-ключ по замыслу лежит внутри клиентского
-// приложения, так что кто угодно может прислать envelope с сотнями транзакций,
-// чьи timestamp'ы попадают в сотни разных МЕСЯЦЕВ. Таблицы transactions/spans
-// партиционированы по toYYYYMM(timestamp), а ClickHouse отбивает INSERT-блок
-// больше чем в 100 партиций («Code: 252 ... Too many partitions for single
-// INSERT block»): такая пачка падала бы на вставке, возвращалась в голову
-// буфера и вставала бы намертво — трейсинг переставал бы писаться для ВСЕГО
-// инстанса, для всех организаций. Теперь такие item'ы отбрасываются на
-// парсинге, и следующая нормальная транзакция доезжает в CH.
 func TestTransactionTimestampPoisonDoesNotWedgeWriter(t *testing.T) {
 	s := newStack(t)
 	path := fmt.Sprintf("/api/%d/envelope/", s.project.ID)
@@ -762,8 +691,6 @@ func TestTransactionTimestampPoisonDoesNotWedgeWriter(t *testing.T) {
 		t.Fatalf("poison envelope: status = %d, want 200", resp.StatusCode)
 	}
 
-	// Нормальная транзакция ПОСЛЕ отравы: если писатель заклинило, она навсегда
-	// останется за отравленной пачкой в буфере и в CH не появится.
 	resp = s.post(t, path, transactionEnvelope(freshTransactionJSON()), false, s.key.PublicKey)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("good envelope: status = %d, want 200", resp.StatusCode)
@@ -775,7 +702,6 @@ func TestTransactionTimestampPoisonDoesNotWedgeWriter(t *testing.T) {
 		t.Fatalf("good transaction rows = %d, want 1 (span writer wedged by the poison batch?)", got)
 	}
 
-	// Сама отрава в CH не попала — её отбросили ещё на парсинге.
 	var poison uint64
 	if err := s.ch.QueryRow(context.Background(),
 		"SELECT count(*) FROM transactions WHERE project_id = ? AND transaction = 'GET /poison'",
@@ -785,14 +711,11 @@ func TestTransactionTimestampPoisonDoesNotWedgeWriter(t *testing.T) {
 	if poison != 0 {
 		t.Errorf("poison transactions in CH = %d, want 0", poison)
 	}
-	// И буфер не пришлось спасать переполнением: ничего не выброшено.
 	if dropped := s.spans.Dropped(); dropped != 0 {
 		t.Errorf("span writer Dropped() = %d, want 0", dropped)
 	}
 }
 
-// TestEventTraceIDGoesToClickHouse: событие с contexts.trace → колонки
-// events.trace_id/span_id заполнены.
 func TestEventTraceIDGoesToClickHouse(t *testing.T) {
 	s := newStack(t)
 	path := fmt.Sprintf("/api/%d/envelope/", s.project.ID)

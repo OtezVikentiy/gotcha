@@ -11,51 +11,12 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 )
 
-// TestIssueStatusMatchesCheckConstraint сверяет канон issue.Statuses с
-// CHECK-constraint status в 0003_issues.up.sql — седьмая копия перечня
-// статусов issue, обнаруженная ревью и не покрытая
-// TestNoIssueEnumLiteralCopies (тот сторож разбирает Go AST, до SQL в
-// миграциях ему дела нет).
-//
-// Мутация, которую ловит этот тест: добавление значения "muted" в
-// issue.Statuses само по себе не ловится НИЧЕМ — ни сборкой (SQL не
-// компилируется вместе с Go), ни issue_enum_contract_test.go (это не Go
-// литерал), ни существовавшими до этой задачи тестами; расхождение
-// всплыло бы только в рантайме ошибкой Postgres при первой попытке
-// записать issue со статусом "muted" — далеко от места, где статус
-// добавили в канон.
-//
-// Миграция 0003_issues.up.sql уже применена на проде — её нельзя менять
-// (что бы ни говорил канон, в БД уже колонка с ИМЕННО этим constraint), и
-// не только неё: TestBreakingMigrationsAreMarkedBreaking проверяет как раз
-// то, что накатанные миграции не переписываются задним числом. Отсюда
-// направление сверки: не "исправить миграцию под канон", а "новый статус в
-// канон обязан сопровождаться НОВОЙ миграцией", а до тех пор — падать.
-//
-// Способ сверки — разбор миграции самим сторожем (regexp по
-// guards.Load(t).MigrationsPG), а не запрос information_schema у тестовой
-// БД: guards.Tree уже читает дерево миграций в память для других сторожей
-// того же пакета (TestBreakingMigrationsAreMarkedBreaking и соседи в
-// migrations_test.go), и эта проверка — не про поведение живой Postgres
-// (тот же constraint из той же миграции будет и в testenv.MigratedPG, раз
-// down/up миграции идентичны прод-цепочке), а про соответствие ДВУХ
-// ИСХОДНИКОВ: query.go и .up.sql. Гонять ради этого тестовый контейнер —
-// добавлять сетевую/процессную зависимость там, где хватает regexp по уже
-// прочитанному в памяти файлу.
+// Миграция уже применена на проде и правке не подлежит: новый статус в
+// issue.Statuses обязан сопровождаться НОВОЙ миграцией, а не правкой этой.
 const issueStatusCheckMigrationPath = "internal/db/migrations/pg/0003_issues.up.sql"
 
-// issueStatusCheckRe вытаскивает список значений внутри
-// `CHECK (status IN ('a','b',...))` — форма ограничения в
-// 0003_issues.up.sql. Разбор нарочно узкий (не полноценный SQL-парсер):
-// область — один конкретный constraint одной конкретной миграции, а не
-// произвольный SQL.
 var issueStatusCheckRe = regexp.MustCompile(`(?is)CHECK\s*\(\s*status\s+IN\s*\(([^)]*)\)\s*\)`)
 
-// issueStatusCheckValues разбирает список значений внутри CHECK(status IN
-// (...)). Возвращает ok=false, если constraint в тексте не найден вовсе
-// (регэксп не совпал) или значение внутри списка не удалось разобрать как
-// одинарно-кавыченный SQL-литерал, — вызывающий обязан упасть t.Fatalf на
-// ok=false, а не молча сверяться с пустым/частичным множеством.
 func issueStatusCheckValues(sql string) (values []string, ok bool) {
 	m := issueStatusCheckRe.FindStringSubmatch(sql)
 	if m == nil {
@@ -68,9 +29,8 @@ func issueStatusCheckValues(sql string) (values []string, ok bool) {
 		if len(p) < 2 || p[0] != '\'' || p[len(p)-1] != '\'' {
 			return nil, false
 		}
-		// SQL '...' -> Go "..." для strconv.Unquote: значения канона (коды
-		// статусов) не содержат ни апострофов, ни экранирования — узкий
-		// разбор, достаточный ровно для этого constraint.
+		// SQL '...' -> Go "..." для strconv.Unquote: значения канона не содержат апострофов
+		// и экранирования — узкий разбор, достаточный для этого constraint.
 		unq, err := strconv.Unquote(`"` + p[1:len(p)-1] + `"`)
 		if err != nil {
 			return nil, false
@@ -111,10 +71,6 @@ func TestIssueStatusMatchesCheckConstraint(t *testing.T) {
 	}
 }
 
-// TestIssueStatusCheckValuesParsing закрепляет разбор issueStatusCheckValues
-// отдельно от факта, что он верно разбирает реальную миграцию — по образцу
-// TestDestructiveSQLRecognizesForms в migrations_test.go (расширение/сужение
-// регэкспа не должно проходить вслепую).
 func TestIssueStatusCheckValuesParsing(t *testing.T) {
 	cases := []struct {
 		name string

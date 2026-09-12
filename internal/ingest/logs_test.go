@@ -20,16 +20,12 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// collectLogSink копит принятые записи лога — для проверки санитизации,
-// квоты и наличия/отсутствия записи (LogSink nil-noop).
 type collectLogSink struct{ records []log.LogRecord }
 
 func (s *collectLogSink) Add(_ int64, r log.LogRecord) {
 	s.records = append(s.records, r)
 }
 
-// logStrVal/logKV — сборка AnyValue/KeyValue для OTLP LogRecord, калька strVal/
-// kv из internal/log/parse_otlp_test.go (другой пакет, свои копии).
 func logStrVal(s string) *commonpb.AnyValue {
 	return &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: s}}
 }
@@ -38,8 +34,6 @@ func logKV(k, v string) *commonpb.KeyValue {
 	return &commonpb.KeyValue{Key: k, Value: logStrVal(v)}
 }
 
-// postOTLPLogs — калька postOTLPMetrics (otlp_test.go:1507): POST /v1/logs с
-// protobuf-телом и Bearer-DSN auth.
 func postOTLPLogs(t *testing.T, h *Handler, rl []*logspb.ResourceLogs) *httptest.ResponseRecorder {
 	t.Helper()
 	raw, err := proto.Marshal(&logspb.LogsData{ResourceLogs: rl})
@@ -54,8 +48,7 @@ func postOTLPLogs(t *testing.T, h *Handler, rl []*logspb.ResourceLogs) *httptest
 	return w
 }
 
-// postNDJSON — POST /logs. gzipped=true шлёт тело gzip'ом с Content-Encoding
-// (проверка, что logsNDJSON читает тело через h.body, а не r.Body напрямую).
+// gzipped=true проверяет, что logsNDJSON читает тело через h.body, не r.Body напрямую.
 func postNDJSON(t *testing.T, h *Handler, body string, gzipped bool) *httptest.ResponseRecorder {
 	t.Helper()
 	var buf bytes.Buffer
@@ -86,7 +79,6 @@ func newLogsTestHandler(sink *collectLogSink) *Handler {
 	return h
 }
 
-// accepted декодирует ответ NDJSON-эндпоинта {"accepted":N}.
 func accepted(t *testing.T, w *httptest.ResponseRecorder) int {
 	t.Helper()
 	var body struct {
@@ -97,8 +89,6 @@ func accepted(t *testing.T, w *httptest.ResponseRecorder) int {
 	}
 	return body.Accepted
 }
-
-// --- OTLP /v1/logs ---
 
 func TestOTLPLogsBasic(t *testing.T) {
 	sink := &collectLogSink{}
@@ -124,12 +114,6 @@ func TestOTLPLogsBasic(t *testing.T) {
 	}
 }
 
-// TestOTLPLogsJSONHexTraceID — Fix A: OTLP/JSON кодирует trace_id/span_id как
-// HEX (не base64), а protojson без предварительного otlpJSONHexIDs молча
-// декодирует hex как base64 и портит id той же формы, но другого значения
-// (см. TestOTLPUnmarshalJSONHexIDs в otlp_test.go — тот же класс дефекта для
-// трасс). До фикса otlpUnmarshalLogs шёл в protojson напрямую — эта дыра была
-// не покрыта тестами: parse_otlp_test строит структуры напрямую, минуя JSON.
 func TestOTLPLogsJSONHexTraceID(t *testing.T) {
 	const (
 		wantTrace = "ab0102030405060708090a0b0c0d0eff"
@@ -183,8 +167,6 @@ func TestOTLPLogsUnauthenticated(t *testing.T) {
 	}
 }
 
-// TestOTLPLogsSinkNil: h.Logs == nil → 200 без записи (эндпоинт выключен, но
-// коллектор не должен ретраить вечно).
 func TestOTLPLogsSinkNil(t *testing.T) {
 	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 
@@ -197,8 +179,6 @@ func TestOTLPLogsSinkNil(t *testing.T) {
 	}
 }
 
-// TestOTLPLogsTooLarge: тело сверх maxBytes читается через h.body (MaxBytesReader) →
-// 413, а не 400/500.
 func TestOTLPLogsTooLarge(t *testing.T) {
 	sink := &collectLogSink{}
 	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 16)
@@ -218,8 +198,6 @@ func TestOTLPLogsTooLarge(t *testing.T) {
 	}
 }
 
-// --- NDJSON /logs ---
-
 func TestNDJSONLogsBasic(t *testing.T) {
 	sink := &collectLogSink{}
 	h := newLogsTestHandler(sink)
@@ -238,8 +216,6 @@ func TestNDJSONLogsBasic(t *testing.T) {
 	}
 }
 
-// TestNDJSONLogsGzip: тело gzip'ом с Content-Encoding — logsNDJSON обязан
-// читать его через h.body (распаковка), а не r.Body напрямую (спека §2.3).
 func TestNDJSONLogsGzip(t *testing.T) {
 	sink := &collectLogSink{}
 	h := newLogsTestHandler(sink)
@@ -258,8 +234,6 @@ func TestNDJSONLogsGzip(t *testing.T) {
 	}
 }
 
-// TestNDJSONLogsTooLarge: несжатое тело сверх maxBytes → 413 через h.body
-// (MaxBytesReader), не 400/500.
 func TestNDJSONLogsTooLarge(t *testing.T) {
 	sink := &collectLogSink{}
 	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 8)
@@ -275,10 +249,6 @@ func TestNDJSONLogsTooLarge(t *testing.T) {
 	}
 }
 
-// TestNDJSONLogsBadBody: нечитаемая кодировка тела (Content-Encoding: gzip на
-// не-gzip теле) → 400, не 500/413. Заодно проверяет self-метрику: T6 завела
-// gotcha_ingest_rejected_total{reason,signal}, и (malformed, log) — одна из
-// 29 пар, которые ничем не были защищены (см. countRejected в logsNDJSON).
 func TestNDJSONLogsBadBody(t *testing.T) {
 	sink := &collectLogSink{}
 	h := newLogsTestHandler(sink)
@@ -298,7 +268,6 @@ func TestNDJSONLogsBadBody(t *testing.T) {
 	}
 }
 
-// TestNDJSONLogsSinkNil: h.Logs == nil → 200 без записи, {"accepted":0}.
 func TestNDJSONLogsSinkNil(t *testing.T) {
 	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 
@@ -311,11 +280,6 @@ func TestNDJSONLogsSinkNil(t *testing.T) {
 	}
 }
 
-// --- Санитизация ---
-
-// TestLogsSanitizeNUL: NUL в теле лога и в NDJSON trace_id/span_id (последние
-// НЕ проходят ни через один кап парсера — только через sanitizeLog) вырезаны
-// перед записью.
 func TestLogsSanitizeNUL(t *testing.T) {
 	sink := &collectLogSink{}
 	h := newLogsTestHandler(sink)
@@ -340,8 +304,6 @@ func TestLogsSanitizeNUL(t *testing.T) {
 	}
 }
 
-// TestLogsSanitizeDenylistAttribute: денилист-ключ в LogAttributes/ResourceAttrs
-// маскируется скрубером — та же дисциплина, что у otlpMetrics.
 func TestLogsSanitizeDenylistAttribute(t *testing.T) {
 	sink := &collectLogSink{}
 	h := newLogsTestHandler(sink)
@@ -370,16 +332,10 @@ func TestLogsSanitizeDenylistAttribute(t *testing.T) {
 	}
 }
 
-// TestLogsSanitizeBodyURLScrub — Fix C: тело лога (`body`) — единственное
-// свободнотекстовое поле пайплайна логов, и без ScrubMessage оно обходило бы
-// безусловный скраб query-токенов/basic-auth в URL, применяемый к message
-// событий, имени транзакции и описанию спанов (см. пайплайн событий,
-// TestScrubReAuditRound2/M2 — тот же контракт: чистится ВСЕГДА, даже при
-// ScrubFreeText=false). Обычный текст без URL не должен искажаться.
 func TestLogsSanitizeBodyURLScrub(t *testing.T) {
 	sink := &collectLogSink{}
 	h := newLogsTestHandler(sink)
-	h.Scrub = NewScrubber(false, false, []string{"token"}) // ScrubFreeText=false — URL всё равно чистится (M2)
+	h.Scrub = NewScrubber(false, false, []string{"token"}) // ScrubFreeText=false — URL всё равно чистится
 
 	body := `{"message":"GET https://api.example/reset?token=SECRET&ok=1"}` + "\n" +
 		`{"message":"DSN https://user:hunter2@db.example/app fell over"}` + "\n" +
@@ -406,8 +362,6 @@ func TestLogsSanitizeBodyURLScrub(t *testing.T) {
 	}
 }
 
-// TestLogsSanitizeServiceCardinality: service под гардом кардинальности —
-// новое значение сверх потолка схлопывается в CardinalityOverflow.
 func TestLogsSanitizeServiceCardinality(t *testing.T) {
 	sink := &collectLogSink{}
 	h := newLogsTestHandler(sink)
@@ -430,7 +384,6 @@ func TestLogsSanitizeServiceCardinality(t *testing.T) {
 	}
 }
 
-// TestLogsSanitizeEnvironmentCardinality: environment под тем же гардом.
 func TestLogsSanitizeEnvironmentCardinality(t *testing.T) {
 	sink := &collectLogSink{}
 	h := newLogsTestHandler(sink)
@@ -453,9 +406,6 @@ func TestLogsSanitizeEnvironmentCardinality(t *testing.T) {
 	}
 }
 
-// --- Квота ---
-
-// TestLogsQuotaExhausted: LogQuota в 0 → 429, ничего не записано.
 func TestLogsQuotaExhausted(t *testing.T) {
 	sink := &collectLogSink{}
 	h := newLogsTestHandler(sink)
@@ -471,8 +421,7 @@ func TestLogsQuotaExhausted(t *testing.T) {
 	}
 }
 
-// fixedQuotaChecker выдаёт ровно n единиц один раз (остаток запросов той же
-// орги — 0): достаточно для проверки частичного списания в один запрос.
+// Выдаёт ровно n единиц один раз, дальше 0 — для проверки частичного списания.
 type fixedQuotaChecker struct{ n int64 }
 
 func (q *fixedQuotaChecker) CheckAndCount(_ context.Context, _ int64, want int64) (int64, time.Time, error) {
@@ -486,14 +435,10 @@ func (q *fixedQuotaChecker) CheckAndCount(_ context.Context, _ int64, want int64
 	return granted, time.Time{}, nil
 }
 
-// Refund — логи не имеют ёмкостного отказа постановки (LogSink.Add, в
-// отличие от Enqueue, ничего не отклоняет), поэтому возврат в тестах этого
-// файла не наступает и пустая реализация достаточна.
+// LogSink.Add, в отличие от Enqueue, ничего не отклоняет — возврат в этих
+// тестах не наступает, пустая реализация достаточна.
 func (q *fixedQuotaChecker) Refund(context.Context, int64, int64, time.Time) error { return nil }
 
-// TestLogsQuotaPartial: квота впритык на 1 запись из 2 → 200 (по 1 записи
-// принято), остаток дропнут и посчитан через countDrop(dropLog) →
-// DropCounter.IncDroppedLogs.
 func TestLogsQuotaPartial(t *testing.T) {
 	sink := &collectLogSink{}
 	h := newLogsTestHandler(sink)

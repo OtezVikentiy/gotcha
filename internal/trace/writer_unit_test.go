@@ -13,9 +13,8 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// fakeCHConn/fakeCHBatch повторяют event.fakeConn/fakeBatch: Append копит
-// строки, Send переносит их в conn.rows[таблица] либо падает, если для этой
-// таблицы взведён failTx/failSpans.
+// Append копит строки, Send переносит их в conn.rows[таблица] либо падает,
+// если для этой таблицы взведён failTx/failSpans.
 type fakeCHConn struct {
 	mu        sync.Mutex
 	txRows    int
@@ -24,9 +23,8 @@ type fakeCHConn struct {
 	spanSends int
 	failTx    bool
 	failSpans bool
-	// poisonTx/poisonSpans — предикаты «ядовитого» ряда по аргументам Append.
-	// Если заданы, Send падает, когда в батче есть хотя бы один такой ряд (для
-	// тестов изоляции poison-row); одиночная вставка ядовитого ряда всегда падает.
+	// если заданы, Send падает при наличии хотя бы одного такого ряда в батче;
+	// одиночная вставка ядовитого ряда падает всегда.
 	poisonTx    func(args []any) bool
 	poisonSpans func(args []any) bool
 }
@@ -52,7 +50,6 @@ func (b *fakeCHBatch) Close() error                  { return nil }
 func (b *fakeCHBatch) Column(int) driver.BatchColumn { return nil }
 func (b *fakeCHBatch) Columns() []column.Interface   { return nil }
 
-// hasPoison — есть ли в накопленном батче ряд, забракованный предикатом.
 func (b *fakeCHBatch) hasPoison(pred func([]any) bool) bool {
 	if pred == nil {
 		return false
@@ -156,7 +153,7 @@ func TestSpanWriterRetryKeepsRows(t *testing.T) {
 	go w.Run()
 	w.Add(1, 1, sampleTx(1))
 	w.Add(1, 1, sampleTx(1))
-	waitForCH(t, func() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.txSends >= 2 }) // ретраится
+	waitForCH(t, func() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.txSends >= 2 })
 	c.mu.Lock()
 	c.failTx, c.failSpans = false, false
 	c.mu.Unlock()
@@ -168,8 +165,6 @@ func TestSpanWriterRetryKeepsRows(t *testing.T) {
 	_ = w.Close(context.Background())
 }
 
-// Падение вставки в одну таблицу не должно ни терять, ни дублировать строки
-// другой: буферы независимы.
 func TestSpanWriterSpanFailureDoesNotResendTransactions(t *testing.T) {
 	c := &fakeCHConn{failSpans: true}
 	w := NewSpanWriter(c)
@@ -201,9 +196,9 @@ func TestSpanWriterDropsOldestOnOverflow(t *testing.T) {
 	w.batchSize = 100
 	w.spanBatchSize = 100
 	for i := 0; i < 8; i++ {
-		w.Add(1, 1, sampleTx(0)) // по 1 строке в каждый буфер
+		w.Add(1, 1, sampleTx(0))
 	}
-	if got := w.Dropped(); got != 6 { // 3 транзакции + 3 спана
+	if got := w.Dropped(); got != 6 {
 		t.Fatalf("Dropped() = %d, want 6", got)
 	}
 	w.mu.Lock()
@@ -235,8 +230,7 @@ func TestSpanWriterCloseFlushesAndIsIdempotent(t *testing.T) {
 	}
 }
 
-// txNamed — транзакция без дочерних спанов с заданным именем (колонка
-// transaction). Даёт ровно 1 строку в txBuf и 1 корневой спан в spanBuf.
+// без дочерних спанов — даёт ровно 1 строку в txBuf и 1 корневой спан в spanBuf.
 func txNamed(name string) Transaction {
 	start := time.Now().UTC()
 	return Transaction{
@@ -245,8 +239,7 @@ func txNamed(name string) Transaction {
 	}
 }
 
-// txWithChildDescs — транзакция (root Description = "ok") с дочерними спанами
-// заданных описаний. Позволяет подложить «ядовитый» спан в spanBuf.
+// root Description = "ok"; позволяет подложить «ядовитый» спан в spanBuf.
 func txWithChildDescs(descs ...string) Transaction {
 	tr := txNamed("ok")
 	for _, d := range descs {
@@ -258,9 +251,6 @@ func txWithChildDescs(descs ...string) Transaction {
 	return tr
 }
 
-// После poisonThreshold подряд-фейлов flushTx обязан изолировать ядовитый tx-ряд
-// (бинарное дробление): хорошие транзакции вставляются, ядовитая дропается,
-// txBuf разблокируется — head-of-line blocking снят.
 func TestSpanWriterIsolatesPoisonTxRowAfterThreshold(t *testing.T) {
 	// insertTx падает, если в батче есть транзакция с именем "poison"
 	// (args[3] — колонка transaction, см. порядок Append в insertTx).
@@ -274,7 +264,6 @@ func TestSpanWriterIsolatesPoisonTxRowAfterThreshold(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		w.Add(1, 1, txNamed("ok"))
 	}
-	// txBuf: 1 ядовитый + 5 хороших (всё в одном батче, batchSize=1000).
 
 	for i := 0; i < poisonThreshold+1; i++ {
 		w.flushTx(context.Background())
@@ -296,8 +285,6 @@ func TestSpanWriterIsolatesPoisonTxRowAfterThreshold(t *testing.T) {
 	}
 }
 
-// То же для батча спанов: раздельный счётчик spanFailStreak и изоляция в
-// flushSpans, независимо от tx.
 func TestSpanWriterIsolatesPoisonSpanRowAfterThreshold(t *testing.T) {
 	// insertSpans падает, если в батче есть спан с описанием "poison"
 	// (args[6] — колонка description, см. порядок Append в insertSpans).
@@ -307,11 +294,10 @@ func TestSpanWriterIsolatesPoisonSpanRowAfterThreshold(t *testing.T) {
 	w := NewSpanWriter(c)
 	w.interval = time.Hour
 
-	w.Add(1, 1, txWithChildDescs("poison")) // root(ok) + child(poison)
+	w.Add(1, 1, txWithChildDescs("poison"))
 	for i := 0; i < 5; i++ {
-		w.Add(1, 1, txNamed("ok")) // root(ok)
+		w.Add(1, 1, txNamed("ok"))
 	}
-	// spanBuf: 1 ядовитый + 6 хороших (root'ы).
 
 	for i := 0; i < poisonThreshold+1; i++ {
 		w.flushSpans(context.Background())
@@ -333,14 +319,12 @@ func TestSpanWriterIsolatesPoisonSpanRowAfterThreshold(t *testing.T) {
 	}
 }
 
-// Транзиентный отказ обеих таблиц (сеть/ctx): даже после порога подряд-фейлов
-// изоляция не должна дропать валидные tx/span-ряды — они остаются в буфере.
 func TestSpanWriterTransientFailureDropsNothing(t *testing.T) {
 	c := &fakeCHConn{failTx: true, failSpans: true}
 	w := NewSpanWriter(c)
 	w.interval = time.Hour
 	for i := 0; i < 4; i++ {
-		w.Add(1, 1, txNamed("ok")) // 1 tx + 1 root-span на каждый Add
+		w.Add(1, 1, txNamed("ok"))
 	}
 	for i := 0; i < poisonThreshold+3; i++ {
 		w.flushTx(context.Background())
@@ -369,10 +353,6 @@ func waitForCH(t *testing.T, cond func() bool) {
 	t.Fatal("condition not met in 5s")
 }
 
-// TestSpanWriterBoundsBuffersByBytes — оба буфера (транзакции и спаны) были
-// ограничены только ЧИСЛОМ строк, а размер строки задаёт клиент: описание спана,
-// теги транзакции, JSON data. maxSpanBuf=100000 раздутых строк — это десятки
-// гигабайт в буфере, заведённом под сто тысяч небольших спанов.
 func TestSpanWriterBoundsBuffersByBytes(t *testing.T) {
 	w := NewSpanWriter(nil)
 	w.maxBufBytes = 1 << 20

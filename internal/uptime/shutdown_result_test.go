@@ -9,8 +9,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// blockingChecker держит проверку до тех пор, пока не отменят контекст, —
-// ровно то, что происходит с медленным HTTP-запросом в момент SIGTERM.
+// держит проверку, пока не отменят ctx, — то же самое происходит с медленным
+// HTTP-запросом в момент SIGTERM.
 type blockingChecker struct{ started chan struct{} }
 
 func (b *blockingChecker) Check(ctx context.Context, m uptime.Monitor) uptime.Result {
@@ -22,14 +22,6 @@ func (b *blockingChecker) Check(ctx context.Context, m uptime.Monitor) uptime.Re
 	return uptime.Result{OK: false, Error: ctx.Err().Error()}
 }
 
-// TestShutdownDoesNotRecordFalseOutage — проверка, оборванная остановкой
-// процесса, не должна записываться как отказ сервиса.
-//
-// Отмена ctx приходит от SIGTERM (деплой, рестарт контейнера), и проверка в
-// этот момент возвращает неуспех с «context canceled». Раньше эта строка
-// доезжала и в check_results, и в детектор: каждый деплой занижал аптайм, а у
-// монитора с fail_threshold=1 ещё и открывал инцидент с рассылкой «сервис
-// недоступен». В данных это неотличимо от настоящего падения.
 func TestShutdownDoesNotRecordFalseOutage(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -55,8 +47,7 @@ func TestShutdownDoesNotRecordFalseOutage(t *testing.T) {
 	go (&uptime.Scheduler{Svc: svc, Every: 10 * time.Millisecond}).Run(runCtx)
 	go runner.Run(runCtx)
 
-	// Дожидаемся, что проверка реально началась, и только потом «выключаем
-	// процесс» — иначе тест ничего не проверял бы.
+	// ждём, что проверка реально началась — иначе тест ничего бы не проверял.
 	select {
 	case <-checker.started:
 	case <-time.After(10 * time.Second):
@@ -66,8 +57,6 @@ func TestShutdownDoesNotRecordFalseOutage(t *testing.T) {
 	runCancel()
 	runner.Close()
 
-	// Ни состояния, ни инцидента: обрыв по нашей же остановке не событие о
-	// сервисе.
 	states, err := svc.States(ctx, created.ID)
 	if err != nil {
 		t.Fatalf("States: %v", err)

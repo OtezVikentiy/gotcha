@@ -10,8 +10,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// composeFile/composeService — ровно те поля compose-файлов, на которые
-// опираются правила. Разбор строгий не нужен: неизвестные поля игнорируются.
 type composeFile struct {
 	Services map[string]composeService `yaml:"services"`
 }
@@ -44,13 +42,8 @@ func loadCompose(t *testing.T, root, name string) composeFile {
 	return cf
 }
 
-// TestEnvExampleDoesNotOverrideCompose — каждая переменная, которую задаёт
-// секция environment сервиса gotcha, обязана быть закомментирована в
-// .env.example. Compose читает .env дважды — для подстановки ${…} и через
-// env_file — поэтому раскомментированное значение в .env ПОБЕЖДАЕТ дефолт
-// compose: так появилась находка №37 (BASE_URL с портом 8080 против
-// публикуемого 59080 → 403 на каждый POST). GOTCHA_LISTEN_ADDR добавлен явно:
-// compose его не задаёт, но проброс порта 59080:8080 подразумевает :8080.
+// Compose читает .env дважды — для подстановки ${…} и через env_file — и
+// раскомментированное значение в .env побеждает дефолт compose.
 func TestEnvExampleDoesNotOverrideCompose(t *testing.T) {
 	root, err := findRoot()
 	if err != nil {
@@ -65,9 +58,6 @@ func TestEnvExampleDoesNotOverrideCompose(t *testing.T) {
 	for k := range gotcha.Environment {
 		keys = append(keys, k)
 	}
-	// Нижняя граница: environment сервиса задаёт минимум три переменные
-	// (PG_DSN, CH_DSN, BASE_URL, SECRET_KEY на момент написания). Меньше —
-	// сторож разучился читать YAML, а не compose стал проще.
 	if len(keys) < 4 {
 		t.Fatalf("найдено %d переменных environment, ожидалось ≥4 — обход ослеп", len(keys))
 	}
@@ -86,12 +76,6 @@ func TestEnvExampleDoesNotOverrideCompose(t *testing.T) {
 	}
 }
 
-// TestComposeServicesAreBounded — каждый сервис базового compose-файла обязан
-// иметь restart-политику, ротацию логов, потолок памяти и healthcheck со
-// start_period. Класс дефекта — «добавили сервис и не дали ему потолок»:
-// ровно так появились находки №39 (память ClickHouse без лимита ела 90%
-// хоста) и №104 (без start_period бюджет проверок тратился на инициализацию,
-// и первый запуск на минимальном VPS падал «dependency failed to start»).
 func TestComposeServicesAreBounded(t *testing.T) {
 	root, err := findRoot()
 	if err != nil {
@@ -128,23 +112,14 @@ func TestComposeServicesAreBounded(t *testing.T) {
 	// Ужесточение приложения: у gotcha нет причин иметь capabilities, запись
 	// в свою ФС или неограниченное число процессов.
 	gotcha := cf.Services["gotcha"]
-	// Допустимых форм ровно две: литерал и подстановка С ДЕФОЛТОМ true.
-	// Переключатель ${GOTCHA_COMPOSE_NO_NEW_PRIVS:-true} существует для хостов,
-	// где dockerd сам confined под AppArmor (сборка из snap) и ядро отказывает
-	// в переходе в профиль контейнера при NO_NEW_PRIVS — там контейнер падает
-	// на exec ещё до первой строки лога. Снять ужесточение оператор может
-	// осознанно через .env, но ДЕФОЛТ ПОСТАВКИ обязан оставаться true: форма
-	// без дефолта (${…}) или с дефолтом false выключила бы его молча и у всех,
-	// а это ровно тот класс «ослабили и не заметили», против которого сторож.
+	// Дефолт обязан быть true: без него или с false ужесточение гаснет молча у всех.
+	// Подстановка нужна хостам с AppArmor-confined dockerd (snap) — там иначе падает exec.
 	const (
 		nnpLiteral = "no-new-privileges:true"
 		nnpSubst   = "no-new-privileges:${GOTCHA_COMPOSE_NO_NEW_PRIVS:-true}"
 	)
-	// Сверяется ВЕСЬ список, а не наличие нужной записи в нём: security_opt —
-	// ровно то место, куда ослабление дописывается следующей строкой
-	// (apparmor=unconfined, seccomp=unconfined), и проверка «нужное на месте»
-	// такое дописывание пропускает молча. Понадобится законная вторая опция —
-	// её впишут сюда осознанно, вместе с обоснованием.
+	// Сверяется весь список, не только наличие нужной записи — иначе дописанное
+	// ослабление (apparmor=unconfined, seccomp=unconfined) прошло бы молча.
 	if len(gotcha.SecurityOpt) != 1 ||
 		(gotcha.SecurityOpt[0] != nnpLiteral && gotcha.SecurityOpt[0] != nnpSubst) {
 		t.Errorf("docker-compose.yml: security_opt сервиса gotcha = %q, а обязан состоять "+
@@ -168,20 +143,12 @@ func TestComposeServicesAreBounded(t *testing.T) {
 		t.Error("docker-compose.yml: gotcha без pids_limit")
 	}
 
-	// Оверлей для стеснённых машин: требований к перекрытиям нет, но
-	// нечитаемый YAML — ошибка здесь, раньше CI (тот проверяет связку целиком).
+	// Требований к содержимому нет — только чтобы YAML читался.
 	loadCompose(t, root, "docker-compose.small.yml")
 }
 
-// TestComposeGotchaPortBindsLoopbackByDefault — публикация порта приложения
-// (ports: у сервиса gotcha) обязана по умолчанию биндиться ТОЛЬКО на
-// loopback (${GOTCHA_COMPOSE_BIND:-127.0.0.1}), а не на все интерфейсы (W3-D,
-// запись 6, ревью 2026-08-27). Раньше compose публиковал 59080 на 0.0.0.0
-// безусловно: чек-лист прод-развёртывания (installation.md) ставит перед
-// приложением TLS-реверс-прокси, но голый HTTP-вход и открытый /metrics
-// (self-телеметрия без аутентификации) оставались доступны напрямую В ОБХОД
-// прокси с ЛЮБОГО адреса. YAML юнит-тестами не проверяется — этот сторож
-// ловит будущую правку compose, которая молча вернёт бинд на 0.0.0.0.
+// Порт обязан по умолчанию биндиться на loopback: голый HTTP-вход и
+// открытый /metrics не должны быть доступны в обход прокси с любого адреса.
 func TestComposeGotchaPortBindsLoopbackByDefault(t *testing.T) {
 	root, err := findRoot()
 	if err != nil {
@@ -203,39 +170,10 @@ func TestComposeGotchaPortBindsLoopbackByDefault(t *testing.T) {
 	}
 }
 
-// composeSubstRe находит подстановки Docker Compose ${GOTCHA_...} (с
-// дефолтом `:-...`/`:?...` или без него) в тексте compose-файла.
 var composeSubstRe = regexp.MustCompile(`\$\{(GOTCHA_[A-Z0-9_]+)(?::[-?][^}]*)?\}`)
 
-// TestComposeVarsNamespaced — любая переменная GOTCHA_*, которую подставляет
-// сам Docker Compose (`${GOTCHA_...}` в docker-compose.yml/.small.yml),
-// обязана нести префикс GOTCHA_COMPOSE_ или GOTCHA_BUILD_ (envcontract.Renamed,
-// «E3, заморозка контракта — неймспейс compose и сборки»). Без него имя
-// неотличимо на вид от обычной продуктовой переменной, а cmd/gotcha.Config
-// поля под него нет и не будет: оператор, задавший, скажем, GOTCHA_PG_PASSWORD
-// напрямую на Kubernetes/systemd (без Compose в цепочке), не получает ни
-// эффекта, ни диагностики — сам compose её просто не подставит.
-//
-// Одно сквозное исключение, найденное структурно, а не вторым списком
-// руками: подстановка, которую compose пробрасывает под ТЕМ ЖЕ именем в
-// окружение контейнера (`GOTCHA_BASE_URL: ${GOTCHA_BASE_URL:-...}`,
-// `GOTCHA_SECRET_KEY: ${GOTCHA_SECRET_KEY:-...}`) — это не compose-only
-// переменная, а обычное поле cmd/gotcha.Config, которое compose лишь
-// форвардит дальше под собственным именем. Любая другая подстановка —
-// под другим ключом (`POSTGRES_PASSWORD: ${GOTCHA_PG_PASSWORD:-gotcha}`,
-// `VERSION: ${GOTCHA_VERSION:-dev}`) или вовсе без ключа (`ports:`,
-// `mem_limit:`, `driver_opts:`) — исключения не получает и обязана нести
-// префикс.
-//
-// Критерий исключения — не только «ключ YAML совпадает с именем переменной»
-// (находка M2 ревью): такое совпадение само по себе ничего не
-// доказывает — `GOTCHA_NET_MTU: ${GOTCHA_NET_MTU:-1450}` в environment прошло
-// бы этот критерий, хотя GOTCHA_NET_MTU не поле cmd/gotcha.Config, а
-// переименованная (в этой же волне) compose-only переменная. Исключение
-// действует, только если имя ЕЩЁ И реально читает cmd/gotcha/config.go —
-// сверяется с configVars (collectGotchaEnvVars, env_example_test.go, та же
-// истина, которой поверяет .env.example) — а не со вторым списком имён
-// вручную.
+// Исключение — только когда ключ YAML совпадает с именем переменной, и она
+// реально читается cmd/gotcha/config.go (configVars), а не любое такое совпадение.
 func TestComposeVarsNamespaced(t *testing.T) {
 	root, err := findRoot()
 	if err != nil {
@@ -262,11 +200,6 @@ func TestComposeVarsNamespaced(t *testing.T) {
 	}
 }
 
-// checkComposeNamespace обходит YAML-дерево одного compose-файла и проверяет
-// каждую найденную подстановку GOTCHA_* (см. докблок TestComposeVarsNamespaced
-// про сквозное исключение "ключ совпадает с именем переменной, которое
-// реально читает cmd/gotcha.Config"). Возвращает число найденных подстановок
-// — по нему TestComposeVarsNamespaced проверяет, что обход не ослеп.
 func checkComposeNamespace(t *testing.T, file, parentKey string, n *yaml.Node, configVars map[string]bool) int {
 	t.Helper()
 	found := 0
@@ -296,18 +229,8 @@ func checkComposeNamespace(t *testing.T, file, parentKey string, n *yaml.Node, c
 	return found
 }
 
-// TestComposeVarsDocumented — задача 11, пункт 4: паритет compose-неймспейса
-// (${GOTCHA_COMPOSE_*}/${GOTCHA_BUILD_*}, подстановка Docker Compose самого
-// себя — читатель) ↔ .env.example ↔ таблицы configuration.md обеих локалей.
-// Решение владельца, задача 11 п.5: у этих имён читатель — не Go-код, а сама
-// подстановка в docker-compose.yml/.small.yml, поэтому TestEnvExampleCoversConfig
-// (которая сверяет .env.example с кодом) и checkConfigurationTableParity
-// (которая берёт vars из кода) их не видят вовсе — этот сторож закрывает
-// именно этот, третий класс переменных, отдельно.
-//
-// До этого сторожа GOTCHA_COMPOSE_PORT, GOTCHA_COMPOSE_BIND и все три
-// GOTCHA_BUILD_* вовсе отсутствовали в .env.example — реальная находка,
-// которую этот сторож теперь не даст повторить.
+// У compose-only переменных читатель — не Go-код, а сама подстановка в
+// docker-compose.yml, поэтому сторожи, берущие имена из кода, их не видят.
 func TestComposeVarsDocumented(t *testing.T) {
 	root, err := findRoot()
 	if err != nil {
@@ -347,10 +270,6 @@ func TestComposeVarsDocumented(t *testing.T) {
 	enTable := tableVarNames(string(enDoc))
 
 	for v := range composeVars {
-		// То же «NAME=», что и в TestEnvExampleCoversConfig — короткое имя
-		// префикс более длинного (GOTCHA_COMPOSE_PG_PASSWORD ⊂
-		// GOTCHA_COMPOSE_CH_PASSWORD не бывает, но конвенция общая с тем
-		// сторожем не случайно).
 		if !strings.Contains(string(example), v+"=") {
 			t.Errorf("%s подставляется Docker Compose (${%s}), но отсутствует в .env.example", v, v)
 		}

@@ -8,36 +8,18 @@ import (
 	"time"
 )
 
-// snapshotInterval — как часто обновляется снимок очереди выгрузок. Тот же
-// приём и тот же интервал, что у notify.Stats (internal/notify/stats.go):
-// частоту скрейпа задаёт чужой Prometheus, и сажать запрос к PostgreSQL на
-// этот путь значит отдать нагрузку на базу под чужой контроль.
+// Частоту скрейпа задаёт внешний Prometheus — запрос к PostgreSQL на этот путь садить нельзя.
 const snapshotInterval = 15 * time.Second
 
-// QueueSnapshot — состояние очереди выгрузок на момент опроса.
 type QueueSnapshot struct {
-	// Pending — заявок в очереди, ещё не досчитано (queued или running).
 	Pending int64
-	// Failed — заявок, у которых кончились попытки.
-	Failed int64
-	// OldestPendingAge — возраст самой старой заявки, ещё не досчитанной.
-	//
-	// Главное из трёх чисел: только оно отличает «очередь пуста, потому что
-	// всё обработано» от «очередь стоит». Ни глубина, ни число провалов
-	// этого не показывают — очередь из трёх заявок может быть нормальной
-	// работой, а может третьи сутки ждать воркера, который не поднят.
+	Failed  int64
+	// Только это поле отличает «очередь пуста» от «очередь стоит» — глубина и Failed не покажут.
 	OldestPendingAge time.Duration
 }
 
-// QueueSnapshot — состояние очереди выгрузок: сколько заявок ждёт
-// обработки, сколько добито в failed, и сколько ждёт самая старая.
-//
-// Pending считает queued И running разом: заявка, которую воркер уже
-// забрал, но ещё не дописал, с точки зрения дежурного так же "в очереди",
-// как и не забранная — до P1-OPS-1 не было видно ни то, ни другое.
-// OldestPendingAge берётся от created_at (момент постановки), а не от
-// claimed_at: заявка, простоявшая в queued час, а потом обрабатывающаяся
-// минуту, всё это время была "заявкой, которую дежурный не увидел".
+// Pending считает queued И running — заявка у воркера всё ещё «в очереди» с точки зрения дежурного.
+// OldestPendingAge — от created_at, не claimed_at: время без внимания дежурного, не обработки.
 func (s *Store) QueueSnapshot(ctx context.Context) (QueueSnapshot, error) {
 	var snap QueueSnapshot
 	var oldestSecs float64
@@ -56,18 +38,11 @@ func (s *Store) QueueSnapshot(ctx context.Context) (QueueSnapshot, error) {
 	return snap, nil
 }
 
-// Stats — наблюдаемость очереди выгрузок для самометрик (P1-OPS-1). До неё
-// вставшая очередь и массовые отказы заявок были видны только по тишине в
-// логе (Worker пишет только slog.Warn на неудачный тик) — тот же пробел, что
-// закрывала notify.Stats (internal/notify/stats.go) для очереди доставки
-// уведомлений; этот тип устроен симметрично.
 type Stats struct {
-	// snapshot хранит *QueueSnapshot: горутина опроса заменяет его целиком,
-	// читатели метрик берут без блокировки.
+	// Заменяется горутиной опроса целиком, читатели берут без блокировки.
 	snapshot atomic.Pointer[QueueSnapshot]
 }
 
-// Snapshot — последний снимок очереди. До первого опроса — нули.
 func (s *Stats) Snapshot() QueueSnapshot {
 	if snap := s.snapshot.Load(); snap != nil {
 		return *snap
@@ -75,20 +50,16 @@ func (s *Stats) Snapshot() QueueSnapshot {
 	return QueueSnapshot{}
 }
 
-// Pending, FailedJobs, OldestPendingAgeSeconds — снимок очереди в виде,
-// удобном для регистрации метрик (selfmetrics.Registry.AddInt).
 func (s *Stats) Pending() int64    { return s.Snapshot().Pending }
 func (s *Stats) FailedJobs() int64 { return s.Snapshot().Failed }
 func (s *Stats) OldestPendingAgeSeconds() int64 {
 	return int64(s.Snapshot().OldestPendingAge / time.Second)
 }
 
-// QueueProbe — источник снимков очереди; *Store ему удовлетворяет.
 type QueueProbe interface {
 	QueueSnapshot(ctx context.Context) (QueueSnapshot, error)
 }
 
-// RunSnapshots обновляет снимок очереди, пока не отменят ctx.
 func (s *Stats) RunSnapshots(ctx context.Context, probe QueueProbe) {
 	ticker := time.NewTicker(snapshotInterval)
 	defer ticker.Stop()
@@ -106,9 +77,7 @@ func (s *Stats) RunSnapshots(ctx context.Context, probe QueueProbe) {
 func (s *Stats) refresh(ctx context.Context, probe QueueProbe) {
 	snap, err := probe.QueueSnapshot(ctx)
 	if err != nil {
-		// Снимок не обновился — оставляем прежний. Обнулять его нельзя: нули
-		// означали бы «очередь пуста», то есть недоступная база выглядела бы
-		// как здоровая очередь выгрузок.
+		// При ошибке прежний снимок не обнуляем: нули означали бы «пусто», база выглядела бы здоровой.
 		if ctx.Err() == nil {
 			slog.Warn("export: queue snapshot failed", "error", err)
 		}

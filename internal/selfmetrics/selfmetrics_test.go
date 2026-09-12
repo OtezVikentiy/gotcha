@@ -12,7 +12,6 @@ func TestGatherFormat(t *testing.T) {
 		map[string]string{"writer": "events"}, func() int64 { return 42 })
 	r.AddInt(Counter, "gotcha_dropped_total", "Rows dropped.",
 		map[string]string{"writer": "events"}, func() int64 { return 7 })
-	// Вторая серия того же имени — обязана попасть под ОДИН блок HELP/TYPE.
 	r.AddInt(Counter, "gotcha_dropped_total", "Rows dropped.",
 		map[string]string{"writer": "spans"}, func() int64 { return 0 })
 
@@ -36,7 +35,6 @@ func TestGatherFormat(t *testing.T) {
 	}
 }
 
-// Значения читаются на КАЖДЫЙ скрап, а не запоминаются при регистрации.
 func TestGatherReadsLive(t *testing.T) {
 	var r Registry
 	n := int64(1)
@@ -62,7 +60,6 @@ func TestEscaping(t *testing.T) {
 	}
 }
 
-// Порядок вывода стабилен: одинаковый скрап — одинаковый текст.
 func TestGatherStable(t *testing.T) {
 	var r Registry
 	r.AddInt(Gauge, "b", "b", map[string]string{"z": "1", "a": "2"}, func() int64 { return 1 })
@@ -73,7 +70,6 @@ func TestGatherStable(t *testing.T) {
 			t.Fatal("вывод нестабилен между скрапами")
 		}
 	}
-	// Сортировка по имени: блок метрики "a" должен идти раньше блока "b".
 	if strings.Index(first, "# HELP a ") > strings.Index(first, "# HELP b ") {
 		t.Errorf("метрики не отсортированы по имени:\n%s", first)
 	}

@@ -1,8 +1,6 @@
 -- backward-compatible: yes (смена значений по умолчанию)
--- PROD-B2: безлимит квот по умолчанию (OSS). Меняем DEFAULT колонок квот на 0
--- и сбрасываем в 0 существующие строки, всё ещё держащие legacy-хардкод-дефолты
--- (transaction_quota=100000, metric/profile=1000000). Явно заданные оператором
--- иные значения не трогаются (WHERE = старый дефолт).
+-- DEFAULT квот -> 0 (безлимит); сбрасываются только строки, ещё держащие legacy-дефолт
+-- (WHERE = старое значение) — операторские правки не трогаем.
 ALTER TABLE organizations ALTER COLUMN transaction_quota SET DEFAULT 0;
 ALTER TABLE organizations ALTER COLUMN metric_quota SET DEFAULT 0;
 ALTER TABLE organizations ALTER COLUMN profile_quota SET DEFAULT 0;

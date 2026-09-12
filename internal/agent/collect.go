@@ -1,5 +1,3 @@
-// collect.go — сбор Sample через шов Probes: Collector не знает о gopsutil,
-// пробы подставляются DefaultProbes() (боевой путь) или fakeProbes (тесты).
 package agent
 
 import (
@@ -11,24 +9,23 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/hostmetric"
 )
 
-// CPUTimes — агрегат по всем ядрам, секунды (cpu.Times(false) у gopsutil).
+// Агрегат по всем ядрам, секунды (cpu.Times(false) у gopsutil).
 type CPUTimes struct {
 	User, System, Idle, Nice, Iowait, Irq, Softirq, Steal float64
 }
 
-// FSSample — один смонтированный раздел до фильтрации хостовых исключений.
+// До фильтрации хостовых исключений (см. filterFS).
 type FSSample struct {
 	Device, Mountpoint, FSType, Mode string // Mode "ro"|"rw" из реальных опций монтирования
 	Utilization                      float64
 }
 
-// IOBytes — счётчики диска since-boot (не дельта: дельту считает потребитель).
+// Счётчики since-boot, не дельта — дельту считает потребитель.
 type IOBytes struct{ Read, Write uint64 }
 
-// NetBytes — счётчики интерфейса since-boot.
+// Счётчики since-boot (как IOBytes).
 type NetBytes struct{ Recv, Sent uint64 }
 
-// Sample — один тик сбора хост-метрик.
 type Sample struct {
 	Time                 time.Time
 	CPU                  map[string]float64 // state → доля 0..1; nil на первом тике (нет дельты) и при откате счётчика
@@ -43,9 +40,7 @@ type Sample struct {
 	BootTime             time.Time
 }
 
-// Probes — шов между Collector и источником данных (gopsutil за DefaultProbes,
-// фиксированные литералы в тестах). Каждая проба независима: падение одной не
-// должно требовать успеха остальных.
+// Каждая проба независима: падение одной не требует успеха остальных.
 type Probes struct {
 	CPUTimes func() (CPUTimes, error)
 	CPUCount func() (int, error)
@@ -59,20 +54,18 @@ type Probes struct {
 	BootTime func() (time.Time, error)
 }
 
-// Collector хранит CPUTimes прошлого тика для дельты долей.
+// Хранит CPUTimes прошлого тика для дельты долей.
 type Collector struct {
 	probes  Probes
 	prevCPU *CPUTimes
 }
 
-// NewCollector создаёт Collector поверх заданных проб.
 func NewCollector(p Probes) *Collector {
 	return &Collector{probes: p}
 }
 
-// Collect снимает один Sample. Ошибка одной пробы не роняет весь тик —
-// соответствующая секция остаётся нулевой (частичный сбор лучше пустого);
-// err возвращается только если упали ВСЕ пробы.
+// Ошибка одной пробы не роняет тик — секция остаётся нулевой; err только,
+// если упали все пробы.
 func (c *Collector) Collect(now time.Time) (Sample, error) {
 	s := Sample{Time: now}
 	var errs []error
@@ -154,9 +147,8 @@ func (c *Collector) Collect(now time.Time) (Sample, error) {
 	return s, nil
 }
 
-// cpuUtilization считает доли по CPU-state из дельты с прошлым тиком.
-// Имена states — канон hostmetrics cpu-scraper (не поля gopsutil): Iowait→wait,
-// Irq→interrupt, остальные однозначны.
+// Имена states — канон hostmetrics cpu-scraper, не поля gopsutil:
+// Iowait→wait, Irq→interrupt, остальные без изменений.
 func (c *Collector) cpuUtilization(cur CPUTimes) map[string]float64 {
 	prev := c.prevCPU
 	c.prevCPU = &cur
@@ -187,8 +179,7 @@ func (c *Collector) cpuUtilization(cur CPUTimes) map[string]float64 {
 	return util
 }
 
-// filterFS отсекает псевдо-ФС и служебные точки монтирования — единый список
-// исключений с web/hosts.go и evaluator (internal/hostmetric).
+// Список исключений общий с web/hosts.go и evaluator (internal/hostmetric).
 func filterFS(all []FSSample) []FSSample {
 	var out []FSSample
 	for _, fs := range all {

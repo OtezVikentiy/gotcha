@@ -5,18 +5,9 @@ import (
 	"strconv"
 )
 
-// projCookie — «липкость» выбранного проекта: та же идея, что у rangeCookie
-// (№25). Проект в навигации задаётся только путём /projects/{id}/…, а детали
-// (/issues/{id}, /traces/{id}…), /docs, /profile и область организации живут
-// на адресах без проекта — там навигация молча откатывалась на ПЕРВЫЙ проект
-// списка, и выбор пользователя слетал на каждом таком переходе. Cookie
-// запоминает последний явно открытый проект; страницы без проекта в пути и
-// корень "/" берут его отсюда.
 const projCookieName = "proj"
 
-// projCookieID — id проекта из cookie; 0 — cookie нет или значение битое.
-// Доверять значению нельзя: вызывающий обязан сверить id со списком проектов,
-// доступных ЭТОМУ пользователю (общий браузер, отозванный доступ).
+// Значению нельзя доверять: id нужно сверить со списком проектов, доступных ЭТОМУ пользователю.
 func projCookieID(r *http.Request) int64 {
 	c, err := r.Cookie(projCookieName)
 	if err != nil {
@@ -29,8 +20,6 @@ func projCookieID(r *http.Request) int64 {
 	return id
 }
 
-// setProjCookie — та же механика, что setRangeCookie: год жизни, Path=/,
-// SameSite=Lax, Secure по схеме. HttpOnly — значение читает только сервер.
 func setProjCookie(w http.ResponseWriter, id int64, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     projCookieName,

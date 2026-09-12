@@ -13,7 +13,6 @@ func profileRegressionsPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/profile-regressions"
 }
 
-// profileRegressionStatusFilter нормализует query-статус (дефолт open).
 func profileRegressionStatusFilter(v string) string {
 	switch v {
 	case "resolved":
@@ -25,9 +24,6 @@ func profileRegressionStatusFilter(v string) string {
 	}
 }
 
-// profileRegressionsList — GET /projects/{id}/profile-regressions: таблица
-// регрессий self-CPU функций. Доступ — CanAccessProject, чужим 404; только
-// чтение (регрессии закрываются оценщиком автоматически).
 func (h *Handler) profileRegressionsList(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -51,9 +47,6 @@ func (h *Handler) profileRegressionsList(w http.ResponseWriter, r *http.Request)
 		h.notFound(w, r)
 		return
 	}
-	// CanOperate — read-only, тот же приём, что regressionsList/hostDetail:
-	// список открыт всем участникам проекта, ack-кнопка на открытой регрессии —
-	// только оператору.
 	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -65,7 +58,6 @@ func (h *Handler) profileRegressionsList(w http.ResponseWriter, r *http.Request)
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	// ackedBy — W2-C находка 4: email подтвердившего, батчем (см. ackedByEmails).
 	ackedByIDs := make([]int64, 0, len(regs))
 	for _, reg := range regs {
 		if reg.AcknowledgedBy != nil {

@@ -11,18 +11,12 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 )
 
-// parseThresholdsRequest строит GET-запрос с query-параметрами формы —
-// parseHostThresholdsForm читает через r.FormValue, которому всё равно,
-// пришли ли значения из query или из тела POST (тот же приём избавляет от
-// Content-Type-заголовка multipart/urlencoded в тесте).
+// FormValue не различает query и тело POST — GET с query избавляет от Content-Type в тесте.
 func parseThresholdsRequest(t *testing.T, form url.Values) *http.Request {
 	t.Helper()
 	return httptest.NewRequest("GET", "/x?"+form.Encode(), nil)
 }
 
-// TestParseHostThresholdsFormInherit — форма без единого поля (или с
-// нераспознанным режимом) — все 8 указателей nil, каждый вид "наследует"
-// (docblock parseHostThresholdsForm).
 func TestParseHostThresholdsFormInherit(t *testing.T) {
 	ov, err := parseHostThresholdsForm(parseThresholdsRequest(t, url.Values{}))
 	if err != nil {
@@ -35,9 +29,6 @@ func TestParseHostThresholdsFormInherit(t *testing.T) {
 		t.Errorf("ov = %+v, want все поля nil (inherit)", ov)
 	}
 
-	// Нераспознанный режим — тот же inherit, что и пустой (комментарий
-	// parseHostThresholdsForm: "любой другой/пустой режим трактуется как
-	// inherit").
 	form := url.Values{"disk_mode": {"bogus"}}
 	ov, err = parseHostThresholdsForm(parseThresholdsRequest(t, form))
 	if err != nil {
@@ -48,9 +39,6 @@ func TestParseHostThresholdsFormInherit(t *testing.T) {
 	}
 }
 
-// TestParseHostThresholdsFormOverride — режим "override" по каждому из 4
-// видов: Enabled=true + распарсенное значение (проценты диска/памяти —
-// доля, load — как есть, silent — минуты в time.Duration).
 func TestParseHostThresholdsFormOverride(t *testing.T) {
 	form := url.Values{
 		"disk_mode": {"override"}, "disk_value": {"75"},
@@ -76,8 +64,6 @@ func TestParseHostThresholdsFormOverride(t *testing.T) {
 	}
 }
 
-// TestParseHostThresholdsFormOff — режим "off" по каждому виду: Enabled=false,
-// значение не парсится (поле *_value игнорируется, остаётся nil).
 func TestParseHostThresholdsFormOff(t *testing.T) {
 	form := url.Values{
 		"disk_mode": {"off"}, "memory_mode": {"off"},
@@ -101,11 +87,6 @@ func TestParseHostThresholdsFormOff(t *testing.T) {
 	}
 }
 
-// TestParseHostThresholdsFormInvalid — по каждому виду: нечисловой ввод (или
-// пустая строка при override) и NaN/переполнение возвращают тот же
-// сентинел-ошибку host.ErrInvalid*, что host.Validate/ValidateOverride —
-// hostSettingsErrorMessage не различает источник ошибки (docblock
-// parseHostThresholdsForm).
 func TestParseHostThresholdsFormInvalid(t *testing.T) {
 	cases := []struct {
 		name string

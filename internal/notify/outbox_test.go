@@ -15,23 +15,17 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// newChannel: прямые вставки — notify-пакет не зависит от alert.
+// Прямые вставки — notify-пакет не зависит от alert.
 func newChannel(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	_, channelID := newChannelInProject(t, pool)
 	return channelID
 }
 
-// orgProjectSeq — счётчик для уникальных org/project slug'ов, когда один
-// тест заводит несколько org/project через newChannelInProject (slug
-// организации/проекта уникален по схеме).
 var orgProjectSeq int64
 
-// newChannelInProject — как newChannel, но также возвращает projectID
-// (нужен FailedForProject-тестам, которые фильтруют по проекту). Каждый
-// вызов заводит org/project с уникальным slug'ом, чтобы один тест мог
-// вызвать его несколько раз (два "проекта" в одном сценарии) без коллизии
-// по organizations_slug_key / projects_slug_key.
+// Каждый вызов заводит org/project с уникальным slug'ом — тест может звать
+// его несколько раз без коллизии по slug_key.
 func newChannelInProject(t *testing.T, pool *pgxpool.Pool) (projectID, channelID int64) {
 	t.Helper()
 	ctx := context.Background()
@@ -147,9 +141,6 @@ func TestOutboxRetryAndFailed(t *testing.T) {
 	}
 }
 
-// TestClaimConcurrentNoOverlap: две горутины забирают из одной очереди
-// одновременно — FOR UPDATE SKIP LOCKED гарантирует, что задачи не
-// пересекаются между вызовами.
 func TestClaimConcurrentNoOverlap(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ob := notify.NewOutbox(pool)
@@ -205,8 +196,7 @@ func TestClaimConcurrentNoOverlap(t *testing.T) {
 	}
 }
 
-// insertChannel inserts an alert_channels row of the given kind/target
-// directly (notify doesn't depend on alert), returning its id.
+// notify doesn't depend on alert, so channels are inserted directly.
 func insertChannel(t *testing.T, pool *pgxpool.Pool, projectID int64, kind, target string) int64 {
 	t.Helper()
 	var channelID int64
@@ -218,12 +208,6 @@ func insertChannel(t *testing.T, pool *pgxpool.Pool, projectID int64, kind, targ
 	return channelID
 }
 
-// TestOutboxFailedForProject — spec §7: failed уведомления должны быть
-// видны в настройках проекта. FailedForProject должна: (1) вернуть только
-// failed-задачи (не pending/sent), (2) join'ить channel_kind/target из
-// alert_channels (payload сам по себе не отдаётся — там могут быть секреты
-// вроде webhook HMAC-ключа или telegram bot token), (3) не задевать чужие
-// проекты.
 func TestOutboxFailedForProject(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ob := notify.NewOutbox(pool)
@@ -233,7 +217,6 @@ func TestOutboxFailedForProject(t *testing.T) {
 	projectID, emailChID := newChannelInProject(t, pool)
 	webhookChID := insertChannel(t, pool, projectID, "webhook", "https://hooks.example.com/in")
 
-	// Failed job on the email channel.
 	if err := ob.Enqueue(ctx, emailChID, map[string]any{"secret": "should-not-leak", "title": "boom"}); err != nil {
 		t.Fatalf("enqueue email: %v", err)
 	}
@@ -245,17 +228,13 @@ func TestOutboxFailedForProject(t *testing.T) {
 		t.Fatalf("mark failed email: %v", err)
 	}
 
-	// A second, still-pending job on the webhook channel of the SAME
-	// project: must NOT show up in FailedForProject (status filter).
+	// Тот же проект, всё ещё pending — не должен попасть в FailedForProject (status filter).
 	if err := ob.Enqueue(ctx, webhookChID, map[string]any{"title": "pending one"}); err != nil {
 		t.Fatalf("enqueue webhook pending: %v", err)
 	}
 
-	// A failed job belonging to a DIFFERENT project: must not leak across
-	// projects. Claim(ctx, 10) also re-claims the still-pending webhook job
-	// enqueued above (it's a different project's job, but Claim isn't
-	// project-scoped) — pick out the one belonging to otherChID and only
-	// fail that one, leaving the webhook job's status as 'pending'.
+	// Claim не скоупится по проекту и повторно захватывает pending webhook-джоб
+	// выше — вычленяем джоб otherChID и валим только его.
 	_, otherChID := newChannelInProject(t, pool)
 	if err := ob.Enqueue(ctx, otherChID, map[string]any{"title": "other project"}); err != nil {
 		t.Fatalf("enqueue other project: %v", err)

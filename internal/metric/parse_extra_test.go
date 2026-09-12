@@ -8,8 +8,6 @@ import (
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 )
 
-// TestAttrString проходит все скалярные представления AnyValue плюс nil и
-// неподдержанный тип (bytes) — на них attrString возвращает "".
 func TestAttrString(t *testing.T) {
 	cases := []struct {
 		name string
@@ -33,14 +31,11 @@ func TestAttrString(t *testing.T) {
 	}
 }
 
-// TestAttrsToMap закрывает три ветки: пустой вход → nil; пропуск пустого ключа;
-// кап maxAttrKeys с детерминированным отбором первых ключей по сортировке.
 func TestAttrsToMap(t *testing.T) {
 	if got := attrsToMap(nil); got != nil {
 		t.Errorf("attrsToMap(nil) = %v, want nil", got)
 	}
 
-	// Пустой ключ пропускается, остальные сохраняются.
 	m := attrsToMap([]*commonpb.KeyValue{
 		{Key: "", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "skip"}}},
 		{Key: "a", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "1"}}},
@@ -53,8 +48,6 @@ func TestAttrsToMap(t *testing.T) {
 		t.Error("empty key must be skipped")
 	}
 
-	// Больше maxAttrKeys ключей → усечение ровно до maxAttrKeys, оставляются
-	// первые по сортировке (k0000..k0063 из k0000..k0099).
 	var many []*commonpb.KeyValue
 	for i := 0; i < maxAttrKeys+36; i++ {
 		key := "k" + strconv.FormatInt(int64(1000+i), 10) // k1000..k1099 — сортируемо
@@ -73,7 +66,6 @@ func TestAttrsToMap(t *testing.T) {
 	}
 }
 
-// TestTemporalityString проходит все три ветки перечисления temporality.
 func TestTemporalityString(t *testing.T) {
 	cases := []struct {
 		in   metricspb.AggregationTemporality

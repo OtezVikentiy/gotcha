@@ -15,9 +15,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestParseDeployTime — прямой разбор поля deployed_at: три допустимые формы
-// (RFC3339-строка, Unix-секунды числом, отсутствие/null) плюс мусор от кривого
-// CI. Всё непонятное → нулевое время (Record подставит now()), БЕЗ паники.
 func TestParseDeployTime(t *testing.T) {
 	wantRFC := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 
@@ -35,9 +32,8 @@ func TestParseDeployTime(t *testing.T) {
 		{"bool", `true`, true, time.Time{}},
 		{"fractional", `1.5`, true, time.Time{}},
 		{"non-time-string", `"not-a-time"`, true, time.Time{}},
-		// Значение НАЧИНАЕТСЯ с кавычки, но JSON-строкой не является
-		// (незакрытая кавычка): снятие кавычек честным декодом обязано
-		// вернуть нулевое время, а не запаниковать на обрезке байтов.
+		// Начинается с кавычки, но не является JSON-строкой (не закрыта) —
+		// не должно паниковать на обрезке байтов.
 		{"unterminated-string", `"2026-01-02T03:04:05Z`, true, time.Time{}},
 	}
 	for _, tc := range cases {
@@ -52,7 +48,6 @@ func TestParseDeployTime(t *testing.T) {
 			if !got.Equal(tc.want) {
 				t.Fatalf("parseDeployTime(%q) = %s, want %s", tc.raw, got, tc.want)
 			}
-			// Unix-число разбирается именно в UTC (маркеры графиков в UTC).
 			if got.Location() != time.UTC {
 				t.Errorf("parseDeployTime(%q) в зоне %s, want UTC", tc.raw, got.Location())
 			}
@@ -60,9 +55,8 @@ func TestParseDeployTime(t *testing.T) {
 	}
 }
 
-// newIngestTestWithDeploy строит ingest-хендлер с КОНКРЕТНЫМ deploy.Store поверх
-// мигрированной PG и засеянными org/project. Ключ авторизации указывает на тот же
-// project id (FK deployments.project_id → projects.id), иначе Record упадёт на FK.
+// Ключ авторизации указывает на тот же project id — иначе Record упадёт на FK
+// deployments.project_id.
 func newIngestTestWithDeploy(t *testing.T) (h *Handler, projectID int64) {
 	t.Helper()
 	pool := testenv.MigratedPG(t)
@@ -85,7 +79,6 @@ func newIngestTestWithDeploy(t *testing.T) (h *Handler, projectID int64) {
 	return h, projectID
 }
 
-// postDeploy шлёт POST /api/v1/{project}/deployments с sentry_key и телом body.
 func postDeploy(t *testing.T, h *Handler, projectID int64, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest("POST",
@@ -117,13 +110,11 @@ func TestIngestDeployment(t *testing.T) {
 		t.Fatalf("поля не сохранились: %+v", deps[0])
 	}
 
-	// version пусто → 400, запись не добавляется
 	bad := postDeploy(t, h, projectID, `{"environment":"prod"}`)
 	if bad.Code != http.StatusBadRequest {
 		t.Fatalf("пустой version → %d, want 400", bad.Code)
 	}
 
-	// malformed json → 400
 	broken := postDeploy(t, h, projectID, `{not-json`)
 	if broken.Code != http.StatusBadRequest {
 		t.Fatalf("битый json → %d, want 400", broken.Code)
@@ -135,7 +126,6 @@ func TestIngestDeployment(t *testing.T) {
 	}
 }
 
-// TestIngestDeploymentDeployedAt проверяет разбор явного deployed_at (RFC3339).
 func TestIngestDeploymentDeployedAt(t *testing.T) {
 	h, projectID := newIngestTestWithDeploy(t)
 
@@ -154,11 +144,6 @@ func TestIngestDeploymentDeployedAt(t *testing.T) {
 	}
 }
 
-// TestIngestDeploymentTooLarge: тело деплоя сверх лимита (GOTCHA_MAX_EVENT_BYTES)
-// обязано отвечать 413, а не 400 — decode-ошибка от json.Decoder на теле,
-// упёршемся в http.MaxBytesReader, раньше НЕ отличалась от битого JSON (см.
-// докблок в deploymentsIngest). Заодно проверяет self-метрику T6: (too_large,
-// deploy) — одна из 29 пар gotcha_ingest_rejected_total, ничем не защищённых.
 func TestIngestDeploymentTooLarge(t *testing.T) {
 	h, projectID := newIngestTestWithDeploy(t)
 	before := h.RejectedBy(RejectTooLarge, SignalDeploy)
@@ -181,7 +166,6 @@ func TestIngestDeploymentTooLarge(t *testing.T) {
 	}
 }
 
-// TestIngestDeploymentDisabled: без сконфигурированного стора эндпоинт отвечает 503.
 func TestIngestDeploymentDisabled(t *testing.T) {
 	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 	rec := postDeploy(t, h, 1, `{"version":"v1"}`)
@@ -190,10 +174,6 @@ func TestIngestDeploymentDisabled(t *testing.T) {
 	}
 }
 
-// TestIngestDeploymentRateLimited: эндпоинт деплоя троттлится тем же per-DSN
-// лимитером, что envelope/store (публичный sentry_key → без rate-limit безлимитный
-// поток INSERT'ов). Фиксированные часы + burst 1: первый запрос проходит, второй
-// в тот же миг — 429, и вторая запись НЕ появляется в сторе.
 func TestIngestDeploymentRateLimited(t *testing.T) {
 	h, projectID := newIngestTestWithDeploy(t)
 	now := time.Unix(0, 0)
@@ -219,9 +199,8 @@ func TestIngestDeploymentRateLimited(t *testing.T) {
 	}
 }
 
-// deployRequest — POST /api/v1/{project}/deployments с произвольными заголовками
-// и (опционально) без sentry_key: postDeploy ключ подставляет всегда, а ветки
-// отказа по ключу и по кодировке тела иначе недостижимы.
+// postDeploy ключ подставляет всегда, а ветки отказа по ключу и по кодировке
+// тела иначе недостижимы.
 func deployRequest(h *Handler, projectID int64, body string, withKey bool, contentEncoding string) *httptest.ResponseRecorder {
 	url := "/api/v1/" + strconv.FormatInt(projectID, 10) + "/deployments"
 	if withKey {
@@ -238,9 +217,6 @@ func deployRequest(h *Handler, projectID int64, body string, withKey bool, conte
 	return rec
 }
 
-// TestIngestDeploymentUnauthorized: запрос без sentry_key → 401, и отказ виден
-// self-метрикой с сигналом deploy — приёмник обязан различать, какой ИЗ ШЕСТИ
-// входов отбивало по ключу, иначе дежурный видит только общий рост 401.
 func TestIngestDeploymentUnauthorized(t *testing.T) {
 	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 	before := h.RejectedBy(RejectKeyUnknown, SignalDeploy)
@@ -254,9 +230,6 @@ func TestIngestDeploymentUnauthorized(t *testing.T) {
 	}
 }
 
-// TestIngestDeploymentBadBodyEncoding: Content-Encoding: gzip на не-gzip теле —
-// h.body падает до разбора JSON → 400 с причиной malformed (не too_large:
-// тело в лимит уложилось, испорчена именно кодировка).
 func TestIngestDeploymentBadBodyEncoding(t *testing.T) {
 	h, projectID := newIngestTestWithDeploy(t)
 	beforeBad := h.RejectedBy(RejectMalformed, SignalDeploy)
@@ -282,9 +255,6 @@ func TestIngestDeploymentBadBodyEncoding(t *testing.T) {
 	}
 }
 
-// TestIngestDeploymentRecordFailure: сбой записи в реестр (здесь — ключ
-// указывает на НЕсуществующий проект, FK deployments.project_id) отвечает 503,
-// а не 200 с несохранённым деплоем: CI обязан увидеть отказ и повторить.
 func TestIngestDeploymentRecordFailure(t *testing.T) {
 	h, projectID := newIngestTestWithDeploy(t)
 	ghost := projectID + 1_000_000

@@ -7,11 +7,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 )
 
-// TestAttrKeysCache закрепляет поведение кеша автокомплита ключей атрибутов
-// (задача 6, C2, §6 спеки: «кеш per-project ~60с»): промах → put → хит в
-// пределах TTL → истечение TTL → снова промах, ключ — (projectID, prefix,
-// окно), другой prefix того же проекта не путается с первым. Тот же приём
-// инъекции часов, что и TestKeyCache (internal/ingest/auth_test.go).
 func TestAttrKeysCache(t *testing.T) {
 	now := time.Now()
 	c := newAttrKeysCache()
@@ -32,32 +27,24 @@ func TestAttrKeysCache(t *testing.T) {
 		t.Fatalf("get вернул %+v, хотим %+v", got, values)
 	}
 
-	// Другой prefix того же проекта — отдельная запись кеша, не хит.
 	if _, hit := c.get(1, "db.", "24h", "", ""); hit {
 		t.Fatalf("другой prefix не должен давать хит по записи \"http.\"")
 	}
-	// Тот же prefix другого проекта — тоже отдельная запись.
 	if _, hit := c.get(2, "http.", "24h", "", ""); hit {
 		t.Fatalf("другой projectID не должен давать хит по записи проекта 1")
 	}
 
-	// Чуть меньше TTL — всё ещё хит.
 	now = now.Add(attrKeysCacheTTL - time.Second)
 	if _, hit := c.get(1, "http.", "24h", "", ""); !hit {
 		t.Fatalf("в пределах TTL должен быть хит")
 	}
 
-	// TTL истёк — промах (протухшая запись не отдаётся).
 	now = now.Add(2 * time.Second)
 	if _, hit := c.get(1, "http.", "24h", "", ""); hit {
 		t.Fatalf("после истечения TTL должен быть промах")
 	}
 }
 
-// TestAttrKeysCacheWindowIsolation — правка ревью UX Important #3: то же
-// (projectID, prefix), но другое окно (period/start/end) — отдельная запись
-// кеша, не хит. Без этого автокомплит с ДРУГИМ окном фильтра мог получить
-// закешированный ответ от предыдущего окна (см. attrKeysCacheKey).
 func TestAttrKeysCacheWindowIsolation(t *testing.T) {
 	now := time.Now()
 	c := newAttrKeysCache()
@@ -76,10 +63,6 @@ func TestAttrKeysCacheWindowIsolation(t *testing.T) {
 	}
 }
 
-// TestAttrKeysCacheOverflowClearsAll закрепляет вытеснение при переполнении
-// (см. maxAttrKeysCacheEntries): в отличие от KeyCache (ярусное вытеснение),
-// здесь при достижении потолка карта очищается целиком — записи
-// короткоживущие (TTL 60с) и дёшевы для пересчёта.
 func TestAttrKeysCacheOverflowClearsAll(t *testing.T) {
 	now := time.Now()
 	c := newAttrKeysCache()
@@ -92,8 +75,6 @@ func TestAttrKeysCacheOverflowClearsAll(t *testing.T) {
 		t.Fatalf("entries = %d, want %d перед переполнением", len(c.entries), maxAttrKeysCacheEntries)
 	}
 
-	// Запись поверх потолка вытесняет ВСЁ (включая только что положенные
-	// записи 0..N-1), а не только освобождает место под одну новую.
 	c.put(999999, "p", "24h", "", "", nil)
 	if len(c.entries) != 1 {
 		t.Fatalf("entries = %d после переполнения, want 1 (только новая запись)", len(c.entries))

@@ -12,9 +12,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestExportSubject проверяет, что экспорт (право субъекта на доступ, 152-ФЗ)
-// возвращает ТОЛЬКО строки субъекта в рамках проекта: и по email, и по user_id,
-// и не тянет данные чужого субъекта или чужого проекта.
 func TestExportSubject(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -33,7 +30,6 @@ func TestExportSubject(t *testing.T) {
 
 	p := telemetry.NewPurger(conn)
 
-	// Экспорт по email: одно событие в p2 и ни одной транзакции (email там нет).
 	exp, err := p.ExportSubject(ctx, p2, telemetry.Subject{Email: "a@b.com"})
 	if err != nil {
 		t.Fatalf("ExportSubject by email: %v", err)
@@ -51,7 +47,6 @@ func TestExportSubject(t *testing.T) {
 		t.Errorf("transactions по email: получили %d, ждали 0 (email в transactions не хранится)", len(exp.Transactions))
 	}
 
-	// Экспорт по user_id: событие + транзакция субъекта victim в p2.
 	exp2, err := p.ExportSubject(ctx, p2, telemetry.Subject{UserID: "victim"})
 	if err != nil {
 		t.Fatalf("ExportSubject by user_id: %v", err)
@@ -66,15 +61,11 @@ func TestExportSubject(t *testing.T) {
 		t.Errorf("transactions[0].UserID=%q, ждали victim", exp2.Transactions[0].UserID)
 	}
 
-	// Пустой субъект — ошибка, ничего не экспортируем.
 	if _, err := p.ExportSubject(ctx, p2, telemetry.Subject{}); err == nil {
 		t.Errorf("ExportSubject с пустым субъектом должен вернуть ошибку")
 	}
 }
 
-// TestExportSubjectTransactionTags проверяет паритет выгрузки с чисткой: субъект,
-// заданный email, ДОЛЖЕН видеть свои транзакции, где email лежит в тегах (OTLP),
-// а не только в колонке user_id. Чужие транзакции в выгрузку не попадают.
 func TestExportSubjectTransactionTags(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -89,7 +80,6 @@ func TestExportSubjectTransactionTags(t *testing.T) {
 
 	p2 := telemetry.NewPurger(conn)
 
-	// Экспорт по email тянет обе транзакции субъекта из тегов, чужую — нет.
 	exp, err := p2.ExportSubject(ctx, p, telemetry.Subject{Email: "a@b.com"})
 	if err != nil {
 		t.Fatalf("ExportSubject by email: %v", err)
@@ -99,9 +89,6 @@ func TestExportSubjectTransactionTags(t *testing.T) {
 	}
 }
 
-// TestExportSubjectMetricPoints проверяет паритет выгрузки с чисткой (152-ФЗ):
-// ПДн субъекта из metric_points.attributes попадают в экспорт по user_id, но не
-// по IP-only субъекту (метрики по IP не сегментируются).
 func TestExportSubjectMetricPoints(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -116,7 +103,6 @@ func TestExportSubjectMetricPoints(t *testing.T) {
 
 	p := telemetry.NewPurger(conn)
 
-	// Экспорт по user_id: только метрика субъекта victim, чужая не тянется.
 	exp, err := p.ExportSubject(ctx, p2, telemetry.Subject{UserID: "victim"})
 	if err != nil {
 		t.Fatalf("ExportSubject by user_id: %v", err)
@@ -131,7 +117,6 @@ func TestExportSubjectMetricPoints(t *testing.T) {
 		t.Errorf("metric_points[0].ProjectID=%d, ждали %d", exp.MetricPoints[0].ProjectID, p2)
 	}
 
-	// Экспорт по IP-only субъекту: метрик нет (attributes не содержат IP).
 	expIP, err := p.ExportSubject(ctx, p2, telemetry.Subject{IP: "192.168.0.1"})
 	if err != nil {
 		t.Fatalf("ExportSubject by IP: %v", err)
@@ -141,10 +126,6 @@ func TestExportSubjectMetricPoints(t *testing.T) {
 	}
 }
 
-// TestExportSubjectLogs проверяет паритет выгрузки с чисткой (152-ФЗ): ПДн
-// субъекта из logs.log_attributes попадают в экспорт по всем четырём ключам
-// (user.id/enduser.id ← UserID, user.email/enduser.email ← Email), не отдавая
-// логи постороннего субъекта или чужого проекта.
 func TestExportSubjectLogs(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -174,7 +155,6 @@ func TestExportSubjectLogs(t *testing.T) {
 		t.Errorf("logs[0].ProjectID=%d, ждали %d", exp.Logs[0].ProjectID, p2)
 	}
 
-	// Экспорт по IP-only субъекту: логов нет (log_attributes не содержат IP).
 	expIP, err := p.ExportSubject(ctx, p2, telemetry.Subject{IP: "192.168.0.1"})
 	if err != nil {
 		t.Fatalf("ExportSubject by IP: %v", err)
@@ -184,18 +164,10 @@ func TestExportSubjectLogs(t *testing.T) {
 	}
 }
 
-// errAbortedCursor — синтетическая ошибка обрыва курсора, которую видит
-// только Rows.Err() (см. abortingRows ниже).
 var errAbortedCursor = errors.New("telemetry_test: simulated ClickHouse cursor abort")
 
-// abortingRows оборачивает реальный driver.Rows и обрывает курсор ПОСЛЕ
-// keep успешных Next(): дальше Next() возвращает false, как будто строки
-// кончились штатно, Err() отдаёт errAbortedCursor, а Close() — как
-// настоящий обрыв соединения в clickhouse-go (K4-3, аудит перед 1.0) —
-// свою ошибку не поднимает, отдавая nil независимо от исхода реального
-// Close(). Обрыв синтетический (без разрыва настоящего соединения или
-// отмены контекста), поэтому воспроизводится детерминированно и не задевает
-// остальные вызовы Query в том же ExportSubject.
+// После keep успешных Next() имитирует штатный конец (false), но Err() отдаёт
+// errAbortedCursor, а Close() — nil, как в реальном обрыве соединения clickhouse-go.
 type abortingRows struct {
 	driver.Rows
 	keep int
@@ -216,10 +188,8 @@ func (r *abortingRows) Close() error {
 	return nil
 }
 
-// countingConn оборачивает реальное соединение и подменяет результат
-// failAt-го по счёту вызова Query на abortingRows — курсор ИМЕННО этого
-// вызова обрывается после keepRows строк, остальные вызовы Query того же
-// ExportSubject идут через настоящий Rows без изменений.
+// Подменяет результат failAt-го по счёту вызова Query на abortingRows, остальные
+// вызовы идут через настоящий Rows без изменений.
 type countingConn struct {
 	driver.Conn
 	n        int
@@ -236,13 +206,6 @@ func (c *countingConn) Query(ctx context.Context, query string, args ...any) (dr
 	return &abortingRows{Rows: rows, keep: c.keepRows}, nil
 }
 
-// TestExportSubjectRowsErrSurfaces проверяет, что обрыв курсора ClickHouse
-// ПОСЛЕ успешного Query — ошибка выгрузки субъекта, а не тихо усечённый
-// результат (K4-3). Четыре подтеста k=1..4 обрывают курсор events/
-// transactions/metric_points/logs соответственно (остальные три вызова
-// Query идут штатно, без единой строки потерь) — каждый доказывает, что
-// СВОЙ цикл SubjectExport проверяет rows.Err(), а не только rows.Close(),
-// которое (см. abortingRows) обрыв не показывает.
 func TestExportSubjectRowsErrSurfaces(t *testing.T) {
 	ctx := context.Background()
 	conn := testenv.MigratedCH(t)

@@ -8,11 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestHeartbeatGraceText — допуск короткими единицами, точно, а не «порядок»:
-// каждая ветка функции (часы/минуты/секунды и их сочетания) и прочерк на
-// нулевом/отрицательном допуске. Страничные тесты (web/monitordetail_test.go)
-// доходят только до «15 мин» и «1 ч 30 мин»: Create отсекает grace < 60, и
-// нулевой допуск через страницу не воспроизвести.
 func TestHeartbeatGraceText(t *testing.T) {
 	ctx := ruCtx()
 	cases := []struct {
@@ -38,9 +33,6 @@ func TestHeartbeatGraceText(t *testing.T) {
 	}
 }
 
-// TestHeartbeatGrace — допуск читается из config через HeartbeatConfig;
-// пустой или не разбираемый config даёт нулевой допуск (и, следовательно,
-// прочерк в плитке), а не панику.
 func TestHeartbeatGrace(t *testing.T) {
 	cfg, err := json.Marshal(uptime.HeartbeatConfig{GraceSeconds: 900})
 	if err != nil {
@@ -60,8 +52,6 @@ func TestHeartbeatGrace(t *testing.T) {
 	}
 }
 
-// TestHeartbeatExpectedByText — срок следующего маячка: last_beat_at + допуск
-// в формате humanize.Time (UTC), прочерк, пока маячка не было.
 func TestHeartbeatExpectedByText(t *testing.T) {
 	ctx := ruCtx()
 	cfg, err := json.Marshal(uptime.HeartbeatConfig{GraceSeconds: 5400})

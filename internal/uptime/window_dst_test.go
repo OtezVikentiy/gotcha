@@ -7,18 +7,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestWeeklyWindowKeepsDurationAcrossDST — окно длится заданное время и в ночь
-// перевода часов.
-//
-// Измерено на Europe/Berlin для окна 02:00–04:00: весной time.Date нормализует
-// несуществующие 02:00 в 03:00, а наивный конец 04:00 даёт окно длиной ОДИН час
-// вместо двух. Осенью time.Date выбирает второе вхождение 02:00 (CET), и окно
-// начинается на час позже намерения оператора. Оба случая приходятся ровно на
-// ночь работ, когда окно и нужно.
-//
-// Окно теперь задаётся как «начало плюс длительность»: длительность реальная,
-// потому что обслуживание описывает, сколько сервис фактически недоступен, и
-// «два часа» должны означать два часа.
+// весной 02:00 не существует (норм. в 03:00) — наивный конец 04:00 дал бы
+// час вместо двух; поэтому окно — «начало + длительность», не start/end.
 func TestWeeklyWindowKeepsDurationAcrossDST(t *testing.T) {
 	berlin, err := time.LoadLocation("Europe/Berlin")
 	if err != nil {
@@ -53,9 +43,8 @@ func TestWeeklyWindowKeepsDurationAcrossDST(t *testing.T) {
 	}
 }
 
-// TestAutumnWindowCoversFirstPass — осенью окно покрывает ПЕРВЫЙ проход
-// удвоенного часа: работы идут тогда, когда их назначил оператор, а не часом
-// позже.
+// осенью работы идут в первый (не второй) проход удвоенного часа — час,
+// когда их назначил оператор.
 func TestAutumnWindowCoversFirstPass(t *testing.T) {
 	berlin, err := time.LoadLocation("Europe/Berlin")
 	if err != nil {
@@ -80,9 +69,7 @@ func TestAutumnWindowCoversFirstPass(t *testing.T) {
 	}
 }
 
-// TestWindowUnaffectedInZoneWithoutDST — контроль: в поясе без перевода часов
-// поведение не меняется. Иначе правка могла бы сдвинуть обычные окна, которых
-// на инстансе большинство.
+// контроль: пояс без перевода часов не должен сдвинуться правкой DST-логики.
 func TestWindowUnaffectedInZoneWithoutDST(t *testing.T) {
 	ekb, err := time.LoadLocation("Asia/Yekaterinburg")
 	if err != nil {

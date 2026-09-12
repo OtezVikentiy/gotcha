@@ -42,10 +42,6 @@ func TestHealthzOK(t *testing.T) {
 	}
 }
 
-// TestHealthzStaysAliveWhenStorageIsDown — главное свойство разделения: живость
-// не зависит от хранилища. Иначе liveness-проба перезапускает живой процесс при
-// сбое ClickHouse, а каждый перезапуск выбрасывает буферы — то есть ровно ту
-// телеметрию, которую они копили, дожидаясь возвращения хранилища.
 func TestHealthzStaysAliveWhenStorageIsDown(t *testing.T) {
 	h := livenessHandler(fakePinger{err: errors.New("dial tcp 10.0.0.5:5432: refused")},
 		fakePinger{err: errors.New("dial tcp 10.0.0.5:9000: refused")})
@@ -63,8 +59,6 @@ func TestHealthzStaysAliveWhenStorageIsDown(t *testing.T) {
 	}
 }
 
-// TestReadyzClickHouseDown — готовность, наоборот, обязана падать: писать
-// некуда, и балансировщику незачем слать сюда трафик.
 func TestReadyzClickHouseDown(t *testing.T) {
 	h := readinessHandler(fakePinger{}, fakePinger{err: errors.New("dial tcp 10.0.0.5:9000: refused")})
 	rec := httptest.NewRecorder()
@@ -81,7 +75,6 @@ func TestReadyzClickHouseDown(t *testing.T) {
 	}
 }
 
-// TestReadyzOK — обе базы доступны: инстанс готов.
 func TestReadyzOK(t *testing.T) {
 	h := readinessHandler(fakePinger{}, fakePinger{})
 	rec := httptest.NewRecorder()
@@ -94,9 +87,6 @@ func TestReadyzOK(t *testing.T) {
 	}
 }
 
-// TestHealthcheckRequested закрепляет разбор аргументов подкоманды проверки:
-// именно она стоит в HEALTHCHECK образа, и ошибка здесь оставит контейнер
-// вечно unhealthy или, наоборот, вечно healthy.
 func TestHealthcheckRequested(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -124,8 +114,6 @@ func TestHealthcheckRequested(t *testing.T) {
 	}
 }
 
-// TestRunHealthcheckExitCodes — код выхода отражает готовность, а не
-// доступность порта: 503 от живого сервера обязан давать ненулевой код.
 func TestRunHealthcheckExitCodes(t *testing.T) {
 	ready := httptest.NewServer(readinessHandler(fakePinger{}, fakePinger{}))
 	defer ready.Close()
@@ -145,20 +133,13 @@ func TestRunHealthcheckExitCodes(t *testing.T) {
 }
 
 func TestHealthzSlowPostgresDoesNotStarveClickHouse(t *testing.T) {
-	// PG висит дольше своего таймаута; CH отвечает за 1.5s — последовательный
-	// хендлер занял бы ~3.5s, конкурентный — ~2s.
+	// PG (3с) и CH (1.5с) таймаутов: последовательно ~3.5с, параллельно ~2с
 	h := readinessHandler(fakePinger{delay: 3 * time.Second}, fakePinger{delay: 1500 * time.Millisecond})
 	rec := httptest.NewRecorder()
 	start := time.Now()
 	h(rec, httptest.NewRequest("GET", "/healthz", nil))
-	// Нижняя граница (пинги параллельны, как и задумано): у каждого пинга
-	// свой таймаут 2с (см. probeComponents), PG в него упирается, CH
-	// укладывается в 1.5с раньше — итог около 2с.
-	// Верхняя граница (если параллелизм сломается и пинги пойдут по
-	// очереди): 2с (таймаут PG) + 1.5с (CH) = 3.5с.
-	// Порог 3200мс выбран между ними: запас 1.2с (60%) над нижней границей,
-	// чтобы не мигать на нагруженном общем раннере под nice — и 300мс до
-	// верхней, чтобы тест всё ещё ловил регресс на последовательные пинги.
+	// порог 3200мс лежит между ~2с (таймаут PG, параллельно) и ~3.5с (пинги последовательно)
+	// запас держит от миганий под nice, но ловит регресс на потерю параллелизма
 	if elapsed := time.Since(start); elapsed > 3200*time.Millisecond {
 		t.Fatalf("handler took %v, pings are not concurrent", elapsed)
 	}
@@ -208,19 +189,8 @@ func TestHealthzCarriesVersion(t *testing.T) {
 	}
 }
 
-// TestRootMuxLivenessStaysUpWhileReadinessFails — тесты выше вызывают
-// livenessHandler/readinessHandler напрямую конструкторами, а не через
-// /healthz и /readyz корневого mux, поэтому не ловят перестановку самих
-// регистраций (см. newRootMux в server.go): переставь местами строки
-// mux.HandleFunc("GET /healthz", ...) и mux.HandleFunc("GET /readyz", ...) —
-// и весь набор выше останется зелёным, а либочная проба начнёт отдавать 503
-// при недоступном ClickHouse. Оркестратор перезапускает живой процесс, и
-// каждый перезапуск выбрасывает накопленные буферы.
-//
-// Этот тест поднимает корневой mux с подставным ClickHouse, отвечающим
-// ошибкой, и бьёт именно по путям /healthz и /readyz — так он проверяет,
-// какой хендлер РЕАЛЬНО забронирован за каким путём, а не какой хендлер
-// умеет отвечать 200 или 503 в отрыве от маршрутизации.
+// в отличие от тестов выше — бьёт по маршрутам /healthz и /readyz корневого mux,
+// а не вызывает хендлеры напрямую: ловит перестановку регистраций в newRootMux
 func TestRootMuxLivenessStaysUpWhileReadinessFails(t *testing.T) {
 	var metrics selfmetrics.Registry
 	mux := newRootMux(rootDeps{

@@ -17,19 +17,13 @@ func orgProbesRevokePath(orgID int64) string {
 	return orgProbesPath(orgID) + "/revoke"
 }
 
-// ProbeRow — проба вместе с уже посчитанным веб-слоем статусом (online, если
-// last_seen_at свежее probeOfflineAfter; иначе offline; отозванная — revoked;
-// см. web/probes.go) — тот же приём, что и MonitorRow: пороги и работа со
-// временем остаются в web, этот пакет только форматирует.
+// online/offline/revoked уже посчитаны в web/probes.go по порогу probeOfflineAfter;
+// здесь только форматирование, как у MonitorRow.
 type ProbeRow struct {
 	Probe  uptime.Probe
 	Status string
 }
 
-// probeStatusBadgeClass — цвета статусов проб через дизайн-систему: online —
-// тот же зелёный, что и у монитора в состоянии up, offline — красный (проба
-// молчит, её регион не проверяется), revoked — нейтральный (отозванная проба
-// не тревога, а осознанное действие админа).
 func probeStatusBadgeClass(status string) string {
 	switch status {
 	case uptime.ProbeStatusOnline:
@@ -41,8 +35,6 @@ func probeStatusBadgeClass(status string) string {
 	}
 }
 
-// probeStatusLabel — локализованное имя статуса пробы (online/offline/revoked).
-// Неизвестный статус возвращается как есть.
 func probeStatusLabel(ctx context.Context, status string) string {
 	switch status {
 	case uptime.ProbeStatusOnline, uptime.ProbeStatusOffline, uptime.ProbeStatusRevoked:
@@ -51,12 +43,7 @@ func probeStatusLabel(ctx context.Context, status string) string {
 	return status
 }
 
-// probeLastSeenCell — «никогда» для только что созданной пробы, которая ещё
-// ни разу не постучалась в центр, либо точный момент последнего визита рядом
-// с относительной подписью (тот же приём, что и lastCheckedCell в
-// monitors.templ). Возвращает templ.Component вместо string — только так
-// строка «никогда» и <time> с относительным временем внутри могут делить
-// одну ячейку без ветвления разметки в вызывающем шаблоне.
+// component, не string — «никогда» и <time> делят одну ячейку без ветвления в вызывающем шаблоне.
 func probeLastSeenCell(row ProbeRow) templ.Component {
 	if row.Probe.LastSeenAt == nil {
 		return neverSeenLabel()
@@ -64,8 +51,7 @@ func probeLastSeenCell(row ProbeRow) templ.Component {
 	return relativeTime(*row.Probe.LastSeenAt)
 }
 
-// neverSeenLabel — «никогда» текстом, обёрнутая в templ.Component ради
-// единой сигнатуры с relativeTime в probeLastSeenCell выше.
+// component ради общей сигнатуры с relativeTime в probeLastSeenCell.
 templ neverSeenLabel() {
 	{ i18n.T(ctx, "uptime.probes.never") }
 }
@@ -88,17 +74,12 @@ templ probeTableRow(orgID int64, row ProbeRow) {
 	</tr>
 }
 
-// Probes — GET/POST /orgs/{id}/probes: таблица проб организации и форма
-// создания новой. rawToken и runCmd заполняются ровно один раз — в теле ответа
-// POST, создавшего пробу: сырой токен хранится в БД только хешем и второй раз
-// его показать неоткуда (тот же приём, что и одноразовая ссылка-приглашение в
-// OrgSettings и DSN-ключи проекта). errMsg — сообщение 422 (пустое/слишком
-// длинное имя или регион), страница при этом перерисовывается на месте.
+// rawToken/runCmd приходят один раз — из тела ответа POST, создавшего пробу; токен хранится хешем.
+// errMsg — 422 (имя/регион), страница перерисовывается на месте.
 templ Probes(o org.Org, rows []ProbeRow, rawToken, runCmd, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "uptime.probes.title")+" "+o.Name, userEmail) {
 		<div class="org-probes">
-			// №118: крошка ведёт в настройки организации — и называться обязана
-			// ими же, а не «Участниками» (участники — лишь одна из карточек там).
+			// крошка называется как «Настройки организации», не «Участники» — те лишь одна из карточек.
 			@breadcrumbBackTo(templ.URL(orgSettingsPath(o.ID)), i18n.T(ctx, "org.settings.title"))
 			<h1>{ i18n.T(ctx, "uptime.probes.title") } { o.Name }</h1>
 			@helpPanel("probes", "probes")
@@ -111,9 +92,7 @@ templ Probes(o org.Org, rows []ProbeRow, rawToken, runCmd, errMsg, userEmail str
 					<p><code class="probe-token">{ rawToken }</code></p>
 					<p>{ i18n.T(ctx, "uptime.probes.run_hint") }</p>
 					<p><code class="probe-run">{ runCmd }</code></p>
-					// №70: команда содержит плейсхолдер <gotcha-image> — без
-					// пояснения он читается как опечатка, а не как «подставьте
-					// свой образ».
+					// <gotcha-image> в команде — плейсхолдер; без пояснения читается как опечатка.
 					<p class="hint">{ i18n.T(ctx, "uptime.probes.cmd_hint") } <a href="/docs/probes">{ i18n.T(ctx, "uptime.probes.cmd_docs_link") }</a></p>
 				</div>
 			}

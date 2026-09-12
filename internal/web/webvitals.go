@@ -13,22 +13,15 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// perfVitalChartBuckets — сколько корзин в мини-графике p75 web vital на панели
-// эндпойнта (та же грубость, что и спарклайн p95 в списке эндпойнтов).
 const perfVitalChartBuckets = 24
 
-// webVitalsPanelNames — порядок vitals в панели Web Vitals на странице
-// эндпойнта: сначала три Core Web Vitals (LCP/INP/CLS), затем FCP/TTFB.
+// сначала три Core Web Vitals (LCP/INP/CLS), затем FCP/TTFB.
 var webVitalsPanelNames = []string{"lcp", "inp", "cls", "fcp", "ttfb"}
 
 func webVitalsPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/web-vitals"
 }
 
-// webVitalsList — GET /projects/{id}/web-vitals: таблица страниц (pageload-
-// транзакций) с p75 LCP/INP/CLS и рейтингом. Только чтение; доступ —
-// CanAccessProject, иначе 404 (тот же принцип, что и performanceList); h.Trace
-// nil → 404, как в performanceList.
 func (h *Handler) webVitalsList(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -39,8 +32,7 @@ func (h *Handler) webVitalsList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// h.Trace может быть nil в стендах без трейсинга — тогда 404, как и при
-	// отсутствии доступа (тот же приём, что в performanceList), а не паника.
+	// h.Trace может быть nil в стендах без трейсинга — 404, не паника.
 	if h.Trace == nil {
 		h.notFound(w, r)
 		return
@@ -61,9 +53,8 @@ func (h *Handler) webVitalsList(w http.ResponseWriter, r *http.Request) {
 
 	from, now := tr.From, tr.To
 
-	// Отказ ClickHouse — НЕ 500: фильтры и оболочка остаются, на месте
-	// таблицы — «данные временно недоступны» (единый приём CH-страниц,
-	// образец — logsList). Первый отказ прекращает опрос хранилища.
+	// отказ ClickHouse — не 500: фильтры/оболочка остаются, вместо таблицы
+	// «данные временно недоступны».
 	pages, err := h.Trace.WebVitalsPages(r.Context(), projectID, from, now, environment)
 	var environments []string
 	if err == nil {
@@ -82,10 +73,8 @@ func (h *Handler) webVitalsList(w http.ResponseWriter, r *http.Request) {
 		Render(r.Context(), w)
 }
 
-// sortPageVitals сортирует список страниц по query-параметру sort. Дефолт
-// (пустой/неизвестный) — число замеров LCP по убыванию (в этом же порядке их
-// отдаёт trace.Query.WebVitalsPages, но пересортировать всё равно надо: с
-// указанным sort порядок другой).
+// дефолт даёт тот же порядок, что уже отдаёт WebVitalsPages, но пересортировка
+// всё равно нужна для остальных значений sortKey.
 func sortPageVitals(pages []trace.PageVitals, sortKey string) {
 	less := func(i, j int) bool { return pages[i].Count > pages[j].Count }
 	switch sortKey {
@@ -101,13 +90,8 @@ func sortPageVitals(pages []trace.PageVitals, sortKey string) {
 	sort.SliceStable(pages, less)
 }
 
-// vitalsPanel собирает панель Web Vitals эндпойнта: по каждому из пяти vitals —
-// общий p75 за период с рейтингом (PageVitalsOne, один запрос с учётом фильтра
-// окружения) и мини-график p75 во времени (VitalSeries с шагом chart). Панель
-// показывается, только если хотя бы у одного из пяти vitals есть данные за
-// период в текущем окружении (Rating != ""); иначе возвращает nil и панель не
-// рендерится (в т.ч. когда vitals есть лишь в другом окружении — при
-// environment=staging панели у чисто production-страницы не будет).
+// панель рендерится, только если хотя бы у одного vital есть данные в текущем
+// окружении — иначе nil, даже если vitals есть лишь в другом окружении.
 func (h *Handler) vitalsPanel(r *http.Request, projectID int64, transaction string, from, now time.Time, window time.Duration, environment string) ([]templates.VitalPanelRow, error) {
 	lcp, inp, cls, fcp, ttfb, err := h.Trace.PageVitalsOne(r.Context(), projectID, transaction, from, now, environment)
 	if err != nil {
@@ -143,9 +127,8 @@ func (h *Handler) vitalsPanel(r *http.Request, projectID int64, transaction stri
 	return rows, nil
 }
 
-// vitalValueFormatter — запись значения метрики для подсказки спарклайна: та
-// же, что у значения в строке таблицы (см. formatVitalValue в шаблоне), иначе
-// подсказка показывала бы голое число без единицы измерения.
+// та же запись, что у значения в строке таблицы — иначе подсказка спарклайна
+// показывала бы голое число без единицы измерения.
 func vitalValueFormatter(name string) func(float64) string {
 	if name == "cls" {
 		return func(v float64) string { return strconv.FormatFloat(v, 'f', 2, 64) }

@@ -11,13 +11,11 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// errCapture — часовой: метод обязан вернуть именно его, иначе перехват
-// не сработал и голден-проверка ничего не доказывает.
+// Часовой: метод обязан вернуть именно эту ошибку, иначе перехват не сработал и голден-проверка ничего не доказывает.
 var errCapture = errors.New("capture")
 
-// captureConn запоминает последний запрос и аргументы. Встроенный nil-интерфейс
-// даёт остальные методы driver.Conn: их вызов запаникует, что и нужно —
-// тест обязан падать, а не молча проходить, если код пойдёт другим путём.
+// Встроенный nil-интерфейс даёт остальные методы driver.Conn — их вызов запаникует, что и нужно: тест обязан
+// падать, а не молча проходить, если код пойдёт другим путём.
 type captureConn struct {
 	driver.Conn
 	query string
@@ -30,11 +28,8 @@ func (c *captureConn) Query(_ context.Context, query string, args ...any) (drive
 	return nil, errCapture
 }
 
-// containsArg ищет строковое значение среди перехваченных аргументов запроса.
-// Не slices.Contains: go.mod этого модуля фиксирует "go 1.26.6", и в этой
-// связке версий инстанцирование slices.Contains по []any (E=any) не проходит
-// проверку ограничения comparable на этапе компиляции — не имеет отношения
-// к содержимому теста, обходится обычным циклом с явным приведением типа.
+// Не slices.Contains: в этой связке версий (go 1.26.6) []any не проходит ограничение comparable на
+// этапе компиляции — обходится обычным циклом с явным приведением типа.
 func containsArg(args []any, v string) bool {
 	for _, a := range args {
 		if s, ok := a.(string); ok && s == v {
@@ -44,8 +39,7 @@ func containsArg(args []any, v string) bool {
 	return false
 }
 
-// goldenFilter — один и тот же набор условий для всех голден-случаев:
-// задействует каждую ветку сборки WHERE.
+// Один и тот же набор условий для всех голден-случаев — задействует каждую ветку сборки WHERE.
 func goldenFilter() ListFilter {
 	return ListFilter{
 		From:        time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
@@ -155,9 +149,8 @@ func TestGoldenWhereFacet(t *testing.T) {
 		wantArgs []any
 	}{
 		{
-			// severity: собственное условие "severity IN (?)" НЕ добавляется —
-			// фасет обязан показывать распределение по всем уровням (см. докблок
-			// Facet). Это поведение фиксируется здесь наравне с текстом запроса.
+			// severity: собственное "severity IN (?)" не добавляется — фасет обязан показывать распределение по
+			// всем уровням (см. докблок Facet).
 			col: "severity",
 			want: `
 		SELECT severity, count() AS c
@@ -399,14 +392,8 @@ func TestGoldenWhereAttrValues(t *testing.T) {
 	}
 }
 
-// TestGoldenFacetOmitsOwnNegation: фасет по колонке не должен применять
-// собственное отрицание — иначе исключённое значение пропадёт из счётчиков
-// вместе с возможностью снять исключение обратным кликом. Отрицание по
-// ДРУГОМУ полю при этом обязано остаться. Прогоняется по ВСЕМ трём колонкам
-// facetColumns (не только service): омит-ключ обязан браться из параметра
-// col, а не совпадать с ним случайно на одной проверенной колонке — иначе
-// хардкод вида `map[string]bool{"service": true}` вместо `{col: true}`
-// прошёл бы незамеченным на service и молча тёк для environment/severity.
+// Прогоняется по ВСЕМ facetColumns, не только service — омит-ключ обязан браться из параметра col,
+// иначе хардкод вида {"service": true} прошёл бы на service и молча тёк для environment/severity.
 func TestGoldenFacetOmitsOwnNegation(t *testing.T) {
 	cases := []struct {
 		col       string
@@ -459,12 +446,8 @@ func TestGoldenFacetOmitsOwnNegation(t *testing.T) {
 	}
 }
 
-// TestGoldenAttrValuesOmitsOwnNegation: раскрытый ключ атрибута не
-// применяет своё отрицание, но отрицание по чужому ключу продолжает
-// сужать выборку. Два случая — обычный атрибут и ресурсный, с РАЗНЫМИ
-// ключами (не "source" в обоих): омит-ключ обязан собираться из
-// resource+key параметров вызова, а не совпадать с одним захардкоженным
-// значением случайно на единственной проверенной комбинации.
+// Два случая (атрибут/ресурсный) с РАЗНЫМИ ключами — омит-ключ обязан собираться из resource+key, а не
+// совпадать с захардкоженным значением случайно на одной проверенной комбинации.
 func TestGoldenAttrValuesOmitsOwnNegation(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -514,10 +497,8 @@ func TestGoldenAttrValuesOmitsOwnNegation(t *testing.T) {
 			if got := strings.Count(c.query, wantClause); got != 1 {
 				t.Fatalf("ожидалось ровно одно отрицание по чужому ключу, найдено %d:\n%s", got, c.query)
 			}
-			// Аргументы докажут, что осталось именно чужое значение, а не
-			// собственное. Сам ключ раскрытого атрибута в args есть всегда
-			// (параметр SELECT-проекции и mapContains), поэтому различает
-			// только значение отрицания, а не ключ.
+			// Ключ раскрытого атрибута в args есть всегда (SELECT-проекция и mapContains) — различает только
+			// значение отрицания, а не ключ.
 			if !containsArg(c.args, tc.otherValue) || containsArg(c.args, tc.ownValue) {
 				t.Fatalf("отрицание по раскрытому ключу не отброшено: %#v", c.args)
 			}

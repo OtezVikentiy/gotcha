@@ -26,26 +26,21 @@ func TestIdentityRepo(t *testing.T) {
 		t.Fatalf("register B: %v", err)
 	}
 
-	// Нет личности → ErrNoIdentity.
 	if _, err := svc.IdentityUser(ctx, "oidc", "sub-a"); !errors.Is(err, auth.ErrNoIdentity) {
 		t.Fatalf("IdentityUser missing = %v, want ErrNoIdentity", err)
 	}
-	// Привязали к A → IdentityUser возвращает A.
 	if err := svc.LinkIdentity(ctx, uidA, "oidc", "sub-a", "a@example.com"); err != nil {
 		t.Fatalf("LinkIdentity A: %v", err)
 	}
 	if got, err := svc.IdentityUser(ctx, "oidc", "sub-a"); err != nil || got != uidA {
 		t.Fatalf("IdentityUser = (%d,%v), want (%d,nil)", got, err, uidA)
 	}
-	// Тот же субъект к B → ErrIdentityTaken.
 	if err := svc.LinkIdentity(ctx, uidB, "oidc", "sub-a", "b@example.com"); !errors.Is(err, auth.ErrIdentityTaken) {
 		t.Fatalf("LinkIdentity taken = %v, want ErrIdentityTaken", err)
 	}
-	// Второй oidc к тому же A → ErrAlreadyLinked.
 	if err := svc.LinkIdentity(ctx, uidA, "oidc", "sub-a2", "a@example.com"); !errors.Is(err, auth.ErrAlreadyLinked) {
 		t.Fatalf("LinkIdentity already = %v, want ErrAlreadyLinked", err)
 	}
-	// UpdateIdentityEmail меняет сохранённый email.
 	if err := svc.UpdateIdentityEmail(ctx, "oidc", "sub-a", "a-new@example.com"); err != nil {
 		t.Fatalf("UpdateIdentityEmail: %v", err)
 	}
@@ -53,14 +48,12 @@ func TestIdentityRepo(t *testing.T) {
 	if err != nil || len(ids) != 1 || ids[0].Email != "a-new@example.com" {
 		t.Fatalf("ListIdentities = (%+v,%v)", ids, err)
 	}
-	// UserByEmail.
 	if got, err := svc.UserByEmail(ctx, "A@Example.com"); err != nil || got != uidA {
 		t.Fatalf("UserByEmail = (%d,%v), want (%d,nil)", got, err, uidA)
 	}
 	if _, err := svc.UserByEmail(ctx, "nobody@example.com"); !errors.Is(err, auth.ErrUserNotFound) {
 		t.Fatalf("UserByEmail missing = %v, want ErrUserNotFound", err)
 	}
-	// CreateOAuthUser + повторный email → ErrEmailTaken.
 	uidC, err := svc.CreateOAuthUser(ctx, "c@example.com")
 	if err != nil {
 		t.Fatalf("CreateOAuthUser: %v", err)
@@ -68,7 +61,6 @@ func TestIdentityRepo(t *testing.T) {
 	if _, err := svc.CreateOAuthUser(ctx, "c@example.com"); !errors.Is(err, auth.ErrEmailTaken) {
 		t.Fatalf("CreateOAuthUser dup = %v, want ErrEmailTaken", err)
 	}
-	// Unlink.
 	if err := svc.UnlinkIdentity(ctx, uidC, "oidc"); !errors.Is(err, auth.ErrNoIdentity) {
 		t.Fatalf("UnlinkIdentity none = %v, want ErrNoIdentity", err)
 	}

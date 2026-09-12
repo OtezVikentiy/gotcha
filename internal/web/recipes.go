@@ -18,18 +18,11 @@ func recipesPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/recipes"
 }
 
-// recipeDetectWindow — окно детекции «данные приходят»: сигнатурная метрика
-// рецепта агрегируется за последние 15 минут (спека B6 §4). Сигнатуры
-// подобраны в реестре так, что скалярный агрегат виден с первого же скрейпа
-// (gauge / не-monotonic sum), поэтому статус загорается без ожидания второй
-// корзины rate-пути.
+// Сигнатуры реестра — скалярный агрегат (gauge/не-monotonic sum), виден с первого скрейпа,
+// без ожидания второй корзины rate-пути.
 const recipeDetectWindow = 15 * time.Minute
 
-// recipeDataArrives — детекция «данные приходят» по сигнатурной метрике
-// рецепта. Ошибка ClickHouse (или непроведённый h.Metrics на узком стенде)
-// трактуется как «данных нет» с логом — страница рецептов вспомогательная и
-// не должна падать из-за недоступной аналитики; тот же приём, что подсказки
-// имён метрик в renderMetricAlerts.
+// Ошибка ClickHouse — «данных нет» с логом, не падение: страница рецептов вспомогательная.
 func (h *Handler) recipeDataArrives(ctx context.Context, projectID int64, rec recipes.Recipe) bool {
 	if h.Metrics == nil {
 		return false
@@ -43,10 +36,6 @@ func (h *Handler) recipeDataArrives(ctx context.Context, projectID int64, rec re
 	return ok
 }
 
-// recipesListPage — GET /projects/{id}/recipes: карточки всех рецептов с
-// бейджем статуса данных и счётчиком созданных порогов. Доступ — любой с
-// доступом к проекту (CanAccessProject), как metricsList: это чтение
-// телеметрии и справка по подключению, не настройка.
 func (h *Handler) recipesListPage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -57,8 +46,8 @@ func (h *Handler) recipesListPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Nil-guard как у metricAlertsPage: без RuleService не посчитать статусы
-	// порогов, а POST создания без него мёртв — раздел целиком отвечает 404.
+	// Без RuleService не посчитать статусы порогов, а POST создания без него мёртв — раздел
+	// целиком отвечает 404.
 	if h.MetricRules == nil {
 		h.notFound(w, r)
 		return
@@ -72,8 +61,7 @@ func (h *Handler) recipesListPage(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	// Один List на все четыре рецепта: RuleStatuses — чистая функция над уже
-	// загруженным срезом, N+1 по правилам не возникает.
+	// Один List на все рецепты: RuleStatuses — чистая функция над срезом, N+1 не возникает.
 	existing, err := h.MetricRules.List(r.Context(), projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -99,14 +87,6 @@ func (h *Handler) recipesListPage(w http.ResponseWriter, r *http.Request) {
 	_ = templates.RecipesList(projectID, cards, h.currentEmail(r)).Render(r.Context(), w)
 }
 
-// recipeDetailPage — GET /projects/{id}/recipes/{slug}: шаги подключения со
-// сниппетом конфига (ключ проекта — тем же путём KeysForProject→liveKeyFor,
-// что hostInstallBlocks, только с типом server; нет живого ключа → сниппет
-// скрыт с подсказкой),
-// статус данных, преднастроенные графики (только когда данные уже приходят —
-// до первого скрейпа блок из одних пустых карточек лишь загромождал бы
-// инструкцию подключения) и таблица рекомендованных порогов. Доступ — как у
-// списка.
 func (h *Handler) recipeDetailPage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -140,11 +120,8 @@ func (h *Handler) recipeDetailPage(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	// CanOperate — read-only, тот же приём, что hostDetail (renderHostDetail):
-	// страница открыта любому с доступом, а кнопка создания порогов у
-	// не-оператора не рендерится вовсе (POST и так гейтится
-	// requireProjectOperator — тут только честность разметки: кнопка,
-	// ведущая зрителя в 404, хуже подсказки).
+	// Страница открыта любому с доступом, кнопка создания — только оператору (POST и так
+	// гейтится requireProjectOperator — это лишь честность разметки).
 	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -153,11 +130,8 @@ func (h *Handler) recipeDetailPage(w http.ResponseWriter, r *http.Request) {
 	dataArrives := h.recipeDataArrives(r.Context(), projectID, rec)
 	var charts []templates.RecipeChartVM
 	if dataArrives {
-		// Диапазон ФИКСИРОВАННЫЙ — recipeChartWindow от реального «сейчас»,
-		// НЕ resolveTimeRange (см. докблок константы: страница рецепта не
-		// должна молча уезжать за глобальной кукой диапазона). Шаг — той же
-		// формулой autoStep, что metricDetail: метрики читают сырую
-		// metric_points, шаг не мельче минуты, без выравнивания.
+		// Шаг — та же формула autoStep, что у metricDetail: метрики читают сырую metric_points,
+		// шаг не мельче минуты, без выравнивания.
 		now := time.Now()
 		step := autoStep(recipeChartWindow, time.Minute, 0, metricChartBuckets)
 		charts = h.recipeCharts(r.Context(), projectID, rec, now.Add(-recipeChartWindow), now, step)
@@ -174,15 +148,8 @@ func (h *Handler) recipeDetailPage(w http.ResponseWriter, r *http.Request) {
 	_ = templates.RecipeDetail(vm, h.currentEmail(r)).Render(r.Context(), w)
 }
 
-// recipeConfig — готовый сниппет коллектора с ключом типа server проекта;
-// "" — ключа нет или чтение ключей упало (страница не падает, шаблон
-// показывает подсказку «выпустите ключ» со ссылкой на настройки) — тот же
-// контракт, что hostInstallBlocks (hosts.go).
-//
-// server, а не agent: сниппеты рецептов (registry.go) сознательно НЕ ставят
-// resourcedetection, хост не регистрируют и никогда не регистрировали (§7
-// дизайна). Выдать рецепту agent-ключ значило бы дать право регистрации
-// источнику, которому оно не нужно, — против самой цели типизации ключей.
+// "" — ключа нет или чтение упало, страница не падает (подсказка «выпустите ключ»).
+// server, а не agent: рецепты не регистрируют хост, agent-ключ дал бы лишнее право.
 func (h *Handler) recipeConfig(ctx context.Context, projectID int64, rec recipes.Recipe) string {
 	keys, err := h.Org.KeysForProject(ctx, projectID)
 	if err != nil {
@@ -196,11 +163,6 @@ func (h *Handler) recipeConfig(ctx context.Context, projectID int64, rec recipes
 	return rec.Config(h.BaseURL, key)
 }
 
-// recipeThresholdsCreate — POST /projects/{id}/recipes/{slug}/thresholds:
-// идемпотентно создать недостающие рекомендованные пороги рецепта
-// (recipes.ApplyRules поверх того же RuleService, что форма metric alerts).
-// Доступ — оператор проекта (requireProjectOperator), как у ручных мутаций
-// правил; не-оператору отвечает единый existence-oracle 404.
 func (h *Handler) recipeThresholdsCreate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)

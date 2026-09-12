@@ -13,8 +13,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// dumpFormat выбирает разметку сборщика renderEventForLLM: markdown (для
-// вставки в чат с поддержкой Markdown) или обычный текст.
 type dumpFormat int
 
 const (
@@ -22,21 +20,15 @@ const (
 	dumpPlain
 )
 
-// maxDumpBytes — потолок размера дампа события для LLM (128 КиБ): защита от
-// раздутых vars/breadcrumbs, которые иначе забили бы контекст модели целиком.
+// Защита от раздутых vars/breadcrumbs, которые иначе забили бы контекст модели целиком.
 const maxDumpBytes = 128 << 10
 
-// renderEventForLLM собирает полный контекст события в текст для вставки в LLM.
-// Машинный формат, не человеческий показ (время — RFC3339 UTC): дамп читает
-// модель, а не пользователь. См. cld/specs/2026-08-12-event-llm-copy-design.md.
+// Машинный формат: дамп читает модель, не пользователь — время RFC3339 UTC, без локализации.
 func renderEventForLLM(it issue.Issue, ev event.Stored, f dumpFormat) string {
 	md := f == dumpMarkdown
 
-	// Тела секций собираются заранее: забор код-блоков в md — один общий на
-	// весь дамп, длиной больше самой длинной серии бэктиков во ВСЁМ
-	// содержимом (не только внутри самих код-блоков) — иначе бэктики,
-	// случайно попавшие в нефенсированную секцию (например, в текст
-	// исключения), могли бы визуально слиться с забором соседнего блока.
+	// Один общий фенс на весь дамп, длиннее самой длинной серии бэктиков во ВСЁМ тексте —
+	// иначе бэктики в тексте могли бы слиться с забором соседней секции.
 	exception := ""
 	if ev.ExceptionType != "" || ev.ExceptionValue != "" {
 		exception = exceptionLine(ev)
@@ -55,7 +47,6 @@ func renderEventForLLM(it issue.Issue, ev event.Stored, f dumpFormat) string {
 	}
 	breadcrumbs := prettyJSON(ev.Breadcrumbs)
 
-	// Забор нужен только в md (в txt код-блоков нет) — не считаем зря.
 	var fence string
 	if md {
 		fence = codeFence(strings.Join([]string{exception, stack, reqText, contexts, tags, breadcrumbs}, "\n"))
@@ -79,8 +70,6 @@ func renderEventForLLM(it issue.Issue, ev event.Stored, f dumpFormat) string {
 	return capDump(sanitizeControl(b.String()))
 }
 
-// writeTitle пишет заголовок дампа: title issue как заголовок первого уровня
-// в md, простая строка в txt.
 func writeTitle(b *strings.Builder, md bool, title string) {
 	if md {
 		fmt.Fprintf(b, "# %s\n\n", title)
@@ -89,9 +78,6 @@ func writeTitle(b *strings.Builder, md bool, title string) {
 	fmt.Fprintf(b, "%s\n\n", title)
 }
 
-// writeMeta пишет блок метаданных события: level/env/release/server/sdk,
-// время в RFC3339 UTC (машинный формат — дамп читает модель, см. докблок
-// renderEventForLLM), event_id, trace_id. Пустые поля опускаются.
 func writeMeta(b *strings.Builder, md bool, ev event.Stored) {
 	rows := []struct {
 		label string
@@ -119,11 +105,6 @@ func writeMeta(b *strings.Builder, md bool, ev event.Stored) {
 	b.WriteString("\n")
 }
 
-// writeSection добавляет секцию с заголовком title и телом body. Пустое
-// body — секция целиком пропускается (правило «пустые секции опускать»).
-// В md заголовок — "## title", тело в код-блоке при code==true (общий на
-// весь дамп fence, см. renderEventForLLM). В txt — "TITLE:" заглавными,
-// без разметки.
 func writeSection(b *strings.Builder, md bool, title, body string, code bool, fence string) {
 	if body == "" {
 		return
@@ -156,9 +137,6 @@ func writeSection(b *strings.Builder, md bool, title, body string, code bool, fe
 	b.WriteString("\n")
 }
 
-// codeFence возвращает строку из бэктиков длиннее самой длинной серии
-// бэктиков внутри body (минимум 3) — иначе забор внутри содержимого
-// закрыл бы код-блок раньше времени.
 func codeFence(body string) string {
 	longest := 0
 	run := 0
@@ -179,8 +157,6 @@ func codeFence(body string) string {
 	return strings.Repeat("`", n)
 }
 
-// exceptionLine форматирует строку исключения "Type: Value" (пустые части
-// опускаются вместе с разделителем).
 func exceptionLine(ev event.Stored) string {
 	switch {
 	case ev.ExceptionType != "" && ev.ExceptionValue != "":
@@ -192,10 +168,7 @@ func exceptionLine(ev event.Stored) string {
 	}
 }
 
-// framesText форматирует кадры стектрейса, по одному кадру — строка
-// "Filename:Lineno  Function" (+" [Module]", если Module непусто), следом
-// строка с ContextLine, если она непуста. Порядок сохраняется как отдал
-// parseStacktraceFrames (не переставлять — global-constraints.md).
+// Порядок кадров сохраняется как отдал parseStacktraceFrames — не переставлять.
 func framesText(frames []templates.Frame) string {
 	var b strings.Builder
 	for i, f := range frames {
@@ -214,8 +187,6 @@ func framesText(frames []templates.Frame) string {
 	return b.String()
 }
 
-// requestText форматирует HTTP-запрос: строка "METHOD URL", затем query,
-// headers, body — каждый непустой блок на своей строке/строках.
 func requestText(r *templates.RequestDump) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s %s", r.Method, r.URL)
@@ -238,8 +209,6 @@ func requestText(r *templates.RequestDump) string {
 	return b.String()
 }
 
-// tagsText форматирует теги события как "k=v", по одному на строку,
-// отсортированные по ключу для детерминированного вывода.
 func tagsText(tags map[string]string) string {
 	keys := make([]string, 0, len(tags))
 	for k := range tags {
@@ -256,8 +225,6 @@ func tagsText(tags map[string]string) string {
 	return b.String()
 }
 
-// prettyJSON переформатирует raw с отступами для читаемости. Пусто (""),
-// "{}", "null" или невалидный JSON — пустая строка (секция опускается).
 func prettyJSON(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" || trimmed == "{}" || trimmed == "null" {
@@ -277,9 +244,7 @@ func prettyJSON(raw string) string {
 	return strings.TrimRight(buf.String(), "\n")
 }
 
-// sanitizeControl заменяет недопустимые control-руны (кроме \n, \t) на
-// пробел — дамп мог бы иначе унести управляющие символы из vars/body в
-// текст, отдаваемый LLM.
+// Иначе управляющие символы из vars/body могли бы утечь в текст, отдаваемый LLM.
 func sanitizeControl(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\t' {
@@ -292,13 +257,9 @@ func sanitizeControl(s string) string {
 	}, s)
 }
 
-// capDumpMarker — хвост, добавляемый при обрезке дампа сверх maxDumpBytes.
-// По-английски, как и весь дамп (заголовки секций Exception/Stack trace и т.д.):
-// это машинный текст для LLM, а не элемент локализованного интерфейса.
+// По-английски: это машинный текст для LLM, а не локализованный интерфейс.
 const capDumpMarker = "\n…[truncated]"
 
-// capDump обрезает s по границе руны, если он превышает maxDumpBytes, и
-// добавляет маркер обрезки (не рвёт UTF-8 посередине руны).
 func capDump(s string) string {
 	if len(s) <= maxDumpBytes {
 		return s
@@ -313,8 +274,6 @@ func capDump(s string) string {
 	return s[:limit] + capDumpMarker
 }
 
-// isRuneBoundary сообщает, начинается ли в позиции i руна (не находится ли
-// i внутри многобайтовой UTF-8 последовательности).
 func isRuneBoundary(s string, i int) bool {
 	if i <= 0 || i >= len(s) {
 		return true

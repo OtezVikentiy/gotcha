@@ -1,10 +1,5 @@
 package db_test
 
-// TestLatestMigrationHasDataTest (internal/guards) требует, чтобы НОВЕЙШАЯ
-// миграция PostgreSQL приезжала с тестом на непустой базе — db.MigratePGTo на
-// схему, уже содержащую строки. На момент этой правки новейшая —
-// 0059_user_hide_getting_started.up.sql.
-
 import (
 	"context"
 	"testing"
@@ -14,9 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestMigrate0059DefaultsHideGettingStartedFalse — флаг скрытия чек-листа
-// (№71) добавляется существующим пользователям выключенным: скрытие — явное
-// решение человека, а не побочный эффект миграции.
+// Флаг добавляется выключенным — скрытие чек-листа решает человек, а не миграция.
 func TestMigrate0059DefaultsHideGettingStartedFalse(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

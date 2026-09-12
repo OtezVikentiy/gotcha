@@ -14,8 +14,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// randSlug — короткий случайный суффикс для уникальных slug/email между
-// тестами общей БД (testenv поднимает один контейнер на пакет).
 func randSlug(t *testing.T) string {
 	t.Helper()
 	b := make([]byte, 6)
@@ -25,8 +23,6 @@ func randSlug(t *testing.T) string {
 	return hex.EncodeToString(b)
 }
 
-// seedUser заводит пользователя без привязки к проекту — второй участник
-// теста изоляции по пользователю (см. TestEnqueueLimitedRefusesAtUserLimit).
 func seedUser(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	var id int64
@@ -38,8 +34,6 @@ func seedUser(t *testing.T, pool *pgxpool.Pool) int64 {
 	return id
 }
 
-// seedProjectAndUser заводит организацию, проект и пользователя-автора —
-// минимальный набор для постановки заявки на выгрузку.
 func seedProjectAndUser(t *testing.T, pool *pgxpool.Pool) (projectID, userID int64) {
 	t.Helper()
 	ctx := context.Background()
@@ -59,14 +53,11 @@ func seedProjectAndUser(t *testing.T, pool *pgxpool.Pool) (projectID, userID int
 	return projectID, userID
 }
 
-// mustEnqueue ставит заявку с параметрами по умолчанию (issues/csv) — для
-// тестов, которым важен только факт наличия заявки, а не её содержимое.
 func mustEnqueue(t *testing.T, st *Store, projectID, userID int64) int64 {
 	t.Helper()
 	return mustEnqueueKind(t, st, projectID, userID, KindIssues, FormatCSV)
 }
 
-// mustEnqueueKind — как mustEnqueue, но с явным видом и форматом выгрузки.
 func mustEnqueueKind(t *testing.T, st *Store, projectID, userID int64, kind Kind, format Format) int64 {
 	t.Helper()
 	now := time.Now().UTC()
@@ -111,12 +102,6 @@ func TestEnqueueGetRoundTrip(t *testing.T) {
 	}
 }
 
-// TestEnqueueDefaultsAndScope — расширяет round-trip на поля, которые первый
-// тест не трогает: ScopeIssueID, IncludePII, остальные фильтры Params и
-// значения по умолчанию, которые заявка получает от схемы (attempts,
-// last_error, claimed_at и т.п.). Ловит перепутанные позиции в scanJob —
-// TestEnqueueGetRoundTrip такую перестановку не заметил бы, если бы она
-// случайно совпала по типам соседних колонок.
 func TestEnqueueDefaultsAndScope(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -162,9 +147,6 @@ func TestEnqueueDefaultsAndScope(t *testing.T) {
 	}
 }
 
-// TestEnqueueWithoutScopeStoresNull — заявка без привязки к группе (обычный
-// массовый экспорт) обязана вернуть ScopeIssueID=0, а не паниковать на NULL
-// в scope_issue_id при сканировании.
 func TestEnqueueWithoutScopeStoresNull(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -181,11 +163,6 @@ func TestEnqueueWithoutScopeStoresNull(t *testing.T) {
 	}
 }
 
-// TestEnqueueScopeColumnNullVsZero — проверяет саму колонку scope_issue_id
-// напрямую SQL-запросом, а не через Get: jobColumns читает
-// coalesce(scope_issue_id, 0), поэтому round-trip через Get не отличает NULL
-// от буквального нуля и не заметил бы потерю guard'а на j.ScopeIssueID == 0
-// в Enqueue.
 func TestEnqueueScopeColumnNullVsZero(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -231,9 +208,6 @@ func TestGetUnknownIDReturnsNotFound(t *testing.T) {
 	}
 }
 
-// TestByProjectOrdersNewestFirstAndLimits — сортировка и limit одновременно:
-// если ORDER BY потеряется, третий по счёту (случайно попавший в LIMIT
-// первым при вставке) не окажется отрезан, и тест это заметит.
 func TestByProjectOrdersNewestFirstAndLimits(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -244,8 +218,6 @@ func TestByProjectOrdersNewestFirstAndLimits(t *testing.T) {
 	midID := mustEnqueue(t, st, projectID, userID)
 	newID := mustEnqueue(t, st, projectID, userID)
 
-	// created_at выставляется вручную: default now() у трёх вставок подряд
-	// может совпасть до микросекунды и сделать порядок недетерминированным.
 	base := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	for i, id := range []int64{oldID, midID, newID} {
 		if _, err := pool.Exec(ctx, `UPDATE export_jobs SET created_at = $2 WHERE id = $1`,
@@ -254,11 +226,6 @@ func TestByProjectOrdersNewestFirstAndLimits(t *testing.T) {
 		}
 	}
 
-	// export_jobs_list_idx уже отсортирован по (project_id, created_at DESC),
-	// и планировщик способен отдать верный порядок его сканированием даже без
-	// ORDER BY в запросе — потерю сортировки такое совпадение маскирует. База
-	// теста изолированная (своя на тест, testenv.PostgresDSN), поэтому индекс
-	// можно снести здесь без риска для остальных тестов пакета.
 	if _, err := pool.Exec(ctx, `DROP INDEX export_jobs_list_idx`); err != nil {
 		t.Fatalf("снятие индекса: %v", err)
 	}
@@ -280,12 +247,6 @@ func TestByProjectOrdersNewestFirstAndLimits(t *testing.T) {
 	}
 }
 
-// TestByProjectNonPositiveLimit фиксирует контракт ByProject на границах,
-// которые сама сигнатура не запрещает: limit — забота вызывающей стороны
-// (страница «Выгрузки» задаёт его константой пакета web, как issueEventsLimit
-// у EventsForIssue), стор её не подменяет. limit=0 — валидный SQL LIMIT 0,
-// пустой список без ошибки; отрицательный — ошибка PostgreSQL ("LIMIT must
-// not be negative"), которую ByProject не глотает молча.
 func TestByProjectNonPositiveLimit(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -314,9 +275,6 @@ func ids(js []Job) []int64 {
 	return out
 }
 
-// TestByProjectIsolatesOtherProjects — заявка чужого проекта не должна
-// попасть в выборку: без фильтра по project_id ByProject превратился бы в
-// глобальный список заявок всех арендаторов.
 func TestByProjectIsolatesOtherProjects(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -336,9 +294,6 @@ func TestByProjectIsolatesOtherProjects(t *testing.T) {
 	}
 }
 
-// TestByProjectForUserIsolatesOtherAuthors — §3 спеки: свои заявки видит
-// автор, а не все заявки проекта. Две заявки одного проекта, разные
-// авторы — выдача несёт только заявку своего автора.
 func TestByProjectForUserIsolatesOtherAuthors(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -358,10 +313,6 @@ func TestByProjectForUserIsolatesOtherAuthors(t *testing.T) {
 	}
 }
 
-// TestByProjectForUserLimitNotEatenByOthers — фильтр по автору обязан
-// сидеть в самом SQL, а не быть Go-фильтром поверх ByProject: иначе limit
-// съедался бы чужими строками раньше, чем автор увидел бы свою собственную
-// (N чужих заявок новее своей + limit=N вернул бы автору пустую страницу).
 func TestByProjectForUserLimitNotEatenByOthers(t *testing.T) {
 	const n = 5
 	ctx := context.Background()
@@ -393,9 +344,6 @@ func TestByProjectForUserLimitNotEatenByOthers(t *testing.T) {
 	}
 }
 
-// testJob — минимальная валидная заявка для EnqueueLimited/Enqueue-тестов
-// гонки/лимитов: конкретный Kind/Format здесь не важен, важны только
-// ProjectID/CreatedBy.
 func testJob(projectID, userID int64) Job {
 	now := time.Now().UTC()
 	return Job{
@@ -405,8 +353,6 @@ func testJob(projectID, userID int64) Job {
 	}
 }
 
-// TestEnqueueLimitedRefusesAtUserLimit — предел персональный: у userB своя
-// квота, отказ userA его не касается.
 func TestEnqueueLimitedRefusesAtUserLimit(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -429,11 +375,6 @@ func TestEnqueueLimitedRefusesAtUserLimit(t *testing.T) {
 	}
 }
 
-// TestEnqueueLimitedUserLimitAppliesAcrossProjects — предел на пользователя
-// обязан считаться по ВСЕМ проектам сразу, а не в границах одного проекта
-// (P2-SEC-2 аудита): без этого пользователь, состоящий в K проектах, ставит
-// K*userLimit активных заявок одновременно, хотя докблок и обе локали доки
-// обещают единый потолок на пользователя.
 func TestEnqueueLimitedUserLimitAppliesAcrossProjects(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -453,9 +394,6 @@ func TestEnqueueLimitedUserLimitAppliesAcrossProjects(t *testing.T) {
 	}
 }
 
-// TestEnqueueLimitedRefusesAtProjectLimit — третья заявка снова от userA (его
-// персональный лимит 10, далеко не исчерпан) обязана упереться именно в
-// проектный предел, а не быть пропущена по ошибке смешения условий.
 func TestEnqueueLimitedRefusesAtProjectLimit(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -476,9 +414,6 @@ func TestEnqueueLimitedRefusesAtProjectLimit(t *testing.T) {
 	}
 }
 
-// TestEnqueueLimitedExcludesTerminalStatuses — досчитанная заявка не должна
-// занимать место в лимите одновременных выгрузок: иначе автор упрётся в
-// потолок из-за заявок, которые давно отработали.
 func TestEnqueueLimitedExcludesTerminalStatuses(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -500,14 +435,6 @@ func TestEnqueueLimitedExcludesTerminalStatuses(t *testing.T) {
 	}
 }
 
-// TestEnqueueLimitedConcurrentRespectsLimit — обязательная проверка гонки
-// check-then-act (находка ревью задачи 10, P2): N параллельных постановок
-// при лимите M обязаны дать РОВНО M успехов, остальные — ErrActiveLimitReached.
-// На раздельных ActiveCounts+Enqueue этот тест падал в 5 прогонах из 8 (8
-// параллельных заявок, лимит 3 → от 3 до 6 успешных постановок, эмпирика
-// ревьюера). rounds раз подряд на СВЕЖЕМ проекте каждый раз: advisory lock
-// в EnqueueLimited ключуется по project_id, кросс-раундовая интерференция
-// исключена без нужды делить состояние между раундами.
 func TestEnqueueLimitedConcurrentRespectsLimit(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -575,9 +502,6 @@ func TestDeleteRefusesNonTerminal(t *testing.T) {
 	}
 }
 
-// TestDeleteUnknownIDReturnsNotDeletable — несуществующий id ведёт себя как
-// незавершённая заявка (нуль затронутых строк), а не как отдельная ошибка:
-// со стороны вызывающего это тот же «удалить нельзя».
 func TestDeleteUnknownIDReturnsNotDeletable(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -624,7 +548,6 @@ func TestClaimReclaimsExpiredLease(t *testing.T) {
 	if _, _, err := st.Claim(ctx); err != nil {
 		t.Fatalf("первый Claim: %v", err)
 	}
-	// Инстанс «упал»: лиза протухла, заявка обязана вернуться в работу.
 	if _, err := pool.Exec(ctx,
 		`UPDATE export_jobs SET claimed_at = now() - interval '21 minutes' WHERE id=$1`, id); err != nil {
 		t.Fatalf("подготовка: %v", err)
@@ -638,9 +561,6 @@ func TestClaimReclaimsExpiredLease(t *testing.T) {
 	}
 }
 
-// TestClaimDoesNotReclaimExhaustedRunningJob — граница attempts == maxAttempts:
-// заявка с протухшей лизой, но без оставшихся попыток, не должна снова уйти в
-// работу. Её судьба — SweepStale, а не ещё один клейм.
 func TestClaimDoesNotReclaimExhaustedRunningJob(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -659,8 +579,6 @@ func TestClaimDoesNotReclaimExhaustedRunningJob(t *testing.T) {
 	}
 }
 
-// TestClaimReclaimsJustBelowMaxAttempts — симметричная граница: одной попытки
-// в запасе достаточно, чтобы протухшая лиза вернула заявку в работу.
 func TestClaimReclaimsJustBelowMaxAttempts(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -707,15 +625,9 @@ func TestSweepStaleFailsExhaustedJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	// FailureReasonKey = reasonInternal (P2-UX-2 аудита): SweepStale добивает
-	// заявку мимо fail()/failPermanent(), различимой причины провала
-	// последней попытки у него нет (см. докблок Store.SweepStale). Мутация —
-	// вернуть UPDATE без failure_reason_key = $3 — обязана уронить именно
-	// эту проверку.
 	if got.Status != StatusFailed || got.LastError == "" || got.FailureReasonKey != reasonInternal {
 		t.Errorf("зависшая заявка осталась в статусе %q, причина %q, ключ %q", got.Status, got.LastError, got.FailureReasonKey)
 	}
-	// Заявка с исчерпанными попытками не должна больше выдаваться в работу.
 	if _, ok, _ := st.Claim(ctx); ok {
 		t.Error("Claim выдал заявку с исчерпанными попытками")
 	}
@@ -775,13 +687,6 @@ func TestFailRetriesThenGivesUp(t *testing.T) {
 		if got.Status != want {
 			t.Errorf("после %d-й неудачи статус %q, ожидали %q", i, got.Status, want)
 		}
-		// P2-UX-2 аудита: failure_reason_key ложится ТОЛЬКО вместе с
-		// переходом в failed — пока заявка возвращается в очередь
-		// (промежуточные попытки), ключ пуст, потому что следующая попытка
-		// может провалиться по другой причине или вовсе завершиться
-		// успехом. Мутация — убрать "CASE WHEN attempts >= $2" вокруг
-		// failure_reason_key в Store.Fail — обязана уронить именно эту
-		// ветку (i < maxAttempts): ключ появится досрочно.
 		if i < maxAttempts && got.FailureReasonKey != "" {
 			t.Errorf("после %d-й (промежуточной) неудачи FailureReasonKey = %q, ожидали пусто", i, got.FailureReasonKey)
 		}
@@ -791,12 +696,6 @@ func TestFailRetriesThenGivesUp(t *testing.T) {
 	}
 }
 
-// TestDoneIgnoresAlreadyFinalizedJob — Done не должен воскрешать заявку,
-// которую тем временем уже закрыл SweepStale (протухшая лиза, попытки
-// исчерпаны): «застрявший» вызов Done из зомби-воркера получает
-// ErrStaleClaim и не имеет права откатить финальный статус обратно на
-// 'done', даже если номер попытки совпадает — status='running' в связке
-// с attempts защищает и от этого случая.
 func TestDoneIgnoresAlreadyFinalizedJob(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -823,9 +722,6 @@ func TestDoneIgnoresAlreadyFinalizedJob(t *testing.T) {
 	}
 }
 
-// TestFailIgnoresAlreadyDoneJob — симметричный случай: Fail из зомби-вызова
-// получает ErrStaleClaim и не откатывает уже успешно досчитанную заявку в
-// очередь.
 func TestFailIgnoresAlreadyDoneJob(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -851,11 +747,6 @@ func TestFailIgnoresAlreadyDoneJob(t *testing.T) {
 	}
 }
 
-// TestDoneRejectsStaleClaimAfterReclaim — подтверждённый сценарий гонки:
-// A клеймит заявку, лиза протухает, её подбирает B (attempts вырос), и
-// запоздавший Done от A обязан получить ErrStaleClaim и не тронуть строку —
-// иначе заявка финализировалась бы устаревшими данными A, а Done от B, у
-// которого строка увести уже некому, тихо потерял бы результат.
 func TestDoneRejectsStaleClaimAfterReclaim(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -879,7 +770,6 @@ func TestDoneRejectsStaleClaimAfterReclaim(t *testing.T) {
 		t.Fatalf("B перехватил заявку с attempts=%d, ожидали %d", claimB.Attempts, claimA.Attempts+1)
 	}
 
-	// A не знает о перехвате и дописывает СВОИ (устаревшие) результаты.
 	if err := st.Done(ctx, id, claimA.Attempts, 111, 222, false, time.Hour); !errors.Is(err, ErrStaleClaim) {
 		t.Fatalf("Done от A: err=%v, ожидали ErrStaleClaim", err)
 	}
@@ -891,7 +781,6 @@ func TestDoneRejectsStaleClaimAfterReclaim(t *testing.T) {
 		t.Fatalf("устаревший Done от A изменил заявку: %+v", afterA)
 	}
 
-	// B ведёт актуальную попытку — его Done обязан пройти и записать его данные.
 	if err := st.Done(ctx, id, claimB.Attempts, 999, 888, true, time.Hour); err != nil {
 		t.Fatalf("Done от B: %v", err)
 	}
@@ -904,9 +793,6 @@ func TestDoneRejectsStaleClaimAfterReclaim(t *testing.T) {
 	}
 }
 
-// TestFailRejectsStaleClaimAfterReclaim — та же гонка со стороны Fail:
-// запоздавшая неудача от A не должна откатывать попытку, которую уже
-// ведёт B.
 func TestFailRejectsStaleClaimAfterReclaim(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -950,17 +836,6 @@ func TestFailRejectsStaleClaimAfterReclaim(t *testing.T) {
 	}
 }
 
-// TestClaimConcurrentDoesNotDoubleAssign — настоящая конкурентность: несколько
-// горутин со своими соединениями одновременно бьются за пул заявок. Без
-// корректной блокировки строки (FOR UPDATE SKIP LOCKED) два клейма могли бы
-// увидеть одну и ту же «самую старую» заявку в своих снапшотах и оба её
-// забрать.
-// Раунды и высокое соотношение воркеров к заявкам — не украшение: без
-// FOR UPDATE SKIP LOCKED окно гонки между чтением «самой старой заявки» и
-// её захватом узкое, и один раунд с малым числом участников ловит поломку
-// не всегда (наблюдалось ~3 из 10 прогонов при 12 воркерах на 6 заявок).
-// Барьер запускает все горутины раунда одновременно, а несколько раундов
-// подряд убирают зависимость результата от разового везения планировщика.
 func TestClaimConcurrentDoesNotDoubleAssign(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -1017,9 +892,6 @@ func TestClaimConcurrentDoesNotDoubleAssign(t *testing.T) {
 	}
 }
 
-// TestClaimConcurrentReclaimsExpiredLeaseExactlyOnce — та же гарантия для
-// переклейма: параллельные попытки подобрать одну просроченную лизу обязаны
-// отдать её ровно одному вызову, остальные — уйти с ok=false.
 func TestClaimConcurrentReclaimsExpiredLeaseExactlyOnce(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -1066,13 +938,6 @@ func TestClaimConcurrentReclaimsExpiredLeaseExactlyOnce(t *testing.T) {
 	}
 }
 
-// TestFailPermanentIgnoresRetryBudgetButRespectsAttemptFence — в отличие от
-// Fail, FailPermanent обязан закрыть заявку сразу при СОВПАДАЮЩЕМ attempt, а
-// не вернуть её в очередь: первая попытка (attempts=1, меньше maxAttempts=3)
-// через обычный Fail ушла бы обратно в 'queued', и именно поэтому воркер
-// зовёт FailPermanent для причин, которые повтор не исправит. Игнорируется
-// только потолок попыток — не сам номер попытки (см.
-// TestFailPermanentRejectsStaleClaimAfterReclaim).
 func TestFailPermanentIgnoresRetryBudgetButRespectsAttemptFence(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -1109,13 +974,6 @@ func TestFailPermanentIgnoresRetryBudgetButRespectsAttemptFence(t *testing.T) {
 	}
 }
 
-// TestFailPermanentRejectsStaleClaimAfterReclaim — тот же сценарий гонки, что
-// у Done/Fail: A клеймит заявку, лиза протухает, её подбирает B (attempts
-// вырос и B активно работает), и запоздавший постоянный отказ от A обязан
-// получить ErrStaleClaim и не тронуть строку. Без фенсинга по attempt
-// FailPermanent закрыл бы заявку как failed поверх активной попытки B — дыра
-// шире обычного зомби-Done, потому что FailPermanent не ждёт даже исчерпания
-// попыток.
 func TestFailPermanentRejectsStaleClaimAfterReclaim(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -1139,7 +997,6 @@ func TestFailPermanentRejectsStaleClaimAfterReclaim(t *testing.T) {
 		t.Fatalf("B перехватил заявку с attempts=%d, ожидали %d", claimB.Attempts, claimA.Attempts+1)
 	}
 
-	// A не знает о перехвате и зовёт постоянный отказ по СВОЕЙ (устаревшей) попытке.
 	if err := st.FailPermanent(ctx, id, claimA.Attempts, "диск переполнен", reasonDiskFull); !errors.Is(err, ErrStaleClaim) {
 		t.Fatalf("FailPermanent от A: err=%v, ожидали ErrStaleClaim", err)
 	}
@@ -1153,10 +1010,6 @@ func TestFailPermanentRejectsStaleClaimAfterReclaim(t *testing.T) {
 	}
 }
 
-// TestFailPermanentUnknownIDReturnsStaleClaim — постоянный отказ заявки,
-// которую успели удалить, неотличим по фенсингу от переклейма (0 затронутых
-// строк в обоих случаях) — тот же ErrStaleClaim, что и у Fail/Done для того
-// же входа.
 func TestFailPermanentUnknownIDReturnsStaleClaim(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -1166,14 +1019,6 @@ func TestFailPermanentUnknownIDReturnsStaleClaim(t *testing.T) {
 	}
 }
 
-// TestReleaseReturnsJobToQueueWithoutSpendingAttempt — базовый happy path
-// P2-OPS-5: Release отпускает клейм без последствий, которые несёт Fail —
-// attempts не растёт, last_error/failure_reason_key не заполняются, а
-// claimed_at обнуляется настолько, что следующий Claim подбирает заявку
-// снова (мутация — забыть "claimed_at = NULL" в UPDATE — обязана уронить
-// именно повторный Claim ниже: WHERE в Claim требует протухшую лизу, а без
-// сброса claimed_at заявка осталась бы недоступной для подбора все 20 минут
-// leaseTTL).
 func TestReleaseReturnsJobToQueueWithoutSpendingAttempt(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -1212,11 +1057,6 @@ func TestReleaseReturnsJobToQueueWithoutSpendingAttempt(t *testing.T) {
 	}
 }
 
-// TestReleaseRejectsStaleClaimAfterReclaim — та же гонка, что у
-// Fail/Done/FailPermanent: A клеймит заявку, лиза протухает, её подбирает B
-// (attempts вырос и B активно работает), и запоздавший релиз от A обязан
-// получить ErrStaleClaim и не тронуть строку — иначе зомби-релиз выбил бы
-// из-под B заявку, которую тот ещё активно строит.
 func TestReleaseRejectsStaleClaimAfterReclaim(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -1240,7 +1080,6 @@ func TestReleaseRejectsStaleClaimAfterReclaim(t *testing.T) {
 		t.Fatalf("B перехватил заявку с attempts=%d, ожидали %d", claimB.Attempts, claimA.Attempts+1)
 	}
 
-	// A не знает о перехвате и запоздало отпускает СВОЮ (уже неактуальную) попытку.
 	if err := st.Release(ctx, id, claimA.Attempts); !errors.Is(err, ErrStaleClaim) {
 		t.Fatalf("Release от A: err=%v, ожидали ErrStaleClaim", err)
 	}
@@ -1254,9 +1093,6 @@ func TestReleaseRejectsStaleClaimAfterReclaim(t *testing.T) {
 	}
 }
 
-// TestDueForExpiryReturnsOnlyExpiredDone — выборка обязана видеть только
-// done-заявки с просроченным expires_at: живой done (срок ещё не наступил) и
-// queued (даже с NULL expires_at) не должны попасть в проход джанитора.
 func TestDueForExpiryReturnsOnlyExpiredDone(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -1286,9 +1122,6 @@ func TestDueForExpiryReturnsOnlyExpiredDone(t *testing.T) {
 	}
 }
 
-// TestMarkExpiredGuardsStatus — MarkExpired обязан трогать только заявки в
-// статусе done: заявку, ещё стоящую в очереди (queued), пометить expired
-// нельзя — файл по ней ещё не создавался и удалять нечего.
 func TestMarkExpiredGuardsStatus(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -1322,9 +1155,6 @@ func TestMarkExpiredGuardsStatus(t *testing.T) {
 	}
 }
 
-// TestMarkExpiredEmptyIDsIsNoop — пустой список id не должен бить по базе
-// SQL-запросом с пустым ANY($1): вызывающая сторона (Janitor) собирает список
-// из циклa, который на пустых входных данных может дать nil-срез.
 func TestMarkExpiredEmptyIDsIsNoop(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -1334,9 +1164,6 @@ func TestMarkExpiredEmptyIDsIsNoop(t *testing.T) {
 	}
 }
 
-// TestPurgeRowsRemovesOnlyOldTerminal — история чистится по finished_at и
-// только у терминальных статусов: свежая терминальная заявка и активная
-// (queued/running), сколько бы она ни висела, остаются нетронутыми.
 func TestPurgeRowsRemovesOnlyOldTerminal(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -1355,9 +1182,6 @@ func TestPurgeRowsRemovesOnlyOldTerminal(t *testing.T) {
 		t.Fatalf("подготовка свежей заявки: %v", err)
 	}
 
-	// Активная заявка без finished_at, "состаренная" по created_at — Purge
-	// не должен цепляться за created_at вовсе, только за finished_at
-	// терминальных статусов.
 	activeID := mustEnqueue(t, st, projectID, userID)
 	if _, err := pool.Exec(ctx, `UPDATE export_jobs SET created_at = now() - interval '40 days'
 		WHERE id = $1`, activeID); err != nil {
@@ -1382,12 +1206,6 @@ func TestPurgeRowsRemovesOnlyOldTerminal(t *testing.T) {
 	}
 }
 
-// TestPurgeRowsContinuesBeyondBatch — цикл обязан пройти больше одного
-// батча: Store собирается напрямую с заниженным batchSize=2, строк — пять,
-// значит без продолжения цикла после первого батча часть строк осталась бы
-// жить. Store собран как литерал структуры (тот же приём, что у
-// eventSource в source_events_test.go), а не через NewStore — так тест не
-// делит изменяемое глобальное состояние с остальными тестами пакета.
 func TestPurgeRowsContinuesBeyondBatch(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -1419,14 +1237,6 @@ func TestPurgeRowsContinuesBeyondBatch(t *testing.T) {
 	}
 }
 
-// TestPurgeRowsZeroBatchSizeUsesDefault — Store, собранный литералом в обход
-// NewStore (batchSize остаётся нулевым значением поля), не должен превращать
-// PurgeRows в вечный цикл: DELETE ... LIMIT 0 всегда удаляет 0 строк, и без
-// защиты `0 < 0` никогда не становится истиной — цикл продолжался бы,
-// молотя базу впустую, пока не отменят ctx. Тест ограничивает ctx коротким
-// дедлайном и требует, чтобы вызов гарантированно завершился в разумное
-// время: зависание здесь означает регрессию guard'а в batch(), а не просто
-// медленный проход.
 func TestPurgeRowsZeroBatchSizeUsesDefault(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1463,9 +1273,6 @@ func TestPurgeRowsZeroBatchSizeUsesDefault(t *testing.T) {
 	}
 }
 
-// TestExistingIDsReturnsSubset — джанитор сверяет файлы каталога со строками
-// именно так: из произвольного набора id возвращаются только реально
-// существующие, несуществующие тихо выпадают, а не превращаются в ошибку.
 func TestExistingIDsReturnsSubset(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -1484,8 +1291,6 @@ func TestExistingIDsReturnsSubset(t *testing.T) {
 	}
 }
 
-// TestExistingIDsEmptyInput — пустой список на входе не должен бить по базе
-// SQL-запросом с пустым ANY($1) — тот же случай, что и MarkExpired.
 func TestExistingIDsEmptyInput(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)

@@ -30,14 +30,11 @@ func TestAcceptsGzip(t *testing.T) {
 	}
 }
 
-// TestServeGzipCompressesStatic — статика уходила несжатой вообще: измерено
-// 112 286 байт на app.css там, где gzip даёт 30 639 (−73%). Для SSR-приложения
-// без бандлера это самая дешёвая крупная победа.
 func TestServeGzipCompressesStatic(t *testing.T) {
-	big := bytes.Repeat([]byte("body { color: red; }\n"), 500) // хорошо сжимается
+	big := bytes.Repeat([]byte("body { color: red; }\n"), 500)
 	fsys := fstest.MapFS{
 		"app.css":  {Data: big},
-		"tiny.css": {Data: []byte("a{}")}, // ниже порога — не сжимаем
+		"tiny.css": {Data: []byte("a{}")},
 		"logo.png": {Data: bytes.Repeat([]byte{0x89, 0x50}, 2000)},
 	}
 	assets := buildGzipAssets(fsys)
@@ -59,7 +56,6 @@ func TestServeGzipCompressesStatic(t *testing.T) {
 	})
 	h := serveGzip(assets, plain)
 
-	// Клиент принимает gzip → сжатое тело, корректно распаковывается.
 	req := httptest.NewRequest(http.MethodGet, "/app.css", nil)
 	req.Header.Set("Accept-Encoding", "gzip, deflate")
 	rec := httptest.NewRecorder()
@@ -79,7 +75,6 @@ func TestServeGzipCompressesStatic(t *testing.T) {
 		t.Fatalf("распакованное тело не совпадает с исходным (err=%v)", err)
 	}
 
-	// Клиент НЕ принимает gzip → исходное тело, без Content-Encoding.
 	req2 := httptest.NewRequest(http.MethodGet, "/app.css", nil)
 	rec2 := httptest.NewRecorder()
 	h.ServeHTTP(rec2, req2)
@@ -89,8 +84,7 @@ func TestServeGzipCompressesStatic(t *testing.T) {
 	if !bytes.Equal(rec2.Body.Bytes(), big) {
 		t.Error("клиент без gzip должен получить исходное тело")
 	}
-	// Vary обязателен и здесь: иначе промежуточный кэш отдаст сжатое тело
-	// клиенту, который его не принимает.
+	// Vary обязателен и здесь — иначе промежуточный кэш отдаст сжатое тело клиенту без gzip.
 	if v := rec2.Header().Get("Vary"); v != "Accept-Encoding" {
 		t.Errorf("Vary = %q в несжатом ответе, want Accept-Encoding", v)
 	}

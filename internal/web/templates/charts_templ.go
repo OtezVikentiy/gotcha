@@ -8,20 +8,12 @@ package templates
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
-// LegendItem — один пункт легенды generic мульти-серийного графика: подпись
-// и CSS-класс свотча (legend-m1..legend-m8 у палитры multiSeriesMarkup, но
-// компонент не завязан именно на неё — подойдёт любой заранее объявленный в
-// app.css класс легенды, как legend-p50/legend-dns у существующих графиков).
+// Class должен быть уже объявлен в app.css (legend-*).
 type LegendItem struct {
 	Label string
 	Class string
 }
 
-// chartLegend — переиспользуемая легенда графика: свотч + подпись на пункт,
-// в порядке items. Раньше легенда каждого графика была вписана в разметку
-// страницы литералом (monitordetail.templ, endpoint.templ) — воспроизводимо
-// для двух-четырёх зашитых рядов, но не для генерируемого набора до 8 серий,
-// где число и подписи пунктов заранее не известны.
 func chartLegend(items []LegendItem) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -73,7 +65,7 @@ func chartLegend(items []LegendItem) templ.Component {
 			var templ_7745c5c3_Var4 string
 			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(it.Label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/charts.templ`, Line: 20, Col: 53}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/charts.templ`, Line: 12, Col: 53}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 			if templ_7745c5c3_Err != nil {

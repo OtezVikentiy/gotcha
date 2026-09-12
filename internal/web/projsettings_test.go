@@ -17,10 +17,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// TestWebProjectSettings — сквозной сценарий задачи 3 (настройки проекта):
-// owner видит настройки, member — 404, rename работает и пустое имя → 422,
-// создание/отзыв DSN-ключа, отзыв ЧУЖОГО key_id → 404, DSN обновляется после
-// revoke+create.
 func TestWebProjectSettings(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -43,7 +39,6 @@ func TestWebProjectSettings(t *testing.T) {
 
 	settingsPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/settings"
 
-	// GET owner -> 200, имя и платформа видны.
 	resp := getWithCookie(t, s.srv, settingsPath, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -54,7 +49,6 @@ func TestWebProjectSettings(t *testing.T) {
 		t.Fatalf("GET %s missing project name/platform: %s", settingsPath, body)
 	}
 
-	// GET member (не owner/admin) -> 404
 	resp = getWithCookie(t, s.srv, settingsPath, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -66,7 +60,6 @@ func TestWebProjectSettings(t *testing.T) {
 	keysPath := settingsPath + "/keys"
 	revokePath := keysPath + "/revoke"
 
-	// POST rename под member -> 403 (№72)
 	resp = postForm(t, s.srv, renamePath, url.Values{"name": {"Hacked"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -74,7 +67,6 @@ func TestWebProjectSettings(t *testing.T) {
 		t.Fatalf("POST %s (member) status = %d, want 403", renamePath, resp.StatusCode)
 	}
 
-	// POST rename без Origin -> 403
 	resp = postForm(t, s.srv, renamePath, url.Values{"name": {"New Name"}}, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -82,7 +74,6 @@ func TestWebProjectSettings(t *testing.T) {
 		t.Fatalf("POST %s (no origin) status = %d, want 403", renamePath, resp.StatusCode)
 	}
 
-	// POST rename валидный -> 303
 	resp = postForm(t, s.srv, renamePath, url.Values{"name": {"New Name"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -90,7 +81,6 @@ func TestWebProjectSettings(t *testing.T) {
 		t.Fatalf("POST %s status = %d, want 303", renamePath, resp.StatusCode)
 	}
 
-	// POST rename пустое имя -> 422
 	resp = postForm(t, s.srv, renamePath, url.Values{"name": {""}}, s.srv.URL, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -98,9 +88,7 @@ func TestWebProjectSettings(t *testing.T) {
 		t.Fatalf("POST %s (empty name) status = %d, want 422: %s", renamePath, resp.StatusCode, body)
 	}
 
-	// Ключей пока нет -> DSN не показан. DSN рендерится только внутри <pre>
-	// (см. templates.ProjectSettings), поэтому проверяем именно этот тег, а
-	// не "://" — тот встречается и в xmlns иконки-спрайта в <body>.
+	// DSN рендерится внутри <pre> — проверяем именно тег: "://" совпадает и с xmlns спрайта.
 	resp = getWithCookie(t, s.srv, settingsPath, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -108,8 +96,6 @@ func TestWebProjectSettings(t *testing.T) {
 		t.Fatalf("GET %s unexpectedly has a DSN before any key created: %s", settingsPath, body)
 	}
 
-	// POST keys create -> 303, ключ появился. Форма выбора типа появится в
-	// Task 4 — здесь шлём kind напрямую, как это будет делать та форма.
 	resp = postForm(t, s.srv, keysPath, url.Values{"kind": {"server"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -130,7 +116,6 @@ func TestWebProjectSettings(t *testing.T) {
 		t.Fatalf("GET %s missing DSN %q: %s", settingsPath, firstDSN, body)
 	}
 
-	// Отзыв ЧУЖОГО key_id (принадлежащего другому проекту) -> 404, ключ не тронут.
 	otherProj, err := orgSvc.CreateProject(context.Background(), o.ID, "projsettings-other", "Other Proj", "go")
 	if err != nil {
 		t.Fatalf("create other project: %v", err)
@@ -150,9 +135,6 @@ func TestWebProjectSettings(t *testing.T) {
 		t.Fatalf("other project's key revoked unexpectedly: %+v err=%v", k2, err)
 	}
 
-	// Отзыв своего ключа (с confirmed=yes — без него revoke только показал бы
-	// страницу подтверждения, см. TestWebProjectSettingsRevokeConfirmGate) +
-	// выпуск нового -> DSN обновился.
 	resp = postForm(t, s.srv, revokePath, url.Values{"key_id": {strconv.FormatInt(firstKeyID, 10)}, "confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -190,11 +172,6 @@ func TestWebProjectSettings(t *testing.T) {
 	}
 }
 
-// TestWebProjectPerformanceSettings — секция «Performance» (этап 3, план 5,
-// задача 2): форма показывает текущие значения; сохранение пишет
-// sample_rate/apdex/detector_config в БД, и trace.ConfigFromJSON читает пороги
-// обратно (round-trip); невалидные sample_rate/apdex/пороги → 422 с
-// сохранением ввода; member → 404 на POST.
 func TestWebProjectPerformanceSettings(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -218,7 +195,6 @@ func TestWebProjectPerformanceSettings(t *testing.T) {
 	settingsPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/settings"
 	perfPath := settingsPath + "/performance"
 
-	// GET owner: форма Performance с дефолтными порогами детекторов.
 	resp := getWithCookie(t, s.srv, settingsPath, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -234,7 +210,6 @@ func TestWebProjectPerformanceSettings(t *testing.T) {
 		}
 	}
 
-	// member (не owner/admin) → 404 на POST.
 	resp = postForm(t, s.srv, perfPath, url.Values{
 		"sample_rate": {"0.5"}, "apdex_threshold_ms": {"300"},
 		"n_plus_one_min": {"5"}, "n_plus_one_min_total_ms": {"20"},
@@ -246,7 +221,6 @@ func TestWebProjectPerformanceSettings(t *testing.T) {
 		t.Fatalf("POST %s (member) status = %d, want 403 (№72)", perfPath, resp.StatusCode)
 	}
 
-	// Валидное сохранение → 303, значения в БД, пороги читаются обратно.
 	resp = postForm(t, s.srv, perfPath, url.Values{
 		"sample_rate": {"0.25"}, "apdex_threshold_ms": {"450"},
 		"n_plus_one_min": {"7"}, "n_plus_one_min_total_ms": {"30"},
@@ -272,7 +246,6 @@ func TestWebProjectPerformanceSettings(t *testing.T) {
 		t.Fatalf("round-trip cfg = %+v, want {7 30 250 15}", cfg)
 	}
 
-	// Форма после сохранения показывает сохранённые значения.
 	resp = getWithCookie(t, s.srv, settingsPath, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -280,7 +253,6 @@ func TestWebProjectPerformanceSettings(t *testing.T) {
 		t.Fatalf("GET %s missing saved perf values: %s", settingsPath, body)
 	}
 
-	// Невалидные входы → 422; сохранённое в БД не меняется.
 	bad := []struct {
 		name string
 		form url.Values
@@ -297,12 +269,10 @@ func TestWebProjectPerformanceSettings(t *testing.T) {
 		if resp.StatusCode != http.StatusUnprocessableEntity {
 			t.Fatalf("POST %s (%s) status = %d, want 422: %s", perfPath, tc.name, resp.StatusCode, body)
 		}
-		// Отправленное (невалидное) значение возвращается в форму.
 		if want := tc.form.Get(strings.SplitN(tc.name, "=", 2)[0]); !strings.Contains(string(body), `value="`+want+`"`) {
 			t.Fatalf("POST %s (%s) 422 form did not preserve submitted %q: %s", perfPath, tc.name, want, body)
 		}
 	}
-	// БД по-прежнему держит валидные значения (последняя удачная запись).
 	got, err = orgSvc.GetProject(context.Background(), proj.ID)
 	if err != nil {
 		t.Fatalf("GetProject after bad posts: %v", err)
@@ -312,12 +282,6 @@ func TestWebProjectPerformanceSettings(t *testing.T) {
 	}
 }
 
-// TestWebProjectRegressionSettings — секция «Регрессии» (этап 4, план 5,
-// задача 2): форма показывает текущие значения (проценты); сохранение пишет
-// perf_regression_config, и trace.RegressionConfigFromJSON читает пороги
-// обратно (round-trip со значениями ВЫШЕ дефолтных, чтобы опечатка ключа
-// завалила тест); recovery ≥ threshold / threshold вне (0,1] / window=0 /
-// отрицательный пол / NaN → 422 с сохранением ввода; member → 404 на POST.
 func TestWebProjectRegressionSettings(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -341,7 +305,6 @@ func TestWebProjectRegressionSettings(t *testing.T) {
 	settingsPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/settings"
 	regPath := settingsPath + "/regressions"
 
-	// GET owner: форма «Регрессии» с дефолтами (проценты: 25 = 0.25, 10 = 0.10).
 	resp := getWithCookie(t, s.srv, settingsPath, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -357,7 +320,7 @@ func TestWebProjectRegressionSettings(t *testing.T) {
 		}
 	}
 
-	// Базовая валидная форма (значения ВЫШЕ дефолтов).
+	// Значения выше дефолтов — иначе round-trip не поймал бы опечатку в JSON-ключе.
 	valid := func() url.Values {
 		return url.Values{
 			"threshold_pct": {"40"}, "recovery_pct": {"20"},
@@ -369,7 +332,6 @@ func TestWebProjectRegressionSettings(t *testing.T) {
 		}
 	}
 
-	// member (не owner/admin) → 404 на POST.
 	resp = postForm(t, s.srv, regPath, valid(), s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -377,7 +339,6 @@ func TestWebProjectRegressionSettings(t *testing.T) {
 		t.Fatalf("POST %s (member) status = %d, want 403 (№72)", regPath, resp.StatusCode)
 	}
 
-	// Валидное сохранение → 303, пороги читаются обратно через RegressionConfigFromJSON.
 	resp = postForm(t, s.srv, regPath, valid(), s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -409,7 +370,6 @@ func TestWebProjectRegressionSettings(t *testing.T) {
 		t.Fatalf("round-trip Enabled = false, want true")
 	}
 
-	// Снятый чекбокс enabled → сохраняется как false (присутствие поля = вкл).
 	noEnabled := valid()
 	noEnabled.Del("enabled")
 	resp = postForm(t, s.srv, regPath, noEnabled, s.srv.URL, ownerCookie)
@@ -423,7 +383,6 @@ func TestWebProjectRegressionSettings(t *testing.T) {
 	if cfg.Enabled {
 		t.Fatalf("Enabled after unchecked = true, want false")
 	}
-	// Сезонный режим: seasonal_enabled=on + seasonal_weeks=6 → сохраняется в конфиг.
 	seasonal := valid()
 	seasonal.Set("seasonal_enabled", "1")
 	seasonal.Set("seasonal_weeks", "6")
@@ -438,7 +397,6 @@ func TestWebProjectRegressionSettings(t *testing.T) {
 	if !cfg.SeasonalEnabled || cfg.SeasonalWeeks != 6 {
 		t.Fatalf("round-trip seasonal = %v/%d, want true/6", cfg.SeasonalEnabled, cfg.SeasonalWeeks)
 	}
-	// Снятый чекбокс seasonal_enabled → false (присутствие поля = вкл), недели хранятся.
 	noSeasonal := valid()
 	noSeasonal.Set("seasonal_weeks", "5")
 	resp = postForm(t, s.srv, regPath, noSeasonal, s.srv.URL, ownerCookie)
@@ -450,12 +408,10 @@ func TestWebProjectRegressionSettings(t *testing.T) {
 		t.Fatalf("seasonal off round-trip = %v/%d, want false/5", cfg.SeasonalEnabled, cfg.SeasonalWeeks)
 	}
 
-	// Вернём валидную запись с enabled для дальнейшей проверки «не менялось».
 	resp = postForm(t, s.srv, regPath, valid(), s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 
-	// Форма после сохранения показывает сохранённые значения (проценты 40/20).
 	resp = getWithCookie(t, s.srv, settingsPath, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -463,7 +419,6 @@ func TestWebProjectRegressionSettings(t *testing.T) {
 		t.Fatalf("GET %s missing saved regression values: %s", settingsPath, body)
 	}
 
-	// Невалидные входы → 422 с сохранением отправленного значения offending-поля.
 	bad := []struct {
 		name  string
 		field string
@@ -494,7 +449,6 @@ func TestWebProjectRegressionSettings(t *testing.T) {
 		}
 	}
 
-	// БД по-прежнему держит последнюю валидную запись (threshold 0.40).
 	gotProj, err = orgSvc.GetProject(context.Background(), proj.ID)
 	if err != nil {
 		t.Fatalf("GetProject after bad posts: %v", err)
@@ -505,8 +459,6 @@ func TestWebProjectRegressionSettings(t *testing.T) {
 	}
 }
 
-// TestProjectSettingsKeyCreateRequiresKind — форма без выбранного типа не
-// создаёт ключ: 422 и сообщение, а не молчаливый ключ с произвольным типом.
 func TestProjectSettingsKeyCreateRequiresKind(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -535,8 +487,6 @@ func TestProjectSettingsKeyCreateRequiresKind(t *testing.T) {
 	}
 }
 
-// TestProjectSettingsKeyCreateRejectsLegacy — legacy через UI не выпускается:
-// это тип ключей, выпущенных ДО появления типов.
 func TestProjectSettingsKeyCreateRejectsLegacy(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -565,7 +515,6 @@ func TestProjectSettingsKeyCreateRejectsLegacy(t *testing.T) {
 	}
 }
 
-// TestProjectSettingsKeyCreateKind — выбранный тип доезжает до БД.
 func TestProjectSettingsKeyCreateKind(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -597,8 +546,6 @@ func TestProjectSettingsKeyCreateKind(t *testing.T) {
 	}
 }
 
-// TestProjectSettingsPageShowsKindsAndDSN — карточка каждого ключа показывает
-// его тип и его СОБСТВЕННЫЙ DSN; отдельного «DSN проекта» на странице нет.
 func TestProjectSettingsPageShowsKindsAndDSN(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -631,9 +578,7 @@ func TestProjectSettingsPageShowsKindsAndDSN(t *testing.T) {
 	if browserKey.ID == 0 || agentKey.ID == 0 {
 		t.Fatalf("CreateKeys did not return both kinds: %+v", newKeys)
 	}
-	// legacy-ключ через UI не выпускается (шаг блокируется обработчиком), но
-	// на уровне сервиса kind.Valid() пропускает legacy — им и пользовались
-	// ключи, выпущенные ДО появления типов. Заводим такой напрямую.
+	// legacy не выпускается через UI, но kind.Valid() пропускает его на уровне сервиса.
 	legacyKeys, err := orgSvc.CreateKeys(context.Background(), proj.ID, org.KindLegacy)
 	if err != nil {
 		t.Fatalf("create legacy key: %v", err)
@@ -665,13 +610,8 @@ func TestProjectSettingsPageShowsKindsAndDSN(t *testing.T) {
 		t.Fatalf("GET %s shows the old dsn.label copy caption (should say project.settings.dsn.copy now): %s", settingsPath, html)
 	}
 
-	// cardFor вырезает фрагмент <article class="key-card...">...</article>,
-	// несущий publicKey ключа (полный ключ живёт внутри его собственного DSN
-	// — copyBlock печатает его целиком и в hidden-textarea, и в видимом
-	// <pre>, см. keyDisplayID) — тип и DSN проверяем ИМЕННО в карточке этого
-	// ключа, а не «где-то на странице» (форма выпуска рендерит те же
-	// подписи типов безусловно в своих radio, и наивная проверка по всему
-	// HTML не отличила бы одно от другого).
+	// Проверяем тип и DSN именно в карточке этого ключа: форма выпуска рендерит те же
+	// подписи типов на всей странице, и наивная проверка не отличила бы одно от другого.
 	cardFor := func(publicKey string) string {
 		idx := strings.Index(html, publicKey)
 		if idx == -1 {
@@ -701,8 +641,6 @@ func TestProjectSettingsPageShowsKindsAndDSN(t *testing.T) {
 		t.Fatalf("GET %s legacy card missing hint link to /docs/keys: %s", settingsPath, legacyCard)
 	}
 
-	// Каждая карточка несёт СВОЙ DSN и ни один чужой — перепутанные местами
-	// карточки эту проверку не прошли бы.
 	for _, c := range []struct {
 		name   string
 		card   string
@@ -724,10 +662,6 @@ func TestProjectSettingsPageShowsKindsAndDSN(t *testing.T) {
 	}
 }
 
-// TestProjectSettingsRevokeLastOfKindWarns — подтверждение отзыва последнего
-// ЖИВОГО ключа своего типа предупреждает, что приём этого класса телеметрии
-// остановится; при наличии второго живого ключа того же типа — обычный
-// текст.
 func TestProjectSettingsRevokeLastOfKindWarns(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -744,7 +678,6 @@ func TestProjectSettingsRevokeLastOfKindWarns(t *testing.T) {
 	}
 	revokePath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/settings/keys/revoke"
 
-	// Единственный живой ключ типа agent -> предупреждение.
 	soleKeys, err := orgSvc.CreateKeys(context.Background(), proj.ID, org.KindAgent)
 	if err != nil {
 		t.Fatalf("create sole agent key: %v", err)
@@ -761,7 +694,6 @@ func TestProjectSettingsRevokeLastOfKindWarns(t *testing.T) {
 		t.Fatalf("POST %s (sole agent key) missing last-of-kind warning: %s", revokePath, body)
 	}
 
-	// Второй живой ключ того же типа -> обычный текст, без предупреждения.
 	pairKeys, err := orgSvc.CreateKeys(context.Background(), proj.ID, org.KindServer, org.KindServer)
 	if err != nil {
 		t.Fatalf("create two server keys: %v", err)
@@ -778,12 +710,6 @@ func TestProjectSettingsRevokeLastOfKindWarns(t *testing.T) {
 	}
 }
 
-// TestProjectSettingsAllRevokedShowsNoLiveKeyWarning — проект, у которого
-// ВСЕ ключи отозваны (не только «ключей нет вовсе»), обязан показывать
-// предупреждение «Нет активного ключа»: приём событий в обоих случаях
-// одинаково сломан (см. hasLiveKey в projsettings.templ, дефект поведения из
-// брифа блока «DSN-ключи», п.6). Предупреждение исчезает после выпуска
-// нового ключа.
 func TestProjectSettingsAllRevokedShowsNoLiveKeyWarning(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -808,7 +734,6 @@ func TestProjectSettingsAllRevokedShowsNoLiveKeyWarning(t *testing.T) {
 	}
 	soleKey := soleKeys[0]
 
-	// Пока ключ жив -> предупреждения нет.
 	resp := getWithCookie(t, s.srv, settingsPath, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -816,8 +741,6 @@ func TestProjectSettingsAllRevokedShowsNoLiveKeyWarning(t *testing.T) {
 		t.Fatalf("GET %s shows no-live-key warning with a live key present: %s", settingsPath, body)
 	}
 
-	// Отзыв единственного ключа (confirmed=yes — без него revoke только
-	// показал бы confirm-страницу, см. TestProjectSettingsRevokeLastOfKindWarns).
 	resp = postForm(t, s.srv, revokePath, url.Values{"key_id": {strconv.FormatInt(soleKey.ID, 10)}, "confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -825,8 +748,6 @@ func TestProjectSettingsAllRevokedShowsNoLiveKeyWarning(t *testing.T) {
 		t.Fatalf("POST %s (revoke sole key) status = %d, want 303", revokePath, resp.StatusCode)
 	}
 
-	// Ключ есть (отозванный), но живого — нет: предупреждение обязано
-	// появиться. Старое условие len(keys)==0 этот случай пропускало.
 	resp = getWithCookie(t, s.srv, settingsPath, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -837,7 +758,6 @@ func TestProjectSettingsAllRevokedShowsNoLiveKeyWarning(t *testing.T) {
 		t.Fatalf("KeysForProject after revoke = %+v, err=%v, want 1 (revoked) key", keys, err)
 	}
 
-	// Новый ключ -> предупреждение снимается.
 	resp = postForm(t, s.srv, keysPath, url.Values{"kind": {"server"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -852,12 +772,6 @@ func TestProjectSettingsAllRevokedShowsNoLiveKeyWarning(t *testing.T) {
 	}
 }
 
-// TestWebProjectSettingsShowsDeprecatedPathSignal — аудит перед 1.0
-// (K7-5/K7-6): проект, который недавно постучался на устаревший алиас
-// приёма (/logs), видит об этом callout на своей странице настроек; проект,
-// чей единственный сигнал старше 7 дней (отправитель, судя по всему, уже
-// переехал или отвалился), его не видит — иначе баннер, разучившийся
-// исчезать, был бы бесполезнее его отсутствия.
 func TestWebProjectSettingsShowsDeprecatedPathSignal(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -876,16 +790,13 @@ func TestWebProjectSettingsShowsDeprecatedPathSignal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project stale: %v", err)
 	}
-	// wrongKind — сигнал есть и он свежий, но его kind (key_invalid) не
-	// входит в deprecatedPathByKind: он про отказ по ключу, а не про
-	// устаревший адрес. Убирает `!ok` из фильтра — и этот сигнал ложно
-	// всплывёт в callout'е (мутация M2).
+	// wrongKind: kind (key_invalid) не входит в deprecatedPathByKind — про отказ по ключу,
+	// не про устаревший адрес, callout не должен на него сработать.
 	wrongKind, err := orgSvc.CreateProject(context.Background(), o.ID, "depr-wrongkind", "Depr WrongKind", "go")
 	if err != nil {
 		t.Fatalf("create project wrongkind: %v", err)
 	}
-	// noSignals — h.Signals == nil (стенд без per-project учёта): страница
-	// обязана рендериться без паники и без callout'а (мутация M3).
+	// noSignals: h.Signals == nil — страница не должна падать или рисовать callout.
 	noSignals, err := orgSvc.CreateProject(context.Background(), o.ID, "depr-nosig", "Depr NoSig", "go")
 	if err != nil {
 		t.Fatalf("create project nosignals: %v", err)
@@ -915,21 +826,15 @@ func TestWebProjectSettingsShowsDeprecatedPathSignal(t *testing.T) {
 	if !strings.Contains(string(body), "/logs") {
 		t.Errorf("GET %s missing deprecated path /logs: %s", freshPath, body)
 	}
-	// M4: Hits (5, du Bump выше) обязан попасть в текст, а не остаться 0.
 	if want := i18n.Tf(ctx, "ingest_signals.deprecated.item_hits", "hits", "5"); !strings.Contains(string(body), want) {
 		t.Errorf("GET %s missing hits count %q: %s", freshPath, want, body)
 	}
-	// G3 (re-review): item_hits — текстовый узел сразу после @relativeTime,
-	// без пробела между ними (ведущий пробел, если он вообще нужен, — часть
-	// самой строки item_hits, а не разметки). Склейка "</time>" + item_hits
-	// без промежуточного пробела фейлится, если templ при следующей
-	// регенерации вставит пробел между узлами.
+	// item_hits идёт сразу после @relativeTime без пробела между узлами — склейка ловит
+	// случай, где templ при регенерации вставит пробел.
 	glued := "</time>" + i18n.Tf(ctx, "ingest_signals.deprecated.item_hits", "hits", "5")
 	if !strings.Contains(string(body), glued) {
 		t.Errorf("GET %s: relativeTime и item_hits не склеены без пробела, want %q: %s", freshPath, glued, body)
 	}
-	// F3: ссылка на устаревший адрес ведёт на страницу ЭТОГО входа
-	// (/docs/logs), а не на общий /docs/upgrade.
 	if !strings.Contains(string(body), `href="/docs/logs"`) {
 		t.Errorf("GET %s missing per-path docs link href=\"/docs/logs\": %s", freshPath, body)
 	}
@@ -948,8 +853,6 @@ func TestWebProjectSettingsShowsDeprecatedPathSignal(t *testing.T) {
 		t.Errorf("GET %s shows deprecated-path callout for a signal older than 7 days: %s", stalePath, body)
 	}
 
-	// M2: kind вне deprecatedPathByKind (key_invalid) не должен породить
-	// callout, даже будучи свежим.
 	wrongKindPath := "/projects/" + strconv.FormatInt(wrongKind.ID, 10) + "/settings"
 	resp = getWithCookie(t, s.srv, wrongKindPath, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
@@ -961,8 +864,6 @@ func TestWebProjectSettingsShowsDeprecatedPathSignal(t *testing.T) {
 		t.Errorf("GET %s shows deprecated-path callout for a key-reject signal (kind outside deprecatedPathByKind): %s", wrongKindPath, body)
 	}
 
-	// M3: h.Signals == nil не должен ронять страницу настроек, ни рисовать
-	// пустой callout.
 	prevSignals := s.h.Signals
 	s.h.Signals = nil
 	t.Cleanup(func() { s.h.Signals = prevSignals })

@@ -15,8 +15,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/version"
 )
 
-// fullSample — полный тик (CPU != nil, все секции заполнены), опорный для
-// большинства тестов эмиссии.
 func fullSample() Sample {
 	return Sample{
 		Time:     time.Unix(2000, 0),
@@ -35,8 +33,6 @@ func fullSample() Sample {
 	}
 }
 
-// metricByName — хелпер поиска метрики в собранном экспорте по имени; nil,
-// если метрики нет (первым делом проверяют именно отсутствие/наличие).
 func metricByName(req *metricspb.MetricsData, name string) *metricspb.Metric {
 	for _, rm := range req.GetResourceMetrics() {
 		for _, sm := range rm.GetScopeMetrics() {
@@ -50,7 +46,6 @@ func metricByName(req *metricspb.MetricsData, name string) *metricspb.Metric {
 	return nil
 }
 
-// attrValue — строковое значение атрибута датапойнта по ключу, "" если нет.
 func attrValue(attrs []*commonpb.KeyValue, key string) string {
 	for _, a := range attrs {
 		if a.GetKey() == key {
@@ -72,9 +67,6 @@ func allMetricNames(req *metricspb.MetricsData) []string {
 	return names
 }
 
-// TestBuildExportParity — контрактный тест паритета из спеки §5: набор имён
-// метрик полного Sample должен совпадать с hostmetric.AllMetrics() один в
-// один. Добавили имя в hostmetric — тест падает, пока агент его не эмитит.
 func TestBuildExportParity(t *testing.T) {
 	req := BuildExport("host1", "", "", fullSample())
 	got := allMetricNames(req)
@@ -89,8 +81,6 @@ func TestBuildExportParity(t *testing.T) {
 	}
 }
 
-// TestBuildExportFirstTick — на первом тике (Sample.CPU == nil, нет дельты)
-// CPUUtilization не эмитится, остальные метрики — как обычно.
 func TestBuildExportFirstTick(t *testing.T) {
 	s := fullSample()
 	s.CPU = nil
@@ -108,8 +98,6 @@ func TestBuildExportFirstTick(t *testing.T) {
 	}
 }
 
-// TestBuildExportResource — resource-атрибуты: host.name из параметра,
-// os.type фиксирован "linux", версия агента из version.Version().
 func TestBuildExportResource(t *testing.T) {
 	req := BuildExport("myhost.local", "", "", fullSample())
 	if len(req.GetResourceMetrics()) != 1 {
@@ -134,8 +122,6 @@ func TestBuildExportResource(t *testing.T) {
 	}
 }
 
-// TestBuildExportLabels — deployment.environment/host.role в resource только
-// при непустых значениях (спека §1.4: агент не эмитит пустые атрибуты).
 func TestBuildExportLabels(t *testing.T) {
 	req := BuildExport("h1", "prod", "web", Sample{Time: time.Unix(1, 0), BootTime: time.Unix(0, 0)})
 	attrs := req.GetResourceMetrics()[0].GetResource().GetAttributes()
@@ -146,7 +132,6 @@ func TestBuildExportLabels(t *testing.T) {
 	if got["deployment.environment"] != "prod" || got["host.role"] != "web" {
 		t.Fatalf("resource labels=%v", got)
 	}
-	// Пустые метки не эмитятся.
 	req2 := BuildExport("h1", "", "", Sample{Time: time.Unix(1, 0), BootTime: time.Unix(0, 0)})
 	for _, kv := range req2.GetResourceMetrics()[0].GetResource().GetAttributes() {
 		if kv.GetKey() == "deployment.environment" || kv.GetKey() == "host.role" {
@@ -155,8 +140,6 @@ func TestBuildExportLabels(t *testing.T) {
 	}
 }
 
-// TestBuildExportCumulative — DiskIO/NetworkIO: Sum монотонный, кумулятивная
-// темпоральность, StartTimeUnixNano == BootTime, атрибуты direction+device.
 func TestBuildExportCumulative(t *testing.T) {
 	s := fullSample()
 	req := BuildExport("host1", "", "", s)
@@ -221,9 +204,6 @@ func TestBuildExportCumulative(t *testing.T) {
 	}
 }
 
-// TestBuildExportGaugeAttrs — CPUUtilization: gauge с атрибутом state на
-// каждом датапойнте; FilesystemUtilization: атрибуты device/mountpoint/
-// type/mode; ProcessesCount: Sum non-monotonic по status.
 func TestBuildExportGaugeAttrs(t *testing.T) {
 	s := fullSample()
 	req := BuildExport("host1", "", "", s)
@@ -303,9 +283,6 @@ func TestBuildExportGaugeAttrs(t *testing.T) {
 	}
 }
 
-// TestEncodeBodyGzipRoundTrip — EncodeBody: proto.Marshal + gzip; получатель
-// (otlp.go) распаковывает Content-Encoding: gzip и должен получить исходный
-// req обратно бит в бит.
 func TestEncodeBodyGzipRoundTrip(t *testing.T) {
 	req := BuildExport("host1", "", "", fullSample())
 	body, err := EncodeBody(req)

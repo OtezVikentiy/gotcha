@@ -26,8 +26,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// --- хелперы сборки protobuf-структур (без сети и без docker) ---
-
 func strAttr(k, v string) *commonpb.KeyValue {
 	return &commonpb.KeyValue{Key: k, Value: &commonpb.AnyValue{
 		Value: &commonpb.AnyValue_StringValue{StringValue: v},
@@ -54,7 +52,6 @@ func dblAttr(k string, v float64) *commonpb.KeyValue {
 
 func nanos(ts time.Time) uint64 { return uint64(ts.UnixNano()) }
 
-// resSpans собирает один ResourceSpans с одним ScopeSpans.
 func resSpans(resAttrs []*commonpb.KeyValue, spans ...*tracepb.Span) *tracepb.ResourceSpans {
 	return &tracepb.ResourceSpans{
 		Resource:   &resourcepb.Resource{Attributes: resAttrs},
@@ -587,11 +584,6 @@ func TestMapOTLP(t *testing.T) {
 	}
 }
 
-// TestMapOTLPMeasurements — web vitals приезжают в OTLP атрибутами корневого
-// спана с префиксом sentry.measurements.<name> (double или int). Префикс
-// снимается, значение кладётся как есть; строковые атрибуты и атрибуты без
-// префикса measurements не дают, недоверенные значения (NaN/Inf/отрицательные)
-// отбрасываются.
 func TestMapOTLPMeasurements(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	start := now.Add(-time.Minute)
@@ -630,7 +622,6 @@ func TestMapOTLPMeasurements(t *testing.T) {
 	}
 }
 
-// TestMapOTLPNoMeasurements — корень без sentry.measurements-атрибутов даёт nil.
 func TestMapOTLPNoMeasurements(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	start := now.Add(-time.Minute)
@@ -653,9 +644,7 @@ func TestMapOTLPNoMeasurements(t *testing.T) {
 	}
 }
 
-// TestParseMeasurementsDropsNonFinite — прямой юнит на дисциплину
-// parseMeasurements: NaN/Inf/отрицательные отбрасываются, пустой/nil вход → nil.
-// NaN/Inf нельзя выразить в JSON, поэтому проверяем функцию напрямую.
+// NaN/Inf нельзя выразить в JSON, поэтому проверяем parseMeasurements напрямую.
 func TestParseMeasurementsDropsNonFinite(t *testing.T) {
 	got := parseMeasurements(map[string]sentryMeasurement{
 		"lcp": {Value: 2480, Unit: "millisecond"},
@@ -681,8 +670,6 @@ func checkEmpty(t *testing.T, txs []trace.Transaction) {
 	}
 }
 
-// TestMapOTLPLimits — недоверенные строки каппятся теми же лимитами, что и в
-// Sentry-парсере (имя 200, description 2000, op 100).
 func TestMapOTLPLimits(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	start := now.Add(-time.Minute)
@@ -735,8 +722,6 @@ func TestMapOTLPLimits(t *testing.T) {
 	}
 }
 
-// TestMapOTLPMaxSpans — раздутый батч спанов одного трейса обрезается, сама
-// транзакция остаётся.
 func TestMapOTLPMaxSpans(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	start := now.Add(-time.Minute)
@@ -771,8 +756,6 @@ func TestMapOTLPMaxSpans(t *testing.T) {
 	}
 }
 
-// --- привязка спанов к СВОЕМУ корню (батч коллектора склеивает сервисы) ---
-
 var (
 	feRootID   = []byte{0xf0, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01} // корень фронтенда
 	feClientID = []byte{0xf0, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02} // его http.client
@@ -780,12 +763,6 @@ var (
 	blDBID     = []byte{0xb0, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02} // его db-спан
 )
 
-// TestMapOTLPMultiServiceBatch — batch-процессор коллектора ШТАТНО склеивает
-// ResourceSpans разных сервисов в один экспорт, и трейс, прошедший через два
-// сервиса, приезжает с ДВУМЯ корнями (SERVER-спан второго сервиса — корень по
-// правилу kind). Каждый спан обязан уехать в СВОЮ транзакцию: SpanWriter копирует
-// в строку спана transaction и environment владеющей транзакции, и привязка к
-// первому корню трейса заставила бы фильтр по окружению врать.
 func TestMapOTLPMultiServiceBatch(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	start := now.Add(-time.Minute)
@@ -877,8 +854,6 @@ func TestMapOTLPMultiServiceBatch(t *testing.T) {
 	}
 }
 
-// TestMapOTLPDeepChainToOwnRoot — ребёнок цепляется к ближайшему корню ВВЕРХ по
-// цепочке parent_span_id, даже если между ними есть промежуточные спаны.
 func TestMapOTLPDeepChainToOwnRoot(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	start := now.Add(-time.Minute)
@@ -923,8 +898,6 @@ func TestMapOTLPDeepChainToOwnRoot(t *testing.T) {
 	}
 }
 
-// TestMapOTLPParentCycle — битый батч с циклом в parent_span_id не должен
-// зациклить подъём к корню (кап maxParentHops).
 func TestMapOTLPParentCycle(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	start := now.Add(-time.Minute)
@@ -969,9 +942,6 @@ func TestMapOTLPParentCycle(t *testing.T) {
 	}
 }
 
-// TestMapOTLPChildBeforeRoot — коллектор НЕ гарантирует порядок спанов в батче:
-// ребёнок, приехавший ДО своего корня, обязан к нему привязаться (два прохода —
-// не украшение, а требование).
 func TestMapOTLPChildBeforeRoot(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	start := now.Add(-time.Minute)
@@ -996,7 +966,6 @@ func TestMapOTLPChildBeforeRoot(t *testing.T) {
 		EndTimeUnixNano:   nanos(end),
 	}
 
-	// Ребёнок ПЕРВЫМ в списке.
 	txs := MapOTLP([]*tracepb.ResourceSpans{resSpans(nil, child, root)}, now)
 	if len(txs) != 1 {
 		t.Fatalf("транзакций: %d, ждали 1", len(txs))
@@ -1009,8 +978,6 @@ func TestMapOTLPChildBeforeRoot(t *testing.T) {
 	}
 }
 
-// TestMapOTLPOrphanOfOtherTrace — сирота ЧУЖОГО трейса (его корень не приехал)
-// отбрасывается и не липнет к корню другого трейса, приехавшего тем же запросом.
 func TestMapOTLPOrphanOfOtherTrace(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	start := now.Add(-time.Minute)
@@ -1062,8 +1029,6 @@ func TestMapOTLPOrphanOfOtherTrace(t *testing.T) {
 	}
 }
 
-// TestMapOTLPMaxDataKeys — число ключей в Span.Data ограничено (Data целиком
-// уезжает в колонку `data`), тот же кап, что у тегов.
 func TestMapOTLPMaxDataKeys(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	start := now.Add(-time.Minute)
@@ -1100,20 +1065,13 @@ func TestMapOTLPMaxDataKeys(t *testing.T) {
 	if got := len(txs[0].Spans[0].Data); got != maxDataKeys {
 		t.Fatalf("ключей в Data: %d, ждали кап %d", got, maxDataKeys)
 	}
-	// Кап тегов корня — тот же (см. capTags), проверяем заодно.
 	if got := len(txs[0].Tags); got > 64 {
 		t.Errorf("тегов: %d, ждали не больше 64", got)
 	}
 }
 
-// --- OTLP/JSON: идентификаторы — HEX-строки, а не base64 ---
-
-// TestOTLPUnmarshalJSONHexIDs — спека OTLP отступает от стандартного
-// protobuf-JSON ровно здесь: trace_id/span_id/parent_span_id в OTLP/JSON это
-// HEX. protojson молча декодирует их как base64 (каждый hex-символ входит в
-// base64-алфавит, 32/16 символов кратны 4) и выдаёт мусор нужной ФОРМЫ — 200 OK,
-// строки в CH, ни одной записи в лог. Тело настоящего коллектора (OTel-JS шлёт
-// JSON по умолчанию) обязано доехать с ТЕМИ ЖЕ id.
+// protojson молча декодирует hex id как base64 и не падает — 200 OK, мусорные
+// id в CH, ни одной записи в лог.
 func TestOTLPUnmarshalJSONHexIDs(t *testing.T) {
 	const (
 		wantTrace  = "ab0102030405060708090a0b0c0d0eff"
@@ -1188,10 +1146,8 @@ func TestOTLPUnmarshalJSONHexIDs(t *testing.T) {
 	}
 }
 
-// TestOTLPUnmarshalJSONKeepsAttributes — переписывая id, тело пересобирается
-// целиком: атрибуты, события и большие числовые значения обязаны пережить это
-// без потерь (json.Number, а не float64: иначе наносекунды уехали бы в
-// экспоненциальную запись, которую protojson не примет).
+// переписывая id, тело пересобирается целиком — атрибуты и большие числа не
+// должны потеряться (json.Number, не float64, иначе наносекунды уедут в экспоненту).
 func TestOTLPUnmarshalJSONKeepsAttributes(t *testing.T) {
 	body := `{"resourceSpans":[{
 		"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"billing"}}]},
@@ -1238,10 +1194,6 @@ func TestOTLPUnmarshalJSONKeepsAttributes(t *testing.T) {
 	}
 }
 
-// TestOTLPUnmarshalJSONBadIDsPassThrough — правило переписывания намеренно
-// узкое: конвертируется только hex РОВНО нужной длины. Всё остальное уходит в
-// protojson нетронутым — и решение (принять как base64 или отбить весь батч)
-// остаётся за ним, мы чужих ошибок не глотаем и своих не выдумываем.
 func TestOTLPUnmarshalJSONBadIDsPassThrough(t *testing.T) {
 	var req tracepb.TracesData
 
@@ -1279,10 +1231,6 @@ func TestOTLPUnmarshalJSONBadIDsPassThrough(t *testing.T) {
 	}
 }
 
-// СОВРЕМЕННАЯ семконвенция OTel: db.system.name + db.query.text (старые
-// db.system/db.statement SDK уже не шлют). Без чтения нового ключа такой спан
-// получал бы op `client` (по kind), и НИ ОДИН детектор его не видел бы:
-// hasOpPrefix(op, "db") ложен — ни N+1, ни медленных запросов у Postgres/MySQL.
 func TestMapOTLPModernDBSemconv(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	start := now.Add(-time.Minute)
@@ -1348,8 +1296,6 @@ func TestMapOTLPModernDBSemconv(t *testing.T) {
 	}
 }
 
-// Redis по современной семконвенции (db.system.name=redis) обязан получать тот
-// же op db.redis, что и по старой: иначе его команда уедет в SQL-нормализатор.
 func TestMapOTLPModernRedisSemconv(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	start := now.Add(-time.Minute)
@@ -1387,10 +1333,6 @@ func TestMapOTLPModernRedisSemconv(t *testing.T) {
 	}
 }
 
-// Redis-цикл, приехавший по OTLP, обязан детектиться так же, как через Sentry
-// SDK: db.system=redis получает op `db.redis`, и его описание нормализуется как
-// ключ кеша, а не как SQL (в SQL `:42` — именованный плейсхолдер, и все ключи
-// остались бы разными).
 func TestMapOTLPRedisSpansDetectAsNPlusOne(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	start := now.Add(-time.Minute)
@@ -1440,10 +1382,6 @@ func TestMapOTLPRedisSpansDetectAsNPlusOne(t *testing.T) {
 	}
 }
 
-// --- Task 5: ingest.HostRegistry (сбор хостов на пути otlpMetrics) ---
-
-// fakeHostRegistry копит projectID → хосты (и TouchEntry целиком), переданные
-// в Touch.
 type fakeHostRegistry struct {
 	mu      sync.Mutex
 	calls   map[int64][]string
@@ -1469,27 +1407,23 @@ func (f *fakeHostRegistry) get(projectID int64) []string {
 	return append([]string(nil), f.calls[projectID]...)
 }
 
-// getEntries — TouchEntry целиком (Name+AgentVersion), для проверок Task 9.
 func (f *fakeHostRegistry) getEntries(projectID int64) []host.TouchEntry {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]host.TouchEntry(nil), f.entries[projectID]...)
 }
 
-// zeroQuotaChecker — QuotaChecker, всегда отвечающий «квота исчерпана»: нужен
-// сценарию (в) — Touch обязан сработать даже когда приём отвечает 429.
+// всегда отвечает «квота исчерпана» — Touch обязан сработать даже когда приём
+// отвечает 429.
 type zeroQuotaChecker struct{}
 
 func (zeroQuotaChecker) CheckAndCount(context.Context, int64, int64) (int64, time.Time, error) {
 	return 0, time.Time{}, nil
 }
 
-// Refund — грант всегда 0, значит возврату никогда нечего вернуть; пустая
-// реализация.
 func (zeroQuotaChecker) Refund(context.Context, int64, int64, time.Time) error { return nil }
 
-// resourceMetricWithHost — один ResourceMetrics с одним gauge-датапойнтом;
-// host="" — резурс без host.name (метрика приложения).
+// host="" — ресурс без host.name (метрика приложения).
 func resourceMetricWithHost(host, metricName string) *metricspb.ResourceMetrics {
 	var attrs []*commonpb.KeyValue
 	if host != "" {
@@ -1522,8 +1456,6 @@ func postOTLPMetrics(t *testing.T, h *Handler, rm []*metricspb.ResourceMetrics) 
 	return w
 }
 
-// TestOTLPMetricsHostRegistryTouch (сценарий а): экспорт с двумя разными
-// host.name → Touch получил оба, без дублей, без пустых.
 func TestOTLPMetricsHostRegistryTouch(t *testing.T) {
 	sink := &collectMetricSink{}
 	hosts := newFakeHostRegistry()
@@ -1552,8 +1484,6 @@ func TestOTLPMetricsHostRegistryTouch(t *testing.T) {
 	}
 }
 
-// TestOTLPMetricsHostRegistryNoHost (сценарий б): точки без host.name → Touch
-// не вызывается вовсе.
 func TestOTLPMetricsHostRegistryNoHost(t *testing.T) {
 	sink := &collectMetricSink{}
 	hosts := newFakeHostRegistry()
@@ -1572,9 +1502,6 @@ func TestOTLPMetricsHostRegistryNoHost(t *testing.T) {
 	}
 }
 
-// TestOTLPMetricsHostRegistryTouchedOnQuotaExceeded (сценарий в): квота
-// метрик исчерпана (granted == 0) → ответ 429, но Touch всё равно вызван:
-// приём принял экспорт, живость хоста не зависит от записи точек в CH.
 func TestOTLPMetricsHostRegistryTouchedOnQuotaExceeded(t *testing.T) {
 	sink := &collectMetricSink{}
 	hosts := newFakeHostRegistry()
@@ -1597,8 +1524,6 @@ func TestOTLPMetricsHostRegistryTouchedOnQuotaExceeded(t *testing.T) {
 	}
 }
 
-// TestOTLPMetricsHostRegistrySkipsCardinalityOverflow (сценарий г): хост,
-// схлопнутый гардом кардинальности в CardinalityOverflow, в Touch не попадает.
 func TestOTLPMetricsHostRegistrySkipsCardinalityOverflow(t *testing.T) {
 	sink := &collectMetricSink{}
 	hosts := newFakeHostRegistry()
@@ -1619,11 +1544,8 @@ func TestOTLPMetricsHostRegistrySkipsCardinalityOverflow(t *testing.T) {
 		t.Errorf("схлопнутый хост попал в Touch: %v, want пусто", got)
 	}
 
-	// Гард применяется к host РОВНО ОДИН РАЗ за запрос (сбор хостов + цикл
-	// записи вместе), а не дважды: цикл записи обязан застать уже собранное
-	// (points[i].Host мутирован по индексу в сборе) и попасть в идемпотентную
-	// ветку Value, а не пересчитать схлопывание заново. Иначе Collapsed и
-	// Samples в отчёте оператору врали бы вдвое (см. код ревью задачи 5).
+	// гард применяется к host ровно один раз за запрос (сбор + запись вместе) —
+	// иначе Collapsed и Samples в отчёте оператору врали бы вдвое.
 	reports := h.Cardinality.Report(1)
 	var hostReport *FieldReport
 	for i := range reports {
@@ -1642,11 +1564,7 @@ func TestOTLPMetricsHostRegistrySkipsCardinalityOverflow(t *testing.T) {
 	}
 }
 
-// --- Task 9: gotcha.agent.version на приёме OTLP-метрик ---
-
-// resourceMetricWithHostVersion — один ResourceMetrics с host.name и
-// (опционально) gotcha.agent.version в resource-атрибутах; version="" —
-// атрибут версии в экспорте отсутствует (как у обычного коллектора hostmetrics).
+// version="" — атрибут версии в экспорте отсутствует (как у коллектора hostmetrics).
 func resourceMetricWithHostVersion(host, version, metricName string) *metricspb.ResourceMetrics {
 	var attrs []*commonpb.KeyValue
 	if host != "" {
@@ -1668,8 +1586,6 @@ func resourceMetricWithHostVersion(host, version, metricName string) *metricspb.
 	}
 }
 
-// TestOTLPMetricsAgentVersionTouch (Task 9): resource-атрибут
-// gotcha.agent.version на приёме OTLP-метрик долетает до TouchEntry.AgentVersion.
 func TestOTLPMetricsAgentVersionTouch(t *testing.T) {
 	t.Run("версия есть", func(t *testing.T) {
 		sink := &collectMetricSink{}
@@ -1711,10 +1627,8 @@ func TestOTLPMetricsAgentVersionTouch(t *testing.T) {
 		}
 	})
 
-	// Смешанный экспорт: один и тот же host.name приезжает в ДВУХ ресурсах
-	// одного батча — один с версией (агент), другой без (коллектор hostmetrics
-	// на том же хосте). Непустая версия обязана победить вне зависимости от
-	// порядка ресурсов в батче (ревью плана №22).
+	// один host.name в двух ресурсах — один с версией, другой без. Непустая версия
+	// обязана победить вне зависимости от порядка.
 	t.Run("смешанный экспорт: версия первым ресурсом", func(t *testing.T) {
 		sink := &collectMetricSink{}
 		hosts := newFakeHostRegistry()
@@ -1758,9 +1672,6 @@ func TestOTLPMetricsAgentVersionTouch(t *testing.T) {
 	})
 }
 
-// TestOTLPMetricsAgentVersionGarbage (Task 9): мусорные значения
-// gotcha.agent.version (инъекция, гигантская строка, произвольный текст) не
-// долетают до AgentVersion — валидация отсекает их до записи в БД.
 func TestOTLPMetricsAgentVersionGarbage(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1793,14 +1704,8 @@ func TestOTLPMetricsAgentVersionGarbage(t *testing.T) {
 	}
 }
 
-// TestOTLPMetricsAgentVersionNotInAttrs (Task 9, тест-сторож): resource-атрибут
-// gotcha.agent.version не попадает в принятые CH-точки — ни в промоутированные
-// поля, ни в Attributes датапойнта. Гарантия сегодня даёт сам metric.MapOTLP
-// (ресурсные атрибуты не копируются в datapoint Attributes); тест фиксирует
-// инвариант, чтобы будущая правка его не сломала молча. Проверяем ЛЮБОЙ
-// атрибут с префиксом hostmetric.AgentAttrPrefix (не только точное имя версии)
-// — эта же гарантия задумана для всего служебного неймспейса агента, а не
-// только для уже существующего сегодня единственного атрибута в нём.
+// resource-атрибуты неймспейса агента не должны попасть в принятые CH-точки —
+// ни в промоутированные поля, ни в Attributes.
 func TestOTLPMetricsAgentVersionNotInAttrs(t *testing.T) {
 	sink := &collectMetricSink{}
 	hosts := newFakeHostRegistry()
@@ -1826,10 +1731,6 @@ func TestOTLPMetricsAgentVersionNotInAttrs(t *testing.T) {
 	}
 }
 
-// --- Task 3 (B1): метки хоста environment/role на приёме OTLP-метрик ---
-
-// resourceMetricWithHostLabels — один ResourceMetrics с host.name и
-// (опционально) deployment.environment.name/host.role в resource-атрибутах.
 func resourceMetricWithHostLabels(host, env, role, metricName string) *metricspb.ResourceMetrics {
 	var attrs []*commonpb.KeyValue
 	if host != "" {
@@ -1854,9 +1755,6 @@ func resourceMetricWithHostLabels(host, env, role, metricName string) *metricspb
 	}
 }
 
-// TestOTLPMetricsHostLabelsTouch (Task 3): resource-атрибуты
-// deployment.environment.name (СОВРЕМЕННЫЙ ключ, через промоут metric.MapOTLP)
-// и host.role (отдельный resource-проход) долетают до TouchEntry.
 func TestOTLPMetricsHostLabelsTouch(t *testing.T) {
 	sink := &collectMetricSink{}
 	hosts := newFakeHostRegistry()
@@ -1877,8 +1775,7 @@ func TestOTLPMetricsHostLabelsTouch(t *testing.T) {
 	}
 }
 
-// TestValidAgentVersion (Task 9): semver-подобие
-// ^v?\d+\.\d+\.\d+[0-9A-Za-z.+-]*$, длина ≤ 32.
+// semver-подобие ^v?\d+\.\d+\.\d+[0-9A-Za-z.+-]*$, длина ≤ 32.
 func TestValidAgentVersion(t *testing.T) {
 	cases := []struct{ name, in, want string }{
 		{"валид без v", "0.6.0", "0.6.0"},

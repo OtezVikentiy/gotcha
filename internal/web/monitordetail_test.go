@@ -24,8 +24,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// monitorDetailStack — reuses the same setup as monitors_test.go for
-// consistency (includes ClickHouse Query).
 type monitorDetailStack struct {
 	pool   *pgxpool.Pool
 	srv    *httptest.Server
@@ -72,15 +70,6 @@ func newMonitorDetailStack(t *testing.T) *monitorDetailStack {
 	return &monitorDetailStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc, uptime: uptimeSvc, writer: writer, alerts: alertSvc}
 }
 
-// TestWebMonitorDetailHeartbeatSectionOperatorGated — открывая деталь
-// heartbeat-монитора, НИКТО (ни owner, ни участник команды) не видит сырой
-// токен на обычном GET — он хранится только хешем (sha256) и показывается
-// один раз сразу после create/regenerate (см. TestWebMonitorHeartbeatCreateShowsPingURL,
-// TestWebMonitorHeartbeatRegenerate). Это критичный security-тест: токен —
-// bearer-секрет, у кого он есть — может подделать heartbeat и замаскировать
-// реальный даунтайм. Саму секцию «Heartbeat-пинг» (с кнопкой Regenerate) с
-// задачи 2 (спека 2026-08-08) видят и owner, и участник команды — карточка
-// гейтится canOperate (canOperateProject), не только owner/admin.
 func TestWebMonitorDetailHeartbeatSectionOperatorGated(t *testing.T) {
 	s := newMonitorDetailStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hb-detail-owner@example.com")
@@ -99,7 +88,6 @@ func TestWebMonitorDetailHeartbeatSectionOperatorGated(t *testing.T) {
 	}
 	addTeamAccess(t, s.org, o.ID, proj.ID, memberID, "hb-detail-team")
 
-	// Create a heartbeat monitor.
 	hbConfig := uptime.HeartbeatConfig{GraceSeconds: 120}
 	hbConfigJSON, err := json.Marshal(hbConfig)
 	if err != nil {
@@ -126,8 +114,6 @@ func TestWebMonitorDetailHeartbeatSectionOperatorGated(t *testing.T) {
 
 	path := "/monitors/" + strconv.FormatInt(created.ID, 10)
 
-	// Owner GET -> 200. Сырой токен на чтении НЕ показывается (в БД — хеш):
-	// owner видит секцию Heartbeat-пинг с кнопкой перевыпуска, но не сам токен.
 	resp := getWithCookie(t, s.srv, path, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -142,11 +128,6 @@ func TestWebMonitorDetailHeartbeatSectionOperatorGated(t *testing.T) {
 		t.Fatalf("GET %s (owner) missing 'Heartbeat-пинг' section: %s", path, bodyStr)
 	}
 
-	// Произвольный диапазон в адресе (?period=custom&start&end) страницу
-	// heartbeat не ломает: handler parseTimeRange/autoStep отрабатывает, а
-	// селектора на странице нет — секция задержки у heartbeat не рендерится
-	// (сам селектор в режиме custom проверяется на http-мониторе в
-	// TestWebMonitorDetailLatencyTitleFollowsRange).
 	custQ := path + "?period=custom&start=2026-07-01T00:00&end=2026-07-10T00:00"
 	resp = getWithCookie(t, s.srv, custQ, ownerCookie)
 	cbody, _ := io.ReadAll(resp.Body)
@@ -158,9 +139,6 @@ func TestWebMonitorDetailHeartbeatSectionOperatorGated(t *testing.T) {
 		t.Fatalf("GET %s rendered the latency range selector on a heartbeat monitor: %s", custQ, cbody)
 	}
 
-	// Member (view access via team — с задачи 2 тоже оператор) GET -> 200:
-	// секцию Heartbeat-пинг теперь видит (canOperate), но сырой токен на
-	// обычном GET не видит никто, независимо от роли.
 	resp = getWithCookie(t, s.srv, path, memberCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -176,9 +154,6 @@ func TestWebMonitorDetailHeartbeatSectionOperatorGated(t *testing.T) {
 	}
 }
 
-// TestWebMonitorCreateInvalidTCPPortReturns422 — POST monitor create with
-// tcp_port=999999 (out of range) → 422 (not 500). This is a cheap validation
-// test to ensure numeric bounds are checked at the HTTP layer.
 func TestWebMonitorCreateInvalidTCPPortReturns422(t *testing.T) {
 	s := newMonitorDetailStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "tcpport-owner@example.com")
@@ -197,7 +172,7 @@ func TestWebMonitorCreateInvalidTCPPortReturns422(t *testing.T) {
 		"name":               {"TCP monitor with bad port"},
 		"kind":               {"tcp"},
 		"tcp_host":           {"example.com"},
-		"tcp_port":           {"999999"}, // Out of range (max 65535)
+		"tcp_port":           {"999999"},
 		"interval_seconds":   {"60"},
 		"timeout_seconds":    {"10"},
 		"fail_threshold":     {"1"},
@@ -213,8 +188,6 @@ func TestWebMonitorCreateInvalidTCPPortReturns422(t *testing.T) {
 	}
 }
 
-// monitorDetailProject — org + project для тестов страницы монитора, где
-// нужен только owner: возвращает id проекта и cookie владельца.
 func monitorDetailProject(t *testing.T, s *monitorDetailStack, slug string) (int64, *http.Cookie) {
 	t.Helper()
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, slug+"-owner@example.com")
@@ -229,7 +202,6 @@ func monitorDetailProject(t *testing.T, s *monitorDetailStack, slug string) (int
 	return proj.ID, ownerCookie
 }
 
-// monitorDetailGet — GET страницы монитора с ожиданием 200, тело строкой.
 func monitorDetailGet(t *testing.T, s *monitorDetailStack, path string, cookie *http.Cookie) string {
 	t.Helper()
 	resp := getWithCookie(t, s.srv, path, cookie)
@@ -241,13 +213,6 @@ func monitorDetailGet(t *testing.T, s *monitorDetailStack, path string, cookie *
 	return string(body)
 }
 
-// TestWebMonitorDetailHeartbeatTiles — страница heartbeat-монитора собрана
-// не под опросный монитор: вместо доступности 24ч/7д/30д и SSL — три плитки
-// «Последний маячок / Допуск / Ожидается до» с реальными значениями
-// (last_beat_at задан явно, допуск 15 минут → срок = last_beat_at + 15 мин),
-// а секций «Задержка» (заголовок, легенда фаз, селектор окна) и «Последние
-// проверки» нет вовсе — heartbeat не пишет check_results по конструкции.
-// Лента инцидентов остаётся.
 func TestWebMonitorDetailHeartbeatTiles(t *testing.T) {
 	s := newMonitorDetailStack(t)
 	projID, ownerCookie := monitorDetailProject(t, s, "hb-tiles")
@@ -265,7 +230,6 @@ func TestWebMonitorDetailHeartbeatTiles(t *testing.T) {
 	}
 	path := "/monitors/" + strconv.FormatInt(created.ID, 10)
 
-	// Маячка ещё не было: плитки есть, последний — «ещё не было», срок — прочерк.
 	body := monitorDetailGet(t, s, path, ownerCookie)
 	for _, want := range []string{"Последний маячок", "ещё не было", "Допуск", "15 мин", "Ожидается до", "Инцидентов не было"} {
 		if !strings.Contains(body, want) {
@@ -284,8 +248,6 @@ func TestWebMonitorDetailHeartbeatTiles(t *testing.T) {
 		}
 	}
 
-	// Маячок был в известный момент: относительное время в <time datetime>,
-	// срок — абсолютное время last_beat_at + 15 мин в формате страницы.
 	if _, err := s.pool.Exec(context.Background(),
 		"UPDATE monitors SET last_beat_at = '2026-07-01 12:00:00+00' WHERE id = $1", created.ID); err != nil {
 		t.Fatalf("set last_beat_at: %v", err)
@@ -302,8 +264,6 @@ func TestWebMonitorDetailHeartbeatTiles(t *testing.T) {
 	}
 }
 
-// TestWebMonitorDetailHeartbeatGraceCompound — допуск, не кратный часу,
-// печатается двумя единицами («1 ч 30 мин»), а не округляется до «1 ч».
 func TestWebMonitorDetailHeartbeatGraceCompound(t *testing.T) {
 	s := newMonitorDetailStack(t)
 	projID, ownerCookie := monitorDetailProject(t, s, "hb-grace")
@@ -326,9 +286,6 @@ func TestWebMonitorDetailHeartbeatGraceCompound(t *testing.T) {
 	}
 }
 
-// TestWebMonitorDetailSSLTileOnlyForHTTP — плитка SSL есть у http-монитора и
-// отсутствует у tcp: сертификат проверяет только http, прочерк у tcp читался
-// бы как «сертификат не найден».
 func TestWebMonitorDetailSSLTileOnlyForHTTP(t *testing.T) {
 	s := newMonitorDetailStack(t)
 	projID, ownerCookie := monitorDetailProject(t, s, "ssl-tile")
@@ -361,7 +318,6 @@ func TestWebMonitorDetailSSLTileOnlyForHTTP(t *testing.T) {
 	if strings.Contains(body, sslTile) {
 		t.Fatalf("GET %s (tcp) must not render SSL tile: %s", tcpPath, body)
 	}
-	// Опросный монитор без heartbeat: плитки доступности и задержка на месте.
 	for _, want := range []string{"Доступность 24ч", "Задержка (24 ч)", "Последние проверки"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET %s (tcp) missing %q: %s", tcpPath, want, body)
@@ -369,9 +325,6 @@ func TestWebMonitorDetailSSLTileOnlyForHTTP(t *testing.T) {
 	}
 }
 
-// TestWebMonitorDetailLatencyTitleFollowsRange — заголовок «Задержка (…)»
-// печатает ту же подпись, что и селектор окна: пресет 7d → «7 дн» (range.7d),
-// произвольный диапазон → границы в формате страницы.
 func TestWebMonitorDetailLatencyTitleFollowsRange(t *testing.T) {
 	s := newMonitorDetailStack(t)
 	projID, ownerCookie := monitorDetailProject(t, s, "lat-title")

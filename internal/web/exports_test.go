@@ -26,30 +26,13 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// Зеркала неэкспортируемых лимитов internal/web/exports.go — та же техника,
-// что и emailLimitPerWindow в register_invite_test.go: тест внешнего пакета
-// web_test не видит maxActivePerUser/createRateLimit напрямую, значения
-// обязаны совпадать с продовыми (см. exports.go).
 const (
 	exportsMaxActivePerUser = 3
 	exportsCreateRateLimit  = 10
 )
 
-// okForm — минимальная валидная форма постановки заявки.
 var okForm = url.Values{"kind": {"issues"}, "format": {"csv"}}
 
-// exportsStack — стенд задачи 10: организация с четырьмя ролями и ВТОРОЙ,
-// не связанный с первым, проект — нужен для проверки межпроектной изоляции
-// Store.Get/Delete (принимают только id, без projectID).
-//
-//   - adminUID — владелец организации (CanManage=true), «admin» брифа;
-//   - operatorUID — доступ к проекту ТОЛЬКО через команду (CanManage=false),
-//     тот же приём, что TestRequireProjectOperatorReturnsAuthz (operate_test.go);
-//   - viewerUID — не состоит ни в организации, ни в команде: доступа к
-//     проекту нет вовсе (canOperateProject==CanAccessProject, operate.go) —
-//     тот же existence-oracle, что и у остальных lvlOperator-страниц: 404;
-//   - otherUserUID — владелец ВТОРОГО проекта (otherProjectID), заявки
-//     которого используются как «чужие» для projectID.
 type exportsStack struct {
 	pool *pgxpool.Pool
 	srv  *httptest.Server
@@ -124,8 +107,6 @@ func newExportsStack(t *testing.T) *exportsStack {
 	if err := orgSvc.AttachTeam(ctx, proj.ID, team.ID); err != nil {
 		t.Fatalf("attach team: %v", err)
 	}
-	// viewerUID сознательно не добавляется никуда — у него нет доступа к
-	// проекту вовсе.
 
 	o2, err := orgSvc.CreateOrg(ctx, "exports-co-2", "Exports Co 2", otherUserUID)
 	if err != nil {
@@ -164,8 +145,6 @@ func (s *exportsStack) path(suffix string) string {
 	return fmt.Sprintf("/projects/%d%s", s.projectID, suffix)
 }
 
-// postForm — POST от имени operatorUID (дефолтный актор большинства
-// сценариев постановки заявки).
 func (s *exportsStack) postForm(t *testing.T, path string, form url.Values) *http.Response {
 	t.Helper()
 	return s.postFormAs(t, s.operatorUID, path, form)
@@ -181,8 +160,6 @@ func (s *exportsStack) getAs(t *testing.T, uid int64, path string) *http.Respons
 	return getWithCookie(t, s.srv, path, s.cookie(t, uid))
 }
 
-// getBody — GET, ожидающий 200, тело для strings.Contains-проверок разметки
-// (страница «Выгрузки» и её кнопки на issues/issuedetail).
 func (s *exportsStack) getBody(t *testing.T, uid int64, path string) string {
 	t.Helper()
 	resp := s.getAs(t, uid, path)
@@ -221,9 +198,6 @@ func (s *exportsStack) jobCount(t *testing.T) int {
 	return n
 }
 
-// markDone переводит заявку в done напрямую через SQL — тесты этого файла
-// обходят воркер (задача 8, отдельная), им нужен только терминальный
-// статус, а не реальная сборка файла.
 func (s *exportsStack) markDone(t *testing.T, id int64) {
 	t.Helper()
 	if _, err := s.pool.Exec(context.Background(),
@@ -232,10 +206,6 @@ func (s *exportsStack) markDone(t *testing.T, id int64) {
 	}
 }
 
-// markStatus — выставляет статус заявки напрямую через SQL, в обход
-// Store.Claim/Done/Fail (которые фенсят под status='running' AND attempts=N)
-// — странице списка (задача 11) нужен только конечный статус на экране, а
-// не реальный цикл воркера (тот же приём, что markDone выше).
 func (s *exportsStack) markStatus(t *testing.T, id int64, status string) {
 	t.Helper()
 	if _, err := s.pool.Exec(context.Background(),
@@ -244,12 +214,6 @@ func (s *exportsStack) markStatus(t *testing.T, id int64, status string) {
 	}
 }
 
-// markFailed — заявка в failed с заданным failure_reason_key напрямую через
-// SQL (P2-UX-2 аудита), тот же приём, что markStatus/markDoneTruncated:
-// тестам этого файла нужен только конечный вид строки в БД, а не реальный
-// путь Store.Fail/FailPermanent/SweepStale (те уже проверены мутационно в
-// internal/export/store_test.go). reasonKey — "" собирает NULL, тот же
-// случай, что у заявки старше миграции failure_reason_key.
 func (s *exportsStack) markFailed(t *testing.T, id int64, reasonKey string) {
 	t.Helper()
 	var arg any
@@ -263,8 +227,6 @@ func (s *exportsStack) markFailed(t *testing.T, id int64, reasonKey string) {
 	}
 }
 
-// markDoneTruncated — как markDone, но с truncated=true и ненулевыми
-// rows/bytes — для проверки отметки «обрезана» на странице списка.
 func (s *exportsStack) markDoneTruncated(t *testing.T, id int64, rows, bytes int64) {
 	t.Helper()
 	if _, err := s.pool.Exec(context.Background(),
@@ -275,11 +237,6 @@ func (s *exportsStack) markDoneTruncated(t *testing.T, id int64, rows, bytes int
 	}
 }
 
-// enqueueAndFinish — ставит заявку ЧЕРЕЗ HTTP (чтобы её засчитал лимитер
-// частоты h.exportLimiter) и сразу освобождает слот активных заявок,
-// переводя её в done: TestExportsCreateRateLimited проверяет ИМЕННО лимитер
-// частоты, а не лимит активных заявок (exportsMaxActivePerUser=3), поэтому
-// каждая итерация обязана заканчивать за собой заявку.
 func (s *exportsStack) enqueueAndFinish(t *testing.T, uid int64) {
 	t.Helper()
 	resp := s.postFormAs(t, uid, s.path("/exports"), okForm)
@@ -290,14 +247,6 @@ func (s *exportsStack) enqueueAndFinish(t *testing.T, uid int64) {
 	s.markDone(t, s.lastJobID(t))
 }
 
-// enqueueAs — заводит заявку НАПРЯМУЮ через Store в otherProjectID (uid —
-// его владелец): используется как «чужая» заявка для projectID в тестах
-// межпроектной изоляции. HTTP тут не годится — uid не оператор projectID.
-// Заявка сразу помечается done: без этого TestExportsDownloadForeignJobIs404
-// проверял бы совсем не то, что заявлено в его докблоке — запрос отсекался
-// бы веткой job.Status != StatusDone (queued по умолчанию) РАНЬШЕ, чем
-// дошёл бы до сверки job.ProjectID, и мутация, ломающая именно эту сверку,
-// осталась бы незамеченной.
 func (s *exportsStack) enqueueAs(t *testing.T, uid int64) int64 {
 	t.Helper()
 	id, err := s.h.Exports.Enqueue(context.Background(), export.Job{
@@ -310,11 +259,6 @@ func (s *exportsStack) enqueueAs(t *testing.T, uid int64) int64 {
 	if err != nil {
 		t.Fatalf("enqueueAs: %v", err)
 	}
-	// done + реальный файл на диске: единственная ветка, которая должна
-	// отсекать межпроектный доступ, — сверка job.ProjectID. Не-done или
-	// отсутствующий файл дали бы 404 по другой причине и замаскировали бы
-	// мутацию, ломающую именно эту сверку (см. докблок
-	// TestExportsDownloadForeignJobIs404).
 	path := filepath.Join(s.h.ExportDir, fmt.Sprintf("%d.csv", id))
 	if err := os.WriteFile(path, []byte("id,title\n1,demo\n"), 0o644); err != nil {
 		t.Fatalf("enqueueAs: write file: %v", err)
@@ -323,8 +267,6 @@ func (s *exportsStack) enqueueAs(t *testing.T, uid int64) int64 {
 	return id
 }
 
-// enqueueDone — заявка uid в projectID, сразу done, С реальным файлом на
-// диске (h.ExportDir/<id>.csv) — download открывает именно этот путь.
 func (s *exportsStack) enqueueDone(t *testing.T, uid int64) int64 {
 	t.Helper()
 	id, err := s.h.Exports.Enqueue(context.Background(), export.Job{
@@ -345,10 +287,6 @@ func (s *exportsStack) enqueueDone(t *testing.T, uid int64) int64 {
 	return id
 }
 
-// enqueueDoneWithoutFile — заявка done, но БЕЗ файла на диске: имитирует
-// расхождение строки и файла (джанитор не туда смотрел, файл снесли руками) —
-// exportsDownload обязана отказать 404 и залогировать предупреждение, а не
-// упасть при os.Open.
 func (s *exportsStack) enqueueDoneWithoutFile(t *testing.T, uid int64) int64 {
 	t.Helper()
 	id, err := s.h.Exports.Enqueue(context.Background(), export.Job{
@@ -372,9 +310,6 @@ func (s *exportsStack) revokeProjectAccess(t *testing.T, uid int64) {
 	}
 }
 
-// TestExportsCreateFreezesRelativePeriod — заявка «за последние 24 часа»,
-// исполненная позже, обязана дать тот же файл: период разворачивается в
-// абсолютные границы В МОМЕНТ постановки, а не исполнения.
 func TestExportsCreateFreezesRelativePeriod(t *testing.T) {
 	s := newExportsStack(t)
 	before := time.Now().UTC()
@@ -396,12 +331,6 @@ func TestExportsCreateFreezesRelativePeriod(t *testing.T) {
 	}
 }
 
-// TestExportsCreateDefaultsToAllTimeWithoutPeriod — POST без query-параметра
-// периода (кнопки на issues/issuedetail до правки слали именно так) обязан
-// ставить заявку «за всё время», а не молча урезать её до 24ч: список issues,
-// с которого ставится большинство заявок, сам по умолчанию живёт на «за всё
-// время» (RangeAll) и никогда не пишет "all" в rangeCookie. Мутация: вернуть
-// дефолт resolveTimeRange в exportsCreate на "24h" — тест обязан упасть.
 func TestExportsCreateDefaultsToAllTimeWithoutPeriod(t *testing.T) {
 	s := newExportsStack(t)
 
@@ -419,24 +348,6 @@ func TestExportsCreateDefaultsToAllTimeWithoutPeriod(t *testing.T) {
 	}
 }
 
-// TestExportsCreateIgnoresRangeCookieWithoutExplicitPeriod — волна 2, аудит
-// 2026-08-27, DEDUP-P1 кластер 5: POST без query-периода (ручная форма самой
-// страницы «Выгрузки», exports.templ:exportsForm — своего селектора периода
-// у неё нет) обязан ставить RangeAll ДАЖЕ когда в cookie rangeCookie лежит
-// чужой пресет — её выставляет ЛЮБОЙ другой экран с явным периодом (logs/
-// hosts/metrics/issues с ?period=), а не эта форма. Раньше exportsCreate звал
-// h.resolveTimeRange(w, r, RangeAll) без разбора: при отсутствии query та
-// молча подставляла cookie вместо RangeAll — «выгрузка» превращалась в
-// «последние 24 часа», потому что час назад пользователь смотрел графики
-// хостов, и нигде не было сказано, за какой период файл.
-//
-// "range" — литерал имени cookie (internal/web/rangecookie.go:
-// const rangeCookie = "range"): пакет здесь web_test (чёрный ящик снаружи),
-// неэкспортированная константа недоступна — тот же приём, что и зеркала
-// exportsMaxActivePerUser/exportsCreateRateLimit наверху файла.
-//
-// Мутация: в exportsCreate (internal/web/exports.go) заменить ветку без
-// query обратно на h.resolveTimeRange(w, r, RangeAll) — тест обязан упасть.
 func TestExportsCreateIgnoresRangeCookieWithoutExplicitPeriod(t *testing.T) {
 	s := newExportsStack(t)
 
@@ -466,12 +377,6 @@ func TestExportsCreateIgnoresRangeCookieWithoutExplicitPeriod(t *testing.T) {
 	}
 }
 
-// TestExportsCreateHonorsExplicitPeriodQuery — период, переданный
-// query-параметром на action формы (exportsPathWithRange), обязан дойти до
-// Params: это то, что теперь реально шлют формы issues/issuedetail вместо
-// бесполезного hidden-поля. Мутация: убрать period из action формы (то есть
-// не передать его в запросе) — тест обязан упасть, откатившись на дефолт
-// «за всё время» из предыдущего теста.
 func TestExportsCreateHonorsExplicitPeriodQuery(t *testing.T) {
 	s := newExportsStack(t)
 	before := time.Now().UTC()
@@ -493,10 +398,6 @@ func TestExportsCreateHonorsExplicitPeriodQuery(t *testing.T) {
 	}
 }
 
-// TestExportsCreateHonorsCustomRangeQuery — произвольный диапазон, который
-// TimeRangeVM.apply переносит в поля "start"/"end" query (не "cstart"/"cend"
-// — те лишь для переноса custom между страницами при смене прочих фильтров),
-// обязан дойти до Params ровно теми границами, что были заданы.
 func TestExportsCreateHonorsCustomRangeQuery(t *testing.T) {
 	s := newExportsStack(t)
 	start := time.Now().Add(-48 * time.Hour).UTC().Truncate(time.Minute)
@@ -521,10 +422,6 @@ func TestExportsCreateHonorsCustomRangeQuery(t *testing.T) {
 	}
 }
 
-// TestExportsCreateDeniedForNonOperator — участник без доступа к проекту не
-// выгружает: массовый вынос данных не должен быть доступен кому попало.
-// 404, не 403 — существование проекта не раскрываем (тот же принцип, что у
-// остальных lvlOperator-страниц).
 func TestExportsCreateDeniedForNonOperator(t *testing.T) {
 	s := newExportsStack(t)
 	resp := s.postFormAs(t, s.viewerUID, s.path("/exports"), okForm)
@@ -537,9 +434,6 @@ func TestExportsCreateDeniedForNonOperator(t *testing.T) {
 	}
 }
 
-// TestExportsCreateIgnoresPIIFlagFromOperator — галку «как есть» ставит
-// только админ/владелец орга; оператору она молча игнорируется (не отказ —
-// маска безопасна по умолчанию).
 func TestExportsCreateIgnoresPIIFlagFromOperator(t *testing.T) {
 	s := newExportsStack(t)
 
@@ -564,15 +458,6 @@ func TestExportsCreateIgnoresPIIFlagFromOperator(t *testing.T) {
 	}
 }
 
-// TestExportsCreateRefusesOverActiveLimit — лимит активных (queued+running)
-// заявок на пользователя (exportsMaxActivePerUser).
-//
-// Проверяет и находку аудита P2-UX-4: отказ обязан перерисовать страницу
-// «Выгрузки» (список заявок + форма постановки с сообщением), а не уйти на
-// chromeless ErrorPage с одной ссылкой «На главную» — единственное место
-// пакета, где так было раньше. Мутация — вернуть renderError на место
-// renderExportsPage — обязана уронить оба ассерта: маркер chromeless-
-// страницы появится, форма постановки пропадёт.
 func TestExportsCreateRefusesOverActiveLimit(t *testing.T) {
 	s := newExportsStack(t)
 	for i := 0; i < exportsMaxActivePerUser; i++ {
@@ -598,10 +483,6 @@ func TestExportsCreateRefusesOverActiveLimit(t *testing.T) {
 	}
 }
 
-// TestExportsCreateRateLimited — лимит активных заявок не ловит того, кто
-// ставит и тут же удаляет (завершает): тяжёлую выборку по ClickHouse
-// защищает именно ограничение частоты. Проверяет ту же находку P2-UX-4, что
-// и TestExportsCreateRefusesOverActiveLimit (429, не только 422).
 func TestExportsCreateRateLimited(t *testing.T) {
 	s := newExportsStack(t)
 	for i := 0; i < exportsCreateRateLimit; i++ {
@@ -620,11 +501,6 @@ func TestExportsCreateRateLimited(t *testing.T) {
 	}
 }
 
-// TestExportsCreateInvalidKindReRendersExportsPageWithFormState — та же
-// находка P2-UX-4 для 422 разбора kind: раньше уходила на ErrorPage,
-// теперь — страница «Выгрузки» с сообщением и восстановленным полем format
-// (exportCreateFormState) — введённый формат не потерян из-за опечатки в
-// виде.
 func TestExportsCreateInvalidKindReRendersExportsPageWithFormState(t *testing.T) {
 	s := newExportsStack(t)
 	resp := s.postForm(t, s.path("/exports"), url.Values{"kind": {"bogus"}, "format": {"ndjson"}})
@@ -643,8 +519,6 @@ func TestExportsCreateInvalidKindReRendersExportsPageWithFormState(t *testing.T)
 	}
 }
 
-// TestExportsCreateInvalidFormatReRendersExportsPage — тот же отказ 422 для
-// разбора format.
 func TestExportsCreateInvalidFormatReRendersExportsPage(t *testing.T) {
 	s := newExportsStack(t)
 	resp := s.postForm(t, s.path("/exports"), url.Values{"kind": {"events"}, "format": {"bogus"}})
@@ -660,15 +534,6 @@ func TestExportsCreateInvalidFormatReRendersExportsPage(t *testing.T) {
 	}
 }
 
-// TestExportsCreateRejectsInvalidStatus — находка ревью соседней задачи
-// (P1): status раньше клался в export.Params прямо из PostFormValue без
-// сверки с закрытым перечислением issues.status (issue.query.go:
-// validStatuses) — произвольная строка оседала в БД как параметр заявки и
-// затем рендерилась на странице списка как "issues.status.<мусор>" (промах
-// ключа i18n в этом продукте отдаёт сам ключ). Мутация — убрать сверку
-// exportParseStatus (вернуть в Params голый PostFormValue) — обязана уронить
-// именно проверку `if n := s.jobCount(t); n != 0`: заявка со status=bogus
-// создастся вместо отказа, и счётчик заявок станет 1.
 func TestExportsCreateRejectsInvalidStatus(t *testing.T) {
 	s := newExportsStack(t)
 	resp := s.postForm(t, s.path("/exports"), url.Values{
@@ -686,8 +551,6 @@ func TestExportsCreateRejectsInvalidStatus(t *testing.T) {
 	}
 }
 
-// TestExportsCreateRejectsInvalidLevel — тот же отказ 422 для level, что и
-// TestExportsCreateRejectsInvalidStatus для status.
 func TestExportsCreateRejectsInvalidLevel(t *testing.T) {
 	s := newExportsStack(t)
 	resp := s.postForm(t, s.path("/exports"), url.Values{
@@ -705,9 +568,6 @@ func TestExportsCreateRejectsInvalidLevel(t *testing.T) {
 	}
 }
 
-// TestExportsCreateAcceptsKnownStatusAndLevel — здоровые значения из
-// закрытого перечисления обязаны по-прежнему проходить и лечь в Params
-// заявки как есть — сверка не должна ловить легитимные значения.
 func TestExportsCreateAcceptsKnownStatusAndLevel(t *testing.T) {
 	s := newExportsStack(t)
 	resp := s.postForm(t, s.path("/exports"), url.Values{
@@ -726,14 +586,6 @@ func TestExportsCreateAcceptsKnownStatusAndLevel(t *testing.T) {
 	}
 }
 
-// TestExportsCreateAcceptsEmptyStatusAndLevel — пустое значение (поле
-// формы не тронуто оператором) обязано по-прежнему означать «любой» и
-// проходить, а не трактоваться как невалидное — issue.Filter/
-// buildIssueFilter понимают "" как отсутствие фильтра по полю (issue/
-// query.go). Мутация — сделать сверку exportParseStatus/exportParseLevel
-// строгой к пустой строке (убрать `v == "" ||`) — обязана уронить именно
-// `resp.StatusCode != http.StatusSeeOther`: здоровая заявка без явного
-// status/level получит 422 вместо редиректа на страницу «Выгрузки».
 func TestExportsCreateAcceptsEmptyStatusAndLevel(t *testing.T) {
 	s := newExportsStack(t)
 	resp := s.postForm(t, s.path("/exports"), url.Values{"kind": {"issues"}, "format": {"csv"}})
@@ -750,16 +602,6 @@ func TestExportsCreateAcceptsEmptyStatusAndLevel(t *testing.T) {
 	}
 }
 
-// TestExportsCreateRejectsForeignScopeIssueId — находка аудита P3-SEC-4:
-// scope_issue_id из ЧУЖОГО проекта раньше доходил до EnqueueLimited и жёг
-// оба лимита (частоты и активных заявок) холостой заявкой, которая молча
-// собрала бы пустой файл — StreamForExport фильтрует
-// WHERE project_id = ? AND issue_id IN (?) (event/query.go), утечки данных
-// нет и без этого фикса, но слот лимита сгорал ни за что, а колонка
-// «Фильтры» показывала бы чужой id. Мутация — убрать сверку it.ProjectID
-// != projectID (принять любой существующий issue) — обязана уронить и код
-// ответа, и счётчик заявок: чужой issue существует и прошёл бы Get без
-// ошибки.
 func TestExportsCreateRejectsForeignScopeIssueId(t *testing.T) {
 	s := newExportsStack(t)
 	res, err := s.h.Issues.Upsert(context.Background(), s.otherProjectID, "fp-foreign", "Foreign", "pkg/a.go:1", "error", "", time.Now())
@@ -782,10 +624,6 @@ func TestExportsCreateRejectsForeignScopeIssueId(t *testing.T) {
 	}
 }
 
-// TestExportsCreateRejectsUnknownScopeIssueId — тот же отказ для
-// несуществующего id (issue.ErrNotFound), не только для чужого проекта:
-// h.Issues.Get(ctx, scopeIssueID) возвращает ErrNotFound, и он трактуется
-// так же, как чужой проект (см. докблок exportsCreate).
 func TestExportsCreateRejectsUnknownScopeIssueId(t *testing.T) {
 	s := newExportsStack(t)
 	resp := s.postForm(t, s.path("/exports"), url.Values{
@@ -800,13 +638,6 @@ func TestExportsCreateRejectsUnknownScopeIssueId(t *testing.T) {
 	}
 }
 
-// TestExportsCreateAcceptsOwnScopeIssueId — здоровая заявка со
-// scope_issue_id ИЗ СВОЕГО проекта обязана пройти как раньше: проверка
-// P3-SEC-4 не должна ловить легитимный сценарий (та самая точка входа
-// «Выгрузить события issue», issuedetail.templ). Мутация — сузить сверку
-// принадлежности до "любой issue с ProjectID > 0" (случайно принять и
-// отвергнуть неверно) не даёт незамеченно сработать: тест ловит именно
-// успешный проход СВОЕГО issue.
 func TestExportsCreateAcceptsOwnScopeIssueId(t *testing.T) {
 	s := newExportsStack(t)
 	res, err := s.h.Issues.Upsert(context.Background(), s.projectID, "fp-own", "Own", "pkg/a.go:1", "error", "", time.Now())
@@ -826,13 +657,6 @@ func TestExportsCreateAcceptsOwnScopeIssueId(t *testing.T) {
 	}
 }
 
-// TestExportsDownloadForeignJobIs404 — Store.Get принимает только id, без
-// projectID: заявка из ДРУГОГО проекта не должна отдаваться по
-// /projects/{projectID}/exports/{jobID}/download только потому, что jobID
-// совпал. Заявка заведена НА ТОГО ЖЕ operatorUID, что её запрашивает —
-// авторская проверка (job.CreatedBy == uid) сама по себе прошла бы, изолируя
-// проверку именно ProjectID: без неё тест не отличил бы отсутствующую
-// сверку проекта от работающей сверки авторства.
 func TestExportsDownloadForeignJobIs404(t *testing.T) {
 	s := newExportsStack(t)
 	other := s.enqueueAs(t, s.operatorUID)
@@ -844,10 +668,6 @@ func TestExportsDownloadForeignJobIs404(t *testing.T) {
 	}
 }
 
-// TestExportsDeleteForeignJobIs404 — тот же инвариант, что и
-// TestExportsDownloadForeignJobIs404, для удаления: без сверки job.ProjectID
-// с {id} из маршрута Delete снёс бы заявку из другого проекта по одному
-// jobID. Тот же приём изоляции: заявка заведена на самого operatorUID.
 func TestExportsDeleteForeignJobIs404(t *testing.T) {
 	s := newExportsStack(t)
 	other := s.enqueueAs(t, s.operatorUID)
@@ -862,9 +682,6 @@ func TestExportsDeleteForeignJobIs404(t *testing.T) {
 	}
 }
 
-// TestExportsDownloadRechecksProjectAccess — доступ мог быть отозван ПОСЛЕ
-// постановки заявки: авторства недостаточно, скачивание обязано
-// перепроверить доступ к проекту в момент запроса.
 func TestExportsDownloadRechecksProjectAccess(t *testing.T) {
 	s := newExportsStack(t)
 	id := s.enqueueDone(t, s.operatorUID)
@@ -877,8 +694,6 @@ func TestExportsDownloadRechecksProjectAccess(t *testing.T) {
 	}
 }
 
-// TestExportsDownloadSetsAttachmentHeaders — Content-Type из Format, имя
-// файла с расширением в Content-Disposition: attachment.
 func TestExportsDownloadSetsAttachmentHeaders(t *testing.T) {
 	s := newExportsStack(t)
 	id := s.enqueueDone(t, s.operatorUID)
@@ -900,9 +715,6 @@ func TestExportsDownloadSetsAttachmentHeaders(t *testing.T) {
 	}
 }
 
-// TestExportsDeleteRejectsRunningJob — удаление разрешено только для
-// терминальных статусов: у queued/running в этот момент может писаться
-// файл, а не только строка.
 func TestExportsDeleteRejectsRunningJob(t *testing.T) {
 	s := newExportsStack(t)
 	resp := s.postForm(t, s.path("/exports"), okForm)
@@ -919,8 +731,6 @@ func TestExportsDeleteRejectsRunningJob(t *testing.T) {
 	}
 }
 
-// TestExportsDeleteRemovesFileThenRow — успешное удаление (confirmed=yes)
-// сносит и файл на диске, и строку в таблице.
 func TestExportsDeleteRemovesFileThenRow(t *testing.T) {
 	s := newExportsStack(t)
 	id := s.enqueueDone(t, s.operatorUID)
@@ -939,15 +749,6 @@ func TestExportsDeleteRemovesFileThenRow(t *testing.T) {
 	}
 }
 
-// TestExportsDeleteRequiresConfirmation — находка аудита P2-UX-5: кнопка
-// «Удалить» стоит вплотную к «Скачать», промах уничтожает единственную
-// копию файла, собиравшегося до 15 минут, безвозвратно. POST без
-// confirmed=yes обязан показать страницу подтверждения (тот же общий приём
-// продукта renderConfirm/ConfirmPage, что у 11 из 13 *Delete-хендлеров
-// пакета) и НЕ трогать ни файл, ни строку; тот же POST с confirmed=yes —
-// довести удаление до конца. Мутация — убрать проверку confirmed=yes
-// (удалять сразу) — обязана уронить первый блок: код станет 303, а файл и
-// строка пропадут уже на первом (неподтверждённом) запросе.
 func TestExportsDeleteRequiresConfirmation(t *testing.T) {
 	s := newExportsStack(t)
 	id := s.enqueueDone(t, s.operatorUID)
@@ -984,12 +785,6 @@ func TestExportsDeleteRequiresConfirmation(t *testing.T) {
 	}
 }
 
-// TestExportsRoutesDisabledWhenExportsNil — h.Exports == nil (выгрузки
-// выключены на инстансе) обязан давать 404 на create/download/delete —
-// это не UI, объяснять там нечего (ревью веб-части E1, п.3). Страница
-// списка (GET /projects/{id}/exports) — исключение: спека E1 §10 требует
-// на ней объяснение вместо пустой таблицы, а не 404, см.
-// TestExportsPageShowsExplanationWhenExportsNil ниже.
 func TestExportsRoutesDisabledWhenExportsNil(t *testing.T) {
 	s := newExportsStack(t)
 	s.h.Exports = nil
@@ -1005,12 +800,6 @@ func TestExportsRoutesDisabledWhenExportsNil(t *testing.T) {
 	}
 }
 
-// TestExportsPageShowsExplanationWhenExportsNil — h.Exports == nil обязан
-// давать 200 с объяснением на странице списка, а не 404 и не пустую
-// таблицу с рабочей формой постановки (спека E1 §10; ревью веб-части, п.3).
-// Доступ по-прежнему только оператору проекта — не-оператор получает
-// обычный 404 (TestExportsPageDeniedForNonOperator покрывает общий случай,
-// здесь — что порядок гейтов не сломан при отключённой фиче).
 func TestExportsPageShowsExplanationWhenExportsNil(t *testing.T) {
 	s := newExportsStack(t)
 	s.h.Exports = nil
@@ -1035,12 +824,6 @@ func TestExportsPageShowsExplanationWhenExportsNil(t *testing.T) {
 	}
 }
 
-// TestExportsDownloadInvalidJobIDIs404 — нечисловой jobID в пути обязан
-// давать 404, а не паниковать/500. Проверяет только код ответа: конкретная
-// ветка не различима снаружи и не гарантирована этим тестом — strconv.ParseInt
-// отсекает такой jobID сама, но даже без этой проверки jobID=0 ушёл бы в
-// Store.Get(0) и получил бы тот же 404 через ErrNotFound (двух путей к
-// одному ответу достаточно, различать их снаружи незачем).
 func TestExportsDownloadInvalidJobIDIs404(t *testing.T) {
 	s := newExportsStack(t)
 	resp := s.getAs(t, s.operatorUID, s.path("/exports/not-a-number/download"))
@@ -1050,8 +833,6 @@ func TestExportsDownloadInvalidJobIDIs404(t *testing.T) {
 	}
 }
 
-// TestExportsDeleteInvalidJobIDIs404 — тот же разбор пути, что и у download,
-// в exportsDelete.
 func TestExportsDeleteInvalidJobIDIs404(t *testing.T) {
 	s := newExportsStack(t)
 	resp := s.postForm(t, s.path("/exports/not-a-number/delete"), url.Values{})
@@ -1061,9 +842,6 @@ func TestExportsDeleteInvalidJobIDIs404(t *testing.T) {
 	}
 }
 
-// TestExportsDownloadMissingFileIs404 — строка done есть, файла на диске
-// нет (расхождение с уборкой/ручным вмешательством): 404, не 500 и не паника
-// на os.Open.
 func TestExportsDownloadMissingFileIs404(t *testing.T) {
 	s := newExportsStack(t)
 	id := s.enqueueDoneWithoutFile(t, s.operatorUID)
@@ -1075,10 +853,6 @@ func TestExportsDownloadMissingFileIs404(t *testing.T) {
 	}
 }
 
-// --- Задача 11: страница «Выгрузки», кнопки и i18n ---
-
-// TestExportsPageShowsStatusesAndTruncation — заголовок, перевод статуса
-// running и отметка «обрезана» — на экране (см. exports.templ:exportRow).
 func TestExportsPageShowsStatusesAndTruncation(t *testing.T) {
 	s := newExportsStack(t)
 	runningID, err := s.h.Exports.Enqueue(context.Background(), export.Job{
@@ -1107,12 +881,6 @@ func TestExportsPageShowsStatusesAndTruncation(t *testing.T) {
 	}
 }
 
-// TestExportsPageShowsFailureReasonHint — P2-UX-2 аудита: провалившаяся
-// заявка сообщает переведённую причину прямо на странице выгрузок, не
-// только в письме (которого на инстансе без почты нет вовсе, notify.go:
-// NewMailNotifier тихо выходит при m == nil). Мутация — убрать сборку
-// failureReasonKey в exportViewRow (internal/web/exports.go) — обязана
-// уронить эту проверку (текст причины пропадёт со страницы).
 func TestExportsPageShowsFailureReasonHint(t *testing.T) {
 	s := newExportsStack(t)
 	id, err := s.h.Exports.Enqueue(context.Background(), export.Job{
@@ -1128,21 +896,11 @@ func TestExportsPageShowsFailureReasonHint(t *testing.T) {
 	if !strings.Contains(body, "на диске выгрузок закончилось место") {
 		t.Errorf("на странице нет переведённой причины отказа: %s", body)
 	}
-	// Техтекст last_error ('техническая причина', см. markFailed) — на UI
-	// не показывается, только переведённая причина по ключу.
 	if strings.Contains(body, "техническая причина") {
 		t.Error("техтекст last_error утёк на страницу")
 	}
 }
 
-// TestExportsPageHidesReasonHintForUnknownOrMissingKey — защита от утечки
-// техтекста (P2-UX-2 аудита, тот же риск, что уже был найден для last_error):
-// строка, у которой failure_reason_key либо NULL (заявка старше миграции,
-// либо не терминальна), либо содержит чужой/битый ключ (ручная правка БД,
-// откат миграции вперёд-назад), НЕ должна показать сырой идентификатор —
-// i18n.T() на неизвестном ключе возвращает сам ключ как есть. Мутация — убрать
-// export.KnownFailureReasonKey(...) из условия в exportViewRow (оставить
-// только j.Status == StatusFailed) — обязана уронить вторую строку (ID=2).
 func TestExportsPageHidesReasonHintForUnknownOrMissingKey(t *testing.T) {
 	s := newExportsStack(t)
 	legacyID, err := s.h.Exports.Enqueue(context.Background(), export.Job{
@@ -1169,8 +927,6 @@ func TestExportsPageHidesReasonHintForUnknownOrMissingKey(t *testing.T) {
 	}
 }
 
-// TestExportsPageHidesDeleteForRunningJob — у queued/running кнопки удаления
-// быть не должно: она разъедется с воркером, который ещё пишет файл.
 func TestExportsPageHidesDeleteForRunningJob(t *testing.T) {
 	s := newExportsStack(t)
 	id, err := s.h.Exports.Enqueue(context.Background(), export.Job{
@@ -1188,8 +944,6 @@ func TestExportsPageHidesDeleteForRunningJob(t *testing.T) {
 	}
 }
 
-// TestExportsPageEmptyState — пустой список объясняет, что делать, а не
-// рисует голую таблицу без строк.
 func TestExportsPageEmptyState(t *testing.T) {
 	s := newExportsStack(t)
 	body := s.getBody(t, s.operatorUID, s.path("/exports"))
@@ -1201,22 +955,7 @@ func TestExportsPageEmptyState(t *testing.T) {
 	}
 }
 
-// TestIssuesPageHasExportButtons — на списке ошибок есть форма постановки
-// заявки (кнопки экспорта групп/событий с текущими фильтрами), и её action
-// реально несёт период. GET без query резолвится в дефолт RangeAll
-// (issues.go:issuesList → h.resolveTimeRange(w, r, RangeAll)), значит action
-// обязан быть .../exports?period=all, а не голым .../exports — перенос
-// периода в action стал частью контракта формы ещё в 6b43db26, и точный
-// матч по closing quote обязан ловить его пропажу, а не мириться с любым
-// query-суффиксом (раньше здесь была ослабленная проверка без query — она
-// перестала отличать «форма пропала» от «формат/период у формы поменялся»).
-// Полный перебор пресетов (7d/all/custom) — на уровне шаблона,
-// TestIssuesListExportFormsCarryTimeRange
-// (internal/web/templates/exports_test.go), здесь не дублируется.
 func TestIssuesPageHasExportButtons(t *testing.T) {
-	// Стек issues, а не exports: тулбар с формами экспорта рендерится только
-	// над непустой таблицей (выгружать пустую выборку нечего), а строки
-	// списка тянут спарклайны из CH (Events) — в newExportsStack его нет.
 	s := newIssuesStack(t)
 	ownerID, ownerCookie := registerAndLogin(t, s, "issues-export-btn@example.com")
 	project := createProject(t, s, ownerID, "export-btn-org", "export-btn-proj")
@@ -1232,9 +971,6 @@ func TestIssuesPageHasExportButtons(t *testing.T) {
 	}
 }
 
-// TestExportsPagePIIHintPresent — подсказка про необратимость маскирования
-// PII обязана быть видна тому, кому вообще доступна галка include_pii:
-// иначе админ примет занулённые на приёме адреса за баг.
 func TestExportsPagePIIHintPresent(t *testing.T) {
 	s := newExportsStack(t)
 	body := s.getBody(t, s.adminUID, s.path("/exports"))
@@ -1243,11 +979,6 @@ func TestExportsPagePIIHintPresent(t *testing.T) {
 	}
 }
 
-// TestExportsPageIgnoresLimitQueryParam — Store.ByProject НЕ санитизирует
-// limit (отрицательное значение — сырая ошибка PostgreSQL, см. её докблок);
-// exportsPage обязана звать её с фиксированной exportsListLimit, а не со
-// значением из query. ?limit=-1, доехавший до SQL, дал бы 500 — мутация,
-// подменяющая константу на query-параметр, обязана уронить этот тест.
 func TestExportsPageIgnoresLimitQueryParam(t *testing.T) {
 	s := newExportsStack(t)
 	resp := s.getAs(t, s.operatorUID, s.path("/exports?limit=-1"))
@@ -1257,8 +988,6 @@ func TestExportsPageIgnoresLimitQueryParam(t *testing.T) {
 	}
 }
 
-// TestExportsPageDeniedForNonOperator — тот же гейт, что у create/download/
-// delete: массовый список заявок проекта не должен быть виден кому попало.
 func TestExportsPageDeniedForNonOperator(t *testing.T) {
 	s := newExportsStack(t)
 	resp := s.getAs(t, s.viewerUID, s.path("/exports"))
@@ -1268,17 +997,6 @@ func TestExportsPageDeniedForNonOperator(t *testing.T) {
 	}
 }
 
-// TestExportsPageHidesForeignJobWhenNotManager — оператор без CanManage не
-// должен видеть чужую (не свою) заявку на странице выгрузок вовсе — ни
-// строки, ни email автора, ни колонки PII (спека §3: «свои заявки видит
-// автор; админ и владелец орга видят все заявки проекта» — эта строка несёт
-// тот самый аудит-сигнал «кто и когда выгружал непомаскированные данные»,
-// который спека оставляет админу). Админу (CanManage) чужая заявка обязана
-// быть видна целиком, включая кнопки download/delete.
-//
-// До ревью веб-части E1 (п.2) чужая заявка оператору БЫЛА видна строкой
-// (kind/format/статус/email автора/PII), только кнопки download/delete были
-// спрятаны — это и было дефектом: сама видимость строки утекала.
 func TestExportsPageHidesForeignJobWhenNotManager(t *testing.T) {
 	s := newExportsStack(t)
 	resp := s.postFormAs(t, s.adminUID, s.path("/exports"), okForm)
@@ -1296,8 +1014,6 @@ func TestExportsPageHidesForeignJobWhenNotManager(t *testing.T) {
 	if strings.Contains(operatorView, fmt.Sprintf("/exports/%d/delete", adminJobID)) {
 		t.Error("оператор без CanManage видит удаление чужой заявки")
 	}
-	// register() в newExportsStack заводит админа с этим email — строка чужой
-	// заявки не должна рендериться вовсе, а не просто прятать кнопки.
 	if strings.Contains(operatorView, "exports-admin@example.com") {
 		t.Error("оператор без CanManage видит email автора чужой заявки — строка не должна рендериться вовсе")
 	}
@@ -1311,13 +1027,6 @@ func TestExportsPageHidesForeignJobWhenNotManager(t *testing.T) {
 	}
 }
 
-// TestExportsPageBatchesAuthorEmailsAcrossDistinctAuthors — email автора
-// собирается батчем через Auth.UserEmails (ревью веб-части E1, п.5: раньше
-// exportViewRow звала h.Auth.UserEmail на КАЖДУЮ строку — N+1 к PG на
-// рендер). Правильность батча проверяем напрямую: две заявки РАЗНЫХ
-// авторов в одном проекте, админ (CanManage) видит обе через ByProject —
-// оба email обязаны дойти до страницы, каждый ровно на свою строку, не
-// перепутанные и не потерянные при разрешении по карте authorEmails.
 func TestExportsPageBatchesAuthorEmailsAcrossDistinctAuthors(t *testing.T) {
 	s := newExportsStack(t)
 	adminJobID := s.enqueueDone(t, s.adminUID)
@@ -1342,9 +1051,6 @@ func TestExportsPageBatchesAuthorEmailsAcrossDistinctAuthors(t *testing.T) {
 	}
 }
 
-// rowContaining вырезает содержимое ближайшего <tr>…</tr>, несущего marker
-// (ссылку на конкретную заявку), — чтобы сравнивать email не по всей
-// странице целиком (там оба присутствуют), а по конкретной строке таблицы.
 func rowContaining(t *testing.T, body, marker string) string {
 	t.Helper()
 	i := strings.Index(body, marker)
@@ -1359,17 +1065,6 @@ func rowContaining(t *testing.T, body, marker string) string {
 	return body[start : i+end]
 }
 
-// TestExportIssueURLHitsRegisteredRoute — сторож колонки url выгрузки групп:
-// ссылка, которую получает пользователь в CSV/JSON, обязана вести на реально
-// зарегистрированный маршрут, а не в catch-all.
-//
-// Живой случай (приёмка v0.22.0 в браузере): выгрузка отдавала
-// {base}/projects/{projectID}/issues/{issueID} — страницы по такому пути нет,
-// деталь группы обслуживает «GET /issues/{id}», и КАЖДАЯ строка выгрузки вела
-// в 404. Юнит-тест источника это пропустил, потому что собирал ожидание тем же
-// fmt.Sprintf, что и реализация: тавтология переживает любую мутацию шаблона.
-// Здесь ожидания нет вовсе — путь скармливается роутеру, и вопрос ему один:
-// есть ли у тебя такой маршрут.
 func TestExportIssueURLHitsRegisteredRoute(t *testing.T) {
 	s := newStack(t)
 
@@ -1382,13 +1077,6 @@ func TestExportIssueURLHitsRegisteredRoute(t *testing.T) {
 	assertRouteRegistered(t, s, http.MethodGet, path)
 }
 
-// TestExportsMetaEndpointReturnsBuildMeta — F5/F1′ контрактной уборки
-// 2026-08-28 (CONTRACT-DECISIONS.md, докблок export.Meta, meta.go):
-// GET .../download?meta=1 обязан отдавать export.BuildMeta(job) в JSON —
-// тот же маршрут скачивания, тот же гейт доступа, но тело — метаданные, а
-// не файл. Заявка Kind=events/IncludePII=false без ScopeIssueID и без
-// сужающих Params — scope_issue_id=0, filter_code="all", pseudonym_note
-// непусто (псевдонимизация user_id есть).
 func TestExportsMetaEndpointReturnsBuildMeta(t *testing.T) {
 	s := newExportsStack(t)
 	id, err := s.h.Exports.Enqueue(context.Background(), export.Job{
@@ -1424,10 +1112,6 @@ func TestExportsMetaEndpointReturnsBuildMeta(t *testing.T) {
 	}
 }
 
-// TestExportsMetaEndpointScopeIssueID — заявка, ограниченная одной группой
-// (Kind=issues, ScopeIssueID!=0): filter_code="issue", pseudonym_note пусто
-// (у issues колонки user_id нет вовсе — предупреждать о псевдониме, которого
-// нет, нечего, см. докблок BuildMeta).
 func TestExportsMetaEndpointScopeIssueID(t *testing.T) {
 	s := newExportsStack(t)
 	id, err := s.h.Exports.Enqueue(context.Background(), export.Job{
@@ -1460,9 +1144,6 @@ func TestExportsMetaEndpointScopeIssueID(t *testing.T) {
 	}
 }
 
-// TestExportsMetaEndpointForeignJobIs404 — та же межпроектная изоляция, что
-// и у самого скачивания (TestExportsDownloadForeignJobIs404): ?meta=1 не
-// открывает лазейку мимо сверки job.ProjectID.
 func TestExportsMetaEndpointForeignJobIs404(t *testing.T) {
 	s := newExportsStack(t)
 	other := s.enqueueAs(t, s.operatorUID)
@@ -1474,11 +1155,6 @@ func TestExportsMetaEndpointForeignJobIs404(t *testing.T) {
 	}
 }
 
-// TestExportsMetaEndpointNotDoneIs404 — тот же гейт Status==Done, что и у
-// самого файла: заявка, ещё не досчитанная, не отдаёт метаданные тоже — до
-// завершения Job.Params/ScopeIssueID уже стабильны, но продукт сознательно
-// не отличает "ещё нет файла" от "ещё нет метаданных о нём" (см. докблок
-// exportsMetaQueryParam, internal/web/exports.go).
 func TestExportsMetaEndpointNotDoneIs404(t *testing.T) {
 	s := newExportsStack(t)
 	resp := s.postForm(t, s.path("/exports"), okForm)

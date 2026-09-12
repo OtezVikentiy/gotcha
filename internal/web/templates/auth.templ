@@ -8,8 +8,8 @@ import (
 )
 
 type OAuthButton struct {
-	Name  string // ключ провайдера для URL (/auth/oauth/{name}/start)
-	Label string // подпись, напр. "Войти через Яндекс"
+	Name  string // сегмент URL: /auth/oauth/{name}/start
+	Label string
 }
 
 templ oauthButtons(providers []OAuthButton) {
@@ -23,16 +23,7 @@ templ oauthButtons(providers []OAuthButton) {
 	}
 }
 
-// next — куда вернуть человека после входа (уже провалидированный
-// относительный путь этого сайта, см. safeNextPath). Пустая строка — на
-// главную. Едет скрытым полем, чтобы пережить POST формы.
-//
-// email — то, что человек уже набрал в форме (K7-12): после отказа входа
-// (лимит, принудительный SSO, неверные данные) поле не должно пустеть, иначе
-// адрес приходится набирать заново. Пароль сюда никогда не попадает — его нет
-// ни в одном вызове этого шаблона. Значение уходит через { } — экранирование
-// атрибута templ-рантайма, инъекция им закрыта; на сообщение об ошибке (уже
-// вычисленное вызывающим) email не влияет — существование учётки не палится.
+// errMsg не зависит от email — по нему нельзя понять, существует ли аккаунт.
 templ Login(errMsg, next, email string, providers []OAuthButton) {
 	@chromeless(i18n.T(ctx, "auth.login.title"), "") {
 		<div class="auth-brand">
@@ -67,7 +58,6 @@ templ Login(errMsg, next, email string, providers []OAuthButton) {
 	}
 }
 
-// SSOLogin — GET/POST /sso: identifier-first вход по email-домену (этап 10).
 templ SSOLogin(errMsg string) {
 	@chromeless(i18n.T(ctx, "auth.sso.title"), "") {
 		<form method="post" action="/sso" class="auth-form">
@@ -87,25 +77,14 @@ templ SSOLogin(errMsg string) {
 	}
 }
 
-// isInvitePath — тот же признак «этот next — путь приглашения», что и у
-// inviteTokenFromNext в internal/web/auth.go, но локальная копия: templates
-// не может импортировать web (обратный цикл). Здесь она решает только, класть
-// ли next в query ссылки — сам токен по этому пути не проверяется, проверка
-// остаётся в web.inviteTokenFromNext.
+// локальная копия признака из web.inviteTokenFromNext: templates не может
+// импортировать web (цикл). Токен здесь не проверяется, только распознаётся путь.
 func isInvitePath(next string) bool {
 	return strings.HasPrefix(next, "/invite/")
 }
 
-// loginLinkWithNext — ссылка на /login, несущая адресата, если он есть. Тот
-// же приём экранирования, что и у loginWithNext в
-// internal/auth/middleware.go (RequireUser): url.QueryEscape без url.Values,
-// потому что параметр всего один. next приходит уже провалидированным через
-// safeNextPath у вызывающего — здесь только строится ссылка.
-//
-// K9-19: путь приглашения (/invite/{token}) в query не кладём никогда —
-// оттуда токен утекает в историю браузера, в лог обратного прокси и в
-// Referer. Адресат при этом не теряется: его несёт invite-cookie
-// (invitecookie.go), которую читает resolveAuthNext на GET /login.
+// путь приглашения в query не кладём никогда — токен утёк бы в историю
+// браузера, лог обратного прокси и Referer; адресата несёт invite-cookie.
 func loginLinkWithNext(next string) string {
 	if next == "" || isInvitePath(next) {
 		return "/login"
@@ -113,8 +92,6 @@ func loginLinkWithNext(next string) string {
 	return "/login?next=" + url.QueryEscape(next)
 }
 
-// registerLinkWithNext — тот же приём для /register, с тем же исключением
-// для пути приглашения (см. loginLinkWithNext).
 func registerLinkWithNext(next string) string {
 	if next == "" || isInvitePath(next) {
 		return "/register"
@@ -122,17 +99,6 @@ func registerLinkWithNext(next string) string {
 	return "/register?next=" + url.QueryEscape(next)
 }
 
-// RegisterForm — рабочая форма регистрации (open, invite и bootstrap первого
-// пользователя).
-//
-// inviteNote=true — режим invite без токена приглашения в next (QA
-// MINOR-UX-2): форма остаётся (по ней же проходит bootstrap и приглашённые,
-// потерявшие query), но человек ДО ввода пароля видит, что без
-// ссылки-приглашения отправка упрётся в отказ — раньше тупик выяснялся
-// только после сабмита.
-//
-// next — куда вернуть человека после регистрации (см. Login выше): тот же
-// приём, скрытое поле, переживающее POST формы.
 templ RegisterForm(errMsg string, inviteNote bool, next string, providers []OAuthButton) {
 	@chromeless(i18n.T(ctx, "auth.register.title"), "") {
 		<form method="post" action="/register" class="auth-form">
@@ -171,18 +137,6 @@ templ RegisterForm(errMsg string, inviteNote bool, next string, providers []OAut
 	}
 }
 
-// RegisterStub — экран регистрации без формы: GET в режиме closed (PROD-B1,
-// bootstrap пройден) и 403-отказы POST (denyRegistration). Копия — по режиму
-// (QA MINOR-UX-2): в closed не предлагаем «получить приглашение» — оно там
-// не поможет.
-//
-// Красная плашка — только реальной ошибке POST (№68): на GET закрытая
-// регистрация — штатное состояние, о нём говорит информационный абзац. При
-// ошибке абзац не дублируется: плашка и абзац рассказывали одно и то же
-// двумя почти одинаковыми текстами.
-//
-// next переживает переход дальше — на /login — через query-параметр ссылки
-// (формы со скрытым полем здесь нет).
 templ RegisterStub(errMsg string, mode string, next string, providers []OAuthButton) {
 	@chromeless(i18n.T(ctx, "auth.register.title"), "") {
 		<div class="auth-form">

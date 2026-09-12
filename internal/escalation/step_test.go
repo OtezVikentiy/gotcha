@@ -11,14 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestSendStepIfDueLogsEnqueuedChannels — T7-fix: логирование incident_
-// escalations живёт в SendStepIfDue (оркестрация), не в нотифаере — оно
-// обязано писаться независимо от того, что стоит за notifyStep (реальный
-// Outbox-нотифаер или тестовый мок эволюатора), лишь бы тот вернул реально
-// заенкенные каналы. Здесь notifyStep — фейк, возвращающий фиксированный
-// набор без похода в Outbox вовсе, и лог всё равно появляется — это и есть
-// гарантия, которую раньше давал только реальный нотифаер (T6), а с мок-
-// нотифаерами (host/slo) она молчала.
 func TestSendStepIfDueLogsEnqueuedChannels(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -40,8 +32,6 @@ func TestSendStepIfDueLogsEnqueuedChannels(t *testing.T) {
 			if step != 0 {
 				t.Errorf("notifyStep step = %d, want 0", step)
 			}
-			// Симулирует реальный нотифаер: возвращает то, что "реально
-			// поставлено в очередь" — здесь всё, что дала лесенка.
 			return chs, nil
 		},
 		func(id int64, from int) (bool, error) {
@@ -74,9 +64,6 @@ func TestSendStepIfDueLogsEnqueuedChannels(t *testing.T) {
 	}
 }
 
-// TestSendStepIfDueSkipsWhenDelayNotDue — задержка ступени ещё не настала
-// (elapsed < DelayMinutes): ни notifyStep, ни bump не зовутся, лог пуст —
-// планировщик (T8) отправит эту ступень позже.
 func TestSendStepIfDueSkipsWhenDelayNotDue(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -114,8 +101,6 @@ func TestSendStepIfDueSkipsWhenDelayNotDue(t *testing.T) {
 	}
 }
 
-// TestSendStepIfDueLevelBeyondLadder — level >= len(ladder) (лесенка
-// исчерпана, эскалировать дальше некуда): sent=false, ничего не зовётся.
 func TestSendStepIfDueLevelBeyondLadder(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -141,13 +126,6 @@ func TestSendStepIfDueLevelBeyondLadder(t *testing.T) {
 	}
 }
 
-// TestSendStepIfDueNotifyStepTotalFailureSkipsLogAndBump — ТОТАЛЬНЫЙ провал
-// notifyStep (ни один канал не заенкенился — enqueued пуст) не логирует
-// (нечего логировать) и не бампает уровень: следующий тик повторит ступень
-// целиком, а не молчаливо продвинет эскалацию дальше. QA P2-3: до фикса
-// discard всех enqueued при err != nil был общим для тотального и частичного
-// сбоя — здесь фиксируем, что для тотального сбоя (пустой enqueued) поведение
-// осталось прежним; частичный сбой см. TestSendStepIfDueNotifyStepPartialFailureLogsAndBumps.
 func TestSendStepIfDueNotifyStepTotalFailureSkipsLogAndBump(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -186,12 +164,6 @@ func TestSendStepIfDueNotifyStepTotalFailureSkipsLogAndBump(t *testing.T) {
 	}
 }
 
-// TestSendStepIfDueNotifyStepPartialFailureLogsAndBumps — ЧАСТИЧНЫЙ провал
-// notifyStep (c1 реально заенкенился, но вызов вернул ошибку — напр. второй
-// канал в очередь не встал) обязан залогировать c1 в incident_escalations
-// (иначе recovery не найдёт его и не пришлёт отбой запейдженному каналу) И
-// продвинуть уровень (иначе один битый канал клинит лесенку бесконечным
-// пере-пейджем c1). Ошибка при этом не проглатывается — прокидывается вызывающему. QA P2-3.
 func TestSendStepIfDueNotifyStepPartialFailureLogsAndBumps(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -246,15 +218,6 @@ func TestSendStepIfDueNotifyStepPartialFailureLogsAndBumps(t *testing.T) {
 	}
 }
 
-// TestSendStepIfDueClaimFailureBlocksNotifyAndBump — АДАПТИРОВАН под
-// claim-before-notify (K1-1): раньше (нотификация→лог) этот тест бил по
-// провалу ЛОГА ПОСЛЕ успешной отправки — notifyStep "успевал" отправить,
-// а падение записи блокировало bump. Теперь запись — это и есть claim, и он
-// стоит ДО notifyStep: тот же отменённый контекст роняет ClaimStepChannels,
-// и SendStepIfDue обязан вернуться, вообще не дойдя до notifyStep — не
-// только bump, но и сама отправка не должны случиться на непройденном
-// claim'е (иначе получатель увидел бы уведомление без гарантии, что оно
-// вообще куда-то залогировано).
 func TestSendStepIfDueClaimFailureBlocksNotifyAndBump(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -303,10 +266,6 @@ func TestSendStepIfDueClaimFailureBlocksNotifyAndBump(t *testing.T) {
 	}
 }
 
-// TestLogStepIdempotentOnRetry — W2-C находка 3 (миграция 0085): повторный
-// LogStep той же (source, incident, channel, step) — как это делает
-// SendStepIfDue на следующем тике после краха между логом и бампом — не
-// падает ошибкой уникальности и не создаёт вторую строку.
 func TestLogStepIdempotentOnRetry(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -335,11 +294,6 @@ func TestLogStepIdempotentOnRetry(t *testing.T) {
 	}
 }
 
-// TestSendStepIfDueSkipsNotifyWhenStepAlreadyClaimed — K1-1: ступень уже
-// занята целиком (например, другой репликой в этом же тике, или этой же
-// репликой на предыдущем тике, упавшем между claim и notifyStep) — claim
-// выигрывает пустой won, notifyStep не должен зваться вовсе, но уровень всё
-// равно продвигается (CAS bump безопасен для гонки).
 func TestSendStepIfDueSkipsNotifyWhenStepAlreadyClaimed(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -351,8 +305,7 @@ func TestSendStepIfDueSkipsNotifyWhenStepAlreadyClaimed(t *testing.T) {
 	c2 := newChannel(t, pool, pid, true)
 	const incidentID = int64(9010)
 
-	// Ступень 0 уже занята за оба канала — LogStep делает тот же INSERT, что
-	// и ClaimStepChannels (общий UNIQUE 0085).
+	// Ступень 0 уже занята за оба канала — LogStep делает тот же INSERT, что и ClaimStepChannels.
 	if err := escalation.LogStep(ctx, pool, "metric", incidentID, c1, 0); err != nil {
 		t.Fatalf("LogStep c1: %v", err)
 	}
@@ -384,11 +337,6 @@ func TestSendStepIfDueSkipsNotifyWhenStepAlreadyClaimed(t *testing.T) {
 	}
 }
 
-// TestSendStepIfDueReleasesClaimOnTotalNotifyFailure — K1-1: тотальный
-// провал notifyStep (ни один канал не заенкенился) после успешного claim
-// обязан ОСВОБОДИТЬ claim (ReleaseStepChannels) — иначе следующий тик увидит
-// ступень уже "занятой" и молча её пропустит, хотя она ни разу не ушла.
-// Освобождённый claim позволяет следующему вызову повторить notifyStep.
 func TestSendStepIfDueReleasesClaimOnTotalNotifyFailure(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -441,11 +389,6 @@ func TestSendStepIfDueReleasesClaimOnTotalNotifyFailure(t *testing.T) {
 	}
 }
 
-// TestSendStepIfDueReleasesUnenqueuedChannels — K1-1: частичный провал
-// notifyStep (won содержит [c1,c2], реально заенкенился только c1) обязан
-// освободить claim ДЛЯ c2 (ReleaseStepChannels), но не для c1 — лог должен
-// точно отражать, что реально ушло, а bump всё равно применяется (частичный
-// сбой прогресс не блокирует).
 func TestSendStepIfDueReleasesUnenqueuedChannels(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -491,9 +434,6 @@ func TestSendStepIfDueReleasesUnenqueuedChannels(t *testing.T) {
 	}
 }
 
-// TestSendStepIfDueNotifiesOnlyWonChannels — K1-1: c1 занят заранее (другой
-// репликой) — claim выигрывает только c2, и notifyStep обязан получить
-// ИМЕННО [c2], а не всю лесенку [c1,c2].
 func TestSendStepIfDueNotifiesOnlyWonChannels(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -525,12 +465,6 @@ func TestSendStepIfDueNotifiesOnlyWonChannels(t *testing.T) {
 	}
 }
 
-// TestSendStepIfDueBumpsWithoutNotifyWhenStepHasNoChannels — F3 (аудит перед
-// 1.0): ступень лесенки без каналов (проект без alert-каналов на эту
-// ступень) — явная ветка len(chs)==0 в SendStepIfDue: нечего занимать и
-// некому слать, но эскалация не должна клинить — bump применяется, notifyStep
-// не зовётся вовсе, лог ступени пуст (ClaimStepChannels/ReleaseStepChannels
-// тоже не участвуют).
 func TestSendStepIfDueBumpsWithoutNotifyWhenStepHasNoChannels(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -573,13 +507,6 @@ func TestSendStepIfDueBumpsWithoutNotifyWhenStepHasNoChannels(t *testing.T) {
 	}
 }
 
-// TestSendStepIfDueLogsReleaseErrorOnTotalNotifyFailure — F3 (аудит перед
-// 1.0): тотальный провал notifyStep, ПОСЛЕ которого сам ReleaseStepChannels
-// тоже проваливается (случай 3 докблока SendStepIfDue) — итоговая ошибка
-// обязана содержать ОБЕ причины (errBoom и ошибку release), bump не
-// зовётся, а строка лога claim остаётся (release не смог её удалить) —
-// следующий тик увидит ступень занятой и не повторит доставку каналу,
-// громкий slog.Error об этом уже пишется в самой функции.
 func TestSendStepIfDueLogsReleaseErrorOnTotalNotifyFailure(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -591,10 +518,8 @@ func TestSendStepIfDueLogsReleaseErrorOnTotalNotifyFailure(t *testing.T) {
 	const incidentID = int64(9015)
 	errBoom := errors.New("outbox down")
 
-	// BEFORE DELETE триггер с RAISE EXCEPTION — тот же трюк, что CHECK(false)
-	// в step_internal_test.go, но для DELETE, а не INSERT: claim (INSERT)
-	// обязан пройти штатно, провалиться должен именно ReleaseStepChannels
-	// (DELETE) после тотального провала notifyStep.
+	// BEFORE DELETE триггер с RAISE EXCEPTION: claim (INSERT) проходит штатно, должен
+	// провалиться именно ReleaseStepChannels (DELETE).
 	if _, err := pool.Exec(ctx, `
 		CREATE OR REPLACE FUNCTION test_force_release_fail() RETURNS trigger AS $$
 		BEGIN

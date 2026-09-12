@@ -13,7 +13,6 @@ import (
 	"time"
 )
 
-// EmailConfig — настройки SMTP-отправителя.
 type EmailConfig struct {
 	Host     string
 	Port     int
@@ -22,7 +21,6 @@ type EmailConfig struct {
 	From     string
 }
 
-// EmailSender шлёт уведомления по email через SMTP.
 type EmailSender struct {
 	Host     string
 	Port     int
@@ -31,7 +29,6 @@ type EmailSender struct {
 	From     string
 }
 
-// NewEmailSender строит EmailSender из конфигурации.
 func NewEmailSender(cfg EmailConfig) *EmailSender {
 	return &EmailSender{
 		Host:     cfg.Host,
@@ -42,25 +39,15 @@ func NewEmailSender(cfg EmailConfig) *EmailSender {
 	}
 }
 
-// Configured сообщает, задан ли SMTP-хост (т.е. отправитель пригоден к
-// использованию).
 func (s *EmailSender) Configured() bool {
 	return s.Host != ""
 }
 
-// defaultSMTPDeadline bounds the whole SMTP conversation when ctx carries
-// no deadline of its own.
+// Used when ctx carries no deadline of its own.
 const defaultSMTPDeadline = 30 * time.Second
 
-// setSMTPDeadline applies a deadline derived from ctx (or defaultSMTPDeadline,
-// when ctx carries none) to conn. Extracted out of Send so the failure path
-// is directly testable without a live SMTP server: a real net.Conn can race
-// closed between DialContext returning and this call (peer RST, or the
-// dialer's own timeout firing concurrently), and SetDeadline erroring in
-// that case (K1-7) was previously swallowed with "_ =" — silently leaving
-// the very conversation this function exists to bound unbounded, which
-// defeats the whole point documented on Send. Failing fast here instead
-// means a broken conn is caught before smtp.NewClient ever touches it.
+// Extracted so the failure path is testable without a live server: a real
+// conn can race closed between dial and here — failing fast catches it early.
 func setSMTPDeadline(ctx context.Context, conn net.Conn) error {
 	deadline := time.Now().Add(defaultSMTPDeadline)
 	if dl, ok := ctx.Deadline(); ok {
@@ -69,16 +56,8 @@ func setSMTPDeadline(ctx context.Context, conn net.Conn) error {
 	return conn.SetDeadline(deadline)
 }
 
-// Send отправляет письмо на Target.Target с темой и телом из payload.
-//
-// Written against net.Dialer/smtp.NewClient (rather than the simpler
-// smtp.SendMail) specifically to honour ctx: SendMail has no notion of a
-// deadline, so a blackholed SMTP server (accepts the TCP connection, then
-// never speaks) would stall this call forever. Since Worker.process runs
-// jobs sequentially, that stall doesn't just affect the email channel — it
-// blocks delivery on every other channel too. Dialing with DialContext and
-// then setting a deadline derived from ctx (or defaultSMTPDeadline, if ctx
-// carries none) bounds the whole conversation.
+// smtp.SendMail ignores ctx; a blackholed server would stall forever and,
+// since Worker.process runs jobs sequentially, block every other channel too.
 func (s *EmailSender) Send(ctx context.Context, t Target, payload map[string]any) error {
 	subject, _ := payload["subject"].(string)
 	body, _ := payload["body"].(string)
@@ -138,35 +117,14 @@ func (s *EmailSender) Send(ctx context.Context, t Target, payload map[string]any
 	return nil
 }
 
-// wrapSMTPErr strips the literal recipient string t.Target out of an
-// SMTP-stage error before wrapping it (A1, audit P1-1): a real server's
-// MAIL/RCPT/DATA rejection routinely echoes the address verbatim in its
-// reply text (e.g. "550 5.1.1 <addr>: Recipient address rejected"), and that
-// reply becomes err.Error() straight from net/smtp — wrapping it with %w
-// would carry the address into notification_outbox.last_error, which the
-// deliveries page renders. RedactToken is a no-op if the address doesn't
-// appear in err at all (the common case for mail/data), so this is safe to
-// apply uniformly across all three stages rather than singling out rcpt.
-//
-// This is an exact-substring match on recipient as we sent it — it does not
-// catch the server echoing the address back case-normalized or otherwise
-// reformatted, nor does it touch any OTHER address a misbehaving server
-// might embed in the reply (e.g. From, or an unrelated address from its own
-// config). It guards the one address this call actually knows about.
+// Redacts the recipient from a raw SMTP-stage error before wrapping — servers
+// often echo it in rejection replies, which end up in notification_outbox.last_error.
 func wrapSMTPErr(stage string, err error, recipient string) error {
 	return fmt.Errorf("notify: smtp %s: %s", stage, RedactToken(err.Error(), recipient))
 }
 
-// BuildEmail собирает RFC 5322-подобное сообщение (заголовки + text/plain
-// тело). Вынесена отдельно от Send, чтобы тестировать построение письма
-// без реального SMTP-соединения.
-//
-// from/to/subject приходят от пользователя (subject, в частности,
-// выводится из issue title) и попадают в сырые заголовки без какого-либо
-// экранирования на уровне net/smtp — поэтому каждое значение прогоняется
-// через sanitizeHeader перед интерполяцией, чтобы CR/LF не мог
-// инъецировать произвольные заголовки (например Bcc) или начать тело
-// письма раньше времени.
+// from/to/subject приходят от пользователя без экранирования в net/smtp —
+// каждое прогоняется через sanitizeHeader, чтобы CR/LF не инъецировал заголовки.
 func BuildEmail(from, to, subject, body string) []byte {
 	from = sanitizeHeader(from)
 	to = sanitizeHeader(to)
@@ -174,11 +132,8 @@ func BuildEmail(from, to, subject, body string) []byte {
 
 	htmlBody := buildHTMLBody(subject, body)
 
-	// multipart/alternative: текстовые клиенты видят text/plain, остальные —
-	// оформленный HTML. plain-часть пишется как есть (body user-influenced),
-	// поэтому boundary генерируется случайно ПОД содержимое и проверяется на
-	// отсутствие в теле частей — тело с литеральным boundary иначе могло бы
-	// инъецировать/подменить MIME-часть (BE-L1).
+	// boundary генерируется под содержимое письма и проверяется на отсутствие в
+	// нём — иначе тело могло бы подменить MIME-часть.
 	boundary := makeBoundary(body, htmlBody)
 
 	headers := fmt.Sprintf(
@@ -198,16 +153,12 @@ func BuildEmail(from, to, subject, body string) []byte {
 	return []byte(b.String())
 }
 
-// makeBoundary генерирует случайный MIME-разделитель (128 бит энтропии),
-// гарантированно НЕ встречающийся ни в одной из частей письма. Случайного
-// boundary уже достаточно, чтобы user-controlled body не мог его угадать, но
-// коллизия проверяется явно и boundary перегенерируется при совпадении —
-// так тело, содержащее literal boundary, не способно инъецировать MIME-часть.
+// 128 бит энтропии; коллизия с частями письма проверяется явно и boundary
+// перегенерируется — тело с literal boundary не инъецирует MIME-часть.
 func makeBoundary(parts ...string) string {
 	for {
 		raw := make([]byte, 16)
-		// crypto/rand.Read на практике не возвращает ошибку; при сбое просто
-		// перегенерируем (следующая итерация даст свежие байты).
+		// crypto/rand.Read практически не ошибается; при сбое просто перегенерируем.
 		if _, err := rand.Read(raw); err != nil {
 			continue
 		}
@@ -225,9 +176,7 @@ func makeBoundary(parts ...string) string {
 	}
 }
 
-// buildHTMLBody оборачивает текстовое тело в простой self-contained HTML
-// (inline-стили, без внешних ресурсов/картинок). Всё html-экранировано, переносы
-// строк сохраняются через <br>. subject уже sanitized/truncated вызывающим.
+// subject уже sanitized/truncated вызывающим.
 func buildHTMLBody(subject, body string) string {
 	escBody := strings.ReplaceAll(html.EscapeString(body), "\n", "<br>")
 	escSubject := html.EscapeString(subject)
@@ -240,23 +189,18 @@ func buildHTMLBody(subject, body string) string {
 		`</div></body></html>`
 }
 
-// maxSubjectRunes caps the Subject header so a pathologically long
-// user-controlled title can't bloat the message.
+// Caps Subject so a pathologically long user-controlled title can't bloat the message.
 const maxSubjectRunes = 200
 
-// sanitizeHeader strips CR and LF from a value destined for a raw RFC 5322
-// header line, replacing each with a space. Header values here come from
-// user-controlled input (subject derived from issue titles, from/to
-// addresses); without this, an embedded "\r\n" terminates the header early
-// and lets an attacker inject arbitrary headers or body content.
+// Strips CR/LF from user-controlled header values (subject, from/to) — an
+// embedded \r\n could otherwise terminate the header early and inject others.
 func sanitizeHeader(s string) string {
 	s = strings.ReplaceAll(s, "\r", " ")
 	s = strings.ReplaceAll(s, "\n", " ")
 	return s
 }
 
-// truncateRunes caps s at n runes (not bytes, to avoid splitting multi-byte
-// UTF-8 sequences).
+// Runes, not bytes — avoids splitting multi-byte UTF-8 sequences.
 func truncateRunes(s string, n int) string {
 	r := []rune(s)
 	if len(r) <= n {

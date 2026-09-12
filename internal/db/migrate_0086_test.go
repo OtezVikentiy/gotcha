@@ -10,14 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0086AddsNotifyOpenChannelsColumn — миграция 0086 (W3-E, правка
-// по вердикту ревью): аптайм получает retry для лога шага 0
-// (escalation.LogStepChannels, тот же механизм, что у остальных пяти
-// источников), и для него нужно ПОМНИТЬ, каким каналам "down" уже реально
-// ушёл — notify_open_channels. Пре-существующий открытый инцидент (то самое
-// доэскалационное состояние, которое видит любая работающая инсталляция при
-// апгрейде) обязан пережить миграцию с NULL — снимка для него никогда не
-// было, ретраить нечего.
+// notify_open_channels помнит, каким каналам «down» уже реально ушёл, для ретрая лога шага 0 —
+// пре-существующий инцидент обязан пережить миграцию с NULL: снимка для него никогда не было.
 func TestMigrate0086AddsNotifyOpenChannelsColumn(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -66,9 +60,7 @@ func TestMigrate0086AddsNotifyOpenChannelsColumn(t *testing.T) {
 		t.Errorf("notify_open_channels for pre-existing incident = %v, want NULL (никогда не было снимка)", channels)
 	}
 
-	// Колонка реально пишется как bigint[] — то, чем её будет пользоваться
-	// Detector.notifyOpen/retryStepZeroLog (Service.SetNotifyOpenChannels/
-	// ClearNotifyOpenChannels).
+	// Пишется как bigint[] — тем же типом пользуются SetNotifyOpenChannels/ClearNotifyOpenChannels.
 	if _, err := pool.Exec(ctx,
 		"UPDATE incidents SET notify_open_channels = $2 WHERE id = $1", incidentID, []int64{7, 9}); err != nil {
 		t.Fatalf("set notify_open_channels: %v", err)
@@ -96,8 +88,7 @@ func TestMigrate0086AddsNotifyOpenChannelsColumn(t *testing.T) {
 	}
 }
 
-// TestMigrate0086DownDropsColumn — down зеркалит up: колонка обязана уйти
-// целиком, старый бинарь (не знающий о ней) продолжает работать как раньше.
+// down зеркалит up — колонка уходит целиком, старый бинарь продолжает работать как раньше.
 func TestMigrate0086DownDropsColumn(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

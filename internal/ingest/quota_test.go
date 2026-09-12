@@ -10,11 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
 )
 
-// TestQuotaExceededReturns429 закрывает основной сценарий: квота 2, третье
-// принятое событие получает 429 с Retry-After > 0. Заодно проверяет
-// self-метрику T6: (quota, event) — одна из 29 пар
-// gotcha_ingest_rejected_total, которые ничем не были защищены (см.
-// countRejected в writeQuotaExceeded).
 func TestQuotaExceededReturns429(t *testing.T) {
 	s := newStack(t)
 	ctx := context.Background()
@@ -48,9 +43,6 @@ func TestQuotaExceededReturns429(t *testing.T) {
 	}
 }
 
-// TestDroppedCounterOnQuotaExceeded: при 429 по квоте событий отклонённое
-// событие учитывается в org_usage.dropped_events (PROD-P1) и не трогает
-// принятый events_count.
 func TestDroppedCounterOnQuotaExceeded(t *testing.T) {
 	s := newStack(t)
 	ctx := context.Background()
@@ -59,7 +51,6 @@ func TestDroppedCounterOnQuotaExceeded(t *testing.T) {
 	}
 	path := fmt.Sprintf("/api/%d/envelope/", s.project.ID)
 
-	// Первое событие принято (200), второе и третье — 429 (по одному дропу).
 	if resp := s.post(t, path, envelopeBody(testEventJSON), false, s.key.PublicKey); resp.StatusCode != http.StatusOK {
 		t.Fatalf("first event: status = %d, want 200", resp.StatusCode)
 	}
@@ -76,14 +67,11 @@ func TestDroppedCounterOnQuotaExceeded(t *testing.T) {
 	if d.Events != 2 {
 		t.Fatalf("dropped events = %d, want 2", d.Events)
 	}
-	// Прочие счётчики дропов не задеты дропом событий.
 	if d.Transactions != 0 || d.Metrics != 0 || d.Profiles != 0 {
 		t.Fatalf("cross-class drops = %+v, want only Events", d)
 	}
 }
 
-// TestQuotaZeroIsUnlimited: EventQuota=0 никогда не блокирует, сколько бы
-// событий ни пришло.
 func TestQuotaZeroIsUnlimited(t *testing.T) {
 	s := newStack(t)
 	ctx := context.Background()
@@ -100,7 +88,6 @@ func TestQuotaZeroIsUnlimited(t *testing.T) {
 	}
 }
 
-// TestQuotaCountsInOrgUsage: каждый принятый запрос увеличивает org_usage.
 func TestQuotaCountsInOrgUsage(t *testing.T) {
 	s := newStack(t)
 	ctx := context.Background()

@@ -14,8 +14,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// TestWebTeamRename — переименование команды через форму: новое имя, прежний
-// slug, а на 422 открывается модалка ИМЕННО этой команды.
 func TestWebTeamRename(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -34,7 +32,6 @@ func TestWebTeamRename(t *testing.T) {
 	teamsPath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/teams"
 	renamePath := "/teams/" + strconv.FormatInt(tm.ID, 10) + "/rename"
 
-	// Страница показывает ссылку на модалку переименования.
 	resp := getWithCookie(t, s.srv, teamsPath, ownerCookie)
 	page, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -54,7 +51,6 @@ func TestWebTeamRename(t *testing.T) {
 		t.Fatalf("teams after rename = %+v err=%v, want renamed with slug kept", teams, err)
 	}
 
-	// Пустое имя -> 422 и модалка этой команды открыта, а не форма создания.
 	resp = postForm(t, s.srv, renamePath, url.Values{"name": {"  "}}, s.srv.URL, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -69,9 +65,6 @@ func TestWebTeamRename(t *testing.T) {
 	}
 }
 
-// TestWebTeamRenameForbiddenForOutsider — переименование команды чужой
-// организации отдаёт 404: скоуп тот же, что и у остальных действий над
-// командой (requireTeamRole).
 func TestWebTeamRenameForbiddenForOutsider(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -100,9 +93,6 @@ func TestWebTeamRenameForbiddenForOutsider(t *testing.T) {
 	}
 }
 
-// TestWebAlertsChannelUpdate — правка канала доставки через форму: адрес и
-// включённость меняются, пустой секрет оставляет прежний, а на 422 открывается
-// модалка именно этого канала с введёнными значениями.
 func TestWebAlertsChannelUpdate(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -132,7 +122,6 @@ func TestWebAlertsChannelUpdate(t *testing.T) {
 	}
 	chID := channels[0].ID
 
-	// Страница показывает ссылку на модалку правки этого канала.
 	resp = getWithCookie(t, s.srv, alertsPath, ownerCookie)
 	page, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -141,7 +130,6 @@ func TestWebAlertsChannelUpdate(t *testing.T) {
 		t.Fatalf("alerts page has no edit anchor %q", anchor)
 	}
 
-	// Правка: другой адрес, канал выключается.
 	resp = postForm(t, s.srv, alertsPath+"/channels/update", url.Values{
 		"channel_id": {strconv.FormatInt(chID, 10)},
 		"target":     {"https://example.com/hook-v2"},
@@ -159,7 +147,6 @@ func TestWebAlertsChannelUpdate(t *testing.T) {
 		t.Fatalf("channel after update = %+v, want new target and disabled", channels[0])
 	}
 
-	// Невалидный адрес -> 422, модалка этого канала открыта, введённое на месте.
 	resp = postForm(t, s.srv, alertsPath+"/channels/update", url.Values{
 		"channel_id": {strconv.FormatInt(chID, 10)},
 		"target":     {"not-a-url"},
@@ -181,10 +168,6 @@ func TestWebAlertsChannelUpdate(t *testing.T) {
 	}
 }
 
-// TestWebAlertsChannelTrustedCheckbox — галочка «получатель внутри моего
-// контура» доезжает из формы до канала и обратно в разметку. Она решает, уйдут
-// ли наружу детали события, поэтому проверяется весь путь целиком: создание без
-// галочки, установка при правке, бейдж в таблице и снятие.
 func TestWebAlertsChannelTrustedCheckbox(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -201,7 +184,6 @@ func TestWebAlertsChannelTrustedCheckbox(t *testing.T) {
 	}
 	alertsPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/alerts"
 
-	// Создание без галочки: канал не доверенный, деталей не получает.
 	resp := postForm(t, s.srv, alertsPath+"/channels", url.Values{
 		"kind": {"telegram"}, "target": {"418885689"}, "secret": {"bot-token"}, "enabled": {"on"},
 	}, s.srv.URL, ownerCookie)
@@ -218,8 +200,7 @@ func TestWebAlertsChannelTrustedCheckbox(t *testing.T) {
 	}
 	chID := channels[0].ID
 
-	// Правка с галочкой — Telegram-канал становится доверенным, хотя по адресу
-	// (chat_id) этого установить нельзя: в том и смысл отметки.
+	// Telegram chat_id не говорит о доверии — оно только через отдельную отметку.
 	resp = postForm(t, s.srv, alertsPath+"/channels/update", url.Values{
 		"channel_id": {strconv.FormatInt(chID, 10)},
 		"target":     {"418885689"},
@@ -235,8 +216,6 @@ func TestWebAlertsChannelTrustedCheckbox(t *testing.T) {
 		t.Fatalf("channel after update = %+v, want trusted", channels)
 	}
 
-	// Страница показывает это в строке канала — состав получателей деталей
-	// должен быть виден, не открывая каждый канал по очереди.
 	resp = getWithCookie(t, s.srv, alertsPath, ownerCookie)
 	page, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -244,7 +223,7 @@ func TestWebAlertsChannelTrustedCheckbox(t *testing.T) {
 		t.Fatalf("нет бейджа доверенного канала в таблице:\n%s", page)
 	}
 
-	// Снятие галочки: отсутствие поля в форме означает «снято», как и у enabled.
+	// Отсутствие поля в форме = «снято», как и у enabled.
 	resp = postForm(t, s.srv, alertsPath+"/channels/update", url.Values{
 		"channel_id": {strconv.FormatInt(chID, 10)},
 		"target":     {"418885689"},
@@ -257,8 +236,6 @@ func TestWebAlertsChannelTrustedCheckbox(t *testing.T) {
 	}
 }
 
-// TestWebAlertsChannelUpdateForeign — канал чужого проекта не правится по
-// подобранному id: 404, как и у удаления.
 func TestWebAlertsChannelUpdateForeign(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)

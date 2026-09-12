@@ -19,7 +19,6 @@ func TestUserThemeSetGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	// по умолчанию пусто
 	code, err := svc.UserTheme(ctx, uid)
 	if err != nil || code != "" {
 		t.Fatalf("default theme = %q, err=%v", code, err)

@@ -13,8 +13,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestMonitorStatusTextKey — все статусы монитора имеют свой i18n-ключ,
-// неизвестный падает в «unknown».
 func TestMonitorStatusTextKey(t *testing.T) {
 	cases := map[string]string{
 		"up": "uptime.status.up", "down": "uptime.status.down",
@@ -28,8 +26,6 @@ func TestMonitorStatusTextKey(t *testing.T) {
 	}
 }
 
-// TestStatusMonitorTextLocalized — публичный статус монитора локализуется для
-// всех значений и не пуст.
 func TestStatusMonitorTextLocalized(t *testing.T) {
 	ctx := ruCtx()
 	for _, s := range []string{"up", "down", "paused", "maintenance", "weird"} {
@@ -39,8 +35,6 @@ func TestStatusMonitorTextLocalized(t *testing.T) {
 	}
 }
 
-// TestOverallStatusTextLocalized — сводный статус локализуется для
-// major/partial/ok.
 func TestOverallStatusTextLocalized(t *testing.T) {
 	ctx := ruCtx()
 	a, b, c := overallStatusText(ctx, "major"), overallStatusText(ctx, "partial"), overallStatusText(ctx, "operational")
@@ -49,8 +43,6 @@ func TestOverallStatusTextLocalized(t *testing.T) {
 	}
 }
 
-// TestChannelKindLabel — известные типы каналов локализуются, неизвестный
-// возвращается как есть.
 func TestChannelKindLabel(t *testing.T) {
 	ctx := ruCtx()
 	for _, k := range []string{alert.ChannelEmail, alert.ChannelWebhook, alert.ChannelTelegram} {
@@ -63,7 +55,6 @@ func TestChannelKindLabel(t *testing.T) {
 	}
 }
 
-// TestPerfKindLabel — виды perf-issue локализуются, неизвестный как есть.
 func TestPerfKindLabel(t *testing.T) {
 	ctx := ruCtx()
 	for _, k := range []string{trace.KindNPlusOne, trace.KindSlowDBQuery, trace.KindHTTPFlood} {
@@ -76,8 +67,6 @@ func TestPerfKindLabel(t *testing.T) {
 	}
 }
 
-// TestRegressionMetricLabel — duration особый ключ, прочие метрики → «<VITAL>
-// p75».
 func TestRegressionMetricLabel(t *testing.T) {
 	ctx := ruCtx()
 	if got := regressionMetricLabel(ctx, "duration"); got == "" || strings.Contains(got, "p75") {
@@ -88,10 +77,6 @@ func TestRegressionMetricLabel(t *testing.T) {
 	}
 }
 
-// TestWindowKindTextKey — еженедельное/разовое/бессрочное окно обслуживания.
-// P2-4 устранения аудита B3: разовое окно без EndsAt (бессрочное) должно
-// показывать метку «бессрочное», а не «разовое» — колонка «Тип» иначе врала
-// бы про окно, глушащее проект навсегда.
 func TestWindowKindTextKey(t *testing.T) {
 	if windowKindTextKey(uptime.Window{Weekly: true}) != "uptime.maintenance.kind.weekly" {
 		t.Error("еженедельное окно")
@@ -105,7 +90,6 @@ func TestWindowKindTextKey(t *testing.T) {
 	}
 }
 
-// TestWeekdayLabelKey — дни 0..6 дают разные ключи, вне диапазона — «unknown».
 func TestWeekdayLabelKey(t *testing.T) {
 	seen := map[string]bool{}
 	for d := 0; d <= 6; d++ {
@@ -123,7 +107,6 @@ func TestWeekdayLabelKey(t *testing.T) {
 	}
 }
 
-// TestMemberRoleLabelKey — ключи ролей owner/admin/member.
 func TestMemberRoleLabelKey(t *testing.T) {
 	cases := map[org.Role]string{
 		org.RoleOwner:  "org.role.owner",
@@ -137,8 +120,6 @@ func TestMemberRoleLabelKey(t *testing.T) {
 	}
 }
 
-// TestMonitorToggleHelpers — включённый монитор предлагает «пауза» и целится в
-// pause-путь, выключенный — «возобновить» и resume-путь.
 func TestMonitorToggleHelpers(t *testing.T) {
 	on := uptime.Monitor{ID: 3, Enabled: true}
 	off := uptime.Monitor{ID: 3, Enabled: false}
@@ -150,7 +131,6 @@ func TestMonitorToggleHelpers(t *testing.T) {
 	}
 }
 
-// TestMonitorFormHelpers — режим правки против создания в заголовке и action.
 func TestMonitorFormHelpers(t *testing.T) {
 	edit := MonitorFormData{IsEdit: true, MonitorID: 9, ProjectID: 7}
 	create := MonitorFormData{ProjectID: 7}
@@ -162,8 +142,6 @@ func TestMonitorFormHelpers(t *testing.T) {
 	}
 }
 
-// TestRuleScope — область правила: пустой env даёт «все», label добавляется
-// хвостом.
 func TestRuleScope(t *testing.T) {
 	ctx := ruCtx()
 	all := ruleScope(ctx, metric.Rule{})
@@ -176,8 +154,6 @@ func TestRuleScope(t *testing.T) {
 	}
 }
 
-// TestProfileRegHelpers — форматтеры регрессий профилей: доля, диапазон,
-// прирост, «сервис · тип», пустой сервис.
 func TestProfileRegHelpers(t *testing.T) {
 	if profileRegShare(0.257) != "25.7%" {
 		t.Error("доля профиля")
@@ -200,8 +176,6 @@ func TestProfileRegHelpers(t *testing.T) {
 	}
 }
 
-// TestSslExpiryText — без сертификата «—», просроченный и валидный дают разный
-// локализованный текст.
 func TestSslExpiryText(t *testing.T) {
 	ctx := ruCtx()
 	if sslExpiryText(ctx, nil) != "—" {
@@ -216,8 +190,6 @@ func TestSslExpiryText(t *testing.T) {
 	}
 }
 
-// TestWindowScheduleText — расписание окна: еженедельное с днём/временем и
-// разовое с датами (в т.ч. без дат — «?»).
 func TestWindowScheduleText(t *testing.T) {
 	ctx := ruCtx()
 	weekly := windowScheduleText(ctx, uptime.Window{Weekly: true, Weekday: 1, StartTime: "02:00", EndTime: "04:00", Timezone: "UTC"})
@@ -229,21 +201,16 @@ func TestWindowScheduleText(t *testing.T) {
 	if !strings.Contains(oneoff, "→") {
 		t.Errorf("разовое расписание: %q", oneoff)
 	}
-	// Без дат — знаки вопроса.
 	unknown := windowScheduleText(ctx, uptime.Window{Timezone: "UTC"})
 	if !strings.Contains(unknown, "?") {
 		t.Errorf("окно без дат должно показать ?: %q", unknown)
 	}
-	// Разовое окно без даты окончания — «бессрочно», не «?» (T8: UI
-	// коммуникация indefinite-окон).
 	indefinite := windowScheduleText(ctx, uptime.Window{StartsAt: &now, Timezone: "UTC"})
 	if !strings.Contains(indefinite, "бессрочно") || strings.Contains(indefinite, "?") {
 		t.Errorf("окно без даты окончания должно показать «бессрочно», не ?: %q", indefinite)
 	}
 }
 
-// TestPathHelpers — базовые маршруты содержат идентификаторы (в т.ч. tracePath
-// и incidentsPath, не покрытые рендером страниц).
 func TestPathHelpers(t *testing.T) {
 	if !strings.Contains(tracePath("abc123"), "abc123") {
 		t.Error("tracePath должен нести trace id")
@@ -253,10 +220,7 @@ func TestPathHelpers(t *testing.T) {
 	}
 }
 
-// TestEnumRenderBadges — компоненты-бейджи рендерят каждое значение своего
-// enum с ожидаемым классом/содержимым.
 func TestEnumRenderBadges(t *testing.T) {
-	// vitalRatingBadge: рейтинг → бейдж с классом; пустой рейтинг ничего не рисует.
 	for rating, cls := range map[string]string{"good": "badge-good", "needs-improvement": "badge-warn", "poor": "badge-danger"} {
 		out := renderTo(t, vitalRatingBadge(rating))
 		if !strings.Contains(out, cls) {
@@ -267,7 +231,6 @@ func TestEnumRenderBadges(t *testing.T) {
 		t.Errorf("пустой рейтинг не должен рисовать бейдж: %s", out)
 	}
 
-	// incidentStatusBadge (метрики): open красный, resolved зелёный.
 	if !strings.Contains(renderTo(t, incidentStatusBadge("open")), "badge-danger") {
 		t.Error("incidentStatusBadge(open) должен быть danger")
 	}
@@ -275,14 +238,12 @@ func TestEnumRenderBadges(t *testing.T) {
 		t.Error("incidentStatusBadge(resolved) должен быть good")
 	}
 
-	// ruleEnabledBadge: включённое/выключенное правило.
 	on := renderTo(t, ruleEnabledBadge(true))
 	off := renderTo(t, ruleEnabledBadge(false))
 	if on == off {
 		t.Error("бейдж включённости правила должен отличаться")
 	}
 
-	// channelStatusBadge: включённый/выключенный канал.
 	onCh := renderTo(t, channelStatusBadge(alert.Channel{Enabled: true}))
 	offCh := renderTo(t, channelStatusBadge(alert.Channel{Enabled: false}))
 	if onCh == offCh {
@@ -290,8 +251,6 @@ func TestEnumRenderBadges(t *testing.T) {
 	}
 }
 
-// parseRequest разбирает Sentry request-интерфейс: method/url, query_string
-// строкой и массивом пар, тело-объект, headers объектом и массивом пар.
 func TestParseRequest(t *testing.T) {
 	r := parseRequest(`{"method":"POST","url":"https://x/api","query_string":"a=1&b=2","data":{"name":"bob"},"headers":{"Content-Type":"application/json","Accept":"*/*"}}`)
 	if r == nil {
@@ -312,30 +271,24 @@ func TestParseRequest(t *testing.T) {
 	if parseRequest("") != nil || parseRequest("{}") != nil || parseRequest("null") != nil {
 		t.Error("пустой request должен давать nil")
 	}
-	// query_string и headers массивами пар
 	r2 := parseRequest(`{"query_string":[["x","1"]],"headers":[["H","v"]]}`)
 	if r2 == nil || len(r2.Query) != 1 || len(r2.Headers) != 1 {
 		t.Errorf("массив-пары разобраны неверно: %+v", r2)
 	}
-	// рендер компонента не падает и содержит method/url
 	out := renderTo(t, requestFullView(r))
 	if !strings.Contains(out, "POST") || !strings.Contains(out, "https://x/api") {
 		t.Errorf("requestFullView не содержит method/url: %s", out)
 	}
 
-	// query_string объектом (не строкой) → flattenContext-ветка parseQueryParams.
 	r3 := parseRequest(`{"method":"GET","query_string":{"page":"2"}}`)
 	if r3 == nil || len(r3.Query) != 1 {
 		t.Errorf("query_string объектом разобран неверно: %+v", r3)
 	}
-	// нераспознаваемая query-строка (не k=v) → одна строка со значением как есть.
 	r4 := parseRequest(`{"url":"/x","query_string":"%zz"}`)
 	if r4 == nil || len(r4.Query) != 1 {
 		t.Errorf("сырая query-строка: %+v", r4)
 	}
 
-	// Минимальный запрос (только тело) — покрывает ложные ветки requestFullView
-	// (нет method/url, нет query, нет headers).
 	bodyOnly := &sentryRequest{Body: "raw-body-text"}
 	outMin := renderTo(t, requestFullView(bodyOnly))
 	if !strings.Contains(outMin, "raw-body-text") {
@@ -346,9 +299,6 @@ func TestParseRequest(t *testing.T) {
 	}
 }
 
-// TestIssueEnumLabelsLocalized (B5): уровни/статусы/виды рендерятся
-// локализованно, а не сырым enum. Ключевая проверка got != code — она поймает
-// откат к сырым значениям (ошибка, которую пропускали рендер-тесты вокруг).
 func TestIssueEnumLabelsLocalized(t *testing.T) {
 	ctx := ruCtx()
 	check := func(name, code, got string) {
@@ -368,7 +318,6 @@ func TestIssueEnumLabelsLocalized(t *testing.T) {
 	for _, s := range []string{"open", "resolved"} {
 		check("regressionStatusLabel", s, regressionStatusLabel(ctx, s))
 	}
-	// Неизвестный код возвращается как есть (без паники/пустоты).
 	if got := issueStatusLabel(ctx, "weird"); got != "weird" {
 		t.Errorf("неизвестный статус как есть: %q", got)
 	}

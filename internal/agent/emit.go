@@ -1,8 +1,3 @@
-// emit.go — сборка Sample (T4) в OTLP ExportMetricsServiceRequest и кодирование
-// тела запроса. Правило спеки: агент неотличим по форме данных от коллектора
-// OTel hostmetrics — набор метрик и атрибутов зеркалит internal/hostmetric
-// (единый источник правды об именах для агента, web и генератора YAML
-// коллектора).
 package agent
 
 import (
@@ -20,13 +15,12 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/version"
 )
 
-// scopeName — имя ScopeMetrics.Scope агента: тот же набор метрик, что у
-// коллектора hostmetrics, но другой источник (различают по scope, не по
-// имени метрики).
+// Тот же набор метрик, что у коллектора hostmetrics — различаются по scope,
+// не по имени метрики.
 const scopeName = "gotcha-agent"
 
-// direction-значения атрибута hostmetric.AttrDirection — semconv hostmetrics:
-// диск read|write, сеть receive|transmit (разные глаголы для разных доменов).
+// Диск использует read|write, сеть — receive|transmit: разные глаголы для
+// разных доменов (semconv hostmetrics).
 const (
 	directionRead     = "read"
 	directionWrite    = "write"
@@ -34,20 +28,8 @@ const (
 	directionTransmit = "transmit"
 )
 
-// BuildExport собирает один тик Sample в OTLP-экспорт: один ResourceMetrics +
-// один ScopeMetrics. На первом тике (s.CPU == nil — ещё нет дельты, см.
-// Collector.cpuUtilization) system.cpu.utilization не эмитится, остальные
-// метрики идут как обычно. environment/role — resource-метки
-// deployment.environment/host.role (GOTCHA_AGENT_ENVIRONMENT/ROLE); попадают
-// в resource только при непустом значении.
-//
-// Возвращает metricspb.MetricsData, а не collector-обёртку
-// ExportMetricsServiceRequest: сервер (internal/ingest/otlp.go,
-// otlpUnmarshalMetrics) анмаршалит тело POST /v1/metrics именно в
-// MetricsData. У обоих типов ровно одно поле — repeated ResourceMetrics — и
-// wire-формат идентичен, но пакет collector/metrics/v1 несёт в той же
-// директории сгенерённый gRPC-gateway код и тащит grpc+grpc-gateway в
-// зависимости и в бинарь агента, который сам никогда не ходит по gRPC.
+// Возвращает MetricsData, не ExportMetricsServiceRequest: сервер анмаршалит
+// тело именно в MetricsData, а последняя тащит grpc+grpc-gateway в зависимости.
 func BuildExport(hostname, environment, role string, s Sample) *metricspb.MetricsData {
 	ts := uint64(s.Time.UnixNano())
 	bootNano := uint64(s.BootTime.UnixNano())
@@ -94,9 +76,8 @@ func BuildExport(hostname, environment, role string, s Sample) *metricspb.Metric
 	}
 }
 
-// EncodeBody сериализует запрос в protobuf и сжимает gzip — приёмник
-// (internal/ingest/otlp.go) распаковывает тело по Content-Encoding: gzip тем
-// же путём, что и у остальных OTLP-источников.
+// Приёмник (internal/ingest/otlp.go) распаковывает по Content-Encoding: gzip —
+// тем же путём, что остальные OTLP-источники.
 func EncodeBody(req *metricspb.MetricsData) ([]byte, error) {
 	raw, err := proto.Marshal(req)
 	if err != nil {
@@ -113,8 +94,7 @@ func EncodeBody(req *metricspb.MetricsData) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// stateDataPoints — gauge-точки по карте state→доля (CPU/Memory): один
-// датапойнт на state, ключи отсортированы для стабильного порядка.
+// Ключи отсортированы для стабильного порядка датапойнтов.
 func stateDataPoints(m map[string]float64, ts uint64, attrKey string) []*metricspb.NumberDataPoint {
 	dps := make([]*metricspb.NumberDataPoint, 0, len(m))
 	for _, state := range slices.Sorted(maps.Keys(m)) {
@@ -123,7 +103,6 @@ func stateDataPoints(m map[string]float64, ts uint64, attrKey string) []*metrics
 	return dps
 }
 
-// statusDataPoints — Sum-точки system.processes.count по status→count.
 func statusDataPoints(m map[string]int, ts uint64) []*metricspb.NumberDataPoint {
 	dps := make([]*metricspb.NumberDataPoint, 0, len(m))
 	for _, status := range slices.Sorted(maps.Keys(m)) {
@@ -132,9 +111,8 @@ func statusDataPoints(m map[string]int, ts uint64) []*metricspb.NumberDataPoint 
 	return dps
 }
 
-// filesystemDataPoints — gauge-точки system.filesystem.utilization, по одной
-// на раздел (Collect уже отфильтровал псевдо-ФС и служебные точки
-// монтирования — hostmetric.Excluded*); атрибуты берутся из FSSample целиком.
+// Collect уже отфильтровал псевдо-ФС и служебные точки монтирования — тут
+// фильтрации нет.
 func filesystemDataPoints(fs []FSSample, ts uint64) []*metricspb.NumberDataPoint {
 	dps := make([]*metricspb.NumberDataPoint, 0, len(fs))
 	for _, f := range fs {
@@ -149,9 +127,7 @@ func filesystemDataPoints(fs []FSSample, ts uint64) []*metricspb.NumberDataPoint
 	return dps
 }
 
-// diskIODataPoints — Sum-точки system.disk.io: по устройству две точки
-// (read/write); StartTimeUnixNano = BootTime — счётчик since-boot, не дельта
-// (см. IOBytes).
+// StartTimeUnixNano = BootTime: счётчик since-boot, не дельта (см. IOBytes).
 func diskIODataPoints(m map[string]IOBytes, ts, bootNano uint64) []*metricspb.NumberDataPoint {
 	dps := make([]*metricspb.NumberDataPoint, 0, len(m)*2)
 	for _, device := range slices.Sorted(maps.Keys(m)) {
@@ -168,8 +144,7 @@ func diskIODataPoints(m map[string]IOBytes, ts, bootNano uint64) []*metricspb.Nu
 	return dps
 }
 
-// netIODataPoints — Sum-точки system.network.io: по интерфейсу две точки
-// (receive/transmit); StartTimeUnixNano = BootTime (тот же счётчик since-boot).
+// StartTimeUnixNano = BootTime, тот же счётчик since-boot, что и diskIODataPoints.
 func netIODataPoints(m map[string]NetBytes, ts, bootNano uint64) []*metricspb.NumberDataPoint {
 	dps := make([]*metricspb.NumberDataPoint, 0, len(m)*2)
 	for _, iface := range slices.Sorted(maps.Keys(m)) {
@@ -186,9 +161,6 @@ func netIODataPoints(m map[string]NetBytes, ts, bootNano uint64) []*metricspb.Nu
 	return dps
 }
 
-// stringAttr — единственный вид значения атрибута, который эмитит агент:
-// state/device/direction/mountpoint/type/mode/status — всё строки semconv
-// hostmetrics.
 func stringAttr(key, value string) *commonpb.KeyValue {
 	return &commonpb.KeyValue{Key: key, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: value}}}
 }
@@ -214,9 +186,8 @@ func gaugeMetric(name string, dps []*metricspb.NumberDataPoint) *metricspb.Metri
 	return &metricspb.Metric{Name: name, Data: &metricspb.Metric_Gauge{Gauge: &metricspb.Gauge{DataPoints: dps}}}
 }
 
-// sumMetric — все Sum-метрики агента кумулятивные (AGGREGATION_TEMPORALITY_
-// CUMULATIVE), монотонность зависит от смысла метрики (счётчики since-boot
-// монотонны, снимки состояния вроде processes.count — нет).
+// Все Sum-метрики кумулятивные; monotonic зависит от смысла метрики (счётчики
+// since-boot — да, снимки состояния вроде processes.count — нет).
 func sumMetric(name string, monotonic bool, dps []*metricspb.NumberDataPoint) *metricspb.Metric {
 	return &metricspb.Metric{Name: name, Data: &metricspb.Metric_Sum{Sum: &metricspb.Sum{
 		DataPoints:             dps,

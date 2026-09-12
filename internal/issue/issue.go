@@ -1,5 +1,3 @@
-// Package issue — группы ошибок: upsert-группировка по fingerprint
-// и жизненный цикл unresolved/resolved/ignored.
 package issue
 
 import (
@@ -22,18 +20,13 @@ type Issue struct {
 	LastSeen    time.Time
 	TimesSeen   int64
 	AssigneeID  *int64
-	// AssigneeEmail — email назначенного пользователя (coalesce(u.email,'')),
-	// заполняется List/Get через LEFT JOIN users; пусто без назначения.
+	// Заполняется List/Get через LEFT JOIN users; пусто без назначения.
 	AssigneeEmail string
-	// Environments — окружения группы (issue_environments), отсортированные
-	// по имени. Заполняется только StreamForExport батчем на страницу —
-	// List/Get его не трогают: обычный список рендерит фильтр окружений
-	// отдельным запросом (h.Issues.Environments), а тянуть его на каждую
-	// из 25 строк ради колонки, которой в UI нет, незачем.
+	// Заполняется только StreamForExport батчем на страницу — List/Get его не
+	// трогают: обычный список рендерит фильтр окружений отдельным запросом.
 	Environments []string
 }
 
-// UpsertResult — что произошло с группой при поступлении события.
 type UpsertResult struct {
 	IssueID    int64
 	New        bool // группа создана этим событием
@@ -48,18 +41,8 @@ func NewService(pool *pgxpool.Pool) *Service {
 	return &Service{pool: pool}
 }
 
-// Upsert регистрирует событие в группе. Новый fingerprint создаёт issue;
-// существующий обновляет last_seen/times_seen/title/level; resolved
-// переоткрывается (регрессия), ignored остаётся ignored.
-//
-// environment (если не пустой) денормализуется в issue_environments —
-// хранится в PG отдельно от событий (которые живут в CH), чтобы фильтр
-// списка issues по environment оставался обычным EXISTS без похода в CH.
-// Пустой environment не пишется.
-//
-// Гонка двух первых событий одного fingerprint: обе стороны могут получить
-// New=true (CTE old видит снимок до вставки). Редко и безвредно —
-// дедупликацию алертов делает троттлинг (план 6).
+// environment в issue_environments (PG, не CH) — фильтр issues обходится EXISTS без похода в CH.
+// Гонка двух первых событий fingerprint может дать New=true обеим сторонам — редко, безвредно.
 func (s *Service) Upsert(ctx context.Context, projectID int64, fingerprint, title, culprit, level, environment string, seenAt time.Time) (UpsertResult, error) {
 	const q = `
 WITH old AS (

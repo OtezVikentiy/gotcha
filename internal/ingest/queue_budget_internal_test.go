@@ -7,15 +7,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// TestQueueByteBudgetDropsOversizedFlood — очередь ограничена не только по
-// числу задач, но и по объёму.
-//
-// Счётный потолок сам по себе ничего не гарантировал: событие несёт до четырёх
-// сырых JSON-блоков по 256 КиБ (contexts, breadcrumbs, request, stacktrace) —
-// до мегабайта на задачу, — а очередь держит тысячу задач. Гигабайт
-// резидентной памяти на пути приёма, куда пишет кто угодно с публичным ключом.
-// Все пять писателей получили байтовый бюджет ровно по этой причине; очередь
-// была единственным буфером без него.
 func TestQueueByteBudgetDropsOversizedFlood(t *testing.T) {
 	p := NewPipeline(nil, nil)
 	// Воркеры не запускаем: очередь должна наполниться и упереться в потолок.
@@ -47,8 +38,6 @@ func TestQueueByteBudgetDropsOversizedFlood(t *testing.T) {
 	}
 }
 
-// TestQueueByteBudgetReleasedAfterProcessing — бюджет возвращается по мере
-// обработки, иначе очередь однажды заполнилась бы навсегда.
 func TestQueueByteBudgetReleasedAfterProcessing(t *testing.T) {
 	p := NewPipeline(nil, nil)
 	p.SetMaxQueueBytes(1 << 20)
@@ -68,9 +57,6 @@ func TestQueueByteBudgetReleasedAfterProcessing(t *testing.T) {
 	}
 }
 
-// TestQueueByteBudgetSurvivesPanic — паника в обработке тоже возвращает
-// бюджет: иначе очередь, пережившая несколько битых событий, навсегда считала
-// бы себя заполненной, и приём вставал бы без единой причины в логе.
 func TestQueueByteBudgetSurvivesPanic(t *testing.T) {
 	p := NewPipeline(nil, nil)
 	p.SetMaxQueueBytes(1 << 20)
@@ -85,17 +71,13 @@ func TestQueueByteBudgetSurvivesPanic(t *testing.T) {
 	}
 }
 
-// TestTaskBytesCountsEmptyEvents — постоянная цена задачи не даёт обойти учёт
-// потоком пустых событий (та же логика, что у rowOverheadBytes в батчере).
 func TestTaskBytesCountsEmptyEvents(t *testing.T) {
 	if got := taskBytes(task{ev: &ParsedEvent{}}); got <= 0 {
 		t.Fatalf("пустое событие весит %d — учёт обходится потоком пустышек", got)
 	}
 }
 
-// bigSpanData строит span.Data на грани капов transaction.go/otlp.go:
-// maxDataKeys=64 ключей по maxDataValue=2000 рун строкового значения — то, ради
-// чего байтовый бюджет очереди и заведён (см. taskBytes/dataMapBytes).
+// на грани капов transaction.go/otlp.go: maxDataKeys=64 ключей по maxDataValue=2000 рун.
 func bigSpanData() map[string]any {
 	data := make(map[string]any, 64)
 	val := strings.Repeat("d", 2000)
@@ -105,11 +87,6 @@ func bigSpanData() map[string]any {
 	return data
 }
 
-// TestTaskBytesCountsSpanDataAndTags — находка P1-1: taskBytes раньше не
-// считал ни sp.Data (map[string]any, «сырой JSON» из SDK — то самое поле, ради
-// которого байтовый бюджет и заведён), ни tx.Tags. Транзакция с большими
-// span.Data должна весить на порядки больше, чем те же поля без Data/Tags,
-// иначе бюджет очереди слеп к реальному весу.
 func TestTaskBytesCountsSpanDataAndTags(t *testing.T) {
 	bare := trace.Transaction{
 		Name: "tx", TraceID: "t", Environment: "prod",
@@ -130,11 +107,6 @@ func TestTaskBytesCountsSpanDataAndTags(t *testing.T) {
 	}
 }
 
-// TestQueueByteBudgetDropsOversizedSpanDataFlood — как
-// TestQueueByteBudgetDropsOversizedFlood, но по EnqueueTransaction с большими
-// span.Data: до фикса taskBytes не считал sp.Data вовсе, и такие транзакции
-// проходили бюджет очереди почти бесплатно (≈256 байт учтённого веса при
-// реальном весе за сотню КиБ на транзакцию).
 func TestQueueByteBudgetDropsOversizedSpanDataFlood(t *testing.T) {
 	p := NewPipeline(nil, nil)
 	p.SetMaxQueueBytes(1 << 20) // 1 МиБ

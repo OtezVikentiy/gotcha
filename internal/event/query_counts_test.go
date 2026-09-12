@@ -11,10 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestCountsSinceGroupsAllIssuesInOneQuery: одна выборка отдаёт счётчики всех
-// групп сразу. Раньше spike-детектор считал их по одной — тик стоил столько
-// round-trip'ов в ClickHouse, сколько в проекте активных групп, а их число
-// задаёт отправитель событий.
 func TestCountsSinceGroupsAllIssuesInOneQuery(t *testing.T) {
 	ch := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

@@ -1,4 +1,3 @@
-// Package profile — приём, хранение и flamegraph-визуализация профилей (этап 7).
 package profile
 
 import (
@@ -7,46 +6,29 @@ import (
 	"time"
 )
 
-// Frame — один кадр стека (уже символизированный: имя функции, файл, строка).
 type Frame struct {
 	Function string
 	File     string
 	Line     int32
 }
 
-// Sample — уникальный стек с весом (число сэмплов / value выбранного sample-type).
 type Sample struct {
-	Stack []Frame // корень→лист
+	Stack []Frame
 	Value uint64
 }
 
-// Profile — нормализованный профиль (общая модель для Sentry и pprof форматов).
 type Profile struct {
-	Service, Environment, Transaction, Platform, Type string // Type: 'cpu'|'wall'|'alloc'|...
-	// Unit — единица измерения значения выборки из pprof SampleType.Unit
-	// ('nanoseconds', 'bytes', 'count'). Хранится рядом со значением, чтобы
-	// UI не угадывал единицу по имени типа: для нестандартных типов профилей
-	// догадка не работает. Пусто — источник единицу не сообщил.
-	Unit string
-	// TraceID — привязка к трейсу (этап 8, profiling-in-context). Пусто —
-	// профиль без привязки (напр. непрерывный pprof).
-	TraceID   string
-	Timestamp time.Time
-	Samples   []Sample
+	Service, Environment, Transaction, Platform, Type string
+	Unit                                              string
+	TraceID                                           string
+	Timestamp                                         time.Time
+	Samples                                           []Sample
 }
 
-// frameFieldEscaper экранирует символы, из которых собран разделитель ключа
-// кадра, чтобы сериализация была инъективной (разные (Function,File,Line) → разные
-// ключи). Без экранирования имя вроде "a (b:1)" без файла давало тот же ключ, что
-// {Function:"a", File:"b", Line:1}, и агрегатор writer.go схлопывал несвязанные
-// стеки. Экранируем: '\\' (делает схему обратимой), '(' (граница func/file),
-// ':' (граница file/line). Обратный слэш идёт первым — strings.Replacer не
-// перечитывает вставленное, так что двойного экранирования нет.
+// Экранирует ровно разделители ключа кадра "func (file:line)": без этого
+// разные (Function,File,Line) могут дать одинаковый ключ и слиться в writer.go.
 var frameFieldEscaper = strings.NewReplacer(`\`, `\\`, `(`, `\(`, `:`, `\:`)
 
-// FrameKey сериализует кадр в одну строку для колонки stack Array(String):
-// "func (file:line)" либо "func", если файла нет. Поля экранируются, поэтому
-// разные кадры никогда не дают одинаковый ключ (см. frameFieldEscaper).
 func FrameKey(f Frame) string {
 	if f.File == "" {
 		return frameFieldEscaper.Replace(f.Function)

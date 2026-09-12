@@ -1,7 +1,3 @@
-// run.go — цикл сбора и отправки: тик собирает Sample, кодирует в OTLP и либо
-// шлёт сразу, либо буферизует, дренируя буфер oldest-first при восстановлении
-// связи с инстансом. Один тик — одна отправка «текущего» батча плюс, при её
-// успехе, попытка вычистить накопленный буфер.
 package agent
 
 import (
@@ -15,31 +11,24 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/version"
 )
 
-// Границы кольцевого буфера недоставленных батчей (спека §1.3): 120 батчей И
-// 8 МиБ суммарно — что раньше упрётся, то и вытесняет старейшее (см. buffer.go).
+// 120 батчей И 8 МиБ суммарно — что раньше упрётся, то и вытесняет старейшее.
 const (
 	bufferMaxBatches = 120
 	bufferMaxBytes   = 8 << 20
 )
 
-// Экспоненциальный бэкофф между неудачными попытками: 30s·2^(fails-1),
-// капается в 10 минут — дольше «тишина» не нужна там, где сервер сам не
-// попросил через Retry-After (см. backoffFor).
+// 30s·2^(fails-1), капается в 10 минут — дольше без Retry-After сервера
+// не нужно.
 const (
 	backoffBase = 30 * time.Second
 	backoffCap  = 10 * time.Minute
 )
 
-// maxDrainPerTick — сколько буферизованных батчей выгружаем за один тик
-// (ops-MED, thundering herd): без границы после часового простоя дренаж
-// одним залпом кладёт 120 запросов подряд, а тики сбора в это время не
-// идут — та же горутина занята дренажом. Небольшая порция размазывает
-// разгрузку буфера на несколько тиков и не мешает следующему сбору.
+// Ограничивает выгрузку буфера за тик — без него дренаж после долгого
+// простоя блокирует сбор одним 120-запросным залпом.
 const maxDrainPerTick = 8
 
-// runner — состояние цикла отправки между тиками. notBefore/fails реализуют
-// бэкофф с полом из Retry-After сервера (429): повторные ошибки не должны
-// долбить недоступный/квотированный инстанс на каждом тике.
+// notBefore/fails — бэкофф с полом из Retry-After сервера (429).
 type runner struct {
 	hostname    string
 	environment string // resource-метка deployment.environment; "" — не эмитится
@@ -57,19 +46,15 @@ type runner struct {
 	buffering     bool // сейчас в состоянии «сервер недоступен, копим буфер» (для логов перехода)
 }
 
-// seedFromHost — детерминируемый seed для rand.Rand runner'а: хеш hostname
-// (разные хосты парка расходятся по фазе джиттера) в паре с PID (разные
-// перезапуски одного хоста тоже не совпадают). Не крипто — джиттеру
-// достаточно расхождения фаз, не непредсказуемости.
+// Хеш hostname расходится по хосту, PID — по рестарту одного хоста; не
+// крипто, джиттеру нужно только расхождение фаз.
 func seedFromHost(hostname string, pid int) int64 {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(hostname))
 	return int64(h.Sum64()) ^ int64(pid)
 }
 
-// Run запускает цикл сбора-отправки до отмены ctx: раз в cfg.Interval снимает
-// Sample, кодирует в OTLP и отправляет либо буферизует. Блокируется — это и
-// есть та единственная горутина, которой принадлежит буфер (buffer.go).
+// Блокируется — единственная горутина, которой принадлежит buffer.go.
 func Run(ctx context.Context, cfg Config, logger *slog.Logger) error {
 	sender, err := NewSender(cfg)
 	if err != nil {
@@ -96,9 +81,8 @@ func Run(ctx context.Context, cfg Config, logger *slog.Logger) error {
 		rng:         rand.New(rand.NewSource(seedFromHost(hostname, os.Getpid()))),
 	}
 
-	// Стартовый баннер (ops-MED, немота): здоровый агент до этой правки не
-	// писал в журнал ничего, кроме ошибок — оператор не мог отличить «работает
-	// тихо» от «не запустился». Пишем один раз при старте цикла.
+	// Один раз при старте — иначе оператор не отличит «работает тихо» от
+	// «не запустился».
 	r.log.Info("agent: starting",
 		"version", version.Version(),
 		"endpoint", cfg.Endpoint,
@@ -106,10 +90,8 @@ func Run(ctx context.Context, cfg Config, logger *slog.Logger) error {
 		"hostname", hostname,
 	)
 
-	// Первый тик — сразу при старте, а не после ожидания cfg.Interval (до
-	// 5 минут, см. maxInterval): свежеустановленный агент не должен молчать
-	// на карточке хоста дольше, чем нужно на сам сбор. CPU и так пропускается
-	// на этом тике собирателем (нет дельты для первого замера, см. Collector).
+	// Сразу при старте, не после ожидания interval — свежий агент не должен
+	// молчать на карточке хоста дольше, чем нужно на сам сбор.
 	r.tick(ctx, time.Now())
 
 	ticker := time.NewTicker(cfg.Interval)
@@ -124,8 +106,6 @@ func Run(ctx context.Context, cfg Config, logger *slog.Logger) error {
 	}
 }
 
-// tick — один цикл: сбор → (пустой Sample — только лог, без отправки) →
-// кодирование → уважение пола бэкоффа → отправка/буферизация.
 func (r *runner) tick(ctx context.Context, now time.Time) {
 	s, err := r.collector.Collect(now)
 	if err != nil {
@@ -149,10 +129,6 @@ func (r *runner) tick(ctx context.Context, now time.Time) {
 	r.sendCurrent(ctx, now, body)
 }
 
-// sendCurrent отправляет батч текущего тика. SendOK сбрасывает счётчик
-// неудач и запускает дренаж накопленного буфера; SendRetry буферизует сам
-// этот батч и сдвигает пол следующей попытки; SendDrop — батч отбрасывается
-// безвозвратно (повтор не поможет).
 func (r *runner) sendCurrent(ctx context.Context, now time.Time, body []byte) {
 	result, floor, err := r.sender.Send(ctx, body)
 	switch result {
@@ -171,16 +147,8 @@ func (r *runner) sendCurrent(ctx context.Context, now time.Time, body []byte) {
 	}
 }
 
-// drain выгружает буфер oldest-first, пока отправка проходит успешно, но не
-// больше maxDrainPerTick батчей за вызов (ops-MED, thundering herd — см.
-// комментарий у константы): остаток разгрузится следующими тиками, а не
-// одним залпом, который блокирует сбор в той же горутине.
-// SendRetry на дренаже — та же ветка бэкоффа: батч ОСТАЁТСЯ в буфере (без
-// DropOldest), fails/notBefore обновляются, и дренаж СРАЗУ прекращается —
-// иначе недоступный инстанс получал бы по попытке дренажа на каждом тике
-// (ревью плана №11). SendDrop на дренаже — батч отбрасывается с логом,
-// дренаж продолжается со следующего: это не отказ доступности, повтор всё
-// равно не поможет.
+// SendRetry обрывает дренаж сразу — иначе недоступный инстанс получал бы
+// попытку на каждом тике. SendDrop продолжает со следующего батча.
 func (r *runner) drain(ctx context.Context, now time.Time) {
 	for i := 0; i < maxDrainPerTick; i++ {
 		body, ok := r.buffer.Oldest()
@@ -203,11 +171,8 @@ func (r *runner) drain(ctx context.Context, now time.Time) {
 	}
 }
 
-// backoffAfterFailure сдвигает пол следующей попытки: не раньше, чем через
-// max(floor сервера, экспоненциальный бэкофф по числу подряд неудач), плюс
-// джиттер (ops-MED, thundering herd): без него весь парк, потерявший связь
-// одновременно (рестарт/обновление инстанса), повторяет попытки в одну и ту
-// же секунду по одинаковому детерминированному расписанию.
+// Пол — max(floor сервера, бэкофф по числу неудач) + джиттер: без него весь
+// парк, потерявший связь разом, повторяет попытки в одну секунду.
 func (r *runner) backoffAfterFailure(now time.Time, floor time.Duration) {
 	r.fails++
 	wait := backoffFor(r.fails)
@@ -218,10 +183,8 @@ func (r *runner) backoffAfterFailure(now time.Time, floor time.Duration) {
 	r.notBefore = now.Add(wait)
 }
 
-// jitterBackoff — случайная добавка к wait в диапазоне [0, min(wait/4,
-// backoffCap)]: только увеличивает ожидание, никогда не приближает notBefore
-// к «сейчас» относительно базового бэкоффа/пола сервера, и не превышает
-// разумного даже при часовом floor из Retry-After (maxRetryWait в sender.go).
+// [0, min(wait/4, backoffCap)] — только увеличивает ожидание, никогда не
+// приближает notBefore к «сейчас».
 func jitterBackoff(rng *rand.Rand, wait time.Duration) time.Duration {
 	if wait <= 0 || rng == nil {
 		return 0
@@ -236,8 +199,7 @@ func jitterBackoff(rng *rand.Rand, wait time.Duration) time.Duration {
 	return time.Duration(rng.Int63n(int64(ceil) + 1))
 }
 
-// noteDelivered логирует факт первой успешной доставки за жизнь процесса
-// (ops-MED, немота) — ровно один раз, не на каждом здоровом тике.
+// Только один раз за жизнь процесса, не на каждом здоровом тике.
 func (r *runner) noteDelivered() {
 	if r.deliveredOnce {
 		return
@@ -246,9 +208,8 @@ func (r *runner) noteDelivered() {
 	r.log.Info("agent: first batch delivered")
 }
 
-// noteBuffering логирует переход в состояние «сервер недоступен, копим
-// буфер» — только на смене состояния, не на каждой неудаче (существующие
-// per-attempt Warn/Error логи это уже покрывают).
+// Только на смене состояния — per-attempt Warn/Error логи уже покрывают
+// остальное.
 func (r *runner) noteBuffering() {
 	if r.buffering {
 		return
@@ -257,10 +218,8 @@ func (r *runner) noteBuffering() {
 	r.log.Info("agent: entering buffered mode, server unavailable", "buffered_batches", r.buffer.Len())
 }
 
-// noteRecoveredIfDrained логирует восстановление — только когда буфер
-// полностью разгружен после того, как агент был в состоянии буферизации
-// (иначе строка «recovered» писалась бы на каждом здоровом тике, у которого
-// буфер и так пуст).
+// Только после периода буферизации и при пустом буфере — иначе «recovered»
+// писалось бы на каждом здоровом тике.
 func (r *runner) noteRecoveredIfDrained() {
 	if !r.buffering || r.buffer.Len() != 0 {
 		return
@@ -269,7 +228,6 @@ func (r *runner) noteRecoveredIfDrained() {
 	r.log.Info("agent: buffer drained, delivery recovered")
 }
 
-// backoffFor — 30s·2^(fails-1), капается в backoffCap.
 func backoffFor(fails int) time.Duration {
 	if fails <= 0 {
 		return 0
@@ -286,10 +244,8 @@ func backoffFor(fails int) time.Duration {
 	return d
 }
 
-// sampleEmpty — все «содержательные» (карта/срез) секции сбора пусты. Бывает
-// при отказе всех content-проб, когда Collect всё же не вернул err благодаря
-// успеху скалярных (CPUCount/Load/Uptime/BootTime — см. Collect.ok): экспорт
-// из одних нулей отправлять незачем.
+// Бывает при отказе всех content-проб, когда Collect всё же не вернул err
+// благодаря успеху скалярных проб (CPUCount/Load/Uptime/BootTime).
 func sampleEmpty(s Sample) bool {
 	return s.CPU == nil && s.Memory == nil && len(s.Filesystems) == 0 &&
 		s.DiskIO == nil && s.NetIO == nil && s.Procs == nil

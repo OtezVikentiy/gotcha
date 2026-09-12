@@ -19,23 +19,14 @@ const (
 	maxHTTPBodyBytes = 1 << 20 // 1 MB
 )
 
-// HTTPChecker — HTTP(S)-чекер.
-//
-// SSRF: по умолчанию (AllowPrivate=false) чекер режет соединения к
-// приватным/служебным адресам (loopback, RFC1918, link-local/метадата
-// облака и т.п.) через netguard — фильтр работает по фактическому IP после
-// резолва и на каждом hop редиректа, устойчив к DNS-rebind. Это защита от
-// мультитенантного SSRF: один арендатор не должен мониторить внутренние
-// сервисы кластера. Оператор может отключить фильтр глобально флагом
-// (AllowPrivate=true), если инстанс single-tenant и мониторит свою же
-// приватную сеть.
+// проверка IP идёт после резолва на каждом hop редиректа (устойчиво к
+// DNS-rebind) — защита от SSRF на приватные адреса.
 type HTTPChecker struct {
 	// AllowPrivate=true отключает SSRF-фильтр приватных целей.
 	AllowPrivate bool
 
-	// TLSClientConfig, если задан, используется вместо стандартного
-	// TLS-конфига транспорта — нужно тестам, чтобы доверять
-	// самоподписанному сертификату httptest.NewTLSServer.
+	// используется вместо стандартного TLS-конфига транспорта — нужно тестам
+	// для самоподписанных сертификатов httptest.NewTLSServer.
 	TLSClientConfig *tls.Config
 }
 
@@ -43,8 +34,6 @@ func NewHTTPChecker(allowPrivate bool) *HTTPChecker {
 	return &HTTPChecker{AllowPrivate: allowPrivate}
 }
 
-// httpTiming собирает моменты событий httptrace для расчёта тайминга по
-// фазам запроса.
 type httpTiming struct {
 	dnsStart, dnsDone         time.Time
 	connectStart, connectDone time.Time
@@ -64,10 +53,8 @@ func (t *httpTiming) clientTrace() *httptrace.ClientTrace {
 	}
 }
 
-// stalledPhase — фаза запроса, на которой он завис (по httptrace): последний
-// начавшийся, но не завершившийся этап. Помогает диагностировать таймауты:
-// «TLS handshake» (сервер принял TCP, но не отвечает на ClientHello) отличается
-// от «awaiting response» (TLS прошёл, но нет ответа) и от «DNS»/«TCP connect».
+// последний начавшийся, но не завершившийся этап — отличает зависший
+// TLS-handshake от молчащего после TLS сервера или медленного DNS/connect.
 func stalledPhase(t httpTiming) string {
 	switch {
 	case !t.firstByte.IsZero():
@@ -89,8 +76,7 @@ func stalledPhase(t httpTiming) string {
 	}
 }
 
-// durMs возвращает продолжительность между двумя моментами в мс, или 0,
-// если одно из событий не произошло (например DNS для литерального IP).
+// 0, если одно из событий не произошло (например DNS для литерального IP).
 func durMs(start, end time.Time) uint32 {
 	if start.IsZero() || end.IsZero() || end.Before(start) {
 		return 0
@@ -120,16 +106,12 @@ func (c *HTTPChecker) Check(ctx context.Context, m Monitor) Result {
 	var timing httpTiming
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), timing.clientTrace()))
 
-	// Create a fresh transport with keep-alives disabled. Each check needs a real
-	// connection to accurately measure ConnectMs and TLSMs. Since this transport
-	// is discarded after each check, pooling would leak idle connections and their
-	// goroutines. DisableKeepAlives ensures we get a fresh connect per check.
+	// DisableKeepAlives — иначе ConnectMs/TLSMs не измерить точно, а разовый
+	// транспорт не подчистит простаивающий пул соединений.
 	transport := &http.Transport{
 		DisableKeepAlives: true,
-		// SSRF-фильтр: DialContext режет приватные цели по фактическому IP.
-		// Для FollowRedirects фильтр срабатывает автоматически на каждом
-		// hop — каждый редирект открывает новое соединение через этот же
-		// DialContext.
+		// фильтр действует и на каждом hop редиректа — новый DialContext на
+		// каждое соединение.
 		DialContext: netguard.DialContext(c.AllowPrivate),
 	}
 	defer transport.CloseIdleConnections()
@@ -142,9 +124,8 @@ func (c *HTTPChecker) Check(ctx context.Context, m Monitor) Result {
 		Timeout:   time.Duration(m.TimeoutSeconds) * time.Second,
 	}
 	if !cfg.FollowRedirects {
-		// ErrUseLastResponse останавливает следование редиректу и
-		// возвращает сам 3xx-ответ клиенту — он и проверяется ниже
-		// против ExpectedStatus, как любой другой ответ.
+		// ErrUseLastResponse останавливает редирект, отдавая сам 3xx как
+		// обычный ответ — он проверяется ниже, как любой другой.
 		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		}
@@ -155,9 +136,8 @@ func (c *HTTPChecker) Check(ctx context.Context, m Monitor) Result {
 	total := time.Since(start)
 	if err != nil {
 		msg := errMessage(err, m.TimeoutSeconds)
-		// На таймауте дописываем ФАЗУ, до которой дошёл запрос (по httptrace):
-		// без неё «timeout after 30s» не отличает зависший TLS-handshake от
-		// молчащего сервера или медленного DNS. Диагностика прямо в проверке.
+		// без фазы «timeout after 30s» не отличить зависший TLS-handshake от
+		// молчащего сервера или медленного DNS.
 		if isTimeout(err) {
 			msg += " (" + stalledPhase(timing) + ")"
 		}
@@ -206,8 +186,6 @@ func (c *HTTPChecker) Check(ctx context.Context, m Monitor) Result {
 	return result
 }
 
-// statusExpected сообщает, входит ли code в expected; пустой expected
-// означает 200..299.
 func statusExpected(code int, expected []int) bool {
 	if len(expected) == 0 {
 		return code >= 200 && code < 300

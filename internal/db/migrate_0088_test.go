@@ -10,11 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0088ProjectKeyKind — столбец project_keys.kind: тип DSN-ключа.
-// Проверяет: существующая строка получает 'legacy' (переход без простоя),
-// CHECK отвергает чужое значение, вставка БЕЗ kind после up проходит и даёт
-// 'legacy' (совместимость с откатом релиза на бинарь, который про kind не
-// знает, — см. §3.2 спеки), down снимает столбец.
+// Существующая строка получает 'legacy' (переход без простоя); вставка БЕЗ kind после up тоже даёт
+// 'legacy' — совместимость с откатом релиза на бинарь, который про kind не знает.
 func TestMigrate0088ProjectKeyKind(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -52,14 +49,12 @@ func TestMigrate0088ProjectKeyKind(t *testing.T) {
 		t.Fatalf("kind существующего ключа = %q, ожидалось legacy", kind)
 	}
 
-	// CHECK: чужое значение не проходит.
 	if _, err := pool.Exec(ctx,
 		"INSERT INTO project_keys (project_id, public_key, kind) VALUES ($1,'m88bad','root')",
 		projectID); err == nil {
 		t.Fatal("CHECK принял kind='root'")
 	}
 
-	// Все четыре допустимых значения проходят.
 	for _, k := range []string{"browser", "server", "agent", "legacy"} {
 		if _, err := pool.Exec(ctx,
 			"INSERT INTO project_keys (project_id, public_key, kind) VALUES ($1,$2,$3)",
@@ -68,9 +63,8 @@ func TestMigrate0088ProjectKeyKind(t *testing.T) {
 		}
 	}
 
-	// Вставка БЕЗ kind (то, что делает бинарь версии до этой миграции после
-	// отката релиза) проходит и даёт legacy. Без этого свойства откат ломал бы
-	// создание ключей и следом создание проектов.
+	// Вставка без kind — то, что делает старый бинарь после отката релиза; без этого свойства откат
+	// ломал бы создание ключей и следом создание проектов.
 	var rolledBackKind string
 	if err := pool.QueryRow(ctx,
 		"INSERT INTO project_keys (project_id, public_key) VALUES ($1,'m88old') RETURNING kind",
@@ -81,7 +75,6 @@ func TestMigrate0088ProjectKeyKind(t *testing.T) {
 		t.Fatalf("вставка без kind дала %q, ожидалось legacy", rolledBackKind)
 	}
 
-	// Down зеркальна: столбца нет.
 	if err := db.MigratePGTo(dsn, 87); err != nil {
 		t.Fatalf("migrate down to 87: %v", err)
 	}

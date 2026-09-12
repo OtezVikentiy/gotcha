@@ -9,29 +9,22 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Потолок уведомлений на проект за окно.
-//
-// Дефолты щедрые нарочно: цель — срезать размножение, а не мешать настоящему
-// инциденту. Проект, у которого разом упало полтора десятка сервисов, должен
-// получить все уведомления; проект, которому кто-то шлёт уникальный fingerprint
-// на каждое событие, — не должен утопить почту участников.
+// Дефолты щедрые нарочно — срезать размножение уведомлений, а не мешать
+// настоящему инциденту с десятком упавших сервисов сразу.
 const (
 	defaultAlertBudgetWindow = time.Hour
 	defaultAlertBudgetLimit  = 50
 )
 
-// BudgetDecision — исход попытки занять место под уведомление.
 type BudgetDecision struct {
-	// Allowed — можно слать.
 	Allowed bool
-	// Suppressed — сколько уведомлений подавлено в текущем окне НАКОПИТЕЛЬНО,
-	// включая это. Ноль при Allowed.
+	// Сколько уведомлений подавлено в окне накопительно, включая это; ноль
+	// при Allowed.
 	Suppressed int
 }
 
-// SetBudget задаёт окно и потолок. Нулевой или отрицательный потолок ВЫКЛЮЧАЕТ
-// ограничение целиком — для инсталляции с доверенными отправителями это
-// осознанный выбор оператора, а не аварийный режим.
+// Нулевой или отрицательный потолок выключает ограничение целиком —
+// осознанный выбор оператора, не аварийный режим.
 func (s *Service) SetBudget(window time.Duration, limit int) {
 	if window > 0 {
 		s.budgetWindow = window
@@ -51,29 +44,15 @@ func (s *Service) budgetParams() (time.Duration, int) {
 	return w, s.budgetLimit
 }
 
-// claimBudget занимает место под одно уведомление проекта.
-//
-// Решение и учёт — ОДНИМ оператором, как в claimThrottle и по той же причине:
-// иначе между «проверил, бюджет есть» и «списал» встаёт гонка, а конкурентные
-// вызовы здесь штатны (пайплайн приёма многопоточный, и на первом событии
-// нового fingerprint два воркера могут одновременно увидеть New=true).
-//
-// Окно скользит не по расписанию, а по первому обращению после истечения:
-// ON CONFLICT сам решает, продлевать текущее окно или начать новое. Поэтому
-// проект без трафика не занимает ни строки в планировщике, ни такта в цикле.
-//
-// suppressed НЕ обнуляется здесь — его забирает Digester, чтобы сводка
-// «подавлено ещё N» не потерялась вместе со сбросом окна.
+// Решение и учёт — одним запросом против гонки при конкурентных вызовах.
+// suppressed не обнуляется здесь — его забирает Digester.
 func (s *Service) claimBudget(ctx context.Context, projectID int64) (BudgetDecision, error) {
 	window, limit := s.budgetParams()
 	if limit <= 0 {
 		return BudgetDecision{Allowed: true}, nil // ограничение выключено
 	}
-	// Отсечка окна вычисляется часами БАЗЫ: window_start пишется её now(), и
-	// сравнение с моментом от часов процесса зависело бы от их расхождения —
-	// отстающие часы растягивали окно бюджета, опережающие сокращали.
-	// Длительность передаётся секундами, потому что интервал приходит из
-	// конфига именно как длительность, а не как момент.
+	// Часы БАЗЫ, не процесса — иначе расхождение часов растягивало бы или
+	// сокращало окно бюджета.
 	windowSecs := int(window / time.Second)
 
 	var d BudgetDecision
@@ -102,13 +81,8 @@ func (s *Service) claimBudget(ctx context.Context, projectID int64) (BudgetDecis
 	return d, nil
 }
 
-// refundBudget отменяет claimBudget: возвращает место, занятое
-// уведомлением, чьи Enqueue провалились ПОЛНОСТЬЮ (иначе истраченный
-// бюджет списывался бы на алерт, который так и не ушёл — см. вызов из
-// Evaluator.OnIssue после цикла Enqueue). Ограничен ТЕКУЩИМ окном по той
-// же причине, что и claimBudget: окно, которое уже истекло, claimBudget
-// откроет заново сам, трогать его возвратом ни к чему. Best-effort: ошибка
-// логируется вызывающей стороной, а не ронянет обработку.
+// Возвращает место при полном провале Enqueue — иначе бюджет списывался бы
+// зря. Ограничен текущим окном; best-effort, ошибку логирует вызывающий.
 func (s *Service) refundBudget(ctx context.Context, projectID int64) error {
 	window, limit := s.budgetParams()
 	if limit <= 0 {
@@ -128,32 +102,21 @@ func (s *Service) refundBudget(ctx context.Context, projectID int64) error {
 	return nil
 }
 
-// SuppressedBatch — подавленные уведомления одного проекта, готовые к сводке.
 type SuppressedBatch struct {
 	ProjectID  int64
 	Suppressed int
 	Since      time.Time
 }
 
-// ClaimSuppressed забирает накопленные подавленные уведомления проектов, у
-// которых окно уже истекло, и обнуляет счётчик — атомарно, чтобы две реплики
-// не разослали одну сводку дважды.
-//
-// Забираем ТОЛЬКО по истечении окна: иначе сводка ушла бы посреди всплеска и
-// сообщила бы неполное число, а следом пришла бы вторая с остатком.
+// Атомарно — чтобы две реплики не разослали одну сводку дважды. Берём
+// только по истечении окна, иначе сводка ушла бы с неполным числом.
 func (s *Service) ClaimSuppressed(ctx context.Context, limit int) ([]SuppressedBatch, error) {
 	window, _ := s.budgetParams()
 	// Отсечка — часами базы, как и в claimBudget: window_start пишется её now().
 	windowSecs := int(window / time.Second)
 
-	// Значение забирается ДО обнуления, поэтому через CTE, а не RETURNING у
-	// UPDATE: RETURNING отдаёт НОВУЮ строку, то есть уже обнулённый счётчик, и
-	// сводка ушла бы с числом «подавлено 0».
-	//
-	// FOR UPDATE SKIP LOCKED в claimed — чтобы две реплики не разослали одну
-	// сводку дважды: строку забирает та, что успела первой, вторая её
-	// пропускает. JOIN с cleared обязателен: он заставляет data-modifying CTE
-	// выполниться и связывает выдачу с фактически обнулёнными строками.
+	// CTE, не RETURNING у UPDATE: RETURNING отдал бы уже обнулённый счётчик.
+	// FOR UPDATE SKIP LOCKED защищает от гонки реплик; JOIN cleared обязателен для CTE.
 	rows, err := s.pool.Query(ctx, `
 		WITH claimed AS (
 			SELECT project_id, suppressed, window_start
@@ -189,7 +152,7 @@ func (s *Service) ClaimSuppressed(ctx context.Context, limit int) ([]SuppressedB
 	return out, rows.Err()
 }
 
-// budgetOf — текущее состояние бюджета проекта. Для тестов и диагностики.
+// Для тестов и диагностики.
 func (s *Service) budgetOf(ctx context.Context, projectID int64) (sent, suppressed int, err error) {
 	err = s.pool.QueryRow(ctx,
 		`SELECT sent, suppressed FROM alert_project_budget WHERE project_id = $1`,

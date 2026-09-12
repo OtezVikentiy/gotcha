@@ -13,40 +13,22 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// pgxPool — подмножество *pgxpool.Pool, которое использует Suppressor.
-// Заведено ради тестируемости K1-5 (сужение критической секции getSnapshot):
-// тест на несериализацию конкурентных загрузок подменяет pool инструментированной
-// обёрткой, считающей одновременные запросы, а *pgxpool.Pool этому интерфейсу
-// удовлетворяет структурно, без каких-либо изменений на стороне вызывающих
-// NewSuppressor.
 type pgxPool interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
-// cacheTTL — время жизни снимка состояния зависимостей/инцидентов (кеш-на-
-// тик): резолвинг HasParent/ParentDown не бьёт в БД на каждый вызов —
-// снимок {edges, downHosts, downMonitors, hostLabels} переиспользуется, пока
-// не устареет старше cacheTTL, и тогда перезагружается целиком одним
-// набором запросов. Резолвинг конкретного узла по снимку — работа в памяти,
-// без дополнительных SQL-запросов (никакого N+1 по узлам).
 const cacheTTL = 5 * time.Second
 
-// hostLabels — метки хоста (env/role, волна B1) плюс его project_id, нужны
-// для резолвинга label-селекторов ребра (child_label_scope/child_label_
-// value). project_id обязателен: метки типовые (web/prod/db повторяются
-// между тенантами), и без сверки проекта label-ребро одного проекта
-// подавляло бы инциденты одноимённых хостов ЧУЖОГО проекта (межпроектная
-// утечка подавления — находка ревью).
+// project_id обязателен: метки типовые (web/prod/db повторяются между тенантами) —
+// без сверки проекта label-ребро подавляло бы одноимённые хосты ЧУЖОГО проекта.
 type hostLabels struct {
 	projectID int64
 	env       string
 	role      string
 }
 
-// snapshot — единый срез состояния на момент loadedAt, по которому
-// резолвятся HasParent/ParentDown без дополнительных запросов к БД.
 type snapshot struct {
 	edges        []Edge
 	downHosts    map[int64]bool
@@ -55,24 +37,15 @@ type snapshot struct {
 	loadedAt     time.Time
 }
 
-// Suppressor отвечает на вопрос «упал ли задекларированный родитель узла?»
-// поверх рёбер зависимостей (alert_dependencies, см. Store) и открытых
-// инцидентов недоступности (host_incidents.kind='silent' и uptime-инциденты
-// incidents). Используется host-evaluator'ом и uptime-детектором
-// (HasParent/ParentDown) и escalation-scheduler'ом (CheckIncident/
-// MarkSuppressed), у которого нет прямой зависимости на пакет host.
 type Suppressor struct {
 	pool     pgxPool
 	cacheTTL time.Duration
-	// now — источник текущего времени для кеша-на-тик; в проде time.Now,
-	// в тестах подменяется для детерминируемого истечения TTL.
-	now func() time.Time
+	now      func() time.Time
 
 	mu    sync.Mutex
 	cache *snapshot
 }
 
-// NewSuppressor создаёт Suppressor поверх пула соединений PostgreSQL.
 func NewSuppressor(pool *pgxpool.Pool) *Suppressor {
 	return &Suppressor{
 		pool:     pool,
@@ -81,9 +54,7 @@ func NewSuppressor(pool *pgxpool.Pool) *Suppressor {
 	}
 }
 
-// HasParent сообщает, задекларирован ли у узла (kind, nodeID) хотя бы один
-// родитель (явное ребро или label-селектор, матчащий метки узла), без учёта
-// того, упал ли этот родитель. kind ∈ {"host","monitor"}.
+// kind ∈ {"host","monitor"}.
 func (s *Suppressor) HasParent(ctx context.Context, kind string, nodeID int64) (bool, error) {
 	snap, err := s.getSnapshot(ctx)
 	if err != nil {
@@ -92,32 +63,8 @@ func (s *Suppressor) HasParent(ctx context.Context, kind string, nodeID int64) (
 	return len(matchingParents(snap, kind, nodeID)) > 0, nil
 }
 
-// ParentDown сообщает, подавлен ли узел (kind, nodeID) упавшим родителем:
-// достижим ли от одного из его СЕЙЧАС упавших родителей down-КОРЕНЬ — упавший
-// узел, у которого самого нет ни одного упавшего родителя (его никто не
-// подавляет → он пейджит и якорит подавление всей ветки под ним).
-//
-// Обход идёт вверх по упавшим родителям (parentDownFromSnapshot) с visited-
-// множеством, поэтому цикло-устойчив: два reciprocal label-ребра
-// (A→role=web, B→role=web, оба хоста role=web и оба замолчали) НЕ образуют
-// «чёрную дыру» — наивный one-level резолвер счёл бы A подавленным (видит
-// упавшего родителя B) И B подавленным (видит упавшего родителя A), оба ушли
-// бы в suppressed_by_dep при открытых инцидентах, и никто бы не запейджил.
-// Обход же, встретив только зацикленные пути без down-корня, возвращает false
-// для обоих — оба пейджат, авария не молчит.
-//
-// Инциденты родителей НЕ фильтруются по suppressed_by_dep (MINOR-7,
-// инвариант транзитивности): промежуточный узел B цепочки A→B→C, уже
-// помеченный подавленным, всё равно остаётся status='open' (host) /
-// resolved_at IS NULL (uptime) и ПРОДОЛЖАЕТ подавлять C — обход поднимается
-// сквозь B до реального down-корня A (у A нет упавшего родителя → он якорит
-// подавление). Если промежуточного звена нет и сам B без родителя — B и есть
-// down-корень, C подавлен.
-//
-// Устарелость снимка принята осознанно: перманентное решение (MarkSuppressed)
-// принимается по снимку возрастом до cacheTTL (5с); при тике планировщика 60с
-// снимок свеж на старте тика, окно устарелости ≤5с ≪ латентности детекции
-// молчания/uptime-инцидента — цена ложного подавления в этом окне пренебрежима.
+// Цикл упавших родителей не образует «чёрную дыру» подавления: без down-корня
+// обход возвращает false обоим узлам цикла — они пейджат, а не молчат разом.
 func (s *Suppressor) ParentDown(ctx context.Context, kind string, nodeID int64) (bool, error) {
 	snap, err := s.getSnapshot(ctx)
 	if err != nil {
@@ -126,10 +73,6 @@ func (s *Suppressor) ParentDown(ctx context.Context, kind string, nodeID int64) 
 	return parentDownFromSnapshot(snap, node{kind: kind, id: nodeID}), nil
 }
 
-// downParents возвращает родителей узла start (из рёбер снимка — та же логика,
-// что у matchingParents: self-match исключён, label-рёбра сверяют project_id),
-// которые СЕЙЧАС в состоянии «упал» (downHosts/downMonitors). Это один шаг
-// обхода вверх по дереву зависимостей в parentDownFromSnapshot.
 func downParents(snap *snapshot, start node) []node {
 	var out []node
 	for _, e := range matchingParents(snap, start.kind, start.id) {
@@ -143,11 +86,6 @@ func downParents(snap *snapshot, start node) []node {
 	return out
 }
 
-// parentDownFromSnapshot решает, подавлен ли start: обходит вверх по СЕЙЧАС
-// упавшим родителям (итеративно, без рекурсии, на снимке в памяти) с visited-
-// множеством и возвращает true, только если достигнут down-корень — упавший
-// узел без единого упавшего родителя. Если все пути вверх зацикливаются и
-// реального корня нет, возвращает false: start не подавлен, пейджит.
 func parentDownFromSnapshot(snap *snapshot, start node) bool {
 	visited := map[node]bool{start: true}
 	stack := append([]node{}, downParents(snap, start)...)
@@ -167,11 +105,8 @@ func parentDownFromSnapshot(snap *snapshot, start node) bool {
 	return false // все пути вверх зациклились, реального корня нет → start пейджит
 }
 
-// CheckIncident отвечает на тот же вопрос, что и HasParent/ParentDown, но
-// принимает не узел, а конкретный инцидент — так его вызывает escalation-
-// scheduler, у которого на входе только (source, incidentID). Для source
-// отличного от "host" зависимости пока не резолвятся (uptime резолвит их
-// сам через свой сервис, см. T6/T7) — возвращается (false, false, nil).
+// Для source, отличного от "host", зависимости не резолвятся — молчаливый
+// (false, false, nil): uptime резолвит их сам через свой сервис.
 func (s *Suppressor) CheckIncident(ctx context.Context, source string, incidentID int64) (hasParent, parentDown bool, err error) {
 	if source != "host" {
 		return false, false, nil
@@ -181,9 +116,7 @@ func (s *Suppressor) CheckIncident(ctx context.Context, source string, incidentI
 	if err := s.pool.QueryRow(ctx,
 		`SELECT host_id FROM host_incidents WHERE id = $1`, incidentID,
 	).Scan(&hostID); err != nil {
-		// Инцидент мог закрыться между OpenUnacked и этим tickOne — строки уже
-		// нет. Узел исчез, подавлять нечего: это не сбой сервиса, а гонка с
-		// закрытием, поэтому (false, false, nil), а не ошибка.
+		// Гонка с закрытием инцидента между OpenUnacked и этим tickOne — не ошибка.
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, false, nil
 		}
@@ -201,13 +134,8 @@ func (s *Suppressor) CheckIncident(ctx context.Context, source string, incidentI
 	return hasParent, parentDown, nil
 }
 
-// MarkSuppressed помечает инцидент как подавленный зависимостью
-// (suppressed_by_dep=true). Единственный писатель этого флага для host-
-// инцидентов — сам host себя не помечает, чтобы не дублировать логику
-// резолвинга зависимостей в двух местах. Для source, отличного от "host",
-// это no-op: uptime-инциденты помечает исключительно uptime.Service.
-// MarkSuppressedByDep (T6) — так у флага остаётся ровно один писатель на
-// таблицу.
+// Единственный писатель suppressed_by_dep для host-инцидентов. Для source,
+// отличного от "host", no-op: uptime-инциденты помечает только uptime.Service.
 func (s *Suppressor) MarkSuppressed(ctx context.Context, source string, incidentID int64) error {
 	if source != "host" {
 		return nil
@@ -220,39 +148,8 @@ func (s *Suppressor) MarkSuppressed(ctx context.Context, source string, incident
 	return nil
 }
 
-// getSnapshot возвращает текущий кеш-на-тик, перезагружая его, если он ещё
-// не был загружен или устарел старше cacheTTL.
-//
-// Мьютекс защищает РОВНО одно: согласованность чтения/записи указателя
-// s.cache (разделяемое состояние). Сам снимок иммутабелен с момента
-// построения (loadSnapshot собирает его в локальную переменную и отдаёт
-// целиком), поэтому вычитывать его можно и после разблокировки — держать
-// мьютекс на время четырёх последовательных запросов к PG (K1-5) не нужно:
-// это сериализовало БЫ конкурентные вызовы на всё время похода в базу, хотя
-// им достаточно не разъехаться по самому кешу.
-//
-// Узкое место, оставшееся сознательно: при устаревшем кеше несколько
-// конкурентных вызовов могут запустить loadSnapshot независимо (без
-// single-flight) — каждый увидит s.cache == nil/протухшим ДО того, как
-// кто-то из них успеет положить свежий снимок обратно. Это не портит данные
-// (снимки эквивалентны с точностью до окна TTL, который и так принят как
-// источник устарелости, см. докблок ParentDown) — только избыточные, но
-// безопасные повторные запросы в редком окне протухания кеша.
-//
-// Гонка «прочитал-затем-записал» по s.cache между двумя разделёнными
-// критическими секциями ВОЗМОЖНА (ревью аудита): loadedAt фиксируется
-// ВНУТРИ loadSnapshot, а запись в s.cache — отдельным, более поздним
-// захватом mu. Горутина A, начавшая загрузку раньше, но вытесненная
-// планировщиком (GC-пауза, нагрузка) между возвратом из loadSnapshot и
-// повторным Lock, может проснуться и перетереть s.cache уже ПОСЛЕ того,
-// как горутина B успела загрузить и записать более свежий снимок — без
-// guard'а ниже это откатило бы кеш назад во времени. Guard "пишем только
-// если наш снимок не старше текущего" не устраняет само вытеснение
-// (оно всё ещё может случиться), но не даёт более старому снимку A
-// затереть более свежий снимок B: после guard'а кеш либо получает A (если
-// A первой добралась до Lock), либо остаётся снимком B (если A опоздала) —
-// в любом случае не откатывается назад. Остаточная устарелость от этого не
-// растёт сверх уже принятого окна cacheTTL.
+// Пишем в s.cache, только если наш снимок не старше текущего — иначе вытесненная
+// планировщиком горутина могла бы откатить более свежую запись назад во времени.
 func (s *Suppressor) getSnapshot(ctx context.Context) (*snapshot, error) {
 	s.mu.Lock()
 	cache := s.cache
@@ -275,9 +172,6 @@ func (s *Suppressor) getSnapshot(ctx context.Context) (*snapshot, error) {
 	return snap, nil
 }
 
-// loadSnapshot тянет весь снимок состояния одним набором запросов (по
-// одному на каждую из четырёх составляющих — рёбра, упавшие хосты, упавшие
-// мониторы, метки хостов).
 func (s *Suppressor) loadSnapshot(ctx context.Context) (*snapshot, error) {
 	edges, err := s.loadEdges(ctx)
 	if err != nil {
@@ -304,9 +198,8 @@ func (s *Suppressor) loadSnapshot(ctx context.Context) (*snapshot, error) {
 	}, nil
 }
 
-// loadEdges тянет весь набор рёбер зависимостей всех проектов: набор
-// невелик, а резолвинг всё равно идёт по конкретному узлу — фильтрация по
-// проекту в памяти не нужна.
+// Тянет рёбра всех проектов сразу — набор невелик, резолвинг всё равно идёт
+// по конкретному узлу, фильтровать по проекту здесь не нужно.
 func (s *Suppressor) loadEdges(ctx context.Context) ([]Edge, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, project_id, parent_host_id, parent_monitor_id,
@@ -334,9 +227,7 @@ func (s *Suppressor) loadEdges(ctx context.Context) ([]Edge, error) {
 	return out, nil
 }
 
-// loadDownHosts — id хостов с открытым инцидентом недоступности
-// (kind='silent'): «хост упал» в терминах B5 — это молчание хоста, а не
-// диск/память/нагрузка.
+// «Хост упал» здесь — это молчание (kind='silent'), а не диск/память/нагрузка.
 func (s *Suppressor) loadDownHosts(ctx context.Context) (map[int64]bool, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT DISTINCT host_id FROM host_incidents WHERE status = 'open' AND kind = 'silent'`)
@@ -359,7 +250,6 @@ func (s *Suppressor) loadDownHosts(ctx context.Context) (map[int64]bool, error) 
 	return out, nil
 }
 
-// loadDownMonitors — id мониторов с открытым uptime-инцидентом.
 func (s *Suppressor) loadDownMonitors(ctx context.Context) (map[int64]bool, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT DISTINCT monitor_id FROM incidents WHERE resolved_at IS NULL`)
@@ -382,10 +272,6 @@ func (s *Suppressor) loadDownMonitors(ctx context.Context) (map[int64]bool, erro
 	return out, nil
 }
 
-// loadHostLabels — project_id и метки (env, role) всех хостов, нужны для
-// резолвинга label-селекторов рёбер (child_label_scope/value) без N+1-
-// запроса на узел; project_id — обязательная часть снимка ради изоляции
-// тенантов при матче (см. edgeMatchesChild).
 func (s *Suppressor) loadHostLabels(ctx context.Context) (map[int64]hostLabels, error) {
 	rows, err := s.pool.Query(ctx, `SELECT id, project_id, environment, role FROM hosts`)
 	if err != nil {
@@ -408,24 +294,8 @@ func (s *Suppressor) loadHostLabels(ctx context.Context) (map[int64]hostLabels, 
 	return out, nil
 }
 
-// matchingParents возвращает рёбра, чей ребёнок — узел (kind, nodeID):
-// явное совпадение (child_host_id/child_monitor_id) либо, для kind="host",
-// label-селектор (child_label_scope/value), матчащий метки хоста nodeID В
-// ТОМ ЖЕ ПРОЕКТЕ, что и ребро (e.ProjectID == hostLabels[nodeID].projectID).
-// Explicit-рёбра project_id не сверяют — child_host_id/child_monitor_id уже
-// глобально уникальны и принадлежность проекту проверена Store.Create при
-// вставке ребра.
-//
-// Проверка проекта для label-рёбер обязательна: метки типовые (web/prod/db
-// повторяются между тенантами), и без неё ребро одного проекта (например,
-// «шлюз P1 → все хосты role=web») матчило бы одноимённые хосты ЧУЖОГО
-// проекта — межпроектная утечка подавления, тихая потеря чужих алертов
-// (находка ревью, устранена).
-//
-// Self-match ИСКЛЮЧАЕТСЯ: ребро пропускается, если его РОДИТЕЛЬ — тот же
-// узел (kind, nodeID) — иначе узел с label-ребром на собственную группу
-// подавлял бы сам себя, как только у него открывается инцидент (MAJOR-5
-// ревью дизайна; см. TestParentDownLabelAndTransitive/self-match).
+// Self-match исключается: ребро пропускается, если его родитель — тот же
+// узел, иначе узел с label-ребром на собственную группу подавлял бы сам себя.
 func matchingParents(snap *snapshot, kind string, nodeID int64) []Edge {
 	var out []Edge
 	for _, e := range snap.edges {
@@ -476,8 +346,6 @@ func edgeMatchesChild(e Edge, snap *snapshot, kind string, nodeID int64) bool {
 	}
 }
 
-// parentIsDown сообщает, находится ли родитель ребра e в состоянии «упал»
-// согласно снимку snap.
 func parentIsDown(e Edge, snap *snapshot) bool {
 	if e.ParentHostID != nil {
 		return snap.downHosts[*e.ParentHostID]
@@ -488,17 +356,7 @@ func parentIsDown(e Edge, snap *snapshot) bool {
 	return false
 }
 
-// DownRoot возвращает down-корень узла (kind, nodeID) — топового упавшего
-// предка, якорящего подавление ветки (D3, единый предикат членства групп):
-// упавший узел без единого упавшего родителя, достижимый от узла по СЕЙЧАС
-// упавшим родителям. Если сам узел упал, а упавших предков у него нет —
-// корень он сам — в том числе когда узел состоит в цикле упавших: член
-// цикла пейджит (ParentDown у него false), значит он же и якорит свою
-// группу. found=false — упавшего корня нет: узел ЖИВ, и все пути вверх
-// либо обрываются на живых, либо зациклились без упавшего корня (то же
-// поведение, что у ParentDown: цикл сам по себе не назначается корнем).
-// Детерминизм при нескольких верхних корнях: host прежде monitor, затем
-// меньший id. Тот же 5с-кеш снимка, что у HasParent/ParentDown.
+// При нескольких верхних корнях детерминизм: host прежде monitor, затем меньший id.
 func (s *Suppressor) DownRoot(ctx context.Context, kind string, nodeID int64) (rootKind string, rootID int64, found bool, err error) {
 	snap, err := s.getSnapshot(ctx)
 	if err != nil {
@@ -511,10 +369,6 @@ func (s *Suppressor) DownRoot(ctx context.Context, kind string, nodeID int64) (r
 	return root.kind, root.id, true, nil
 }
 
-// downRootFromSnapshot — чистая часть DownRoot: обход вверх по упавшим
-// родителям (та же машинерия, что parentDownFromSnapshot — итеративно,
-// visited-множество, цикло-устойчиво), но с СБОРОМ всех достижимых
-// down-корней и детерминированным выбором одного.
 func downRootFromSnapshot(snap *snapshot, start node) (node, bool) {
 	var roots []node
 	visited := map[node]bool{start: true}
@@ -548,7 +402,6 @@ func downRootFromSnapshot(snap *snapshot, start node) (node, bool) {
 	return roots[0], true
 }
 
-// nodeIsDown — узел в состоянии «упал» по снимку.
 func nodeIsDown(snap *snapshot, n node) bool {
 	switch n.kind {
 	case "host":
@@ -560,23 +413,16 @@ func nodeIsDown(snap *snapshot, n node) bool {
 	}
 }
 
-// Invalidate сбрасывает кеш-на-тик: следующий getSnapshot перезагрузит
-// снимок целиком. Нужен ретро-присоединению (D3, Grouper.OnRootOpened):
-// только что открытый корневой инцидент ещё не виден снимку возрастом до
-// cacheTTL, и перебор кандидатов по устаревшему снимку молча пропустил бы
-// всех членов.
+// Без сброса только что открытый корневой инцидент не виден снимку возрастом
+// до cacheTTL, и перебор кандидатов по нему молча пропустил бы всех членов.
 func (s *Suppressor) Invalidate() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cache = nil
 }
 
-// DeclaredChildrenCount — число задекларированных детей ОДНОГО уровня узла
-// (kind, nodeID) по рёбрам/label-селекторам: строка «Зависимых узлов: N» в
-// уведомлении корня (D3 Р9, нейтральная формулировка MINOR-7 — именно
-// декларированные дети, не «затронутые», без транзитивности и без учёта
-// фактического состояния). Данные — тот же снимок (паттерн загрузчиков
-// snapshot'а, уточнение MINOR-7).
+// Считает декларированных детей одного уровня, не «затронутых» транзитивно
+// и без учёта текущего состояния — для строки «Зависимых узлов: N».
 func (s *Suppressor) DeclaredChildrenCount(ctx context.Context, kind string, nodeID int64) (int, error) {
 	snap, err := s.getSnapshot(ctx)
 	if err != nil {
@@ -585,11 +431,6 @@ func (s *Suppressor) DeclaredChildrenCount(ctx context.Context, kind string, nod
 	return declaredChildrenFromSnapshot(snap, node{kind: kind, id: nodeID}), nil
 }
 
-// declaredChildrenFromSnapshot — чистая часть DeclaredChildrenCount: дедуп
-// по узлам (несколько рёбер/селекторов на один узел — один ребёнок),
-// label-селекторы разворачиваются по хостам ТОГО ЖЕ проекта, что и ребро
-// (та же тенант-изоляция, что в edgeMatchesChild), self исключается
-// (симметрия previewExpandLabel, MAJOR-5).
 func declaredChildrenFromSnapshot(snap *snapshot, self node) int {
 	seen := map[node]bool{}
 	for _, e := range snap.edges {

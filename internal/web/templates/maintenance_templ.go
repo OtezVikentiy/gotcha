@@ -26,10 +26,8 @@ func maintenanceDeletePath(projectID int64) string {
 	return maintenancePath(projectID) + "/delete"
 }
 
-// EditWindowModalID — якорь модалки правки окна обслуживания. Одна модалка на
-// строку таблицы: они построены на CSS :target, а якорь обязан быть уникальным.
-// Экспортирована, чтобы обработчик мог сказать, какую именно открыть заново
-// после ошибки валидации.
+// Построена на CSS :target — якорь обязан быть уникальным на строку.
+// Экспортирована, чтобы обработчик мог переоткрыть нужную модалку после ошибки валидации.
 func EditWindowModalID(windowID int64) string {
 	return "edit-window-" + strconv.FormatInt(windowID, 10)
 }
@@ -38,11 +36,7 @@ func maintenanceUpdatePath(projectID int64) string {
 	return maintenancePath(projectID) + "/update"
 }
 
-// windowFieldDefaults — значения полей формы для уже сохранённого окна.
-//
-// Форма одна на создание и на правку, а значения полей у них берутся из разных
-// мест: у создания — пустые, у правки — из окна. Возвращаем плоскую карту тех
-// же имён, что и у FormState, чтобы фрагмент полей не знал, какой он из двух.
+// Общая карта для создания/правки (как FormState) — фрагмент полей не знает, какой он из двух.
 func windowFieldDefaults(w uptime.Window) FormState {
 	f := FormState{"name": w.Name, "kind": "oneoff", "timezone": w.Timezone}
 	if w.Weekly {
@@ -51,8 +45,7 @@ func windowFieldDefaults(w uptime.Window) FormState {
 		f["start_time"] = w.StartTime
 		f["end_time"] = w.EndTime
 	} else {
-		// datetime-local понимает только этот формат и только местное время —
-		// то же, в котором окно и было задано, поэтому переводим в его пояс.
+		// datetime-local понимает только этот формат и местное время — переводим в пояс окна.
 		loc, err := time.LoadLocation(w.Timezone)
 		if err != nil {
 			loc = time.UTC
@@ -63,15 +56,13 @@ func windowFieldDefaults(w uptime.Window) FormState {
 		if w.EndsAt != nil {
 			f["ends_at"] = w.EndsAt.In(loc).Format("2006-01-02T15:04")
 		} else {
-			// Бессрочное окно (EndsAt == nil) — чекбокс «без даты окончания»
-			// предотмечен при открытии формы правки, иначе сохранение без
-			// изменений тут же упёрлось бы в oneOffEndRequired.
+			// Чекбокс «без даты окончания» предотмечен для бессрочного окна — иначе сохранение без
+			// правок тут же упёрлось бы в oneOffEndRequired.
 			f["indefinite"] = "1"
 		}
 	}
 	if !knownTimezone(w.Timezone) {
-		// Пояса нет в фиксированном списке — select переключается на «Другой»
-		// (пустое значение), а сам пояс уезжает в соседнее свободное поле.
+		// Пояс не из списка — select показывает «Другой», сам пояс уезжает в соседнее свободное поле.
 		f["timezone"] = ""
 		f["timezone_custom"] = w.Timezone
 	}
@@ -87,10 +78,7 @@ func knownTimezone(tz string) bool {
 	return false
 }
 
-// windowFormValues — какие значения показывать в полях: введённые человеком,
-// если ошиблась именно эта форма, иначе значения самого окна (или пустые у
-// формы создания). Модалок правки на странице столько же, сколько окон, а
-// состояние формы одно — без этой развилки введённое попало бы во все сразу.
+// Модалок правки — по одной на окно, а FormState одна: без развилки введённое попало бы во все.
 func windowFormValues(form FormState, open bool, defaults FormState) FormState {
 	if open {
 		return form
@@ -98,13 +86,9 @@ func windowFormValues(form FormState, open bool, defaults FormState) FormState {
 	return defaults
 }
 
-// maintenanceTimezones — фиксированный список TZ из спеки задачи; "Другой"
-// (пустое значение select'а) переключает форму на соседнее свободное
-// IANA-поле, см. web/maintenance.go:maintenanceTimezone.
 var maintenanceTimezones = []string{"UTC", "Europe/Moscow", "Europe/Berlin", "Asia/Yekaterinburg"}
 
-// weekdayLabelKeys — i18n-ключи дней недели, индекс совпадает со значением
-// select'а weekday (0 = воскресенье, как в БД/уже сохранённых окнах).
+// Индекс совпадает со значением select'а weekday (0 = воскресенье, как в БД).
 var weekdayLabelKeys = [7]string{
 	"uptime.weekday.0", "uptime.weekday.1", "uptime.weekday.2", "uptime.weekday.3",
 	"uptime.weekday.4", "uptime.weekday.5", "uptime.weekday.6",
@@ -131,14 +115,10 @@ func windowScheduleText(ctx context.Context, w uptime.Window) string {
 	if w.Weekly {
 		return i18n.T(ctx, weekdayLabelKey(w.Weekday)) + " " + w.StartTime + "–" + w.EndTime + " (" + w.Timezone + ")"
 	}
-	// Время показывается В ПОЯСЕ ОКНА. Раньше здесь стоял RFC3339 от значения
-	// в UTC, а рядом подписывался пояс окна: «2026-07-31T00:00:00Z
-	// (Europe/Moscow)» — число одного пояса под именем другого. Соседняя
-	// функция этого же файла переводила время честно.
+	// Время показывается В ПОЯСЕ ОКНА, не UTC: RFC3339 от UTC-значения с подписанным поясом окна
+	// печатал бы число одного пояса под именем другого.
 	loc := humanize.LocationOrUTC(w.Timezone)
-	// EndsAt == nil — не «неизвестно», а «бессрочно» (validateWindow требует
-	// StartsAt всегда, так что "?" у начала — чисто defensive и на практике
-	// у сохранённых окон не встречается).
+	// EndsAt == nil — «бессрочно», не «неизвестно» (validateWindow требует StartsAt всегда).
 	starts, ends := "?", i18n.T(ctx, "uptime.maintenance.indefinite")
 	if w.StartsAt != nil {
 		starts = humanize.Time(ctx, *w.StartsAt, loc)
@@ -178,7 +158,7 @@ func maintenanceTimezoneOption(tz string, selected bool) templ.Component {
 			var templ_7745c5c3_Var2 string
 			templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.ResolveAttributeValue(tz)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 146, Col: 20}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 126, Col: 20}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var2)
 			if templ_7745c5c3_Err != nil {
@@ -191,7 +171,7 @@ func maintenanceTimezoneOption(tz string, selected bool) templ.Component {
 			var templ_7745c5c3_Var3 string
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(tz)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 146, Col: 36}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 126, Col: 36}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 			if templ_7745c5c3_Err != nil {
@@ -209,7 +189,7 @@ func maintenanceTimezoneOption(tz string, selected bool) templ.Component {
 			var templ_7745c5c3_Var4 string
 			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.ResolveAttributeValue(tz)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 148, Col: 20}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 128, Col: 20}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var4)
 			if templ_7745c5c3_Err != nil {
@@ -222,7 +202,7 @@ func maintenanceTimezoneOption(tz string, selected bool) templ.Component {
 			var templ_7745c5c3_Var5 string
 			templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(tz)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 148, Col: 27}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 128, Col: 27}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 			if templ_7745c5c3_Err != nil {
@@ -266,7 +246,7 @@ func maintenanceWeekdayOption(value int, selected bool) templ.Component {
 			var templ_7745c5c3_Var7 string
 			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.ResolveAttributeValue(strconv.Itoa(value))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 154, Col: 37}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 134, Col: 37}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var7)
 			if templ_7745c5c3_Err != nil {
@@ -279,7 +259,7 @@ func maintenanceWeekdayOption(value int, selected bool) templ.Component {
 			var templ_7745c5c3_Var8 string
 			templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, weekdayLabelKey(value)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 154, Col: 86}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 134, Col: 86}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 			if templ_7745c5c3_Err != nil {
@@ -297,7 +277,7 @@ func maintenanceWeekdayOption(value int, selected bool) templ.Component {
 			var templ_7745c5c3_Var9 string
 			templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.ResolveAttributeValue(strconv.Itoa(value))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 156, Col: 37}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 136, Col: 37}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var9)
 			if templ_7745c5c3_Err != nil {
@@ -310,7 +290,7 @@ func maintenanceWeekdayOption(value int, selected bool) templ.Component {
 			var templ_7745c5c3_Var10 string
 			templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, weekdayLabelKey(value)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 156, Col: 77}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 136, Col: 77}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 			if templ_7745c5c3_Err != nil {
@@ -353,7 +333,7 @@ func windowRow(projectID int64, w uptime.Window, form FormState, errMsg string) 
 		var templ_7745c5c3_Var12 string
 		templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(w.Name)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 162, Col: 14}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 142, Col: 14}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 		if templ_7745c5c3_Err != nil {
@@ -366,7 +346,7 @@ func windowRow(projectID int64, w uptime.Window, form FormState, errMsg string) 
 		var templ_7745c5c3_Var13 string
 		templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, windowKindTextKey(w)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 163, Col: 41}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 143, Col: 41}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 		if templ_7745c5c3_Err != nil {
@@ -379,7 +359,7 @@ func windowRow(projectID int64, w uptime.Window, form FormState, errMsg string) 
 		var templ_7745c5c3_Var14 string
 		templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(windowScheduleText(ctx, w))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 164, Col: 34}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 144, Col: 34}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 		if templ_7745c5c3_Err != nil {
@@ -392,7 +372,7 @@ func windowRow(projectID int64, w uptime.Window, form FormState, errMsg string) 
 		var templ_7745c5c3_Var15 templ.SafeURL
 		templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("#" + EditWindowModalID(w.ID)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 167, Col: 80}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 147, Col: 80}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 		if templ_7745c5c3_Err != nil {
@@ -405,7 +385,7 @@ func windowRow(projectID int64, w uptime.Window, form FormState, errMsg string) 
 		var templ_7745c5c3_Var16 string
 		templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.maintenance.edit"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 167, Col: 123}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 147, Col: 123}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 		if templ_7745c5c3_Err != nil {
@@ -418,7 +398,7 @@ func windowRow(projectID int64, w uptime.Window, form FormState, errMsg string) 
 		var templ_7745c5c3_Var17 templ.SafeURL
 		templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(maintenanceDeletePath(projectID)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 168, Col: 76}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 148, Col: 76}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 		if templ_7745c5c3_Err != nil {
@@ -431,7 +411,7 @@ func windowRow(projectID int64, w uptime.Window, form FormState, errMsg string) 
 		var templ_7745c5c3_Var18 string
 		templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.ResolveAttributeValue(strconv.FormatInt(w.ID, 10))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 169, Col: 78}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 149, Col: 78}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var18)
 		if templ_7745c5c3_Err != nil {
@@ -444,7 +424,7 @@ func windowRow(projectID int64, w uptime.Window, form FormState, errMsg string) 
 		var templ_7745c5c3_Var19 string
 		templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.action_delete"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 170, Col: 100}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 150, Col: 100}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 		if templ_7745c5c3_Err != nil {
@@ -466,7 +446,6 @@ func windowRow(projectID int64, w uptime.Window, form FormState, errMsg string) 
 	})
 }
 
-// windowEditModal — правка окна обслуживания теми же полями, что и создание.
 func windowEditModal(projectID int64, w uptime.Window, form FormState, errMsg string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -512,7 +491,7 @@ func windowEditModal(projectID int64, w uptime.Window, form FormState, errMsg st
 			var templ_7745c5c3_Var22 templ.SafeURL
 			templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(maintenanceUpdatePath(projectID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 186, Col: 74}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 165, Col: 74}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 			if templ_7745c5c3_Err != nil {
@@ -530,7 +509,7 @@ func windowEditModal(projectID int64, w uptime.Window, form FormState, errMsg st
 				var templ_7745c5c3_Var23 string
 				templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.ResolveAttributeValue(errID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 190, Col: 31}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 168, Col: 31}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var23)
 				if templ_7745c5c3_Err != nil {
@@ -543,7 +522,7 @@ func windowEditModal(projectID int64, w uptime.Window, form FormState, errMsg st
 				var templ_7745c5c3_Var24 string
 				templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinStringErrs(errMsg)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 190, Col: 42}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 168, Col: 42}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 				if templ_7745c5c3_Err != nil {
@@ -561,7 +540,7 @@ func windowEditModal(projectID int64, w uptime.Window, form FormState, errMsg st
 			var templ_7745c5c3_Var25 string
 			templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.ResolveAttributeValue(strconv.FormatInt(w.ID, 10))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 192, Col: 76}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 170, Col: 76}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var25)
 			if templ_7745c5c3_Err != nil {
@@ -589,24 +568,8 @@ func windowEditModal(projectID int64, w uptime.Window, form FormState, errMsg st
 	})
 }
 
-// maintenanceFields — поля окна обслуживания. Общие для создания и правки:
-// формы отличаются только адресом, идентификатором окна и подписью кнопки, а
-// восемь полей с их взаимными зависимостями (тип окна прячет половину, «Другой»
-// пояс открывает свободное поле) незачем держать в двух экземплярах — они
-// разъедутся при первой же правке.
-//
-// values — что показывать в полях: введённое человеком после ошибки либо
-// значения самого окна; см. windowFormValues.
-//
-// errID — id блока ошибки валидации в вызывающей модалке (пустой, если
-// ошибки нет): первое текстовое поле получает aria-invalid/aria-describedby,
-// чтобы скринридер связал сообщение с полем (№80).
-//
-// idPrefix — модалка создания и модалка правки каждого окна рендерят этот
-// фрагмент на одной странице ("new-maintenance-window" / EditWindowModalID),
-// поэтому статичные id полей (сейчас — подсказки под ends_at) собираются из
-// него, а не зашиты в разметке: иначе на странице с несколькими окнами id
-// задвоились бы.
+// Общий для создания и правки — 8 полей с зависимостями иначе разъехались бы в двух копиях.
+// idPrefix обязателен: несколько модалок (одна на окно) рендерят фрагмент на одной странице.
 func maintenanceFields(values FormState, submitKey string, errID string, idPrefix string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -635,7 +598,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var27 string
 		templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.maintenance.field.name"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 219, Col: 49}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 181, Col: 49}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 		if templ_7745c5c3_Err != nil {
@@ -648,7 +611,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var28 string
 		templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.ResolveAttributeValue(values.Get("name", ""))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 225, Col: 34}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 187, Col: 34}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var28)
 		if templ_7745c5c3_Err != nil {
@@ -666,7 +629,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 			var templ_7745c5c3_Var29 string
 			templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.ResolveAttributeValue(errID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 228, Col: 29}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 190, Col: 29}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var29)
 			if templ_7745c5c3_Err != nil {
@@ -684,7 +647,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var30 string
 		templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.maintenance.field.kind"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 237, Col: 76}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 197, Col: 76}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
 		if templ_7745c5c3_Err != nil {
@@ -708,7 +671,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var31 string
 		templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.maintenance.kind.oneoff_label"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 245, Col: 57}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 205, Col: 57}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 		if templ_7745c5c3_Err != nil {
@@ -732,7 +695,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var32 string
 		templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.maintenance.kind.weekly_label"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 253, Col: 57}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 213, Col: 57}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
 		if templ_7745c5c3_Err != nil {
@@ -750,7 +713,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 			var templ_7745c5c3_Var33 string
 			templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.ResolveAttributeValue(idPrefix + "-indefinite-warning")
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 272, Col: 105}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 224, Col: 105}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var33)
 			if templ_7745c5c3_Err != nil {
@@ -768,7 +731,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 			var templ_7745c5c3_Var34 string
 			templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.ResolveAttributeValue(idPrefix + "-indefinite-warning")
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 274, Col: 97}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 226, Col: 97}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var34)
 			if templ_7745c5c3_Err != nil {
@@ -782,7 +745,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var35 string
 		templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.maintenance.oneoff.indefinite"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 276, Col: 57}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 228, Col: 57}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
 		if templ_7745c5c3_Err != nil {
@@ -795,7 +758,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var36 string
 		templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.ResolveAttributeValue(idPrefix + "-indefinite-warning")
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 278, Col: 67}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 230, Col: 67}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var36)
 		if templ_7745c5c3_Err != nil {
@@ -808,7 +771,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var37 string
 		templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.maintenance.indefinite_slo_warning"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 278, Col: 128}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 230, Col: 128}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
 		if templ_7745c5c3_Err != nil {
@@ -821,7 +784,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var38 string
 		templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.maintenance.oneoff.start"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 283, Col: 53}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 235, Col: 53}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 		if templ_7745c5c3_Err != nil {
@@ -834,7 +797,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var39 string
 		templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.ResolveAttributeValue(values.Get("starts_at", ""))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 284, Col: 100}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 236, Col: 100}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var39)
 		if templ_7745c5c3_Err != nil {
@@ -847,7 +810,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var40 string
 		templ_7745c5c3_Var40, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.maintenance.oneoff.end"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 289, Col: 51}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 241, Col: 51}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var40))
 		if templ_7745c5c3_Err != nil {
@@ -860,7 +823,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var41 string
 		templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.ResolveAttributeValue(values.Get("ends_at", ""))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 290, Col: 96}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 242, Col: 96}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var41)
 		if templ_7745c5c3_Err != nil {
@@ -873,7 +836,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var42 string
 		templ_7745c5c3_Var42, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.maintenance.weekly.weekday"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 299, Col: 55}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 251, Col: 55}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var42))
 		if templ_7745c5c3_Err != nil {
@@ -896,7 +859,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var43 string
 		templ_7745c5c3_Var43, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.maintenance.weekly.start"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 309, Col: 53}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 261, Col: 53}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var43))
 		if templ_7745c5c3_Err != nil {
@@ -909,7 +872,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var44 string
 		templ_7745c5c3_Var44, templ_7745c5c3_Err = templ.ResolveAttributeValue(values.Get("start_time", ""))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 310, Col: 92}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 262, Col: 92}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var44)
 		if templ_7745c5c3_Err != nil {
@@ -922,7 +885,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var45 string
 		templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.maintenance.weekly.end"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 315, Col: 51}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 267, Col: 51}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var45))
 		if templ_7745c5c3_Err != nil {
@@ -935,7 +898,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var46 string
 		templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.ResolveAttributeValue(values.Get("end_time", ""))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 316, Col: 88}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 268, Col: 88}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var46)
 		if templ_7745c5c3_Err != nil {
@@ -948,7 +911,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var47 string
 		templ_7745c5c3_Var47, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.maintenance.field.timezone"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 324, Col: 54}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 276, Col: 54}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var47))
 		if templ_7745c5c3_Err != nil {
@@ -972,7 +935,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 			var templ_7745c5c3_Var48 string
 			templ_7745c5c3_Var48, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.maintenance.field.timezone_other"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 330, Col: 88}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 282, Col: 88}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var48))
 			if templ_7745c5c3_Err != nil {
@@ -990,7 +953,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 			var templ_7745c5c3_Var49 string
 			templ_7745c5c3_Var49, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.maintenance.field.timezone_other"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 332, Col: 79}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 284, Col: 79}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var49))
 			if templ_7745c5c3_Err != nil {
@@ -1008,7 +971,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var50 string
 		templ_7745c5c3_Var50, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.maintenance.field.timezone_custom"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 342, Col: 61}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 292, Col: 61}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var50))
 		if templ_7745c5c3_Err != nil {
@@ -1021,7 +984,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var51 string
 		templ_7745c5c3_Var51, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "uptime.maintenance.timezone_placeholder"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 343, Col: 114}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 293, Col: 114}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var51)
 		if templ_7745c5c3_Err != nil {
@@ -1034,7 +997,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var52 string
 		templ_7745c5c3_Var52, templ_7745c5c3_Err = templ.ResolveAttributeValue(values.Get("timezone_custom", ""))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 343, Col: 172}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 293, Col: 172}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var52)
 		if templ_7745c5c3_Err != nil {
@@ -1047,7 +1010,7 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 		var templ_7745c5c3_Var53 string
 		templ_7745c5c3_Var53, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, submitKey))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 347, Col: 71}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 297, Col: 71}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var53))
 		if templ_7745c5c3_Err != nil {
@@ -1061,8 +1024,6 @@ func maintenanceFields(values FormState, submitKey string, errID string, idPrefi
 	})
 }
 
-// Maintenance — GET/POST /projects/{id}/maintenance: список окон
-// обслуживания проекта + форма создания (разового или еженедельного).
 // Доступ только owner/admin организации проекта (requireProjectRole).
 func Maintenance(projectID int64, windows []uptime.Window, form FormState, errMsg, userEmail string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
@@ -1112,7 +1073,7 @@ func Maintenance(projectID int64, windows []uptime.Window, form FormState, errMs
 			var templ_7745c5c3_Var56 string
 			templ_7745c5c3_Var56, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "nav.maintenance"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 357, Col: 39}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 305, Col: 39}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var56))
 			if templ_7745c5c3_Err != nil {
@@ -1134,7 +1095,7 @@ func Maintenance(projectID int64, windows []uptime.Window, form FormState, errMs
 				var templ_7745c5c3_Var57 string
 				templ_7745c5c3_Var57, templ_7745c5c3_Err = templ.JoinStringErrs(errMsg)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 360, Col: 29}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 308, Col: 29}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var57))
 				if templ_7745c5c3_Err != nil {
@@ -1156,7 +1117,7 @@ func Maintenance(projectID int64, windows []uptime.Window, form FormState, errMs
 			var templ_7745c5c3_Var58 string
 			templ_7745c5c3_Var58, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.maintenance.list_title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 364, Col: 74}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 312, Col: 74}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var58))
 			if templ_7745c5c3_Err != nil {
@@ -1191,7 +1152,7 @@ func Maintenance(projectID int64, windows []uptime.Window, form FormState, errMs
 					var templ_7745c5c3_Var60 string
 					templ_7745c5c3_Var60, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.maintenance.table.name"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 372, Col: 72}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 320, Col: 72}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var60))
 					if templ_7745c5c3_Err != nil {
@@ -1204,7 +1165,7 @@ func Maintenance(projectID int64, windows []uptime.Window, form FormState, errMs
 					var templ_7745c5c3_Var61 string
 					templ_7745c5c3_Var61, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.maintenance.table.type"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 373, Col: 72}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 321, Col: 72}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var61))
 					if templ_7745c5c3_Err != nil {
@@ -1217,7 +1178,7 @@ func Maintenance(projectID int64, windows []uptime.Window, form FormState, errMs
 					var templ_7745c5c3_Var62 string
 					templ_7745c5c3_Var62, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.maintenance.table.schedule"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 374, Col: 76}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 322, Col: 76}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var62))
 					if templ_7745c5c3_Err != nil {
@@ -1271,7 +1232,7 @@ func Maintenance(projectID int64, windows []uptime.Window, form FormState, errMs
 				var templ_7745c5c3_Var64 templ.SafeURL
 				templ_7745c5c3_Var64, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(maintenancePath(projectID)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 393, Col: 69}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 341, Col: 69}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var64))
 				if templ_7745c5c3_Err != nil {
@@ -1289,7 +1250,7 @@ func Maintenance(projectID int64, windows []uptime.Window, form FormState, errMs
 					var templ_7745c5c3_Var65 string
 					templ_7745c5c3_Var65, templ_7745c5c3_Err = templ.ResolveAttributeValue(createErrID)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 397, Col: 38}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 344, Col: 38}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var65)
 					if templ_7745c5c3_Err != nil {
@@ -1302,7 +1263,7 @@ func Maintenance(projectID int64, windows []uptime.Window, form FormState, errMs
 					var templ_7745c5c3_Var66 string
 					templ_7745c5c3_Var66, templ_7745c5c3_Err = templ.JoinStringErrs(errMsg)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 397, Col: 49}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/maintenance.templ`, Line: 344, Col: 49}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var66))
 					if templ_7745c5c3_Err != nil {

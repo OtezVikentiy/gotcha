@@ -20,29 +20,19 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// fakeIssueSource стримит n синтетических записей issues, игнорируя фильтр
-// заявки: воркеру для этих тестов важна только сборка файла, а не то, что
-// именно отфильтровано.
 type fakeIssueSource struct {
 	n       int
 	failAt  int // индекс записи, на которой вернуть failErr вместо записи
 	failErr error
-	// seenPII — includePII, с которым Stream был вызван, по порядку вызовов
-	// (мутационная проверка M1b, worker.go:stream: includePII обязан быть
-	// job.IncludePII заявки, а не константой).
 	seenPII []bool
 }
 
 func fakeIssues(n int) IssueSource { return &fakeIssueSource{n: n} }
 
-// failingSource — источник, падающий на первой же записи (failAt=0 — до
-// единой записи).
 func failingSource(err error) IssueSource {
 	return &fakeIssueSource{n: 1, failAt: 0, failErr: err}
 }
 
-// partialFailingSource пишет k записей и затем возвращает err — проверка,
-// что .part не остаётся и от ошибки посреди потока, а не только от мгновенной.
 func partialFailingSource(k int, err error) IssueSource {
 	return &fakeIssueSource{n: k + 1, failAt: k, failErr: err}
 }
@@ -64,8 +54,6 @@ func (s *fakeIssueSource) Stream(ctx context.Context, projectID int64, includePI
 	return nil
 }
 
-// fakeEventSource — аналог fakeIssueSource для kind=events, покрывает ветку
-// columnsFor/stream, которую issues-сценарии не задевают.
 type fakeEventSource struct{ n int }
 
 func fakeEvents(n int) EventSource { return &fakeEventSource{n: n} }
@@ -84,11 +72,6 @@ func (s *fakeEventSource) Stream(ctx context.Context, projectID, scopeIssueID in
 	return nil
 }
 
-// deleteOnStreamSource удаляет строку заявки из БД сразу после первой
-// отданной записи — имитация «заявку снесли, пока воркер писал файл».
-// Заявка к этому моменту уже в статусе running (Claim отработал раньше), так
-// что удаление идёт напрямую, в обход Store.Delete (тот удаляет только
-// терминальные заявки).
 type deleteOnStreamSource struct {
 	pool *pgxpool.Pool
 	id   int64
@@ -131,10 +114,6 @@ func TestWorkerWritesFileAndMarksDone(t *testing.T) {
 	}
 }
 
-// TestWorkerFileModeExcludesOtherAccess — файл выгрузки — единственное
-// место продукта, где ПДн ложатся на диск (P3-SEC-1 аудита): режим обязан
-// быть 0600, а не 0644 (на bare-metal деплое 0644 читается любым
-// пользователем хоста).
 func TestWorkerFileModeExcludesOtherAccess(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -158,8 +137,6 @@ func TestWorkerFileModeExcludesOtherAccess(t *testing.T) {
 }
 
 func TestWorkerWritesEventsFile(t *testing.T) {
-	// Ветка Kind=events (columnsFor/stream) не покрыта issues-сценариями
-	// выше — отдельный проход с фиктивным EventSource.
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
@@ -184,17 +161,6 @@ func TestWorkerWritesEventsFile(t *testing.T) {
 	}
 }
 
-// TestWorkerPassesJobIncludePIIToEventSource — мутационная проверка врезки
-// worker.go:stream(): includePII, дошедший до EventSource.Stream, обязан
-// быть галочкой ИМЕННО этой заявки (job.IncludePII), а не константой,
-// зашитой в момент постройки w.Events. Источник — НАСТОЯЩИЙ eventSource
-// (не фиктивный), заявки собираются одним и тем же Worker.Events одна за
-// другой, а проверка идёт по РЕАЛЬНОМУ содержимому файлов на диске: если
-// бы стрим вызывался с захардкоженным true/false (или с полем самого
-// источника, как было до фикса), одна из двух заявок ниже либо унесла бы
-// PII под маской «отфильтровано», либо отдала бы маску там, где заявка
-// просила «выгрузить как есть». Проверка по именам ключей здесь недостаточна
-// — только по фактическим секретным значениям в байтах файла.
 func TestWorkerPassesJobIncludePIIToEventSource(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -242,8 +208,6 @@ func TestWorkerPassesJobIncludePIIToEventSource(t *testing.T) {
 	w := &Worker{Store: st, Pool: pool, Events: NewEventSource(event.NewQuery(ch), svc), Cfg: Config{
 		Dir: dir, TTL: time.Hour, MaxRows: 100, MaxBytes: 1 << 20, DiskBudget: 1 << 30}}
 
-	// Claim берёт по ORDER BY created_at — сначала masked, потом raw, один
-	// и тот же w.Events на оба тика.
 	if err := w.Tick(ctx); err != nil {
 		t.Fatalf("Tick 1: %v", err)
 	}
@@ -275,15 +239,6 @@ func TestWorkerPassesJobIncludePIIToEventSource(t *testing.T) {
 	}
 }
 
-// TestWorkerPassesJobIncludePIIToIssueSource — то же самое (M1b, аудит
-// перед 1.0), что TestWorkerPassesJobIncludePIIToEventSource, но для
-// worker.go:stream ветки KindIssues: includePII, дошедший до
-// IssueSource.Stream, обязан быть галочкой ИМЕННО этой заявки
-// (job.IncludePII), а не константой, зашитой в вызове (например, true
-// независимо от заявки — тогда маска assignee_email из source_issues.go
-// никогда не применялась бы). fakeIssueSource фиксирует includePII каждого
-// вызова Stream, Claim берёт заявки по ORDER BY created_at — сначала
-// masked, потом raw.
 func TestWorkerPassesJobIncludePIIToIssueSource(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -352,13 +307,6 @@ func TestWorkerTruncatesAtRowCap(t *testing.T) {
 	}
 }
 
-// TestWorkerRetriesOnDiskBudgetExceeded — P3-SEC-3 аудита: «места нет прямо
-// сейчас» самоустраняется первым же проходом джанитора (файлы истекают,
-// освобождают бюджет), в отличие от ErrTooManyIssues (постоянная причина,
-// требующая действия автора) — disk_full обязан вернуться в очередь
-// (fail(), 3 попытки), а не отказать НАВСЕГДА первой же попыткой
-// (failPermanent валил бы выгрузки чужих организаций до ручного
-// вмешательства, пока один тенант держит диск полным).
 func TestWorkerRetriesOnDiskBudgetExceeded(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -391,11 +339,6 @@ func TestWorkerRetriesOnDiskBudgetExceeded(t *testing.T) {
 	}
 }
 
-// TestWorkerNotifiesOnDiskFullAfterFinalAttempt — disk_full теперь временный
-// отказ (fail(), см. TestWorkerRetriesOnDiskBudgetExceeded): Notify обязан
-// сработать только на ПОСЛЕДНЕЙ попытке (maxAttempts), не на первой, и
-// донести ИМЕННО reasonDiskFull автору письма (даёт понятное действие —
-// подождать), а не общий reasonInternal.
 func TestWorkerNotifiesOnDiskFullAfterFinalAttempt(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -432,8 +375,6 @@ func TestWorkerNotifiesOnDiskFullAfterFinalAttempt(t *testing.T) {
 		if notifiedJob.ID != id || notifiedJob.Status != StatusFailed || notifiedJob.LastError == "" {
 			t.Fatalf("Notify получил неожиданный снимок заявки: %+v", notifiedJob)
 		}
-		// reasonDiskFull, не reasonInternal — мутация switch на reasonInternal
-		// осталась бы незамеченной без этой проверки.
 		if notifiedJob.FailureReasonKey != reasonDiskFull {
 			t.Fatalf("FailureReasonKey = %q, want %q", notifiedJob.FailureReasonKey, reasonDiskFull)
 		}
@@ -445,12 +386,6 @@ func TestWorkerNotifiesOnDiskFullAfterFinalAttempt(t *testing.T) {
 	}
 }
 
-// TestWorkerReservesBudgetHeadroomForCurrentJob — P2-OPS-4 аудита: раньше
-// проверка была used >= DiskBudget, и заявка при used == DiskBudget-1
-// проходила, а затем дописывала до MaxBytes СВЕРХ бюджета — единственный
-// потолок размера файла её не сдерживал, потому что заявку уже пропустили.
-// used настроен РОВНО на 1 байт меньше бюджета — граница, которую старая
-// проверка молча пропускала.
 func TestWorkerReservesBudgetHeadroomForCurrentJob(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -479,11 +414,6 @@ func TestWorkerReservesBudgetHeadroomForCurrentJob(t *testing.T) {
 	}
 }
 
-// TestWorkerRejectsOnLowRealDiskSpace — P2-OPS-4 аудита: в поставляемом
-// docker-compose pgdata/chdata/exportdata делят одну файловую систему хоста,
-// поэтому заявка, уместившаяся в Config.DiskBudget, всё равно может не
-// уместиться на РЕАЛЬНОМ диске — Worker.FreeBytes (инъекция для теста)
-// сообщает мало свободного места, хотя каталог выгрузок пуст.
 func TestWorkerRejectsOnLowRealDiskSpace(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -514,10 +444,6 @@ func TestWorkerRejectsOnLowRealDiskSpace(t *testing.T) {
 	}
 }
 
-// TestWorkerIgnoresRealDiskSpaceWhenUnsupported — Worker.FreeBytes с ok=false
-// (платформа без Statfs, см. diskfree_other.go) обязан оставить решение
-// ЦЕЛИКОМ за бюджетом — заявка, вписывающаяся в DiskBudget, не должна
-// отказывать из-за неподдержанной проверки реального диска.
 func TestWorkerIgnoresRealDiskSpaceWhenUnsupported(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -542,11 +468,6 @@ func TestWorkerIgnoresRealDiskSpaceWhenUnsupported(t *testing.T) {
 	}
 }
 
-// TestWorkerNotifiesTooManyGroupsReason — ErrTooManyIssues от источника
-// (фильтр резолвится в слишком много групп) обязан дать письму СВОЙ ключ
-// причины (reasonTooManyGroups, «сузьте условия»), а не общий
-// reasonInternal: это единственная постоянная причина, которую автор может
-// устранить сам (§8 спеки).
 func TestWorkerNotifiesTooManyGroupsReason(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -604,17 +525,11 @@ func TestWorkerLeavesNoPartFileOnFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	// Отказ временный (ClickHouse недоступен — не наша вина): при
-	// attempts=1 < maxAttempts заявка обязана вернуться в очередь, а не
-	// осесть в failed после единственной попытки.
 	if j.Status != StatusQueued || j.Attempts != 1 {
 		t.Fatalf("временный отказ обработан как окончательный: %+v", j)
 	}
 }
 
-// TestWorkerDoesNotNotifyOnRetryableFailure — временный отказ первой
-// попытки не сообщает автору: заявка ещё может досчитаться со следующего
-// тика, письмо о ней было бы преждевременным.
 func TestWorkerDoesNotNotifyOnRetryableFailure(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -638,10 +553,6 @@ func TestWorkerDoesNotNotifyOnRetryableFailure(t *testing.T) {
 	}
 }
 
-// TestWorkerNotifiesOnFinalRetryableFailure — та же временная причина
-// отказа, но заявка исчерпала все maxAttempts попыток: Store.Fail сама
-// переводит её в failed, и это тот самый момент, когда автору наконец стоит
-// написать (ровно один раз, не на каждой из промежуточных попыток).
 func TestWorkerNotifiesOnFinalRetryableFailure(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -674,9 +585,6 @@ func TestWorkerNotifiesOnFinalRetryableFailure(t *testing.T) {
 		if notifiedJob.ID != id || notifiedJob.Status != StatusFailed {
 			t.Fatalf("Notify получил неожиданный снимок заявки: %+v", notifiedJob)
 		}
-		// Транзитная инфраструктурная причина ("ClickHouse недоступен") не
-		// даёт автору вменяемого действия — общий reasonInternal, не
-		// reasonDiskFull/reasonTooManyGroups.
 		if notifiedJob.FailureReasonKey != reasonInternal {
 			t.Fatalf("FailureReasonKey = %q, want %q", notifiedJob.FailureReasonKey, reasonInternal)
 		}
@@ -688,15 +596,6 @@ func TestWorkerNotifiesOnFinalRetryableFailure(t *testing.T) {
 	}
 }
 
-// TestWorkerNotifiesOnSweepStale — заявка, зависшая вместе с погибшим
-// инстансом на последней попытке (running, attempts=maxAttempts, лиза
-// протухла), добивается не через fail()/failPermanent() воркера, а через
-// Store.SweepStale в начале Tick — это единственный терминальный исход
-// фичи, о котором Worker.process не узнаёт вовсе. Раньше Tick вызывал
-// SweepStale только ради счётчика и никого не уведомлял: автор заявки не
-// получал письма и не мог узнать об отказе иначе как перезагрузкой страницы
-// выгрузок (см. §9 спеки — письмо обязательно на КАЖДОМ терминальном
-// исходе).
 func TestWorkerNotifiesOnSweepStale(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -735,8 +634,6 @@ func TestWorkerNotifiesOnSweepStale(t *testing.T) {
 }
 
 func TestWorkerLeavesNoPartFileOnPartialWriteFailure(t *testing.T) {
-	// Источник падает НЕ на первой записи — .part к моменту ошибки уже
-	// непустой; проверка, что удаление .part не завязано на «файл пуст».
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
@@ -755,12 +652,6 @@ func TestWorkerLeavesNoPartFileOnPartialWriteFailure(t *testing.T) {
 	}
 }
 
-// staleningIssueSource симулирует потерю лизы во время записи: пока воркер
-// ещё пишет файл (Stream не вернулся), кто-то другой успевает переклеймить
-// эту же заявку — attempts растёт в обход текущего вызова. К моменту Done
-// связка status='running' AND attempts=$attempt из фенсинга Store.Fail/Done
-// уже не совпадает с тем, что держит текущий вызов, и Done обязан получить
-// ErrStaleClaim, а не дописать поверх чужой попытки.
 type staleningIssueSource struct {
 	pool *pgxpool.Pool
 	id   int64
@@ -789,10 +680,6 @@ func TestWorkerRemovesFileWhenLeaseLostBeforeDone(t *testing.T) {
 		t.Fatalf("Tick: %v", err)
 	}
 
-	// Done должен был получить ErrStaleClaim (attempts из БД уже не совпадает
-	// с тем, что держал вызов) и не отметить заявку как done: файл,
-	// оставшийся на диске без подтверждённого владения, был бы скачиваемым
-	// мусором зомби-попытки.
 	j, err := st.Get(ctx, id)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -831,9 +718,6 @@ func TestWorkerDropsFileWhenJobDeletedMidFlight(t *testing.T) {
 }
 
 func TestWorkerRequeuesOnMissingDir(t *testing.T) {
-	// Каталог назначения отсутствует (в проде — фича вовсе не стартует, но
-	// воркер сам по себе не должен терять ошибку записи: она обязана
-	// доехать до Fail, а не пропасть молча).
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
@@ -883,9 +767,6 @@ func TestWorkerRequeuesOnWritePermissionDenied(t *testing.T) {
 }
 
 func TestWorkerSkipsWhenAnotherInstanceHoldsLock(t *testing.T) {
-	// Второй экземпляр воркера не должен начинать писать файл параллельно —
-	// проверка бьёт по самому механизму exclusivity (advisory lock), держа
-	// его на отдельном соединении, как это делала бы соседняя реплика.
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
@@ -923,9 +804,6 @@ func TestWorkerSkipsWhenAnotherInstanceHoldsLock(t *testing.T) {
 	}
 }
 
-// TestWorkerFailsPermanentlyWhenSourceNotConfigured — воркер, собранный без
-// нужного источника (ошибка связки в cmd/, а не временный сбой) — заявка не
-// должна биться о ретраи: причина не изменится сама собой.
 func TestWorkerFailsPermanentlyWhenSourceNotConfigured(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -948,8 +826,6 @@ func TestWorkerFailsPermanentlyWhenSourceNotConfigured(t *testing.T) {
 	}
 }
 
-// TestWorkerFailsPermanentlyWhenIssueSourceNotConfigured — симметричный
-// случай для groups: до сих пор был покрыт только KindEvents/Events==nil.
 func TestWorkerFailsPermanentlyWhenIssueSourceNotConfigured(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -972,8 +848,6 @@ func TestWorkerFailsPermanentlyWhenIssueSourceNotConfigured(t *testing.T) {
 	}
 }
 
-// TestTickReturnsNilWhenQueueEmpty — очередь пуста, Claim отдаёт ok=false:
-// Tick обязан молча выйти, не тронув ничего и не вернув ошибку.
 func TestTickReturnsNilWhenQueueEmpty(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -985,13 +859,6 @@ func TestTickReturnsNilWhenQueueEmpty(t *testing.T) {
 	}
 }
 
-// TestWorkerRejectsMaxRowsAtOrAboveSafetyLimit — P1: GOTCHA_EXPORT_MAX_ROWS
-// на уровне защитного предела потока событий (eventStreamSafetyLimit)
-// обесценивает Truncated — источник событий физически не отдаст больше
-// eventStreamSafetyLimit строк, поток кончится «естественно» раньше, чем
-// счётчик заявки дойдёт до своего потолка, и пользователь получит молча
-// усечённую выгрузку. Config.Validate (вызывается из Tick) обязан упасть
-// внятной ошибкой конфигурации ДО клейма заявки, а не тихо продолжить.
 func TestWorkerRejectsMaxRowsAtOrAboveSafetyLimit(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -1010,7 +877,6 @@ func TestWorkerRejectsMaxRowsAtOrAboveSafetyLimit(t *testing.T) {
 		t.Errorf("причина невнятна: %v", err)
 	}
 
-	// Заявка не тронута вовсе: конфигурация проверяется раньше клейма.
 	j, getErr := st.Get(ctx, id)
 	if getErr != nil {
 		t.Fatalf("Get: %v", getErr)
@@ -1020,8 +886,6 @@ func TestWorkerRejectsMaxRowsAtOrAboveSafetyLimit(t *testing.T) {
 	}
 }
 
-// TestWorkerAcceptsMaxRowsBelowSafetyLimit — симметричный положительный
-// случай: значение строго ниже предела не мешает обычной сборке файла.
 func TestWorkerAcceptsMaxRowsBelowSafetyLimit(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -1044,9 +908,6 @@ func TestWorkerAcceptsMaxRowsBelowSafetyLimit(t *testing.T) {
 	}
 }
 
-// TestWorkerTruncatesAtByteCapIndependentlyOfRowCap — потолок байт должен
-// сработать сам по себе, а не только как побочный эффект потолка строк: до
-// сих пор все тесты держали MaxBytes заведомо просторным.
 func TestWorkerTruncatesAtByteCapIndependentlyOfRowCap(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -1069,9 +930,6 @@ func TestWorkerTruncatesAtByteCapIndependentlyOfRowCap(t *testing.T) {
 	}
 }
 
-// badRecordSource отдаёт запись, которую JSON-писатель не может
-// сериализовать (канал — не JSON-тип), — источник ошибки внутри самой
-// записи строки, а не чтения источника.
 type badRecordSource struct{}
 
 func (badRecordSource) Stream(ctx context.Context, projectID int64, includePII bool, p Params, fn func(Record) error) error {
@@ -1104,13 +962,6 @@ func TestWorkerLeavesNoPartFileOnSerializationFailure(t *testing.T) {
 	}
 }
 
-// staleningFailingSource симулирует потерю лизы, совпавшую с транзитным
-// отказом: пока источник ещё «читается», кто-то другой успевает
-// переклеймить эту же заявку (attempts растёт в обход текущего вызова), а
-// сам источник в довершение возвращает обычную (не постоянную) ошибку.
-// worker.fail обязан получить ErrStaleClaim от Store.Fail и проглотить её
-// молча — активная попытка чужого клейма не должна быть задета отказом
-// зомби-вызова.
 type staleningFailingSource struct {
 	pool *pgxpool.Pool
 	id   int64
@@ -1151,14 +1002,6 @@ func TestWorkerFailSuppressesStaleClaim(t *testing.T) {
 	}
 }
 
-// slowAfterWriteSource пишет одну запись сразу (пока ctx ещё жив), затем
-// ждёт истечения ctx.Done() (гарантированно совпадает с дедлайном тика,
-// сколько бы Claim/SweepStale/открытие файла ни заняли на медленном
-// раннере) плюс небольшой запас и только потом возвращается. Запись успевает
-// пройти ДО истечения дедлайна, поэтому writeFile завершается успешно и
-// process доходит до Store.Done — с уже просроченным ctx. Если бы Done
-// вызывался с context.Background() вместо этого ctx, отказ бы не наступил и
-// заявка стала бы done несмотря на истёкший тайм-аут тика.
 type slowAfterWriteSource struct{}
 
 func (s *slowAfterWriteSource) Stream(ctx context.Context, projectID int64, includePII bool, p Params, fn func(Record) error) error {
@@ -1195,15 +1038,6 @@ func TestWorkerDoesNotFinalizeAfterJobTimeoutExpiresBeforeDone(t *testing.T) {
 	}
 }
 
-// TestWorkerRemovesFileWhenDoneFailsNotStaleClaim воспроизводит ту же гонку,
-// что и TestWorkerDoesNotFinalizeAfterJobTimeoutExpiresBeforeDone (jobCtx
-// истёк между rename и Store.Done), но проверяет другую половину дефекта:
-// Store.Done с уже истёкшим ctx возвращает ошибку контекста, а не
-// ErrStaleClaim (ноль строк там не при чём — pgx не успевает даже уйти в
-// сеть). Раньше уборка finalPath была только в ветке ErrStaleClaim — эта
-// ошибка утекала мимо неё, и файл навсегда оставался на диске при заявке,
-// которую позже добьёт SweepStale в failed (заявка недостижима для
-// скачивания, но место на диске не освобождается вплоть до PurgeRows).
 func TestWorkerRemovesFileWhenDoneFailsNotStaleClaim(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -1235,13 +1069,6 @@ func TestWorkerRemovesFileWhenDoneFailsNotStaleClaim(t *testing.T) {
 	}
 }
 
-// shutdownIssueSource симулирует остановку процесса (SIGTERM/деплой,
-// P2-OPS-5) в разгар сборки: после n записей источник сам отменяет runCtx —
-// тот же ctx, что Worker.Tick получил снаружи, — и возвращает его ошибку
-// отмены, как это сделал бы реальный источник (ClickHouse/PG), у которого
-// запрос оборвался вместе с ctx. Worker.process обязан отличить эту отмену
-// РОДИТЕЛЬСКОГО ctx от настоящего сбоя сборки и вернуть заявку в очередь
-// через release(), не потратив попытку через fail().
 type shutdownIssueSource struct {
 	n      int
 	cancel context.CancelFunc
@@ -1259,12 +1086,6 @@ func (s *shutdownIssueSource) Stream(ctx context.Context, projectID int64, inclu
 	return ctx.Err()
 }
 
-// TestWorkerReleasesJobOnShutdownDuringBuild — основной сценарий P2-OPS-5:
-// SIGTERM/деплой ловят заявку посреди сборки. Мутация — убрать ветку
-// "runCtx.Err() != nil" в process() (или проверять jobCtx вместо runCtx) —
-// обязана уронить это тест: заявка либо потратит попытку через fail()
-// (attempts станет 2), либо (без детача в release()) навсегда останется
-// running, потому что Store.Release получит уже отменённый ctx.
 func TestWorkerReleasesJobOnShutdownDuringBuild(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
@@ -1300,15 +1121,6 @@ func TestWorkerReleasesJobOnShutdownDuringBuild(t *testing.T) {
 	}
 }
 
-// TestWorkerDoesNotWarnOnAdvisoryUnlockDuringShutdown — снятие advisory lock
-// в Tick() пишется через detachTimeout(ctx), а не ctx напрямую (P2-OPS-5):
-// ctx — Run-level контекст, отменённый к моменту, когда отработавший до
-// конца тик доходит до отложенного pg_advisory_unlock. Без детача это не
-// баг (лок сессионный, соединение его переустановит само), но WARN на
-// КАЖДОМ деплое приучает оператора игнорировать предупреждения в логе.
-// Мутация — вернуть в defer'е conn.Exec(ctx, ...) вместо detachTimeout(ctx)
-// — обязана уронить этот тест: снятие лока получит уже отменённый ctx,
-// провалится и залогирует "снятие advisory lock".
 func TestWorkerDoesNotWarnOnAdvisoryUnlockDuringShutdown(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
@@ -1335,14 +1147,6 @@ func TestWorkerDoesNotWarnOnAdvisoryUnlockDuringShutdown(t *testing.T) {
 	}
 }
 
-// permanentFailAfterShutdownSource отменяет переданный runCtx (имитируя
-// SIGTERM/деплой, совпавший по времени с постоянным отказом сборки — редкая,
-// но возможная гонка), а затем всё равно возвращает permErr, никак не
-// связанный с отменой ctx. Настоящий постоянный отказ обязан остаться
-// постоянным отказом (failPermanent), а не замаскироваться под безобидный
-// release() только потому, что процесс в этот же момент останавливают —
-// иначе конфигурационная проблема молча повторялась бы на каждом старте, а
-// автор заявки никогда не получил бы письма с внятной причиной.
 type permanentFailAfterShutdownSource struct {
 	cancel  context.CancelFunc
 	permErr error
@@ -1353,11 +1157,6 @@ func (s *permanentFailAfterShutdownSource) Stream(ctx context.Context, projectID
 	return s.permErr
 }
 
-// TestWorkerStillFailsPermanentlyDuringShutdown — проверяет порядок веток в
-// process(): permanent-случаи обязаны проверяться РАНЬШЕ runCtx.Err().
-// Мутация — переставить "case runCtx.Err() != nil" перед
-// "case errors.Is(err, ErrTooManyIssues)"/ErrPermanent — обязана уронить
-// этот тест: заявка станет queued вместо failed с reasonTooManyGroups.
 func TestWorkerStillFailsPermanentlyDuringShutdown(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
@@ -1383,12 +1182,6 @@ func TestWorkerStillFailsPermanentlyDuringShutdown(t *testing.T) {
 	}
 }
 
-// shutdownAfterLastWriteSource пишет одну запись, затем сам отменяет
-// переданный runCtx (имитируя SIGTERM/деплой, поймавший заявку РОВНО между
-// последней записью и Store.Done) и возвращает успех. writeFile поэтому
-// завершается успешно, но jobCtx на момент вызова Done уже мёртв через свою
-// связь с runCtx — Done обязан всё равно записать успех через
-// detachTimeout(), а не оставить заявку running до SweepStale (P2-OPS-5).
 type shutdownAfterLastWriteSource struct {
 	cancel context.CancelFunc
 }
@@ -1402,11 +1195,6 @@ func (s *shutdownAfterLastWriteSource) Stream(ctx context.Context, projectID int
 	return nil
 }
 
-// TestWorkerFinalizesDoneDespiteShutdownRacingCompletion — мутация: заменить
-// detachTimeout(ctx) на ctx напрямую в Done-ветке process() — обязана
-// уронить этот тест (заявка останется running вместо done), потому что
-// jobCtx унаследовал отмену от runCtx и запись в PG с уже отменённым ctx
-// проваливается мгновенно.
 func TestWorkerFinalizesDoneDespiteShutdownRacingCompletion(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
@@ -1432,12 +1220,6 @@ func TestWorkerFinalizesDoneDespiteShutdownRacingCompletion(t *testing.T) {
 	}
 }
 
-// TestFailDetachesFromCanceledParentContext — прямой тест на detachTimeout():
-// родитель отменяется ДО вызова fail(), запись итога всё равно обязана
-// дойти до PG. Мутация — вызвать Store.Fail(ctx, ...) вместо
-// Store.Fail(dctx, ...) в fail() — обязана уронить этот тест: PG-запрос с
-// уже отменённым ctx проваливается мгновенно, и статус заявки останется
-// running вместо queued.
 func TestFailDetachesFromCanceledParentContext(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
@@ -1464,8 +1246,6 @@ func TestFailDetachesFromCanceledParentContext(t *testing.T) {
 	}
 }
 
-// TestReleaseDetachesFromCanceledParentContext — то же самое для release():
-// см. докблок TestFailDetachesFromCanceledParentContext.
 func TestReleaseDetachesFromCanceledParentContext(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
@@ -1492,9 +1272,6 @@ func TestReleaseDetachesFromCanceledParentContext(t *testing.T) {
 	}
 }
 
-// TestWorkerRunProcessesJobOnTicker — достигает ветку <-ticker.C в Run
-// (до сих пор все тесты били по Tick напрямую) и заодно w.Notify — тоже не
-// вызывавшийся ни в одном тесте.
 func TestWorkerRunProcessesJobOnTicker(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
@@ -1523,9 +1300,6 @@ func TestWorkerRunProcessesJobOnTicker(t *testing.T) {
 }
 
 func TestWorkerRunStopsOnContextCancel(t *testing.T) {
-	// tickInterval — 5s, дожидаться настоящего тика в юнит-тесте незачем:
-	// достаточно убедиться, что Run не виснет после отмены ctx до первого
-	// срабатывания тикера.
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
@@ -1546,24 +1320,12 @@ func TestWorkerRunStopsOnContextCancel(t *testing.T) {
 	}
 }
 
-// TestJobTimeoutBelowLeaseTTL фиксирует инвариант, который иначе живёт
-// только в комментарии рядом с константами: defaultJobTimeout обязан быть
-// строго меньше leaseTTL, иначе второй инстанс переклеймит заявку, которую
-// первый ещё пишет. init() пакета уже паникует при нарушении — тест делает
-// то же самое явным ассертом, который виден в отчёте прогона, а не только
-// при падении. Инвариант для значения, заданного через Config (а не
-// дефолтного), проверяет Config.Validate — см. TestWorkerDoesNotFinalize...
-// и TestWorkerRejectsMaxRowsAtOrAboveSafetyLimit для JobTimeout из Tick.
 func TestJobTimeoutBelowLeaseTTL(t *testing.T) {
 	if defaultJobTimeout >= leaseTTL {
 		t.Fatalf("defaultJobTimeout (%s) обязан быть строго меньше leaseTTL (%s)", defaultJobTimeout, leaseTTL)
 	}
 }
 
-// TestConfigValidateRejectsJobTimeoutAtOrAboveLeaseTTL — инъекция
-// Config.JobTimeout не должна обходить инвариант, который для дефолтного
-// значения держит init()-паника: значение из окружения (§10 спеки) так же
-// легко развести с leaseTTL, как и константы кода.
 func TestConfigValidateRejectsJobTimeoutAtOrAboveLeaseTTL(t *testing.T) {
 	cfg := validExportConfig()
 	cfg.JobTimeout = leaseTTL
@@ -1572,10 +1334,6 @@ func TestConfigValidateRejectsJobTimeoutAtOrAboveLeaseTTL(t *testing.T) {
 	}
 }
 
-// validExportConfig — конфигурация, проходящая Validate() целиком, чтобы
-// тесты на ОДНО конкретное поле не зависели от порядка проверок внутри
-// Validate() и не проходили случайно из-за того, что более раннее поле уже
-// невалидно.
 func validExportConfig() Config {
 	return Config{
 		MaxRows:    1000,
@@ -1585,12 +1343,6 @@ func validExportConfig() Config {
 	}
 }
 
-// TestConfigValidateRejectsNonPositiveMaxRows: P2-OPS-1 — MaxRows <= 0 не
-// значит «без лимита» (в отличие от GOTCHA_DIST_RATE_PER_MIN/
-// *_RETENTION_DAYS): worker.go гасит собственный потолок условием "> 0", а
-// source_events.go всё равно шлёт в ClickHouse LIMIT eventStreamSafetyLimit
-// — поток обрывается на миллионе строк, а Truncated остаётся false. Оператор,
-// следующий конвенции «0 = без лимита», получал бы тихо обрезанную выгрузку.
 func TestConfigValidateRejectsNonPositiveMaxRows(t *testing.T) {
 	for _, maxRows := range []int64{0, -1} {
 		cfg := validExportConfig()
@@ -1605,8 +1357,6 @@ func TestConfigValidateRejectsNonPositiveMaxRows(t *testing.T) {
 	}
 }
 
-// TestConfigValidateRejectsNonPositiveMaxBytes: та же дыра, что у MaxRows,
-// со стороны байтового потолка (worker.go: "MaxBytes > 0 && ...").
 func TestConfigValidateRejectsNonPositiveMaxBytes(t *testing.T) {
 	for _, maxBytes := range []int64{0, -1} {
 		cfg := validExportConfig()
@@ -1621,10 +1371,6 @@ func TestConfigValidateRejectsNonPositiveMaxBytes(t *testing.T) {
 	}
 }
 
-// TestConfigValidateRejectsNonPositiveDiskBudget: P2-OPS-2 —
-// DISK_BUDGET_BYTES<=0 делает "used >= budget" истинным на пустом каталоге:
-// каждая заявка отказывает без единой попытки (failPermanent), а не
-// «работает без ограничения».
 func TestConfigValidateRejectsNonPositiveDiskBudget(t *testing.T) {
 	for _, budget := range []int64{0, -1} {
 		cfg := validExportConfig()
@@ -1639,9 +1385,6 @@ func TestConfigValidateRejectsNonPositiveDiskBudget(t *testing.T) {
 	}
 }
 
-// TestConfigValidateRejectsNonPositiveTTL: P2-OPS-2 — TTL_HOURS<=0 делает
-// expires_at не позже now(): ближайший тик джанитора сносит только что
-// собранный файл, хотя заявка отчиталась успехом и письмо уже ушло.
 func TestConfigValidateRejectsNonPositiveTTL(t *testing.T) {
 	for _, ttl := range []time.Duration{0, -time.Hour} {
 		cfg := validExportConfig()
@@ -1656,13 +1399,6 @@ func TestConfigValidateRejectsNonPositiveTTL(t *testing.T) {
 	}
 }
 
-// TestKnownFailureReasonKeyWhitelistsOnlyTheThreeReasons — P2-UX-2 аудита:
-// веб-слой сверяет failure_reason_key из БД по этой функции перед i18n.T(),
-// потому что i18n.T() на неизвестном ключе возвращает сам ключ как есть, а
-// не перевод — без сверки повреждённая/устаревшая строка стала бы
-// техническим идентификатором на экране пользователя. Мутация — вернуть
-// true по умолчанию (убрать default: return false) — обязана уронить
-// случаи "неизвестный ключ" и "пусто" ниже.
 func TestKnownFailureReasonKeyWhitelistsOnlyTheThreeReasons(t *testing.T) {
 	for _, key := range []string{reasonDiskFull, reasonTooManyGroups, reasonInternal} {
 		if !KnownFailureReasonKey(key) {
@@ -1676,13 +1412,6 @@ func TestKnownFailureReasonKeyWhitelistsOnlyTheThreeReasons(t *testing.T) {
 	}
 }
 
-// raceDirEntry оборачивает os.DirEntry, полученный настоящим os.ReadDir, и
-// удаляет свой файл прямо в момент вызова Info() — непосредственно ПЕРЕД
-// делегированием настоящему Info(). Это воспроизводит именно гонку с
-// джанитором (K4-6): файл существовал на момент обхода каталога (иначе
-// ReadDir его бы не вернул), но исчез до Stat конкретно этой записи.
-// Ошибка, которую в итоге видит sizeOfEntries, — настоящий ENOENT от
-// настоящего lstat на настоящем удалённом файле, а не сконструированная.
 type raceDirEntry struct {
 	os.DirEntry
 	path string
@@ -1695,11 +1424,6 @@ func (r raceDirEntry) Info() (os.FileInfo, error) {
 	return r.DirEntry.Info()
 }
 
-// TestSizeOfEntriesSkipsFileRemovedBetweenReadDirAndInfo — K4-6: отдельный
-// файл, исчезнувший между os.ReadDir и Info() (параллельный джанитор
-// подчищает .part/просроченные файлы независимо от подсчёта бюджета
-// текущей заявки, janitor.go), не должен валить всю заявку ошибкой — он
-// просто больше не занимает место, значит его нечего учитывать.
 func TestSizeOfEntriesSkipsFileRemovedBetweenReadDirAndInfo(t *testing.T) {
 	dir := t.TempDir()
 	keepPath := filepath.Join(dir, "keep.csv")

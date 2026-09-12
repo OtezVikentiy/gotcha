@@ -10,10 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestMonitorRegionMustBeAvailable: форма предлагает только свои регионы, но
-// POST принимал любую строку. Монитор в несуществующем регионе попадает в
-// очередь, и его не забирает никто — тихий отказ мониторинга, который выглядит
-// как «проверок нет, значит всё хорошо».
 func TestMonitorRegionMustBeAvailable(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -28,7 +24,6 @@ func TestMonitorRegionMustBeAvailable(t *testing.T) {
 		t.Fatalf("Create с несуществующим регионом: err = %v, want ErrInvalidMonitor", err)
 	}
 
-	// Встроенный регион доступен всегда.
 	created, err := svc.Create(ctx, m, []string{"local"}, nil)
 	if err != nil {
 		t.Fatalf("Create со встроенным регионом: %v", err)
@@ -39,7 +34,6 @@ func TestMonitorRegionMustBeAvailable(t *testing.T) {
 		t.Fatalf("Update с несуществующим регионом: err = %v, want ErrInvalidMonitor", err)
 	}
 
-	// Регион пробы организации доступен.
 	orgID := orgOfProject(t, pool, pid)
 	if _, _, err := svc.CreateProbe(ctx, orgID, "eu-west", "EU probe"); err != nil {
 		t.Fatalf("CreateProbe: %v", err)

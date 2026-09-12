@@ -5,7 +5,6 @@ import (
 	"testing"
 )
 
-// TestPipelineQueueSaturationEmpty — пустая очередь не насыщена.
 func TestPipelineQueueSaturationEmpty(t *testing.T) {
 	p := NewPipeline(nil, nil)
 	if got := p.QueueSaturation(); got != 0 {
@@ -13,9 +12,6 @@ func TestPipelineQueueSaturationEmpty(t *testing.T) {
 	}
 }
 
-// TestPipelineQueueSaturationRowCap — упор в потолок ПО ЧИСЛУ задач: воркеры
-// не запускаем, очередь наполняется до cap(p.queue) и должна давать рост
-// заполненности вплоть до потолка.
 func TestPipelineQueueSaturationRowCap(t *testing.T) {
 	p := NewPipeline(nil, nil)
 	capacity := int(p.QueueCap())
@@ -37,10 +33,6 @@ func TestPipelineQueueSaturationRowCap(t *testing.T) {
 	}
 }
 
-// TestPipelineQueueSaturationByteCap — байтовое плечо очереди действительно
-// участвует в максимуме: SetMaxQueueBytes ставит маленький потолок ровно по
-// весу одной задачи (см. taskBytes), а счётный потолок (cap(p.queue)) при
-// одной задаче в очереди остаётся практически незанятым.
 func TestPipelineQueueSaturationByteCap(t *testing.T) {
 	p := NewPipeline(nil, nil)
 	ev := &ParsedEvent{EventID: "e", ContextsJSON: strings.Repeat("x", 200)}
@@ -58,8 +50,6 @@ func TestPipelineQueueSaturationByteCap(t *testing.T) {
 	}
 }
 
-// TestPipelineQueueSaturationPartial — частичное заполнение даёт значение
-// строго между 0 и 1.
 func TestPipelineQueueSaturationPartial(t *testing.T) {
 	p := NewPipeline(nil, nil)
 	for i := 0; i < 3; i++ {
@@ -71,9 +61,6 @@ func TestPipelineQueueSaturationPartial(t *testing.T) {
 	}
 }
 
-// TestQueueSaturationZeroDenominatorIsUnbounded — потолок, выключенный нулём
-// (или отрицательным значением), означает «этим лимитом не ограничены»: вклад
-// в QueueSaturation обязан быть 0, а не деление на ноль/панику/+Inf.
 func TestQueueSaturationZeroDenominatorIsUnbounded(t *testing.T) {
 	if got := queueSaturation(5, 0); got != 0 {
 		t.Fatalf("queueSaturation(5, 0) = %v, want 0", got)

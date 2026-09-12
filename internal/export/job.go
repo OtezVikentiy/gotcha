@@ -1,12 +1,9 @@
-// Package export — фоновые выгрузки ошибок и событий: очередь заявок в PG,
-// воркер собирает файл на диск, автор скачивает его со страницы выгрузок.
 package export
 
 import (
 	"time"
 )
 
-// Kind — что выгружаем: группы ошибок или сырые события.
 type Kind string
 
 const (
@@ -22,7 +19,6 @@ func ParseKind(s string) (Kind, bool) {
 	return "", false
 }
 
-// Format — формат файла выгрузки.
 type Format string
 
 const (
@@ -39,7 +35,6 @@ func ParseFormat(s string) (Format, bool) {
 	return "", false
 }
 
-// Ext — расширение файла на диске и в имени скачивания.
 func (f Format) Ext() string { return string(f) }
 
 func (f Format) ContentType() string {
@@ -54,7 +49,6 @@ func (f Format) ContentType() string {
 	return "application/octet-stream"
 }
 
-// Status — состояние заявки в очереди.
 type Status string
 
 const (
@@ -65,22 +59,12 @@ const (
 	StatusExpired Status = "expired"
 )
 
-// Terminal — заявка досчитана: файл больше не пишется, строку можно удалять.
 func (s Status) Terminal() bool {
 	return s == StatusDone || s == StatusFailed || s == StatusExpired
 }
 
-// Params — снимок фильтров на момент постановки в очередь. Относительный период
-// уже развёрнут в абсолютные Since/Until: заявка «за последний час», исполненная
-// через десять минут, обязана дать тот же файл, что дала бы сразу.
-//
-// Sort хранится как часть снимка UI (форма постановки заявки пишет его сюда,
-// он же переносится в issue.Filter.Sort обоими источниками), но на порядок
-// строк САМОЙ выгрузки не влияет: StreamForExport/IDsForFilter обходят
-// результат жёстко по last_seen DESC, id DESC — иначе не построить
-// keyset-курсор постранично устойчивого обхода. Поле не мёртвый код (уходит
-// в params jsonb вместе с остальным снимком фильтра), просто его значение
-// нигде не читается при сборке файла.
+// Since/Until уже развёрнуты в абсолютные значения — исполнение позже даёт тот же файл.
+// Sort хранится для UI, но на порядок строк не влияет — обход всегда last_seen DESC, id DESC.
 type Params struct {
 	Status      string    `json:"status,omitempty"`
 	Level       string    `json:"level,omitempty"`
@@ -91,7 +75,6 @@ type Params struct {
 	Until       time.Time `json:"until"`
 }
 
-// Job — заявка на выгрузку: строка таблицы export_jobs.
 type Job struct {
 	ID           int64
 	ProjectID    int64
@@ -104,20 +87,8 @@ type Job struct {
 	Status       Status
 	Attempts     int
 	LastError    string
-	// FailureReasonKey — ключ i18n.T() переведённой причины отказа: тот же
-	// снимок несёт его и в письмо автору (mailPayload в notify.go), и в
-	// колонку failure_reason_key export_jobs (P2-UX-2 аудита — раньше
-	// колонки не было, и на инстансе без почты причина не попадала автору
-	// никуда). Fail/FailPermanent/SweepStale (store.go) пишут в неё ТОЛЬКО
-	// при переходе в status='failed' — заявка, вернувшаяся в очередь на
-	// повтор, ключ не несёт (следующая попытка может завершиться иначе).
-	// NULL/пусто у строки — заявка не терминальна либо старше этой колонки;
-	// scanJob отдаёт такую строку пустым FailureReasonKey, а не паникует.
-	// Значение из БД — до недоверия то же самое, что last_error (сырая
-	// строка): веб-слой обязан сверить его с export.KnownFailureReasonKey
-	// перед i18n.T(), а не подставлять напрямую (см. exportViewRow в
-	// internal/web/exports.go) — i18n.T() на неизвестном ключе возвращает
-	// сам ключ, и пользователь увидел бы технический идентификатор.
+	// Ключ не проверен: веб-слой обязан сверить его с KnownFailureReasonKey
+	// перед i18n.T(), иначе пользователь увидит сырой технический идентификатор.
 	FailureReasonKey string
 	RowsWritten      int64
 	Bytes            int64

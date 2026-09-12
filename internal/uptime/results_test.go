@@ -25,8 +25,6 @@ func TestResultWriterInsertsIntoClickHouseAndCloseFlushesRemainder(t *testing.T)
 		OK: false, StatusCode: 0, Error: "timeout after 5s", TotalMs: 5000,
 	})
 
-	// Close (without any prior tick/kick) must flush whatever is still
-	// sitting in the buffer.
 	if err := w.Close(ctx); err != nil {
 		t.Fatalf("Close: %v", err)
 	}

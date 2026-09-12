@@ -8,8 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// seedSumCumulative вставляет точку monotonic cumulative sum-счётчика (для
-// rateSeries-ветки Series).
 func seedSumCumulative(t *testing.T, conn interface {
 	Exec(ctx context.Context, query string, args ...any) error
 }, projectID int64, name, env string, ts time.Time, val float64) {
@@ -22,7 +20,6 @@ func seedSumCumulative(t *testing.T, conn interface {
 	}
 }
 
-// seedHistogram вставляет histogram-точку (для Aggregate percentile-ветки).
 func seedHistogram(t *testing.T, conn interface {
 	Exec(ctx context.Context, query string, args ...any) error
 }, projectID int64, name, env string, ts time.Time, count uint64, bc []uint64, eb []float64) {
@@ -35,9 +32,6 @@ func seedHistogram(t *testing.T, conn interface {
 	}
 }
 
-// TestQueryRateSeries: monotonic cumulative sum-счётчик должен пойти по ветке
-// rateSeries — max(value) по бакету, затем дельта соседних бакетов / шаг.
-// Кумулятив 100→160 за минуту → rate = 1/s.
 func TestQueryRateSeries(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -48,7 +42,6 @@ func TestQueryRateSeries(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Minute)
 
 	const pid = 71
-	// Два бакета по минуте: кумулятив 100 и 160.
 	seedSumCumulative(t, conn, pid, "req.total", "prod", now.Add(-2*time.Minute), 100)
 	seedSumCumulative(t, conn, pid, "req.total", "prod", now.Add(-1*time.Minute), 160)
 
@@ -66,8 +59,6 @@ func TestQueryRateSeries(t *testing.T) {
 	}
 }
 
-// TestQueryRateSeriesSingleBucket: единственный бакет (len(cum)<2) → rateSeries
-// возвращает nil (дельту не из чего считать).
 func TestQueryRateSeriesSingleBucket(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -90,8 +81,6 @@ func TestQueryRateSeriesSingleBucket(t *testing.T) {
 	}
 }
 
-// TestAggregateHistogramPercentile: Aggregate по histogram+p95 должен просуммировать
-// bucket_counts всего окна и вернуть квантиль, ok=true.
 func TestAggregateHistogramPercentile(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -117,8 +106,6 @@ func TestAggregateHistogramPercentile(t *testing.T) {
 	}
 }
 
-// TestAggregateNoData: metricType находит метрику (по project+name без ts), но в
-// окне [from,to) точек нет → count()=0 → ok=false (ветка «нет данных»).
 func TestAggregateNoData(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -142,10 +129,6 @@ func TestAggregateNoData(t *testing.T) {
 	}
 }
 
-// TestQueryRateSeriesSparseScrape фиксирует деление на РЕАЛЬНЫЙ интервал между
-// точками: GROUP BY отдаёт только непустые корзины, поэтому при скрейпе реже
-// шага соседние точки отстоят на несколько шагов. Деление на ширину корзины
-// завышало скорость ровно в (интервал/шаг) раз.
 func TestQueryRateSeriesSparseScrape(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -174,10 +157,6 @@ func TestQueryRateSeriesSparseScrape(t *testing.T) {
 	}
 }
 
-// TestAggregateMatchesSeriesForCumulativeCounter фиксирует согласованность алерта
-// и графика: монотонный кумулятивный счётчик Series показывает СКОРОСТЬЮ, значит
-// и Aggregate обязан считать скорость. Раньше он агрегировал сырое значение, и
-// правило «avg > порога» срабатывало на абсолютном значении счётчика — навсегда.
 func TestAggregateMatchesSeriesForCumulativeCounter(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")

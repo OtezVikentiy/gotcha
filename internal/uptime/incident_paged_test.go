@@ -9,16 +9,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestIncidentsPagedReturnNonEmptyPage — постраничные выборки инцидентов
-// (обе страницы UI: список инцидентов проекта и деталь монитора) обязаны
-// отдавать НЕПУСТУЮ страницу.
-//
-// Регрессия, ради которой тест заведён: очередная колонка (notify_open_channels,
-// миграция 0086) была добавлена в incidentColumns и в scanIncident, но не в
-// список приёмников внутри queryIncidentsPaged — второй, независимый список
-// на ту же строку колонок. Пустая выборка при этом остаётся зелёной: pgx
-// сверяет число приёмников с числом колонок только при разборе СТРОКИ,
-// поэтому проверка обязана сажать инцидент в базу, а не только звать запрос.
+// пустая выборка не ловит рассинхрон колонок/приёмников — pgx сверяет их число
+// только при разборе СТРОКИ, поэтому тест обязан посадить инцидент в базу.
 func TestIncidentsPagedReturnNonEmptyPage(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -37,9 +29,6 @@ func TestIncidentsPagedReturnNonEmptyPage(t *testing.T) {
 	if !opened {
 		t.Fatalf("OpenIncident: инцидент не создан")
 	}
-	// Снимок каналов шага 0 — та самая колонка, из-за которой списки падали;
-	// проверяем её значение, а не только отсутствие ошибки, чтобы выпадение
-	// колонки из выборки роняло тест, а не проходило молча.
 	if err := svc.SetNotifyOpenChannels(ctx, inc.ID, []int64{7, 9}); err != nil {
 		t.Fatalf("SetNotifyOpenChannels: %v", err)
 	}
@@ -73,13 +62,6 @@ func assertSingleIncident(t *testing.T, who string, page []uptime.Incident, tota
 	}
 }
 
-// TestIncidentsPagedOutOfRangeAndEmptyPage — контракт постраничных выборок на
-// краях набора (см. докблок queryIncidentsPaged): страница внутри набора
-// несёт total всего набора; offset за его пределами даёт nil-страницу и
-// total=0 (ранний возврат без второго запроса); страница внутри набора, но
-// без строк (limit=0 — LIMIT 0 в PG отдаёт пусто) тоже даёт nil и total=0 —
-// ровно так себя вела однозапросная форма с count(*) OVER(), где total
-// нечего было прочитать без строк, и на это опирается пейджер веб-слоя.
 func TestIncidentsPagedOutOfRangeAndEmptyPage(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -91,7 +73,6 @@ func TestIncidentsPagedOutOfRangeAndEmptyPage(t *testing.T) {
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
 	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
 
-	// Два инцидента на одном мониторе: открыть → закрыть → открыть.
 	if _, _, err := svc.OpenIncident(ctx, created.ID, "first", []string{"local"}, false); err != nil {
 		t.Fatalf("OpenIncident 1: %v", err)
 	}

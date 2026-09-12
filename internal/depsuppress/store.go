@@ -1,7 +1,3 @@
-// Package depsuppress хранит рёбра зависимостей между узлами проекта
-// (хост/монитор/группа хостов по метке env-role) и валидирует их перед
-// сохранением. Рёбра используются волной B5 для подавления шторма алертов:
-// инцидент дочернего узла подавляется, пока у родителя открыт свой.
 package depsuppress
 
 import (
@@ -13,10 +9,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Edge — ребро зависимости alert_dependencies. Родитель — ровно один из
-// ParentHostID/ParentMonitorID; ребёнок — ровно один способ: ChildHostID,
-// ChildMonitorID, либо пара ChildLabelScope/ChildLabelValue (селектор по
-// метке "env" или "role").
+// Родитель — ровно один из ParentHostID/ParentMonitorID; ребёнок — ровно один
+// способ: ChildHostID, ChildMonitorID, либо пара ChildLabelScope/Value.
 type Edge struct {
 	ID                               int64
 	ProjectID                        int64
@@ -25,42 +19,26 @@ type Edge struct {
 	ChildLabelScope, ChildLabelValue *string
 }
 
-// Ошибки валидации Create. Обёрнуты через fmt.Errorf("%w: ...") — errors.Is
-// работает через цепочку.
 var (
-	// ErrInvalidEdge — неверная форма ребра (не ровно один родитель/способ
-	// ребёнка, либо scope не из {env,role}).
 	ErrInvalidEdge = errors.New("depsuppress: invalid edge")
-	// ErrForeignNode — узел (host/monitor) не принадлежит project_id ребра.
 	ErrForeignNode = errors.New("depsuppress: node belongs to another project")
-	// ErrSelfLoop — родитель и ребёнок указывают на один и тот же узел.
-	ErrSelfLoop = errors.New("depsuppress: self loop")
-	// ErrSelfMatch — ребёнок-label-селектор матчит собственную метку
-	// родителя-хоста.
-	ErrSelfMatch = errors.New("depsuppress: label selector matches parent itself")
-	// ErrDuplicate — точно такое же ребро уже существует в проекте.
-	ErrDuplicate = errors.New("depsuppress: duplicate edge")
-	// ErrCycle — ребро замыкает цикл среди явных узлов графа зависимостей.
-	ErrCycle = errors.New("depsuppress: cycle among explicit nodes")
-	// ErrNotFound — ребро с таким id в проекте не существует. Update
-	// намеренно не различает «нет вовсе» и «принадлежит другому проекту»:
-	// вызывающий web-слой отвечает единообразным 404, не раскрывая
-	// существование чужой строки (тот же принцип, что uniform 404 кабинета).
+	ErrSelfLoop    = errors.New("depsuppress: self loop")
+	ErrSelfMatch   = errors.New("depsuppress: label selector matches parent itself")
+	ErrDuplicate   = errors.New("depsuppress: duplicate edge")
+	ErrCycle       = errors.New("depsuppress: cycle among explicit nodes")
+	// Update намеренно не различает «нет вовсе» и «принадлежит другому проекту» —
+	// вызывающий web-слой отвечает единообразным 404, не раскрывая чужую строку.
 	ErrNotFound = errors.New("depsuppress: edge not found")
 )
 
-// Store — CRUD рёбер зависимостей поверх таблицы alert_dependencies.
 type Store struct {
 	pool *pgxpool.Pool
 }
 
-// NewStore создаёт Store поверх пула соединений PostgreSQL.
 func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
-// List возвращает все рёбра проекта, отсортированные по id (стабильный
-// порядок для UI и тестов).
 func (s *Store) List(ctx context.Context, projectID int64) ([]Edge, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, project_id, parent_host_id, parent_monitor_id,
@@ -90,16 +68,8 @@ func (s *Store) List(ctx context.Context, projectID int64) ([]Edge, error) {
 	return out, nil
 }
 
-// Create валидирует ребро (форма → принадлежность проекту → self-loop →
-// self-match label → дубликат → цикл) и вставляет его. Все проверки и вставка
-// идут в одной транзакции, но под READ COMMITTED без FOR UPDATE/advisory-lock/
-// UNIQUE две параллельные Create НЕ видят вставки друг друга — конкурентная
-// вставка дубля или замыкающего цикл ребра при точной гонке возможна. Это
-// benign: дубликаты дедуплицируются резолвером (matchingParents идёт по
-// множеству, повтор ребра ничего не меняет), а цикл среди рёбер безопасен —
-// обход ParentDown цикло-устойчив (visited-множество, обход до down-корня),
-// паники/зависания нет. Гонка настолько редка (ручное редактирование графа
-// оператором), что цена строгой сериализации не оправдана.
+// Под READ COMMITTED без блокировок параллельный Create может вставить дубль или цикл-ребро,
+// но это benign: резолвер дедуплицирует по множеству, обход ParentDown цикло-устойчив.
 func (s *Store) Create(ctx context.Context, e Edge) (int64, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -146,22 +116,8 @@ func (s *Store) Create(ctx context.Context, e Edge) (int64, error) {
 	return id, nil
 }
 
-// Update заменяет содержимое существующего ребра e.ID (скоуп — e.ProjectID)
-// новой формой, сохраняя id: якоря модалок правки и адреса POST остаются
-// стабильными между рендерами. Цепочка валидации — та же, что у Create, но
-// checkDuplicate/checkCycle исключают само редактируемое ребро: сохранение
-// без изменений не должно падать дубликатом самого себя, а разворот A→B в
-// B→A — ловить «цикл» с собственной старой версией. Несуществующее ребро или
-// ребро чужого проекта — ErrNotFound (см. докблок ошибки). SELECT ... FOR
-// UPDATE держит строку до конца транзакции — конкурентная правка того же
-// ребра сериализуется; гонки с параллельным Create других рёбер остаются
-// теми же benign-гонками, что описаны у Create.
-//
-// На уже открытые подавленные инциденты правка не влияет: флаг
-// suppressed_by_dep одноразовый (его ставят Suppressor.MarkSuppressed и
-// uptime.Service.MarkSuppressedByDep, обратного писателя нет) — новое ребро
-// увидят только будущие решения о подавлении, через перезагрузку снимка
-// Suppressor не позже cacheTTL.
+// На уже открытые подавленные инциденты правка не влияет: флаг suppressed_by_dep одноразовый —
+// новое ребро увидят будущие решения после перезагрузки снимка Suppressor (не позже cacheTTL).
 func (s *Store) Update(ctx context.Context, e Edge) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -218,8 +174,6 @@ func (s *Store) Update(ctx context.Context, e Edge) error {
 	return nil
 }
 
-// Delete удаляет ребро проекта. Отсутствие строки — не ошибка (идемпотентно,
-// как принято в остальных стораджах продукта).
 func (s *Store) Delete(ctx context.Context, projectID, id int64) error {
 	_, err := s.pool.Exec(ctx,
 		`DELETE FROM alert_dependencies WHERE project_id = $1 AND id = $2`, projectID, id)
@@ -229,8 +183,6 @@ func (s *Store) Delete(ctx context.Context, projectID, id int64) error {
 	return nil
 }
 
-// validateShape проверяет форму ребра: ровно один родитель, ровно один
-// способ задать ребёнка, scope (если задан) — из допустимого набора.
 func validateShape(e Edge) error {
 	parents := 0
 	if e.ParentHostID != nil {
@@ -268,9 +220,7 @@ func validateShape(e Edge) error {
 	return nil
 }
 
-// checkNodesBelongToProject проверяет, что каждый указанный узел (host или
-// monitor) принадлежит project_id ребра. Для label-рёбер проверяется только
-// родитель — ребёнок не ссылается на конкретный узел.
+// Для label-рёбер проверяется только родитель — ребёнок не ссылается на конкретный узел.
 func checkNodesBelongToProject(ctx context.Context, tx pgx.Tx, e Edge) error {
 	if e.ParentHostID != nil {
 		if err := checkOwnership(ctx, tx, "hosts", *e.ParentHostID, e.ProjectID); err != nil {
@@ -308,8 +258,6 @@ func checkOwnership(ctx context.Context, tx pgx.Tx, table string, id, projectID 
 	return nil
 }
 
-// checkSelfLoop отвергает ребро, где родитель и ребёнок — один и тот же узел
-// (host==host или monitor==monitor).
 func checkSelfLoop(e Edge) error {
 	if e.ParentHostID != nil && e.ChildHostID != nil && *e.ParentHostID == *e.ChildHostID {
 		return fmt.Errorf("%w: host %d references itself", ErrSelfLoop, *e.ParentHostID)
@@ -320,9 +268,7 @@ func checkSelfLoop(e Edge) error {
 	return nil
 }
 
-// checkSelfMatch отвергает ребро, где ребёнок — label-селектор, родитель —
-// host, и этот host сам матчит собственный селектор (например: parent host
-// role='web', child selector scope=role value='web').
+// Ребёнок-селектор, матчащий собственный env/role родителя-host — тоже self-match.
 func checkSelfMatch(ctx context.Context, tx pgx.Tx, e Edge) error {
 	if e.ChildLabelScope == nil || e.ChildLabelValue == nil || e.ParentHostID == nil {
 		return nil
@@ -346,10 +292,7 @@ func checkSelfMatch(ctx context.Context, tx pgx.Tx, e Edge) error {
 	return nil
 }
 
-// checkDuplicate отвергает ребро, точно совпадающее (NULL-safe) с уже
-// существующим рёбром проекта. excludeID — id самого редактируемого ребра
-// при Update (его собственная строка — не дубликат себя); 0 при Create —
-// id из bigserial начинаются с 1, ноль не исключает ничего.
+// excludeID: 0 при Create ничего не исключает — id из bigserial начинаются с 1.
 func checkDuplicate(ctx context.Context, tx pgx.Tx, e Edge, excludeID int64) error {
 	var exists bool
 	err := tx.QueryRow(ctx, `
@@ -377,24 +320,16 @@ func checkDuplicate(ctx context.Context, tx pgx.Tx, e Edge, excludeID int64) err
 	return nil
 }
 
-// node — узел графа явных зависимостей: пара (тип, id). Label-рёбра не
-// участвуют в графе — их цикличность неразрешима статически (страхует
-// depth-cap на этапе применения, вне этого пакета).
+// Label-рёбра не участвуют в графе — их цикличность неразрешима статически
+// (страхует depth-cap на этапе применения, вне этого пакета).
 type node struct {
 	kind string // "host" | "monitor"
 	id   int64
 }
 
-// checkCycle строит ориентированный граф узлов из существующих явных рёбер
-// проекта (родитель-узел → ребёнок-узел) плюс новое ребро и проверяет, не
-// достигает ли ребёнок нового ребра транзитивно родителя нового ребра
-// (обычный BFS). Рёбра, где ребёнок — label-селектор, в граф не входят.
-// excludeID — id редактируемого ребра при Update: его старая версия уходит
-// из графа (в БД её вот-вот заменит e), иначе разворот единственного ребра
-// A→B в B→A ловил бы ложный «цикл» сам с собой; 0 при Create.
+// excludeID — старая версия редактируемого ребра уходит из графа, иначе
+// разворот единственного ребра A→B в B→A ловил бы ложный цикл сам с собой.
 func checkCycle(ctx context.Context, tx pgx.Tx, e Edge, excludeID int64) error {
-	// Новое ребро — не среди явных узлов (ребёнок — label-селектор): цикл
-	// среди явных узлов невозможен.
 	if e.ChildHostID == nil && e.ChildMonitorID == nil {
 		return nil
 	}
@@ -433,7 +368,6 @@ func checkCycle(ctx context.Context, tx pgx.Tx, e Edge, excludeID int64) error {
 		return fmt.Errorf("depsuppress: load edges for cycle check: %w", err)
 	}
 
-	// Добавляем новое ребро к графу и ищем путь child -> ... -> parent (BFS).
 	adj[*parent] = append(adj[*parent], *child)
 
 	visited := map[node]bool{*child: true}

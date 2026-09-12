@@ -22,22 +22,16 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// EscalationsPath — адрес раздела эскалаций проекта (B4, задача 9).
-// Экспортирован для nav (nav.go добавляет пункт меню рядом с alerts).
 func EscalationsPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/escalations"
 }
 
-// EscalationStepForm — одна строка редактора: значения формы для ступени
-// StepNo, как строки (буквальный ввод для повторной отрисовки при 422 —
-// тот же принцип, что MonitorFormData). Selected — какие каналы отмечены.
 type EscalationStepForm struct {
 	StepNo       int
 	DelayMinutes string
 	Selected     map[int64]bool
 }
 
-// EscalationLadderForm — maxEscalationSteps строк формы одной severity.
 type EscalationLadderForm struct {
 	Severity string
 	Steps    []EscalationStepForm
@@ -46,7 +40,6 @@ type EscalationLadderForm struct {
 func stepDelayField(stepNo int) string    { return fmt.Sprintf("step%d_delay", stepNo) }
 func stepChannelsField(stepNo int) string { return fmt.Sprintf("step%d_channels", stepNo) }
 
-// escalationSeverityTitle — локализованный заголовок блока severity.
 func escalationSeverityTitle(ctx context.Context, severity string) string {
 	if severity == escalation.SeverityWarning {
 		return i18n.T(ctx, "escalations.severity.warning")
@@ -54,10 +47,6 @@ func escalationSeverityTitle(ctx context.Context, severity string) string {
 	return i18n.T(ctx, "escalations.severity.critical")
 }
 
-// hasDeliverableChannel — есть ли в проекте хоть один канал, годный для
-// выбора в ступени (Deliverable: enabled и с рабочим секретом). Считается
-// один раз на секцию severity, а не на каждую ступень — подсказка «каналов
-// нет» иначе повторилась бы maxEscalationSteps раз подряд.
 func hasDeliverableChannel(channels []alert.Channel) bool {
 	for _, c := range channels {
 		if c.Deliverable() {
@@ -67,16 +56,8 @@ func hasDeliverableChannel(channels []alert.Channel) bool {
 	return false
 }
 
-// escalationChannelDisplay — подпись канала для чекбокса ступени и dry-run-
-// предпросмотра: вид канала + безопасное представление адреса. У вебхука
-// Target — URL с секретным путём (https://hooks.slack.com/services/T…/B…/
-// <секрет>): полный адрес на экране — это секрет в каждом скриншоте и на
-// каждой демонстрации, поэтому показываются хост и путь с замаскированными
-// секретными сегментами — их достаточно, чтобы отличить два вебхука друг от
-// друга (maskedWebhookTarget). Email-адрес и
-// telegram chat id секретов не содержат и показываются как есть. Kind
-// валидируется при создании канала (alert.validateChannel) — неизвестный вид
-// в норме невозможен и, как и в channelKindLabel, не теряет данные из вида.
+// target вебхука маскируется (maskedWebhookTarget) — иначе секрет виден на
+// каждом скриншоте; у email/telegram секретов в адресе нет.
 func escalationChannelDisplay(ctx context.Context, c alert.Channel) string {
 	target := c.Target
 	if c.Kind == alert.ChannelWebhook {
@@ -85,34 +66,8 @@ func escalationChannelDisplay(ctx context.Context, c alert.Channel) string {
 	return channelKindLabel(ctx, c.Kind) + ": " + target
 }
 
-// secretLikeSegment — «похож ли сегмент пути вебхука на секрет». Секретным
-// считается сегмент от 20 рун (длинные токены и ключи любого алфавита —
-// Slack 24, Mattermost 26, Discord 68) либо от 10 рун, где есть и буквы, и
-// цифры (hex/base64-токены вида a4d718d555cb88b0). Порог смешанного правила —
-// 10, а не выше: генерируемые ключи generic-вебхуков бывают и по 10–12
-// знаков, и печатать такой целиком — утечка; словарные же сегменты такой
-// длины с цифрами внутри в реальных адресах не встречаются. Идентификаторы
-// вида T024BE7LD (9 рун) и цифровые id Discord (17–19 цифр, без букв) —
-// не секреты, остаются видимыми и различают вебхуки.
-//
-// У ПОСЛЕДНЕГО сегмента (last) порог ниже: от 6 рун при наличии цифры.
-// Последний сегмент вебхука почти всегда и есть ключ, и бывает коротким
-// (Zapier: /hooks/catch/123456/o2eyvv — ключ 6–8 рун); словарные хвосты
-// вида incidents/notifications состоят только из букв и под правило не
-// попадают. Чисто цифровой хвост от 6 цифр тоже маскируется — осознанный
-// выбор безопасной стороны: числовой id последним сегментом бывает и
-// публичным идентификатором, и ключом, а отличить их машинно нельзя; цена
-// маски мала (видимого хвоста достаточно, чтобы различить два вебхука),
-// цена ошибки в другую сторону — восстановимый URL.
-//
-// Сегмент, уже содержащий «…», — не сырой секрет, а след чужой маски
-// (композиция с maskChannelTarget, web/mask.go: не-админу приходит
-// «scheme://host/… ·hhhh») — не перемаскировывается, иначе теряется
-// дискриминатор ·hhhh.
-//
-// Отдельная чистая функция — чтобы граница «секрет/не секрет» была
-// закреплена юнит-таблицей (TestSecretLikeSegment) независимо от сборки
-// всей маски.
+// пороги (20 рун; 10 рун со смесью букв и цифр; 6 рун в последнем сегменте)
+// подобраны под реальные вебхуки — менять не глядя в TestSecretLikeSegment рискованно.
 func secretLikeSegment(seg string, last bool) bool {
 	if strings.Contains(seg, "…") {
 		return false
@@ -136,15 +91,8 @@ func secretLikeSegment(seg string, last bool) bool {
 	return len(r) >= 10 && hasLetter && hasDigit
 }
 
-// maskedWebhookTarget — «hooks.slack.com/services/T000/B000/…88b0»: хост +
-// путь, в котором секретные на вид сегменты (secretLikeSegment) заменены на
-// «…» плюс последние secretTailRunes рун, а словарные («hooks», «incidents»)
-// показаны как есть — видно, куда уходит уведомление и какой это из вебхуков,
-// но секрет на экран не попадает никогда. Значения query и фрагмента не
-// показываются вовсе («?…»): там секрет почти всегда, а различать параметры
-// пользователю не нужно. Схема и userinfo скрыты. Слишком длинный результат
-// (> maskedTargetMaxRunes) схлопывается посередине пути: первый и последний
-// сегменты остаются — начало говорит о сервисе, конец различает вебхуки.
+// при схлопывании длинного результата первый и последний сегмент остаются:
+// начало говорит о сервисе, конец различает вебхуки.
 func maskedWebhookTarget(target string) string {
 	const (
 		tailRunes            = 6
@@ -169,9 +117,8 @@ func maskedWebhookTarget(target string) string {
 		return u.Host + suffix
 	}
 	segs := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
-	// Последний СОДЕРЖАТЕЛЬНЫЙ сегмент — с поправкой на завершающий слэш
-	// (Zapier канонически пишет ключ с «/» на конце): пустые хвостовые
-	// сегменты — не ключ.
+	// с поправкой на завершающий слэш (Zapier пишет ключ с «/» на конце) —
+	// пустые хвостовые сегменты не считаются последним.
 	lastIdx := len(segs) - 1
 	for lastIdx > 0 && segs[lastIdx] == "" {
 		lastIdx--
@@ -198,11 +145,7 @@ func maskedWebhookTarget(target string) string {
 	return display
 }
 
-// escalationChannelLabels — человекочитаемый список каналов ступени
-// ("Email: a@b.c, Webhook: hooks.slack.com/services/T000/B000/…88b0") для dry-run-предпросмотра. Канал,
-// которого уже нет в текущем списке проекта (удалён после того, как лесенка
-// на него ссылалась), молча пропускается — тот же принцип, что и у
-// остальных мест, резолвящих id в отображаемое имя.
+// канал, удалённый после того, как лесенка на него сослалась, молча пропускается.
 func escalationChannelLabels(ctx context.Context, ids []int64, channels []alert.Channel) string {
 	byID := make(map[int64]alert.Channel, len(channels))
 	for _, c := range channels {
@@ -220,8 +163,6 @@ func escalationChannelLabels(ctx context.Context, ids []int64, channels []alert.
 	return strings.Join(parts, ", ")
 }
 
-// escalationDryRunStepText — одна строка dry-run-предпросмотра: «сразу» для
-// delay=0, иначе «через N мин».
 func escalationDryRunStepText(ctx context.Context, step escalation.Step, channels []alert.Channel) string {
 	chans := escalationChannelLabels(ctx, step.ChannelIDs, channels)
 	no := strconv.Itoa(step.StepNo + 1)
@@ -231,9 +172,6 @@ func escalationDryRunStepText(ctx context.Context, step escalation.Step, channel
 	return i18n.Tf(ctx, "escalations.dryrun.step_delayed", "step", no, "minutes", strconv.Itoa(step.DelayMinutes), "channels", chans)
 }
 
-// escalationDryRun — расчётный предпросмотр БЕЗ сайд-эффектов: что разошлётся
-// по фактически действующей (сохранённой, с дефолт-fallback) лесенке. ladder
-// приходит уже посчитанной PolicyStore.Ladder — здесь только форматирование.
 func escalationDryRun(ladder escalation.Ladder, channels []alert.Channel) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -262,7 +200,7 @@ func escalationDryRun(ladder escalation.Ladder, channels []alert.Channel) templ.
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "escalations.dryrun.title"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 231, Col: 67}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 169, Col: 67}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
@@ -280,7 +218,7 @@ func escalationDryRun(ladder escalation.Ladder, channels []alert.Channel) templ.
 			var templ_7745c5c3_Var3 string
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(escalationDryRunStepText(ctx, step, channels))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 234, Col: 55}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 172, Col: 55}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 			if templ_7745c5c3_Err != nil {
@@ -298,7 +236,7 @@ func escalationDryRun(ladder escalation.Ladder, channels []alert.Channel) templ.
 		var templ_7745c5c3_Var4 string
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "escalations.dryrun.recovery"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 237, Col: 62}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 175, Col: 62}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
@@ -312,9 +250,6 @@ func escalationDryRun(ladder escalation.Ladder, channels []alert.Channel) templ.
 	})
 }
 
-// escalationUndeliverableReasonKey — почему канал недоставляем: отключён
-// оператором или сломан секрет (единственные два случая в
-// alert.Channel.Deliverable, см. её докблок). W2-C находка 5.
 func escalationUndeliverableReasonKey(c alert.Channel) string {
 	if !c.Enabled {
 		return "escalations.field.channel_disabled"
@@ -322,26 +257,8 @@ func escalationUndeliverableReasonKey(c alert.Channel) string {
 	return "escalations.field.channel_broken"
 }
 
-// escalationStepFields — одна строка редактора: задержка + чекбоксы каналов.
-//
-// W2-C находка 5: раньше рисовались ТОЛЬКО Deliverable-каналы — сохранённый
-// в ступени канал, переставший быть доставляемым МЕЖДУ настройкой ступени и
-// открытием формы (например, у вебхука сломался секрет), просто пропадал из
-// списка; следующее «Сохранить» отправляло форму БЕЗ его id и молча стирало
-// настройку — ни строчки предупреждения. Теперь строка рисуется, если канал
-// доставляем ИЛИ уже выбран в этой ступени (step.Selected[c.ID]) — второе
-// условие как раз ловит ровно тот случай: сохранённый выбор канала,
-// сломавшегося уже ПОСЛЕ настройки. Чекбокс остаётся АКТИВНЫМ (не disabled):
-// disabled-инпут браузер не включает в POST вовсе, а тогда "просто открыть и
-// нажать Сохранить, не трогая ничего" тем же образом бы потерял канал — чек-
-// бокс обязан оставаться отмечаемым/снимаемым и участвовать в отправке формы
-// как обычный. Единственное отличие недоставляемого канала — бейдж с
-// причиной (выключен / секрет сломан), сигнал человеку, что канал стоит
-// поправить или сознательно убрать самому, а не то, что он тихо исчезнет.
-//
-// Каналы для ВЫБОРА В НОВУЮ ступень (Selected[c.ID]=false) по-прежнему
-// предлагаются только доставляемые — see condition ниже: добавлять в ступень
-// заведомо недоставляемый канал по-прежнему незачем.
+// чекбокс недоставляемого, но уже выбранного канала — НЕ disabled: disabled-
+// инпут не попадает в POST, и обычное «Сохранить» тихо стёрло бы канал.
 func escalationStepFields(step EscalationStepForm, channels []alert.Channel) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -370,7 +287,7 @@ func escalationStepFields(step EscalationStepForm, channels []alert.Channel) tem
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "escalations.step.legend", "no", strconv.Itoa(step.StepNo+1)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 273, Col: 106}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 190, Col: 106}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {
@@ -383,7 +300,7 @@ func escalationStepFields(step EscalationStepForm, channels []alert.Channel) tem
 		var templ_7745c5c3_Var7 string
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "escalations.field.delay"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 276, Col: 44}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 193, Col: 44}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 		if templ_7745c5c3_Err != nil {
@@ -396,7 +313,7 @@ func escalationStepFields(step EscalationStepForm, channels []alert.Channel) tem
 		var templ_7745c5c3_Var8 string
 		templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.ResolveAttributeValue(stepDelayField(step.StepNo))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 277, Col: 73}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 194, Col: 73}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var8)
 		if templ_7745c5c3_Err != nil {
@@ -409,7 +326,7 @@ func escalationStepFields(step EscalationStepForm, channels []alert.Channel) tem
 		var templ_7745c5c3_Var9 string
 		templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.ResolveAttributeValue(step.DelayMinutes)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 277, Col: 101}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 194, Col: 101}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var9)
 		if templ_7745c5c3_Err != nil {
@@ -422,7 +339,7 @@ func escalationStepFields(step EscalationStepForm, channels []alert.Channel) tem
 		var templ_7745c5c3_Var10 string
 		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "escalations.field.channels"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 280, Col: 103}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 197, Col: 103}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var10)
 		if templ_7745c5c3_Err != nil {
@@ -435,7 +352,7 @@ func escalationStepFields(step EscalationStepForm, channels []alert.Channel) tem
 		var templ_7745c5c3_Var11 string
 		templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "escalations.field.channels"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 281, Col: 91}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 198, Col: 91}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 		if templ_7745c5c3_Err != nil {
@@ -454,7 +371,7 @@ func escalationStepFields(step EscalationStepForm, channels []alert.Channel) tem
 				var templ_7745c5c3_Var12 string
 				templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.ResolveAttributeValue(stepChannelsField(step.StepNo))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 285, Col: 66}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 202, Col: 66}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var12)
 				if templ_7745c5c3_Err != nil {
@@ -467,7 +384,7 @@ func escalationStepFields(step EscalationStepForm, channels []alert.Channel) tem
 				var templ_7745c5c3_Var13 string
 				templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.ResolveAttributeValue(strconv.FormatInt(c.ID, 10))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 285, Col: 104}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 202, Col: 104}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var13)
 				if templ_7745c5c3_Err != nil {
@@ -490,7 +407,7 @@ func escalationStepFields(step EscalationStepForm, channels []alert.Channel) tem
 				var templ_7745c5c3_Var14 string
 				templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(escalationChannelDisplay(ctx, c))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 286, Col: 40}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 203, Col: 40}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 				if templ_7745c5c3_Err != nil {
@@ -508,7 +425,7 @@ func escalationStepFields(step EscalationStepForm, channels []alert.Channel) tem
 					var templ_7745c5c3_Var15 string
 					templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, escalationUndeliverableReasonKey(c)))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 288, Col: 88}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 205, Col: 88}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 					if templ_7745c5c3_Err != nil {
@@ -533,10 +450,6 @@ func escalationStepFields(step EscalationStepForm, channels []alert.Channel) tem
 	})
 }
 
-// escalationSeveritySection — редактор одной лесенки (critical ИЛИ warning):
-// форма из maxEscalationSteps строк-ступеней сохраняется отдельной кнопкой
-// (severity в форме — скрытое поле), плюс dry-run фактически действующей
-// лесенки ЭТОЙ severity сразу под формой.
 func escalationSeveritySection(projectID int64, form EscalationLadderForm, channels []alert.Channel, ladder escalation.Ladder, showErr bool, errMsg string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -565,7 +478,7 @@ func escalationSeveritySection(projectID int64, form EscalationLadderForm, chann
 		var templ_7745c5c3_Var17 string
 		templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(escalationSeverityTitle(ctx, form.Severity))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 303, Col: 51}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 216, Col: 51}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 		if templ_7745c5c3_Err != nil {
@@ -583,7 +496,7 @@ func escalationSeveritySection(projectID int64, form EscalationLadderForm, chann
 			var templ_7745c5c3_Var18 string
 			templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(errMsg)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 305, Col: 28}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 218, Col: 28}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 			if templ_7745c5c3_Err != nil {
@@ -602,7 +515,7 @@ func escalationSeveritySection(projectID int64, form EscalationLadderForm, chann
 			var templ_7745c5c3_Var19 string
 			templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "escalations.field.channels_none"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 308, Col: 67}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 221, Col: 67}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 			if templ_7745c5c3_Err != nil {
@@ -620,7 +533,7 @@ func escalationSeveritySection(projectID int64, form EscalationLadderForm, chann
 		var templ_7745c5c3_Var20 string
 		templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "escalations.field.steps_hint"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 317, Col: 65}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 224, Col: 65}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 		if templ_7745c5c3_Err != nil {
@@ -633,7 +546,7 @@ func escalationSeveritySection(projectID int64, form EscalationLadderForm, chann
 		var templ_7745c5c3_Var21 string
 		templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "escalations.field.delay_hint"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 317, Col: 113}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 224, Col: 113}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 		if templ_7745c5c3_Err != nil {
@@ -646,7 +559,7 @@ func escalationSeveritySection(projectID int64, form EscalationLadderForm, chann
 		var templ_7745c5c3_Var22 string
 		templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "escalations.default_notice"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 318, Col: 61}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 225, Col: 61}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 		if templ_7745c5c3_Err != nil {
@@ -659,7 +572,7 @@ func escalationSeveritySection(projectID int64, form EscalationLadderForm, chann
 		var templ_7745c5c3_Var23 templ.SafeURL
 		templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(EscalationsPath(projectID)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 319, Col: 68}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 226, Col: 68}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 		if templ_7745c5c3_Err != nil {
@@ -672,7 +585,7 @@ func escalationSeveritySection(projectID int64, form EscalationLadderForm, chann
 		var templ_7745c5c3_Var24 string
 		templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.Severity)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 320, Col: 61}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 227, Col: 61}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var24)
 		if templ_7745c5c3_Err != nil {
@@ -695,7 +608,7 @@ func escalationSeveritySection(projectID int64, form EscalationLadderForm, chann
 		var templ_7745c5c3_Var25 string
 		templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "escalations.form.submit"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 326, Col: 89}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 233, Col: 89}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 		if templ_7745c5c3_Err != nil {
@@ -717,12 +630,8 @@ func escalationSeveritySection(projectID int64, form EscalationLadderForm, chann
 	})
 }
 
-// Escalations — GET/POST /projects/{id}/escalations: редактор двух лесенок
-// (critical/warning) + dry-run-предпросмотр каждой. ladders — фактически
-// действующая политика ОБЕИХ severity (дефолт-fallback, если не настроена),
-// критical/warning — вью-модель формы (из ladders на GET, из отправленного,
-// но не сохранившегося запроса — для упавшей на 422 severity). Доступ —
-// оператор проекта (requireProjectOperator, как Alerts/SLOsScreen).
+// critical/warning — вью-модель формы: из ladders на GET, из отправленного
+// непринятого запроса — для упавшей на 422 severity.
 func Escalations(projectID int64, channels []alert.Channel, critical, warning EscalationLadderForm, ladders map[string]escalation.Ladder, failedSeverity, errMsg, userEmail string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -763,7 +672,7 @@ func Escalations(projectID int64, channels []alert.Channel, critical, warning Es
 			var templ_7745c5c3_Var28 string
 			templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "escalations.title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 341, Col: 41}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 244, Col: 41}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 			if templ_7745c5c3_Err != nil {
@@ -792,7 +701,7 @@ func Escalations(projectID int64, channels []alert.Channel, critical, warning Es
 				var templ_7745c5c3_Var30 string
 				templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "escalations.intro"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 347, Col: 41}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 246, Col: 41}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
 				if templ_7745c5c3_Err != nil {
@@ -805,7 +714,7 @@ func Escalations(projectID int64, channels []alert.Channel, critical, warning Es
 				var templ_7745c5c3_Var31 string
 				templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "escalations.uptime_note"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 348, Col: 47}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 247, Col: 47}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 				if templ_7745c5c3_Err != nil {
@@ -818,7 +727,7 @@ func Escalations(projectID int64, channels []alert.Channel, critical, warning Es
 				var templ_7745c5c3_Var32 string
 				templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "escalations.issue_note"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 349, Col: 46}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/escalations.templ`, Line: 248, Col: 46}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
 				if templ_7745c5c3_Err != nil {

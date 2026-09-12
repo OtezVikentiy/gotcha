@@ -10,17 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0083AddsNullableFailureReasonKey — миграция 0083 добавляет
-// failure_reason_key export_jobs (P2-UX-2 аудита: провалившаяся заявка
-// обязана сообщать переведённую причину на странице выгрузок, не только в
-// письме). Колонка nullable БЕЗ DEFAULT — на непустой таблице это безопасно
-// (в отличие от NOT NULL без DEFAULT, ради которого и заведено правило
-// TestLatestMigrationHasDataTest, см. internal/db/migrate_0029_test.go —
-// первый прецедент), но проверяем это явно, а не полагаемся на чтение SQL:
-// строка, заведённая ДО миграции (как у любой инсталляции, обновляющейся с
-// прежней версии схемы), обязана мигрировать без ошибки и остаться с NULL
-// в новой колонке — экран выгрузок трактует такую заявку как «подсказки о
-// причине нет» (см. докблок Job.FailureReasonKey в internal/export/job.go).
+// nullable БЕЗ DEFAULT безопасно на непустой таблице — проверяем явно: строка до миграции остаётся
+// с NULL, а экран выгрузок трактует это как «подсказки о причине нет» (Job.FailureReasonKey).
 func TestMigrate0083AddsNullableFailureReasonKey(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -43,9 +34,7 @@ func TestMigrate0083AddsNullableFailureReasonKey(t *testing.T) {
 		"INSERT INTO projects (org_id, slug, name) VALUES ($1, 'm83', 'M83') RETURNING id", orgID)
 	mustScan(t, pool, &userID,
 		"INSERT INTO users (email, password_hash) VALUES ('m83@example.com', 'x') RETURNING id")
-	// Заявка, уже завершившаяся отказом ДО миграции — ровно та строка,
-	// которую увидит любая работающая инсталляция при апгрейде: колонки
-	// failure_reason_key в схеме на момент вставки ещё нет.
+	// Заявка, завершившаяся отказом до миграции — ровно то, что увидит любая инсталляция при апгрейде.
 	mustScan(t, pool, &jobID, `
 		INSERT INTO export_jobs (project_id, created_by, kind, format, status)
 		VALUES ($1, $2, 'issues', 'csv', 'failed') RETURNING id`, projectID, userID)
@@ -63,8 +52,7 @@ func TestMigrate0083AddsNullableFailureReasonKey(t *testing.T) {
 		t.Fatalf("failure_reason_key = %q для строки, заведённой до миграции, want NULL", *reasonKey)
 	}
 
-	// Новая строка вправе записать колонку — само наличие и тип проверяются
-	// этим же UPDATE (ошибка типа/отсутствующей колонки провалила бы Exec).
+	// Наличие и тип колонки проверяются этим же UPDATE — ошибка провалила бы Exec.
 	mustExec(t, pool,
 		"UPDATE export_jobs SET failure_reason_key = 'exports.mail.failed.reason.disk_full' WHERE id = $1", jobID)
 	if err := pool.QueryRow(ctx,

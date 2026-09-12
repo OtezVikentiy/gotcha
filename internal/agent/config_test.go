@@ -12,11 +12,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/envcontract"
 )
 
-// env возвращает и getenv, и environ для LoadConfig — оба вида доступа к
-// одной и той же карте. Возврат двух значений позволяет писать
-// LoadConfig(env(vars)) без распаковки: Go передаёт результат
-// многозначного вызова как оба аргумента, если это единственный аргумент
-// вызова.
+// Go передаёт результат многозначного вызова как оба аргумента, если это
+// единственный аргумент — отсюда LoadConfig(env(vars)) без распаковки.
 func env(m map[string]string) (func(string) string, func() []string) {
 	getenv := func(k string) string { return m[k] }
 	environ := func() []string {
@@ -29,9 +26,6 @@ func env(m map[string]string) (func(string) string, func() []string) {
 	return getenv, environ
 }
 
-// environFrom — вариант env() для тестов, которым нужен только environ
-// (проверка checkUnknownAgentEnvVars напрямую), в том же стиле, что
-// environFrom в cmd/gotcha/unknown_env_vars_test.go.
 func environFrom(kv ...string) func() []string {
 	return func() []string { return kv }
 }
@@ -54,15 +48,12 @@ func TestLoadConfigDefaults(t *testing.T) {
 
 func TestLoadConfigRejects(t *testing.T) {
 	cases := map[string]map[string]string{
-		"без endpoint":    {"GOTCHA_AGENT_INGEST_KEY": "pk"},
-		"без key":         {"GOTCHA_AGENT_ENDPOINT": "https://g"},
-		"кривой endpoint": {"GOTCHA_AGENT_ENDPOINT": "ftp://g", "GOTCHA_AGENT_INGEST_KEY": "pk"},
-		"interval мал":    {"GOTCHA_AGENT_ENDPOINT": "https://g", "GOTCHA_AGENT_INGEST_KEY": "pk", "GOTCHA_AGENT_INTERVAL_SECONDS": "5"},
-		"interval велик":  {"GOTCHA_AGENT_ENDPOINT": "https://g", "GOTCHA_AGENT_INGEST_KEY": "pk", "GOTCHA_AGENT_INTERVAL_SECONDS": "301"},
-		"interval мусор":  {"GOTCHA_AGENT_ENDPOINT": "https://g", "GOTCHA_AGENT_INGEST_KEY": "pk", "GOTCHA_AGENT_INTERVAL_SECONDS": "щедро"},
-		// E3 T8: тип сменился с duration-строки на целые секунды — старый
-		// формат "30s" (валидный до переименования) обязан быть отказом
-		// разбора, а не тихо превратиться в другое значение.
+		"без endpoint":                    {"GOTCHA_AGENT_INGEST_KEY": "pk"},
+		"без key":                         {"GOTCHA_AGENT_ENDPOINT": "https://g"},
+		"кривой endpoint":                 {"GOTCHA_AGENT_ENDPOINT": "ftp://g", "GOTCHA_AGENT_INGEST_KEY": "pk"},
+		"interval мал":                    {"GOTCHA_AGENT_ENDPOINT": "https://g", "GOTCHA_AGENT_INGEST_KEY": "pk", "GOTCHA_AGENT_INTERVAL_SECONDS": "5"},
+		"interval велик":                  {"GOTCHA_AGENT_ENDPOINT": "https://g", "GOTCHA_AGENT_INGEST_KEY": "pk", "GOTCHA_AGENT_INTERVAL_SECONDS": "301"},
+		"interval мусор":                  {"GOTCHA_AGENT_ENDPOINT": "https://g", "GOTCHA_AGENT_INGEST_KEY": "pk", "GOTCHA_AGENT_INTERVAL_SECONDS": "щедро"},
 		"interval старый duration-формат": {"GOTCHA_AGENT_ENDPOINT": "https://g", "GOTCHA_AGENT_INGEST_KEY": "pk", "GOTCHA_AGENT_INTERVAL_SECONDS": "30s"},
 	}
 	for name, vars := range cases {
@@ -86,10 +77,6 @@ func TestLoadConfigLabels(t *testing.T) {
 	}
 }
 
-// TestLoadConfigTLSSkipVerifyAcceptedSpellings — GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY
-// принимает ровно тот же набор написаний, что общий разбор булевых в
-// cmd/gotcha (trim + lower; 1/true/yes/on и 0/false/no/off в обоих
-// регистрах). Раньше switch был буквальным и падал на "True".
 func TestLoadConfigTLSSkipVerifyAcceptedSpellings(t *testing.T) {
 	for _, tc := range []struct {
 		value string
@@ -116,9 +103,6 @@ func TestLoadConfigTLSSkipVerifyAcceptedSpellings(t *testing.T) {
 	}
 }
 
-// TestLoadConfigTLSSkipVerifyRejectsInvalid — мусор в булевой переменной не
-// должен молча превращаться в false: см. TestLoadConfigRunEvaluatorsRejectsInvalid
-// в cmd/gotcha за тем же контрактом.
 func TestLoadConfigTLSSkipVerifyRejectsInvalid(t *testing.T) {
 	_, err := LoadConfig(env(map[string]string{
 		"GOTCHA_AGENT_ENDPOINT":                 "https://g.example",
@@ -146,10 +130,6 @@ func TestLoadConfigTrimsEndpointSlash(t *testing.T) {
 	}
 }
 
-// TestLoadConfigTrimsEndpointLeadingAndTrailingSpace — эндпоинт раньше
-// триммился только по хвостовой "/"; пробел по краям ("https://g.example/ ",
-// " https://g.example") проходил как есть. Пробел ПОСЛЕ хвостовой "/" вообще
-// не срезался бы TrimRight(v, "/") — обрезка пробела должна идти ДО него.
 func TestLoadConfigTrimsEndpointLeadingAndTrailingSpace(t *testing.T) {
 	cases := []string{
 		" https://g.example",
@@ -171,12 +151,6 @@ func TestLoadConfigTrimsEndpointLeadingAndTrailingSpace(t *testing.T) {
 	}
 }
 
-// TestLoadConfigEndpointRejectsQuery — E3 T6: GOTCHA_AGENT_ENDPOINT срезал
-// хвостовой слэш и до этой правки, но query/fragment не проверял вовсе —
-// baseurl.Normalize (тот же хелпер, что у GOTCHA_BASE_URL/
-// GOTCHA_TELEGRAM_API_BASE/GOTCHA_PROBE_SERVER_URL в cmd/gotcha/config.go)
-// закрывает и эту ветку: невалидное значение — отказ старта, а не адрес с
-// query/fragment посреди пути в каждом OTLP-пуше.
 func TestLoadConfigEndpointRejectsQuery(t *testing.T) {
 	for _, raw := range []string{
 		"https://g.example?token=1",
@@ -191,11 +165,6 @@ func TestLoadConfigEndpointRejectsQuery(t *testing.T) {
 	}
 }
 
-// TestLoadConfigEndpointNormalizeErrorPassedThroughVerbatim — m1 (финальное
-// ревью): ошибка baseurl.Normalize отдаётся оператору дословно, а не
-// заменяется общим «must be an http(s) URL» — у Normalize свой точный текст
-// на каждый класс проблемы (см. её докблок), и для адреса СО схемой и
-// хостом, но с query, общая формулировка называла бы неверную причину.
 func TestLoadConfigEndpointNormalizeErrorPassedThroughVerbatim(t *testing.T) {
 	_, err := LoadConfig(env(map[string]string{
 		"GOTCHA_AGENT_ENDPOINT":   "https://g.example?token=1",
@@ -212,9 +181,6 @@ func TestLoadConfigEndpointNormalizeErrorPassedThroughVerbatim(t *testing.T) {
 	}
 }
 
-// TestLoadConfigWhitespaceOnlyEndpointRejected — эндпоинт обязателен; строка
-// из одних пробелов после тримминга становится пустой и обязана давать ту же
-// ошибку, что полностью отсутствующая переменная, а не URL с пробелом внутри.
 func TestLoadConfigWhitespaceOnlyEndpointRejected(t *testing.T) {
 	if _, err := LoadConfig(env(map[string]string{
 		"GOTCHA_AGENT_ENDPOINT":   "   ",
@@ -224,9 +190,6 @@ func TestLoadConfigWhitespaceOnlyEndpointRejected(t *testing.T) {
 	}
 }
 
-// TestLoadConfigWhitespaceOnlyKeyRejected — тот же контракт для ключа: он
-// используется как есть в заголовке Authorization (sender.go), поэтому
-// пробельное значение обязано быть отказом старта, а не пустым Bearer.
 func TestLoadConfigWhitespaceOnlyKeyRejected(t *testing.T) {
 	if _, err := LoadConfig(env(map[string]string{
 		"GOTCHA_AGENT_ENDPOINT":   "https://g.example",
@@ -236,11 +199,6 @@ func TestLoadConfigWhitespaceOnlyKeyRejected(t *testing.T) {
 	}
 }
 
-// TestLoadConfigTrimsKeyCACertLabels — Key/CACert/Environment/Role/Hostname
-// раньше не триммились вовсе. Key напрямую уходит в заголовок Authorization:
-// "Bearer abc " с хвостовым пробелом — это НЕ тот же Bearer-токен, что
-// "Bearer abc", и сервер отклонит его как неизвестный ключ без единого
-// понятного сообщения в логах агента.
 func TestLoadConfigTrimsKeyCACertLabels(t *testing.T) {
 	cfg, err := LoadConfig(env(map[string]string{
 		"GOTCHA_AGENT_ENDPOINT":    "https://g.example",
@@ -270,12 +228,6 @@ func TestLoadConfigTrimsKeyCACertLabels(t *testing.T) {
 	}
 }
 
-// TestLoadConfigHostnameTrimmedConsistently — GOTCHA_AGENT_HOSTNAME — это
-// identity-ключ хоста в проде (host.name resource-атрибут, ключ карты на
-// приёме, см. докблок Hostname в config.go). "web-1", "web-1 " и " web-1"
-// обязаны дать один и тот же host.name — иначе оператор, «поправив» пробел
-// на живом инстансе, тихо переименовал бы хост в новый вместо того же самого
-// (потеря меток/порогов/зависимостей на старом ключе).
 func TestLoadConfigHostnameTrimmedConsistently(t *testing.T) {
 	for _, raw := range []string{"web-1", "web-1 ", " web-1", "\tweb-1\n"} {
 		cfg, err := LoadConfig(env(map[string]string{
@@ -292,20 +244,8 @@ func TestLoadConfigHostnameTrimmedConsistently(t *testing.T) {
 	}
 }
 
-// TestLoadConfigKeyTrimReflectedInBearerHeader — GOTCHA_AGENT_INGEST_KEY → Config.Key
-// → заголовок Authorization (sender.go подставляет cfg.Key как есть, строкой
-// "Bearer "+cfg.Key, без собственного тримминга): "abc " с хвостовым пробелом
-// обязан дать ровно "Bearer abc", а не "Bearer abc ".
-//
-// Собирается http.Request тем же способом, что и Send() в sender.go
-// (http.NewRequestWithContext + req.Header.Set("Authorization", "Bearer
-// "+cfg.Key)), а не через реальный HTTP round-trip: net/http/textproto
-// обрезает OWS (optional whitespace) у значений заголовков на приёмной
-// стороне при разборе запроса, так что httptest.Server увидел бы уже
-// нормализованное значение и не отличил бы тримминг в LoadConfig от его
-// отсутствия — round-trip через httptest здесь маскировал бы регресс,
-// а не проверял его. Header.Get читает значение из Request.Header
-// (map[string][]string) напрямую, до какой-либо сериализации на провод.
+// httptest.Server увидел бы уже нормализованное значение (net/http/textproto
+// обрезает OWS сам) — round-trip через него маскировал бы регресс тримминга.
 func TestLoadConfigKeyTrimReflectedInBearerHeader(t *testing.T) {
 	cfg, err := LoadConfig(env(map[string]string{
 		"GOTCHA_AGENT_ENDPOINT":   "https://g.example",
@@ -324,9 +264,6 @@ func TestLoadConfigKeyTrimReflectedInBearerHeader(t *testing.T) {
 	}
 }
 
-// TestLoadConfigIntervalSecondsApplied — GOTCHA_AGENT_INTERVAL_SECONDS=30
-// (целое число секунд, канонический контракт после переименования) даёт
-// Interval=30s, тот же дефолт, что и без переменной вовсе.
 func TestLoadConfigIntervalSecondsApplied(t *testing.T) {
 	cfg, err := LoadConfig(env(map[string]string{
 		"GOTCHA_AGENT_ENDPOINT":         "https://g.example",
@@ -341,9 +278,6 @@ func TestLoadConfigIntervalSecondsApplied(t *testing.T) {
 	}
 }
 
-// TestLoadConfigIntervalSecondsBoundaryError — "5" (ниже минимума 10) и
-// "301" (выше максимума 300) обязаны называть границы диапазона в тексте
-// ошибки, а не просто отказывать молча.
 func TestLoadConfigIntervalSecondsBoundaryError(t *testing.T) {
 	_, err := LoadConfig(env(map[string]string{
 		"GOTCHA_AGENT_ENDPOINT":         "https://g.example",
@@ -365,15 +299,8 @@ func sortedAgentOwnedOldNames() []string {
 	return names
 }
 
-// foreignRenamedNameUnderOwnPrefix — в стиле sortedAgentOwnedOldNames()
-// выше, для случая W2-2: старое имя ВНЕ envcontract.AgentOwned, но
-// по-прежнему несущее префикс GOTCHA_AGENT_ (старые СЕРВЕРНЫЕ имена,
-// исторически названные с агентским на вид префиксом). Находится
-// динамически, не литералом: internal/guards/renamed_env_vars_test.go
-// (TestNoRenamedEnvVarNames) не пускает старые имена литералом за пределы
-// renamed.go/CHANGELOG/upgrade.md/renamed_env_contract_test.go. Отсортировано
-// той же строкой, что sortedAgentOwnedOldNames() — обход map сам по себе
-// порядок не гарантирует, а кандидатов здесь два.
+// Находится динамически, не литералом: internal/guards/renamed_env_vars_test.go
+// не пускает старые имена литералом за пределы renamed.go/CHANGELOG/upgrade.md.
 func foreignRenamedNameUnderOwnPrefix(t *testing.T) string {
 	t.Helper()
 	agentOwned := map[string]bool{}
@@ -393,14 +320,6 @@ func foreignRenamedNameUnderOwnPrefix(t *testing.T) string {
 	return candidates[0]
 }
 
-// TestLoadConfigRenamedEnvVarFailsStart — envcontract.AgentOwned (три свои
-// пары, НЕ весь реестр — агент не отвечает за 27 серверных переменных,
-// которые никогда не читает; см. докблок LoadConfig и AgentOwned в
-// internal/envcontract/renamed.go): КАЖДОЕ своё старое имя с непустым
-// значением роняет старт агента, сообщение называет И старое, И новое имя.
-// Подтест на КАЖДУЮ пару (t.Run по старому имени), а не одна проверка на
-// первую попавшуюся — иначе неоднородный баг в envcontract.CheckRenamedScoped,
-// срабатывающий не на всех именах, прошёл бы незамеченным.
 func TestLoadConfigRenamedEnvVarFailsStart(t *testing.T) {
 	for _, old := range sortedAgentOwnedOldNames() {
 		newName := envcontract.Renamed[old]
@@ -419,17 +338,8 @@ func TestLoadConfigRenamedEnvVarFailsStart(t *testing.T) {
 	}
 }
 
-// TestLoadConfigRenamedEnvVarEmptyNowFailsStart — контракт изменился
-// (повторное ревью, W2-2): раньше пустое значение старого агентского имени
-// было легитимным declared-but-unset (docker-compose штатно прокидывает
-// объявленные, но не заданные переменные пустой строкой) и старт проходил
-// молча. Теперь checkUnknownAgentEnvVars смотрит имя, а не значение, — то
-// же самое старое имя, свойское оно или чужое (см. следующий тест),
-// обязано быть названо «renamed to», потому что declared-but-unset имеет
-// смысл только для переменной, которую что-то ЕЩЁ читает по этому имени, —
-// а переименованное имя не читает уже никто. ENDPOINT/KEY заданы явно и
-// валидно — иначе на пустом окружении LoadConfig упал бы по другой, не
-// связанной с переименованием причине.
+// checkUnknownAgentEnvVars смотрит на имя, не на значение — declared-but-unset
+// не спасает переименованное имя, которое уже никто не читает.
 func TestLoadConfigRenamedEnvVarEmptyNowFailsStart(t *testing.T) {
 	old := sortedAgentOwnedOldNames()[0]
 	newName := envcontract.Renamed[old]
@@ -446,15 +356,6 @@ func TestLoadConfigRenamedEnvVarEmptyNowFailsStart(t *testing.T) {
 	}
 }
 
-// TestLoadConfigIgnoresOutOfScopeRenamedNames — старое СЕРВЕРНОЕ имя ВНЕ
-// префикса GOTCHA_AGENT_ (не входящее в envcontract.AgentOwned И не
-// начинающееся с этого префикса — см. следующий тест про пару, которая
-// формально «не своя», но всё же под своим префиксом), стоящее в общем
-// .env хоста, не должно ронять старт агента ни в каком виде: он никогда
-// его не читал ни до, ни после переименования, и отказ по нему был бы
-// самоуправством — агент вообще не смотрит имена без своего префикса.
-// ENDPOINT/KEY заданы явно и валидно, чтобы тест проверял именно эту
-// ветку, а не общий отказ на их отсутствие.
 func TestLoadConfigIgnoresOutOfScopeRenamedNames(t *testing.T) {
 	agentOwned := map[string]bool{}
 	for _, old := range envcontract.AgentOwned {
@@ -462,12 +363,8 @@ func TestLoadConfigIgnoresOutOfScopeRenamedNames(t *testing.T) {
 	}
 	outOfScope := ""
 	for old := range envcontract.Renamed {
-		// Без исключения по префиксу обход мог бы (недетерминированно,
-		// порядок обхода map) выбрать одну из пары старых СЕРВЕРНЫХ имён
-		// распространения агентских бинарей — формально не в AgentOwned,
-		// но несущих префикс GOTCHA_AGENT_, и потому ИМЕННО ИХ агент
-		// обязан назвать «renamed to» (см. тест ниже), а не проигнорировать
-		// молча.
+		// Без проверки префикса обход map мог бы недетерминированно выбрать
+		// серверное имя, которое агент обязан назвать renamed (см. тест ниже).
 		if !agentOwned[old] && !strings.HasPrefix(old, "GOTCHA_AGENT_") {
 			outOfScope = old
 			break
@@ -489,15 +386,6 @@ func TestLoadConfigIgnoresOutOfScopeRenamedNames(t *testing.T) {
 	}
 }
 
-// TestLoadConfigRejectsForeignRenamedNameUnderOwnPrefix — W2-2 (повторное
-// ревью): пара переменных распространения агентских бинарей — старые
-// СЕРВЕРНЫЕ имена, не входящие в envcontract.AgentOwned, но несущие
-// префикс GOTCHA_AGENT_ по историческим причинам (см.
-// foreignRenamedNameUnderOwnPrefix выше). Живой прогон до этого теста
-// показал: агент на такой переменной говорил «unknown, check for typos», а
-// сервер на той же переменной — «renamed to <новое имя>»: один хост, одна
-// переменная, два противоречивых вердикта. Агент обязан сказать то же
-// самое, что сервер.
 func TestLoadConfigRejectsForeignRenamedNameUnderOwnPrefix(t *testing.T) {
 	old := foreignRenamedNameUnderOwnPrefix(t)
 	newName := envcontract.Renamed[old]
@@ -517,12 +405,6 @@ func TestLoadConfigRejectsForeignRenamedNameUnderOwnPrefix(t *testing.T) {
 	}
 }
 
-// agentRenamedEnvVarNewNameChecks — новое имя → тестовое значение и читатель
-// соответствующего поля Config, для ТРЁХ переименований, которые принадлежит
-// internal/agent (не cmd/gotcha — там у Config нет и не может быть полей
-// под эти три переменные, см. agentOwnedRenamedNewNames в
-// cmd/gotcha/renamed_env_contract_test.go). Регрессия на то, что
-// переименование не сломало применение НОВОГО имени.
 var agentRenamedEnvVarNewNameChecks = map[string]struct {
 	value string
 	get   func(Config) string
@@ -532,12 +414,6 @@ var agentRenamedEnvVarNewNameChecks = map[string]struct {
 	"GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY": {"true", func(c Config) string { return strconv.FormatBool(c.InsecureSkipVerify) }},
 }
 
-// TestAgentRenamedEnvVarNewNameChecksComplete — agentRenamedEnvVarNewNameChecks
-// обязана содержать РОВНО новые имена envcontract.AgentOwned (единственный
-// источник — тот же срез, что LoadConfig передаёт в CheckRenamedScoped) — ни
-// лишних, ни пропущенных. То же назначение, что
-// TestRenamedEnvVarNewNameChecksComplete в cmd/gotcha: без этой сверки
-// новая агентская пара тихо осталась бы без регрессии.
 func TestAgentRenamedEnvVarNewNameChecksComplete(t *testing.T) {
 	wantNewNames := map[string]bool{}
 	for _, old := range envcontract.AgentOwned {
@@ -555,9 +431,6 @@ func TestAgentRenamedEnvVarNewNameChecksComplete(t *testing.T) {
 	}
 }
 
-// TestLoadConfigRenamedEnvVarNewNameStillApplies — подтест на КАЖДУЮ запись
-// agentRenamedEnvVarNewNameChecks, реальная итерация (а не одна проверка
-// вручную выбранной пары).
 func TestLoadConfigRenamedEnvVarNewNameStillApplies(t *testing.T) {
 	for newName, check := range agentRenamedEnvVarNewNameChecks {
 		t.Run(newName, func(t *testing.T) {

@@ -12,8 +12,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// perfIssuesListLimit — потолок выборки списка perf-проблем на странице (тот же
-// порядок величины, что и perfIssuesLimit на странице эндпойнта).
 const perfIssuesListLimit = 100
 
 func perfIssuesPath(projectID int64) string {
@@ -24,10 +22,7 @@ func perfIssueDetailPath(id int64) string {
 	return "/perf-issues/" + strconv.FormatInt(id, 10)
 }
 
-// perfIssueStatusFilter переводит query-параметр status в аргумент
-// IssueService.List и нормализованное имя фильтра для формы. Дефолт (пустой или
-// неизвестный) — unresolved: страница по умолчанию показывает то, что требует
-// внимания. "all" → пустой status (без фильтра в List).
+// Дефолт (пустой/неизвестный) — unresolved; "all" даёт пустой status (без фильтра в List).
 func perfIssueStatusFilter(v string) (status, name string) {
 	switch v {
 	case "unresolved", "resolved", "ignored":
@@ -39,8 +34,6 @@ func perfIssueStatusFilter(v string) (status, name string) {
 	}
 }
 
-// perfIssuesList — GET /projects/{id}/perf-issues: таблица perf-проблем проекта
-// (доступ — CanAccessProject, иначе 404, тот же принцип, что и у performanceList).
 func (h *Handler) perfIssuesList(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -51,9 +44,7 @@ func (h *Handler) perfIssuesList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// h.PerfIssues может быть nil в стендах без детекции — тогда 404, как и при
-	// отсутствии доступа (тот же приём, что и guard на h.Trace в performanceList),
-	// а не паника при разыменовании.
+	// h.PerfIssues может быть nil в стендах без детекции — 404, а не паника при разыменовании.
 	if h.PerfIssues == nil {
 		h.notFound(w, r)
 		return
@@ -78,11 +69,6 @@ func (h *Handler) perfIssuesList(w http.ResponseWriter, r *http.Request) {
 	_ = templates.PerfIssuesList(projectID, items, filterName, h.currentEmail(r)).Render(r.Context(), w)
 }
 
-// loadAccessiblePerfIssue — общая часть GET-обработчика страницы проблемы:
-// резолвит владеющий проблемой проект (ProjectOf), проверяет доступ к нему
-// (CanAccessProject) и читает строку уже скоуплено (Get). Отсутствующая
-// проблема и проблема чужого проекта одинаково дают 404 — не палим
-// существование чужих числовых id (тот же принцип, что и loadAccessibleIssue).
 func (h *Handler) loadAccessiblePerfIssue(w http.ResponseWriter, r *http.Request, uid int64) (trace.PerfIssue, bool) {
 	if h.PerfIssues == nil {
 		h.notFound(w, r)
@@ -123,11 +109,6 @@ func (h *Handler) loadAccessiblePerfIssue(w http.ResponseWriter, r *http.Request
 	return iss, true
 }
 
-// perfIssueDetail — GET /perf-issues/{id}: заголовок, kind, culprit, счётчик,
-// first/last seen, статус, распарсенный evidence и ссылка на пример трейса.
-// Кнопки resolve/ignore/unresolve видны любому, кто дошёл до страницы: POST
-// их тоже принимает от любого с доступом к проекту (см. perfIssueSetStatus,
-// спека 2026-08-08 — одинаковые по смыслу действия равны в правах).
 func (h *Handler) perfIssueDetail(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -139,17 +120,13 @@ func (h *Handler) perfIssueDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Кнопки статуса рендерятся безусловно (см. PerfIssueDetailData): доступ к
-	// странице уже подтверждён loadAccessiblePerfIssue (CanAccessProject), а
-	// POST-обработчик проверяет ту же границу, так что отдельная роль-проверка
-	// тут не нужна — кнопки статуса видит любой смотрящий.
+	// Кнопки статуса рендерятся безусловно: POST-обработчик проверяет ту же границу
+	// доступа, отдельная роль-проверка тут не нужна.
 	data := templates.PerfIssueDetailData{
 		Issue:    iss,
 		Evidence: parsePerfEvidence(iss.Evidence),
 	}
-	// Показательный спан из примера-трейса: полный текст запроса (в отличие от
-	// нормализованного/обрезанного Title) и, если SDK прислал, привязка к коду.
-	// Любая ошибка/истёкший трейс — не критично, страница рисуется и без этого.
+	// Любая ошибка/истёкший трейс — не критично, страница рисуется и без обогащения.
 	if h.Trace != nil && iss.SampleTraceID != "" {
 		if ids := perfEvidenceSpanIDs(iss.Evidence); len(ids) > 0 {
 			if spans, err := h.Trace.OffendingSpans(r.Context(), iss.ProjectID, iss.SampleTraceID, ids); err == nil {
@@ -160,8 +137,6 @@ func (h *Handler) perfIssueDetail(w http.ResponseWriter, r *http.Request) {
 	_ = templates.PerfIssueDetail(data, h.currentEmail(r)).Render(r.Context(), w)
 }
 
-// perfEvidenceSpanIDs достаёт из evidence список id показательных спанов
-// (пишется детектором как "span_ids", ≤10). Пусто/битый JSON → nil.
 func perfEvidenceSpanIDs(raw []byte) []string {
 	if len(raw) == 0 {
 		return nil
@@ -175,10 +150,8 @@ func perfEvidenceSpanIDs(raw []byte) []string {
 	return m.SpanIDs
 }
 
-// enrichPerfDetail дополняет данные страницы полным запросом и привязкой к коду
-// из показательного спана: берём первый спан с непустым описанием (спаны
-// отсортированы по длительности убыв.), иначе — первый (например, http-флуд без
-// текста запроса, но с возможной привязкой к коду).
+// Берём первый спан с непустым описанием (спаны отсортированы по длительности убыв.),
+// иначе первый — например, http-флуд без текста запроса, но с привязкой к коду.
 func enrichPerfDetail(d *templates.PerfIssueDetailData, spans []trace.SpanDetail) {
 	if len(spans) == 0 {
 		return
@@ -197,9 +170,6 @@ func enrichPerfDetail(d *templates.PerfIssueDetailData, spans []trace.SpanDetail
 	d.Code = codeLocFromData(rep.Data)
 }
 
-// codeLocFromData собирает привязку к коду из data спана по общим ключам SDK
-// (Sentry/OTLP: code.filepath/code.function/code.lineno). nil, если ни файла,
-// ни функции нет — показывать нечего.
 func codeLocFromData(data map[string]string) *templates.PerfCodeLoc {
 	if len(data) == 0 {
 		return nil
@@ -224,12 +194,6 @@ func codeLocFromData(data map[string]string) *templates.PerfCodeLoc {
 	}
 }
 
-// perfIssueSetStatus — POST /perf-issues/{id}/status: status из формы
-// (unresolved|resolved|ignored) → SetStatus → 303 назад на страницу проблемы.
-// Смену статуса видит и совершает любой с доступом к проекту (CanAccessProject)
-// — та же граница, что у issueSetStatus (спека 2026-08-08): одинаковые по
-// смыслу действия — одинаковые права. Чужой проект и несуществующая проблема
-// → 404 (один и тот же existence-oracle), неизвестный статус → 422.
 func (h *Handler) perfIssueSetStatus(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -249,10 +213,8 @@ func (h *Handler) perfIssueSetStatus(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 		return
 	}
-	// Проект резолвим ДО проверки доступа: CanAccessProject проверяет доступ к
-	// организации проекта проблемы. Несуществующая проблема (found=false) даёт
-	// тот же стилизованный 404, что и не имеющий доступа пользователь на чужой
-	// POST — иначе разные тела ответа выдавали бы существование id (enumeration).
+	// Резолвим проект ДО проверки доступа: несуществующая проблема должна давать тот же
+	// 404, что и чужая — иначе разные тела ответов выдавали бы существование id.
 	projectID, found, err := h.PerfIssues.ProjectOf(r.Context(), id)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -262,10 +224,6 @@ func (h *Handler) perfIssueSetStatus(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 		return
 	}
-	// Статус perf-issue меняет любой с доступом к проекту — та же
-	// граница, что у issueSetStatus (одинаковые по смыслу действия —
-	// одинаковые права, спека 2026-08-08). Нет доступа → 404, тот же
-	// existence-oracle, что и был.
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -294,13 +252,8 @@ func (h *Handler) perfIssueSetStatus(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, perfIssueDetailPath(id), http.StatusSeeOther)
 }
 
-// parsePerfEvidence разбирает JSONB evidence в типизированное представление для
-// шаблона. Ключи — ровно те, что пишет детектор (см. internal/trace/detect.go):
-// count, total_us, max_us (slow_db_query), sequential_pct/max_concurrency/urls
-// (http_flood), parent_op (n_plus_one). Невалидный/пустой JSON — пустое
-// представление, а не ошибка: страница проблемы должна отрисоваться в любом
-// случае (флаги Has* остаются false, соответствующие строки просто не
-// показываются).
+// Невалидный/пустой JSON — пустое представление, не ошибка: страница рисуется в любом
+// случае, флаги Has* остаются false.
 func parsePerfEvidence(raw []byte) templates.PerfEvidence {
 	var ev templates.PerfEvidence
 	if len(raw) == 0 {

@@ -8,8 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestIncidentServiceEscalationName проверяет, что ключ источника совпадает
-// с incident_source='metric', зафиксированным в миграции 0077.
 func TestIncidentServiceEscalationName(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	inc := metric.NewIncidentService(pool)
@@ -18,10 +16,8 @@ func TestIncidentServiceEscalationName(t *testing.T) {
 	}
 }
 
-// TestIncidentServiceOpenUnacked дискриминирует «status='open' AND
-// acknowledged_at IS NULL»: открытый неподтверждённый инцидент попадает в
-// выборку с верными полями; после Acknowledge — пропадает; отдельный
-// resolved-инцидент в выборку не попадает вовсе.
+// Дискриминирует «status='open' AND acknowledged_at IS NULL»: неподтверждённый инцидент — в выборке,
+// после Acknowledge — пропадает, resolved — не попадает вовсе.
 func TestIncidentServiceOpenUnacked(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	rules := metric.NewRuleService(pool)
@@ -89,10 +85,8 @@ func TestIncidentServiceOpenUnacked(t *testing.T) {
 	}
 }
 
-// TestIncidentServiceOpenSeverityOverride — B4 T5: Open проставляет severity
-// инцидента из override правила, а не table-DEFAULT, когда override задан;
-// дискриминирует override='critical' от отсутствия override (""→'warning',
-// уже покрыто TestIncidentServiceOpenUnacked).
+// Open проставляет severity инцидента из override правила, а не table-DEFAULT, когда override задан —
+// дискриминирует override='critical' от его отсутствия (""→'warning').
 func TestIncidentServiceOpenSeverityOverride(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	rules := metric.NewRuleService(pool)
@@ -122,9 +116,8 @@ func TestIncidentServiceOpenSeverityOverride(t *testing.T) {
 	}
 }
 
-// TestIncidentServiceBumpEscalation проверяет атомарность продвижения
-// escalation_level: успешный бамп двигает level и last_escalated_at,
-// повторный бамп с устаревшим from — идемпотентный no-op (ok=false).
+// Атомарность продвижения escalation_level: успешный бамп двигает level и last_escalated_at, повторный
+// с устаревшим from — идемпотентный no-op (ok=false).
 func TestIncidentServiceBumpEscalation(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	rules := metric.NewRuleService(pool)

@@ -27,36 +27,20 @@ import (
 
 const flameRowHeight = 18
 
-// flameCharWidthPx — ширина символа подписи флеймграфа в единицах viewBox.
-// Не svgCharWidthPx: та рассчитана на подписи осей, чей кегль задают
-// тиры .chart-vbN text по ширине окна. У флеймграфа кегль фиксирован правилом
-// svg.flamegraph text (11px моноширинного, app.css) — измерено 6.6 на символ.
-// Усечение считается от этой ширины; разойдутся — подписи вылезут за кадр.
+// не svgCharWidthPx — та для подписей осей с кеглем по ширине окна; кегль
+// флеймграфа фиксирован (svg.flamegraph text, 11px), измерено 6.6 на символ.
 const flameCharWidthPx = 6.6
 
-// flameLabelPad — отступ подписи от левого края кадра (и столько же справа).
 const flameLabelPad = 2
 
-// flamegraphSVG рисует icicle-диаграмму дерева профиля (сверху вниз). Ширина
-// фрейма ∝ его доле от корня; глубина = уровень стека. Текст SVG строится из
-// чисел и html-экранированных имён — templ.Raw безопасен. Пустое дерево
-// (Value==0) → плейсхолдер «нет данных».
-// svgRoot открывает корневой <svg> с доступным ИМЕНЕМ. role="img" + aria-label
-// обязательны: без них скринридер объявляет график как безымянную графику, а
-// <title> внутри отдельных <rect> (тултипы для мыши) на нефокусируемых фигурах,
-// как правило, не озвучивается и недостижим с клавиатуры. Имя описывает, ЧТО
-// изображено; сами числа доступны в соседних таблицах и подписях осей.
+// role="img" + aria-label обязательны — без них скринридер объявляет график
+// как безымянную графику, а <title> в <rect> без фокуса обычно не озвучивается.
 func svgRoot(class string, w, h int, label string) string {
 	var sb strings.Builder
 	sb.WriteString(`<svg class="`)
 	sb.WriteString(class)
-	// Класс с ШИРИНОЙ viewBox. Кегль подписей осей задаётся в единицах viewBox,
-	// а на экране он равен font-size × ширинаКарточки/ширинаViewBox — то есть
-	// один и тот же font-size даёт разный размер у графиков с разным viewBox.
-	// В продукте их два (720 и 1200), и правило «на класс графика» накрывало
-	// только половину: у 1200 подписи оставались вдвое мельче цели. Класс
-	// проставляет сам генератор — новый график получит его по построению, а не
-	// по памяти автора.
+	// кегль подписей — в единицах viewBox: один font-size на разные viewBox
+	// давал разный видимый размер; класс проставляет сам генератор.
 	sb.WriteString(` chart-vb`)
 	sb.WriteString(strconv.Itoa(w))
 	sb.WriteString(`" viewBox="0 0 `)
@@ -69,12 +53,8 @@ func svgRoot(class string, w, h int, label string) string {
 	return sb.String()
 }
 
-// flamegraphSVG рисует дерево с фокусом на узле по пути focusPath (зум по
-// клику): предки — строками на всю ширину, полупрозрачные, затем сам узел на
-// всю ширину и его поддерево в масштабе node.Value. Доля в тултипе всегда
-// считается от корня, чтобы при зуме числа не «прыгали». Каждый узел —
-// ссылка на URL с фокусом на нём (link), корень — ссылка-сброс (link(nil)).
-// Оборванный путь (данные за другой период) тихо откатывается к корню.
+// фокус (зум по клику): предки — на всю ширину, полупрозрачные; доля в
+// тултипе всегда от корня, чтобы числа не «прыгали» при зуме.
 func flamegraphSVG(ctx context.Context, root *profile.FlameNode, focusPath []string, width int, link func(path []string) string) templ.Component {
 	if !flameHasData(root) {
 		return templ.Raw(`<p class="empty">` + html.EscapeString(i18n.T(ctx, "profile.flame.no_data")) + `</p>`)
@@ -88,7 +68,7 @@ func flamegraphSVG(ctx context.Context, root *profile.FlameNode, focusPath []str
 	sb.WriteString(svgRoot("flamegraph", width, height, i18n.T(ctx, "a11y.chart.flamegraph")))
 	fw := float64(width)
 	for i, a := range ancestors {
-		// Путь корня — nil, а не пустой срез: link(nil) обязан дать URL без focus.
+		// путь корня — nil, а не пустой срез: link(nil) обязан дать URL без focus.
 		var path []string
 		if i > 0 {
 			path = focusPath[:i]
@@ -100,15 +80,11 @@ func flamegraphSVG(ctx context.Context, root *profile.FlameNode, focusPath []str
 	return templ.Raw(sb.String())
 }
 
-// flameHasData — есть ли в дереве сэмплы; тот же критерий, по которому
-// flamegraphSVG рисует плейсхолдер вместо графика.
 func flameHasData(root *profile.FlameNode) bool {
 	return root != nil && root.Value > 0
 }
 
-// focusFlame спускается от корня по именам path (дети слиты по имени при
-// сборке дерева — путь однозначен). Возвращает узел и его предков от корня;
-// пустой путь — сам корень без предков. Шаг не найден → корень и ok=false.
+// дети слиты по имени при сборке дерева — путь по именам однозначен.
 func focusFlame(root *profile.FlameNode, path []string) (node *profile.FlameNode, ancestors []*profile.FlameNode, ok bool) {
 	node = root
 	for _, name := range path {
@@ -138,15 +114,9 @@ func flameDepth(n *profile.FlameNode) int {
 	return max + 1
 }
 
-// flameRow рисует узел и рекурсивно детей. x/w — позиция и ширина в единицах
-// viewBox; total — Value корня (для доли в подписи); path — путь узла от корня
-// по именам (у корня nil), из него строятся ссылки детей.
 func flameRow(sb *strings.Builder, n *profile.FlameNode, x, w float64, depth int, total uint64, path []string, link func(path []string) string) {
-	// n.Value == 0 — узел без сэмплов (сюда попадает фокус на пустой узел:
-	// ширину ему даёт зум, а не доля). Рисовать нечего, а деление на
-	// n.Value ниже дало бы детям NaN/Inf, который guard по ширине не
-	// отсекает (NaN < 0.5 — false) и который уехал бы в разметку как
-	// width="NaN".
+	// n.Value==0 — узел без сэмплов; деление ниже дало бы детям NaN/Inf, не
+	// отсекаемый guard'ом (NaN<0.5 — false).
 	if w < 0.5 || n.Value == 0 {
 		return
 	}
@@ -154,8 +124,7 @@ func flameRow(sb *strings.Builder, n *profile.FlameNode, x, w float64, depth int
 	childX := x
 	for _, c := range n.Children {
 		cw := w * float64(c.Value) / float64(n.Value)
-		// Свой срез на каждого ребёнка: append к общему path делил бы буфер
-		// между братьями.
+		// свой срез каждому ребёнку — append к общему path делил бы буфер между братьями.
 		cp := make([]string, len(path)+1)
 		copy(cp, path)
 		cp[len(path)] = c.Name
@@ -164,11 +133,8 @@ func flameRow(sb *strings.Builder, n *profile.FlameNode, x, w float64, depth int
 	}
 }
 
-// flameNode рисует один кадр: ссылка → вложенный <svg> → прямоугольник с
-// тултипом и подпись. Вложенный <svg> клипует содержимое сам (overflow hidden
-// по умолчанию), поэтому подпись не вылезет за кадр даже при расхождении
-// расчётной и реальной ширины символа — без clipPath и id. Координаты подписи
-// относительны кадра. ancestor — полупрозрачная строка предка при зуме.
+// вложенный <svg> клипует сам (overflow hidden) — подпись не вылезет за
+// кадр даже при расхождении расчётной и реальной ширины символа, без clipPath/id.
 func flameNode(sb *strings.Builder, n *profile.FlameNode, x, w float64, depth int, total uint64, path []string, link func(path []string) string, ancestor bool) {
 	pct := 0.0
 	if total > 0 {
@@ -207,10 +173,8 @@ func flameNode(sb *strings.Builder, n *profile.FlameNode, x, w float64, depth in
 	sb.WriteString(`</svg></a>`)
 }
 
-// fitFlameLabel подгоняет имя кадра под ширину w: целиком, если влезает с
-// паддингом с обеих сторон; иначе усекает до fit-1 рун и добавляет «…», чтобы
-// обрезка была видна. Если после усечения остаётся меньше трёх рун, подписи
-// нет вовсе — читателю остаётся тултип.
+// усекает до fit-1 рун с «…»; если остаётся меньше трёх рун — подписи нет
+// вовсе, читателю тултип.
 func fitFlameLabel(name string, w float64) string {
 	fit := int((w - 2*flameLabelPad) / flameCharWidthPx)
 	r := []rune(name)
@@ -223,12 +187,8 @@ func fitFlameLabel(name string, w float64) string {
 	return string(r[:fit-1]) + "…"
 }
 
-// flameColor — детерминированный тёплый цвет по имени функции. Диапазон hue
-// намеренно начинается с янтаря (24), а не с красного: чистый красный (<20) —
-// семантический цвет ошибки во всём приложении (--danger), и красноватые
-// кадры флеймграфа с ним ложно перекликались. Остаётся «пламя» (янтарь →
-// оранжевый → золото), но без клеша с error-red. Светлота фиксирована на 58%,
-// поэтому тёмная подпись (#111) читается на любом кадре в обеих темах.
+// hue начинается с 24, не с 0 — чистый красный (<20) занят под --danger,
+// кадры флеймграфа не должны с ним путаться.
 func flameColor(name string) string {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(name))
@@ -236,7 +196,6 @@ func flameColor(name string) string {
 	return fmt.Sprintf("hsl(%d,70%%,58%%)", hue)
 }
 
-// truncateRunes обрезает строку до n рун (без многоточия), n<=0 → пусто.
 func truncateRunes(s string, n int) string {
 	if n <= 0 {
 		return ""
@@ -248,17 +207,12 @@ func truncateRunes(s string, n int) string {
 	return string(r[:n])
 }
 
-// metricThreshold — порог алерта для горизонтальной линии на графике метрики
-// (значение + направление сравнения, чтобы подписать «> N» / «< N»).
 type metricThreshold struct {
 	Value      float64
 	Comparator string // "gt" | "lt"
 }
 
-// metricSeriesSVG рисует график ряда metric.Point с осями: ось Y (значения +
-// юнит слева), ось X (время снизу) и пунктирные пороговые линии алертов
-// (Grafana-style). Текст SVG состоит из чисел и html-экранированных подписей —
-// templ.Raw безопасен, как в latencyLinesSVG.
+// templ.Raw безопасен: SVG строится из чисел и html-экранированных подписей.
 func metricSeriesSVG(ctx context.Context, points []metric.Point, unit string, thresholds []metricThreshold, deploys []deploy.Deployment, w, h int) templ.Component {
 	return templ.Raw(metricSeriesMarkup(ctx, points, unit, thresholds, deploys, w, h))
 }
@@ -276,17 +230,13 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 	var sb strings.Builder
 	sb.WriteString(svgRoot("metric-chart", w, h, i18n.T(ctx, "a11y.chart.metric")))
 
-	// Домен значений: данные (пропуская пустые NaN-корзины дозаполнения окна) +
-	// пороги (чтобы пороговые линии попадали в область). Пустые корзины ряд
-	// покрывает разрывом, а не нулём — иначе на пропусках линия падала бы в 0.
+	// пустые NaN-корзины дозаполнения окна не входят в домен и рисуются
+	// разрывом, не нулём.
 	haveData := false
 	var dataMin, dataMax float64
 	for _, p := range points {
-		// IsInf рядом с IsNaN: одна ±Inf-точка иначе сделала бы domMax-domMin
-		// бесконечным и NaN-координаты получили бы ВСЕ точки, не только
-		// сбойная (defense-in-depth — ingest уже отбрасывает NaN/Inf/
-		// отрицательные значения метрик, но эта функция не должна полагаться
-		// на вызывающих).
+		// ±Inf рядом с NaN — иначе одна такая точка сделает domMax-domMin
+		// бесконечным, и NaN-координаты получат все точки, не только сбойную.
 		if math.IsNaN(p.V) || math.IsInf(p.V, 0) {
 			continue
 		}
@@ -302,11 +252,8 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 		}
 	}
 	if !haveData {
-		// Рамка осей — и у пустого графика, с полем по умолчанию (подписей
-		// оси Y нет, раздвигать нечего). Группа открывается ЗДЕСЬ, а не
-		// общим кодом выше: для данных она идёт после расчёта поля
-		// (yAxisPadL ниже), и ранний выход без своей группы оставлял
-		// осиротевший </g> — невалидный SVG (ревью задачи 9).
+		// группа осей открывается здесь отдельно от общего кода ниже (после
+		// yAxisPadL) — иначе ранний выход оставлял бы осиротевший </g>.
 		sb.WriteString(`<g class="chart-axis">`)
 		axisLine(&sb, x0, y0, x0, y1)
 		axisLine(&sb, x0, y1, x1, y1)
@@ -339,24 +286,19 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 		return y1 - (v-domMin)/(domMax-domMin)*(y1-y0)
 	}
 
-	// Подписи оси Y: max, середина, min значений данных + горизонтальные линии.
-	// Плоский ряд (dataMin == dataMax, например alert-threshold на графике с
-	// одним постоянным значением) даёт все три числа равными — три подписи и
-	// три линии легли бы друг на друга; рисуем в этом случае одну.
+	// плоский ряд (dataMin==dataMax) даёт три равных значения — рисуем одну
+	// подпись/линию вместо трёх наложенных.
 	yValues := []float64{dataMax, (dataMin + dataMax) / 2, dataMin}
 	if dataMin == dataMax {
 		yValues = []float64{dataMax}
 	}
-	// Поле под подписи — до рамки: unit из OTLP («12.3K bytes/sec») шире
-	// padL, и без yAxisPadL подпись резалась левым краем (K9-4, тот же
-	// приём, что fitYLabels у генераторов на writeYGrid).
+	// unit из OTLP может быть шире padL — без yAxisPadL подпись резалась бы левым краем.
 	yLabels := make([]string, len(yValues))
 	for i, v := range yValues {
 		yLabels[i] = formatAxisValue(v, unit)
 	}
 	x0 = yAxisPadL(w, x0, yLabels)
 
-	// Рамка осей (левая вертикаль + нижняя горизонталь).
 	sb.WriteString(`<g class="chart-axis">`)
 	axisLine(&sb, x0, y0, x0, y1)
 	axisLine(&sb, x0, y1, x1, y1)
@@ -373,7 +315,6 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 		sb.WriteString(`</text>`)
 	}
 
-	// Подписи оси X: время первой, средней и последней точки.
 	n := len(points)
 	spanH := points[n-1].T.Sub(points[0].T).Hours()
 	xLabel := func(t time.Time, xpos float64, anchor string) {
@@ -394,7 +335,6 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 	xLabel(points[n-1].T, x1, "end")
 	sb.WriteString(`</g>`) // конец chart-axis
 
-	// Пороговые линии алертов (пунктир, поверх сетки, под линией данных).
 	for _, t := range thresholds {
 		yv := yFor(t.Value)
 		if yv < y0 || yv > y1 {
@@ -417,11 +357,8 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 		sb.WriteString(`</text></g>`)
 	}
 
-	// Линия данных с мягкой заливкой под ней. Пустые корзины дозаполнения окна
-	// (NaN) — разрыв линии (has=false), а не провал в ноль: так график
-	// покрывает всё выбранное окно, но не рисует данных там, где их нет. ±Inf
-	// (см. фильтр домена выше) — тот же разрыв: точка вне конечного домена не
-	// имеет корректной Y-координаты.
+	// NaN и ±Inf — разрыв линии (has=false), не провал в ноль: график
+	// покрывает окно, но не рисует данных, где их нет.
 	linePts := make([]seriesPoint, n)
 	for i, p := range points {
 		x := x0
@@ -434,15 +371,12 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 		}
 		linePts[i] = seriesPoint{x: x, y: yFor(p.V), has: true}
 	}
-	// Цвет линии и заливки берётся из CSS (color у .metric-chart), а не
-	// зашивается хексом: бренд-градиент живёт в токенах, и зашитая копия
-	// расходится с ними молча.
+	// цвет — из CSS (color у .metric-chart), не хекс: зашитая копия
+	// разошлась бы с токенами молча.
 	writeLineWithArea(&sb, linePts, y1, "currentColor", "gradMetric", `stroke="currentColor"`)
 
-	// Полосы наведения: линия тонкая, наводиться на неё нечем, поэтому
-	// подсказку ловит прозрачная полоса над своим интервалом. Значение
-	// показывается в той же записи, что и подписи оси. Пустые корзины и ±Inf
-	// пропускаем — подсказки «нет данных»/сломанного числа не нужны.
+	// линия тонкая, наводиться нечем — подсказку ловит прозрачная полоса над
+	// интервалом; пустые корзины и ±Inf пропускаем.
 	g := chartGeom{w: w, h: h, x0: x0, x1: x1, y0: y0, y1: y1}
 	band := (x1 - x0) / float64(n)
 	for i, p := range points {
@@ -457,7 +391,6 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 			humanize.Time(ctx, p.T, time.UTC)+" — "+formatAxisValue(p.V, unit))
 	}
 
-	// Маркеры деплоев (C5): вертикали в моменты выкладок по срезу времён точек.
 	times := make([]time.Time, n)
 	for i, p := range points {
 		times[i] = p.T
@@ -468,28 +401,18 @@ func metricSeriesMarkup(ctx context.Context, points []metric.Point, unit string,
 	return sb.String()
 }
 
-// NamedSeries — один ряд generic мульти-серийного графика: подпись (для
-// легенды и подсказок) + точки. Порядок в срезе задаёт и порядок легенды, и
-// класс палитры линии: i-й элемент рисуется классом series-m{i+1}.
+// i-й элемент рисуется классом series-m{i+1} — порядок в срезе задаёт и легенду, и палитру.
 type NamedSeries struct {
 	Label  string
 	Points []metric.Point
 }
 
-// maxMultiSeries — сколько серий одновременно умеет рисовать
-// multiSeriesMarkup: в app.css заведено ровно восемь пар классов палитры
-// (series-m1..series-m8 / legend-m1..legend-m8). Девятая серия и далее
-// молча отбрасываются — красить её было бы нечем, а падать из-за того, что
-// вызывающий передал больше рядов, чем есть в палитре, не повод.
+// в app.css заведено ровно 8 пар классов палитры — девятая серия и далее
+// молча отбрасываются.
 const maxMultiSeries = 8
 
-// multiSeriesSVG рисует generic мульти-серийный график (до 8 рядов
-// metric.Point с общей осью значений) с осями, сеткой, пороговыми линиями
-// алертов и подсказками по каждой точке. Обобщение metricSeriesSVG на
-// произвольное число рядов: та же логика NaN-разрывов и порогов, но линия
-// каждого ряда красится классом палитры, а не currentColor. Текст SVG
-// собран из чисел и html-экранированных подписей — templ.Raw безопасен по
-// тем же причинам, что и у metricSeriesSVG.
+// обобщение metricSeriesSVG на несколько рядов — та же логика NaN-разрывов
+// и порогов, но цвет линии по классу палитры.
 func multiSeriesSVG(ctx context.Context, series []NamedSeries, unit string, thresholds []metricThreshold, deploys []deploy.Deployment, w, h int) templ.Component {
 	return templ.Raw(multiSeriesMarkup(ctx, series, unit, thresholds, deploys, w, h))
 }
@@ -499,14 +422,10 @@ func multiSeriesMarkup(ctx context.Context, series []NamedSeries, unit string, t
 		series = series[:maxMultiSeries]
 	}
 
-	// Поля холста — как у metricSeriesMarkup (совместимая высота подписей).
 	g := newChartGeom(w, h, 58, 16, 12, 26)
 
-	// Домен: максимум по ВСЕМ сериям (пропуская NaN/Inf, как и в
-	// metricSeriesMarkup) + пороги, чтобы пороговая линия всегда попадала в
-	// область. Шкала «круглая» и растёт от нуля (newYScaleFloat, как в
-	// latencyLinesMarkup) — метрики хоста (CPU/память/диск/сеть) по своей
-	// природе неотрицательны, отдельный нижний домен им не нужен.
+	// шкала растёт от нуля — метрики хоста (CPU/память/диск/сеть)
+	// неотрицательны по природе, отдельный нижний домен не нужен.
 	var max float64
 	haveData := false
 	longest := -1
@@ -552,9 +471,8 @@ func multiSeriesMarkup(ctx context.Context, series []NamedSeries, unit string, t
 	writeFrame(&sb, g)
 	writeYGrid(&sb, g, scale, yLabel)
 
-	// Ось X строится по самому длинному ряду: на практике все ряды приходят
-	// с одной и той же сетки времени (общий запрос metric.Query.Series), и
-	// это просто самый информативный вариант из имеющихся, а не рассинхрон.
+	// ось X — по самому длинному ряду: на практике все ряды на одной сетке
+	// времени, это просто самый информативный вариант.
 	times := make([]time.Time, len(series[longest].Points))
 	for i, p := range series[longest].Points {
 		times[i] = p.T
@@ -563,9 +481,6 @@ func multiSeriesMarkup(ctx context.Context, series []NamedSeries, unit string, t
 	writeXTicks(&sb, g, timeAxis(times, func(i int) float64 { return g.xForIndex(i, n) }, 70))
 	sb.WriteString(`</g>`)
 
-	// Пороговые линии алертов — тот же вид, что и в metricSeriesMarkup
-	// (пунктир, подпись у правого края, значения за пределами домена не
-	// рисуются).
 	for _, t := range thresholds {
 		yv := scale.yFor(g, t.Value)
 		if yv < g.y0 || yv > g.y1 {
@@ -588,10 +503,8 @@ func multiSeriesMarkup(ctx context.Context, series []NamedSeries, unit string, t
 		sb.WriteString(`</text></g>`)
 	}
 
-	// Линии рядов: разрывы на NaN/Inf (как в metricSeriesMarkup), цвет — по
-	// классу палитры series-m{i+1}, без заливки под линией (area у 8
-	// перекрывающихся рядов читалась бы мутным пятном, а не сериями — тем же
-	// путём уже пошёл p95 в latencyLinesMarkup: только линия).
+	// без заливки под линией — area у 8 перекрывающихся рядов читалась бы
+	// мутным пятном, не сериями.
 	for i, s := range series {
 		sn := len(s.Points)
 		pts := make([]seriesPoint, sn)
@@ -607,9 +520,8 @@ func multiSeriesMarkup(ctx context.Context, series []NamedSeries, unit string, t
 		writeLineWithArea(&sb, pts, g.y1, "", "", `class="`+class+`"`)
 	}
 
-	// Полосы наведения: одна на индекс общей временной сетки, подсказка
-	// перечисляет значения всех рядов, у кого в этой корзине есть данные —
-	// иначе на 8 рядах пришлось бы наводиться на каждый отдельно.
+	// одна полоса на индекс, подсказка перечисляет все ряды с данными в
+	// корзине — иначе пришлось бы наводиться на каждый ряд отдельно.
 	band := (g.x1 - g.x0) / float64(n)
 	for i := 0; i < n; i++ {
 		var parts []string
@@ -626,11 +538,8 @@ func multiSeriesMarkup(ctx context.Context, series []NamedSeries, unit string, t
 		if len(parts) == 0 {
 			continue
 		}
-		// humanize.Time, а не свой .Format("02.01 15:04") (как у соседних
-		// функций этого файла) — TestNoRawTimeFormattingOutsideHumanize
-		// держит долг литеральных макетов на потолке 11, поднимать его ради
-		// нового вызова было бы обычным пополнением долга; сюда идёт вызов
-		// уже существующей общей функции.
+		// humanize.Time, не свой .Format — TestNoRawTimeFormattingOutsideHumanize
+		// держит потолок литеральных макетов, новый вызов поднял бы его без нужды.
 		writeHoverBand(&sb, g, g.xForIndex(i, n)-band/2, band,
 			humanize.Time(ctx, times[i], time.UTC)+" — "+strings.Join(parts, " · "))
 	}
@@ -642,7 +551,6 @@ func multiSeriesMarkup(ctx context.Context, series []NamedSeries, unit string, t
 	return sb.String()
 }
 
-// axisLine — тонкая линия сетки/оси в текущем цвете (currentColor группы).
 func axisLine(sb *strings.Builder, x1, y1v, x2, y2 float64) {
 	sb.WriteString(`<line x1="`)
 	sb.WriteString(formatCoord(x1))
@@ -655,29 +563,13 @@ func axisLine(sb *strings.Builder, x1, y1v, x2, y2 float64) {
 	sb.WriteString(`" stroke="currentColor" stroke-width="0.5" stroke-opacity="0.5"/>`)
 }
 
-// seriesPoint — точка линейного графика на холсте: координаты и признак
-// наличия данных в этой корзине (has=false — пропуск).
 type seriesPoint struct {
 	x, y float64
 	has  bool
 }
 
-// bridgeSparseGaps соединяет соседние непустые корзины ЧЕРЕЗ короткие пропуски,
-// оставляя разрывы только там, где данных не было заметно дольше обычного.
-//
-// Сетка корзин считается по ширине окна (autoStep), а не по частоте ряда, и
-// ряд легко оказывается реже сетки: метрика раз в час на 24-часовом окне
-// попадает в каждую пятую 12-минутную корзину. Тогда каждая точка — одиночный
-// сегмент, и линейный график вырождается в частокол отметок с заливкой в пол.
-//
-// Порог адаптивный: медианный шаг ряда (в корзинах) × 1.5. Это не сглаживание и
-// не досочинение данных — отрезок соединяет две РЕАЛЬНЫЕ соседние точки, ровно
-// как в любом линейном графике; промежуточные значения не появляются, подсказки
-// по-прежнему висят только над корзинами с данными. Пропуск длиннее порога
-// (простой приложения) остаётся разрывом: для мониторинга это главное.
-//
-// Плотный ряд (медиана = 1 корзина) не трогаем вовсе: там одиночная пустая
-// корзина — настоящий провал, и он обязан читаться как разрыв.
+// порог адаптивный (медиана шага ряда × 1.5) — соединяет только реальные
+// соседние точки, не досочиняет данные; длинный пропуск остаётся разрывом.
 func bridgeSparseGaps(pts []seriesPoint) []seriesPoint {
 	idx := make([]int, 0, len(pts))
 	for i, p := range pts {
@@ -706,8 +598,7 @@ func bridgeSparseGaps(pts []seriesPoint) []seriesPoint {
 			continue
 		}
 		if prev >= 0 && i-prev > limit {
-			// Маркер разрыва: одной пустой точки достаточно, чтобы сегмент
-			// оборвался — координаты у неё не читаются.
+			// одной пустой точки достаточно, чтобы сегмент оборвался.
 			out = append(out, seriesPoint{})
 		}
 		out = append(out, p)
@@ -716,23 +607,10 @@ func bridgeSparseGaps(pts []seriesPoint) []seriesPoint {
 	return out
 }
 
-// writeLineWithArea рисует линию по точкам с РАЗРЫВАМИ на пропусках (has=false)
-// — линия не проваливается в ноль на пустых корзинах, а прерывается — и с
-// мягкой заливкой-градиентом под линией (fade к прозрачному). Прямые отрезки, а
-// НЕ сплайн: сглаживание рисует значения между точками, которых не было, что
-// для мониторинга недопустимо. gradID должен быть уникален на странице; при
-// fillHex=="" заливка не рисуется (только линия). lineAttr — атрибуты штриха
-// (class="…" или stroke="#…"). baseline — низ области заливки (обычно g.y1).
-// gradSeq делает идентификаторы градиентов уникальными в пределах документа.
-//
-// Спарклайн рисуется по одному на строку таблицы, и все они несли id
-// «gradSpark»: до пяти одинаковых id на странице. Сегодня это безвредно (каждый
-// url(#gradSpark) находит ПЕРВЫЙ градиент, а они одинаковые), но документ
-// невалиден, и первое же расхождение в цвете покрасит все графики цветом
-// первого.
+// прямые отрезки, не сплайн — сглаживание рисовало бы значения между
+// точками, которых не было. gradID должен быть уникален на странице.
 var gradSeq atomic.Uint64
 
-// uniqueGradID превращает базовое имя в уникальное для этого документа.
 func uniqueGradID(base string) string {
 	return base + "-" + strconv.FormatUint(gradSeq.Add(1), 36)
 }
@@ -749,12 +627,8 @@ func writeLineWithArea(sb *strings.Builder, pts []seriesPoint, baseline float64,
 		sb.WriteString(`" stop-opacity="0"/></linearGradient></defs>`)
 	}
 
-	// Ширина отметки для ОДИНОЧНОЙ корзины: половина шага между точками.
-	// Одиночную корзину нельзя нарисовать полилинией — для неё нужны две точки,
-	// — и раньше она просто пропускалась. Для мониторинга это худший из
-	// возможных пропусков: одиночный всплеск в тишине ровно то, что надо
-	// увидеть, а подсказка при наведении рисуется на каждой корзине независимо
-	// и честно сообщала «3 транзакции» там, где на графике был разрыв.
+	// одиночную корзину нельзя нарисовать полилинией (нужны две точки) —
+	// рисуем короткую отметку, а не пропускаем: всплеск в тишине важен.
 	markW := 2.0
 	if len(pts) > 1 {
 		if step := (pts[len(pts)-1].x - pts[0].x) / float64(len(pts)-1); step > 0 {
@@ -762,13 +636,8 @@ func writeLineWithArea(sb *strings.Builder, pts []seriesPoint, baseline float64,
 		}
 	}
 
-	// Ряд может приходить реже сетки корзин (метрика раз в час на 12-минутном
-	// шаге 24-часового окна). Тогда КАЖДАЯ непустая корзина изолирована, и без
-	// моста график распадается на отдельные отметки с заливкой в пол — «лес
-	// спичек» вместо линии. Мостим только короткие пропуски: см. bridgeSparseGaps.
 	pts = bridgeSparseGaps(pts)
 
-	// Идём сегментами подряд идущих точек с данными; на пропуске сегмент рвётся.
 	for i := 0; i < len(pts); {
 		if !pts[i].has {
 			i++
@@ -781,11 +650,8 @@ func writeLineWithArea(sb *strings.Builder, pts []seriesPoint, baseline float64,
 		seg := pts[i:j]
 		i = j
 		if len(seg) == 1 {
-			// Одиночная корзина — короткая горизонтальная отметка на её
-			// значении, шириной в саму корзину. Рисуется теми же атрибутами
-			// штриха, что и линия, поэтому совпадает с ней по цвету и теме
-			// (у p95 это class=, у метрик — stroke=, окружность с fill здесь
-			// не годится).
+			// рисуется теми же атрибутами штриха, что и линия — совпадает с
+			// ней по цвету и теме.
 			pt := seg[0]
 			x0, x1 := pt.x-markW/2, pt.x+markW/2
 			if fillHex != "" {
@@ -856,7 +722,6 @@ func writeLineWithArea(sb *strings.Builder, pts []seriesPoint, baseline float64,
 	}
 }
 
-// comparatorSymbol — знак сравнения для подписи пороговой линии.
 func comparatorSymbol(cmp string) string {
 	if cmp == "lt" {
 		return "<"
@@ -864,23 +729,17 @@ func comparatorSymbol(cmp string) string {
 	return ">"
 }
 
-// formatAxisValue форматирует значение для подписи оси: компактная запись до
-// 3 значащих цифр с суффиксом k/M/G/T (humanize.CompactNumber — тот же
-// формат, что в таблицах правил метрик; раньше значения от миллиарда снова
-// сваливались в научную нотацию «1e+03M») и опциональный юнит.
+// CompactNumber — тот же формат, что в таблицах правил метрик.
 func formatAxisValue(v float64, unit string) string {
 	s := humanize.CompactNumber(v)
-	// "1" — юнит безразмерной метрики по соглашению OTLP (счётчики,
-	// количества). На оси его печатать нельзя: «17 1» читается как одно
-	// число, а не как «17 штук».
+	// "1" — юнит безразмерной метрики по OTLP — печатать на оси нельзя,
+	// «17 1» читается как число, не как «17 штук».
 	if unit != "" && unit != "1" {
 		s += " " + unit
 	}
 	return s
 }
 
-// metricTimeLabel форматирует момент времени для оси X: на окне до двух суток —
-// часы:минуты, на более длинном — день.месяц.
 func metricTimeLabel(t time.Time, spanHours float64) string {
 	t = t.UTC()
 	if spanHours >= 48 {
@@ -889,25 +748,13 @@ func metricTimeLabel(t time.Time, spanHours float64) string {
 	return t.Format("15:04")
 }
 
-// sparklineWidth/Height — размер инлайновых SVG-спарклайнов в списке issues.
 const (
 	sparklineWidth  = 96
 	sparklineHeight = 24
 )
 
-// sparklineSVG строит инлайновый SVG-спарклайн: полилиния по значениям
-// buckets, нормированным на максимум. Пустые данные (buckets==nil/пустой
-// слайс, либо все нули) рисуются плоской линией посередине, чтобы не путать
-// "нет данных" с ошибкой рендера.
-//
-// buckets приходят из event.Query.Sparklines (числа, посчитанные CH), поэтому
-// собранный из них SVG-текст не требует HTML-экранирования — templ.Raw здесь
-// безопасен, так как в него не попадает ничего, кроме чисел, отформатированных
-// этой функцией.
-// sparklineSVG — врезка-спарклайн в строке таблицы. Осей ей не даём (график
-// шириной в пару сантиметров), но подсказка со сводкой нужна: без неё линия
-// показывает только форму, а величины остаются неизвестными. format задаёт
-// запись значения (счётчик или длительность) — nil означает голое число.
+// buckets — числа из event.Query.Sparklines (посчитаны CH), HTML-экранирование
+// не нужно — templ.Raw здесь безопасен.
 func sparklineSVG(ctx context.Context, buckets []uint64, w, h int, format func(uint64) string) templ.Component {
 	return templ.Raw(sparklinePolyline(ctx, buckets, w, h, format))
 }
@@ -958,17 +805,9 @@ func sparklinePolyline(ctx context.Context, buckets []uint64, w, h int, format f
 	return sb.String()
 }
 
-// flatlineSVG — горизонтальная линия посередине: issue без событий в окне
-// спарклайна (или без данных вовсе).
 func flatlineSVG(ctx context.Context, w, h int) string {
-	// Линия по БАЗОВОЙ, а не по середине холста.
-	//
-	// Середина читается как реальное среднее значение, причём ВЫШЕ, чем
-	// настоящие нули: у ряда с данными пустые корзины лежат на самом низу
-	// (y = h), а «данных нет» рисовалось на y = h/2. Для продукта мониторинга
-	// это инверсия смысла — тишина выглядела активнее нуля. Так же поступает
-	// chartEmptyAxis у больших графиков, и заглушки перестают противоречить
-	// друг другу.
+	// по базовой линии, не по середине — середина читалась бы как реальное
+	// значение выше настоящих нулей.
 	y := formatCoord(float64(h) - 0.5)
 	var sb strings.Builder
 	sb.WriteString(svgRoot("sparkline", w, h, i18n.T(ctx, "a11y.chart.sparkline_empty")))
@@ -983,26 +822,21 @@ func flatlineSVG(ctx context.Context, w, h int) string {
 }
 
 func formatCoord(f float64) string {
-	// Защита: нефинитное значение (NaN/±Inf) дало бы SVG-атрибут "NaN"/"+Inf" и
-	// сломало бы отрисовку. Пороги NaN/Inf уже отсекаются на входе, но значение
-	// ряда из ClickHouse теоретически может прийти нефинитным — клампим в 0.
+	// нефинитное значение дало бы SVG-атрибут "NaN"/"+Inf" — CH теоретически
+	// может прислать такое, хотя пороги уже отсекаются на входе.
 	if math.IsNaN(f) || math.IsInf(f, 0) {
 		return "0.0"
 	}
 	return strconv.FormatFloat(f, 'f', 1, 64)
 }
 
-// perfSparklineWidth/Height — размер инлайнового спарклайна p95 в списке
-// эндпойнтов (та же роль, что sparkline у issues).
 const (
 	perfSparklineWidth  = 96
 	perfSparklineHeight = 24
 )
 
-// latencySparklineSVG строит спарклайн p95 по ряду trace.LatencyPoint —
-// переиспользует sparklineSVG, скармливая ему P95 каждой точки как []uint64.
-// Числа приходят из trace.Query.EndpointLatency (посчитаны CH), поэтому
-// templ.Raw внутри sparklineSVG остаётся безопасным.
+// переиспользует sparklineSVG — числа из trace.Query.EndpointLatency,
+// templ.Raw остаётся безопасным.
 func latencySparklineSVG(ctx context.Context, points []trace.LatencyPoint, w, h int) templ.Component {
 	vals := make([]uint64, len(points))
 	for i, p := range points {
@@ -1012,33 +846,20 @@ func latencySparklineSVG(ctx context.Context, points []trace.LatencyPoint, w, h 
 	return sparklineSVG(ctx, vals, w, h, func(v uint64) string { return formatUSAxis(float64(v)) })
 }
 
-// perfLatencyChartWidth/Height — размер графика перцентилей p50/p95 и графика
-// throughput на странице эндпойнта.
 const (
 	perfLatencyChartWidth  = 1200
 	perfLatencyChartHeight = 220
 )
 
-// perfLatencyLineClasses — классы линий p50 и p95 на графике перцентилей;
-// цвет назначается в app.css из токенов, чтобы линии следовали теме.
-// Захардкожены (не currentColor): нужны два разных цвета в одном SVG.
+// захардкожены, не currentColor — нужны два разных цвета линий в одном SVG;
+// сам цвет — из app.css по токенам.
 var perfLatencyLineClasses = [2]string{"series-p50", "series-p95"}
 
-// latencyLinesSVG рисует две полилинии (p50 и p95) по ряду trace.LatencyPoint,
-// нормированные на максимум p95. Пустой ряд (или все нули) → плоская линия
-// посередине, тем же принципом «нет данных ≠ ошибка рендера», что и
-// flatlineSVG.
-//
-// points приходят из trace.Query.EndpointLatency (числа), поэтому собранный
-// SVG-текст состоит только из чисел и фиксированных цветов — templ.Raw
-// безопасен по тем же причинам, что и в sparklineSVG.
+// пустой ряд → flatlineSVG, тем же принципом «нет данных ≠ ошибка рендера».
 func latencyLinesSVG(ctx context.Context, points []trace.LatencyPoint, deploys []deploy.Deployment, w, h int) templ.Component {
 	return templ.Raw(latencyLinesMarkup(ctx, points, deploys, w, h))
 }
 
-// latencyLinesMarkup — перцентили p50/p95 во времени с осями, сеткой и
-// подсказками. Раньше это была голая ломаная без единой подписи: ни величины
-// (микросекунды? миллисекунды?), ни времени, ни какая линия что означает.
 func latencyLinesMarkup(ctx context.Context, points []trace.LatencyPoint, deploys []deploy.Deployment, w, h int) string {
 	var max uint32
 	for _, p := range points {
@@ -1068,9 +889,8 @@ func latencyLinesMarkup(ctx context.Context, points []trace.LatencyPoint, deploy
 	writeXTicks(&sb, g, timeAxis(times, func(i int) float64 { return g.xForIndex(i, n) }, 70))
 	sb.WriteString(`</g>`)
 
-	// Перцентили. p50 — с заливкой под линией; p95 — только линия (заливка обеих
-	// дала бы мутное наложение). На пустых корзинах (Count==0) линия рвётся, а
-	// не проваливается в ноль — это убирает резкие V-пики.
+	// p50 с заливкой, p95 только линией — заливка обеих дала бы мутное
+	// наложение; пустые корзины (Count==0) — разрыв, не провал в ноль.
 	p50pts := make([]seriesPoint, n)
 	p95pts := make([]seriesPoint, n)
 	for i, p := range points {
@@ -1082,7 +902,6 @@ func latencyLinesMarkup(ctx context.Context, points []trace.LatencyPoint, deploy
 	writeLineWithArea(&sb, p50pts, g.y1, "currentColor", "gradLatP50", `class="`+perfLatencyLineClasses[0]+`"`)
 	writeLineWithArea(&sb, p95pts, g.y1, "", "", `class="`+perfLatencyLineClasses[1]+`"`)
 
-	// Полосы наведения: по одной на точку, с обоими перцентилями в подсказке.
 	band := (g.x1 - g.x0) / float64(n)
 	for i, p := range points {
 		writeHoverBand(&sb, g, g.xForIndex(i, n)-band/2, band,
@@ -1091,7 +910,6 @@ func latencyLinesMarkup(ctx context.Context, points []trace.LatencyPoint, deploy
 				i18n.Tn(ctx, "chart.bar.transactions", int(p.Count)))
 	}
 
-	// Маркеры деплоев (C5): times построены по точкам выше.
 	writeDeployMarker(&sb, g, times, deploys)
 
 	sb.WriteString(`</svg>`)
@@ -1102,8 +920,6 @@ func throughputBarsSVG(ctx context.Context, points []trace.LatencyPoint, deploys
 	return templ.Raw(throughputBarsMarkup(ctx, points, deploys, w, h))
 }
 
-// throughputBarsMarkup — число транзакций за интервал агрегации, столбиками,
-// с осями и подсказкой на каждом столбике.
 func throughputBarsMarkup(ctx context.Context, points []trace.LatencyPoint, deploys []deploy.Deployment, w, h int) string {
 	var max uint64
 	for _, p := range points {
@@ -1111,10 +927,8 @@ func throughputBarsMarkup(ctx context.Context, points []trace.LatencyPoint, depl
 			max = p.Count
 		}
 	}
-	// Подпись — про пропускную способность, а не про задержку и не про частоту
-	// событий: скринридер объявляет её вместо картинки, и назвать чужим именем
-	// значит соврать вспомогательной технологии. Пустая и заполненная версии
-	// одного графика обязаны называться одинаково — раньше они расходились.
+	// пустая и заполненная версии графика обязаны называться одинаково —
+	// подпись про пропускную способность, не про задержку или частоту событий.
 	if len(points) == 0 || max == 0 {
 		return chartEmptyAxis(w, h, i18n.T(ctx, "a11y.chart.throughput"))
 	}
@@ -1155,9 +969,8 @@ func throughputBarsMarkup(ctx context.Context, points []trace.LatencyPoint, depl
 		sb.WriteString(`</title></rect>`)
 	}
 
-	// Маркеры деплоев (C5): столбчатая шкала времени ставит точку i в g.x0 +
-	// i*barW (см. writeXTicks выше), поэтому маркеру нужна та же шкала — копия
-	// g с x1, укороченным до левого края последнего слота.
+	// столбчатая шкала ставит точку i в g.x0+i*barW — маркеру нужна та же
+	// шкала, копия g с укороченным x1.
 	bg := g
 	bg.x1 = g.x0 + float64(n-1)*barW
 	writeDeployMarker(&sb, bg, times, deploys)
@@ -1170,9 +983,6 @@ func durationHistogramSVG(ctx context.Context, buckets []trace.DurationBucket, w
 	return templ.Raw(durationHistogramMarkup(ctx, buckets, w, h))
 }
 
-// durationHistogramMarkup — распределение длительностей: по X границы корзин
-// в миллисекундах, по Y число транзакций. Без подписей осей величина не
-// угадывалась вообще: столбики могли означать что угодно.
 func durationHistogramMarkup(ctx context.Context, buckets []trace.DurationBucket, w, h int) string {
 	var max uint64
 	for _, b := range buckets {
@@ -1180,9 +990,7 @@ func durationHistogramMarkup(ctx context.Context, buckets []trace.DurationBucket
 			max = b.Count
 		}
 	}
-	// Гистограмма распределения — не временной ряд: ключ a11y.chart.histogram
-	// для этого и заведён, но не использовался нигде, а график назывался то
-	// пропускной способностью, то частотой событий.
+	// гистограмма распределения — не временной ряд, со своим ключом a11y.chart.histogram.
 	if len(buckets) == 0 || max == 0 {
 		return chartEmptyAxis(w, h, i18n.T(ctx, "a11y.chart.histogram"))
 	}
@@ -1200,8 +1008,7 @@ func durationHistogramMarkup(ctx context.Context, buckets []trace.DurationBucket
 	sb.WriteString(`<g class="chart-axis">`)
 	writeFrame(&sb, g)
 	writeYGrid(&sb, g, scale, formatCountAxis)
-	// Подписи по X — верхние границы корзин, но не каждая: их до двадцати, и
-	// подписи наезжали бы друг на друга.
+	// не каждая граница подписана — их до двадцати, подписи наезжали бы.
 	lastX := -1e9
 	var ticks []xTick
 	for i, b := range buckets {
@@ -1238,14 +1045,11 @@ func durationHistogramMarkup(ctx context.Context, buckets []trace.DurationBucket
 	return sb.String()
 }
 
-// chartWidth/Height — размер bar-chart частоты на странице issue (события за 7
-// дней). Высота с запасом под подписи оси X, ширина под подписи оси Y.
 const (
 	chartWidth  = 1200
 	chartHeight = 180
 )
 
-// chartPad* — поля графика частоты под оси.
 const (
 	chartPadL = 40
 	chartPadR = 10
@@ -1253,23 +1057,14 @@ const (
 	chartPadB = 22
 )
 
-// chartSVG строит инлайновый SVG bar-chart: один столбик на точку
-// event.Point, высота нормирована на максимум N в points. Пустые данные
-// (points==nil или все N==0) рисуют плоскую ось у нижнего края, тем же
-// принципом, что flatlineSVG у sparklineSVG — "нет событий" не должно
-// выглядеть как ошибка рендера.
-//
-// points приходят из event.Query.Series (числа, посчитанные CH), поэтому
-// собранный SVG-текст состоит только из чисел, отформатированных этой
-// функцией — templ.Raw здесь безопасен по тем же причинам, что и в
-// sparklineSVG.
+// пустые данные рисуют плоскую ось у нижнего края, тем же принципом, что
+// flatlineSVG. points из event.Query.Series (CH) — templ.Raw безопасен.
 func chartSVG(ctx context.Context, points []event.Point, w, h int) templ.Component {
 	return templ.Raw(chartBars(ctx, points, w, h))
 }
 
-// niceStep подбирает «круглый» шаг сетки из ряда 1/2/5×10ⁿ так, чтобы линий
-// вышло примерно targetLines. Без него подписи оси получаются вида 37/74/111 —
-// формально верные, но прикинуть по ним значение столбика нельзя.
+// иначе подписи выходят вида 37/74/111 — формально верные, но прикинуть
+// значение нельзя.
 func niceStep(max uint64, targetLines int) uint64 {
 	if max == 0 || targetLines <= 0 {
 		return 1
@@ -1287,8 +1082,7 @@ func niceStep(max uint64, targetLines int) uint64 {
 	return uint64(10 * mag)
 }
 
-// niceStepFloat — тот же ряд 1/2/5×10ⁿ, но для дробных величин (длительности
-// в микросекундах), где округление шага до целого бессмысленно.
+// тот же ряд 1/2/5×10ⁿ, но без округления шага до целого.
 func niceStepFloat(max float64, targetLines int) float64 {
 	if max <= 0 || targetLines <= 0 {
 		return 1
@@ -1313,9 +1107,8 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 			max = p.N
 		}
 	}
-	// Шкала Y считается ДО осей: левое поле растёт под самую широкую подпись
-	// (yAxisPadL, см. svgaxis.go), и ось должна встать уже на сдвинутый x0.
-	// Верх шкалы — строго выше максимума, см. комментарий у сетки ниже.
+	// считается до осей: левое поле растёт под самую широкую подпись
+	// (yAxisPadL), ось встаёт уже на сдвинутый x0.
 	var step, top uint64
 	if max > 0 {
 		step = niceStep(max, 3)
@@ -1328,14 +1121,10 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 	}
 
 	var sb strings.Builder
-	// Пропорции сохраняем (preserveAspectRatio по умолчанию): у графика есть
-	// текстовые подписи осей, и неравномерное растяжение растягивало бы вместе
-	// с рисунком и буквы. Чтобы график занимал широкую карточку целиком,
-	// увеличены сами размеры холста (chartWidth/chartHeight ниже), а не
-	// способ его вписывания.
+	// preserveAspectRatio по умолчанию — неравномерное растяжение растянуло
+	// бы и подписи; под широкую карточку увеличены сами chartWidth/chartHeight.
 	sb.WriteString(svgRoot("chart-freq", w, h, i18n.T(ctx, "a11y.chart.frequency")))
 
-	// Оси: левая вертикаль + базовая линия.
 	sb.WriteString(`<g class="chart-axis">`)
 	axisLine(&sb, x0, y0, x0, y1)
 	axisLine(&sb, x0, y1, x1, y1)
@@ -1349,11 +1138,8 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 		return sb.String()
 	}
 
-	// Горизонтальная сетка: круглый шаг, подпись на каждой линии. Верх шкалы
-	// берём строго выше максимума — на один шаг над ближайшим кратным. Если
-	// верх совпадает с максимумом, самый высокий столбик упирается в рамку и
-	// график читается как сплошной забор; небольшой запас сверху задаёт
-	// «шапку», по которой видно, что пик — это пик.
+	// верх строго выше максимума — иначе столбик упирается в рамку и график
+	// читается забором; запас сверху задаёт «шапку», по которой виден пик.
 	yFor := func(v uint64) float64 {
 		return y1 - float64(v)/float64(top)*(y1-y0)
 	}
@@ -1371,13 +1157,8 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 		sb.WriteString(`</text>`)
 	}
 
-	// Вертикальная сетка и подписи — по границам суток (шаг корзины меньше
-	// суток, подписывать каждую корзину нечитаемо; привязку ко времени даёт
-	// день). На длинном окне (30 дней) суток слишком много и метки наезжают,
-	// поэтому целимся примерно в targetDayLabels равномерных подписей: сначала
-	// собираем индексы границ суток, затем берём каждую k-ю. Так ось «дышит»
-	// на любом окне (7д → все дни, 30д → ~каждый 4-й), а не прореживается
-	// по пикселям неравномерно.
+	// подписи — по границам суток, не каждой корзине; целимся в
+	// targetDayLabels равномерных через шаг k, чтобы ось «дышала» на любом окне.
 	n := len(points)
 	barW := (x1 - x0) / float64(n)
 	const targetDayLabels = 7
@@ -1401,13 +1182,8 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 			axisLine(&sb, x, y0, x, y1)
 		}
 		text := points[idx].T.UTC().Format("02.01")
-		// Якорь и защита от наезда на предыдущую подпись — общая с
-		// writeXTicks (svgaxis.go) логика xLabelPlacement: было две копии
-		// одного и того же порога у края холста, которые могли разойтись,
-		// и ни одна не учитывала сдвиг подписи при переключении якоря
-		// (P1-7 — первая подпись наезжала на вторую). draw=false, если наезд
-		// не удалось починить сменой якоря (не рисуем — линия сетки выше
-		// уже нарисована).
+		// якорь и защита от наезда — та же логика xLabelPlacement, что у
+		// writeXTicks; draw=false, если наезд не удалось починить сменой якоря.
 		anchor, _, right, draw := xLabelPlacement(w, x0, x1, prevDayLabelRight, x, text)
 		if !draw {
 			continue
@@ -1423,9 +1199,7 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 	}
 	sb.WriteString(`</g>`)
 
-	// Столбики в области графика. У каждого — <title> с временем корзины и
-	// количеством: это нативная подсказка браузера при наведении, она не
-	// требует JS и переживает его отключение.
+	// title — нативная подсказка браузера, без JS, переживает его отключение.
 	gap := barW * 0.15
 	for i, p := range points {
 		barH := float64(p.N) / float64(top) * (y1 - y0)
@@ -1449,12 +1223,8 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 	return sb.String()
 }
 
-// chartEmptyAxis — горизонтальная линия у нижнего края: пустой ряд (нет данных)
-// у bar-графиков с классом .chart (throughput, гистограмма длительностей) —
-// "нет данных" не должно выглядеть как ошибка рендера.
-// label передаёт ВЫЗЫВАЮЩИЙ: эта заглушка обслуживает три разных графика
-// (задержка, throughput, Web Vital), и зашитое имя одного из них было бы враньём
-// для остальных двух.
+// заглушка на три разных графика (задержка, throughput, Web Vital) — label
+// передаёт вызывающий, зашитое имя одного было бы враньём для остальных.
 func chartEmptyAxis(w, h int, label string) string {
 	y := formatCoord(float64(h) - 0.5)
 	var sb strings.Builder
@@ -1469,21 +1239,12 @@ func chartEmptyAxis(w, h int, label string) string {
 	return sb.String()
 }
 
-// availabilityBarsWidth/Height — размер полоски доступности в списке
-// мониторов и на странице монитора (план 4, задача 2): по умолчанию 24
-// корзины (например, часовые за последние 24 часа).
 const (
 	availabilityBarsWidth  = 192
 	availabilityBarsHeight = 24
 )
 
-// Классы корзин полоски доступности: зелёная (все проверки в корзине
-// успешны), жёлтая (большинство успешно, но были сбои — «иногда
-// постреливает»), красная (большинство проверок провалилось), серая (в
-// корзине нет ни одной проверки — "нет данных", не путать с провалом). Цвет
-// назначает app.css из токенов, поэтому полоска следует теме. Одного
-// currentColor тут мало — нужны разные цвета в одном SVG, а не один цвет из
-// контекста, как у sparklineSVG/chartSVG.
+// цвет — из app.css по классу, не currentColor: нужны разные цвета в одном SVG.
 const (
 	availabilityClassUp      = "bar-up"
 	availabilityClassPartial = "bar-partial"
@@ -1491,14 +1252,8 @@ const (
 	availabilityClassEmpty   = "bar-empty"
 )
 
-// availabilityBarsSVG строит полоску доступности: один прямоугольник на
-// корзину uptime.Query.Bars. Пустой bars (buckets==nil/пустой слайс) рисует
-// один серый прямоугольник на всю ширину — тот же принцип "нет данных не
-// должно выглядеть как ошибка рендера", что и у flatlineSVG/chartEmptyAxis.
-//
-// bars приходят из uptime.Query.Bars (числа), поэтому собранный SVG-текст
-// состоит только из чисел и трёх фиксированных цветовых констант выше —
-// templ.Raw здесь безопасен по тем же причинам, что и в sparklineSVG.
+// пустой bars рисует один серый прямоугольник — тот же принцип, что у
+// flatlineSVG/chartEmptyAxis; templ.Raw безопасен (bars — числа).
 func availabilityBarsSVG(ctx context.Context, bars []uptime.UptimeStat, w, h int) templ.Component {
 	return templ.Raw(availabilityBarsMarkup(ctx, bars, w, h))
 }
@@ -1529,15 +1284,8 @@ func availabilityBarsMarkup(ctx context.Context, bars []uptime.UptimeStat, w, h 
 	}
 
 	var sb strings.Builder
-	// preserveAspectRatio="none": полоска рисуется в фиксированные
-	// availabilityBarsWidth×Height (192×24), а карточка на публичной
-	// статус-странице шире (646px/255px) — дефолтный
-	// "xMidYMid meet" держит натуральный масштаб и центрирует SVG, отчего
-	// полоска смотрится крошечной в большой рамке. object-fit тут не
-	// работает: это не замещаемый элемент (<img>), а инлайновый корневой
-	// <svg> — растягивать умеет только сам preserveAspectRatio, и только у
-	// ЭТОГО графика (svgRoot общий на все графики продукта, менять его
-	// атрибут по умолчанию нельзя — см. chartEmptyAxis выше, тот же приём).
+	// object-fit не работает на инлайновом корневом <svg> — растягивать
+	// умеет только сам preserveAspectRatio, и только у этого графика.
 	sb.WriteString(strings.TrimSuffix(svgRoot("availability-bars", w, h, i18n.T(ctx, "a11y.chart.availability")), ">"))
 	sb.WriteString(` preserveAspectRatio="none">`)
 	sb.WriteString(rects.String())
@@ -1556,14 +1304,12 @@ func availabilityBarClass(b uptime.UptimeStat) string {
 		// Целочисленно (OK*2 >= Total) == доля успехов >= 50%, без float.
 		return availabilityClassPartial
 	default:
-		// Большинство проверок в корзине провалилось.
 		return availabilityClassDown
 	}
 }
 
-// availabilityBarLabelKey — единая таблица «класс корзины → i18n-ключ подписи».
-// И класс, и подпись выводятся из availabilityBarClass через неё, поэтому
-// разъехаться (как «9 из 10 прошли» → «недоступен», №29) им больше не из чего.
+// класс и подпись выводятся из availabilityBarClass через одну таблицу —
+// разъехаться им больше не из чего.
 var availabilityBarLabelKey = map[string]string{
 	availabilityClassUp:      "chart.bar.up",
 	availabilityClassPartial: "chart.bar.partial",
@@ -1571,23 +1317,16 @@ var availabilityBarLabelKey = map[string]string{
 	availabilityClassEmpty:   "chart.no_data",
 }
 
-// availabilityBarLabel — текстовая альтернатива цвету корзины полоски
-// доступности (для <title> внутри <rect>): цвет — единственный сигнал
-// состояния в SVG, без title screen reader / hover ничего не получают.
-// uptime.UptimeStat не несёт даты/лейбла корзины, поэтому подпись — только
-// состояние (по таблице availabilityBarLabelKey). Текст приходит из каталога,
-// поэтому на вызывающей стороне он html-экранируется (контракт templ.Raw
-// требует экранировать всё, что не является числом или фиксированной строкой
-// самого шаблона).
+// цвет — единственный сигнал состояния в SVG, без title screen reader/hover
+// ничего не получают; текст из каталога экранируется вызывающей стороной.
 func availabilityBarLabel(ctx context.Context, b uptime.UptimeStat) string {
 	return i18n.T(ctx, availabilityBarLabelKey[availabilityBarClass(b)])
 }
 
 func availabilityEmptyBarsSVG(ctx context.Context, w, h int) string {
 	var sb strings.Builder
-	// preserveAspectRatio="none" — тот же адресный фикс, что и в
-	// availabilityBarsMarkup выше (пустое состояние того же графика должно
-	// растягиваться одинаково с заполненным).
+	// тот же фикс, что у availabilityBarsMarkup — пустое состояние
+	// растягивается одинаково с заполненным.
 	sb.WriteString(strings.TrimSuffix(svgRoot("availability-bars", w, h, i18n.T(ctx, "a11y.chart.availability")), ">"))
 	sb.WriteString(` preserveAspectRatio="none">`)
 	sb.WriteString(`<rect x="0" y="0" width="`)
@@ -1600,12 +1339,8 @@ func availabilityEmptyBarsSVG(ctx context.Context, w, h int) string {
 	return sb.String()
 }
 
-// waterfall* — геометрия SVG-waterfall трейса (этап 3, план 4, задача 3): по
-// строке на спан, слева колонка подписей (op + мс) с отступом по глубине
-// дерева, справа полоса, спозиционированная по времени спана в масштабе всего
-// трейса. waterfallMaxRows — потолок отрисованных строк: трейс из тысяч спанов
-// не должен родить чудовищный SVG, поэтому рисуем первые N в порядке обхода
-// дерева, а страница сообщает, что показаны не все (см. trace.templ).
+// waterfallMaxRows — трейс из тысяч спанов не должен родить чудовищный SVG;
+// рисуем первые N в порядке обхода, страница сообщает об усечении.
 const (
 	waterfallWidth   = 900
 	waterfallRowH    = 18
@@ -1615,27 +1350,14 @@ const (
 	waterfallMaxRows = 200
 )
 
-// waterfallClassOK/Error — класс полосы спана: обычный (status == ok и нет
-// привязанной ошибки) и ошибочный (status != ok либо на спане есть событие-
-// ошибка). Цвет назначает app.css из токенов, как у availabilityClass* —
-// нужны два разных цвета в одном SVG, одного currentColor мало.
+// цвет — из app.css по классу, не currentColor: нужны два цвета в одном SVG.
 const (
 	waterfallClassOK    = "wf-ok"
 	waterfallClassError = "wf-err"
 )
 
-// waterfallSVG строит SVG-waterfall трейса: дерево спанов (по ParentSpanID)
-// разворачивается в порядке обхода в глубину, каждая строка — полоса,
-// спозиционированная по StartUS..StartUS+DurationUS в масштабе totalUS, с
-// отступом подписи по глубине. Спаны из errIssues (span_id → issue_id)
-// красятся красным и оборачиваются ссылкой на /issues/{issue_id}. Число строк
-// ограничено waterfallMaxRows. Пустой трейс не рисуется (nil-компонент через
-// пустую строку не отдаём — вызывающая сторона не зовёт нас на пустом трейсе).
-//
-// op/description спанов — недоверенные данные, поэтому подписи экранируются
-// (templ.EscapeString): в отличие от прочих SVG-хелперов здесь в текст SVG
-// попадают строки пользователя, а не только числа, поэтому templ.Raw без
-// экранирования был бы XSS-дырой.
+// op/description — недоверенные данные, экранируются (templ.EscapeString) —
+// единственный SVG-хелпер, куда попадают строки пользователя, не только числа.
 func waterfallSVG(ctx context.Context, spans []trace.SpanRow, errIssues map[string]int64, totalUS uint32, w int) templ.Component {
 	return templ.Raw(waterfallMarkup(ctx, spans, errIssues, totalUS, w))
 }
@@ -1713,16 +1435,13 @@ func waterfallMarkup(ctx context.Context, spans []trace.SpanRow, errIssues map[s
 	return b.String()
 }
 
-// orderedSpan — спан в порядке обхода дерева с его глубиной.
 type orderedSpan struct {
 	span  trace.SpanRow
 	depth int
 }
 
-// orderSpanTree разворачивает спаны в порядок обхода в глубину: корни (спаны
-// без родителя или с родителем вне трейса) в исходном порядке (спаны приходят
-// отсортированными по времени), под каждым — его дети рекурсивно. Возвращает
-// не более max строк. Циклы (спан ссылается на предка) обрезаются посещением.
+// корни в исходном порядке (спаны уже отсортированы по времени), дети
+// рекурсивно; циклы обрезаются посещением.
 func orderSpanTree(spans []trace.SpanRow, max int) []orderedSpan {
 	if len(spans) == 0 {
 		return nil
@@ -1773,8 +1492,6 @@ func orderSpanTree(spans []trace.SpanRow, max int) []orderedSpan {
 	return out
 }
 
-// waterfallLabel — подпись строки: op и длительность в мс. op недоверенный,
-// экранируется вызывающей стороной.
 func waterfallLabel(s trace.SpanRow) string {
 	op := s.Op
 	if op == "" {
@@ -1783,8 +1500,7 @@ func waterfallLabel(s trace.SpanRow) string {
 	return op + " " + waterfallMS(s.DurationUS)
 }
 
-// waterfallMS форматирует микросекунды человекочитаемо (µs→ms→s), как
-// formatDurationUS в templates, но локально — svg.go в другом пакете.
+// как formatDurationUS в templates, но локально — svg.go в другом пакете.
 func waterfallMS(us uint32) string {
 	switch {
 	case us < 1000:
@@ -1796,27 +1512,13 @@ func waterfallMS(us uint32) string {
 	}
 }
 
-// perfVitalChartWidth/Height — размер мини-графика p75 web vital во времени на
-// панели Web Vitals страницы эндпойнта (этап 4, план 2, задача 2).
 const (
 	perfVitalChartWidth  = 240
 	perfVitalChartHeight = 48
 )
 
-// vitalSeriesSVG рисует полилинию p75 одного web vital по ряду
-// trace.VitalPoint, нормированную на максимум P75. Пустой ряд (или все нули) →
-// плоская линия посередине, тем же принципом «нет данных ≠ ошибка рендера»,
-// что и flatlineSVG.
-//
-// points приходят из trace.Query.VitalSeries (числа, посчитанные CH), поэтому
-// собранный SVG-текст состоит только из чисел — templ.Raw безопасен по тем же
-// причинам, что и в sparklineSVG.
-// vitalSeriesSVG — врезка-спарклайн Web Vital. Осей ей не даём: это график
-// шириной в пару сантиметров внутри строки таблицы, оси его только
-// загромоздят. Вместо этого — подсказка с диапазоном и последним значением;
-// format приводит число к той же записи, что и значение рядом в строке
-// (миллисекунды/секунды либо безразмерный CLS), иначе в подсказке висели бы
-// голые числа без единицы.
+// пустой ряд → flatlineSVG. format приводит число к той же записи, что и
+// рядом в строке (мс/с либо безразмерный CLS) — иначе подсказка была бы без единицы.
 func vitalSeriesSVG(ctx context.Context, points []trace.VitalPoint, w, h int, format func(float64) string) templ.Component {
 	return templ.Raw(vitalSeriesMarkup(ctx, points, w, h, format))
 }
@@ -1873,39 +1575,18 @@ const (
 	latencyChartHeight = 160
 )
 
-// latencySegmentClasses — классы сегментов stacked-bar-графика задержек, по
-// порядку укладки снизу вверх: DNS, connect, TLS, TTFB. Цвет назначает
-// app.css из токенов по той же причине, что и availabilityClass* выше —
-// четыре разных цвета в одном SVG, одного currentColor мало.
+// порядок укладки снизу вверх: DNS, connect, TLS, TTFB; цвет — из app.css
+// по классу, не currentColor (нужны четыре цвета).
 var latencySegmentClasses = [4]string{"seg-dns", "seg-connect", "seg-tls", "seg-ttfb"}
 
-// latencyCapClass — метка выброса над столбиком: час, чей средний total не
-// влез в шкалу (медленно/таймаут). Красная, чтобы читаться как событие, а не
-// как обычная фаза.
+// красная, чтобы читаться как событие, не как обычная фаза.
 const latencyCapClass = "seg-cap"
 
-// latencySegmentNames — подписи фаз для подсказки. Названия технические
-// (DNS, TCP, TLS, TTFB) и одинаковы во всех языках, поэтому в каталог не
-// выносятся.
+// технические названия одинаковы во всех языках — в каталог не выносятся.
 var latencySegmentNames = [4]string{"DNS", "TCP", "TLS", "TTFB"}
 
-// latencyStackedSVG строит stacked-bar-график по фазам таймингов
-// (DNS/TCP/TLS/TTFB) на точку временного ряда uptime.Query.Latency, с осями,
-// сеткой (в мс), метками времени и подсказкой на каждый час — тем же каркасом
-// (svgaxis.go), что и графики перфоманса.
-//
-// Шкалу задаёт максимум СУММЫ рисуемых фаз, а НЕ AvgTotalMs. У часа с
-// таймаутом фазы ≈ 0 (соединения/TTFB не было), зато total ≈ 30000мс: если
-// нормировать на total, здоровые часы (90–150мс) схлопываются в невидимые
-// огрызки у дна — ровно так график и стал нечитаемым. Час, чей средний total
-// вылез за шкалу (медленно/таймаут), помечаем красной меткой сверху
-// (latencyCapClass), но саму шкалу он не ломает. Сумма фаз обычно меньше total
-// (остаток — тело ответа и прочий оверхед вне разбивки); полный total виден в
-// подсказке.
-//
-// points приходят из uptime.Query.Latency (числа), поэтому собранный
-// SVG-текст состоит только из чисел и фиксированных цветов —
-// templ.Raw здесь безопасен по тем же причинам, что и в sparklineSVG.
+// шкала — по максимуму СУММЫ фаз, не AvgTotalMs: час с таймаутом даёт
+// total≈30000мс при фазах≈0, нормировка на total схлопнула бы здоровые часы.
 func latencyStackedSVG(ctx context.Context, points []uptime.LatencyPoint, deploys []deploy.Deployment, w, h int) templ.Component {
 	return templ.Raw(latencyStackedMarkup(ctx, points, deploys, w, h))
 }
@@ -1917,8 +1598,6 @@ func latencyStackedMarkup(ctx context.Context, points []uptime.LatencyPoint, dep
 			maxPhase = sum
 		}
 	}
-	// Пустая ветка называлась «График Web Vital» — копипаста из соседней
-	// функции: это стек фаз задержки, и обе версии должны называться одинаково.
 	if len(points) == 0 || maxPhase == 0 {
 		return chartEmptyAxis(w, h, i18n.T(ctx, "a11y.chart.latency"))
 	}
@@ -1948,10 +1627,8 @@ func latencyStackedMarkup(ctx context.Context, points []uptime.LatencyPoint, dep
 		slotX := g.x0 + float64(i)*barW + gap/2
 		bw := barW - gap
 		segments := [4]uint32{p.AvgDNSMs, p.AvgConnectMs, p.AvgTLSMs, p.AvgTTFBMs}
-		// segGap — тонкий зазор между фазами (единицы viewBox): сегмент рисуется
-		// на segGap короче сверху, обнажая фон карточки, — фазы разделяются не
-		// только цветом. Для очень тонких сегментов зазор пропускается, иначе
-		// они бы исчезли.
+		// зазор обнажает фон карточки — фазы различаются не только цветом;
+		// для очень тонких сегментов пропускается, иначе они исчезли бы.
 		const segGap = 1.5
 		bottom := g.y1
 		for si, ms := range segments {
@@ -1978,8 +1655,7 @@ func latencyStackedMarkup(ctx context.Context, points []uptime.LatencyPoint, dep
 			sb.WriteString(`"/>`)
 		}
 
-		// Метка выброса: средний total выше видимой шкалы (медленный час или
-		// таймаут). Треугольник у верхней рамки над своим слотом.
+		// средний total выше видимой шкалы — треугольник у верхней рамки над слотом.
 		capped := float64(p.AvgTotalMs) > scale.top
 		if capped {
 			cx := slotX + bw/2
@@ -1992,8 +1668,7 @@ func latencyStackedMarkup(ctx context.Context, points []uptime.LatencyPoint, dep
 			sb.WriteString(`l-4 7h8z"/>`)
 		}
 
-		// Полоса наведения на весь слот: подсказка появляется в любом месте над
-		// часом, даже если фазы нулевые (таймаут).
+		// подсказка на весь слот — появляется даже если все фазы нулевые (таймаут).
 		title := humanize.Time(ctx, p.T, time.UTC)
 		for si, ms := range segments {
 			title += " · " + latencySegmentNames[si] + " " + strconv.FormatUint(uint64(ms), 10) + "ms"
@@ -2005,8 +1680,7 @@ func latencyStackedMarkup(ctx context.Context, points []uptime.LatencyPoint, dep
 		writeHoverBand(&sb, g, slotX-gap/2, barW, title)
 	}
 
-	// Маркеры деплоев (C5): та же столбчатая шкала времени, что и в
-	// throughputBarsMarkup (точка i в g.x0 + i*barW).
+	// та же столбчатая шкала времени, что у throughputBarsMarkup (точка i в g.x0+i*barW).
 	bg := g
 	bg.x1 = g.x0 + float64(n-1)*barW
 	writeDeployMarker(&sb, bg, times, deploys)
@@ -2015,13 +1689,8 @@ func latencyStackedMarkup(ctx context.Context, points []uptime.LatencyPoint, dep
 	return sb.String()
 }
 
-// logSeverityClasses — CSS-класс заливки сегмента гистограммы объёма логов
-// (T3, C2) на каждый канон severity. Цвета — те же токены, что и у
-// severityBadgeClass в templates/logs.templ: trace/debug делят нейтральный
-// (как badge-neutral), error/fatal делят danger (как их бейджи) — гистограмма
-// говорит на том же цветовом языке, что и бейджи уровня в списке логов,
-// намеренно не заводя шести различных цветов там, где бейджи и так сводят их
-// к четырём.
+// цвета — те же токены, что у severityBadgeClass: trace/debug делят
+// нейтральный, error/fatal — danger, как их бейджи.
 var logSeverityClasses = map[string]string{
 	log.SevTrace: "sev-trace",
 	log.SevDebug: "sev-debug",
@@ -2031,12 +1700,8 @@ var logSeverityClasses = map[string]string{
 	log.SevFatal: "sev-fatal",
 }
 
-// logHistogramSVG строит inline-SVG stacked-bar-график объёма логов
-// (log.Query.Histogram: сетка времён + ряды по severity, уже добитые
-// нулями) — тем же каркасом (svgaxis.go) и тем же приёмом укладки сегментов
-// снизу вверх, что и latencyStackedSVG. times/series приходят из
-// ClickHouse-агрегата (числа), поэтому templ.Raw безопасен по тем же
-// причинам, что и у соседних графиков пакета.
+// тот же каркас и приём укладки снизу вверх, что у latencyStackedSVG;
+// times/series из ClickHouse — templ.Raw безопасен.
 func logHistogramSVG(ctx context.Context, times []time.Time, series map[string][]int64, w, h int) templ.Component {
 	return templ.Raw(logHistogramMarkup(ctx, times, series, w, h))
 }
@@ -2065,13 +1730,8 @@ func logHistogramMarkup(ctx context.Context, times []time.Time, series map[strin
 	plotH := g.y1 - g.y0
 
 	var sb strings.Builder
-	// "latency-chart" переиспользован НЕ по смыслу данных, а ради готовой
-	// разметки: тот же viewBox 720, для которого в app.css уже есть кегль
-	// подписей (.chart-vb720 text) и правило font-size (.latency-chart
-	// text). Заливка сегментов (.sev-*) специфична для этого графика и
-	// заведена под родительским классом обёртки .logs-histogram (см.
-	// logs.templ) — тот же приём вложенности, что .monitor-chart .latency-chart
-	// у стека задержек монитора.
+	// "latency-chart" переиспользован ради готовой разметки (кегль/font-size
+	// для viewBox 720 уже есть в app.css), не по смыслу данных.
 	sb.WriteString(svgRoot("latency-chart", w, h, i18n.T(ctx, "a11y.chart.logs_volume")))
 
 	sb.WriteString(`<g class="chart-axis">`)
@@ -2080,9 +1740,7 @@ func logHistogramMarkup(ctx context.Context, times []time.Time, series map[strin
 	writeXTicks(&sb, g, timeAxis(times, func(i int) float64 { return g.x0 + float64(i)*barW }, 70))
 	sb.WriteString(`</g>`)
 
-	// segGap — тот же тонкий зазор между сегментами, что и у стека задержек
-	// монитора: сегмент рисуется на segGap короче сверху, обнажая фон
-	// карточки, чтобы severity различались не только цветом.
+	// тот же приём зазора, что у стека задержек монитора.
 	const segGap = 1.5
 
 	for i := 0; i < n; i++ {
@@ -2118,8 +1776,7 @@ func logHistogramMarkup(ctx context.Context, times []time.Time, series map[strin
 			title += " · " + i18n.T(ctx, "logs.severity."+sev) + " " + strconv.FormatInt(c, 10)
 		}
 
-		// Полоса наведения на весь слот: подсказка появляется и над пустой
-		// корзиной (все severity — 0), там просто не будет перечисления.
+		// подсказка появляется и над пустой корзиной — просто без перечисления.
 		writeHoverBand(&sb, g, slotX-gap/2, barW, title)
 	}
 	sb.WriteString(`</svg>`)

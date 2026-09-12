@@ -13,10 +13,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestWebMonitorHeartbeatRegenerate — перевыпуск heartbeat-токена (L10 follow-up):
-// owner получает новый URL пинга один раз (200); участник команды с
-// view-доступом теперь тоже оператор (спека 2026-08-08) и получает свой
-// новый URL так же, как owner.
 func TestWebMonitorHeartbeatRegenerate(t *testing.T) {
 	s := newMonitorFormStack(t)
 	proj, ownerCookie, memberCookie := ownerAndMember(t, s, "hbregen")
@@ -32,8 +28,6 @@ func TestWebMonitorHeartbeatRegenerate(t *testing.T) {
 	}
 	path := "/monitors/" + strconv.FormatInt(created.ID, 10) + "/heartbeat/regenerate"
 
-	// Перевыпуск необратим и ломает работающий cron, поэтому первый POST
-	// показывает вопрос, а не выполняет действие.
 	resp := postForm(t, s.srv, path, url.Values{}, s.srv.URL, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -49,8 +43,6 @@ func TestWebMonitorHeartbeatRegenerate(t *testing.T) {
 
 	editLink := "/monitors/" + strconv.FormatInt(created.ID, 10) + "/edit"
 
-	// owner с подтверждением: 200, показан новый URL пинга и cron-сниппет,
-	// и видна кнопка Edit (owner управляет формой монитора).
 	resp = postForm(t, s.srv, path, url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -64,13 +56,6 @@ func TestWebMonitorHeartbeatRegenerate(t *testing.T) {
 		t.Fatalf("owner regenerate: missing Edit link %s", editLink)
 	}
 
-	// участник команды (оператор, но не owner/admin): 200, тоже получает
-	// новый URL пинга — та же граница, что и у pause/resume/delete (Task 1,
-	// cld/plans/2026-08-08-access-model-rework.md). С задачи 2 кнопки
-	// Pause/Resume/Edit/Delete на этой же странице тоже операторские
-	// (canManage теперь наполняется тем же canOperateProject, что и canOperate) —
-	// Edit-форма тоже requireProjectOperator, так что видимая ссылка Edit
-	// действительно работает, а не 404-ит.
 	resp = postForm(t, s.srv, path, url.Values{"confirmed": {"yes"}}, s.srv.URL, memberCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -84,9 +69,6 @@ func TestWebMonitorHeartbeatRegenerate(t *testing.T) {
 		t.Fatalf("member regenerate: missing Edit link %s (Task 2 makes Edit an operator action)", editLink)
 	}
 
-	// И ссылка не только видна, но и рабочая: GET на неё участнику команды
-	// отдаёт 200, а не 403/404 (иначе рабочая на вид кнопка была бы хуже, чем
-	// её отсутствие).
 	resp = getWithCookie(t, s.srv, editLink, memberCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()

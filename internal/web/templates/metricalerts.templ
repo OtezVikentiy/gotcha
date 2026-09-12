@@ -14,30 +14,19 @@ func metricAlertsBasePath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/metrics/alerts"
 }
 
-// metricAlertUpdatePath — POST правки одного правила: тот же сегмент {ruleID}
-// без суффикса, по образцу alertSuppressionUpdatePath.
 func metricAlertUpdatePath(projectID, ruleID int64) string {
 	return metricAlertsBasePath(projectID) + "/" + strconv.FormatInt(ruleID, 10)
 }
 
-// MetricRuleCreateModalID — якорь модалки создания правила: на него ведёт
-// createTrigger, его же переоткрывает metricAlertCreate после 422.
 const MetricRuleCreateModalID = "new-metric-rule"
 
-// EditMetricRuleModalID — якорь модалки правки одного правила. Модалка на
-// строку таблицы: они построены на CSS :target, якорь обязан быть уникальным,
-// а id правила стабилен между рендерами (RuleService.Update сохраняет id).
-// Экспортирована, чтобы обработчик мог сказать, какую именно открыть заново
-// после ошибки валидации (тот же приём, что EditSuppressionEdgeModalID).
+// Построена на CSS :target — якорь обязан быть уникальным, id правила стабилен между рендерами.
+// Экспортирована, чтобы обработчик мог переоткрыть нужную модалку после ошибки валидации.
 func EditMetricRuleModalID(ruleID int64) string {
 	return "edit-metric-rule-" + strconv.FormatInt(ruleID, 10)
 }
 
-// metricRuleFormValues — введённые человеком значения, если 422 вернулась
-// именно из этой модалки, иначе fallback (у создания — дефолты со взведённым
-// «Включено», у правки — значения самого правила). Модалок на странице N+1,
-// а состояние формы одно — без этой развилки введённое при ошибке попало бы
-// во все модалки сразу (тот же приём, что suppressionFormValues).
+// Модалок N+1, а состояние формы одно — без развилки введённое при ошибке попало бы во все сразу.
 func metricRuleFormValues(form FormState, open bool, fallback FormState) FormState {
 	if open {
 		return form
@@ -45,8 +34,6 @@ func metricRuleFormValues(form FormState, open bool, fallback FormState) FormSta
 	return fallback
 }
 
-// metricRuleErrID — id абзаца ошибки модалки для aria-describedby; "" —
-// модалка отрисовывается без ошибки.
 func metricRuleErrID(modalID string, open bool, errMsg string) string {
 	if open && errMsg != "" {
 		return modalID + "-error"
@@ -54,16 +41,9 @@ func metricRuleErrID(modalID string, open bool, errMsg string) string {
 	return ""
 }
 
-// metricRuleCreateDefaults — дефолты формы создания при первом открытии:
-// чекбокс «Включено» взведён (правило по умолчанию активно), остальные поля
-// берут свои fallback'и в Get.
 func metricRuleCreateDefaults() FormState { return FormState{"enabled": "on"} }
 
-// ruleFormDefaults — значения полей модалки правки из самого правила: плоская
-// карта тех же имён, что у FormState, чтобы общий фрагмент полей не знал,
-// создание он или правка (как suppressionEdgeFormDefaults у рёбер). Ключ
-// enabled есть только у включённого правила: снятый чекбокс не приходит в
-// POST вовсе, признак — наличие непустого значения (см. metricRuleFormFields).
+// Ключ enabled есть только у включённого правила — снятый чекбокс не шлётся в POST.
 func ruleFormDefaults(r metric.Rule) FormState {
 	f := FormState{
 		"metric_name":    r.MetricName,
@@ -82,9 +62,7 @@ func ruleFormDefaults(r metric.Rule) FormState {
 	return f
 }
 
-// fmtFloat — значение/порог метрики для таблиц правил и инцидентов.
-// Компактная запись вместо strconv 'g' (QA: «avg > 8e+08» нечитаемо для
-// байтов) — тот же формат, что на осях графиков метрик (formatAxisValue).
+// Компактная запись вместо strconv 'g' (иначе «avg > 8e+08» нечитаемо) — как на осях графиков.
 func fmtFloat(v float64) string {
 	return humanize.CompactNumber(v)
 }
@@ -96,8 +74,6 @@ func comparatorSymbol(c string) string {
 	return ">"
 }
 
-// incidentBadgeClass — CSS-класс бейджа статуса инцидента через дизайн-систему
-// (.badge-danger — открыт, .badge-good — решён), как vitalBadgeClass.
 func incidentBadgeClass(status string) string {
 	if status == "open" {
 		return "badge badge-danger"
@@ -112,12 +88,10 @@ func incidentStatusKey(status string) string {
 	return "metrics.alerts.status.resolved"
 }
 
-// incidentStatusBadge — бейдж статуса инцидента (открыт/решён).
 templ incidentStatusBadge(status string) {
 	<span class={ incidentBadgeClass(status) }>{ i18n.T(ctx, incidentStatusKey(status)) }</span>
 }
 
-// ruleEnabledBadge — бейдж состояния правила (включено/выключено).
 templ ruleEnabledBadge(enabled bool) {
 	if enabled {
 		<span class="badge badge-good">{ i18n.T(ctx, "metrics.alerts.status.enabled") }</span>
@@ -137,26 +111,16 @@ func ruleScope(ctx context.Context, r metric.Rule) string {
 	return scope
 }
 
-// MetricAlerts — GET /projects/{id}/metrics/alerts: правила и инциденты.
 templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Incident, knownMetrics []string, form FormState, errMsg, userEmail string, ackedByOpt ...map[int64]string) {
 	{{ ackedBy := firstAckedByMap(ackedByOpt) }}
 	@layout(i18n.T(ctx, "nav.metric_alerts"), userEmail) {
 		<div class="metric-alerts">
 			<h1>{ i18n.T(ctx, "nav.metric_alerts") }</h1>
 			@helpPanel("metricalerts", "metric-alerts")
-			// Ошибка валидации формы показывается ВНУТРИ модалки, рядом с полями.
-			// Раньше она рисовалась здесь, на странице: модалка при этом
-			// закрывалась, и сообщение оставалось где-то в фоне, приклеенное к
-			// кнопке «Новое правило» — то есть в стороне от того, что человек
-			// заполнял. Ошибки, не относящиеся к форме, показывать тут больше
-			// нечему: других действий на странице нет.
+			// Ошибка формы — внутри модалки, у полей: снаружи она осталась бы в стороне от заполняемого.
 			@createTrigger(MetricRuleCreateModalID, "metrics.alerts.new_rule")
-			// datalist, а не select: правило можно завести и на метрику,
-			// которая ещё не приходила (новый сервис только выкатывают),
-			// но опечатка в уже известном имени больше не проходит молча.
-			// Единственный экземпляр на страницу: поле метрики рендерится в
-			// N+1 модалках (создание + правка на строку), и datalist внутри
-			// фрагмента полей давал бы дубли id в документе.
+			// datalist, не select: можно завести правило на ещё не приходившую метрику, но опечатка
+			// в известном имени не проходит молча. Один экземпляр на страницу — иначе дубли id.
 			<datalist id="known-metrics">
 				for _, name := range knownMetrics {
 					<option value={ name }></option>
@@ -185,10 +149,6 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 										<tr>
 											<td>{ rule.MetricName }</td>
 											<td>{ i18n.T(ctx, "metrics.aggregation."+rule.Aggregation) } { comparatorSymbol(rule.Comparator) } { fmtFloat(rule.Threshold) }</td>
-											// Раньше окно печаталось как сырые "3600s" — дежурному
-											// приходилось делить в уме, чтобы понять, час это или нет.
-											// humanize.Duration даёт ту же единицу словами ("1 час"),
-											// что и остальные длительности в интерфейсе.
 											<td class="num">{ humanize.Duration(ctx, time.Duration(rule.WindowSeconds)*time.Second) }</td>
 											<td>{ ruleScope(ctx, rule) }</td>
 											<td>
@@ -270,16 +230,13 @@ templ MetricAlerts(projectID int64, rules []metric.Rule, incidents []metric.Inci
 	}
 }
 
-// metricRuleCreateModal — модалка создания правила; open — 422 именно из неё
-// (FormState.Opens). Раньше признаком открытия служил form.Has(): модалка на
-// странице была одна, «есть значения» значило «открой её» — с модалками
-// правки на каждую строку это открывало бы заодно и форму создания.
+// open — 422 именно из этой модалки (FormState.Opens), не form.Has(): иначе форма создания
+// открывалась бы вместе с правкой любой строки.
 templ metricRuleCreateModal(projectID int64, form FormState, errMsg string) {
 	{{ open := form.Opens(MetricRuleCreateModalID) }}
 	@createModalOpen(MetricRuleCreateModalID, "metrics.alerts.new_rule", false, open) {
 		<form method="post" action={ templ.URL(metricAlertsBasePath(projectID)) } class="metric-alert-form">
-			// Без role="alert": фокус в модалку переносит modal.js (№80),
-			// ошибка привязана к полю метрики через aria-describedby.
+			// Без role="alert": фокус переносит modal.js, ошибка привязана к полю через aria-describedby.
 			if open && errMsg != "" {
 				<p class="error" id={ MetricRuleCreateModalID + "-error" }>{ errMsg }</p>
 			}
@@ -289,13 +246,8 @@ templ metricRuleCreateModal(projectID int64, form FormState, errMsg string) {
 	}
 }
 
-// metricRuleEditModal — модалка правки одного правила теми же полями, что и
-// создание; предзаполнена значениями правила (ruleFormDefaults), после 422 —
-// введёнными человеком (metricRuleFormValues). Подсказка edit.hint — про
-// семантику открытого инцидента: оценщик на каждом тике перечитывает правило
-// и применяет ТЕКУЩЕЕ условие (evaluator.evalRule → Decide), поэтому правка
-// вступает в силу со следующего цикла проверки, а открытый инцидент сам
-// закроется или продолжится по новому условию.
+// Правка вступает в силу со следующего цикла оценки (evaluator.evalRule перечитывает правило
+// каждый тик) — открытый инцидент сам закроется или продолжится по новому условию.
 templ metricRuleEditModal(projectID int64, rule metric.Rule, form FormState, errMsg string) {
 	{{ modalID := EditMetricRuleModalID(rule.ID) }}
 	{{ open := form.Opens(modalID) }}
@@ -311,12 +263,7 @@ templ metricRuleEditModal(projectID int64, rule metric.Rule, form FormState, err
 	}
 }
 
-// metricRuleFormFields — общие поля модалок создания и правки правила. id у
-// полей нет намеренно: фрагмент рендерится в N+1 модалках одной страницы,
-// любой id давал бы дубли в документе (тот же принцип, что
-// suppressionEdgeFields); datalist known-metrics по той же причине вынесен на
-// страницу единственным экземпляром. errID — id абзаца ошибки той модалки,
-// из которой пришла 422 ("" — ошибки нет).
+// id у полей нет намеренно — фрагмент рендерится в N+1 модалках, любой id дал бы дубли в документе.
 templ metricRuleFormFields(errID string, values FormState) {
 	<div class="form-grid">
 	<div class="field">
@@ -417,15 +364,10 @@ templ metricRuleFormFields(errID string, values FormState) {
 	</div>
 	</div>
 	<label class="checkbox-inline">
-		// Hidden перед чекбоксом: снятый чекбокс в POST не приходит вовсе, а
-		// прямой POST без поля enabled обязан по-прежнему создавать включённое
-		// правило (контракт до появления чекбокса). С hidden браузер шлёт
-		// enabled всегда: ["off"] — снят, ["off","on"] — взведён, отсутствие
-		// поля целиком — запрос мимо формы (см. metricRuleEnabled в web).
+		// Hidden перед чекбоксом: без него снятый чекбокс не шлётся в POST, а прямой запрос мимо формы
+		// обязан по умолчанию создавать включённое правило — hidden гарантирует enabled в любом случае.
 		<input type="hidden" name="enabled" value="off"/>
-		// Признак «взведён» в values — ключ "on" (metricRuleFormState кладёт
-		// его через metricRuleEnabled): в дефолтах создания он есть всегда, у
-		// правки — только у включённого правила.
+		// Признак «взведён» — ключ "on" в values; у правки есть только для включённого правила.
 		if values.Get("enabled", "") != "" {
 			<input type="checkbox" name="enabled" value="on" checked/>
 		} else {

@@ -17,23 +17,18 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// stubKeyResolver отдаёт фиксированный ключ на любой public key — авторизация
-// OTLP-входа без PG.
 type stubKeyResolver struct{ key org.Key }
 
 func (r stubKeyResolver) KeyByPublic(_ context.Context, _ string) (org.Key, error) {
 	return r.key, nil
 }
 
-// collectMetricSink копит принятые metric-точки для проверки скраба атрибутов.
 type collectMetricSink struct{ points []metric.MetricPoint }
 
 func (s *collectMetricSink) Add(_ int64, p metric.MetricPoint) {
 	s.points = append(s.points, p)
 }
 
-// TestOTLPMetricsScrubAttributes: атрибуты OTLP-датапойнта проходят через
-// scrubber перед записью — denylist-ключ заменён маской, прочие атрибуты целы.
 func TestOTLPMetricsScrubAttributes(t *testing.T) {
 	sink := &collectMetricSink{}
 	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
@@ -80,16 +75,11 @@ func TestOTLPMetricsScrubAttributes(t *testing.T) {
 	}
 }
 
-// TestOTLPMetricsHostCardinalityCollapses: host.name промоутируется в
-// MetricPoint.Host и обязан пройти тот же гард кардинальности, что имя метрики
-// и сервис (FieldHost) — при исчерпанном потолке host в записанной точке
-// схлопывается в CardinalityOverflow.
 func TestOTLPMetricsHostCardinalityCollapses(t *testing.T) {
 	sink := &collectMetricSink{}
 	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 	h.Metrics = sink
 	h.Cardinality = NewCardinalityGuard(1, time.Hour)
-	// Потолок уже исчерпан другим хостом того же проекта.
 	h.Cardinality.Value(1, FieldHost, "web-1")
 
 	md := &metricspb.MetricsData{ResourceMetrics: []*metricspb.ResourceMetrics{{

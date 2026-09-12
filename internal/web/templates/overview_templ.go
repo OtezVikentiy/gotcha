@@ -16,30 +16,17 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// StatusLine — три числа строки состояния «Обзора» (задача 7 nav-ia): ответ
-// на «дом горит?» с одного экрана, каждое число — ссылка в свой раздел
-// (см. statusLine ниже). Uptime — доля успешных проверок за то же окно, что
-// и секция «недавно решённые» (rangeKey); нулевой uptime.UptimeStat{} (нет
-// мониторов или подсистема не подключена) рисуется как «нет данных» тем же
-// uptimeStatTextCtx, что и на странице монитора. HostsOverThreshold/
-// NewIssues24h — простые счётчики, 0 — легитимное («всё спокойно»)
-// значение, не «нет данных» (в отличие от Uptime, у них нет отдельного
-// признака «подсистема недоступна» — web.overviewStatusLine оставляет 0 и
-// когда HostIncidents/Issues пустые данными, и когда сервис не подключён:
-// разница между «спокойно» и «нечем измерить» здесь не имеет отдельного
-// действия для читателя).
+// Uptime=0 рисуется как «нет данных»; HostsOverThreshold/NewIssues24h — 0 значит «всё спокойно».
+// для них нет отдельного признака «недоступно» — эта разница не имеет действия для читателя.
 type StatusLine struct {
 	Uptime uptime.UptimeStat
-	// UptimeUnavailable — ClickHouse не ответил: плитка аптайма показывает
-	// «недоступно» вместо значения.
+	// true — плитка аптайма показывает «недоступно» вместо значения.
 	UptimeUnavailable  bool
 	HostsOverThreshold int
 	NewIssues24h       int64
 }
 
-// overviewRangeHref — ссылка переключателя окна «недавно решённые»: 24ч —
-// канонический адрес без параметра (умолчание, не грязнит URL закладок),
-// 7д — явный ?range=7d.
+// 24ч — канонический адрес без параметра: не грязнит URL закладок значением по умолчанию.
 func overviewRangeHref(projectID int64, value string) string {
 	if value == "24h" {
 		return overviewPath(projectID)
@@ -54,10 +41,7 @@ func overviewRangeTabClass(active bool) string {
 	return "tab"
 }
 
-// overviewRangeTab — вкладка окна «недавно решённые», тем же приёмом, что
-// perfStatusTab (perfissues.templ): обычная ссылка с query-параметром, без
-// JS. Подпись — переиспользованные ключи range.24h/range.7d (тот же
-// словарь, что и у графиков TimeRangePresets).
+// переиспользует ключи range.24h/range.7d — тот же словарь, что у графиков.
 func overviewRangeTab(projectID int64, value, rangeKey string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -104,7 +88,7 @@ func overviewRangeTab(projectID int64, value, rangeKey string) templ.Component {
 		var templ_7745c5c3_Var4 templ.SafeURL
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(overviewRangeHref(projectID, value)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 54, Col: 108}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 38, Col: 108}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
@@ -127,7 +111,7 @@ func overviewRangeTab(projectID int64, value, rangeKey string) templ.Component {
 		var templ_7745c5c3_Var5 string
 		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "range."+value))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 54, Col: 185}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 38, Col: 185}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
@@ -141,10 +125,7 @@ func overviewRangeTab(projectID int64, value, rangeKey string) templ.Component {
 	})
 }
 
-// overviewRangeTabs — переключатель окна «недавно решённые»: вынесен из
-// непустой ветки Overview, чтобы быть доступным и в пустой — проект без
-// данных в окне 24ч, у которого всё закрылось, скажем, трое суток назад,
-// без этого не имел ни одной двери к окну 7д.
+// показывается и в пустом состоянии — иначе проект без данных за 24ч не имел бы двери к окну 7д.
 func overviewRangeTabs(projectID int64, rangeKey string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -173,7 +154,7 @@ func overviewRangeTabs(projectID int64, rangeKey string) templ.Component {
 		var templ_7745c5c3_Var7 string
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "overview.range.aria"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 62, Col: 66}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 43, Col: 66}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var7)
 		if templ_7745c5c3_Err != nil {
@@ -199,12 +180,8 @@ func overviewRangeTabs(projectID int64, rangeKey string) templ.Component {
 	})
 }
 
-// statusLine — строка состояния (§ шаг 3 брифа задачи 7): три плитки,
-// повторяющие вёрстку .stat-tile (monitordetail/hostdetail/slodetail), но
-// каждая — ссылка на свой раздел, а не просто число. .monitor-meta —
-// тот же контейнер-строка, что и у тех страниц (flex-item блокируется сам,
-// без отдельного правила display на ссылке); своей новой сетки под три
-// плитки не заводим.
+// .stat-tile — та же вёрстка, что у monitordetail/hostdetail/slodetail, но с ссылкой вместо числа.
+// .monitor-meta переиспользован как контейнер — своей сетки под три плитки не заводим.
 func statusLine(projectID int64, sl StatusLine) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -233,7 +210,7 @@ func statusLine(projectID int64, sl StatusLine) templ.Component {
 		var templ_7745c5c3_Var9 templ.SafeURL
 		templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(monitorsPath(projectID)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 76, Col: 64}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 53, Col: 64}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 		if templ_7745c5c3_Err != nil {
@@ -246,7 +223,7 @@ func statusLine(projectID int64, sl StatusLine) templ.Component {
 		var templ_7745c5c3_Var10 string
 		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "overview.status.uptime"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 77, Col: 66}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 54, Col: 66}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 		if templ_7745c5c3_Err != nil {
@@ -264,7 +241,7 @@ func statusLine(projectID int64, sl StatusLine) templ.Component {
 			var templ_7745c5c3_Var11 string
 			templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "overview.status.uptime_unavailable"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 79, Col: 79}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 56, Col: 79}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 			if templ_7745c5c3_Err != nil {
@@ -282,7 +259,7 @@ func statusLine(projectID int64, sl StatusLine) templ.Component {
 			var templ_7745c5c3_Var12 string
 			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(uptimeStatTextCtx(ctx, sl.Uptime))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 81, Col: 63}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 58, Col: 63}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 			if templ_7745c5c3_Err != nil {
@@ -300,7 +277,7 @@ func statusLine(projectID int64, sl StatusLine) templ.Component {
 		var templ_7745c5c3_Var13 templ.SafeURL
 		templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(hostsBasePath(projectID)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 84, Col: 65}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 61, Col: 65}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 		if templ_7745c5c3_Err != nil {
@@ -313,7 +290,7 @@ func statusLine(projectID int64, sl StatusLine) templ.Component {
 		var templ_7745c5c3_Var14 string
 		templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "overview.status.hosts_over_threshold"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 85, Col: 80}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 62, Col: 80}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 		if templ_7745c5c3_Err != nil {
@@ -326,7 +303,7 @@ func statusLine(projectID int64, sl StatusLine) templ.Component {
 		var templ_7745c5c3_Var15 string
 		templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(sl.HostsOverThreshold))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 86, Col: 64}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 63, Col: 64}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 		if templ_7745c5c3_Err != nil {
@@ -339,7 +316,7 @@ func statusLine(projectID int64, sl StatusLine) templ.Component {
 		var templ_7745c5c3_Var16 templ.SafeURL
 		templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(issuesPath(projectID)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 88, Col: 62}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 65, Col: 62}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 		if templ_7745c5c3_Err != nil {
@@ -352,7 +329,7 @@ func statusLine(projectID int64, sl StatusLine) templ.Component {
 		var templ_7745c5c3_Var17 string
 		templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "overview.status.new_issues"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 89, Col: 70}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 66, Col: 70}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 		if templ_7745c5c3_Err != nil {
@@ -365,7 +342,7 @@ func statusLine(projectID int64, sl StatusLine) templ.Component {
 		var templ_7745c5c3_Var18 string
 		templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatInt(sl.NewIssues24h, 10))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 90, Col: 67}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 67, Col: 67}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 		if templ_7745c5c3_Err != nil {
@@ -379,13 +356,8 @@ func statusLine(projectID int64, sl StatusLine) templ.Component {
 	})
 }
 
-// overviewDeploys — маркеры деплоев (C5) на той же временной оси, что и
-// секция «недавно решённые» ниже (то же окно rangeKey/since, см.
-// web.overviewDeployMarkers): читатель видит и деплой, и инциденты того же
-// окна на одном экране — «после выкатки или само» решается без похода на
-// /deployments. Пусто → секция не рисуется вовсе (в отличие от групп
-// инцидентов, деплои — вспомогательный контекст, не первичное содержимое
-// страницы, отдельного пустого состояния не заслуживают).
+// то же окно rangeKey, что у «недавно решённых» — деплой и инциденты видны на одном экране.
+// пусто → секция не рисуется вовсе (в отличие от групп) — деплои вспомогательный контекст.
 func overviewDeploys(projectID int64, deploys []DeploymentRow) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -415,7 +387,7 @@ func overviewDeploys(projectID int64, deploys []DeploymentRow) templ.Component {
 			var templ_7745c5c3_Var20 string
 			templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "deploy.title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 104, Col: 35}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 76, Col: 35}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 			if templ_7745c5c3_Err != nil {
@@ -444,7 +416,7 @@ func overviewDeploys(projectID int64, deploys []DeploymentRow) templ.Component {
 				var templ_7745c5c3_Var22 string
 				templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "deploy.table.version"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 110, Col: 60}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 82, Col: 60}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 				if templ_7745c5c3_Err != nil {
@@ -457,7 +429,7 @@ func overviewDeploys(projectID int64, deploys []DeploymentRow) templ.Component {
 				var templ_7745c5c3_Var23 string
 				templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "deploy.table.environment"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 111, Col: 64}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 83, Col: 64}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 				if templ_7745c5c3_Err != nil {
@@ -470,7 +442,7 @@ func overviewDeploys(projectID int64, deploys []DeploymentRow) templ.Component {
 				var templ_7745c5c3_Var24 string
 				templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "deploy.table.when"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 112, Col: 57}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 84, Col: 57}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 				if templ_7745c5c3_Err != nil {
@@ -488,7 +460,7 @@ func overviewDeploys(projectID int64, deploys []DeploymentRow) templ.Component {
 					var templ_7745c5c3_Var25 string
 					templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(d.Version)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 118, Col: 23}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 90, Col: 23}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 					if templ_7745c5c3_Err != nil {
@@ -501,7 +473,7 @@ func overviewDeploys(projectID int64, deploys []DeploymentRow) templ.Component {
 					var templ_7745c5c3_Var26 string
 					templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinStringErrs(d.Environment)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 119, Col: 27}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 91, Col: 27}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 					if templ_7745c5c3_Err != nil {
@@ -537,7 +509,7 @@ func overviewDeploys(projectID int64, deploys []DeploymentRow) templ.Component {
 			var templ_7745c5c3_Var27 templ.SafeURL
 			templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(deploymentsPath(projectID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 126, Col: 66}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 98, Col: 66}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 			if templ_7745c5c3_Err != nil {
@@ -550,7 +522,7 @@ func overviewDeploys(projectID int64, deploys []DeploymentRow) templ.Component {
 			var templ_7745c5c3_Var28 string
 			templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "overview.deploys.view_all"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 126, Col: 111}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 98, Col: 111}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 			if templ_7745c5c3_Err != nil {
@@ -565,18 +537,8 @@ func overviewDeploys(projectID int64, deploys []DeploymentRow) templ.Component {
 	})
 }
 
-// Overview — GET /projects/{id}/overview (задача 6 nav-ia): первый экран
-// проекта, шкала инцидентов. Тело страницы — прежняя /incident-feed БЕЗ
-// урезания (инвентаризация, см. докблок web.overview): открытые группы и
-// внегрупповые открытые инциденты остаются без временного окна (они
-// открыты сейчас, обрезать нечего), у «недавно решённых» окно стало
-// выбираемым (rangeKey — "24h"/"7d") вместо жёстко зашитых суток. Отдельной
-// «полной ленты» не остаётся — /incident-feed целиком редиректит сюда.
-//
-// Совсем пустой проект (ни одной секции ни по одному источнику) получает не
-// «нет данных» по трём секциям сразу, а одно приглашение подключить SDK,
-// ссылкой на «Первые шаги» — три одинаковых «здесь пока пусто» подряд на
-// первом экране проекта выглядели бы как поломка, а не как чистый старт.
+// совсем пустой проект получает одно приглашение подключить SDK, не «нет данных» по трём секциям —
+// три одинаковых «пусто» подряд выглядели бы как поломка, а не чистый старт.
 func Overview(projectID int64, rangeKey string, openGroups []GroupCard, outOfGroup []incidentgroup.FeedItem, closedGroups []GroupCard, closed []incidentgroup.FeedItem, caps FeedCaps, canOperate bool, sl StatusLine, deploys []DeploymentRow, userEmail string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -619,7 +581,7 @@ func Overview(projectID int64, rangeKey string, openGroups []GroupCard, outOfGro
 			var templ_7745c5c3_Var31 string
 			templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "overview.title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 148, Col: 38}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 110, Col: 38}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 			if templ_7745c5c3_Err != nil {
@@ -632,7 +594,7 @@ func Overview(projectID int64, rangeKey string, openGroups []GroupCard, outOfGro
 			var templ_7745c5c3_Var32 string
 			templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "feed.see_incidents_hint"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 149, Col: 59}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 111, Col: 59}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
 			if templ_7745c5c3_Err != nil {
@@ -645,7 +607,7 @@ func Overview(projectID int64, rangeKey string, openGroups []GroupCard, outOfGro
 			var templ_7745c5c3_Var33 templ.SafeURL
 			templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(incidentsPath(projectID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 149, Col: 106}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 111, Col: 106}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var33))
 			if templ_7745c5c3_Err != nil {
@@ -658,7 +620,7 @@ func Overview(projectID int64, rangeKey string, openGroups []GroupCard, outOfGro
 			var templ_7745c5c3_Var34 string
 			templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "nav.incidents"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 149, Col: 139}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 111, Col: 139}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var34))
 			if templ_7745c5c3_Err != nil {
@@ -671,7 +633,7 @@ func Overview(projectID int64, rangeKey string, openGroups []GroupCard, outOfGro
 			var templ_7745c5c3_Var35 string
 			templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "feed.see_incidents_hint_suffix"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 149, Col: 192}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 111, Col: 192}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
 			if templ_7745c5c3_Err != nil {
@@ -714,7 +676,7 @@ func Overview(projectID int64, rangeKey string, openGroups []GroupCard, outOfGro
 				var templ_7745c5c3_Var36 string
 				templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "feed.section.groups"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 157, Col: 44}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 119, Col: 44}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
 				if templ_7745c5c3_Err != nil {
@@ -727,7 +689,7 @@ func Overview(projectID int64, rangeKey string, openGroups []GroupCard, outOfGro
 				var templ_7745c5c3_Var37 string
 				templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "feed.open_groups.cap", "n", strconv.Itoa(caps.OpenGroups)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 157, Col: 140}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 119, Col: 140}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
 				if templ_7745c5c3_Err != nil {
@@ -757,7 +719,7 @@ func Overview(projectID int64, rangeKey string, openGroups []GroupCard, outOfGro
 				var templ_7745c5c3_Var38 string
 				templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "feed.section.out_of_group"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 165, Col: 50}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 127, Col: 50}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 				if templ_7745c5c3_Err != nil {
@@ -770,7 +732,7 @@ func Overview(projectID int64, rangeKey string, openGroups []GroupCard, outOfGro
 				var templ_7745c5c3_Var39 string
 				templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "feed.out_of_group.cap", "n", strconv.Itoa(caps.OutOfGroup)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 165, Col: 147}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 127, Col: 147}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
 				if templ_7745c5c3_Err != nil {
@@ -842,7 +804,7 @@ func Overview(projectID int64, rangeKey string, openGroups []GroupCard, outOfGro
 				var templ_7745c5c3_Var41 string
 				templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "feed.section.closed"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 182, Col: 44}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 144, Col: 44}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var41))
 				if templ_7745c5c3_Err != nil {
@@ -855,7 +817,7 @@ func Overview(projectID int64, rangeKey string, openGroups []GroupCard, outOfGro
 				var templ_7745c5c3_Var42 string
 				templ_7745c5c3_Var42, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "overview.closed.cap", "window", i18n.T(ctx, "range."+rangeKey), "groups", strconv.Itoa(caps.ClosedGroups), "items", strconv.Itoa(caps.ClosedItems)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 182, Col: 229}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 144, Col: 229}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var42))
 				if templ_7745c5c3_Err != nil {

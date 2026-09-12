@@ -6,11 +6,6 @@ import (
 	"time"
 )
 
-// Follow-up (2026-08-12): при переполнении буфера писатель выбрасывает самое
-// старое, и без per-org атрибуции потеря невидима per-org (тот же класс, что
-// дропы очереди в arch P1-1, но слой буфера писателя). SetDropSink списывает
-// выброшенные события их организациям; проверяем, что сток получает верные
-// per-org счётчики и что событие без OrgID (0) не атрибутируется никому.
 func TestBatcherAttributesDropsPerOrg(t *testing.T) {
 	var mu sync.Mutex
 	got := map[int64]int64{}
@@ -54,9 +49,6 @@ func TestBatcherAttributesDropsPerOrg(t *testing.T) {
 	}
 }
 
-// Без стока (SetDropSink не вызван) атрибуция — no-op: дропы просто считаются
-// суммарно, как раньше. Гарантирует, что писатель без пайплайна (напр. в
-// тестах) не паникует на nil-стоке.
 func TestBatcherDropWithoutSinkIsNoop(t *testing.T) {
 	c := &fakeConn{}
 	b := NewBatcher(c)

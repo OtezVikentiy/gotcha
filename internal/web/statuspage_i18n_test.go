@@ -11,9 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// getAnonLang — анонимный GET с заданным Accept-Language: публичную
-// status-страницу смотрит посетитель без сессии, и язык ему может достаться
-// только из заголовка (или cookie), не из users.locale.
 func getAnonLang(t *testing.T, url, lang string) string {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -33,10 +30,8 @@ func getAnonLang(t *testing.T, url, lang string) string {
 	return string(body)
 }
 
-// TestWebStatusPageLocalized — публичная страница переводится по
-// Accept-Language, и (главное) язык НЕ протекает через 30-секундный кеш
-// вьюхи: сборка кешируется одна на slug, поэтому всё локалезависимое обязано
-// строиться на рендере запроса, а не внутри buildStatusPage.
+// сборка страницы кешируется одна на slug — локалезависимое строится на рендере
+// запроса, а не внутри buildStatusPage, иначе язык протечёт через кеш.
 func TestWebStatusPageLocalized(t *testing.T) {
 	s := newStatusPageStack(t)
 	proj, _, _ := statusPageProject(t, s, "spi18n")
@@ -58,7 +53,6 @@ func TestWebStatusPageLocalized(t *testing.T) {
 
 	url := s.srv.URL + "/status/" + sp.PublicID
 
-	// Первым греет кеш русский посетитель — именно так локаль и протекала бы.
 	ru := getAnonLang(t, url, "ru-RU,ru;q=0.9")
 	for _, want := range []string{"Все системы работают", "Работает", `lang="ru"`} {
 		if !strings.Contains(ru, want) {

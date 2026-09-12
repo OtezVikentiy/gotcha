@@ -8,10 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// TestBodyForDepsLine — строка «Зависимых узлов: N» в down-теле уведомления
-// монитора (D3 Р9): непустой depsLine попадает в реальный рендер каталога,
-// пустой не оставляет ни текста, ни висящего плейсхолдера {deps_line}.
-// Остальные виды событий плейсхолдера в шаблонах не имеют вовсе.
 func TestBodyForDepsLine(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	const url = "https://gotcha.example/monitors/7"
@@ -42,8 +38,6 @@ func TestBodyForDepsLine(t *testing.T) {
 	}
 }
 
-// stubDepCounter — фиксированный ответ depsLine, запоминающий аргументы
-// вызова: без этого подмена kind/nodeID прошла бы мимо тестов.
 type stubDepCounter struct {
 	cnt     int
 	err     error
@@ -56,10 +50,6 @@ func (s *stubDepCounter) DeclaredChildrenCount(_ context.Context, kind string, n
 	return s.cnt, s.err
 }
 
-// TestUptimeNotifierDepsLineGate — гейты depsLine монитора: строка есть
-// только у down-события с ненулевым счётчиком; nil-счётчик, иной вид
-// события, ноль детей и ошибка счётчика дают пустую строку (fail-open, Р9).
-// Отдельно пинуются аргументы счётчика — («monitor», ID монитора).
 func TestUptimeNotifierDepsLineGate(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	down := Event{Kind: "down", Monitor: Monitor{ID: 7, Name: "api-prod"}}

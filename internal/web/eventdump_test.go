@@ -60,9 +60,9 @@ func TestRenderEventForLLM_OmitsEmptySections(t *testing.T) {
 
 func TestRenderEventForLLM_FenceGrowsWithBackticks(t *testing.T) {
 	ev := sampleEvent()
-	ev.ExceptionValue = "x ``` y ```` z" // 4 подряд
+	ev.ExceptionValue = "x ``` y ```` z"
 	out := renderEventForLLM(issue.Issue{Title: "T"}, ev, dumpMarkdown)
-	if !strings.Contains(out, "`````") { // забор ≥5
+	if !strings.Contains(out, "`````") {
 		t.Errorf("fence did not grow past inner backticks\n%s", out)
 	}
 }
@@ -79,8 +79,6 @@ func TestRenderEventForLLM_CapTruncates(t *testing.T) {
 	}
 }
 
-// Control-символы (кроме \n,\t) заменяются пробелом — иначе NUL и прочие
-// невалидные в тексте символы попали бы в буфер/во вставку в LLM.
 func TestRenderEventForLLM_SanitizesControlChars(t *testing.T) {
 	ev := sampleEvent()
 	ev.ExceptionValue = "bad\x00value\x07here"
@@ -91,16 +89,14 @@ func TestRenderEventForLLM_SanitizesControlChars(t *testing.T) {
 	if !strings.Contains(out, "bad value here") {
 		t.Errorf("expected control chars replaced by spaces:\n%s", out)
 	}
-	// \n и \t сохраняются.
 	if !strings.Contains(out, "\n") {
 		t.Errorf("newlines must be preserved")
 	}
 }
 
-// Обрезка по капу режет строго по границе руны — многобайтовый UTF-8 не рвётся.
 func TestRenderEventForLLM_CapKeepsRuneBoundary(t *testing.T) {
 	ev := sampleEvent()
-	// «я» — 2 байта; заполняем сверх капа, чтобы рез пришёлся внутрь руны.
+	// «я» — 2 байта: заполняем сверх капа, чтобы обрезка пришлась внутрь руны.
 	ev.ExceptionValue = strings.Repeat("я", maxDumpBytes)
 	out := renderEventForLLM(issue.Issue{Title: "T"}, ev, dumpPlain)
 	if !utf8.ValidString(out) {

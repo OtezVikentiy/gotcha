@@ -13,29 +13,13 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// stubEvalProjectNamer — фиксированное имя проекта, без обращения к БД.
+// Фиксированное имя проекта, без обращения к БД.
 type stubEvalProjectNamer struct{ name string }
 
 func (s stubEvalProjectNamer) ProjectName(context.Context, int64) (string, error) {
 	return s.name, nil
 }
 
-// TestEvaluatorDispatchUsesConfiguredLocale — реролл ревью W3-E: OnIssue
-// строит subject/body на lctx := i18n.WithLocale(ctx, e.Locale) (класс
-// №133–136), но исходно звал escalation.Dispatch(ctx, ...) — БАЗОВЫМ ctx, не
-// lctx. Dispatch сам зовёт notify.WithProjectSubject/WithProjectBody и, на
-// обезличенном пути, notify.RedactExternalPayload — обе берут локаль ИЗ ctx,
-// которым их позвали, и без lctx откатывались бы на i18n.Default ("ru")
-// независимо от GOTCHA_LOCALE, расходясь с уже локализованным (en) текстом
-// самого OnIssue. У остальных шести источников (host/metric/slo/profile/
-// trace/uptime) локаль в ctx для Dispatch кладётся всегда — только alert
-// был исключением, и это прожило бы незамеченным: до этого теста локаль в
-// evaluator_test.go не упоминалась вовсе.
-//
-// Канал telegram (AllowsDetails=false) бьёт РЕДАКТИРОВАННЫЙ путь: подпись
-// вида алерта ("New issue" vs "Новая проблема") и обёртка "Project:"/
-// "Проект:" различаются по языку сильнее всего — если бы Dispatch получил
-// базовый ctx, обе ушли бы на русском при en-инстансе.
 func TestEvaluatorDispatchUsesConfiguredLocale(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := alert.NewService(pool)
@@ -52,11 +36,6 @@ func TestEvaluatorDispatchUsesConfiguredLocale(t *testing.T) {
 	}
 	webhookCh, err := svc.CreateChannel(ctx, alert.Channel{
 		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://internal.example/hook",
-		// Trusted: этот канал должен бить НЕобезличенный путь (AllowsDetails
-		// true) — telegram ниже бьёт обезличенный (DetailPolicy держит его
-		// внешним всегда), так тест кроет ОБА места, где Dispatch зовёт
-		// notify.WithProjectSubject/WithProjectBody: напрямую и через
-		// RedactExternalPayload.
 		Trusted: true,
 	})
 	if err != nil {
@@ -71,10 +50,6 @@ func TestEvaluatorDispatchUsesConfiguredLocale(t *testing.T) {
 
 	e := &alert.Evaluator{
 		Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example",
-		// Details: allowAll=false, trusted пуст — webhookCh получает полный
-		// (не обезличенный) путь только через свой собственный Trusted=true;
-		// telegramCh остаётся внешним всегда (DetailPolicy: chat_id не
-		// разобрать как получателя) и бьёт RedactExternalPayload.
 		Details:  alert.NewDetailPolicy("", nil, false),
 		Locale:   i18n.Locale{Code: "en"},
 		Projects: stubEvalProjectNamer{name: "Marketing Site"},
@@ -134,5 +109,5 @@ func TestEvaluatorDispatchUsesConfiguredLocale(t *testing.T) {
 	}
 }
 
-// compile-time sanity: stubEvalProjectNamer must satisfy escalation.ProjectNamer.
+// Проверка компилятором: тип обязан реализовывать escalation.ProjectNamer.
 var _ escalation.ProjectNamer = stubEvalProjectNamer{}

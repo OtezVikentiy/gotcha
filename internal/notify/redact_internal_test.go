@@ -7,14 +7,10 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// TestRedactedKindLabelsCoverAllKinds — сторож словаря redactedKindKeys:
-// каждый заявленный kind обязан резолвиться в настоящий ключ ОБОИХ каталогов
-// (иначе получатель снова увидит сырой enum — ровно то, что чинил QA MINOR-4),
-// и сам словарь обязан покрывать все виды, которые шлют нотифаеры.
+// Каждый kind должен резолвиться в реальный ключ ОБОИХ каталогов; словарь
+// обязан покрывать все виды, которые шлют нотифаеры.
 func TestRedactedKindLabelsCoverAllKinds(t *testing.T) {
-	// Полный перечень видов по нотифаерам (см. комментарии в redactedKindKeys).
-	// Новый вид алерта обязан попасть и сюда, и в словарь — тест на пару с
-	// код-ревью держит их синхронными.
+	// Новый вид алерта обязан попасть и сюда, и в словарь redactedKindKeys.
 	allKinds := []string{
 		"new_issue", "regression", "spike",
 		"suppressed_digest",

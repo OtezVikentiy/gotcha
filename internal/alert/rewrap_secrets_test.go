@@ -14,19 +14,16 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// Тот же зафиксированный v1-вектор, что и internal/secretbox/secretbox_test.go
-// (literal скопирован, а не получен через публичный API кольца — у v1 нет
-// id ключа, и способа запечатать v1 через Keyring в продуктовом коде больше
-// нет намеренно: это то, что реально лежит в чужих БД со времён до ротации).
+// Совпадает с вектором internal/secretbox/secretbox_test.go; скопирован, не получен через
+// Keyring — у v1 нет id ключа, и запечатывать v1 в продуктовом коде больше нельзя.
 const (
 	rewrapV1Master   = "vector-master-v1-legacy-old-code"
 	rewrapV1Plain    = "legacy-v1-secret-value"
 	rewrapV1Envelope = "enc:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYudf0xP3/sKnysGe0CDB7Uzw42DGYRgM/gl3FF8KMFQgpVnZw4I4="
 )
 
-// insertChannel заводит канал напрямую SQL с заданным секретом as is — в
-// отличие от CreateChannel, ничего не запечатывает. Так тест управляет
-// точным байтовым содержимым secret (plaintext/v1/v2-prev/v2-current/битый).
+// В отличие от CreateChannel, ничего не запечатывает — тест управляет точным
+// содержимым secret (plaintext/v1/v2-prev/v2-current/битый).
 func insertChannel(t *testing.T, pool *pgxpool.Pool, pid int64, secret string) int64 {
 	t.Helper()
 	var id int64
@@ -40,10 +37,6 @@ func insertChannel(t *testing.T, pool *pgxpool.Pool, pid int64, secret string) i
 	return id
 }
 
-// TestChannelsRewrapSecrets — бэкфилл §6 спеки ротации целиком: поднимает
-// всё читаемое (legacy plaintext, v1, v2 предыдущим ключом) до v2 текущего,
-// не трогает уже-текущее и нечитаемое, не запечатывает пустой секрет,
-// идемпотентен.
 func TestChannelsRewrapSecrets(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -58,9 +51,6 @@ func TestChannelsRewrapSecrets(t *testing.T) {
 	ctx := context.Background()
 	pid := newEvalProject(t, pool, "rewrapch")
 
-	// v2, запечатанный ПРЕДЫДУЩИМ ключом кольца (rewrapV1Master как current
-	// своего собственного однокелевого кольца) — второй читаемый-но-не-текущий
-	// случай матрицы Rewrap, отдельный от v1.
 	oldRing, err := secretbox.NewKeyring(rewrapV1Master, "")
 	if err != nil {
 		t.Fatalf("NewKeyring(old): %v", err)
@@ -70,8 +60,6 @@ func TestChannelsRewrapSecrets(t *testing.T) {
 		t.Fatalf("Seal(old): %v", err)
 	}
 
-	// Нечитаемое: запечатано ключом, которого нет в кольце ни текущим, ни
-	// предыдущим (потерянный/сменившийся мимо PREV мастер-ключ).
 	garbageRing, err := secretbox.NewKeyring("totally-unrelated-master-key-xyz", "")
 	if err != nil {
 		t.Fatalf("NewKeyring(garbage): %v", err)
@@ -124,21 +112,17 @@ func TestChannelsRewrapSecrets(t *testing.T) {
 	wantCurrentV2(v1ID, rewrapV1Plain)
 	wantCurrentV2(v2PrevID, "old-v2-secret")
 
-	// Нечитаемое — байт-в-байт как было, старт (проход) при этом не упал.
 	if got := readSecret(unreadableID); got != garbage {
 		t.Fatalf("нечитаемый секрет изменён: %q, want unchanged %q", got, garbage)
 	}
-	// Пустой секрет НЕ запечатан — иначе сломался бы смысл «оставить прежний»
-	// в UpdateChannel (internal/alert/alert.go).
+	// Пустой секрет НЕ запечатан — иначе сломался бы «оставить прежний» в UpdateChannel.
 	if got := readSecret(emptyID); got != "" {
 		t.Fatalf("пустой секрет запечатан: %q, want \"\"", got)
 	}
-	// v2 текущего ключа не тронут — байт-в-байт то же значение.
 	if got := readSecret(v2CurID); got != v2Current {
 		t.Fatalf("v2-текущий секрет изменён: %q, want unchanged %q", got, v2Current)
 	}
 
-	// Идемпотентность: поднимать больше нечего.
 	updated2, err := svc.RewrapSecrets(ctx)
 	if err != nil {
 		t.Fatalf("RewrapSecrets (2nd pass): %v", err)
@@ -148,8 +132,6 @@ func TestChannelsRewrapSecrets(t *testing.T) {
 	}
 }
 
-// TestChannelsRewrapSecretsNoKey — без заданного кольца (dev-стенд) проход —
-// no-op: ни ошибки, ни попытки что-то прочитать/переписать.
 func TestChannelsRewrapSecretsNoKey(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -173,9 +155,8 @@ func TestChannelsRewrapSecretsNoKey(t *testing.T) {
 	}
 }
 
-// capturingLogHandler — slog.Handler, копящий Record'ы в срез вместо вывода.
-// Используется только тестом капа лога (ниже) — не запускается с
-// t.Parallel(), потому что slog.SetDefault меняет глобальный логгер процесса.
+// Не запускается с t.Parallel() — slog.SetDefault меняет глобальный логгер
+// процесса.
 type capturingLogHandler struct {
 	records *[]slog.Record
 }
@@ -188,13 +169,6 @@ func (h capturingLogHandler) Handle(_ context.Context, r slog.Record) error {
 func (h capturingLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h capturingLogHandler) WithGroup(string) slog.Handler      { return h }
 
-// TestChannelsRewrapSecretsLogCap — свойство rewrapLogCap (internal/alert/
-// rewrap_secrets.go): подробный лог нерасшифруемых секретов капируется
-// пятью записями на проход, но итоговая строка (slog.Info) считает ВСЕ
-// нерасшифруемые, а не только залогированные подробно — кап режет
-// детализацию, а не сам факт нечитаемости. Нечитаемых каналов заведено
-// заведомо больше капа, иначе тест не отличил бы «кап работает» от «их и
-// так меньше пяти».
 func TestChannelsRewrapSecretsLogCap(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -213,7 +187,7 @@ func TestChannelsRewrapSecretsLogCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewKeyring(garbage): %v", err)
 	}
-	const unreadableCount = 8 // > rewrapLogCap(5) по спеке
+	const unreadableCount = 8 // > rewrapLogCap(5)
 	for i := 0; i < unreadableCount; i++ {
 		garbage, err := garbageRing.Seal(fmt.Sprintf("garbage-secret-%d", i))
 		if err != nil {
@@ -260,13 +234,6 @@ func TestChannelsRewrapSecretsLogCap(t *testing.T) {
 	}
 }
 
-// TestChannelsRewrapSecretsPoolClosed — обрыв соединения на самом SELECT
-// партии: RewrapSecrets обязан вернуть ошибку вызывающему, а не (0,nil) —
-// иначе старт с недоступной на секунду БД молча спишется на «нечего
-// поднимать». Это единственная ветка ошибки RewrapSecrets, которую честно
-// достать закрытием пула: он рвёт соединение уже на pool.Query, до чтения
-// партии, так что ветки rows.Scan/rows.Err и slog.Warn-путь одиночного
-// UPDATE внутри цикла этим способом не воспроизвести (см. отчёт задачи).
 func TestChannelsRewrapSecretsPoolClosed(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

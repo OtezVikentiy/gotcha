@@ -8,13 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 )
 
-// TestRelativeTimeCarriesExactMoment: относительная подпись отвечает на
-// вопрос «давно ли», но дежурному нужен точный момент, чтобы сопоставить
-// проблему с логами приложения. Раньше точное время добывалось только через
-// «Сырой JSON события» — на списке issues его не было вовсе.
-//
-// UTC намеренно: настройки пояса у пользователя нет, а в аудите доставок UTC
-// уже принят.
 func TestRelativeTimeCarriesExactMoment(t *testing.T) {
 	moment := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
 	rows := []IssueRow{

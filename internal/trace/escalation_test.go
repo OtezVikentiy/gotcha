@@ -8,8 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// TestRegressionServiceEscalationName проверяет, что ключ источника
-// совпадает с incident_source='trace', зафиксированным в миграции 0077.
 func TestRegressionServiceEscalationName(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := trace.NewRegressionService(pool)
@@ -18,10 +16,6 @@ func TestRegressionServiceEscalationName(t *testing.T) {
 	}
 }
 
-// TestRegressionServiceOpenUnacked дискриминирует «status='open' AND
-// acknowledged_at IS NULL»: открытый неподтверждённый инцидент попадает в
-// выборку с верными полями; после Acknowledge — пропадает; отдельный
-// resolved-инцидент в выборку не попадает вовсе.
 func TestRegressionServiceOpenUnacked(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := trace.NewRegressionService(pool)
@@ -79,9 +73,6 @@ func TestRegressionServiceOpenUnacked(t *testing.T) {
 	}
 }
 
-// TestRegressionServiceBumpEscalation проверяет атомарность продвижения
-// escalation_level: успешный бамп двигает level и last_escalated_at,
-// повторный бамп с устаревшим from — идемпотентный no-op (ok=false).
 func TestRegressionServiceBumpEscalation(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := trace.NewRegressionService(pool)

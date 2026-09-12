@@ -12,8 +12,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/slo"
 )
 
-// TestWebSLODetail — экран деталей SLO: показывает SLO и историю его инцидентов;
-// чужой проект и несуществующее SLO дают 404 (без утечки существования).
 func TestWebSLODetail(t *testing.T) {
 	s := newSLOStack(t, true)
 	ctx := context.Background()
@@ -33,7 +31,6 @@ func TestWebSLODetail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed slo: %v", err)
 	}
-	// История инцидентов: один открыт-затем-закрыт.
 	rem := 0.4
 	if _, _, err := s.slo.OpenIncident(ctx, created.ID, project.ID, 22.5, &rem, false); err != nil {
 		t.Fatalf("open incident: %v", err)
@@ -44,7 +41,6 @@ func TestWebSLODetail(t *testing.T) {
 
 	detailPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/slos/" + strconv.FormatInt(created.ID, 10)
 
-	// Экран показывает имя SLO.
 	resp := getWithCookie(t, s.srv, detailPath, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -52,7 +48,6 @@ func TestWebSLODetail(t *testing.T) {
 		t.Fatalf("detail missing SLO (status %d): %s", resp.StatusCode, body)
 	}
 
-	// Несуществующее SLO в своём проекте → 404.
 	missing := "/projects/" + strconv.FormatInt(project.ID, 10) + "/slos/9999999"
 	resp = getWithCookie(t, s.srv, missing, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -61,7 +56,6 @@ func TestWebSLODetail(t *testing.T) {
 		t.Fatalf("missing slo status = %d, want 404", resp.StatusCode)
 	}
 
-	// Чужой проект (SLO принадлежит другому проекту) → 404.
 	other, err := s.org.CreateProject(ctx, o.ID, "slo-d-other", "SLO D Other", "go")
 	if err != nil {
 		t.Fatalf("create other project: %v", err)
@@ -74,7 +68,6 @@ func TestWebSLODetail(t *testing.T) {
 		t.Fatalf("foreign project slo status = %d, want 404", resp.StatusCode)
 	}
 
-	// Оператор чужой команды без доступа к проекту → 404.
 	memberID, memberCookie := orgSettingsRegister(t, s.auth, "slo-detail-member@example.com")
 	if err := s.org.AddMember(ctx, o.ID, memberID, org.RoleMember); err != nil {
 		t.Fatalf("add member: %v", err)

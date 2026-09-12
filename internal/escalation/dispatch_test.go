@@ -6,8 +6,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 )
 
-// TestContainsID — чистая функция членства без БД: результат зависит от
-// присутствия id в списке, порядка/длины списка и пустого списка отдельно.
 func TestContainsID(t *testing.T) {
 	cases := []struct {
 		name string

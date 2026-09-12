@@ -9,9 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestInviteByTokenReadsWithoutConsuming — приглашение читается по токену и
-// НЕ гасится: страница должна показать, куда зовут, до того как человек
-// согласился.
 func TestInviteByTokenReadsWithoutConsuming(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -38,14 +35,11 @@ func TestInviteByTokenReadsWithoutConsuming(t *testing.T) {
 		t.Fatalf("InviteInfo = %+v", inv)
 	}
 
-	// Не погашено: второе чтение даёт то же самое.
 	if _, err := svc.InviteByToken(ctx, token); err != nil {
 		t.Fatalf("повторное чтение: %v", err)
 	}
 }
 
-// TestInviteByTokenRejectsDeadTokens — несуществующий, просроченный и уже
-// принятый неотличимы: одна и та же ошибка. Различие было бы оракулом.
 func TestInviteByTokenRejectsDeadTokens(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

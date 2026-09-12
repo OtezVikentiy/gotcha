@@ -11,40 +11,19 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// KeyKind — тип DSN-ключа: чем этим ключом можно пользоваться. Матрица
-// «какому типу какой сигнал приёма разрешён» живёт в internal/ingest и
-// является единственной истиной: org знает только допустимые ЗНАЧЕНИЯ типа,
-// знание «что кому можно» принадлежит приёму (ADR 0012).
-//
-// Тип НЕИЗМЕНЯЕМ: сменить тип выпущенного ключа нельзя, можно только выпустить
-// новый и отозвать старый. Отсюда следует, что кешированный в ingest.KeyCache
-// ключ не может поменять допуск, не перестав существовать, — инвалидация кеша
-// по смене типа не нужна.
+// Неизменяем: сменить тип выпущенного ключа нельзя, только выпустить новый и
+// отозвать старый — поэтому кеш ingest.KeyCache не нуждается в инвалидации по типу.
 type KeyKind string
 
 const (
-	// KindBrowser — ключ для браузерных SDK. Публикуется в JS по замыслу,
-	// поэтому не допущен к профилям, деплой-маркерам и регистрации хостов.
 	KindBrowser KeyKind = "browser"
-	// KindServer — ключ серверного SDK, CI и коллектора прикладных метрик.
-	// Хосты не регистрирует.
-	KindServer KeyKind = "server"
-	// KindAgent — ключ источника ХОСТОВЫХ метрик: и собственного go-агента, и
-	// otel-collector'а с hostmetrics+resourcedetection со страницы хостов.
-	// Единственный тип, которому разрешена регистрация хоста.
-	KindAgent KeyKind = "agent"
-	// KindLegacy — ключ, выпущенный до появления типов: полный допуск,
-	// бессрочно. Через UI не создаётся (§3.2 спеки), проставляется только
-	// дефолтом столбца.
-	KindLegacy KeyKind = "legacy"
+	KindServer  KeyKind = "server"
+	KindAgent   KeyKind = "agent"
+	KindLegacy  KeyKind = "legacy"
 )
 
-// ErrInvalidKeyKind — попытка выпустить ключ с типом вне набора.
 var ErrInvalidKeyKind = errors.New("org: invalid key kind")
 
-// Valid — тип входит в набор, известный столбцу project_keys.kind (CHECK).
-// Пустая строка НЕ валидна: незаданный тип — это забытое значение, а не
-// «полный допуск» (см. §3.1 спеки).
 func (k KeyKind) Valid() bool {
 	switch k {
 	case KindBrowser, KindServer, KindAgent, KindLegacy:
@@ -53,8 +32,6 @@ func (k KeyKind) Valid() bool {
 	return false
 }
 
-// Key — DSN-ключ проекта: по public_key ingest узнаёт проект, по Kind —
-// на что этот ключ имеет право.
 type Key struct {
 	ID        int64
 	ProjectID int64
@@ -64,12 +41,6 @@ type Key struct {
 	Revoked   bool
 }
 
-// CreateKeys выпускает ключи проекта ОДНИМ INSERT'ом с несколькими VALUES.
-// Пакетность здесь — не оптимизация, а атомарность: онбординг выпускает
-// сразу три ключа и при провале откатывает всю организацию best-effort
-// компенсацией (compensateOrgCreate), поэтому три отдельных вызова утроили бы
-// окно наполовину созданного проекта. Одного запроса достаточно — ручная
-// транзакция не нужна.
 func (s *Service) CreateKeys(ctx context.Context, projectID int64, kinds ...KeyKind) ([]Key, error) {
 	if len(kinds) == 0 {
 		return nil, fmt.Errorf("%w: no kinds given", ErrInvalidKeyKind)
@@ -120,8 +91,6 @@ func (s *Service) CreateKeys(ctx context.Context, projectID int64, kinds ...KeyK
 	return keys, nil
 }
 
-// RevokeKey отзывает ключ. Не идемпотентно: повторный вызов на уже
-// отозванном ключе вернёт ErrNotFound.
 func (s *Service) RevokeKey(ctx context.Context, keyID int64) error {
 	tag, err := s.pool.Exec(ctx,
 		"UPDATE project_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL", keyID)
@@ -134,10 +103,6 @@ func (s *Service) RevokeKey(ctx context.Context, keyID int64) error {
 	return nil
 }
 
-// KeyByPublic возвращает живой (неотозванный) ключ по public_key, включая
-// org_id проекта (JOIN projects) — ingest использует его для квот без
-// дополнительного похода в БД. Горячий путь ingest — по нему
-// аутентифицируется каждое событие.
 func (s *Service) KeyByPublic(ctx context.Context, publicKey string) (Key, error) {
 	k := Key{PublicKey: publicKey}
 	err := s.pool.QueryRow(ctx,
@@ -154,7 +119,6 @@ func (s *Service) KeyByPublic(ctx context.Context, publicKey string) (Key, error
 	return k, nil
 }
 
-// KeysForProject возвращает все ключи проекта, включая отозванные.
 func (s *Service) KeysForProject(ctx context.Context, projectID int64) ([]Key, error) {
 	rows, err := s.pool.Query(ctx,
 		"SELECT id, project_id, public_key, kind, revoked_at IS NOT NULL FROM project_keys WHERE project_id = $1 ORDER BY id",

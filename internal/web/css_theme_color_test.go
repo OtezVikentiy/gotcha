@@ -8,10 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// Сторож <meta name="theme-color"> (layout.templ) против --bg в app.css:
-// цвет системной рамки браузера обязан совпадать с полотном темы, иначе над
-// страницей висит полоса чужого цвета. Истина — таблица стилей; шаблон
-// держит копию, потому что <meta> не умеет читать CSS-переменные.
 func TestThemeColorMatchesCSS(t *testing.T) {
 	css, err := readAppCSS()
 	if err != nil {

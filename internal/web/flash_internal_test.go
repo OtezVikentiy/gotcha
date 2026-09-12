@@ -11,15 +11,9 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/flashctx"
 )
 
-// TestFlashRoundTrip — сообщение переживает редирект и показывается ровно один
-// раз: cookie гасится тем же запросом, которым читается.
-//
-// Именно поэтому cookie, а не query-параметр: параметр остаётся в адресе,
-// залипает при F5 и уезжает в закладку.
 func TestFlashRoundTrip(t *testing.T) {
 	h := &Handler{BaseURL: "https://gotcha.example"}
 
-	// Обработчик ставит сообщение перед редиректом.
 	rec := httptest.NewRecorder()
 	h.flashOK(rec, "flash.saved", 0)
 	cookies := rec.Result().Cookies()
@@ -30,7 +24,6 @@ func TestFlashRoundTrip(t *testing.T) {
 		t.Errorf("cookie должна быть HttpOnly и Secure на https-инстансе: %+v", cookies[0])
 	}
 
-	// Следующий запрос её читает, гасит и кладёт сообщение в контекст.
 	var seen *flashctx.Flash
 	next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		seen = flashctx.FromContext(r.Context())
@@ -43,7 +36,6 @@ func TestFlashRoundTrip(t *testing.T) {
 	if seen == nil || seen.Key != "flash.saved" || seen.Kind != "ok" {
 		t.Fatalf("сообщение не доехало до обработчика: %+v", seen)
 	}
-	// Гашение: MaxAge<0 в ответе.
 	var cleared bool
 	for _, c := range rec2.Result().Cookies() {
 		if c.Name == flashCookie && c.MaxAge < 0 {
@@ -55,10 +47,6 @@ func TestFlashRoundTrip(t *testing.T) {
 	}
 }
 
-// TestFlashRejectsForgedCookie — значение cookie полностью подконтрольно
-// клиенту, поэтому в ней хранится КЛЮЧ из белого списка, а не текст. Иначе
-// подсунутая ссылка рисовала бы произвольное сообщение на нашей же странице —
-// готовая площадка для фишинга.
 func TestFlashRejectsForgedCookie(t *testing.T) {
 	forged := []string{
 		"ok|Ваш+пароль+истёк,+введите+его+заново",
@@ -72,7 +60,6 @@ func TestFlashRejectsForgedCookie(t *testing.T) {
 		f := parseFlash(v)
 		switch v {
 		case "ok|flash.saved|not-a-number":
-			// Ключ валиден, мусорное число игнорируется.
 			if f == nil || f.N != 0 {
 				t.Errorf("валидный ключ с мусорным числом: %+v", f)
 			}
@@ -84,8 +71,6 @@ func TestFlashRejectsForgedCookie(t *testing.T) {
 	}
 }
 
-// TestFlashPluralCarriesCount — число доезжает до формы множественного числа:
-// «помечено решёнными 5 проблем», а не «помечено решёнными».
 func TestFlashPluralCarriesCount(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h := &Handler{BaseURL: "http://localhost:59080"}
@@ -105,11 +90,6 @@ func TestFlashPluralCarriesCount(t *testing.T) {
 	}
 }
 
-// TestFlashPairCarriesBothCounts — парный флеш (B6, «создано N, пропущено M»)
-// доносит через cookie ОБА счётчика: setFlash кодирует kind|key|n|m,
-// parseFlash восстанавливает N/M и помечает ключ Pair (по белому списку
-// flashPairKeys, не по содержимому cookie) — по этой отметке flashView
-// уходит в Tf-ветку с {n}/{m} вместо плюрального Tn.
 func TestFlashPairCarriesBothCounts(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h := &Handler{BaseURL: "http://localhost:59080"}
@@ -121,8 +101,6 @@ func TestFlashPairCarriesBothCounts(t *testing.T) {
 		t.Fatalf("парный флеш не доехал: %+v", f)
 	}
 
-	// Краевой случай повторного POST: created=0, skipped=M — нулевой N обязан
-	// кодироваться позиционно (kind|key|0|m), иначе M съехал бы на место N.
 	rec = httptest.NewRecorder()
 	h.flashOKPair(rec, "flash.recipes_applied", 0, 3)
 	f = parseFlash(rec.Result().Cookies()[0].Value)
@@ -130,21 +108,15 @@ func TestFlashPairCarriesBothCounts(t *testing.T) {
 		t.Fatalf("нулевой created сдвинул счётчики: %+v", f)
 	}
 
-	// Отрицательный M (подделка cookie) отбрасывается, как и отрицательный N.
 	if f := parseFlash("ok|flash.recipes_applied|2|-7"); f == nil || f.M != 0 || f.N != 2 {
 		t.Errorf("отрицательный M должен игнорироваться: %+v", f)
 	}
 
-	// Старый однокоследный формат по-прежнему парсится и Pair НЕ ставит:
-	// плюральные ключи рендерятся прежней Tn-веткой.
 	if f := parseFlash("ok|flash.issues_resolved|5"); f == nil || f.Pair || f.N != 5 || f.M != 0 {
 		t.Errorf("старый формат сломан или ошибочно помечен Pair: %+v", f)
 	}
 }
 
-// TestFlashSkipsStatic — на статику middleware не тратится и, что важнее, не
-// гасит cookie: иначе сообщение съедалось бы параллельным запросом за app.css
-// раньше, чем отрисуется страница.
 func TestFlashSkipsStatic(t *testing.T) {
 	h := &Handler{BaseURL: "https://gotcha.example"}
 	req := httptest.NewRequest(http.MethodGet, "/static/app.css", nil)
@@ -169,14 +141,7 @@ func TestFlashSkipsStatic(t *testing.T) {
 	}
 }
 
-// TestFlashUnknownKeyNotSet — обработчик не может поставить сообщение, которого
-// нет в белом списке: опечатка в ключе не должна давать пустую плашку.
 func TestFlashUnknownKeyNotSet(t *testing.T) {
-	// Неизвестный ключ пишет error-лог (см. setFlash, задача 1) — это здесь не
-	// предмет проверки (её ведёт TestSetFlashUnknownKeyIsLoud), поэтому лог
-	// перехватывается, а не летит в реальный вывод прогона: без перехвата
-	// строка ERROR попадала бы в вывод go test и выглядела бы как настоящий
-	// сбой, хотя тест и так зелёный.
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
@@ -192,12 +157,6 @@ func TestFlashUnknownKeyNotSet(t *testing.T) {
 	}
 }
 
-// TestSetFlashUnknownKeyIsLoud: ключ приходит в setFlash из кода, литералом.
-// Тихий возврат при отсутствии в списке защищает не от клиента (для этого есть
-// проверка в parseFlash на пути чтения cookie), а прячет ошибку программиста:
-// забытый ключ даёт молчание вместо сообщения, и администратор не отличает
-// «отозвано» от «форма не сработала» — ровно так и жила находка про отзыв
-// приглашения.
 func TestSetFlashUnknownKeyIsLoud(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()

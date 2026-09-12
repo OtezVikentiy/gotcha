@@ -78,7 +78,6 @@ func TestWebMetricsList(t *testing.T) {
 
 	base := "/projects/" + strconv.FormatInt(project.ID, 10) + "/metrics"
 
-	// Список метрик содержит имя.
 	resp := getWithCookie(t, s.srv, base, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -89,7 +88,6 @@ func TestWebMetricsList(t *testing.T) {
 		t.Fatalf("list missing metric: %s", body)
 	}
 
-	// Страница метрики: график (SVG) и селекторы.
 	detail := base + "/cpu.usage?period=24h&agg=avg"
 	resp = getWithCookie(t, s.srv, detail, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
@@ -101,7 +99,6 @@ func TestWebMetricsList(t *testing.T) {
 		t.Fatalf("detail missing chart svg: %s", body)
 	}
 
-	// Несуществующая метрика → 404.
 	resp = getWithCookie(t, s.srv, base+"/nope", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -109,7 +106,6 @@ func TestWebMetricsList(t *testing.T) {
 		t.Fatalf("unknown metric status = %d, want 404", resp.StatusCode)
 	}
 
-	// Чужой → 404.
 	_, outsider := orgSettingsRegister(t, s.auth, "metrics-outsider@example.com")
 	resp = getWithCookie(t, s.srv, base, outsider)
 	io.Copy(io.Discard, resp.Body)
@@ -119,10 +115,6 @@ func TestWebMetricsList(t *testing.T) {
 	}
 }
 
-// TestWebMetricsListSystemFilter — метрики хостового коллектора (system.*)
-// затопили бы список метрик проекта после подключения хоста (T14–T16):
-// по умолчанию они скрыты за переключателем со счётчиком, ?system=1
-// показывает всё (§5.6 дизайна).
 func TestWebMetricsListSystemFilter(t *testing.T) {
 	s := newMetricsStack(t, true)
 	ctx := context.Background()
@@ -140,8 +132,6 @@ func TestWebMetricsListSystemFilter(t *testing.T) {
 
 	base := "/projects/" + strconv.FormatInt(project.ID, 10) + "/metrics"
 
-	// По умолчанию: видна прикладная метрика, системная скрыта, есть
-	// переключатель со счётчиком скрытых (1).
 	resp := getWithCookie(t, s.srv, base, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -158,7 +148,6 @@ func TestWebMetricsListSystemFilter(t *testing.T) {
 		t.Fatalf("hidden count (1) not shown: %s", body)
 	}
 
-	// ?system=1: обе метрики видны.
 	resp = getWithCookie(t, s.srv, base+"?system=1", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()

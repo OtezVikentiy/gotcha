@@ -53,9 +53,6 @@ func inviteAcceptPath(token string) string {
 	return "/invite/" + token
 }
 
-// viewerIsOwner ищет uid среди members и сообщает, владелец ли зритель —
-// members уже содержит эту роль (её незачем запрашивать у Org отдельно),
-// нужно только найти строку зрителя.
 func viewerIsOwner(members []org.Member, uid int64) bool {
 	for _, m := range members {
 		if m.UserID == uid {
@@ -65,8 +62,6 @@ func viewerIsOwner(members []org.Member, uid int64) bool {
 	return false
 }
 
-// memberRoleLabelKey — i18n-ключ подписи роли; переиспользуется и статичным
-// бейджем роли (memberRow), и опциями <select> (roleOption).
 func memberRoleLabelKey(role org.Role) string {
 	switch role {
 	case org.RoleOwner:
@@ -78,8 +73,6 @@ func memberRoleLabelKey(role org.Role) string {
 	}
 }
 
-// memberRoleBadgeClass — цвет бейджа роли через дизайн-систему: owner —
-// самый заметный (warn), admin — info, member — нейтральный.
 func memberRoleBadgeClass(role org.Role) string {
 	switch role {
 	case org.RoleOwner:
@@ -99,19 +92,8 @@ templ roleOption(value, labelKey string, current org.Role) {
 	}
 }
 
-// memberRow — строка таблицы участников: email, роль, форма смены роли,
-// форма удаления. Для собственной строки (self) обе формы скрыты — сервер
-// всё равно отклонит self-действия 422-ом (см. орг-бриф), но раз в UI это
-// никогда не легитимное действие, спрятать проще, чем показывать
-// заведомо проваливающиеся кнопки.
-//
-// viewerIsOwner — только owner может выдать роль owner, изменить роль
-// owner'а или удалить owner'а (security fix, задача 2): пункт "Owner" в
-// select виден только owner'у-зрителю, а для чужой строки с текущей ролью
-// owner non-owner-зритель вообще не получает ни select, ни кнопку удаления
-// (сервер всё равно отклонит такой POST 422-ом, но раз действие никогда не
-// легитимно — прятать элемент проще и честнее для UI, чем показывать
-// заведомо проваливающуюся форму).
+// self и чужая роль owner (для non-owner-зрителя) скрывают формы в UI — сервер тоже отклонит POST 422,
+// но раз действие никогда не легитимно, прятать элемент честнее, чем показывать проваливающуюся форму.
 templ memberRow(orgID int64, m org.Member, self, viewerIsOwner bool) {
 	<tr>
 		<td>{ m.Email }</td>
@@ -142,25 +124,13 @@ templ memberRow(orgID int64, m org.Member, self, viewerIsOwner bool) {
 	</tr>
 }
 
-// OrgSettings — GET/POST /orgs/{id}/settings: таблица участников (роль,
-// смена роли, удаление — не для себя) и форма приглашения нового участника.
-// errMsg — сообщение об ошибке последнего POST (self-действие, last-owner,
-// невалидный email и т.п.), рендерится с тем же статусом 422, что и ответ.
-// inviteLink заполняется один раз, сразу в ответе POST .../invite: токен
-// приглашения одноразовый и не должен уходить в query string или Location,
-// поэтому страница с готовой ссылкой рендерится прямо в теле POST-ответа.
-// uid используется и чтобы найти роль зрителя среди members (viewerIsOwner
-// для memberRow — см. её комментарий и security fix задачи 2). usage —
-// счётчик событий организации за текущий месяц (org.Usage), o.EventQuota —
-// её месячный лимит (0 = безлимит).
-// SSOSettings — данные секции SSO (этап 10). Видна owner'у организации либо
-// admin'у инстанса (см. CanConfigure ниже и sso.md); секрет не
-// пре-заполняется (Configured сигналит «настроено»).
+// inviteLink рендерится прямо в теле POST-ответа — одноразовый токен не должен уходить в query/Location.
+// errMsg — тем же статусом 422, что и ответ.
+
+// видна owner'у организации либо admin'у инстанса; секрет не пре-заполняется (Configured — «настроено»).
 type SSOSettings struct {
-	IsOwner     bool
-	// CanConfigure — зритель может РЕДАКТИРОВАТЬ SSO (админ инстанса). Владелец
-	// орга видит статус, но настройку федерации выполняет оператор инстанса —
-	// иначе self-service SSO по непроверенному домену даёт захват аккаунта.
+	IsOwner bool
+	// зритель может РЕДАКТИРОВАТЬ — только admin инстанса: self-service SSO по домену дал бы захват аккаунта.
 	CanConfigure bool
 	Configured  bool
 	Issuer      string
@@ -171,11 +141,6 @@ type SSOSettings struct {
 	RedirectURI string
 }
 
-// QuotaVM — одна строка секции «Защитный лимит приёма (rate-guard)»: вид
-// приёма (события/транзакции/метрики/профили/логи), имя поля формы,
-// использование за текущий месяц и лимит (0 = безлимит). Собирается в
-// renderOrgSettings из o.*Quota и *Usage; так секция расширяется одним
-// срезом, а не скалярными аргументами шаблона на каждый вид.
 type QuotaVM struct {
 	Kind  string // человекочитаемое имя вида приёма
 	Field string // имя input-поля формы (event_quota/transaction_quota/…)
@@ -183,7 +148,6 @@ type QuotaVM struct {
 	Limit int64  // месячный лимит (0 = безлимит)
 }
 
-// rateGuardRow — строка usage + поле ввода лимита для одного вида приёма.
 templ rateGuardRow(q QuotaVM) {
 	<tr>
 		<td>{ q.Kind }</td>
@@ -206,8 +170,7 @@ templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, 
 		<div class="org-settings">
 			@quotaBannerView(banner)
 			<h1>{ i18n.T(ctx, "org.settings.title") } { o.Name }</h1>
-			// №27: ошибка приглашения показывается у самой формы (ниже), а не
-			// абзацем под h1 — здесь остаются ошибки остальных POST-ов.
+			// ошибка приглашения показывается у самой формы, не здесь — тут остаются ошибки остальных POST-ов.
 			if errMsg != "" && !inviteForm.Has() {
 				<p class="error">{ errMsg }</p>
 			}
@@ -270,8 +233,7 @@ templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, 
 					</div>
 				}
 				<form method="post" action={ templ.URL(orgSettingsInvitePath(o.ID)) } class="invite-form">
-					// №27: 422 не съедает ввод — email и роль возвращаются в форму,
-					// ошибка стоит рядом с ней.
+					// 422 не съедает ввод — email и роль возвращаются в форму, ошибка стоит рядом с ней.
 					if errMsg != "" && inviteForm.Has() {
 						<p class="error" id="invite-error">{ errMsg }</p>
 					}
@@ -309,11 +271,8 @@ templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, 
 	}
 }
 
-// subjectExportSection — форма выгрузки ПДн субъекта (право субъекта на доступ,
-// 152-ФЗ ст. 14, RA-L11). Только owner. project_id указывает проект, из
-// телеметрии которого экспортируются строки субъекта; заполняется хотя бы
-// одно из email/user_id/ip (проверка на сервере). Ответ — JSON-файл
-// subject-export.json (attachment).
+// только owner; заполнить хотя бы один из email/user_id/ip — сервер проверяет.
+// ответ — JSON-файл subject-export.json (attachment).
 templ subjectExportSection(orgID int64, purge SubjectPurgeVM) {
 	<div class="gdpr-block">
 		<h3>{ i18n.T(ctx, "org.gdpr.export.title") }</h3>
@@ -321,10 +280,7 @@ templ subjectExportSection(orgID int64, purge SubjectPurgeVM) {
 			<div class="field">
 				<label>
 					{ i18n.T(ctx, "org.gdpr.field.project") }
-					// Селект с названиями, а не номер числом: списка проектов на
-					// этой странице нет, и номер приходилось добывать из адреса
-					// другого раздела — отсюда и риск опечатки в необратимой
-					// операции.
+					// выбор по названию, не номер вручную — опечатка в необратимой операции была реальным риском.
 					<select name="project_id" required class="select">
 						<option value="">{ i18n.T(ctx, "org.gdpr.field.project_placeholder") }</option>
 						for _, p := range purge.Projects {
@@ -361,10 +317,8 @@ templ subjectExportSection(orgID int64, purge SubjectPurgeVM) {
 	</div>
 }
 
-// subjectPurgeSection — форма удаления ПДн субъекта (право субъекта на
-// удаление, 152-ФЗ). Только owner. project_id указывает проект, из телеметрии
-// которого чистятся строки субъекта; заполняется хотя бы одно из email/user_id/ip
-// (проверка на сервере). PG не трогается — данные субъекта живут в ClickHouse.
+// только owner; заполнить хотя бы один из email/user_id/ip — сервер проверяет.
+// PG не трогается — данные субъекта живут в ClickHouse.
 templ subjectPurgeSection(orgID int64, purge SubjectPurgeVM) {
 	<div class="gdpr-block">
 		<h3>{ i18n.T(ctx, "org.gdpr.purge.title") }</h3>
@@ -372,10 +326,7 @@ templ subjectPurgeSection(orgID int64, purge SubjectPurgeVM) {
 			<div class="field">
 				<label>
 					{ i18n.T(ctx, "org.gdpr.field.project") }
-					// Селект с названиями, а не номер числом: списка проектов на
-					// этой странице нет, и номер приходилось добывать из адреса
-					// другого раздела — отсюда и риск опечатки в необратимой
-					// операции.
+					// выбор по названию, не номер вручную — опечатка в необратимой операции была реальным риском.
 					<select name="project_id" required class="select">
 						<option value="">{ i18n.T(ctx, "org.gdpr.field.project_placeholder") }</option>
 						for _, p := range purge.Projects {
@@ -412,14 +363,8 @@ templ subjectPurgeSection(orgID int64, purge SubjectPurgeVM) {
 	</div>
 }
 
-// dangerZoneSection — «Опасная зона»: покинуть организацию (виден всем,
-// единственный owner получит 422 ErrLastOwner — так проще, чем прятать
-// кнопку по числу owner'ов) и удалить организацию целиком (только owner).
-// Подтверждение — server-side, двухшаговый POST: под CSP default-src 'self'
-// без unsafe-inline инлайновые onsubmit="confirm()" не исполняются, поэтому
-// первый POST без confirmed=yes рендерит страницу подтверждения
-// (templates.ConfirmPage через Handler.renderConfirm) вместо самого
-// действия — никакого JS не требуется (см. orgSettingsLeave/orgSettingsDelete).
+// покинуть — виден всем, единственный owner получит 422 ErrLastOwner, а не скрытую кнопку.
+// подтверждение server-side: CSP default-src 'self' без unsafe-inline не исполняет onsubmit=confirm().
 templ dangerZoneSection(orgID int64, isOwner bool) {
 	<section class="card">
 		<h2 class="card-header">{ i18n.T(ctx, "org.danger.title") }</h2>
@@ -444,8 +389,6 @@ templ dangerZoneSection(orgID int64, isOwner bool) {
 	</section>
 }
 
-// ssoSection — секция настроек enterprise-SSO (этап 10, owner орга либо admin
-// инстанса — см. SSOSettings выше).
 templ ssoSection(orgID int64, sso SSOSettings) {
 	<section class="card">
 		<h2 class="card-header">{ i18n.T(ctx, "org.sso.title") }</h2>
@@ -525,38 +468,8 @@ templ ssoSection(orgID int64, sso SSOSettings) {
 	</section>
 }
 
-// InviteAccept — GET/POST /invite/{token}: страница «принять приглашение».
-// GET резолвит приглашение через InviteByToken, но НЕ гасит его (одноразовый
-// токен нельзя тратить на просмотр) — accepted_at выставляет только POST.
-// errMsg заполняется тем же err.org.invite_invalid, что и при отправке формы:
-// недействительный, просроченный и уже принятый токен не должны различаться
-// по ответу (иначе существование приглашения можно перебирать по токену).
-//
-// inv — то, что показывается ДО принятия: организация и роль — без этого
-// человек подтверждает вслепую. При errMsg != "" inv — нулевое значение и на
-// странице не используется.
-//
-// Адрес приглашения (inv.Email) на странице НЕ показывается — ни анониму, ни
-// вошедшему. Страница публична (см. web.go: GET не за requireUser), значит
-// доступна любому держателю токена, а ссылка утекает реальными способами
-// (переслали в чат, осталась в истории браузера, ушла через Referer). Гейт
-// регистрации по приглашению (invitedByToken) требует токен И совпадение
-// адреса именно затем, чтобы одного утёкшего токена было недостаточно для
-// регистрации под чужим адресом — показ адреса здесь свёл бы это требование
-// на нет. inv.Email как ПОЛЕ не убираем: он нужен серверу для того же
-// сравнения и для AcceptInvite, уходит только отображение.
-//
-// userEmail == "" — зритель анонимен: вместо формы принятия (которая для
-// неавторизованного молча уводила на /login, теряя токен) — две ссылки,
-// «войти» и «создать аккаунт». Обработчик (inviteAcceptPage) к этому моменту
-// уже положил токен в invite-cookie, поэтому обе ссылки — на голые /login и
-// /register, без next=/invite/{token} в query (K9-19): loginLinkWithNext и
-// registerLinkWithNext сами не кладут путь приглашения в query, а адресат
-// переживает переход через cookie, а не через адрес. Непустой userEmail —
-// обычная форма принятия, без изменений.
-//
-// @chromeless — минимальный layout (анонимная страница вне app-shell);
-// сам layout не трогаем, только внутреннюю разметку формы.
+// inv.Email никогда не отображается (только используется на сервере) — иначе токен раскрывал бы адрес.
+// errMsg одинаков для invalid/expired/accepted — иначе токен можно перебирать по ответу.
 templ InviteAccept(token, errMsg, userEmail string, inv org.InviteInfo) {
 	@chromeless(i18n.T(ctx, "org.invite_accept.title"), userEmail) {
 		<div class="invite-accept card">
@@ -582,12 +495,8 @@ templ InviteAccept(token, errMsg, userEmail string, inv org.InviteInfo) {
 	}
 }
 
-// pendingInvites — выписанные, но ещё не принятые приглашения.
-//
-// Существует потому, что выписанное приглашение было невидимо: ошибся в
-// адресе — ссылка ушла постороннему, и ни увидеть это, ни отменить из
-// интерфейса было нельзя. Самой ссылки здесь нет и быть не может: в базе
-// лежит только её хеш.
+// показывает выписанные, не принятые приглашения — иначе ошибку в адресе нельзя увидеть или отменить.
+// самой ссылки здесь нет и быть не может — в базе лежит только её хеш.
 templ pendingInvites(orgID int64, invites []org.PendingInvite) {
 	<div class="pending-invites">
 		<h3>{ i18n.T(ctx, "org.invite.pending_title") }</h3>

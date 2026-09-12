@@ -66,8 +66,6 @@ func validInviteEmail(email string) bool {
 	return email != "" && auth.ValidEmailFormat(email)
 }
 
-// orgSettingsErrorMessage переводит доменные ошибки org.Service в
-// человекочитаемое сообщение для 422-страницы настроек организации.
 func orgSettingsErrorMessage(ctx context.Context, err error) string {
 	switch {
 	case errors.Is(err, org.ErrLastOwner):
@@ -85,9 +83,6 @@ func orgSettingsErrorMessage(ctx context.Context, err error) string {
 	}
 }
 
-// parsePathOrgID достаёт orgID из {id} пути /orgs/{id}/settings*; на
-// невалидный id — 404 (тот же принцип, что и у числовых id issue/project:
-// не палим существование записи форматом ответа).
 func (h *Handler) parsePathOrgID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	orgID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -97,9 +92,6 @@ func (h *Handler) parsePathOrgID(w http.ResponseWriter, r *http.Request) (int64,
 	return orgID, true
 }
 
-// orgSettingsPage — GET /orgs/{id}/settings: таблица участников (email,
-// роль, форма смены роли, форма удаления — не для себя) и форма приглашения.
-// Доступ только owner/admin (requireOrgRole).
 func (h *Handler) orgSettingsPage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -116,9 +108,7 @@ func (h *Handler) orgSettingsPage(w http.ResponseWriter, r *http.Request) {
 	h.renderOrgSettings(w, r, http.StatusOK, orgID, uid, "", "", nil)
 }
 
-// requireOrgOwner — SSO-настройки доступны только владельцу орга (более узкая
-// граница, чем requireOrgRole owner/admin): SSO — доверенная точка входа. Не
-// owner → 404 (как прочие owner-only действия). Возвращает ok.
+// SSO — доверенная точка входа: граница у́же, чем requireOrgRole (owner/admin) — только owner.
 func (h *Handler) requireOrgOwner(w http.ResponseWriter, r *http.Request, orgID, uid int64) bool {
 	role, err := h.Org.Role(r.Context(), orgID, uid)
 	if err != nil || role != org.RoleOwner {
@@ -128,13 +118,8 @@ func (h *Handler) requireOrgOwner(w http.ResponseWriter, r *http.Request, orgID,
 	return true
 }
 
-// requireInstanceAdminForSSO гейтит настройку/удаление per-org SSO админом
-// инстанса. Само-обслуживаемая настройка SSO владельцем орга для НЕпроверенного
-// на владение домена — захват аккаунта (см. ssoCallback): атакующий создал бы
-// свой орг, заявил domain=victim.com со СВОИМ IdP и, пройдя domain-guard,
-// залогинился бы в чужой парольный аккаунт. Поэтому федерацию настраивает только
-// оператор инстанса — для доменов, которыми владеет. Возвращает false и рендерит
-// ответ, если проверка не пройдена.
+// Само-обслуживание SSO владельцем орга для непроверенного домена — захват аккаунта:
+// атакующий заявил бы чужой domain со своим IdP и прошёл бы domain-guard.
 func (h *Handler) requireInstanceAdminForSSO(w http.ResponseWriter, r *http.Request, uid int64) bool {
 	admin, err := h.Auth.UserIsInstanceAdmin(r.Context(), uid)
 	if err != nil {
@@ -148,7 +133,6 @@ func (h *Handler) requireInstanceAdminForSSO(w http.ResponseWriter, r *http.Requ
 	return true
 }
 
-// orgSettingsSSO — POST /orgs/{id}/settings/sso: инстанс-админ настраивает per-org OIDC.
 func (h *Handler) orgSettingsSSO(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -191,7 +175,6 @@ func (h *Handler) orgSettingsSSO(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// orgSettingsSSODelete — POST /orgs/{id}/settings/sso/delete: owner убирает SSO.
 func (h *Handler) orgSettingsSSODelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -212,9 +195,7 @@ func (h *Handler) orgSettingsSSODelete(w http.ResponseWriter, r *http.Request) {
 	if !h.parseForm(w, r) {
 		return
 	}
-	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
-	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
-	// показываем страницу подтверждения вместо необратимого действия.
+	// CSP блокирует inline confirm() — первый POST рендерит страницу подтверждения.
 	if r.FormValue("confirmed") != "yes" {
 		h.renderConfirm(w, r, "confirm.title", "confirm.sso_delete.message", "confirm.delete",
 			orgSettingsPath(orgID), orgSettingsPath(orgID)+"/sso/delete", nil)
@@ -224,18 +205,13 @@ func (h *Handler) orgSettingsSSODelete(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	// Отзыв федерации обязан действовать немедленно: без сброса кеша отозванный
-	// IdP ещё до 5 минут выдавал бы логины и JIT-провижнинг участников.
+	// Без сброса кеша отозванный IdP ещё до ssoCacheTTL выдавал бы логины и JIT-провижининг.
 	h.ssoProviders.invalidate(orgID)
 	http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
 }
 
-// renderOrgSettings — общий рендер страницы настроек: используется и
-// GET-обработчиком, и POST-обработчиками (422 с сообщением об ошибке на
-// месте, без редиректа — как логин/онбординг). POST .../invite при успехе
-// тоже рендерит эту же страницу напрямую (без редиректа): одноразовый токен
-// приглашения нельзя протащить через query string или Location, поэтому
-// ссылка-приглашение показывается один раз, сразу в теле ответа POST.
+// POST .../invite рендерит эту же страницу напрямую, без редиректа: одноразовый
+// токен приглашения нельзя протащить через query string или Location.
 func (h *Handler) renderOrgSettings(w http.ResponseWriter, r *http.Request, status int, orgID, uid int64, errMsg, inviteLink string, inviteForm templates.FormState) {
 	o, err := h.Org.Get(r.Context(), orgID)
 	if err != nil {
@@ -247,11 +223,7 @@ func (h *Handler) renderOrgSettings(w http.ResponseWriter, r *http.Request, stat
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	// Секция «Защитный лимит приёма (rate-guard)» показывает по каждому виду
-	// приёма (события/транзакции/метрики/профили) использование ЗА ТЕКУЩИЙ
-	// месяц (org_usage ключуется по (org_id, period_month)) рядом с лимитом
-	// (o.*Quota, уже загружены в Get выше). Ошибка чтения любого счётчика —
-	// 500, чтобы не показать частично-пустую картину лимитов.
+	// Ошибка чтения любого счётчика usage — 500, чтобы не показать частично-пустую картину лимитов.
 	now := time.Now()
 	usage, err := h.Org.Usage(r.Context(), orgID, now)
 	if err != nil {
@@ -286,9 +258,7 @@ func (h *Handler) renderOrgSettings(w http.ResponseWriter, r *http.Request, stat
 		{Kind: i18n.T(r.Context(), "org.quota.kind.logs"), Field: "log_quota", Usage: logUsage, Limit: o.LogQuota},
 	}
 	banner := h.quotaBanner(r.Context(), orgID, true)
-	// Выписанные приглашения. Ошибка чтения не должна ронять всю страницу
-	// настроек: список приглашений полезен, но не важнее возможности управлять
-	// участниками и квотами.
+	// Ошибка чтения приглашений не должна ронять всю страницу настроек.
 	invites, err := h.Org.PendingInvites(r.Context(), orgID)
 	if err != nil {
 		slog.Error("web: pending invites lookup failed", "org_id", orgID, "error", err)
@@ -298,14 +268,8 @@ func (h *Handler) renderOrgSettings(w http.ResponseWriter, r *http.Request, stat
 	_ = templates.OrgSettings(o, members, uid, quotas, h.EmailEnabled, errMsg, inviteLink, h.ssoSettingsVM(r, orgID, uid), h.currentEmail(r), banner, h.subjectPurgeVM(r.Context(), orgID), invites, inviteForm).Render(r.Context(), w)
 }
 
-// subjectPurgeVM собирает состояние блока удаления ПДн: предупреждение о
-// критериях, которые на этом инстансе заведомо пусты. Итог самого удаления
-// показывается общим сообщением о результате действия (см. flash.go).
-//
-// Предупреждение важнее итога: при включённых по умолчанию GOTCHA_SCRUB_IP и
-// GOTCHA_SCRUB_EMAIL колонки user_email и user_ip зануляются на приёме, поэтому
-// поиск субъекта по email или IP не совпадает ни с чем — а форма их спрашивает
-// и раньше молча принимала.
+// При включённых по умолчанию GOTCHA_SCRUB_IP/GOTCHA_SCRUB_EMAIL колонки user_email
+// и user_ip зануляются на приёме — поиск субъекта по email/IP не совпадёт ни с чем.
 func (h *Handler) subjectPurgeVM(ctx context.Context, orgID int64) templates.SubjectPurgeVM {
 	vm := templates.SubjectPurgeVM{InertEmail: h.ScrubEmail, InertIP: h.ScrubIP}
 	if h.Org == nil {
@@ -317,30 +281,12 @@ func (h *Handler) subjectPurgeVM(ctx context.Context, orgID int64) templates.Sub
 			vm.Projects = append(vm.Projects, templates.ProjectOption{ID: p.ID, Name: p.Name})
 		}
 	} else {
-		// Список проектов вспомогательный: без него форма всё ещё работает
-		// (селект будет пуст), но ронять страницу настроек из-за него нельзя.
 		slog.Warn("orgSettings: cannot list projects for GDPR form", "org_id", orgID, "error", err)
 	}
 	return vm
 }
 
-// quotaBanner собирает вьюмодель баннера про ограничение приёма для орга orgID
-// (PROD-P1: конец молчаливых потерь). Возвращает nil, когда показывать нечего:
-// за текущий месяц нет отклонённых элементов И (лимит событий безлимитный ИЛИ
-// приём далёк от лимита). Баннер показывается, если за текущий месяц дропнут
-// хотя бы один элемент любого класса (события/транзакции/метрики/профили) ЛИБО
-// при заданном лимите событий использование достигло 90%. Ссылка ведёт на
-// настройки орга (rate-guard). Баннер вспомогательный: любая ошибка чтения
-// usage/дропов не должна ронять страницу — тогда просто возвращаем nil.
-// canManage — можно ли давать ссылку на настройки организации. Для обычного
-// участника ссылки нет: страница настроек требует owner/admin и отдала бы ему
-// 404, а баннер при этом сам предлагает туда пойти. Текст ему всё равно
-// показываем — знать, что приём ограничен, полезно всем, кто смотрит на
-// пустеющий список проблем.
-// droppedBreakdown — «события 1 200, профили 300»: только непустые виды.
-//
-// Порядок фиксированный, а не по величине: одинаковый порядок между заходами
-// читается быстрее, чем перетасованный по значению.
+// Порядок фиксированный, не по величине — так список читается одинаково между заходами.
 func droppedBreakdown(ctx context.Context, d org.Dropped) string {
 	parts := make([]string, 0, 4)
 	for _, kind := range []struct {
@@ -364,6 +310,7 @@ func droppedBreakdown(ctx context.Context, d org.Dropped) string {
 	return i18n.Tf(ctx, "org.quota.dropped_breakdown", "parts", strings.Join(parts, ", "))
 }
 
+// nil — показывать нечего: без дропов за месяц, и лимит событий безлимитный либо использование <90%.
 func (h *Handler) quotaBanner(ctx context.Context, orgID int64, canManage bool) *templates.QuotaBanner {
 	href := orgSettingsPath(orgID)
 	if !canManage {
@@ -378,10 +325,7 @@ func (h *Handler) quotaBanner(ctx context.Context, orgID int64, canManage bool) 
 	total := dropped.Events + dropped.Transactions + dropped.Metrics + dropped.Profiles + dropped.Logs
 	if total > 0 {
 		return &templates.QuotaBanner{
-			Text: i18n.Tn(ctx, "org.quota.dropped_banner", int(total)),
-			// Разбивка по видам: общее число не говорит, какую квоту поднимать.
-			// «Отклонено 12 400» одинаково выглядит и при исчерпанной квоте
-			// профилей, и при исчерпанной квоте событий — а это разные решения.
+			Text:   i18n.Tn(ctx, "org.quota.dropped_banner", int(total)),
 			Detail: droppedBreakdown(ctx, dropped),
 			Href:   href,
 		}
@@ -411,9 +355,7 @@ func (h *Handler) quotaBanner(ctx context.Context, orgID int64, canManage bool) 
 	return nil
 }
 
-// ssoSettingsVM собирает данные секции SSO настроек орга (этап 10). Секция
-// видна owner'у организации либо admin'у инстанса; client_secret обратно не
-// отдаём (показываем «настроено»).
+// client_secret обратно не отдаём — показываем только «настроено».
 func (h *Handler) ssoSettingsVM(r *http.Request, orgID, uid int64) templates.SSOSettings {
 	vm := templates.SSOSettings{
 		RedirectURI: h.BaseURL + "/auth/oauth/" + ssoProviderPrefix + strconv.FormatInt(orgID, 10) + "/callback",
@@ -421,8 +363,7 @@ func (h *Handler) ssoSettingsVM(r *http.Request, orgID, uid int64) templates.SSO
 	if role, err := h.Org.Role(r.Context(), orgID, uid); err == nil && role == org.RoleOwner {
 		vm.IsOwner = true
 	}
-	// Настройку федерации выполняет только админ инстанса (см.
-	// requireInstanceAdminForSSO): владельцу орга показываем статус, но форму — нет.
+	// Владельцу орга показываем статус SSO, но не форму настройки — та только админу инстанса.
 	if admin, err := h.Auth.UserIsInstanceAdmin(r.Context(), uid); err == nil && admin {
 		vm.CanConfigure = true
 	}
@@ -437,10 +378,6 @@ func (h *Handler) ssoSettingsVM(r *http.Request, orgID, uid int64) templates.SSO
 	return vm
 }
 
-// orgSettingsRole — POST /orgs/{id}/settings/role: user_id, role. Менять
-// роль себе нельзя (422); org.SetRoleAs сам защищает последнего owner'а
-// (ErrLastOwner → 422), проверяет допустимость роли (ErrInvalidRole → 422) и
-// привилегию эскалации (ErrOwnerOnly → 422).
 func (h *Handler) orgSettingsRole(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -471,10 +408,8 @@ func (h *Handler) orgSettingsRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	role := org.Role(r.FormValue("role"))
-	// SetRoleAs — актёрозависимый вариант (security fix): проверяет роль
-	// актёра, роль цели и last-owner защиту в ОДНОЙ транзакции с самой
-	// мутацией (см. её комментарий в internal/org/member.go), закрывая TOCTOU
-	// между requireOrgRole и мутацией.
+	// Роль актёра, роль цели и last-owner защита проверяются в одной транзакции с
+	// мутацией — закрывает TOCTOU между requireOrgRole и записью.
 	if err := h.Org.SetRoleAs(r.Context(), orgID, uid, targetID, role); err != nil {
 		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "", nil)
 		return
@@ -483,12 +418,6 @@ func (h *Handler) orgSettingsRole(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
 }
 
-// orgSettingsRemove — POST /orgs/{id}/settings/remove: user_id. Self-remove
-// больше не запрещаем отдельной проверкой (PROD-P7): org.RemoveMemberAs сам
-// защищает последнего owner'а (ErrLastOwner → 422) — единственный owner,
-// пытающийся удалить себя, получит 422; в остальном owner/admin может выйти
-// сам. Метод также защищает привилегию эскалации (ErrOwnerOnly → 422).
-// Отдельный, не требующий owner/admin выход участника — orgSettingsLeave.
 func (h *Handler) orgSettingsRemove(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -514,10 +443,7 @@ func (h *Handler) orgSettingsRemove(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
-	// RemoveMemberAs — тот же TOCTOU-фикс, что и у SetRoleAs выше.
-	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
-	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
-	// показываем страницу подтверждения вместо необратимого действия.
+	// Тот же TOCTOU-фикс, что у SetRoleAs; CSP блокирует inline confirm().
 	if r.FormValue("confirmed") != "yes" {
 		h.renderConfirm(w, r, "confirm.title", "confirm.member_remove.message", "confirm.remove",
 			orgSettingsPath(orgID), orgSettingsRemovePath(orgID),
@@ -531,22 +457,8 @@ func (h *Handler) orgSettingsRemove(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
 }
 
-// orgSettingsLeave — POST /orgs/{id}/settings/leave: участник (ЛЮБОЙ роли, не
-// только owner/admin — потому requireOrgRole здесь НЕ применяется, в отличие
-// от orgSettingsRemove) выходит из организации сам. Единственный owner получает
-// 422 (ErrLastOwner) — сначала нужно передать владение. Не участник → 404 (не
-// палим существование чужой организации, как requireOrgRole). Успех → 303 на /.
-//
-// Членства в командах этой организации снимает база: team_members_member_fk
-// объявлен ON DELETE CASCADE (миграция 0029). Делать это здесь вручную не
-// нужно и вредно — появится вторая копия инварианта, которая разойдётся с
-// первой.
-//
-// Сессии удалённого участника намеренно не инвалидируются: пользователь
-// бывает членом нескольких организаций, и удаление из одной не должно
-// выкидывать его из остальных. Доступ проверяется на каждом запросе
-// (CanAccessProject ходит в базу), поэтому живая cookie перестаёт открывать
-// проекты этой организации сразу после удаления.
+// Членства в командах снимает каскад БД (team_members_member_fk ON DELETE CASCADE) —
+// дублировать это здесь не нужно, инвариант разойдётся с БД.
 func (h *Handler) orgSettingsLeave(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -564,34 +476,24 @@ func (h *Handler) orgSettingsLeave(w http.ResponseWriter, r *http.Request) {
 	if !h.parseForm(w, r) {
 		return
 	}
-	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
-	// исполняет inline onsubmit="confirm()" — see renderConfirm): без
-	// confirmed=yes показываем страницу подтверждения вместо выхода из орга.
+	// CSP блокирует inline confirm().
 	if r.FormValue("confirmed") != "yes" {
 		h.renderConfirm(w, r, "confirm.title", "confirm.org_leave.message", "org.danger.leave_org.button",
 			orgSettingsPath(orgID), orgSettingsLeavePath(orgID), nil)
 		return
 	}
-	// RemoveMember — self-вариант без actor-guard (участник любой роли убирает
-	// сам себя); ensureNotLastOwner внутри защищает последнего owner'а.
+	// Сессии участника намеренно не инвалидируются: доступ проверяется на каждом запросе.
 	if err := h.Org.RemoveMember(r.Context(), orgID, uid); err != nil {
 		if errors.Is(err, org.ErrNotMember) {
 			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 			return
 		}
-		// ErrLastOwner (единственный owner пытается уйти) и прочее → 422 с
-		// сообщением на месте; такую страницу видит только owner (member на
-		// last-owner не наткнётся), значит renderOrgSettings безопасен.
 		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "", nil)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-// orgSettingsInvite — POST /orgs/{id}/settings/invite: email, role
-// (admin|member). Успех рендерит ту же страницу настроек с готовой
-// ссылкой-приглашением {BaseURL}/invite/{token} прямо в теле ответа, без
-// редиректа (см. renderOrgSettings).
 func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -613,8 +515,6 @@ func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
-	// №27: 422 сохраняет введённое (email, роль) и показывает ошибку у самой
-	// формы приглашения, а не абзацем под h1 — см. inviteForm в шаблоне.
 	inviteForm := templates.FormState{"email": email, "role": r.FormValue("role")}
 	if !validInviteEmail(email) {
 		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.invalid_email"), "", inviteForm)
@@ -628,19 +528,9 @@ func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	inviteLink := h.BaseURL + inviteAcceptPath(token)
 
-	// Упрощение (план 6, задача 5): полноценный outbox (internal/notify)
-	// привязан к channel_id NOT NULL — он существует для алертов конкретного
-	// проекта, а приглашение — организационное событие без проекта/канала.
-	// Поэтому письмо шлётся СИНХРОННО напрямую через notify.EmailSender,
-	// best-effort: ошибка SMTP не должна ронять сам POST — ссылка-приглашение
-	// всё равно показывается в UI ниже и её можно передать вручную.
+	// Письмо шлётся синхронно best-effort: сбой SMTP не роняет POST — ссылка-приглашение
+	// всё равно показана в UI ниже.
 	if h.Email != nil && h.Email.Configured() {
-		// Имя организации и адрес приглашающего — в тексте письма (QA
-		// MINOR-3): «Приглашение в организацию Gotcha» читалось как
-		// организация с именем «Gotcha», а на мульти-org инсталляции
-		// получатель вовсе не понимал, куда и кто его зовёт. Ошибки
-		// подстановок не роняют отправку (письмо и так best-effort):
-		// приглашение уже выписано, ссылка показана в UI.
 		orgName := ""
 		if o, err := h.Org.Get(r.Context(), orgID); err == nil {
 			orgName = o.Name
@@ -651,9 +541,8 @@ func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			slog.Warn("orgSettingsInvite: inviter lookup for email failed", "org_id", orgID, "err", err)
 		}
+		// Письмо уходит на языке приглашающего: локаль адресата ещё неизвестна — он не зарегистрирован.
 		payload := map[string]any{
-			// Письмо уходит на языке приглашающего: локаль адресата ещё
-			// неизвестна — он в системе не зарегистрирован.
 			"subject": i18n.Tf(r.Context(), "org.invite.email_subject", "org", orgName),
 			"body": i18n.Tf(r.Context(), "org.invite.email_body",
 				"org", orgName, "inviter", inviter, "link", inviteLink),
@@ -666,17 +555,6 @@ func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
 	h.renderOrgSettings(w, r, http.StatusOK, orgID, uid, "", inviteLink, nil)
 }
 
-// orgSettingsInviteRevoke — POST /orgs/{id}/settings/invite/revoke: отзыв
-// выписанного приглашения.
-//
-// Раньше выписанное приглашение было невидимо и неотменяемо: ошибся в адресе —
-// ссылка ушла постороннему, и сделать с этим из интерфейса было нельзя, хотя
-// в сервисе способ существовал.
-//
-// Подтверждение двухшаговое, как у остальных необратимых действий: CSP без
-// unsafe-inline не исполняет inline confirm(), поэтому первый POST рендерит
-// страницу вопроса. В вопросе назван адрес — иначе он защищает от опечатки,
-// которую на экране не видно.
 func (h *Handler) orgSettingsInviteRevoke(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -721,20 +599,8 @@ func (h *Handler) orgSettingsInviteRevoke(w http.ResponseWriter, r *http.Request
 	http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
 }
 
-// orgSettingsQuota — POST /orgs/{id}/settings/quota: единый защитный лимит
-// приёма (rate-guard). Форма несёт пять полей — event_quota /
-// transaction_quota / metric_quota / profile_quota / log_quota (каждое:
-// событий/транзакций/метрик/профилей/логов в месяц). Доступ только owner/admin
-// (requireOrgRole — та же граница, что и у остальных настроек организации).
-// Отрицательное или нечисловое значение любого поля → 422 (ErrInvalidQuota),
-// причём ДО применения каких-либо изменений (сначала полностью валидируем все
-// поля, потом сохраняем). Все пять применяются ОДНИМ вызовом org.SetQuotas —
-// единый UPDATE, а не цикл отдельных Set*Quota/SetLogQuota, так что сбой БД
-// на применении не может оставить квоты частично изменёнными (если бы форма
-// сохраняла log_quota отдельным вызовом после SetQuotas, обрыв между двумя
-// вызовами закоммитил бы четыре квоты и показал пользователю 422, будто не
-// сохранилось ничего). Пустое/отсутствующее поле пропускается (эту квоту не
-// трогаем); 0 = безлимит.
+// Валидация всех пяти полей идёт до применения; SetQuotas — один UPDATE, а не цикл
+// Set*Quota, чтобы сбой БД не оставил квоты частично изменёнными.
 func (h *Handler) orgSettingsQuota(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -755,8 +621,7 @@ func (h *Handler) orgSettingsQuota(w http.ResponseWriter, r *http.Request) {
 	if !h.parseForm(w, r) {
 		return
 	}
-	// Поля rate-guard и указатели, куда положить распарсенное значение.
-	// Порядок фиксирован; nil-поле после парсинга = не прислано = не трогаем.
+	// nil-поле после парсинга = не прислано = эту квоту не трогаем.
 	var event, transaction, metric, profile, log *int64
 	fields := []struct {
 		name string
@@ -788,19 +653,8 @@ func (h *Handler) orgSettingsQuota(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, orgSettingsPath(orgID), http.StatusSeeOther)
 }
 
-// orgSettingsDelete — POST /orgs/{id}/settings/delete: owner-only удаление
-// организации. PG-удаление (org.DeleteOrg, FK ON DELETE CASCADE снимает
-// членов/проекты/ключи и т.д.) той же транзакцией ставит заявки на очистку
-// телеметрии всех проектов организации — выборкой по org_id ДО удаления,
-// потому что каскад уничтожает идентификаторы. Выполняет заявки фоновый
-// исполнитель (telemetry.PurgeWorker).
-//
-// Раньше проекты перечислялись здесь отдельным запросом вне всякой транзакции,
-// а телеметрия чистилась синхронно, по восемь мутаций на проект в одном
-// HTTP-запросе: организация с двадцатью проектами упиралась в WriteTimeout, и
-// данные непройденных проектов оставались в ClickHouse навсегда.
-//
-// Успех → 303 на / (роута /orgs нет — RA-7; как orgSettingsLeave).
+// Заявки на очистку телеметрии ставятся ДО удаления org (по org_id) — каскад
+// уничтожает project_id; выполняет их фоновый telemetry.PurgeWorker.
 func (h *Handler) orgSettingsDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -821,9 +675,7 @@ func (h *Handler) orgSettingsDelete(w http.ResponseWriter, r *http.Request) {
 	if !h.parseForm(w, r) {
 		return
 	}
-	// Двухшаговое подтверждение (см. orgSettingsLeave/renderConfirm): без
-	// confirmed=yes показываем страницу подтверждения вместо удаления орга.
-	// Имя организации — в тексте вопроса (K7-3, как у hostDelete).
+	// Имя организации называется в тексте вопроса подтверждения.
 	if r.FormValue("confirmed") != "yes" {
 		o, err := h.Org.Get(r.Context(), orgID)
 		if err != nil {
@@ -851,11 +703,6 @@ func (h *Handler) orgSettingsDelete(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-// orgSettingsPurgeSubject — POST /orgs/{id}/settings/purge-subject: owner-only
-// удаление ПДн субъекта в рамках проекта. Поля формы: project_id (обязателен,
-// должен принадлежать этому оргу) и хотя бы одно из email/user_id/ip. PG не
-// трогается (субъектные ПДн живут в ClickHouse); вызывается best-effort
-// h.Purger.PurgeSubject. Успех → 303 обратно на страницу настроек орга.
 func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -896,19 +743,14 @@ func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request
 		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.subject_required"), "", nil)
 		return
 	}
-	// Право на удаление ПДн (152-ФЗ ст.14): не выдаём успех, если удаление не
-	// выполнено. Нет Purger (стенд без ClickHouse) или ошибка очистки → 5xx, а не
-	// молчаливый redirect-как-успех — оператор должен знать, что ПДн НЕ удалены.
+	// Право на удаление ПДн (152-ФЗ ст.14): не выдаём успех, если удаление не выполнено —
+	// нет Purger или ошибка очистки → 5xx, не молчаливый redirect-как-успех.
 	if h.Purger == nil {
-		// Как ExportSubject: подсистема очистки не сконфигурирована → 503, а не
-		// молчаливый успех (ПДн субъекта НЕ удалены).
 		slog.Error("orgSettingsPurgeSubject: Purger not configured, subject data NOT purged", "org_id", orgID, "project_id", projectID)
 		h.renderError(w, r, http.StatusServiceUnavailable, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	// Двухшаговое подтверждение. Здесь оно обязательнее прочего: удаление
-	// необратимо, а проект задаётся номером — опечатка 25→26 вычистила бы
-	// телеметрию соседнего проекта того же орга без единого вопроса.
+	// Проект задаётся номером — опечатка вычистила бы телеметрию соседнего проекта того же орга.
 	if r.FormValue("confirmed") != "yes" {
 		hidden := []templates.HiddenField{
 			{Name: "project_id", Value: strconv.FormatInt(projectID, 10)},
@@ -922,10 +764,6 @@ func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request
 		if sub.IP != "" {
 			hidden = append(hidden, templates.HiddenField{Name: "ip", Value: sub.IP})
 		}
-		// Показываем ИМЕННО то, что будет удалено: имя проекта, его номер и
-		// заполненные критерии. Без этого вопрос нельзя было осмысленно
-		// подтвердить — опечатку 25→26 на экране не по чему заметить, а
-		// проверка принадлежности проекта оргу соседний проект пропускает.
 		projectName := ""
 		if projects, err := h.Org.ProjectsOf(r.Context(), orgID); err == nil {
 			for _, p := range projects {
@@ -952,28 +790,18 @@ func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	// Пишем результат в аудит-лог операций с ПДн: у экспорта такая запись есть,
-	// у удаления не было. Ноль строк — не ошибка, но это ровно тот исход, о
-	// котором оператор обязан узнать: при включённом скрубинге email/IP поиск по
-	// ним не совпадает ни с чем, работает только user_id.
+	// Ноль строк — не ошибка, но при включённом скрубинге email/IP поиск по ним не
+	// совпадает ни с чем — работает только user_id, оператор должен это увидеть.
 	slog.Info("subject data purged",
 		"org_id", orgID, "project_id", projectID, "criteria", subjectCriteria(sub),
 		"events", res.Events, "transactions", res.Transactions, "spans", res.Spans,
 		"metric_points", res.MetricPoints, "logs", res.Logs, "total", res.Total())
 
-	// Итог показывается сообщением, а не query-параметром: параметр оставался в
-	// адресе, залипал при F5 и уезжал в закладку, а ссылку вида ?purged=9999
-	// можно было подсунуть владельцу и показать ему выдуманное число.
+	// Не query-параметром: ссылку вида ?purged=9999 можно подсунуть владельцу как выдуманный итог.
 	h.flashOK(w, "flash.subject_purged", int(res.Total()))
 	http.Redirect(w, r, orgSettingsPath(orgID)+"#gdpr", http.StatusSeeOther)
 }
 
-// orgSettingsExportSubject — POST /orgs/{id}/settings/export-subject: owner-only
-// выгрузка всех ПДн субъекта в рамках проекта (право субъекта на доступ, 152-ФЗ
-// ст. 14, RA-L11). Гейт и валидация идентичны orgSettingsPurgeSubject
-// (requireOrgOwner, sameOrigin, project_id принадлежит оргу, хотя бы одно из
-// email/user_id/ip). В отличие от purge — ExportSubject не best-effort: ошибку
-// нельзя проглотить, отдаём 500. Успех → JSON-выгрузка как attachment.
 func (h *Handler) orgSettingsExportSubject(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -1035,12 +863,7 @@ func (h *Handler) orgSettingsExportSubject(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-// subjectCriteria — виды заполненных идентификаторов субъекта для аудит-лога
-// (email/user_id/ip), БЕЗ самих значений ПДн.
-// subjectCriteriaText — заполненные критерии субъекта человекочитаемо, для
-// страницы подтверждения. ЗНАЧЕНИЯ показываются намеренно: подтверждать
-// удаление ПДн, не видя, по кому оно идёт, бессмысленно. В журнал при этом
-// уходят только ИМЕНА критериев (см. subjectCriteria) — там значения не нужны.
+// Значения показываются намеренно (для confirm), но не в аудит-логе — там только имена критериев.
 func subjectCriteriaText(ctx context.Context, sub telemetry.Subject) string {
 	var parts []string
 	if sub.Email != "" {
@@ -1069,21 +892,11 @@ func subjectCriteria(sub telemetry.Subject) []string {
 	return c
 }
 
-// inviteAcceptPage — GET /invite/{token}: страница «принять приглашение».
-// Читает приглашение через InviteByToken (это ЧТЕНИЕ, не AcceptInvite —
-// одноразовый токен нельзя тратить на простой просмотр страницы) и
-// показывает, куда зовут: организацию, роль и адрес. Без этого человек
-// подтверждал бы приглашение вслепую.
-//
-// Невалидный, просроченный и уже принятый токен дают ту же ошибку и тот же
-// код ответа, что и неудачный POST (err.org.invite_invalid, 422) — иначе по
-// разнице ответов GET и POST можно было бы перебором узнавать, какие токены
-// вообще существуют.
+// Невалидный, просроченный и уже принятый токен дают ту же ошибку и код ответа, что и
+// неудачный POST — иначе по разнице ответов GET/POST можно перебором узнать, какие токены существуют.
 func (h *Handler) inviteAcceptPage(w http.ResponseWriter, r *http.Request) {
 	token := r.PathValue("token")
-	// Маршрут публичный (см. web.go) — h.currentEmail здесь всегда вернула бы
-	// "": auth.UserID кладёт в контекст только requireUser, а эта страница им
-	// не обёрнута нарочно. currentEmailPublic резолвит сессию напрямую.
+	// Маршрут публичный, requireUser его не оборачивает — h.currentEmail тут всегда вернула бы "".
 	email := h.currentEmailPublic(r)
 	inv, err := h.Org.InviteByToken(r.Context(), token)
 	if errors.Is(err, org.ErrInviteInvalid) {
@@ -1099,19 +912,13 @@ func (h *Handler) inviteAcceptPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if email == "" {
-		// K9-19: страница ниже покажет анониму ссылки «войти»/«создать
-		// аккаунт» БЕЗ next=/invite/{token} в query (см. loginLinkWithNext/
-		// registerLinkWithNext в auth.templ) — токен вместо этого едет в
-		// HttpOnly cookie и его читает resolveAuthNext на GET /login и
-		// /register (auth.go, invitecookie.go).
+		// Токен едет в HttpOnly cookie, а не в next= query — его читает resolveAuthNext
+		// на GET /login и /register.
 		h.setInviteNextCookie(w, token)
 	}
 	_ = templates.InviteAccept(token, "", email, inv).Render(r.Context(), w)
 }
 
-// inviteAcceptSubmit — POST /invite/{token}: org.AcceptInvite; успех → 303 /,
-// невалидный/истёкший/уже использованный токен (ErrInviteInvalid) → 422
-// styled-страница.
 func (h *Handler) inviteAcceptSubmit(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -1130,8 +937,7 @@ func (h *Handler) inviteAcceptSubmit(w http.ResponseWriter, r *http.Request) {
 			msg = i18n.T(r.Context(), "err.org.invite_other_email")
 		}
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		// inv — нулевое значение: errMsg != "" и шаблон его не использует (см.
-		// комментарий у InviteAccept).
+		// Нулевой InviteInfo{}: шаблон его не использует, когда errMsg != "".
 		_ = templates.InviteAccept(token, msg, email, org.InviteInfo{}).Render(r.Context(), w)
 		return
 	}

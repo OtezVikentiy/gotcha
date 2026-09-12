@@ -10,20 +10,16 @@ import (
 	"time"
 )
 
-// Record — одна строка выгрузки: набор именованных значений. Допустимые типы
-// значений: string, int64, bool, time.Time, json.RawMessage, nil.
+// Допустимые типы значений: string, int64, bool, time.Time, json.RawMessage, nil.
 type Record map[string]any
 
-// Writer пишет записи в выбранный формат выгрузки. Реализации потоковые:
-// данные уходят в нижележащий io.Writer по мере поступления записей, а не
-// копятся в памяти до Close — заявки на выгрузку могут содержать миллионы строк.
+// Реализации потоковые: данные уходят в io.Writer по мере поступления, не копятся в памяти до Close.
 type Writer interface {
 	Write(Record) error
 	Close() error
 }
 
-// NewWriter создаёт писателя нужного формата. columns задаёт порядок колонок
-// для CSV; JSON и NDJSON пишут запись целиком и columns игнорируют.
+// columns задаёт порядок для CSV; JSON/NDJSON пишут запись целиком и columns игнорируют.
 func NewWriter(w io.Writer, f Format, columns []string) (Writer, error) {
 	switch f {
 	case FormatCSV:
@@ -36,10 +32,8 @@ func NewWriter(w io.Writer, f Format, columns []string) (Writer, error) {
 	return nil, fmt.Errorf("экспорт: неизвестный формат %q", f)
 }
 
-// csvSafe обезвреживает формульную инъекцию: Excel и LibreOffice исполняют
-// значение, начинающееся с =, +, -, @ (а также с таба или CR — они съедаются
-// парсером до символа-триггера). Текст ошибок пишет тот, кто шлёт события,
-// поэтому выгрузка без этой защиты — готовый вектор атаки на того, кто её открыл.
+// Обезвреживает формульную инъекцию: Excel/LibreOffice исполняют значение, начинающееся с =,+,-,@
+// (и с таба/CR — они съедаются парсером до триггера). Текст ошибок пишет отправитель событий.
 func csvSafe(s string) string {
 	if s == "" {
 		return s
@@ -51,8 +45,7 @@ func csvSafe(s string) string {
 	return s
 }
 
-// cell приводит значение к строке для CSV: время — всегда RFC3339 в UTC,
-// чтобы файл не зависел от таймзоны того, кто его открыл.
+// Время — всегда RFC3339 в UTC, чтобы файл не зависел от таймзоны того, кто его открыл.
 func cell(v any) string {
 	switch x := v.(type) {
 	case nil:
@@ -71,10 +64,8 @@ func cell(v any) string {
 	return fmt.Sprint(v)
 }
 
-// csvWriter пишет BOM и заголовок сразу при создании: они не зависят от
-// данных, и ранний сбой нижележащего writer'а обнаруживается в NewWriter,
-// а не только на первой строке. Flush после каждой строки — чтобы ошибка
-// записи всплывала на той строке, где случилась, а не копилась до Close.
+// BOM и заголовок пишутся сразу — ранний сбой writer'а виден в NewWriter, не на первой строке.
+// Flush после каждой строки: ошибка всплывает на своей строке, не копится до Close.
 type csvWriter struct {
 	cw      *csv.Writer
 	columns []string
@@ -100,11 +91,8 @@ func (c *csvWriter) Write(rec Record) error {
 	for i, col := range c.columns {
 		row[i] = csvSafe(cell(rec[col]))
 	}
-	// Ранний возврат экономит холостой Flush, но не является единственной
-	// защитой: у bufio.Writer внутри encoding/csv ошибка "липкая" — раз
-	// возникнув, она всплывёт и через Flush()+Error() ниже, даже если этот
-	// return убрать. Оставлен ради ясности кода, а не потому что без него
-	// ошибка потеряется.
+	// Ранний возврат экономит холостой Flush, но не единственная защита — ошибка bufio.Writer
+	// внутри encoding/csv «липкая», всплывёт и через Flush()+Error() ниже в любом случае.
 	if err := c.cw.Write(row); err != nil {
 		return err
 	}
@@ -112,20 +100,13 @@ func (c *csvWriter) Write(rec Record) error {
 	return c.cw.Error()
 }
 
-// Close дублирует Flush()+Error() из Write: каждая строка (и заголовок в
-// конструкторе) уже сброшена сразу после записи, поэтому к моменту Close
-// буферу обычно нечего отдавать. Проверка оставлена как рубеж на случай,
-// если схему буферизации в Write однажды изменят и уберут промежуточный
-// Flush — тогда Close останется последним местом, где ошибка ещё может
-// всплыть.
+// Дублирует Flush()+Error() из Write — рубеж на случай, если промежуточный Flush когда-то уберут.
 func (c *csvWriter) Close() error {
 	c.cw.Flush()
 	return c.cw.Error()
 }
 
-// jsonWriter пишет данные напрямую в нижележащий io.Writer записью за записью,
-// без буферизации всего массива в памяти. Открывающая скобка уходит сразу
-// в конструкторе, закрывающая — в Close; на нуле записей файл получается "[]".
+// Открывающая скобка — в конструкторе, закрывающая — в Close; на нуле записей выходит «[]».
 type jsonWriter struct {
 	w       io.Writer
 	written int
@@ -164,8 +145,7 @@ func (j *jsonWriter) Close() error {
 	return err
 }
 
-// ndjsonWriter — объект на строку, без буферизации: json.Encoder пишет прямо
-// в нижележащий writer при каждом Encode, включая перевод строки после него.
+// Без буферизации: json.Encoder пишет прямо в writer при каждом Encode, включая перевод строки.
 type ndjsonWriter struct {
 	enc *json.Encoder
 }

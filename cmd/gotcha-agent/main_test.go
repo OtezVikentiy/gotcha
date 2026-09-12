@@ -7,18 +7,10 @@ import (
 	"testing"
 )
 
-// TestPackageBuilds — компиляционный смоук: cmd/gotcha-agent держит планку
-// щадящей CMD-группы покрытия (T16), реальную логику проверяют тесты
-// internal/agent. main() либо блокируется в agent.Run, либо делает os.Exit —
-// гонять его через exec.Command здесь excessive, достаточно факта сборки.
 func TestPackageBuilds(t *testing.T) {}
 
-// TestCheckSubcommand компилирует настоящий бинарь и гоняет "--check" —
-// именно эту команду install.sh вызывает через systemd-run ДО systemctl
-// enable (ops-H2, install.sh). Код выхода обязан быть 0 на валидном
-// конфиге и 2 на битом (тот же код, что и обычный запуск на ошибке
-// конфига — от него зависит RestartPreventExitStatus=2 в юните), без
-// обращения к сети: --check не должен запускать цикл сбора агента.
+// код выхода 2 общий с ошибкой конфига на обычном запуске: от него зависит
+// RestartPreventExitStatus=2 в systemd-юните
 func TestCheckSubcommand(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "gotcha-agent")
 	build := exec.Command("go", "build", "-o", bin, ".")

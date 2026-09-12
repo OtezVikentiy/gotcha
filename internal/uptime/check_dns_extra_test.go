@@ -7,9 +7,6 @@ import (
 	"testing"
 )
 
-// TestAnswerMatches — чистая функция сопоставления ответов DNS: MX сравнивается
-// целиком регистронезависимо, TXT — подстрокой, остальные типы — точным
-// совпадением. Покрывает все ветки switch, включая пустой набор ответов.
 func TestAnswerMatches(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -36,17 +33,12 @@ func TestAnswerMatches(t *testing.T) {
 	}
 }
 
-// TestLookupUnsupportedRecordType: неизвестный тип записи → ошибка сразу, без
-// обращения к сети (ветка default в switch).
 func TestLookupUnsupportedRecordType(t *testing.T) {
 	if _, err := lookup(context.Background(), net.DefaultResolver, "SRV", "example.com"); err == nil {
 		t.Fatal("lookup(SRV) = nil error, want unsupported-type error")
 	}
 }
 
-// TestLookupResolverErrors: резолвер, у которого Dial всегда падает, гарантирует,
-// что каждая ветка типа записи (A/AAAA/CNAME/MX/TXT) прогоняет свой путь
-// возврата ошибки, детерминированно и без реальной сети.
 func TestLookupResolverErrors(t *testing.T) {
 	failing := &net.Resolver{
 		PreferGo: true,

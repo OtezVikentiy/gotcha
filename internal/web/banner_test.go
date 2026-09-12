@@ -10,10 +10,6 @@ import (
 	"time"
 )
 
-// TestWebBannerOnIssuesAndOrgSettings — баннер про ограничение приёма (PROD-P1:
-// конец молчаливых потерь). Показывается на странице issues проекта и на
-// странице настроек орга, когда за текущий месяц есть отклонённые элементы. При
-// нулевых дропах и безлимитном/далёком-от-лимита приёме баннера быть не должно.
 func TestWebBannerOnIssuesAndOrgSettings(t *testing.T) {
 	s := newIssuesStack(t)
 
@@ -27,8 +23,6 @@ func TestWebBannerOnIssuesAndOrgSettings(t *testing.T) {
 	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
 	orgSettingsPath := "/orgs/" + strconv.FormatInt(orgID, 10) + "/settings"
 
-	// Без дропов и с дефолтным лимитом (usage=0) — баннера нет ни на issues,
-	// ни на настройках орга.
 	for _, path := range []string{issuesPath, orgSettingsPath} {
 		resp := getWithCookie(t, s.srv, path, ownerCookie)
 		body, _ := io.ReadAll(resp.Body)
@@ -41,7 +35,6 @@ func TestWebBannerOnIssuesAndOrgSettings(t *testing.T) {
 		}
 	}
 
-	// Инкремент дропов за текущий месяц → баннер появляется на обеих страницах.
 	if err := s.org.IncDroppedEvents(context.Background(), orgID, time.Now(), 7); err != nil {
 		t.Fatalf("inc dropped events: %v", err)
 	}

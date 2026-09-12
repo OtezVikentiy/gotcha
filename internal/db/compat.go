@@ -11,20 +11,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// compatMarker — маркер обратной совместимости, первая строка каждого *.up.sql:
-//
-//	-- backward-compatible: yes (новая таблица)
-//	-- backward-compatible: no  (DROP COLUMN)
-//
-// Признак лежит рядом с тем, к чему относится, а не в отдельном реестре:
-// реестр разъехался бы с миграциями на первой же правке. Скобка с причиной
-// обязательна — она объясняет решение тому, кто читает файл через год.
+// Первая строка каждого *.up.sql: `-- backward-compatible: yes` или `-- backward-compatible: no`.
+// Признак — рядом с файлом, не в общем реестре, чтобы не разъезжались при правках миграций.
 var compatMarker = regexp.MustCompile(`^--\s*backward-compatible:\s*(yes|no)\b`)
 
-// parseCompatMarker читает маркер из первой строки миграции.
-//
-// Первой строки, а не любой: маркер, разрешённый где угодно, рано или поздно
-// окажется внутри длинного комментария к чему-то другому.
+// Только первая строка — иначе маркер рискует затеряться внутри обычного комментария к чему-то другому.
 func parseCompatMarker(content []byte) (compatible bool, ok bool) {
 	first, _, _ := strings.Cut(string(content), "\n")
 	m := compatMarker.FindStringSubmatch(strings.TrimSpace(first))
@@ -34,9 +25,7 @@ func parseCompatMarker(content []byte) (compatible bool, ok bool) {
 	return m[1] == "yes", true
 }
 
-// embeddedCompat собирает признаки совместимости всех встроенных миграций
-// каталога. Отсутствие маркера — ошибка: молча считать миграцию совместимой
-// значит разрешить откат через неизвестное.
+// Отсутствие маркера — ошибка: молчаливая совместимость разрешила бы откат через неизвестное.
 func embeddedCompat(fsys embed.FS, dir string) (map[uint]bool, error) {
 	entries, err := fsys.ReadDir(dir)
 	if err != nil {
@@ -48,10 +37,8 @@ func embeddedCompat(fsys embed.FS, dir string) (map[uint]bool, error) {
 		if !strings.HasSuffix(name, ".up.sql") {
 			continue
 		}
-		// Номер обязателен и обязан помещаться в потолок: файл без него — это
-		// миграция, о совместимости которой нельзя ничего записать, а гейт
-		// схемы трактует отсутствие записи как «старт запрещён». Тихо
-		// пропустить такой файл значит отложить отказ до чужого запуска.
+		// Номер версии обязателен — без него нечего записать в schema_compat, а гейт трактует пропуск
+		// как «старт запрещён»; тихий скип файла отложил бы отказ до чужого запуска.
 		version, ok := parseMigrationVersion(name)
 		if !ok {
 			return nil, fmt.Errorf("schema compat: имя миграции %s без номера версии "+
@@ -71,15 +58,12 @@ func embeddedCompat(fsys embed.FS, dir string) (map[uint]bool, error) {
 	return out, nil
 }
 
-// EmbeddedCompatPG и EmbeddedCompatCH — признаки встроенных миграций. Наружу
-// торчат для теста-стража, который требует маркер у каждого файла.
+// Экспортированы для теста-стража, который требует маркер у каждого файла.
 func EmbeddedCompatPG() (map[uint]bool, error) { return embeddedCompat(pgMigrations, "migrations/pg") }
 func EmbeddedCompatCH() (map[uint]bool, error) { return embeddedCompat(chMigrations, "migrations/ch") }
 
-// recordCompat записывает признаки применённых миграций ОДНОЙ схемы (target
-// — "pg"/"ch"). Идемпотентна: ON CONFLICT DO NOTHING. Перезаписывать
-// существующую строку нельзя — она отражает то, что реально применяли к этой
-// базе, а не то, что написано в файлах текущего бинаря.
+// Идемпотентна (ON CONFLICT DO NOTHING), но не перезаписывает — строка отражает то, что реально
+// применили к базе, а не то, что в файлах текущего бинаря.
 func recordCompat(ctx context.Context, pool *pgxpool.Pool, target string, compat map[uint]bool) error {
 	for version, compatible := range compat {
 		if _, err := pool.Exec(ctx,
@@ -93,16 +77,8 @@ func recordCompat(ctx context.Context, pool *pgxpool.Pool, target string, compat
 	return nil
 }
 
-// RecordSchemaCompatPG записывает признаки применённых PG-миграций.
-//
-// Вызывается СРАЗУ после успешного применения PG-схемы — ДО попытки
-// применить CH (W3-D, запись 5): раньше единственная RecordSchemaCompat
-// писала обе схемы разом ПОСЛЕ обеих миграций, и сорванная CH-миграция при
-// успешной PG оставляла PG-версии без единой строки в schema_compat — откат
-// бинаря назад становился невозможен (CheckSchemaCurrent видит "unknown" и
-// отказывает в старте), даже если сами PG-миграции были безопасно
-// аддитивны. Раздельная запись делает PG откатываемым независимо от того,
-// как далеко продвинулась CH-миграция следом.
+// Пишется сразу после PG-миграции, до попытки CH: иначе сорванная CH-миграция при успешной PG
+// оставляла бы PG без записи в schema_compat, и откат бинаря назад становился бы невозможен.
 func RecordSchemaCompatPG(ctx context.Context, pool *pgxpool.Pool) error {
 	compat, err := EmbeddedCompatPG()
 	if err != nil {
@@ -111,8 +87,7 @@ func RecordSchemaCompatPG(ctx context.Context, pool *pgxpool.Pool) error {
 	return recordCompat(ctx, pool, "pg", compat)
 }
 
-// RecordSchemaCompatCH записывает признаки применённых CH-миграций. Симметрична
-// RecordSchemaCompatPG, вызывается сразу после успешной CH-миграции.
+// Симметрична RecordSchemaCompatPG — вызывается сразу после успешной CH-миграции.
 func RecordSchemaCompatCH(ctx context.Context, pool *pgxpool.Pool) error {
 	compat, err := EmbeddedCompatCH()
 	if err != nil {
@@ -121,13 +96,8 @@ func RecordSchemaCompatCH(ctx context.Context, pool *pgxpool.Pool) error {
 	return recordCompat(ctx, pool, "ch", compat)
 }
 
-// RecordSchemaCompat записывает признаки применённых миграций ОБЕИХ схем.
-//
-// Оставлена как композиция RecordSchemaCompatPG+RecordSchemaCompatCH для
-// вызывающих, которым нужен один вызов на обе схемы разом (тесты, разовые
-// скрипты) — но migrate.go её больше не зовёт: там PG и CH мигрируют
-// раздельными шагами, и маркер каждой схемы пишется сразу за её собственной
-// миграцией, а не общим хвостом после обеих (см. RecordSchemaCompatPG).
+// Только для тестов/разовых скриптов — migrate.go её не вызывает: там PG и CH мигрируют раздельно,
+// каждая пишет свой признак сразу после своей миграции (см. RecordSchemaCompatPG).
 func RecordSchemaCompat(ctx context.Context, pool *pgxpool.Pool) error {
 	if err := RecordSchemaCompatPG(ctx, pool); err != nil {
 		return err
@@ -135,10 +105,7 @@ func RecordSchemaCompat(ctx context.Context, pool *pgxpool.Pool) error {
 	return RecordSchemaCompatCH(ctx, pool)
 }
 
-// loadSchemaCompat читает признаки, записанные при применении миграций.
-//
-// Отсутствие таблицы — не ошибка, а ответ «записей нет»: схему применял бинарь,
-// который о ней не знал. Такое состояние гейт трактует как несовместимое.
+// Отсутствие таблицы — не ошибка, а «записей нет»: применял бинарь, не знавший о schema_compat.
 func loadSchemaCompat(ctx context.Context, pool *pgxpool.Pool, target string) (map[uint]bool, error) {
 	var exists bool
 	if err := pool.QueryRow(ctx, "SELECT to_regclass('schema_compat') IS NOT NULL").Scan(&exists); err != nil {
@@ -170,15 +137,8 @@ func loadSchemaCompat(ctx context.Context, pool *pgxpool.Pool, target string) (m
 	return out, nil
 }
 
-// schemaAheadDecision решает, может ли бинарь работать с базой, которая впереди
-// него, и возвращает текст предупреждения для лога.
-//
-// Работать разрешено, только когда КАЖДАЯ версия из (want, got] помечена
-// совместимой. Неизвестная версия запрещает старт: отсутствие записи означает,
-// что схему применял бинарь, не знавший о признаке, и утверждать о ней нечего.
-// Это правило fail-closed намеренно — ошибиться здесь значит стартовать на
-// схеме, где нужной бинарю колонки уже нет, и получить не отказ при старте, а
-// ошибку на каждой вставке телеметрии.
+// Работать можно, только когда каждая версия из (want, got] помечена совместимой; неизвестная
+// версия запрещает старт (fail-closed) — иначе бинарь может недосчитаться нужной колонки.
 func schemaAheadDecision(label string, got, want uint, compat map[uint]bool) (warning string, err error) {
 	var breaking, unknown, ahead []uint
 	for v := want + 1; v <= got; v++ {

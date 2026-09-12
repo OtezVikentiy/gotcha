@@ -1,11 +1,6 @@
 package depsuppress
 
-// Тест кеша-на-тик живёт в package depsuppress (не depsuppress_test):
-// getSnapshot и поле now — неэкспортируемые, а now вводился в дизайне
-// (MINOR-8) именно ради тестируемости TTL — без доступа к нему изнутри
-// пакета протухание снимка нечем проверить. Минимально-инвазивный путь:
-// прямая композитная инициализация Suppressor{} с подменённым now, без
-// новых экспортируемых/неэкспортируемых конструкторов.
+// package depsuppress, не _test: getSnapshot и поле now неэкспортируемы.
 
 import (
 	"context"
@@ -15,13 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestSnapshotCacheTTL проверяет: (1) в пределах cacheTTL повторный
-// getSnapshot переиспользует тот же снимок и не видит изменения, случившиеся
-// в БД после первой загрузки; (2) после продвижения часов за cacheTTL
-// снимок перезагружается и видит новые данные. Заодно ловит инверсию
-// сравнения now().Sub(loadedAt) < cacheTTL — при инвертированном условии
-// либо кеш никогда бы не переиспользовался (шаг 1 не прошёл бы), либо
-// никогда не перезагружался (шаг 2 не прошёл бы).
 func TestSnapshotCacheTTL(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -58,11 +46,6 @@ func TestSnapshotCacheTTL(t *testing.T) {
 		t.Fatal("до открытия инцидента хост не должен быть в downHosts")
 	}
 
-	// Открываем silent-инцидент хоста — в пределах TTL кеш обязан остаться
-	// прежним: второй вызов НЕ перезагружает снимок и НЕ видит новые данные.
-	// current_value/peak_value для kind='silent' — длительность тишины в
-	// секундах, как их пишет host.IncidentService.Open; с миграции 0087 обе
-	// колонки NOT NULL.
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO host_incidents (project_id,host_id,kind,status,current_value,peak_value,started_at)
 		 VALUES ($1,$2,'silent','open',900,900,now())`,
@@ -81,7 +64,6 @@ func TestSnapshotCacheTTL(t *testing.T) {
 		t.Fatal("в пределах TTL кеш не должен видеть только что открытый инцидент")
 	}
 
-	// Продвигаем часы за TTL — теперь обязана произойти перезагрузка.
 	clock = clock.Add(cacheTTL + time.Second)
 
 	snap3, err := sup.getSnapshot(ctx)

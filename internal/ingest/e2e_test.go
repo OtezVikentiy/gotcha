@@ -32,7 +32,6 @@ func TestRealSentryGoSDK(t *testing.T) {
 		t.Fatal("sentry.Flush timed out — server did not accept the event")
 	}
 
-	// Issue в PG.
 	waitIssue(t, s.pool, s.project.ID, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -49,7 +48,7 @@ func TestRealSentryGoSDK(t *testing.T) {
 		t.Errorf("level = %q, want error", level)
 	}
 
-	// Событие в CH (доезжает после флаша батчера ≤5s — поллим до 20s).
+	// Флаш батчера ≤5s — поллим вместо проверки сразу.
 	deadline := time.Now().Add(20 * time.Second)
 	var cnt uint64
 	for time.Now().Before(deadline) {

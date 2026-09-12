@@ -44,10 +44,7 @@ func projectSettingsDeletePath(projectID int64) string {
 	return projectSettingsPath(projectID) + "/delete"
 }
 
-// PerfSettingsForm — значения формы «Performance» строками, чтобы при 422
-// перерисовке показать РОВНО то, что отправил пользователь (например «1.5»),
-// а не переигранное через float. На GET заполняется из org.Project и
-// распарсенного perf_detector_config (см. perfFormFromProject в projsettings.go).
+// поля строками — при 422 показываем ровно отправленное (например «1.5»), не переигранное через float.
 type PerfSettingsForm struct {
 	SampleRate         string
 	ApdexMS            string
@@ -57,12 +54,8 @@ type PerfSettingsForm struct {
 	HTTPFloodMin       string
 }
 
-// RegressionSettingsForm — значения формы «Регрессии» строками (тот же приём,
-// что и PerfSettingsForm: при 422 показать РОВНО отправленное). ThresholdPct и
-// RecoveryPct — В ПРОЦЕНТАХ (25 = ratio 0.25), конвертация в долю на стороне
-// обработчика. Полы — абсолютные значения метрик. Enabled — bool (чекбокс).
-// На GET заполняется из RegressionConfigFromJSON(project.PerfRegressionConfig)
-// (см. regressionFormFromProject в projsettings.go).
+// поля строками — тот же приём, что у PerfSettingsForm, при 422 показать ровно отправленное.
+// ThresholdPct/RecoveryPct — в процентах (25 = 0.25), в долю конвертирует обработчик.
 type RegressionSettingsForm struct {
 	ThresholdPct    string
 	RecoveryPct     string
@@ -79,10 +72,7 @@ type RegressionSettingsForm struct {
 	SeasonalWeeks   string
 }
 
-// keyStatusBadgeClass — цвет статуса DSN-ключа через дизайн-систему: живой
-// ключ — .badge-good (используется прямо сейчас), отозванный — .badge-danger
-// (клиенты с ним сразу получают 403 — это заметное, «опасное» состояние,
-// не просто нейтральный факт).
+// отозванный — .badge-danger: клиенты с ним сразу получают 403, это заметное «опасное» состояние.
 func keyStatusBadgeClass(k org.Key) string {
 	if k.Revoked {
 		return "badge badge-danger"
@@ -90,7 +80,6 @@ func keyStatusBadgeClass(k org.Key) string {
 	return "badge badge-good"
 }
 
-// keyStatusLabelKey — i18n-ключ подписи статуса ключа.
 func keyStatusLabelKey(k org.Key) string {
 	if k.Revoked {
 		return "project.settings.keys.status.revoked"
@@ -98,23 +87,13 @@ func keyStatusLabelKey(k org.Key) string {
 	return "project.settings.keys.status.active"
 }
 
-// ProjectKeyView — строка таблицы ключей: сам ключ и его собственный DSN.
-// DSN считается в web-слое (buildDSN знает BaseURL инстанса), шаблон его
-// только показывает.
 type ProjectKeyView struct {
 	Key org.Key
 	DSN string
 }
 
-// DeprecatedPathView — одна строка callout'а «проект ещё шлёт по устаревшим
-// адресам» (аудит перед 1.0, K7-5/K7-6): собирается в web-слое из
-// ingestsignal.Store.ForProject (renderProjectSettings), фильтр по
-// LastSeenAt — там же. Path — сам устаревший адрес (например "/logs"), Hits
-// — сумма попаданий за всё время наблюдения (не только за окно фильтра, оно
-// лишь решает, показывать ли строку вообще — отсюда формулировка «всего», а
-// не «за 7 дней» в тексте). Docs — страница документации именно этого входа
-// (ingest.DocsPath), не общий /docs/upgrade: разные адреса ведут в разные
-// разделы (logs/profiling/deployments).
+// Hits — сумма за всё время наблюдения, не за окно фильтра — отсюда «всего», не «за 7 дней» в тексте.
+// Docs — страница документации именно этого входа, не общий /docs/upgrade.
 type DeprecatedPathView struct {
 	Path       string
 	LastSeenAt time.Time
@@ -122,13 +101,8 @@ type DeprecatedPathView struct {
 	Docs       string
 }
 
-// deprecatedPathsCallout — над списком ключей (K7-5): раз отправитель ещё
-// стучится на удаляемый в 2.0 алиас, самое уместное место напомнить об этом
-// — прямо рядом с тем местом, где выпускают новые ключи и смотрят на DSN.
-// Пусто (nil/[]) → блок не рендерится вовсе — свежий проект или проект без
-// Store (h.Signals == nil) не должен видеть пустой callout. Ссылка — у
-// каждого адреса своя (p.Docs), а не одна общая: /logs и /profiles/pprof
-// документированы в разных разделах.
+// пусто (nil/[]) → блок не рендерится — свежий проект или проект без Store не должен видеть его пустым.
+// ссылка своя у каждого адреса (p.Docs) — /logs и /profiles/pprof документированы в разных разделах.
 func deprecatedPathsCallout(paths []DeprecatedPathView) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -158,7 +132,7 @@ func deprecatedPathsCallout(paths []DeprecatedPathView) templ.Component {
 			var templ_7745c5c3_Var2 string
 			templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "ingest_signals.deprecated.title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 128, Col: 60}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 102, Col: 60}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 			if templ_7745c5c3_Err != nil {
@@ -176,7 +150,7 @@ func deprecatedPathsCallout(paths []DeprecatedPathView) templ.Component {
 				var templ_7745c5c3_Var3 string
 				templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "ingest_signals.deprecated.item", "path", p.Path))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 132, Col: 71}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 106, Col: 71}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 				if templ_7745c5c3_Err != nil {
@@ -189,7 +163,7 @@ func deprecatedPathsCallout(paths []DeprecatedPathView) templ.Component {
 				var templ_7745c5c3_Var4 string
 				templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "ingest_signals.deprecated.item_hits", "hits", strconv.FormatInt(p.Hits, 10)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 134, Col: 99}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 108, Col: 99}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 				if templ_7745c5c3_Err != nil {
@@ -202,7 +176,7 @@ func deprecatedPathsCallout(paths []DeprecatedPathView) templ.Component {
 				var templ_7745c5c3_Var5 templ.SafeURL
 				templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(p.Docs))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 135, Col: 38}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 109, Col: 38}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 				if templ_7745c5c3_Err != nil {
@@ -215,7 +189,7 @@ func deprecatedPathsCallout(paths []DeprecatedPathView) templ.Component {
 				var templ_7745c5c3_Var6 string
 				templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "ingest_signals.deprecated.link"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 135, Col: 88}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 109, Col: 88}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 				if templ_7745c5c3_Err != nil {
@@ -233,7 +207,7 @@ func deprecatedPathsCallout(paths []DeprecatedPathView) templ.Component {
 			var templ_7745c5c3_Var7 string
 			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "ingest_signals.deprecated.hint"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 139, Col: 85}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 113, Col: 85}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 			if templ_7745c5c3_Err != nil {
@@ -248,9 +222,7 @@ func deprecatedPathsCallout(paths []DeprecatedPathView) templ.Component {
 	})
 }
 
-// keyKindLabelKey — i18n-ключ подписи типа ключа. legacy отображается как
-// «без типа»: с точки зрения пользователя это ключ, выпущенный до появления
-// типов, а не ещё один равноправный выбор.
+// legacy — «без типа»: с точки зрения пользователя это ключ до появления типов, не равноправный выбор.
 func keyKindLabelKey(k org.Key) string {
 	if k.Kind == org.KindLegacy || k.Kind == "" {
 		return "project.settings.keys.kind.legacy"
@@ -258,8 +230,7 @@ func keyKindLabelKey(k org.Key) string {
 	return "project.settings.keys.kind." + string(k.Kind)
 }
 
-// keyKindBadgeClass — legacy выделен как состояние, требующее внимания
-// (переход на типизированные ключи), но не как ошибка: ключ работает.
+// legacy выделен как состояние, требующее внимания (переход на типизированные ключи), но не ошибка.
 func keyKindBadgeClass(k org.Key) string {
 	if k.Kind == org.KindLegacy || k.Kind == "" {
 		return "badge badge-warn"
@@ -267,28 +238,13 @@ func keyKindBadgeClass(k org.Key) string {
 	return "badge"
 }
 
-// keyRowHasDSN — у карточки ключа есть блок с его DSN. Отозванному ключу DSN
-// не показываем (слать им нечего), пустой DSN означает ненастроенный BaseURL
-// инстанса — и то, и другое оставляет карточку без DSN-блока (см.
-// keyCard ниже и keyDisplayID, которая на этом же условии решает, сокращать
-// ли идентификатор в шапке).
+// revoked или пустой DSN — оба оставляют карточку без DSN-блока (тем же условием живёт keyDisplayID).
 func keyRowHasDSN(v ProjectKeyView) bool {
 	return !v.Key.Revoked && v.DSN != ""
 }
 
-// keyDisplayID — идентификатор ключа для шапки карточки (keyCard). Когда
-// карточка и так показывает DSN (keyRowHasDSN), полный ключ уже виден внутри
-// него (buildDSN подставляет его целиком) — печатать те же 32 hex-символа
-// ВТОРОЙ раз в шапке было бы чистым повтором, поэтому там сокращённая форма
-// «первые 6…последние 4». Отозванному ключу (и живому с пустым DSN) сокращать
-// нечего: шапка — единственное место, где виден весь ключ, а title как
-// единственный носитель полного значения не годится — его не прочесть ни с
-// клавиатуры, ни скринридером.
-//
-// Сокращаем только то, что реально длиннее результата сокращения: при длине
-// ключа ≤12 символов «сокращённая» форма (6+1+4=11) выигрывает от силы один
-// символ, а на коротких тестовых фикстурах (7-10 символов) вообще ничего не
-// экономит — возвращаем ключ как есть.
+// сокращаем в шапке только когда полный ключ виден и так, в DSN-блоке — иначе он нигде не читался бы.
+// ≤12 символов не сокращаем: «сокращённая» форма экономит от силы 1 символ.
 func keyDisplayID(v ProjectKeyView) string {
 	id := v.Key.PublicKey
 	if !keyRowHasDSN(v) {
@@ -302,11 +258,7 @@ func keyDisplayID(v ProjectKeyView) string {
 	return string(r[:headRunes]) + "…" + string(r[len(r)-tailRunes:])
 }
 
-// hasLiveKey — есть ли среди ключей проекта хотя бы один неотозванный.
-// Предупреждение «нет активного ключа» (ProjectSettings) обязано появляться
-// не только когда ключей нет вовсе, но и когда все выпущенные — отозваны:
-// приём событий в обоих случаях одинаково сломан, а старое условие
-// len(keys)==0 второй случай молча пропускало.
+// «нет ключа» — и когда их нет, и когда все отозваны; len(keys)==0 второй случай пропускал.
 func hasLiveKey(keys []ProjectKeyView) bool {
 	for _, v := range keys {
 		if !v.Key.Revoked {
@@ -316,15 +268,6 @@ func hasLiveKey(keys []ProjectKeyView) bool {
 	return false
 }
 
-// keyCard — карточка одного DSN-ключа: шапка (сокращённый/полный
-// идентификатор + бейджи типа и статуса), опциональная заметка (ссылка
-// «Что это значит» у legacy-ключа, пояснение у отозванного), DSN-блок
-// (copyBlock, показывается только при keyRowHasDSN) и кнопка отзыва (только у
-// живого ключа). Раньше запись занимала ДВЕ строки таблицы (сама запись +
-// DSN во всю ширину через colspan) — обходной приём, вызванный тем, что
-// таблица стоит в узкой средней колонке трёхколоночных настроек и пятую
-// колонку под DSN схлопывала до ~78px. Карточка этого ограничения не имеет:
-// ширина у неё одна, произвольная высота — не проблема.
 func keyCard(projectID int64, v ProjectKeyView) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -371,7 +314,7 @@ func keyCard(projectID int64, v ProjectKeyView) templ.Component {
 		var templ_7745c5c3_Var11 string
 		templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(keyDisplayID(v))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 225, Col: 46}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 168, Col: 46}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 		if templ_7745c5c3_Err != nil {
@@ -406,7 +349,7 @@ func keyCard(projectID int64, v ProjectKeyView) templ.Component {
 		var templ_7745c5c3_Var14 string
 		templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, keyKindLabelKey(v.Key)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 226, Col: 81}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 169, Col: 81}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 		if templ_7745c5c3_Err != nil {
@@ -441,7 +384,7 @@ func keyCard(projectID int64, v ProjectKeyView) templ.Component {
 		var templ_7745c5c3_Var17 string
 		templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, keyStatusLabelKey(v.Key)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 227, Col: 85}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 170, Col: 85}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 		if templ_7745c5c3_Err != nil {
@@ -459,7 +402,7 @@ func keyCard(projectID int64, v ProjectKeyView) templ.Component {
 			var templ_7745c5c3_Var18 string
 			templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.keys.kind.legacy.hint"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 230, Col: 104}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 173, Col: 104}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 			if templ_7745c5c3_Err != nil {
@@ -478,7 +421,7 @@ func keyCard(projectID int64, v ProjectKeyView) templ.Component {
 			var templ_7745c5c3_Var19 string
 			templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.keys.revoked.note"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 233, Col: 79}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 176, Col: 79}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 			if templ_7745c5c3_Err != nil {
@@ -503,7 +446,7 @@ func keyCard(projectID int64, v ProjectKeyView) templ.Component {
 			var templ_7745c5c3_Var20 templ.SafeURL
 			templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(projectSettingsKeysRevokePath(projectID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 240, Col: 84}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 183, Col: 84}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 			if templ_7745c5c3_Err != nil {
@@ -516,7 +459,7 @@ func keyCard(projectID int64, v ProjectKeyView) templ.Component {
 			var templ_7745c5c3_Var21 string
 			templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.ResolveAttributeValue(strconv.FormatInt(v.Key.ID, 10))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 241, Col: 79}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 184, Col: 79}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var21)
 			if templ_7745c5c3_Err != nil {
@@ -529,7 +472,7 @@ func keyCard(projectID int64, v ProjectKeyView) templ.Component {
 			var templ_7745c5c3_Var22 string
 			templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.keys.revoke"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 242, Col: 101}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 185, Col: 101}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 			if templ_7745c5c3_Err != nil {
@@ -548,17 +491,7 @@ func keyCard(projectID int64, v ProjectKeyView) templ.Component {
 	})
 }
 
-// ProjectSettings — GET/POST /projects/{id}/settings: имя (форма rename),
-// платформа (readonly), список карточек DSN-ключей (идентификатор, тип,
-// статус, DSN и revoke — по одной карточке на ключ, см. keyCard), форма
-// выпуска нового ключа. errMsg —
-// сообщение об ошибке последнего POST, рендерится с тем же статусом (422),
-// что и ответ — тот же принцип, что и у OrgSettings/Teams.
-// helpLabel — подпись поля с всплывающей расшифровкой (нативный title, без JS
-// и CSP-исключений). Пунктирное подчёркивание и курсор-help сигналят, что при
-// наведении будет пояснение. Для форм с «непрозрачными» техническими полями
-// (пороги детекторов производительности/регрессий), где непосвящённому имя
-// поля ничего не говорит.
+// native title, без JS и CSP-исключений — для полей, где непосвящённому имя ничего не говорит.
 func helpLabel(labelKey, helpKey string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -587,7 +520,7 @@ func helpLabel(labelKey, helpKey string) templ.Component {
 		var templ_7745c5c3_Var24 string
 		templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, helpKey))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 261, Col: 54}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 194, Col: 54}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var24)
 		if templ_7745c5c3_Err != nil {
@@ -600,7 +533,7 @@ func helpLabel(labelKey, helpKey string) templ.Component {
 		var templ_7745c5c3_Var25 string
 		templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, labelKey))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 261, Col: 80}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 194, Col: 80}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 		if templ_7745c5c3_Err != nil {
@@ -614,9 +547,7 @@ func helpLabel(labelKey, helpKey string) templ.Component {
 	})
 }
 
-// perfSettingsForm — секция «Performance»: доля семплирования транзакций,
-// порог Apdex и пороги детекторов. Один POST на /settings/performance
-// (sameOrigin + owner|admin), при невалидном вводе — 422 с этой же формой.
+// POST на /settings/performance (sameOrigin + owner|admin); невалидный ввод — 422 с этой же формой.
 func perfSettingsForm(projectID int64, f PerfSettingsForm) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -645,7 +576,7 @@ func perfSettingsForm(projectID int64, f PerfSettingsForm) templ.Component {
 		var templ_7745c5c3_Var27 string
 		templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "nav.performance"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 269, Col: 58}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 200, Col: 58}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 		if templ_7745c5c3_Err != nil {
@@ -658,7 +589,7 @@ func perfSettingsForm(projectID int64, f PerfSettingsForm) templ.Component {
 		var templ_7745c5c3_Var28 templ.SafeURL
 		templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(projectSettingsPerformancePath(projectID)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 270, Col: 83}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 201, Col: 83}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 		if templ_7745c5c3_Err != nil {
@@ -679,7 +610,7 @@ func perfSettingsForm(projectID int64, f PerfSettingsForm) templ.Component {
 		var templ_7745c5c3_Var29 string
 		templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.SampleRate)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 274, Col: 65}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 205, Col: 65}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var29)
 		if templ_7745c5c3_Err != nil {
@@ -700,7 +631,7 @@ func perfSettingsForm(projectID int64, f PerfSettingsForm) templ.Component {
 		var templ_7745c5c3_Var30 string
 		templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.ApdexMS)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 280, Col: 69}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 211, Col: 69}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var30)
 		if templ_7745c5c3_Err != nil {
@@ -721,7 +652,7 @@ func perfSettingsForm(projectID int64, f PerfSettingsForm) templ.Component {
 		var templ_7745c5c3_Var31 string
 		templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.NPlusOneMin)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 286, Col: 69}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 217, Col: 69}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var31)
 		if templ_7745c5c3_Err != nil {
@@ -742,7 +673,7 @@ func perfSettingsForm(projectID int64, f PerfSettingsForm) templ.Component {
 		var templ_7745c5c3_Var32 string
 		templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.NPlusOneMinTotalMs)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 292, Col: 85}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 223, Col: 85}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var32)
 		if templ_7745c5c3_Err != nil {
@@ -763,7 +694,7 @@ func perfSettingsForm(projectID int64, f PerfSettingsForm) templ.Component {
 		var templ_7745c5c3_Var33 string
 		templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.SlowDBMs)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 298, Col: 62}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 229, Col: 62}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var33)
 		if templ_7745c5c3_Err != nil {
@@ -784,7 +715,7 @@ func perfSettingsForm(projectID int64, f PerfSettingsForm) templ.Component {
 		var templ_7745c5c3_Var34 string
 		templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.HTTPFloodMin)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 304, Col: 70}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 235, Col: 70}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var34)
 		if templ_7745c5c3_Err != nil {
@@ -797,7 +728,7 @@ func perfSettingsForm(projectID int64, f PerfSettingsForm) templ.Component {
 		var templ_7745c5c3_Var35 string
 		templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.perf.submit"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 307, Col: 94}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 238, Col: 94}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
 		if templ_7745c5c3_Err != nil {
@@ -811,10 +742,7 @@ func perfSettingsForm(projectID int64, f PerfSettingsForm) templ.Component {
 	})
 }
 
-// regressionSettingsForm — секция «Регрессии»: пороги детектора регрессий
-// (рост p95/p75 над скользящей базой). threshold_pct/recovery_pct В ПРОЦЕНТАХ
-// (шаг 1). Один POST на /settings/regressions (sameOrigin + owner|admin), при
-// невалидном вводе — 422 с этой же формой.
+// POST на /settings/regressions (sameOrigin + owner|admin); невалидный ввод — 422 с этой же формой.
 func regressionSettingsForm(projectID int64, f RegressionSettingsForm) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -843,7 +771,7 @@ func regressionSettingsForm(projectID int64, f RegressionSettingsForm) templ.Com
 		var templ_7745c5c3_Var37 string
 		templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "nav.regressions"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 318, Col: 58}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 246, Col: 58}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
 		if templ_7745c5c3_Err != nil {
@@ -856,7 +784,7 @@ func regressionSettingsForm(projectID int64, f RegressionSettingsForm) templ.Com
 		var templ_7745c5c3_Var38 templ.SafeURL
 		templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(projectSettingsRegressionsPath(projectID)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 319, Col: 83}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 247, Col: 83}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 		if templ_7745c5c3_Err != nil {
@@ -877,7 +805,7 @@ func regressionSettingsForm(projectID int64, f RegressionSettingsForm) templ.Com
 		var templ_7745c5c3_Var39 string
 		templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.ThresholdPct)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 323, Col: 69}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 251, Col: 69}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var39)
 		if templ_7745c5c3_Err != nil {
@@ -898,7 +826,7 @@ func regressionSettingsForm(projectID int64, f RegressionSettingsForm) templ.Com
 		var templ_7745c5c3_Var40 string
 		templ_7745c5c3_Var40, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.RecoveryPct)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 329, Col: 67}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 257, Col: 67}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var40)
 		if templ_7745c5c3_Err != nil {
@@ -919,7 +847,7 @@ func regressionSettingsForm(projectID int64, f RegressionSettingsForm) templ.Com
 		var templ_7745c5c3_Var41 string
 		templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.WindowMinutes)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 335, Col: 71}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 263, Col: 71}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var41)
 		if templ_7745c5c3_Err != nil {
@@ -940,7 +868,7 @@ func regressionSettingsForm(projectID int64, f RegressionSettingsForm) templ.Com
 		var templ_7745c5c3_Var42 string
 		templ_7745c5c3_Var42, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.MinSamples)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 341, Col: 65}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 269, Col: 65}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var42)
 		if templ_7745c5c3_Err != nil {
@@ -961,7 +889,7 @@ func regressionSettingsForm(projectID int64, f RegressionSettingsForm) templ.Com
 		var templ_7745c5c3_Var43 string
 		templ_7745c5c3_Var43, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.DurationFloorMs)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 347, Col: 76}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 275, Col: 76}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var43)
 		if templ_7745c5c3_Err != nil {
@@ -982,7 +910,7 @@ func regressionSettingsForm(projectID int64, f RegressionSettingsForm) templ.Com
 		var templ_7745c5c3_Var44 string
 		templ_7745c5c3_Var44, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.FloorLCP)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 353, Col: 61}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 281, Col: 61}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var44)
 		if templ_7745c5c3_Err != nil {
@@ -1003,7 +931,7 @@ func regressionSettingsForm(projectID int64, f RegressionSettingsForm) templ.Com
 		var templ_7745c5c3_Var45 string
 		templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.FloorINP)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 359, Col: 61}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 287, Col: 61}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var45)
 		if templ_7745c5c3_Err != nil {
@@ -1024,7 +952,7 @@ func regressionSettingsForm(projectID int64, f RegressionSettingsForm) templ.Com
 		var templ_7745c5c3_Var46 string
 		templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.FloorCLS)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 365, Col: 61}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 293, Col: 61}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var46)
 		if templ_7745c5c3_Err != nil {
@@ -1045,7 +973,7 @@ func regressionSettingsForm(projectID int64, f RegressionSettingsForm) templ.Com
 		var templ_7745c5c3_Var47 string
 		templ_7745c5c3_Var47, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.FloorFCP)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 371, Col: 61}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 299, Col: 61}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var47)
 		if templ_7745c5c3_Err != nil {
@@ -1066,7 +994,7 @@ func regressionSettingsForm(projectID int64, f RegressionSettingsForm) templ.Com
 		var templ_7745c5c3_Var48 string
 		templ_7745c5c3_Var48, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.FloorTTFB)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 377, Col: 63}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 305, Col: 63}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var48)
 		if templ_7745c5c3_Err != nil {
@@ -1089,7 +1017,7 @@ func regressionSettingsForm(projectID int64, f RegressionSettingsForm) templ.Com
 		var templ_7745c5c3_Var49 string
 		templ_7745c5c3_Var49, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.regressions.enabled"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 382, Col: 57}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 310, Col: 57}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var49))
 		if templ_7745c5c3_Err != nil {
@@ -1112,7 +1040,7 @@ func regressionSettingsForm(projectID int64, f RegressionSettingsForm) templ.Com
 		var templ_7745c5c3_Var50 string
 		templ_7745c5c3_Var50, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.regressions.seasonal_enabled"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 386, Col: 66}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 314, Col: 66}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var50))
 		if templ_7745c5c3_Err != nil {
@@ -1133,7 +1061,7 @@ func regressionSettingsForm(projectID int64, f RegressionSettingsForm) templ.Com
 		var templ_7745c5c3_Var51 string
 		templ_7745c5c3_Var51, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.SeasonalWeeks)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 391, Col: 71}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 319, Col: 71}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var51)
 		if templ_7745c5c3_Err != nil {
@@ -1146,7 +1074,7 @@ func regressionSettingsForm(projectID int64, f RegressionSettingsForm) templ.Com
 		var templ_7745c5c3_Var52 string
 		templ_7745c5c3_Var52, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.regressions.seasonal_hint"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 393, Col: 79}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 321, Col: 79}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var52))
 		if templ_7745c5c3_Err != nil {
@@ -1159,7 +1087,7 @@ func regressionSettingsForm(projectID int64, f RegressionSettingsForm) templ.Com
 		var templ_7745c5c3_Var53 string
 		templ_7745c5c3_Var53, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.regressions.submit"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 395, Col: 101}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 323, Col: 101}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var53))
 		if templ_7745c5c3_Err != nil {
@@ -1173,10 +1101,7 @@ func regressionSettingsForm(projectID int64, f RegressionSettingsForm) templ.Com
 	})
 }
 
-// retentionNotice — «События хранятся N дней» при заданном RetentionDays,
-// иначе «срок хранения не ограничен» — PROD-P6. Число подставляется через
-// i18n.Tf, а не отдельным узлом рядом с переводом: иначе порядок слов
-// «N дней» / «N days» не переживает разные языки.
+// число через i18n.Tf, не отдельным узлом — иначе порядок «N дней»/«N days» не переживает языки.
 func retentionNotice(retentionDays int) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -1206,7 +1131,7 @@ func retentionNotice(retentionDays int) templ.Component {
 			var templ_7745c5c3_Var55 string
 			templ_7745c5c3_Var55, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "project.settings.retention.notice", "days", strconv.Itoa(retentionDays)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 406, Col: 118}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 331, Col: 118}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var55))
 			if templ_7745c5c3_Err != nil {
@@ -1224,7 +1149,7 @@ func retentionNotice(retentionDays int) templ.Component {
 			var templ_7745c5c3_Var56 string
 			templ_7745c5c3_Var56, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.retention.unset"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 408, Col: 79}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 333, Col: 79}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var56))
 			if templ_7745c5c3_Err != nil {
@@ -1279,7 +1204,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 			var templ_7745c5c3_Var59 string
 			templ_7745c5c3_Var59, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 415, Col: 46}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 340, Col: 46}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var59))
 			if templ_7745c5c3_Err != nil {
@@ -1292,7 +1217,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 			var templ_7745c5c3_Var60 string
 			templ_7745c5c3_Var60, templ_7745c5c3_Err = templ.JoinStringErrs(project.Name)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 415, Col: 63}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 340, Col: 63}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var60))
 			if templ_7745c5c3_Err != nil {
@@ -1310,7 +1235,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 				var templ_7745c5c3_Var61 string
 				templ_7745c5c3_Var61, templ_7745c5c3_Err = templ.JoinStringErrs(errMsg)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 417, Col: 29}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 342, Col: 29}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var61))
 				if templ_7745c5c3_Err != nil {
@@ -1328,7 +1253,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 			var templ_7745c5c3_Var62 string
 			templ_7745c5c3_Var62, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.general.title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 421, Col: 75}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 346, Col: 75}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var62))
 			if templ_7745c5c3_Err != nil {
@@ -1341,7 +1266,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 			var templ_7745c5c3_Var63 templ.SafeURL
 			templ_7745c5c3_Var63, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(projectSettingsRenamePath(project.ID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 422, Col: 81}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 347, Col: 81}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var63))
 			if templ_7745c5c3_Err != nil {
@@ -1354,7 +1279,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 			var templ_7745c5c3_Var64 string
 			templ_7745c5c3_Var64, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.field.name"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 425, Col: 51}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 350, Col: 51}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var64))
 			if templ_7745c5c3_Err != nil {
@@ -1367,7 +1292,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 			var templ_7745c5c3_Var65 string
 			templ_7745c5c3_Var65, templ_7745c5c3_Err = templ.ResolveAttributeValue(project.Name)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 426, Col: 58}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 351, Col: 58}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var65)
 			if templ_7745c5c3_Err != nil {
@@ -1380,7 +1305,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 			var templ_7745c5c3_Var66 string
 			templ_7745c5c3_Var66, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.rename.submit"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 429, Col: 98}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 354, Col: 98}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var66))
 			if templ_7745c5c3_Err != nil {
@@ -1393,7 +1318,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 			var templ_7745c5c3_Var67 string
 			templ_7745c5c3_Var67, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.field.platform"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 431, Col: 63}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 356, Col: 63}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var67))
 			if templ_7745c5c3_Err != nil {
@@ -1406,7 +1331,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 			var templ_7745c5c3_Var68 string
 			templ_7745c5c3_Var68, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "platform."+project.Platform))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 431, Col: 119}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 356, Col: 119}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var68))
 			if templ_7745c5c3_Err != nil {
@@ -1419,7 +1344,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 			var templ_7745c5c3_Var69 templ.SafeURL
 			templ_7745c5c3_Var69, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(alertsPath(project.ID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 432, Col: 72}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 357, Col: 72}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var69))
 			if templ_7745c5c3_Err != nil {
@@ -1432,7 +1357,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 			var templ_7745c5c3_Var70 string
 			templ_7745c5c3_Var70, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "nav.alerts"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 432, Col: 102}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 357, Col: 102}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var70))
 			if templ_7745c5c3_Err != nil {
@@ -1445,7 +1370,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 			var templ_7745c5c3_Var71 string
 			templ_7745c5c3_Var71, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.keys.title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 435, Col: 72}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 360, Col: 72}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var71))
 			if templ_7745c5c3_Err != nil {
@@ -1463,7 +1388,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 				var templ_7745c5c3_Var72 string
 				templ_7745c5c3_Var72, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.keys.no_dsn"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 437, Col: 67}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 362, Col: 67}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var72))
 				if templ_7745c5c3_Err != nil {
@@ -1495,7 +1420,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 			var templ_7745c5c3_Var73 templ.SafeURL
 			templ_7745c5c3_Var73, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(projectSettingsKeysPath(project.ID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 445, Col: 79}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 370, Col: 79}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var73))
 			if templ_7745c5c3_Err != nil {
@@ -1508,7 +1433,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 			var templ_7745c5c3_Var74 string
 			templ_7745c5c3_Var74, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.keys.kind.legend"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 447, Col: 84}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 372, Col: 84}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var74))
 			if templ_7745c5c3_Err != nil {
@@ -1526,7 +1451,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 				var templ_7745c5c3_Var75 string
 				templ_7745c5c3_Var75, templ_7745c5c3_Err = templ.ResolveAttributeValue(string(kind))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 451, Col: 61}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 376, Col: 61}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var75)
 				if templ_7745c5c3_Err != nil {
@@ -1539,7 +1464,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 				var templ_7745c5c3_Var76 string
 				templ_7745c5c3_Var76, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.keys.kind."+string(kind)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 452, Col: 66}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 377, Col: 66}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var76))
 				if templ_7745c5c3_Err != nil {
@@ -1557,7 +1482,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 			var templ_7745c5c3_Var77 string
 			templ_7745c5c3_Var77, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.keys.kind.none.hint"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 456, Col: 109}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 381, Col: 109}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var77))
 			if templ_7745c5c3_Err != nil {
@@ -1593,7 +1518,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 				var templ_7745c5c3_Var80 string
 				templ_7745c5c3_Var80, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.keys.kind."+string(kind)+".hint"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 458, Col: 143}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 383, Col: 143}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var80))
 				if templ_7745c5c3_Err != nil {
@@ -1611,7 +1536,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 			var templ_7745c5c3_Var81 string
 			templ_7745c5c3_Var81, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.keys.create"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 461, Col: 96}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 386, Col: 96}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var81))
 			if templ_7745c5c3_Err != nil {
@@ -1636,7 +1561,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 			var templ_7745c5c3_Var82 string
 			templ_7745c5c3_Var82, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.retention.title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 468, Col: 78}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 393, Col: 78}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var82))
 			if templ_7745c5c3_Err != nil {
@@ -1657,7 +1582,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 			var templ_7745c5c3_Var83 string
 			templ_7745c5c3_Var83, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.danger.title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 472, Col: 75}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 397, Col: 75}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var83))
 			if templ_7745c5c3_Err != nil {
@@ -1670,7 +1595,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 			var templ_7745c5c3_Var84 templ.SafeURL
 			templ_7745c5c3_Var84, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(projectSettingsDeletePath(project.ID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 476, Col: 64}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 401, Col: 64}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var84))
 			if templ_7745c5c3_Err != nil {
@@ -1683,7 +1608,7 @@ func ProjectSettings(project org.Project, keys []ProjectKeyView, errMsg, userEma
 			var templ_7745c5c3_Var85 string
 			templ_7745c5c3_Var85, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "project.settings.danger.delete_submit"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 479, Col: 106}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 404, Col: 106}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var85))
 			if templ_7745c5c3_Err != nil {

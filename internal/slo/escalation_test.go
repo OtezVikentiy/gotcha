@@ -8,8 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestStoreEscalationName проверяет, что ключ источника совпадает с
-// incident_source='slo', зафиксированным в миграции 0077.
 func TestStoreEscalationName(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	st := slo.NewStore(pool)
@@ -30,10 +28,6 @@ func createSLO(t *testing.T, ctx context.Context, st *slo.Store, pid int64, name
 	return def
 }
 
-// TestStoreOpenUnacked дискриминирует «status='open' AND acknowledged_at IS
-// NULL»: открытый неподтверждённый инцидент попадает в выборку с верными
-// полями; после Acknowledge — пропадает; отдельный resolved-инцидент в
-// выборку не попадает вовсе.
 func TestStoreOpenUnacked(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -95,9 +89,6 @@ func TestStoreOpenUnacked(t *testing.T) {
 	}
 }
 
-// TestStoreBumpEscalation проверяет атомарность продвижения
-// escalation_level: успешный бамп двигает level и last_escalated_at,
-// повторный бамп с устаревшим from — идемпотентный no-op (ok=false).
 func TestStoreBumpEscalation(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()

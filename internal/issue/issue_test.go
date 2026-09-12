@@ -11,7 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// newProject: прямые вставки — issue-пакет не зависит от org.
 func newProject(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -39,13 +38,11 @@ func TestUpsertLifecycle(t *testing.T) {
 	pid := newProject(t, pool)
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
-	// Новый issue.
 	r1, err := svc.Upsert(ctx, pid, "fp-1", "boom", "app.main", "error", "", now)
 	if err != nil || !r1.New || r1.Regression || r1.IssueID == 0 {
 		t.Fatalf("first upsert: %+v err=%v", r1, err)
 	}
 
-	// Повтор: не новый, не регрессия, times_seen растёт, last_seen двигается.
 	later := now.Add(time.Minute)
 	r2, err := svc.Upsert(ctx, pid, "fp-1", "boom", "app.main", "error", "", later)
 	if err != nil || r2.New || r2.Regression || r2.IssueID != r1.IssueID {
@@ -63,7 +60,6 @@ func TestUpsertLifecycle(t *testing.T) {
 		t.Fatalf("times_seen=%d last_seen=%v status=%s", timesSeen, lastSeen, status)
 	}
 
-	// Регрессия: resolved → снова пришло → unresolved + флаг.
 	if _, err := pool.Exec(ctx, "UPDATE issues SET status='resolved' WHERE id=$1", r1.IssueID); err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -75,7 +71,6 @@ func TestUpsertLifecycle(t *testing.T) {
 		t.Fatalf("status after regression = %s err=%v", status, err)
 	}
 
-	// Ignored не реопенится и не считается регрессией.
 	if _, err := pool.Exec(ctx, "UPDATE issues SET status='ignored' WHERE id=$1", r1.IssueID); err != nil {
 		t.Fatalf("ignore: %v", err)
 	}
@@ -87,7 +82,6 @@ func TestUpsertLifecycle(t *testing.T) {
 		t.Fatalf("status after ignored-upsert = %s err=%v", status, err)
 	}
 
-	// Другой fingerprint — другой issue.
 	r5, err := svc.Upsert(ctx, pid, "fp-2", "other", "", "warning", "", now)
 	if err != nil || !r5.New || r5.IssueID == r1.IssueID {
 		t.Fatalf("second fingerprint: %+v err=%v", r5, err)

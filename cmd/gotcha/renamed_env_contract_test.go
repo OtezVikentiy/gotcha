@@ -6,42 +6,23 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/envcontract"
 )
 
-// Файл существует ОТДЕЛЬНО от config_test.go намеренно: это единственное
-// место в cmd/gotcha, где старые имена envcontract.Renamed пишутся буквально
-// (справочник для независимой сверки с CHANGELOG ниже), поэтому именно оно —
-// точечное исключение internal/guards/renamed_env_vars_test.go
-// (TestNoRenamedEnvVarNames), а не config_test.go целиком. config_test.go
-// растёт с каждой фичей конфига и не должен становиться слепой зоной
-// сторожа из-за соседства с этим справочником — свои поведенческие тесты
-// отказа старта он берёт из envcontract.Renamed динамически, без единого
-// литерала старого имени (см. sortedRenamedOldNames в config_test.go).
+// Файл — точечное исключение из TestNoRenamedEnvVarNames (internal/guards):
+// единственное место, где старые имена envcontract.Renamed пишутся буквально.
 
-// TestEnvcontractRenamedComplete — envcontract.Renamed держит РОВНО
-// сорок одну пару (десять из волны контрактной уборки v0.23.0, семнадцать
-// серверных из волны заморозки контракта перед 1.0, три агентские из той же
-// волны плюс одиннадцать переменных compose и сборки той же волны) и
-// покрывает весь список, документированный в CHANGELOG. Тест на полноту:
-// если карту в
-// будущем случайно урежут (например, забудут добавить очередное
-// переименование или потеряют одну пару при рефакторинге), этот тест
-// укажет на расхождение с документированным контрактом, а не только на
-// количество. want прописан буквально и сознательно НЕ переиспользует
-// envcontract.Renamed — иначе тест сверял бы карту саму с собой и не
-// заметил бы никакой порчи.
+// want прописан буквально, не через envcontract.Renamed — иначе тест сверял
+// бы карту саму с собой и не заметил бы порчи.
 func TestEnvcontractRenamedComplete(t *testing.T) {
 	want := map[string]string{
-		// v0.23.0
-		"GOTCHA_METRIC_EVAL_INTERVAL":    "GOTCHA_METRIC_EVAL_INTERVAL_SECONDS",
-		"GOTCHA_PROFILE_EVAL_INTERVAL":   "GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS",
-		"GOTCHA_HOST_EVAL_INTERVAL":      "GOTCHA_HOST_EVAL_INTERVAL_SECONDS",
-		"GOTCHA_SLO_EVAL_INTERVAL":       "GOTCHA_SLO_EVAL_INTERVAL_SECONDS",
-		"GOTCHA_ESCALATION_INTERVAL":     "GOTCHA_ESCALATION_INTERVAL_SECONDS",
-		"GOTCHA_RETENTION_DAYS":          "GOTCHA_EVENT_RETENTION_DAYS",
-		"GOTCHA_SERVER_URL":              "GOTCHA_PROBE_SERVER_URL",
-		"GOTCHA_INGEST_RATE_LIMIT":       "GOTCHA_INGEST_RATE_PER_SEC",
-		"GOTCHA_AGENT_DIST_DIR":          "GOTCHA_DIST_DIR",
-		"GOTCHA_AGENT_DIST_RATE_PER_MIN": "GOTCHA_DIST_RATE_PER_MIN",
-		// E3, заморозка контракта
+		"GOTCHA_METRIC_EVAL_INTERVAL":     "GOTCHA_METRIC_EVAL_INTERVAL_SECONDS",
+		"GOTCHA_PROFILE_EVAL_INTERVAL":    "GOTCHA_PROFILE_EVAL_INTERVAL_SECONDS",
+		"GOTCHA_HOST_EVAL_INTERVAL":       "GOTCHA_HOST_EVAL_INTERVAL_SECONDS",
+		"GOTCHA_SLO_EVAL_INTERVAL":        "GOTCHA_SLO_EVAL_INTERVAL_SECONDS",
+		"GOTCHA_ESCALATION_INTERVAL":      "GOTCHA_ESCALATION_INTERVAL_SECONDS",
+		"GOTCHA_RETENTION_DAYS":           "GOTCHA_EVENT_RETENTION_DAYS",
+		"GOTCHA_SERVER_URL":               "GOTCHA_PROBE_SERVER_URL",
+		"GOTCHA_INGEST_RATE_LIMIT":        "GOTCHA_INGEST_RATE_PER_SEC",
+		"GOTCHA_AGENT_DIST_DIR":           "GOTCHA_DIST_DIR",
+		"GOTCHA_AGENT_DIST_RATE_PER_MIN":  "GOTCHA_DIST_RATE_PER_MIN",
 		"GOTCHA_ADDR":                     "GOTCHA_LISTEN_ADDR",
 		"GOTCHA_LOG_LEVEL":                "GOTCHA_LOGGING_LEVEL",
 		"GOTCHA_LOG_FORMAT":               "GOTCHA_LOGGING_FORMAT",
@@ -62,18 +43,17 @@ func TestEnvcontractRenamedComplete(t *testing.T) {
 		"GOTCHA_AGENT_INTERVAL":           "GOTCHA_AGENT_INTERVAL_SECONDS",
 		"GOTCHA_AGENT_KEY":                "GOTCHA_AGENT_INGEST_KEY",
 		"GOTCHA_AGENT_TLS_SKIP_VERIFY":    "GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY",
-		// E3, заморозка контракта — неймспейс compose и сборки
-		"GOTCHA_PG_PASSWORD":  "GOTCHA_COMPOSE_PG_PASSWORD",
-		"GOTCHA_CH_PASSWORD":  "GOTCHA_COMPOSE_CH_PASSWORD",
-		"GOTCHA_PG_MEM_LIMIT": "GOTCHA_COMPOSE_PG_MEM_LIMIT",
-		"GOTCHA_CH_MEM_LIMIT": "GOTCHA_COMPOSE_CH_MEM_LIMIT",
-		"GOTCHA_MEM_LIMIT":    "GOTCHA_COMPOSE_MEM_LIMIT",
-		"GOTCHA_NET_MTU":      "GOTCHA_COMPOSE_NET_MTU",
-		"GOTCHA_PORT":         "GOTCHA_COMPOSE_PORT",
-		"GOTCHA_BIND":         "GOTCHA_COMPOSE_BIND",
-		"GOTCHA_VERSION":      "GOTCHA_BUILD_VERSION",
-		"GOTCHA_COMMIT":       "GOTCHA_BUILD_COMMIT",
-		"GOTCHA_DATE":         "GOTCHA_BUILD_DATE",
+		"GOTCHA_PG_PASSWORD":              "GOTCHA_COMPOSE_PG_PASSWORD",
+		"GOTCHA_CH_PASSWORD":              "GOTCHA_COMPOSE_CH_PASSWORD",
+		"GOTCHA_PG_MEM_LIMIT":             "GOTCHA_COMPOSE_PG_MEM_LIMIT",
+		"GOTCHA_CH_MEM_LIMIT":             "GOTCHA_COMPOSE_CH_MEM_LIMIT",
+		"GOTCHA_MEM_LIMIT":                "GOTCHA_COMPOSE_MEM_LIMIT",
+		"GOTCHA_NET_MTU":                  "GOTCHA_COMPOSE_NET_MTU",
+		"GOTCHA_PORT":                     "GOTCHA_COMPOSE_PORT",
+		"GOTCHA_BIND":                     "GOTCHA_COMPOSE_BIND",
+		"GOTCHA_VERSION":                  "GOTCHA_BUILD_VERSION",
+		"GOTCHA_COMMIT":                   "GOTCHA_BUILD_COMMIT",
+		"GOTCHA_DATE":                     "GOTCHA_BUILD_DATE",
 	}
 	if len(envcontract.Renamed) != 41 {
 		t.Errorf("len(envcontract.Renamed) = %d, want 41", len(envcontract.Renamed))
@@ -95,17 +75,8 @@ func TestEnvcontractRenamedComplete(t *testing.T) {
 	}
 }
 
-// agentOwnedRenamedNewNames — новые имена envcontract.Renamed, которые
-// читает internal/agent (отдельный бинарь gotcha-agent), а НЕ cmd/gotcha:
-// у Config здесь нет и не может быть поля под GOTCHA_AGENT_INGEST_KEY/
-// GOTCHA_AGENT_INTERVAL_SECONDS/GOTCHA_AGENT_TLS_INSECURE_SKIP_VERIFY,
-// поэтому регрессионный подтест «новое имя применяется как обычно» для них
-// живёт в internal/agent/config_test.go (agentRenamedEnvVarNewNameChecks +
-// TestLoadConfigRenamedEnvVarNewNameStillApplies того пакета), а не здесь.
-// Выведено ИЗ envcontract.AgentOwned (internal/envcontract/renamed.go) —
-// единственного источника, не хардкод: добавление агентской пары в
-// AgentOwned меняет и это множество, без правки cmd/gotcha (список не
-// дублируется руками в двух местах).
+// Пары, которые читает internal/agent, а не cmd/gotcha — Config здесь не
+// имеет для них поля, регрессия «новое имя работает» живёт в internal/agent.
 func agentOwnedRenamedNewNames() map[string]bool {
 	m := make(map[string]bool, len(envcontract.AgentOwned))
 	for _, old := range envcontract.AgentOwned {
@@ -114,17 +85,8 @@ func agentOwnedRenamedNewNames() map[string]bool {
 	return m
 }
 
-// infraOwnedRenamedNewNames — новые имена envcontract.Renamed, которые не
-// читает НИКТО из Go-кода (ни cmd/gotcha, ни internal/agent): одиннадцать
-// переменных compose и сборки (GOTCHA_COMPOSE_*/GOTCHA_BUILD_*) — их видит
-// только сам Docker Compose (подстановка `${...}` в docker-compose.yml/
-// .small.yml) и Makefile (DOCKER_BUILD_ENV, build-args образа), поэтому у
-// Config нет и не может быть под них поля, и регрессионному подтесту
-// «новое имя применяется как обычно» здесь взяться неоткуда. Выведено ИЗ
-// envcontract.InfraOwned (internal/envcontract/renamed.go) — единственного
-// источника, не хардкод, тем же приёмом, что и agentOwnedRenamedNewNames
-// выше: добавление пары в InfraOwned меняет и это множество без правки
-// cmd/gotcha.
+// Пары compose/build (GOTCHA_COMPOSE_*/GOTCHA_BUILD_*) — их не читает никакой
+// Go-код, подставляют только Docker Compose и Makefile.
 func infraOwnedRenamedNewNames() map[string]bool {
 	m := make(map[string]bool, len(envcontract.InfraOwned))
 	for _, old := range envcontract.InfraOwned {
@@ -133,20 +95,8 @@ func infraOwnedRenamedNewNames() map[string]bool {
 	return m
 }
 
-// TestRenamedEnvVarNewNameChecksComplete — renamedEnvVarNewNameChecks
-// (cmd/gotcha/config_test.go, регрессионные подтесты «новое имя применяется
-// как обычно») обязана содержать РОВНО те новые имена, что есть среди
-// значений envcontract.Renamed И принадлежат cmd/gotcha (не входят ни в
-// agentOwnedRenamedNewNames, ни в infraOwnedRenamedNewNames выше) — ни
-// лишних, ни пропущенных. Таблица и карта живут в разных местах не просто
-// рядом: без этой сверки одиннадцатая пара, добавленная в
-// envcontract.Renamed, тихо осталась бы без регрессионного подтеста в
-// TestLoadConfigRenamedEnvVarNewNameStillApplies — ровно то же расхождение
-// таблицы и истины, которое уже один раз привело к тому, что девять из
-// десяти строк таблицы не вызывались никогда (таблица заявляла покрытие,
-// которого не было). Сравнение только НОВЫХ имён — они не под сторожем
-// TestNoRenamedEnvVarNames, поэтому написать их буквально можно в любом
-// файле cmd/gotcha, в том числе в config_test.go.
+// Сверяет renamedEnvVarNewNameChecks с envcontract.Renamed построчно — без
+// неё новая пара тихо осталась бы без регрессионного подтеста.
 func TestRenamedEnvVarNewNameChecksComplete(t *testing.T) {
 	agentOwned := agentOwnedRenamedNewNames()
 	infraOwned := infraOwnedRenamedNewNames()

@@ -20,8 +20,6 @@ var (
 	errFlowExpired   = errors.New("web: oauth flow expired")
 )
 
-// oauthFlow — состояние потока, живущее в подписанной cookie между start и
-// callback. Link/UID — поток привязки из профиля (юзер уже залогинен).
 type oauthFlow struct {
 	Provider string `json:"p"`
 	State    string `json:"s"`

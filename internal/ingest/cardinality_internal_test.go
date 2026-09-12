@@ -6,44 +6,30 @@ import (
 	"time"
 )
 
-// TestCardinalityGuardCollapsesTail — сверх потолка значения схлопываются, а не
-// теряются: суммарная нагрузка по проекту остаётся видна, пропадает лишь
-// разбивка по хвосту.
 func TestCardinalityGuardCollapsesTail(t *testing.T) {
 	g := NewCardinalityGuard(3, time.Hour)
 
-	// Первые три имени проходят как есть.
 	for i := 0; i < 3; i++ {
 		v := "GET /a" + strconv.Itoa(i)
 		if got := g.Value(1, FieldTransaction, v); got != v {
 			t.Fatalf("значение %d схлопнуто раньше потолка: %q", i, got)
 		}
 	}
-	// Уже известное имя проходит и после исчерпания потолка — иначе честный
-	// проект, набравший ровно потолок, потерял бы все свои эндпойнты.
 	if got := g.Value(1, FieldTransaction, "GET /a0"); got != "GET /a0" {
 		t.Fatalf("известное имя схлопнуто: %q", got)
 	}
-	// Новое — схлопывается.
 	if got := g.Value(1, FieldTransaction, "GET /users/8812"); got != CardinalityOverflow {
 		t.Fatalf("значение сверх потолка не схлопнуто: %q", got)
 	}
 
-	// Поля независимы: переполнение имён транзакций не режет окружения.
 	if got := g.Value(1, FieldEnvironment, "production"); got != "production" {
 		t.Fatalf("другое поле задето: %q", got)
 	}
-	// Проекты независимы.
 	if got := g.Value(2, FieldTransaction, "GET /b"); got != "GET /b" {
 		t.Fatalf("другой проект задет: %q", got)
 	}
 }
 
-// TestCardinalityGuardCollapsesHostTail — host.name промоутируется в MetricPoint
-// и обязан быть под тем же гардом, что имена транзакций и метрик: значение
-// открыто клиенту (реальное имя хоста/пода), а в ClickHouse оно стоит в ключе
-// точки — без потолка взрыв кардинальности будет тем же, что и у остальных
-// полей под FieldHost.
 func TestCardinalityGuardCollapsesHostTail(t *testing.T) {
 	g := NewCardinalityGuard(2, time.Hour)
 
@@ -53,20 +39,14 @@ func TestCardinalityGuardCollapsesHostTail(t *testing.T) {
 	if got := g.Value(1, FieldHost, "web-2"); got != "web-2" {
 		t.Fatalf("значение в пределах потолка схлопнуто: %q", got)
 	}
-	// Известное имя проходит и после исчерпания потолка.
 	if got := g.Value(1, FieldHost, "web-1"); got != "web-1" {
 		t.Fatalf("известное имя схлопнуто: %q", got)
 	}
-	// Новое сверх потолка — схлопывается.
 	if got := g.Value(1, FieldHost, "web-3"); got != CardinalityOverflow {
 		t.Fatalf("значение сверх потолка не схлопнуто: %q", got)
 	}
 }
 
-// TestCardinalityGuardReportsSamples — отчёт обязан нести ПРИМЕРЫ схлопнутых
-// значений. Ради них он и существует: три имени подряд с разными числами
-// объясняют причину («в имя попал идентификатор») мгновенно, а голый счётчик
-// не объясняет ничего.
 func TestCardinalityGuardReportsSamples(t *testing.T) {
 	g := NewCardinalityGuard(2, time.Hour)
 	g.Value(7, FieldTransaction, "GET /orders")
@@ -99,14 +79,11 @@ func TestCardinalityGuardReportsSamples(t *testing.T) {
 		t.Errorf("первый пример %q, ожидалось первое схлопнутое значение", r.Samples[0])
 	}
 
-	// Проект без переполнения в отчёт не попадает.
 	if rep := g.Report(999); rep != nil {
 		t.Errorf("отчёт для чистого проекта не пуст: %+v", rep)
 	}
 }
 
-// TestCardinalityGuardWindowResets — проект, починивший имена, обязан вернуться
-// к нормальной работе сам, без перезапуска инстанса.
 func TestCardinalityGuardWindowResets(t *testing.T) {
 	now := time.Unix(0, 0)
 	g := NewCardinalityGuard(1, time.Minute)
@@ -126,7 +103,6 @@ func TestCardinalityGuardWindowResets(t *testing.T) {
 	}
 }
 
-// TestCardinalityGuardDisabled — потолок 0 означает «выключено».
 func TestCardinalityGuardDisabled(t *testing.T) {
 	g := NewCardinalityGuard(0, time.Hour)
 	for i := 0; i < 1000; i++ {
@@ -138,16 +114,12 @@ func TestCardinalityGuardDisabled(t *testing.T) {
 	if g.Report(1) != nil {
 		t.Error("выключенный ограничитель не должен ничего сообщать")
 	}
-	// nil-приёмник тоже безопасен: ограничитель может быть не сконфигурирован.
 	var nilGuard *CardinalityGuard
 	if got := nilGuard.Value(1, FieldTransaction, "x"); got != "x" {
 		t.Errorf("nil-ограничитель изменил значение: %q", got)
 	}
 }
 
-// TestCardinalityGuardBoundsProjects — карта проектов не растёт бесконечно, и
-// вытеснение не снимает ограничение со всех разом (тот же дефект уже чинили в
-// рейт-лимитере).
 func TestCardinalityGuardBoundsProjects(t *testing.T) {
 	g := NewCardinalityGuard(1, time.Hour)
 	for id := int64(0); id < maxCardinalityProjects+500; id++ {
@@ -164,10 +136,6 @@ func TestCardinalityGuardBoundsProjects(t *testing.T) {
 	}
 }
 
-// TestCardinalityGuardCollapsedTotalMonotonic — CollapsedTotal это counter за
-// жизнь процесса: растёт ровно на число схлопываний и НЕ проседает при
-// ролловере окна, когда per-field счётчики проекта начинаются заново. Раньше
-// он суммировал их под мьютексом, и rate() по нему врал после каждого окна.
 func TestCardinalityGuardCollapsedTotalMonotonic(t *testing.T) {
 	now := time.Unix(0, 0)
 	g := NewCardinalityGuard(1, time.Minute)
@@ -187,8 +155,6 @@ func TestCardinalityGuardCollapsedTotalMonotonic(t *testing.T) {
 		t.Fatalf("после %d схлопываний счётчик = %d", n, got)
 	}
 
-	// Ролловер окна: набор проекта начинается заново, отчёт пустой, но
-	// накопленный счётчик не убывает.
 	now = now.Add(2 * time.Minute)
 	if got := g.Value(3, FieldTransaction, "GET /b0"); got != "GET /b0" {
 		t.Fatalf("после окна набор должен начаться заново: %q", got)

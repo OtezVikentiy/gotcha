@@ -41,12 +41,10 @@ func TestInviteFlow(t *testing.T) {
 		t.Fatalf("invited role: r=%q err=%v", r, err)
 	}
 
-	// Одноразовость.
 	other := newUser(t, pool, "other@example.com")
 	if _, err := svc.AcceptInvite(ctx, token, other, "other@example.com"); !errors.Is(err, org.ErrInviteInvalid) {
 		t.Fatalf("reused token: got %v, want ErrInviteInvalid", err)
 	}
-	// Мусорный токен.
 	if _, err := svc.AcceptInvite(ctx, "garbage", other, "other@example.com"); !errors.Is(err, org.ErrInviteInvalid) {
 		t.Fatalf("garbage token: got %v, want ErrInviteInvalid", err)
 	}
@@ -76,10 +74,6 @@ func TestInviteExpiry(t *testing.T) {
 	}
 }
 
-// TestInviteEmailMismatch — SEC-M2: инвайт выписан на конкретный email, и
-// принять его может только владелец этого адреса. Чужой юзер получает
-// ErrInviteEmailMismatch, членство не создаётся, а инвайт остаётся
-// действующим (не гасится) и потом успешно принимается правильным юзером.
 func TestInviteEmailMismatch(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)
@@ -96,7 +90,6 @@ func TestInviteEmailMismatch(t *testing.T) {
 		t.Fatalf("Invite: %v", err)
 	}
 
-	// Чужой email → mismatch, членства нет.
 	wrong := newUser(t, pool, "b@y.com")
 	if _, err := svc.AcceptInvite(ctx, token, wrong, "b@y.com"); !errors.Is(err, org.ErrInviteEmailMismatch) {
 		t.Fatalf("wrong email: got %v, want ErrInviteEmailMismatch", err)
@@ -105,7 +98,6 @@ func TestInviteEmailMismatch(t *testing.T) {
 		t.Fatalf("wrong user role: got %v, want ErrNotMember", err)
 	}
 
-	// Правильный email (регистр не важен — email citext) → успех.
 	right := newUser(t, pool, "a@x.com")
 	gotOrg, err := svc.AcceptInvite(ctx, token, right, "A@X.com")
 	if err != nil || gotOrg != o.ID {
@@ -146,10 +138,6 @@ func TestAcceptPendingInviteByEmail(t *testing.T) {
 	}
 }
 
-// TestAcceptPendingInviteByEmailNoDoubleAccept — RA-L7: при гонке нескольких
-// провижинингов одного email действующий инвайт должен быть погашен ровно один
-// раз. Guard `accepted_at IS NULL` в самом UPDATE (а не только в подзапросе)
-// гарантирует, что параллельные транзакции не примут один инвайт дважды.
 func TestAcceptPendingInviteByEmailNoDoubleAccept(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -177,7 +165,7 @@ func TestAcceptPendingInviteByEmailNoDoubleAccept(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			<-start // одновременный старт — максимизируем окно гонки
+			<-start
 			_, ok, err := svc.AcceptPendingInviteByEmail(ctx, "racer@example.com", inviteeID)
 			oks[i], errs[i] = ok, err
 		}(i)

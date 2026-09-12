@@ -9,10 +9,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
-// maxFailedErrorRunes caps the displayed last_error at 200 runes (not
-// bytes, to avoid splitting multi-byte UTF-8 sequences) — sender errors
-// (SMTP responses, HTTP bodies) are arbitrary free text and can be long;
-// this is an overview table, not a full log viewer.
+// лимит в рунах, не байтах — иначе можно разрезать многобайтовый UTF-8 символ.
 const maxFailedErrorRunes = 200
 
 func truncateFailedError(s string) string {
@@ -34,13 +31,6 @@ templ failedRow(f notify.FailedJob) {
 	</tr>
 }
 
-// AlertDeliveries — GET /projects/{id}/alerts/deliveries: лог последних
-// неудачных доставок уведомлений (spec §7 — не только правила/каналы, но и
-// то, что реально не долетело, должно быть видно в UI, не только в логах
-// воркера). Вынесена из основной страницы алертов (UI-фидбек: секция делала
-// страницу алертов слишком длинной/разрежённой). canManage (C3) — та же
-// маска цели канала, что и на странице алертов: не-admin видит замаскированный
-// Target (alertDeliveriesPage), и здесь же — почему.
 templ AlertDeliveries(projectID int64, failed []notify.FailedJob, canManage bool, userEmail string) {
 	@layout(i18n.T(ctx, "alerts.deliveries.title"), userEmail) {
 		<div class="alert-deliveries">

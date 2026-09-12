@@ -17,29 +17,22 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// slosPath — адрес раздела SLO проекта (зеркалит templates.SLOsPath, чтобы
-// веб-слой не тянул конкатенацию руками).
 func slosPath(projectID int64) string {
 	return templates.SLOsPath(projectID)
 }
 
-// defaultSLOBurnLongMin/ShortMin — окна burn rate по умолчанию (не выведены в
-// форму: форма задаёт только порог). Совпадают с DEFAULT миграции 0072 и с
-// дефолтами оценщика (T4): 60-минутное «медленное» и 5-минутное «быстрое» окно.
+// Совпадают с DEFAULT миграции 0072 и с дефолтами оценщика: 60-минутное «медленное» и
+// 5-минутное «быстрое» окно.
 const (
 	defaultSLOBurnLongMin   = 60
 	defaultSLOBurnShortMin  = 5
 	defaultSLOBurnThreshold = 14.4
 )
 
-// maxThresholdMS — потолок порога задержки latency-SLO (1 час в мс). Выше
-// бессмысленно для SLI задержки и вдобавок переполняет колонку int4 (>2^31-1 →
-// INSERT падает → 500 вместо 422). Валидируем до вставки.
+// Выше бессмысленно для SLI задержки и переполняет колонку int4 (>2^31-1 → INSERT падает →
+// 500 вместо 422). Валидируем до вставки.
 const maxThresholdMS = 3_600_000
 
-// slosPage — GET /projects/{id}/slos: список определений SLO с текущим
-// достижением и остатком бюджета + форма создания. Доступ — оператор проекта
-// (requireProjectOperator), как metric-alerts (спека 2026-08-08).
 func (h *Handler) slosPage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -60,7 +53,6 @@ func (h *Handler) slosPage(w http.ResponseWriter, r *http.Request) {
 	h.renderSLOs(w, r, http.StatusOK, projectID, nil, "")
 }
 
-// sloFormState — введённые значения формы SLO для возврата при ошибке валидации.
 func sloFormState(r *http.Request) templates.FormState {
 	f := templates.FormState{}
 	for _, name := range []string{
@@ -74,25 +66,20 @@ func sloFormState(r *http.Request) templates.FormState {
 	return f
 }
 
-// renderSLOs отрисовывает страницу. form/errMsg — введённые значения и ошибка
-// валидации (открывают модалку с сервера), как renderMetricAlerts.
 func (h *Handler) renderSLOs(w http.ResponseWriter, r *http.Request, status int, projectID int64, form templates.FormState, errMsg string) {
 	slos, err := h.SLO.List(r.Context(), projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	// Окна обслуживания проекта — один раз на страницу, а не в провайдере на
-	// каждую строку (аудит 2026-09-04, K8-2): sloRow отдаёт их провайдеру
-	// через BucketsExcluding.
+	// Окна обслуживания — один раз на страницу, не в провайдере на каждую строку: sloRow отдаёт
+	// их провайдеру через BucketsExcluding.
 	windows, windowsLoaded := h.sloMaintenanceWindows(r.Context(), projectID)
 	rows := make([]templates.SLORow, 0, len(slos))
 	for _, s := range slos {
 		rows = append(rows, h.sloRow(r.Context(), s, windows, windowsLoaded))
 	}
-	// Мониторы проекта — для выбора в форме uptime-SLO. Ошибка чтения (или
-	// отсутствие Uptime-сервиса на этом стенде) не должна ронять страницу:
-	// тогда просто нет выбора, форма подскажет завести монитор.
+	// Ошибка чтения (или отсутствие Uptime) не должна ронять страницу — тогда просто нет выбора.
 	var monitors []templates.SLOMonitorOption
 	if h.Uptime != nil {
 		if ms, err := h.Uptime.List(r.Context(), projectID); err == nil {
@@ -106,12 +93,8 @@ func (h *Handler) renderSLOs(w http.ResponseWriter, r *http.Request, status int,
 	_ = templates.SLOsScreen(projectID, rows, monitors, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
 }
 
-// sloRow считает достижение и остаток бюджета SLO за его окно через провайдер
-// соответствующего типа. Провайдера нет (h.SLOProviders не проведён на стенде)
-// либо за окно нет событий (total==0) → HasData=false: страница показывает
-// прочерк, а не мнимые 0%. Ошибку провайдера трактуем как «нет данных», а не
-// 500: список не должен падать целиком из-за одного SLO без телеметрии.
-// windows/windowsLoaded — см. sloMaintenanceWindows.
+// Провайдера нет либо за окно нет событий (total==0) → HasData=false: прочерк, не мнимые 0%.
+// Ошибку провайдера трактуем так же — список не падает из-за одного SLO.
 func (h *Handler) sloRow(ctx context.Context, s slo.SLO, windows []uptime.Window, windowsLoaded bool) templates.SLORow {
 	row := templates.SLORow{
 		ID:        s.ID,
@@ -125,8 +108,7 @@ func (h *Handler) sloRow(ctx context.Context, s slo.SLO, windows []uptime.Window
 	}
 	to := time.Now().UTC()
 	from := to.Add(-time.Duration(s.WindowDays) * 24 * time.Hour)
-	// Клип окна к горизонту хранения источника: за пределами TTL данных нет,
-	// и просить их — лишнее сканирование пустых партиций (0 = хранить вечно).
+	// Клип к горизонту хранения: за пределами TTL данных нет, и просить их — лишнее сканирование.
 	if cap := p.RetentionCap(); cap > 0 {
 		if earliest := to.Add(-cap); from.Before(earliest) {
 			from = earliest
@@ -154,10 +136,8 @@ func (h *Handler) sloRow(ctx context.Context, s slo.SLO, windows []uptime.Window
 	return row
 }
 
-// sloMaintenanceWindows — окна обслуживания проекта для списка SLO.
-// loaded=false — стенд без h.Uptime: провайдер читает окна сам (Buckets),
-// как и прежде. Ошибка чтения — то же, что «окон нет» (loaded=true, nil):
-// так же трактует её и сам провайдер в excludeMaintenance.
+// loaded=false — стенд без h.Uptime: провайдер читает окна сам. Ошибка чтения — то же, что
+// «окон нет» (loaded=true, nil) — так же трактует её и сам провайдер.
 func (h *Handler) sloMaintenanceWindows(ctx context.Context, projectID int64) (windows []uptime.Window, loaded bool) {
 	if h.Uptime == nil {
 		return nil, false
@@ -170,10 +150,8 @@ func (h *Handler) sloMaintenanceWindows(ctx context.Context, projectID int64) (w
 	return ws, true
 }
 
-// sloStatus — статус бюджета по доле остатка: исчерпан (≤0), горит (тонкий
-// остаток), здоров. Пороги — грубая визуальная классификация для списка;
-// фактическое открытие инцидента решает двухоконный burn rate в оценщике (T4),
-// не эти границы.
+// Пороги — грубая визуальная классификация для списка; открытие инцидента решает двухоконный
+// burn rate в оценщике, не эти границы.
 func sloStatus(remaining float64) string {
 	switch {
 	case remaining <= 0:
@@ -185,8 +163,6 @@ func sloStatus(remaining float64) string {
 	}
 }
 
-// sloCreate — POST /projects/{id}/slos: создать определение SLO. Валидация
-// зависит от типа SLI. Доступ — оператор проекта.
 func (h *Handler) sloCreate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -302,11 +278,8 @@ func (h *Handler) sloCreate(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, slosPath(projectID), http.StatusSeeOther)
 }
 
-// monitorInProject — принадлежит ли монитор проекту. Проверяем через список
-// мониторов проекта, а не Uptime.Get(id): Get вернул бы и чужой монитор,
-// раскрыв его существование (тот же existence-oracle, что и в остальных
-// гейтах). Uptime не проведён (нет монитор-стенда) → всегда false: uptime-SLO
-// без мониторов не заводится.
+// Через список мониторов проекта, не Uptime.Get(id): Get вернул бы и чужой монитор, раскрыв
+// его существование.
 func (h *Handler) monitorInProject(ctx context.Context, projectID, monitorID int64) bool {
 	if h.Uptime == nil {
 		return false
@@ -323,8 +296,6 @@ func (h *Handler) monitorInProject(ctx context.Context, projectID, monitorID int
 	return false
 }
 
-// sloDelete — POST /projects/{id}/slos/{sloID}/delete: удалить определение SLO
-// (инциденты уходят каскадом). Двухшаговое подтверждение, как у метрик-алертов.
 func (h *Handler) sloDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)

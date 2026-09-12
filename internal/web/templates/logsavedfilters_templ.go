@@ -17,14 +17,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/logfilter"
 )
 
-// LogsPath / LogsURLFromValues — экспортированные обёртки вокруг
-// unexported logsPath/logsURLFromValues (задача 9, «сохранённые фильтры
-// логов»): хендлерам управления фильтрами (пакет web) нужно собрать адрес
-// возврата POST-Redirect-GET из url.Values параметров формы, а сама склейка
-// пути уже живёт здесь, в templates. Тот же приём, что ExportsPath у
-// выгрузок (exports.templ) — там же объяснение, зачем обёртка вместо
-// прямого экспорта logsPath: путь строится в одном месте, а не в каждом
-// вызывающем пакете отдельно.
+// Экспортированные обёртки над unexported logsPath/logsURLFromValues — путь строится в одном месте.
 func LogsPath(projectID int64) string {
 	return logsPath(projectID)
 }
@@ -33,23 +26,12 @@ func LogsURLFromValues(projectID int64, q url.Values) string {
 	return logsURLFromValues(projectID, q)
 }
 
-// LogSavedFilterRow — один сохранённый фильтр в панели плюс то, что решает
-// веб-слой при построении вью-модели: право редактировать/удалять именно
-// эту запись (владелец личного либо оператор для общего) и является ли
-// фильтр умолчанием текущего пользователя. Сам logfilter.Filter не прячется
-// за отдельным вью-типом (в отличие от ExportView у выгрузок) — пакет
-// templates уже импортирует internal/log ради log.Predicate/AttrFilter,
-// тот же прецедент для internal/logfilter не заводит нового слоя данных
-// там, где перекладывать нечего.
 type LogSavedFilterRow struct {
 	Filter    logfilter.Filter
 	CanEdit   bool
 	IsDefault bool
 }
 
-// LogSavedFiltersPanel — вью-модель панели «Мои»/«Общие» на странице логов.
-// CanShare — праву заводить/править общие фильтры (lvlOperator, вычислено
-// веб-слоем один раз для всей панели, а не на каждую строку отдельно).
 type LogSavedFiltersPanel struct {
 	Personal []LogSavedFilterRow
 	Shared   []LogSavedFilterRow
@@ -76,31 +58,13 @@ func logSavedFilterActionURL(projectID, filterID int64, action string) string {
 	return logSavedFiltersCreateURL(projectID) + "/" + strconv.FormatInt(filterID, 10) + "/" + action
 }
 
-// logSavedFilterEditModalID — якорь модалки правки конкретного фильтра.
-// Строка панели показывает только имя и три действия, а поля правки (имя и
-// видимость) живут в модалке — тот же приём, что у окон обслуживания
-// (windowEditModal, maintenance.templ) и правил подавления. Инлайновая форма
-// правки прямо в строке давала ряд из полноширинного .input и четырёх кнопок
-// разной высоты: строка списка переставала читаться как строка списка.
+// Поля правки живут в модалке, не инлайн в строке — иначе строка тянула .input и портила список.
 func logSavedFilterEditModalID(filterID int64) string {
 	return "log-filter-edit-" + strconv.FormatInt(filterID, 10)
 }
 
-// logSavedFilterApplyURL — ссылка применения сохранённого фильтра: условия
-// разворачиваются в обычные query-параметры списка логов, а не прячутся за
-// идентификатором фильтра, поэтому ссылка самодостаточна и переживает
-// удаление фильтра (Produces из брифа задачи 9). Раскладку предикатов в поля
-// делает log.ApplyPredicates — та же функция, что применяет сохранённый
-// фильтр и фильтр по умолчанию в internal/web/logs.go (задачи 9/10); до
-// устранения находки финального ревью C4 здесь жила независимая копия того
-// же switch (templates не может звать пакет web — тот и так импортирует
-// templates, обратный импорт дал бы цикл), и разошлась с оригиналом по всем
-// веткам, кроме q_not, не будучи покрытой тестом. log.ApplyPredicates
-// живёт в internal/log — пакете, который уже импортируют оба (web и
-// templates), поэтому общая функция не создаёт цикла. Копируется здесь
-// только тривиальное отображение log.ListFilter → LogsFilter (совпадающие
-// по смыслу поля один-в-один, без ветвления по Field/Op) — тот же приём,
-// что и в renderLogsPage (logs.go), где такое же отображение уже есть.
+// Раскладку предикатов делает общий log.ApplyPredicates, та же функция, что применяет
+// сохранённый фильтр и фильтр по умолчанию в web/logs.go; отдельная копия switch'а уже расходилась.
 func logSavedFilterApplyURL(projectID int64, f logfilter.Filter) string {
 	var lf log.ListFilter
 	log.ApplyPredicates(&lf, f.Predicates)
@@ -116,19 +80,8 @@ func logSavedFilterApplyURL(projectID int64, f logfilter.Filter) string {
 	return logsURLFromValues(projectID, logsPageURLValues(vm))
 }
 
-// logFilterConditionFields — скрытые поля текущего набора условий фильтра,
-// переиспользуются формой «Сохранить текущий фильтр» и формой «Обновить»
-// у каждого редактируемого фильтра списка (одна и та же разметка, два
-// разных action) — то же имя параметров, что читает web.logFilterFormParams
-// по закрытому списку logFilterParams (internal/web/logfilters.go).
-//
-// attr/trace_id/исключения вынесены в общий logFilterHiddenChipFields
-// (logs.templ) — до устранения находки финального ревью C11 этот же тройной
-// блок был написан здесь ещё раз независимо от GET-формы фильтров
-// (LogsScreen), и рисковал разойтись с ней при добавлении следующего
-// параметра отбора. severity/service/environment/q остаются здесь: у
-// GET-формы это ЖИВЫЕ поля с тем же именем — общая функция для них задвоила
-// бы параметр в сабмите (см. докблок logFilterHiddenChipFields).
+// Переиспользуется формой «Сохранить» и формой «Обновить» — то же имя параметров, что читает
+// web.logFilterFormParams. severity/service/environment/q не сюда: это живые поля GET-формы.
 func logFilterConditionFields(filter LogsFilter) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -158,7 +111,7 @@ func logFilterConditionFields(filter LogsFilter) templ.Component {
 			var templ_7745c5c3_Var2 string
 			templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.ResolveAttributeValue(sv)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 126, Col: 49}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 79, Col: 49}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var2)
 			if templ_7745c5c3_Err != nil {
@@ -177,7 +130,7 @@ func logFilterConditionFields(filter LogsFilter) templ.Component {
 			var templ_7745c5c3_Var3 string
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.ResolveAttributeValue(filter.Service)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 129, Col: 60}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 82, Col: 60}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var3)
 			if templ_7745c5c3_Err != nil {
@@ -196,7 +149,7 @@ func logFilterConditionFields(filter LogsFilter) templ.Component {
 			var templ_7745c5c3_Var4 string
 			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.ResolveAttributeValue(filter.Environment)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 132, Col: 68}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 85, Col: 68}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var4)
 			if templ_7745c5c3_Err != nil {
@@ -215,7 +168,7 @@ func logFilterConditionFields(filter LogsFilter) templ.Component {
 			var templ_7745c5c3_Var5 string
 			templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.ResolveAttributeValue(filter.Query)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 135, Col: 52}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 88, Col: 52}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var5)
 			if templ_7745c5c3_Err != nil {
@@ -234,11 +187,7 @@ func logFilterConditionFields(filter LogsFilter) templ.Component {
 	})
 }
 
-// logSavedFilterSaveForm — «Сохранить текущий фильтр»: имя + условия
-// текущего вида (logFilterConditionFields) + чекбокс «сделать общим», если
-// у вызывающего есть право (CanShare). Право реально проверяет веб-слой
-// (requireLogFilterOperator) — чекбокс здесь только для тех, у кого он
-// имеет смысл, честного отказа при подмене значения формы это не отменяет.
+// Чекбокс «сделать общим» — только для тех, у кого есть право; веб-слой проверяет его реально.
 func logSavedFilterSaveForm(projectID int64, filter LogsFilter, canShare bool) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -267,7 +216,7 @@ func logSavedFilterSaveForm(projectID int64, filter LogsFilter, canShare bool) t
 		var templ_7745c5c3_Var7 templ.SafeURL
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(logSavedFiltersCreateURL(projectID)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 146, Col: 76}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 95, Col: 76}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 		if templ_7745c5c3_Err != nil {
@@ -280,7 +229,7 @@ func logSavedFilterSaveForm(projectID int64, filter LogsFilter, canShare bool) t
 		var templ_7745c5c3_Var8 string
 		templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "logs.savedfilters.name_placeholder"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 147, Col: 110}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 96, Col: 110}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var8)
 		if templ_7745c5c3_Err != nil {
@@ -293,7 +242,7 @@ func logSavedFilterSaveForm(projectID int64, filter LogsFilter, canShare bool) t
 		var templ_7745c5c3_Var9 string
 		templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "logs.savedfilters.name_placeholder"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 147, Col: 175}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 96, Col: 175}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var9)
 		if templ_7745c5c3_Err != nil {
@@ -315,7 +264,7 @@ func logSavedFilterSaveForm(projectID int64, filter LogsFilter, canShare bool) t
 			var templ_7745c5c3_Var10 string
 			templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.savedfilters.shared_checkbox"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 152, Col: 54}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 101, Col: 54}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 			if templ_7745c5c3_Err != nil {
@@ -333,7 +282,7 @@ func logSavedFilterSaveForm(projectID int64, filter LogsFilter, canShare bool) t
 		var templ_7745c5c3_Var11 string
 		templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.savedfilters.save"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 155, Col: 85}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 104, Col: 85}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 		if templ_7745c5c3_Err != nil {
@@ -347,15 +296,8 @@ func logSavedFilterSaveForm(projectID int64, filter LogsFilter, canShare bool) t
 	})
 }
 
-// logSavedFilterRow — одна строка списка «Мои»/«Общие»: ссылка применения
-// (или неактивная подпись, если фильтр Applicable=false — payload неизвестной
-// версии, см. logfilter.Filter.Applicable), бейдж умолчания и действия. Сама
-// строка держит только имя и кнопки: поля правки (имя, видимость) уехали в
-// модалку logSavedFilterEditModal — иначе каждая строка списка тянула за
-// собой полноширинный .input и переносящуюся подпись чекбокса, и список
-// переставал читаться списком. «Сделать умолчанием» показывается всем, кто
-// видит фильтр вообще — это персональная настройка смотрящего, не правка
-// самого фильтра; «Изменить»/«Удалить» — только при CanEdit.
+// Поля правки — в модалке, иначе строка тянула .input и подпись чекбокса, переставая быть строкой.
+// «Сделать умолчанием» видит любой с доступом к фильтру; «Изменить»/«Удалить» — только CanEdit.
 func logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRow, canShare bool) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -389,7 +331,7 @@ func logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRow
 			var templ_7745c5c3_Var13 templ.SafeURL
 			templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(logSavedFilterApplyURL(projectID, row.Filter)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 172, Col: 70}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 114, Col: 70}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 			if templ_7745c5c3_Err != nil {
@@ -402,7 +344,7 @@ func logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRow
 			var templ_7745c5c3_Var14 string
 			templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(row.Filter.Name)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 172, Col: 90}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 114, Col: 90}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 			if templ_7745c5c3_Err != nil {
@@ -420,7 +362,7 @@ func logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRow
 			var templ_7745c5c3_Var15 string
 			templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "logs.savedfilters.not_applicable"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 174, Col: 104}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 116, Col: 104}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var15)
 			if templ_7745c5c3_Err != nil {
@@ -433,7 +375,7 @@ func logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRow
 			var templ_7745c5c3_Var16 string
 			templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(row.Filter.Name)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 174, Col: 124}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 116, Col: 124}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 			if templ_7745c5c3_Err != nil {
@@ -452,7 +394,7 @@ func logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRow
 			var templ_7745c5c3_Var17 string
 			templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.savedfilters.default_badge"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 177, Col: 86}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 119, Col: 86}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 			if templ_7745c5c3_Err != nil {
@@ -475,7 +417,7 @@ func logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRow
 			var templ_7745c5c3_Var18 templ.SafeURL
 			templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(logSavedFilterDefaultURL(projectID, row.Filter.ID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 182, Col: 94}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 124, Col: 94}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 			if templ_7745c5c3_Err != nil {
@@ -488,7 +430,7 @@ func logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRow
 			var templ_7745c5c3_Var19 string
 			templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.savedfilters.make_default"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 183, Col: 96}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 125, Col: 96}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 			if templ_7745c5c3_Err != nil {
@@ -507,7 +449,7 @@ func logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRow
 			var templ_7745c5c3_Var20 templ.SafeURL
 			templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("#" + logSavedFilterEditModalID(row.Filter.ID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 187, Col: 97}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 129, Col: 97}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 			if templ_7745c5c3_Err != nil {
@@ -520,7 +462,7 @@ func logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRow
 			var templ_7745c5c3_Var21 string
 			templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.savedfilters.edit"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 187, Col: 139}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 129, Col: 139}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 			if templ_7745c5c3_Err != nil {
@@ -533,7 +475,7 @@ func logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRow
 			var templ_7745c5c3_Var22 templ.SafeURL
 			templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(logSavedFilterDeleteURL(projectID, row.Filter.ID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 188, Col: 93}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 130, Col: 93}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 			if templ_7745c5c3_Err != nil {
@@ -554,7 +496,7 @@ func logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRow
 			var templ_7745c5c3_Var23 string
 			templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.savedfilters.delete"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 199, Col: 97}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 134, Col: 97}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 			if templ_7745c5c3_Err != nil {
@@ -583,23 +525,8 @@ func logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRow
 	})
 }
 
-// logSavedFilterEditModal — правка сохранённого фильтра (находка финального
-// ревью C10, оформление): имя, переключатель видимости и кнопка, которая
-// записывает в фильтр условия ТЕКУЩЕГО вида (об этом же говорит подсказка под
-// полями — до выноса в модалку это знание жило только в title кнопки, то есть
-// не было доступно ни с клавиатуры, ни с телефона).
-//
-// Модалка открывается только якорем (open=false): серверного переоткрытия по
-// ошибке валидации здесь нет — отказ рисуется сообщением над списком, панель
-// при этом раскрыта (см. logSavedFiltersSection). Тот же приём и те же
-// ограничения, что у windowEditModal до появления FormState.
-//
-// Переключатель видимости доступен только при canShare (тот же уровень, что
-// у создания общего фильтра, — веб-слой перепроверяет требованием оператора
-// ДО и ПОСЛЕ правки, requireLogFilterOperator). row.CanEdit для общего
-// фильтра гарантирует canOperate==canShare (см. logFiltersPanel), поэтому
-// переключатель для видимого здесь общего фильтра всегда доступен; скрытое
-// поле — запасной путь на случай расхождения инварианта, а не типовой путь.
+// Модалка не переоткрывается сервером при ошибке — отказ рисуется над списком, панель раскрыта.
+// Переключатель видимости — только при canShare; requireLogFilterOperator перепроверяет на сервере.
 func logSavedFilterEditModal(projectID int64, filter LogsFilter, row LogSavedFilterRow, canShare bool) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -640,7 +567,7 @@ func logSavedFilterEditModal(projectID int64, filter LogsFilter, row LogSavedFil
 			var templ_7745c5c3_Var26 templ.SafeURL
 			templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(logSavedFilterUpdateURL(projectID, row.Filter.ID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 228, Col: 91}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 148, Col: 91}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 			if templ_7745c5c3_Err != nil {
@@ -653,7 +580,7 @@ func logSavedFilterEditModal(projectID int64, filter LogsFilter, row LogSavedFil
 			var templ_7745c5c3_Var27 string
 			templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.savedfilters.name_placeholder"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 231, Col: 56}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 151, Col: 56}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 			if templ_7745c5c3_Err != nil {
@@ -666,7 +593,7 @@ func logSavedFilterEditModal(projectID int64, filter LogsFilter, row LogSavedFil
 			var templ_7745c5c3_Var28 string
 			templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.ResolveAttributeValue(row.Filter.Name)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 232, Col: 73}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 152, Col: 73}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var28)
 			if templ_7745c5c3_Err != nil {
@@ -698,7 +625,7 @@ func logSavedFilterEditModal(projectID int64, filter LogsFilter, row LogSavedFil
 				var templ_7745c5c3_Var29 string
 				templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.savedfilters.shared_checkbox"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 240, Col: 56}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 160, Col: 56}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 				if templ_7745c5c3_Err != nil {
@@ -721,7 +648,7 @@ func logSavedFilterEditModal(projectID int64, filter LogsFilter, row LogSavedFil
 			var templ_7745c5c3_Var30 string
 			templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.savedfilters.update_title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 246, Col: 66}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 166, Col: 66}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
 			if templ_7745c5c3_Err != nil {
@@ -734,7 +661,7 @@ func logSavedFilterEditModal(projectID int64, filter LogsFilter, row LogSavedFil
 			var templ_7745c5c3_Var31 string
 			templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.savedfilters.update"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 247, Col: 90}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 167, Col: 90}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 			if templ_7745c5c3_Err != nil {
@@ -754,12 +681,7 @@ func logSavedFilterEditModal(projectID int64, filter LogsFilter, row LogSavedFil
 	})
 }
 
-// logSavedFiltersSection — панель «Мои»/«Общие» целиком: карточка-<details>,
-// раскрытая при непустом errMsg (тот же приём, что exportsForm — P2-UX-4),
-// два списка и форма сохранения текущего вида. Счётчик в свёрнутом заголовке
-// отвечает на единственный вопрос к закрытой панели — «есть ли там что-то»:
-// без него панель выглядит одинаково и с тремя фильтрами, и с пустыми
-// списками, и раскрывать её приходится наугад.
+// Счётчик в свёрнутом заголовке — иначе панель выглядит одинаково и пустой, и полной.
 func logSavedFiltersSection(projectID int64, filter LogsFilter, panel LogSavedFiltersPanel, errMsg string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -799,7 +721,7 @@ func logSavedFiltersSection(projectID int64, filter LogsFilter, panel LogSavedFi
 		var templ_7745c5c3_Var33 string
 		templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.savedfilters.title"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 262, Col: 43}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 177, Col: 43}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var33))
 		if templ_7745c5c3_Err != nil {
@@ -817,7 +739,7 @@ func logSavedFiltersSection(projectID int64, filter LogsFilter, panel LogSavedFi
 			var templ_7745c5c3_Var34 string
 			templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(total))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 264, Col: 64}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 179, Col: 64}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var34))
 			if templ_7745c5c3_Err != nil {
@@ -840,7 +762,7 @@ func logSavedFiltersSection(projectID int64, filter LogsFilter, panel LogSavedFi
 			var templ_7745c5c3_Var35 string
 			templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinStringErrs(errMsg)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 269, Col: 29}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 184, Col: 29}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
 			if templ_7745c5c3_Err != nil {
@@ -858,7 +780,7 @@ func logSavedFiltersSection(projectID int64, filter LogsFilter, panel LogSavedFi
 		var templ_7745c5c3_Var36 string
 		templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.savedfilters.personal"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 273, Col: 52}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 188, Col: 52}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
 		if templ_7745c5c3_Err != nil {
@@ -876,7 +798,7 @@ func logSavedFiltersSection(projectID int64, filter LogsFilter, panel LogSavedFi
 			var templ_7745c5c3_Var37 string
 			templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.savedfilters.empty"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 275, Col: 62}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 190, Col: 62}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
 			if templ_7745c5c3_Err != nil {
@@ -909,7 +831,7 @@ func logSavedFiltersSection(projectID int64, filter LogsFilter, panel LogSavedFi
 		var templ_7745c5c3_Var38 string
 		templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.savedfilters.shared"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 285, Col: 50}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 200, Col: 50}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 		if templ_7745c5c3_Err != nil {
@@ -927,7 +849,7 @@ func logSavedFiltersSection(projectID int64, filter LogsFilter, panel LogSavedFi
 			var templ_7745c5c3_Var39 string
 			templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.savedfilters.empty"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 287, Col: 62}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logsavedfilters.templ`, Line: 202, Col: 62}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
 			if templ_7745c5c3_Err != nil {

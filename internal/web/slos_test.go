@@ -45,10 +45,8 @@ func newSLOStack(t *testing.T, wire bool) *sloStack {
 	h := web.New(authSvc, orgSvc, nil, nil, srv.URL)
 	if wire {
 		h.SLO = store
-		// SLOProviders намеренно nil: без ClickHouse ряды good/total не
-		// посчитать, страница списка при этом обязана рендериться (HasData=false,
-		// прочерк вместо %), а не падать. Расчёт достижения по провайдерам
-		// проверяется на уровне пакета slo (provider_test.go).
+		// SLOProviders намеренно nil: страница обязана рендериться (HasData=false), а не
+		// падать — расчёт достижения проверяется отдельно в пакете slo.
 	}
 	h.Register(mux)
 	return &sloStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc, h: h, slo: store}
@@ -75,7 +73,6 @@ func TestWebSLOsList(t *testing.T) {
 
 	base := "/projects/" + strconv.FormatInt(project.ID, 10) + "/slos"
 
-	// Список показывает засеянное SLO.
 	resp := getWithCookie(t, s.srv, base, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -83,7 +80,6 @@ func TestWebSLOsList(t *testing.T) {
 		t.Fatalf("page missing SLO (status %d): %s", resp.StatusCode, body)
 	}
 
-	// Создание валидного availability-SLO (target в %) → 303, запись в сторе.
 	form := url.Values{
 		"name": {"api latency"}, "sli_kind": {"latency"}, "target": {"95"},
 		"window_days": {"7"}, "threshold_ms": {"300"}, "burn_threshold": {"14.4"},
@@ -99,7 +95,6 @@ func TestWebSLOsList(t *testing.T) {
 		t.Fatalf("slos = %d, want 2", len(list))
 	}
 
-	// Невалидный target (>100%) → 422 с формой.
 	bad := url.Values{"name": {"bad"}, "sli_kind": {"availability"}, "target": {"150"}, "window_days": {"30"}}
 	resp = postForm(t, s.srv, base, bad, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -108,7 +103,6 @@ func TestWebSLOsList(t *testing.T) {
 		t.Fatalf("bad target status = %d, want 422", resp.StatusCode)
 	}
 
-	// latency без порога → 422 (kind-специфичная валидация).
 	badLat := url.Values{"name": {"lat"}, "sli_kind": {"latency"}, "target": {"99"}, "window_days": {"30"}, "threshold_ms": {"0"}}
 	resp = postForm(t, s.srv, base, badLat, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -117,7 +111,6 @@ func TestWebSLOsList(t *testing.T) {
 		t.Fatalf("latency no-threshold status = %d, want 422", resp.StatusCode)
 	}
 
-	// latency с порогом выше потолка (1 час в мс) → 422, а не 500 (int4-overflow).
 	bigLat := url.Values{"name": {"big"}, "sli_kind": {"latency"}, "target": {"99"}, "window_days": {"30"}, "threshold_ms": {"3600001"}}
 	resp = postForm(t, s.srv, base, bigLat, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -126,7 +119,6 @@ func TestWebSLOsList(t *testing.T) {
 		t.Fatalf("latency over-max status = %d, want 422", resp.StatusCode)
 	}
 
-	// uptime без монитора → 422 (kind-специфичная валидация).
 	badUp := url.Values{"name": {"up"}, "sli_kind": {"uptime"}, "target": {"99"}, "window_days": {"30"}}
 	resp = postForm(t, s.srv, base, badUp, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -135,9 +127,8 @@ func TestWebSLOsList(t *testing.T) {
 		t.Fatalf("uptime no-monitor status = %d, want 422", resp.StatusCode)
 	}
 
-	// Первый шаг удаления: POST без confirmed обязан отдать страницу подтверждения,
-	// а не удалить. Проверяется именно тело: тест, который сразу шлёт confirmed=yes,
-	// ходит в обход шаблона и не заметит, если форма и хендлер разойдутся.
+	// Проверяем именно тело подтверждения: тест, сразу шлющий confirmed=yes, не заметил бы,
+	// если форма и хендлер разошлись.
 	delPath := base + "/" + strconv.FormatInt(list[0].ID, 10) + "/delete"
 	resp = postForm(t, s.srv, delPath, url.Values{}, s.srv.URL, ownerCookie)
 	confirmBody, _ := io.ReadAll(resp.Body)
@@ -152,7 +143,6 @@ func TestWebSLOsList(t *testing.T) {
 		t.Fatalf("SLO исчез после неподтверждённого удаления: %d, want 2", len(list1))
 	}
 
-	// Удаление SLO (двухшаговое подтверждение: confirmed=yes).
 	del := url.Values{"confirmed": {"yes"}, "slo_id": {strconv.FormatInt(list[0].ID, 10)}}
 	resp = postForm(t, s.srv, base+"/"+strconv.FormatInt(list[0].ID, 10)+"/delete", del, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -164,8 +154,7 @@ func TestWebSLOsList(t *testing.T) {
 		t.Fatalf("after delete slos = %d, want 1", len(list2))
 	}
 
-	// Повтор по той же (уже устаревшей) странице: удалять нечего — 404, а не 303
-	// «как будто удалили» и не 500. Держится на slo.ErrNotFound из store.
+	// Повтор по устаревшей странице — 404 (slo.ErrNotFound), не 303 «как будто удалили» и не 500.
 	resp = postForm(t, s.srv, delPath, del, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -173,7 +162,6 @@ func TestWebSLOsList(t *testing.T) {
 		t.Fatalf("повторное удаление status = %d, want 404", resp.StatusCode)
 	}
 
-	// Член организации без команды на проекте → 404 (requireProjectOperator).
 	memberID, memberCookie := orgSettingsRegister(t, s.auth, "slo-member@example.com")
 	if err := s.org.AddMember(ctx, o.ID, memberID, org.RoleMember); err != nil {
 		t.Fatalf("add member: %v", err)
@@ -185,8 +173,8 @@ func TestWebSLOsList(t *testing.T) {
 		t.Fatalf("member (no team) status = %d, want 404", resp.StatusCode)
 	}
 
-	// Кап-на-проект на web-слое: добиваем до 100 через стор, 101-й POST → 422
-	// (ErrTooManySLOs транслируется в err.slo.too_many, а не 500).
+	// Добиваем до 100 через стор — 101-й POST через веб-слой должен упереться в ErrTooManySLOs
+	// (err.slo.too_many, не 500).
 	cur, _ := s.slo.List(ctx, project.ID)
 	for i := len(cur); i < 100; i++ {
 		if _, err := s.slo.Create(ctx, slo.SLO{
@@ -220,7 +208,6 @@ func TestWebSLOsNilService(t *testing.T) {
 	}
 }
 
-// TestSLOsPathHelper фиксирует адрес раздела для nav/детали (T7).
 func TestSLOsPathHelper(t *testing.T) {
 	if got := templates.SLOsPath(7); got != "/projects/7/slos" {
 		t.Fatalf("SLOsPath(7) = %q, want /projects/7/slos", got)

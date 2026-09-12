@@ -16,9 +16,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestPerfEvidenceEachKind — доказательства perf-issue рендерятся по-своему для
-// каждого вида; проверяем slow-db (max time), http-flood (последовательность и
-// список URL) и неизвестный вид (только счётчик).
 func TestPerfEvidenceEachKind(t *testing.T) {
 	slow := PerfIssueDetail(PerfIssueDetailData{
 		Issue:    trace.PerfIssue{ID: 1, Kind: trace.KindSlowDBQuery, Title: "slow", Status: "unresolved", Count: 5, SampleTraceID: "t"},
@@ -44,8 +41,6 @@ func TestPerfEvidenceEachKind(t *testing.T) {
 	}, "u@e.com")
 	_ = renderTo(t, unknown)
 
-	// N+1 без опциональных доказательств (HasTotal=false, пустой ParentOp) —
-	// ветки условий по else.
 	bare := PerfIssueDetail(PerfIssueDetailData{
 		Issue:    trace.PerfIssue{ID: 4, Kind: trace.KindNPlusOne, Title: "n1", Status: "resolved", Count: 2, SampleTraceID: "t"},
 		Evidence: PerfEvidence{Count: 2},
@@ -53,8 +48,6 @@ func TestPerfEvidenceEachKind(t *testing.T) {
 	_ = renderTo(t, bare)
 }
 
-// TestProjectSettingsRetentionUnset — retentionDays=0 показывает «безлимитную»
-// ветку уведомления о хранении, а не число дней.
 func TestProjectSettingsRetentionUnset(t *testing.T) {
 	out := renderTo(t, ProjectSettings(org.Project{ID: 7, Slug: "web", Name: "Web"}, nil, "ошибка ключа", "u@e.com", PerfSettingsForm{}, RegressionSettingsForm{}, 0, nil))
 	if !strings.Contains(out, "ошибка ключа") {
@@ -62,11 +55,8 @@ func TestProjectSettingsRetentionUnset(t *testing.T) {
 	}
 }
 
-// TestIssueDetailBareFrame — кадр не из приложения (InApp=false) и без модуля,
-// issue без назначенного и без выбранного события — альтернативные ветки.
 func TestIssueDetailBareFrame(t *testing.T) {
 	it := issue.Issue{ID: 6, Title: "err", Level: "info", Status: "ignored", TimesSeen: 1, FirstSeen: time.Now(), LastSeen: time.Now()}
-	// Системный кадр (InApp=false) с модулем — рендерится через <details>.
 	frames := []Frame{{Function: "runtime.main", Module: "runtime", Filename: "", Lineno: 0, InApp: false}}
 	ev := event.Stored{ID: "e9", Level: "info", Message: "just a message"}
 	out := renderTo(t, IssueDetail(it, nil, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "e9", &ev, frames, "u@e.com", false, false, "", "", true, true, false))
@@ -75,7 +65,6 @@ func TestIssueDetailBareFrame(t *testing.T) {
 	}
 }
 
-// TestMonitorFormTCPandDNS — формы монитора kind=tcp/dns показывают свои поля.
 func TestMonitorFormTCPandDNS(t *testing.T) {
 	base := MonitorFormData{ProjectID: 7, IntervalSeconds: "60", TimeoutSeconds: "10", FailThreshold: "3", RecoveryThreshold: "2",
 		TCPHost: "db.internal", TCPPort: "5432", DNSHostname: "example.com", DNSRecordType: "A", DNSExpectedValue: "1.2.3.4"}
@@ -93,8 +82,6 @@ func TestMonitorFormTCPandDNS(t *testing.T) {
 	}
 }
 
-// TestMetricDetailPlain — метрика-gauge без перцентилей и без лейблов: ветки
-// без p50/p95/p99 и без матчера лейблов.
 func TestMetricDetailPlain(t *testing.T) {
 	vm := MetricDetailVM{ProjectID: 7, Info: metric.MetricInfo{Name: "cpu", Type: "gauge", Unit: ""}, Range: TimeRangeVM{Key: "1h"}, Agg: "avg", Chart: stub(), Percentiles: false}
 	out := renderTo(t, MetricDetail(vm, "u@e.com"))
@@ -103,8 +90,6 @@ func TestMetricDetailPlain(t *testing.T) {
 	}
 }
 
-// TestMonitorDetailPausedDisabled — выключенный монитор в статусе paused: ветка
-// «возобновить», без SSL и без проверок/инцидентов.
 func TestMonitorDetailPausedDisabled(t *testing.T) {
 	m := uptime.Monitor{ID: 9, Name: "paused-mon", Kind: uptime.KindTCP, Enabled: false, IntervalSeconds: 120}
 	stat := uptime.UptimeStat{}
@@ -114,16 +99,7 @@ func TestMonitorDetailPausedDisabled(t *testing.T) {
 	}
 }
 
-// TestRegisterClosed — регистрация в закрытом режиме прячет форму (ветка
-// closed=true) и показывает именно сообщение о закрытой регистрации, а не
-// приглашение зарегистрироваться по инвайту (соседняя ветка mode!="closed").
-//
-// Мутация — поменять местами ветки `if mode == "closed"` на `<h1>`/абзаце в
-// auth.templ (RegisterStub) — обязана уронить проверку заголовка и/или тела:
-// на выходе окажется auth.register.invite_title/invite_required вместо
-// closed_title/closed_body. Прежний ассерт (`len(out) == 0`) такую мутацию
-// не ловил вовсе: RegisterStub всегда рендерит непустой HTML независимо от
-// того, какая ветка сработала.
+// проверка по тексту заголовка/тела, не len(out)==0 — та не ловит перепутанные ветки closed/invite.
 func TestRegisterClosed(t *testing.T) {
 	out := renderTo(t, RegisterStub("", "closed", "", nil))
 
@@ -136,29 +112,16 @@ func TestRegisterClosed(t *testing.T) {
 	if !strings.Contains(out, wantBody) {
 		t.Errorf("закрытая регистрация: нет сообщения о закрытой регистрации %q", wantBody)
 	}
-	// action="/register" — маркер именно формы регистрации (RegisterForm,
-	// auth.templ), а не chromeless-обвязки: та сама рисует свои формы
-	// (переключатель языка/темы, /logout), и голая проверка на "<form"
-	// ловила бы их вместо интересующей.
+	// action="/register" — маркер именно формы регистрации, не chromeless-обвязки: та рисует свои формы.
 	if strings.Contains(out, `action="/register"`) {
 		t.Error("закрытая регистрация не должна показывать форму регистрации")
 	}
 }
 
-// emptyStateMarker — разметка, которую рисует единый компонент пустого
-// состояния (emptyState, emptystate.templ). Проверка именно по нему, а не по
-// длине вывода: страница рендерит layout и навигацию независимо от того,
-// показано ли пустое состояние или список строк данных, поэтому
-// `len(out) != 0` истинно в обоих случаях и не различает их вовсе.
+// класс empty-state, не len(out) — страница всегда рендерит layout/навигацию, длина не различает состояния.
 const emptyStateMarker = `class="empty-state"`
 
-// TestEmptyStates — пустые списки во всех разделах показывают пустое состояние,
-// а не строки данных.
-//
-// Мутация — убрать `@emptyState(...)` из ЛЮБОГО одного из шаблонов ниже —
-// обязана уронить ровно ту запись map'ы и назвать её по ключу: страница
-// по-прежнему рендерит непустой HTML (layout, навигация), но без
-// class="empty-state". Прежний ассерт (`len(out) == 0`) эту мутацию не ловил.
+// падение по конкретному ключу — сигнал, что из этого шаблона убрали @emptyState, не общая деградация.
 func TestEmptyStates(t *testing.T) {
 	o := org.Org{ID: 1, Slug: "acme", Name: "Acme"}
 	empties := map[string]string{
@@ -187,8 +150,6 @@ func TestEmptyStates(t *testing.T) {
 	}
 }
 
-// TestChannelStatusBadgeKinds — бейдж канала со всеми типами (email/webhook/
-// telegram) внутри строки канала.
 func TestChannelStatusBadgeKinds(t *testing.T) {
 	channels := []alert.Channel{
 		{ID: 1, Kind: alert.ChannelEmail, Enabled: true, Target: "a@b.c"},

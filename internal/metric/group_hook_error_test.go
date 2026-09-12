@@ -15,10 +15,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// erroringMetricGroupHook — фейковая реализация metricGroupHook (duck-
-// typing D3, см. evaluator.go): AttachMetric всегда возвращает заданную
-// ошибку. Изолирует groupGate от настоящего incidentgroup.Grouper
-// (используется для позитивных сценариев в group_test.go).
+// Фейковая реализация metricGroupHook (duck-typing): AttachMetric всегда возвращает заданную ошибку —
+// изолирует groupGate от настоящего incidentgroup.Grouper (позитивные сценарии — в group_test.go).
 type erroringMetricGroupHook struct {
 	err error
 }
@@ -27,10 +25,8 @@ func (h *erroringMetricGroupHook) AttachMetric(ctx context.Context, incidentID, 
 	return false, false, h.err
 }
 
-// TestGroupGateAttachMetricErrorStaysNoisy — groupGate: ошибка AttachMetric
-// — fail-safe (докблок groupGate: «шумим как без D3»). Инцидент правила
-// label_key='host' обязан открыться и уведомить, как будто группы нет
-// вовсе, а не молча потеряться под гейтом «attached && informing».
+// Ошибка AttachMetric — fail-safe (см. groupGate: «шумим как без группировки»). Инцидент правила
+// label_key='host' обязан открыться и уведомить, как будто группы нет, не потеряться под гейтом.
 func TestGroupGateAttachMetricErrorStaysNoisy(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")

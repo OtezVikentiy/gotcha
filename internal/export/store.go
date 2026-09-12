@@ -14,85 +14,38 @@ import (
 )
 
 const (
-	// leaseTTL строго больше таймаута сборки файла (jobTimeout воркера):
-	// иначе второй инстанс переклеймит заявку, которую первый ещё пишет,
-	// и оба одновременно запишут результат.
+	// Строго больше jobTimeout воркера, иначе второй инстанс переклеймит заявку, которую пишет первый.
 	leaseTTL = 20 * time.Minute
-	// maxAttempts — потолок попыток одной заявки. Заявка, упавшая столько
-	// раз подряд, скорее всего бьётся о системную проблему (ClickHouse
-	// недоступен, диск полон), а не о случайный сбой — дальше её добивает
-	// SweepStale, а не бесконечный переклейм.
+	// После стольких провалов подряд — вероятно системный сбой; дальше заявку добивает SweepStale.
 	maxAttempts = 3
-	// janitorBatchSize — потолок строк на один SQL-проход джанитора
-	// (выборка/удаление пачками): один оператор на весь накопленный хвост
-	// держал бы блокировку на таблице, по которой в это же время идёт приём
-	// новых заявок. Значение по умолчанию для поля Store.batchSize,
-	// проставляемое в NewStore: лимит — поле структуры, а не пакетная
-	// переменная (тот же паттерн, что у eventSource.maxIssueIDs в
-	// source_events.go), чтобы тест на переход через границу батча не делил
-	// изменяемое глобальное состояние с остальными тестами пакета (мина под
-	// будущий t.Parallel()) — вместо этого тест собирает Store напрямую с
-	// нужным значением поля. Не приходит от вызывающего извне и не
-	// конфигурируется из env/Config — это внутренняя деталь стора.
+	// Один проход на весь хвост держал бы блокировку на таблице, куда идёт приём новых заявок.
 	janitorBatchSize = 500
-	// enqueueLockClassProject/enqueueLockClassUser — classID'ы двухаргументной
-	// формы advisory-лока постановки заявки (EnqueueLimited):
-	// pg_advisory_xact_lock(int,int) — СТРУКТУРНО отдельное от
-	// pg_advisory_lock/pg_try_advisory_lock(bigint) keyspace
-	// (однопараметрическая форма, которой пользуются воркер и джанитор —
-	// advisoryLockKey=0x6578706F в worker.go, janitorLockKey в janitor.go):
-	// PostgreSQL хранит их под разными тегами лока независимо от числовых
-	// значений, поэтому пересечение исключено ГАРАНТИРОВАННО, а не потому
-	// что диапазоны project_id/user_id и констант воркера/джанитора пока не
-	// пересекаются (при id, доросшем до ~1.7 млрд, старая однопараметрическая
-	// форма начала бы конфликтовать с воркером — находка ре-ревью задачи 10,
-	// P3). Два разных classID здесь — ДВА разных лока внутри одной
-	// EnqueueLimited: project (по project_id) и user (по created_by, через
-	// ВСЕ проекты сразу, см. докблок EnqueueLimited) не пересекаются друг с
-	// другом по той же гарантии структурного разделения тегов лока.
+	// Двухаргументная форма pg_advisory_xact_lock — свой keyspace, отдельный от формы воркера/джанитора:
+	// пересечение исключено структурно, а не диапазоном id.
 	enqueueLockClassProject = 1
 	enqueueLockClassUser    = 2
 )
 
 var (
-	// ErrNotFound — заявки с таким id нет в таблице.
 	ErrNotFound = errors.New("export: заявка не найдена")
-	// ErrNotDeletable — заявка ещё не досчитана (queued/running) либо уже
-	// удалена: удалять можно только терминальные заявки.
+	// Возвращается и для queued/running, и для уже удалённой — оба случая неразличимы для вызывающего.
 	ErrNotDeletable = errors.New("export: заявка ещё выполняется")
-	// ErrStaleClaim — вызывающий пишет результат уже не своей попытки:
-	// заявку успели переклеймить (Claim увеличил attempts) или её уже
-	// финализировал другой вызов Done/Fail. Воркер, поймавший эту ошибку,
-	// обязан молча остановиться — дописывать поверх чужой попытки нельзя.
-	ErrStaleClaim = errors.New("export: заявка перехвачена другой попыткой")
-	// ErrActiveLimitReached — у пользователя или у проекта уже нет
-	// свободного места среди активных (queued+running) заявок; см.
-	// EnqueueLimited.
+	// Заявку успели переклеймить или уже финализировал другой вызов Done/Fail.
+	// Получивший эту ошибку обязан молча остановиться, не дописывать поверх чужой попытки.
+	ErrStaleClaim         = errors.New("export: заявка перехвачена другой попыткой")
 	ErrActiveLimitReached = errors.New("export: лимит активных заявок исчерпан")
 )
 
-// Store — очередь заявок на выгрузку поверх таблицы export_jobs.
 type Store struct {
 	pool *pgxpool.Pool
-	// batchSize — лимит пачки для DueForExpiry/PurgeRows (см. комментарий
-	// к janitorBatchSize). Тест переприсваивает поле напрямую при сборке
-	// Store, боевой код — всегда дефолт из NewStore. Читать не напрямую, а
-	// через batch(): нулевое (или отрицательное) значение — не валидный
-	// лимит, а признак стора, собранного в обход NewStore, и трактуется как
-	// "используй дефолт".
+	// Читать только через batch(): нулевое/отрицательное значение — сигнал стора не из NewStore.
 	batchSize int
 }
 
-// NewStore создаёт стор поверх пула PostgreSQL.
 func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool, batchSize: janitorBatchSize} }
 
-// batch возвращает действующий лимит пачки: batchSize<=0 (стор собран
-// литералом &Store{pool: pool} в обход NewStore — так делает, например,
-// TestPurgeRowsContinuesBeyondBatch с другим значением) трактуется как
-// "дефолт", а не как "нуль". Без этой защиты DueForExpiry/PurgeRows ушли бы
-// в LIMIT 0: PurgeRows зациклился бы навечно (0 удалённых строк никогда не
-// меньше нулевого предела), а DueForExpiry молча перестал бы что-либо
-// находить.
+// batchSize<=0 — стор собран в обход NewStore: без защиты LIMIT 0 зациклил бы PurgeRows
+// (0 удалённых никогда не меньше нуля) и остановил бы DueForExpiry.
 func (s *Store) batch() int {
 	if s.batchSize <= 0 {
 		return janitorBatchSize
@@ -100,21 +53,17 @@ func (s *Store) batch() int {
 	return s.batchSize
 }
 
-// jobColumns — общий порядок колонок для Get/ByProject; scanJob разбирает
-// строку строго в этом порядке.
+// Порядок совпадает со scanJob — менять только вместе.
 const jobColumns = `id, project_id, created_by, kind, format,
 	coalesce(scope_issue_id, 0), params, include_pii, status, attempts, last_error,
 	rows_written, bytes, truncated, file_ext, claimed_at, created_at, finished_at, expires_at,
 	failure_reason_key`
 
-// rowScanner — общий интерфейс pgx.Row и pgx.Rows, достаточный для scanJob.
 type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-// scanJob разбирает одну строку export_jobs в Job. params хранится как jsonb
-// и разбирается отдельно: Scan не умеет декодировать jsonb сразу в структуру
-// с учётом её тегов.
+// params — jsonb, Scan не умеет декодировать в структуру с тегами напрямую, разбирается отдельно.
 func scanJob(row rowScanner) (Job, error) {
 	var j Job
 	var kind, format, status string
@@ -132,31 +81,25 @@ func scanJob(row rowScanner) (Job, error) {
 	j.Kind = Kind(kind)
 	j.Format = Format(format)
 	j.Status = Status(status)
-	j.FailureReasonKey = reasonKey.String // NULL → "" (заявка не терминальна либо старше колонки, см. докблок Job.FailureReasonKey)
+	j.FailureReasonKey = reasonKey.String // NULL → "" — не терминальна либо старше колонки
 	if err := json.Unmarshal(raw, &j.Params); err != nil {
 		return Job{}, fmt.Errorf("разбор params: %w", err)
 	}
 	return j, nil
 }
 
-// queryRower — общий интерфейс *pgxpool.Pool и pgx.Tx, достаточный для
-// insertJob: Enqueue вставляет строку прямо через пул, EnqueueLimited — тем
-// же кодом, но внутри своей транзакции (см. её комментарий).
+// Enqueue работает через пул, EnqueueLimited — через свою транзакцию.
 type queryRower interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// insertJob — общая вставка строки export_jobs для Enqueue/EnqueueLimited:
-// одна точка правды для сериализации Params и NULL-подстановки scope_issue_id,
-// чтобы у двух методов постановки не разъехалась запись одного и того же.
+// Общая точка вставки для Enqueue/EnqueueLimited — чтобы форматы строки не разошлись.
 func insertJob(ctx context.Context, q queryRower, j Job) (int64, error) {
 	raw, err := json.Marshal(j.Params)
 	if err != nil {
 		return 0, fmt.Errorf("export: сериализация params: %w", err)
 	}
-	// scope_issue_id — NULL для заявок без области (не выгрузка одной
-	// группы): ноль в Go должен лечь в NULL, а не в валидный, но
-	// бессмысленный внешний id.
+	// scope_issue_id: 0 в Go — NULL в базе, не валидный внешний id.
 	var scope any
 	if j.ScopeIssueID != 0 {
 		scope = j.ScopeIssueID
@@ -174,63 +117,12 @@ func insertJob(ctx context.Context, q queryRower, j Job) (int64, error) {
 	return id, nil
 }
 
-// Enqueue ставит заявку в очередь и возвращает id новой строки — БЕЗ проверки
-// лимитов активных заявок. Вызывающие, которым нужен гейт (веб-слой), обязаны
-// звать EnqueueLimited; Enqueue остаётся для мест, где лимит неуместен или уже
-// проверен иначе (сиды тестов, будущие служебные постановки).
 func (s *Store) Enqueue(ctx context.Context, j Job) (int64, error) {
 	return insertJob(ctx, s.pool, j)
 }
 
-// EnqueueLimited — как Enqueue, но проверяет лимиты активных (queued+
-// running) заявок на пользователя (userLimit) и на проект (projectLimit)
-// АТОМАРНО вместе со вставкой строки.
-//
-// Раздельные «посчитать (ActiveCounts) → вставить (Enqueue)», как раньше
-// делал веб-слой, — классический check-then-act под READ COMMITTED: гонка
-// подтверждена эмпирически (8 параллельных постановок при лимите 3 давали от
-// 3 до 6 успешных вставок). Просто обернуть счёт и вставку в одну транзакцию
-// НЕДОСТАТОЧНО — SELECT count(*) не блокирует конкурирующий INSERT в ту же
-// таблицу, гонка осталась бы той же. Транзакция берёт xact-scoped advisory
-// lock — снимается сам на COMMIT/ROLLBACK, в отличие от сессионного
-// pg_advisory_lock воркера/джанитора, которому нужен ручной unlock — ДО
-// подсчёта: все конкурентные постановки ОДНОГО проекта сериализуются в
-// критической секции «посчитать → сравнить с лимитом → вставить». Предел на
-// пользователя — ОТДЕЛЬНЫЙ лок по created_by (без project_id: пользователь
-// ставит заявки в K проектах под ОДНИМ и тем же id, лок по паре (project,
-// user) не сериализовал бы его постановки в разных проектах друг с другом, и
-// count по одному project_id не увидел бы заявки, уже стоящие в других —
-// P2-SEC-2 аудита: без этого предел «N активных на пользователя» был
-// фактически «N на пользователя В КАЖДОМ проекте», то есть не существовал
-// вовсе). Порядок локов ФИКСИРОВАН — сперва user (enqueueLockClassUser),
-// затем project (enqueueLockClassProject) — у любых двух конкурентных
-// постановок одинаковый порядок захвата, поэтому дедлок между ними
-// структурно невозможен. Разные проекты (и разные пользователи) друг друга
-// не блокируют — project_id/created_by — часть ключа своего лока, см.
-// hashtext ниже.
-//
-// Ключ — ДВУХаргументная форма pg_advisory_xact_lock(classid, objid), не
-// pg_advisory_xact_lock(bigint): однопараметрическую форму по константным
-// ключам уже держат воркер (advisoryLockKey, worker.go) и джанитор
-// (janitorLockKey, janitor.go), и это ОДНО 64-битное пространство — лок по
-// сырому project_id/created_by делил бы его с ними, а id, доросший до
-// значения их констант (~1.7 млрд), начал бы блокировать воркер/джанитор
-// (находка ре-ревью задачи 10, P3). Двухаргументная форма — СТРУКТУРНО
-// отдельное keyspace в PostgreSQL (свой тег лока независимо от чисел),
-// поэтому пересечение исключено гарантированно, а не диапазоном значений;
-// classID (enqueueLockClassProject/enqueueLockClassUser) дополнительно
-// разводит ключи project и user между собой в этом же keyspace. objid —
-// hashtext(id) вместо прямого id::int, потому что objid физически int4, а
-// project_id/created_by — bigint (IDENTITY), и не влезающий в int4 id
-// обязан не падать и не давать двум разным id один и тот же лок по
-// случайности усечения. id передаётся уже строкой (strconv.FormatInt), а не
-// $N::text в самом SQL: pgx на extended-протоколе узнаёт тип параметра из
-// Describe-ответа Postgres и при инлайновом ::text в тексте запроса
-// пытается закодировать Go int64 как text напрямую, что не умеет (ловится
-// этой же правкой — без неё Exec падает с "unable to encode ... into text
-// format").
-//
-// ErrActiveLimitReached — лимит исчерпан, id не выдан.
+// Транзакции мало — SELECT count(*) не блокирует конкурентный INSERT, нужен advisory-лок до подсчёта.
+// Лок user не включает project_id: лимит на пользователя действует по всем его проектам сразу.
 func (s *Store) EnqueueLimited(ctx context.Context, j Job, userLimit, projectLimit int) (int64, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -238,8 +130,7 @@ func (s *Store) EnqueueLimited(ctx context.Context, j Job, userLimit, projectLim
 	}
 	defer tx.Rollback(ctx) // no-op после успешного Commit
 
-	// Порядок ФИКСИРОВАН: user, затем project (см. докблок выше) — иначе две
-	// конкурентные постановки с обратным порядком захвата дали бы дедлок.
+	// Порядок фиксирован: user, затем project — иначе дедлок между конкурентными постановками.
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1, hashtext($2))",
 		enqueueLockClassUser, strconv.FormatInt(j.CreatedBy, 10)); err != nil {
 		return 0, fmt.Errorf("export: постановка заявки: advisory lock (user): %w", err)
@@ -249,6 +140,8 @@ func (s *Store) EnqueueLimited(ctx context.Context, j Job, userLimit, projectLim
 		return 0, fmt.Errorf("export: постановка заявки: advisory lock (project): %w", err)
 	}
 
+	// hashtext: objid — int4, id — bigint; id идёт строкой (strconv), не ::text в SQL —
+	// так pgx кодирует int64 корректно.
 	var proj, user int
 	if err := tx.QueryRow(ctx, `
 		SELECT
@@ -271,7 +164,6 @@ func (s *Store) EnqueueLimited(ctx context.Context, j Job, userLimit, projectLim
 	return id, nil
 }
 
-// Get возвращает заявку по id либо ErrNotFound.
 func (s *Store) Get(ctx context.Context, id int64) (Job, error) {
 	row := s.pool.QueryRow(ctx, "SELECT "+jobColumns+" FROM export_jobs WHERE id = $1", id)
 	j, err := scanJob(row)
@@ -284,11 +176,7 @@ func (s *Store) Get(ctx context.Context, id int64) (Job, error) {
 	return j, nil
 }
 
-// ByProject возвращает заявки проекта, новые сверху, не больше limit штук —
-// страница «Выгрузки» списком без пагинации со сдвигом.
-//
-// limit — забота вызывающей стороны, стор его не подменяет: 0 даёт пустой
-// список (валидный SQL LIMIT 0), отрицательное значение — ошибку PostgreSQL.
+// limit не подменяется: 0 — валидный LIMIT 0, отрицательное — ошибка PostgreSQL.
 func (s *Store) ByProject(ctx context.Context, projectID int64, limit int) ([]Job, error) {
 	rows, err := s.pool.Query(ctx, "SELECT "+jobColumns+`
 		FROM export_jobs WHERE project_id = $1
@@ -312,12 +200,7 @@ func (s *Store) ByProject(ctx context.Context, projectID int64, limit int) ([]Jo
 	return out, nil
 }
 
-// ByProjectForUser — тот же список, что и ByProject, но только заявки
-// одного автора (uid): §3 спеки — свои заявки видит автор, все заявки
-// проекта видят только админ/владелец орга (см. её вызов под authz.CanManage
-// в web/exports.go). Предикат по автору — в самом SQL, а не фильтром поверх
-// ByProject в Go: иначе limit съедался бы чужими строками раньше, чем
-// автор увидел свои собственные.
+// Фильтр по автору — в SQL, не пост-фильтром: иначе limit съедался бы чужими строками раньше своих.
 func (s *Store) ByProjectForUser(ctx context.Context, projectID, uid int64, limit int) ([]Job, error) {
 	rows, err := s.pool.Query(ctx, "SELECT "+jobColumns+`
 		FROM export_jobs WHERE project_id = $1 AND created_by = $2
@@ -341,11 +224,7 @@ func (s *Store) ByProjectForUser(ctx context.Context, projectID, uid int64, limi
 	return out, nil
 }
 
-// Claim берёт в работу самую старую доступную заявку: свежую из очереди либо
-// «running» с протухшей лизой, у которой ещё остались попытки. SELECT ... FOR
-// UPDATE SKIP LOCKED внутри одного UPDATE — атомарная операция: две
-// параллельные попытки клейма физически не могут захватить одну и ту же
-// строку, второй достанется следующая свободная либо ok=false.
+// FOR UPDATE SKIP LOCKED внутри одного UPDATE — атомарно: два клейма не заберут одну строку.
 func (s *Store) Claim(ctx context.Context) (Job, bool, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE export_jobs SET status = 'running', attempts = attempts + 1, claimed_at = now()
@@ -368,22 +247,10 @@ func (s *Store) Claim(ctx context.Context) (Job, bool, error) {
 	return j, true, nil
 }
 
-// SweepStale закрывает заявки, пережившие все попытки: без этого заявка,
-// упавшая вместе с инстансом на последней попытке, вечно показывала бы
-// «выполняется» — Claim её больше не тронет (attempts >= maxAttempts), а
-// статус сам себя не поменяет.
-//
-// Возвращает добитые заявки, а не только их число: это единственный
-// терминальный исход фичи, до которого воркер не доходит через
-// fail()/failPermanent() (заявку добивает сам SweepStale, а не Worker.process
-// упавшего вызова) — без снимков здесь автору неоткуда узнать о провале
-// иначе как ручной перезагрузкой страницы выгрузок. Вызывающий (worker.go,
-// Tick) заводит по ним w.notifyFailed так же, как fail()/failPermanent().
+// Без этого зависшая заявка висела бы «выполняется» вечно — Claim её не тронет.
+// Возвращает заявки, не число: воркер шлёт notifyFailed по каждой из них.
 func (s *Store) SweepStale(ctx context.Context) ([]Job, error) {
-	// failure_reason_key = reasonInternal всегда: инстанс, добивающий
-	// зомби-заявку, не знает исходную причину провала попытки (та лиза
-	// протухла вместе с процессом, который её держал) — тот же повод, что
-	// у reasonInternal в worker.go Tick (см. её комментарий там).
+	// reasonInternal всегда: причина исходного провала неизвестна — лиза протухла вместе с процессом.
 	rows, err := s.pool.Query(ctx, `
 		UPDATE export_jobs
 		SET status = 'failed', finished_at = now(),
@@ -411,23 +278,8 @@ func (s *Store) SweepStale(ctx context.Context) ([]Job, error) {
 	return out, nil
 }
 
-// Fail возвращает заявку в очередь, пока попытки не исчерпаны: ждать
-// протухания лизы незачем — причина неудачи уже известна здесь и сейчас.
-//
-// attempt — номер попытки, с которым вызывающий получил заявку от Claim.
-// status='running' один не различает ВЛАДЕЛЬЦА текущего running-статуса:
-// если лиза протухла и заявку успел переклеймить кто-то другой, статус
-// остаётся 'running', но это уже чужая попытка. attempts растёт только в
-// Claim, поэтому связка status='running' AND attempts=$attempt однозначно
-// подтверждает, что вызывающий всё ещё держит именно ту попытку, что забрал.
-// Ноль затронутых строк — не ошибка выполнения, а сигнал ErrStaleClaim:
-// заявку либо переклеймили, либо её уже финализировал кто-то другой.
-//
-// reasonKey ложится в failure_reason_key ТОЛЬКО вместе с переходом в
-// status='failed' (попытки исчерпаны): заявка, вернувшаяся в очередь на
-// повтор, ключ не несёт — следующая попытка может провалиться по другой
-// причине или вовсе завершиться успехом, и висящий с прошлого раза ключ
-// был бы враньём на странице выгрузок.
+// attempt фенсит владение попыткой: 0 затронутых строк — сигнал ErrStaleClaim, не ошибка выполнения.
+// reasonKey пишется в failure_reason_key только при переходе в failed, не при возврате в очередь.
 func (s *Store) Fail(ctx context.Context, id int64, attempt int, cause, reasonKey string) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE export_jobs
@@ -445,14 +297,7 @@ func (s *Store) Fail(ctx context.Context, id int64, attempt int, cause, reasonKe
 	return nil
 }
 
-// Done завершает заявку успехом и назначает срок хранения файла от момента
-// завершения, а не от постановки в очередь: заявка, простоявшая в очереди
-// час, обязана хранить файл столько же, сколько исполненная мгновенно.
-//
-// attempt фенсит владение попыткой той же связкой status='running' AND
-// attempts=$attempt, что и Fail (см. её комментарий) — без этого запоздавший
-// Done от воркера, потерявшего лизу, дописал бы свои устаревшие rows/bytes
-// поверх заявки, которую уже ведёт следующая попытка.
+// Срок хранения — от завершения, не от постановки: очередь и мгновенная заявка хранятся одинаково.
 func (s *Store) Done(ctx context.Context, id int64, attempt int, rows, bytes int64, truncated bool, ttl time.Duration) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE export_jobs
@@ -469,18 +314,7 @@ func (s *Store) Done(ctx context.Context, id int64, attempt int, rows, bytes int
 	return nil
 }
 
-// FailPermanent закрывает заявку без права на повтор: причина не устранится
-// следующей попыткой (бюджет диска исчерпан, фильтр резолвится в слишком
-// много групп) — три бессмысленных повтора только оттянут момент, когда
-// человек увидит внятную причину.
-//
-// attempt фенсит владение попыткой той же связкой status='running' AND
-// attempts=$attempt, что и Fail/Done (см. их комментарии): без этого
-// запоздавший постоянный отказ от зомби-вызова (лиза протухла, заявку
-// переклеймили) закрыл бы заявку поверх активной попытки, которая её уже
-// подхватила и продолжает работать, — дыра шире обычного зомби-Done, потому
-// что FailPermanent не ждёт даже исчерпания попыток. Ноль затронутых строк —
-// тот же сигнал ErrStaleClaim, что и у Fail/Done, а не ошибка выполнения.
+// Закрывает без права на повтор — для причин, которые повтор не устранит (диск, слишком много групп).
 func (s *Store) FailPermanent(ctx context.Context, id int64, attempt int, cause, reasonKey string) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE export_jobs
@@ -495,23 +329,7 @@ func (s *Store) FailPermanent(ctx context.Context, id int64, attempt int, cause,
 	return nil
 }
 
-// Release возвращает заявку в очередь БЕЗ траты попытки (P2-OPS-5): путь
-// штатной остановки процесса (SIGTERM/деплой, см. worker.go) — прерванная
-// на середине сборка не вина заявки, жечь на неё одну из maxAttempts
-// неправильно. В отличие от Fail, статус безусловно 'queued' вне
-// зависимости от того, сколько попыток уже потрачено, attempts не
-// меняется — Claim подхватит заявку следующим стартом с тем же attempts,
-// каким её отпустили. last_error/failure_reason_key не трогаются: это не
-// отказ, автору нечего сообщать.
-//
-// attempt фенсит владение попыткой той же связкой status='running' AND
-// attempts=$attempt, что и Fail/Done/FailPermanent (см. их комментарии):
-// без этого запоздавший релиз от зомби-горутины сбросил бы в очередь
-// заявку, которую уже переклеймила и активно строит следующая попытка —
-// та же гонка, что фенсят Fail/Done/FailPermanent, только зомби-сторона
-// здесь не ошибка, а само штатное завершение процесса. Ноль затронутых
-// строк — тот же сигнал ErrStaleClaim, что и у соседей, а не ошибка
-// выполнения.
+// Не тратит попытку: прерванная штатной остановкой сборка — не вина заявки, в отличие от Fail.
 func (s *Store) Release(ctx context.Context, id int64, attempt int) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE export_jobs SET status = 'queued', claimed_at = NULL
@@ -525,10 +343,7 @@ func (s *Store) Release(ctx context.Context, id int64, attempt int) error {
 	return nil
 }
 
-// Delete сносит только досчитанную заявку: у queued/running в этот момент
-// может писаться файл, и удаление строки разъехалось бы с воркером. Тот же
-// ErrNotDeletable возвращается и для несуществующего id — с точки зрения
-// вызывающего это неразличимо от «удалить нельзя».
+// Тот же ErrNotDeletable и для queued/running (файл ещё пишется), и для несуществующего id.
 func (s *Store) Delete(ctx context.Context, id int64) error {
 	tag, err := s.pool.Exec(ctx,
 		`DELETE FROM export_jobs WHERE id = $1 AND status IN ('done','failed','expired')`, id)
@@ -541,14 +356,7 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
-// DueForExpiry возвращает заявки, чей срок хранения файла истёк: status='done'
-// и expires_at уже в прошлом. Джанитор удаляет файл каждой из них и переводит
-// строку в expired через MarkExpired — здесь только выборка, без побочных
-// эффектов, чтобы вызывающий сам решал, в каком порядке убирать файл и
-// строку.
-//
-// Пачка ограничена janitorBatchSize: проход джанитора не должен захватывать
-// произвольно много строк за один тик.
+// Только выборка: джанитор сам решает порядок — сначала файл, потом MarkExpired.
 func (s *Store) DueForExpiry(ctx context.Context) ([]Job, error) {
 	rows, err := s.pool.Query(ctx, "SELECT "+jobColumns+`
 		FROM export_jobs WHERE status = 'done' AND expires_at < now()
@@ -572,11 +380,7 @@ func (s *Store) DueForExpiry(ctx context.Context) ([]Job, error) {
 	return out, nil
 }
 
-// MarkExpired переводит перечисленные заявки из done в expired одной пачкой —
-// вызывается уже после того, как их файлы удалены с диска. Условие
-// status='done' делает вызов идемпотентным: заявка, уже переведённая другим
-// проходом (или переклеймленная заново — впрочем, done заявки не клеймятся),
-// повторно не тронется.
+// status='done' делает идемпотентным — уже переведённая заявка повторно не тронется.
 func (s *Store) MarkExpired(ctx context.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
@@ -588,15 +392,8 @@ func (s *Store) MarkExpired(ctx context.Context, ids []int64) error {
 	return nil
 }
 
-// PurgeRows удаляет терминальные заявки (done/failed/expired), завершившиеся
-// раньше olderThan назад — история очереди, а не сама очередь: queued/running
-// не трогаются никогда, сколько бы ни висели. Возраст считается от
-// finished_at, а не created_at: заявка, час простоявшая в очереди, не должна
-// вычищаться раньше той, что исполнилась мгновенно.
-//
-// Удаление идёт пачками по janitorBatchSize — один оператор на весь
-// накопленный хвост держал бы блокировку на таблице, по которой в это же
-// время идёт постановка новых заявок.
+// Возраст — от finished_at, не created_at: заявка, час простоявшая в очереди,
+// чистится не раньше исполненной мгновенно.
 func (s *Store) PurgeRows(ctx context.Context, olderThan time.Duration) (int, error) {
 	cutoff := time.Now().Add(-olderThan)
 	var total int
@@ -624,14 +421,7 @@ func (s *Store) PurgeRows(ctx context.Context, olderThan time.Duration) (int, er
 	}
 }
 
-// AuthorEmail возвращает адрес пользователя по его id — письмо об итоге
-// заявки (internal/export/notify.go) шлётся автору, известному стору только
-// как Job.CreatedBy. Запрос дублирует auth.Service.UserEmail нарочно, а не
-// заводит зависимость Store → auth.Service: воркеру export не нужен весь
-// контур auth (пароли, сессии, идентити-провайдеры) ради одного email по
-// id, тот же приём, что уже применён у Mailer (см. NewMailNotifier) — не
-// тянуть чужой пакет ради одной сигнатуры. Тот же SQL, что и в
-// auth.Service.UserEmail и в web.exportViewRow (internal/web/exports.go).
+// SQL дублирует auth.Service.UserEmail нарочно — Store не должен тянуть весь auth ради одного email.
 func (s *Store) AuthorEmail(ctx context.Context, id int64) (string, error) {
 	var email string
 	err := s.pool.QueryRow(ctx, "SELECT email FROM users WHERE id = $1", id).Scan(&email)
@@ -644,9 +434,7 @@ func (s *Store) AuthorEmail(ctx context.Context, id int64) (string, error) {
 	return email, nil
 }
 
-// ExistingIDs возвращает подмножество ids, для которых в export_jobs ещё
-// есть строка — джанитор сверяет по нему файлы каталога с базой, чтобы
-// найти сирот (файл остался, а строку снесли PurgeRows или каскад проекта).
+// Использует джанитор, сверяя файлы каталога с базой, чтобы найти сирот (файл есть, строки нет).
 func (s *Store) ExistingIDs(ctx context.Context, ids []int64) (map[int64]bool, error) {
 	out := make(map[int64]bool, len(ids))
 	if len(ids) == 0 {

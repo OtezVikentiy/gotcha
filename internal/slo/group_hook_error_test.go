@@ -15,10 +15,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// erroringSLOGroupHook — фейковая реализация sloGroupHook (duck-typing D3,
-// см. evaluator.go): Attach всегда возвращает заданную ошибку. Изолирует
-// groupGate от настоящего incidentgroup.Grouper (используется для
-// позитивных сценариев в group_test.go).
 type erroringSLOGroupHook struct {
 	err error
 }
@@ -27,9 +23,6 @@ func (h *erroringSLOGroupHook) Attach(ctx context.Context, source string, incide
 	return false, false, h.err
 }
 
-// TestGroupGateAttachErrorStaysNoisy — groupGate: ошибка Attach — fail-safe
-// (докблок groupGate: «шумим как без D3»). uptime-SLO с привязанным
-// монитором обязан открыться и уведомить, как будто группы нет вовсе.
 func TestGroupGateAttachErrorStaysNoisy(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -62,9 +55,8 @@ func TestGroupGateAttachErrorStaysNoisy(t *testing.T) {
 
 	notifier := &capturingNotifier{store: st}
 	e := &slo.Evaluator{
-		// Interval задан явно: тикер не используем (Tick дёргается вручную), но от
-		// него считается бюджет тика — с дефолтом бюджет упирается в пол 10s, и на
-		// нагруженной машине (полный прогон, контейнеры) запрос в CH не укладывается.
+		// от Interval считается бюджет тика — с дефолтом он упирается в пол 10s,
+		// и на нагруженной машине запрос в CH может не уложиться.
 		Interval:       time.Hour,
 		Pool:           pool,
 		Store:          st,

@@ -8,33 +8,22 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// NewClickHouse открывает нативное соединение и проверяет его пингом.
 func NewClickHouse(ctx context.Context, dsn string) (driver.Conn, error) {
 	opts, err := clickhouse.ParseDSN(dsn)
 	if err != nil {
-		// Сырую ошибку ParseDSN намеренно НЕ оборачиваем через %w и не
-		// логируем: она может содержать сам DSN с паролем и утечь в логи
-		// оператора. Отдаём обобщённую формулировку без credentials.
+		// Сырую ошибку ParseDSN намеренно не оборачиваем и не логируем — она может содержать DSN с паролем.
 		return nil, fmt.Errorf("clickhouse: invalid DSN")
 	}
-	// Потолок времени выполнения запроса. Без него один тяжёлый скан (например
-	// поиск по неиндексированному trace_id на большом объёме) может занять сервер
-	// целиком и уронить инстанс. 60с заведомо выше любого легитимного запроса
-	// (в т.ч. батч-вставок), но превращает runaway-скан в ошибку страницы, а не в
-	// отказ всей БД. Оператор может переопределить через DSN
-	// (?max_execution_time=...) — тогда своё значение не трогаем.
+	// Потолок runaway-запроса — без него тяжёлый скан может занять сервер целиком; 60с выше любого
+	// легитимного запроса. DSN (?max_execution_time=...) переопределяет — своё значение не трогаем.
 	if opts.Settings == nil {
 		opts.Settings = clickhouse.Settings{}
 	}
 	if _, ok := opts.Settings["max_execution_time"]; !ok {
 		opts.Settings["max_execution_time"] = 60
 	}
-	// Приложение опирается на инвариант «агрегат без GROUP BY возвращает ровно одну
-	// строку с дефолтами» в ~11 read-путях (metric/uptime/trace/event/profile): пустое
-	// окно должно давать нули, а не ErrNoRows. При empty_result_for_aggregation_by_empty_set=1
-	// это ломается (алертинг падал бы на каждом пустом окне), поэтому фиксируем 0
-	// жёстко — не даём DSN случайно переопределить. Guard'ы ErrNoRows в metric/uptime
-	// остаются как defense-in-depth.
+	// Инвариант «агрегат без GROUP BY даёт одну строку с нулями» используют ~11 read-путей — фиксируем 0
+	// жёстко, не даём DSN переопределить (иначе пустое окно даёт ErrNoRows вместо нулей).
 	opts.Settings["empty_result_for_aggregation_by_empty_set"] = 0
 	conn, err := clickhouse.Open(opts)
 	if err != nil {
@@ -47,16 +36,10 @@ func NewClickHouse(ctx context.Context, dsn string) (driver.Conn, error) {
 	return conn, nil
 }
 
-// ValidateClickHouseDSN проверяет, что dsn разбираем клиентом ClickHouse —
-// без установки соединения (тот же clickhouse.ParseDSN, что NewClickHouse
-// вызывает первым шагом). Тот же клиентский парсер принимает DSN и в URL-, и
-// в keyword-форме — проверка не сужает набор относительно того, что реально
-// потребит клиент.
+// Тот же парсер, что и NewClickHouse — принимает URL- и keyword-форму DSN одинаково.
 func ValidateClickHouseDSN(dsn string) error {
 	if _, err := clickhouse.ParseDSN(dsn); err != nil {
-		// Как и в NewClickHouse: сырая ошибка ParseDSN может содержать сам
-		// DSN с паролем в тексте (проверено — "invalid port" эхом отдаёт
-		// весь адрес), логировать/оборачивать её нельзя.
+		// Как и выше — сырая ошибка может содержать DSN с паролем, поэтому не логируем её.
 		return fmt.Errorf("clickhouse: invalid DSN")
 	}
 	return nil

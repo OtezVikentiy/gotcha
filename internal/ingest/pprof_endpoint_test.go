@@ -48,7 +48,6 @@ func TestPprofEndpoint(t *testing.T) {
 	s := newStack(t)
 	body := pprofBody(t)
 
-	// Валидный pprof + метаданные → 202, профиль с Service/TraceID из query.
 	resp := s.postPprof(t, body, "?service=api&type=samples&trace_id=tr-99", s.key.PublicKey)
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", resp.StatusCode)
@@ -63,23 +62,19 @@ func TestPprofEndpoint(t *testing.T) {
 		t.Fatalf("trace_id = %q, want tr-99", s.profiles.pros[0].TraceID)
 	}
 
-	// Без ключа → 401.
 	resp = s.postPprof(t, body, "", "")
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("no-key status = %d, want 401", resp.StatusCode)
 	}
 
-	// Мусорное тело → 400.
 	resp = s.postPprof(t, []byte("garbage"), "", s.key.PublicKey)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("garbage status = %d, want 400", resp.StatusCode)
 	}
 }
 
-// TestPprofDecompressionBomb — pprof присылают gzip'ом внутри тела без
-// Content-Encoding, поэтому h.body его не разжимает. Маленький gzip (<maxBytes),
-// раздувающийся за maxBytes*10 (=10 МБ при maxBytes 1 МБ), должен отклоняться
-// c 413, а не разжиматься без предела (OOM) внутри ParsePprof.
+// pprof шлют gzip без Content-Encoding — h.body его не разжимает; раздувание
+// сверх maxBytes*10 должно отклоняться 413, а не разжиматься без предела в ParsePprof.
 func TestPprofDecompressionBomb(t *testing.T) {
 	s := newStack(t)
 
@@ -104,9 +99,7 @@ func TestPprofDecompressionBomb(t *testing.T) {
 	}
 }
 
-// TestPprofValidGzip — обычный клиент шлёт pprof одним слоем gzip (без
-// Content-Encoding). После цикла распаковки ParseData получает protobuf и
-// принимает профиль (202) — фикс от бомбы не должен ломать легитимный ввод.
+// один слой gzip без Content-Encoding — фикс от бомбы не должен ломать легитимный ввод.
 func TestPprofValidGzip(t *testing.T) {
 	s := newStack(t)
 	var gz bytes.Buffer
@@ -126,10 +119,8 @@ func TestPprofValidGzip(t *testing.T) {
 	}
 }
 
-// TestPprofNestedGzipBomb — двойной gzip: маленькое внешнее тело разжимается в
-// внутренний gzip под лимитом, который pp.ParseData разжал бы БЕЗ предела.
-// gunzipLimited должен размотать оба слоя под лимитом и отклонить бомбу (413),
-// а не дать ParseData повторно разжать внутренний слой.
+// двойной gzip — внутренний слой ParseData разжал бы без предела; gunzipLimited
+// должен размотать оба слоя под лимитом и отклонить бомбу (413).
 func TestPprofNestedGzipBomb(t *testing.T) {
 	s := newStack(t)
 

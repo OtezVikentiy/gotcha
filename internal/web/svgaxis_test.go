@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// textTag — атрибуты одного <text> элемента, разобранные из сгенерированного
-// SVG, для проверки геометрии подписей числами (а не наличием подстроки).
 type textTag struct {
 	x      float64
 	anchor string
@@ -42,12 +40,8 @@ func parseTextTags(t *testing.T, svg string) []textTag {
 	return tags
 }
 
-// labelBounds — горизонтальные границы подписи по её якорю: "start" растёт
-// вправо от x, "end" — влево, "middle" — поровну в обе стороны.
-// calW — ширина холста, при которой svgCharWidthPx даёт ≈6.0 на руну:
-// сценарии ниже (сдвиги якорей, пороги обрезки) посчитаны под ширину руны 6,
-// как и до перевода калибровки на пропорцию к ширине viewBox
-// (svgCharWidthPerVB). Точность держит TestCalWCharWidth.
+// ширина холста, при которой svgCharWidthPx даёт ≈6.0 на руну — сценарии
+// ниже посчитаны под эту ширину; точность держит TestCalWCharWidth.
 const calW = 478
 
 func TestCalWCharWidth(t *testing.T) {
@@ -67,9 +61,6 @@ func labelBounds(x float64, anchor string, width float64) (left, right float64) 
 	}
 }
 
-// TestFormatUSAxis — подпись оси несёт единицу измерения: пользователь не
-// должен гадать, микросекунды это или миллисекунды. Ноль — исключение, «0µs»
-// читалось бы как значащая величина.
 func TestFormatUSAxis(t *testing.T) {
 	cases := []struct {
 		us   float64
@@ -88,8 +79,6 @@ func TestFormatUSAxis(t *testing.T) {
 	}
 }
 
-// TestTimeAxisGranularity — шаг меток выбирается по длине окна: на неделе
-// подписывать часы бессмысленно, на трёх часах — сутки.
 func TestTimeAxisGranularity(t *testing.T) {
 	mk := func(n int, step time.Duration) []time.Time {
 		base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
@@ -111,8 +100,6 @@ func TestTimeAxisGranularity(t *testing.T) {
 	}
 }
 
-// TestTimeAxisRespectsMinGap — метки не ставятся чаще, чем раз в minGapPx:
-// иначе подписи наезжают друг на друга.
 func TestTimeAxisRespectsMinGap(t *testing.T) {
 	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
 	times := make([]time.Time, 48)
@@ -127,8 +114,6 @@ func TestTimeAxisRespectsMinGap(t *testing.T) {
 	}
 }
 
-// TestYScaleHeadroom — верх шкалы строго выше максимума, иначе самый высокий
-// столбик упирается в рамку.
 func TestYScaleHeadroom(t *testing.T) {
 	if s := newYScale(10, 3); s.top <= 10 {
 		t.Errorf("newYScale(10): top = %v, ожидался запас над максимумом", s.top)
@@ -138,11 +123,8 @@ func TestYScaleHeadroom(t *testing.T) {
 	}
 }
 
-// TestWriteYGridClampsLongLabelToCanvas — подпись оси Y растёт влево от
-// x0-6 (text-anchor=end); при малом x0 и длинной подписи левый край уходил
-// за x=0 и обрезался вьюбоксом (P1-6). Сценарий подобран так, что ширины
-// подписи хватает и на то, чтобы прижаться к x=0, и на то, чтобы остаться
-// внутри поля слева от x0 (width < x0) — оба края проверяются числами.
+// сценарий: ширины подписи хватает и на прижим к x=0, и на то, чтобы
+// остаться левее x0 — проверяются оба края.
 func TestWriteYGridClampsLongLabelToCanvas(t *testing.T) {
 	g := chartGeom{w: calW, h: 100, x0: 100, x1: 290, y0: 10, y1: 90}
 	s := yScale{top: 0, step: 1}         // один тик, v=0 — геометрия подписи не зависит от значения
@@ -166,30 +148,15 @@ func TestWriteYGridClampsLongLabelToCanvas(t *testing.T) {
 	if tag.x > g.x0+0.05 {
 		t.Errorf("правый край подписи оси Y = %.2f заходит правее x0=%.1f — залезает в область графика", tag.x, g.x0)
 	}
-	// Без прижимания x был бы g.x0-6 = 94, а левый край = 94-width = -2 —
-	// чуть за вьюбоксом. С прижимом x должен ровно совпасть с шириной
-	// (левый край = 0), и этой ширины (96) хватает, чтобы не залезть за x0
-	// (100) — обе границы точны, не просто «в пределах».
+	// без прижима x=94, левый край=-2 (за вьюбоксом); с прижимом x=width=96,
+	// левый край=0, и это не превышает x0=100.
 	if math.Abs(tag.x-width) > 0.05 {
 		t.Errorf("x подписи = %.2f, ожидалось %.2f (x0-6 недостаточно для этой подписи, прижато так, что левый край = 0)", tag.x, width)
 	}
 }
 
-// TestWriteYGridRightEdgeStaysOutOfPlotArea — реалистичный сценарий из
-// ревью: x0=58 (padL из svg.go/svg_slo.go), подпись длиннее самого x0
-// (unit приходит из MetricInfo.Unit — внешняя OTLP-строка без ограничения
-// длины, "12.3K megabytes" реалистична). Прижатый под левый край x (=width)
-// в этом случае оказывался ПРАВЕЕ x0 — правый край подписи залезал В
-// область графика поверх сетки и данных, что строго хуже обрезки вьюбоксом.
-// Правый край не должен заходить правее x0 ни при каких обстоятельствах.
-//
-// Компромисс (записан, не подразумевается): когда ширины подписи не хватает
-// ОДНОВРЕМЕННО и на левый, и на правый край, приоритет — не залезать на
-// график, поэтому левый край в этом случае ВСЁ РАВНО обрезается вьюбоксом
-// (пользователь видит подпись, обрезанную слева). Порог начала обрезки —
-// длина подписи в рунах > x0/svgCharWidthPx = 58/6 ≈ 9.67, то есть с 10
-// рун; тест ниже проверяет и это число, а не только то, что правый край
-// защищён.
+// x0=58, подпись шириной ≈90 (unit без ограничения длины) — прижатый левый
+// край оказался бы правее x0; тест проверяет клампинг к x0.
 func TestWriteYGridRightEdgeStaysOutOfPlotArea(t *testing.T) {
 	g := chartGeom{w: calW, h: 100, x0: 58, x1: 390, y0: 10, y1: 90}
 	s := yScale{top: 0, step: 1}
@@ -211,9 +178,8 @@ func TestWriteYGridRightEdgeStaysOutOfPlotArea(t *testing.T) {
 	if math.Abs(tag.x-g.x0) > 0.05 {
 		t.Errorf("x подписи = %.2f, ожидалось %.2f (прижата ровно к x0 — ширины 90 не хватает и на левый, и на правый край одновременно)", tag.x, g.x0)
 	}
-	// Записанный компромисс: левый край (x - ширина) в этом сценарии
-	// действительно уходит за 0 — обрезается вьюбоксом. Число не «примерно
-	// отрицательное», а точное: x0(58) - width(≈90) ≈ -32.
+	// компромисс: левый край всё равно уходит за 0 (обрезается вьюбоксом) —
+	// точное значение ≈-32, не «примерно отрицательное».
 	width := estimateTextWidth(g.w, longLabel)
 	if math.Abs(width-90) > 0.05 {
 		t.Fatalf("подставная подпись даёт ширину %.2f, ожидалось ≈90 — число -32 ниже посчитано под неё", width)
@@ -223,10 +189,7 @@ func TestWriteYGridRightEdgeStaysOutOfPlotArea(t *testing.T) {
 	}
 }
 
-// TestWriteYGridLeftClipThreshold — порог, с которого начинается обрезка
-// левого края (компромисс из TestWriteYGridRightEdgeStaysOutOfPlotArea):
-// ровно x0/svgCharWidthPx рун — подпись ещё помещается, x0/svgCharWidthPx+1
-// рун — уже нет. При x0=60 порог — 10 рун ровно.
+// порог обрезки левого края — ровно x0/svgCharWidthPx рун; при x0=60 это 10 рун.
 func TestWriteYGridLeftClipThreshold(t *testing.T) {
 	g := chartGeom{w: calW, h: 100, x0: 60, x1: 390, y0: 10, y1: 90}
 	s := yScale{top: 0, step: 1}
@@ -254,8 +217,6 @@ func TestWriteYGridLeftClipThreshold(t *testing.T) {
 	}
 }
 
-// TestWriteYGridShortLabelUnclamped — короткая подпись при обычном x0 не
-// трогается прижимом: x остаётся g.x0-6, как раньше (регресс не вносим).
 func TestWriteYGridShortLabelUnclamped(t *testing.T) {
 	g := chartGeom{w: 200, h: 100, x0: 48, x1: 190, y0: 10, y1: 90}
 	s := yScale{top: 0, step: 1}
@@ -271,12 +232,8 @@ func TestWriteYGridShortLabelUnclamped(t *testing.T) {
 	}
 }
 
-// TestWriteXTicksAccountsForAnchorShift — у левого края холста якорь подписи
-// переключается на "start": подпись растёт от x вправо, а не от x-halfWidth,
-// то есть её видимый центр сдвигается на полширины вправо. Разводка тиков
-// раньше этот сдвиг не учитывала — первая подпись наезжала на вторую
-// (P1-7). Сценарий: узкий холст, первый тик ровно на x0 с длинной подписью,
-// второй — недалеко от первого с обычной подписью времени.
+// у левого края якорь start растёт вправо от x — видимый центр подписи
+// сдвигается на полширины; разводка тиков обязана это учитывать.
 func TestWriteXTicksAccountsForAnchorShift(t *testing.T) {
 	g := chartGeom{w: calW, h: 120, x0: 50, x1: 468, y0: 10, y1: 90}
 	ticks := []xTick{
@@ -294,9 +251,8 @@ func TestWriteXTicksAccountsForAnchorShift(t *testing.T) {
 	if first.anchor != "start" {
 		t.Fatalf("якорь первой подписи = %q, ожидался start (у левого края холста)", first.anchor)
 	}
-	// Без учёта сдвига второй якорь остался бы "middle": её левый край был бы
-	// x - ширина/2 = 120 - 15 = 105, что меньше правого края первой (50+60=110)
-	// — наезд. С учётом сдвига якорь второй тоже переключается на "start".
+	// без учёта сдвига якорь второй остался бы middle (левый край 105 <
+	// правого края первой 110 — наезд); с учётом сдвига оба start.
 	if second.anchor != "start" {
 		t.Fatalf("якорь второй подписи = %q, ожидался start (иначе наезд на первую — сдвиг не учтён)", second.anchor)
 	}
@@ -310,14 +266,8 @@ func TestWriteXTicksAccountsForAnchorShift(t *testing.T) {
 	}
 }
 
-// TestXLabelPlacementEndAnchorChecksPrevRight — защита от наезда была только
-// у ветки "start" (см. TestWriteXTicksAccountsForAnchorShift); у ветки "end"
-// (тик у правого края холста) её не было вовсе, хотя якорь end сдвигает
-// левый край подписи ЕЩЁ левее среднего — риск наезда на предыдущую у него
-// выше, а не ниже. Сценарий: тик у самого x1 (якорь неизбежно "end") при
-// этом слишком близко к prevRight — сменить якорь на "start" нельзя (это
-// увело бы подпись ещё дальше за x1), поэтому единственный целевой исход —
-// не рисовать подпись вовсе (draw=false), а не молча накладывать текст.
+// защита от наезда раньше была только у ветки start — у end её не было,
+// хотя end сдвигает левый край подписи ещё левее (риск наезда выше).
 func TestXLabelPlacementEndAnchorChecksPrevRight(t *testing.T) {
 	// text шириной ≈42 (7 рун × ≈6 при calW) для круглых чисел.
 	const text = "HELLO12"

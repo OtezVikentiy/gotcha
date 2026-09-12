@@ -13,22 +13,16 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Статус пробы для таблицы веб-слоя. Колонки status в таблице probes нет —
-// схема хранит только revoked_at/last_seen_at, а online/offline/revoked
-// вычисляется web-слоем (см. web.probeStatus) из порога молчания и признака
-// отзыва. Раз столбца нет, CHECK-ограничения тоже нет — эти константы и есть
-// источник истины для множества значений (владелец — uptime, домен проб).
+// колонки status в таблице probes нет — web-слой вычисляет online/offline/
+// revoked из last_seen_at/revoked_at; эти константы — источник истины набора.
 const (
 	ProbeStatusOnline  = "online"
 	ProbeStatusOffline = "offline"
 	ProbeStatusRevoked = "revoked"
 )
 
-// ProbeStatuses — все допустимые статусы пробы.
 var ProbeStatuses = []string{ProbeStatusOnline, ProbeStatusOffline, ProbeStatusRevoked}
 
-// Probe — региональный агент проверок; аутентифицируется токеном (sha256 в
-// БД, сырой токен возвращается вызывающему только один раз при создании).
 type Probe struct {
 	ID         int64
 	OrgID      int64
@@ -44,9 +38,8 @@ func probeTokenHash(token string) []byte {
 	return sum[:]
 }
 
-// CreateProbe issues a new probe for orgID and returns it along with the raw
-// token (32 random bytes, hex-encoded) — the only time the caller ever sees
-// it. Only its sha256 is persisted.
+// возвращает сырой токен только здесь — единственный раз, когда вызывающий
+// его видит; в БД сохраняется только sha256.
 func (s *Service) CreateProbe(ctx context.Context, orgID int64, region, name string) (Probe, string, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
@@ -67,8 +60,8 @@ func (s *Service) CreateProbe(ctx context.Context, orgID int64, region, name str
 	return p, token, nil
 }
 
-// RevokeProbe revokes a probe. Not idempotent: revoking an already-revoked
-// (or unknown) probe returns ErrNotFound.
+// не идемпотентно — повторный отзыв уже отозванной или неизвестной пробы
+// возвращает ErrNotFound.
 func (s *Service) RevokeProbe(ctx context.Context, probeID int64) error {
 	tag, err := s.pool.Exec(ctx,
 		"UPDATE probes SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL", probeID)
@@ -81,8 +74,6 @@ func (s *Service) RevokeProbe(ctx context.Context, probeID int64) error {
 	return nil
 }
 
-// Probes returns all of orgID's probes (including revoked ones), ordered by
-// id.
 func (s *Service) Probes(ctx context.Context, orgID int64) ([]Probe, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, org_id, region, name, last_seen_at, revoked_at IS NOT NULL, created_at
@@ -102,9 +93,8 @@ func (s *Service) Probes(ctx context.Context, orgID int64) ([]Probe, error) {
 	return out, rows.Err()
 }
 
-// ProbeByToken looks up a non-revoked probe by its raw token. Revoked
-// probes are treated as not found, so a revoked token stops authenticating
-// immediately.
+// отозванная проба трактуется как не найденная — отозванный токен сразу
+// перестаёт аутентифицировать.
 func (s *Service) ProbeByToken(ctx context.Context, token string) (Probe, error) {
 	var p Probe
 	err := s.pool.QueryRow(ctx, `
@@ -120,7 +110,6 @@ func (s *Service) ProbeByToken(ctx context.Context, token string) (Probe, error)
 	return p, nil
 }
 
-// TouchProbe records that a probe just checked in.
 func (s *Service) TouchProbe(ctx context.Context, probeID int64) error {
 	tag, err := s.pool.Exec(ctx, "UPDATE probes SET last_seen_at = now() WHERE id = $1", probeID)
 	if err != nil {
@@ -132,13 +121,8 @@ func (s *Service) TouchProbe(ctx context.Context, probeID int64) error {
 	return nil
 }
 
-// Regions returns the regions available to orgID: the built-in local region
-// plus the regions of its non-revoked probes, deduplicated and sorted.
-//
-// The built-in region is the one this installation's in-process runner
-// actually leases (s.localRegion() — GOTCHA_UPTIME_LOCAL_REGION, "local" by default),
-// NOT the literal "local": offering a region nobody leases would let an admin
-// assign a monitor to a region in which it is never checked.
+// встроенный регион — тот, что реально арендует раннер (s.localRegion()), не
+// литерал "local": иначе монитор назначили бы на регион, где его не проверяют.
 func (s *Service) Regions(ctx context.Context, orgID int64) ([]string, error) {
 	rows, err := s.pool.Query(ctx,
 		"SELECT DISTINCT region FROM probes WHERE org_id = $1 AND revoked_at IS NULL", orgID)

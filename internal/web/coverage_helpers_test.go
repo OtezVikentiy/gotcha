@@ -10,9 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// TestCacheControl: неизменяемый кэш ставится ТОЛЬКО при ?v == текущая версия;
-// отсутствие ?v или чужой/устаревший ?v — короткий кэш. И в любом случае
-// обёрнутый handler реально вызывается (а не проглатывается).
 func TestCacheControl(t *testing.T) {
 	const version = "abc123def456"
 	cases := []struct {
@@ -47,16 +44,14 @@ func TestCacheControl(t *testing.T) {
 	}
 }
 
-// TestNoDirListing: запрос каталога (пустой путь после StripPrefix или "…/")
-// даёт 404 и не пробрасывается в файловый сервер; обычный файл — пробрасывается.
 func TestNoDirListing(t *testing.T) {
 	cases := []struct {
 		path       string
 		wantServed bool
 	}{
-		{"", false},       // /static/ после StripPrefix
-		{"icons/", false}, // /static/icons/
-		{"app.css", true}, // обычный файл
+		{"", false},
+		{"icons/", false},
+		{"app.css", true},
 	}
 	for _, c := range cases {
 		served := false
@@ -74,9 +69,6 @@ func TestNoDirListing(t *testing.T) {
 	}
 }
 
-// TestMonitorStatus покрывает все три ветки monitorStatus: paused (Enabled
-// == false), maintenance (активное окно обслуживания) и делегирование в
-// uptime.Aggregate для обычного случая.
 func TestMonitorStatus(t *testing.T) {
 	t.Run("disabled monitor is paused regardless of states", func(t *testing.T) {
 		m := uptime.Monitor{Enabled: false, Consensus: uptime.ConsensusAny}
@@ -97,9 +89,6 @@ func TestMonitorStatus(t *testing.T) {
 	})
 
 	t.Run("enabled monitor outside maintenance delegates to uptime.Aggregate", func(t *testing.T) {
-		// Consensus=any, единственный регион в статусе "up" => decided=1,
-		// down=0 => ConsensusAny не срабатывает (down>0 ложно) => aggUp =>
-		// Aggregate возвращает буквально "up" (см. internal/uptime/detector.go).
 		m := uptime.Monitor{Enabled: true, Consensus: uptime.ConsensusAny}
 		states := []uptime.State{{Region: "eu", Status: "up"}}
 		got := monitorStatus(m, states, false)
@@ -109,9 +98,6 @@ func TestMonitorStatus(t *testing.T) {
 	})
 }
 
-// TestUpcomingWindows проверяет разворачивание окон обслуживания в
-// StatusWindowView: пустой список окон, и несколько окон, пересекающих
-// [from,to), с сортировкой результата по времени начала.
 func TestUpcomingWindows(t *testing.T) {
 	from := time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 7, 29, 0, 0, 0, 0, time.UTC)
@@ -128,7 +114,6 @@ func TestUpcomingWindows(t *testing.T) {
 		earlyEnd := time.Date(2026, 7, 23, 3, 0, 0, 0, time.UTC)
 		lateStart := time.Date(2026, 7, 25, 10, 0, 0, 0, time.UTC)
 		lateEnd := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
-		// Окно за пределами [from,to) не должно попасть в результат.
 		outsideStart := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 		outsideEnd := time.Date(2026, 6, 1, 1, 0, 0, 0, time.UTC)
 

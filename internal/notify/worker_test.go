@@ -14,7 +14,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// fakeSender records calls and either always succeeds or always fails.
 type fakeSender struct {
 	failAlways bool
 	calls      int32
@@ -33,9 +32,6 @@ func (f *fakeSender) Send(ctx context.Context, t notify.Target, payload map[stri
 	return nil
 }
 
-// enqueueJob кладёт задачу БЕЗ секрета — ровно как боевые нотифаеры: секрет в
-// notification_outbox.payload обесценивал бы шифрование alert_channels.secret,
-// поэтому воркер достаёт его по channel_id в момент отправки.
 func enqueueJob(t *testing.T, ob *notify.Outbox, chID int64, kind, target string) {
 	t.Helper()
 	err := ob.Enqueue(context.Background(), chID, map[string]any{
@@ -48,9 +44,6 @@ func enqueueJob(t *testing.T, ob *notify.Outbox, chID int64, kind, target string
 	}
 }
 
-// fakeSecrets — заглушка notify.SecretResolver: отдаёт секрет по id канала и
-// считает обращения, чтобы тест мог убедиться, что воркер спросил именно её,
-// а не взял значение из payload.
 type fakeSecrets struct {
 	secret string
 	err    error
@@ -69,7 +62,6 @@ type jobState struct {
 	nextRetry time.Time
 }
 
-// readJobState reads the current state of the single outbox row for chID.
 func readJobState(t *testing.T, pool *pgxpool.Pool, chID int64) jobState {
 	t.Helper()
 	var s jobState
@@ -82,8 +74,6 @@ func readJobState(t *testing.T, pool *pgxpool.Pool, chID int64) jobState {
 	return s
 }
 
-// waitForJobState polls the single outbox row for chID until pred is
-// satisfied or timeout elapses.
 func waitForJobState(t *testing.T, pool *pgxpool.Pool, chID int64, timeout time.Duration, pred func(jobState) bool) jobState {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -99,9 +89,6 @@ func waitForJobState(t *testing.T, pool *pgxpool.Pool, chID int64, timeout time.
 	}
 }
 
-// forceRetryNow rewrites next_retry_at into the past so a running worker's
-// next tick reclaims the job immediately, sidestepping the real minutes/
-// hours-long backoff schedule.
 func forceRetryNow(t *testing.T, pool *pgxpool.Pool, chID int64) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),
@@ -111,14 +98,6 @@ func forceRetryNow(t *testing.T, pool *pgxpool.Pool, chID int64) {
 	}
 }
 
-// advanceRetry forces the job back to "ready to send" and waits for the
-// worker to actually pick it up. A naive single forceRetryNow call races
-// with the worker: Claim() bumps attempts (and thus last_error is already
-// non-empty from the *previous* failure) before MarkRetry writes the real
-// backoff, so a single forced update can land between Claim and MarkRetry
-// and be immediately clobbered by the worker's own backoff write. Looping
-// here keeps forcing next_retry_at into the past until attempts actually
-// advances past fromAttempts (or the job gives up and fails).
 func advanceRetry(t *testing.T, pool *pgxpool.Pool, chID int64, fromAttempts int) jobState {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -144,10 +123,6 @@ func runWorker(t *testing.T, w *notify.Worker, ctx context.Context) (done <-chan
 	return ch
 }
 
-// blockingSender never returns on its own: it blocks until the ctx passed
-// to Send is done, then reports that as an error. It stands in for one
-// hanging target (dead peer, no timeout) to prove the worker doesn't stall
-// forever on it.
 type blockingSender struct {
 	calls int32
 }
@@ -158,10 +133,6 @@ func (b *blockingSender) Send(ctx context.Context, t notify.Target, payload map[
 	return ctx.Err()
 }
 
-// TestWorkerSendTimeoutDoesNotHang proves that a target which never
-// responds does not stall the worker forever: with a short per-send
-// timeout configured, the blocking sender's ctx is cancelled, Send returns
-// an error, and the job is rescheduled (not left stuck "in flight").
 func TestWorkerSendTimeoutDoesNotHang(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ob := notify.NewOutbox(pool)
@@ -193,12 +164,6 @@ func TestWorkerSendTimeoutDoesNotHang(t *testing.T) {
 	}
 }
 
-// flakyMarkSentOutbox — in-memory заглушка Outbox, отдающая ровно одну job
-// и умеющая уронить первый вызов MarkSent. Нужна, чтобы проверить сужение
-// окна at-least-once (ARCH-M2): после успешного Send воркер должен повторить
-// MarkSent при транзиентном сбое БД, а не оставлять job на повторную
-// доставку. Реальный notify.Outbox для этого не годится — его MarkSent
-// невозможно сделать флаки без модификации схемы.
 type flakyMarkSentOutbox struct {
 	mu            sync.Mutex
 	claimed       bool
@@ -254,11 +219,6 @@ func (f *flakyMarkSentOutbox) snapshot() (markSentCalls, retryCalls, failCalls i
 	return f.markSentCalls, f.retryCalls, f.failCalls, f.sent
 }
 
-// TestWorkerMarkSentRetriesTransientFailure: Send успешен, MarkSent падает
-// первый раз и проходит со второго. Воркер должен повторить MarkSent (>1
-// вызова) и в итоге пометить job отправленной, НЕ отправляя её на повторную
-// доставку (MarkRetry/MarkFailed не вызываются) — окно двойной доставки
-// сужено (ARCH-M2). Тест на заглушке, без testcontainers.
 func TestWorkerMarkSentRetriesTransientFailure(t *testing.T) {
 	ob := &flakyMarkSentOutbox{}
 	ok := &fakeSender{}
@@ -328,7 +288,6 @@ func TestWorkerDeliversSuccessfulJob(t *testing.T) {
 	if len(ok.targets) != 1 || ok.targets[0].Target != "dest" || ok.targets[0].Secret != "sek" {
 		t.Errorf("target = %+v, want {Target:dest Secret:sek}", ok.targets)
 	}
-	// Секрет пришёл именно от резолвера: в payload его не было вовсе.
 	if got := atomic.LoadInt32(&secrets.calls); got != 1 {
 		t.Errorf("ChannelSecret вызван %d раз, want 1 — секрет обязан резолвиться по channel_id", got)
 	}
@@ -364,10 +323,6 @@ func TestWorkerRetriesFailingJob(t *testing.T) {
 	}
 }
 
-// TestWorkerFailsAfterFiveAttempts drives the worker through its own
-// claim/send/backoff loop five times (forcing next_retry_at back into the
-// past between attempts, since the real backoff schedule spans minutes to
-// hours) and asserts it gives up via MarkFailed on the fifth attempt.
 func TestWorkerFailsAfterFiveAttempts(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ob := notify.NewOutbox(pool)
@@ -407,11 +362,6 @@ func TestWorkerFailsAfterFiveAttempts(t *testing.T) {
 	}
 }
 
-// slowSender держит каждую отправку delay и запоминает пиковое число
-// одновременных вызовов.
-// panicSender simulates a bug inside a concrete Sender implementation (bad
-// payload assumption, nil deref building the request) by panicking instead
-// of returning an error.
 type panicSender struct {
 	calls int32
 }
@@ -421,15 +371,6 @@ func (p *panicSender) Send(ctx context.Context, t notify.Target, payload map[str
 	panic("boom: sender exploded")
 }
 
-// TestWorkerRecoversFromPanicInProcess covers the P1 finding: deliver spawns
-// one goroutine per job calling w.process WITHOUT recover(). Go kills the
-// whole process on an unrecovered panic in any goroutine, so a single bad
-// Sender (or a malformed payload it can't handle) used to take down the
-// entire notify.Worker — and everything else running in the same process —
-// instead of just failing that one job. This proves the panic is now
-// contained: the worker keeps running, the panicking job is treated as a
-// failed delivery (retryable, NOT marked sent), and other jobs in the same
-// batch are still delivered.
 func TestWorkerRecoversFromPanicInProcess(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ob := notify.NewOutbox(pool)
@@ -449,9 +390,6 @@ func TestWorkerRecoversFromPanicInProcess(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := runWorker(t, w, ctx)
 
-	// The panicking job must not be marked delivered: recover() treats a
-	// panic the same as any other Send error, routing it through
-	// retryOrFail, not markSent.
 	s := waitForJobState(t, pool, badCh, 2*time.Second, func(s jobState) bool {
 		return s.attempts == 1 && s.lastError != ""
 	})
@@ -459,8 +397,6 @@ func TestWorkerRecoversFromPanicInProcess(t *testing.T) {
 		t.Errorf("panicking job status = %q, want pending (retryable, not sent)", s.status)
 	}
 
-	// The other job in the same batch must still be delivered: the panic
-	// must not have taken the worker (or the process) down with it.
 	waitForJobState(t, pool, okCh, 2*time.Second, func(s jobState) bool { return s.status == "sent" })
 
 	cancel()
@@ -495,11 +431,6 @@ func (s *slowSender) Send(ctx context.Context, t notify.Target, payload map[stri
 	return nil
 }
 
-// TestDeliveryIsConcurrent: медленный канал не должен задерживать остальные.
-//
-// Раньше отправка была последовательной, и один мёртвый вебхук с 30-секундным
-// таймаутом съедал тик целиком: инцидент, задевший десяток мониторов,
-// растягивал оповещения на минуты.
 func TestDeliveryIsConcurrent(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -528,11 +459,6 @@ func TestDeliveryIsConcurrent(t *testing.T) {
 	if got := sender.calls.Load(); got != jobs {
 		t.Fatalf("отправок = %d, want %d", got, jobs)
 	}
-	// 8 задач по 200 мс: последовательно — 1.6 с, при четырёх параллельных —
-	// ~0.4 с. Раньше это ещё проверялось по elapsed (wall-clock), но на
-	// разделяемом раннере под нагрузкой время могло растянуться без всякой
-	// связи с параллелизмом — регрессия на последовательную доставку и так
-	// надёжно ловится проверками пика ниже, часы для этого не нужны.
 	if peak := sender.maxInFl.Load(); peak < 2 {
 		t.Errorf("пик одновременных отправок = %d: доставка последовательная, "+
 			"один медленный канал задержит все остальные", peak)
@@ -542,9 +468,6 @@ func TestDeliveryIsConcurrent(t *testing.T) {
 	}
 }
 
-// TestTickDrainsQueueWithoutWaitingForNextTick: пока очередь полна, воркер
-// берёт следующий батч сразу. Тик — это пауза на пустой очереди, а не квант
-// работы; иначе пропускная способность упирается в размер батча за интервал.
 func TestTickDrainsQueueWithoutWaitingForNextTick(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -552,7 +475,6 @@ func TestTickDrainsQueueWithoutWaitingForNextTick(t *testing.T) {
 	ob := notify.NewOutbox(pool)
 	channelID := newChannel(t, pool)
 
-	// Батч при Concurrency=2 равен 4; ставим больше одного батча.
 	const jobs = 9
 	for i := 0; i < jobs; i++ {
 		if err := ob.Enqueue(ctx, channelID, map[string]any{

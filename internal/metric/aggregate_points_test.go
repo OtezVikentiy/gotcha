@@ -6,9 +6,8 @@ import (
 	"time"
 )
 
-// TestAggregatePoints — сведение ряда к одному числу. Отдельный юнит-тест без
-// ClickHouse: именно здесь решается, ЧТО увидит пороговое правило, и перцентиль
-// обязан быть настоящим перцентилем, а не подменяться средним.
+// Отдельный юнит-тест без ClickHouse: именно здесь решается, ЧТО увидит пороговое правило — перцентиль
+// обязан быть настоящим перцентилем, не подменяться средним.
 func TestAggregatePoints(t *testing.T) {
 	base := time.Unix(0, 0).UTC()
 	pts := make([]Point, 0, 5)
@@ -45,9 +44,8 @@ func TestAggregatePoints(t *testing.T) {
 	}
 }
 
-// TestScalarAggExprPercentile — перцентиль на НЕ-гистограмме должен давать
-// quantile, а не avg: раньше p50/p95/p99 проваливались в default и правило с
-// подписью «p95» молча сравнивало с порогом среднее.
+// Перцентиль на НЕ-гистограмме обязан давать quantile, не avg — иначе правило с подписью «p95» молча
+// сравнивало бы с порогом среднее.
 func TestScalarAggExprPercentile(t *testing.T) {
 	for _, agg := range []string{"p50", "p95", "p99"} {
 		if got := scalarAggExpr("gauge", agg); got == "avg(value)" {

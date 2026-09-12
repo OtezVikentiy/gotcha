@@ -1,7 +1,3 @@
-// Package agent — ядро gotcha-agent: сбор хост-метрик через gopsutil,
-// сборка OTLP-экспорта и push на инстанс Gotcha с буферизацией недоставленного.
-// Вся логика здесь (cmd/gotcha-agent — тонкая обвязка): пакет входит в
-// BACK-агрегат покрытия, а точка входа — в щадящую CMD-группу.
 package agent
 
 import (
@@ -16,7 +12,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/envcontract"
 )
 
-// Config — публичный контракт GOTCHA_AGENT_* (фиксируется набело, спека §1.4).
+// Публичный контракт GOTCHA_AGENT_* — поля не переименовывать, ломает совместимость с агентом.
 type Config struct {
 	Endpoint           string        // базовый URL инстанса, без пути
 	Key                string        // публичный ключ проекта (Bearer)
@@ -33,22 +29,13 @@ const (
 	minIntervalSecs = 10  // ниже — самоDoS ключом по ingest
 	maxIntervalSecs = 300 // выше — «тишина» порогов ложно срабатывает
 
-	// maxInterval — то же значение диапазона, что maxIntervalSecs, в
-	// исходном представлении Config.Interval (time.Duration): run_test.go
-	// использует его напрямую, минуя LoadConfig/GOTCHA_AGENT_INTERVAL_SECONDS.
+	// То же значение, что maxIntervalSecs, но в Duration — run_test.go
+	// использует его напрямую, в обход LoadConfig.
 	maxInterval = maxIntervalSecs * time.Second
 )
 
-// intNum разбирает голое целое число секунд. Название функции — не
-// совпадение с cmd/gotcha/config.go: internal/guards/env_example_test.go
-// (numericReaderFuncs) ищет вызовы именно с этим именем, чтобы применить
-// конвенцию единиц измерения к голым числовым переменным (здесь единица
-// уже в имени, суффикс _SECONDS). Общий код с cmd/gotcha не заводится —
-// agent не может импортировать package main. На пустом значении возвращает
-// set=false (переменная не задана, у вызывающего кода свой дефолт); на
-// ошибке разбора НЕ возвращает частичный результат strconv — так "30s"
-// (старый duration-формат) не может быть по ошибке принято как правдоподобное
-// число вместо явного отказа.
+// Имя функции важно: internal/guards ищет вызовы intNum по имени для
+// проверки конвенции единиц — переименование сломает guard молча.
 func intNum(name, raw string) (value int, set bool, err error) {
 	v := strings.TrimSpace(raw)
 	if v == "" {
@@ -61,40 +48,21 @@ func intNum(name, raw string) (value int, set bool, err error) {
 	return int(n), true, nil
 }
 
-// LoadConfig читает окружение. getenv параметром — детерминированные тесты
-// без t.Setenv (тот же приём, что loadConfig в cmd/gotcha). environ
-// перечисляет всё окружение процесса ("KEY=VALUE" на строку, как
-// os.Environ()) — нужен отдельно от getenv (интерфейс «дай значение по
-// ключу» не умеет перечислить, что вообще задано) для проверки неизвестных
-// имён в конце этой функции; в проде — os.Environ, в тестах — фикстура.
+// getenv — для тестов без t.Setenv; environ перечисляет всё окружение
+// отдельно, чтобы поймать неизвестные GOTCHA_AGENT_* имена.
 func LoadConfig(getenv func(string) string, environ func() []string) (Config, error) {
-	// CheckRenamedScoped на envcontract.AgentOwned (три свои пары), не
-	// CheckRenamedAll: агент не должен отказывать на устаревших СЕРВЕРНЫХ
-	// именах в общем .env одного хоста — эти переменные он никогда не
-	// читает, отказ по ним не защита, а самоуправство. Идёт ДО любого
-	// разбора значений — иначе валидный когда-то
-	// "30s" под старым именем успел бы разобраться (не как секунды, но как
-	// молчаливый дефолт) прежде, чем оператор узнает, что имя устарело.
+	// AgentOwned, не CheckRenamedAll: чужие серверные имена агент не читает.
+	// Вызов до разбора значений — иначе устаревшее имя тихо станет дефолтом.
 	if err := envcontract.CheckRenamedScoped(getenv, envcontract.AgentOwned); err != nil {
 		return Config{}, err
 	}
 	cfg := Config{
-		// Endpoint: пробелы по краям обрезаются здесь, ДО baseurl.Normalize
-		// ниже — иначе "https://g.example/ " (пробел после слэша) прошёл бы
-		// TrimRight внутри Normalize как есть и оставил бы пробел на конце
-		// базового URL (Normalize сам пробелы не трогает — это забота
-		// вызывающего кода, как и у GOTCHA_BASE_URL/GOTCHA_TELEGRAM_API_BASE/
-		// GOTCHA_PROBE_SERVER_URL в cmd/gotcha/config.go).
+		// Trim до baseurl.Normalize — сам Normalize пробелы не трогает, это
+		// забота вызывающего (как и для GOTCHA_BASE_URL и соседей).
 		Endpoint: strings.TrimSpace(getenv("GOTCHA_AGENT_ENDPOINT")),
 		Key:      strings.TrimSpace(getenv("GOTCHA_AGENT_INGEST_KEY")),
-		// Hostname — identity-ключ хоста в проде: run.go кладёт его как есть в
-		// OTLP-атрибут host.name (emit.go), а приём (internal/ingest/otlp.go)
-		// использует сырой host.name ключом карты хостов без своего тримминга.
-		// " web-1 " и "web-1" — два РАЗНЫХ ключа: оператор, «поправив» пробел
-		// на живом инстансе, получил бы НОВЫЙ хост вместо переименования
-		// старого, с потерей меток/порогов/зависимостей. Серверная нормализация
-		// host.name — отдельная работа (не тут, приём принимает значения не
-		// только от этого агента); здесь только не порождать проблему на входе.
+		// host.name уходит как есть в приём — identity-ключ хоста: " web-1 " и
+		// "web-1" — РАЗНЫЕ хосты, здесь тримминг обязателен.
 		Hostname:    strings.TrimSpace(getenv("GOTCHA_AGENT_HOSTNAME")),
 		CACert:      strings.TrimSpace(getenv("GOTCHA_AGENT_CA_CERT")),
 		Interval:    defaultInterval,
@@ -104,18 +72,8 @@ func LoadConfig(getenv func(string) string, environ func() []string) (Config, er
 	if cfg.Endpoint == "" {
 		return Config{}, fmt.Errorf("GOTCHA_AGENT_ENDPOINT is required")
 	}
-	// baseurl.Normalize — тот же хелпер, что GOTCHA_BASE_URL/
-	// GOTCHA_TELEGRAM_API_BASE/GOTCHA_PROBE_SERVER_URL в cmd/gotcha/config.go:
-	// схема и хост обязательны, query/fragment запрещены, хвостовые слэши
-	// срезаются (до этой правки Endpoint слэш срезал, но query не проверял).
-	// Ошибка Normalize отдаётся ОПЕРАТОРУ дословно, а не заменяется общим
-	// «must be an http(s) URL»: у Normalize свой текст на каждый класс
-	// проблемы (нет схемы/хоста, лишние query/fragment) с именем переменной
-	// уже внутри (см. её докблок в internal/baseurl) — сервер (GOTCHA_BASE_URL
-	// и соседи, cmd/gotcha/config.go) отдаёт эту ошибку так же напрямую.
-	// Общая формулировка молча подменяла точную причину («…must not carry a
-	// query or fragment») на неточную («…must be an http(s) URL») для
-	// адреса, который http(s)-схему и хост как раз имеет.
+	// Ошибка Normalize пробрасывается как есть — общая формулировка увела бы
+	// от настоящей причины (например лишний query при валидной схеме/хосте).
 	normalized, err := baseurl.Normalize("GOTCHA_AGENT_ENDPOINT", cfg.Endpoint)
 	if err != nil {
 		return Config{}, err
@@ -124,10 +82,7 @@ func LoadConfig(getenv func(string) string, environ func() []string) (Config, er
 	if cfg.Key == "" {
 		return Config{}, fmt.Errorf("GOTCHA_AGENT_INGEST_KEY is required")
 	}
-	// GOTCHA_AGENT_INTERVAL_SECONDS — целое число секунд, не duration-строка:
-	// intNum отказывает разбор на "30s" вместо того, чтобы молча принять его
-	// как значение, — единственная duration-строка продукта раньше не несла
-	// единицу измерения в самом имени, в отличие от шести серверных *_SECONDS.
+	// Целое число секунд, не duration-строка ("30s" не пройдёт intNum).
 	if raw := strings.TrimSpace(getenv("GOTCHA_AGENT_INTERVAL_SECONDS")); raw != "" {
 		seconds, _, err := intNum("GOTCHA_AGENT_INTERVAL_SECONDS", raw)
 		if err != nil {
@@ -151,40 +106,8 @@ func LoadConfig(getenv func(string) string, environ func() []string) (Config, er
 	return cfg, nil
 }
 
-// checkUnknownAgentEnvVars отказывает старту, если в окружении процесса
-// присутствует переменная с префиксом GOTCHA_AGENT_, которую не читает ни
-// эта функция, ни какая-либо другая (envcontract.Known — общий реестр,
-// объединяющий агентские и серверные имена, см. её докблок в
-// internal/envcontract/known.go).
-//
-// ТОЛЬКО свой префикс, а не любая GOTCHA_*: чужая серверная переменная
-// (GOTCHA_PG_DSN и т.п.) в общем `.env` одного хоста — легитимный сосед по
-// файлу, агент её никогда не читал и отказ по ней был бы самоуправством
-// (тот же принцип, что у envcontract.CheckRenamedScoped выше — см. её
-// докблок) — это единственное настоящее отличие от серверного
-// checkUnknownEnvVars (cmd/gotcha/config.go), которая смотрит на ЛЮБОЕ
-// GOTCHA_*, а не только на свой узкий неймспейс. Но опечатка ВНУТРИ своего
-// же префикса — другое дело: агент штатно стоит на удалённом хосте ОДИН,
-// там нет ни сервера, ни его проверки неизвестных имён — без этой
-// проверки install.sh --check подтверждал бы битый конфиг агента как
-// "config OK", а опечатка (например GOTCHA_AGENT_INTERVAL_SECOND без "S" на
-// конце) молча превращалась бы в «переменная не задана», то есть в тихий
-// дефолт вместо отказа старта.
-//
-// Имя из envcontract.Renamed под своим префиксом — ОТДЕЛЬНАЯ ветка, не
-// «unknown»: пара переменных распространения агентских бинарей — старые
-// СЕРВЕРНЫЕ имена (см. envcontract.Renamed — их новые имена без префикса
-// GOTCHA_AGENT_, но старые исторически несут его по недосмотру), не
-// входящие в envcontract.AgentOwned, так что CheckRenamedScoped выше их не
-// ловит вовсе (не в его области). Без этой ветки на такой переменной агент
-// и сервер на ОДНОМ И ТОМ ЖЕ хосте отдавали бы противоречащие вердикты:
-// агент — «unknown, check for typos», сервер — «renamed to <новое имя>».
-// Значение НЕ смотрится — ни здесь, ни в ветке «unknown» ниже:
-// declared-but-unset для по-настоящему ЖИВОГО имени — забота
-// CheckRenamedScoped/envcontract.Known (тех, что уже читает конфиг), а не
-// этой проверки; имя, которое НЕ читает уже никто (переименовано или
-// никогда не существовало), под «пустое = не задано» не подпадает — само
-// его присутствие в `.env`, с любым значением, стоит назвать оператору.
+// Только префикс GOTCHA_AGENT_, не любой GOTCHA_* — чужие серверные
+// переменные в общем .env агент не читает и не должен по ним отказывать.
 func checkUnknownAgentEnvVars(environ func() []string) error {
 	var renamed, unknown []string
 	for _, kv := range environ() {
@@ -212,10 +135,8 @@ func checkUnknownAgentEnvVars(environ func() []string) error {
 	return errors.Join(errs...)
 }
 
-// parseBool — тот же разбор булевых значений env, что у parseBool в
-// cmd/gotcha/config.go: trim + lower, истина 1/true/yes/on, ложь
-// 0/false/no/off, пустая строка — «не задано». agent не может импортировать
-// package main, поэтому набор синхронизируется вручную, а не общим кодом.
+// Тот же разбор, что parseBool в cmd/gotcha/config.go — синхронизируется
+// вручную, agent не может импортировать package main.
 func parseBool(name, raw string) (value bool, set bool, err error) {
 	v := strings.ToLower(strings.TrimSpace(raw))
 	switch v {

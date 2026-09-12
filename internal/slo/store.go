@@ -11,27 +11,20 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 )
 
-// maxName — максимум рун в имени SLO (капается по рунам, не по байтам).
+// Капается по рунам в имени SLO, не по байтам.
 const maxName = 200
 
-// maxSLOsPerProject — верхний предел числа SLO на проект. Кап-на-проект — главная
-// защита от раздувания: без него оператор плодит latency-SLO (raw-скан ~10с
-// каждый), а единый последовательный оценщик (ListEnabled) растягивает тик за
-// интервал → error-budget алерты задерживаются у ВСЕХ тенантов (cross-tenant
-// blast radius).
+// без кап-на-проект оператор плодит latency-SLO (raw-скан ~10с каждый), а
+// последовательный оценщик растягивает тик за интервал — задержка бьёт по ВСЕМ тенантам.
 const maxSLOsPerProject = 100
 
-// ErrTooManySLOs — достигнут предел числа SLO на проект. Экспортируется, чтобы
-// web-слой отличил её от прочих ошибок и отдал 422, а не 500.
+// экспортируется, чтобы web-слой отличил её от прочих ошибок и отдал 422, не 500.
 var ErrTooManySLOs = errors.New("slo: too many slos for project")
 
-// ErrNotFound — записи нет (или она принадлежит другому проекту). Возвращается
-// удалением, когда DELETE не затронул ни строки: без этого «удалили ничего»
-// неотличимо от успеха, и web-слой рапортует 303 по несуществующему SLO.
-// Соседи ведут себя так же — uptime.Service.Delete, DeleteWindow, DeleteStatusPage.
+// без неё «удалили ничего» неотличимо от успеха, и web-слой рапортует не туда.
 var ErrNotFound = errors.New("slo: not found")
 
-// capStr — обрезка строки до n рун. Имя НЕ `cap`: тот шадовит builtin.
+// не `cap`: шадовило бы builtin.
 func capStr(s string, n int) string {
 	r := []rune(s)
 	if len(r) > n {
@@ -40,14 +33,12 @@ func capStr(s string, n int) string {
 	return s
 }
 
-// Store — Postgres-стор определений SLO (таблица slos) и инцидентов сжигания
-// бюджета (slo_incidents). Все запросы скоупятся по project_id (тенант-изоляция),
-// кроме ListEnabled — тот читает все включённые SLO для оценщика.
+// все запросы скоупятся по project_id, кроме ListEnabled — тот читает все
+// включённые SLO по всем проектам для оценщика.
 type Store struct {
 	pool *pgxpool.Pool
 }
 
-// NewStore создаёт стор поверх пула pgx.
 func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
@@ -66,15 +57,12 @@ func scanSLO(row pgx.Row) (SLO, error) {
 	return s, err
 }
 
-// Create валидирует минимально (капы длины) и создаёт SLO. Возвращает
-// вставленную строку со всеми DEFAULT-полями.
 func (s *Store) Create(ctx context.Context, in SLO) (SLO, error) {
 	in.Name = capStr(in.Name, maxName)
 	in.Transaction = capStr(in.Transaction, maxName)
 	in.Environment = capStr(in.Environment, maxName)
-	// Кап-на-проект: считаем существующие до вставки. При гонке на границе
-	// возможен небольшой перелёт, но это не защита безопасности, а ограничение
-	// blast-radius оценщика — точность до единицы не требуется.
+	// при гонке на границе возможен небольшой перелёт — это ограничение
+	// blast-radius, не защита безопасности, точность до единицы не нужна.
 	var count int
 	if err := s.pool.QueryRow(ctx,
 		"SELECT count(*) FROM slos WHERE project_id = $1", in.ProjectID).Scan(&count); err != nil {
@@ -98,7 +86,6 @@ func (s *Store) Create(ctx context.Context, in SLO) (SLO, error) {
 	return out, nil
 }
 
-// Get возвращает SLO проекта по id (found=false, если нет или чужой проект).
 func (s *Store) Get(ctx context.Context, projectID, id int64) (SLO, bool, error) {
 	row := s.pool.QueryRow(ctx,
 		"SELECT "+sloColumns+" FROM slos WHERE project_id = $1 AND id = $2", projectID, id)
@@ -112,10 +99,8 @@ func (s *Store) Get(ctx context.Context, projectID, id int64) (SLO, bool, error)
 	return out, true, nil
 }
 
-// List возвращает SLO проекта, свежайшие первыми.
 func (s *Store) List(ctx context.Context, projectID int64) ([]SLO, error) {
-	// LIMIT с запасом над капом-на-проект (maxSLOsPerProject=100) — defence in
-	// depth: даже если кап обойдён (гонка/ручная вставка), список не станет O(N).
+	// запас над maxSLOsPerProject: даже если кап обойдён, список не станет O(N).
 	rows, err := s.pool.Query(ctx,
 		"SELECT "+sloColumns+" FROM slos WHERE project_id = $1 ORDER BY created_at DESC, id DESC LIMIT 200", projectID)
 	if err != nil {
@@ -133,12 +118,9 @@ func (s *Store) List(ctx context.Context, projectID int64) ([]SLO, error) {
 	return out, rows.Err()
 }
 
-// ListEnabled возвращает все включённые SLO по всем проектам — для оценщика.
 func (s *Store) ListEnabled(ctx context.Context) ([]SLO, error) {
-	// LIMIT — вторичная защита от неограниченного прохода оценщика на инсталляции
-	// с тысячами проектов (кап-на-проект ограничивает каждый проект, но не их
-	// число). Потолок с большим запасом: 5000 включённых SLO — уже за гранью
-	// разумного для одного оценочного тика.
+	// вторичная защита: кап-на-проект не ограничивает число проектов; 5000 SLO —
+	// уже за гранью разумного для одного тика.
 	rows, err := s.pool.Query(ctx,
 		"SELECT "+sloColumns+" FROM slos WHERE enabled ORDER BY id LIMIT 5000")
 	if err != nil {
@@ -156,8 +138,7 @@ func (s *Store) ListEnabled(ctx context.Context) ([]SLO, error) {
 	return out, rows.Err()
 }
 
-// Delete удаляет SLO проекта (scoped по projectID — чужое не удалить). Инциденты
-// уходят каскадом (ON DELETE CASCADE).
+// инциденты уходят каскадом (ON DELETE CASCADE).
 func (s *Store) Delete(ctx context.Context, projectID, id int64) error {
 	tag, err := s.pool.Exec(ctx,
 		"DELETE FROM slos WHERE project_id = $1 AND id = $2", projectID, id)
@@ -182,7 +163,6 @@ func scanIncident(row pgx.Row) (Incident, error) {
 	return in, err
 }
 
-// OpenIncidentFor возвращает открытый инцидент SLO, если он есть.
 func (s *Store) OpenIncidentFor(ctx context.Context, sloID int64) (Incident, bool, error) {
 	row := s.pool.QueryRow(ctx,
 		"SELECT "+incidentColumns+" FROM slo_incidents WHERE slo_id = $1 AND status = 'open'", sloID)
@@ -196,10 +176,7 @@ func (s *Store) OpenIncidentFor(ctx context.Context, sloID int64) (Incident, boo
 	return in, true, nil
 }
 
-// GetIncidentByID возвращает инцидент сжигания бюджета по id (любого
-// статуса). Нужен эскалации (B4, T6): планировщик и StepNotifier знают
-// только incidentID, объект инцидента приходится перегружать заново. Не
-// путать с Get — тот читает определение SLO (slos), а не инцидент.
+// не путать с Get — тот читает определение SLO (slos), а не инцидент.
 func (s *Store) GetIncidentByID(ctx context.Context, id int64) (Incident, bool, error) {
 	row := s.pool.QueryRow(ctx, "SELECT "+incidentColumns+" FROM slo_incidents WHERE id = $1", id)
 	in, err := scanIncident(row)
@@ -212,11 +189,8 @@ func (s *Store) GetIncidentByID(ctx context.Context, id int64) (Incident, bool, 
 	return in, true, nil
 }
 
-// OpenIncident открывает инцидент сжигания бюджета, если открытого ещё нет
-// (модель one-open через частичный уникальный индекс slo_incidents_one_open_idx).
-// created=true — вставлен новый; created=false — уже был открытый (вернётся он).
-// Выполняется в транзакции: SELECT открытого → если есть, вернуть; иначе INSERT.
-// При гонке параллельный INSERT ловит уникальное нарушение → перечитываем победителя.
+// one-open через частичный уникальный индекс: транзакция SELECT-then-INSERT,
+// при гонке параллельный INSERT ловит уникальное нарушение — перечитываем победителя.
 func (s *Store) OpenIncident(ctx context.Context, sloID, projectID int64, burnRate float64, budgetRemaining *float64, inMaintenance bool) (Incident, bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -224,7 +198,6 @@ func (s *Store) OpenIncident(ctx context.Context, sloID, projectID int64, burnRa
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Уже есть открытый — вернуть его.
 	existing, err := scanIncident(tx.QueryRow(ctx,
 		"SELECT "+incidentColumns+" FROM slo_incidents WHERE slo_id = $1 AND status = 'open'", sloID))
 	if err == nil {
@@ -237,7 +210,6 @@ func (s *Store) OpenIncident(ctx context.Context, sloID, projectID int64, burnRa
 		return Incident{}, false, fmt.Errorf("slo: open incident select: %w", err)
 	}
 
-	// Открытого нет — вставляем.
 	in, err := scanIncident(tx.QueryRow(ctx, `
 		INSERT INTO slo_incidents (slo_id, project_id, burn_rate, budget_remaining, in_maintenance)
 		VALUES ($1, $2, $3, $4, $5)
@@ -264,8 +236,6 @@ func (s *Store) OpenIncident(ctx context.Context, sloID, projectID int64, burnRa
 	return in, true, nil
 }
 
-// ResolveIncident закрывает открытый инцидент SLO. resolved=false, если открытого
-// не было (идемпотентно).
 func (s *Store) ResolveIncident(ctx context.Context, sloID int64) (Incident, bool, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE slo_incidents SET status = 'resolved', resolved_at = now()
@@ -281,8 +251,6 @@ func (s *Store) ResolveIncident(ctx context.Context, sloID int64) (Incident, boo
 	return in, true, nil
 }
 
-// MarkNotified фиксирует отправку уведомления (open → notified_open, иначе
-// notified_close).
 func (s *Store) MarkNotified(ctx context.Context, incidentID int64, open bool) error {
 	column := "notified_close"
 	if open {
@@ -296,10 +264,7 @@ func (s *Store) MarkNotified(ctx context.Context, incidentID int64, open bool) e
 	return nil
 }
 
-// Acknowledge подтверждает открытый инцидент (B4: эскалации) — фиксирует
-// acknowledged_at/acknowledged_by, чем гасит дальнейшую эскалацию. ok=false,
-// если инцидент уже подтверждён или закрыт (идемпотентно). project_id в
-// WHERE — defense-in-depth (зеркало uptime.DeleteWindow, B3).
+// project_id в WHERE — defense-in-depth: не даёт подтвердить чужой инцидент по id.
 func (s *Store) Acknowledge(ctx context.Context, incidentID, projectID, userID int64) (bool, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE slo_incidents SET acknowledged_at = now(), acknowledged_by = $3
@@ -316,22 +281,11 @@ func (s *Store) Acknowledge(ctx context.Context, incidentID, projectID, userID i
 	return true, nil
 }
 
-// Name — ключ источника для эскалации (B4, T4): совпадает с incident_source
-// 'slo' в incident_escalations (0077).
+// должен совпадать с incident_source 'slo' в incident_escalations.
 func (s *Store) Name() string { return "slo" }
 
-// OpenUnacked возвращает открытые неподтверждённые инциденты — кандидаты
-// планировщика эскалации (T7). Члены ОТКРЫТЫХ групп исключаются (D3 Р5):
-// информирование берёт на себя корень; удалённая группа (висячий group_id,
-// LEFT JOIN даёт NULL) ≡ закрытая. Для бывшего члена закрытой группы база
-// отсчёта лесенки — момент освобождения: StartedAt = GREATEST(started_at,
-// g.resolved_at) (анти-залп BLOCKER-1: elapsed планировщика считается от
-// StartedAt, и член, просидевший в группе часы, иначе получил бы всю
-// лесенку очередью за 2-3 тика).
-// Осознанно (фикс ревью плана m-1): фильтр не различает informing/немой
-// корень — член НЕМОГО корня уведомил сам (step0 из оценщика), но step1+
-// через планировщик пойдут только после закрытия группы. Не баг — буква
-// спеки §4.2.
+// члены открытых групп исключены — корень уведомляет за них; StartedAt =
+// GREATEST(started, group.resolved) — иначе бывший член огрёб бы всю лесенку разом.
 func (s *Store) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT i.id, i.project_id,
@@ -357,9 +311,7 @@ func (s *Store) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident, 
 	return out, rows.Err()
 }
 
-// BumpEscalation атомарно продвигает уровень эскалации инцидента с from на
-// from+1 и фиксирует last_escalated_at (B4, T4). ok=false, если level уже не
-// равен from — планировщик проиграл гонку другому тику (идемпотентно).
+// level=from — оптимистическая блокировка: false значит, другой тик уже продвинул эскалацию.
 func (s *Store) BumpEscalation(ctx context.Context, id int64, from int) (bool, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE slo_incidents SET escalation_level = $2 + 1, last_escalated_at = now()
@@ -376,7 +328,6 @@ func (s *Store) BumpEscalation(ctx context.Context, id int64, from int) (bool, e
 	return true, nil
 }
 
-// Incidents возвращает инциденты SLO в проекте, свежайшие первыми.
 func (s *Store) Incidents(ctx context.Context, projectID, sloID int64, limit int) ([]Incident, error) {
 	if limit <= 0 {
 		limit = 100
@@ -399,7 +350,7 @@ func (s *Store) Incidents(ctx context.Context, projectID, sloID int64, limit int
 	return out, rows.Err()
 }
 
-// isUniqueViolation — true, если ошибка pgx — нарушение уникального индекса (SQLSTATE 23505).
+// SQLSTATE 23505.
 func isUniqueViolation(err error) bool {
 	var pgErr interface{ SQLState() string }
 	return errors.As(err, &pgErr) && pgErr.SQLState() == "23505"

@@ -10,10 +10,6 @@ import (
 
 const themeCookie = "theme"
 
-// withTheme кладёт выбранную тему оформления в контекст запроса. Порядок
-// разрешения: cookie theme → сохранённая users.theme залогиненного (с
-// self-heal cookie, см. resolveTheme) → Default (system). /static/*
-// пропускаем без резолвинга.
 func (h *Handler) withTheme(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/static/") {
@@ -25,8 +21,7 @@ func (h *Handler) withTheme(next http.Handler) http.Handler {
 	})
 }
 
-// resolveThemeNoUser — часть цепочки без обращения к БД: cookie → Default.
-// bool=true, если разрешено из cookie (тогда пользовательскую ветку пропускаем).
+// true, если тема разрешена из cookie — тогда пользовательская ветка пропускается.
 func resolveThemeNoUser(r *http.Request) (theme.Theme, bool) {
 	if c, err := r.Cookie(themeCookie); err == nil {
 		if t, ok := theme.Parse(c.Value); ok {
@@ -41,11 +36,8 @@ func (h *Handler) resolveTheme(w http.ResponseWriter, r *http.Request) theme.The
 	if fromCookie {
 		return t
 	}
-	// Нет cookie. У залогиненного берём сохранённую users.theme; если она не
-	// задана — засеваем cookie разрешённым фолбэком (Default), чтобы
-	// последующие запросы шли по cookie-ветке без похода в БД (один запрос к
-	// БД на сессию, а не на запрос). Анонимов НЕ засеваем: иначе сохранённая
-	// тема, выбранная при будущем логине, оказалась бы затенена.
+	// без cookie: берём users.theme, иначе засеваем cookie Default — не бить БД на каждый запрос.
+	// анонимов не засеваем: иначе будущая пользовательская тема окажется затенена этим cookie.
 	if tok, ok := auth.ReadSessionToken(r, h.Secure); ok {
 		if uid, err := h.Auth.SessionUser(r.Context(), tok); err == nil {
 			if code, err := h.Auth.UserTheme(r.Context(), uid); err == nil {
@@ -60,9 +52,7 @@ func (h *Handler) resolveTheme(w http.ResponseWriter, r *http.Request) theme.The
 	return t
 }
 
-// setThemeCookie выставляет cookie theme на год. Не HttpOnly — тема не
-// секрет, и клиентский код (позже) может её читать; SameSite=Lax, Secure по
-// схеме.
+// не HttpOnly — тема не секрет, клиентский код должен её читать; SameSite=Lax, Secure по схеме.
 func setThemeCookie(w http.ResponseWriter, code string, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     themeCookie,
@@ -74,10 +64,7 @@ func setThemeCookie(w http.ResponseWriter, code string, secure bool) {
 	})
 }
 
-// themeSwitch — POST /settings/theme (theme=dark|light|system): ставит
-// cookie theme, для залогиненного пишет users.theme, редиректит на Referer
-// (в пределах origin). Доступен и анониму. sameOrigin обязателен — это
-// меняющий состояние POST.
+// sameOrigin обязателен — обработчик меняет состояние (POST).
 func (h *Handler) themeSwitch(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)

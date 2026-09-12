@@ -15,22 +15,16 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestAuthPages — экраны входа/регистрации/SSO с OAuth-кнопками и ошибками;
-// регистрация в закрытом режиме прячет форму.
 func TestAuthPages(t *testing.T) {
 	providers := []OAuthButton{{Name: "yandex", Label: "Войти через Яндекс"}, {Name: "github", Label: "GitHub"}}
 	login := renderTo(t, Login("неверный пароль", "", "a@b.c", providers))
 	if !strings.Contains(login, "неверный пароль") || !strings.Contains(login, "Яндекс") {
 		t.Error("логин должен показать ошибку и OAuth-кнопки")
 	}
-	// K7-12: адрес, набранный до отказа входа, возвращается в поле формы, а
-	// не пропадает — иначе после ошибки его пришлось бы набирать заново.
 	if !strings.Contains(login, `value="a@b.c"`) {
 		t.Error("логин должен вернуть введённый email в поле формы")
 	}
-	// Экранирование значения атрибута (кластер K7-12): "><script> в email не
-	// должен разорвать атрибут value и открыть инъекцию — весь тег остаётся
-	// текстом внутри value.
+	// экранирование value: "><script> не должен разорвать атрибут и открыть инъекцию — тег остаётся текстом.
 	loginXSS := renderTo(t, Login("неверный пароль", "", `"><script>x</script>`, providers))
 	if strings.Contains(loginXSS, "<script>") {
 		t.Error("email в форме логина должен быть экранирован, а не вставлен как HTML")
@@ -39,11 +33,8 @@ func TestAuthPages(t *testing.T) {
 	if !strings.Contains(reg, "GitHub") {
 		t.Error("регистрация должна показать OAuth-кнопки")
 	}
-	// Мутационную проверку самих веток (заголовок/текст закрытой регистрации,
-	// отсутствие формы) держит TestRegisterClosed (variants_test.go) — здесь
-	// нужен только заголовок, чтобы не вернуть тавтологичный len(out)==0: он
-	// не ловил мутацию «перепутать ветки closed/invite» — RegisterStub
-	// рендерит непустой HTML независимо от того, какая ветка сработала.
+	// ветки закрытой регистрации мутационно проверяет TestRegisterClosed — здесь только заголовок,
+	// чтобы не вернуть тавтологичный len(out)==0, не ловящий перепутанные ветки closed/invite.
 	regClosed := renderTo(t, RegisterStub("", "closed", "", nil))
 	wantClosedTitle := i18n.T(i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"}), "auth.register.closed_title")
 	if !strings.Contains(regClosed, wantClosedTitle) {
@@ -55,7 +46,6 @@ func TestAuthPages(t *testing.T) {
 	}
 }
 
-// TestConfirmPage — страница подтверждения с действием и скрытыми полями.
 func TestConfirmPage(t *testing.T) {
 	hidden := []HiddenField{{Name: "id", Value: "42"}, {Name: "csrf", Value: "tok"}}
 	out := renderTo(t, ConfirmPage("Удалить проект?", "Действие необратимо", "Удалить", "/back", "/do-delete", hidden, "u@e.com"))
@@ -64,27 +54,22 @@ func TestConfirmPage(t *testing.T) {
 	}
 }
 
-// TestErrorPage — страница ошибки для известного и неизвестного статуса.
 func TestErrorPage(t *testing.T) {
 	out := renderTo(t, ErrorPage(404, "не найдено", "u@e.com"))
 	if len(out) == 0 {
 		t.Error("страница 404 должна рендериться")
 	}
-	// Неизвестный статус (ветка с пустыми ключами) — использует msg.
 	out2 := renderTo(t, ErrorPage(418, "я чайник", "u@e.com"))
 	if !strings.Contains(out2, "я чайник") {
 		t.Error("неизвестный статус показывает переданное сообщение")
 	}
-	// K9-18: без nav.Shell в ctx выход один — «На главную»; ссылки в
-	// «Проблемы» нет (проект неизвестен).
+	// без nav.Shell в ctx страница не должна угадывать проект — выход только «На главную».
 	if strings.Contains(out, "/issues") {
 		t.Errorf("без shell в ctx страница ошибки не должна угадывать проект: %s", out)
 	}
 }
 
-// TestErrorPageIssuesExit — K9-18: chromeless-страница ошибки со shell в ctx
-// даёт второй выход — в «Проблемы» текущего проекта (effectiveProjectID:
-// ProjectID, иначе первый проект списка).
+// с shell в ctx — второй выход в «Проблемы» текущего проекта (effectiveProjectID: ProjectID, иначе первый).
 func TestErrorPageIssuesExit(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	ctx = nav.WithShell(ctx, nav.Shell{
@@ -107,7 +92,6 @@ func TestErrorPageIssuesExit(t *testing.T) {
 	}
 }
 
-// TestDocsPages — индекс документации по группам и страница с телом.
 func TestDocsPages(t *testing.T) {
 	groups := []DocsGroup{
 		{Key: "docs.group.getting_started", Pages: []docs.Page{{Slug: "quickstart", Group: "docs.group.getting_started", Title: "Быстрый старт"}}},
@@ -123,8 +107,6 @@ func TestDocsPages(t *testing.T) {
 	}
 }
 
-// TestMaintenance — окна обслуживания: разовое (по датам) и еженедельное (по
-// дню недели и времени).
 func TestMaintenance(t *testing.T) {
 	now := time.Now()
 	windows := []uptime.Window{
@@ -135,14 +117,12 @@ func TestMaintenance(t *testing.T) {
 	if !strings.Contains(out, "разовое") || !strings.Contains(out, "еженедельное") {
 		t.Error("окна обслуживания должны отрендериться")
 	}
-	// С ошибкой и пустым списком.
 	outErr := renderTo(t, Maintenance(7, nil, nil, "плохое время", "u@e.com"))
 	if !strings.Contains(outErr, "плохое время") {
 		t.Error("ошибка обслуживания должна отрендериться")
 	}
 }
 
-// TestProjectSetup — экран инструкций по установке SDK с DSN и сниппетами.
 func TestProjectSetup(t *testing.T) {
 	project := org.Project{ID: 7, Slug: "web", Name: "Web", Platform: "go"}
 	snippets := []SetupSnippet{
@@ -153,32 +133,26 @@ func TestProjectSetup(t *testing.T) {
 	if !strings.Contains(out, "https://key@dsn/7") {
 		t.Error("экран установки должен показать DSN")
 	}
-	// Команда установки обязана быть на странице: без неё сниппет инициализации
-	// бесполезен, а раньше её не было вовсе.
+	// без команды установки сниппет инициализации бесполезен.
 	if !strings.Contains(out, "go get github.com/getsentry/sentry-go") {
 		t.Error("экран установки должен показать команду установки пакета")
 	}
 	if !strings.Contains(out, "composer require sentry/sentry") {
 		t.Error("экран установки должен показать все переданные сниппеты")
 	}
-	// K9-21: сниппеты подставляют разные DSN (browser у JavaScript, server у
-	// остальных) — страница обязана это объяснить одной строкой.
+	// сниппеты используют разные DSN (browser у JavaScript, server у остальных) — страница должна это объяснить.
 	if !strings.Contains(out, "DSN браузерного ключа") {
 		t.Error("экран установки должен объяснить разницу browser-/server-DSN у сниппетов")
 	}
-	// K9-18: chromeless-страница обязана давать выход в «Проблемы» проекта,
-	// а не только в список проектов и документацию.
 	if !strings.Contains(out, `href="/projects/7/issues"`) {
 		t.Errorf("экран установки без ссылки в «Проблемы» проекта: %s", out)
 	}
-	// Без сниппетов пояснение про DSN бессмысленно — его нет.
 	empty := renderTo(t, ProjectSetup(project, "", nil, "", "u@e.com"))
 	if strings.Contains(empty, "DSN браузерного ключа") {
 		t.Error("без сниппетов пояснение про виды DSN показывать незачем")
 	}
 }
 
-// TestInviteAccept — экран принятия приглашения с токеном и ошибкой.
 func TestInviteAccept(t *testing.T) {
 	inv := org.InviteInfo{OrgID: 1, OrgName: "Acme Inc", Email: "u@e.com", Role: org.RoleMember}
 	out := renderTo(t, InviteAccept("invtok", "", "u@e.com", inv))
@@ -191,7 +165,6 @@ func TestInviteAccept(t *testing.T) {
 	}
 }
 
-// TestProfileFlame — страница флеймграфа профиля с графиком.
 func TestProfileFlame(t *testing.T) {
 	vm := ProfileFlameVM{ProjectID: 7, Service: "web", Type: "cpu", Transaction: "GET /", Environment: "production", Range: TimeRangeVM{Key: "24h"}, Chart: stub()}
 	out := renderTo(t, ProfileFlame(vm, "u@e.com"))
@@ -201,7 +174,7 @@ func TestProfileFlame(t *testing.T) {
 	if !strings.Contains(out, "web · cpu") || !strings.Contains(out, "· GET /") {
 		t.Errorf("при заполненных type/transaction разделители обязаны быть: %s", out)
 	}
-	// K9-20: /flame без параметров — «(unknown)» без висящего разделителя.
+	// без параметров — «(unknown)» без висящего разделителя.
 	bare := renderTo(t, ProfileFlame(ProfileFlameVM{ProjectID: 7, Range: TimeRangeVM{Key: "24h"}, Chart: stub()}, "u@e.com"))
 	if !strings.Contains(bare, "(unknown)") {
 		t.Errorf("пустой сервис показывается как (unknown): %s", bare)
@@ -211,7 +184,6 @@ func TestProfileFlame(t *testing.T) {
 	}
 }
 
-// TestTracePages — waterfall и флеймграф трейса.
 func TestTracePages(t *testing.T) {
 	wf := TraceWaterfallData{ProjectID: 7, TraceID: "trace123", Transaction: "GET /api", TotalUS: 250000, Timestamp: time.Now(), Waterfall: stub(), ShownRows: 5, TotalRows: 10, HasProfile: true, From: "endpoint", FromTransaction: "GET /api"}
 	out := renderTo(t, TraceWaterfall(wf, "u@e.com"))
@@ -225,12 +197,8 @@ func TestTracePages(t *testing.T) {
 	}
 }
 
-// TestTraceExpired — состояние «спанов трейса больше нет» (баг: TTL spans
-// настраивается через GOTCHA_SPAN_RETENTION_DAYS, поэтому текст обязан брать
-// число дней из TraceExpiredData.RetentionDays, а не из захардкоженной
-// константы, и склонять его по CLDR-правилам ru, а не печатать «1 дней»).
-// RetentionDays<=0 (TTL не задан, спаны хранятся вечно) — отдельный текст без
-// чисел: спаны пропали не по TTL, а значит вручную/по запросу на удаление.
+// число дней — из RetentionDays, не захардкожено; склоняется по CLDR ru («1 день»/«2 дня»/«5 дней»).
+// RetentionDays<=0 — TTL не задан (хранится вечно): текст без чисел.
 func TestTraceExpired(t *testing.T) {
 	cases := []struct {
 		days int
@@ -252,8 +220,7 @@ func TestTraceExpired(t *testing.T) {
 		}
 	}
 
-	// RetentionDays=0 — TTL не задан (спаны хранятся вечно): текст не должен
-	// называть срок хранения (он бесконечен, «хранятся 0 дней» — неправда).
+	// RetentionDays=0 — TTL не задан: текст не должен называть срок («хранятся 0 дней» была бы неправдой).
 	purged := renderTo(t, TraceExpired(TraceExpiredData{ProjectID: 7, TraceID: "trace-purged", RetentionDays: 0}, "u@e.com"))
 	if strings.Contains(purged, "хранятся") {
 		t.Errorf("RetentionDays=0 не должен утверждать срок хранения: %s", purged)
@@ -263,10 +230,6 @@ func TestTraceExpired(t *testing.T) {
 	}
 }
 
-// TestStatusPagesSettings — настройки статус-страниц: существующая форма с
-// мониторами и новая пустая форма. Slug — не поле формы (задача 4 плана):
-// публичный адрес — сгенерированный public_id, форма его не вводит, только
-// показывает (в блоке «Публикация» существующей страницы).
 func TestStatusPagesSettings(t *testing.T) {
 	forms := []StatusPageForm{
 		{ID: 1, PublicID: "p_public123", Title: "Статус Acme", Description: "Наш статус", Enabled: true, Monitors: []StatusPageFormMonitor{
@@ -279,14 +242,11 @@ func TestStatusPagesSettings(t *testing.T) {
 	if !strings.Contains(out, "Статус Acme") || !strings.Contains(out, "p_public123") {
 		t.Error("настройки статус-страниц должны содержать форму и публичный адрес")
 	}
-	// С ошибкой.
 	outErr := renderTo(t, StatusPagesSettings(7, "https://x", nil, newForm, true, "ошибка формы", "u@e.com"))
 	if !strings.Contains(outErr, "ошибка формы") {
 		t.Error("ошибка статус-страницы должна отрендериться")
 	}
-	// canManage=false: у существующей страницы чекбокс enabled скрыт
-	// (публикация — admin-only). Поля slug в форме нет вовсе — ни у
-	// оператора, ни у управляющего.
+	// canManage=false скрывает enabled; slug нет в форме ни у кого.
 	outOperator := renderTo(t, StatusPagesSettings(7, "https://gotcha.example", forms, newForm, false, "", "u@e.com"))
 	if strings.Contains(outOperator, `name="enabled"`) {
 		t.Error("оператор без прав управления не должен видеть чекбокс enabled")
@@ -294,16 +254,12 @@ func TestStatusPagesSettings(t *testing.T) {
 	if strings.Contains(outOperator, `name="slug"`) {
 		t.Error("формы больше не должны присылать slug")
 	}
-	// Кнопка удаления ОПУБЛИКОВАННОЙ страницы (forms[0].Enabled == true) —
-	// зона canManage: сервер режет оператора 403 (statuspage.go), поэтому у
-	// оператора кнопки нет вовсе, а у управляющего — есть.
 	if strings.Contains(outOperator, "status-page-delete-form") {
 		t.Error("оператор не должен видеть кнопку удаления опубликованной статус-страницы")
 	}
 	if !strings.Contains(out, "status-page-delete-form") {
 		t.Error("управляющий должен видеть кнопку удаления статус-страницы")
 	}
-	// Черновик (Enabled == false) оператор удаляет свободно — кнопка есть.
 	draft := []StatusPageForm{{ID: 2, Title: "Черновик", Enabled: false}}
 	outOperatorDraft := renderTo(t, StatusPagesSettings(7, "https://gotcha.example", draft, newForm, false, "", "u@e.com"))
 	if !strings.Contains(outOperatorDraft, "status-page-delete-form") {
@@ -311,8 +267,6 @@ func TestStatusPagesSettings(t *testing.T) {
 	}
 }
 
-// TestPublicStatusPage — публичная статус-страница со всеми сводными статусами,
-// мониторами, инцидентами и окнами обслуживания.
 func TestPublicStatusPage(t *testing.T) {
 	for _, overall := range []string{"operational", "partial", "major"} {
 		v := StatusPageView{
@@ -332,13 +286,8 @@ func TestPublicStatusPage(t *testing.T) {
 	}
 }
 
-// TestPublicStatusPageTablesScrollable — волна 3 аудита (P1-2/P1-3, кластер
-// 13): таблицы инцидентов и окон обслуживания на публичной статус-странице
-// были единственным местом продукта без собственного скролл-региона — длинное
-// имя монитора (FQDN) в таблице распирало страницу целиком, а не саму
-// таблицу. Ассерт целится в структуру scrollRegion (div.table-scroll с
-// tabindex/role/aria-label), а не в len(out)!=0: голый <table ...> без обёртки
-// прошёл бы этот тест зелёным, если бы проверял только наличие текста.
+// длинное имя монитора (FQDN) распирало страницу без scrollRegion — таблицы были без своего скролла.
+// ассерт целится в структуру div.table-scroll (tabindex/role/aria-label), не в len(out)!=0.
 func TestPublicStatusPageTablesScrollable(t *testing.T) {
 	v := StatusPageView{
 		Title: "Acme Status", Overall: "operational",
@@ -347,15 +296,13 @@ func TestPublicStatusPageTablesScrollable(t *testing.T) {
 	}
 	out := renderTo(t, PublicStatusPage(v))
 
-	// Обёртка инцидентов: класс, клавиатурная доступность (tabindex, №31) и
-	// её собственный aria-label, отличный от label окон обслуживания.
+	// обёртка инцидентов — свой aria-label, отличный от label окон обслуживания.
 	if !strings.Contains(out, `<div class="table-scroll" tabindex="0" role="region" aria-label="Таблица инцидентов">`) {
 		t.Error("таблица инцидентов должна быть обёрнута scrollRegion (table-scroll/tabindex/role/aria-label)")
 	}
 	if !strings.Contains(out, `<div class="table-scroll" tabindex="0" role="region" aria-label="Таблица окон обслуживания">`) {
 		t.Error("таблица окон обслуживания должна быть обёрнута scrollRegion (table-scroll/tabindex/role/aria-label)")
 	}
-	// Таблицы остаются внутри своей обёртки (не съехали наружу при рефакторинге).
 	tail := func(i int) string {
 		end := i + 400
 		if end > len(out) {
@@ -371,10 +318,7 @@ func TestPublicStatusPageTablesScrollable(t *testing.T) {
 	}
 }
 
-// TestStatusTileNameCarriesFullNameInTitle — волна 3 аудита (кластер 13,
-// P1-2..8): .status-tile-name сжимается многоточием на узком экране (CSS), но
-// полное имя монитора обязано остаться доступным при наведении — иначе
-// длинное имя (FQDN) теряется без следа для мыши/скринридера без CSS.
+// имя сжимается многоточием (CSS) — полное должно остаться доступным через title.
 func TestStatusTileNameCarriesFullNameInTitle(t *testing.T) {
 	long := "payments-gateway-eu-central-1.internal.example.com"
 	v := StatusPageView{
@@ -388,23 +332,8 @@ func TestStatusTileNameCarriesFullNameInTitle(t *testing.T) {
 	}
 }
 
-// TestStatusPageIncidentDurationLocalised: длительность инцидента на публичной
-// статус-странице собиралась строками «h »/«m» без каталога — у функции не
-// было даже ctx. Это внешняя поверхность: её видят клиенты владельца
-// инстанса, и она оставалась английской в русском интерфейсе, тогда как
-// остальная страница локализуется более чем в двадцати местах.
-//
-// Кеш вьюхи общий на всех посетителей независимо от языка — поэтому вьюха
-// несёт time.Duration, а язык применяется при рендере, а не при сборке.
-//
-// Ассерт целится именно в длительность, а не в страницу целиком: на странице
-// больше двадцати других мест уже локализуются (заголовки, статусы,
-// подписи), поэтому «ru-рендер != en-рендер» был бы зелёным и до правки —
-// когда длительность ещё собиралась строками "h "/"m" без каталога вообще.
-// Ищем конкретно форму, которую для 2*time.Hour отдаёт humanize.Duration:
-// «2 часа» по-русски (unit.hours, форма few) и «2 hours» по-английски
-// (unit.hours, форма other) — и проверяем, что в каждой локали нет формы
-// чужого языка.
+// цель — конкретная форма (2*time.Hour), не «ru≠en» в целом: то было зелёным ещё до правки бага.
+// кеш вьюхи общий на всех языках — вьюха несёт time.Duration, перевод происходит при рендере.
 func TestStatusPageIncidentDurationLocalised(t *testing.T) {
 	v := StatusPageView{
 		Title: "Acme Status", Description: "d", Overall: "operational",
@@ -437,8 +366,6 @@ func TestStatusPageIncidentDurationLocalised(t *testing.T) {
 	}
 }
 
-// TestHeartbeatMonitorDetail — деталь heartbeat-монитора рисует URL пинга и
-// cron-сниппет (heartbeatPingURL/heartbeatCronSnippet).
 func TestHeartbeatMonitorDetail(t *testing.T) {
 	m := uptime.Monitor{ID: 4, Name: "cron", Kind: uptime.KindHeartbeat, Enabled: false, IntervalSeconds: 3600, HeartbeatToken: "hbtok"}
 	stat := uptime.UptimeStat{Total: 10, OK: 10}
@@ -446,13 +373,11 @@ func TestHeartbeatMonitorDetail(t *testing.T) {
 	if !strings.Contains(out, "hbtok") {
 		t.Error("деталь heartbeat должна содержать токен пинга")
 	}
-	// T9: рекомендуемая команда — явный -X POST, а не голый curl (GET
-	// неотличим от префетч-бота/антивирусного прокси на стороне клиента).
+	// команда — явный -X POST, не голый curl (GET неотличим от префетч-бота/антивирусного прокси).
 	if !strings.Contains(out, "curl -fsS -X POST ") {
 		t.Error("cron-сниппет heartbeat должен содержать \"curl -fsS -X POST \"")
 	}
-	// K9-9: «скопируйте URL сейчас» — значит, копировать есть чем: URL и
-	// cron-строка идут через @copyBlock с кнопкой, а не голым <code>.
+	// «скопируйте URL сейчас» — URL и cron идут через @copyBlock с кнопкой, не голым <code>.
 	for _, id := range []string{"heartbeat-ping-url", "heartbeat-cron-line"} {
 		if !strings.Contains(out, `data-copy-target="`+id+`"`) {
 			t.Errorf("heartbeat-блок без кнопки копирования %q: %s", id, out)
@@ -463,9 +388,6 @@ func TestHeartbeatMonitorDetail(t *testing.T) {
 	}
 }
 
-// TestLayoutShellRendersRail — рендер страницы внутри nav.Shell раскрывает
-// боковую навигацию: имя текущего проекта и ссылки разделов (railAreaClass,
-// ctxItemClass, currentProjectName, effectiveProjectID).
 func TestLayoutShellRendersRail(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	ctx = theme.WithTheme(ctx, theme.Theme{Code: "dark"})
@@ -484,8 +406,6 @@ func TestLayoutShellRendersRail(t *testing.T) {
 	}
 }
 
-// TestLayoutHelpersDirect — прямые проверки хелперов сайдбара на граничных
-// входах (пустой Shell → падать не должен).
 func TestLayoutHelpersDirect(t *testing.T) {
 	if railAreaClass(true) == railAreaClass(false) {
 		t.Error("активный/неактивный rail должны отличаться классом")
@@ -493,11 +413,9 @@ func TestLayoutHelpersDirect(t *testing.T) {
 	if ctxItemClass(true) == ctxItemClass(false) {
 		t.Error("активный/неактивный пункт должны отличаться классом")
 	}
-	// Пустой Shell: имя пусто, id ноль — без паники.
 	if currentProjectName(nav.Shell{}) != "" || effectiveProjectID(nav.Shell{}) != 0 {
 		t.Error("пустой Shell должен давать нулевые значения")
 	}
-	// Shell без ProjectID падает на первый проект.
 	s := nav.Shell{Projects: []nav.Project{{ID: 9, Name: "first"}}}
 	if currentProjectName(s) != "first" || effectiveProjectID(s) != 9 {
 		t.Error("без ProjectID берётся первый проект")

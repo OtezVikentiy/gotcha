@@ -6,9 +6,6 @@ import (
 	"testing"
 )
 
-// mdSlugsOnDisk перечисляет slug'и (имя файла без ".md") всех markdown-файлов
-// локали в embed.FS — то, что реально лежит на диске, а не то, что знает
-// registry.
 func mdSlugsOnDisk(t *testing.T, loc string) map[string]bool {
 	t.Helper()
 	entries, err := files.ReadDir(loc)
@@ -25,7 +22,6 @@ func mdSlugsOnDisk(t *testing.T, loc string) map[string]bool {
 	return out
 }
 
-// registrySlugs — все slug'и, перечисленные в registry (порядок оглавления).
 func registrySlugs() map[string]bool {
 	out := make(map[string]bool, len(registry))
 	for _, r := range registry {
@@ -34,15 +30,8 @@ func registrySlugs() map[string]bool {
 	return out
 }
 
-// TestEveryMarkdownFileIsInRegistry ловит именно тот класс бага, из-за
-// которого эта проверка появилась: markdown-файл страницы лежит в
-// internal/docs/{ru,en}/, но забыт в registry — Render()/Pages() его не
-// отдают, все ссылки на /docs/<slug> внутри других страниц ведут на 404, а
-// TestPagesRegistryBothLocales (сверяющий только len(Pages(loc)) ==
-// len(registry)) эту дыру не видит: он не смотрит на диск вообще, только на
-// сам registry. Проверка идёт по ИМЕНАМ файлов, а не по номеру строки —
-// добавление/переименование страницы ловится независимо от того, куда в
-// registry её вписали.
+// TestPagesRegistryBothLocales сверяет только len(Pages(loc)) == len(registry) —
+// файл, забытый в registry, эту дыру не ловит, а страница по /docs/<slug> даст 404.
 func TestEveryMarkdownFileIsInRegistry(t *testing.T) {
 	want := registrySlugs()
 	for _, loc := range []string{"ru", "en"} {

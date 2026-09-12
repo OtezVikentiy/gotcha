@@ -13,33 +13,6 @@ import (
 	"testing"
 )
 
-// Сторож класса на список ClickHouse-таблиц, живущий копиями в трёх местах:
-// в whitelist'е internal/telemetry/purge.go (кто чистится при удалении
-// проекта/субъекта), в internal/docs/{ru,en}/backup-restore.md (что снимает
-// оператор в бэкап) — а истина лежит в четвёртом месте, в самой схеме
-// (internal/db/migrations/ch/*.up.sql), и её никто автоматически не сверял.
-//
-// Расхождение уже случалось: таблица logs приехала с приёмом логов и не
-// попала ни в purge.go, ни в доку бэкапа — удаление проекта оставляло логи в
-// ClickHouse навсегда, а восстановление из бэкапа по инструкции молча теряло
-// всю историю логов. Класс проблемы тот же, что уже ловили на
-// autoBufferCapUnits в buffer_units_test.go: список копируется руками, схема
-// меняется в одном месте — копии расходятся молча, потому что расхождение
-// остаётся валидным Go и валидным Markdown.
-//
-// Сторож выводит истину ИЗ СХЕМЫ (CREATE TABLE / CREATE MATERIALIZED VIEW с
-// колонкой project_id) и сверяет с обеими копиями:
-//   - purge.go: literal projectTables обязан содержать РОВНО все
-//     project-scoped таблицы и MV схемы (без пропусков и без лишних имён);
-//   - backup-restore.md (ru и en, оба вхождения "for t in ..." в каждом):
-//     список обязан быть РОВНО базовыми project-scoped ТАБЛИЦАМИ (без MV — они
-//     производные и пересобираются, в бэкап не входят).
-//
-// Каждое из четырёх вхождений сверяется НАПРЯМУЮ со схемой, а не друг с
-// другом: сравнение вхождений между собой делает испорченное первое похожим
-// на эталон, а остальные (исправные) — на расхождение с ним, и сообщение об
-// ошибке отправляет чинить не то место.
-
 const (
 	chMigrationsDir  = "internal/db/migrations/ch"
 	purgeFile        = "internal/telemetry/purge.go"
@@ -51,17 +24,8 @@ var backupDocs = []string{
 	"internal/docs/en/backup-restore.md",
 }
 
-// Ограничения разбора миграций (сегодня ни одно не стреляет — в схеме нет
-// таких случаев, — но следующий читатель обязан знать границы сторожа):
-//   - createStmtRe требует "CREATE TABLE"/"CREATE MATERIALIZED VIEW" ЗАГЛАВНЫМИ
-//     буквами с начала строки, без префикса имени БД (db.table) и без
-//     бэктиков вокруг имени — миграции проекта всегда пишутся так, но формально
-//     это не проверяется отдельно;
-//   - DROP учитывается (dropStmtRe ниже) для таблицы/MV, удалённой ПОЗДНЕЙ
-//     миграцией: имя пропадает из scoped-множеств независимо от того, в каком
-//     файле относительно CREATE лежит DROP. Пересоздание той же таблицы ПОСЛЕ
-//     DROP (drop → create заново) сторож не отследит верно — такого паттерна
-//     в миграциях проекта нет.
+// createStmtRe/dropStmtRe не отследят пересоздание таблицы после DROP —
+// такого паттерна (drop → create заново) в миграциях проекта нет.
 var (
 	createStmtRe = regexp.MustCompile(`(?im)^CREATE\s+(TABLE|MATERIALIZED\s+VIEW)\s+(?:IF NOT EXISTS\s+)?(\w+)`)
 	dropStmtRe   = regexp.MustCompile(`(?im)^DROP\s+(TABLE|MATERIALIZED\s+VIEW)\s+(?:IF EXISTS\s+)?(\w+)`)
@@ -77,9 +41,6 @@ func TestProjectScopedCHTablesTracked(t *testing.T) {
 
 	scopedTables, scopedViews, createdBy := scanCHSchema(t, root)
 
-	// Нижняя граница — только на то, что даёт обход схемы: обход, нашедший
-	// меньше, сломан сам, и без этой проверки пустой результат совпал бы с
-	// пустым списком purgeTables.
 	if len(scopedTables) < 7 {
 		t.Fatalf("обход миграций ослеп: project-scoped таблиц в схеме найдено %d "+
 			"(ожидалось не меньше 7) — сломан сам сторож, а не проверяемая схема",
@@ -118,12 +79,6 @@ func TestProjectScopedCHTablesTracked(t *testing.T) {
 		}
 	}
 
-	// backup-restore.md: каждое вхождение "for t in ..." сверяется НАПРЯМУЮ со
-	// схемой, а не друг с другом. Схема — единственный источник истины: если
-	// сверять вхождения между собой, испорченное ПЕРВОЕ вхождение выглядит
-	// эталоном, а остальные (исправные) — расходящимися с ним, и сообщение
-	// об ошибке указывает разработчику чинить не то. Список — только базовые
-	// project-scoped ТАБЛИЦЫ, MV в бэкап не входят (они производные).
 	for _, doc := range backupDocs {
 		lists := extractBackupLoops(t, root, doc)
 		for i, list := range lists {
@@ -149,14 +104,6 @@ func TestProjectScopedCHTablesTracked(t *testing.T) {
 	}
 }
 
-// scanCHSchema разбирает internal/db/migrations/ch/*.up.sql и возвращает имена
-// project-scoped таблиц и материализованных представлений отдельно (таблица
-// или MV считается project-scoped, если слово project_id встречается в тексте
-// её CREATE-выражения — как колонка в CREATE TABLE, как элемент SELECT/ORDER BY
-// в CREATE MATERIALIZED VIEW), а также createdBy — имя файла миграции,
-// создавшей каждую из них (для сообщений об ошибках, «что делать»). Таблица
-// или MV, удалённая более поздней миграцией (DROP), из scoped-множеств
-// убирается: она больше не часть текущей схемы.
 func scanCHSchema(t *testing.T, root string) (tables, views map[string]bool, createdBy map[string]string) {
 	t.Helper()
 	dir := filepath.Join(root, chMigrationsDir)
@@ -213,9 +160,7 @@ func scanCHSchema(t *testing.T, root string) (tables, views map[string]bool, cre
 		}
 	}
 
-	// DROP применяется после полного обхода: имя таблицы/MV уникально в схеме
-	// проекта, и в каком файле относительно её CREATE лежит DROP — не важно,
-	// важно только то, что в итоговой схеме её больше нет.
+	// DROP снимается после полного обхода независимо от порядка файла относительно CREATE.
 	for _, name := range dropped {
 		delete(tables, name)
 		delete(views, name)
@@ -224,10 +169,6 @@ func scanCHSchema(t *testing.T, root string) (tables, views map[string]bool, cre
 	return tables, views, createdBy
 }
 
-// extractProjectTables достаёт AST-разбором literal []string из объявления
-// projectTables в purge.go. Пустой результат недопустим — это ослепший
-// сторож, а не пустой whitelist (PurgeProject с пустым списком не удалял бы
-// вообще ничего, такой код не мог бы существовать).
 func extractProjectTables(t *testing.T, root string) []string {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -275,9 +216,6 @@ func extractProjectTables(t *testing.T, root string) []string {
 	return nil
 }
 
-// extractBackupLoops находит в доке все вхождения "for t in X Y Z; do" и
-// возвращает списки таблиц по порядку появления. Пустой результат — ослепший
-// сторож: сама инструкция бэкапа без единого такого цикла быть не может.
 func extractBackupLoops(t *testing.T, root, relPath string) [][]string {
 	t.Helper()
 	path := filepath.Join(root, relPath)

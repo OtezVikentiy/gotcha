@@ -1,6 +1,3 @@
-// probes.go — DefaultProbes: реализация Probes поверх gopsutil/v4. Единственное
-// место в internal/agent, которое импортирует gopsutil — весь остальной пакет
-// работает через шов Probes и тестируется без реального железа.
 package agent
 
 import (
@@ -16,9 +13,8 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 )
 
-// DefaultProbes — боевые пробы для NewCollector. Не вызывается тестами
-// Collector (недетерминированные значения реального хоста); покрыта
-// TestDefaultProbesSmoke.
+// Недетерминированные значения реального хоста — тесты Collector используют
+// fakeProbes.
 func DefaultProbes() Probes {
 	return Probes{
 		CPUTimes: func() (CPUTimes, error) {
@@ -67,13 +63,8 @@ func DefaultProbes() Probes {
 				}
 				mode := "rw"
 				for _, opt := range p.Opts {
-					// Точное совпадение, не strings.Contains: фолбэк gopsutil на
-					// /proc/1/mounts (когда обычный источник недоступен) отдаёт
-					// суперблочные опции без нормализации, и там встречается
-					// "errors=remount-ro" — оно содержит подстроку "ro", но не
-					// значит «раздел смонтирован read-only». Коллектор ниже
-					// сравнивает Mode целиком с "ro", поэтому и здесь нужно
-					// точное совпадение самой опции.
+					// Точное совпадение, не Contains: опция "errors=remount-ro"
+					// содержит подстроку "ro", но раздел не read-only.
 					if opt == "ro" {
 						mode = "ro"
 						break
@@ -101,9 +92,7 @@ func DefaultProbes() Probes {
 			return out, nil
 		},
 		NetIO: func() (map[string]NetBytes, error) {
-			// true = все интерфейсы, включая lo: network-scraper hostmetrics по
-			// умолчанию не фильтрует, и A1-коллектор уже шлёт lo — фильтр здесь
-			// разошёлся бы с графиком сети из A1.
+			// true = все интерфейсы, включая lo — hostmetrics их не фильтрует.
 			counters, err := net.IOCounters(true)
 			if err != nil {
 				return nil, err
@@ -153,10 +142,6 @@ func DefaultProbes() Probes {
 	}
 }
 
-// mapProcStatus переводит слова-константы gopsutil v4 (process.go:52-66) в
-// статусы hostmetrics processes-scraper: running→running, sleep→sleeping,
-// blocked→blocked, stop→stopped, zombie→zombies, wait→paging, lock→locked,
-// idle→idle, неизвестное→unknown.
 func mapProcStatus(s string) string {
 	switch s {
 	case process.Running:

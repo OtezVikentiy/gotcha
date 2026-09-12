@@ -13,21 +13,13 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// sloDetailIncidentsLimit — сколько инцидентов SLO показывать в истории на
-// экране деталей (свежайшие). Больше и не нужно: инциденты сжигания редки, а
-// глубокая история — не задача этой страницы.
+// Инциденты сжигания редки, глубокая история — не задача этой страницы.
 const sloDetailIncidentsLimit = 50
 
-// sloDetailBurndownStep — шаг корзин burn-down графика и расчёта достижения за
-// полное окно. Час (кратен 5м, чего требует MV transactions_5m) — как в
-// evaluator.fullWindowStep и в списке (slos.go): полный бюджет считается на
-// рендер страницы, точности до часа достаточно.
+// Час, кратный 5м (требование MV transactions_5m) — как в evaluator.fullWindowStep и в
+// списке; точности до часа для рендера страницы достаточно.
 const sloDetailBurndownStep = time.Hour
 
-// sloDetail — GET /projects/{id}/slos/{sloID}: экран деталей одного SLO с
-// текущим достижением/остатком бюджета, burn rate сейчас, открытым инцидентом,
-// графиком сжигания бюджета и историей инцидентов. Доступ — оператор проекта
-// (как список, см. slos.go).
 func (h *Handler) sloDetail(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -71,19 +63,15 @@ func (h *Handler) sloDetail(w http.ResponseWriter, r *http.Request) {
 		BurnThreshold: s.BurnThreshold,
 	}
 
-	// Достижение/остаток бюджета/burn/график считаем только при наличии
-	// провайдера (h.SLOProviders не проведён на стенде без ClickHouse → HasData
-	// остаётся false, экран показывает «нет данных», а не 500).
+	// h.SLOProviders не проведён на стенде без ClickHouse → HasData остаётся false, экран
+	// показывает «нет данных», а не 500.
 	if p := h.SLOProviders[s.Kind]; p != nil {
 		h.fillSLODetailBudget(ctx, &vm, p, s, time.Now().UTC())
 	}
 
-	// История инцидентов SLO (свежайшие первыми). Ошибка чтения не должна ронять
-	// экран — тогда просто нет истории.
+	// Ошибка чтения истории не должна ронять экран — тогда просто нет истории.
 	if incs, err := h.SLO.Incidents(ctx, projectID, sloID, sloDetailIncidentsLimit); err == nil {
-		// ackedBy — W2-C находка 4: email подтвердившего, батчем (см.
-		// ackedByEmails). Как и остальное в этом блоке — ошибка не должна
-		// ронять экран, тогда строки просто не несут email.
+		// Ошибка резолва email не должна ронять экран — строки просто не несут email.
 		ackedByIDs := make([]int64, 0, len(incs))
 		for _, inc := range incs {
 			if inc.AcknowledgedBy != nil {
@@ -126,10 +114,8 @@ func (h *Handler) sloDetail(w http.ResponseWriter, r *http.Request) {
 	_ = templates.SLODetailScreen(vm, h.currentEmail(r)).Render(ctx, w)
 }
 
-// fillSLODetailBudget заполняет достижение, остаток бюджета, статус, burn rate и
-// burn-down график за полное окно SLO (клип к горизонту хранения провайдера).
-// total==0 за окно / ошибка провайдера → HasData остаётся false: экран покажет
-// «нет данных», а не мнимые нули.
+// total==0 за окно / ошибка провайдера → HasData остаётся false: экран покажет «нет данных»,
+// не мнимые нули.
 func (h *Handler) fillSLODetailBudget(ctx context.Context, vm *templates.SLODetailVM, p slo.Provider, s slo.SLO, now time.Time) {
 	from := now.Add(-time.Duration(s.WindowDays) * 24 * time.Hour)
 	if capD := p.RetentionCap(); capD > 0 {
@@ -152,9 +138,8 @@ func (h *Handler) fillSLODetailBudget(ctx context.Context, vm *templates.SLODeta
 	vm.Status = sloStatus(rem)
 	vm.Chart = sloBudgetBurndownSVG(ctx, bs, s.Target, sloBurndownWidth, sloBurndownHeight)
 
-	// Burn rate сейчас: длинное окно BurnLongMin с шагом BurnShortMin, короткое —
-	// последняя корзина (зеркало evaluator.burnWindows). Отдельный запрос: burn
-	// считается по узкому окну, не по полному окну бюджета.
+	// Длинное окно BurnLongMin с шагом BurnShortMin, короткое — последняя корзина (зеркало
+	// evaluator.burnWindows). Отдельный запрос: burn считается по узкому окну, не по полному.
 	longMin, shortMin := s.BurnLongMin, s.BurnShortMin
 	if longMin <= 0 {
 		longMin = 60

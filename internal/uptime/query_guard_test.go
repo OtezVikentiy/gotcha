@@ -6,16 +6,10 @@ import (
 	"time"
 )
 
-// degenerateCounts — вырожденные значения buckets/limit, которые guard'ы
-// обязаны отсечь до аллокации/деления/запроса. Ноль здесь не менее важен,
-// чем отрицательное число (K2-6/K2-7): мутация `<= 0` → `< 0` пропускает
-// ровно ноль — в Bars/BarsBatch это целочисленное деление на ноль при
-// расчёте ширины корзины, в Recent — уход в ClickHouse с LIMIT 0.
+// ноль здесь не менее важен, чем отрицательное число: `<= 0`, ослабленный до
+// `< 0`, пропускает ровно ноль — деление на ноль в Bars/BarsBatch, LIMIT 0 в Recent.
 var degenerateCounts = []int{-1, 0}
 
-// TestBarsGuardBeforeAllocate verifies Bars validates buckets > 0 before allocating.
-// Negative buckets would panic with "makeslice: len out of range" without the guard;
-// zero buckets would panic dividing the range by the bucket count.
 func TestBarsGuardBeforeAllocate(t *testing.T) {
 	q := NewQuery(nil) // nil conn is sufficient; Bars returns early
 	ctx := context.Background()
@@ -42,9 +36,6 @@ func TestBarsGuardBeforeAllocate(t *testing.T) {
 	}
 }
 
-// TestRecentGuardBeforeAllocate verifies Recent validates limit > 0 before allocating.
-// Negative limit would panic with "makeslice: len out of range" without the guard;
-// zero limit must return early too, not reach ClickHouse (nil conn would blow up).
 func TestRecentGuardBeforeAllocate(t *testing.T) {
 	q := NewQuery(nil) // nil conn is sufficient; Recent returns early
 	ctx := context.Background()
@@ -67,10 +58,6 @@ func TestRecentGuardBeforeAllocate(t *testing.T) {
 	}
 }
 
-// TestBarsBatchGuardBeforeAllocate: BarsBatch, как и Bars, отсекает buckets<=0
-// ДО make([]UptimeStat, buckets) — иначе отрицательный buckets паникует в
-// makeslice, а нулевой — в делении на число корзин. Мис-копирование формы из
-// UptimeBatch тихо сняло бы этот guard.
 func TestBarsBatchGuardBeforeAllocate(t *testing.T) {
 	q := NewQuery(nil) // nil conn достаточно: вырожденный вход возвращается рано
 	ctx := context.Background()

@@ -14,8 +14,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestCreateStatusPageGeneratesPublicID: Create заполняет PublicID —
-// непрозрачный ключ "p_" + 24 hex (12 случайных байт), не зависящий от slug.
 func TestCreateStatusPageGeneratesPublicID(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -40,13 +38,6 @@ func TestCreateStatusPageGeneratesPublicID(t *testing.T) {
 	}
 }
 
-// TestCreateStatusPageDuplicateMonitorFailsImmediately: PK-нарушение в
-// status_page_monitors (дубль monitor_id в списке — POST /statuspages не
-// дедуплицирует, см. parseStatusPageForm в internal/web) тоже даёт SQLSTATE
-// 23505, но НЕ должно ложно трактоваться как коллизия public_id: retry-цикл
-// в CreateStatusPage обязан вернуть эту ошибку СРАЗУ, не сжигая все 3
-// попытки на детерминированно повторяющейся ошибке (см.
-// statusPagePublicIDConstraint в statuspage.go).
 func TestCreateStatusPageDuplicateMonitorFailsImmediately(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -73,9 +64,6 @@ func TestCreateStatusPageDuplicateMonitorFailsImmediately(t *testing.T) {
 	}
 }
 
-// TestStatusPageByPublicID: enabled-страница резолвится по своему PublicID;
-// disabled — ErrNotFound (единообразно со старым поведением по slug: скрытая
-// страница неотличима от несуществующей).
 func TestStatusPageByPublicID(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -113,8 +101,6 @@ func TestStatusPageByPublicID(t *testing.T) {
 	}
 }
 
-// TestStatusPageForRedirect: legacy_slug → public_id для 301, только для
-// enabled-страницы; неизвестный slug и slug выключенной страницы — (?, false).
 func TestStatusPageForRedirect(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)

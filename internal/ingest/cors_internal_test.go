@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-// corsPreflight должен отвечать 204 без тела и с разрешающими заголовками —
-// иначе браузер не отправит кросс-origin envelope (Web Vitals с чужого домена).
 func TestCORSPreflight(t *testing.T) {
 	rec := httptest.NewRecorder()
 	corsPreflight(rec, httptest.NewRequest(http.MethodOptions, "/api/1/envelope/", nil))
@@ -26,8 +24,6 @@ func TestCORSPreflight(t *testing.T) {
 	}
 }
 
-// cors обязан прокинуть вызов дальше И выставить Allow-Origin на реальном ответе,
-// иначе браузер отбросит ответ ingest как кросс-origin.
 func TestCORSWrapsHandler(t *testing.T) {
 	called := false
 	wrapped := cors(func(w http.ResponseWriter, _ *http.Request) {

@@ -13,8 +13,6 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// fakeConn/fakeBatch: Append копит строки во временный счётчик, Send при
-// успехе переносит их в c.rows, при c.fail — возвращает ошибку.
 type fakeConn struct {
 	mu     sync.Mutex
 	rows   int
@@ -92,11 +90,11 @@ func TestBatcherRetryKeepsEvents(t *testing.T) {
 	go b.Run()
 	b.Add(Event{ID: "a"})
 	b.Add(Event{ID: "b"})
-	waitFor(t, func() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.sends >= 2 }) // ретраится
+	waitFor(t, func() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.sends >= 2 })
 	c.mu.Lock()
 	c.fail = false
 	c.mu.Unlock()
-	waitFor(t, func() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.rows == 2 }) // доехали
+	waitFor(t, func() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.rows == 2 })
 	_ = b.Close(context.Background())
 }
 
@@ -118,10 +116,6 @@ func TestBatcherDropsOldestOnOverflow(t *testing.T) {
 }
 
 func TestBatcherBulkDropOnOverfilledBuffer(t *testing.T) {
-	// Буфер переполнен сверх maxBuf (как после возврата пачки в буфер во flush).
-	// Один Add обязан разом срезать весь избыток (bulk-сдвиг), а не по одному:
-	// при 7 рядах и maxBuf=5 добавление одного элемента должно дропнуть 3
-	// (7+1-5) и оставить ровно maxBuf.
 	c := &fakeConn{}
 	b := NewBatcher(c)
 	b.maxBuf = 5
@@ -178,14 +172,12 @@ func TestCloseIsIdempotent(t *testing.T) {
 	if err := b.Close(ctx); err != nil {
 		t.Fatalf("first Close: %v", err)
 	}
-	// Second Close must not panic (close of closed channel) and must return promptly.
 	if err := b.Close(ctx); err != nil {
 		t.Fatalf("second Close: %v", err)
 	}
 }
 
 func TestBatcherIsolatesPoisonRowAfterThreshold(t *testing.T) {
-	// conn.Send падает, если среди рядов есть событие ядовитого проекта.
 	const poisonPID = 999
 	c := &fakeConn{poison: func(pid uint64) bool { return pid == poisonPID }}
 	b := NewBatcher(c)
@@ -215,9 +207,6 @@ func TestBatcherIsolatesPoisonRowAfterThreshold(t *testing.T) {
 	}
 }
 
-// Транзиентный отказ (сеть/ctx, НЕ *clickhouse.Exception): даже после порога
-// подряд-фейлов изоляция НЕ должна дропать валидные ряды — они возвращаются в
-// буфер под обычный ретрай. Dropped() обязан остаться 0.
 func TestBatcherTransientFailureDropsNothing(t *testing.T) {
 	c := &fakeConn{fail: true} // Send всегда возвращает обычную errors.New — транзиент
 	b := NewBatcher(c)
@@ -257,9 +246,6 @@ func waitFor(t *testing.T, cond func() bool) {
 	t.Fatal("condition not met in 5s")
 }
 
-// TestBatcherSelfMetrics — три счётчика, которые видит /metrics. Проверяем, что
-// они различают три РАЗНЫХ состояния: данные ждут записи, вставка падает но
-// ретраится (потери ещё нет), буфер переполнен (данные потеряны).
 func TestBatcherSelfMetrics(t *testing.T) {
 	c := &fakeConn{fail: true}
 	b := NewBatcher(c)
@@ -295,10 +281,6 @@ func TestBatcherSelfMetrics(t *testing.T) {
 	_ = b.Close(context.Background())
 }
 
-// TestBatcherBoundsBufferByBytes фиксирует ресурсный дефект: буфер был ограничен
-// только ЧИСЛОМ строк, а размер строки задаёт клиент. Событие несёт четыре сырых
-// JSON-блока по 256 КиБ, то есть доходит до ~1 МиБ, и maxBuf=10000 таких строк —
-// это больше 10 ГБ в буфере, заведённом под «десять тысяч небольших событий».
 func TestBatcherBoundsBufferByBytes(t *testing.T) {
 	b := NewBatcher(nil)
 	b.maxBufBytes = 1 << 20 // 1 МиБ, чтобы тест был быстрым
@@ -327,9 +309,6 @@ func TestBatcherBoundsBufferByBytes(t *testing.T) {
 	}
 }
 
-// TestBatcherByteAccountingSurvivesDrops — счётчик веса не должен разъезжаться с
-// содержимым буфера: он ведётся инкрементально в Add и пересчитывается на путях
-// флаша, и разъехавшись однажды, он либо запрёт приём, либо снимет потолок.
 func TestBatcherByteAccountingSurvivesDrops(t *testing.T) {
 	b := NewBatcher(nil)
 	b.maxBuf = 5

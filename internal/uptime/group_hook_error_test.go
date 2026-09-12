@@ -13,29 +13,16 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// erroringGroupHook — фейковая реализация groupHook (duck-typing D3, см.
-// detector.go): каждый метод возвращает заданную ошибку. Изолирует
-// конкретную error-ветку openIncident/settleHeldIncident/resolveIncident от
-// настоящего incidentgroup.Grouper (используется для позитивных сценариев в
-// group_test.go).
 type erroringGroupHook struct {
 	attachErr       error
 	onRootOpenedErr error
 	onRootClosedErr error
 
-	// rootIncidentErr/rootSource/rootIncidentID/rootFound — R3b: RootIncident
-	// double, инъекция ошибки резолва кросс-видового корня в openIncident.
 	rootIncidentErr error
 	rootSource      string
 	rootIncidentID  int64
 	rootFound       bool
 
-	// onRootOpenedCalls/lastRoot* — R3b: записывает КАЖДЫЙ вызов
-	// OnRootOpened с его аргументами. Fail-safe openIncident при ошибке
-	// DownRoot/RootIncident обязан вызвать OnRootOpened с самим монитором
-	// как корнем (откат к поведению до R3b), а не молча пропустить вызов и
-	// не подставить фабрикованный чужой корень — счётчик и последние
-	// аргументы различают все три исхода.
 	onRootOpenedCalls  int
 	lastRootSource     string
 	lastRootIncidentID int64
@@ -60,11 +47,6 @@ func (h *erroringGroupHook) OnRootClosed(ctx context.Context, rootSource string,
 	return h.onRootClosedErr
 }
 
-// RootIncident — nil error/rootFound=false по умолчанию: безопасный no-op
-// для тестов, не бьющих кросс-видовую ветку openIncident. Настраиваемый
-// (R3b): rootIncidentErr — инъекция ошибки резолва корня; rootSource/
-// rootIncidentID/rootFound — успешный ответ (не используется этими
-// error-тестами, но держит форму симметрично host/group_hook_error_test.go).
 func (h *erroringGroupHook) RootIncident(ctx context.Context, rootKind string, rootID int64) (string, int64, int64, bool, bool, error) {
 	if h.rootIncidentErr != nil {
 		return "", 0, 0, false, false, h.rootIncidentErr
@@ -72,11 +54,6 @@ func (h *erroringGroupHook) RootIncident(ctx context.Context, rootKind string, r
 	return h.rootSource, h.rootIncidentID, 0, false, h.rootFound, nil
 }
 
-// downRootStubChecker — depChecker с настраиваемым DownRoot; HasParent/
-// ParentDown всегда false (эти тесты не про B5-отложенное уведомление,
-// только про R3b-резолв фактического корня в openIncident). Локальный для
-// error-инъекции, в отличие от fakeDepChecker (detector_test.go), у
-// которого DownRoot жёстко not-found.
 type downRootStubChecker struct {
 	rootKind string
 	rootID   int64
@@ -96,11 +73,8 @@ func (c *downRootStubChecker) DownRoot(context.Context, string, int64) (string, 
 	return c.rootKind, c.rootID, c.found, c.err
 }
 
-// captureErrorLog — подменяет slog.Default на текстовый handler уровня WARN
-// (ловит и ERROR — Warn(4) < Error(8), Level — минимальный порог; образец —
-// cover_profile_delete_test.go/host/group_hook_error_test.go). Порог поднят
-// с ERROR до WARN в R3b: root incident lookup failed (openIncident, ошибка
-// RootIncident) логируется через slog.Warn.
+// уровень WARN, не ERROR: Level — минимальный порог (Warn(4) < Error(8)),
+// так что ловит и Warn-, и Error-логи.
 func captureErrorLog(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var buf bytes.Buffer
@@ -110,9 +84,6 @@ func captureErrorLog(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
-// TestOpenIncidentGroupRootOpenedErrorLoggedNotFatal — openIncident:
-// ошибка ретро-присоединения (Р7, OnRootOpened) не должна ронять открытие
-// самого инцидента монитора, только логируется.
 func TestOpenIncidentGroupRootOpenedErrorLoggedNotFatal(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -135,10 +106,6 @@ func TestOpenIncidentGroupRootOpenedErrorLoggedNotFatal(t *testing.T) {
 	}
 }
 
-// TestSettleHeldAttachErrorLeavesGroupIDNull — settleHeldIncident: ошибка
-// Attach на B5-подавлении не должна отменять само подавление
-// (SuppressedByDep), только состав группы — group_id остаётся NULL, а не
-// молча "притворяется" присоединённым.
 func TestSettleHeldAttachErrorLeavesGroupIDNull(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -160,9 +127,7 @@ func TestSettleHeldAttachErrorLeavesGroupIDNull(t *testing.T) {
 	d.IncidentGroups = &erroringGroupHook{attachErr: errors.New("attach boom")}
 	now := time.Now().UTC()
 
-	// Тик 1: ребёнок открывается, "down" придержан (HasParent).
 	applyAndDetect(t, ctx, svc, d, child, "local", false, "boom", now, nil)
-	// Тик 2: родитель down → settleHeldIncident подавляет; Attach падает.
 	applyAndDetect(t, ctx, svc, d, child, "local", false, "boom", now.Add(time.Second), nil)
 
 	inc := assertOpenIncident(t, ctx, svc, child.ID)
@@ -178,9 +143,6 @@ func TestSettleHeldAttachErrorLeavesGroupIDNull(t *testing.T) {
 	}
 }
 
-// TestResolveIncidentGroupRootClosedErrorLoggedNotFatal — resolveIncident:
-// ошибка закрытия группы (Р5, OnRootClosed) не должна мешать закрытию
-// самого инцидента монитора и recovery-уведомлению.
 func TestResolveIncidentGroupRootClosedErrorLoggedNotFatal(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -188,7 +150,7 @@ func TestResolveIncidentGroupRootClosedErrorLoggedNotFatal(t *testing.T) {
 	defer cancel()
 
 	pid := newProject(t, pool)
-	mon := createMonitor(t, svc, pid, 1, 1) // recovery_threshold=1 — один "ok" уже разрешает
+	mon := createMonitor(t, svc, pid, 1, 1)
 
 	notifier := &fakeNotifier{}
 	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
@@ -212,13 +174,6 @@ func TestResolveIncidentGroupRootClosedErrorLoggedNotFatal(t *testing.T) {
 	}
 }
 
-// TestOpenIncidentDownRootErrorFallsBackToSelfAndNotifies — openIncident
-// (R3b): ошибка d.Dep.DownRoot при резолве фактического корня каскада —
-// fail-safe откат на САМ монитор как корень (ровно поведение ДО R3b), а не
-// молчание (OnRootOpened всё равно зовётся — ретро-перебор проекта не
-// должен пропускаться из-за временной ошибки Suppressor'а) и не
-// фабрикованный чужой корень. Открытие/уведомление монитора не затронуты
-// вовсе — это независимый путь (гейт hasParent).
 func TestOpenIncidentDownRootErrorFallsBackToSelfAndNotifies(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -252,11 +207,6 @@ func TestOpenIncidentDownRootErrorFallsBackToSelfAndNotifies(t *testing.T) {
 	}
 }
 
-// TestOpenIncidentRootIncidentErrorFallsBackToSelfAndNotifies — openIncident
-// (R3b): DownRoot резолвит фактический (кросс-видовой) корень успешно, но
-// e.IncidentGroups.RootIncident падает — тот же fail-safe откат на сам
-// монитор как корень, OnRootOpened всё равно зовётся, открытие/уведомление
-// монитора не затронуты.
 func TestOpenIncidentRootIncidentErrorFallsBackToSelfAndNotifies(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)

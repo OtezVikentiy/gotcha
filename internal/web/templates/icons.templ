@@ -1,14 +1,6 @@
-// icons.templ — инлайновый SVG-спрайт Lucide-иконок (ISC) и компонент icon(name)
-// для использования вместо эмодзи в навигации и UI. Спрайт рендерится один
-// раз первым потомком <body> (см. layoutBody в layout.templ), компонент icon
-// ссылается на символы через <use href="#i-<name>">. CSP: default-src 'self'
-// без unsafe-inline запрещает style="" — спрайт скрыт классом .icon-sprite
-// (см. app.css), не инлайн-стилем.
 package templates
 
-// iconSprite — скрытый набор <symbol> с путями Lucide-иконок (24x24, только
-// обводка, без заливки). Должен быть отрендерен один раз в документе, до
-// первого использования @icon(...).
+// Рендерить один раз, до первого использования icon() — иначе <use> ссылается в пустоту.
 templ iconSprite() {
 	<svg class="icon-sprite" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
 		<symbol id="i-home" viewBox="0 0 24 24">
@@ -187,11 +179,6 @@ templ iconSprite() {
 	</svg>
 }
 
-// brandMark — фирменный знак Gotcha: моноширинная «G», взятая в уголковую
-// рамку-прицел («пойман в кадр» — суть продукта: поймать ошибку/культприта).
-// Градиент #brand-grad определён один раз в iconSprite(). Размер задаётся
-// через CSS (.brand-mark), а не атрибутами, чтобы масштабировать в рейле,
-// на логине и в вордмарке одним компонентом.
 templ brandMark() {
 	<svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
 		<defs>
@@ -210,8 +197,7 @@ templ brandMark() {
 	</svg>
 }
 
-// icon — использование символа из iconSprite() через <use>. iconSprite()
-// должна быть отрендерена раньше в документе (см. layoutBody).
+// Работает, только если спрайт символов уже отрендерен раньше в документе.
 templ icon(name string) {
 	<svg class="ic" aria-hidden="true">
 		<use href={ "#i-" + name }></use>

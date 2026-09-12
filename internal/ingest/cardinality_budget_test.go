@@ -6,9 +6,6 @@ import (
 	"time"
 )
 
-// TestFieldCountIsCapped: имена полей задаёт отправитель, поэтому «поле на
-// событие» обходило ограничитель целиком — потолок стоял только на значениях
-// внутри поля, а карта полей росла без границы.
 func TestFieldCountIsCapped(t *testing.T) {
 	g := NewCardinalityGuard(10, time.Hour)
 
@@ -24,15 +21,11 @@ func TestFieldCountIsCapped(t *testing.T) {
 		t.Errorf("отслеживается %d полей при потолке %d: имя поля задаёт отправитель, "+
 			"и без потолка карта растёт без границы", fields, maxCardinalityFields)
 	}
-	// Поле сверх потолка обязано схлопываться, а не проходить как есть.
 	if got := g.Value(1, "field-99999", "value"); got != CardinalityOverflow {
 		t.Errorf("значение поля сверх потолка = %q, want %q", got, CardinalityOverflow)
 	}
 }
 
-// TestTrackedValuesRespectBudget: общий бюджет запомненных значений — та самая
-// граница, которой не было. Произведение потолков (проекты × поля × значения)
-// давало миллиарды строк, то есть «границу» размером в сотни гигабайт.
 func TestTrackedValuesRespectBudget(t *testing.T) {
 	g := NewCardinalityGuard(1000, time.Hour)
 	g.maxTracked = 100
@@ -51,9 +44,6 @@ func TestTrackedValuesRespectBudget(t *testing.T) {
 	}
 }
 
-// TestExpiredProjectsFreeBudget: набор проекта с истёкшим окном освобождает
-// бюджет. Иначе инстанс, переживший всплеск, навсегда остаётся с исчерпанным
-// бюджетом и перестаёт различать значения даже у здоровых проектов.
 func TestExpiredProjectsFreeBudget(t *testing.T) {
 	now := time.Now()
 	g := NewCardinalityGuard(1000, time.Hour)
@@ -67,7 +57,6 @@ func TestExpiredProjectsFreeBudget(t *testing.T) {
 		t.Fatalf("запомнено %d, want 50", got)
 	}
 
-	// Окно проекта 1 истекло — его набор больше не нужен.
 	now = now.Add(2 * time.Hour)
 	if got := g.Value(2, "tag", "fresh"); got != "fresh" {
 		t.Errorf("значение нового проекта схлопнуто (%q) при освободившемся бюджете", got)

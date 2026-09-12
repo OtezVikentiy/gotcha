@@ -6,9 +6,6 @@ func int64p(v int64) *int64 { return &v }
 
 func strp(v string) *string { return &v }
 
-// TestPreviewSuppressionLabelExcludesSelfMatch — parent gw (host, role=web)
-// with a label-selector child (role=web) must expand to web1 (same role)
-// but never to gw itself (self-match, MAJOR-5) nor to db1 (different role).
 func TestPreviewSuppressionLabelExcludesSelfMatch(t *testing.T) {
 	gw := HostLite{ID: 1, Name: "gw", Environment: "prod", Role: "web"}
 	web1 := HostLite{ID: 2, Name: "web1", Environment: "prod", Role: "web"}
@@ -35,8 +32,6 @@ func TestPreviewSuppressionLabelExcludesSelfMatch(t *testing.T) {
 	}
 }
 
-// TestPreviewSuppressionExplicitHostChild — an explicit host-to-host edge is
-// resolved as-is, without any label expansion.
 func TestPreviewSuppressionExplicitHostChild(t *testing.T) {
 	parentHost := HostLite{ID: 10, Name: "lb1", Environment: "prod", Role: "lb"}
 	childHost := HostLite{ID: 11, Name: "app1", Environment: "prod", Role: "app"}
@@ -56,8 +51,6 @@ func TestPreviewSuppressionExplicitHostChild(t *testing.T) {
 	}
 }
 
-// TestPreviewSuppressionMonitorChild — a monitor child is resolved from the
-// supplied monitor inventory, not from hosts.
 func TestPreviewSuppressionMonitorChild(t *testing.T) {
 	parentHost := HostLite{ID: 20, Name: "gw2", Environment: "prod", Role: "web"}
 	monitor := NodeRef{Kind: "monitor", ID: 30, Name: "ping-google"}
@@ -75,21 +68,13 @@ func TestPreviewSuppressionMonitorChild(t *testing.T) {
 	}
 }
 
-// TestPreviewSuppressionDanglingParent — an edge whose parent no longer
-// resolves in the supplied inventory (deleted since the edge was created)
-// contributes nothing to the preview: dangling parent host, dangling parent
-// monitor, and a malformed edge with no parent at all are all dropped.
 func TestPreviewSuppressionDanglingParent(t *testing.T) {
 	childHost := HostLite{ID: 51, Name: "web9", Environment: "prod", Role: "web"}
 	monitor := NodeRef{Kind: "monitor", ID: 60, Name: "ping-api"}
 
 	edges := []Edge{
-		// Parent host id 999 was deleted after the edge was created.
 		{ID: 7, ParentHostID: int64p(999), ChildHostID: int64p(childHost.ID)},
-		// Parent monitor id 888 was deleted after the edge was created.
 		{ID: 8, ParentMonitorID: int64p(888), ChildHostID: int64p(childHost.ID)},
-		// Malformed edge without any parent (must never happen past
-		// validateShape, but the preview must not panic or invent a parent).
 		{ID: 9, ChildHostID: int64p(childHost.ID)},
 	}
 
@@ -100,9 +85,6 @@ func TestPreviewSuppressionDanglingParent(t *testing.T) {
 	}
 }
 
-// TestPreviewResolveParentBranches — unit coverage of previewResolveParent
-// itself: each miss branch returns (NodeRef{}, false), a live monitor parent
-// resolves to the inventory NodeRef.
 func TestPreviewResolveParentBranches(t *testing.T) {
 	hostByID := map[int64]HostLite{1: {ID: 1, Name: "gw", Environment: "prod", Role: "web"}}
 	monitorByID := map[int64]NodeRef{2: {Kind: "monitor", ID: 2, Name: "ping"}}
@@ -127,9 +109,6 @@ func TestPreviewResolveParentBranches(t *testing.T) {
 	}
 }
 
-// TestPreviewResolveChildrenBranches — unit coverage of the child-resolution
-// misses: a deleted monitor child resolves to nothing, an edge with no child
-// spec at all (must never happen past validateShape) resolves to nothing.
 func TestPreviewResolveChildrenBranches(t *testing.T) {
 	hostByID := map[int64]HostLite{}
 	monitorByID := map[int64]NodeRef{}
@@ -143,9 +122,6 @@ func TestPreviewResolveChildrenBranches(t *testing.T) {
 	}
 }
 
-// TestPreviewExpandLabelUnknownScope — a label scope outside {env,role}
-// (must never happen past validateShape) expands to nothing instead of
-// accidentally matching hosts.
 func TestPreviewExpandLabelUnknownScope(t *testing.T) {
 	hostByID := map[int64]HostLite{
 		2: {ID: 2, Name: "web1", Environment: "prod", Role: "web"},
@@ -157,8 +133,6 @@ func TestPreviewExpandLabelUnknownScope(t *testing.T) {
 	}
 }
 
-// TestPreviewSuppressionSortsMixedKinds — children of one parent are sorted
-// by (kind, id): hosts before monitors, ids ascending within a kind.
 func TestPreviewSuppressionSortsMixedKinds(t *testing.T) {
 	parentHost := HostLite{ID: 70, Name: "gw4", Environment: "prod", Role: "web"}
 	hostA := HostLite{ID: 72, Name: "web4", Environment: "prod", Role: "app"}
@@ -190,10 +164,6 @@ func TestPreviewSuppressionSortsMixedKinds(t *testing.T) {
 	}
 }
 
-// TestPreviewSuppressionDedupAndMissingNodes — two edges expanding to the
-// same child collapse to one entry; a child id no longer present in the
-// inventory (deleted node) is silently dropped rather than surfaced as a
-// ghost entry.
 func TestPreviewSuppressionDedupAndMissingNodes(t *testing.T) {
 	parentHost := HostLite{ID: 40, Name: "gw3", Environment: "prod", Role: "web"}
 	childHost := HostLite{ID: 41, Name: "web2", Environment: "prod", Role: "web"}
@@ -202,7 +172,6 @@ func TestPreviewSuppressionDedupAndMissingNodes(t *testing.T) {
 	edges := []Edge{
 		{ID: 4, ParentHostID: int64p(parentHost.ID), ChildHostID: int64p(childHost.ID)},
 		{ID: 5, ParentHostID: int64p(parentHost.ID), ChildLabelScope: strp("role"), ChildLabelValue: strp("web")},
-		// Dangling child id — node deleted since the edge was created.
 		{ID: 6, ParentHostID: int64p(parentHost.ID), ChildHostID: int64p(999)},
 	}
 

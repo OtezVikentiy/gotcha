@@ -10,9 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestHasPasswordUnknownUser — несуществующий userID: SELECT возвращает
-// pgx.ErrNoRows, HasPassword обязан отдать ErrInvalidCredentials, а не
-// голую ошибку БД.
 func TestHasPasswordUnknownUser(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := auth.NewService(pool)
@@ -24,11 +21,6 @@ func TestHasPasswordUnknownUser(t *testing.T) {
 	}
 }
 
-// TestSetPasswordUnknownUser — условный UPDATE (WHERE id=$1 AND password_hash
-// IS NULL) для несуществующего userID даёт RowsAffected==0; SetPassword
-// добором различает «юзера нет» от «пароль уже задан» отдельным SELECT
-// exists. Для отсутствующего юзера это должно дать ErrInvalidCredentials
-// (а не ошибочно ErrPasswordAlreadySet).
 func TestSetPasswordUnknownUser(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := auth.NewService(pool)

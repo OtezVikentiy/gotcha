@@ -14,34 +14,23 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// Frame — один фрейм стектрейса для отображения. Парсится из JSON исключения
-// (event.Stored.Stacktrace) в web/issuedetail.go локальным парсером (не тянет
-// internal/ingest — см. бриф задачи 7); сюда попадает уже в порядке "новые
-// сверху".
 type Frame struct {
 	Function string
 	Module   string
 	Filename string
 	Lineno   int
 	InApp    bool
-	// Исходный код кадра (шлёт sentry-php по опции context_lines): строки до
-	// ошибки, сама строка и строки после. Пустые — фрейм без исходника.
 	AbsPath     string
 	ContextLine string
 	PreContext  []string
 	PostContext []string
-	// Vars — локальные переменные кадра (JSON-объект), если SDK их прислал
-	// (sentry-php: опция include_local_variables). Пусто — не показываем.
 	Vars string
 }
 
-// frameHasVars — есть ли у кадра сохранённые локальные переменные.
 func frameHasVars(f Frame) bool {
 	return f.Vars != "" && f.Vars != "{}" && f.Vars != "null"
 }
 
-// frameVars разворачивает vars кадра в строки ключ/значение (тем же плоским
-// парсером, что и контексты).
 func frameVars(f Frame) []ctxRow {
 	if !frameHasVars(f) {
 		return nil
@@ -51,22 +40,16 @@ func frameVars(f Frame) []ctxRow {
 	return rows
 }
 
-// sourceLine — одна строка исходника кадра с абсолютным номером и признаком
-// «та самая строка ошибки» (для подсветки).
 type sourceLine struct {
 	No      int
 	Code    string
 	Current bool
 }
 
-// frameHasSource — есть ли у кадра исходный код для показа в развороте.
 func frameHasSource(f Frame) bool {
 	return f.ContextLine != "" || len(f.PreContext) > 0 || len(f.PostContext) > 0
 }
 
-// frameSourceLines собирает pre_context + context_line + post_context в единый
-// список с корректной сквозной нумерацией: context_line стоит на f.Lineno,
-// pre_context — строки прямо перед ним, post_context — сразу после.
 func frameSourceLines(f Frame) []sourceLine {
 	if !frameHasSource(f) {
 		return nil
@@ -90,8 +73,7 @@ func sourceLineClass(l sourceLine) string {
 	return "src-line"
 }
 
-// prettyJSON форматирует JSON с отступами для читаемости. Невалидный JSON
-// возвращается как есть — лучше показать сырьё, чем ничего.
+	// Невалидный JSON возвращается как есть — лучше показать сырьё, чем ничего.
 func prettyJSON(s string) string {
 	var buf bytes.Buffer
 	if err := json.Indent(&buf, []byte(s), "", "  "); err != nil {
@@ -100,17 +82,13 @@ func prettyJSON(s string) string {
 	return buf.String()
 }
 
-// ctxRow — пара ключ/значение в карточке контекста.
 type ctxRow struct{ Key, Val string }
 
-// ctxGroup — именованная группа контекста события (os, runtime, trace…),
-// показывается таблицей ключ/значение вместо сырого JSON.
 type ctxGroup struct {
 	Title string
 	Rows  []ctxRow
 }
 
-// contextTitle — заголовок группы контекста; неизвестные ключи как есть.
 func contextTitle(key string) string {
 	switch key {
 	case "os":
@@ -134,8 +112,6 @@ func contextTitle(key string) string {
 	}
 }
 
-// jsonScalar приводит JSON-значение к строке: строки как есть, целые без .0,
-// объект/массив — компактным JSON.
 func jsonScalar(raw json.RawMessage) string {
 	var v any
 	if err := json.Unmarshal(raw, &v); err != nil {
@@ -159,8 +135,6 @@ func jsonScalar(raw json.RawMessage) string {
 	}
 }
 
-// flattenContext разворачивает вложенный объект в плоские строки с точечными
-// ключами (data.http.url). Массивы/скаляры кладём как значение.
 func flattenContext(prefix string, raw json.RawMessage, out *[]ctxRow) {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &obj); err == nil && len(obj) > 0 {
@@ -186,8 +160,6 @@ func sortedKeys(m map[string]json.RawMessage) []string {
 	return keys
 }
 
-// contextGroups парсит contexts-JSON события в упорядоченные группы для показа
-// таблицами. Пустой/битый JSON → nil (тогда шаблон падает на raw-JSON).
 func contextGroups(contextsJSON string) []ctxGroup {
 	if contextsJSON == "" || contextsJSON == "{}" {
 		return nil
@@ -208,8 +180,6 @@ func contextGroups(contextsJSON string) []ctxGroup {
 	return groups
 }
 
-// requestRows вытаскивает суть HTTP-запроса из contexts.trace.data (method, url,
-// route, статус) — отдельная карточка «Запрос» сверху. Пусто → nil.
 func requestRows(contextsJSON string) []ctxRow {
 	if contextsJSON == "" {
 		return nil
@@ -242,19 +212,15 @@ func requestRows(contextsJSON string) []ctxRow {
 	return rows
 }
 
-// sentryRequest — распарсенный Sentry request-интерфейс к показу на детали issue.
 type sentryRequest struct {
 	Method  string
 	URL     string
-	Query   []ctxRow // разобранные query-параметры (из query_string)
+	Query   []ctxRow
 	Headers []ctxRow
 	Body    string // тело запроса: pretty-JSON для объекта, иначе как есть
 }
 
-// parseRequest разбирает JSON Sentry request-интерфейса (уже отскрабленного в
-// пайплайне приёма). Терпим к вариациям SDK: query_string — строкой "a=1&b=2"
-// либо объектом/массивом пар; data — телом-строкой либо объектом; headers —
-// объектом {name:value} либо массивом пар [name, value]. Пусто/битый JSON → nil.
+// Терпим к вариациям SDK: query_string/data/headers — строка, объект или массив пар.
 func parseRequest(requestJSON string) *sentryRequest {
 	if requestJSON == "" || requestJSON == "{}" || requestJSON == "null" {
 		return nil
@@ -282,8 +248,6 @@ func parseRequest(requestJSON string) *sentryRequest {
 	return out
 }
 
-// parseQueryParams разбирает query_string в пары ключ/значение: строка
-// "a=1&b=2" — как URL-query; объект/массив — разворачивается flattenContext'ом.
 func parseQueryParams(raw json.RawMessage) []ctxRow {
 	if len(raw) == 0 {
 		return nil
@@ -313,8 +277,6 @@ func parseQueryParams(raw json.RawMessage) []ctxRow {
 	return rows
 }
 
-// pairsOrObjectRows разворачивает headers-подобное значение: массив пар
-// [[name, value], …] либо объект {name: value} — в пары ключ/значение.
 func pairsOrObjectRows(raw json.RawMessage) []ctxRow {
 	if len(raw) == 0 {
 		return nil
@@ -336,8 +298,6 @@ func pairsOrObjectRows(raw json.RawMessage) []ctxRow {
 	return rows
 }
 
-// requestBody нормализует тело запроса: тело-строку возвращает как есть,
-// объект/массив — отформатированным JSON (prettyJSON).
 func requestBody(raw json.RawMessage) string {
 	if len(raw) == 0 || string(raw) == "null" || string(raw) == `""` {
 		return ""
@@ -349,8 +309,7 @@ func requestBody(raw json.RawMessage) string {
 	return prettyJSON(string(raw))
 }
 
-// requestFullView — карточка «Запрос»: строка «METHOD URL», параметры, тело и
-// (сворачиваемые) заголовки. Данные уже отскраблены на приёме.
+// Данные уже отскраблены на приёме — здесь без повторной санитизации.
 templ requestFullView(r *sentryRequest) {
 	<div class="request-view">
 		if r.Method != "" || r.URL != "" {
@@ -388,7 +347,6 @@ func issueEventPath(issueID int64, eventID string, rng TimeRangeVM) string {
 	return issueDetailPath(issueID) + "?" + q.Encode()
 }
 
-// frameLocation — "filename:lineno", пусто для фреймов без адреса.
 func frameLocation(f Frame) string {
 	if f.Filename == "" {
 		return ""
@@ -410,11 +368,8 @@ func eventRowClass(selected bool) string {
 	return "event-row"
 }
 
-// assignControl — смена ответственного. Состояние («на кого назначено»)
-// показывает assigneeChip в шапке, а здесь только действие, поэтому форма
-// свёрнута в <details>: раньше предвыбранный <select> был единственным
-// носителем информации, и факт назначения приходилось вычитывать из элемента
-// управления. <details> — нативный, работает без JS.
+// Состояние («на кого назначено») показывает assigneeChip шапки — здесь только действие.
+// Свёрнуто в <details>: нативный переключатель, работает без JS.
 templ assignControl(it issue.Issue, members []org.Member) {
 	<details class="dropdown-control">
 		<summary>
@@ -445,7 +400,6 @@ templ assigneeOption(m org.Member, selected *int64) {
 	}
 }
 
-// frameSource — исходный код кадра: строки с номерами, строка ошибки подсвечена.
 templ frameSource(f Frame) {
 	<div class="frame-source">
 		for _, l := range frameSourceLines(f) {
@@ -457,7 +411,6 @@ templ frameSource(f Frame) {
 	</div>
 }
 
-// breadcrumb — один «след» до ошибки (лог/HTTP/навигация), как шлёт SDK.
 type breadcrumb struct {
 	Category string
 	Type     string
@@ -466,7 +419,6 @@ type breadcrumb struct {
 	Data     string
 }
 
-// breadcrumbLabel — что показать слева: категория, иначе тип, иначе прочерк.
 func breadcrumbLabel(b breadcrumb) string {
 	switch {
 	case b.Category != "":
@@ -478,8 +430,7 @@ func breadcrumbLabel(b breadcrumb) string {
 	}
 }
 
-// parseBreadcrumbs разбирает breadcrumbs события: Sentry шлёт {"values":[…]}
-// либо прямой массив. Порядок сохраняем как есть (SDK шлёт хронологически).
+// Порядок сохраняем как есть — SDK шлёт хронологически.
 func parseBreadcrumbs(js string) []breadcrumb {
 	if js == "" || js == "{}" || js == "null" {
 		return nil
@@ -514,21 +465,14 @@ func parseBreadcrumbs(js string) []breadcrumb {
 	return out
 }
 
-// breadcrumbsView — таймлайн следов до ошибки.
 templ breadcrumbsView(js string) {
 	<ul class="breadcrumbs">
 		for _, b := range parseBreadcrumbs(js) {
 			<li class="bc-item">
 				<span class="bc-cat">{ breadcrumbLabel(b) }</span>
 				if b.Level != "" {
-					// b.Level приходит из breadcrumb JSON события (SDK-controlled).
-					// Держим class СРЕЗОМ из двух аргументов: templ санитизирует
-					// каждый элемент через templ.CSSClasses/RenderCSSItems
-					// (issuedetail_templ.go, сгенерированный код) — regexp-фильтром
-					// допустимых CSS-имён. Схлопывание в один string-аргумент
-					// (`class={ "bc-level bc-level-" + b.Level }`) выключит эту
-					// санитизацию и откроет CSS-инъекцию через уровень breadcrumb —
-					// НЕ упрощать этот атрибут при рефакторинге блока.
+					// class — срезом из двух аргументов: templ санитизирует каждый элемент отдельно.
+					// Схлопывание в одну строку выключит санитизацию и откроет CSS-инъекцию через b.Level.
 					<span class={ "bc-level", "bc-level-" + b.Level }>{ issueLevelLabel(ctx, b.Level) }</span>
 				}
 				<span class="bc-msg">{ b.Message }</span>
@@ -540,7 +484,6 @@ templ breadcrumbsView(js string) {
 	</ul>
 }
 
-// frameVarsView — локальные переменные кадра таблицей ключ/значение.
 templ frameVarsView(f Frame) {
 	<div class="frame-vars">
 		<div class="frame-vars-title">{ i18n.T(ctx, "issues.detail.variables") }</div>
@@ -579,7 +522,6 @@ templ frameView(f Frame, expandSystem bool) {
 	}
 }
 
-// contextTable — таблица ключ/значение для группы контекста или Request-карточки.
 templ contextTable(rows []ctxRow) {
 	<table class="ctx-table data-table data-table--auto">
 		<tbody>
@@ -602,13 +544,8 @@ templ eventRow(issueID int64, ev event.Stored, selected bool, rng TimeRangeVM) {
 	</tr>
 }
 
-// IssueDetail — GET /issues/{id}: шапка, статус/assign-формы, график частоты
-// за 7 дней, последние 20 событий, детали выбранного события (?event=).
-// selectedID — id события из query (для подсветки строки в таблице), может
-// не совпадать ни с одним из events, если событие устарело/удалено — тогда
-// selected/frames приходят пустыми и блок деталей просто не рендерится.
-// loadFailed — ClickHouse не ответил: шапка и статус на месте, вместо графика
-// и событий — «данные временно недоступны».
+// selectedID может не совпадать ни с одним из events (устарело/удалено) — тогда деталей нет.
+// loadFailed — ClickHouse не ответил: график и события заменяет «данные временно недоступны».
 templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, rng TimeRangeVM, events []event.Stored, selectedID string, selected *event.Stored, frames []Frame, userEmail string, hasTrace bool, showAllFrames bool, copyMD string, copyTXT string, exportsEnabled bool, canManagePII bool, loadFailed bool) {
 	@layout(issueTitle(ctx, it.Title), userEmail) {
 		<div class="issue-detail">
@@ -623,9 +560,8 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 				@assigneeChip(it.AssigneeEmail)
 			</div>
 			<div class="issue-meta">
-				// @relativeTime — отдельным узлом: после текста в той же строке
-				// templ не разбирает @-вызов и печатает его буквально
-				// («…: @relativeTime(it.FirstSeen)» прямо на странице).
+				// @relativeTime — отдельным узлом: templ не разбирает @-вызов после текста в той же строке
+				// и печатает его буквально.
 				<span>
 					{ i18n.T(ctx, "issues.detail.first_seen") + ": " }
 					@relativeTime(it.FirstSeen)
@@ -647,32 +583,8 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 					}
 				</form>
 				@assignControl(it, members)
-				// Экспорт событий этой issue (E1, задача 11): без явного
-				// canOperate-параметра — loadAccessibleIssue уже потребовал
-				// CanAccessProject, а он сегодня буквально canOperateProject
-				// (см. её докблок в operate.go), так что дошедший досюда
-				// пользователь уже прошёл бы requireProjectOperator постановки.
-				// exportsEnabled — сверх этого: на инстансе без каталога
-				// выгрузок (h.Exports == nil) форма поведёт на 404, поэтому
-				// не рендерится вовсе (ревью веб-части E1, п.3).
-				//
-				// Раскрывающаяся <details> — тот же приём, что и у
-				// @assignControl чуть выше и у кнопок экспорта issues.templ:
-				// раньше формат был зашит в hidden-поле («Экспорт событий
-				// issue» всегда давал csv, тот же по названию со списка ошибок
-				// давал ndjson) и выбрать его или поставить галку PII было
-				// негде — находка аудита P2-UX-3. canManagePII гейтит галку
-				// «выгрузить как есть» тем же правилом, что и генерическая
-				// форма страницы «Выгрузки» (exports.go:exportsCreate,
-				// authz.CanManage) — только здесь она впервые доступна ВМЕСТЕ
-				// со scope_issue_id: раньше PII работала только для выгрузки
-				// всего проекта.
-				//
-				// Период — тем же окном, что сейчас выбрано графиком частоты
-				// (rng, дефолт 7д — issuedetail.go), переносится в action
-				// query-параметром (exportsPathWithRange), тем же приёмом, что
-				// и формы issues.templ: hidden-поле сюда не годится, POST-тело
-				// не долетает до resolveTimeRange (ревью веб-части E1, п.1).
+				// canOperate не нужен явно — loadAccessibleIssue уже требует его (CanAccessProject).
+				// Период идёт query-параметром (exportsPathWithRange) — POST-тело resolveTimeRange не читает.
 				if exportsEnabled {
 					<details class="dropdown-control">
 						<summary>{ i18n.T(ctx, "issuedetail.export") }</summary>
@@ -802,8 +714,7 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 			}
 
 			<h2 class="issue-events-heading">{ i18n.T(ctx, "issues.detail.recent_events") }</h2>
-			// Таблица событий — в собственном скролл-регионе, как остальные
-			// таблицы (№31): на 375px она распирала страницу целиком.
+			// Таблица — в своём скролл-регионе: без него она распирала страницу на 375px.
 			@scrollRegion("table-scroll", "issues.detail.recent_events") {
 				<table class="issue-events data-table">
 					<thead>
@@ -826,11 +737,7 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 	}
 }
 
-// copyToolbar — кнопки «Скопировать для ИИ» (Markdown/текст) и скрытые
-// off-screen textarea-источники для JS-обработчика (static/copy.js, Task 4).
-// Рендерится только при непустом md (т.е. selected != nil в вызывающем
-// коде) — без выбранного события копировать нечего. Текст в <textarea>
-// экранируется templ автоматически — это корректно, обходить не нужно.
+// Текст в <textarea> экранируется templ автоматически — обходить не нужно.
 templ copyToolbar(md string, txt string) {
 	if md != "" {
 		<div class="copy-llm">

@@ -13,9 +13,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestWebMaintenanceUpdate — правка окна через форму: тот же набор полей, что
-// и у создания, плюс window_id. Проверяем и содержимое страницы после правки:
-// ссылка «Изменить» и предзаполненная модалка — это и есть весь смысл правки.
 func TestWebMaintenanceUpdate(t *testing.T) {
 	s := newMaintenanceStack(t)
 	proj, ownerCookie, _ := maintenanceOwnerAndMember(t, s, "maintupd")
@@ -57,7 +54,6 @@ func TestWebMaintenanceUpdate(t *testing.T) {
 		t.Fatalf("EndsAt = %v, want 06:00 UTC", got.EndsAt)
 	}
 
-	// Страница отдаёт модалку правки с уже подставленными значениями окна.
 	resp = getWithCookie(t, s.srv, path, ownerCookie)
 	page, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -73,10 +69,6 @@ func TestWebMaintenanceUpdate(t *testing.T) {
 	}
 }
 
-// TestWebMaintenanceEditIndefiniteWindowChecksBox — окно, созданное без
-// ends_at (бессрочное), открывает форму правки с уже отмеченным чекбоксом
-// «indefinite» — иначе сохранение формы без изменений тут же упёрлось бы в
-// end_required (windowFieldDefaults должен предзаполнить чекбокс).
 func TestWebMaintenanceEditIndefiniteWindowChecksBox(t *testing.T) {
 	s := newMaintenanceStack(t)
 	proj, ownerCookie, _ := maintenanceOwnerAndMember(t, s, "maintedgeindef")
@@ -106,10 +98,6 @@ func TestWebMaintenanceEditIndefiniteWindowChecksBox(t *testing.T) {
 	}
 }
 
-// TestWebMaintenanceUpdateInvalidReopensModal — на 422 страница возвращается с
-// открытой модалкой ИМЕННО этого окна и с введёнными значениями. Раньше
-// признаком «открыть модалку» служил сам факт непустого состояния формы, и с
-// появлением модалки на каждую строку ошибка правки открыла бы форму создания.
 func TestWebMaintenanceUpdateInvalidReopensModal(t *testing.T) {
 	s := newMaintenanceStack(t)
 	proj, ownerCookie, _ := maintenanceOwnerAndMember(t, s, "maintupdinv")
@@ -129,7 +117,7 @@ func TestWebMaintenanceUpdateInvalidReopensModal(t *testing.T) {
 		"name":      {"Задом наперёд"},
 		"kind":      {"oneoff"},
 		"starts_at": {"2026-08-01T06:00"},
-		"ends_at":   {"2026-08-01T02:00"}, // конец раньше начала
+		"ends_at":   {"2026-08-01T02:00"},
 		"timezone":  {"UTC"},
 	}
 	resp := postForm(t, s.srv, path, form, s.srv.URL, ownerCookie)
@@ -150,15 +138,12 @@ func TestWebMaintenanceUpdateInvalidReopensModal(t *testing.T) {
 	if !strings.Contains(page, `value="Задом наперёд"`) {
 		t.Fatalf("entered name not returned to the form:\n%s", page)
 	}
-	// Само окно осталось прежним.
 	windows, err := s.uptime.Windows(context.Background(), proj.ID)
 	if err != nil || len(windows) != 1 || windows[0].Name != "DB upgrade" {
 		t.Fatalf("window after failed update = %+v err=%v, want untouched", windows, err)
 	}
 }
 
-// TestWebMaintenanceUpdateForeignWindow — окно чужого проекта не правится по
-// подобранному id: 404, как и у удаления.
 func TestWebMaintenanceUpdateForeignWindow(t *testing.T) {
 	s := newMaintenanceStack(t)
 	mine, ownerCookie, _ := maintenanceOwnerAndMember(t, s, "maintupdmine")

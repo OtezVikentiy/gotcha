@@ -5,9 +5,8 @@ import (
 	"testing"
 )
 
-// TestParseLimit закрепляет разбор файлов cgroup, включая обе формы записи
-// «ограничения нет». Ошибиться здесь значит выставить потолок кучи в 7 эксабайт
-// (v1) или уронить старт на слове «max» (v2).
+// Обе формы записи «ограничения нет» — ошибиться значит выставить потолок кучи в 7 эксабайт (v1) или
+// уронить старт на слове «max» (v2).
 func TestParseLimit(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -41,11 +40,11 @@ func TestParseLimit(t *testing.T) {
 	}
 }
 
-// errParse — маркер «ожидается ошибка разбора»; сравнивается по значению.
+// Маркер «ожидается ошибка разбора»; сравнивается по значению.
 var errParse = errors.New("ожидается ошибка разбора")
 
-// TestDecideKeepsExplicitEnv: значение, написанное оператором руками, важнее
-// вычисленного — иначе GOMEMLIMIT из small-оверлея молча перестал бы работать.
+// Значение, написанное оператором руками, важнее вычисленного — иначе GOMEMLIMIT из small-оверлея молча
+// перестал бы работать.
 func TestDecideKeepsExplicitEnv(t *testing.T) {
 	_, apply, err := decide("200MiB", true, 1<<30, nil)
 	if err != nil {
@@ -56,8 +55,6 @@ func TestDecideKeepsExplicitEnv(t *testing.T) {
 	}
 }
 
-// TestDecideAppliesContainerLimit: при лимите контейнера и пустом GOMEMLIMIT
-// потолок вычисляется и ставится.
 func TestDecideAppliesContainerLimit(t *testing.T) {
 	target, apply, err := decide("", false, 1<<30, nil)
 	if err != nil {
@@ -72,8 +69,7 @@ func TestDecideAppliesContainerLimit(t *testing.T) {
 	}
 }
 
-// TestDecideWithoutLimitDoesNothing: вне контейнера и в контейнере без лимита
-// продукт не выдумывает потолок за оператора.
+// Вне контейнера и в контейнере без лимита продукт не выдумывает потолок за оператора.
 func TestDecideWithoutLimitDoesNothing(t *testing.T) {
 	_, apply, err := decide("", false, 0, ErrNoLimit)
 	if apply {
@@ -84,8 +80,8 @@ func TestDecideWithoutLimitDoesNothing(t *testing.T) {
 	}
 }
 
-// TestDecideEmptyEnvIsNotExplicit: GOMEMLIMIT="" — это не «оператор так решил»,
-// а пустая переменная из compose; она не должна отключать автоопределение.
+// GOMEMLIMIT="" — не «оператор так решил», а пустая переменная из compose; не должна отключать
+// автоопределение.
 func TestDecideEmptyEnvIsNotExplicit(t *testing.T) {
 	_, apply, err := decide("", true, 1<<30, nil)
 	if err != nil {
@@ -96,9 +92,8 @@ func TestDecideEmptyEnvIsNotExplicit(t *testing.T) {
 	}
 }
 
-// TestApplyRatioLeavesHeadroom: потолок кучи должен быть строго меньше лимита
-// контейнера. Потолок, равный лимиту, не защищает ни от чего — превысить его
-// значит быть убитым OOM-killer'ом.
+// Потолок кучи должен быть строго меньше лимита контейнера — равный лимиту не защищает ни от чего,
+// превысить его значит быть убитым OOM-killer'ом.
 func TestApplyRatioLeavesHeadroom(t *testing.T) {
 	const limit = int64(1 << 30)
 	target := heapTarget(limit)

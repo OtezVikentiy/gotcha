@@ -15,9 +15,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// TestWebEscalationsPage — owner (оператор проекта) видит редактор двух
-// лесенок, member без командного доступа к проекту — 404 (тот же
-// existence-oracle, что и alerts/slos: requireProjectOperator).
 func TestWebEscalationsPage(t *testing.T) {
 	s := newStack(t)
 	s.h.EscalationPolicy = escalation.NewPolicyStore(s.pool)
@@ -38,9 +35,6 @@ func TestWebEscalationsPage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	// Канал проекта — без него ни один чекбокс step0_channels не рендерится
-	// (только Deliverable-каналы, см. escalations.templ), а форма всё равно
-	// обязана показать поля ступеней.
 	if _, err := s.h.Alerts.CreateChannel(context.Background(), alert.Channel{
 		ProjectID: proj.ID, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
 	}); err != nil {
@@ -54,7 +48,6 @@ func TestWebEscalationsPage(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s (owner) status = %d, want 200: %s", path, resp.StatusCode, body)
 	}
-	// Обе severity и фиксированные поля ступеней должны быть в форме.
 	for _, want := range []string{"step0_delay", "step0_channels", "severity", "critical", "warning"} {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("GET %s missing %q: %s", path, want, body)
@@ -69,10 +62,6 @@ func TestWebEscalationsPage(t *testing.T) {
 	}
 }
 
-// TestWebEscalationsSave — сохранение валидной лесенки (две ступени) →
-// PolicyStore.Ladder возвращает её; лесенка с дырой в step_no → 422, ничего
-// не сохраняется; dry-run-предпросмотр на странице после сохранения содержит
-// цель канала (концерн: "содержит названия каналов ступеней").
 func TestWebEscalationsSave(t *testing.T) {
 	s := newStack(t)
 	s.h.EscalationPolicy = escalation.NewPolicyStore(s.pool)
@@ -103,7 +92,6 @@ func TestWebEscalationsSave(t *testing.T) {
 		t.Fatalf("CreateChannel c2: %v", err)
 	}
 
-	// Валидная лесенка: ступень 0 сразу к c1, ступень 1 через 15 мин к c2.
 	valid := url.Values{
 		"severity":       {"critical"},
 		"step0_delay":    {"0"},
@@ -128,10 +116,6 @@ func TestWebEscalationsSave(t *testing.T) {
 		t.Fatalf("Ladder(critical) = %+v, want step0->c1, step1(15m)->c2", ladder)
 	}
 
-	// Dry-run на странице отражает то, что реально сохранено, но адрес
-	// вебхука показан безопасным представлением (хост + путь с урезанным до
-	// хвоста секретным сегментом), а не полным URL. Два разных вебхука при
-	// этом обязаны оставаться различимы по хвосту.
 	resp = getWithCookie(t, s.srv, path, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -150,8 +134,6 @@ func TestWebEscalationsSave(t *testing.T) {
 		}
 	}
 
-	// Дыра в step_no (ступень 0 занята, 1 пустая, 2 занята) → 422, старая
-	// лесенка не тронута.
 	gap := url.Values{
 		"severity":       {"critical"},
 		"step0_delay":    {"0"},
@@ -174,9 +156,6 @@ func TestWebEscalationsSave(t *testing.T) {
 	}
 }
 
-// TestWebEscalationsCrossTenant — concern T2: channel_id чужого проекта в
-// форме отвергается ДО SetLadder, лесенка не сохраняется. Тот же сценарий,
-// что и TestWebAlertsChannelUpdateForeign (edit_forms_test.go), для эскалаций.
 func TestWebEscalationsCrossTenant(t *testing.T) {
 	s := newStack(t)
 	s.h.EscalationPolicy = escalation.NewPolicyStore(s.pool)
@@ -219,15 +198,11 @@ func TestWebEscalationsCrossTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ladder: %v", err)
 	}
-	// Ничего не настроено -> дефолт-fallback (пустая лесенка проекта mine, у
-	// которого нет собственных каналов), а не лесенка с чужим channel_id.
 	if len(ladder) != 1 || len(ladder[0].ChannelIDs) != 0 {
 		t.Fatalf("Ladder(mine) after rejected cross-tenant save = %+v, want default fallback with no channels", ladder)
 	}
 }
 
-// TestWebEscalationsNilService — h.EscalationPolicy не проведён (узкий
-// тестовый стенд) -> 404, тот же nil-guard, что у alertsPage/slosPage.
 func TestWebEscalationsNilService(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -245,12 +220,6 @@ func TestWebEscalationsNilService(t *testing.T) {
 	}
 }
 
-// TestWebEscalationsUndeliverableChannelSurvivesResave — W2-C находка 5:
-// канал, сохранённый в ступени, ломается ПОСЛЕ настройки (здесь — оператор
-// его выключает; у сломанного секрета Deliverable() тот же false) — форма
-// обязана продолжать его показывать, отмеченным и с пометкой причины, а
-// повторное «Сохранить» (форма отправляется буквально как отрендерена,
-// ничего руками не трогаем) не должно тихо потерять его из лесенки.
 func TestWebEscalationsUndeliverableChannelSurvivesResave(t *testing.T) {
 	s := newStack(t)
 	s.h.EscalationPolicy = escalation.NewPolicyStore(s.pool)
@@ -287,9 +256,7 @@ func TestWebEscalationsUndeliverableChannelSurvivesResave(t *testing.T) {
 		t.Fatalf("save initial ladder status = %d, want 303", resp.StatusCode)
 	}
 
-	// Канал ломается ПОСЛЕ настройки ступени: оператор его выключил (тот же
-	// эффект недоставляемости, что и у сломанного секрета — Deliverable()
-	// смотрит на Enabled ИЛИ SecretBroken).
+	// Deliverable() смотрит на Enabled ИЛИ SecretBroken — выключение канала даёт тот же эффект, что и сломанный секрет.
 	if err := s.h.Alerts.UpdateChannel(context.Background(), alert.Channel{
 		ID: chID, ProjectID: proj.ID, Kind: alert.ChannelWebhook, Target: "https://example.com/flaky-hook", Enabled: false,
 	}); err != nil {
@@ -307,9 +274,7 @@ func TestWebEscalationsUndeliverableChannelSurvivesResave(t *testing.T) {
 	if !strings.Contains(html, chVal) {
 		t.Fatalf("недоставляемый, но выбранный канал пропал из формы: %s", html)
 	}
-	// Чекбокс обязан остаться АКТИВНЫМ (не disabled) — иначе браузер не
-	// пошлёт его value при отправке формы, и следующее "Сохранить" потеряет
-	// канал так же тихо, как до фикса.
+	// disabled чекбокс не шлёт value при отправке формы — канал тихо пропал бы из лесенки.
 	checkboxStart := strings.Index(html, `<input type="checkbox" name="step0_channels" `+chVal)
 	if checkboxStart == -1 {
 		t.Fatalf("чекбокс канала не найден в ожидаемой форме: %s", html)
@@ -326,9 +291,6 @@ func TestWebEscalationsUndeliverableChannelSurvivesResave(t *testing.T) {
 		t.Fatalf("чекбокс недоставляемого, но сохранённого канала не отмечен: %s", checkboxTag)
 	}
 
-	// Повторное "Сохранить" — форма отправляется буквально как отрендерена
-	// (тот же набор полей, что и в исходном form выше): канал должен
-	// пережить пересохранение, а не исчезнуть из лесенки.
 	resp = postForm(t, s.srv, path, form, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -344,10 +306,6 @@ func TestWebEscalationsUndeliverableChannelSurvivesResave(t *testing.T) {
 	}
 }
 
-// TestWebEscalationsLayout — UI-проход: вводная теория — в свёрнутой справке
-// под <h1> со ссылкой на существующую доку; ступени лесенки — сеткой
-// (класс-крючок на обёртке каждой из двух лесенок); правило непрерывности
-// ступеней — заметной подсказкой ДО формы, а не серым хвостом под ней.
 func TestWebEscalationsLayout(t *testing.T) {
 	s := newStack(t)
 	s.h.EscalationPolicy = escalation.NewPolicyStore(s.pool)
@@ -382,8 +340,6 @@ func TestWebEscalationsLayout(t *testing.T) {
 			t.Fatalf("GET %s missing %q: %s", path, want, html)
 		}
 	}
-	// Вводная теория живёт внутри тела свёрнутой справки, а не стеной
-	// абзацев под <h1>: текст интро стоит между help-panel-body и </details>.
 	bodyIdx := strings.Index(html, `class="help-panel-body"`)
 	introIdx := strings.Index(html, "какая из них сработает")
 	if bodyIdx == -1 || introIdx == -1 {
@@ -393,11 +349,9 @@ func TestWebEscalationsLayout(t *testing.T) {
 	if detailsEnd == -1 || introIdx < bodyIdx || introIdx > bodyIdx+detailsEnd {
 		t.Fatalf("GET %s: intro text at %d is outside help-panel body [%d..%d]: %s", path, introIdx, bodyIdx, bodyIdx+detailsEnd, html)
 	}
-	// Ступени — сеткой: обёртка с классом-крючком в каждой из двух лесенок.
 	if got := strings.Count(html, `class="escalation-steps"`); got != 2 {
 		t.Fatalf("GET %s: %d escalation-steps wrappers, want 2 (critical + warning): %s", path, got, html)
 	}
-	// Правило непрерывности — заметной подсказкой (notice) до полей формы.
 	noticeIdx := strings.Index(html, `<p class="notice">Чтобы убрать ступень`)
 	formIdx := strings.Index(html, `class="escalation-ladder-form"`)
 	if noticeIdx == -1 || formIdx == -1 {
@@ -409,23 +363,16 @@ func TestWebEscalationsLayout(t *testing.T) {
 	if got := strings.Count(html, `<p class="notice">Чтобы убрать ступень`); got != 2 {
 		t.Fatalf("GET %s: %d continuity notices, want 2 (one per ladder): %s", path, got, html)
 	}
-	// Подпись задержки — короткая у каждой ступени (иначе полная фраза
-	// повторяется десять раз на экран), развёрнутое пояснение «минут от
-	// открытия инцидента» — один раз на лесенку, в той же плашке-notice.
 	if got := strings.Count(html, "Задержка, мин"); got != 10 {
 		t.Fatalf("GET %s: %d short delay labels, want 10 (2 ladders × 5 steps): %s", path, got, html)
 	}
 	if got := strings.Count(html, "минутах от открытия инцидента"); got != 2 {
 		t.Fatalf("GET %s: %d delay explanations, want 2 (one per ladder): %s", path, got, html)
 	}
-	// Зазор между карточками лесенок: класс-крючок .escalations-section на
-	// обеих секциях (правило в app.css).
 	if got := strings.Count(html, `class="escalations-section card"`); got != 2 {
 		t.Fatalf("GET %s: %d escalations-section hooks, want 2: %s", path, got, html)
 	}
 
-	// Дока, на которую ведёт «подробнее», обязана существовать — иначе
-	// свёрнутая справка кончается 404.
 	resp = getWithCookie(t, s.srv, "/docs/escalations", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -434,12 +381,6 @@ func TestWebEscalationsLayout(t *testing.T) {
 	}
 }
 
-// TestWebEscalationsChannelTargetMasked — адрес канала в подписях чекбоксов
-// и dry-run: секретный сегмент пути вебхука в HTML отсутствует, но словарные
-// сегменты пути видны целиком (посегментная маска maskedWebhookTarget) и два
-// вебхука одного сервиса различимы по хвосту; email и telegram chat id — не
-// секреты и показываются как есть. Страницу открывает owner (canManage), то
-// есть channelsForView отдаёт СЫРЫЕ цели — маску обязан держать сам шаблон.
 func TestWebEscalationsChannelTargetMasked(t *testing.T) {
 	s := newStack(t)
 	s.h.EscalationPolicy = escalation.NewPolicyStore(s.pool)
@@ -455,7 +396,6 @@ func TestWebEscalationsChannelTargetMasked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	// Два вебхука одного сервиса: секрет — в пути, отличимы только хвостом.
 	for _, target := range []string{
 		"https://hooks.example.com/services/T000/B000/secretaaa111",
 		"https://hooks.example.com/services/T000/B000/secretbbb222",
@@ -485,17 +425,11 @@ func TestWebEscalationsChannelTargetMasked(t *testing.T) {
 		t.Fatalf("GET %s status = %d, want 200: %s", path, resp.StatusCode, body)
 	}
 	html := string(body)
-	// Секретный сегмент вебхука не встречается в HTML нигде — ни в подписи
-	// чекбокса ступени, ни в dry-run. Словарные сегменты (/services/T000/
-	// B000) секретами не являются и по замыслу видны — в списке утечек
-	// только настоящие секреты.
 	for _, leak := range []string{"secretaaa111", "secretbbb222"} {
 		if strings.Contains(html, leak) {
 			t.Fatalf("GET %s leaks webhook secret path (%q found): %s", path, leak, html)
 		}
 	}
-	// Хост, словарный путь и различающий хвост видны (вебхуки отличимы),
-	// email и chat id — как есть.
 	for _, want := range []string{
 		"hooks.example.com/services/T000/B000/…a111",
 		"hooks.example.com/services/T000/B000/…b222",

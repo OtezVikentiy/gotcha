@@ -13,21 +13,12 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// fakeNotifier collects every Event handed to it. Notify optionally returns
-// a fixed err (still recording the event first) to exercise the "notify
-// failed" path.
 type fakeNotifier struct {
 	mu         sync.Mutex
 	events     []uptime.Event
 	recoveries []recoveryCall
 	err        error
-
-	// svc — optional: when set, NotifyRecovery reloads the real incident (as
-	// the production OutboxNotifier.NotifyRecovery does) to compute a
-	// faithful DurationSeconds instead of recording a zero-value Event. Tests
-	// that only care WHETHER/WHERE recovery fired (most of them) can leave
-	// this nil.
-	svc *uptime.Service
+	svc        *uptime.Service
 }
 
 func (f *fakeNotifier) Notify(_ context.Context, ev uptime.Event) error {
@@ -37,10 +28,6 @@ func (f *fakeNotifier) Notify(_ context.Context, ev uptime.Event) error {
 	return f.err
 }
 
-// NotifyOpenStep0 — records ev like Notify, and reports a single fake
-// "enqueued" channel (1) on success so callers relying on Detector logging
-// step 0 (escalation.RecoveryChannels) have something to find; f.err makes
-// it report nothing enqueued, matching a real total dispatch failure.
 func (f *fakeNotifier) NotifyOpenStep0(_ context.Context, ev uptime.Event) ([]int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -51,11 +38,6 @@ func (f *fakeNotifier) NotifyOpenStep0(_ context.Context, ev uptime.Event) ([]in
 	return []int64{1}, nil
 }
 
-// NotifyRecovery — records the call (Recoveries()) and a matching "up" event
-// so kindEvents("up") keeps working for tests written against the old
-// Notify-based recovery path. With svc set, reloads the real incident to
-// compute DurationSeconds the same way the production OutboxNotifier.
-// NotifyRecovery does; without it, the event's DurationSeconds is 0.
 func (f *fakeNotifier) NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error {
 	ev := uptime.Event{Kind: "up"}
 	if f.svc != nil {
@@ -73,9 +55,6 @@ func (f *fakeNotifier) NotifyRecovery(ctx context.Context, incidentID int64, cha
 	return f.err
 }
 
-// recoveryCall records one NotifyRecovery invocation — used by tests that
-// check WHICH channels recovery was addressed to (W3-E), not just whether it
-// fired.
 type recoveryCall struct {
 	incidentID int64
 	channelIDs []int64
@@ -89,9 +68,6 @@ func (f *fakeNotifier) Events() []uptime.Event {
 	return out
 }
 
-// Recoveries returns every NotifyRecovery call recorded so far — used by
-// tests asserting WHICH channels recovery was addressed to (W3-E), not just
-// whether "up" fired at all (see kindEvents("up") for that).
 func (f *fakeNotifier) Recoveries() []recoveryCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -110,10 +86,6 @@ func (f *fakeNotifier) kindEvents(kind string) []uptime.Event {
 	return out
 }
 
-// fakeDepChecker is a configurable depChecker double for the T7
-// deferred-notification FSM: fixed HasParent/ParentDown answers, with
-// ParentDown settable mid-test to simulate a parent going down between two
-// detector ticks.
 type fakeDepChecker struct {
 	mu            sync.Mutex
 	hasParent     bool
@@ -134,9 +106,6 @@ func (f *fakeDepChecker) ParentDown(_ context.Context, _ string, _ int64) (bool,
 	return f.parentDown, f.parentDownErr
 }
 
-// DownRoot — not exercised by the T7 FSM tests in this file (none set
-// IncidentGroups, so openIncident's DownRoot branch is never reached);
-// stubbed found=false so it stays a safe no-op default.
 func (f *fakeDepChecker) DownRoot(_ context.Context, _ string, _ int64) (string, int64, bool, error) {
 	return "", 0, false, nil
 }
@@ -153,10 +122,6 @@ func (f *fakeDepChecker) setParentDownErr(err error) {
 	f.parentDownErr = err
 }
 
-// backdateIncidentStart pushes the currently open incident's started_at
-// back by 30s — enough to clear the 20s SettleGrace the T7 tests below use,
-// deterministically instead of relying on real sleep (same trick
-// TestOnResultResolvesIncidentWithPositiveDuration uses for duration).
 func backdateIncidentStart(t *testing.T, ctx context.Context, pool *pgxpool.Pool, monitorID int64) {
 	t.Helper()
 	if _, err := pool.Exec(ctx,
@@ -166,10 +131,6 @@ func backdateIncidentStart(t *testing.T, ctx context.Context, pool *pgxpool.Pool
 	}
 }
 
-// createMonitorWith creates an http monitor with explicit regions and
-// consensus policy — shared by detector tests that need multi-region setups
-// (createMonitor in state_test.go always creates a single "local" region
-// with the default majority consensus).
 func createMonitorWith(t *testing.T, pool *pgxpool.Pool, svc *uptime.Service, projectID int64, regions []string, consensus uptime.Consensus, failThreshold, recoveryThreshold int) uptime.Monitor {
 	t.Helper()
 	allowRegions(t, pool, svc, context.Background(), projectID, regions)
@@ -185,8 +146,6 @@ func createMonitorWith(t *testing.T, pool *pgxpool.Pool, svc *uptime.Service, pr
 	return created
 }
 
-// applyAndDetect runs one check result through ApplyResult (as the Runner
-// would) and feeds the resulting State into Detector.OnResult.
 func applyAndDetect(t *testing.T, ctx context.Context, svc *uptime.Service, d *uptime.Detector, mon uptime.Monitor, region string, ok bool, errText string, at time.Time, sslExpires *time.Time) {
 	t.Helper()
 	st, err := svc.ApplyResult(ctx, mon.ID, region, ok, errText, at)
@@ -224,13 +183,12 @@ func TestOnResultSingleRegionOpensIncidentOnceAndDedups(t *testing.T) {
 	defer cancel()
 
 	pid := newProject(t, pool)
-	mon := createMonitor(t, svc, pid, 3, 2) // fail_threshold=3, single "local" region
+	mon := createMonitor(t, svc, pid, 3, 2)
 
 	notifier := &fakeNotifier{}
 	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	now := time.Now().UTC()
 
-	// Two fails: below fail_threshold, no incident yet.
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(time.Second), nil)
 	assertNoOpenIncident(t, ctx, svc, mon.ID)
@@ -238,8 +196,6 @@ func TestOnResultSingleRegionOpensIncidentOnceAndDedups(t *testing.T) {
 		t.Fatalf("notified before fail_threshold reached: %+v", notifier.Events())
 	}
 
-	// Third fail reaches fail_threshold=3: incident opens, exactly one
-	// "down" notification.
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(2*time.Second), nil)
 	inc := assertOpenIncident(t, ctx, svc, mon.ID)
 	if inc.Cause != "boom" {
@@ -259,7 +215,6 @@ func TestOnResultSingleRegionOpensIncidentOnceAndDedups(t *testing.T) {
 		t.Fatalf("NotifiedOpen = false, want true after successful notify")
 	}
 
-	// Two more fails: still the same incident, no new notification.
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(3*time.Second), nil)
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(4*time.Second), nil)
 	if len(notifier.kindEvents("down")) != 1 {
@@ -278,11 +233,8 @@ func TestOnResultResolvesIncidentWithPositiveDuration(t *testing.T) {
 	defer cancel()
 
 	pid := newProject(t, pool)
-	mon := createMonitor(t, svc, pid, 1, 2) // fail_threshold=1 to open quickly, recovery_threshold=2
+	mon := createMonitor(t, svc, pid, 1, 2)
 
-	// svc: set so NotifyRecovery reloads the real incident and computes a
-	// faithful DurationSeconds (W3-E — recovery no longer carries a
-	// pre-built Event, see fakeNotifier.NotifyRecovery).
 	notifier := &fakeNotifier{svc: svc}
 	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	now := time.Now().UTC()
@@ -290,19 +242,15 @@ func TestOnResultResolvesIncidentWithPositiveDuration(t *testing.T) {
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "down!", now, nil)
 	assertOpenIncident(t, ctx, svc, mon.ID)
 
-	// Backdate started_at so the resolve below yields a non-zero duration
-	// deterministically, instead of relying on real sleep.
 	if _, err := pool.Exec(ctx,
 		"UPDATE incidents SET started_at = started_at - interval '30 seconds' WHERE monitor_id = $1 AND resolved_at IS NULL",
 		mon.ID); err != nil {
 		t.Fatalf("backdate incident: %v", err)
 	}
 
-	// One ok: below recovery_threshold=2, incident stays open.
 	applyAndDetect(t, ctx, svc, d, mon, "local", true, "", now.Add(time.Second), nil)
 	assertOpenIncident(t, ctx, svc, mon.ID)
 
-	// Second ok reaches recovery_threshold: incident resolves.
 	applyAndDetect(t, ctx, svc, d, mon, "local", true, "", now.Add(2*time.Second), nil)
 	assertNoOpenIncident(t, ctx, svc, mon.ID)
 
@@ -327,17 +275,14 @@ func TestConsensusMajority(t *testing.T) {
 	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	now := time.Now().UTC()
 
-	// Baseline: all three regions decided and up.
 	applyAndDetect(t, ctx, svc, d, mon, "r1", true, "", now, nil)
 	applyAndDetect(t, ctx, svc, d, mon, "r2", true, "", now, nil)
 	applyAndDetect(t, ctx, svc, d, mon, "r3", true, "", now, nil)
 	assertNoOpenIncident(t, ctx, svc, mon.ID)
 
-	// One of three down: not a majority, no incident.
 	applyAndDetect(t, ctx, svc, d, mon, "r1", false, "boom", now.Add(time.Second), nil)
 	assertNoOpenIncident(t, ctx, svc, mon.ID)
 
-	// Two of three down: majority, incident opens.
 	applyAndDetect(t, ctx, svc, d, mon, "r2", false, "boom", now.Add(2*time.Second), nil)
 	assertOpenIncident(t, ctx, svc, mon.ID)
 }
@@ -359,7 +304,6 @@ func TestConsensusAny(t *testing.T) {
 	applyAndDetect(t, ctx, svc, d, mon, "r3", true, "", now, nil)
 	assertNoOpenIncident(t, ctx, svc, mon.ID)
 
-	// A single down region is enough under "any".
 	applyAndDetect(t, ctx, svc, d, mon, "r1", false, "boom", now.Add(time.Second), nil)
 	assertOpenIncident(t, ctx, svc, mon.ID)
 }
@@ -381,21 +325,14 @@ func TestConsensusAll(t *testing.T) {
 	applyAndDetect(t, ctx, svc, d, mon, "r3", true, "", now, nil)
 	assertNoOpenIncident(t, ctx, svc, mon.ID)
 
-	// Two of three down: not all, no incident.
 	applyAndDetect(t, ctx, svc, d, mon, "r1", false, "boom", now.Add(time.Second), nil)
 	applyAndDetect(t, ctx, svc, d, mon, "r2", false, "boom", now.Add(2*time.Second), nil)
 	assertNoOpenIncident(t, ctx, svc, mon.ID)
 
-	// All three down: incident opens.
 	applyAndDetect(t, ctx, svc, d, mon, "r3", false, "boom", now.Add(3*time.Second), nil)
 	assertOpenIncident(t, ctx, svc, mon.ID)
 }
 
-// TestConsensusUndecidedRegionsAreNotDown фиксирует ЗНАМЕНАТЕЛЬ голосования:
-// регион, который ещё ни разу не отчитался ("unknown"), голосом за down не
-// является. Раньше голоса считались только по определившимся регионам, поэтому
-// у свежего монитора на 3 региона первый же упавший регион давал down==decided==1
-// и срабатывал не только "any" (что верно), но и "majority" (что нет).
 func TestConsensusUndecidedRegionsAreNotDown(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -407,7 +344,6 @@ func TestConsensusUndecidedRegionsAreNotDown(t *testing.T) {
 		mon := createMonitorWith(t, pool, svc, pid, []string{"r1", "r2", "r3"}, uptime.ConsensusAny, 1, 1)
 		notifier := &fakeNotifier{}
 		d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
-		// Only r1 is ever checked; r2/r3 remain "unknown".
 		applyAndDetect(t, ctx, svc, d, mon, "r1", false, "boom", time.Now().UTC(), nil)
 		assertOpenIncident(t, ctx, svc, mon.ID)
 	})
@@ -417,10 +353,8 @@ func TestConsensusUndecidedRegionsAreNotDown(t *testing.T) {
 		notifier := &fakeNotifier{}
 		d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 		now := time.Now().UTC()
-		// 1 из 3 настроенных регионов — не большинство, даже если остальные молчат.
 		applyAndDetect(t, ctx, svc, d, mon, "r1", false, "boom", now, nil)
 		assertNoOpenIncident(t, ctx, svc, mon.ID)
-		// 2 из 3 — уже большинство.
 		applyAndDetect(t, ctx, svc, d, mon, "r2", false, "boom", now.Add(time.Second), nil)
 		assertOpenIncident(t, ctx, svc, mon.ID)
 	})
@@ -480,8 +414,6 @@ func TestNotifyErrorDoesNotBreakDetection(t *testing.T) {
 	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 	now := time.Now().UTC()
 
-	// Must not panic, and the incident must still be recorded even though
-	// the notification delivery failed.
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now, nil)
 
 	inc := assertOpenIncident(t, ctx, svc, mon.ID)
@@ -493,17 +425,6 @@ func TestNotifyErrorDoesNotBreakDetection(t *testing.T) {
 	}
 }
 
-// TestUptimeResolveGatedByNotifiedOpen: resolveIncident must not send "up"
-// for an incident whose "down" never went out (NotifiedOpen=false) — sending
-// a recovery notification for an outage nobody was told about is confusing.
-// The false case here drives the retry introduced by W2-C находка 1 all the
-// way to exhaustion (Notify errors on every attempt, including every retry
-// settleHeldIncident makes on the intervening "still down" ticks) so
-// NotifiedOpen genuinely never becomes true — see
-// TestUptimeNotifyOpenFailedRetriesUntilDelivered below for the case where a
-// retry succeeds (there "up" correctly DOES go out, because "down" ends up
-// delivered). Once NotifiedOpen=true, "up" must still be sent as before
-// (control case).
 func TestUptimeResolveGatedByNotifiedOpen(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -512,7 +433,7 @@ func TestUptimeResolveGatedByNotifiedOpen(t *testing.T) {
 	pid := newProject(t, pool)
 
 	t.Run("notified_open=false: up not sent", func(t *testing.T) {
-		mon := createMonitor(t, svc, pid, 1, 2) // fail_threshold=1, recovery_threshold=2
+		mon := createMonitor(t, svc, pid, 1, 2)
 		notifier := &fakeNotifier{err: errors.New("smtp down")}
 		d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
 		now := time.Now().UTC()
@@ -523,9 +444,6 @@ func TestUptimeResolveGatedByNotifiedOpen(t *testing.T) {
 			t.Fatalf("NotifiedOpen = true, want false (open notify failed)")
 		}
 
-		// Notify keeps failing (err stays set) — the "still down" tick below
-		// retries (W2-C находка 1) and fails again, so NotifiedOpen genuinely
-		// never becomes true, same as before the retry existed.
 		applyAndDetect(t, ctx, svc, d, mon, "local", true, "", now.Add(time.Second), nil)
 		applyAndDetect(t, ctx, svc, d, mon, "local", true, "", now.Add(2*time.Second), nil)
 		assertNoOpenIncident(t, ctx, svc, mon.ID)
@@ -565,13 +483,13 @@ func TestOnResultNilNotifierOnlyTracksIncidents(t *testing.T) {
 
 	pid := newProject(t, pool)
 	mon := createMonitor(t, svc, pid, 1, 1)
-	d := &uptime.Detector{Svc: svc} // Notifier is nil
+	d := &uptime.Detector{Svc: svc}
 
 	st, err := svc.ApplyResult(ctx, mon.ID, "local", false, "boom", time.Now().UTC())
 	if err != nil {
 		t.Fatalf("ApplyResult: %v", err)
 	}
-	d.OnResult(ctx, mon, "local", uptime.Result{OK: false, Error: "boom"}, st) // must not panic
+	d.OnResult(ctx, mon, "local", uptime.Result{OK: false, Error: "boom"}, st)
 	assertOpenIncident(t, ctx, svc, mon.ID)
 }
 
@@ -598,13 +516,10 @@ func TestOnResultTracksSSLExpiry(t *testing.T) {
 		t.Fatalf("SSLExpiresAt = %v, want %v", got.SSLExpiresAt, expires1)
 	}
 
-	// Simulate a previously-sent "N days left" alert, to prove it survives
-	// an unchanged expiry.
 	if _, err := pool.Exec(ctx, "UPDATE monitors SET ssl_alerted_days = '{14,7}' WHERE id = $1", mon.ID); err != nil {
 		t.Fatalf("seed ssl_alerted_days: %v", err)
 	}
 
-	// Same expiry again: no change to ssl_expires_at or ssl_alerted_days.
 	applyAndDetect(t, ctx, svc, d, mon, "local", true, "", now.Add(time.Second), &expires1)
 
 	var alerted []int
@@ -615,7 +530,6 @@ func TestOnResultTracksSSLExpiry(t *testing.T) {
 		t.Fatalf("ssl_alerted_days changed on unchanged expiry: %v", alerted)
 	}
 
-	// A later expiry (new certificate) clears ssl_alerted_days.
 	expires2 := expires1.Add(30 * 24 * time.Hour)
 	applyAndDetect(t, ctx, svc, d, mon, "local", true, "", now.Add(2*time.Second), &expires2)
 
@@ -636,11 +550,6 @@ func TestOnResultTracksSSLExpiry(t *testing.T) {
 	}
 }
 
-// TestUptimeChildHeldThenSuppressed covers the T7 deferred-notification FSM:
-// a monitor-child (declared parent, Dep.HasParent=true) does not get a
-// synchronous "down" on open — the notification is held. Once the parent is
-// observed down (Dep.ParentDown=true) on a later tick, the incident is
-// suppressed for good and "down" is never sent.
 func TestUptimeChildHeldThenSuppressed(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -648,7 +557,7 @@ func TestUptimeChildHeldThenSuppressed(t *testing.T) {
 	defer cancel()
 
 	pid := newProject(t, pool)
-	mon := createMonitor(t, svc, pid, 1, 1) // fail_threshold=1: opens on first fail
+	mon := createMonitor(t, svc, pid, 1, 1)
 
 	notifier := &fakeNotifier{}
 	dep := &fakeDepChecker{hasParent: true, parentDown: false}
@@ -664,7 +573,6 @@ func TestUptimeChildHeldThenSuppressed(t *testing.T) {
 		t.Fatalf("notified synchronously on open despite a declared parent: %+v", notifier.Events())
 	}
 
-	// Parent goes down: the next tick must suppress the incident, not notify.
 	dep.setParentDown(true)
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(time.Second), nil)
 	inc = assertOpenIncident(t, ctx, svc, mon.ID)
@@ -678,9 +586,6 @@ func TestUptimeChildHeldThenSuppressed(t *testing.T) {
 		t.Fatalf("down event sent despite dependency suppression: %+v", notifier.Events())
 	}
 
-	// W2-C находка 1 regression: suppressed_by_dep is "consciously not
-	// notified" (not a delivery failure) — recovery must stay silent too,
-	// the same NotifiedOpen gate resolveIncident already applies.
 	applyAndDetect(t, ctx, svc, d, mon, "local", true, "", now.Add(2*time.Second), nil)
 	assertNoOpenIncident(t, ctx, svc, mon.ID)
 	if got := notifier.kindEvents("up"); len(got) != 0 {
@@ -688,21 +593,6 @@ func TestUptimeChildHeldThenSuppressed(t *testing.T) {
 	}
 }
 
-// TestDetectorReleasesSuppressedIncidentWhenParentRecovers — K1-4 (аудит
-// перед 1.0): раньше a suppressed_by_dep incident stayed silent forever —
-// there was no writer setting the flag back to false, so a parent that came
-// back online minutes later never unblocked its child's notification.
-// settleHeldIncident now re-checks ParentDown on every "still down" tick for
-// an already-suppressed incident; once the parent recovers, it falls through
-// to the ORDINARY settle switch (F1, ревью раунда 1): released incidents do
-// NOT skip SettleGrace a second time — MarkSuppressedByDep (case down)
-// fires on the very first "still down" tick, with no grace check at all, so
-// the child may not have earned its grace yet. This test backdates
-// started_at past SettleGrace BEFORE the recovery tick, so the ordinary
-// switch's `now.Sub(StartedAt) >= SettleGrace` is already true when the
-// parent recovers — see
-// TestDetectorStaysUnnotifiedInsideGraceAfterParentRecovers below for the
-// inverse (recovery inside grace: still silent).
 func TestDetectorReleasesSuppressedIncidentWhenParentRecovers(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -723,7 +613,6 @@ func TestDetectorReleasesSuppressedIncidentWhenParentRecovers(t *testing.T) {
 		t.Fatalf("NotifiedOpen = true, want false: monitor has a declared parent, notify must be held")
 	}
 
-	// Parent goes down: suppressed, same as TestUptimeChildHeldThenSuppressed.
 	dep.setParentDown(true)
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(time.Second), nil)
 	inc = assertOpenIncident(t, ctx, svc, mon.ID)
@@ -731,10 +620,6 @@ func TestDetectorReleasesSuppressedIncidentWhenParentRecovers(t *testing.T) {
 		t.Fatalf("SuppressedByDep = false, want true once ParentDown=true")
 	}
 
-	// The incident has now "earned" its grace on its OWN clock (started_at,
-	// unrelated to suppression) — clear the 20s SettleGrace deterministically
-	// (same trick as TestUptimeChildNotifiesAfterGrace), THEN recover the
-	// parent: the fall-through switch sees an incident old enough to notify.
 	backdateIncidentStart(t, ctx, pool, mon.ID)
 	dep.setParentDown(false)
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(2*time.Second), nil)
@@ -758,14 +643,6 @@ func TestDetectorReleasesSuppressedIncidentWhenParentRecovers(t *testing.T) {
 	}
 }
 
-// TestDetectorStaysUnnotifiedInsideGraceAfterParentRecovers — F1 (ревью
-// раунда 1): the inverse of the test above. The parent recovers WITHOUT the
-// incident having cleared SettleGrace on its own clock (no backdate) — a
-// parent blip shorter than the grace must not page. The flag is still
-// cleared (dep_released_at stamped, SuppressedByDep=false — the incident is
-// genuinely no longer held for the dependency reason), but NO "down" goes
-// out: the ordinary settle switch holds it, exactly like a fresh incident
-// still inside its grace with no dependency involved at all.
 func TestDetectorStaysUnnotifiedInsideGraceAfterParentRecovers(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -788,8 +665,6 @@ func TestDetectorStaysUnnotifiedInsideGraceAfterParentRecovers(t *testing.T) {
 		t.Fatalf("SuppressedByDep = false, want true once ParentDown=true")
 	}
 
-	// Parent recovers on the very next tick (blip shorter than SettleGrace,
-	// no backdate) — release must not bypass the grace it never held itself.
 	dep.setParentDown(false)
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(2*time.Second), nil)
 	inc = assertOpenIncident(t, ctx, svc, mon.ID)
@@ -812,9 +687,6 @@ func TestDetectorStaysUnnotifiedInsideGraceAfterParentRecovers(t *testing.T) {
 	}
 }
 
-// TestDetectorStaysSuppressedWhileParentDown — the parent is still down on
-// the next tick after suppression: settleHeldIncident's re-check must keep
-// the incident silent, not release it speculatively.
 func TestDetectorStaysSuppressedWhileParentDown(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -837,7 +709,6 @@ func TestDetectorStaysSuppressedWhileParentDown(t *testing.T) {
 		t.Fatalf("SuppressedByDep = false, want true once ParentDown=true")
 	}
 
-	// Parent still down on the next tick: must stay suppressed and silent.
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(2*time.Second), nil)
 	inc = assertOpenIncident(t, ctx, svc, mon.ID)
 	if !inc.SuppressedByDep {
@@ -851,10 +722,6 @@ func TestDetectorStaysSuppressedWhileParentDown(t *testing.T) {
 	}
 }
 
-// TestUptimeChildNotifiesAfterGrace: a monitor-child whose parent stays up
-// through the settling grace gets its "down" sent late, once
-// now-StartedAt >= SettleGrace — the outage turned out real, not a
-// parent-caused blip.
 func TestUptimeChildNotifiesAfterGrace(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -875,7 +742,7 @@ func TestUptimeChildNotifiesAfterGrace(t *testing.T) {
 		t.Fatalf("notified synchronously on open despite a declared parent: %+v", notifier.Events())
 	}
 
-	backdateIncidentStart(t, ctx, pool, mon.ID) // clear the 20s grace
+	backdateIncidentStart(t, ctx, pool, mon.ID)
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(time.Second), nil)
 
 	inc := assertOpenIncident(t, ctx, svc, mon.ID)
@@ -894,10 +761,6 @@ func TestUptimeChildNotifiesAfterGrace(t *testing.T) {
 	}
 }
 
-// TestUptimeNoParentNotifiesImmediately is the regression guard for
-// MINOR-5/the pre-T7 behavior: a monitor with no declared parent
-// (Dep.HasParent=false) still notifies synchronously on open, exactly as
-// before this task, even with Dep/SettleGrace configured.
 func TestUptimeNoParentNotifiesImmediately(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -923,12 +786,8 @@ func TestUptimeNoParentNotifiesImmediately(t *testing.T) {
 	}
 }
 
-// TestUptimeHasParentErrorNotifiesImmediately — fail-safe (аудит
-// корректности): если HasParent на открытии инцидента вернул ошибку (dep-БД
-// недоступна), детектор трактует узел как БЕЗ родителя и уведомляет
-// немедленно, а не глушит "down" из-за сбоя резолвера зависимостей. Молчать
-// про реальное падение, потому что не удалось спросить о родителе, — хуже
-// лишнего уведомления.
+// ошибка HasParent — узел считается без родителя и уведомляется немедленно:
+// молчать про реальное падение хуже лишнего уведомления.
 func TestUptimeHasParentErrorNotifiesImmediately(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -939,8 +798,6 @@ func TestUptimeHasParentErrorNotifiesImmediately(t *testing.T) {
 	mon := createMonitor(t, svc, pid, 1, 1)
 
 	notifier := &fakeNotifier{}
-	// hasParent=true (без ошибки удержал бы "down"), но HasParent падает —
-	// fail-safe обязан всё равно уведомить.
 	dep := &fakeDepChecker{hasParent: true, hasParentErr: errors.New("dep db down")}
 	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second, Pool: pool}
 	now := time.Now().UTC()
@@ -956,11 +813,8 @@ func TestUptimeHasParentErrorNotifiesImmediately(t *testing.T) {
 	}
 }
 
-// TestUptimeParentDownErrorNotifiesAfterGrace — fail-safe (аудит
-// корректности): инцидент-ребёнок придержан на открытии (родитель
-// задекларирован). На следующем тике ParentDown падает И грейс уже истёк —
-// детектор НЕ подавляет (ошибка резолвера не приравнивается к «родитель
-// упал»), а отправляет отложенный "down".
+// ошибка ParentDown не приравнивается к «родитель упал»: если грейс уже
+// истёк, детектор шлёт отложенный "down", а не подавляет инцидент.
 func TestUptimeParentDownErrorNotifiesAfterGrace(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -981,7 +835,6 @@ func TestUptimeParentDownErrorNotifiesAfterGrace(t *testing.T) {
 		t.Fatalf("notified synchronously despite a declared parent: %+v", notifier.Events())
 	}
 
-	// ParentDown падает, а грейс уже прошёл → fail-safe: не подавляем, шлём.
 	dep.setParentDownErr(errors.New("dep db down"))
 	backdateIncidentStart(t, ctx, pool, mon.ID)
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(time.Second), nil)
@@ -998,11 +851,8 @@ func TestUptimeParentDownErrorNotifiesAfterGrace(t *testing.T) {
 	}
 }
 
-// TestUptimeMaintenanceNotResurrected is BLOCKER-1 from the plan review: an
-// incident opened inside a maintenance window (in_maintenance=true,
-// notified_open=false, B3 suppression) must stay silent forever even once
-// the T7 settling grace elapses with a live parent — the FSM must not
-// resurrect a maintenance-suppressed "down".
+// подавление окном обслуживания не снимается автоматом грейса зависимостей —
+// инцидент остаётся неуведомлённым даже когда грейс истёк.
 func TestUptimeMaintenanceNotResurrected(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -1025,7 +875,7 @@ func TestUptimeMaintenanceNotResurrected(t *testing.T) {
 	}
 
 	notifier := &fakeNotifier{}
-	dep := &fakeDepChecker{hasParent: true, parentDown: false} // parent stays up
+	dep := &fakeDepChecker{hasParent: true, parentDown: false}
 	d := &uptime.Detector{Svc: svc, Notifier: notifier, Dep: dep, SettleGrace: 20 * time.Second, Pool: pool}
 	now := time.Now().UTC()
 
@@ -1038,7 +888,7 @@ func TestUptimeMaintenanceNotResurrected(t *testing.T) {
 		t.Fatalf("NotifiedOpen = true, want false")
 	}
 
-	backdateIncidentStart(t, ctx, pool, mon.ID) // clear the 20s grace
+	backdateIncidentStart(t, ctx, pool, mon.ID)
 	applyAndDetect(t, ctx, svc, d, mon, "local", false, "boom", now.Add(time.Second), nil)
 
 	inc = assertOpenIncident(t, ctx, svc, mon.ID)

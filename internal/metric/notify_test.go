@@ -51,7 +51,6 @@ func TestMetricNotifierEnqueues(t *testing.T) {
 		t.Fatalf("channel_kind = %v", jobs[0].Payload["channel_kind"])
 	}
 
-	// Закрытие тоже ставит задачу.
 	ev.Opened = false
 	if err := n.Notify(ctx, ev); err != nil {
 		t.Fatalf("Notify close: %v", err)
@@ -62,8 +61,6 @@ func TestMetricNotifierEnqueues(t *testing.T) {
 	}
 }
 
-// Трансграничный гейт: при политике без доверия получателю во внешние каналы не должно
-// уезжать имя метрики/значения (тело/subject); при true — уезжает.
 func TestMetricNotifierExternalDetailsGate(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

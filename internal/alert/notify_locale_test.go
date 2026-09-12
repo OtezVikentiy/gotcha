@@ -9,9 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// TestIssueAlertKindLabelLocale — вид алерта в теме письма локализуется
-// (класс №133–136): раньше в тему уходил сырой enum ("new_issue").
-// Незнакомый вид уходит как есть, а не прячется за пустой строкой.
 func TestIssueAlertKindLabelLocale(t *testing.T) {
 	ru := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	en := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})

@@ -13,12 +13,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// TestPendingInvitesVisibleAndRevocable: выписанное приглашение обязано быть
-// видно и отзываемо.
-//
-// Раньше оно было невидимо и неотменяемо: ошибся в адресе — ссылка ушла
-// постороннему, а из интерфейса сделать было нечего, хотя в сервисе способ
-// существовал.
 func TestPendingInvitesVisibleAndRevocable(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -47,7 +41,6 @@ func TestPendingInvitesVisibleAndRevocable(t *testing.T) {
 		t.Fatalf("PendingInvites = %+v, err = %v; want ровно одно", invites, err)
 	}
 
-	// Первый POST без подтверждения — страница вопроса, приглашение цело.
 	revokePath := settings + "/invite/revoke"
 	form := url.Values{"invite_id": {strconv.FormatInt(invites[0].ID, 10)}, "email": {wrongAddress}}
 	resp = postForm(t, s.srv, revokePath, form, s.srv.URL, cookie)
@@ -63,7 +56,6 @@ func TestPendingInvitesVisibleAndRevocable(t *testing.T) {
 		t.Fatalf("приглашение отозвано без подтверждения")
 	}
 
-	// Второй POST с подтверждением — отзыв.
 	form.Set("confirmed", "yes")
 	resp = postForm(t, s.srv, revokePath, form, s.srv.URL, cookie)
 	io.Copy(io.Discard, resp.Body)
@@ -71,11 +63,6 @@ func TestPendingInvitesVisibleAndRevocable(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("отзыв приглашения: статус %d, want 303", resp.StatusCode)
 	}
-	// Ключ flash-сообщения раньше жил как "flash.invite.revoked" — с точкой,
-	// в белом списке flashKeys не значился, и setFlash молча ничего не
-	// клал в cookie. Администратор не мог отличить «отозвано» от
-	// «форма не сработала». Теперь ключ "flash.invite_revoked" в списке
-	// есть, и cookie обязана появиться.
 	var flashCookie *http.Cookie
 	for _, c := range resp.Cookies() {
 		if c.Name == "flash" {
@@ -97,8 +84,6 @@ func TestPendingInvitesVisibleAndRevocable(t *testing.T) {
 	}
 }
 
-// TestRevokeInviteIsScopedToOrg: идентификатор приходит из формы, поэтому
-// администратор одной организации не должен отзывать приглашения чужой.
 func TestRevokeInviteIsScopedToOrg(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)

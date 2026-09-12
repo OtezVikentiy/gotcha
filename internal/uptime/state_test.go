@@ -9,8 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// createMonitor creates an http monitor with custom fail/recovery
-// thresholds — shared by state/incident/statuspage tests.
 func createMonitor(t *testing.T, svc *uptime.Service, projectID int64, failThreshold, recoveryThreshold int) uptime.Monitor {
 	t.Helper()
 	ctx := context.Background()
@@ -59,8 +57,7 @@ func TestApplyResultTransitionTable(t *testing.T) {
 		t.Fatalf("after 3 fails: %+v, want status=down fails=3", st)
 	}
 
-	// Partial recovery series (1 of 2) resets the fail streak but must not
-	// flip status to up yet.
+	// 1 из 2 успехов — сбрасывает серию провалов, но status ещё не up.
 	st, err = svc.ApplyResult(ctx, mon.ID, "local", true, "", now.Add(3*time.Minute))
 	if err != nil {
 		t.Fatalf("ApplyResult 1st ok: %v", err)
@@ -80,8 +77,7 @@ func TestApplyResultTransitionTable(t *testing.T) {
 		t.Fatalf("after ok: LastError = %q, want empty", st.LastError)
 	}
 
-	// Partial fail series (1 of 3) resets the ok streak but must not flip
-	// status back down.
+	// 1 из 3 провалов — сбрасывает серию успехов, status ещё не down.
 	st, err = svc.ApplyResult(ctx, mon.ID, "local", false, "boom", now.Add(5*time.Minute))
 	if err != nil {
 		t.Fatalf("ApplyResult partial fail: %v", err)
@@ -102,10 +98,6 @@ func TestApplyResultTransitionTable(t *testing.T) {
 	}
 }
 
-// TestApplyResultDoesNotRollBackLastChecked: два задания одного региона
-// подряд после истечения лизы приходят не по порядку. Запоздавший результат
-// перезаписывал last_checked_at и last_error более старым значением, и
-// монитор показывал «проверено 2 минуты назад» при работающей проверке.
 func TestApplyResultDoesNotRollBackLastChecked(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -135,18 +127,8 @@ func TestApplyResultDoesNotRollBackLastChecked(t *testing.T) {
 	}
 }
 
-// TestApplyResultDoesNotRollBackLastChecked защищает last_checked_at/last_error,
-// но не защищает consecutive_fails/consecutive_oks/status — их можно случайно
-// вернуть к безусловному инкременту, и этот тест ничего не заметит. Этот тест
-// целится ровно в тот гейт: строит серию так, что запоздавший провал, будучи
-// учтён (т.е. если бы гейт со счётчиков сняли), сам по себе дотягивает
-// consecutive_fails до fail_threshold и уводит монитор в down — а с рабочим
-// гейтом ничего не меняется, потому что результат старше уже учтённого.
-//
-// last_checked_at и last_error у обоих результатов защищены независимым
-// GREATEST/CASE (см. TestApplyResultDoesNotRollBackLastChecked) и потому не
-// двигаются в обоих случаях — тест ловит именно снятие гейта со счётчиков и
-// status, а не со отметки времени.
+// не то же, что TestApplyResultDoesNotRollBackLastChecked: тот гейт защищает
+// last_checked_at/last_error, этот — прицельно counters/status от заражения серии.
 func TestApplyResultDoesNotContaminateSeriesWithStaleResult(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -158,8 +140,6 @@ func TestApplyResultDoesNotContaminateSeriesWithStaleResult(t *testing.T) {
 	recent := time.Now().UTC().Truncate(time.Second)
 	stale := recent.Add(-5 * time.Minute)
 
-	// Первый (и единственный уже учтённый) провал: consecutive_fails=1 —
-	// на единицу меньше порога, статус ещё не down.
 	first, err := svc.ApplyResult(ctx, mon.ID, "local", false, "первый провал", recent)
 	if err != nil {
 		t.Fatalf("первый провал: %v", err)
@@ -168,11 +148,8 @@ func TestApplyResultDoesNotContaminateSeriesWithStaleResult(t *testing.T) {
 		t.Fatalf("после первого провала: %+v, хотел fails=1 и status != down", first)
 	}
 
-	// Запоздавший провал доставлен позже, но относится к более раннему
-	// моменту (stale < recent, уже учтённого как last_checked_at). Без гейта
-	// на счётчиках он ровно дотянул бы серию до fail_threshold=2 и увёл бы
-	// монитор в down — хотя по факту это не второй провал ПОСЛЕ первого, а
-	// провал, случившийся ДО него и разминувшийся в пути.
+	// без гейта на счётчиках этот запоздавший провал дотянул бы серию до
+	// fail_threshold=2 — хотя по времени он случился ДО уже учтённого первого.
 	got, err := svc.ApplyResult(ctx, mon.ID, "local", false, "запоздавший провал", stale)
 	if err != nil {
 		t.Fatalf("запоздавший провал: %v", err)
@@ -191,14 +168,8 @@ func TestApplyResultDoesNotContaminateSeriesWithStaleResult(t *testing.T) {
 	}
 }
 
-// TestApplyResultDoesNotContaminateSeriesWithStaleOK — зеркало
-// TestApplyResultDoesNotContaminateSeriesWithStaleResult на стороне успехов.
-// Гейт в запросе один CASE на fail/ok обе стороны, но записан двумя
-// самостоятельными ветками (consecutive_fails и consecutive_oks) — опечатка
-// или неосторожный рефакторинг именно ветки успехов прошли бы незамеченными,
-// если проверять заражение серии только провалами. Монитор нарочно заведён в
-// состояние, из которого переход в "up" виден (status="unknown", ещё не
-// "up"), иначе тест был бы зелёным по причине, не связанной с гейтом.
+// гейт в SQL — две независимые CASE-ветки; регресс только ветки успехов не
+// поймать без зеркала. Исходный status=unknown, иначе переход в up был бы не виден.
 func TestApplyResultDoesNotContaminateSeriesWithStaleOK(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -210,8 +181,6 @@ func TestApplyResultDoesNotContaminateSeriesWithStaleOK(t *testing.T) {
 	recent := time.Now().UTC().Truncate(time.Second)
 	stale := recent.Add(-5 * time.Minute)
 
-	// Первый (и единственный уже учтённый) успех: consecutive_oks=1 — на
-	// единицу меньше порога восстановления, статус ещё не up.
 	first, err := svc.ApplyResult(ctx, mon.ID, "local", true, "", recent)
 	if err != nil {
 		t.Fatalf("первый успех: %v", err)
@@ -220,11 +189,8 @@ func TestApplyResultDoesNotContaminateSeriesWithStaleOK(t *testing.T) {
 		t.Fatalf("после первого успеха: %+v, хотел oks=1 и status != up", first)
 	}
 
-	// Запоздавший успех доставлен позже, но относится к более раннему моменту
-	// (stale < recent, уже учтённого как last_checked_at). Без гейта на
-	// счётчиках он ровно дотянул бы серию до recovery_threshold=2 и увёл бы
-	// монитор в up — хотя по факту это не второй успех ПОСЛЕ первого, а
-	// успех, случившийся ДО него и разминувшийся в пути.
+	// без гейта на счётчиках этот запоздавший успех дотянул бы серию до
+	// recovery_threshold=2 — хотя по времени он случился ДО уже учтённого первого.
 	got, err := svc.ApplyResult(ctx, mon.ID, "local", true, "", stale)
 	if err != nil {
 		t.Fatalf("запоздавший успех: %v", err)
@@ -247,12 +213,8 @@ func TestApplyResultPerRegionIndependent(t *testing.T) {
 	defer cancel()
 
 	pid := newProject(t, pool)
-	// Регионы монитора — те же, по которым дальше применяются результаты.
-	// Раньше монитор заводился с единственным регионом «local», а результаты
-	// шли в «eu» и «us»: состояние регионов, которых у монитора нет, — это и
-	// есть та сирота, из-за которой снятый регион держал монитор в down
-	// навсегда (см. TestRemovedRegionStopsHoldingMonitorDown). Проверять на ней
-	// независимость регионов значило проверять на дефекте.
+	// регионы монитора те же, что в ApplyResult — иначе тест проверял бы
+	// независимость регионов на сироте (JOIN её исключает), а не по-настоящему.
 	m := baseHTTPMonitor(pid)
 	m.FailThreshold = 2
 	m.RecoveryThreshold = 2

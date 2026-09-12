@@ -1,10 +1,5 @@
 package db_test
 
-// TestLatestMigrationHasDataTest (internal/guards) требует, чтобы НОВЕЙШАЯ
-// миграция PostgreSQL приезжала с тестом на непустой базе — db.MigratePGTo на
-// схему, уже содержащую строки. На момент этой правки новейшая —
-// 0061_outbox_last_error_scrub.up.sql.
-
 import (
 	"context"
 	"testing"
@@ -14,17 +9,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestMigrate0061ScrubsLastErrorLeavesEmptyAlone — A1: миграция разово
-// нейтрализует уже накопленный last_error (мог нести адрес получателя из
-// email.go RCPT-ответа или URL цели, отражённый сломанным webhook-
-// получателем, — обе течи закрыты у источника этим же релизом, но старые
-// строки уже содержат утёкшее). Проверка содержательная: заводим ДВЕ
-// записи очереди — одну с непустым last_error (несущим правдоподобный
-// секрет), другую с пустым (обычный успех/pending-путь, last_error=” по
-// умолчанию у столбца) — и убеждаемся, что миграция трогает только первую:
-// секрет заменяется маркером, а пустая строка остаётся пустой (WHERE
-// last_error <> ” — иначе миграция шумела бы UPDATE на каждой строке
-// очереди без необходимости).
+// Разово нейтрализует уже накопленный last_error (мог нести адрес получателя/URL из RCPT/webhook-
+// ответа) — WHERE last_error <> ” бережёт от UPDATE на каждой строке очереди без нужды.
 func TestMigrate0061ScrubsLastErrorLeavesEmptyAlone(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

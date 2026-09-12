@@ -1,9 +1,5 @@
 package db_test
 
-// Тест на непустой базе для НОВЕЙШЕЙ миграции живёт в файле этой самой
-// новейшей миграции — см. migrate_0070_test.go (0070_org_usage_logs.up.sql,
-// C1, задача 2).
-
 import (
 	"context"
 	"testing"
@@ -14,14 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0069HostsAgentVersionAddThenDrop — 0069 добавляет hosts.agent_version
-// (TEXT, без NOT NULL/DEFAULT) поверх непустой таблицы hosts, накопленной ещё
-// до миграции (0064, T4): ADD COLUMN без DEFAULT — безопасная операция на
-// непустой таблице (NULL для существующих строк), но тест на непустой базе
-// всё равно нужен по правилу — самый дешёвый способ поймать, если кто-то
-// впоследствии допишет сюда NOT NULL без DEFAULT и превратит миграцию в
-// ломающую. down проверяет, что колонка исчезает, не трогая саму таблицу
-// hosts и её строки.
+// ADD COLUMN без DEFAULT безопасен на непустой таблице (NULL для старых строк), но тест ловит, если
+// кто-то впоследствии допишет NOT NULL без DEFAULT и превратит миграцию в ломающую.
 func TestMigrate0069HostsAgentVersionAddThenDrop(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -50,9 +40,7 @@ func TestMigrate0069HostsAgentVersionAddThenDrop(t *testing.T) {
 		t.Fatalf("migrate to 69: %v", err)
 	}
 
-	// Существующая строка, накопленная ДО миграции, обязана получить NULL, а
-	// не упасть на NOT NULL — ровно тот класс ошибки, ради которого правило
-	// TestLatestMigrationHasDataTest существует.
+	// Строка, заведённая до миграции, обязана получить NULL, а не упасть на NOT NULL.
 	var agentVersion *string
 	if err := pool.QueryRow(ctx,
 		"SELECT agent_version FROM hosts WHERE id = $1", hostID).Scan(&agentVersion); err != nil {
@@ -83,8 +71,7 @@ func TestMigrate0069HostsAgentVersionAddThenDrop(t *testing.T) {
 		t.Fatal("колонка agent_version должна исчезнуть после отката 0069")
 	}
 
-	// Сама строка hosts (и таблица целиком) откат не трогает — DROP COLUMN,
-	// не DROP TABLE.
+	// Сама строка hosts (и таблица целиком) откат не трогает — DROP COLUMN, не DROP TABLE.
 	var name string
 	if err := pool.QueryRow(ctx, "SELECT name FROM hosts WHERE id = $1", hostID).Scan(&name); err != nil {
 		t.Fatalf("host row must survive down-migration: %v", err)

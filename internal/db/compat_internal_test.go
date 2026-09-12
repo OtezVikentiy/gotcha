@@ -5,12 +5,6 @@ import (
 	"testing"
 )
 
-// TestEveryMigrationDeclaresCompatMarker — страж: у каждого *.up.sql в первой
-// строке есть маркер обратной совместимости.
-//
-// Забыть маркер нельзя: без него откат релиза через эту версию будет запрещён
-// (гейт трактует неизвестное как несовместимое), и узнать об этом при следующем
-// откате — худший момент для новости.
 func TestEveryMigrationDeclaresCompatMarker(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -49,8 +43,6 @@ func TestEveryMigrationDeclaresCompatMarker(t *testing.T) {
 	}
 }
 
-// TestParseCompatMarker закрепляет разбор маркера: он читается только из первой
-// строки и только в объявленной форме.
 func TestParseCompatMarker(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -77,9 +69,3 @@ func TestParseCompatMarker(t *testing.T) {
 		})
 	}
 }
-
-// TestBreakingMigrationsAreMarkedBreaking и destructiveSQL, на которой она
-// стояла, переехали в internal/guards/migrations_test.go (задача 8, находка
-// №54 / QA-11): страж расширил список распознаваемых разрушительных форм
-// SQL и стал частью общего пакета сторожей, а не отдельным internal-тестом
-// пакета db.

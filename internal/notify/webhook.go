@@ -17,16 +17,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/netguard"
 )
 
-// WebhookSender шлёт уведомление как JSON POST на Target.Target, подписывая
-// тело HMAC-SHA256(Secret) в заголовке X-Gotcha-Signature, если Secret
-// задан.
-//
-// SSRF: получатель вебхука задаёт арендатор, поэтому по умолчанию
-// (AllowPrivate=false) отправитель, когда Client не задан явно, использует
-// SSRF-safe клиент из netguard — доставка на loopback/приватные/link-local
-// адреса режется по фактическому IP. Оператор может отключить фильтр
-// глобально (AllowPrivate=true) для single-tenant инсталляции. Если Client
-// задан явно (в тестах), фильтр не применяется.
 type WebhookSender struct {
 	Client       *http.Client
 	AllowPrivate bool
@@ -45,23 +35,13 @@ func (s *WebhookSender) client() *http.Client {
 	return s.safeClient
 }
 
-// transportFields — keys that alert.Evaluator stuffs into the outbox
-// payload purely so the worker can rebuild a notify.Target (see
-// worker.go's process: channel_kind/target/secret feed Target.Kind/
-// Target.Target/Target.Secret). They describe the delivery transport, not
-// the alert itself, and must never be echoed in the outbound body —
-// "secret" in particular is the HMAC signing key, so forwarding it would
-// let anyone reading the receiver's logs forge signed webhook requests.
+// secret — ключ HMAC-подписи; эти поля не должны попасть в тело вебхука.
 var transportFields = map[string]struct{}{
 	"channel_kind": {},
 	"target":       {},
 	"secret":       {},
 }
 
-// Send отправляет payload как JSON на t.Target, с транспортными полями
-// (channel_kind/target/secret — см. transportFields) вырезанными из тела:
-// они существуют только для внутреннего использования воркером и не
-// предназначены для получателя вебхука.
 func (s *WebhookSender) Send(ctx context.Context, t Target, payload map[string]any) error {
 	out := make(map[string]any, len(payload))
 	for k, v := range payload {
@@ -77,11 +57,8 @@ func (s *WebhookSender) Send(ctx context.Context, t Target, payload map[string]a
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.Target, bytes.NewReader(body))
 	if err != nil {
-		// *url.Error embeds the full target URL (Target.Target — the webhook
-		// endpoint, which routinely carries a bearer token/secret in its path
-		// or query, e.g. Slack's /T000/B000/secret). Unwrap it the same way
-		// telegram.go does, so the URL never reaches callers that log or
-		// persist Send's error (slog, notification_outbox.last_error).
+		// *url.Error несёт полный URL цели с токеном/секретом в пути или query —
+		// распаковываем, чтобы он не утёк в лог через обёрнутую ошибку.
 		var urlErr *url.Error
 		if errors.As(err, &urlErr) {
 			return fmt.Errorf("notify: webhook request: %w", urlErr.Err)
@@ -97,7 +74,6 @@ func (s *WebhookSender) Send(ctx context.Context, t Target, payload map[string]a
 
 	resp, err := s.client().Do(req)
 	if err != nil {
-		// Same *url.Error leak as above, on the actual send this time.
 		var urlErr *url.Error
 		if errors.As(err, &urlErr) {
 			return fmt.Errorf("notify: webhook send: %w", urlErr.Err)
@@ -107,13 +83,6 @@ func (s *WebhookSender) Send(ctx context.Context, t Target, payload map[string]a
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		// respBody приходит от чужого (возможно, сломанного или враждебного)
-		// сервера и в теории может отразить сам запрос — целиком URL цели
-		// (который несёт токен/HMAC-секрет в пути или query, как *url.Error
-		// выше) либо только его путь. Прогоняем через ту же редакцию, что и
-		// Telegram, дважды: сперва целым Target (полный URL), затем отдельно
-		// путём — путь мог быть отражён относительным, без схемы/хоста, и
-		// тогда первый проход его не поймает.
 		snippet := RedactToken(string(respBody), t.Target)
 		if u, perr := url.Parse(t.Target); perr == nil && u.Path != "" && u.Path != "/" {
 			snippet = RedactToken(snippet, u.Path)

@@ -13,22 +13,17 @@ import (
 )
 
 const (
-	// probeMaxBodyBytes — лимит тела машинных ручек /probe/*: без сессии и
-	// без sameOrigin единственная защита от заливки произвольного объёма —
-	// жёсткий потолок (спека §4, Global Constraints плана).
+	// Без сессии и sameOrigin жёсткий потолок тела — единственная защита от заливки
+	// произвольного объёма.
 	probeMaxBodyBytes = 1 << 20 // 1 MB
-	// probeMaxResults — максимум результатов в одной пачке /probe/results.
-	probeMaxResults = 100
-	// probeDefaultLeaseLimit / probeMaxLeaseLimit — сколько заданий проба
-	// получает за один lease, если не попросила иного, и потолок её запроса.
+	probeMaxResults   = 100
+
 	probeDefaultLeaseLimit = 20
 	probeMaxLeaseLimit     = 100
 )
 
-// probeAuth аутентифицирует пробу по Bearer-токену. Любая осечка (нет
-// заголовка, не Bearer, неизвестный или отозванный токен) — одинаковый 401
-// без подробностей: машинному клиенту незачем знать, чем именно его токен
-// плох, а чужому — тем более. Сам токен не логируется никогда.
+// Любая осечка (нет заголовка, не Bearer, неизвестный/отозванный токен) — одинаковый
+// 401 без подробностей. Сам токен не логируется никогда.
 func (h *Handler) probeAuth(w http.ResponseWriter, r *http.Request) (uptime.Probe, bool) {
 	auth := r.Header.Get("Authorization")
 	token, ok := strings.CutPrefix(auth, "Bearer ")
@@ -50,10 +45,8 @@ func (h *Handler) probeAuth(w http.ResponseWriter, r *http.Request) (uptime.Prob
 	return probe, true
 }
 
-// probeLease — POST /probe/lease: выносная проба забирает задания своего
-// региона. Публичный (без сессии и без sameOrigin) машинный эндпойнт — это
-// не браузерная форма, а исходящий HTTPS-вызов пробы, для которого
-// Bearer-токен — единственный и достаточный секрет (ср. heartbeat.go).
+// Публичный (без сессии и sameOrigin): это не браузерная форма, а исходящий
+// HTTPS-вызов пробы, для которого Bearer-токен — единственный и достаточный секрет.
 func (h *Handler) probeLease(w http.ResponseWriter, r *http.Request) {
 	probe, ok := h.probeAuth(w, r)
 	if !ok {
@@ -98,25 +91,14 @@ func (h *Handler) probeLease(w http.ResponseWriter, r *http.Request) {
 	writeProbeJSON(w, http.StatusOK, resp)
 }
 
-// probeResults — POST /probe/results: приём пачки результатов от выносной
-// пробы. Центр пробе не доверяет: время результата ставит он сам
-// (time.Now().UTC()), а сам результат принимается, только если задание
-// существует, выдано ИМЕННО ЭТОЙ пробе и её lease ещё жив (LeasedJob).
-// Отвергнутый результат — не ошибка запроса: задание могло быть перевыдано
-// после истечения lease, пока проба ходила по сети; такие просто считаются в
-// rejected, а вся пачка остаётся 200.
-//
-// LeasedJob — только предварительная проверка (и источник Job.LeaseUntil):
-// два одновременных запроса с одним queue_id оба её проходят. Право применить
-// результат ровно один раз выдаёт claim внутри Ingestor.Accept — см. ClaimJob.
+// Центр пробе не доверяет: время результата ставит он сам. Отвергнутый результат — не
+// ошибка запроса, такие просто считаются в rejected, а пачка остаётся 200.
 func (h *Handler) probeResults(w http.ResponseWriter, r *http.Request) {
 	probe, ok := h.probeAuth(w, r)
 	if !ok {
 		return
 	}
 	if h.UptimeIngestor == nil {
-		// Режим без Ingestor'а (собирается вызывающей стороной): принять
-		// результат физически некому — обработать его должен центр целиком.
 		slog.Error("probe api: results endpoint without an ingestor")
 		writeProbeError(w, http.StatusServiceUnavailable, "results are not accepted by this node")
 		return
@@ -134,12 +116,8 @@ func (h *Handler) probeResults(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var resp uptime.ResultsResponse
 
-	// Задания всей пачки — одним запросом (LeasedJobs), изъятие из очереди —
-	// одним DELETE (ClaimJobs): раньше на каждый результат приходилось по два
-	// round-trip'а к БД ещё до применения, до 2×probeMaxResults на регулярный
-	// POST (аудит 2026-09-04, K8-3). Применение результата к состоянию
-	// монитора (ApplyResult) остаётся построчным: это машина состояний, и
-	// отказ БД на одном результате по-прежнему не роняет остальные.
+	// Задания всей пачки — одним запросом (LeasedJobs), изъятие из очереди — одним
+	// DELETE (ClaimJobs), а не по два round-trip'а на каждый результат.
 	queueIDs := make([]int64, len(req.Results))
 	for i, res := range req.Results {
 		queueIDs[i] = res.QueueID
@@ -154,11 +132,10 @@ func (h *Handler) probeResults(w http.ResponseWriter, r *http.Request) {
 	for _, job := range jobs {
 		claims = append(claims, uptime.JobClaim{QueueID: job.QueueID, LeaseUntil: job.LeaseUntil})
 	}
+	// LeasedJob — только предварительная проверка: два одновременных запроса с одним
+	// queue_id оба её проходят. Право применить результат один раз даёт ClaimJobs.
 	claimed, err := h.Uptime.ClaimJobs(ctx, claims)
 	if err != nil {
-		// Как и при построчном claim'е (Ingestor.Accept): отказ БД — результаты
-		// в rejected, пачка остаётся 200. Задания остаются в очереди с живым
-		// lease, проба ничего не теряет.
 		slog.Error("probe api: claim jobs failed", "probe_id", probe.ID, "error", err)
 		resp.Rejected = len(req.Results)
 		writeProbeJSON(w, http.StatusOK, resp)
@@ -173,10 +150,8 @@ func (h *Handler) probeResults(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if !claimed[res.QueueID] {
-			// Задание уже забрано: перевыдано после истечения lease, пока проба
-			// ходила по сети, либо тот же queue_id встретился в пачке дважды.
-			// Результат отбрасываем, как Ingestor.Accept при ClaimJob=false —
-			// это не ошибка запроса, а не изъятое задание.
+			// Задание уже забрано: перевыдано после истечения lease, пока проба ходила по
+			// сети, либо тот же queue_id встретился в пачке дважды — не ошибка запроса.
 			slog.Info("uptime: ingest: job already claimed or re-leased, result dropped",
 				"monitor_id", job.MonitorID, "region", job.Region, "queue_id", job.QueueID)
 			resp.Accepted++
@@ -185,10 +160,7 @@ func (h *Handler) probeResults(w http.ResponseWriter, r *http.Request) {
 		claimed[res.QueueID] = false
 
 		if err := h.UptimeIngestor.AcceptClaimed(ctx, job, time.Now().UTC(), res.Result()); err != nil {
-			// БД споткнулась на этом результате уже после claim'а — результат
-			// потерян, монитор проверится заново, когда планировщик поставит
-			// его в очередь по следующему сроку (см. Ingestor.Accept).
-			// Остальную пачку это ронять не должно.
+			// Результат потерян; монитор проверится заново по следующему сроку в очереди.
 			slog.Error("probe api: accept result failed", "probe_id", probe.ID, "queue_id", res.QueueID, "error", err)
 			resp.Rejected++
 			continue
@@ -199,9 +171,7 @@ func (h *Handler) probeResults(w http.ResponseWriter, r *http.Request) {
 	writeProbeJSON(w, http.StatusOK, resp)
 }
 
-// decodeProbeBody читает тело запроса пробы под лимитом probeMaxBodyBytes.
-// Пустое тело — не ошибка (v остаётся нулевым: /probe/lease без параметров
-// — законный запрос «дай сколько дашь»).
+// Пустое тело — не ошибка: /probe/lease без параметров — законный запрос «дай сколько дашь».
 func decodeProbeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, probeMaxBodyBytes)
 	defer r.Body.Close()

@@ -5,9 +5,6 @@ import (
 	"time"
 )
 
-// TestProjectCacheIsBounded — ProjectCache обязан ограничивать размер карты,
-// как KeyCache/OrgQuota, а не расти без границы на инсталляции с очень
-// большим числом проектов за долгий аптайм (P2-1 из аудита 2026-08-12).
 func TestProjectCacheIsBounded(t *testing.T) {
 	now := time.Unix(0, 0)
 	c := &ProjectCache{
@@ -32,9 +29,6 @@ func TestProjectCacheIsBounded(t *testing.T) {
 	}
 }
 
-// TestProjectCacheEvictsExpiredFirst — истёкшие записи должны вытесняться
-// раньше живых, иначе поток проектов при переполнении выбивал бы заодно и
-// свежие записи.
 func TestProjectCacheEvictsExpiredFirst(t *testing.T) {
 	now := time.Unix(0, 0)
 	c := &ProjectCache{

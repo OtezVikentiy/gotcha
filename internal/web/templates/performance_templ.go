@@ -22,28 +22,20 @@ func performancePath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/performance"
 }
 
-// endpointPath — ссылка на страницу эндпойнта. Имя транзакции недоверенное и
-// может содержать слэши, пробелы и произвольные символы, поэтому едет в пути
-// %-экранированным (PathEscape экранирует и «/» → «%2F», так что имя остаётся
-// одним сегментом пути); обработчик декодирует его обратно (url.PathUnescape).
+// имя транзакции недоверенное, может содержать «/» — PathEscape держит его одним сегментом пути.
+// обработчик декодирует обратно через url.PathUnescape.
 func endpointPath(projectID int64, transaction string) string {
 	return performancePath(projectID) + "/" + url.PathEscape(transaction)
 }
 
-// PerfFilter — состояние фильтров списка эндпойнтов (окно времени, окружение,
-// сортировка), нужно и для GET-формы фильтров, и для ссылок сортировки колонок.
 type PerfFilter struct {
 	Range       TimeRangeVM
 	Environment string
 	Sort        string
 }
 
-// sortAria — значение aria-sort для заголовка колонки: "none", если список
-// отсортирован не по ней, иначе направление. Совпадает с sortEndpointStats/
-// sortVitalPages: имя и apdex по возрастанию, метрики — по убыванию (сначала
-// худшие/самые нагруженные). CSS рисует стрелку через ::after по этому же
-// атрибуту, поэтому индикатор направления и семантика для скринридера — из
-// одного источника.
+// совпадает с sortEndpointStats/sortVitalPages: имя/apdex по возрастанию, метрики — по убыванию.
+// CSS рисует стрелку через ::after по этому же атрибуту — не менять его отдельно от направления.
 func sortAria(active, col string) string {
 	if active != col {
 		return "none"
@@ -54,8 +46,6 @@ func sortAria(active, col string) string {
 	return "descending"
 }
 
-// perfListSortURL — ссылка на список с заданной сортировкой, сохраняя окно и
-// окружение фильтра (клик по заголовку колонки).
 func perfListSortURL(projectID int64, f PerfFilter, sort string) string {
 	q := url.Values{}
 	f.Range.apply(q)
@@ -66,8 +56,6 @@ func perfListSortURL(projectID int64, f PerfFilter, sort string) string {
 	return performancePath(projectID) + "?" + q.Encode()
 }
 
-// formatDurationUS форматирует длительность из микросекунд человекочитаемо:
-// µs → ms → s. Перцентили и Apdex — колонки таблицы.
 func formatDurationUS(us uint32) string {
 	switch {
 	case us == 0:
@@ -81,10 +69,7 @@ func formatDurationUS(us uint32) string {
 	}
 }
 
-// formatThroughput — трафик с единицей по величине. Фиксированные «в минуту»
-// давали «0.0/min» во всех строках: при десятке транзакций за сутки это
-// 0.007/мин, и один знак после запятой всё схлопывал в ноль — колонка
-// переставала отвечать на вопрос «сколько запросов».
+// фиксированные «в минуту» давали «0.0/min» при малом трафике — единица подбирается по величине.
 func formatThroughput(ctx context.Context, perMin float64) string {
 	switch {
 	case perMin >= 1:
@@ -96,8 +81,7 @@ func formatThroughput(ctx context.Context, perMin float64) string {
 	}
 }
 
-// envList — окружения эндпойнта одной строкой. Пусто быть не должно (строка
-// существует, только если транзакции были), но подстраховываемся прочерком.
+// пусто быть не должно — подстраховка прочерком.
 func envList(envs []string) string {
 	if len(envs) == 0 {
 		return "—"
@@ -105,27 +89,21 @@ func envList(envs []string) string {
 	return strings.Join(envs, ", ")
 }
 
-// formatFailureRate — доля ошибок (0..1) в процентах с одним знаком.
 func formatFailureRate(rate float64) string {
 	return strconv.FormatFloat(rate*100, 'f', 1, 64) + "%"
 }
 
-// formatApdex — Apdex-балл (0..1) с двумя знаками.
 func formatApdex(score float64) string {
 	return strconv.FormatFloat(score, 'f', 2, 64)
 }
 
-// EndpointRow — строка списка эндпойнтов: агрегаты (trace.EndpointStat) плюс
-// уже собранный в web/performance.go SVG-спарклайн p95 (тот же приём, что и
-// MonitorRow: числовая агрегация в web-пакете, шаблон только форматирует).
+// спарклайн p95 уже собран в web/performance.go — тот же приём, что у MonitorRow.
 type EndpointRow struct {
 	Stat      trace.EndpointStat
 	Sparkline templ.Component
 }
 
-// metricHead — заголовок колонки-метрики с всплывающей расшифровкой (native
-// title, без JS, как у Web Vitals). Пунктир + курсор-help подсказывают, что на
-// метрику можно навести. Оборачивается в ссылку сортировки на месте вызова.
+// native title, без JS — пунктир и курсор-help подсказывают, что на метрику можно навести.
 func metricHead(labelKey, helpKey string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -154,7 +132,7 @@ func metricHead(labelKey, helpKey string) templ.Component {
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, helpKey))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 122, Col: 55}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 100, Col: 55}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var2)
 		if templ_7745c5c3_Err != nil {
@@ -167,7 +145,7 @@ func metricHead(labelKey, helpKey string) templ.Component {
 		var templ_7745c5c3_Var3 string
 		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, labelKey))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 122, Col: 81}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 100, Col: 81}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 		if templ_7745c5c3_Err != nil {
@@ -181,7 +159,6 @@ func metricHead(labelKey, helpKey string) templ.Component {
 	})
 }
 
-// perfEnvOption — <option> окружения с отметкой выбранного.
 func perfEnvOption(value, label, selected string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -211,7 +188,7 @@ func perfEnvOption(value, label, selected string) templ.Component {
 			var templ_7745c5c3_Var5 string
 			templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.ResolveAttributeValue(value)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 128, Col: 23}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 105, Col: 23}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var5)
 			if templ_7745c5c3_Err != nil {
@@ -224,7 +201,7 @@ func perfEnvOption(value, label, selected string) templ.Component {
 			var templ_7745c5c3_Var6 string
 			templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 128, Col: 42}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 105, Col: 42}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 			if templ_7745c5c3_Err != nil {
@@ -242,7 +219,7 @@ func perfEnvOption(value, label, selected string) templ.Component {
 			var templ_7745c5c3_Var7 string
 			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.ResolveAttributeValue(value)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 130, Col: 23}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 107, Col: 23}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var7)
 			if templ_7745c5c3_Err != nil {
@@ -255,7 +232,7 @@ func perfEnvOption(value, label, selected string) templ.Component {
 			var templ_7745c5c3_Var8 string
 			templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 130, Col: 33}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 107, Col: 33}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 			if templ_7745c5c3_Err != nil {
@@ -270,12 +247,8 @@ func perfEnvOption(value, label, selected string) templ.Component {
 	})
 }
 
-// PerformanceList — GET /projects/{id}/performance: таблица эндпойнтов проекта с
-// перцентилями, failure rate, Apdex (порог T = apdexT мс) и спарклайном p95.
-// total — полное число эндпойнтов до усечения списка (len(rows) — показанные):
-// если total больше, показывается пометка об усечении (как у waterfall).
-// loadFailed — ClickHouse не ответил: фильтры на месте, вместо таблицы —
-// «данные временно недоступны».
+// total — полное число до усечения списка (len(rows) — показанные).
+// loadFailed — ClickHouse не ответил: фильтры на месте, вместо таблицы «данные временно недоступны».
 func PerformanceList(projectID int64, rows []EndpointRow, total int, filter PerfFilter, environments []string, apdexT int, cardinality []CardinalityNotice, userEmail string, loadFailed bool) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -316,7 +289,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 			var templ_7745c5c3_Var11 string
 			templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "nav.transactions"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 146, Col: 40}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 118, Col: 40}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 			if templ_7745c5c3_Err != nil {
@@ -341,7 +314,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 			var templ_7745c5c3_Var12 templ.SafeURL
 			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(performancePath(projectID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 152, Col: 68}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 122, Col: 68}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 			if templ_7745c5c3_Err != nil {
@@ -354,7 +327,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 			var templ_7745c5c3_Var13 string
 			templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "filter.environment"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 153, Col: 92}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 123, Col: 92}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var13)
 			if templ_7745c5c3_Err != nil {
@@ -390,7 +363,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 				var templ_7745c5c3_Var14 string
 				templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.ResolveAttributeValue(filter.Sort)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 161, Col: 57}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 131, Col: 57}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var14)
 				if templ_7745c5c3_Err != nil {
@@ -408,7 +381,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 			var templ_7745c5c3_Var15 string
 			templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "perf.filter.apply"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 163, Col: 84}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 133, Col: 84}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 			if templ_7745c5c3_Err != nil {
@@ -436,7 +409,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 				var templ_7745c5c3_Var16 string
 				templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "perf.apdex_note", "t", strconv.Itoa(apdexT)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 170, Col: 86}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 140, Col: 86}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 				if templ_7745c5c3_Err != nil {
@@ -454,7 +427,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 					var templ_7745c5c3_Var17 string
 					templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "perf.truncated", "shown", strconv.Itoa(len(rows)), "total", strconv.Itoa(total)))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 172, Col: 126}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 142, Col: 126}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 					if templ_7745c5c3_Err != nil {
@@ -488,7 +461,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 					var templ_7745c5c3_Var19 string
 					templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.ResolveAttributeValue(sortAria(filter.Sort, "name"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 179, Col: 65}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 149, Col: 65}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var19)
 					if templ_7745c5c3_Err != nil {
@@ -501,7 +474,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 					var templ_7745c5c3_Var20 templ.SafeURL
 					templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(perfListSortURL(projectID, filter, "name")))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 179, Col: 131}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 149, Col: 131}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 					if templ_7745c5c3_Err != nil {
@@ -514,7 +487,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 					var templ_7745c5c3_Var21 string
 					templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "perf.endpoint"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 179, Col: 164}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 149, Col: 164}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 					if templ_7745c5c3_Err != nil {
@@ -527,7 +500,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 					var templ_7745c5c3_Var22 string
 					templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "perf.environment"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 180, Col: 57}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 150, Col: 57}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 					if templ_7745c5c3_Err != nil {
@@ -548,7 +521,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 					var templ_7745c5c3_Var23 string
 					templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.ResolveAttributeValue(sortAria(filter.Sort, "throughput"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 182, Col: 83}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 152, Col: 83}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var23)
 					if templ_7745c5c3_Err != nil {
@@ -561,7 +534,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 					var templ_7745c5c3_Var24 templ.SafeURL
 					templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(perfListSortURL(projectID, filter, "throughput")))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 182, Col: 155}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 152, Col: 155}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 					if templ_7745c5c3_Err != nil {
@@ -582,7 +555,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 					var templ_7745c5c3_Var25 string
 					templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.ResolveAttributeValue(sortAria(filter.Sort, "p50"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 183, Col: 76}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 153, Col: 76}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var25)
 					if templ_7745c5c3_Err != nil {
@@ -595,7 +568,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 					var templ_7745c5c3_Var26 templ.SafeURL
 					templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(perfListSortURL(projectID, filter, "p50")))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 183, Col: 141}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 153, Col: 141}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 					if templ_7745c5c3_Err != nil {
@@ -616,7 +589,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 					var templ_7745c5c3_Var27 string
 					templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.ResolveAttributeValue(sortAria(filter.Sort, "p75"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 184, Col: 76}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 154, Col: 76}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var27)
 					if templ_7745c5c3_Err != nil {
@@ -629,7 +602,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 					var templ_7745c5c3_Var28 templ.SafeURL
 					templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(perfListSortURL(projectID, filter, "p75")))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 184, Col: 141}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 154, Col: 141}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 					if templ_7745c5c3_Err != nil {
@@ -650,7 +623,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 					var templ_7745c5c3_Var29 string
 					templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.ResolveAttributeValue(sortAria(filter.Sort, "p95"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 185, Col: 76}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 155, Col: 76}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var29)
 					if templ_7745c5c3_Err != nil {
@@ -663,7 +636,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 					var templ_7745c5c3_Var30 templ.SafeURL
 					templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(perfListSortURL(projectID, filter, "p95")))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 185, Col: 141}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 155, Col: 141}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
 					if templ_7745c5c3_Err != nil {
@@ -684,7 +657,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 					var templ_7745c5c3_Var31 string
 					templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.ResolveAttributeValue(sortAria(filter.Sort, "p99"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 186, Col: 76}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 156, Col: 76}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var31)
 					if templ_7745c5c3_Err != nil {
@@ -697,7 +670,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 					var templ_7745c5c3_Var32 templ.SafeURL
 					templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(perfListSortURL(projectID, filter, "p99")))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 186, Col: 141}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 156, Col: 141}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
 					if templ_7745c5c3_Err != nil {
@@ -718,7 +691,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 					var templ_7745c5c3_Var33 string
 					templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.ResolveAttributeValue(sortAria(filter.Sort, "failure"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 187, Col: 80}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 157, Col: 80}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var33)
 					if templ_7745c5c3_Err != nil {
@@ -731,7 +704,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 					var templ_7745c5c3_Var34 templ.SafeURL
 					templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(perfListSortURL(projectID, filter, "failure")))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 187, Col: 149}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 157, Col: 149}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var34))
 					if templ_7745c5c3_Err != nil {
@@ -752,7 +725,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 					var templ_7745c5c3_Var35 string
 					templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.ResolveAttributeValue(sortAria(filter.Sort, "apdex"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 188, Col: 78}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 158, Col: 78}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var35)
 					if templ_7745c5c3_Err != nil {
@@ -765,7 +738,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 					var templ_7745c5c3_Var36 templ.SafeURL
 					templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(perfListSortURL(projectID, filter, "apdex")))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 188, Col: 145}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 158, Col: 145}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
 					if templ_7745c5c3_Err != nil {
@@ -799,7 +772,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 						var templ_7745c5c3_Var37 templ.SafeURL
 						templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(endpointPath(projectID, row.Stat.Transaction)))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 195, Col: 79}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 165, Col: 79}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
 						if templ_7745c5c3_Err != nil {
@@ -812,7 +785,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 						var templ_7745c5c3_Var38 string
 						templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(row.Stat.Transaction)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 195, Col: 104}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 165, Col: 104}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 						if templ_7745c5c3_Err != nil {
@@ -825,7 +798,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 						var templ_7745c5c3_Var39 string
 						templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinStringErrs(envList(row.Stat.Environments))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 196, Col: 45}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 166, Col: 45}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
 						if templ_7745c5c3_Err != nil {
@@ -838,7 +811,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 						var templ_7745c5c3_Var40 string
 						templ_7745c5c3_Var40, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatUint(row.Stat.Count, 10))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 197, Col: 65}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 167, Col: 65}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var40))
 						if templ_7745c5c3_Err != nil {
@@ -851,7 +824,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 						var templ_7745c5c3_Var41 string
 						templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.JoinStringErrs(formatThroughput(ctx, row.Stat.Throughput))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 198, Col: 69}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 168, Col: 69}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var41))
 						if templ_7745c5c3_Err != nil {
@@ -864,7 +837,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 						var templ_7745c5c3_Var42 string
 						templ_7745c5c3_Var42, templ_7745c5c3_Err = templ.JoinStringErrs(formatDurationUS(row.Stat.P50))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 199, Col: 57}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 169, Col: 57}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var42))
 						if templ_7745c5c3_Err != nil {
@@ -877,7 +850,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 						var templ_7745c5c3_Var43 string
 						templ_7745c5c3_Var43, templ_7745c5c3_Err = templ.JoinStringErrs(formatDurationUS(row.Stat.P75))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 200, Col: 57}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 170, Col: 57}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var43))
 						if templ_7745c5c3_Err != nil {
@@ -890,7 +863,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 						var templ_7745c5c3_Var44 string
 						templ_7745c5c3_Var44, templ_7745c5c3_Err = templ.JoinStringErrs(formatDurationUS(row.Stat.P95))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 201, Col: 57}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 171, Col: 57}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var44))
 						if templ_7745c5c3_Err != nil {
@@ -903,7 +876,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 						var templ_7745c5c3_Var45 string
 						templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.JoinStringErrs(formatDurationUS(row.Stat.P99))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 202, Col: 57}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 172, Col: 57}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var45))
 						if templ_7745c5c3_Err != nil {
@@ -916,7 +889,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 						var templ_7745c5c3_Var46 string
 						templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.JoinStringErrs(formatFailureRate(row.Stat.FailureRate))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 203, Col: 66}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 173, Col: 66}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var46))
 						if templ_7745c5c3_Err != nil {
@@ -929,7 +902,7 @@ func PerformanceList(projectID int64, rows []EndpointRow, total int, filter Perf
 						var templ_7745c5c3_Var47 string
 						templ_7745c5c3_Var47, templ_7745c5c3_Err = templ.JoinStringErrs(formatApdex(row.Stat.ApdexScore))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 204, Col: 59}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/performance.templ`, Line: 174, Col: 59}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var47))
 						if templ_7745c5c3_Err != nil {

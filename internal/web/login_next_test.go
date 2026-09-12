@@ -10,22 +10,11 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 )
 
-// TestLoginReturnsToRequestedPage — глубокая ссылка переживает форму входа.
-//
-// Раньше требование авторизации отправляло на голый /login, и адресат
-// терялся: пришедший по глубокой ссылке (например, на профиль или на
-// проблему из письма алерта) входил и оказывался на главной.
-//
-// Пример — GET /profile, а не /invite/{token}: последний с задачи 8 сам
-// сделан публичным (аноним должен УВИДЕТЬ приглашение, а не улететь на
-// /login, потеряв токен), requireUser его больше не оборачивает — см. web.go.
 func TestLoginReturnsToRequestedPage(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
 	_, _ = orgSettingsRegister(t, authSvc, "loginnext@example.com")
 
-	// Неавторизованный запрос глубокой ссылки уводит на форму входа, сохраняя,
-	// куда человек шёл.
 	req, _ := http.NewRequest(http.MethodGet, s.srv.URL+"/profile", nil)
 	resp, err := noRedirectClient().Do(req)
 	if err != nil {
@@ -40,7 +29,6 @@ func TestLoginReturnsToRequestedPage(t *testing.T) {
 		t.Fatalf("Location = %q, адресат не сохранён", loc)
 	}
 
-	// Форма входа несёт его скрытым полем.
 	page, err := http.Get(s.srv.URL + loc)
 	if err != nil {
 		t.Fatalf("GET login: %v", err)
@@ -51,7 +39,6 @@ func TestLoginReturnsToRequestedPage(t *testing.T) {
 		t.Fatalf("форма входа не сохранила адресата:\n%s", body)
 	}
 
-	// И вход возвращает именно туда.
 	resp = postForm(t, s.srv, "/login", url.Values{
 		"email": {"loginnext@example.com"}, "password": {"correct-horse-battery"},
 		"next": {"/profile"},
@@ -62,8 +49,6 @@ func TestLoginReturnsToRequestedPage(t *testing.T) {
 	}
 }
 
-// TestLoginRejectsForeignNext — адресат приходит из формы, то есть от клиента:
-// увести им на чужой сайт нельзя.
 func TestLoginRejectsForeignNext(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -85,9 +70,6 @@ func TestLoginRejectsForeignNext(t *testing.T) {
 	}
 }
 
-// TestRequireUserDoesNotSaveNextForPOST — тело POST после входа не
-// восстановить, а повторять его молча означало бы выполнить действие, которого
-// человек в этот раз не просил.
 func TestRequireUserDoesNotSaveNextForPOST(t *testing.T) {
 	s := newStack(t)
 

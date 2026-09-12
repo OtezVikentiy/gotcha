@@ -9,38 +9,23 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// RootResolver — подмножество depsuppress.Suppressor, нужное Grouper'у:
-// duck-typing (паттерн MaintenanceChecker/depChecker), пакет не импортирует
-// depsuppress.
+// Duck-typing — пакет не импортирует depsuppress.
 type RootResolver interface {
-	// DownRoot — топовый упавший предок узла (или сам узел, если он упал и
-	// выше упавших нет); см. depsuppress.Suppressor.DownRoot.
+	// Топовый упавший предок узла — или сам узел, если выше упавших нет.
 	DownRoot(ctx context.Context, kind string, nodeID int64) (rootKind string, rootID int64, found bool, err error)
-	// Invalidate сбрасывает кеш снимка — ретро-перебор должен видеть только
-	// что открытый корень.
+	// Сбрасывает кеш снимка — ретро-перебор должен видеть только что открытый корень.
 	Invalidate()
 }
 
-// Grouper — сервис-резолвер членства: по узлу инцидента находит корневую
-// группу (единый предикат Р3: DownRoot(узел) == корневой узел группы —
-// путь по упавшим, не статическое поддерево рёбер).
+// Единый предикат членства: DownRoot(узел) == корневой узел группы — путь по упавшим, не статика.
 type Grouper struct {
 	Pool  *pgxpool.Pool
 	Store *Store
 	Roots RootResolver
 }
 
-// RootIncident — открытый инцидент недоступности узла-корня: host →
-// host_incidents kind='silent', monitor → uptime incidents. found=false —
-// гонка «корень закрылся между снимком DownRoot и этим запросом» (группу
-// тогда не создаём: sweep, §4.4, закрыл бы её тут же).
-//
-// Экспортирован (R3b, W25): host.Evaluator и uptime.Detector резолвят
-// ФАКТИЧЕСКИЙ down-корень каскада через depChecker.DownRoot, но у них нет
-// доступа к таблицам инцидентов чужого вида (host не знает про uptime-
-// incidents и наоборот) — им нужен способ превратить (rootKind, rootID) в
-// rootIncidentID для вызова OnRootOpened, не зная, что за вид у корня.
-// Тот же метод, каким пользуется Attach ниже.
+// found=false — гонка «корень закрылся между снимком DownRoot и этим запросом»: группу не создаём.
+// Экспортирован: у Evaluator/Detector нет доступа к таблицам инцидентов чужого вида.
 func (g *Grouper) RootIncident(ctx context.Context, rootKind string, rootID int64) (source string, incidentID, projectID int64, notified bool, found bool, err error) {
 	switch rootKind {
 	case "host":
@@ -68,17 +53,8 @@ func (g *Grouper) RootIncident(ctx context.Context, rootKind string, rootID int6
 	return source, incidentID, projectID, notified, true, nil
 }
 
-// Attach присоединяет инцидент (source, incidentID) с узлом (nodeKind,
-// nodeID) к группе его down-корня, если корень есть и это не сам инцидент.
-// rootInforming — гейт «информирующего корня» (Р4, MAJOR-3):
-// root.notified_open НА МОМЕНТ attach; глушить собственное open-уведомление
-// член может ТОЛЬКО при attached && rootInforming. Немые корни (открытый в
-// maintenance uptime-корень, B5-подавленный host-корень, корень в грейсе
-// B5) дают attach «только для состава» — член уведомляет сам (fail-noisy).
-// Группа, успевшая закрыться, — attach не делается вовсе. Группа корня
-// создаётся ЛЕНИВО (W4): MemberEligible проверяется ДО EnsureGroup, иначе
-// член, уже сгруппированный под другим ОТКРЫТЫМ корнем (SetGroup — no-op),
-// оставлял бы пустую группу нового корня висеть на карточке навсегда.
+// root.notified_open НА МОМЕНТ attach — член глушит уведомление только при attached && rootInforming.
+// Лениво: MemberEligible — ДО EnsureGroup, иначе пустая группа виснет на карточке навсегда.
 func (g *Grouper) Attach(ctx context.Context, source string, incidentID int64, nodeKind string, nodeID int64) (attached, rootInforming bool, err error) {
 	rootKind, rootID, found, err := g.Roots.DownRoot(ctx, nodeKind, nodeID)
 	if err != nil || !found {
@@ -109,10 +85,7 @@ func (g *Grouper) Attach(ctx context.Context, source string, incidentID int64, n
 	return attached, attached && notified, nil
 }
 
-// AttachMetric — Attach для metric-инцидента правила с label_key='host':
-// узел резолвится по hosts.name = label_value ТОГО ЖЕ проекта (Р1). Резолв
-// зовётся только при создании инцидента (редкое событие), поэтому прямой
-// индексированный запрос вместо кеша-на-тик — кешировать нечего.
+// Узел резолвится по hosts.name = label_value того же проекта; кеш не нужен — событие редкое.
 func (g *Grouper) AttachMetric(ctx context.Context, incidentID, projectID int64, hostName string) (attached, rootInforming bool, err error) {
 	var hostID int64
 	err = g.Pool.QueryRow(ctx,
@@ -127,8 +100,6 @@ func (g *Grouper) AttachMetric(ctx context.Context, incidentID, projectID int64,
 	return g.Attach(ctx, "metric", incidentID, "host", hostID)
 }
 
-// candidate — открытый инцидент проекта с резолвнутым узлом: кандидат
-// ретро-присоединения (Р7).
 type candidate struct {
 	source     string
 	incidentID int64
@@ -136,16 +107,8 @@ type candidate struct {
 	nodeID     int64
 }
 
-// openCandidates — открытые ВНЕгрупповые инциденты проекта источников
-// host/metric/slo с их узлами. Uptime намеренно отсутствует (MAJOR-4):
-// uptime-членство возникает только через хук MarkSuppressedByDep. Metric —
-// только правила label_key='host' с хостом того же проекта; slo — только
-// sli_kind='uptime' с monitor_id (Р1). Ретро по env/role-селекторам метрик
-// не делается (осознанно отложено, §10). «Внегрупповой» — не член ОТКРЫТОЙ
-// группы (W2, LEFT JOIN incident_groups wg, та же трактовка, что в SetGroup
-// и feedProjectQuery): инцидент, однажды побывавший в группе, которая с тех
-// пор резолвнулась или удалена, — кандидат перекорреляции при повторном
-// открытии флапающего корня, не выпадает из перебора навсегда.
+// Uptime отсутствует — членство у него только через хук MarkSuppressedByDep, не ретро-перебор.
+// Побывавший в резолвнутой/удалённой группе — снова кандидат: не выпадает из перебора навсегда.
 func (g *Grouper) openCandidates(ctx context.Context, projectID int64) ([]candidate, error) {
 	rows, err := g.Pool.Query(ctx, `
 		SELECT 'host'::text, hi.id, 'host'::text, hi.host_id
@@ -187,17 +150,10 @@ func (g *Grouper) openCandidates(ctx context.Context, projectID int64) ([]candid
 	return out, nil
 }
 
-// OnRootOpened — ретро-присоединение (Р7): при открытии корневого инцидента
-// уже открытые инциденты проекта, чей узел проходит DownRoot == корень,
-// присоединяются задним числом — их уведомления УЖЕ ушли, notified-статус
-// не трогается, присоединение чисто для состава. Группа создаётся ЛЕНИВО:
-// нет членов — нет группы (EnsureGroup идемпотентен, первый будущий член
-// создаст её сам через Attach). Перебор — прогон DownRoot по узлу каждого
-// кандидата (MAJOR-6: НЕ обход рёбер вниз — PreviewSuppression одноуровнев
-// и не знает состояния промежуточных узлов).
+// Их уведомления УЖЕ ушли — notified не трогается, присоединение чисто для состава.
+// Перебор — DownRoot по узлу каждого кандидата, не обход рёбер: PreviewSuppression одноуровнев.
 func (g *Grouper) OnRootOpened(ctx context.Context, rootSource string, rootIncidentID int64, rootNodeKind string, rootNodeID, projectID int64) error {
-	// Снимок depsuppress может не знать о только что открытом корне (кеш
-	// 5с) — сбрасываем, иначе перебор молча пропустит всех членов.
+	// Снимок кеширован 5с — сбрасываем, иначе перебор молча пропустит только что открывшийся корень.
 	g.Roots.Invalidate()
 	cands, err := g.openCandidates(ctx, projectID)
 	if err != nil {
@@ -232,8 +188,7 @@ func (g *Grouper) OnRootOpened(ctx context.Context, rootSource string, rootIncid
 	return nil
 }
 
-// OnRootClosed закрывает группу корневого инцидента (Р5). Отсутствие
-// группы — не ошибка (группа могла не создаться: членов не было).
+// Отсутствие группы — не ошибка: членов не было, группа не создавалась.
 func (g *Grouper) OnRootClosed(ctx context.Context, rootSource string, rootIncidentID int64) error {
 	_, err := g.Store.Resolve(ctx, rootSource, rootIncidentID)
 	return err

@@ -18,9 +18,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// newFiltersStack — logsStack (logs_test.go) с проведённым LogFilters:
-// newLogsStack сам его не заводит (как и LogQuery без wireLogQuery=true),
-// сохранённые фильтры логов — отдельная опциональная зависимость Handler.
 func newFiltersStack(t *testing.T) *logsStack {
 	t.Helper()
 	s := newLogsStack(t, true)
@@ -28,17 +25,6 @@ func newFiltersStack(t *testing.T) *logsStack {
 	return s
 }
 
-// addProjectMember делает userID участником организации orgID (role=member)
-// И даёт ему доступ к projectID через персональную команду
-// (CreateTeam+AddTeamMember+AttachTeam) — тот же приём, что у актора
-// «оператор (team-attached, role=member)» в authz_behavior_test.go:407.
-// Голого org.AddMember(...RoleMember) НЕДОСТАТОЧНО: org.CanAccessProject
-// (org/project.go, accessCondition) даёт доступ либо owner/admin
-// организации, либо участнику команды, прикреплённой к проекту — рядовой
-// member без команды не видит сам /logs, не то что его фильтры (это и
-// проверяет TestPersonalFilterOfAnotherUserIsInvisible: даже владелец
-// проекта — team-attachment ему не нужен, он проходит по первой ветви
-// accessCondition — не видит чужой личный фильтр).
 func addProjectMember(t *testing.T, s *logsStack, orgID, projectID, userID int64) {
 	t.Helper()
 	ctx := context.Background()
@@ -57,10 +43,6 @@ func addProjectMember(t *testing.T, s *logsStack, orgID, projectID, userID int64
 	}
 }
 
-// lastFilterID/countFilters/filterShared — прямые обёртки над pool.QueryRow
-// по log_saved_filters, как просит бриф задачи 9: тестам нужно проверять
-// состояние хранилища, которое хендлеры не всегда отражают в ответе (счётчик
-// после отказа, факт понижения/повышения фильтра).
 func lastFilterID(t *testing.T, pool *pgxpool.Pool, projectID int64) int64 {
 	t.Helper()
 	var id int64
@@ -91,9 +73,6 @@ func filterShared(t *testing.T, pool *pgxpool.Pool, filterID int64) bool {
 	return shared
 }
 
-// TestLogFiltersCreatePersonal — счастливый путь личного фильтра: создание,
-// появление в панели «Мои», ссылка применения разворачивает условие в
-// обычный query-параметр (не прячет его за идентификатором).
 func TestLogFiltersCreatePersonal(t *testing.T) {
 	s := newFiltersStack(t)
 	_, ownerCookie, project := newLogsProject(t, s, "create-personal@example.com", "cp-org", "cp-proj")
@@ -122,8 +101,6 @@ func TestLogFiltersCreatePersonal(t *testing.T) {
 	}
 }
 
-// TestLogFiltersCreateSharedVisibleToMembers — общий фильтр, заведённый
-// оператором, виден рядовому участнику проекта в панели «Общие».
 func TestLogFiltersCreateSharedVisibleToMembers(t *testing.T) {
 	s := newFiltersStack(t)
 	_, ownerCookie, project := newLogsProject(t, s, "create-shared@example.com", "cs-org", "cs-proj")
@@ -151,8 +128,6 @@ func TestLogFiltersCreateSharedVisibleToMembers(t *testing.T) {
 	}
 }
 
-// TestSharedFilterRequiresOperator — вторичный гейт создания: рядовой
-// участник не может завести общий фильтр (403), оператор — может (303).
 func TestSharedFilterRequiresOperator(t *testing.T) {
 	s := newFiltersStack(t)
 	_, ownerCookie, project := newLogsProject(t, s, "gate-owner@example.com", "gate-org", "gate-proj")
@@ -181,9 +156,6 @@ func TestSharedFilterRequiresOperator(t *testing.T) {
 	}
 }
 
-// TestPersonalFilterOfAnotherUserIsInvisible — чужой личный фильтр не
-// отдаётся никому: ни в списке (даже владельцу проекта), ни по прямому
-// идентификатору (404, не 403 — существование не подтверждаем).
 func TestPersonalFilterOfAnotherUserIsInvisible(t *testing.T) {
 	s := newFiltersStack(t)
 	_, ownerCookie, project := newLogsProject(t, s, "owner2@example.com", "priv-org", "priv-proj")
@@ -201,7 +173,6 @@ func TestPersonalFilterOfAnotherUserIsInvisible(t *testing.T) {
 
 	filterID := lastFilterID(t, s.pool, projectID)
 
-	// Владелец проекта — тоже посторонний для чужого личного фильтра.
 	page := getWithCookie(t, s.srv, logsBasePath(projectID), ownerCookie)
 	defer page.Body.Close()
 	body, err := io.ReadAll(page.Body)
@@ -216,18 +187,12 @@ func TestPersonalFilterOfAnotherUserIsInvisible(t *testing.T) {
 		path := fmt.Sprintf("%s/filters/%d%s", logsBasePath(projectID), filterID, action)
 		resp := postForm(t, s.srv, path, url.Values{"name": {"чужое"}}, s.srv.URL, ownerCookie)
 		resp.Body.Close()
-		// 404, а не 403: существование чужого личного фильтра не подтверждаем
-		// (тот же приём, что в internal/web/exports.go:309).
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("%s на чужой личный фильтр вернул %d, ожидался 404", action, resp.StatusCode)
 		}
 	}
 }
 
-// TestLogFiltersUpdatePersonalRoundTrip — владелец меняет условия своего
-// личного фильтра; проверяется, что Update ЗАМЕЩАЕТ старые условия, а не
-// добавляет к ним (иначе мутация «забыли передать новые предикаты» осталась
-// бы незамеченной).
 func TestLogFiltersUpdatePersonalRoundTrip(t *testing.T) {
 	s := newFiltersStack(t)
 	_, ownerCookie, project := newLogsProject(t, s, "update-personal@example.com", "up-org", "up-proj")
@@ -261,10 +226,6 @@ func TestLogFiltersUpdatePersonalRoundTrip(t *testing.T) {
 	}
 }
 
-// filterUpdateFormHTML вырезает разметку формы «Обновить» для КОНКРЕТНОГО
-// filterID из HTML страницы логов — по его action-URL, а не первую
-// попавшуюся форму «Обновить» на странице (их может быть несколько, по
-// одной на редактируемый фильтр).
 func filterUpdateFormHTML(t *testing.T, html string, projectID, filterID int64) string {
 	t.Helper()
 	marker := fmt.Sprintf(`%s/filters/%d/update"`, logsBasePath(projectID), filterID)
@@ -283,16 +244,6 @@ func filterUpdateFormHTML(t *testing.T, html string, projectID, filterID int64) 
 	return html[formStart : idx+formEnd+len("</form>")]
 }
 
-// TestLogFiltersUpdateFormShowsRenameAndVisibilityControlsForOperator —
-// находка финального ревью C10: §7.3 спеки объявляет переименование и смену
-// видимости отдельными действиями панели; хендлер (logFiltersUpdate) их уже
-// поддерживал (см. TestLogFiltersUpdatePersonalRoundTrip и
-// TestLogFiltersConvertPersonalToSharedRequiresOperator — оба идут прямым
-// POST), но элементов управления в разметке не было. Тест идёт через
-// РЕАЛЬНУЮ страницу (GET), не прямым POST: владелец проекта (оператор)
-// обязан увидеть текстовое поле имени, предзаполненное текущим значением
-// (не скрытое), и переключатель видимости у формы «Обновить» — как для
-// личного, так и для общего фильтра.
 func TestLogFiltersUpdateFormShowsRenameAndVisibilityControlsForOperator(t *testing.T) {
 	s := newFiltersStack(t)
 	_, ownerCookie, project := newLogsProject(t, s, "ui-controls-owner@example.com", "uic-org", "uic-proj")
@@ -322,12 +273,6 @@ func TestLogFiltersUpdateFormShowsRenameAndVisibilityControlsForOperator(t *test
 	}
 }
 
-// TestLogFiltersUpdateFormHidesVisibilityToggleForNonOperator — рядовой
-// участник видит форму «Обновить» СВОЕГО ЖЕ личного фильтра (CanEdit по
-// владению), но переключатель видимости обязан отсутствовать: подмена
-// значения формы всё равно отклонится requireLogFilterOperator на сабмите
-// (см. TestLogFiltersConvertPersonalToSharedRequiresOperator), но элемент
-// управления, ведущий к гарантированному 403, вводит в заблуждение.
 func TestLogFiltersUpdateFormHidesVisibilityToggleForNonOperator(t *testing.T) {
 	s := newFiltersStack(t)
 	_, _, project := newLogsProject(t, s, "ui-controls-owner2@example.com", "uic2-org", "uic2-proj")
@@ -356,8 +301,6 @@ func TestLogFiltersUpdateFormHidesVisibilityToggleForNonOperator(t *testing.T) {
 	}
 }
 
-// TestLogFiltersUpdateSharedRequiresOperator — правка УЖЕ общего фильтра
-// требует оператора, даже когда результат остаётся общим.
 func TestLogFiltersUpdateSharedRequiresOperator(t *testing.T) {
 	s := newFiltersStack(t)
 	_, ownerCookie, project := newLogsProject(t, s, "update-shared@example.com", "us-org", "us-proj")
@@ -387,8 +330,6 @@ func TestLogFiltersUpdateSharedRequiresOperator(t *testing.T) {
 	}
 }
 
-// TestLogFiltersConvertPersonalToSharedRequiresOperator — рядовой участник
-// не может повысить СВОЙ ЖЕ личный фильтр до общего в обход гейта оператора.
 func TestLogFiltersConvertPersonalToSharedRequiresOperator(t *testing.T) {
 	s := newFiltersStack(t)
 	_, _, project := newLogsProject(t, s, "convert@example.com", "cv-org", "cv-proj")
@@ -416,9 +357,6 @@ func TestLogFiltersConvertPersonalToSharedRequiresOperator(t *testing.T) {
 	}
 }
 
-// TestLogFiltersOwnerConvertsPersonalToShared — оператор (в т.ч. владелец
-// проекта) может повысить СВОЙ личный фильтр до общего; после этого фильтр
-// виден рядовым участникам.
 func TestLogFiltersOwnerConvertsPersonalToShared(t *testing.T) {
 	s := newFiltersStack(t)
 	_, ownerCookie, project := newLogsProject(t, s, "convert-ok@example.com", "cvo-org", "cvo-proj")
@@ -453,7 +391,6 @@ func TestLogFiltersOwnerConvertsPersonalToShared(t *testing.T) {
 	}
 }
 
-// TestLogFiltersDeleteOwnPersonal — владелец удаляет свой личный фильтр.
 func TestLogFiltersDeleteOwnPersonal(t *testing.T) {
 	s := newFiltersStack(t)
 	_, ownerCookie, project := newLogsProject(t, s, "delete-personal@example.com", "dp-org", "dp-proj")
@@ -479,9 +416,6 @@ func TestLogFiltersDeleteOwnPersonal(t *testing.T) {
 	}
 }
 
-// TestLogFiltersDeleteSharedRequiresOperator — удаление общего фильтра
-// требует оператора; рядовой участник получает отказ, и фильтр остаётся на
-// месте (гейт ДО удаления, а не после).
 func TestLogFiltersDeleteSharedRequiresOperator(t *testing.T) {
 	s := newFiltersStack(t)
 	_, ownerCookie, project := newLogsProject(t, s, "delete-shared@example.com", "ds-org", "ds-proj")
@@ -518,8 +452,6 @@ func TestLogFiltersDeleteSharedRequiresOperator(t *testing.T) {
 	}
 }
 
-// TestLogFiltersSetDefault — бейдж умолчания появляется после назначения
-// и отсутствует до него.
 func TestLogFiltersSetDefault(t *testing.T) {
 	s := newFiltersStack(t)
 	_, ownerCookie, project := newLogsProject(t, s, "default@example.com", "def-org", "def-proj")
@@ -556,9 +488,6 @@ func TestLogFiltersSetDefault(t *testing.T) {
 	}
 }
 
-// TestLogFiltersValidationErrors — пустое имя, слишком длинное имя и
-// дублирующееся имя перерисовывают страницу логов с 422 и понятным
-// сообщением вместо голого редиректа/500.
 func TestLogFiltersValidationErrors(t *testing.T) {
 	s := newFiltersStack(t)
 	_, ownerCookie, project := newLogsProject(t, s, "validation@example.com", "val-org", "val-proj")
@@ -596,24 +525,9 @@ func TestLogFiltersValidationErrors(t *testing.T) {
 	}
 }
 
-// TestLogFiltersSaveErrorPreservesConditionsAndSkipsDefault — находка
-// финального ревью C2: отказ валидации (занятое имя) обязан перерисовать
-// страницу логов С УСЛОВИЯМИ ИЗ ФОРМЫ (logFilterFormParams(r)), а не из
-// r.URL.Query() — у POST-запроса он пуст, action ведёт на
-// /projects/{id}/logs/filters. До фикса введённое исключение исчезало со
-// страницы 422 (чипа нет вовсе), а пустой query дополнительно включал
-// фильтр по умолчанию поверх — третий набор данных, которого пользователь
-// не запрашивал. Стенд — seedDefaultFilterCase: у проекта УЖЕ есть
-// назначенный фильтр по умолчанию, что и делает вторую часть проверки
-// значимой (без него молчаливое включение умолчания было бы не от чего
-// отличить).
 func TestLogFiltersSaveErrorPreservesConditionsAndSkipsDefault(t *testing.T) {
 	s, projectID, cookie := seedDefaultFilterCase(t)
 
-	// service_not=worker — условие, которого нет у назначенного фильтра по
-	// умолчанию (тот несёт q_not=buffered...), и которое не совпадает по
-	// смыслу с service обеих засеянных записей (обе — nginx) — отсутствие
-	// строк в выдаче не спутать с потерей условия.
 	dup := postForm(t, s.srv, logsBasePath(projectID)+"/filters",
 		url.Values{"name": {"без шума"}, "service_not": {"worker"}}, s.srv.URL, cookie)
 	defer dup.Body.Close()
@@ -630,9 +544,6 @@ func TestLogFiltersSaveErrorPreservesConditionsAndSkipsDefault(t *testing.T) {
 	}
 }
 
-// TestLogFiltersInapplicablePayloadShown — фильтр с payload неизвестной
-// версии (продукт мог сменить формат) не роняет страницу и не даёт ссылку
-// применения, но остаётся виден в списке с пояснением.
 func TestLogFiltersInapplicablePayloadShown(t *testing.T) {
 	s := newFiltersStack(t)
 	ownerID, ownerCookie, project := newLogsProject(t, s, "inapplicable@example.com", "ia-org", "ia-proj")
@@ -660,11 +571,6 @@ func TestLogFiltersInapplicablePayloadShown(t *testing.T) {
 	}
 }
 
-// TestLogFilterHandlersRejectForeignOrigin — все четыре хендлера отказывают
-// запросу с чужим Origin (sameOrigin) и не меняют состав фильтров проекта.
-// filterName/filterExists — точечные проверки состояния одного фильтра
-// (в отличие от countFilters, который видит только общее число и не ловит,
-// например, «удаления не было, но имя подменили»).
 func filterName(t *testing.T, pool *pgxpool.Pool, filterID int64) string {
 	t.Helper()
 	var name string
@@ -685,14 +591,6 @@ func filterExists(t *testing.T, pool *pgxpool.Pool, filterID int64) bool {
 	return exists
 }
 
-// TestLogFilterHandlersRejectForeignOrigin — все четыре хендлера отказывают
-// запросу с чужим Origin (sameOrigin). Состояние ИЗОЛИРОВАНО по маршруту:
-// свой фильтр под update/delete/default (разные имена, никто не переиспользует
-// id после удаления) — иначе прогон через общее имя "чужое" и общий filterID
-// (как было раньше) ловит обход только на create/delete: update глушится
-// побочным ErrNameTaken (имя уже занято предыдущим шагом), а default бьёт по
-// уже удалённому предыдущим шагом id — обе ветки «зелёные» не по защите,
-// а по случайному конфликту состояния (находка ревью, Important).
 func TestLogFilterHandlersRejectForeignOrigin(t *testing.T) {
 	s := newFiltersStack(t)
 	ownerID, cookie, project := newLogsProject(t, s, "csrf@example.com", "csrf-org", "csrf-proj")
@@ -756,22 +654,11 @@ func TestLogFilterHandlersRejectForeignOrigin(t *testing.T) {
 	}
 }
 
-// noisyRowSummary/usefulRowSummary — точное вхождение строки списка логов
-// (logs.templ: `<summary>{ logBodyPreview(row.Row.Body) }</summary>`), а не
-// голый текст тела: сам текст «buffered to a temporary file» всегда
-// присутствует в HTML отдельно от списка строк — как значение скрытого
-// поля формы «Сохранить текущий фильтр» (logFilterConditionFields
-// зеркалит текущие условия, включая применённое умолчание) — и голый
-// strings.Contains(html, тело) не отличил бы «строка скрыта» от «строка
-// показана».
 const (
 	noisyRowSummary  = "<summary>buffered to a temporary file</summary>"
 	usefulRowSummary = "<summary>полезная запись</summary>"
 )
 
-// seedDefaultFilterCase готовит проект с двумя записями — шумной и
-// полезной — и назначает пользователю умолчанием фильтр, исключающий
-// шумную (задача 10, «фильтр по умолчанию»).
 func seedDefaultFilterCase(t *testing.T) (s *logsStack, projectID int64, cookie *http.Cookie) {
 	t.Helper()
 	s = newFiltersStack(t)
@@ -820,10 +707,6 @@ func fetchLogsBody(t *testing.T, s *logsStack, path string, cookie *http.Cookie)
 	return string(body)
 }
 
-// TestDefaultFilterAppliesOnBareURL — умолчание применяется на чистом заходе
-// в раздел: шумная запись скрыта, полезная видна, плашка о применении
-// показана (без неё сохранённое исключение тихо прячет логи во время
-// инцидента — худший сценарий для системы мониторинга).
 func TestDefaultFilterAppliesOnBareURL(t *testing.T) {
 	s, projectID, cookie := seedDefaultFilterCase(t)
 
@@ -839,16 +722,9 @@ func TestDefaultFilterAppliesOnBareURL(t *testing.T) {
 	}
 }
 
-// TestDefaultFilterSkippedWhenURLHasFilterParams — присутствие любого
-// параметра отбора в URL подавляет умолчание: присланная коллегой ссылка не
-// должна молча показать получателю не то, что видел отправитель.
 func TestDefaultFilterSkippedWhenURLHasFilterParams(t *testing.T) {
 	s, projectID, cookie := seedDefaultFilterCase(t)
 
-	// Перебор идёт по самому web.LogFilterParamsForTest (реэкспорт
-	// закрытого logFilterParams, см. logs_internal_test.go), а не по
-	// ручному подмножеству — новый параметр в списке автоматически
-	// попадает в проверку, разойтись молча они не смогут.
 	for _, name := range web.LogFilterParamsForTest {
 		qs := url.Values{name: {"x"}}.Encode()
 		html := fetchLogsBody(t, s, logsBasePath(projectID)+"?"+qs, cookie)
@@ -858,10 +734,6 @@ func TestDefaultFilterSkippedWhenURLHasFilterParams(t *testing.T) {
 	}
 }
 
-// TestDefaultFilterNotSuppressedByPaginationOrRange — параметры пагинации
-// (before/tskip), раскрытого фасета (facet) и окна времени (period) не
-// параметры отбора и умолчание не подавляют: по ним чистый заход не
-// отличить (окно задано всегда).
 func TestDefaultFilterNotSuppressedByPaginationOrRange(t *testing.T) {
 	s, projectID, cookie := seedDefaultFilterCase(t)
 
@@ -873,8 +745,6 @@ func TestDefaultFilterNotSuppressedByPaginationOrRange(t *testing.T) {
 	}
 }
 
-// extractShowAllHref достаёт href ссылки «показать всё» из плашки умолчания
-// в уже отрендеренном HTML (общий разбор для нескольких тестов ниже).
 func extractShowAllHref(t *testing.T, html string) string {
 	t.Helper()
 	idx := strings.Index(html, "logs-default-notice")
@@ -894,10 +764,6 @@ func extractShowAllHref(t *testing.T, html string) string {
 	return strings.ReplaceAll(html[start:start+end], "&amp;", "&")
 }
 
-// TestDefaultFilterShowAllLinkSuppressesDefault — ссылка «показать всё» на
-// плашке ведёт на адрес, который умолчание повторно не применит (пустой URL
-// для этого не годится — он снова включил бы умолчание), и на нём видна
-// запись, скрытая умолчанием.
 func TestDefaultFilterShowAllLinkSuppressesDefault(t *testing.T) {
 	s, projectID, cookie := seedDefaultFilterCase(t)
 
@@ -913,14 +779,6 @@ func TestDefaultFilterShowAllLinkSuppressesDefault(t *testing.T) {
 	}
 }
 
-// TestDefaultFilterFormCarriesSuppression — после перехода по ссылке
-// «показать всё» форма фильтров несёт скрытое поле nodefault: подавление
-// умолчания при повторном сабмите формы («Применить» без единого
-// заполненного условия отбора) обязано опираться на этот явный признак,
-// а не на случайность вида «пустые service=/environment=/q= тоже считаются
-// присутствующими параметрами» (web.hasLogFilterParams проверяет наличие
-// ключа, а не непустоту значения) — та случайность исчезла бы при замене
-// текстового поля на виджет, не сериализующий пустое значение.
 func TestDefaultFilterFormCarriesSuppression(t *testing.T) {
 	s, projectID, cookie := seedDefaultFilterCase(t)
 
@@ -932,22 +790,12 @@ func TestDefaultFilterFormCarriesSuppression(t *testing.T) {
 		t.Errorf("форма фильтров не несёт скрытое поле nodefault после «показать всё»: %s", after)
 	}
 
-	// Сабмит формы БЕЗ единого заполненного поля отбора — как если бы
-	// виджет не сериализовал пустые значения вовсе (в отличие от текущих
-	// текстовых <input>, которые браузер отправит пустыми ключами
-	// service=/environment=/q=). Единственное, на что вправе опереться
-	// повторное подавление умолчания в этом запросе, — скрытое поле
-	// nodefault, найденное выше.
 	resubmitted := fetchLogsBody(t, s, logsBasePath(projectID)+"?nodefault=1", cookie)
 	if strings.Contains(resubmitted, "logs-default-notice") {
 		t.Errorf("сабмит формы без заполненных полей воскресил умолчание")
 	}
 }
 
-// TestDefaultFilterNotApplicableSkipped — умолчание с неприменимым payload
-// (Applicable=false, неизвестная версия формата) не применяется и не
-// превращается молча в «фильтр без условий»: список остаётся полным,
-// плашки нет.
 func TestDefaultFilterNotApplicableSkipped(t *testing.T) {
 	s, projectID, cookie := seedDefaultFilterCase(t)
 

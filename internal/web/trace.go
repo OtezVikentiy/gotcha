@@ -12,12 +12,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// traceWaterfall — GET /traces/{trace_id}: waterfall трейса (дерево спанов с
-// полосами по времени) плюс красные маркеры спанов с привязанными ошибками.
-// Доступ — по проекту трейса: сначала резолвим trace_id → project_id
-// (ProjectForTrace), затем CanAccessProject; неизвестный трейс и трейс чужого
-// проекта дают одну и ту же 404 (не палим существование чужих trace_id, тот же
-// принцип, что и у issue/monitor).
 func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -25,33 +19,22 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Нормализуем как ingest.normalizeID (нижний регистр, обрезка пробелов):
-	// в БД trace_id всегда канонично лоуркейснут, так что trace_id из URL в
-	// другом регистре без этого давал бы ложный 404 для существующего трейса
-	// (P2-5 из аудита 2026-08-12; OffendingSpans в этом же пакете уже так
-	// нормализует span_ids).
+	// trace_id в БД всегда канонично лоуркейснут — без нормализации значение
+	// из URL в другом регистре даёт ложный 404 для существующего трейса.
 	traceID := strings.ToLower(strings.TrimSpace(r.PathValue("trace_id")))
 	if traceID == "" {
 		h.notFound(w, r)
 		return
 	}
 
-	// h.Trace может быть nil в стендах без трейсинга — тогда 404, а не паника
-	// при разыменовании (тот же guard, что и в traceFlame/performanceList).
 	if h.Trace == nil {
 		h.notFound(w, r)
 		return
 	}
 
-	// Откуда открыли трейс — нужно и ниже (состояния «спаны истекли» и
-	// «хранилище недоступно»), и в конце функции (обычный waterfall),
-	// поэтому разбираем один раз.
 	origin, originID, originTransaction := traceOrigin(r)
 
-	// «Трейса нет» и «ClickHouse не ответил» — разные состояния: первое —
-	// found=false без ошибки (404 ниже), второе — err (деградация: оболочка
-	// живая, вместо waterfall — «данные временно недоступны»). Проект в этом
-	// случае неизвестен — крошка к списку транзакций не рисуется.
+	// found=false — 404 ниже; err — ClickHouse недоступен, деградация без 404.
 	projectID, found, err := h.Trace.ProjectForTrace(r.Context(), traceID)
 	if err != nil {
 		h.renderTraceUnavailable(w, r, 0, traceID, origin, originID, originTransaction, err)
@@ -78,18 +61,8 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(spans) == 0 {
-		// ProjectForTrace нашёл трейс в transactions (TTL 90 дней), но в spans
-		// для него уже ничего нет — waterfall рисовать нечем. Это НЕ «страницы
-		// не существует» (для этого остаётся notFound выше, когда
-		// ProjectForTrace вообще не находит трейс), а отдельное состояние —
-		// осмысленная 404 с trace_id и куда вернуться, а не голая заглушка.
-		// Покрывает разом все ссылки на /traces/{id}: из списков медленных
-		// трейсов, issue-detail, perf-issue. h.SpanRetentionDays — настраиваемый
-		// TTL spans (GOTCHA_SPAN_RETENTION_DAYS, applies через
-		// db.ApplySpanRetention на каждом старте) — источник истины, а не
-		// trace.SpanRetentionDays (тот лишь дефолт первой установки); шаблон
-		// решает по нему, писать ли «истекли N дней» или нейтральный текст про
-		// удаление (retention=0 значит «вечно», то есть спаны пропали не по TTL).
+		// h.SpanRetentionDays (не trace.SpanRetentionDays — тот лишь дефолт
+		// первой установки) — актуальный TTL; 0 значит «вечно».
 		data := templates.TraceExpiredData{
 			ProjectID:       projectID,
 			TraceID:         traceID,
@@ -104,8 +77,7 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Маркеры ошибок: события этого трейса (issue_id + span_id). Events может
-	// быть nil в стендах, которым он не нужен, — тогда маркеров просто нет.
+	// h.Events может быть nil в стендах без него — тогда маркеров просто нет.
 	errIssues := map[string]int64{}
 	if h.Events != nil {
 		errs, err := h.Events.ByTraceID(r.Context(), projectID, traceID)
@@ -120,10 +92,8 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// totalUS — правый край шкалы: максимальный конец спана (StartUS+Dur), а не
-	// только длительность корня — дочерний спан теоретически может закончиться
-	// позже корня, полоса не должна вылезти за viewBox. Считаем в uint64 и
-	// насыщаем на UInt32.
+	// Конец последнего спана, не длительность корня: дочерний спан может
+	// закончиться позже корня. Считаем в uint64 и насыщаем на UInt32.
 	var maxEnd uint64
 	for _, s := range spans {
 		end := uint64(s.StartUS) + uint64(s.DurationUS)
@@ -136,8 +106,6 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 	}
 	totalUS := uint32(maxEnd)
 
-	// Имя транзакции для заголовка — описание корневого спана (writer кладёт в
-	// него имя транзакции). Нет корня — падаем на trace_id.
 	transaction := traceID
 	for _, s := range spans {
 		if s.ParentSpanID == "" {
@@ -151,9 +119,7 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 		shown = waterfallMaxRows
 	}
 
-	// Profiling-in-context (этап 8): показываем ссылку на flamegraph, если для
-	// этого трейса есть профиль. Best-effort — ошибка проверки не роняет
-	// waterfall, просто прячет ссылку.
+	// Best-effort: ошибка проверки профиля не роняет waterfall, просто прячет ссылку.
 	hasProfile := false
 	if h.Profiles != nil {
 		if ok, err := h.Profiles.HasProfileForTrace(r.Context(), projectID, traceID); err == nil {
@@ -172,17 +138,11 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 		TotalRows:   len(spans),
 		HasProfile:  hasProfile,
 	}
-	// Откуда открыли трейс — чтобы крошка вернула туда же, а не в список
-	// транзакций (разобрано один раз в начале функции — нужно и здесь, и в
-	// состоянии «спаны истекли» выше).
 	data.From, data.FromID, data.FromTransaction = origin, originID, originTransaction
 	_ = templates.TraceWaterfall(data, h.currentEmail(r)).Render(r.Context(), w)
 }
 
-// renderTraceUnavailable — страница трейса при отказе ClickHouse: крошка
-// назад и trace_id на месте, вместо waterfall — «данные временно
-// недоступны». 200, а не 500 (единый приём CH-страниц, образец — logsList);
-// 404 остаётся за «трейса нет» (ProjectForTrace: found=false без ошибки).
+// 200, а не 500: единый приём для CH-страниц, 404 остаётся за «трейса нет».
 func (h *Handler) renderTraceUnavailable(w http.ResponseWriter, r *http.Request, projectID int64, traceID, origin string, originID int64, originTransaction string, err error) {
 	slog.Warn("trace: waterfall failed", "project_id", projectID, "trace_id", traceID, "err", err)
 	data := templates.TraceExpiredData{
@@ -195,10 +155,6 @@ func (h *Handler) renderTraceUnavailable(w http.ResponseWriter, r *http.Request,
 	_ = templates.TraceUnavailable(data, h.currentEmail(r)).Render(r.Context(), w)
 }
 
-// traceFlame — GET /traces/{trace_id}/flame: flamegraph профиля, снятого во
-// время этого трейса (profiling-in-context, этап 8). Тот же контур доступа, что
-// waterfall (ProjectForTrace → 404 чужим/неизвестным). Нет профиля → flamegraph
-// с плейсхолдером «нет данных».
 func (h *Handler) traceFlame(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -209,15 +165,13 @@ func (h *Handler) traceFlame(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	// Нормализуем как в traceWaterfall (см. P2-5 из аудита 2026-08-12).
 	traceID := strings.ToLower(strings.TrimSpace(r.PathValue("trace_id")))
 	if traceID == "" {
 		h.notFound(w, r)
 		return
 	}
-	// Отказ ClickHouse (а не «трейса нет» — то found=false без ошибки, 404):
-	// оболочка и ссылка на waterfall на месте, вместо флеймграфа — «данные
-	// временно недоступны» (см. renderTraceUnavailable).
+	// err (не found=false) — ClickHouse недоступен: оболочка на месте,
+	// вместо флеймграфа «данные временно недоступны».
 	projectID, found, err := h.Trace.ProjectForTrace(r.Context(), traceID)
 	if err != nil {
 		h.renderTraceFlameUnavailable(w, r, 0, traceID, err)
@@ -249,16 +203,13 @@ func (h *Handler) traceFlame(w http.ResponseWriter, r *http.Request) {
 	_ = templates.TraceFlame(data, h.currentEmail(r)).Render(r.Context(), w)
 }
 
-// renderTraceFlameUnavailable — флеймграф трейса при отказе ClickHouse
-// (см. renderTraceUnavailable).
 func (h *Handler) renderTraceFlameUnavailable(w http.ResponseWriter, r *http.Request, projectID int64, traceID string, err error) {
 	slog.Warn("trace: flame failed", "project_id", projectID, "trace_id", traceID, "err", err)
 	data := templates.TraceFlameData{TraceID: traceID, LoadFailed: true}
 	_ = templates.TraceFlame(data, h.currentEmail(r)).Render(r.Context(), w)
 }
 
-// traceOrigin разбирает пометку об источнике перехода на страницу трейса.
-// Неизвестный источник игнорируется: значение пришло из адреса и не должно
+// Неизвестный источник игнорируется — значение пришло из URL и не должно
 // влиять на навигацию.
 func traceOrigin(r *http.Request) (origin string, id int64, transaction string) {
 	q := r.URL.Query()

@@ -5,33 +5,22 @@ import (
 	"fmt"
 )
 
-// metricDuration — метрика эндпойнтной регрессии (p95 длительности транзакции).
-// Прочие метрики — это web-vital'ы, у каждого свой абсолютный пол (см. Floor).
 const metricDuration = "duration"
 
-// defaultVitalFloor — пол для web-vital'а, которого нет в VitalFloor. Пол 0
-// означал бы «срабатывать всегда» (любой рост над базой), поэтому для
-// незнакомой метрики берём консервативные 200 (мс у ms-метрик) вместо нуля.
+// 0 означало бы «срабатывать всегда»; для незнакомой метрики берём
+// консервативные 200 вместо нуля.
 const defaultVitalFloor = 200
 
-// Границы числа недель сезонной истории. Клампинг [2,12] строго валидирует UI,
-// но при чтении битого jsonb значение вне диапазона заменяется дефолтом, чтобы
-// оценщик не получил мусор.
+// клампинг [2,12] здесь — защита от битого jsonb; строгую валидацию диапазона
+// делает UI при сохранении.
 const (
 	defaultSeasonalWeeks = 4
 	minSeasonalWeeks     = 2
 	maxSeasonalWeeks     = 12
 )
 
-// RegressionConfig — пороги детектора регрессий, приезжают из
-// projects.perf_regression_config. Это ДРУГОЙ механизм, чем DetectorConfig
-// этапа 3 (N+1/медленные запросы): здесь отслеживается рост p95/p75 над
-// скользящей базой.
-// json-теги РОВНО совпадают с regressionConfigJSON: настройки проекта
-// сохраняются через json.Marshal(RegressionConfig{...}) (см.
-// projectSettingsRegressions в web), и Marshal обязан выдать те же ключи, что
-// читает RegressionConfigFromJSON, — иначе опечатка молча перекрылась бы
-// дефолтом (как json-теги DetectorConfig этапа 3).
+// json-теги должны РОВНО совпадать с regressionConfigJSON — иначе опечатка в
+// Marshal молча перекроется дефолтом при чтении.
 type RegressionConfig struct {
 	ThresholdPct    float64            `json:"threshold_pct"`     // открытие: recent > base×(1+ThresholdPct)
 	RecoveryPct     float64            `json:"recovery_pct"`      // закрытие: recent ≤ base×(1+RecoveryPct); RecoveryPct < ThresholdPct (гистерезис)
@@ -44,8 +33,7 @@ type RegressionConfig struct {
 	SeasonalWeeks   int                `json:"seasonal_weeks"`    // сколько прошлых недель берётся в сезонный слот (медиана); [2,12]
 }
 
-// DefaultRegressionConfig — дефолты из спеки (§6). Пол обязателен: +100% на
-// 20→40 мс без него поднял бы ложную тревогу.
+// пол обязателен: +100% на 20→40 мс без него поднял бы ложную тревогу.
 func DefaultRegressionConfig() RegressionConfig {
 	return RegressionConfig{
 		ThresholdPct:    0.25,
@@ -66,10 +54,8 @@ func DefaultRegressionConfig() RegressionConfig {
 	}
 }
 
-// regressionConfigJSON — промежуточное представление для разбора. Поля —
-// указатели, чтобы отличить «ключ отсутствует» от «задан ноль»: у Enabled
-// дефолт true, и обычный bool не дал бы отличить missing (должен стать true) от
-// явного false.
+// поля — указатели, чтобы отличить «ключ отсутствует» от «явный ноль/false»
+// (у Enabled дефолт true).
 type regressionConfigJSON struct {
 	ThresholdPct    *float64           `json:"threshold_pct"`
 	RecoveryPct     *float64           `json:"recovery_pct"`
@@ -82,11 +68,8 @@ type regressionConfigJSON struct {
 	SeasonalWeeks   *int               `json:"seasonal_weeks"`
 }
 
-// RegressionConfigFromJSON парсит projects.perf_regression_config. Пустой/nil
-// вход — не ошибка (колонка по умолчанию '{}'), отсутствующий ключ заменяется
-// дефолтом (как ConfigFromJSON этапа 3). vital_floor перекрывает только
-// заданные метрики, остальные полы остаются дефолтными. При ошибке разбора
-// возвращаются дефолты вместе с ошибкой: вызывающий может продолжить на них.
+// пустой/nil вход — не ошибка; при ошибке разбора возвращаются дефолты вместе
+// с ошибкой, вызывающий может продолжить на них.
 func RegressionConfigFromJSON(raw []byte) (RegressionConfig, error) {
 	cfg := DefaultRegressionConfig()
 	if len(raw) == 0 {
@@ -130,8 +113,6 @@ func RegressionConfigFromJSON(raw []byte) (RegressionConfig, error) {
 	return cfg, nil
 }
 
-// Floor — абсолютный пол для метрики: duration → DurationFloorMs; иначе
-// VitalFloor[metric], а для незнакомой метрики — defaultVitalFloor (не 0).
 func (c RegressionConfig) Floor(metric string) float64 {
 	if metric == metricDuration {
 		return c.DurationFloorMs

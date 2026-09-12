@@ -14,8 +14,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// TestSecurityHeaders — любой ответ Handler'а несёт базовые security-заголовки
-// (securityHeaders оборачивает весь mux в Register).
 func TestSecurityHeaders(t *testing.T) {
 	s := newStack(t)
 
@@ -39,18 +37,13 @@ func TestSecurityHeaders(t *testing.T) {
 	if got := resp.Header.Get("Content-Security-Policy"); got != wantCSP {
 		t.Errorf("Content-Security-Policy = %q, want %q", got, wantCSP)
 	}
-	// newStack собирает Handler с http:// BaseURL (h.Secure == false) — HSTS
-	// на голом HTTP отправлять нельзя (см. securityHeaders). Проверяем
-	// присутствие КЛЮЧА в карте заголовков, а не Get() == "": Get() отдаёт ""
-	// и на отсутствующем ключе, и на Set(name, "") — вторая мутация выживала бы.
+	// Проверяем присутствие КЛЮЧА в карте, не Get() == "": Get() отдаёт "" и для отсутствующего
+	// заголовка, и для Set(name, "") — вторая мутация выживала бы.
 	if values, present := resp.Header["Strict-Transport-Security"]; present {
 		t.Errorf("Strict-Transport-Security on http:// deploy = %q, want no header at all", values)
 	}
 }
 
-// TestSecurityHeadersHSTS — HSTS выставляется только когда BaseURL Handler'а
-// начинается с https:// (h.Secure): проверяем это напрямую через
-// securityHeaders, не поднимая httptest.Server с реальным TLS.
 func TestSecurityHeadersHSTS(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	authSvc := auth.NewService(pool)
@@ -76,9 +69,6 @@ func TestSecurityHeadersHSTS(t *testing.T) {
 	}
 }
 
-// TestStyled404Page — незарегистрированный маршрут отдаёт 404 через layout
-// (не голый "404 page not found" от stdlib ServeMux), и тоже несёт
-// security-заголовки.
 func TestStyled404Page(t *testing.T) {
 	s := newStack(t)
 
@@ -103,10 +93,8 @@ func TestStyled404Page(t *testing.T) {
 	}
 }
 
-// TestSecurityHeadersHSTSVariants — что положили в Handler.HSTSHeader, то и
-// уходит в ответ на https-инстансе. Отдельная строка про max-age=0: это
-// аварийное снятие пина, и заголовок обязан ОТПРАВЛЯТЬСЯ, а не исчезнуть
-// (исчезнувший заголовок пин не снимает — браузер держит его год).
+// max-age=0 — аварийное снятие пина: заголовок обязан отправляться, а не исчезать (исчезнувший
+// заголовок пин не снимает — браузер держит его год).
 func TestSecurityHeadersHSTSVariants(t *testing.T) {
 	for _, tc := range []struct{ name, header, want string }{
 		{"empty means no header", "", ""},
@@ -124,10 +112,8 @@ func TestSecurityHeadersHSTSVariants(t *testing.T) {
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, httptest.NewRequest("GET", "/this-route-does-not-exist", nil))
 
-			// Пустое ожидание проверяется по ОТСУТСТВИЮ заголовка в карте, а не
-			// через Get: Get возвращает "" и для отсутствующего заголовка, и для
-			// выставленного пустым — Set(name, "") прошёл бы такую проверку
-			// незамеченным, а по сети ушёл бы пустой Strict-Transport-Security.
+			// Пустое ожидание проверяется по отсутствию заголовка в карте, не через Get: Get
+			// возвращает "" и для отсутствующего, и для выставленного пустым Set(name, "").
 			values, present := rec.Header()["Strict-Transport-Security"]
 			if tc.want == "" {
 				if present {
@@ -145,9 +131,6 @@ func TestSecurityHeadersHSTSVariants(t *testing.T) {
 	}
 }
 
-// TestSecurityHeadersHSTSNeverOnPlainHTTP — на http-инстансе заголовка нет
-// даже при полностью заполненном HSTSHeader: проверка h.Secure не зависит от
-// того, что подставил main.go.
 func TestSecurityHeadersHSTSNeverOnPlainHTTP(t *testing.T) {
 	h := web.New(nil, nil, nil, nil, "http://gotcha.example")
 	h.HSTSHeader = "max-age=31536000; includeSubDomains; preload"

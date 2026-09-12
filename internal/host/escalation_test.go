@@ -5,8 +5,6 @@ import (
 	"testing"
 )
 
-// TestIncidentServiceName проверяет, что ключ источника совпадает с
-// incident_source='host', зафиксированным в миграции 0077.
 func TestIncidentServiceName(t *testing.T) {
 	_, svc, _, _ := setupIncidentHost(t)
 	if got := svc.Name(); got != "host" {
@@ -14,10 +12,6 @@ func TestIncidentServiceName(t *testing.T) {
 	}
 }
 
-// TestIncidentServiceOpenUnacked дискриминирует «status='open' AND
-// acknowledged_at IS NULL»: открытый неподтверждённый инцидент попадает в
-// выборку с верными полями; после Acknowledge — пропадает; отдельный
-// resolved-инцидент в выборку не попадает вовсе.
 func TestIncidentServiceOpenUnacked(t *testing.T) {
 	pool, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
@@ -48,7 +42,6 @@ func TestIncidentServiceOpenUnacked(t *testing.T) {
 		t.Fatalf("OpenUnacked[0].EscalationLevel = %d, want 0", got.EscalationLevel)
 	}
 
-	// Второй открытый инцидент другого вида — resolved не должен попасть в выборку.
 	resolved, _, err := svc.Open(ctx, projectID, hostID, "memory", 0.9, "oom soon", false)
 	if err != nil {
 		t.Fatalf("Open(memory): %v", err)
@@ -63,7 +56,6 @@ func TestIncidentServiceOpenUnacked(t *testing.T) {
 		t.Fatalf("OpenUnacked после Resolve = %+v/%v, want только disk-инцидент", list, err)
 	}
 
-	// Acknowledge гасит инцидент из выборки.
 	var userID int64
 	if err := pool.QueryRow(ctx,
 		"INSERT INTO users (email, password_hash) VALUES ($1,'x') RETURNING id", "host-esc-ack@e.com").
@@ -78,9 +70,6 @@ func TestIncidentServiceOpenUnacked(t *testing.T) {
 	}
 }
 
-// TestIncidentServiceBumpEscalation проверяет атомарность продвижения
-// escalation_level: успешный бамп двигает level и last_escalated_at,
-// повторный бамп с устаревшим from — идемпотентный no-op (ok=false).
 func TestIncidentServiceBumpEscalation(t *testing.T) {
 	pool, svc, projectID, hostID := setupIncidentHost(t)
 	ctx := context.Background()
@@ -108,7 +97,6 @@ func TestIncidentServiceBumpEscalation(t *testing.T) {
 		t.Fatal("last_escalated_at после BumpEscalation(0) = nil, want заполнено")
 	}
 
-	// Устаревший from (гонка/повтор тика) — ok=false, level не двигается.
 	ok, err = svc.BumpEscalation(ctx, in.ID, 0)
 	if err != nil || ok {
 		t.Fatalf("повторный BumpEscalation(0) = (%v,%v), want (false,nil)", ok, err)
@@ -121,7 +109,6 @@ func TestIncidentServiceBumpEscalation(t *testing.T) {
 		t.Fatalf("escalation_level после устаревшего BumpEscalation = %d, want 1 (не сдвинулся)", level)
 	}
 
-	// Следующий шаг с верным from — снова успех.
 	ok, err = svc.BumpEscalation(ctx, in.ID, 1)
 	if err != nil || !ok {
 		t.Fatalf("BumpEscalation(1) = (%v,%v), want (true,nil)", ok, err)

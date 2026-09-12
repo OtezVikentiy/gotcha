@@ -14,11 +14,9 @@ func TestTLookupAndFallback(t *testing.T) {
 	if got := T(en, "nav.projects"); got != "Projects" {
 		t.Fatalf("en nav.projects = %q", got)
 	}
-	// нет локали в ctx → Default (ru)
 	if got := T(context.Background(), "action.logout"); got != "Выйти" {
 		t.Fatalf("default action.logout = %q", got)
 	}
-	// отсутствующий ключ → сам ключ (видимый маркер)
 	if got := T(en, "no.such.key"); got != "no.such.key" {
 		t.Fatalf("missing key = %q", got)
 	}

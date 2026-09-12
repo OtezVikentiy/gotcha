@@ -1,14 +1,10 @@
 package oauth
 
-// Registry — включённые на инсталляции провайдеры в порядке объявления
-// (порядок кнопок на /login). Собирается в cmd/gotcha/main.go из Config.
 type Registry struct {
 	order  []Provider
 	byName map[string]Provider
 }
 
-// NewRegistry строит реестр; дубликат Name — ошибка сборки (panic): такого не
-// должно случаться при корректной конфигурации.
 func NewRegistry(providers ...Provider) *Registry {
 	r := &Registry{byName: make(map[string]Provider, len(providers))}
 	for _, p := range providers {

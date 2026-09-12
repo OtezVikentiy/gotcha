@@ -15,9 +15,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// waitOutboxPending polls notification_outbox for a pending count >= want,
-// returning early once satisfied, or leaves the caller to observe the final
-// count once the deadline elapses (used both to prove presence and absence).
+// Опрашивает outbox до достижения want или дедлайна — годится и для
+// доказательства присутствия, и отсутствия (по итоговому счётчику).
 func waitOutboxPending(t *testing.T, pool *pgxpool.Pool, want int, timeout time.Duration) int {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -51,10 +50,8 @@ func TestSpikeDetectsThresholdBreach(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 	if _, err := svc.UpsertRule(ctx, alert.Rule{
-		// ThrottleMinutes=30 (not 0/"no throttle"): the spike condition stays
-		// true for the rest of the test's short lifetime, and Spike ticks
-		// every 20ms, so without a throttle window every tick after the
-		// first would enqueue another duplicate job.
+		// 30, не 0 — условие спайка держится всю жизнь теста, и без троттлинга
+		// каждый 20-мс тик после первого дал бы дубль.
 		ProjectID: pid, Kind: alert.KindSpike, Enabled: true, Threshold: 3, WindowMinutes: 10, ThrottleMinutes: 30,
 	}); err != nil {
 		t.Fatalf("UpsertRule: %v", err)
@@ -132,10 +129,8 @@ func TestSpikeBelowThresholdSendsNothing(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 	if _, err := svc.UpsertRule(ctx, alert.Rule{
-		// ThrottleMinutes=30 (not 0/"no throttle"): the spike condition stays
-		// true for the rest of the test's short lifetime, and Spike ticks
-		// every 20ms, so without a throttle window every tick after the
-		// first would enqueue another duplicate job.
+		// 30, не 0 — условие спайка держится всю жизнь теста, и без троттлинга
+		// каждый 20-мс тик после первого дал бы дубль.
 		ProjectID: pid, Kind: alert.KindSpike, Enabled: true, Threshold: 3, WindowMinutes: 10, ThrottleMinutes: 30,
 	}); err != nil {
 		t.Fatalf("UpsertRule: %v", err)
@@ -173,7 +168,6 @@ func TestSpikeBelowThresholdSendsNothing(t *testing.T) {
 		close(done)
 	}()
 
-	// Give several ticks a chance to run, then confirm nothing was enqueued.
 	n := waitOutboxPending(t, pool, 1, 300*time.Millisecond)
 	spCancel()
 	<-done

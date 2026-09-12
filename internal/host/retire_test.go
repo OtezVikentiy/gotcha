@@ -14,8 +14,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// fakeRetireNotifier — host.RetireNotifier для тестов: копит вызовы и умеет
-// падать (модель недоступного канала/outbox).
 type fakeRetireNotifier struct {
 	mu      sync.Mutex
 	retired []retireCall
@@ -43,7 +41,6 @@ func (f *fakeRetireNotifier) calls() []retireCall {
 	return append([]retireCall(nil), f.retired...)
 }
 
-// incidentRow читает статус и флаг уведомления инцидента напрямую.
 func incidentRow(t *testing.T, pool *pgxpool.Pool, id int64) (status string, resolved bool, notifiedClose bool) {
 	t.Helper()
 	var resolvedAt *time.Time
@@ -65,7 +62,6 @@ func hostExists(t *testing.T, pool *pgxpool.Pool, id int64) bool {
 	return n > 0
 }
 
-// openIncident открывает инцидент вида kind у хоста.
 func openIncident(t *testing.T, svc *host.IncidentService, projectID int64, h host.Host, kind string) host.Incident {
 	t.Helper()
 	in, created, err := svc.Open(context.Background(), projectID, h.ID, kind, 0.99, "", false)
@@ -75,10 +71,6 @@ func openIncident(t *testing.T, svc *host.IncidentService, projectID int64, h ho
 	return in
 }
 
-// TestRetirerClosesAndAnnouncesOpenIncidents — решение владельца на приёмке
-// A1: истёкший хост не должен исчезать молча. Открытые инциденты закрываются,
-// о снятии с наблюдения уходит уведомление — и только после этого чистильщик
-// удаляет строку.
 func TestRetirerClosesAndAnnouncesOpenIncidents(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -89,9 +81,6 @@ func TestRetirerClosesAndAnnouncesOpenIncidents(t *testing.T) {
 	projectID := seedEvalProject(t, pool)
 	h := seedEvalHost(t, pool, projectID, "retire-me")
 
-	// Мёртвый сервер держит открытыми сразу несколько порогов: оценщик считает
-	// только живые хосты, поэтому disk/load остаются висеть с последнего
-	// живого тика, а сверху добавляется «Тишина».
 	silent := openIncident(t, incidents, projectID, h, "silent")
 	disk := openIncident(t, incidents, projectID, h, "disk")
 
@@ -123,9 +112,6 @@ func TestRetirerClosesAndAnnouncesOpenIncidents(t *testing.T) {
 	}
 }
 
-// TestRetirerSilentForHostWithoutIncidents — хост, о котором рассказывать
-// нечего, снимается молча: уведомление о снятии имеет смысл только как
-// закрытие открытого инцидента.
 func TestRetirerSilentForHostWithoutIncidents(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -133,8 +119,6 @@ func TestRetirerSilentForHostWithoutIncidents(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	projectID := seedEvalProject(t, pool)
 	h := seedEvalHost(t, pool, projectID, "no-incidents")
-	// Закрытый инцидент уведомления тоже не порождает — о нём уже сообщали,
-	// когда он закрывался.
 	closed := openIncident(t, host.NewIncidentService(pool), projectID, h, "disk")
 	if _, err := host.NewIncidentService(pool).Resolve(context.Background(), closed.ID, 0.5); err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -151,10 +135,6 @@ func TestRetirerSilentForHostWithoutIncidents(t *testing.T) {
 	}
 }
 
-// TestRetirerKeepsIncidentOpenWhenNotifyFails — порядок «сначала сообщить,
-// потом закрыть». Провал уведомления обязан оставить инцидент ОТКРЫТЫМ: иначе
-// следующий проход не нашёл бы, о чём рассказывать, и удалил бы хост молча —
-// ровно то, что этот механизм и предотвращает.
 func TestRetirerKeepsIncidentOpenWhenNotifyFails(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -177,10 +157,6 @@ func TestRetirerKeepsIncidentOpenWhenNotifyFails(t *testing.T) {
 	}
 }
 
-// TestEntityJanitorRetiresHostsBeforeDelete — сцепка целиком, как в main.go:
-// правило hosts чистильщика с хуком host.Retirer. Проверяется весь порядок —
-// уведомление, закрытие, удаление, — потому что по отдельности каждая часть
-// зелёная и в неправильном порядке.
 func TestEntityJanitorRetiresHostsBeforeDelete(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -230,10 +206,6 @@ func TestEntityJanitorRetiresHostsBeforeDelete(t *testing.T) {
 	}
 }
 
-// TestEntityJanitorKeepsHostWhenRetireFails — провал снятия отменяет удаление
-// батча: хост доживает до следующего прохода вместе со своим инцидентом.
-// Соседнее правило (host_incidents) при этом отрабатывает — отказ одного
-// правила не отменяет остальные.
 func TestEntityJanitorKeepsHostWhenRetireFails(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

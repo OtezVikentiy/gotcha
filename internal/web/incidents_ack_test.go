@@ -23,10 +23,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// ackStack — стенд ack-эндпоинта (B4, T10): только PG, все 5 инцидент-
-// сторов проведены на одном Handler — incidentAck диспатчит на них по
-// {source}, не нуждаясь в ClickHouse (в отличие от hostsStack, которому CH
-// нужен ради Metrics на самой карточке хоста).
 type ackStack struct {
 	pool    *pgxpool.Pool
 	srv     *httptest.Server
@@ -42,10 +38,8 @@ type ackStack struct {
 	uptimeS *uptime.Service
 }
 
-// seedMonitor — заводит монитор напрямую SQL (не через uptime.Service.Create):
-// ack-стенду не нужны ни валидные HTTP/DNS/TCP-настройки, ни шифрование
-// заголовков — только строка в monitors, на которую можно повесить инцидент
-// через uptime.Service.OpenIncident (FK monitor_id).
+// SQL напрямую, не uptime.Service.Create: не нужны валидные HTTP/DNS/TCP-настройки —
+// только строка, на которую можно повесить инцидент через OpenIncident (FK monitor_id).
 func (s *ackStack) seedMonitor(t *testing.T, projectID int64, name string) int64 {
 	t.Helper()
 	var id int64
@@ -90,9 +84,7 @@ func newAckStack(t *testing.T) *ackStack {
 		hosts: hostsStore, hostInc: hostInc, metInc: metInc, traceR: traceR, profR: profR, sloSt: sloSt, uptimeS: uptimeS}
 }
 
-// seedHost — заводит хост через host.Store.Upsert (как остальные web-тесты
-// хостов), а не руками через INSERT — не завязываемся на набор колонок
-// таблицы hosts помимо контракта Store.
+// Через host.Store.Upsert, не INSERT: не завязываемся на набор колонок помимо контракта Store.
 func (s *ackStack) seedHost(t *testing.T, projectID int64, name string) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -111,9 +103,6 @@ func ackPath(projectID int64, source string, incidentID int64) string {
 		"/incidents/" + source + "/" + strconv.FormatInt(incidentID, 10) + "/ack"
 }
 
-// TestWebIncidentAckDispatch — один POST на каждый из 5 источников
-// подтверждает СВОЙ инцидент (диспатч по {source} на верный стор) и
-// редиректит 303 на Referer.
 func TestWebIncidentAckDispatch(t *testing.T) {
 	s := newAckStack(t)
 	ctx := context.Background()
@@ -128,14 +117,12 @@ func TestWebIncidentAckDispatch(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	// host
 	hostID := s.seedHost(t, project.ID, "h1")
 	hostInc, _, err := s.hostInc.Open(ctx, project.ID, hostID, "disk", 0.95, "/var", false)
 	if err != nil {
 		t.Fatalf("open host incident: %v", err)
 	}
 
-	// metric
 	rule, err := metric.NewRuleService(s.pool).Create(ctx, metric.Rule{
 		ProjectID: project.ID, MetricName: "cpu", Aggregation: "avg", Comparator: "gt",
 		Threshold: 90, WindowSeconds: 300, Enabled: true,
@@ -148,19 +135,16 @@ func TestWebIncidentAckDispatch(t *testing.T) {
 		t.Fatalf("open metric incident: %v", err)
 	}
 
-	// trace
 	traceReg, _, err := s.traceR.Open(ctx, project.ID, "endpoint_p95", "GET /x", "duration", 100, 300, false)
 	if err != nil {
 		t.Fatalf("open trace regression: %v", err)
 	}
 
-	// profile
 	profReg, _, err := s.profR.Open(ctx, project.ID, "api", "cpu", "hot()", 0.1, 0.3, false)
 	if err != nil {
 		t.Fatalf("open profile regression: %v", err)
 	}
 
-	// slo
 	sloDef, err := s.sloSt.Create(ctx, slo.SLO{
 		ProjectID: project.ID, Name: "ack-slo", Kind: slo.SLIAvailability, Target: 0.99,
 		WindowDays: 30, BurnThreshold: 14.4, BurnLongMin: 60, BurnShortMin: 5, Enabled: true,
@@ -174,7 +158,6 @@ func TestWebIncidentAckDispatch(t *testing.T) {
 		t.Fatalf("open slo incident: %v", err)
 	}
 
-	// uptime (W2-C находка 2)
 	monID := s.seedMonitor(t, project.ID, "m1")
 	uptimeInc, _, err := s.uptimeS.OpenIncident(ctx, monID, "connection refused", []string{"eu"}, false)
 	if err != nil {
@@ -221,7 +204,6 @@ func TestWebIncidentAckDispatch(t *testing.T) {
 		t.Errorf("uptime incident not acked: %+v err=%v", got, err)
 	}
 
-	// Повторный ack — идемпотентно, тот же редирект, без ошибки (T10 §1).
 	resp := postForm(t, s.srv, ackPath(project.ID, "host", hostInc.ID), url.Values{}, s.srv.URL, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -230,7 +212,6 @@ func TestWebIncidentAckDispatch(t *testing.T) {
 	}
 }
 
-// TestWebIncidentAckUnknownSource — {source} вне пяти известных → 404.
 func TestWebIncidentAckUnknownSource(t *testing.T) {
 	s := newAckStack(t)
 	ctx := context.Background()
@@ -252,8 +233,6 @@ func TestWebIncidentAckUnknownSource(t *testing.T) {
 	}
 }
 
-// TestWebIncidentAckCrossOrigin — POST без совпадающего Origin → 403, а не
-// диспатч на стор (sameOrigin — первая проверка хендлера).
 func TestWebIncidentAckCrossOrigin(t *testing.T) {
 	s := newAckStack(t)
 	ctx := context.Background()
@@ -283,12 +262,8 @@ func TestWebIncidentAckCrossOrigin(t *testing.T) {
 	}
 }
 
-// TestWebIncidentAckCrossTenant — оператор проекта B не подтверждает
-// инцидент проекта A подобранным id (project_id в WHERE Acknowledge,
-// defense-in-depth, зеркало uptime.DeleteWindow B3): путь несёт {id}=B,
-// инцидент принадлежит A → Acknowledge WHERE project_id=B не найдёт строку,
-// ok=false, редирект успешный (идемпотентно), но инцидент A остаётся
-// неподтверждённым.
+// {id}=B несёт инцидент проекта A: Acknowledge WHERE project_id=B не найдёт строку, ok=false,
+// редирект успешный (идемпотентно), но инцидент A остаётся неподтверждённым.
 func TestWebIncidentAckCrossTenant(t *testing.T) {
 	s := newAckStack(t)
 	ctx := context.Background()
@@ -318,13 +293,9 @@ func TestWebIncidentAckCrossTenant(t *testing.T) {
 		t.Fatalf("create project B: %v", err)
 	}
 
-	// Оператор B, путь несёт {id}=B, incident_id — инцидент проекта A.
 	resp := postForm(t, s.srv, ackPath(projectB.ID, "host", inc.ID), url.Values{}, s.srv.URL, ownerBCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	// Оператор B авторизован на своём проекте B — гейт requireProjectOperator
-	// пропускает (это его проект), а cross-tenant отсекает Acknowledge внутри
-	// (project_id в WHERE) — идемпотентный редирект, не ошибка.
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("cross-tenant ack: status = %d, want 303: %s", resp.StatusCode, body)
 	}

@@ -1,25 +1,15 @@
-// Package slo реализует SLO/SLI + error budget: определения целей качества,
-// инциденты сжигания бюджета (burn rate) и связанную математику/оценщик.
-//
-// ЛОВУШКА: internal/alert/budget.go — это rate-limit УВЕДОМЛЕНИЙ, а НЕ error
-// budget. К этому пакету он отношения не имеет.
 package slo
 
 import "time"
 
-// SLIKind — тип индикатора уровня сервиса (SLI), на котором строится SLO.
 type SLIKind string
 
 const (
-	// SLIAvailability — доля успешных транзакций (good/total) за окно.
 	SLIAvailability SLIKind = "availability"
-	// SLILatency — доля транзакций быстрее порога ThresholdMS.
-	SLILatency SLIKind = "latency"
-	// SLIUptime — доля успешных проверок uptime-монитора.
-	SLIUptime SLIKind = "uptime"
+	SLILatency      SLIKind = "latency"
+	SLIUptime       SLIKind = "uptime"
 )
 
-// SLO — определение цели уровня сервиса на скользящем окне WindowDays.
 type SLO struct {
 	ID          int64
 	ProjectID   int64
@@ -41,7 +31,6 @@ type SLO struct {
 	UpdatedAt time.Time
 }
 
-// Incident — открытый или закрытый инцидент сжигания бюджета SLO.
 type Incident struct {
 	ID              int64
 	SLOID           int64

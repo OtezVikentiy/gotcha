@@ -11,11 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// TestRegressionOpenConcurrentOnlyOneWins: инвариант «один открытый инцидент на
-// цель» под гонкой. N горутин одновременно зовут Open по одной цели — ровно одна
-// должна получить created=true и в таблице должна остаться ровно одна строка
-// (частичный уникальный индекс — арбитр ON CONFLICT). Именно на этом инварианте
-// план 4 шлёт алерт открытия — если бы двое получили created=true, был бы дубль.
 func TestRegressionOpenConcurrentOnlyOneWins(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := trace.NewRegressionService(pool)
@@ -66,8 +61,6 @@ func TestRegressionOpenConcurrentOnlyOneWins(t *testing.T) {
 	}
 }
 
-// TestRegressionOpenIdempotent: первый Open создаёт (created=true), второй по той
-// же цели — нет (created=false), строка одна.
 func TestRegressionOpenIdempotent(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := trace.NewRegressionService(pool)
@@ -110,10 +103,6 @@ func TestRegressionOpenIdempotent(t *testing.T) {
 	}
 }
 
-// TestRegressionAcknowledge — B4: Acknowledge на открытом инциденте ставит
-// acknowledged_at/acknowledged_by и возвращает ok=true; повторный вызов и
-// вызов на закрытом инциденте — идемпотентно ok=false. scan (List) после ack
-// отдаёт заполненные поля, до ack — nil.
 func TestRegressionAcknowledge(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := trace.NewRegressionService(pool)
@@ -150,12 +139,10 @@ func TestRegressionAcknowledge(t *testing.T) {
 		t.Fatalf("после Acknowledge: AcknowledgedBy = %v, want %d", list[0].AcknowledgedBy, userID)
 	}
 
-	// Повторный ack — идемпотентно ok=false.
 	if ok2, err := svc.Acknowledge(ctx, rec.ID, pid, userID); err != nil || ok2 {
 		t.Fatalf("повторный Acknowledge = (%v,%v), want (false,nil)", ok2, err)
 	}
 
-	// Acknowledge закрытого инцидента — ok=false.
 	if _, err := svc.Resolve(ctx, rec.ID, 50); err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -171,8 +158,6 @@ func TestRegressionAcknowledge(t *testing.T) {
 	}
 }
 
-// TestRegressionAcknowledgeForeignProject — project_id — часть WHERE
-// Acknowledge (defense-in-depth, зеркало uptime.DeleteWindow, B3).
 func TestRegressionAcknowledgeForeignProject(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := trace.NewRegressionService(pool)
@@ -202,7 +187,6 @@ func TestRegressionAcknowledgeForeignProject(t *testing.T) {
 	}
 }
 
-// TestRegressionBump: current обновляется, peak = max(peak, current).
 func TestRegressionBump(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := trace.NewRegressionService(pool)
@@ -215,7 +199,6 @@ func TestRegressionBump(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 
-	// Рост: peak и current идут вверх.
 	if err := svc.Bump(ctx, rec.ID, 300); err != nil {
 		t.Fatalf("Bump up: %v", err)
 	}
@@ -227,7 +210,6 @@ func TestRegressionBump(t *testing.T) {
 		t.Fatalf("after up: cur %v peak %v, want 300/300", got.CurrentValue, got.PeakValue)
 	}
 
-	// Спад: current вниз, peak держит максимум.
 	if err := svc.Bump(ctx, rec.ID, 150); err != nil {
 		t.Fatalf("Bump down: %v", err)
 	}
@@ -240,8 +222,6 @@ func TestRegressionBump(t *testing.T) {
 	}
 }
 
-// TestRegressionResolveIdempotent: Resolve закрывает (status/resolved_at),
-// повторный Resolve → false, после закрытия можно открыть новый по той же цели.
 func TestRegressionResolveIdempotent(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := trace.NewRegressionService(pool)
@@ -282,7 +262,6 @@ func TestRegressionResolveIdempotent(t *testing.T) {
 		t.Fatalf("Resolve 2: ok = true, want false (already resolved)")
 	}
 
-	// После закрытия частичный индекс свободен — новый open по той же цели.
 	rec3, created3, err := svc.Open(ctx, pid, "endpoint_p95", "GET /y", "duration", 100, 300, false)
 	if err != nil {
 		t.Fatalf("Open after resolve: %v", err)
@@ -295,7 +274,6 @@ func TestRegressionResolveIdempotent(t *testing.T) {
 	}
 }
 
-// TestRegressionOpenFor: находит открытый, не находит закрытый.
 func TestRegressionOpenFor(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := trace.NewRegressionService(pool)
@@ -325,8 +303,6 @@ func TestRegressionOpenFor(t *testing.T) {
 	}
 }
 
-// TestRegressionMarkNotified: open=true → notified_open, open=false →
-// notified_close; неизвестный id → ErrNotFound.
 func TestRegressionMarkNotified(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := trace.NewRegressionService(pool)
@@ -358,8 +334,6 @@ func TestRegressionMarkNotified(t *testing.T) {
 	}
 }
 
-// TestRegressionPartialIndex: две РАЗНЫЕ цели одного проекта → два инцидента; та
-// же цель дважды open → одна строка (частичный уникальный индекс).
 func TestRegressionPartialIndex(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := trace.NewRegressionService(pool)
@@ -368,7 +342,6 @@ func TestRegressionPartialIndex(t *testing.T) {
 
 	pid := newPerfProject(t, pool, "reg-index")
 
-	// Разные метрики одной цели — тоже разные цели индекса (project,target,metric).
 	if _, c, err := svc.Open(ctx, pid, "endpoint_p95", "GET /a", "duration", 1, 2, false); err != nil || !c {
 		t.Fatalf("Open a/duration: c=%v err=%v", c, err)
 	}
@@ -378,7 +351,6 @@ func TestRegressionPartialIndex(t *testing.T) {
 	if _, c, err := svc.Open(ctx, pid, "endpoint_p95", "GET /b", "duration", 1, 2, false); err != nil || !c {
 		t.Fatalf("Open b/duration: c=%v err=%v", c, err)
 	}
-	// Дубль по (a,duration) — не создаётся.
 	if _, c, err := svc.Open(ctx, pid, "endpoint_p95", "GET /a", "duration", 1, 2, false); err != nil || c {
 		t.Fatalf("Open a/duration dup: c=%v err=%v, want created=false", c, err)
 	}
@@ -393,7 +365,6 @@ func TestRegressionPartialIndex(t *testing.T) {
 	}
 }
 
-// TestRegressionList: регрессии проекта, свежайшие первыми.
 func TestRegressionList(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := trace.NewRegressionService(pool)

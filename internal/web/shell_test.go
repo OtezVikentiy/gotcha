@@ -24,7 +24,6 @@ func TestWithShellSkipsStaticAndAnonymous(t *testing.T) {
 	})
 	mw := h.withShell(next)
 
-	// /static/* — миддлвара пропускает без резолвинга.
 	seen = nav.Shell{}
 	rs := httptest.NewRequest("GET", "/static/app.css", nil)
 	mw.ServeHTTP(httptest.NewRecorder(), rs)
@@ -32,7 +31,6 @@ func TestWithShellSkipsStaticAndAnonymous(t *testing.T) {
 		t.Fatalf("static should skip resolve, got area = %q", seen.Area)
 	}
 
-	// Запрос без сессии — тоже без shell, и не паникует на nil Auth/Org.
 	seen = nav.Shell{}
 	r := httptest.NewRequest("GET", "/projects/1/issues", nil)
 	mw.ServeHTTP(httptest.NewRecorder(), r)
@@ -41,7 +39,6 @@ func TestWithShellSkipsStaticAndAnonymous(t *testing.T) {
 	}
 }
 
-// projCookieHeader — значение Set-Cookie "proj" из ответа; "" — не ставилась.
 func projCookieHeader(w *httptest.ResponseRecorder) string {
 	for _, c := range w.Result().Cookies() {
 		if c.Name == "proj" {
@@ -51,10 +48,6 @@ func projCookieHeader(w *httptest.ResponseRecorder) string {
 	return ""
 }
 
-// TestWithShellStickyProject — «липкость» выбранного проекта: страница с
-// /projects/{id} в пути запоминает проект в cookie, а страницы без проекта в
-// пути (детали issue, /docs, /profile, организация) берут его из cookie
-// вместо отката на первый проект списка.
 func TestWithShellStickyProject(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	authSvc := auth.NewService(pool)
@@ -102,7 +95,6 @@ func TestWithShellStickyProject(t *testing.T) {
 
 	p2str := strconv.FormatInt(p2.ID, 10)
 
-	// Явный проект в пути → выбор запоминается в cookie.
 	w := get("/projects/"+p2str+"/issues", "")
 	if seen.ProjectID != p2.ID {
 		t.Fatalf("ProjectID = %d, want %d (from path)", seen.ProjectID, p2.ID)
@@ -111,13 +103,11 @@ func TestWithShellStickyProject(t *testing.T) {
 		t.Fatalf("proj cookie after project page = %q, want %q", got, p2str)
 	}
 
-	// Cookie уже актуальна → повторно не переустанавливается.
 	w = get("/projects/"+p2str+"/issues", p2str)
 	if got := projCookieHeader(w); got != "" {
 		t.Fatalf("proj cookie rewritten to %q, want no Set-Cookie", got)
 	}
 
-	// Страница без проекта в пути → проект из cookie, а не первый из списка.
 	w = get("/issues/9", p2str)
 	if seen.ProjectID != p2.ID {
 		t.Fatalf("ProjectID on detail page = %d, want %d (sticky)", seen.ProjectID, p2.ID)
@@ -126,21 +116,19 @@ func TestWithShellStickyProject(t *testing.T) {
 		t.Fatalf("detail page must not touch proj cookie, got %q", got)
 	}
 
-	// Битое значение cookie → игнорируется, откат на прежнее поведение.
 	get("/issues/9", "garbage")
 	if seen.ProjectID != 0 {
 		t.Fatalf("ProjectID with garbage cookie = %d, want 0", seen.ProjectID)
 	}
 
-	// Проект, к которому нет доступа (или несуществующий) → игнорируется.
 	foreign := strconv.FormatInt(p2.ID+12345, 10)
 	get("/issues/9", foreign)
 	if seen.ProjectID != 0 {
 		t.Fatalf("ProjectID with foreign cookie = %d, want 0", seen.ProjectID)
 	}
 
-	// Чужой/несуществующий проект в ПУТИ не должен портить cookie: хендлер
-	// ответит 404, но запомненный выбор обязан пережить такой заход.
+	// Чужой/несуществующий проект в пути не должен портить cookie: хендлер ответит 404, но
+	// запомненный выбор обязан пережить такой заход.
 	w = get("/projects/"+foreign+"/issues", p2str)
 	if got := projCookieHeader(w); got != "" {
 		t.Fatalf("foreign project in path wrote proj cookie %q, want none", got)
@@ -149,10 +137,8 @@ func TestWithShellStickyProject(t *testing.T) {
 	_ = p1 // первый проект нужен только как «дефолт», к которому не должно откатывать
 }
 
-// TestWithShellNarrowsProjectsByOrg — топбар (задача 4 nav-ia): sh.Orgs несёт
-// все организации пользователя, а sh.Projects сужается ВЫБРАННОЙ (OrgID) —
-// иначе селект организации и переключатель проекта под ним противоречили бы
-// друг другу (организация одна, а список проектов — из всех сразу).
+// sh.Orgs несёт все организации, sh.Projects сужается ВЫБРАННОЙ (OrgID) — иначе селект
+// организации и переключатель проекта под ним противоречили бы друг другу.
 func TestWithShellNarrowsProjectsByOrg(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	authSvc := auth.NewService(pool)
@@ -197,30 +183,23 @@ func TestWithShellNarrowsProjectsByOrg(t *testing.T) {
 		mw.ServeHTTP(httptest.NewRecorder(), r)
 	}
 
-	// sh.Orgs — обе организации, независимо от того, какая выбрана путём.
 	get("/projects/" + strconv.FormatInt(projA.ID, 10) + "/issues")
 	if len(seen.Orgs) != 2 {
 		t.Fatalf("Orgs = %+v, want 2", seen.Orgs)
 	}
 
-	// Выбор проекта A (через путь) резолвит orgID = orgA → sh.Projects несёт
-	// только проекты orgA, не projB из orgB.
 	if len(seen.Projects) != 1 || seen.Projects[0].ID != projA.ID {
 		t.Fatalf("Projects with orgA selected = %+v, want only projA", seen.Projects)
 	}
 
-	// Симметрично для orgB.
 	get("/projects/" + strconv.FormatInt(projB.ID, 10) + "/issues")
 	if len(seen.Projects) != 1 || seen.Projects[0].ID != projB.ID {
 		t.Fatalf("Projects with orgB selected = %+v, want only projB", seen.Projects)
 	}
 }
 
-// TestWithShellDropsForeignOrgProjectCookie — I1: projID из cookie может
-// принадлежать другой организации, чем та, что видна из пути
-// (/orgs/{A}/... с кукой на проект организации B). Без сброса шапка
-// (OrgID=A, Projects — проекты A) и рейл (effectiveProjectID — застрявший
-// на B) расходятся молча: любая иконка рейла вела бы в чужую организацию.
+// projID из cookie может относиться к другой организации, чем видна из пути — без сброса
+// шапка и рейл расходятся молча, и рейл ведёт в чужую организацию.
 func TestWithShellDropsForeignOrgProjectCookie(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	authSvc := auth.NewService(pool)
@@ -274,10 +253,8 @@ func TestWithShellDropsForeignOrgProjectCookie(t *testing.T) {
 	}
 	projAPart := "/projects/" + strconv.FormatInt(projA.ID, 10) + "/"
 	projBPart := "/projects/" + strconv.FormatInt(projB.ID, 10) + "/"
-	// Рейл (nav.Areas, effectiveProjectID) должен откатиться на первый
-	// проект ТЕКУЩЕЙ организации — совпасть с тем, что показывает топбар
-	// (Projects выше), а не остаться на проекте org B: до фикса «Обзор» на
-	// рейле вёл в projB, хотя топбар говорил «Probe A / Proj A».
+	// Рейл должен откатиться на первый проект ТЕКУЩЕЙ организации, совпав с топбаром — не
+	// остаться на проекте чужой организации.
 	sawProjA := false
 	for _, area := range nav.Areas(seen) {
 		if strings.Contains(area.Href, projBPart) {
@@ -339,9 +316,8 @@ func TestBackOrigin(t *testing.T) {
 		{"login page ignored", base + "/login", ""},
 		{"same-origin page kept", base + "/projects/7/incidents", "/projects/7/incidents"},
 		{"query string preserved", base + "/projects/7/issues?status=resolved&page=2", "/projects/7/issues?status=resolved&page=2"},
-		// Протокол-относительные формы: браузер прочтёт их как чужой адрес, а
-		// ссылка «назад» ведёт туда одним кликом. Тот же инвариант, что у
-		// safeNextPath и BulkRedirectTarget.
+		// Протокол-относительные формы: браузер прочтёт их как чужой адрес — тот же инвариант,
+		// что у safeNextPath и BulkRedirectTarget.
 		{"protocol-relative rejected", base + "//evil.example/x", ""},
 		{"backslash form rejected", base + "/\\evil.example/x", ""},
 		{"encoded backslash form rejected", base + "/%5Cevil.example/x", ""},
@@ -359,21 +335,16 @@ func TestBackOrigin(t *testing.T) {
 	}
 }
 
-// TestBackOriginEncodedPath (S4b): на странице эндпойнта имя транзакции в URL
-// %-кодировано, а curPath приходит декодированным. Сравнение идёт по
-// декодированному пути (иначе крошка «назад» ссылалась бы сама на себя), а
-// ссылка строится по escaped-форме.
+// Имя транзакции в URL %-кодировано, curPath декодирован. Сравнение идёт по декодированному
+// пути (иначе крошка ссылалась бы сама на себя), ссылка строится по escaped-форме.
 func TestBackOriginEncodedPath(t *testing.T) {
 	const base = "https://gotcha.example"
 	cur := "/projects/7/performance/GET /api/users" // decoded r.URL.Path
-	// Тот же адрес в Referer — %-кодированный (reload/submit формы) → это тот же
-	// экран, крошка не должна на него же и вести.
 	r := httptest.NewRequest("GET", "/", nil)
 	r.Header.Set("Referer", base+"/projects/7/performance/GET%20%2Fapi%2Fusers")
 	if got := backOrigin(r, base, cur); got != "" {
 		t.Errorf("encoded self-reference must be treated as reload, got %q", got)
 	}
-	// Другой эндпойнт: возвращаем escaped-путь (кодировку сохраняем для ссылки).
 	r2 := httptest.NewRequest("GET", "/", nil)
 	r2.Header.Set("Referer", base+"/projects/7/performance/POST%20%2Fpay")
 	if got, want := backOrigin(r2, base, cur), "/projects/7/performance/POST%20%2Fpay"; got != want {

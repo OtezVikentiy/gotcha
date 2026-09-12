@@ -9,15 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestSchedulerFillsQueueWithoutRunner — планировщик наполняет очередь сам, без
-// исполнителя в этом же процессе.
-//
-// Существует потому, что постановка заданий жила вторым тикером внутри Runner,
-// а Runner собирается только в режимах uptime и all. В раздельном развёртывании
-// web+ingest очередь не наполнялась никогда: монитор показан включённым,
-// состояние остаётся unknown, выносные пробы опрашивают пустоту — и ни одной
-// строки в логе. Проверяем ровно этот сценарий: планировщик работает, Runner'а
-// нет, задание должно появиться и стать доступным для лизы.
 func TestSchedulerFillsQueueWithoutRunner(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -33,17 +24,12 @@ func TestSchedulerFillsQueueWithoutRunner(t *testing.T) {
 	defer scancel()
 	go (&uptime.Scheduler{Svc: svc, Every: 20 * time.Millisecond}).Run(sctx)
 
-	// Задание доступно к выдаче — это и означает «очередь наполняется».
 	waitForRunner(t, func() bool {
 		jobs, err := svc.LeaseLocal(context.Background(), "local", 10)
 		return err == nil && len(jobs) == 1 && jobs[0].Monitor.ID == created.ID
 	})
 }
 
-// TestSchedulerIsIdempotentAcrossReplicas — две реплики планировщика не
-// растягивают расписание и не плодят дублей: постановка идёт через
-// ON CONFLICT DO NOTHING по (monitor_id, region), а last_scheduled_at
-// двигается только у тех мониторов, чьё задание реально вставилось.
 func TestSchedulerIsIdempotentAcrossReplicas(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -65,9 +51,8 @@ func TestSchedulerIsIdempotentAcrossReplicas(t *testing.T) {
 	})
 	scancel()
 
-	// После остановки планировщиков в очереди не должно копиться дублей на тот
-	// же монитор и регион — уникальный индекс это и гарантирует, но проверяем
-	// через API, а не через схему.
+	// уникальный индекс гарантирует это на уровне схемы; здесь то же самое
+	// проверяем через публичное API.
 	var queued int
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM check_queue").Scan(&queued); err != nil {
 		t.Fatalf("count check_queue: %v", err)
@@ -77,10 +62,6 @@ func TestSchedulerIsIdempotentAcrossReplicas(t *testing.T) {
 	}
 }
 
-// TestSchedulerPublishesTickLiveness — self-метрики живости: без них умерший
-// или отставший Scheduler снаружи неотличим от «созревших проверок сейчас
-// нет» (ревью W3-D: Scheduler был единственным из семи фоновых циклов этого
-// брифа без метрик и бюджета — тот же класс дефекта, что у Runner/Watchdog).
 func TestSchedulerPublishesTickLiveness(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)

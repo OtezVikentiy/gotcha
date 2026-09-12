@@ -13,10 +13,8 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// fakeCHConn/fakeCHBatch — калька internal/metric/writer_unit_test.go: Append
-// копит строки, Send при успехе переносит их в c.rows, а при заданном
-// poison-предикате падает, если в батче есть ряд с ядовитым body (args[6] в
-// insert — это Body).
+// Калька internal/metric/writer_unit_test.go: Append копит строки, Send при успехе переносит их в c.rows,
+// при заданном poison-предикате падает, если в батче есть ряд с ядовитым body (args[6] в insert — Body).
 type fakeCHConn struct {
 	mu     sync.Mutex
 	rows   int
@@ -73,9 +71,7 @@ func (c *fakeCHConn) PrepareBatch(_ context.Context, _ string, _ ...driver.Prepa
 	return &fakeCHBatch{conn: c}, nil
 }
 
-// TestWriterFlushesAddedRowsInOrder — Add N записей → после flush в
-// fake-conn все N строк; Add не блокирует (буфер копится синхронно, кика
-// ждать не нужно, flush вызываем напрямую).
+// flush вызывается напрямую — кика (async trigger) ждать не нужно, буфер копится синхронно.
 func TestWriterFlushesAddedRowsInOrder(t *testing.T) {
 	c := &fakeCHConn{}
 	w := NewWriter(c)
@@ -98,8 +94,6 @@ func TestWriterFlushesAddedRowsInOrder(t *testing.T) {
 	}
 }
 
-// TestWriterIsolatesPoisonRowAfterThreshold — битая строка изолируется через
-// chbatch.IsolatePoison, остальные проходят.
 func TestWriterIsolatesPoisonRowAfterThreshold(t *testing.T) {
 	c := &fakeCHConn{poison: func(body string) bool { return body == "poison" }}
 	w := NewWriter(c)
@@ -127,7 +121,6 @@ func TestWriterIsolatesPoisonRowAfterThreshold(t *testing.T) {
 	}
 }
 
-// Транзиентный отказ (сеть/ctx): изоляция не должна дропать валидные записи.
 func TestWriterTransientFailureDropsNothing(t *testing.T) {
 	c := &fakeCHConn{fail: true}
 	w := NewWriter(c)
@@ -146,9 +139,8 @@ func TestWriterTransientFailureDropsNothing(t *testing.T) {
 	}
 }
 
-// TestWriterBoundsBufferByBytes — буфер логов был бы ограничен только ЧИСЛОМ
-// строк, а размер строки задаёт клиент: body лога доходит до 64 КиБ на
-// запись. maxBuf раздутых строк с большим body — это гигабайты в буфере.
+// Буфер был бы ограничен только ЧИСЛОМ строк, а размер строки задаёт клиент (body до 64 КиБ) —
+// maxBuf раздутых строк с большим body это гигабайты.
 func TestWriterBoundsBufferByBytes(t *testing.T) {
 	w := NewWriter(nil)
 	w.maxBufBytes = 1 << 20
@@ -172,7 +164,6 @@ func TestWriterBoundsBufferByBytes(t *testing.T) {
 	if limit := w.maxBufBytes + int64(len(big)) + 256; bytes > limit {
 		t.Fatalf("вес буфера %d при потолке %d", bytes, w.maxBufBytes)
 	}
-	// Учёт не разъехался с содержимым.
 	w.mu.Lock()
 	var want int64
 	for i := range w.buf {
@@ -185,9 +176,8 @@ func TestWriterBoundsBufferByBytes(t *testing.T) {
 	}
 }
 
-// TestLogRowBytesCountsBody — защита от того, что body (текст сообщения,
-// до 64 КиБ) не попадёт в вес и trimLocked никогда не сработает: строка с
-// большим body должна быть тяжелее пропорционально длине body.
+// Body (до 64 КиБ) обязан попадать в вес, иначе trimLocked никогда не сработает — строка с большим body
+// должна быть тяжелее пропорционально длине body.
 func TestLogRowBytesCountsBody(t *testing.T) {
 	a := logRowBytes(logRow{Severity: "info"})
 	b := logRowBytes(logRow{Severity: "info", Body: strings.Repeat("x", 1000)})

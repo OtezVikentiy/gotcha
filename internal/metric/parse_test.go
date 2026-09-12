@@ -11,7 +11,6 @@ import (
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 )
 
-// strVal создаёт AnyValue со строковым значением.
 func strVal(s string) *commonpb.AnyValue {
 	return &commonpb.AnyValue{
 		Value: &commonpb.AnyValue_StringValue{StringValue: s},
@@ -24,8 +23,7 @@ func kv(k, v string) *commonpb.KeyValue {
 	}}
 }
 
-// recentTS — таймстемп внутри окна ретенции метрик (см. pointTime); фиксированные
-// значения из прошлого дропались бы клампом окна.
+// Внутри окна ретенции: фиксированный таймстемп из прошлого дропался бы клампом.
 func recentTS() uint64 { return uint64(time.Now().Add(-time.Hour).UnixNano()) }
 
 func numDP(val float64, attrs ...*commonpb.KeyValue) *metricspb.NumberDataPoint {
@@ -115,7 +113,6 @@ func TestMapOTLPDropsNaN(t *testing.T) {
 }
 
 func TestMapOTLPSkipsUnsupported(t *testing.T) {
-	// Summary — вне объёма, пропускается.
 	rm := []*metricspb.ResourceMetrics{{
 		ScopeMetrics: []*metricspb.ScopeMetrics{{Metrics: []*metricspb.Metric{
 			{Name: "sum.summary", Data: &metricspb.Metric_Summary{Summary: &metricspb.Summary{
@@ -128,8 +125,6 @@ func TestMapOTLPSkipsUnsupported(t *testing.T) {
 	}
 }
 
-// gaugeResourceMetrics строит минимальные ResourceMetrics с одним Gauge-метриком,
-// где на каждую пару ts→value приходится отдельная точка (TimeUnixNano=ts).
 func gaugeResourceMetrics(t *testing.T, points map[uint64]float64) []*metricspb.ResourceMetrics {
 	t.Helper()
 	dps := make([]*metricspb.NumberDataPoint, 0, len(points))
@@ -205,12 +200,6 @@ func TestMapOTLPPromotesHostName(t *testing.T) {
 	}
 }
 
-// TestMapOTLPStripsNULFromPromotedFields — NUL валиден в protobuf и в
-// ClickHouse, но PostgreSQL отвергает его в text ("invalid byte sequence for
-// encoding UTF8: 0x00"). host.name доезжает до PG (реестр hosts), причём
-// батчем через unnest: одно битое имя роняло бы upsert ВСЕГО батча, а вместе с
-// ним и обновление last_seen соседних живых хостов — ложная «тишина» чужого
-// сервера. Вырезаем на границе разбора, как ingest.capRunes.
 func TestMapOTLPStripsNULFromPromotedFields(t *testing.T) {
 	rm := []*metricspb.ResourceMetrics{{
 		Resource: &resourcepb.Resource{Attributes: []*commonpb.KeyValue{

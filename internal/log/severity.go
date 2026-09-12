@@ -5,10 +5,8 @@ import (
 	"strings"
 )
 
-// Канон severity — единый набор уровней, к которому приводится любой источник
-// (OTLP SeverityNumber/SeverityText, JSON-логи приложений, syslog). UI и
-// правила алертинга работают только с этими шестью значениями, не с сырыми
-// строками поставщика.
+// Единый набор уровней, к которому приводится любой источник (OTLP/JSON/syslog) — UI и алертинг работают
+// только с ним, не с сырыми строками поставщика.
 const (
 	SevTrace = "trace"
 	SevDebug = "debug"
@@ -18,15 +16,11 @@ const (
 	SevFatal = "fatal"
 )
 
-// Severities — канон в порядке возрастания серьёзности. Для наполнения
-// селекта фильтра severity в UI и валидации входных значений List.
+// Канон в порядке возрастания серьёзности — для селекта фильтра в UI и валидации входных значений List.
 var Severities = []string{SevTrace, SevDebug, SevInfo, SevWarn, SevError, SevFatal}
 
-// CanonFromNumber сводит OTLP SeverityNumber (1-24, см. спецификацию OTel) к
-// канону: 1-4 trace, 5-8 debug, 9-12 info, 13-16 warn, 17-20 error, 21-24
-// fatal. Число вне диапазона (0, отрицательное, >24) — не ошибка формата
-// (поставщик мог прислать мусор), поэтому не роняем запись, а относим её к
-// SevInfo: это нейтральный уровень, ничего не теряем и не эскалируем зря.
+// 1-4 trace, 5-8 debug, 9-12 info, 13-16 warn, 17-20 error, 21-24 fatal (OTel SeverityNumber 1-24).
+// Вне диапазона — не ошибка формата, относим к SevInfo как нейтральному уровню.
 func CanonFromNumber(n int32) string {
 	switch {
 	case n >= 1 && n <= 4:
@@ -46,21 +40,15 @@ func CanonFromNumber(n int32) string {
 	}
 }
 
-// CanonFromText сводит текстовый уровень (SeverityText OTLP, поле level/severity
-// в JSON-логах) к канону. Разные экосистемы называют одно и то же по-разному
-// (err/error, warn/warning, fatal/critical) — словарь покрывает обе формы.
-// Числовая строка ("17") трактуется как SeverityNumber. Пустая или
-// нераспознанная строка — SevInfo по той же причине, что и в CanonFromNumber:
-// нейтральный дефолт, не теряем запись из-за незнакомого формата.
+// Разные экосистемы называют одно и то же по-разному (err/error, warn/warning, fatal/critical) — словарь
+// покрывает обе формы. Числовая строка трактуется как SeverityNumber; пустая/нераспознанная — SevInfo.
 func CanonFromText(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	if s == "" {
 		return SevInfo
 	}
-	// ParseInt с bitSize=32 вместо Atoi+каста: Atoi возвращает int (64 бита на
-	// проде), и int32(n) молча заворачивал бы значения вне диапазона int32
-	// (CodeQL #19, incorrect integer conversion). Не влезло в int32 — это не
-	// SeverityNumber, падаем в текстовый словарь ниже (итог — SevInfo).
+	// ParseInt с bitSize=32, не Atoi+каст — Atoi даёт int (64 бита на проде), int32(n) молча заворачивал бы
+	// значения вне диапазона; не влезло — не SeverityNumber, падаем в словарь ниже.
 	if n, err := strconv.ParseInt(s, 10, 32); err == nil {
 		return CanonFromNumber(int32(n))
 	}

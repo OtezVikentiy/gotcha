@@ -6,32 +6,24 @@ import (
 	"time"
 )
 
-// Direct — синхронная доставка в один канал, минуя outbox (№69: тестовое
-// сообщение из настроек канала — результат нужен немедленно, очередь с
-// ретраями только размазала бы его во времени и спрятала бы ошибку).
-// Механика выбора отправителя, секрета и таймаута — общая с Worker.process:
-// обе двери ведут к одним и тем же Sender'ам, и тест канала проверяет ровно
-// тот путь, которым пойдёт настоящий алерт.
+// Синхронно, минуя outbox: результат теста канала нужен немедленно, очередь
+// с ретраями размазала бы его во времени. Общая механика с Worker.process.
 type Direct struct {
 	Senders map[string]Sender
 	Secrets SecretResolver
-	// SendTimeout — бюджет одной отправки; 0 → defaultSendTimeout.
+	// 0 → defaultSendTimeout.
 	SendTimeout time.Duration
 }
 
-// Send доставляет payload в канал channelID вида kind по адресу target.
-// Ошибка возвращается вызывающему как есть — ему решать, что показать
-// человеку; ретраев здесь нет намеренно.
+// Ошибка возвращается как есть; ретраев здесь нет намеренно.
 func (d *Direct) Send(ctx context.Context, channelID int64, kind, target string, payload map[string]any) error {
 	sender, ok := d.Senders[kind]
 	if !ok {
 		return fmt.Errorf("notify: no sender registered for channel kind %q", kind)
 	}
 	t := Target{Kind: kind, Target: target}
-	// Секрет — по channel_id в момент отправки, не из payload (та же
-	// причина, что у Worker.process: bot-токен не должен жить в jsonb).
-	// Вид сравниваем с литералом, а не с alert.ChannelEmail: зависимость
-	// идёт alert → notify, и импорт в обратную сторону замкнул бы цикл.
+	// Секрет по channel_id, не из payload — не должен жить в jsonb. Kind сравниваем
+	// с литералом "email", не alert.ChannelEmail — импорт назад замкнул бы цикл.
 	if d.Secrets != nil && kind != "email" {
 		secret, err := d.Secrets.ChannelSecret(ctx, channelID)
 		if err != nil {

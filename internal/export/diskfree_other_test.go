@@ -4,9 +4,6 @@ package export
 
 import "testing"
 
-// freeBytes на не-Linux платформе: честный ok=false — вызывающий обязан
-// считать бюджет ТОЛЬКО по Config.DiskBudget, не выдумывая число (см.
-// докблок diskfree_other.go).
 func TestFreeBytesUnsupportedPlatform(t *testing.T) {
 	free, ok, err := freeBytes(t.TempDir())
 	if ok {

@@ -10,13 +10,8 @@ import templruntime "github.com/a-h/templ/runtime"
 
 import "gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 
-// scrollRegion — прокручиваемый контейнер, достижимый с клавиатуры (№31):
-// скроллер без tabindex клавиатурой не прокрутить вовсе (WCAG 2.1.1), а
-// role="region" + aria-label объясняют скринридеру, ЧТО именно прокручивается.
-// class — существующий скролл-класс (table-scroll и семья), labelKey — ключ
-// подписи по смыслу содержимого (обычно ключ заголовка той же секции).
-// Литеральная вёрстка этих классов запрещена сторожем
-// TestScrollContainersUseScrollRegion.
+// без tabindex скроллер не прокрутить с клавиатуры (WCAG 2.1.1); role=region
+// и aria-label дают скринридеру подпись по смыслу содержимого.
 func scrollRegion(class, labelKey string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -63,7 +58,7 @@ func scrollRegion(class, labelKey string) templ.Component {
 		var templ_7745c5c3_Var4 string
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, labelKey))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/scroll.templ`, Line: 13, Col: 83}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/scroll.templ`, Line: 8, Col: 83}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var4)
 		if templ_7745c5c3_Err != nil {

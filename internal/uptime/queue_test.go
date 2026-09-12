@@ -22,12 +22,8 @@ func mustCreateMonitor(t *testing.T, pool *pgxpool.Pool, svc *uptime.Service, ct
 	return created
 }
 
-// allowRegions заводит пробу под каждый не встроенный регион, чтобы монитор
-// можно было в него назначить.
-//
-// Раньше монитор принимал любую строку региона, и тесты этим пользовались.
-// Теперь регион обязан существовать: монитор в несуществующем регионе не
-// забирает никто, а выглядит это как «проверок нет, значит всё хорошо».
+// монитор в несуществующем регионе не берёт в проверку никто — это выглядит
+// как «проверок нет, значит всё хорошо».
 func allowRegions(t *testing.T, pool *pgxpool.Pool, svc *uptime.Service, ctx context.Context, projectID int64, regions []string) {
 	t.Helper()
 	orgID := orgOfProject(t, pool, projectID)
@@ -70,15 +66,10 @@ func TestScheduleQueuesDueMonitorAndSkipsWhilePending(t *testing.T) {
 		t.Fatalf("PendingCount() = %d, want 1", pending)
 	}
 
-	// Force the monitor to look "due" again by rewinding last_scheduled_at,
-	// but the job is still sitting in the queue (not completed) — the
-	// unique (monitor_id, region) index must stop a duplicate from being
-	// queued.
 	if _, err := pool.Exec(ctx, "UPDATE monitors SET last_scheduled_at = now() - interval '1 hour' WHERE id = $1", created.ID); err != nil {
 		t.Fatalf("rewind last_scheduled_at: %v", err)
 	}
 
-	// Read last_scheduled_at after rewinding but before the second Schedule call.
 	var lastScheduledAtBefore *time.Time
 	if err := pool.QueryRow(ctx, "SELECT last_scheduled_at FROM monitors WHERE id = $1", created.ID).Scan(&lastScheduledAtBefore); err != nil {
 		t.Fatalf("select last_scheduled_at (before 2nd schedule): %v", err)
@@ -92,16 +83,11 @@ func TestScheduleQueuesDueMonitorAndSkipsWhilePending(t *testing.T) {
 		t.Fatalf("Schedule() (2nd) = %d, want 0 (job still pending)", n2)
 	}
 
-	// Read last_scheduled_at after the second Schedule call.
 	var lastScheduledAtAfter *time.Time
 	if err := pool.QueryRow(ctx, "SELECT last_scheduled_at FROM monitors WHERE id = $1", created.ID).Scan(&lastScheduledAtAfter); err != nil {
 		t.Fatalf("select last_scheduled_at (after 2nd schedule): %v", err)
 	}
 
-	// The key assertion: last_scheduled_at should NOT have changed on the second
-	// Schedule call, because the job was already pending (INSERT was skipped by
-	// ON CONFLICT DO NOTHING). If last_scheduled_at advances despite the job
-	// not being queued, the effective check cadence stretches.
 	if lastScheduledAtBefore == nil || lastScheduledAtAfter == nil {
 		t.Fatalf("last_scheduled_at before=%v after=%v, both should be set", lastScheduledAtBefore, lastScheduledAtAfter)
 	}
@@ -246,8 +232,6 @@ func TestLeaseLocalOnlyOwnRegionAndRespectsLease(t *testing.T) {
 		t.Fatalf("job.QueueID = 0, want non-zero")
 	}
 
-	// Second immediate lease of the same region must return nothing — the
-	// job is now leased.
 	jobs2, err := svc.LeaseLocal(ctx, "local", 10)
 	if err != nil {
 		t.Fatalf("LeaseLocal (2nd): %v", err)
@@ -256,7 +240,6 @@ func TestLeaseLocalOnlyOwnRegionAndRespectsLease(t *testing.T) {
 		t.Fatalf("LeaseLocal() (2nd) = %d jobs, want 0 (already leased)", len(jobs2))
 	}
 
-	// Expire the lease and try again — should be handed out once more.
 	if _, err := pool.Exec(ctx, "UPDATE check_queue SET lease_until = now() - interval '1 minute' WHERE id = $1", j.QueueID); err != nil {
 		t.Fatalf("expire lease: %v", err)
 	}
@@ -307,11 +290,6 @@ func TestLeaseForProbeSetsLeasedBy(t *testing.T) {
 	}
 }
 
-// TestLeaseForProbeIsScopedToProbeOrg — регрессия на межтенантную утечку:
-// регион — свободная строка, две независимые организации легко назовут свой
-// регион одинаково ("eu-west"). Проба организации A не должна получать задания
-// мониторов организации B (в config монитора лежат чужие заголовки/токены, а
-// присланный результат гонял бы чужие инциденты).
 func TestLeaseForProbeIsScopedToProbeOrg(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -352,7 +330,6 @@ func TestLeaseForProbeIsScopedToProbeOrg(t *testing.T) {
 			jobs[0].MonitorID, createdA.ID, createdB.ID)
 	}
 
-	// Задание организации B осталось в очереди нетронутым.
 	pending, err := svc.PendingCount(ctx)
 	if err != nil {
 		t.Fatalf("PendingCount: %v", err)
@@ -372,9 +349,6 @@ func TestLeaseForProbeIsScopedToProbeOrg(t *testing.T) {
 	}
 }
 
-// TestLeasedJobRejectsJobOfAnotherOrg — вторая линия обороны: даже если строка
-// очереди уже числится за пробой (например, монитор/проект переехал в другую
-// организацию после выдачи lease), центр не отдаёт пробе чужой монитор.
 func TestLeasedJobRejectsJobOfAnotherOrg(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -411,8 +385,6 @@ func TestLeasedJobRejectsJobOfAnotherOrg(t *testing.T) {
 	}
 }
 
-// TestLeaseLocalIsNotOrgScoped — локальный пробер обслуживает все организации
-// сразу (leased_by NULL, регион "local"); org-скоуп проб его не касается.
 func TestLeaseLocalIsNotOrgScoped(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -438,10 +410,6 @@ func TestLeaseLocalIsNotOrgScoped(t *testing.T) {
 	}
 }
 
-// TestClaimJobIsExactlyOnce — claim снимает задание с очереди ровно один раз:
-// повторный claim того же задания (второй одновременный POST /probe/results,
-// вторая реплика) не проходит, и его вызывающий не имеет права применять
-// результат (см. Ingestor.Accept).
 func TestClaimJobIsExactlyOnce(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -493,10 +461,6 @@ func TestClaimJobIsExactlyOnce(t *testing.T) {
 	}
 }
 
-// TestClaimJobRejectsStaleLease — задание, чей lease истёк и которое успела
-// перелизить другая реплика, старому держателю уже не принадлежит: его claim с
-// прежним lease_until не проходит, задание остаётся в очереди за новым
-// держателем.
 func TestClaimJobRejectsStaleLease(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -516,7 +480,6 @@ func TestClaimJobRejectsStaleLease(t *testing.T) {
 		t.Fatalf("LeaseLocal() = %d jobs, %v; want 1, nil", len(first), err)
 	}
 
-	// Lease первого держателя протух — задание берёт вторая реплика.
 	if _, err := pool.Exec(ctx,
 		"UPDATE check_queue SET lease_until = now() - interval '1 minute' WHERE id = $1", first[0].QueueID); err != nil {
 		t.Fatalf("expire lease: %v", err)
@@ -529,7 +492,6 @@ func TestClaimJobRejectsStaleLease(t *testing.T) {
 		t.Fatalf("re-leased queue id = %d, want %d", second[0].QueueID, first[0].QueueID)
 	}
 
-	// Первый держатель наконец досчитал свою проверку — но она уже не его.
 	claimed, err := svc.ClaimJob(ctx, first[0].QueueID, first[0].LeaseUntil)
 	if err != nil {
 		t.Fatalf("ClaimJob (stale holder): %v", err)
@@ -545,7 +507,6 @@ func TestClaimJobRejectsStaleLease(t *testing.T) {
 		t.Fatalf("PendingCount() = %d, want 1 (the job still belongs to the new holder)", pending)
 	}
 
-	// А новый держатель забирает его штатно.
 	claimed, err = svc.ClaimJob(ctx, second[0].QueueID, second[0].LeaseUntil)
 	if err != nil {
 		t.Fatalf("ClaimJob (new holder): %v", err)
@@ -555,11 +516,8 @@ func TestClaimJobRejectsStaleLease(t *testing.T) {
 	}
 }
 
-// TestLeasedJobRejectsRevokedProbe — отозванная проба не может подтвердить
-// даже собственное, ещё не протухшее задание (clause revoked_at IS NULL в
-// LeasedJob). По HTTP этот путь недостижим — probeAuth отвечает 401 раньше, —
-// поэтому проверяется напрямую: иначе clause можно было бы удалить, и ни один
-// тест бы не покраснел.
+// по HTTP этот путь недостижим (probeAuth отвечает 401 раньше) — без этого
+// теста revoked_at IS NULL можно удалить, и никто не заметит.
 func TestLeasedJobRejectsRevokedProbe(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -586,7 +544,6 @@ func TestLeasedJobRejectsRevokedProbe(t *testing.T) {
 	}
 	queueID := jobs[0].QueueID
 
-	// Пока lease жив, задание своё.
 	if _, err := svc.LeasedJob(ctx, queueID, probe.ID); err != nil {
 		t.Fatalf("LeasedJob before revoke: %v", err)
 	}

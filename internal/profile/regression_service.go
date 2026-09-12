@@ -14,7 +14,6 @@ import (
 
 var ErrRegressionNotFound = errors.New("profile: regression not found")
 
-// Regression — строка profile_regressions (для оценщика и UI).
 type Regression struct {
 	ID             int64
 	ProjectID      int64
@@ -48,8 +47,6 @@ func scanRegression(row pgx.Row) (Regression, error) {
 	return r, err
 }
 
-// RegressionService — атомарные open/close инцидентов profile_regressions
-// (калька trace.RegressionService / metric.IncidentService).
 type RegressionService struct {
 	pool *pgxpool.Pool
 }
@@ -58,10 +55,8 @@ func NewRegressionService(pool *pgxpool.Pool) *RegressionService {
 	return &RegressionService{pool: pool}
 }
 
-// Open открывает инцидент по (project,service,type,function), если открытого
-// нет. Гонко-безопасно через partial-индекс profile_regressions_one_open_idx:
-// из параллельных вызовов ровно один INSERT проходит, остальные ловят конфликт
-// (DO NOTHING → нет RETURNING) и дочитывают победителя. peak=current на вставке.
+// единственный открытый инцидент держит partial-индекс: из параллельных вызовов
+// один INSERT проходит, остальные ловят конфликт и дочитывают победителя.
 func (s *RegressionService) Open(ctx context.Context, projectID int64, service, profileType, function string, base, current float64, inMaintenance bool) (Regression, bool, error) {
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO profile_regressions (project_id, service, profile_type, function, baseline_share, peak_share, current_share, in_maintenance)
@@ -86,7 +81,6 @@ func (s *RegressionService) Open(ctx context.Context, projectID int64, service, 
 	return r, true, nil
 }
 
-// OpenFor возвращает открытый инцидент по ключу, если он есть.
 func (s *RegressionService) OpenFor(ctx context.Context, projectID int64, service, profileType, function string) (Regression, bool, error) {
 	row := s.pool.QueryRow(ctx,
 		"SELECT "+regressionColumns+` FROM profile_regressions
@@ -102,10 +96,6 @@ func (s *RegressionService) OpenFor(ctx context.Context, projectID int64, servic
 	return r, true, nil
 }
 
-// OpenForFunctions возвращает открытые инциденты сервиса по перечисленным
-// функциям одним запросом (ключ — функция; функций без открытого инцидента в
-// карте нет). Оценщик зовёт его раз на сервис вместо OpenFor на каждую из
-// TopK функций — PG-часть тика была N+1 при уже батчированной CH-части.
 func (s *RegressionService) OpenForFunctions(ctx context.Context, projectID int64, service, profileType string, functions []string) (map[string]Regression, error) {
 	out := make(map[string]Regression, len(functions))
 	if len(functions) == 0 {
@@ -129,9 +119,6 @@ func (s *RegressionService) OpenForFunctions(ctx context.Context, projectID int6
 	return out, rows.Err()
 }
 
-// GetByID возвращает регрессию по id (любого статуса). Нужен эскалации (B4,
-// T6): планировщик и StepNotifier знают только incidentID, объект регрессии
-// приходится перегружать заново.
 func (s *RegressionService) GetByID(ctx context.Context, id int64) (Regression, bool, error) {
 	row := s.pool.QueryRow(ctx, "SELECT "+regressionColumns+" FROM profile_regressions WHERE id=$1", id)
 	r, err := scanRegression(row)
@@ -144,7 +131,6 @@ func (s *RegressionService) GetByID(ctx context.Context, id int64) (Regression, 
 	return r, true, nil
 }
 
-// Bump обновляет открытый инцидент: current_share=$2, peak_share=max(peak,$2).
 func (s *RegressionService) Bump(ctx context.Context, id int64, current float64) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE profile_regressions SET current_share=$2, peak_share=GREATEST(peak_share,$2)
@@ -158,7 +144,6 @@ func (s *RegressionService) Bump(ctx context.Context, id int64, current float64)
 	return nil
 }
 
-// Resolve закрывает открытый инцидент. ok=false, если открытого не было (идемпотентно).
 func (s *RegressionService) Resolve(ctx context.Context, id int64, current float64) (bool, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE profile_regressions SET status='resolved', resolved_at=now(), current_share=$2
@@ -175,7 +160,6 @@ func (s *RegressionService) Resolve(ctx context.Context, id int64, current float
 	return true, nil
 }
 
-// MarkNotified фиксирует отправку уведомления (open → notified_open, иначе notified_close).
 func (s *RegressionService) MarkNotified(ctx context.Context, id int64, open bool) error {
 	column := "notified_close"
 	if open {
@@ -191,10 +175,7 @@ func (s *RegressionService) MarkNotified(ctx context.Context, id int64, open boo
 	return nil
 }
 
-// Acknowledge подтверждает открытый инцидент (B4: эскалации) — фиксирует
-// acknowledged_at/acknowledged_by, чем гасит дальнейшую эскалацию. ok=false,
-// если инцидент уже подтверждён или закрыт (идемпотентно). project_id в
-// WHERE — defense-in-depth (зеркало uptime.DeleteWindow, B3).
+// project_id в WHERE — defense-in-depth: не даёт подтвердить чужой инцидент по id.
 func (s *RegressionService) Acknowledge(ctx context.Context, incidentID, projectID, userID int64) (bool, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE profile_regressions SET acknowledged_at=now(), acknowledged_by=$3
@@ -211,13 +192,10 @@ func (s *RegressionService) Acknowledge(ctx context.Context, incidentID, project
 	return true, nil
 }
 
-// Name — ключ источника для эскалации (B4, T4): совпадает с incident_source
-// 'profile' в incident_escalations (0077).
+// должен совпадать с incident_source 'profile' в incident_escalations.
 func (s *RegressionService) Name() string { return "profile" }
 
-// OpenUnacked возвращает открытые неподтверждённые инциденты — кандидаты
-// планировщика эскалации (T7) на текущем тике. Ложится на partial-индекс
-// profile_regressions_esc_pending_idx (0077).
+// рассчитан на partial-индекс profile_regressions_esc_pending_idx.
 func (s *RegressionService) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, project_id, started_at, severity, escalation_level
@@ -237,9 +215,7 @@ func (s *RegressionService) OpenUnacked(ctx context.Context) ([]escalation.Pendi
 	return out, rows.Err()
 }
 
-// BumpEscalation атомарно продвигает уровень эскалации инцидента с from на
-// from+1 и фиксирует last_escalated_at (B4, T4). ok=false, если level уже не
-// равен from — планировщик проиграл гонку другому тику (идемпотентно).
+// level=from — оптимистическая блокировка: false значит, другой тик уже продвинул эскалацию.
 func (s *RegressionService) BumpEscalation(ctx context.Context, id int64, from int) (bool, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE profile_regressions SET escalation_level = $2 + 1, last_escalated_at = now()
@@ -256,8 +232,7 @@ func (s *RegressionService) BumpEscalation(ctx context.Context, id int64, from i
 	return true, nil
 }
 
-// List возвращает регрессии проекта, свежайшие первыми. status: ""/"all" — все,
-// "open"/"resolved" — фильтр.
+// status: ""/"all" — все записи, "open"/"resolved" — фильтр.
 func (s *RegressionService) List(ctx context.Context, projectID int64, status string, limit int) ([]Regression, error) {
 	if limit <= 0 {
 		limit = 200

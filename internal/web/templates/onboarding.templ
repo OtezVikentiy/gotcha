@@ -7,13 +7,10 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// projectSetupPath — путь до страницы подключения SDK конкретного проекта.
 func projectSetupPath(id int64) string {
 	return "/projects/" + strconv.FormatInt(id, 10) + "/setup"
 }
 
-// platformOption — рендерит <option>, помечая его selected, если это
-// текущая выбранная платформа (сохранение значения формы после 422).
 templ platformOption(value, label, selected string) {
 	if value == selected {
 		<option value={ value } selected>{ label }</option>
@@ -22,9 +19,6 @@ templ platformOption(value, label, selected string) {
 	}
 }
 
-// Onboarding — форма «создайте организацию и первый проект». Принимает уже
-// отправленные значения (orgSlug, orgName, projectSlug, projectName,
-// platform), чтобы при 422 (невалидный slug) не терять то, что юзер ввёл.
 templ Onboarding(errMsg, orgSlug, orgName, projectSlug, projectName, platform, userEmail string) {
 	@chromeless(i18n.T(ctx, "onboarding.title"), userEmail) {
 		<form method="post" action="/onboarding" class="auth-form">
@@ -71,14 +65,8 @@ templ Onboarding(errMsg, orgSlug, orgName, projectSlug, projectName, platform, u
 	}
 }
 
-// ProjectSetup — страница «подключи SDK»: DSN проекта и сниппеты
-// подключения для нескольких платформ.
-//
-// missingPlatformKind — непустой, когда снипет для ПЛАТФОРМЫ САМОГО ПРОЕКТА
-// не попал в snippets (setupSnippets не отдаёт сниппет с пустым DSN — ревью
-// задачи 5, круг 3): страница обязана сказать, почему пропал именно язык
-// проекта, а не молчать — иначе пользователь JS-проекта видит Go/PHP/Python
-// и не понимает, куда делся его язык.
+// missingPlatformKind непуст, когда снипет для платформы САМОГО проекта не попал в snippets.
+// иначе пользователь JS-проекта видел бы Go/PHP/Python и не понимал, куда делся его язык.
 templ ProjectSetup(project org.Project, dsn string, snippets []SetupSnippet, missingPlatformKind org.KeyKind, userEmail string) {
 	@chromeless(i18n.T(ctx, "project.setup.title")+" "+project.Name, userEmail) {
 		<div class="setup">
@@ -127,14 +115,8 @@ templ ProjectSetup(project org.Project, dsn string, snippets []SetupSnippet, mis
 	}
 }
 
-// NoProjects — GET "/" для юзера, который состоит хотя бы в одной
-// организации, но которому не назначен ни один проект (не привязан ни к
-// одной команде с доступом к проекту). В отличие от юзера вовсе без
-// организаций (тот уходит на /onboarding), таким юзерам организацию создавать
-// не нужно — им нужен админ, который добавит их в команду.
-//
-// canCreate различает роли (№21): владельцу/админу «попросите администратора»
-// — тупик, он сам администратор; ему — дверь в создание проекта.
+// не для юзера без организаций вовсе (тот уходит на /onboarding) — этому нужен админ.
+// canCreate — owner/admin получает дверь в создание проекта, остальным иначе был бы тупик.
 templ NoProjects(canCreate bool, userEmail string) {
 	@chromeless(i18n.T(ctx, "project.none.title"), userEmail) {
 		<div class="no-projects">
@@ -147,10 +129,7 @@ templ NoProjects(canCreate bool, userEmail string) {
 	}
 }
 
-// ProjectListItem — проект вместе с флагом, может ли текущий юзер управлять
-// его организацией (owner/admin) — только тогда рендерится ссылка «Org
-// settings» (иначе member получал бы ссылку на страницу, которая отвечает
-// ему 404 — dead link).
+// CanManage — иначе member получал бы ссылку на «Org settings», отвечающую ему 404.
 type ProjectListItem struct {
 	Project   org.Project
 	CanManage bool
@@ -169,12 +148,6 @@ templ projectRow(it ProjectListItem) {
 	</tr>
 }
 
-// ProjectsList — «Projects» в шапке: все проекты, доступные юзеру. Имя
-// проекта ведёт на список issues (основной сценарий), рядом — отдельная
-// ссылка на страницу подключения SDK.
-// OrgOption — организация, в которой текущий человек может завести проект
-// (owner/admin). Нужна селекту в форме создания: организаций у него может быть
-// несколько, и выбирать надо явно.
 type OrgOption struct {
 	ID   int64
 	Name string
@@ -191,10 +164,8 @@ templ ProjectsList(items []ProjectListItem, canCreate []OrgOption, form FormStat
 				@createTrigger("new-project", "project.create.title")
 			}
 			if len(items) == 0 {
-				// №59: пустой список у ДЕЙСТВУЮЩЕЙ организации ведёт в модалку
-				// создания на этой же странице, а не в /onboarding — мастер
-				// первого запуска чужой этому сценарию. Без права создавать
-				// (member) CTA нет: якорь модалки не существует.
+				// пустой список у действующей организации ведёт в модалку на этой же странице, не в /onboarding.
+				// без права создавать (member) CTA нет: якоря модалки не существует.
 				if len(canCreate) > 0 {
 					@emptyState("building", "project.list.empty.title", "project.list.empty", "project.list.empty_cta", "#new-project", 2)
 				} else {
@@ -224,8 +195,7 @@ templ ProjectsList(items []ProjectListItem, canCreate []OrgOption, form FormStat
 			if len(canCreate) > 0 {
 				@createModalOpen("new-project", "project.create.title", false, form.Opens("new-project")) {
 					<form method="post" action="/projects/new" class="project-create-form">
-						// Без role="alert": фокус в модалку переносит modal.js (№80),
-						// ошибка привязана к полю slug через aria-describedby.
+						// без role=alert: фокус в модалку переносит modal.js, ошибка привязана через aria-describedby.
 						if errMsg != "" && form.Opens("new-project") {
 							<p class="error" id="new-project-error">{ errMsg }</p>
 						}

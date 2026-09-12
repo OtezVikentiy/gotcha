@@ -14,7 +14,7 @@ import (
 
 var ErrIncidentNotFound = errors.New("metric: incident not found")
 
-// Incident — открытый или закрытый инцидент пробоя порога (metric_incidents).
+// Открытый или закрытый инцидент пробоя порога (metric_incidents).
 type Incident struct {
 	ID             int64
 	RuleID         int64
@@ -44,7 +44,7 @@ func scanIncident(row pgx.Row) (Incident, error) {
 	return in, err
 }
 
-// IncidentService — атомарные open/close инцидентов (калька RegressionService).
+// Атомарные open/close инцидентов (калька RegressionService).
 type IncidentService struct {
 	pool *pgxpool.Pool
 }
@@ -53,16 +53,8 @@ func NewIncidentService(pool *pgxpool.Pool) *IncidentService {
 	return &IncidentService{pool: pool}
 }
 
-// Open открывает инцидент по правилу, если открытого ещё нет. inMaintenance
-// фиксируется на инциденте на всё его время (B3): вызывающий решает по
-// MaintenanceChecker в момент открытия, гейт notify — на нём же, а не на
-// состоянии окна в момент закрытия. Гонко-безопасно через частичный уникальный
-// индекс metric_incidents_one_open_idx (rule_id) WHERE status='open': из
-// параллельных вызовов ровно один INSERT проходит, остальные ловят конфликт
-// (DO NOTHING → нет RETURNING) и дочитывают победителя. peak=current на
-// вставке. severity — override из правила (B4, T5): "" (нет override) даёт
-// table-DEFAULT 'warning' через COALESCE в INSERT, непустое значение идёт как
-// есть.
+// inMaintenance фиксируется на инциденте на всё его время — гейт notify смотрит на него, не на состояние
+// окна при закрытии. Гонко-безопасно через partial unique index (rule_id) WHERE status='open'.
 func (s *IncidentService) Open(ctx context.Context, ruleID, projectID int64, current float64, inMaintenance bool, severity string) (Incident, bool, error) {
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO metric_incidents (rule_id, project_id, peak_value, current_value, in_maintenance, severity)
@@ -87,7 +79,6 @@ func (s *IncidentService) Open(ctx context.Context, ruleID, projectID int64, cur
 	return in, true, nil
 }
 
-// OpenFor возвращает открытый инцидент правила, если он есть.
 func (s *IncidentService) OpenFor(ctx context.Context, ruleID int64) (Incident, bool, error) {
 	row := s.pool.QueryRow(ctx,
 		"SELECT "+incidentColumns+" FROM metric_incidents WHERE rule_id = $1 AND status = 'open'", ruleID)
@@ -101,9 +92,7 @@ func (s *IncidentService) OpenFor(ctx context.Context, ruleID int64) (Incident, 
 	return in, true, nil
 }
 
-// GetByID возвращает инцидент по id (любого статуса). Нужен эскалации (B4,
-// T6): планировщик и StepNotifier знают только incidentID, объект инцидента
-// приходится перегружать заново.
+// Нужен эскалации: планировщик и StepNotifier знают только incidentID, объект приходится перегружать заново.
 func (s *IncidentService) GetByID(ctx context.Context, id int64) (Incident, bool, error) {
 	row := s.pool.QueryRow(ctx, "SELECT "+incidentColumns+" FROM metric_incidents WHERE id = $1", id)
 	in, err := scanIncident(row)
@@ -116,8 +105,8 @@ func (s *IncidentService) GetByID(ctx context.Context, id int64) (Incident, bool
 	return in, true, nil
 }
 
-// Bump обновляет открытый инцидент: current_value=$2, peak_value=$3 (peak
-// вычисляет вызывающий — экстремум в сторону нарушения). Закрытый/нет → ErrIncidentNotFound.
+// current_value/peak_value обновляются (peak вычисляет вызывающий — экстремум в сторону нарушения).
+// Закрытый инцидент/нет такого → ErrIncidentNotFound.
 func (s *IncidentService) Bump(ctx context.Context, id int64, current, peak float64) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE metric_incidents SET current_value = $2, peak_value = $3
@@ -131,17 +120,14 @@ func (s *IncidentService) Bump(ctx context.Context, id int64, current, peak floa
 	return nil
 }
 
-// resolveIncidentSQL — единственный UPDATE, которым инцидент закрывается:
-// им пользуются и штатный Resolve (оценщик), и закрытие при выключении
-// правила (resolveOpenIncidentForRule) — чтобы поля закрытия не могли
-// разъехаться между двумя путями.
+// Единственный UPDATE, которым инцидент закрывается — используется и Resolve, и resolveOpenIncidentForRule,
+// чтобы поля закрытия не могли разъехаться между путями.
 const resolveIncidentSQL = `
 		UPDATE metric_incidents SET status = 'resolved', resolved_at = now(), current_value = $2
 		WHERE id = $1 AND status = 'open'
 		RETURNING id`
 
-// Resolve закрывает открытый инцидент. ok=false, если открытого не было
-// (идемпотентно).
+// ok=false, если открытого не было (идемпотентно).
 func (s *IncidentService) Resolve(ctx context.Context, id int64, current float64) (bool, error) {
 	row := s.pool.QueryRow(ctx, resolveIncidentSQL, id, current)
 	var closedID int64
@@ -155,16 +141,8 @@ func (s *IncidentService) Resolve(ctx context.Context, id int64, current float64
 	return true, nil
 }
 
-// resolveOpenIncidentForRule закрывает открытый инцидент правила при его
-// выключении — тем же resolveIncidentSQL, что и штатный Resolve, поэтому
-// resolved_at и семантика статуса совпадают со штатным закрытием;
-// current_value остаётся последним измеренным (свежего агрегата в момент
-// выключения нет, значение передаётся его же собственным). Уведомление о
-// восстановлении не шлётся намеренно: восстановления не было, правило
-// выключил оператор; notified_close=false — то же штатное состояние, что при
-// пустом наборе recovery-каналов (см. evaluator.notifyClose). Открытого
-// инцидента может не быть — это не ошибка. Вызывается только из транзакции
-// RuleService.Update: выключение правила и закрытие его инцидента атомарны.
+// Закрывает открытый инцидент правила при его выключении тем же resolveIncidentSQL — уведомление о
+// восстановлении не шлётся намеренно (правило выключил оператор). Вызывается только из транзакции RuleService.Update.
 func resolveOpenIncidentForRule(ctx context.Context, tx pgx.Tx, ruleID int64) error {
 	var id int64
 	var current float64
@@ -183,8 +161,7 @@ func resolveOpenIncidentForRule(ctx context.Context, tx pgx.Tx, ruleID int64) er
 	return nil
 }
 
-// MarkNotified фиксирует отправку уведомления (open → notified_open, иначе
-// notified_close).
+// open → notified_open, иначе notified_close.
 func (s *IncidentService) MarkNotified(ctx context.Context, id int64, open bool) error {
 	column := "notified_close"
 	if open {
@@ -200,10 +177,8 @@ func (s *IncidentService) MarkNotified(ctx context.Context, id int64, open bool)
 	return nil
 }
 
-// Acknowledge подтверждает открытый инцидент (B4: эскалации) — фиксирует
-// acknowledged_at/acknowledged_by, чем гасит дальнейшую эскалацию. ok=false,
-// если инцидент уже подтверждён или закрыт (идемпотентно). project_id в
-// WHERE — defense-in-depth (зеркало uptime.DeleteWindow, B3).
+// Фиксирует acknowledged_at/acknowledged_by, гасит дальнейшую эскалацию. ok=false, если уже подтверждён
+// или закрыт (идемпотентно). project_id в WHERE — defense-in-depth, зеркало uptime.DeleteWindow.
 func (s *IncidentService) Acknowledge(ctx context.Context, incidentID, projectID, userID int64) (bool, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE metric_incidents SET acknowledged_at = now(), acknowledged_by = $3
@@ -220,22 +195,11 @@ func (s *IncidentService) Acknowledge(ctx context.Context, incidentID, projectID
 	return true, nil
 }
 
-// Name — ключ источника для эскалации (B4, T4): совпадает с incident_source
-// 'metric' в incident_escalations (0077).
+// Совпадает с incident_source='metric' в incident_escalations.
 func (s *IncidentService) Name() string { return "metric" }
 
-// OpenUnacked возвращает открытые неподтверждённые инциденты — кандидаты
-// планировщика эскалации (T7). Члены ОТКРЫТЫХ групп исключаются (D3 Р5):
-// информирование берёт на себя корень; удалённая группа (висячий group_id,
-// LEFT JOIN даёт NULL) ≡ закрытая. Для бывшего члена закрытой группы база
-// отсчёта лесенки — момент освобождения: StartedAt = GREATEST(started_at,
-// g.resolved_at) (анти-залп BLOCKER-1: elapsed планировщика считается от
-// StartedAt, и член, просидевший в группе часы, иначе получил бы всю
-// лесенку очередью за 2-3 тика).
-// Осознанно (фикс ревью плана m-1): фильтр не различает informing/немой
-// корень — член НЕМОГО корня уведомил сам (step0 из оценщика), но step1+
-// через планировщик пойдут только после закрытия группы. Не баг — буква
-// спеки §4.2.
+// Кандидаты планировщика эскалации. Члены ОТКРЫТЫХ групп исключены — информирование берёт на себя корень;
+// у бывшего члена закрытой группы StartedAt=GREATEST(started_at, g.resolved_at) — иначе он получил бы всю лесенку разом.
 func (s *IncidentService) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT i.id, i.project_id,
@@ -261,9 +225,8 @@ func (s *IncidentService) OpenUnacked(ctx context.Context) ([]escalation.Pending
 	return out, rows.Err()
 }
 
-// BumpEscalation атомарно продвигает уровень эскалации инцидента с from на
-// from+1 и фиксирует last_escalated_at (B4, T4). ok=false, если level уже не
-// равен from — планировщик проиграл гонку другому тику (идемпотентно).
+// Продвигает уровень эскалации с from на from+1, фиксирует last_escalated_at. ok=false, если level уже
+// не равен from — планировщик проиграл гонку другому тику (идемпотентно).
 func (s *IncidentService) BumpEscalation(ctx context.Context, id int64, from int) (bool, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE metric_incidents SET escalation_level = $2 + 1, last_escalated_at = now()
@@ -280,7 +243,6 @@ func (s *IncidentService) BumpEscalation(ctx context.Context, id int64, from int
 	return true, nil
 }
 
-// List возвращает инциденты проекта, свежайшие первыми (для UI).
 func (s *IncidentService) List(ctx context.Context, projectID int64, limit int) ([]Incident, error) {
 	if limit <= 0 {
 		limit = 100

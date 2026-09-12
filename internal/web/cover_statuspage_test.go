@@ -13,21 +13,11 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestWebStatusPageOperator — участник команды: (1) создаёт страницу — она
-// создаётся с Enabled=false, ДАЖЕ если форма прислала enabled=on; (2) правит
-// title существующей — проходит, но Enabled остаётся прежним, даже если
-// форма прислала другое значение; (3) страница настроек доступна (200).
-// Admin-путь (полная форма) закреплён существующими тестами
-// cover_statuspage_test.go / statuspage_test.go (спека
-// cld/plans/2026-08-08-access-model-rework.md: контент оператору, публикация
-// admin). Slug форма не шлёт вовсе (задача 4 плана) — прежняя проверка «slug
-// не меняется оператором» отсюда убрана вместе с полем.
 func TestWebStatusPageOperator(t *testing.T) {
 	s := newStatusPageStack(t)
 	proj, _, memberCookie := statusPageProject(t, s, "spop")
 	m := statusPageMonitor(t, s, proj.ID, "spop-monitor", "https://example.com/spop")
 
-	// Владелец создаёт опубликованную страницу.
 	sp, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
 		ProjectID: proj.ID, Title: "Op Status", Enabled: true,
 	}, []uptime.StatusPageMonitor{{MonitorID: m.ID, DisplayName: "Service", Position: 0}})
@@ -37,7 +27,6 @@ func TestWebStatusPageOperator(t *testing.T) {
 
 	settingsPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/statuspages"
 
-	// (3) участник команды видит настройки.
 	resp := getWithCookie(t, s.srv, settingsPath, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -45,8 +34,6 @@ func TestWebStatusPageOperator(t *testing.T) {
 		t.Fatalf("GET %s (operator) = %d, want 200", settingsPath, resp.StatusCode)
 	}
 
-	// (2) участник команды правит title существующей страницы, но enabled из
-	// формы игнорируется — сервер сохраняет прежнее.
 	updatePath := "/statuspages/" + strconv.FormatInt(sp.ID, 10)
 	form := url.Values{
 		"title":   {"New"},
@@ -69,8 +56,6 @@ func TestWebStatusPageOperator(t *testing.T) {
 		t.Fatalf("Enabled = false, want unchanged true (publication is admin-only)")
 	}
 
-	// (1) участник команды создаёт новую страницу: даже с enabled=on она
-	// рождается выключенной.
 	createForm := url.Values{
 		"title":   {"Born Disabled"},
 		"enabled": {"on"},
@@ -85,7 +70,6 @@ func TestWebStatusPageOperator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status pages of: %v", err)
 	}
-	// Матчим по Title: поля Slug у StatusPage больше нет (T5).
 	var created *uptime.StatusPage
 	for i := range pages {
 		if pages[i].Title == "Born Disabled" {
@@ -100,19 +84,11 @@ func TestWebStatusPageOperator(t *testing.T) {
 	}
 }
 
-// TestWebStatusPageDeletePublicationGate — A3 (security P1-3): удаление
-// опубликованной страницы снимает её с публичного интернета — это
-// публикационное решение, а не обычная правка контента, поэтому оператор
-// без canManageProject не может удалить
-// Enabled=true страницу (только Enabled=false, ещё никому не видимую).
-// Admin/owner удаляет любую. Страница уже загружена loadManagedStatusPage
-// (существование не секрет) → честный 403, не 404.
 func TestWebStatusPageDeletePublicationGate(t *testing.T) {
 	s := newStatusPageStack(t)
 	proj, ownerCookie, memberCookie := statusPageProject(t, s, "spdel")
 	m := statusPageMonitor(t, s, proj.ID, "spdel-monitor", "https://example.com/spdel")
 
-	// Оператор удаляет неопубликованную страницу — обычное снятие контента.
 	unpub, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
 		ProjectID: proj.ID, Title: "Unpub", Enabled: false,
 	}, []uptime.StatusPageMonitor{{MonitorID: m.ID, DisplayName: "Service", Position: 0}})
@@ -130,8 +106,6 @@ func TestWebStatusPageDeletePublicationGate(t *testing.T) {
 		t.Fatalf("unpublished page must be gone after operator delete, err = %v", err)
 	}
 
-	// Оператор пытается удалить опубликованную страницу — 403, страница на
-	// месте (с публичного интернета не-admin её не снимает).
 	pub, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
 		ProjectID: proj.ID, Title: "Pub", Enabled: true,
 	}, []uptime.StatusPageMonitor{{MonitorID: m.ID, DisplayName: "Service", Position: 0}})
@@ -149,7 +123,6 @@ func TestWebStatusPageDeletePublicationGate(t *testing.T) {
 		t.Fatalf("published page must survive operator delete attempt, got %+v, err = %v", got, err)
 	}
 
-	// Admin удаляет ту же опубликованную страницу — разрешено.
 	resp = postForm(t, s.srv, pubPath, url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -160,8 +133,6 @@ func TestWebStatusPageDeletePublicationGate(t *testing.T) {
 		t.Fatalf("published page must be gone after admin delete, err = %v", err)
 	}
 
-	// Чужак (без отношения к организации) не видит даже существование
-	// страницы — 404, не 403 (тот же existence-oracle, что и раньше).
 	_, strangerCookie := orgSettingsRegister(t, s.auth, "spdel-stranger@example.com")
 	third, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
 		ProjectID: proj.ID, Title: "Third", Enabled: true,
@@ -178,8 +149,6 @@ func TestWebStatusPageDeletePublicationGate(t *testing.T) {
 	}
 }
 
-// TestCoverStatusPageMajorOutage — единственный монитор в down: общий статус
-// «major», а на странице рендерится инцидент (ветки incident-цикла и сортировки).
 func TestCoverStatusPageMajorOutage(t *testing.T) {
 	s := newStatusPageStack(t)
 	proj, _, _ := statusPageProject(t, s, "spmajor")
@@ -205,18 +174,11 @@ func TestCoverStatusPageMajorOutage(t *testing.T) {
 	}
 }
 
-// TestWebStatusPageCreateRateLimited — P2-2: создание доступно любому
-// оператору, а сама вставка (несколько походов в PG на попытку) достаточно
-// дорогая, чтобы её не штурмовать без лимита. Дешёвая мера: per-user лимит на
-// создание (12/мин). 12 попыток проходят лимитер, 13-я получает 429 — перебор
-// дорожает, легитимный оператор (страницы штучные) не задет.
 func TestWebStatusPageCreateRateLimited(t *testing.T) {
 	s := newStatusPageStack(t)
 	proj, _, memberCookie := statusPageProject(t, s, "sprl")
 	settingsPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/statuspages"
 
-	// Лимитер проверяется ДО разбора формы и БД, поэтому засчитывает любую
-	// попытку независимо от её исхода.
 	form := url.Values{"title": {"Probe"}}
 	for i := 1; i <= 12; i++ {
 		resp := postForm(t, s.srv, settingsPath, form, s.srv.URL, memberCookie)
@@ -227,7 +189,6 @@ func TestWebStatusPageCreateRateLimited(t *testing.T) {
 			t.Fatalf("attempt %d got 429, want limiter to allow first 12", i)
 		}
 	}
-	// 13-я попытка за окно → 429.
 	resp := postForm(t, s.srv, settingsPath, form, s.srv.URL, memberCookie)
 	code := resp.StatusCode
 	io.Copy(io.Discard, resp.Body)

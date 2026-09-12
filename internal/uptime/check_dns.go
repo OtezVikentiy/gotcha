@@ -8,11 +8,8 @@ import (
 	"time"
 )
 
-// DNSChecker — DNS-чекер: резолвит hostname нужного типа записи и (если
-// задан) проверяет, что ExpectedValue встречается среди ответов.
 type DNSChecker struct {
-	// Resolver, если задан, используется вместо net.DefaultResolver —
-	// нужно тестам для инъекции своего резолвера.
+	// используется вместо net.DefaultResolver, если задан — для инъекции в тестах.
 	Resolver *net.Resolver
 }
 
@@ -57,8 +54,6 @@ func (c *DNSChecker) Check(ctx context.Context, m Monitor) Result {
 	return Result{OK: true, DNSMs: ms, TotalMs: ms}
 }
 
-// lookup выполняет запрос recordType для hostname и возвращает ответы в
-// виде строк (IP, CNAME/MX host без завершающей точки, TXT-значения).
 func lookup(ctx context.Context, resolver *net.Resolver, recordType, hostname string) ([]string, error) {
 	switch recordType {
 	case "A", "AAAA":
@@ -105,9 +100,8 @@ func lookup(ctx context.Context, resolver *net.Resolver, recordType, hostname st
 	}
 }
 
-// answerMatches сообщает, встречается ли expected среди answers. Для MX
-// сравнивается host целиком (регистронезависимо), для TXT — подстрокой в
-// любой записи, для остальных — точное совпадение.
+// MX сравнивается host целиком (регистронезависимо), TXT — подстрокой,
+// остальные — точным совпадением.
 func answerMatches(recordType string, answers []string, expected string) bool {
 	for _, a := range answers {
 		switch recordType {

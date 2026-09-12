@@ -12,8 +12,7 @@ func incidentsPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/incidents"
 }
 
-// incidentsPerPage дублирует incidentsPerPage из web/incidents.go (не
-// экспортирован): нужно то же число, чтобы верно посчитать totalPages.
+// Дублирует несэкспортированный incidentsPerPage из web/incidents.go — числа обязаны совпадать.
 const incidentsPerPage = 50
 
 func incidentsTotalPages(total int64) int64 {
@@ -23,10 +22,7 @@ func incidentsTotalPages(total int64) int64 {
 	return (total + incidentsPerPage - 1) / incidentsPerPage
 }
 
-// incidentsPageURL — ссылка на страницу аптайм-инцидентов (page>1 добавляет
-// ?page=N, первая страница — чистый путь). Не путать с лентой инцидентов
-// (D3, incidentfeed.templ) — она сводит все 6 источников и живёт по
-// отдельному пути /incident-feed, см. хинт на IncidentsList.
+// Не путать с лентой инцидентов (incidentfeed.templ) — та сводит 6 источников, путь /incident-feed.
 func incidentsPageURL(projectID int64, page int) string {
 	if page > 1 {
 		return incidentsPath(projectID) + "?page=" + strconv.Itoa(page)
@@ -34,10 +30,6 @@ func incidentsPageURL(projectID int64, page int) string {
 	return incidentsPath(projectID)
 }
 
-// IncidentRow — инцидент вместе с именем его монитора (Incident сам по себе
-// хранит только monitor_id, см. web/incidents.go) — тот же приём, что и
-// MonitorRow/IssueRow: числовая/справочная агрегация остаётся в web-пакете,
-// этот пакет только форматирует готовые данные.
 type IncidentRow struct {
 	Incident    uptime.Incident
 	MonitorName string
@@ -69,14 +61,7 @@ templ incidentListRow(row IncidentRow, projectID int64, canOperate bool, ackedBy
 	</tr>
 }
 
-// IncidentsListOpts — подтверждение (W2-C находка 2/4): canOperate/ackedBy
-// упакованы в структуру и переданы ОДНИМ вариадик-параметром, а не двумя
-// обычными, по той же причине, что и firstAckedByMap — IncidentsList зовут
-// напрямую тесты пакета templates, которые не мои (см. CLAUDE.md запрет
-// трогать internal/web/templates/*_test.go), и сдвигать позиции их
-// существующих аргументов нельзя. Опущенный opts эквивалентен
-// CanOperate=false/AckedBy=nil — ack-кнопка не рисуется, email не резолвится,
-// то же поведение, что было у страницы до этой находки.
+// Вариадик, не параметр: тесты пакета зовут IncidentsList напрямую, менять сигнатуру нельзя.
 type IncidentsListOpts struct {
 	CanOperate bool
 	AckedBy    map[int64]string
@@ -89,12 +74,6 @@ func firstIncidentsListOpts(opts []IncidentsListOpts) IncidentsListOpts {
 	return IncidentsListOpts{}
 }
 
-// IncidentsList — GET /projects/{id}/incidents: инциденты по всем мониторам
-// проекта, самые свежие первыми — доступна любому, у кого есть доступ к
-// проекту (CanAccessProject), не только owner/admin, тот же принцип, что и у
-// MonitorsList. Breadcrumb "← Monitors" ведёт к родительскому списку (тот же
-// паттерн, что у MonitorDetail), боковая панель app-shell уже даёт прямую
-// ссылку на "Incidents" из любого раздела uptime — здесь не дублируется.
 templ IncidentsList(projectID int64, rows []IncidentRow, page int, total int64, userEmail string, incOpts ...IncidentsListOpts) {
 	{{ opts := firstIncidentsListOpts(incOpts) }}
 	@layout(i18n.T(ctx, "nav.incidents"), userEmail) {
@@ -131,9 +110,7 @@ templ IncidentsList(projectID int64, rows []IncidentRow, page int, total int64, 
 				}
 				</div>
 			}
-			// Пагинатор — ВНЕ ветки len(rows)==0: на out-of-range странице строк нет,
-			// но пейджер (с ссылкой на первую) обязан остаться, иначе пользователь
-			// застревает на пустом экране (S1). Как в issues.templ.
+			// Пагинатор — вне ветки len(rows)==0: пустая таблица не должна прятать пейджер.
 			if incidentsTotalPages(total) > 1 || page > 1 {
 				<nav class="pagination" aria-label={ i18n.T(ctx, "pagination.label") }>
 					if page > 1 {

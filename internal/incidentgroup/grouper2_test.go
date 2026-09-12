@@ -10,10 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// fixedRootResolver — RootResolver (см. grouper.go), чей DownRoot всегда
-// возвращает заданный фиксированный ответ. Нужен для сценариев, которые
-// настоящий depsuppress.Suppressor воспроизвести не может: неизвестный
-// rootKind, гонка «корень исчез между DownRoot-снимком и запросом».
 type fixedRootResolver struct {
 	rootKind string
 	rootID   int64
@@ -25,10 +21,6 @@ func (f *fixedRootResolver) DownRoot(ctx context.Context, kind string, nodeID in
 }
 func (f *fixedRootResolver) Invalidate() {}
 
-// TestAttachUnderMonitorRoot — down-корень является монитором (uptime), а не
-// хостом: rootIncident обязан зарезолвить ветку "monitor" (JOIN incidents/
-// monitors), отдельную от ветки "host", и группа обязана заякориться на
-// root_source='uptime'.
 func TestAttachUnderMonitorRoot(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -73,9 +65,6 @@ func TestAttachUnderMonitorRoot(t *testing.T) {
 	}
 }
 
-// TestAttachUnknownRootKindErrors — DownRoot вернул rootKind, которого
-// rootIncident не знает (защитная ветка default): Attach обязан
-// прокинуть ошибку, а не молча проигнорировать/запаниковать.
 func TestAttachUnknownRootKindErrors(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -100,17 +89,10 @@ func TestAttachUnknownRootKindErrors(t *testing.T) {
 	}
 }
 
-// TestAttachRootIncidentVanished — DownRoot нашёл корень (found=true), но у
-// него уже нет открытой строки инцидента (гонка: корень закрылся между
-// снимком DownRoot и этим запросом). rootIncident обязан вернуть
-// (…, found=false, nil) — не ошибку — и Attach обязан тихо отказаться от
-// присоединения, ведя себя как «без группы».
 func TestAttachRootIncidentVanished(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
 	projectID := seedProject(t, pool)
-	// rootHost существует, но у него НЕТ открытого silent-инцидента — то
-	// есть DownRoot формально указывает на него, а rootIncident его не найдёт.
 	rootHost := seedHost(t, pool, projectID, "root-"+randSlug(t))
 	memberHost := seedHost(t, pool, projectID, "m-"+randSlug(t))
 	var memberInc int64
@@ -139,10 +121,6 @@ func TestAttachRootIncidentVanished(t *testing.T) {
 	}
 }
 
-// TestAttachSkipsAlreadyResolvedGroup — группа корня уже закрыта (Resolve
-// прошёл раньше, до попытки нового присоединения — гонка sweep/attach):
-// Attach обязан вести себя как «без группы» и не воскрешать закрытую
-// группу новым членом.
 func TestAttachSkipsAlreadyResolvedGroup(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -186,9 +164,6 @@ func TestAttachSkipsAlreadyResolvedGroup(t *testing.T) {
 	}
 }
 
-// TestAttachUnknownSourceErrors — SetGroup отвергает неизвестный source
-// (см. group.go sourceMeta); Attach обязан прокинуть эту ошибку, а не
-// молчаливо считать член присоединённым.
 func TestAttachUnknownSourceErrors(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -206,10 +181,6 @@ func TestAttachUnknownSourceErrors(t *testing.T) {
 	}
 }
 
-// TestAttachMetricByHostLabel — AttachMetric резолвит хост по имени в
-// пределах проекта и присоединяет metric-инцидент к группе его down-корня
-// (Р1: правило с label_key='host'). Хост из сценария сам является открытым
-// down-корнем (silent), поэтому ожидаем присоединение к его же группе.
 func TestAttachMetricByHostLabel(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -243,9 +214,6 @@ func TestAttachMetricByHostLabel(t *testing.T) {
 	}
 }
 
-// TestAttachMetricUnknownHostName — метка label_value не указывает ни на
-// один хост проекта (переименован/удалён/опечатка) — AttachMetric обязан
-// тихо вернуть attached=false, nil (не ошибку).
 func TestAttachMetricUnknownHostName(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -276,10 +244,6 @@ func TestAttachMetricUnknownHostName(t *testing.T) {
 	}
 }
 
-// TestOnRootOpenedSkipsNonMatchingCandidate — среди открытых внегрупповых
-// кандидатов проекта есть узел, чей down-корень — ДРУГОЙ (несвязанный) хост:
-// ретро-присоединение обязано пропустить его (continue), присоединив только
-// настоящего потомка искомого корня.
 func TestOnRootOpenedSkipsNonMatchingCandidate(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -293,8 +257,6 @@ func TestOnRootOpenedSkipsNonMatchingCandidate(t *testing.T) {
 		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail, notified_open)
 		VALUES ($1,$2,'disk','open',0,0,'',true) RETURNING id`, projectID, childHost)
 
-	// Несвязанный хост без рёбер вообще — его down-корень отсутствует, он
-	// НЕ должен зацепиться за rootHost при переборе.
 	unrelatedHost := seedHost(t, pool, projectID, "unrelated-"+randSlug(t))
 	var unrelatedInc int64
 	mustScan(t, pool, &unrelatedInc, `
@@ -323,9 +285,6 @@ func TestOnRootOpenedSkipsNonMatchingCandidate(t *testing.T) {
 	}
 }
 
-// TestOnRootOpenedSkipsAlreadyResolvedGroup — к моменту переборa кандидатов
-// группа корня уже успела закрыться (sweep обогнал ретро-присоединение):
-// OnRootOpened обязан выйти без ошибки, не присоединив кандидата.
 func TestOnRootOpenedSkipsAlreadyResolvedGroup(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -341,7 +300,6 @@ func TestOnRootOpenedSkipsAlreadyResolvedGroup(t *testing.T) {
 
 	rootInc := seedSilent(t, pool, projectID, rootHost, true)
 
-	// Группа корня уже существует и уже закрыта (гонка со sweep).
 	store := incidentgroup.NewStore(pool)
 	if _, err := store.EnsureGroup(ctx, projectID, "host", rootInc, "host", rootHost); err != nil {
 		t.Fatalf("EnsureGroup: %v", err)
@@ -363,7 +321,6 @@ func TestOnRootOpenedSkipsAlreadyResolvedGroup(t *testing.T) {
 	}
 }
 
-// TestOnRootClosedResolvesGroup — при закрытии корня группа тоже закрывается.
 func TestOnRootClosedResolvesGroup(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -388,8 +345,6 @@ func TestOnRootClosedResolvesGroup(t *testing.T) {
 	}
 }
 
-// TestOnRootClosedNoGroupIsNoop — если группа так и не была создана (членов
-// не было), закрытие корня не должно быть ошибкой (см. комментарий в коде).
 func TestOnRootClosedNoGroupIsNoop(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -399,8 +354,6 @@ func TestOnRootClosedNoGroupIsNoop(t *testing.T) {
 	}
 }
 
-// mustScanBool — как mustScan, но для bool (несколько тестов файла читают
-// булев результат напрямую).
 func mustScanBool(t *testing.T, pool *pgxpool.Pool, dst *bool, sql string, args ...any) {
 	t.Helper()
 	if err := pool.QueryRow(context.Background(), sql, args...).Scan(dst); err != nil {
@@ -408,13 +361,6 @@ func mustScanBool(t *testing.T, pool *pgxpool.Pool, dst *bool, sql string, args 
 	}
 }
 
-// TestAttachAlreadyGroupedSkipsEmptyGroup — W4: инцидент уже член ОТКРЫТОЙ
-// группы g1 (root1); Attach резолвит down-корень в ДРУГОЙ root2 (fixedRoot-
-// Resolver имитирует смену родителя между тиками) — SetGroup будет no-op
-// (член уже в открытой группе), и группа root2 не должна создаваться вовсе:
-// MemberEligible проверяется ДО EnsureGroup. Мутация (вернуть EnsureGroup
-// перед проверкой) даёт лишнюю пустую группу — ловится сравнением
-// len(before)/len(after) по OpenGroups, не только по attached.
 func TestAttachAlreadyGroupedSkipsEmptyGroup(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -474,13 +420,6 @@ func TestAttachAlreadyGroupedSkipsEmptyGroup(t *testing.T) {
 	}
 }
 
-// TestOnRootOpenedReattachesFormerMember — W2: флапающий корень. Первое
-// открытие присоединяет члена к группе g1; корень закрывается (g1
-// резолвится, group_id члена НЕ сбрасывается — единственная запись о том,
-// что упало вместе); корень открывается заново НОВЫМ инцидентом — ретро-
-// перебор обязан подхватить того же члена (его group_id указывает на уже
-// резолвнутую g1, значит он снова «внегрупповой» кандидат) и присоединить
-// его к НОВОЙ группе g2, а не пропустить навсегда.
 func TestOnRootOpenedReattachesFormerMember(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -532,13 +471,6 @@ func TestOnRootOpenedReattachesFormerMember(t *testing.T) {
 	}
 }
 
-// TestOnRootOpenedReattachesFormerMetricMember — то же W2-сценарие
-// (флапающий корень), что TestOnRootOpenedReattachesFormerMember, но для
-// metric-ветки openCandidates (фикс-раунд R1b, MAJOR-1): ревьюер откатил
-// `mi.group_id IS NULL` в WHERE обратно на голое условие без wg.resolved_at
-// — весь пакет остался зелёным, потому что host-ветка та же мутация ловит, а
-// metric никто не проверял. Правило с label_key='host' резолвит childHost по
-// имени (Р1); ребро rootHost -> childHost даёт DownRoot == rootHost.
 func TestOnRootOpenedReattachesFormerMetricMember(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -594,13 +526,6 @@ func TestOnRootOpenedReattachesFormerMetricMember(t *testing.T) {
 	}
 }
 
-// TestOnRootOpenedReattachesFormerSLOMember — то же W2-сценарие, что
-// TestOnRootOpenedReattachesFormerMember, но для slo-ветки openCandidates
-// (фикс-раунд R1b, MAJOR-1): та же выжившая мутация, что и у metric-ветки,
-// в третьей ветке того же UNION ALL, которую тоже никто не гонял отдельно.
-// SLO с sli_kind='uptime' + monitor_id резолвится по узлу 'monitor'; ребро
-// rootHost -> monitorID (parent_host_id/child_monitor_id) даёт
-// DownRoot("monitor", monitorID) == rootHost.
 func TestOnRootOpenedReattachesFormerSLOMember(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()

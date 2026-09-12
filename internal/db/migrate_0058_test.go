@@ -1,10 +1,5 @@
 package db_test
 
-// TestLatestMigrationHasDataTest (internal/guards) требует, чтобы НОВЕЙШАЯ
-// миграция PostgreSQL приезжала с тестом на непустой базе — db.MigratePGTo на
-// схему, уже содержащую строки. На момент этой правки новейшая —
-// 0058_perf_issue_description.up.sql.
-
 import (
 	"context"
 	"testing"
@@ -14,10 +9,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestMigrate0058BackfillsDescriptionFromTitles — backfill №132 извлекает
-// параметр из накопленных русских заголовков по двум известным префиксам,
-// не трогая ни сами title, ни строки, под префиксы не подошедшие (для них
-// работает fallback чтения title на рендере).
+// Backfill извлекает параметр из title по двум известным префиксам, не трогая ни title, ни строки
+// с неизвестным префиксом (для них работает fallback чтения title при рендере).
 func TestMigrate0058BackfillsDescriptionFromTitles(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -79,8 +72,7 @@ func TestMigrate0058BackfillsDescriptionFromTitles(t *testing.T) {
 		}
 	}
 
-	// Дефолт title работает: INSERT без title (так пишет детектор после №132)
-	// не падает и оставляет пустую строку.
+	// INSERT без title не падает и оставляет пустую строку — так пишет детектор после миграции.
 	if _, err := pool.Exec(ctx,
 		"INSERT INTO perf_issues (project_id, fingerprint, kind, description) VALUES ($1, 'fp5', 'n_plus_one', 'SELECT 1')",
 		projectID); err != nil {

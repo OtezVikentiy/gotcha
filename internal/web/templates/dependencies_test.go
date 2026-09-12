@@ -2,9 +2,6 @@ package templates
 
 import "testing"
 
-// TestDepDirectionIcon — иконка и ключ подсказки колонки «Данные» по всем
-// значениям trace.DataDirection плюс неизвестное: minus и none — для пустой
-// строки и для мусора, а не пустая ячейка.
 func TestDepDirectionIcon(t *testing.T) {
 	cases := []struct {
 		dir, icon, key string

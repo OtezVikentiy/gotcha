@@ -1,7 +1,3 @@
-// breadcrumb.templ — ссылка «назад к родительскому разделу», общая для всех
-// страниц-деталей (issue, monitor, endpoint, trace, метрика, команда и т.д.).
-// Вынесена в один компонент, чтобы стрелка и отступ не разъезжались между
-// разделами: раньше каждая страница печатала текстовый глиф «←» сама.
 package templates
 
 import (
@@ -11,10 +7,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/nav"
 )
 
-// breadcrumbBack — «← Родительский раздел». label уже локализован вызывающим
-// (обычно i18n.T(ctx, "nav.…")): подставлять ключ здесь нельзя, ключи у
-// разных страниц разные. Иконка помечена aria-hidden в @icon, смысл ссылки
-// несёт её текст, поэтому отдельный aria-label не нужен.
+// label уже локализован вызывающим — подставлять ключ i18n сюда нельзя.
 templ breadcrumbBack(href templ.SafeURL, label string) {
 	<p class="breadcrumb">
 		<a href={ href }>
@@ -24,23 +17,11 @@ templ breadcrumbBack(href templ.SafeURL, label string) {
 	</p>
 }
 
-// breadcrumbBackTo — та же ссылка «назад», но целью служит страница, откуда
-// пользователь пришёл (Referer, посчитан в withShell). Если источник не
-// определён (прямой заход, перезагрузка, чужой origin) — падает на
-// defaultHref/defaultLabel родителя, переданные вызывающим. Так одна и та же
-// страница-деталь возвращает туда, откуда на неё реально пришли, а не на
-// жёстко зашитого родителя.
 templ breadcrumbBackTo(defaultHref templ.SafeURL, defaultLabel string) {
 	{{ href, label := backTarget(ctx, defaultHref, defaultLabel) }}
 	@breadcrumbBack(href, label)
 }
 
-// backTarget разрешает цель и подпись хлебной крошки «назад». Приоритет — у
-// страницы-источника (nav.Shell.Back из Referer): туда пользователь и хочет
-// вернуться. Подпись строится по разделу пути (nav.BackLabelKey), поэтому
-// «← Проблемы»/«← Мониторы» согласованы с рейлом; неопознанный путь получает
-// общий «Назад». Без источника берётся родитель по умолчанию, переданный
-// вызывающей страницей.
 func backTarget(ctx context.Context, defaultHref templ.SafeURL, defaultLabel string) (templ.SafeURL, string) {
 	back := nav.FromContext(ctx).Back
 	if back == "" {

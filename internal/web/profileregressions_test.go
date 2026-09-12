@@ -54,7 +54,6 @@ func TestWebProfileRegressions(t *testing.T) {
 	o, _ := s.org.CreateOrg(ctx, "preg-co", "PReg Co", ownerID)
 	proj, _ := s.org.CreateProject(ctx, o.ID, "preg-proj", "PReg Proj", "go")
 
-	// Открытая регрессия функции compress; закрытая — decode.
 	if _, _, err := s.reg.Open(ctx, proj.ID, "api", "cpu", "compress", 0.1, 0.3, false); err != nil {
 		t.Fatalf("open compress: %v", err)
 	}
@@ -68,7 +67,6 @@ func TestWebProfileRegressions(t *testing.T) {
 
 	base := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/profile-regressions"
 
-	// Дефолт (open): compress виден, decode нет.
 	resp := getWithCookie(t, s.srv, base, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -79,7 +77,6 @@ func TestWebProfileRegressions(t *testing.T) {
 		t.Fatalf("resolved decode leaked into open filter")
 	}
 
-	// ?status=resolved: decode виден, compress нет.
 	resp = getWithCookie(t, s.srv, base+"?status=resolved", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -87,7 +84,6 @@ func TestWebProfileRegressions(t *testing.T) {
 		t.Fatalf("resolved filter wrong: %s", body)
 	}
 
-	// ?status=all: обе.
 	resp = getWithCookie(t, s.srv, base+"?status=all", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -95,7 +91,6 @@ func TestWebProfileRegressions(t *testing.T) {
 		t.Fatalf("all filter missing one: %s", body)
 	}
 
-	// Чужой → 404.
 	_, outsider := orgSettingsRegister(t, s.auth, "preg-outsider@example.com")
 	resp = getWithCookie(t, s.srv, base, outsider)
 	io.Copy(io.Discard, resp.Body)

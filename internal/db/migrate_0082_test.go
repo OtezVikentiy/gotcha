@@ -10,13 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0082ExportJobsCreatedByIdx — TestForeignKeysHaveCoveringIndex
-// (internal/guards/fkindex_test.go): export_jobs_created_by_fkey (0081) без
-// покрывающего индекса. На непустой базе (TestLatestMigrationHasDataTest):
-// заводим заявку ДО миграции 82, проверяем появление индекса и то, что он
-// действительно покрывает поиск по created_by (тот же профиль запроса, что
-// каскадное удаление пользователя строит по FK), откатываем и убеждаемся,
-// что строка export_jobs пережила откат индекса.
+// TestForeignKeysHaveCoveringIndex (internal/guards) флагует export_jobs_created_by_fkey без покрывающего
+// индекса — этот тест проверяет, что 0082 действительно закрывает профиль запроса по created_by.
 func TestMigrate0082ExportJobsCreatedByIdx(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

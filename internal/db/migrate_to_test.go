@@ -10,10 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigratePGToStopsAtVersion — пошаговая миграция нужна, чтобы проверять
-// миграции на НЕПУСТОЙ базе: засеять данные старой схемой и применить
-// следующую. Без неё любой тест миграции работает на пустых таблицах, где
-// проходит и то, что на живой базе падает (ADD COLUMN NOT NULL без DEFAULT).
 func TestMigratePGToStopsAtVersion(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -39,7 +35,6 @@ func TestMigratePGToStopsAtVersion(t *testing.T) {
 		t.Fatalf("version = %d dirty = %v, want 2 false", version, dirty)
 	}
 
-	// Таблица из миграции 0002 есть, из 0003 — ещё нет.
 	var n int
 	if err := pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM information_schema.tables

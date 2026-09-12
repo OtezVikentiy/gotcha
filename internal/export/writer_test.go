@@ -36,8 +36,6 @@ func TestCSVWriterBOMHeaderAndTime(t *testing.T) {
 	}
 }
 
-// Значения событий контролирует тот, кто их шлёт: сообщение вида =cmd|'/c calc'!A1
-// в CSV исполняется Excel'ем как формула. Префикс апострофа обязателен.
 func TestCSVWriterEscapesFormulas(t *testing.T) {
 	for _, dangerous := range []string{"=1+1", "+1", "-1", "@SUM(A1)", "\t=1", "\r=1"} {
 		var buf bytes.Buffer
@@ -53,8 +51,6 @@ func TestCSVWriterEscapesFormulas(t *testing.T) {
 	}
 }
 
-// Пустая строка не должна получать апостроф — обезвреживать нечего, а лишний
-// символ испортил бы легитимные данные.
 func TestCSVSafeEmptyUnchanged(t *testing.T) {
 	var buf bytes.Buffer
 	w, _ := NewWriter(&buf, FormatCSV, []string{"message"})
@@ -68,8 +64,6 @@ func TestCSVSafeEmptyUnchanged(t *testing.T) {
 	}
 }
 
-// Безопасное значение (не начинается с триггера формулы) обязано пройти без
-// изменений — иначе выгрузка искажает обычные данные.
 func TestCSVSafeOrdinaryValueUnchanged(t *testing.T) {
 	var buf bytes.Buffer
 	w, _ := NewWriter(&buf, FormatCSV, []string{"message"})
@@ -87,10 +81,6 @@ func TestCSVSafeOrdinaryValueUnchanged(t *testing.T) {
 	}
 }
 
-// Запятая, кавычка и перевод строки внутри значения обязаны пережить
-// round-trip через RFC4180-парсер без потери и без расползания по колонкам.
-// csv.Reader сам нормализует одинокий \r\n внутри поля в \n (поведение
-// парсера, не писателя) — сравниваем с уже нормализованным ожиданием.
 func TestCSVWriterEscapesSpecialChars(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{`значение, с запятой`, `значение, с запятой`},
@@ -122,8 +112,6 @@ func TestCSVWriterEscapesSpecialChars(t *testing.T) {
 	}
 }
 
-// Отсутствующий в записи ключ — это nil, а не паника: cell(nil) обязан дать
-// пустую строку, не "<nil>".
 func TestCSVWriterMissingFieldIsEmpty(t *testing.T) {
 	var buf bytes.Buffer
 	w, _ := NewWriter(&buf, FormatCSV, []string{"id", "missing"})
@@ -137,8 +125,6 @@ func TestCSVWriterMissingFieldIsEmpty(t *testing.T) {
 	}
 }
 
-// Очень длинное значение не должно обрезаться писателем — усечение решает
-// вызывающий код (по бюджету строк), а не формат.
 func TestCSVWriterLongValueNotTruncated(t *testing.T) {
 	long := strings.Repeat("x", 100_000)
 	var buf bytes.Buffer
@@ -152,7 +138,6 @@ func TestCSVWriterLongValueNotTruncated(t *testing.T) {
 	}
 }
 
-// bool и NUL-байт внутри строки не должны ронять писателя.
 func TestCSVWriterBoolAndNUL(t *testing.T) {
 	var buf bytes.Buffer
 	w, _ := NewWriter(&buf, FormatCSV, []string{"ok", "raw"})
@@ -197,8 +182,6 @@ func TestJSONWriterValidArray(t *testing.T) {
 	}
 }
 
-// Байтовая проверка нулевой выгрузки: файл обязан быть буквально "[]", а не
-// пустой строкой и не "[" без закрытия.
 func TestJSONWriterEmptyIsBracketPair(t *testing.T) {
 	var buf bytes.Buffer
 	w, _ := NewWriter(&buf, FormatJSON, nil)
@@ -210,8 +193,6 @@ func TestJSONWriterEmptyIsBracketPair(t *testing.T) {
 	}
 }
 
-// Разделитель между объектами — запятая ровно между ними, не перед первым и
-// не после последнего: округлый round-trip через Unmarshal это маскирует.
 func TestJSONWriterCommaPlacement(t *testing.T) {
 	var buf bytes.Buffer
 	w, _ := NewWriter(&buf, FormatJSON, nil)
@@ -229,8 +210,6 @@ func TestJSONWriterCommaPlacement(t *testing.T) {
 	}
 }
 
-// Энкодер по умолчанию экранирует <, >, & в \uXXXX — для выгружаемого файла
-// (не HTML-контекст) это не нужно и портит читаемость сообщений об ошибках.
 func TestJSONWriterDoesNotHTMLEscape(t *testing.T) {
 	var buf bytes.Buffer
 	w, _ := NewWriter(&buf, FormatJSON, nil)
@@ -251,8 +230,6 @@ func TestJSONWriterDoesNotHTMLEscape(t *testing.T) {
 	}
 }
 
-// Невалидный UTF-8 не должен ронять запись и обязан дать валидный JSON на
-// выходе (json.Marshal подменяет невалидные байты U+FFFD).
 func TestJSONWriterInvalidUTF8(t *testing.T) {
 	var buf bytes.Buffer
 	w, _ := NewWriter(&buf, FormatJSON, nil)
@@ -288,9 +265,6 @@ func TestNDJSONWriterOneObjectPerLine(t *testing.T) {
 	}
 }
 
-// Файл обязан заканчиваться переводом строки и после последнего объекта —
-// это то, что отличает NDJSON от JSON Lines без хвостового \n на некоторых
-// потребителях, которые читают построчно через bufio.Scanner.
 func TestNDJSONWriterTrailingNewline(t *testing.T) {
 	var buf bytes.Buffer
 	w, _ := NewWriter(&buf, FormatNDJSON, nil)
@@ -310,8 +284,6 @@ func TestNewWriterUnknownFormat(t *testing.T) {
 	}
 }
 
-// countingWriter считает вызовы Write — им проверяем, что писатель отдаёт
-// данные наружу по мере поступления записей, а не копит всё до Close.
 type countingWriter struct {
 	buf   bytes.Buffer
 	calls int
@@ -375,9 +347,6 @@ func TestCSVWriterStreamsIncrementally(t *testing.T) {
 	w.Close()
 }
 
-// failingWriter пропускает ровно budget байт, дальше любая запись — ошибка.
-// Байтовый, а не количественный лимит: тест не завязан на то, сколькими
-// вызовами Write() писатель решит раздробить свои данные.
 type failingWriter struct {
 	buf    bytes.Buffer
 	budget int
@@ -427,10 +396,6 @@ func TestCSVWriterConstructorErrorPropagates(t *testing.T) {
 	}
 }
 
-// Длинное значение (100КБ) не помещается в буфер encoding/csv целиком:
-// ошибка нижележащего writer'а всплывает прямо из c.cw.Write(row), а не
-// только из Flush()+Error() — маленький бюджет (20 байт) пропускает
-// BOM и заголовок, а на самой длинной строке отказ происходит сразу.
 func TestCSVWriterRowWriteErrorOnLargeField(t *testing.T) {
 	fw := &failingWriter{budget: 20}
 	w, err := NewWriter(fw, FormatCSV, []string{"message"})
@@ -484,8 +449,6 @@ func TestNDJSONWriterWriteErrorPropagates(t *testing.T) {
 	}
 }
 
-// При ошибке на N-й записи частичный файл не обязан выглядеть валидным целым:
-// незакрытый JSON-массив это гарантирует сам по себе.
 func TestJSONWriterPartialOutputNotValidOnError(t *testing.T) {
 	fw := &failingWriter{budget: 1} // ровно на "["
 	w, err := NewWriter(fw, FormatJSON, nil)
@@ -501,9 +464,6 @@ func TestJSONWriterPartialOutputNotValidOnError(t *testing.T) {
 	}
 }
 
-// Тип за пределами документированного контракта (string/int64/bool/
-// time.Time/json.RawMessage/nil) не должен паниковать — cell() обязан дать
-// хоть какое-то текстовое представление через запасной путь.
 func TestCellUnknownTypeFallback(t *testing.T) {
 	var buf bytes.Buffer
 	w, _ := NewWriter(&buf, FormatCSV, []string{"weird"})
@@ -516,8 +476,6 @@ func TestCellUnknownTypeFallback(t *testing.T) {
 	}
 }
 
-// Ошибка при записи строки заголовков (после успешного BOM) обязана
-// всплывать из newCSVWriter, а не только ошибка на самом BOM.
 func TestCSVWriterHeaderWriteErrorPropagates(t *testing.T) {
 	var probe bytes.Buffer
 	if _, err := io.WriteString(&probe, "\ufeff"); err != nil {
@@ -531,8 +489,6 @@ func TestCSVWriterHeaderWriteErrorPropagates(t *testing.T) {
 	}
 }
 
-// Ошибка на самой открывающей скобке "[" обязана всплывать из NewWriter,
-// а не только ошибка на записи первого объекта.
 func TestJSONWriterConstructorErrorPropagates(t *testing.T) {
 	fw := &failingWriter{budget: 0}
 	if _, err := NewWriter(fw, FormatJSON, nil); err == nil {
@@ -540,8 +496,6 @@ func TestJSONWriterConstructorErrorPropagates(t *testing.T) {
 	}
 }
 
-// Значение, которое encoding/json не умеет сериализовать (канал), обязано
-// дать ошибку из Write, а не панику и не молчаливый пропуск записи.
 func TestJSONWriterEncodeErrorPropagates(t *testing.T) {
 	var buf bytes.Buffer
 	w, _ := NewWriter(&buf, FormatJSON, nil)
@@ -550,9 +504,6 @@ func TestJSONWriterEncodeErrorPropagates(t *testing.T) {
 	}
 }
 
-// cell() отдельно от JSON-писателей — единственный потребитель ветки
-// json.RawMessage: raw-значение должно попасть в CSV как есть, без
-// повторного экранирования кавычек внутри уже готового JSON-фрагмента.
 func TestCellRawMessageInCSV(t *testing.T) {
 	var buf bytes.Buffer
 	w, _ := NewWriter(&buf, FormatCSV, []string{"raw"})
@@ -570,8 +521,6 @@ func TestCellRawMessageInCSV(t *testing.T) {
 	}
 }
 
-// Разделительная запятая перед вторым объектом — отдельная точка отказа от
-// записи самих данных: бюджет пропускает ровно первый объект целиком.
 func TestJSONWriterCommaWriteErrorPropagates(t *testing.T) {
 	var probe bytes.Buffer
 	w0, _ := NewWriter(&probe, FormatJSON, nil)
@@ -591,22 +540,6 @@ func TestJSONWriterCommaWriteErrorPropagates(t *testing.T) {
 	}
 }
 
-// TestCSVWriterReadableByStandardCSVReader — F5/F1′ контрактной уборки
-// 2026-08-28 (CONTRACT-DECISIONS.md): CSV-файл выгрузки обязан парситься
-// СТАНДАРТНЫМ encoding/csv.Reader с настройками по умолчанию — тот обязывает
-// все строки нести ОДИНАКОВОЕ число полей, начиная с первой прочитанной.
-// Именно эта проверка поймала регресс предыдущего прохода (P1 ревью):
-// комментарий "# gotcha-export-meta ..." перед строкой колонок ломал файл
-// РОВНО так — у комментария 1 поле (в нём нет запятых), у настоящей строки
-// колонок — len(columns), и csv.Reader падал "record on line 2: wrong number
-// of fields", а не просто "не то содержимое". Мутационная точка F5: вернуть
-// комментарий метаданных перед строкой колонок в newCSVWriter (writer.go) —
-// этот тест обязан упасть на err от r.ReadAll(), а не молча пройти.
-//
-// BOM перед первым полем не срезаем нарочно избирательно — это конвенция
-// формата (Excel опознаёт кодировку только по нему, см. docblock newCSVWriter),
-// а не дефект: срез делает сам тест перед сравнением, тем же приёмом, каким
-// это делает любой типичный потребитель (Python — encoding="utf-8-sig").
 func TestCSVWriterReadableByStandardCSVReader(t *testing.T) {
 	var buf bytes.Buffer
 	w, err := NewWriter(&buf, FormatCSV, []string{"id", "title"})
@@ -644,16 +577,6 @@ func TestCSVWriterReadableByStandardCSVReader(t *testing.T) {
 	}
 }
 
-// TestJSONWriterDecodesDirectlyIntoRecordSlice — F5: получатель обязан
-// разбирать файл наивным json.Unmarshal(data, &[]map[string]any{}) — без
-// какой-либо специальной обработки первого элемента. Именно эта проверка
-// поймала регресс предыдущего прохода: элемент {"_export_meta": {...}}
-// первым в массиве не был строкой данных, и код вида
-// `for _, row := range rows { _ = row["id"].(int64) }` (Go) или
-// `for row in json.load(f): row["id"]` (Python) падал бы на элементе 0.
-// Мутационная точка F5: вернуть writeMeta/exportMetaElement первым элементом
-// в newJSONWriter (writer.go) — len(rows) станет 3 вместо 2 и rows[0]["id"]
-// не будет float64(1): оба Errorf ниже обязаны упасть.
 func TestJSONWriterDecodesDirectlyIntoRecordSlice(t *testing.T) {
 	var buf bytes.Buffer
 	w, err := NewWriter(&buf, FormatJSON, nil)
@@ -685,9 +608,6 @@ func TestJSONWriterDecodesDirectlyIntoRecordSlice(t *testing.T) {
 	}
 }
 
-// TestNDJSONWriterEachLineIsHomogeneousRecord — F5: тот же контракт, что и
-// у JSON-массива выше, но построчно — ни одна строка NDJSON-файла не несёт
-// служебный ключ "_export_meta", каждая декодируется в ту же форму записи.
 func TestNDJSONWriterEachLineIsHomogeneousRecord(t *testing.T) {
 	var buf bytes.Buffer
 	w, err := NewWriter(&buf, FormatNDJSON, nil)

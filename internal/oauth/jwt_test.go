@@ -11,7 +11,6 @@ import (
 	"testing"
 )
 
-// signRS256 — тестовый помощник: собирает JWT с RS256-подписью на заданном ключе.
 func signRS256(t *testing.T, key *rsa.PrivateKey, kid string, claims map[string]any) string {
 	t.Helper()
 	hdr := map[string]any{"alg": "RS256", "typ": "JWT"}
@@ -61,7 +60,6 @@ func TestVerifyRS256WrongKeyFails(t *testing.T) {
 }
 
 func TestVerifyRS256RejectsWeakRSAKey(t *testing.T) {
-	// SEC-L3: ключ < 2048 бит отклоняется, даже если подпись математически верна.
 	weak, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {
 		t.Fatalf("gen weak key: %v", err)
@@ -73,7 +71,6 @@ func TestVerifyRS256RejectsWeakRSAKey(t *testing.T) {
 }
 
 func TestVerifyRS256RejectsNoneAlg(t *testing.T) {
-	// alg=none → ErrUnsupportedAlg (защита от alg-downgrade).
 	enc := func(v any) string {
 		b, _ := json.Marshal(v)
 		return base64.RawURLEncoding.EncodeToString(b)

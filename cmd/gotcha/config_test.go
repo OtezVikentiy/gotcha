@@ -65,14 +65,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.ServerURL != "" {
 		t.Errorf("ServerURL = %q, want empty", cfg.ServerURL)
 	}
-	// rem-A ops-H1: дефолт совпадает с ENV Dockerfile — .env.example с пустым
-	// или отсутствующим значением (env_file compose) не должен гасить раздачу.
 	if cfg.AgentDistDir != "/opt/gotcha/agent-dist" {
 		t.Errorf("AgentDistDir = %q, want /opt/gotcha/agent-dist", cfg.AgentDistDir)
 	}
-	// rem-A ops-H4: щедрее умолчания New() (10/мин) — установка/обновление
-	// парка за одним IP не должны сериализоваться дефолтом, рассчитанным на
-	// одиночный сервер.
 	if cfg.AgentDistRatePerMin != 120 {
 		t.Errorf("AgentDistRatePerMin = %d, want 120", cfg.AgentDistRatePerMin)
 	}
@@ -93,8 +88,6 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_ExportOverrides — все пять переменных выгрузок читаются
-// обычными str/intNum/num, каждая независимо переопределяется своим env.
 func TestLoadConfig_ExportOverrides(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(map[string]string{
 		"GOTCHA_EXPORT_DIR":               "/data/exports",
@@ -123,10 +116,7 @@ func TestLoadConfig_ExportOverrides(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_AgentDistDirEmptyEnvFallsBackToDefault — rem-A ops-H1: явно
-// заданная пустая строка (как её отдаёт docker-compose env_file на
-// GOTCHA_DIST_DIR= из .env.example) неотличима для str() от «не
-// задано» — не должна гасить раздачу пустым значением поверх ENV образа.
+// явно заданная пустая строка для str() неотличима от «не задано»
 func TestLoadConfig_AgentDistDirEmptyEnvFallsBackToDefault(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_DIST_DIR": ""}), nil)
 	if err != nil {
@@ -137,8 +127,6 @@ func TestLoadConfig_AgentDistDirEmptyEnvFallsBackToDefault(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_AgentDistRatePerMinOverride — GOTCHA_DIST_RATE_PER_MIN
-// читается как обычный intNum (rem-A ops-H4).
 func TestLoadConfig_AgentDistRatePerMinOverride(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_DIST_RATE_PER_MIN": "500"}), nil)
 	if err != nil {
@@ -208,10 +196,8 @@ func TestLoadConfigOverrides(t *testing.T) {
 	}
 }
 
-// GOTCHA_TELEGRAM_API_BASE: пусто — дефолт пакета notify (api.telegram.org),
-// непустое значение нормализуется. Хвостовая косая снимается, потому что
-// отправитель дописывает «/bot{token}/sendMessage»: «…org/» дало бы «…org//bot…»
-// и 404 на каждое уведомление.
+// хвостовая косая снимается: отправитель дописывает «/bot{token}/sendMessage»,
+// «…org/» дало бы «…org//bot…» и 404 на каждое уведомление
 func TestLoadConfigTelegramAPIBase(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(nil), nil)
 	if err != nil {
@@ -238,10 +224,8 @@ func TestLoadConfigTelegramAPIBase(t *testing.T) {
 	}
 }
 
-// GOTCHA_BASE_URL нормализуется той же логикой, что GOTCHA_TELEGRAM_API_BASE
-// выше (W3-D, запись 4): хвостовая косая снимается, потому что продукт сам
-// дописывает путь к базе в heartbeat cron-команде, OAuth RedirectURI и
-// ссылке-приглашении — «…app/» дало бы «…app//uptime/hb/…» в каждой из них.
+// хвостовая косая снимается: продукт сам дописывает путь к базе (heartbeat,
+// OAuth RedirectURI, ссылка-приглашение) — «…app/» дало бы «…app//uptime/hb/…»
 func TestLoadConfigBaseURLNormalized(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(nil), nil)
 	if err != nil {
@@ -257,9 +241,8 @@ func TestLoadConfigBaseURLNormalized(t *testing.T) {
 		{"http://127.0.0.1:8081", "http://127.0.0.1:8081"},
 		{"https://gw.example.com/gotcha", "https://gw.example.com/gotcha"},
 	} {
-		// ALLOW_INSECURE_SECRET: сами значения не local (isLocalBaseURL) — без
-		// него тест упёрся бы в ЧУЖУЮ проверку (слабый GOTCHA_SECRET_KEY на
-		// не-local BaseURL, SEC-C1), не в ту, которую проверяет этот тест.
+		// без ALLOW_INSECURE_SECRET тест упёрся бы в чужую проверку — слабый
+		// GOTCHA_SECRET_KEY на не-local BaseURL (значения тут не local)
 		env := map[string]string{"GOTCHA_BASE_URL": tc.in, "GOTCHA_SECRET_KEY_ALLOW_INSECURE": "1"}
 		cfg, err := loadConfig(getenvFrom(env), nil)
 		if err != nil {
@@ -271,8 +254,6 @@ func TestLoadConfigBaseURLNormalized(t *testing.T) {
 	}
 }
 
-// Невалидный GOTCHA_BASE_URL — отказ при запуске, а не битые ссылки в каждом
-// письме/cron/редиректе: без схемы и хоста построенная ссылка ведёт в никуда.
 func TestLoadConfigBaseURLRejectsInvalid(t *testing.T) {
 	for _, v := range []string{
 		"gotcha.example.com",
@@ -289,9 +270,6 @@ func TestLoadConfigBaseURLRejectsInvalid(t *testing.T) {
 	}
 }
 
-// Невалидный адрес Bot API — отказ при запуске, а не таймаут на каждой
-// доставке: без схемы и хоста отправка падает с "unsupported protocol scheme",
-// а запрос/фрагмент оказались бы посреди пути к /bot{token}/sendMessage.
 func TestLoadConfigTelegramAPIBaseRejectsInvalid(t *testing.T) {
 	for _, v := range []string{
 		"tg.example.com",
@@ -315,9 +293,7 @@ func TestLoadConfigInvalidMode(t *testing.T) {
 }
 
 func TestLoadConfigAcceptsUptimeAndProbeModes(t *testing.T) {
-	// probe без GOTCHA_PROBE_SERVER_URL/GOTCHA_PROBE_KEY не запускается (см.
-	// TestLoadConfigProbeModeRequiresServerURLAndToken), поэтому здесь они
-	// заданы для обоих режимов — проверяется только разбор --mode.
+	// заданы для обоих режимов, чтобы проверялся только разбор --mode
 	env := map[string]string{
 		"GOTCHA_PROBE_SERVER_URL": "https://gotcha.example.com",
 		"GOTCHA_PROBE_KEY":        "probe-token",
@@ -334,8 +310,6 @@ func TestLoadConfigAcceptsUptimeAndProbeModes(t *testing.T) {
 }
 
 func TestLoadConfigProbeModeRejectsServerURLWithoutScheme(t *testing.T) {
-	// Без схемы/хоста каждый тик пробы падал бы с "unsupported protocol
-	// scheme" раз в секунду вечно — отказываем на старте.
 	for _, serverURL := range []string{"gotcha.example.com", "/probe", "ftp://gotcha.example.com"} {
 		env := map[string]string{
 			"GOTCHA_PROBE_SERVER_URL": serverURL,
@@ -347,20 +321,8 @@ func TestLoadConfigProbeModeRejectsServerURLWithoutScheme(t *testing.T) {
 	}
 }
 
-// TestLoadConfigProbeServerURLNormalized — та же нормализация (E3 T6), что у
-// GOTCHA_BASE_URL/GOTCHA_TELEGRAM_API_BASE: хвостовая косая срезается. До
-// этой правки GOTCHA_PROBE_SERVER_URL хвостовую "/" не срезал вовсе.
-//
-// Ассерт — прямое наблюдаемое свойство cfg.ServerURL, а не синтетическая
-// копия сборки запроса: internal/uptime/probeclient.go.post() уже режет
-// хвостовой слэш САМ (strings.TrimSuffix(c.ServerURL, "/") + path) — точка
-// использования подстрахована независимо от этого теста. Этот тест стережёт
-// контракт КОНФИГУРАЦИИ (единая нормализация на старте, тот же baseurl.Normalize,
-// что у остальных трёх базовых адресов), а не сборку URL запроса пробы —
-// раньше здесь была конкатенация cfg.ServerURL+"/probe/lease" с проверкой
-// "//probe" в результате, что проверяло собственную копию логики теста, а не
-// боевой путь (round 1 ревью задачи 6: probeclient.go и без нормализации в
-// конфиге не даёт двойной слэш благодаря своему TrimSuffix).
+// проверяет контракт конфигурации (cfg.ServerURL), не сборку запроса пробы:
+// internal/uptime/probeclient.go режет хвостовой слэш сам, независимо от этого теста
 func TestLoadConfigProbeServerURLNormalized(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"https://gotcha.example.com", "https://gotcha.example.com"},
@@ -381,11 +343,8 @@ func TestLoadConfigProbeServerURLNormalized(t *testing.T) {
 	}
 }
 
-// TestLoadConfigProbeServerURLRejectsQuery — та же политика query/fragment,
-// что у GOTCHA_BASE_URL/GOTCHA_TELEGRAM_API_BASE, но только В --mode=probe:
-// формат вне режима пробы не проверяется вовсе (см.
-// TestLoadConfigProbeServerURLInvalidOutsideProbeModeOnlyWarns) — переменную
-// никто не читает, и ронять по ней старт было бы тихим breaking change.
+// формат проверяется только в --mode=probe: вне него переменную никто не
+// читает, и ронять по ней старт было бы тихим breaking change
 func TestLoadConfigProbeServerURLRejectsQuery(t *testing.T) {
 	for _, v := range []string{
 		"https://gotcha.example.com?token=1",
@@ -401,10 +360,6 @@ func TestLoadConfigProbeServerURLRejectsQuery(t *testing.T) {
 	}
 }
 
-// TestLoadConfigProbeServerURLWarnsOutsideProbeMode — заданный, но
-// бесполезный вне --mode=probe: ничего его не читает, поэтому старт не падает,
-// но лог предупреждает — тот же паттерн, что GOTCHA_HSTS_* при выключенном
-// GOTCHA_HSTS_ENABLED (TestLoadConfig_HSTSWarnings).
 func TestLoadConfigProbeServerURLWarnsOutsideProbeMode(t *testing.T) {
 	capture := func(t *testing.T, env map[string]string, args []string) ([]slog.Record, error) {
 		t.Helper()
@@ -424,7 +379,6 @@ func TestLoadConfigProbeServerURLWarnsOutsideProbeMode(t *testing.T) {
 		return false
 	}
 
-	// Вне --mode=probe: предупреждение, старт продолжается.
 	records, err := capture(t, map[string]string{"GOTCHA_PROBE_SERVER_URL": "https://gotcha.example.com"}, nil)
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
@@ -433,7 +387,6 @@ func TestLoadConfigProbeServerURLWarnsOutsideProbeMode(t *testing.T) {
 		t.Error("нет предупреждения о GOTCHA_PROBE_SERVER_URL вне --mode=probe")
 	}
 
-	// В --mode=probe — предупреждения нет, переменная используется по назначению.
 	records, err = capture(t, map[string]string{
 		"GOTCHA_PROBE_SERVER_URL": "https://gotcha.example.com",
 		"GOTCHA_PROBE_KEY":        "probe-token",
@@ -445,7 +398,6 @@ func TestLoadConfigProbeServerURLWarnsOutsideProbeMode(t *testing.T) {
 		t.Error("предупреждение о GOTCHA_PROBE_SERVER_URL выдано в --mode=probe, где переменная используется")
 	}
 
-	// Не задан вовсе — тоже без предупреждения.
 	records, err = capture(t, nil, nil)
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
@@ -455,16 +407,8 @@ func TestLoadConfigProbeServerURLWarnsOutsideProbeMode(t *testing.T) {
 	}
 }
 
-// TestLoadConfigProbeServerURLInvalidOutsideProbeModeOnlyWarns — round 1
-// ревью задачи 6 (CRITICAL): на BASE (до унификации) GOTCHA_PROBE_SERVER_URL
-// вне --mode=probe вообще не разбирался, и невалидное значение там СТАРТ НЕ
-// РОНЯЛО — переменную в этом режиме никто не читает. Безусловный вызов
-// baseurl.Normalize (без гейта режимом) превратил бы это в тихий breaking
-// change: оператор с оставшимся от пробы или опечатанным значением перестал
-// бы стартовать по значению, которое приложение и не собиралось читать. Формат
-// проверяется ТОЛЬКО внутри --mode=probe (см. TestLoadConfigProbeServerURLRejectsQuery
-// и TestLoadConfigProbeModeRejectsServerURLWithoutScheme); вне него —
-// безусловно предупреждение и продолжение старта, независимо от валидности.
+// безусловный Normalize вне режима пробы был бы тихим breaking change: оператор
+// с опечатанным, но нечитаемым значением перестал бы стартовать
 func TestLoadConfigProbeServerURLInvalidOutsideProbeModeOnlyWarns(t *testing.T) {
 	var records []slog.Record
 	prev := slog.Default()
@@ -497,9 +441,6 @@ func TestLoadConfigProbeServerURLInvalidOutsideProbeModeOnlyWarns(t *testing.T) 
 	}
 }
 
-// TestLoadConfigDSNsRejectUnparseable — GOTCHA_PG_DSN/GOTCHA_CH_DSN до E3 T6
-// не разбирались на старте вовсе: опечатка всплывала только на первом
-// db.NewPostgres/db.NewClickHouse. Отказ должен называть переменную.
 func TestLoadConfigDSNsRejectUnparseable(t *testing.T) {
 	cases := []struct {
 		key string
@@ -520,11 +461,7 @@ func TestLoadConfigDSNsRejectUnparseable(t *testing.T) {
 	}
 }
 
-// TestLoadConfigDSNsAcceptKeywordValueForm — Postgres DSN легален и в
-// keyword/value-форме (host=... user=... dbname=...), не только в URL-форме
-// (postgres://...); обе формы принимает pgxpool.ParseConfig, поэтому и
-// проверка на старте обязана принимать обе — иначе она отвергла бы легальный
-// DSN, которым реально пользуются операторы.
+// pgxpool.ParseConfig принимает и keyword/value-форму, не только URL-форму
 func TestLoadConfigDSNsAcceptKeywordValueForm(t *testing.T) {
 	env := map[string]string{
 		"GOTCHA_PG_DSN": "host=pg.example port=5432 user=gotcha password=s3cret dbname=gotcha sslmode=disable",
@@ -550,8 +487,6 @@ func TestLoadConfigInvalidInt(t *testing.T) {
 	}
 }
 
-// №34: 0 = хранить вечно. Пол >= 1 снят у пяти переменных ретенции;
-// документация (configuration.md) обещала это раньше, чем смог код.
 func TestLoadConfigZeroRetentionMeansForever(t *testing.T) {
 	env := map[string]string{
 		"GOTCHA_EVENT_RETENTION_DAYS":    "0",
@@ -577,13 +512,6 @@ func TestLoadConfigZeroRetentionMeansForever(t *testing.T) {
 	}
 }
 
-// TestLoadConfigNegativeRetentionRejected — T2: GOTCHA_DEPLOY_RETENTION_DAYS
-// добавлен в этот список. У шести соседей (RetentionDays, SpanRetentionDays,
-// MetricRetentionDays, ProfileRetentionDays, LogRetentionDays,
-// IncidentRetentionDays) проверка "< 0" была; у DeployRetentionDays — не
-// было: отрицательное значение проходило validate() молча и попадало в
-// time.Duration(cfg.DeployRetentionDays) * 24 * time.Hour (main.go) как
-// отрицательный TTL.
 func TestLoadConfigNegativeRetentionRejected(t *testing.T) {
 	for _, key := range []string{
 		"GOTCHA_EVENT_RETENTION_DAYS",
@@ -602,7 +530,6 @@ func TestLoadConfigNegativeRetentionRejected(t *testing.T) {
 }
 
 func TestLoadConfigNonPositiveDefaultEventQuota(t *testing.T) {
-	// 0 = безлимит (разрешено); ошибка только на отрицательном значении.
 	env := map[string]string{"GOTCHA_DEFAULT_EVENT_QUOTA": "-1"}
 	if _, err := loadConfig(getenvFrom(env), nil); err == nil {
 		t.Fatal("GOTCHA_DEFAULT_EVENT_QUOTA=-1: want error, got nil")
@@ -651,7 +578,6 @@ func TestLoadConfigProbeMode(t *testing.T) {
 	}
 }
 
-// Остальные режимы GOTCHA_PROBE_SERVER_URL/GOTCHA_PROBE_KEY не требуют.
 func TestLoadConfigNonProbeModeDoesNotRequireProbeCreds(t *testing.T) {
 	for _, mode := range []string{"ingest", "web", "uptime", "all"} {
 		if _, err := loadConfig(getenvFrom(nil), []string{"--mode=" + mode}); err != nil {
@@ -691,7 +617,6 @@ func TestLoadConfigOAuthMissingSecretFails(t *testing.T) {
 		"GOTCHA_OIDC_ENABLED":   "true",
 		"GOTCHA_OIDC_ISSUER":    "https://idp.example",
 		"GOTCHA_OIDC_CLIENT_ID": "cid",
-		// нет CLIENT_SECRET
 	}
 	if _, err := loadConfig(getenvFrom(env), []string{"--mode=all"}); err == nil {
 		t.Fatal("enabled OIDC without secret must fail at startup")
@@ -711,8 +636,6 @@ func TestLoadConfigProfileDefaults(t *testing.T) {
 	}
 }
 
-// №35: per-DSN лимит приёма настраивается; 0 выключает, дефолт 500 совпадает
-// с прежним захардкоженным defaultIngestRatePerSec.
 func TestLoadConfigIngestRateLimit(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(nil), nil)
 	if err != nil {
@@ -741,9 +664,7 @@ func TestLoadConfigOutboxRetention(t *testing.T) {
 	if cfg.OutboxRetentionDays != 7 {
 		t.Errorf("OutboxRetentionDays = %d, want 7", cfg.OutboxRetentionDays)
 	}
-	// Outbox — рабочая очередь, не архив: «хранить вечно» = неограниченный
-	// рост таблицы, поэтому пол >= 1 сохранён и после №34 (0 = бессрочно
-	// у переменных ретенции телеметрии).
+	// outbox — рабочая очередь, не архив: «хранить вечно» тут был бы неограниченный рост
 	for _, v := range []string{"0", "-1"} {
 		if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_OUTBOX_RETENTION_DAYS": v}), nil); err == nil {
 			t.Errorf("GOTCHA_OUTBOX_RETENTION_DAYS=%q: want error, got nil", v)
@@ -754,7 +675,6 @@ func TestLoadConfigOutboxRetention(t *testing.T) {
 func TestLoadConfig_RejectsDefaultSecretInProd(t *testing.T) {
 	env := map[string]string{
 		"GOTCHA_BASE_URL": "https://gotcha.example.com",
-		// GOTCHA_SECRET_KEY не задан → дефолт insecure-dev-secret
 	}
 	getenv := func(k string) string { return env[k] }
 	_, err := loadConfig(getenv, []string{"--mode=all"})
@@ -784,16 +704,6 @@ func TestLoadConfig_AllowsDefaultSecretWithEscapeHatch(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_SecretRequiredInDecryptingModes — мастер-ключ обязателен во ВСЕХ
-// режимах, которые расшифровывают секреты at-rest, а не только там, где есть
-// cookie.
-//
-// Раньше проверялись только web и all. Но тем же ключом зашифрованы секреты
-// каналов доставки, а расшифровывают их теперь ingest и uptime тоже: секрет
-// резолвится в момент отправки, а очередь наполняют оценщики из ingest и
-// детектор аптайма. Реплика --mode=ingest с дефолтным ключом стартовала молча и
-// отдавала в Telegram сырой шифротекст "enc:…" вместо bot-токена — 401 и вечные
-// ретраи, не диагностируемые по симптому.
 func TestLoadConfig_SecretRequiredInDecryptingModes(t *testing.T) {
 	for _, mode := range []string{"web", "all", "ingest", "uptime"} {
 		env := map[string]string{"GOTCHA_BASE_URL": "https://gotcha.example.com"}
@@ -803,7 +713,6 @@ func TestLoadConfig_SecretRequiredInDecryptingModes(t *testing.T) {
 		}
 	}
 
-	// probe секретов не видит: ни PG, ни CH, ни каналов — ключ ему не нужен.
 	env := map[string]string{
 		"GOTCHA_PROBE_SERVER_URL": "https://gotcha.example.com",
 		"GOTCHA_PROBE_KEY":        "ptok",
@@ -814,18 +723,10 @@ func TestLoadConfig_SecretRequiredInDecryptingModes(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_SecretErrorNotMaskedByUnrelatedTypo — ops P2-1: раньше
-// проверка GOTCHA_SECRET_KEY шла хвостом функции, ПОСЛЕ бейл-аута по
-// errs[0] на числовых/булевых полях (config.go). Если оператор одновременно
-// опечатался в GOTCHA_EVENT_RETENTION_DAYS И оставил слабый/дефолтный секрет на
-// проде, он видел только ошибку про retention, чинил её, перезапускал — и
-// только тогда узнавал про секрет. Секьюрити-критичная проверка теперь идёт
-// раньше errs[0], поэтому именно она должна быть видна первой.
 func TestLoadConfig_SecretErrorNotMaskedByUnrelatedTypo(t *testing.T) {
 	env := map[string]string{
 		"GOTCHA_BASE_URL":             "https://gotcha.example.com",
-		"GOTCHA_EVENT_RETENTION_DAYS": "abc", // опечатка в числовом поле
-		// GOTCHA_SECRET_KEY не задан → дефолт insecure-dev-secret на не-local URL
+		"GOTCHA_EVENT_RETENTION_DAYS": "abc",
 	}
 	getenv := func(k string) string { return env[k] }
 	_, err := loadConfig(getenv, []string{"--mode=all"})
@@ -837,12 +738,6 @@ func TestLoadConfig_SecretErrorNotMaskedByUnrelatedTypo(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_SecretKeyPrevRejectsInconsistentPairs — GOTCHA_SECRET_KEY_PREV
-// задаёт предыдущий мастер-ключ на время ротации. Три сочетания с текущим
-// ключом физически не могут означать «ротация идёт», и отказ старта тут —
-// не про стойкость ключа (как у GOTCHA_SECRET_KEY_ALLOW_INSECURE), а про то, что
-// молча проигнорированная переменная в .env убедила бы оператора в ротации,
-// которой на самом деле нет.
 func TestLoadConfig_SecretKeyPrevRejectsInconsistentPairs(t *testing.T) {
 	const strongCurrent = "current-master-key-at-least-32-bytes!!"
 	const strongOther = "other-master-key-also-32-bytes-long!!!"
@@ -857,9 +752,7 @@ func TestLoadConfig_SecretKeyPrevRejectsInconsistentPairs(t *testing.T) {
 		if err == nil {
 			t.Fatal("PREV == дев-ключ: want error, got nil")
 		}
-		// Фрагмент уникален для ветки «PREV == дев-ключ»: остальные две ветки
-		// его не содержат, поэтому переклейка текстов ошибок между ветками
-		// этот тест уронит (см. мутацию в отчёте задачи).
+		// фрагмент уникален для этой ветки: переклейка текстов ошибок между ветками уронит тест
 		if !strings.Contains(err.Error(), "public dev default") {
 			t.Errorf("error = %q, want it to mention that PREV cannot be the public dev default", err)
 		}
@@ -875,15 +768,13 @@ func TestLoadConfig_SecretKeyPrevRejectsInconsistentPairs(t *testing.T) {
 		if err == nil {
 			t.Fatal("PREV == текущий ключ: want error, got nil")
 		}
-		// Фрагмент уникален для ветки «PREV == текущий ключ».
 		if !strings.Contains(err.Error(), "differ from GOTCHA_SECRET_KEY") {
 			t.Errorf("error = %q, want it to mention that PREV must differ from GOTCHA_SECRET_KEY", err)
 		}
 	})
 
 	t.Run("текущий ключ дев, PREV задан", func(t *testing.T) {
-		// Локальный BaseURL, чтобы не упереться в ЧУЖУЮ проверку (дефолтный
-		// ключ на не-локальном URL) раньше, чем в свою.
+		// localhost — чтобы не упереться в чужую проверку (дефолтный ключ на не-локальном URL)
 		env := map[string]string{
 			"GOTCHA_BASE_URL":        "http://localhost:8080",
 			"GOTCHA_SECRET_KEY_PREV": strongOther,
@@ -892,7 +783,6 @@ func TestLoadConfig_SecretKeyPrevRejectsInconsistentPairs(t *testing.T) {
 		if err == nil {
 			t.Fatal("текущий ключ дев + PREV задан: want error, got nil")
 		}
-		// Фрагмент уникален для ветки «текущий ключ ещё дев».
 		if !strings.Contains(err.Error(), "still the dev default") {
 			t.Errorf("error = %q, want it to mention that GOTCHA_SECRET_KEY is still the dev default", err)
 		}
@@ -943,14 +833,7 @@ func TestLoadConfig_SecretKeyPrevRejectsInconsistentPairs(t *testing.T) {
 	})
 }
 
-// TestLoadConfig_SecretKeyPrevReadVerbatimNotTrimmed — I1 (финальное
-// ревью): GOTCHA_SECRET_KEY_PREV читается ДОСЛОВНО, без обрезки пробелов —
-// в отличие от GOTCHA_SECRET_KEY, который триммится strGuarded(). Ключ с
-// хвостовым пробелом, скопированный в PREV вместе с тем же пробелом, что
-// был в текущем ключе ДО ротации, обязан пройти «must differ» (текущий
-// ключ теперь триммится и потому отличается от сырого PREV) и остаться в
-// cfg.SecretKeyPrev байт в байт — иначе штатный путь восстановления через
-// PREV неработоспособен для исторического ключа с пробелом.
+// PREV читается дословно, без обрезки пробелов, в отличие от SecretKey (strGuarded)
 func TestLoadConfig_SecretKeyPrevReadVerbatimNotTrimmed(t *testing.T) {
 	const key = "current-master-key-at-least-32-bytes!!"
 	env := map[string]string{
@@ -970,18 +853,13 @@ func TestLoadConfig_SecretKeyPrevReadVerbatimNotTrimmed(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_SecretKeyPrevAllowInsecureDoesNotBypass —
-// GOTCHA_SECRET_KEY_ALLOW_INSECURE снимает требования к СТОЙКОСТИ ключа (дефолтный,
-// короткий), а не к ЛОГИЧЕСКОЙ согласованности пары current/PREV: конфиг,
-// который физически не может делать то, что от него ждут, «разрешать» нечего.
+// ALLOW_INSECURE снимает требования к стойкости ключа, а не к логической
+// согласованности пары current/PREV
 func TestLoadConfig_SecretKeyPrevAllowInsecureDoesNotBypass(t *testing.T) {
 	env := map[string]string{
 		"GOTCHA_BASE_URL":                  "https://gotcha.example.com",
 		"GOTCHA_SECRET_KEY_PREV":           "some-other-strong-previous-key-32b!!",
 		"GOTCHA_SECRET_KEY_ALLOW_INSECURE": "1",
-		// GOTCHA_SECRET_KEY не задан → дефолт insecure-dev-secret, что само по
-		// себе разрешено эскейп-хэтчем, но с заданным PREV ротация невозможна
-		// (дев-ключом ничего не шифровалось), и эскейп-хэтч это не чинит.
 	}
 	_, err := loadConfig(getenvFrom(env), []string{"--mode=web"})
 	if err == nil {
@@ -992,15 +870,11 @@ func TestLoadConfig_SecretKeyPrevAllowInsecureDoesNotBypass(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_SecretKeyPrevNotCheckedInProbeMode — probe не расшифровывает
-// секретов вообще (см. secretKeyMattersFor), поэтому мёртвая для него
-// переменная не должна ронять зонд — ровно то же правило, по которому в probe
-// не проверяется и сам GOTCHA_SECRET_KEY.
 func TestLoadConfig_SecretKeyPrevNotCheckedInProbeMode(t *testing.T) {
 	env := map[string]string{
 		"GOTCHA_PROBE_SERVER_URL": "https://gotcha.example.com",
 		"GOTCHA_PROBE_KEY":        "ptok",
-		// PREV равен дев-ключу — в любом другом режиме это отказ старта.
+		// в любом другом режиме PREV == dev-ключ — отказ старта
 		"GOTCHA_SECRET_KEY_PREV": devSecretKey,
 	}
 	if _, err := loadConfig(getenvFrom(env), []string{"--mode=probe"}); err != nil {
@@ -1008,13 +882,6 @@ func TestLoadConfig_SecretKeyPrevNotCheckedInProbeMode(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_SecretKeyPrevWhitespaceOnlyRejected — R5 (повторное
-// ревью): GOTCHA_SECRET_KEY_PREV читается дословно (I1), а значит не
-// проходит через собственную blank-проверку strGuarded() — тот же
-// контракт («пробельное, но непустое значение — отказ старта, а не тихая
-// трактовка как настоящего значения») повторён для PREV явно. Пустой PREV
-// по-прежнему «не задано» — это отдельная ветка, не покрытая этим тестом
-// (см. «пустой PREV — норма» в TestLoadConfig_SecretKeyPrevRejectsInconsistentPairs).
 func TestLoadConfig_SecretKeyPrevWhitespaceOnlyRejected(t *testing.T) {
 	env := map[string]string{
 		"GOTCHA_BASE_URL":        "https://gotcha.example.com",
@@ -1030,14 +897,8 @@ func TestLoadConfig_SecretKeyPrevWhitespaceOnlyRejected(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_SecretKeyPrevWhitespaceOnlyRejectedEvenInProbeMode —
-// проверка пробельности PREV не под secretKeyMattersFor(cfg.Mode): та же
-// безусловная гигиена значения, что и у strGuarded() (GOTCHA_SECRET_KEY/
-// GOTCHA_PG_DSN/GOTCHA_CH_DSN блокируют пробельное значение независимо от
-// режима). В отличие от TestLoadConfig_SecretKeyPrevNotCheckedInProbeMode
-// (девовый PREV в probe — не отказ, probe не расшифровывает секретов),
-// пробельное значение — не про смысл ключа, а про то, что оператор,
-// скорее всего, ошибся при копировании, и это стоит поймать везде.
+// проверка пробельности PREV не под secretKeyMattersFor: та же безусловная
+// гигиена значения, что у strGuarded(), действует независимо от режима
 func TestLoadConfig_SecretKeyPrevWhitespaceOnlyRejectedEvenInProbeMode(t *testing.T) {
 	env := map[string]string{
 		"GOTCHA_PROBE_SERVER_URL": "https://gotcha.example.com",
@@ -1093,7 +954,6 @@ func TestLoadConfigEscalationInterval(t *testing.T) {
 }
 
 func TestLoadConfig_Registration(t *testing.T) {
-	// Дефолт — invite.
 	cfg, err := loadConfig(getenvFrom(nil), nil)
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
@@ -1101,7 +961,6 @@ func TestLoadConfig_Registration(t *testing.T) {
 	if cfg.RegistrationMode != "invite" {
 		t.Errorf("RegistrationMode default = %q, want %q", cfg.RegistrationMode, "invite")
 	}
-	// Явные допустимые значения.
 	for _, mode := range []string{"open", "invite", "closed"} {
 		cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_REGISTRATION_MODE": mode}), nil)
 		if err != nil {
@@ -1111,15 +970,12 @@ func TestLoadConfig_Registration(t *testing.T) {
 			t.Errorf("RegistrationMode = %q, want %q", cfg.RegistrationMode, mode)
 		}
 	}
-	// Мусорное значение — ошибка.
 	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_REGISTRATION_MODE": "bogus"}), nil); err == nil {
 		t.Error("bogus registration mode must fail")
 	}
 }
 
 func TestLoadConfig_Locale(t *testing.T) {
-	// Дефолт — ru: сохраняет сегодняшний язык регрессионных уведомлений
-	// для действующих инсталляций.
 	cfg, err := loadConfig(getenvFrom(nil), nil)
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
@@ -1127,7 +983,6 @@ func TestLoadConfig_Locale(t *testing.T) {
 	if cfg.Locale != "ru" {
 		t.Errorf("Locale default = %q, want %q", cfg.Locale, "ru")
 	}
-	// Явные допустимые значения.
 	for _, loc := range []string{"ru", "en"} {
 		cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_LOCALE": loc}), nil)
 		if err != nil {
@@ -1137,14 +992,12 @@ func TestLoadConfig_Locale(t *testing.T) {
 			t.Errorf("Locale = %q, want %q", cfg.Locale, loc)
 		}
 	}
-	// Мусорное значение — ошибка.
 	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_LOCALE": "de"}), nil); err == nil {
 		t.Error("bogus locale must fail")
 	}
 }
 
 func TestLoadConfig_Edition(t *testing.T) {
-	// Без env: OSS-редакция, все дефолты квот = 0 (безлимит), и это разрешено.
 	cfg, err := loadConfig(getenvFrom(nil), nil)
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
@@ -1160,7 +1013,6 @@ func TestLoadConfig_Edition(t *testing.T) {
 			cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota, cfg.DefaultLogQuota)
 	}
 
-	// SaaS-редакция: дефолты квот = 1_000_000.
 	cfg, err = loadConfig(getenvFrom(map[string]string{"GOTCHA_EDITION": "saas"}), nil)
 	if err != nil {
 		t.Fatalf("loadConfig saas: %v", err)
@@ -1176,7 +1028,6 @@ func TestLoadConfig_Edition(t *testing.T) {
 			cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota, cfg.DefaultLogQuota)
 	}
 
-	// 0 = безлимит — легитимная конфигурация в любой редакции, включая saas.
 	cfg, err = loadConfig(getenvFrom(map[string]string{
 		"GOTCHA_EDITION":             "saas",
 		"GOTCHA_DEFAULT_EVENT_QUOTA": "0",
@@ -1188,7 +1039,6 @@ func TestLoadConfig_Edition(t *testing.T) {
 		t.Errorf("DefaultEventQuota = %d, want 0", cfg.DefaultEventQuota)
 	}
 
-	// Явные env-переопределения всех пяти дефолтов.
 	cfg, err = loadConfig(getenvFrom(map[string]string{
 		"GOTCHA_DEFAULT_EVENT_QUOTA":       "10",
 		"GOTCHA_DEFAULT_TRANSACTION_QUOTA": "20",
@@ -1205,7 +1055,6 @@ func TestLoadConfig_Edition(t *testing.T) {
 			cfg.DefaultEventQuota, cfg.DefaultTransactionQuota, cfg.DefaultMetricQuota, cfg.DefaultProfileQuota, cfg.DefaultLogQuota)
 	}
 
-	// Отрицательная квота — ошибка (0 разрешён, <0 нет).
 	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_DEFAULT_METRIC_QUOTA": "-1"}), nil); err == nil {
 		t.Error("negative GOTCHA_DEFAULT_METRIC_QUOTA must fail")
 	}
@@ -1213,14 +1062,12 @@ func TestLoadConfig_Edition(t *testing.T) {
 		t.Error("negative GOTCHA_DEFAULT_LOG_QUOTA must fail")
 	}
 
-	// Мусорная редакция — ошибка.
 	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_EDITION": "bogus"}), nil); err == nil {
 		t.Error("bogus GOTCHA_EDITION must fail")
 	}
 }
 
 func TestLoadConfig_Scrub(t *testing.T) {
-	// Без env: PII-scrubbing включён по умолчанию, есть непустой denylist.
 	cfg, err := loadConfig(getenvFrom(nil), nil)
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
@@ -1235,7 +1082,6 @@ func TestLoadConfig_Scrub(t *testing.T) {
 		t.Error("ScrubKeys default is empty, want non-empty")
 	}
 
-	// Явное выключение флага.
 	cfg, err = loadConfig(getenvFrom(map[string]string{"GOTCHA_SCRUB_IP": "false"}), nil)
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
@@ -1247,8 +1093,6 @@ func TestLoadConfig_Scrub(t *testing.T) {
 		t.Error("ScrubEmail не должен зависеть от GOTCHA_SCRUB_IP")
 	}
 
-	// Пользовательский CSV-список ДОПОЛНЯЕТ дефолты, а не заменяет их: иначе
-	// добавление одного своего поля молча снимало скрубинг с password/token/cvv.
 	cfg, err = loadConfig(getenvFrom(map[string]string{"GOTCHA_SCRUB_DENY_KEYS": "a,b"}), nil)
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
@@ -1260,9 +1104,7 @@ func TestLoadConfig_Scrub(t *testing.T) {
 		t.Errorf("ScrubKeys = %v, пользовательские ключи не добавлены", cfg.ScrubKeys)
 	}
 
-	// Значение из одних разделителей не должно обнулять denylist: раньше ",,"
-	// проходило проверку на непустоту, все элементы отсеивались, а ветка с
-	// дефолтами пропускалась — скрубинг ключей выключался целиком и молча.
+	// ",," не должно обнулять denylist: все элементы пустые, ветка с дефолтами не пропускается
 	cfg, err = loadConfig(getenvFrom(map[string]string{"GOTCHA_SCRUB_DENY_KEYS": ",,"}), nil)
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
@@ -1272,7 +1114,6 @@ func TestLoadConfig_Scrub(t *testing.T) {
 	}
 }
 
-// hasAll — все want присутствуют в got.
 func hasAll(got, want []string) bool {
 	set := make(map[string]bool, len(got))
 	for _, g := range got {
@@ -1286,8 +1127,6 @@ func hasAll(got, want []string) bool {
 	return true
 }
 
-// TestTrustedRecipientsParsed — список доменов своего контура разбирается из
-// запятых, чистится от пробелов и регистра, пустые записи отбрасываются.
 func TestTrustedRecipientsParsed(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(map[string]string{
 		"GOTCHA_TRUSTED_RECIPIENTS": " Corp.Example , ,ops.example,",
@@ -1306,8 +1145,6 @@ func TestTrustedRecipientsParsed(t *testing.T) {
 	}
 }
 
-// TestTrustedRecipientsEmptyByDefault — без настройки список пуст: доверие
-// хосту инстанса политика выводит сама, конфиг тут ничего не подставляет.
 func TestTrustedRecipientsEmptyByDefault(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(nil), nil)
 	if err != nil {
@@ -1318,12 +1155,6 @@ func TestTrustedRecipientsEmptyByDefault(t *testing.T) {
 	}
 }
 
-// TestMigrateOnlyImpliesAutoMigrate — флаг существует ради применения
-// миграций, поэтому он их и включает.
-//
-// Иначе `--migrate-only` вместе с GOTCHA_AUTO_MIGRATE_ENABLED=false — а это ровно та
-// конфигурация, для которой флаг и нужен, — только проверил бы схему и вышел,
-// ничего не применив.
 func TestMigrateOnlyImpliesAutoMigrate(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_AUTO_MIGRATE_ENABLED": "false"}), []string{"--migrate-only"})
 	if err != nil {
@@ -1337,8 +1168,6 @@ func TestMigrateOnlyImpliesAutoMigrate(t *testing.T) {
 	}
 }
 
-// TestMigrateOnlyRejectedForProbe — проба не открывает базу вовсе, и молча
-// выйти нулём было бы обманом: оператор решил бы, что схема применена.
 func TestMigrateOnlyRejectedForProbe(t *testing.T) {
 	_, err := loadConfig(getenvFrom(map[string]string{
 		"GOTCHA_PROBE_SERVER_URL": "https://gotcha.example", "GOTCHA_PROBE_KEY": "t",
@@ -1351,7 +1180,6 @@ func TestMigrateOnlyRejectedForProbe(t *testing.T) {
 	}
 }
 
-// TestMigrateOnlyDefaultsOff — обычный запуск флага не несёт.
 func TestMigrateOnlyDefaultsOff(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(nil), nil)
 	if err != nil {
@@ -1362,9 +1190,6 @@ func TestMigrateOnlyDefaultsOff(t *testing.T) {
 	}
 }
 
-// TestMigrateForceFlags — разбор --migrate-force/--migrate-force-ch: три
-// несовместимости отклоняются на разборе конфигурации, одиночный флаг
-// разбирается, дефолт — «не запрошено» (−1).
 func TestMigrateForceFlags(t *testing.T) {
 	probeEnv := map[string]string{
 		"GOTCHA_PROBE_SERVER_URL": "https://gotcha.example", "GOTCHA_PROBE_KEY": "t",
@@ -1407,10 +1232,8 @@ func TestMigrateForceFlags(t *testing.T) {
 	}
 }
 
-// TestLoadConfigOutOfRangeNumericEnvRejected — интервалы, окна, лимиты и
-// квоты, у которых свой пол. Проверка не только «отказ есть», но и «отказ про
-// ЭТУ переменную»: сообщения писались копипастой соседнего блока, и оператор,
-// получив на старте имя чужой переменной, чинит не то, что сломано.
+// проверка не только «отказ есть», но и «отказ про эту переменную»: сообщения
+// писались копипастой соседнего блока
 func TestLoadConfigOutOfRangeNumericEnvRejected(t *testing.T) {
 	cases := []struct{ key, value string }{
 		{"GOTCHA_ALERT_BUDGET_WINDOW_SECONDS", "0"},
@@ -1441,9 +1264,6 @@ func TestLoadConfigOutOfRangeNumericEnvRejected(t *testing.T) {
 	}
 }
 
-// TestLoadConfigRejectsInvalidBoolean — мусор в булевой переменной не должен
-// молча превращаться в false: «GOTCHA_SCRUB_IP=maybe» так выключил бы
-// скрубинг IP, а оператор считал бы его включённым.
 func TestLoadConfigRejectsInvalidBoolean(t *testing.T) {
 	_, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_SCRUB_IP": "maybe"}), nil)
 	if err == nil {
@@ -1454,10 +1274,8 @@ func TestLoadConfigRejectsInvalidBoolean(t *testing.T) {
 	}
 }
 
-// TestLoadConfigRejectsNonNumericInt64 — байтовые потолки читаются как целое;
-// «8MiB» разбирается в 0, а 0 для GOTCHA_MAX_WRITER_BUFFER_BYTES означает «выведи
-// потолок сам» (см. effectiveMaxBufferBytes), то есть опечатка тихо меняла бы
-// смысл настройки вместо отказа на старте.
+// «8MiB» разбирается в 0, а 0 для GOTCHA_MAX_WRITER_BUFFER_BYTES значит «выведи
+// потолок сам» — опечатка тихо меняла бы смысл настройки вместо отказа старта
 func TestLoadConfigRejectsNonNumericInt64(t *testing.T) {
 	_, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_MAX_WRITER_BUFFER_BYTES": "8MiB"}), nil)
 	if err == nil {
@@ -1468,12 +1286,8 @@ func TestLoadConfigRejectsNonNumericInt64(t *testing.T) {
 	}
 }
 
-// TestParseInt64EnvReturnsDefOnParseError — проверяет parseInt64Env напрямую,
-// в обход loadConfig: errors.Join(errs...) в loadConfig возвращается раньше
-// всех cfg.X-валидаций, поэтому разница между def и частичным результатом
-// strconv.ParseInt («8MiB» → 0 при синтаксической ошибке, переполнение →
-// значение, зажатое до края int64) снаружи loadConfig ненаблюдаема ни одним
-// тестом на самом Config — её обязана ловить проверка функции разбора.
+// проверяет parseInt64Env напрямую: разница между def и частичным результатом
+// strconv.ParseInt снаружи loadConfig ненаблюдаема ни одним тестом на Config
 func TestParseInt64EnvReturnsDefOnParseError(t *testing.T) {
 	cases := []struct{ name, value string }{
 		{"syntax", "8MiB"},
@@ -1494,18 +1308,14 @@ func TestParseInt64EnvReturnsDefOnParseError(t *testing.T) {
 			}
 		})
 	}
-	// Незаданная переменная — не ошибка, просто def.
 	if got, err := parseInt64Env(getenvFrom(nil), "GOTCHA_TEST_INT64", 5); err != nil || got != 5 {
 		t.Errorf("unset: got (%d, %v), want (5, nil)", got, err)
 	}
-	// Валидное значение разбирается как есть, без ошибки.
 	if got, err := parseInt64Env(getenvFrom(map[string]string{"GOTCHA_TEST_INT64": "42"}), "GOTCHA_TEST_INT64", 5); err != nil || got != 42 {
 		t.Errorf("valid: got (%d, %v), want (42, nil)", got, err)
 	}
 }
 
-// TestParseIntEnvReturnsDefOnParseError — тот же случай для parseIntEnv
-// (полей типа int), см. TestParseInt64EnvReturnsDefOnParseError.
 func TestParseIntEnvReturnsDefOnParseError(t *testing.T) {
 	cases := []struct{ name, value string }{
 		{"syntax", "8MiB"},
@@ -1534,11 +1344,6 @@ func TestParseIntEnvReturnsDefOnParseError(t *testing.T) {
 	}
 }
 
-// TestParseInt64EnvTrimsSpace — m2 (финальное ревью): числовые значения
-// триммятся по краям той же строкой, что и строковые/булевы (str/strGuarded/
-// parseBool) — до этой правки числовое было единственным типом env-значения,
-// для которого случайный пробел (перенос из таблицы, отступ в .env) ронял бы
-// старт вместо ожидаемого разбора.
 func TestParseInt64EnvTrimsSpace(t *testing.T) {
 	env := map[string]string{"GOTCHA_TEST_INT64": " 30"}
 	got, err := parseInt64Env(getenvFrom(env), "GOTCHA_TEST_INT64", 5)
@@ -1548,15 +1353,11 @@ func TestParseInt64EnvTrimsSpace(t *testing.T) {
 	if got != 30 {
 		t.Errorf("got = %d, want 30", got)
 	}
-	// Строка из одних пробелов — та же трактовка, что и у пустой: def, а не
-	// ошибка (тот же контракт, что у str()/strGuarded()).
 	if got, err := parseInt64Env(getenvFrom(map[string]string{"GOTCHA_TEST_INT64": "   "}), "GOTCHA_TEST_INT64", 5); err != nil || got != 5 {
 		t.Errorf("пробелы: got (%d, %v), want (5, nil)", got, err)
 	}
 }
 
-// TestParseIntEnvTrimsSpace — тот же случай для parseIntEnv, см.
-// TestParseInt64EnvTrimsSpace.
 func TestParseIntEnvTrimsSpace(t *testing.T) {
 	env := map[string]string{"GOTCHA_TEST_INT": " 30 "}
 	got, err := parseIntEnv(getenvFrom(env), "GOTCHA_TEST_INT", 7)
@@ -1568,10 +1369,6 @@ func TestParseIntEnvTrimsSpace(t *testing.T) {
 	}
 }
 
-// TestLoadConfigNumericEnvTrimmedThroughLoadConfig — та же трактовка на
-// реальном поле Config, а не только на голой функции разбора: не просто
-// parseInt64Env/parseIntEnv триммят, а loadConfig действительно доносит
-// триммированное значение до итогового Config.
 func TestLoadConfigNumericEnvTrimmedThroughLoadConfig(t *testing.T) {
 	env := map[string]string{"GOTCHA_EVENT_RETENTION_DAYS": " 45 "}
 	cfg, err := loadConfig(getenvFrom(env), nil)
@@ -1583,13 +1380,6 @@ func TestLoadConfigNumericEnvTrimmedThroughLoadConfig(t *testing.T) {
 	}
 }
 
-// TestLoadConfigMaxBufferAndQueueBytesZeroOrNegativeRejected —
-// GOTCHA_MAX_WRITER_BUFFER_BYTES и GOTCHA_MAX_INGEST_QUEUE_BYTES вошли в семью
-// «запрещённого нуля» вместе с OUTBOX_RETENTION_DAYS/MAX_EVENT_BYTES/
-// *_EVAL_INTERVAL_SECONDS/*_WINDOW_SECONDS/*_CONCURRENCY: явный 0 или
-// отрицательное значение — отказ старта, а не тихий откат к дефолту пакета
-// (который для этих двух переменных тоже кодируется нулём — см.
-// TestLoadConfigMaxBufferAndQueueBytesUnsetUsesPackageDefault).
 func TestLoadConfigMaxBufferAndQueueBytesZeroOrNegativeRejected(t *testing.T) {
 	cases := []struct{ key, value string }{
 		{"GOTCHA_MAX_WRITER_BUFFER_BYTES", "0"},
@@ -1610,10 +1400,6 @@ func TestLoadConfigMaxBufferAndQueueBytesZeroOrNegativeRejected(t *testing.T) {
 	}
 }
 
-// TestLoadConfigMaxBufferAndQueueBytesUnsetUsesPackageDefault — переменная,
-// оставленная незаданной, обязана вести себя как раньше: дефолт писателя
-// (для буфера — через effectiveMaxBufferBytes, а не приватное поле писателя;
-// для очереди — прямое значение Config.MaxQueueBytes, публичный контракт).
 func TestLoadConfigMaxBufferAndQueueBytesUnsetUsesPackageDefault(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(nil), nil)
 	if err != nil {
@@ -1627,11 +1413,8 @@ func TestLoadConfigMaxBufferAndQueueBytesUnsetUsesPackageDefault(t *testing.T) {
 	}
 }
 
-// TestLoadConfigGarbageInMultipleNumericVarsReportsAllNames — loadConfig
-// обязан вернуть ВСЕ накопленные ошибки, а не первую (errs[0]): оператор с
-// несколькими опечатками правит .env за один проход, а не за один деплой на
-// каждую. Мутация: вернуть errs[0] вместо errors.Join(errs...) красит именно
-// этот тест — в тексте ошибки исчезнет одно из двух имён.
+// errs[0] вместо errors.Join(errs...) красит именно этот тест: в тексте
+// ошибки исчезнет одно из двух имён
 func TestLoadConfigGarbageInMultipleNumericVarsReportsAllNames(t *testing.T) {
 	env := map[string]string{
 		"GOTCHA_MAX_WRITER_BUFFER_BYTES": "8MiB",
@@ -1649,13 +1432,6 @@ func TestLoadConfigGarbageInMultipleNumericVarsReportsAllNames(t *testing.T) {
 	}
 }
 
-// TestLoadConfigDSNAndBaseURLErrorsJoinRestOfErrs — I2 (финальное ревью):
-// GOTCHA_PG_DSN/GOTCHA_CH_DSN/GOTCHA_BASE_URL раньше возвращали ошибку
-// СВОИМ отдельным return, вставленным ВЫШЕ общего errors.Join, и топили тем
-// самым числовые/булевы опечатки, накопленные до них, — ровно тот цикл
-// «оператор чинит один DSN, перезапускается, узнаёт про следующую опечатку»,
-// ради которого errs вообще завели. Три находки разом обязаны прийти одним
-// сообщением, а не по одной за цикл деплоя.
 func TestLoadConfigDSNAndBaseURLErrorsJoinRestOfErrs(t *testing.T) {
 	env := map[string]string{
 		"GOTCHA_SCRUB_IP":             "ture",
@@ -1673,12 +1449,8 @@ func TestLoadConfigDSNAndBaseURLErrorsJoinRestOfErrs(t *testing.T) {
 	}
 }
 
-// TestLoadConfigBaseURLErrorJoinsRestOfErrsWithRawValueKept — то же для
-// GOTCHA_BASE_URL: ошибка Normalize копится в errs, а не возвращается сразу
-// же, и cfg.BaseURL остаётся СЫРЫМ (ненормализованным) значением — не
-// используется нигде до возврата ошибки, кроме isLocalBaseURL ниже в SEC-C1,
-// для которой невалидная строка консервативно не совпадает ни с одним
-// локальным хостом.
+// cfg.BaseURL остаётся сырым до возврата ошибки; isLocalBaseURL на невалидной
+// строке консервативно не совпадает ни с одним локальным хостом
 func TestLoadConfigBaseURLErrorJoinsRestOfErrsWithRawValueKept(t *testing.T) {
 	env := map[string]string{
 		"GOTCHA_BASE_URL":             "http://[::1",
@@ -1696,12 +1468,6 @@ func TestLoadConfigBaseURLErrorJoinsRestOfErrsWithRawValueKept(t *testing.T) {
 	}
 }
 
-// TestLoadConfigSecretKeyErrorNotDrownedByNumericErrors — ops P2-1: слабый/
-// дефолтный GOTCHA_SECRET_KEY на не-локальном BaseURL обязан быть виден
-// оператору САМ ПО СЕБЕ, даже когда рядом одновременно опечатка в числовой
-// переменной. Переход к «вернуть ВСЕ ошибки» не должен утопить security-
-// critical предупреждение о ключе среди диагностики опечаток — секретный
-// ключ проверяется своим отдельным return ДО сбора errs.
 func TestLoadConfigSecretKeyErrorNotDrownedByNumericErrors(t *testing.T) {
 	env := map[string]string{
 		"GOTCHA_BASE_URL":             "https://gotcha.example",
@@ -1719,9 +1485,8 @@ func TestLoadConfigSecretKeyErrorNotDrownedByNumericErrors(t *testing.T) {
 	}
 }
 
-// TestLoadConfigTrustedProxiesParsed — CIDR и голые адреса. Голый IP обязан
-// становиться /32 (/128 для IPv6), иначе net.ParseCIDR отвергнет запись, и
-// самая частая форма записи («192.168.1.5») стала бы ошибкой конфигурации.
+// голый IP обязан становиться /32 (/128 для IPv6), иначе net.ParseCIDR отвергнет
+// запись, и самая частая форма («192.168.1.5») стала бы ошибкой конфигурации
 func TestLoadConfigTrustedProxiesParsed(t *testing.T) {
 	env := map[string]string{
 		"GOTCHA_TRUSTED_PROXIES": " 10.0.0.0/8 , 192.168.1.5 ,, 2001:db8::1 ",
@@ -1745,10 +1510,6 @@ func TestLoadConfigTrustedProxiesParsed(t *testing.T) {
 	}
 }
 
-// TestLoadConfigTrustedProxiesRejectsInvalidEntry — невалидная запись обязана
-// ронять старт, а не пропускаться молча: тихо выпавший из списка прокси
-// означает, что X-Forwarded-For больше не доверяется, лимитер ключуется по
-// адресу прокси и защита деградирует, ничего об этом не сообщая.
 func TestLoadConfigTrustedProxiesRejectsInvalidEntry(t *testing.T) {
 	env := map[string]string{"GOTCHA_TRUSTED_PROXIES": "10.0.0.0/8,not-an-ip"}
 	_, err := loadConfig(getenvFrom(env), nil)
@@ -1760,10 +1521,7 @@ func TestLoadConfigTrustedProxiesRejectsInvalidEntry(t *testing.T) {
 	}
 }
 
-// TestLoadConfigScrubAllowKeysParsed — исключения из denylist сравниваются с
-// именами полей в нижнем регистре, поэтому список нормализуется при разборе;
-// без нормализации «Order_ID» не совпал бы ни с чем и исключение молча не
-// работало бы.
+// без нормализации в нижний регистр «Order_ID» не совпал бы ни с чем
 func TestLoadConfigScrubAllowKeysParsed(t *testing.T) {
 	env := map[string]string{"GOTCHA_SCRUB_KEEP_KEYS": " Order_ID , ,USER_ID"}
 	cfg, err := loadConfig(getenvFrom(env), nil)
@@ -1778,10 +1536,6 @@ func TestLoadConfigScrubAllowKeysParsed(t *testing.T) {
 	}
 }
 
-// TestLoadConfigShortSecretKeyOnRemoteBaseURL — свой, но короткий ключ на
-// не-локальном стенде: 16 байт подписи угадываемы, а тем же ключом шифруются
-// секреты каналов доставки. Локальный стенд и явный аварийный тумблер —
-// исключения.
 func TestLoadConfigShortSecretKeyOnRemoteBaseURL(t *testing.T) {
 	short := "0123456789abcdef" // 16 байт, ровно вдвое меньше требуемого
 	base := map[string]string{
@@ -1796,7 +1550,6 @@ func TestLoadConfigShortSecretKeyOnRemoteBaseURL(t *testing.T) {
 		t.Errorf("error = %q, want it to say the key is too short", err)
 	}
 
-	// Явный аварийный тумблер снимает проверку.
 	withEscape := map[string]string{
 		"GOTCHA_BASE_URL":                  "https://gotcha.example",
 		"GOTCHA_SECRET_KEY":                short,
@@ -1806,7 +1559,6 @@ func TestLoadConfigShortSecretKeyOnRemoteBaseURL(t *testing.T) {
 		t.Fatalf("GOTCHA_SECRET_KEY_ALLOW_INSECURE=1 должен разрешать короткий ключ: %v", err)
 	}
 
-	// Локальный стенд — тоже исключение, тумблер там не нужен.
 	local := map[string]string{
 		"GOTCHA_BASE_URL":   "http://localhost:8080",
 		"GOTCHA_SECRET_KEY": short,
@@ -1815,7 +1567,6 @@ func TestLoadConfigShortSecretKeyOnRemoteBaseURL(t *testing.T) {
 		t.Fatalf("короткий ключ на localhost должен проходить: %v", err)
 	}
 
-	// probe секретов не расшифровывает — короткий ключ ему не мешает.
 	probe := map[string]string{
 		"GOTCHA_BASE_URL":         "https://gotcha.example",
 		"GOTCHA_SECRET_KEY":       short,
@@ -1827,9 +1578,7 @@ func TestLoadConfigShortSecretKeyOnRemoteBaseURL(t *testing.T) {
 	}
 }
 
-// TestLoadConfigRejectsUnparseableURLs — адрес, который не разбирается вовсе
-// (незакрытая скобка IPv6-хоста). Ветка отдельная от проверки схемы/хоста:
-// url.Parse возвращает ошибку раньше, чем есть что проверять.
+// ветка отдельная от проверки схемы/хоста: url.Parse возвращает ошибку раньше
 func TestLoadConfigRejectsUnparseableURLs(t *testing.T) {
 	const broken = "http://[::1"
 
@@ -1856,9 +1605,6 @@ func TestLoadConfigRejectsUnparseableURLs(t *testing.T) {
 	}
 }
 
-// TestLoadConfigSocialProvidersRequireSecrets — включённый провайдер без
-// client_id/secret. Стартовать с ним значит отдать пользователю кнопку входа,
-// которая падает уже после редиректа к провайдеру.
 func TestLoadConfigSocialProvidersRequireSecrets(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1883,7 +1629,6 @@ func TestLoadConfigSocialProvidersRequireSecrets(t *testing.T) {
 		})
 	}
 
-	// Полный комплект — стартуем.
 	full := map[string]string{
 		"GOTCHA_VK_ENABLED":       "1",
 		"GOTCHA_VK_CLIENT_ID":     "vcid",
@@ -1898,9 +1643,6 @@ func TestLoadConfigSocialProvidersRequireSecrets(t *testing.T) {
 	}
 }
 
-// TestLoadConfigRunEvaluatorsTriState — «не задано» и «задано false» означают
-// разное (см. runEvaluatorsExplicit), поэтому поле тристабильное, и loadConfig
-// обязан различать все три состояния.
 func TestLoadConfigRunEvaluatorsTriState(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(nil), nil)
 	if err != nil {
@@ -1931,10 +1673,6 @@ func TestLoadConfigRunEvaluatorsTriState(t *testing.T) {
 	}
 }
 
-// TestLoadConfigRunEvaluatorsRejectsInvalid — «ture» и подобный мусор обязаны
-// ронять старт, а не тихо трактоваться как false: раньше RunEvaluators шёл в
-// обход общего parseBool через отдельный разбор (optionalBoolEnv) и такие
-// значения проглатывал молча.
 func TestLoadConfigRunEvaluatorsRejectsInvalid(t *testing.T) {
 	_, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_EVALUATORS_ENABLED": "ture"}), nil)
 	if err == nil {
@@ -1945,17 +1683,8 @@ func TestLoadConfigRunEvaluatorsRejectsInvalid(t *testing.T) {
 	}
 }
 
-// sortedRenamedOldNames — старые имена envcontract.Renamed в детерминированном
-// (алфавитном) порядке. Поведенческие тесты ниже намеренно не пишут ни одного
-// старого имени буквально: TestNoRenamedEnvVarNames (internal/guards) иначе
-// пришлось бы выводить из-под проверки весь этот файл, а не точечную
-// фикстуру-справочник (см. cmd/gotcha/renamed_env_contract_test.go) — файл с
-// сотнями других GOTCHA_-токенов растёт с каждой фичей конфига, и случайно
-// оставленное там старое имя сторож обязан ловить. Вместо литералов тесты
-// берут пару(ы) прямо из карты-истины: тест остаётся привязан к ней и не
-// слабеет (проверяется механика отказа, а не конкретное имя), а вывод
-// t.Errorf всё равно называет ИМЕННО ту пару, что проверялась, — она просто
-// подставляется в текст ошибки как переменная, а не пишется в код теста.
+// тесты ниже не пишут старые имена буквально: иначе TestNoRenamedEnvVarNames
+// (guards) пришлось бы исключать из проверки весь этот файл, а не точечную фикстуру
 func sortedRenamedOldNames() []string {
 	names := make([]string, 0, len(envcontract.Renamed))
 	for old := range envcontract.Renamed {
@@ -1965,14 +1694,8 @@ func sortedRenamedOldNames() []string {
 	return names
 }
 
-// renamedEnvVarNewNameChecks — новое имя → (тестовое значение, читатель
-// соответствующего поля Config). TestLoadConfigRenamedEnvVarNewNameStillApplies
-// ниже проходит ПО ВСЕЙ этой таблице подтестами, а не по одной записи —
-// таблица, по которой реально не итерируются, ничем не отличается от
-// комментария: ложная уверенность в покрытии всех переименований на деле
-// покрывала бы одно. Полноту самой таблицы (что в ней ровно те новые имена,
-// что есть в envcontract.Renamed, — ни лишних, ни пропущенных) проверяет
-// TestRenamedEnvVarNewNameChecksComplete в renamed_env_contract_test.go.
+// таблица, по которой реально не итерируются, ничем не отличается от комментария:
+// TestLoadConfigRenamedEnvVarNewNameStillApplies проходит по ней всей подтестами
 var renamedEnvVarNewNameChecks = map[string]struct {
 	value string
 	get   func(Config) string
@@ -1987,13 +1710,12 @@ var renamedEnvVarNewNameChecks = map[string]struct {
 	"GOTCHA_INGEST_RATE_PER_SEC":           {"307", func(c Config) string { return strconv.Itoa(c.IngestRateLimit) }},
 	"GOTCHA_DIST_DIR":                      {"/tmp/renamed-regression-dist", func(c Config) string { return c.AgentDistDir }},
 	"GOTCHA_DIST_RATE_PER_MIN":             {"308", func(c Config) string { return strconv.Itoa(c.AgentDistRatePerMin) }},
-	// E3, заморозка контракта
-	"GOTCHA_LISTEN_ADDR":            {":9309", func(c Config) string { return c.Addr }},
-	"GOTCHA_LOGGING_LEVEL":          {"debug", func(c Config) string { return c.LogLevel }},
-	"GOTCHA_LOGGING_FORMAT":         {"json", func(c Config) string { return c.LogFormat }},
-	"GOTCHA_UPTIME_LOCAL_REGION":    {"renamed-regression-region", func(c Config) string { return c.LocalRegion }},
-	"GOTCHA_REGISTRATION_MODE":      {"open", func(c Config) string { return c.RegistrationMode }},
-	"GOTCHA_EXPORT_RETENTION_HOURS": {"309", func(c Config) string { return strconv.Itoa(c.ExportTTLHours) }},
+	"GOTCHA_LISTEN_ADDR":                   {":9309", func(c Config) string { return c.Addr }},
+	"GOTCHA_LOGGING_LEVEL":                 {"debug", func(c Config) string { return c.LogLevel }},
+	"GOTCHA_LOGGING_FORMAT":                {"json", func(c Config) string { return c.LogFormat }},
+	"GOTCHA_UPTIME_LOCAL_REGION":           {"renamed-regression-region", func(c Config) string { return c.LocalRegion }},
+	"GOTCHA_REGISTRATION_MODE":             {"open", func(c Config) string { return c.RegistrationMode }},
+	"GOTCHA_EXPORT_RETENTION_HOURS":        {"309", func(c Config) string { return strconv.Itoa(c.ExportTTLHours) }},
 	"GOTCHA_SCRUB_DENY_KEYS": {"renamed_regression_deny_key", func(c Config) string {
 		for _, k := range c.ScrubKeys {
 			if k == "renamed_regression_deny_key" {
@@ -2026,27 +1748,11 @@ var renamedEnvVarNewNameChecks = map[string]struct {
 	"GOTCHA_PROJECT_PURGE_RECONCILE_HOURS":    {"309", func(c Config) string { return strconv.Itoa(c.PurgeReconcileHours) }},
 }
 
-// TestLoadConfigRenamedEnvVarFailsStart — старое имя переменной окружения с
-// непустым значением роняет старт (envcontract.Renamed), а не молча
-// подменяется дефолтом. Сообщение обязано называть И старое, И новое имя —
-// оператор должен сразу понять, что чинить.
-//
-// Подтест на КАЖДУЮ пару реестра (t.Run по старому имени), а не одна
-// проверка на sortedRenamedOldNames()[0]: взятие только алфавитно первой
-// пары — вырожденное прочтение требования «итерация по envcontract.Renamed»
-// и ровно тот анти-паттерн, на котором проект уже обжигался (таблица без
-// реального обхода защищает одну строку из многих, а не все). При такой
-// проверке неоднородный баг в envcontract.CheckRenamedAll — скажем, срабатывающий
-// не на всех именах, — прошёл бы незамеченным: единственная запись под
-// защитой не покрывает остальные двадцать шесть.
+// подтест на каждую пару реестра, не одна проверка на первой паре: таблица
+// без реального обхода защищает одну строку из многих, а не все
 func TestLoadConfigRenamedEnvVarFailsStart(t *testing.T) {
-	// Сторож против вырождения самого перебора (задача 11):
-	// sortedRenamedOldNames(), вручную урезанная до, скажем, names[:1],
-	// по-прежнему возвращала бы валидный []string — цикл t.Run ниже просто
-	// прогнал бы один подтест вместо всех и остался бы зелёным. Сверка длины
-	// с envcontract.Renamed НАПРЯМУЮ (а не через саму функцию, которая и
-	// могла бы быть урезана) — то немногое, что отличает такую мутацию от
-	// «всё покрыто».
+	// sortedRenamedOldNames(), вручную урезанная, по-прежнему вернула бы валидный
+	// []string — сверка длины с envcontract.Renamed напрямую ловит и эту мутацию
 	if got, want := len(sortedRenamedOldNames()), len(envcontract.Renamed); got != want {
 		t.Fatalf("sortedRenamedOldNames() вернула %d имён, envcontract.Renamed содержит %d — обход урезан, ниже проверится не весь реестр", got, want)
 	}
@@ -2067,10 +1773,6 @@ func TestLoadConfigRenamedEnvVarFailsStart(t *testing.T) {
 	}
 }
 
-// TestLoadConfigRenamedEnvVarsListsAllFindings — несколько устаревших
-// переменных сразу: сообщение обязано перечислить ВСЕ найденные старые
-// имена, а не только первое встреченное при обходе карты — иначе оператор
-// чинит их по одному, по циклу деплоя на переменную.
 func TestLoadConfigRenamedEnvVarsListsAllFindings(t *testing.T) {
 	names := sortedRenamedOldNames()
 	old1, old2 := names[0], names[1]
@@ -2089,19 +1791,8 @@ func TestLoadConfigRenamedEnvVarsListsAllFindings(t *testing.T) {
 	}
 }
 
-// TestLoadConfigRenamedEnvVarEmptyNowFailsStart — контракт изменился
-// (повторное ревью, W3-1): раньше пустое значение старого имени было
-// легитимным declared-but-unset (docker-compose штатно прокидывает
-// объявленные, но не заданные переменные пустой строкой) и не роняло старт
-// нигде в цепочке loadConfig→loadConfigChecked. Теперь checkUnknownEnvVars
-// смотрит имя, а не значение, — declared-but-unset имеет смысл только для
-// переменной, которую что-то ЕЩЁ читает по этому имени (это по-прежнему
-// забота CheckRenamedAll — она пропускает пустое непереименованное так же,
-// как раньше), а переименованное имя не читает уже никто. Тест зовёт
-// loadConfigChecked, а не голый loadConfig: последний по-прежнему пропускает
-// пустое значение (его дело — только CheckRenamedAll), но реальный
-// прод-путь (main.go) идёт через loadConfigChecked целиком, и именно она
-// теперь отказывает.
+// зовёт loadConfigChecked, а не голый loadConfig: последний по-прежнему пропускает
+// пустое значение (это забота только CheckRenamedAll), но прод идёт через checked
 func TestLoadConfigRenamedEnvVarEmptyNowFailsStart(t *testing.T) {
 	old := sortedRenamedOldNames()[0]
 	newName := envcontract.Renamed[old]
@@ -2117,13 +1808,6 @@ func TestLoadConfigRenamedEnvVarEmptyNowFailsStart(t *testing.T) {
 	}
 }
 
-// TestLoadConfigBareStillIgnoresEmptyRenamedName — loadConfig в одиночку
-// (без checkUnknownEnvVars) по-прежнему не роняется на пустом устаревшем
-// имени: это её собственный, узкий контракт (только CheckRenamedAll,
-// который пустое значение легитимно пропускает) — регрессия на то, что эта
-// функция не начала молча дублировать проверку неизвестных имён. Реальный
-// прод-путь идёт через loadConfigChecked целиком (см. предыдущий тест) —
-// голый loadConfig в проде не вызывается нигде, кроме как через неё.
 func TestLoadConfigBareStillIgnoresEmptyRenamedName(t *testing.T) {
 	old := sortedRenamedOldNames()[0]
 	if _, err := loadConfig(getenvFrom(map[string]string{old: ""}), nil); err != nil {
@@ -2131,13 +1815,8 @@ func TestLoadConfigBareStillIgnoresEmptyRenamedName(t *testing.T) {
 	}
 }
 
-// TestLoadConfigRenamedEnvVarNewNameStillApplies — регрессия: проверка
-// устаревших имён не задевает применение НОВОГО имени, пришедшего той же
-// волной переименования. Идёт ПОДТЕСТОМ на КАЖДУЮ запись renamedEnvVarNewNameChecks
-// (а не берёт одну произвольную пару) — иначе таблица из десятков строк
-// защищала бы ровно одно переименование, а остальные были бы никогда
-// не вызываемым мёртвым кодом. Имя подтеста — само новое имя переменной:
-// упавшая строка сразу называет себя в выводе `go test`.
+// подтест на каждую запись таблицы: иначе она защищала бы одно переименование,
+// а остальные строки были бы никогда не вызываемым мёртвым кодом
 func TestLoadConfigRenamedEnvVarNewNameStillApplies(t *testing.T) {
 	newNames := make([]string, 0, len(renamedEnvVarNewNameChecks))
 	for newName := range renamedEnvVarNewNameChecks {
@@ -2170,8 +1849,6 @@ func TestLoadConfig_HSTSDefaults(t *testing.T) {
 	if cfg.HSTSMaxAgeSeconds != 31536000 {
 		t.Errorf("HSTSMaxAgeSeconds default = %d, want 31536000", cfg.HSTSMaxAgeSeconds)
 	}
-	// includeSubDomains по умолчанию выключен намеренно: инстанс часто живёт
-	// на поддомене, и флаг сломал бы соседям HTTPS-требование на весь домен.
 	if cfg.HSTSIncludeSubDomains {
 		t.Error("HSTSIncludeSubDomains default = true, want false")
 	}
@@ -2191,7 +1868,6 @@ func TestLoadConfig_HSTSOverrides(t *testing.T) {
 	if cfg.HSTSMaxAgeSeconds != 600 || !cfg.HSTSIncludeSubDomains {
 		t.Errorf("HSTS = (%d, %v), want (600, true)", cfg.HSTSMaxAgeSeconds, cfg.HSTSIncludeSubDomains)
 	}
-	// max-age=0 — законное значение (снятие пина), а не ошибка конфига.
 	cfg, err = loadConfig(getenvFrom(map[string]string{"GOTCHA_HSTS_MAX_AGE_SECONDS": "0"}), nil)
 	if err != nil {
 		t.Fatalf("loadConfig max-age=0: %v", err)
@@ -2205,9 +1881,7 @@ func TestLoadConfig_HSTSRejects(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		env           map[string]string
-		wantErrSubstr string // какое именно правило обязано сработать — три
-		// кейса легко перепутать местами или объединить в одну проверку без
-		// единого красного теста, если сверять только err != nil
+		wantErrSubstr string
 	}{
 		{"negative max-age", map[string]string{"GOTCHA_HSTS_MAX_AGE_SECONDS": "-1"},
 			"GOTCHA_HSTS_MAX_AGE_SECONDS must be >= 0"},
@@ -2231,11 +1905,8 @@ func TestLoadConfig_HSTSRejects(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_HSTSPreloadAccepted — позитивный кейс к TestLoadConfig_HSTSRejects:
-// ровно на границе (max-age год день-в-день) корректная preload-конфигурация
-// обязана стартовать, а не просто НЕ отказами — без этого теста замена
-// строгого сравнения `< 31536000` на `<= 31536000` в валидации не роняет ни
-// один тест (граница в 31536000 никогда не проверяется как «принято»).
+// без позитивного кейса на границе (31536000) замена `<` на `<=` в валидации
+// не роняет ни один тест
 func TestLoadConfig_HSTSPreloadAccepted(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(map[string]string{
 		"GOTCHA_HSTS_ENABLED":              "true",
@@ -2255,9 +1926,6 @@ func TestLoadConfig_HSTSPreloadAccepted(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_HSTSDisabledSkipsPreloadChecks — аварийный откат обязан
-// работать: «выключить HSTS, флаги оставить как были» не должен упираться в
-// отказ старта, то есть ровно в тот момент, когда сервис и так лежит.
 func TestLoadConfig_HSTSDisabledSkipsPreloadChecks(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(map[string]string{
 		"GOTCHA_HSTS_ENABLED":         "false",
@@ -2272,9 +1940,6 @@ func TestLoadConfig_HSTSDisabledSkipsPreloadChecks(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_HSTSWarnings — две ситуации, о которых оператор иначе не
-// узнает: заголовок не уйдёт (BASE_URL не https) и настройки игнорируются
-// (HSTS выключен, а флаги заданы).
 func TestLoadConfig_HSTSWarnings(t *testing.T) {
 	capture := func(t *testing.T, env map[string]string) []slog.Record {
 		t.Helper()
@@ -2296,18 +1961,15 @@ func TestLoadConfig_HSTSWarnings(t *testing.T) {
 		return false
 	}
 
-	// BASE_URL по дефолту http://localhost:8080 — заголовка не будет.
 	if got := capture(t, map[string]string{"GOTCHA_HSTS_ENABLED": "true"}); !hasWarn(got, "GOTCHA_BASE_URL") {
 		t.Error("нет предупреждения о том, что HSTS включён при не-https GOTCHA_BASE_URL")
 	}
-	// Выключенный HSTS с заданными флагами — они игнорируются.
 	if got := capture(t, map[string]string{
 		"GOTCHA_HSTS_ENABLED":            "false",
 		"GOTCHA_HSTS_INCLUDE_SUBDOMAINS": "true",
 	}); !hasWarn(got, "GOTCHA_HSTS_INCLUDE_SUBDOMAINS") {
 		t.Error("нет предупреждения о том, что настройка HSTS игнорируется при выключенном HSTS")
 	}
-	// Обратный случай: ничего лишнего не задано — предупреждения об игнорировании нет.
 	if got := capture(t, map[string]string{
 		"GOTCHA_HSTS_ENABLED":              "false",
 		"GOTCHA_BASE_URL":                  "https://gotcha.example",
@@ -2317,14 +1979,8 @@ func TestLoadConfig_HSTSWarnings(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_HSTSWarningSkippedOutsideWebModes — в ingest/uptime/probe
-// web.Handler вообще не строится (main.go поднимает его только под
-// cfg.Mode == "web" || cfg.Mode == "all"), значит заголовок Strict-Transport-
-// Security структурно невозможен: предупреждение про не-https GOTCHA_BASE_URL
-// не о чем предупреждать и только шумит на каждом старте приёмного узла или
-// dev-стенда. GOTCHA_BASE_URL по умолчанию http://localhost:8080 — то же
-// значение, что в TestLoadConfig_HSTSWarnings роняет предупреждение в
-// дефолтном режиме all.
+// в ingest/uptime/probe web.Handler не строится, заголовок структурно невозможен —
+// предупреждение про не-https BaseURL там не о чем показывать
 func TestLoadConfig_HSTSWarningSkippedOutsideWebModes(t *testing.T) {
 	var records []slog.Record
 	prev := slog.Default()
@@ -2342,9 +1998,6 @@ func TestLoadConfig_HSTSWarningSkippedOutsideWebModes(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_StringEnvTrimmed — обычные str()-переменные обрезаются по
-// краям: раньше "GOTCHA_LOCALE=" ru"" падало с текстом `got " ru"`, хотя
-// оператор явно указал допустимую локаль, просто с лишним пробелом.
 func TestLoadConfig_StringEnvTrimmed(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(map[string]string{
 		"GOTCHA_LOCALE":              " ru",
@@ -2361,9 +2014,6 @@ func TestLoadConfig_StringEnvTrimmed(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_WhitespaceOnlyStringFallsBackToDefault — строка из одних
-// пробелов у обычной str()-переменной (не входит в strGuarded-список) — то же
-// самое, что переменная не задана: тихий откат на def, без ошибки старта.
 func TestLoadConfig_WhitespaceOnlyStringFallsBackToDefault(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_UPTIME_LOCAL_REGION": "   "}), nil)
 	if err != nil {
@@ -2374,12 +2024,7 @@ func TestLoadConfig_WhitespaceOnlyStringFallsBackToDefault(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_SecretKeyTrimmed — "abc ", " abc" и "abc" обязаны дать один и
-// тот же мастер-ключ. Раньше хвостовой/ведущий пробел молча входил в ключ:
-// оператор, «поправив» файл и убрав «лишний» пробел, тихо получал другой
-// ключ и терял всё, что было зашифровано под старым (секреты каналов, SSO).
-// BaseURL по умолчанию localhost — SEC-C1 (дефолтный/короткий ключ) тут не
-// участвует, тест только про сам тримминг.
+// BaseURL по умолчанию localhost: проверка силы ключа тут не участвует
 func TestLoadConfig_SecretKeyTrimmed(t *testing.T) {
 	for _, raw := range []string{"abc", "abc ", " abc", "\tabc\n"} {
 		cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_SECRET_KEY": raw}), nil)
@@ -2392,11 +2037,6 @@ func TestLoadConfig_SecretKeyTrimmed(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_BlankGuardedStringsRejected — GOTCHA_SECRET_KEY/GOTCHA_PG_DSN/
-// GOTCHA_CH_DSN обязаны отказать старт на пробельном (но непустом) значении, а
-// не тихо откатиться на дефолт: для секрета дефолт — публично известный
-// insecure-dev-secret, для DSN — localhost вместо прод-базы, которую оператор
-// явно указывал.
 func TestLoadConfig_BlankGuardedStringsRejected(t *testing.T) {
 	for _, key := range []string{"GOTCHA_SECRET_KEY", "GOTCHA_PG_DSN", "GOTCHA_CH_DSN"} {
 		_, err := loadConfig(getenvFrom(map[string]string{key: "   "}), nil)
@@ -2410,9 +2050,6 @@ func TestLoadConfig_BlankGuardedStringsRejected(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_GuardedDSNsTrimmed — GOTCHA_PG_DSN/GOTCHA_CH_DSN с пробелами
-// по краям читаются как непустое явное значение (обрезанное), а не как
-// «не задано».
 func TestLoadConfig_GuardedDSNsTrimmed(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(map[string]string{
 		"GOTCHA_PG_DSN": " postgres://u:p@pg:5432/g ",
@@ -2429,12 +2066,7 @@ func TestLoadConfig_GuardedDSNsTrimmed(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_ProbeCredsWhitespaceOnlyRejected — ключ и URL пробы обязаны
-// отказать старт на пробельном значении в режиме --mode=probe. Они читаются
-// обычным str() (def == ""), поэтому пробельное значение уже трактуется как
-// «не задано» — и в это же «не задано» упирается существующая обязательность
-// пробы: отдельный strGuarded для них не нужен, но контракт должен быть
-// закрыт тестом, а не молчаливым допущением.
+// читаются обычным str(), пробельное значение уже трактуется как «не задано»
 func TestLoadConfig_ProbeCredsWhitespaceOnlyRejected(t *testing.T) {
 	cases := map[string]map[string]string{
 		"пробельный токен": {
@@ -2453,14 +2085,6 @@ func TestLoadConfig_ProbeCredsWhitespaceOnlyRejected(t *testing.T) {
 	}
 }
 
-// TestLoadConfigExportValidatedAtStartup — экспортная четвёрка
-// (GOTCHA_EXPORT_RETENTION_HOURS/_MAX_ROWS/_MAX_BYTES/_DISK_BUDGET_BYTES)
-// проверяется export.Config.Validate() уже на старте, а не только в первом
-// тике воркера (internal/export/worker.go): раньше Run() глотал её ошибку
-// как slog.Warn на каждом тике, процесс стартовал с виду здоровым, раздел
-// «Выгрузки» был виден в UI, а заявки копились в очереди навсегда. Текст
-// ошибки обязан называть переменную окружения, а не поле структуры Go
-// (MaxRows и т.п.) — оно оператору ни о чём не говорит.
 func TestLoadConfigExportValidatedAtStartup(t *testing.T) {
 	cases := []struct{ key, value string }{
 		{"GOTCHA_EXPORT_MAX_ROWS", "0"},
@@ -2485,12 +2109,7 @@ func TestLoadConfigExportValidatedAtStartup(t *testing.T) {
 		})
 	}
 
-	// K5-2 (сверка задачи 4 волны 1): экспортная четвёрка валидируется
-	// безусловно, независимо от --mode — export.Config.Validate() выше в
-	// цикле гоняется на дефолтном режиме ("all", args=nil), а именно
-	// --mode=ingest поднимает и export-воркер (internal/export/worker.go),
-	// для которого эта четвёрка нужнее всего: неисправный лимит там раньше
-	// копился в очереди навсегда (см. докблок теста выше).
+	// цикл выше гонял дефолтный режим ("all"); именно --mode=ingest поднимает export-воркер
 	t.Run("mode=ingest", func(t *testing.T) {
 		_, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_EXPORT_MAX_ROWS": "0"}), []string{"--mode=ingest"})
 		if err == nil {
@@ -2502,14 +2121,6 @@ func TestLoadConfigExportValidatedAtStartup(t *testing.T) {
 	})
 }
 
-// TestLoadConfig_ValidationErrorsReportedTogether — K5-1: до этой правки
-// loadConfig отдавала первую попавшуюся ошибку валидации немедленным
-// return'ом (fail-fast), и оператор с несколькими независимыми опечатками в
-// .env чинил их по одной за деплой. Семь ошибок из разных подблоков функции
-// (enum RegistrationMode, enum Locale, range EventRetentionDays, range
-// SMTPPort, "*_ENABLED requires ..." для OIDC, и оба поля validateLogging)
-// заданы ОДНОВРЕМЕННО — итоговая ошибка обязана называть все семь
-// переменных разом, а не только первую по порядку проверок.
 func TestLoadConfig_ValidationErrorsReportedTogether(t *testing.T) {
 	env := map[string]string{
 		"GOTCHA_REGISTRATION_MODE":    "weird",
@@ -2541,15 +2152,6 @@ func TestLoadConfig_ValidationErrorsReportedTogether(t *testing.T) {
 	}
 }
 
-// TestTranslateExportEnvNamesWholeWordOnly — задача 11, минор задачи 4:
-// exportFieldNameRe обязана сопоставлять "TTL"/"MaxRows"/"MaxBytes"/
-// "DiskBudget" ЦЕЛЫМ словом, а не любой подстрокой. internal/export/worker.go
-// несёт собственный пакетный термин leaseTTL (константа-таймаут переклейма,
-// 20 минут — не поле export.Config, никогда не читается из env), который
-// заканчивается тем же токеном "TTL": прежняя strings.NewReplacer версия
-// увечила "...строго меньше leaseTTL (20m0s)" в
-// "...строго меньше leaseGOTCHA_EXPORT_RETENTION_HOURS (20m0s)" — то же имя,
-// но не то понятие.
 func TestTranslateExportEnvNamesWholeWordOnly(t *testing.T) {
 	msg := "export: конфигурация: JobTimeout (15m0s) обязан быть строго меньше leaseTTL (20m0s)"
 	got := translateExportEnvNames(msg)
@@ -2560,9 +2162,6 @@ func TestTranslateExportEnvNamesWholeWordOnly(t *testing.T) {
 		t.Errorf("translateExportEnvNames(%q) = %q, leaseTTL изуродован подстрочной заменой", msg, got)
 	}
 
-	// Регрессия: настоящее поле TTL как отдельное слово по-прежнему
-	// переводится — целословный разбор не должен был выключить перевод
-	// вовсе.
 	real := "export: конфигурация: TTL (0s) обязан быть положительным"
 	want := "export: конфигурация: GOTCHA_EXPORT_RETENTION_HOURS (0s) обязан быть положительным"
 	if got := translateExportEnvNames(real); got != want {
@@ -2570,14 +2169,6 @@ func TestTranslateExportEnvNamesWholeWordOnly(t *testing.T) {
 	}
 }
 
-// TestLoadConfigAllowInsecureSecretGarbageParsedRegardlessOfKeyStrength —
-// GOTCHA_SECRET_KEY_ALLOW_INSECURE разбирается ДО обеих secret-проверок ниже, а
-// не inline через boolEnv() в их && условиях. Раньше при СИЛЬНОМ кастомном
-// ключе короткое замыкание останавливалось на состоянии самого ключа
-// (== devSecretKey / длина < 32) раньше, чем доходило до boolEnv() —
-// мусорное значение переменной («ture») никогда не разбиралось и не
-// попадало в errs: fail-fast, зависящий от порядка вычисления выражения, а
-// не от того, что оператор реально написал в .env.
 func TestLoadConfigAllowInsecureSecretGarbageParsedRegardlessOfKeyStrength(t *testing.T) {
 	strong := strings.Repeat("a", 32) // ровно 32 байта — сильный ключ
 	short := "0123456789abcdef"       // 16 байт — слабый ключ
@@ -2608,13 +2199,6 @@ func TestLoadConfigAllowInsecureSecretGarbageParsedRegardlessOfKeyStrength(t *te
 	})
 }
 
-// TestLoadConfig_EnumsCaseInsensitive — E3 задача 5: GOTCHA_EDITION,
-// GOTCHA_REGISTRATION_MODE и GOTCHA_LOCALE сравниваются после trim+lower. Раньше
-// "EDITION=OSS" (капс — принятая форма записи значений env самим же
-// оператором) ронял старт с "must be oss or saas", хотя это ровно
-// документированное значение, только в другом регистре. Расширение
-// принимаемого, не сужение: уже принятые строчные значения продолжают
-// работать (см. TestLoadConfig_Edition/_Registration/_Locale).
 func TestLoadConfig_EnumsCaseInsensitive(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(map[string]string{
 		"GOTCHA_EDITION":           "OSS",
@@ -2634,7 +2218,6 @@ func TestLoadConfig_EnumsCaseInsensitive(t *testing.T) {
 		t.Errorf("Locale = %q, want %q", cfg.Locale, "en")
 	}
 
-	// Смешанный регистр и лишние пробелы по краям — тоже принимается.
 	cfg, err = loadConfig(getenvFrom(map[string]string{
 		"GOTCHA_EDITION": " SaaS ",
 	}), nil)
@@ -2648,17 +2231,12 @@ func TestLoadConfig_EnumsCaseInsensitive(t *testing.T) {
 		t.Errorf("DefaultEventQuota (SaaS с пробелами) = %d, want 1000000 — редакция должна распознаться", cfg.DefaultEventQuota)
 	}
 
-	// По-прежнему мусор — ошибка (регистр не спасает опечатку).
 	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_EDITION": "BOGUS"}), nil); err == nil {
 		t.Error("BOGUS GOTCHA_EDITION must fail regardless of case")
 	}
 }
 
-// TestLoadConfig_LogLevelFormatTrimmedAndLowered — cfg.LogLevel/cfg.LogFormat
-// приходят из GOTCHA_LOGGING_LEVEL/GOTCHA_LOGGING_FORMAT уже trim+lower (loadConfig
-// сам их не валидирует — это делает setupLogging в main.go, см.
-// TestSetupLoggingWarningAliasSetsWarnLevel в wiring_test.go), поэтому
-// "WARNING" в любом регистре обязан дойти до setupLogging как "warning".
+// loadConfig сам не валидирует уровень/формат — это делает setupLogging в main.go
 func TestLoadConfig_LogLevelFormatTrimmedAndLowered(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(map[string]string{
 		"GOTCHA_LOGGING_LEVEL":  " WARNING ",
@@ -2675,9 +2253,6 @@ func TestLoadConfig_LogLevelFormatTrimmedAndLowered(t *testing.T) {
 	}
 }
 
-// TestTrustedRecipientsWhitespaceAndEmptyElements — бриф задачи 5, дословный
-// кейс: пробелы по краям каждого элемента и пустой элемент от двойной
-// запятой не портят список из двух реальных доменов.
 func TestTrustedRecipientsWhitespaceAndEmptyElements(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(map[string]string{
 		"GOTCHA_TRUSTED_RECIPIENTS": " a.example , ,b.example ",

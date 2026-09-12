@@ -21,84 +21,41 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/logfilter"
 )
 
-// LogsFilter — вью-модель фильтров формы + текущего окна времени списка
-// логов (задача 2, C2). Поля сохраняются в GET-форме и переносятся в ссылку
-// «показать старее», как IssuesFilter у issues.
 type LogsFilter struct {
 	Severity    []string
 	Service     string
 	Environment string
 	Query       string
-	// Attrs — точечные фильтры по атрибутам (§3 спеки C2: клик по значению
-	// фасета или ручной ?attr=), сохраняются в URL наравне с остальными
-	// полями (см. LogsPageURL) — иначе клик по встроенному фасету (severity/
-	// service/environment) молча сбросил бы уже выбранные attr-фильтры.
+	// Attrs сохраняются в URL: иначе клик по фасету severity/service/environment сбросил бы их.
 	Attrs []log.AttrFilter
 	Range TimeRangeVM
-	// Active — фильтр сужает список относительно умолчаний (окно 24ч, без
-	// доп. условий): пустой список при Active=true значит «ничего не
-	// подошло под фильтры», а не «логов ещё не было» — тот же принцип,
-	// что issues.Active (№23).
+	// Active: пустой список при Active=true значит «ничего не подошло», не «логов не было».
 	Active bool
-	// Facet — раскрытый ключ атрибут-фасета (?facet=<key>, задача 5),
-	// сохраняется в ссылке «показать старее» наравне с остальными полями
-	// фильтра (правка ревью UX Minor #1: без этого раскрытый атрибут
-	// схлопывался при переходе на следующую страницу).
-	Facet string
-	// TraceID — активный жёсткий скоуп по trace_id (C3): показывается снимаемым
-	// чипом и переносится по всем ссылкам (пагинация/фасеты) через logsPageURLValues.
+	// Facet сохраняется в ссылке «показать старее», иначе раскрытый атрибут схлопывался бы дальше.
+	Facet   string
 	TraceID string
-	// Not — активные исключающие условия (задача 5, «исключающие фильтры
-	// логов»): показываются отдельными чипами (--not) и переносятся по всем
-	// ссылкам через logsPageURLValues наравне с остальными полями фильтра.
-	Not []log.Predicate
-	// RangeClamped/RetentionDays — окно из пресета (Range) урезано снизу по
-	// сроку хранения логов (web.parseLogFilter, правка ревью UX Important #2 /
-	// ops P2): пользователь выбрал, например, 30d, а фактически видит данные
-	// только за RetentionDays — без индикации это выглядело бы как «логов
-	// нет», хотя причина в TTL. RetentionDays==0 — хранение бессрочно, кламп
-	// невозможен, RangeClamped всегда false.
+	Not     []log.Predicate
+	// Range урезан снизу по сроку хранения — без индикации выглядело бы как «логов нет».
+	// RetentionDays==0 — хранение бессрочно, RangeClamped всегда false.
 	RangeClamped  bool
 	RetentionDays int
-	// DefaultApplied — назначенный пользователем фильтр по умолчанию, если
-	// он применён к текущему списку (задача 10): непустой, только когда в
-	// URL не было ни одного параметра отбора (web.hasLogFilterParams) и сам
-	// фильтр применим (Applicable — иначе payload неизвестной версии молча
-	// превратился бы в «фильтр без условий», см. logfilter.Filter). Ненулевое
-	// значение — сигнал показать плашку в LogsScreen: сохранённое
-	// исключение, тихо скрывающее логи во время инцидента, — худший сценарий
-	// для системы мониторинга, плашка с явной ссылкой сброса обязательна.
+	// Непусто, только когда URL был пуст и фильтр применим. Скрытый фильтр во время инцидента — худший
+	// случай для мониторинга, поэтому плашка с явным сбросом обязательна.
 	DefaultApplied *logfilter.Filter
-	// DefaultShowAllHref — ссылка «показать всё» плашки: текущий URL плюс
-	// параметр, явно подавляющий умолчание (web.renderLogsPage). Пустой URL
-	// для этого не годится — он снова включил бы умолчание.
+	// «показать всё» — URL плюс явный параметр подавления; пустой URL заново включил бы умолчание.
 	DefaultShowAllHref string
-	// DefaultSuppressed — true, если запрос уже нёс параметр, явно
-	// подавляющий умолчание (nodefault): форма фильтров эхом переносит его
-	// дальше скрытым полем (LogsScreen), чтобы сабмит «Применить» без
-	// единого заполненного условия отбора не воскресил умолчание. Опора —
-	// именно это явное поле, а не случайность вида «пустые
-	// service=/environment=/q= тоже считаются присутствующими параметрами»
-	// (web.hasLogFilterParams проверяет наличие ключа, не непустоту
-	// значения) — та случайность исчезла бы при замене текстового поля на
-	// виджет, не сериализующий пустое значение.
+	// Форма эхом переносит это скрытым полем — иначе сабмит без условий воскресил бы умолчание.
+	// hasLogFilterParams проверяет наличие ключа, не непустоту значения — учитывать при рефакторинге.
 	DefaultSuppressed bool
 }
 
-// LogsHistogram — гистограмма объёма логов по времени и severity (задача 3,
-// C2): готовый SVG (stacked-bar, logHistogramSVG) + легенда severity, либо
-// Empty=true, если данных совсем нет (окно/фильтры дали одни нули, либо
-// ClickHouse временно недоступен) — тогда график не рендерится вовсе, а не
-// показывает пустую шкалу без смысла.
+// Empty=true — данных нет: график не рисуется вовсе, не пустая шкала.
 type LogsHistogram struct {
 	Chart  templ.Component
 	Legend []LegendItem
 	Empty  bool
 }
 
-// LogFacets — сайдбар фасетов логов: три встроенных (severity/service/
-// environment, задача 4) плюс атрибут-фасеты — авто-обнаруженные ключи
-// Map-колонок с ленивыми значениями (задача 5, ядро-дифференциатор фичи).
 type LogFacets struct {
 	Severity    LogFacet
 	Service     LogFacet
@@ -106,22 +63,12 @@ type LogFacets struct {
 	Attrs       LogAttrFacets
 }
 
-// LogFacet — одна секция сайдбара: до facetLimit (log.Query.Facet, сейчас
-// 10) значений с counts, уже готовые ссылки на клик. TooMuchData — Facet
-// вернул ошибку (таймаут SETTINGS max_execution_time=5 на тяжёлом окне,
-// временная недоступность ClickHouse) — секция рендерится пустой с пометкой
-// вместо падения всей страницы, тот же принцип деградации, что и
-// LogsHistogram.Empty.
+// TooMuchData — Facet вернул ошибку/таймаут: секция рисует пометку вместо падения всей страницы.
 type LogFacet struct {
 	Values      []LogFacetValue
 	TooMuchData bool
 }
 
-// LogFacetValue — одно значение фасета: локализованная метка, count и уже
-// готовая ссылка (клик добавляет фильтр, клик по уже активному — снимает
-// именно его). Active — значение уже входит в текущий фильтр filter.
-// ExcludeHref/ExcludeLabel (задача 7) — вторая ссылка рядом, добавляющая
-// значение в f.Not (тот же logExcludeURL, что и у кнопок в строке лога).
 type LogFacetValue struct {
 	Label        string
 	Count        int64
@@ -131,10 +78,6 @@ type LogFacetValue struct {
 	ExcludeLabel string
 }
 
-// NewSeverityFacet строит вью-модель фасета severity: ссылка — ТОГГЛ в
-// мультивыборе (тот же принцип, что чекбоксы filter.Severity в форме выше —
-// клик добавляет уровень к уже выбранным, повторный клик по активному
-// снимает именно его, остальные выбранные уровни не трогает).
 func NewSeverityFacet(ctx context.Context, projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool) LogFacet {
 	items := make([]LogFacetValue, len(values))
 	for i, v := range values {
@@ -150,10 +93,6 @@ func NewSeverityFacet(ctx context.Context, projectID int64, filter LogsFilter, v
 	return LogFacet{Values: items, TooMuchData: tooMuchData}
 }
 
-// NewServiceFacet строит вью-модель фасета service: одиночный select-фильтр
-// (в отличие от мультивыбора severity) — клик ЗАМЕНЯЕТ filter.Service
-// выбранным значением, клик по уже активному — сбрасывает к "" (снимает
-// фильтр).
 func NewServiceFacet(ctx context.Context, projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool) LogFacet {
 	return newSingleValueFacet(ctx, projectID, filter, values, tooMuchData, log.FieldService, "logs.row.exclude_service",
 		func(f LogsFilter) string { return f.Service },
@@ -161,7 +100,6 @@ func NewServiceFacet(ctx context.Context, projectID int64, filter LogsFilter, va
 	)
 }
 
-// NewEnvironmentFacet — то же самое для environment.
 func NewEnvironmentFacet(ctx context.Context, projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool) LogFacet {
 	return newSingleValueFacet(ctx, projectID, filter, values, tooMuchData, log.FieldEnvironment, "logs.row.exclude_environment",
 		func(f LogsFilter) string { return f.Environment },
@@ -169,11 +107,8 @@ func NewEnvironmentFacet(ctx context.Context, projectID int64, filter LogsFilter
 	)
 }
 
-// newSingleValueFacet — общая реализация NewServiceFacet/NewEnvironmentFacet:
-// оба фильтра одиночные (в отличие от мультивыбора severity), различаются
-// только тем, какое поле LogsFilter читают/пишут (get/set) и какое поле
-// log.Predicate/ключ i18n использует ссылка исключения (field/excludeLabelKey,
-// задача 7) — вынесены параметрами, чтобы не дублировать сборку LogFacetValue.
+// Общая для service/environment: одиночный select — клик заменяет значение, не добавляет.
+// field/excludeLabelKey параметризуют разницу между фильтрами, не дублируя сборку LogFacetValue.
 func newSingleValueFacet(ctx context.Context, projectID int64, filter LogsFilter, values []log.FacetValue, tooMuchData bool, field, excludeLabelKey string, get func(LogsFilter) string, set func(LogsFilter, string) LogsFilter) LogFacet {
 	items := make([]LogFacetValue, len(values))
 	for i, v := range values {
@@ -196,11 +131,7 @@ func newSingleValueFacet(ctx context.Context, projectID int64, filter LogsFilter
 	return LogFacet{Values: items, TooMuchData: tooMuchData}
 }
 
-// logFacetSeverityURL — ссылка значения фасета severity: тоггл sev в
-// filter.Severity (добавить, если отсутствует; убрать, если уже выбран,
-// остальные выбранные уровни не трогая). Курсор пагинации сбрасывается
-// (LogsPageURL с before нулевым временем) — после смены фильтра прежний
-// курсор уже не имеет смысла (список изменился).
+// Тоггл в мультивыборе filter.Severity; курсор пагинации сбрасывается — прежний уже не годится.
 func logFacetSeverityURL(projectID int64, filter LogsFilter, sev string) string {
 	next := filter
 	if severitySelected(filter.Severity, sev) {
@@ -217,10 +148,6 @@ func logFacetSeverityURL(projectID int64, filter LogsFilter, sev string) string 
 	return LogsPageURL(projectID, next, time.Time{}, 0)
 }
 
-// logFacetValueClass — CSS-класс ссылки значения фасета: активное значение
-// получает модификатор -active (тот же приём, что perfStatusFilterClass у
-// вкладок perf-issues — helper с литеральными строками класса, а не
-// динамическая конкатенация).
 func logFacetValueClass(active bool) string {
 	if active {
 		return "logs-facet-value logs-facet-value-active"
@@ -228,21 +155,12 @@ func logFacetValueClass(active bool) string {
 	return "logs-facet-value"
 }
 
-// LogAttrFacets — секция авто-обнаруженных атрибут-фасетов сайдбара (задача
-// 5, C2, ядро-дифференциатор фичи — Grafana поверх Map-колонок так не
-// умеет): список ключей log_attributes со счётчиками (log.Query.AttrKeys).
-// Значения подгружаются ЛЕНИВО — только для раскрытого в URL ключа
-// (?facet=<key>, см. LogAttrKeyFacet.Expanded/Values), остальные ключи
-// остаются просто счётчиком. TooMuchData — та же деградация, что и у
-// LogFacet (AttrKeys вернул ошибку/таймаут).
+// Значения подгружаются лениво только для раскрытого ключа; TooMuchData — как у LogFacet.
 type LogAttrFacets struct {
 	Keys        []LogAttrKeyFacet
 	TooMuchData bool
 }
 
-// LogAttrKeyFacet — один ключ атрибут-фасета: счётчик всегда, Values —
-// только когда Expanded (клик по ключу раскрывает/сворачивает его, Href
-// ведёт на тот же экран с/без ?facet=key).
 type LogAttrKeyFacet struct {
 	Key      string
 	Count    int64
@@ -251,10 +169,6 @@ type LogAttrKeyFacet struct {
 	Values   []LogAttrValueFacet
 }
 
-// LogAttrValueFacet — одно значение раскрытого ключа: клик добавляет
-// точечный фильтр log_attributes[key]=value (§3 спеки), клик по уже
-// активному — снимает именно его. ExcludeHref/ExcludeLabel (задача 7) —
-// вторая ссылка рядом, добавляющая log_attributes[key]!=value в f.Not.
 type LogAttrValueFacet struct {
 	Value        string
 	Count        int64
@@ -264,27 +178,8 @@ type LogAttrValueFacet struct {
 	ExcludeLabel string
 }
 
-// NewAttrFacets строит вью-модель секции атрибут-фасетов: keys — результат
-// log.Query.AttrKeys (топ ключей+counts), expandedKey — раскрытый в URL
-// ключ (?facet=, пусто — ничего не раскрыто), values — результат
-// log.Query.AttrValues ДЛЯ expandedKey. Если запрос значений раскрытого
-// ключа не удался (values==nil при непустом expandedKey), ключ всё равно
-// рендерится раскрытым, но без значений — секция ключей не рушится целиком
-// из-за отказа одного ленивого догруза (та же деградация по уровням, что и
-// у logsFacets в web/logs.go).
-//
-// expandedKey может НЕ входить в keys (правка ревью задачи T5, carry в
-// задачу 6): автокомплит (logsAttrKeys, задача 6) ищет по ВСЕМ обнаруженным
-// ключам, а сайдбар показывает только топ-N (logsAttrKeysLimit) без
-// фильтра — клик по найденному автокомплитом ключу, которого нет в топе,
-// ставит ?facet=<key> точно так же, как клик по ключу из сайдбара. Без этой
-// ветки такой клик визуально ничего не раскрывал: цикл ниже просто не находил
-// среди keys элемент с Value==expandedKey, и посчитанные для него values
-// молча терялись. Синтетический элемент добавляется В НАЧАЛО списка (не
-// смешивается с оставшимся порядком count DESC у обычных ключей — счётчик у
-// него посчитан по всему окну+фильтрам, как и values, в отличие от
-// ограниченной выборки AttrKeys, так что сравнивать его Count с остальными
-// было бы некорректно).
+// expandedKey может не входить в keys: автокомплит ищет по всем ключам, сайдбар — только топ-N.
+// Без синтетического элемента клик по найденному вне топа ключу визуально ничего не раскрывал.
 func NewAttrFacets(ctx context.Context, projectID int64, filter LogsFilter, keys []log.FacetValue, expandedKey string, values []log.FacetValue) LogAttrFacets {
 	items := make([]LogAttrKeyFacet, 0, len(keys)+1)
 	foundExpanded := false
@@ -296,9 +191,7 @@ func NewAttrFacets(ctx context.Context, projectID int64, filter LogsFilter, keys
 		items = append(items, newAttrKeyFacetItem(ctx, projectID, filter, k.Value, k.Count, expanded, values))
 	}
 	if expandedKey != "" && !foundExpanded {
-		// Точного Count здесь нет (expandedKey вне выборки AttrKeys) — сумма
-		// values ближе к реальности, чем 0, и не требует отдельного похода в
-		// ClickHouse только за числом.
+		// Точного Count здесь нет — сумма values ближе к реальности, чем 0.
 		var count int64
 		for _, v := range values {
 			count += v.Count
@@ -308,9 +201,6 @@ func NewAttrFacets(ctx context.Context, projectID int64, filter LogsFilter, keys
 	return LogAttrFacets{Keys: items}
 }
 
-// newAttrKeyFacetItem строит один элемент списка ключей атрибут-фасета —
-// общая часть обычных (из keys) и синтетического (expandedKey вне keys, см.
-// комментарий у NewAttrFacets) элементов.
 func newAttrKeyFacetItem(ctx context.Context, projectID int64, filter LogsFilter, key string, count int64, expanded bool, values []log.FacetValue) LogAttrKeyFacet {
 	item := LogAttrKeyFacet{
 		Key:      key,
@@ -334,12 +224,7 @@ func newAttrKeyFacetItem(ctx context.Context, projectID int64, filter LogsFilter
 	return item
 }
 
-// logAttrKeyFacetURL — ссылка раскрытия/сворачивания ключа атрибут-фасета:
-// клик по нераскрытому ключу выставляет ?facet=key (сервер на следующем
-// рендере досчитает log.Query.AttrValues только для него), клик по уже
-// раскрытому — снимает ?facet= (сворачивает обратно к списку одних
-// счётчиков). Курсор пагинации сбрасывается — тот же принцип, что и у
-// остальных фасетных ссылок экрана (LogsPageURL с before нулевым).
+// Курсор пагинации сбрасывается при раскрытии/сворачивании ключа — как у остальных фасетных ссылок.
 func logAttrKeyFacetURL(projectID int64, filter LogsFilter, key string, expanded bool) string {
 	q := logsPageURLValues(filter)
 	if !expanded {
@@ -348,15 +233,8 @@ func logAttrKeyFacetURL(projectID int64, filter LogsFilter, key string, expanded
 	return logsURLFromValues(projectID, q)
 }
 
-// logAttrValueURL — ссылка значения раскрытого атрибут-фасета: тоггл пары
-// key:value в filter.Attrs (добавляет, если её ещё нет; снимает именно её,
-// если уже активна — остальные выбранные attr-фильтры не трогая, тот же
-// принцип, что logFacetSeverityURL у мультивыбора severity). Раскрытие
-// ключа (?facet=key) СОХРАНЯЕТСЯ (в отличие от курсора пагинации, который
-// сбрасывается, как и у остальных фасетных ссылок) — после клика по
-// значению сайдбар остаётся на этом же раскрытом ключе с уже суженными
-// counts, а не сворачивается: так видно результат клика сразу и можно
-// потогглить ещё одно значение того же ключа без повторного раскрытия.
+// В отличие от прочих фасетных ссылок facet=key сохраняется: после клика по значению сайдбар не
+// сворачивается — виден результат, можно тоглить следующее значение того же ключа.
 func logAttrValueURL(projectID int64, filter LogsFilter, key, value string) string {
 	next := filter
 	if logAttrValueActive(filter, key, value) {
@@ -375,9 +253,7 @@ func logAttrValueURL(projectID int64, filter LogsFilter, key, value string) stri
 	return logsURLFromValues(projectID, q)
 }
 
-// logAttrValueActive — пара (key, value) уже входит в filter.Attrs как
-// фильтр по log_attributes (не resource_attrs — атрибут-фасеты задачи 5
-// раскрывают только log_attributes, см. комментарий у web.logsAttrFacets).
+// Проверяет только log_attributes (не resource_attrs) — фасеты сайдбара раскрывают только их.
 func logAttrValueActive(filter LogsFilter, key, value string) bool {
 	for _, a := range filter.Attrs {
 		if !a.Resource && a.Key == key && a.Value == value {
@@ -387,23 +263,13 @@ func logAttrValueActive(filter LogsFilter, key, value string) bool {
 	return false
 }
 
-// LogRow — строка списка логов вместе с уже собранной для раскрытия
-// таблицей атрибутов.
 type LogRow struct {
 	Row   log.LogRow
 	Attrs []logAttrRow
 }
 
-// logAttrRow — строка таблицы атрибутов записи в развёрнутой строке лога.
-// Key — отображаемый ключ (у атрибутов ресурса с префиксом "resource.",
-// чтобы не путаться с одноимённым ключом атрибута самой записи — тот же
-// приём, что и раньше). Resource/RawKey несут происхождение ЯВНО, с места,
-// где оно ещё точно известно (NewLogRow ниже) — предикат ссылок исключить/
-// оставить только это (logRowAttrPredicate) строится из них, а не разбором
-// префикса в Key: лог-атрибут, буквально названный "resource.foo", дал бы
-// при обратном разборе строки predicate по chujой карте (resource_attrs
-// вместо log_attributes) — кнопка выглядела бы рабочей и молча исключала
-// не то (находка ревью задачи 6).
+// Resource/RawKey несут происхождение явно (из NewLogRow) — предикат строится из них, не разбором
+// префикса "resource." в Key: атрибут, буквально названный так, дал бы предикат по чужой карте.
 type logAttrRow struct {
 	Key      string
 	RawKey   string
@@ -411,8 +277,6 @@ type logAttrRow struct {
 	Resource bool
 }
 
-// NewLogRow строит вью-строку из log.LogRow: атрибуты записи и атрибуты
-// ресурса сведены в один отсортированный по ключу список logAttrRow.
 func NewLogRow(r log.LogRow) LogRow {
 	var attrs []logAttrRow
 	for _, k := range sortedAttrKeys(r.LogAttributes) {
@@ -424,9 +288,7 @@ func NewLogRow(r log.LogRow) LogRow {
 	return LogRow{Row: r, Attrs: attrs}
 }
 
-// sortedAttrKeys — ключи карты атрибутов в стабильном порядке: карта Go не
-// гарантирует порядок обхода, без сортировки таблица атрибутов дрожала бы
-// между рендерами одной и той же записи.
+// Карта Go не гарантирует порядок обхода — без сортировки таблица дрожала бы между рендерами.
 func sortedAttrKeys(m map[string]string) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -440,20 +302,12 @@ func logsPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/logs"
 }
 
-// logTracePath — ссылка trace_id лога на реальную страницу трейса
-// (/traces/{trace_id}, web/trace.go TraceWaterfall; отсутствующий трейс —
-// честный 404 через h.notFound, не паника). Без пометки источника
-// (?from=...) — обратная навигация «со страницы трейса назад к этому логу»
-// появится вместе с полной двусторонней склейкой логов и трейсов (C3, см.
-// tracePathFrom в trace.templ); прямая ссылка вперёд уже безопасна и полезна
-// сама по себе (правка ревью UX Important #4).
+// Отсутствующий трейс — честный 404 (h.notFound), не паника.
 func logTracePath(traceID string) string {
 	return "/traces/" + url.PathEscape(traceID)
 }
 
-// maxLogBodyPreviewRunes — предел усечённого тела в свёрнутой строке списка
-// (не байт — чтобы не резать многобайтовые UTF-8-последовательности, тот же
-// приём, что и truncateFailedError в alertdeliveries.templ).
+// Предел в рунах, не байтах — не резать многобайтовые UTF-8-последовательности.
 const maxLogBodyPreviewRunes = 160
 
 func logBodyPreview(s string) string {
@@ -464,9 +318,6 @@ func logBodyPreview(s string) string {
 	return string(r[:maxLogBodyPreviewRunes]) + "…"
 }
 
-// severityBadgeClass — цвет бейджа уровня лога: тот же набор классов, что и
-// levelBadgeClass у issues (danger/warn/info/neutral), сведённый к канону
-// log.Sev*.
 func severityBadgeClass(sev string) string {
 	switch sev {
 	case log.SevError, log.SevFatal:
@@ -493,11 +344,6 @@ func severitySelected(selected []string, sev string) bool {
 	return false
 }
 
-// logsPageURLValues строит url.Values из фильтра f (без курсора пагинации)
-// — общая часть LogsPageURL и билдеров ссылок атрибут-фасетов
-// (logAttrKeyFacetURL), которым сверх стандартных полей фильтра нужно ЕЩЁ
-// добавить facet= поверх, не дублируя сборку severity/service/environment/
-// q/attr/range.
 func logsPageURLValues(f LogsFilter) url.Values {
 	q := url.Values{}
 	for _, sv := range f.Severity {
@@ -521,14 +367,8 @@ func logsPageURLValues(f LogsFilter) url.Values {
 	for _, p := range f.Not {
 		q.Add(logNotParamName(p), logNotParamValue(p))
 	}
-	// nodefault обязан пережить ЛЮБОЙ переход по ссылке, построенной из
-	// текущего состояния (пагинация «показать старее», фасеты, снятие
-	// последнего чипа-исключения) — иначе умолчание молча возвращается на
-	// следующей странице после того, как пользователь его явно отключил
-	// кнопкой «показать всё» (finding C3 финального ревью). f.DefaultSuppressed
-	// уже несёт это состояние из текущего рендера (см. renderLogsPage,
-	// logs.go), здесь только эхо в исходящий URL — тем же приёмом, что и
-	// остальные поля фильтра выше.
+	// nodefault обязан пережить любой построенный отсюда переход (пагинация, фасеты, чип) — иначе
+	// умолчание молча вернётся после того, как пользователь явно его отключил.
 	if f.DefaultSuppressed {
 		q.Set("nodefault", "1")
 	}
@@ -536,10 +376,7 @@ func logsPageURLValues(f LogsFilter) url.Values {
 	return q
 }
 
-// logNotParamName / logNotParamValue — обратная раскладка предиката в
-// параметр URL (инверсия разбора q_not/severity_not/service_not/
-// environment_not/attr_not в web.parseLogFilter). Держать рядом с разбором:
-// расходятся они молча, и ссылка перестанет воспроизводить своё же состояние.
+// Держать рядом с web.parseLogFilter — расходятся молча, ссылка перестанет воспроизводить его.
 func logNotParamName(p log.Predicate) string {
 	switch p.Field {
 	case log.FieldBody:
@@ -566,21 +403,12 @@ func logNotParamValue(p log.Predicate) string {
 	}
 }
 
-// logExcludeURL — ссылка, добавляющая отрицательное условие к текущему
-// набору (задачи 6 и 7 строят её для «исключить» на чипах/строках списка).
-// Дубли схлопывает log.NormalizePredicates на разборе, поэтому повторный
-// клик по одному и тому же значению безвреден.
 func logExcludeURL(projectID int64, f LogsFilter, p log.Predicate) string {
 	f.Not = append(append([]log.Predicate{}, f.Not...), p)
 	return logsURLFromValues(projectID, logsPageURLValues(f))
 }
 
-// logIncludeURL — ссылка «оставить только это» у значения в строке лога
-// (задача 6). Для одиночных полей (service, environment) новое значение
-// ЗАМЕЩАЕТ прежнее — двух значений у них одновременно быть не может; severity
-// и атрибуты мультивыбираемы, поэтому там значение добавляется к набору, как
-// у клика по значению фасета (logFacetSeverityURL/logAttrValueURL). p.Op не
-// используется — включающее условие для данного поля всегда одно и то же.
+// service/environment замещают прежнее значение (одиночные); severity/атрибуты — добавляют.
 func logIncludeURL(projectID int64, f LogsFilter, p log.Predicate) string {
 	switch p.Field {
 	case log.FieldService:
@@ -600,9 +428,6 @@ func logIncludeURL(projectID int64, f LogsFilter, p log.Predicate) string {
 	return logsURLFromValues(projectID, logsPageURLValues(f))
 }
 
-// logNotChipRemoveURL — ссылка, снимающая одно отрицательное условие по
-// идентичности предиката, не трогая остальные (тот же приём, что у
-// logAttrChipRemoveURL для положительных attr-фильтров).
 func logNotChipRemoveURL(projectID int64, f LogsFilter, p log.Predicate) string {
 	kept := make([]log.Predicate, 0, len(f.Not))
 	for _, x := range f.Not {
@@ -614,11 +439,6 @@ func logNotChipRemoveURL(projectID int64, f LogsFilter, p log.Predicate) string 
 	return logsURLFromValues(projectID, logsPageURLValues(f))
 }
 
-// logNotChipLabel — человекочитаемая подпись чипа исключения: поле фильтра
-// плюс значение, с разными связками для «не равно» (severity/service/
-// environment/attr) и «не содержит» (тело). i18n.T параметров не принимает,
-// поэтому по каждому полю — свой ключ с подстановкой через i18n.Tf, как у
-// logs.chip.trace.
 func logNotChipLabel(ctx context.Context, p log.Predicate) string {
 	switch p.Field {
 	case log.FieldBody:
@@ -634,7 +454,6 @@ func logNotChipLabel(ctx context.Context, p log.Predicate) string {
 	}
 }
 
-// shortTraceID укорачивает trace_id для подписи чипа (полный — в URL).
 func shortTraceID(id string) string {
 	if len(id) <= 8 {
 		return id
@@ -642,26 +461,18 @@ func shortTraceID(id string) string {
 	return id[:8] + "…"
 }
 
-// logsTraceChipRemoveURL — ссылка на тот же экран логов без trace_id (снятие
-// чипа). f — копия по значению, безопасно обнуляем поле.
 func logsTraceChipRemoveURL(projectID int64, f LogsFilter) string {
 	f.TraceID = ""
 	return logsURLFromValues(projectID, logsPageURLValues(f))
 }
 
-// logAttrChipLabel — подпись чипа активного attr-фильтра: "ключ: значение".
-// Ключ уже несёт namespace (host.name, http.method), префикс res: в подписи не
-// показываем — пользователю важно значение, а не в какой из карт оно лежит.
+// Префикс res: в подписи не показываем — пользователю важно значение, не в какой карте оно лежит.
 func logAttrChipLabel(a log.AttrFilter) string {
 	return a.Key + ": " + a.Value
 }
 
-// logAttrChipRemoveURL — снятие конкретного attr-фильтра по идентичности
-// (Resource+Key+Value), не трогая остальные; курсор пагинации и раскрытый фасет
-// сбрасываются — это действие фильтра, как снятие trace-чипа. Нужен отдельно от
-// logAttrValueURL (тот тоглит только log_attributes через !a.Resource и
-// сохраняет facet): чип обязан уметь снять и resource-атрибут (напр. host.name
-// из ссылки «Логи хоста»), у которого фасета в сайдбаре нет вовсе.
+// Отдельно от logAttrValueURL: тот тоглит только log_attributes и хранит facet, чип обязан снимать
+// и resource-атрибут (например host.name из «Логи хоста»), у которого своего фасета в сайдбаре нет.
 func logAttrChipRemoveURL(projectID int64, f LogsFilter, target log.AttrFilter) string {
 	out := make([]log.AttrFilter, 0, len(f.Attrs))
 	for _, a := range f.Attrs {
@@ -674,11 +485,7 @@ func logAttrChipRemoveURL(projectID int64, f LogsFilter, target log.AttrFilter) 
 	return logsURLFromValues(projectID, logsPageURLValues(f))
 }
 
-// logAttrFilterParam сериализует log.AttrFilter обратно в значение ?attr=
-// (инверсия web.parseLogAttrFilter): resource_attrs — префикс "res:", иначе
-// без префикса; ключ/значение — как есть, разделены первым ":" (значение
-// само может содержать ":" — парсер режет по ПЕРВОМУ вхождению, см.
-// web.parseLogAttrFilter).
+// resource_attrs — префикс res:, значение может содержать «:» — парсер режет по первому вхождению.
 func logAttrFilterParam(a log.AttrFilter) string {
 	s := a.Key + ":" + a.Value
 	if a.Resource {
@@ -687,18 +494,8 @@ func logAttrFilterParam(a log.AttrFilter) string {
 	return s
 }
 
-// logFilterHiddenChipFields — скрытые поля условий, у которых в форме нет
-// собственного видимого элемента управления: атрибут-фильтры, жёсткий скоуп
-// по trace_id и исключающие условия (все они живут чипами вне формы, см.
-// logs-active-filters ниже). Общая точка для GET-формы фильтров (LogsScreen,
-// ниже — сабмит «Применить» обязан сохранить их при изменении видимого
-// поля) и POST-форм сохранённых фильтров (logFilterConditionFields,
-// logsavedfilters.templ) — до устранения находки финального ревью C11 оба
-// места писали этот же тройной блок независимо, рискуя разойтись при
-// добавлении следующего параметра отбора. severity/service/environment/q
-// сюда НЕ входят: у GET-формы это видимые поля с тем же именем — добавить
-// их сюда же означало бы задвоить параметр в сабмите (значение из скрытого
-// поля и значение, которое реально ввёл пользователь, под одним name).
+// Общая точка для GET-формы (LogsScreen) и POST сохранённых фильтров (logsavedfilters.templ), чтобы
+// оба места не расходились. severity/service/environment/q сюда не входят — это видимые поля формы.
 func logFilterHiddenChipFields(filter LogsFilter) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -728,7 +525,7 @@ func logFilterHiddenChipFields(filter LogsFilter) templ.Component {
 			var templ_7745c5c3_Var2 string
 			templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.ResolveAttributeValue(logAttrFilterParam(a))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 696, Col: 64}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 493, Col: 64}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var2)
 			if templ_7745c5c3_Err != nil {
@@ -747,7 +544,7 @@ func logFilterHiddenChipFields(filter LogsFilter) templ.Component {
 			var templ_7745c5c3_Var3 string
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.ResolveAttributeValue(filter.TraceID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 699, Col: 61}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 496, Col: 61}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var3)
 			if templ_7745c5c3_Err != nil {
@@ -766,7 +563,7 @@ func logFilterHiddenChipFields(filter LogsFilter) templ.Component {
 			var templ_7745c5c3_Var4 string
 			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.ResolveAttributeValue(logNotParamName(p))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 702, Col: 48}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 499, Col: 48}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var4)
 			if templ_7745c5c3_Err != nil {
@@ -779,7 +576,7 @@ func logFilterHiddenChipFields(filter LogsFilter) templ.Component {
 			var templ_7745c5c3_Var5 string
 			templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.ResolveAttributeValue(logNotParamValue(p))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 702, Col: 78}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 499, Col: 78}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var5)
 			if templ_7745c5c3_Err != nil {
@@ -794,23 +591,14 @@ func logFilterHiddenChipFields(filter LogsFilter) templ.Component {
 	})
 }
 
-// logsAttrKeysPath — путь JSON-эндпоинта автокомплита ключей атрибутов
-// (задача 6, C2, §6 спеки, web.logsAttrKeys) — logs.js сам дописывает
-// ?q=<prefix> при запросе.
 func logsAttrKeysPath(projectID int64) string {
 	return logsPath(projectID) + "/attr-keys"
 }
 
-// logAttrSearchBaseHref — ссылка на экран логов с текущими фильтрами БЕЗ
-// facet= и без курсора пагинации (задача 6): logs.js дописывает
-// "facet=<key>" поверх при клике по подсказке автокомплита — тот же принцип
-// URL, что и у logAttrKeyFacetURL для ключей из самого сайдбара.
 func logAttrSearchBaseHref(projectID int64, filter LogsFilter) string {
 	return logsURLFromValues(projectID, logsPageURLValues(filter))
 }
 
-// logsURLFromValues дописывает q к пути списка логов проекта — общий хвост
-// LogsPageURL/logAttrKeyFacetURL после сборки url.Values.
 func logsURLFromValues(projectID int64, q url.Values) string {
 	qs := q.Encode()
 	if qs == "" {
@@ -819,18 +607,11 @@ func logsURLFromValues(projectID int64, q url.Values) string {
 	return logsPath(projectID) + "?" + qs
 }
 
-// logsAroundEventWindow — полуокно «логи вокруг события» (§3 дизайна C3):
-// событие ±5 мин, если у него нет trace_id для точной склейки.
+// Событие ±5 мин без trace_id для точной склейки — с trace_id окно точное.
 const logsAroundEventWindow = 5 * time.Minute
 
-// logsAroundEventPath — ссылка «Логи вокруг события» со страницы ошибки.
-// ⚠ Окно [ts±5м] задаётся ВСЕГДА (обе ветки): без него /logs берёт дефолтное
-// окно 24ч (resolveTimeRange), и List отсекает логи трейса старше суток
-// (timestamp>=from) — дежурный, открывший вчерашнюю ошибку, получил бы пустой
-// экран (ревью плана, блокер). trace_id, если есть, ДОБАВЛЯЕТСЯ поверх окна
-// (точная склейка внутри окна); иначе окно сужается по environment (у события
-// нет поля Service; logs.service — иное пространство имён). Время — unix-секунды
-// (Global Constraints: обход format-guard + граница пакета templates/web).
+// Окно [ts±5м] обязательно в обеих ветках: без него /logs берёт дефолт 24ч и отсекает старые логи.
+// trace_id, если есть, добавляется поверх окна; время — unix-секунды (граница templates/web).
 func logsAroundEventPath(projectID int64, traceID string, ts time.Time, env string) string {
 	q := url.Values{}
 	q.Set("start", strconv.FormatInt(ts.Add(-logsAroundEventWindow).Unix(), 10))
@@ -843,15 +624,8 @@ func logsAroundEventPath(projectID int64, traceID string, ts time.Time, env stri
 	return logsURLFromValues(projectID, q)
 }
 
-// logsForTracePath — ссылка «Логи этого трейса» с waterfall: trace_id точно +
-// окно трейса [from, from+длительность+1с] ограничивает скан партиций.
-//
-// Окно — ЛИШЬ оптимизация скана (trace_id фильтрует точно). Но TotalUS
-// насыщается на ^uint32(0) (~71 мин, trace.go считает totalUS uint32-микросекундами)
-// для очень длинных трейсов — тогда тесное окно молча отсекло бы хвост логов
-// трейса за пределами 71-й минуты (аудит QA, P1). При насыщении берём заведомо
-// широкий конец (from+24ч): любой реальный трейс в него укладывается, а ретеншен
-// логов всё равно ограничивает выборку сверху; корректность важнее экономии скана.
+// Окно — лишь оптимизация скана: trace_id фильтрует точно. TotalUS насыщается на ~71 мин (uint32)
+// для очень длинных трейсов — тогда берём широкий конец (from+24ч), чтобы не отсечь хвост логов.
 func logsForTracePath(projectID int64, traceID string, from time.Time, totalUS uint32) string {
 	q := url.Values{}
 	q.Set("trace_id", traceID)
@@ -864,20 +638,13 @@ func logsForTracePath(projectID int64, traceID string, from time.Time, totalUS u
 	return logsURLFromValues(projectID, q)
 }
 
-// logsForHostPath — ссылка «Логи хоста» с карточки хоста: точечный фильтр по
-// resource-атрибуту host.name (без изменений query-слоя, повторно использует
-// парсинг ?attr=res:key:value из C2).
 func logsForHostPath(projectID int64, hostName string) string {
 	q := url.Values{}
 	q.Set("attr", "res:host.name:"+hostName)
 	return logsURLFromValues(projectID, q)
 }
 
-// LogsPageURL строит ссылку на список логов с сохранением текущих фильтров
-// и заданным курсором пагинации (before/tskip). before нулевое — курсор из
-// ссылки убирается (используется для «сбросить фильтры», не для пагинации).
-// f.Facet, если задан, переносится тоже (правка ревью UX Minor #1) — иначе
-// «показать старее» схлопывало раскрытый атрибут-фасет.
+// before нулевое снимает курсор из ссылки (используется для сброса фильтров, не для пагинации).
 func LogsPageURL(projectID int64, f LogsFilter, before time.Time, tieSkip int) string {
 	q := logsPageURLValues(f)
 	if f.Facet != "" {
@@ -892,19 +659,8 @@ func LogsPageURL(projectID int64, f LogsFilter, before time.Time, tieSkip int) s
 	return logsURLFromValues(projectID, q)
 }
 
-// LogsScreen — GET /projects/{id}/logs: базовый просмотрщик логов (задача 2,
-// C2) — фильтры (severity/service/environment/тело/окно времени), список с
-// раскрытием строки, курсорная пагинация «показать старее», гистограмма
-// объёма по времени и severity (задача 3), встроенные фасеты severity/
-// service/environment в сайдбаре (задача 4). loadFailed — не смогли
-// прочитать ClickHouse: список пуст, но страница не падает 500-й — вместо
-// таблицы дружелюбное сообщение (гистограмма и фасеты в этом случае тоже не
-// запрашиваются — см. web.logsList — и приходят уже в состоянии отказа).
-// olderHref — пусто, если страницы дальше нет (см. web.nextLogCursor).
-// savedFilters/errMsg (задача 9) — панель «Мои»/«Общие» и сообщение отказа
-// хендлеров управления фильтрами (web.renderLogsPage перерисовывает эту же
-// страницу со статусом 422 при невалидной форме, тот же приём, что у
-// выгрузок).
+// loadFailed — ClickHouse недоступен: список пуст без падения 500, гистограмма/фасеты тоже не
+// запрашиваются и приходят уже в состоянии отказа (см. web.logsList).
 func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bool, olderHref string, histogram LogsHistogram, facets LogFacets, userEmail string, savedFilters LogSavedFiltersPanel, errMsg string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -945,7 +701,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 			var templ_7745c5c3_Var8 string
 			templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 820, Col: 34}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 576, Col: 34}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 			if templ_7745c5c3_Err != nil {
@@ -971,7 +727,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 				var templ_7745c5c3_Var9 string
 				templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "logs.default.applied", "name", filter.DefaultApplied.Name))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 825, Col: 79}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 581, Col: 79}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 				if templ_7745c5c3_Err != nil {
@@ -984,7 +740,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 				var templ_7745c5c3_Var10 templ.SafeURL
 				templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(filter.DefaultShowAllHref))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 826, Col: 51}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 582, Col: 51}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 				if templ_7745c5c3_Err != nil {
@@ -997,7 +753,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 				var templ_7745c5c3_Var11 string
 				templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.default.show_all"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 826, Col: 92}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 582, Col: 92}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 				if templ_7745c5c3_Err != nil {
@@ -1015,7 +771,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 			var templ_7745c5c3_Var12 templ.SafeURL
 			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(logsPath(projectID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 830, Col: 61}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 586, Col: 61}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 			if templ_7745c5c3_Err != nil {
@@ -1028,7 +784,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 			var templ_7745c5c3_Var13 string
 			templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.filter.severity_all"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 832, Col: 54}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 588, Col: 54}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 			if templ_7745c5c3_Err != nil {
@@ -1046,7 +802,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 				var templ_7745c5c3_Var14 string
 				templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.ResolveAttributeValue(sev)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 835, Col: 57}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 591, Col: 57}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var14)
 				if templ_7745c5c3_Err != nil {
@@ -1069,7 +825,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 				var templ_7745c5c3_Var15 string
 				templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(severityLabel(ctx, sev))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 836, Col: 32}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 592, Col: 32}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 				if templ_7745c5c3_Err != nil {
@@ -1087,7 +843,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 			var templ_7745c5c3_Var16 string
 			templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "logs.filter.service"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 840, Col: 100}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 596, Col: 100}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var16)
 			if templ_7745c5c3_Err != nil {
@@ -1100,7 +856,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 			var templ_7745c5c3_Var17 string
 			templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.ResolveAttributeValue(filter.Service)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 840, Col: 125}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 596, Col: 125}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var17)
 			if templ_7745c5c3_Err != nil {
@@ -1113,7 +869,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 			var templ_7745c5c3_Var18 string
 			templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "logs.filter.service"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 840, Col: 175}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 596, Col: 175}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var18)
 			if templ_7745c5c3_Err != nil {
@@ -1126,7 +882,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 			var templ_7745c5c3_Var19 string
 			templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "logs.filter.environment"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 841, Col: 108}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 597, Col: 108}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var19)
 			if templ_7745c5c3_Err != nil {
@@ -1139,7 +895,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 			var templ_7745c5c3_Var20 string
 			templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.ResolveAttributeValue(filter.Environment)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 841, Col: 137}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 597, Col: 137}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var20)
 			if templ_7745c5c3_Err != nil {
@@ -1152,7 +908,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 			var templ_7745c5c3_Var21 string
 			templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "logs.filter.environment"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 841, Col: 191}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 597, Col: 191}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var21)
 			if templ_7745c5c3_Err != nil {
@@ -1165,7 +921,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 			var templ_7745c5c3_Var22 string
 			templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "logs.filter.query"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 842, Col: 92}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 598, Col: 92}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var22)
 			if templ_7745c5c3_Err != nil {
@@ -1178,7 +934,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 			var templ_7745c5c3_Var23 string
 			templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.ResolveAttributeValue(filter.Query)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 842, Col: 115}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 598, Col: 115}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var23)
 			if templ_7745c5c3_Err != nil {
@@ -1191,7 +947,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 			var templ_7745c5c3_Var24 string
 			templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "logs.filter.query"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 842, Col: 163}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 598, Col: 163}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var24)
 			if templ_7745c5c3_Err != nil {
@@ -1222,7 +978,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 			var templ_7745c5c3_Var25 string
 			templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.filter.apply"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 851, Col: 84}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 605, Col: 84}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 			if templ_7745c5c3_Err != nil {
@@ -1245,7 +1001,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 					var templ_7745c5c3_Var26 string
 					templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "logs.chip.trace", "id", shortTraceID(filter.TraceID)))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 857, Col: 76}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 611, Col: 76}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 					if templ_7745c5c3_Err != nil {
@@ -1258,7 +1014,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 					var templ_7745c5c3_Var27 templ.SafeURL
 					templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(logsTraceChipRemoveURL(projectID, filter)))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 858, Col: 89}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 612, Col: 89}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 					if templ_7745c5c3_Err != nil {
@@ -1271,7 +1027,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 					var templ_7745c5c3_Var28 string
 					templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "logs.chip.trace_remove"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 858, Col: 137}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 612, Col: 137}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var28)
 					if templ_7745c5c3_Err != nil {
@@ -1284,7 +1040,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 					var templ_7745c5c3_Var29 string
 					templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "logs.chip.trace_remove"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 858, Col: 190}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 612, Col: 190}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var29)
 					if templ_7745c5c3_Err != nil {
@@ -1303,7 +1059,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 					var templ_7745c5c3_Var30 string
 					templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(logAttrChipLabel(a))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 863, Col: 28}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 617, Col: 28}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
 					if templ_7745c5c3_Err != nil {
@@ -1316,7 +1072,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 					var templ_7745c5c3_Var31 templ.SafeURL
 					templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(logAttrChipRemoveURL(projectID, filter, a)))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 864, Col: 90}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 618, Col: 90}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 					if templ_7745c5c3_Err != nil {
@@ -1329,7 +1085,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 					var templ_7745c5c3_Var32 string
 					templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.Tf(ctx, "logs.chip.attr_remove", "key", a.Key))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 864, Col: 152}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 618, Col: 152}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var32)
 					if templ_7745c5c3_Err != nil {
@@ -1342,7 +1098,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 					var templ_7745c5c3_Var33 string
 					templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.Tf(ctx, "logs.chip.attr_remove", "key", a.Key))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 864, Col: 219}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 618, Col: 219}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var33)
 					if templ_7745c5c3_Err != nil {
@@ -1361,7 +1117,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 					var templ_7745c5c3_Var34 string
 					templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.JoinStringErrs(logNotChipLabel(ctx, p))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 869, Col: 32}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 623, Col: 32}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var34))
 					if templ_7745c5c3_Err != nil {
@@ -1374,7 +1130,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 					var templ_7745c5c3_Var35 templ.SafeURL
 					templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(logNotChipRemoveURL(projectID, filter, p)))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 870, Col: 89}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 624, Col: 89}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
 					if templ_7745c5c3_Err != nil {
@@ -1387,7 +1143,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 					var templ_7745c5c3_Var36 string
 					templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "logs.exclude.chip_remove"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 870, Col: 139}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 624, Col: 139}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var36)
 					if templ_7745c5c3_Err != nil {
@@ -1400,7 +1156,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 					var templ_7745c5c3_Var37 string
 					templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "logs.exclude.chip_remove"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 870, Col: 194}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 624, Col: 194}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var37)
 					if templ_7745c5c3_Err != nil {
@@ -1424,7 +1180,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 				var templ_7745c5c3_Var38 string
 				templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "logs.range.clamped", "days", strconv.Itoa(filter.RetentionDays)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 876, Col: 119}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 630, Col: 119}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 				if templ_7745c5c3_Err != nil {
@@ -1514,7 +1270,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 					var templ_7745c5c3_Var41 string
 					templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.table.time"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 900, Col: 59}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 654, Col: 59}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var41))
 					if templ_7745c5c3_Err != nil {
@@ -1527,7 +1283,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 					var templ_7745c5c3_Var42 string
 					templ_7745c5c3_Var42, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.table.severity"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 901, Col: 63}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 655, Col: 63}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var42))
 					if templ_7745c5c3_Err != nil {
@@ -1540,7 +1296,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 					var templ_7745c5c3_Var43 string
 					templ_7745c5c3_Var43, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.table.service"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 902, Col: 62}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 656, Col: 62}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var43))
 					if templ_7745c5c3_Err != nil {
@@ -1553,7 +1309,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 					var templ_7745c5c3_Var44 string
 					templ_7745c5c3_Var44, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.table.body"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 903, Col: 59}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 657, Col: 59}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var44))
 					if templ_7745c5c3_Err != nil {
@@ -1591,7 +1347,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 					var templ_7745c5c3_Var45 string
 					templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "pagination.label"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 915, Col: 75}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 669, Col: 75}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var45)
 					if templ_7745c5c3_Err != nil {
@@ -1604,7 +1360,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 					var templ_7745c5c3_Var46 templ.SafeURL
 					templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(olderHref))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 916, Col: 38}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 670, Col: 38}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var46))
 					if templ_7745c5c3_Err != nil {
@@ -1617,7 +1373,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 					var templ_7745c5c3_Var47 string
 					templ_7745c5c3_Var47, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.older"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 916, Col: 68}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 670, Col: 68}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var47))
 					if templ_7745c5c3_Err != nil {
@@ -1651,11 +1407,7 @@ func LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed bo
 	})
 }
 
-// logFacetsSidebar — сайдбар встроенных фасетов (задача 4, C2): три секции
-// severity/service/environment, каждая — карточка со списком значений и
-// counts (logFacetSection). Рендерится всегда (даже когда все три секции
-// пусты/в состоянии отказа) — так сайдбар не прыгает по ширине между
-// перезагрузками страницы с разными фильтрами.
+// Рендерится всегда, даже когда все секции пусты — иначе сайдбар прыгал бы по ширине.
 func logFacetsSidebar(projectID int64, filter LogsFilter, facets LogFacets) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -1684,7 +1436,7 @@ func logFacetsSidebar(projectID int64, filter LogsFilter, facets LogFacets) temp
 		var templ_7745c5c3_Var49 string
 		templ_7745c5c3_Var49, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "logs.facet.title"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 933, Col: 72}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 683, Col: 72}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var49)
 		if templ_7745c5c3_Err != nil {
@@ -1718,16 +1470,8 @@ func logFacetsSidebar(projectID int64, filter LogsFilter, facets LogFacets) temp
 	})
 }
 
-// logAttrSearchBox — typeahead поиска ключа атрибута (задача 6, C2, §6
-// спеки, static/logs.js — подключается в layout.templ): без JS это просто
-// текстовый инпут БЕЗ имени — он не участвует в отправке формы фильтров и
-// без скрипта ничего не делает (собственного nojs-действия у поиска по
-// произвольному префиксу нет, в отличие от .time-range у daterange.js).
-// data-атрибуты — точки привязки JS: attr-keys-url бьёт логAttrKeys за
-// подсказками, base-href — ссылка на экран логов с текущими фильтрами БЕЗ
-// facet= (logs.js дописывает "facet=<key>" сам при клике по подсказке — тот
-// же URL, что строит logAttrKeyFacetURL для ключей из сайдбара ниже,
-// см. logAttrSearchBaseHref).
+// Без JS — обычный текстовый инпут без name: не участвует в отправке формы и ничего не делает.
+// data-атрибуты — точки привязки static/logs.js (attr-keys-url, base-href).
 func logAttrSearchBox(projectID int64, filter LogsFilter) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -1756,7 +1500,7 @@ func logAttrSearchBox(projectID int64, filter LogsFilter) templ.Component {
 		var templ_7745c5c3_Var51 string
 		templ_7745c5c3_Var51, templ_7745c5c3_Err = templ.ResolveAttributeValue(logsAttrKeysPath(projectID))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 952, Col: 99}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 694, Col: 99}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var51)
 		if templ_7745c5c3_Err != nil {
@@ -1769,7 +1513,7 @@ func logAttrSearchBox(projectID int64, filter LogsFilter) templ.Component {
 		var templ_7745c5c3_Var52 string
 		templ_7745c5c3_Var52, templ_7745c5c3_Err = templ.ResolveAttributeValue(logAttrSearchBaseHref(projectID, filter))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 952, Col: 164}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 694, Col: 164}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var52)
 		if templ_7745c5c3_Err != nil {
@@ -1782,7 +1526,7 @@ func logAttrSearchBox(projectID int64, filter LogsFilter) templ.Component {
 		var templ_7745c5c3_Var53 string
 		templ_7745c5c3_Var53, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "logs.facet.attr_search"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 953, Col: 131}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 695, Col: 131}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var53)
 		if templ_7745c5c3_Err != nil {
@@ -1795,7 +1539,7 @@ func logAttrSearchBox(projectID int64, filter LogsFilter) templ.Component {
 		var templ_7745c5c3_Var54 string
 		templ_7745c5c3_Var54, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "logs.facet.attr_search"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 953, Col: 184}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 695, Col: 184}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var54)
 		if templ_7745c5c3_Err != nil {
@@ -1809,15 +1553,8 @@ func logAttrSearchBox(projectID int64, filter LogsFilter) templ.Component {
 	})
 }
 
-// logAttrFacetSection — секция авто-обнаруженных атрибут-фасетов (задача 5,
-// C2): список ключей, у раскрытого ключа (Expanded) значения показаны
-// вложенным списком прямо под ним, остальные ключи — просто счётчик.
-// Внешняя обёртка ("card logs-facet") намеренно та же, что у logFacetSection
-// — единый визуальный ряд секций сайдбара. Поиск (задача 6) рендерится ДО
-// TooMuchData/empty-веток: он бьёт по отдельному эндпоинту (logsAttrKeys) и
-// работает независимо от того, справился ли AttrKeys сайдбара с топ-N —
-// именно так найденный поиском ключ вне топа (carry-fix, см. NewAttrFacets)
-// остаётся достижимым, даже когда сама секция ниже пуста/в состоянии отказа.
+// Поиск рендерится ДО TooMuchData/empty-веток: бьёт по отдельному эндпоинту, работает независимо от
+// состояния секции ниже — так найденный вне топа ключ (см. NewAttrFacets) остаётся достижимым.
 func logAttrFacetSection(projectID int64, filter LogsFilter, facet LogAttrFacets) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -1846,7 +1583,7 @@ func logAttrFacetSection(projectID int64, filter LogsFilter, facet LogAttrFacets
 		var templ_7745c5c3_Var56 string
 		templ_7745c5c3_Var56, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.facet.attributes"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 969, Col: 69}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 704, Col: 69}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var56))
 		if templ_7745c5c3_Err != nil {
@@ -1868,7 +1605,7 @@ func logAttrFacetSection(projectID int64, filter LogsFilter, facet LogAttrFacets
 			var templ_7745c5c3_Var57 string
 			templ_7745c5c3_Var57, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.facet.too_much_data"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 972, Col: 71}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 707, Col: 71}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var57))
 			if templ_7745c5c3_Err != nil {
@@ -1886,7 +1623,7 @@ func logAttrFacetSection(projectID int64, filter LogsFilter, facet LogAttrFacets
 			var templ_7745c5c3_Var58 string
 			templ_7745c5c3_Var58, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.facet.empty"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 974, Col: 63}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 709, Col: 63}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var58))
 			if templ_7745c5c3_Err != nil {
@@ -1931,7 +1668,7 @@ func logAttrFacetSection(projectID int64, filter LogsFilter, facet LogAttrFacets
 				var templ_7745c5c3_Var61 templ.SafeURL
 				templ_7745c5c3_Var61, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(k.Href))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 980, Col: 75}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 715, Col: 75}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var61))
 				if templ_7745c5c3_Err != nil {
@@ -1954,7 +1691,7 @@ func logAttrFacetSection(projectID int64, filter LogsFilter, facet LogAttrFacets
 				var templ_7745c5c3_Var62 string
 				templ_7745c5c3_Var62, templ_7745c5c3_Err = templ.JoinStringErrs(k.Key)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 980, Col: 123}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 715, Col: 123}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var62))
 				if templ_7745c5c3_Err != nil {
@@ -1967,7 +1704,7 @@ func logAttrFacetSection(projectID int64, filter LogsFilter, facet LogAttrFacets
 				var templ_7745c5c3_Var63 string
 				templ_7745c5c3_Var63, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatInt(k.Count, 10))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 981, Col: 70}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 716, Col: 70}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var63))
 				if templ_7745c5c3_Err != nil {
@@ -1986,7 +1723,7 @@ func logAttrFacetSection(projectID int64, filter LogsFilter, facet LogAttrFacets
 						var templ_7745c5c3_Var64 string
 						templ_7745c5c3_Var64, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.facet.empty"))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 985, Col: 68}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 720, Col: 68}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var64))
 						if templ_7745c5c3_Err != nil {
@@ -2031,7 +1768,7 @@ func logAttrFacetSection(projectID int64, filter LogsFilter, facet LogAttrFacets
 							var templ_7745c5c3_Var67 templ.SafeURL
 							templ_7745c5c3_Var67, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(v.Href))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 990, Col: 77}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 725, Col: 77}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var67))
 							if templ_7745c5c3_Err != nil {
@@ -2054,7 +1791,7 @@ func logAttrFacetSection(projectID int64, filter LogsFilter, facet LogAttrFacets
 							var templ_7745c5c3_Var68 string
 							templ_7745c5c3_Var68, templ_7745c5c3_Err = templ.JoinStringErrs(v.Value)
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 990, Col: 125}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 725, Col: 125}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var68))
 							if templ_7745c5c3_Err != nil {
@@ -2067,7 +1804,7 @@ func logAttrFacetSection(projectID int64, filter LogsFilter, facet LogAttrFacets
 							var templ_7745c5c3_Var69 string
 							templ_7745c5c3_Var69, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatInt(v.Count, 10))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 991, Col: 74}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 726, Col: 74}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var69))
 							if templ_7745c5c3_Err != nil {
@@ -2110,12 +1847,6 @@ func logAttrFacetSection(projectID int64, filter LogsFilter, facet LogAttrFacets
 	})
 }
 
-// logFacetSection — одна карточка сайдбара: заголовок + список значений с
-// counts, либо пометка (нет данных / слишком много данных — TooMuchData).
-// Каждое значение — обычная ссылка (logFacetValueClass/aria-current
-// показывают активность), работает без JS, как остальные фильтры экрана.
-// Рядом со значением — кнопка «исключить» (задача 7, тот же компонент
-// logRowFieldAction, что и у полей строки лога).
 func logFacetSection(titleKey string, facet LogFacet) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -2144,7 +1875,7 @@ func logFacetSection(titleKey string, facet LogFacet) templ.Component {
 		var templ_7745c5c3_Var71 string
 		templ_7745c5c3_Var71, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, titleKey))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1013, Col: 54}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 742, Col: 54}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var71))
 		if templ_7745c5c3_Err != nil {
@@ -2162,7 +1893,7 @@ func logFacetSection(titleKey string, facet LogFacet) templ.Component {
 			var templ_7745c5c3_Var72 string
 			templ_7745c5c3_Var72, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.facet.too_much_data"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1015, Col: 71}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 744, Col: 71}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var72))
 			if templ_7745c5c3_Err != nil {
@@ -2180,7 +1911,7 @@ func logFacetSection(titleKey string, facet LogFacet) templ.Component {
 			var templ_7745c5c3_Var73 string
 			templ_7745c5c3_Var73, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.facet.empty"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1017, Col: 63}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 746, Col: 63}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var73))
 			if templ_7745c5c3_Err != nil {
@@ -2225,7 +1956,7 @@ func logFacetSection(titleKey string, facet LogFacet) templ.Component {
 				var templ_7745c5c3_Var76 templ.SafeURL
 				templ_7745c5c3_Var76, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(v.Href))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1022, Col: 72}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 751, Col: 72}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var76))
 				if templ_7745c5c3_Err != nil {
@@ -2248,7 +1979,7 @@ func logFacetSection(titleKey string, facet LogFacet) templ.Component {
 				var templ_7745c5c3_Var77 string
 				templ_7745c5c3_Var77, templ_7745c5c3_Err = templ.JoinStringErrs(v.Label)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1022, Col: 120}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 751, Col: 120}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var77))
 				if templ_7745c5c3_Err != nil {
@@ -2261,7 +1992,7 @@ func logFacetSection(titleKey string, facet LogFacet) templ.Component {
 				var templ_7745c5c3_Var78 string
 				templ_7745c5c3_Var78, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatInt(v.Count, 10))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1023, Col: 69}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 752, Col: 69}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var78))
 				if templ_7745c5c3_Err != nil {
@@ -2293,10 +2024,6 @@ func logFacetSection(titleKey string, facet LogFacet) templ.Component {
 	})
 }
 
-// logRowFieldAction — одна кнопка «исключить» или «оставить только это» у
-// значения поля в строке лога (severity/service): пара таких у каждого поля
-// формирует logRowFieldActions. exclude=true — минус и logExcludeURL,
-// иначе — плюс и logIncludeURL.
 func logRowFieldAction(exclude bool, href string, label string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -2326,7 +2053,7 @@ func logRowFieldAction(exclude bool, href string, label string) templ.Component 
 			var templ_7745c5c3_Var80 templ.SafeURL
 			templ_7745c5c3_Var80, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(href))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1038, Col: 76}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 763, Col: 76}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var80))
 			if templ_7745c5c3_Err != nil {
@@ -2339,7 +2066,7 @@ func logRowFieldAction(exclude bool, href string, label string) templ.Component 
 			var templ_7745c5c3_Var81 string
 			templ_7745c5c3_Var81, templ_7745c5c3_Err = templ.ResolveAttributeValue(label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1038, Col: 92}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 763, Col: 92}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var81)
 			if templ_7745c5c3_Err != nil {
@@ -2352,7 +2079,7 @@ func logRowFieldAction(exclude bool, href string, label string) templ.Component 
 			var templ_7745c5c3_Var82 string
 			templ_7745c5c3_Var82, templ_7745c5c3_Err = templ.ResolveAttributeValue(label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1038, Col: 113}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 763, Col: 113}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var82)
 			if templ_7745c5c3_Err != nil {
@@ -2378,7 +2105,7 @@ func logRowFieldAction(exclude bool, href string, label string) templ.Component 
 			var templ_7745c5c3_Var83 templ.SafeURL
 			templ_7745c5c3_Var83, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(href))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1042, Col: 76}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 767, Col: 76}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var83))
 			if templ_7745c5c3_Err != nil {
@@ -2391,7 +2118,7 @@ func logRowFieldAction(exclude bool, href string, label string) templ.Component 
 			var templ_7745c5c3_Var84 string
 			templ_7745c5c3_Var84, templ_7745c5c3_Err = templ.ResolveAttributeValue(label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1042, Col: 92}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 767, Col: 92}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var84)
 			if templ_7745c5c3_Err != nil {
@@ -2404,7 +2131,7 @@ func logRowFieldAction(exclude bool, href string, label string) templ.Component 
 			var templ_7745c5c3_Var85 string
 			templ_7745c5c3_Var85, templ_7745c5c3_Err = templ.ResolveAttributeValue(label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1042, Col: 113}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 767, Col: 113}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var85)
 			if templ_7745c5c3_Err != nil {
@@ -2427,8 +2154,6 @@ func logRowFieldAction(exclude bool, href string, label string) templ.Component 
 	})
 }
 
-// logRowSeverityActions — «исключить»/«оставить только этот уровень» рядом
-// с бейджем уровня в строке лога.
 func logRowSeverityActions(projectID int64, f LogsFilter, sev string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -2470,8 +2195,7 @@ func logRowSeverityActions(projectID int64, f LogsFilter, sev string) templ.Comp
 	})
 }
 
-// logRowServiceActions — то же для сервиса. Пустой сервис (записи без него)
-// кнопок не получает — исключать/оставлять "" как значение поля бессмысленно.
+// Пустой сервис (записи без него) кнопок не получает — исключать/оставлять "" бессмысленно.
 func logRowServiceActions(projectID int64, f LogsFilter, service string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -2515,11 +2239,7 @@ func logRowServiceActions(projectID int64, f LogsFilter, service string) templ.C
 	})
 }
 
-// logRowAttrPredicate — предикат по строке таблицы атрибутов развёрнутой
-// строки лога. Поле-источник берётся из r.Resource/r.RawKey (явно записаны
-// в NewLogRow), НЕ разбором отображаемого r.Key — иначе лог-атрибут,
-// буквально названный "resource.foo", подменил бы карту фильтра (см.
-// докблок logAttrRow).
+// Поле-источник — r.Resource/r.RawKey (из NewLogRow), не разбор r.Key: см. докблок logAttrRow.
 func logRowAttrPredicate(r logAttrRow, op log.Op) log.Predicate {
 	if r.Resource {
 		return log.Predicate{Field: log.FieldResourceAttr, Key: r.RawKey, Op: op, Value: r.Val}
@@ -2527,8 +2247,6 @@ func logRowAttrPredicate(r logAttrRow, op log.Op) log.Predicate {
 	return log.Predicate{Field: log.FieldAttr, Key: r.RawKey, Op: op, Value: r.Val}
 }
 
-// logRowAttrActions — пара кнопок исключить/оставить только это в колонке
-// действий таблицы атрибутов записи в развёрнутой строке лога.
 func logRowAttrActions(projectID int64, f LogsFilter, r logAttrRow) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -2562,11 +2280,6 @@ func logRowAttrActions(projectID int64, f LogsFilter, r logAttrRow) templ.Compon
 	})
 }
 
-// logAttrTable — таблица атрибутов записи в развёрнутой строке лога с
-// колонкой действий. Тот же внешний вид (те же классы ctx-*), что и у
-// contextTable на странице ошибки, но со своим типом строки (logAttrRow) —
-// contextTable/ctxRow страницы ошибки не трогаем, там действий нет и не
-// будет.
 func logAttrTable(rows []logAttrRow, projectID int64, f LogsFilter) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -2600,7 +2313,7 @@ func logAttrTable(rows []logAttrRow, projectID int64, f LogsFilter) templ.Compon
 			var templ_7745c5c3_Var90 string
 			templ_7745c5c3_Var90, templ_7745c5c3_Err = templ.JoinStringErrs(r.Key)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1097, Col: 32}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 808, Col: 32}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var90))
 			if templ_7745c5c3_Err != nil {
@@ -2613,7 +2326,7 @@ func logAttrTable(rows []logAttrRow, projectID int64, f LogsFilter) templ.Compon
 			var templ_7745c5c3_Var91 string
 			templ_7745c5c3_Var91, templ_7745c5c3_Err = templ.JoinStringErrs(r.Val)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1098, Col: 32}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 809, Col: 32}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var91))
 			if templ_7745c5c3_Err != nil {
@@ -2640,11 +2353,7 @@ func logAttrTable(rows []logAttrRow, projectID int64, f LogsFilter) templ.Compon
 	})
 }
 
-// logRowView — одна строка списка: свёрнутое превью тела разворачивается
-// нативным <details> (без JS) в полное тело, таблицу атрибутов и
-// trace_id/span_id. filter — текущий фильтр страницы (задача 6): нужен, чтобы
-// ссылки «исключить»/«оставить только это» добавляли условие к уже активным,
-// а не строили его с нуля.
+// filter — текущий фильтр: нужен, чтобы ссылки исключить/оставить добавляли условие к уже активным.
 func logRowView(projectID int64, filter LogsFilter, row LogRow) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -2703,7 +2412,7 @@ func logRowView(projectID int64, filter LogsFilter, row LogRow) templ.Component 
 		var templ_7745c5c3_Var95 string
 		templ_7745c5c3_Var95, templ_7745c5c3_Err = templ.JoinStringErrs(severityLabel(ctx, row.Row.Severity))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1117, Col: 94}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 824, Col: 94}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var95))
 		if templ_7745c5c3_Err != nil {
@@ -2724,7 +2433,7 @@ func logRowView(projectID int64, filter LogsFilter, row LogRow) templ.Component 
 		var templ_7745c5c3_Var96 string
 		templ_7745c5c3_Var96, templ_7745c5c3_Err = templ.JoinStringErrs(row.Row.Service)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1121, Col: 20}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 828, Col: 20}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var96))
 		if templ_7745c5c3_Err != nil {
@@ -2741,7 +2450,7 @@ func logRowView(projectID int64, filter LogsFilter, row LogRow) templ.Component 
 		var templ_7745c5c3_Var97 string
 		templ_7745c5c3_Var97, templ_7745c5c3_Err = templ.JoinStringErrs(logBodyPreview(row.Row.Body))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1126, Col: 43}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 833, Col: 43}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var97))
 		if templ_7745c5c3_Err != nil {
@@ -2754,7 +2463,7 @@ func logRowView(projectID int64, filter LogsFilter, row LogRow) templ.Component 
 		var templ_7745c5c3_Var98 string
 		templ_7745c5c3_Var98, templ_7745c5c3_Err = templ.JoinStringErrs(row.Row.Body)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1128, Col: 46}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 835, Col: 46}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var98))
 		if templ_7745c5c3_Err != nil {
@@ -2772,7 +2481,7 @@ func logRowView(projectID int64, filter LogsFilter, row LogRow) templ.Component 
 			var templ_7745c5c3_Var99 string
 			templ_7745c5c3_Var99, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.table.attributes"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1130, Col: 66}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 837, Col: 66}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var99))
 			if templ_7745c5c3_Err != nil {
@@ -2795,7 +2504,7 @@ func logRowView(projectID int64, filter LogsFilter, row LogRow) templ.Component 
 			var templ_7745c5c3_Var100 string
 			templ_7745c5c3_Var100, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "logs.table.trace_id"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1135, Col: 65}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 842, Col: 65}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var100))
 			if templ_7745c5c3_Err != nil {
@@ -2808,7 +2517,7 @@ func logRowView(projectID int64, filter LogsFilter, row LogRow) templ.Component 
 			var templ_7745c5c3_Var101 templ.SafeURL
 			templ_7745c5c3_Var101, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(logTracePath(row.Row.TraceID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1136, Col: 57}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 843, Col: 57}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var101))
 			if templ_7745c5c3_Err != nil {
@@ -2821,7 +2530,7 @@ func logRowView(projectID int64, filter LogsFilter, row LogRow) templ.Component 
 			var templ_7745c5c3_Var102 string
 			templ_7745c5c3_Var102, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "logs.table.trace_link_title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1136, Col: 110}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 843, Col: 110}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var102)
 			if templ_7745c5c3_Err != nil {
@@ -2834,7 +2543,7 @@ func logRowView(projectID int64, filter LogsFilter, row LogRow) templ.Component 
 			var templ_7745c5c3_Var103 string
 			templ_7745c5c3_Var103, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "logs.table.trace_link_title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1136, Col: 168}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 843, Col: 168}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var103)
 			if templ_7745c5c3_Err != nil {
@@ -2847,7 +2556,7 @@ func logRowView(projectID int64, filter LogsFilter, row LogRow) templ.Component 
 			var templ_7745c5c3_Var104 string
 			templ_7745c5c3_Var104, templ_7745c5c3_Err = templ.JoinStringErrs(row.Row.TraceID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 1136, Col: 188}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/logs.templ`, Line: 843, Col: 188}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var104))
 			if templ_7745c5c3_Err != nil {

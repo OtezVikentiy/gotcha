@@ -1,12 +1,5 @@
 package web_test
 
-// N+1 в настроечных списках и приёме результатов проб (аудит 2026-09-04,
-// K8-2/K8-3). Считаем не вызовы методов, а РЕАЛЬНЫЕ запросы к PostgreSQL по
-// их SQL: pgx.QueryTracer видит текст каждого запроса, и число запросов к
-// конкретной таблице не должно зависеть от числа строк на странице — тот же
-// приём, что и в statuspage_query_count_test.go, только с фильтром по SQL,
-// чтобы не зависеть от «прочих» запросов страницы (сессия, доступ).
-
 import (
 	"context"
 	"net/http"
@@ -29,7 +22,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// sqlCountingTracer считает запросы, чей SQL содержит одну из подстрок.
 type sqlCountingTracer struct {
 	mu     sync.Mutex
 	counts map[string]int
@@ -70,8 +62,7 @@ func (c *sqlCountingTracer) reset() {
 	}
 }
 
-// tracedPG — мигрированная PostgreSQL с трейсером запросов (testenv.MigratedPG
-// трейсер принять не может — ему нужен голый DSN, который он и даёт отдельно).
+// testenv.MigratedPG трейсер принять не может — ему нужен голый DSN, эта обёртка даёт его отдельно.
 func tracedPG(t *testing.T, tracer *sqlCountingTracer) *pgxpool.Pool {
 	t.Helper()
 	dsn := testenv.PostgresDSN(t)
@@ -100,9 +91,8 @@ func newTracedServer(t *testing.T, h *web.Handler, mux *http.ServeMux) *httptest
 	return srv
 }
 
-// Подстроки SQL тех самых запросов, которые раньше шли в цикле. Для
-// пакетных выборок — их предикат ANY($1): у построчной версии он другой
-// (= $1), и откат к ней даёт ноль совпадений, а не «столько же».
+// Предикат ANY($1) отличает пакетный запрос от построчного (тот дал бы = $1) —
+// так тест ловит N+1 регресс.
 const (
 	sqlTeamMembers      = "WHERE tm.team_id = ANY($1)"
 	sqlTeamProjects     = "WHERE pt.team_id = ANY($1)"
@@ -112,9 +102,6 @@ const (
 	sqlClaimJobs        = "DELETE FROM check_queue"
 )
 
-// TestWebTeamsQueriesDoNotGrowWithTeams: страница команд читает участников и
-// проекты всех команд по одному запросу на таблицу — с одной командой и с
-// тремя число запросов одинаково (раньше — по два на команду).
 func TestWebTeamsQueriesDoNotGrowWithTeams(t *testing.T) {
 	tracer := newSQLCountingTracer(sqlTeamMembers, sqlTeamProjects)
 	pool := tracedPG(t, tracer)
@@ -184,8 +171,6 @@ func TestWebTeamsQueriesDoNotGrowWithTeams(t *testing.T) {
 	}
 }
 
-// TestWebStatusPagesSettingsQueriesDoNotGrowWithPages: настройки
-// статус-страниц читают мониторы всех страниц одним запросом.
 func TestWebStatusPagesSettingsQueriesDoNotGrowWithPages(t *testing.T) {
 	tracer := newSQLCountingTracer(sqlStatusPageMons)
 	pool := tracedPG(t, tracer)
@@ -247,7 +232,6 @@ func TestWebStatusPagesSettingsQueriesDoNotGrowWithPages(t *testing.T) {
 			t.Fatalf("GET %s (3 pages): %q missing", path, want)
 		}
 	}
-	// Выбранные мониторы каждой страницы: три формы, в каждой отмечен mon-a.
 	if got := strings.Count(body, `value="`+strconv.FormatInt(mon.ID, 10)+`" aria-label="mon-a" checked`); got < 3 {
 		t.Fatalf("GET %s (3 pages): checked monitor appears %d times, want at least 3 — per-page selection lost", path, got)
 	}
@@ -256,10 +240,8 @@ func TestWebStatusPagesSettingsQueriesDoNotGrowWithPages(t *testing.T) {
 	}
 }
 
-// TestWebSLOsQueriesDoNotGrowWithSLOs: список SLO читает окна обслуживания
-// проекта один раз на страницу, а не в провайдере на каждую строку. ClickHouse
-// настоящий, с результатами проверок — иначе корзин нет и провайдер за окнами
-// не ходил и раньше (тест ничего бы не доказал).
+// ClickHouse настоящий, с результатами проверок — без корзин провайдер за окнами
+// не ходил бы вовсе, и тест ничего не доказывал.
 func TestWebSLOsQueriesDoNotGrowWithSLOs(t *testing.T) {
 	tracer := newSQLCountingTracer(sqlMaintWindows)
 	pool := tracedPG(t, tracer)
@@ -297,8 +279,6 @@ func TestWebSLOsQueriesDoNotGrowWithSLOs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create monitor: %v", err)
 	}
-	// Ежедневное окно — чтобы у провайдера было что вырезать, а у страницы
-	// что читать.
 	if _, err := uptimeSvc.CreateWindow(ctx, uptime.Window{
 		ProjectID: project.ID, Name: "nightly", Weekly: true, Weekday: int(time.Now().UTC().Weekday()),
 		StartTime: "03:00", EndTime: "04:00", Timezone: "UTC",
@@ -358,10 +338,8 @@ func TestWebSLOsQueriesDoNotGrowWithSLOs(t *testing.T) {
 	}
 }
 
-// TestProbeResultsQueriesDoNotGrowWithResults: POST /probe/results ищет
-// задания всей пачки одним запросом и изымает их из очереди одним DELETE —
-// вне зависимости от числа результатов. Применение к состоянию монитора
-// остаётся построчным (машина состояний), его здесь не считаем.
+// Применение результатов к состоянию монитора остаётся построчным (машина
+// состояний) — здесь эти запросы не считаем.
 func TestProbeResultsQueriesDoNotGrowWithResults(t *testing.T) {
 	tracer := newSQLCountingTracer(sqlLeasedJobsLookup, sqlClaimJobs)
 	pool := tracedPG(t, tracer)
@@ -413,7 +391,6 @@ func TestProbeResultsQueriesDoNotGrowWithResults(t *testing.T) {
 	for _, j := range lease.Jobs {
 		req.Results = append(req.Results, uptime.ResultDTO{QueueID: j.QueueID, OK: true, StatusCode: 200})
 	}
-	// Чужой queue_id в той же пачке: в rejected, остальные принимаются.
 	req.Results = append(req.Results, uptime.ResultDTO{QueueID: 999_999, OK: true, StatusCode: 200})
 
 	tracer.reset()
@@ -441,9 +418,6 @@ func TestProbeResultsQueriesDoNotGrowWithResults(t *testing.T) {
 		t.Fatalf("PendingCount() = %d, want 0 (all leased jobs must be claimed)", pending)
 	}
 
-	// Повторная отправка тех же результатов: задания уже изъяты — ничего не
-	// применяется второй раз, но для пробы это не ошибка (как и раньше при
-	// ClaimJob=false: результат отброшен, пачка 200).
 	rresp = probePost(t, s, "/probe/results", token, req)
 	decodeJSON(t, rresp, &out)
 	if out.Accepted != 0 || out.Rejected != n+1 {
@@ -451,12 +425,6 @@ func TestProbeResultsQueriesDoNotGrowWithResults(t *testing.T) {
 	}
 }
 
-// TestProbeResultsDuplicateQueueIDAppliedOnce: один POST /probe/results с
-// одним и тем же queue_id дважды — результат применяется ровно один раз
-// (claimed[queue_id] сбрасывается после применения, probeapi.go), второй
-// экземпляр отбрасывается как «уже забрано» ровно так, как это делал
-// построчный Ingestor.Accept при ClaimJob=false: без применения, но с
-// Accepted++ и без ошибки для пробы.
 func TestProbeResultsDuplicateQueueIDAppliedOnce(t *testing.T) {
 	s := newProbeStack(t)
 	ctx := context.Background()

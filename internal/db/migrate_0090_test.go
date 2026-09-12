@@ -10,12 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0090DepReleasedAt — K1-4 (аудит перед 1.0, волна 1):
-// dep_released_at на host_incidents и incidents, nullable, без DEFAULT —
-// момент снятия подавления зависимостью, от которого перезапускаются часы
-// лесенки эскалации (см. докблок миграции). Проверяет: колонка появляется
-// в обеих таблицах, у существующей строки — NULL, значение читается/пишется
-// нормально, down убирает обе колонки без потери самих строк.
+// dep_released_at (nullable, без DEFAULT) — момент снятия подавления зависимостью, от которого
+// перезапускаются часы лесенки эскалации; у существующих строк — NULL (никогда не подавлялись).
 func TestMigrate0090DepReleasedAt(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -51,8 +47,6 @@ func TestMigrate0090DepReleasedAt(t *testing.T) {
 		t.Fatalf("migrate to 90: %v", err)
 	}
 
-	// 1) У существующих строк — NULL (нет DEFAULT, старые инциденты никогда
-	// не были под подавлением зависимостью).
 	var hostReleased, uptimeReleased *string
 	if err := pool.QueryRow(ctx,
 		"SELECT dep_released_at::text FROM host_incidents WHERE id=$1", hostIncidentID).Scan(&hostReleased); err != nil {
@@ -69,7 +63,6 @@ func TestMigrate0090DepReleasedAt(t *testing.T) {
 		t.Fatalf("incidents.dep_released_at = %v, want NULL", *uptimeReleased)
 	}
 
-	// 2) Колонка пишется и читается.
 	if _, err := pool.Exec(ctx,
 		"UPDATE host_incidents SET dep_released_at = now() WHERE id=$1", hostIncidentID); err != nil {
 		t.Fatalf("update host_incidents.dep_released_at: %v", err)
@@ -83,7 +76,6 @@ func TestMigrate0090DepReleasedAt(t *testing.T) {
 		t.Fatal("host_incidents.dep_released_at осталась NULL после UPDATE")
 	}
 
-	// 3) Откат убирает обе колонки, строки переживают.
 	if err := db.MigratePGTo(dsn, 89); err != nil {
 		t.Fatalf("migrate down to 89: %v", err)
 	}

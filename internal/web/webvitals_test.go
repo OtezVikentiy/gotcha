@@ -14,9 +14,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// TestWebVitalsOverview — owner видит страницы с p75 LCP/INP/CLS, цветными
-// бейджами рейтинга и человекочитаемым форматированием (мс/CLS); пустой проект
-// отдаёт «no web vitals», не падает; чужой проект → 404.
 func TestWebVitalsOverview(t *testing.T) {
 	s := newPerfStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "wvlist-owner@example.com")
@@ -91,7 +88,6 @@ func TestWebVitalsOverview(t *testing.T) {
 		}
 	}
 
-	// Произвольный диапазон: селектор в режиме custom (parseTimeRange custom).
 	cq := "?period=custom&start=2026-07-01T00:00&end=2026-07-10T00:00"
 	resp = getWithCookie(t, s.srv, path+cq, ownerCookie)
 	cbody, _ := io.ReadAll(resp.Body)
@@ -100,7 +96,6 @@ func TestWebVitalsOverview(t *testing.T) {
 		t.Fatalf("GET %s custom range status=%d: %s", path, resp.StatusCode, cbody)
 	}
 
-	// Пустой проект: «no web vitals», не падает.
 	emptyPath := "/projects/" + strconv.FormatInt(empty.ID, 10) + "/web-vitals"
 	resp = getWithCookie(t, s.srv, emptyPath, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
@@ -115,7 +110,6 @@ func TestWebVitalsOverview(t *testing.T) {
 		t.Fatalf("GET %s (empty) не предлагает расширить период: %s", emptyPath, body)
 	}
 
-	// Чужой проект → 404.
 	resp = getWithCookie(t, s.srv, path, outsiderCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -124,9 +118,6 @@ func TestWebVitalsOverview(t *testing.T) {
 	}
 }
 
-// TestWebVitalsEndpointPanel — на странице эндпойнта с web vitals есть панель
-// «Web Vitals» с p75 всех пяти показателей, рейтинг-бейджами и SVG-графиками;
-// у эндпойнта без vitals панели нет.
 func TestWebVitalsEndpointPanel(t *testing.T) {
 	s := newPerfStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "wvpanel-owner@example.com")
@@ -176,7 +167,6 @@ func TestWebVitalsEndpointPanel(t *testing.T) {
 	}
 	s.flush(t)
 
-	// Эндпойнт с vitals: панель есть.
 	homePath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/performance/" + url.PathEscape("GET /home")
 	resp := getWithCookie(t, s.srv, homePath, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
@@ -200,7 +190,6 @@ func TestWebVitalsEndpointPanel(t *testing.T) {
 		}
 	}
 
-	// Эндпойнт без vitals: панели нет.
 	orderPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/performance/" + url.PathEscape("GET /api/orders")
 	resp = getWithCookie(t, s.srv, orderPath, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
@@ -212,9 +201,8 @@ func TestWebVitalsEndpointPanel(t *testing.T) {
 		t.Fatalf("GET %s (no vitals) must not render Web Vitals panel: %s", orderPath, body)
 	}
 
-	// Vitals есть только в production. При фильтре environment=staging панели
-	// быть НЕ должно (раньше рендерилась с прочерками, т.к. общий p75 брался без
-	// учёта окружения).
+	// vitals есть только в production — при environment=staging панели быть не
+	// должно: общий p75 не учитывает окружение сам по себе.
 	stagingPath := homePath + "?environment=staging"
 	resp = getWithCookie(t, s.srv, stagingPath, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
@@ -226,7 +214,6 @@ func TestWebVitalsEndpointPanel(t *testing.T) {
 		t.Fatalf("GET %s (environment=staging) must not render Web Vitals panel: %s", stagingPath, body)
 	}
 
-	// А при явном environment=production панель есть с реальными значениями.
 	prodPath := homePath + "?environment=production"
 	resp = getWithCookie(t, s.srv, prodPath, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
@@ -241,8 +228,6 @@ func TestWebVitalsEndpointPanel(t *testing.T) {
 	}
 }
 
-// TestWebVitalsPageHasNavLink — страница web-vitals доступна из навигации рядом
-// с Performance (ссылка на /web-vitals присутствует на списке эндпойнтов).
 func TestWebVitalsPageHasNavLink(t *testing.T) {
 	s := newPerfStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "wvnav-owner@example.com")

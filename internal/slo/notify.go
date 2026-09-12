@@ -13,68 +13,41 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
-// SLOBurnNotifier — алерты об открытии/закрытии инцидента сжигания бюджета SLO
-// поверх того же notify.Outbox и тех же каналов проекта, что и остальные
-// нотифаеры (trace.RegressionNotifier, uptime.OutboxNotifier): формат payload
-// намеренно совпадает с ними — обязательные channel_kind/target читает
-// notify.Worker, доставляют те же Sender'ы. Реализует Notifier.
 type SLOBurnNotifier struct {
-	Alerts *alert.Service // каналы проекта: Alerts.Channels(projectID)
+	Alerts *alert.Service
 	Outbox *notify.Outbox
 
-	// BaseURL — префикс ссылки на экран деталей SLO в уведомлении:
 	// {BaseURL}/projects/{project_id}/slos/{slo_id}.
 	BaseURL string
 
-	// EmailEnabled — см. alert.Evaluator.EmailEnabled: пока false, email-каналы
-	// пропускаются (с warn-логом), чтобы не ставить в очередь задачи, которые
-	// notify.Worker всё равно не сможет доставить.
+	// пока false, email-каналы пропускаются (с warn-логом) — иначе в очередь
+	// попадут задачи, которые notify.Worker всё равно не доставит.
 	EmailEnabled bool
 
-	// Details — политика раскрытия деталей события получателю уведомления
-	// (см. alert.DetailPolicy). Нулевое значение не доверяет никому.
+	// нулевое значение политики не раскрывает детали никому.
 	Details alert.DetailPolicy
 
-	// Locale — локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка
-	// получателя, поэтому язык уведомления выбирает оператор.
+	// язык из GOTCHA_LOCALE: внешний канал не знает локали получателя, её выбирает оператор.
 	Locale i18n.Locale
 
-	// Store — источник перезагрузки SLO+инцидента по ID (B4, T6): планировщик
-	// эскалации (T8) хранит только incidentID, у NotifyStep/NotifyRecovery нет
-	// готового SLOEvent на входе, как у Notify.
+	// нужен для перезагрузки SLO+инцидента по ID: NotifyStep/NotifyRecovery
+	// получают только incidentID, без готового события.
 	Store *Store
 
-	// Pool — та же PG, что под Store/Alerts/Outbox: пишет лог эскалации
-	// incident_escalations (B4, T6, миграция 0077) после каждого успешного
-	// Enqueue в NotifyStep.
 	Pool *pgxpool.Pool
 
-	// Projects — источник имени проекта для темы/тела/webhook-payload
-	// уведомления (W3-E). nil-совместим (escalation.ProjectNamer) — тогда
-	// уведомления идут без имени проекта, как до этой правки.
+	// nil-совместим: без него уведомления идут без имени проекта.
 	Projects escalation.ProjectNamer
 }
 
-// Notify ставит по одной задаче в Outbox на каждый включённый канал проекта.
-// Интерфейс Notifier не возвращает ошибку (уведомление не должно ронять переход
-// инцидента в оценщике): все ошибки логируются, постановка по остальным каналам
-// продолжается. Проект без включённых каналов — не ошибка: задач просто не будет.
+// интерфейс Notifier не возвращает ошибку — уведомление не должно ронять переход
+// инцидента в оценщике; все ошибки только логируются.
 func (n *SLOBurnNotifier) Notify(ctx context.Context, ev SLOEvent) {
-	// dispatch логирует каждую ошибку (channels/enqueue) сама — здесь её
-	// достаточно отбросить, Notifier контрактом не возвращает ошибку.
 	_, _ = n.dispatch(ctx, ev, nil)
 }
 
-// NotifyStep — эскалационное уведомление открытого инцидента сжигания
-// бюджета (B4, T6): повтор OPEN-текста в ЗАДАННЫЕ channelIDs. Возвращает
-// каналы, в которые РЕАЛЬНО поставлена задача (deliverable-подмножество
-// channelIDs, прошедшее фильтры dispatch) — лог incident_escalations пишет
-// ОРКЕСТРАЦИЯ (escalation.SendStepIfDue), не сам нотифаер (реролл B4,
-// T7-fix): лог внутри NotifyStep работал только с реальным нотифаером и
-// молчал с мок-нотифаерами тестов, из-за чего RecoveryChannels не находил
-// ничего и recovery немел. SLO+инцидент грузятся заново по ID — планировщик
-// эскалации (T8) хранит только incidentID. channelIDs nil/пусто — все
-// deliverable-каналы проекта (как у Notify).
+// лог incident_escalations пишет вызывающая оркестрация, не сам NotifyStep.
+// channelIDs nil/пусто — все deliverable-каналы проекта.
 func (n *SLOBurnNotifier) NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) ([]int64, error) {
 	ev, err := n.reloadEvent(ctx, incidentID, true)
 	if err != nil {
@@ -83,10 +56,8 @@ func (n *SLOBurnNotifier) NotifyStep(ctx context.Context, incidentID int64, chan
 	return n.dispatch(ctx, ev, channelIDs)
 }
 
-// NotifyRecovery — CLOSE-уведомление инцидента сжигания бюджета (B4, T6) в
-// ЗАДАННЫЕ channelIDs (recovery не эскалирует — не логируется вообще).
-// SLO+инцидент грузятся заново по ID, как в NotifyStep. channelIDs nil/пусто
-// — все deliverable-каналы проекта.
+// recovery не эскалирует — не логируется вообще; channelIDs nil/пусто — все
+// deliverable-каналы проекта.
 func (n *SLOBurnNotifier) NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error {
 	ev, err := n.reloadEvent(ctx, incidentID, false)
 	if err != nil {
@@ -96,13 +67,8 @@ func (n *SLOBurnNotifier) NotifyRecovery(ctx context.Context, incidentID int64, 
 	return err
 }
 
-// reloadEvent перегружает инцидент+SLO по ID и собирает из них SLOEvent
-// (B4, T6). Attainment не хранится в slo_incidents — восстанавливается из
-// budget_remaining инверсией формулы бюджета (см. budget.go:
-// remaining = 1 - (1-attainment)/(1-target)), budget_remaining=nil (бюджет
-// не считался на момент открытия) трактуется как «бюджет полностью
-// израсходован» (remaining=0) — консервативная нижняя оценка для повторного
-// уведомления, не участвующая в решениях оценщика.
+// Attainment не хранится — восстанавливается из budget_remaining инверсией формулы;
+// budget_remaining=nil трактуется как remaining=0 (консервативная нижняя оценка).
 func (n *SLOBurnNotifier) reloadEvent(ctx context.Context, incidentID int64, opened bool) (SLOEvent, error) {
 	in, ok, err := n.Store.GetIncidentByID(ctx, incidentID)
 	if err != nil {
@@ -133,35 +99,23 @@ func (n *SLOBurnNotifier) reloadEvent(ctx context.Context, incidentID int64, ope
 	}, nil
 }
 
-// dispatch — сборка списка каналов проекта и передача готового уведомления в
-// общий контур доставки (escalation.Dispatch, W3-E): гейт доставляемости,
-// фильтр channelIDs, email-fallback, имя проекта, редакция ПДн. channelIDs
-// (B4, T6) — набор каналов, в которые слать: nil/пусто — все
-// deliverable-каналы проекта (старое поведение Notify), непустой — фильтр по
-// членству ПОСЛЕ Deliverable/email-гейта (эскалация в конкретную ступень
-// лесенки). Возвращает ID каналов, в которые задача РЕАЛЬНО поставлена —
-// логировать их в incident_escalations или нет, решает вызывающий (эволюатор
-// через escalation.SendStepIfDue), не dispatch.
+// channelIDs nil/пусто — все deliverable-каналы проекта; непустой — фильтр по членству после гейта.
+// Логировать возвращённые каналы в incident_escalations или нет — решает вызывающий, не dispatch.
 func (n *SLOBurnNotifier) dispatch(ctx context.Context, ev SLOEvent, channelIDs []int64) ([]int64, error) {
 	channels, err := n.Alerts.Channels(ctx, ev.SLO.ProjectID)
 	if err != nil {
 		slog.Error("slo: burn notify: project channels", "project_id", ev.SLO.ProjectID, "error", err)
 		return nil, fmt.Errorf("slo: burn notify: project channels: %w", err)
 	}
-	// Тексты — на языке инстанса, а не запроса: уведомление читает внешний
-	// получатель, у которого нет своей локали.
+	// язык инстанса, а не запроса: читает внешний получатель без своей локали.
 	ctx = i18n.WithLocale(ctx, n.Locale)
 
 	url := fmt.Sprintf("%s/projects/%d/slos/%d", n.BaseURL, ev.SLO.ProjectID, ev.SLO.ID)
 	subject := sloSubject(ctx, ev)
 	body := sloBody(ctx, ev, url)
 
-	// Два вида вместо одного: на обезличенном (трансграничном) пути поле "opened"
-	// вырезается (уходит через Extra — контур редактирует его так же, как
-	// любое доменное поле, не входящее в externalSafeKeys), поэтому открытие и
-	// закрытие инцидента различает только сам kind (иначе получатель не
-	// отличит тревогу от отбоя). Оба зарегистрированы в notify.redactedKindKeys
-	// — иначе наружу ушёл бы сырой enum.
+	// два kind вместо одного: поле "opened" уходит через Extra и вырезается на
+	// обезличенном пути — без разных kind получатель не отличил бы тревогу от отбоя.
 	kind := "slo_burn_open"
 	if !ev.Opened {
 		kind = "slo_burn_close"
@@ -182,9 +136,8 @@ func (n *SLOBurnNotifier) dispatch(ctx context.Context, ev SLOEvent, channelIDs 
 		escalation.DispatchInput{
 			ProjectID: ev.SLO.ProjectID, Kind: kind, Subject: subject, Body: body,
 			URL: url,
-			// Ловушка имён: адрес канала (webhook URL / chat_id) кладём под
-			// "target" (собирает сам Dispatch) — его читает notify.Worker;
-			// имя SLO — под "target_name".
+			// адрес канала кладёт сам Dispatch под "target" (читает notify.Worker) —
+			// имя SLO здесь идёт под "target_name", не перепутать.
 			Extra: map[string]any{
 				"target_name":      ev.SLO.Name,
 				"sli_kind":         string(ev.SLO.Kind),
@@ -197,9 +150,6 @@ func (n *SLOBurnNotifier) dispatch(ctx context.Context, ev SLOEvent, channelIDs 
 		})
 }
 
-// sloSubject строит тему уведомления по виду перехода (открытие/закрытие) из
-// каталога i18n — по локали, положенной в ctx (язык внешнего канала задаёт
-// GOTCHA_LOCALE, см. SLOBurnNotifier.Locale).
 func sloSubject(ctx context.Context, ev SLOEvent) string {
 	if ev.Opened {
 		return i18n.Tf(ctx, "notify.slo.open.subject",
@@ -208,9 +158,6 @@ func sloSubject(ctx context.Context, ev SLOEvent) string {
 	return i18n.Tf(ctx, "notify.slo.close.subject", "name", ev.SLO.Name)
 }
 
-// sloBody строит человекочитаемый текст уведомления: имя SLO, достижение,
-// остаток бюджета, скорость сжигания — плюс ссылка на экран деталей. Каталог и
-// локаль — как у sloSubject.
 func sloBody(ctx context.Context, ev SLOEvent, url string) string {
 	att := formatPercent(ev.Attainment)
 	budget := formatPercent(ev.BudgetRemaining)
@@ -223,15 +170,12 @@ func sloBody(ctx context.Context, ev SLOEvent, url string) string {
 		"name", ev.SLO.Name, "attainment", att, "budget", budget, "url", url)
 }
 
-// formatPercent отображает долю ∈ [0,1] одним знаком после запятой в процентах:
-// 0.98 → "98.0", 0.3 → "30.0". Остаток бюджета может быть отрицательным
-// (перерасход) — знак сохраняется.
+// доля → проценты с одним знаком после запятой (0.98 → "98.0"); остаток
+// бюджета может быть отрицательным (перерасход), знак сохраняется.
 func formatPercent(ratio float64) string {
 	return fmt.Sprintf("%.1f", ratio*100)
 }
 
-// formatBurn отображает множитель burn rate одним знаком после запятой: 20 →
-// "20.0", 14.4 → "14.4".
 func formatBurn(rate float64) string {
 	return fmt.Sprintf("%.1f", rate)
 }

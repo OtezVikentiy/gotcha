@@ -2,9 +2,6 @@ package web
 
 import "testing"
 
-// TestCanonicalEndpointSort: пустой/незнакомый sort канонизируется в
-// throughput — фактический дефолт sortEndpointStats, — чтобы таблица честно
-// показывала дефолтную сортировку aria-sort'ом и стрелкой (QA MINOR-5).
 func TestCanonicalEndpointSort(t *testing.T) {
 	cases := map[string]string{
 		"":           "throughput",

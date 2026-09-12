@@ -9,9 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestIncTransactionUsage покрывает счётчик транзакций: первый инкремент создаёт
-// строку (=1), повторный растит её (=2), а events_count при этом не задет —
-// квоты классов независимы (см. IncTransactionUsage/Usage).
 func TestIncTransactionUsage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -35,16 +32,11 @@ func TestIncTransactionUsage(t *testing.T) {
 	if n, _ := svc.TransactionUsage(ctx, o.ID, now); n != 2 {
 		t.Fatalf("TransactionUsage = %d, want 2", n)
 	}
-	// events_count не задет транзакциями.
 	if n, _ := svc.Usage(ctx, o.ID, now); n != 0 {
 		t.Fatalf("events_count = %d, want 0 (transactions must not touch events)", n)
 	}
 }
 
-// TestUsageErrorBranches прогоняет ветку «ошибка запроса» у семейства usage-
-// функций: отменённый контекст заставляет pool вернуть ошибку до выполнения SQL,
-// поэтому каждая функция уходит в свой `return 0, fmt.Errorf(...)` / non-nil err.
-// Это единственные непокрытые строки этих функций (happy-path закрыт выше).
 func TestUsageErrorBranches(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -54,7 +46,7 @@ func TestUsageErrorBranches(t *testing.T) {
 	now := time.Now()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // все запросы ниже вернут context.Canceled
+	cancel()
 
 	if _, err := svc.Usage(ctx, 1, now); err == nil {
 		t.Fatal("Usage: want error on cancelled ctx")
@@ -109,9 +101,6 @@ func TestUsageErrorBranches(t *testing.T) {
 	}
 }
 
-// TestSetQuotaBranches закрывает две не-happy ветки сеттеров квот: отрицательная
-// квота (ErrInvalidQuota, ранний выход до SQL) и несуществующая организация
-// (RowsAffected()==0 → ErrNotFound). Happy-path закрыт в usage_test.go.
 func TestSetQuotaBranches(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -130,16 +119,12 @@ func TestSetQuotaBranches(t *testing.T) {
 		if err := set(ctx, 1, -1); err != org.ErrInvalidQuota {
 			t.Fatalf("%s quota=-1: err=%v, want ErrInvalidQuota", name, err)
 		}
-		// orgID=0 не существует → UPDATE затрагивает 0 строк → ErrNotFound.
 		if err := set(ctx, 0, 100); err != org.ErrNotFound {
 			t.Fatalf("%s missing org: err=%v, want ErrNotFound", name, err)
 		}
 	}
 }
 
-// TestWriteErrorBranches прогоняет ветку ошибки запроса у write-функций org
-// (project/member/key) через отменённый контекст — это их непокрытые
-// `return fmt.Errorf(...)` строки.
 func TestWriteErrorBranches(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

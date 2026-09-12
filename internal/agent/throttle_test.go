@@ -6,9 +6,6 @@ import (
 	"time"
 )
 
-// TestThrottledProcsCachesWithinInterval: реальная проба вызывается один раз
-// на первое обращение и не чаще interval дальше — между вызовами отдаётся
-// последний снимок (ops-MED: проба процессов — самая дорогая часть тика).
 func TestThrottledProcsCachesWithinInterval(t *testing.T) {
 	calls := 0
 	real := func() (map[string]int, error) {
@@ -42,8 +39,6 @@ func TestThrottledProcsCachesWithinInterval(t *testing.T) {
 	}
 }
 
-// TestThrottledProcsCachesError: ошибка боевой пробы тоже кэшируется — не
-// дёргаем её повторно только чтобы получить ту же ошибку раньше срока.
 func TestThrottledProcsCachesError(t *testing.T) {
 	calls := 0
 	boom := errors.New("boom")
@@ -65,9 +60,6 @@ func TestThrottledProcsCachesError(t *testing.T) {
 	}
 }
 
-// TestThrottledProcsKeepsSampleNonEmpty: тик без реального опроса процессов
-// (внутри procsProbeInterval) всё равно получает непустой Sample.Procs из
-// кэша — Collect не считает такой тик "пустым" (см. sampleEmpty в run.go).
 func TestThrottledProcsKeepsSampleNonEmpty(t *testing.T) {
 	now := time.Unix(1000, 0)
 	probes := fakeProbes()

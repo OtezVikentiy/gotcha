@@ -11,10 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// transactionJSONWithTrace — та же транзакция, что freshTransactionJSON, но с
-// заданным trace_id: семплирование детерминировано по нему, поэтому ожидаемое
-// число сохранённых считается в тесте тем же trace.Keep, а не задаётся числом
-// «из головы».
 func transactionJSONWithTrace(traceID string) string {
 	end := time.Now().UTC()
 	start := end.Add(-500 * time.Millisecond)
@@ -38,7 +34,6 @@ func transactionJSONWithTrace(traceID string) string {
 	}`, unix(start), unix(end), traceID)
 }
 
-// multiTransactionEnvelope собирает конверт из нескольких transaction-item'ов.
 func multiTransactionEnvelope(payloads []string) string {
 	var b strings.Builder
 	b.WriteString("{}\n")
@@ -50,8 +45,6 @@ func multiTransactionEnvelope(payloads []string) string {
 	return b.String()
 }
 
-// sampledTraceIDs делит набор идентификаторов трасс на сохраняемые и
-// отсеиваемые при заданной доле. Решение принимает та же функция, что и приём.
 func sampledTraceIDs(n int, rate float64) (all []string, kept int) {
 	for i := 0; i < n; i++ {
 		id := fmt.Sprintf("%032x", i*0x9e3779b9)
@@ -63,13 +56,6 @@ func sampledTraceIDs(n int, rate float64) (all []string, kept int) {
 	return all, kept
 }
 
-// TestEnvelopeChargesOnlyStoredTransactions — находка №6: квота списывалась за
-// ВСЕ разобранные транзакции, и лишь потом семплирование отбрасывало
-// несохраняемые. При доле 0.1 организация платила вдесятеро против записанного,
-// а org_usage — источник правды по потреблению — врал на тот же порядок.
-//
-// Отсеянное семплированием не является и потерей по квоте: оно отброшено по
-// настройке проекта намеренно, поэтому dropped_transactions расти не должен.
 func TestEnvelopeChargesOnlyStoredTransactions(t *testing.T) {
 	s := newStack(t)
 	ctx := context.Background()
@@ -114,9 +100,6 @@ func TestEnvelopeChargesOnlyStoredTransactions(t *testing.T) {
 	}
 }
 
-// TestEnvelopeTracingDisabledChargesNothing — вторая половина находки №6: при
-// выключенном трейсинге квота списывалась за транзакции, которые не
-// записывались никуда, потому что grant вызывался до проверки TracingEnabled.
 func TestEnvelopeTracingDisabledChargesNothing(t *testing.T) {
 	s := newStackWithoutTracing(t)
 	ctx := context.Background()
@@ -136,14 +119,6 @@ func TestEnvelopeTracingDisabledChargesNothing(t *testing.T) {
 	}
 }
 
-// TestOTLPChargesOnlyStoredTransactions — то же на OTLP-пути: он тоже списывал
-// квоту за все разобранные транзакции и только потом применял семплирование.
-//
-// Доля 0 — самый острый случай: не сохраняется ничего, значит и списать нельзя
-// ничего. Заодно проверяется изменившееся условие отказа: экспорт, целиком
-// отсеянный семплированием, — успешный приём по настройке проекта, а не
-// исчерпанная квота, и отвечать 429 (то есть просить коллектор прислать то же
-// самое ещё раз) на него нельзя.
 func TestOTLPChargesOnlyStoredTransactions(t *testing.T) {
 	s := newStack(t)
 	ctx := context.Background()

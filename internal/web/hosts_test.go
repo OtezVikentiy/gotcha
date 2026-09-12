@@ -20,14 +20,11 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// TestHostPathHelpers — построители путей: чистые строковые функции,
-// покрываются прямым вызовом (как metricDetailURL и соседи в webhelpers_test.go).
 func TestHostPathHelpers(t *testing.T) {
 	cases := []struct{ got, want string }{
 		{hostsPath(7), "/projects/7/hosts"},
 		{hostSettingsPath(7), "/projects/7/hosts/settings"},
 		{hostDetailPath(7, "web-1"), "/projects/7/hosts/web-1"},
-		// имя хоста с символами, требующими экранирования пути
 		{hostDetailPath(7, "a b/c"), "/projects/7/hosts/a%20b%2Fc"},
 	}
 	for _, c := range cases {
@@ -37,8 +34,6 @@ func TestHostPathHelpers(t *testing.T) {
 	}
 }
 
-// TestSortHostRows — проблемные хосты сверху, затем тихие, затем ok; внутри
-// каждой группы — по имени (§5.2 дизайна).
 func TestSortHostRows(t *testing.T) {
 	rows := []templates.HostRowVM{
 		{Name: "z-ok", StatusKind: "ok"},
@@ -57,12 +52,6 @@ func TestSortHostRows(t *testing.T) {
 	}
 }
 
-// TestHostRowStatus — классификация тира строки (ревью T14, находка 2):
-// kind="silent" среди открытых инцидентов не должен попадать в "problem" —
-// тишина, обнаруженная host.Evaluator'ом (открытый incident kind="silent") и
-// тишина, посчитанная здесь же по last_seen, обязаны давать ОДИН И ТОТ ЖЕ
-// тир "silent", иначе бейдж хоста мерцает между "Тихий" и "Тишина" ровно на
-// тике оценщика без изменения реального состояния хоста.
 func TestHostRowStatus(t *testing.T) {
 	now := time.Now()
 	settings := host.Settings{SilentEnabled: true, SilentAfter: 5 * time.Minute}
@@ -103,10 +92,6 @@ func TestHostRowStatus(t *testing.T) {
 	}
 }
 
-// TestHostRowStatusSilentDisabled — SilentEnabled=false: last_seen устаревший
-// сколько угодно не должен давать "silent" (порог выключен), только открытый
-// incident kind="silent" — тир силы источника детекции разные, но правило
-// «silent — один тир» держится и здесь.
 func TestHostRowStatusSilentDisabled(t *testing.T) {
 	now := time.Now()
 	settings := host.Settings{SilentEnabled: false, SilentAfter: 5 * time.Minute}
@@ -121,12 +106,6 @@ func TestHostRowStatusSilentDisabled(t *testing.T) {
 	}
 }
 
-// TestCollectorConfig — конфиг коллектора (§5.4 дизайна) содержит endpoint
-// БЕЗ /v1/metrics (путь дописывает сам otlphttp-экспортёр), Bearer-заголовок
-// с публичным ключом, явно включённую system.cpu.logical.count (делитель
-// load/core, §4.1 — без неё порог load никогда не считается) и все три
-// *.utilization-метрики (cpu/memory/filesystem), нужные графикам и
-// встроенным порогам диска/памяти.
 func TestCollectorConfig(t *testing.T) {
 	cfg := collectorConfig("https://g.example", "pubkey")
 
@@ -152,11 +131,8 @@ func TestCollectorConfig(t *testing.T) {
 	}
 }
 
-// filesystemScraperConfig разбирает конфиг как YAML и возвращает секцию
-// скрейпера filesystem. Разбор, а не strings.Contains: конфиг отдаётся
-// пользователю на копирование в /etc/otelcol-contrib/config.yaml, и «строка
-// присутствует» ничего не говорит о том, что otelcol его прочитает —
-// многострочные flow-списки исключений сломать отступом легко.
+// YAML-разбор, не strings.Contains: конфиг уходит в реальный otelcol-contrib, а «строка
+// присутствует» не гарантирует, что он его прочитает — многострочные списки легко сломать отступом.
 func filesystemScraperConfig(t *testing.T, cfg string) map[string]any {
 	t.Helper()
 	var parsed struct {
@@ -176,10 +152,8 @@ func filesystemScraperConfig(t *testing.T, cfg string) map[string]any {
 	return fs
 }
 
-// stringList достаёт из секции исключений список значений по ключу
-// (fs_types/mount_points), проверяя заодно match_type — без него otelcol
-// применил бы strict по умолчанию, и регулярные выражения стали бы точными
-// именами точек монтирования, то есть исключение перестало бы работать молча.
+// match_type проверяется тоже: без него otelcol применил бы strict, и regexp стали бы точными
+// именами — исключение перестало бы работать молча.
 func stringList(t *testing.T, section map[string]any, key, listKey, wantMatchType string) []string {
 	t.Helper()
 	sub, ok := section[key].(map[string]any)
@@ -204,12 +178,6 @@ func stringList(t *testing.T, section map[string]any, key, listKey, wantMatchTyp
 	return out
 }
 
-// TestCollectorConfigExcludesPseudoFilesystems — ревью I1: скрейпер filesystem
-// без исключений собирает ВСЕ смонтированные ФС, а встроенный порог диска
-// берёт максимум по mountpoint'ам. На обычной Ubuntu каждый snap смонтирован
-// squashfs'ом, заполненным на 100% по замыслу, — дефолтный порог «>90%»
-// открывал бы инцидент на первом же тике оценщика, закрыть который нечем
-// (диск свободен), а топ-8 графика занятости состоял бы из /snap/*.
 func TestCollectorConfigExcludesPseudoFilesystems(t *testing.T) {
 	cfg := collectorConfig("https://g.example", "pubkey")
 	fs := filesystemScraperConfig(t, cfg)
@@ -240,8 +208,6 @@ func TestCollectorConfigExcludesPseudoFilesystems(t *testing.T) {
 		}
 	}
 
-	// Метрика занятости остаётся включённой — исключения не должны были
-	// вытеснить секцию metrics того же скрейпера.
 	metrics, ok := fs["metrics"].(map[string]any)
 	if !ok {
 		t.Fatalf("исключения вытеснили секцию metrics скрейпера filesystem: %+v", fs)
@@ -251,13 +217,8 @@ func TestCollectorConfigExcludesPseudoFilesystems(t *testing.T) {
 	}
 }
 
-// TestCollectorConfigGeneratedLists — списки исключений YAML рендерятся из
-// internal/hostmetric, а не дублируются строкой в шаблоне: правка исключений
-// в одном месте меняет и агент, и конфиг коллектора. Плюс паритет путей —
-// system.uptime едет и с самого коллектора (§3.4 спеки), не только с агента.
 func TestCollectorConfigGeneratedLists(t *testing.T) {
 	cfg := collectorConfig("https://g.example", "pk_x")
-	// Списки исключений рендерятся из hostmetric — источник один.
 	for _, fs := range hostmetric.ExcludedFSTypes {
 		if !strings.Contains(cfg, fs) {
 			t.Errorf("нет fs-типа %q в YAML", fs)
@@ -268,31 +229,24 @@ func TestCollectorConfigGeneratedLists(t *testing.T) {
 			t.Errorf("нет регэкспа маунта для %q", p)
 		}
 	}
-	// Паритет путей: uptime едет и с коллектора (§3.4 спеки).
 	if !strings.Contains(cfg, "system:") || !strings.Contains(cfg, "system.uptime: {enabled: true}") {
 		t.Error("system-scraper с system.uptime не включён")
 	}
 }
 
-// TestAgentUpdateAvailable — сравнение версий по базе X.Y.Z (спека §3.3):
-// префикс "v" срезается, суффикс после третьей числовой группы (dev-сборка
-// "-N-gHASH") игнорируется, любой невалидный семвер (пустая строка, мусор,
-// "dev" у сервера) даёт false — молчим, а не пугаем оператора ложным
-// бейджем. Агент новее сервера — тоже false: обновление не предлагаем
-// откатить.
 func TestAgentUpdateAvailable(t *testing.T) {
 	cases := []struct {
 		agent, server string
 		want          bool
 	}{
 		{"0.5.0", "0.6.0", true},
-		{"v0.5.0", "0.6.0", true},        // префикс v срезается
-		{"0.6.0", "0.6.0", false},        // версии совпадают
-		{"0.6.1", "0.6.0", false},        // агент новее — не пугаем
-		{"0.6.0-5-gabc", "0.6.0", false}, // сравнение по базе X.Y.Z
-		{"", "0.6.0", false},             // нет данных — молчим
+		{"v0.5.0", "0.6.0", true},
+		{"0.6.0", "0.6.0", false},
+		{"0.6.1", "0.6.0", false},
+		{"0.6.0-5-gabc", "0.6.0", false},
+		{"", "0.6.0", false},
 		{"мусор", "0.6.0", false},
-		{"0.6.0", "dev", false},   // сервер без валидного семвера — молчим
+		{"0.6.0", "dev", false},
 		{"0.9.0", "0.10.0", true}, // числовое сравнение minor, не лексикографическое ("9" > "10" строкой)
 		{"0.10.0", "0.9.0", false},
 	}
@@ -305,11 +259,6 @@ func TestAgentUpdateAvailable(t *testing.T) {
 	}
 }
 
-// TestAgentCommands — команда установки несёт ключ и endpoint (DSN-эквивалент
-// хостовых метрик), команда обновления — БЕЗ ключа (повторный запуск того же
-// install.sh переустанавливает бинарь агента, а не выпускает новый ключ).
-// Обе загружают install.sh полностью перед исполнением (`sh -c "$(curl ...)"`,
-// не `curl | sh`) — симметрия форм, см. докблок задачи.
 func TestAgentCommands(t *testing.T) {
 	install := agentInstallCommand("https://g.example", "pk_x")
 	if !strings.Contains(install, "https://g.example/install.sh") {
@@ -331,9 +280,7 @@ func TestAgentCommands(t *testing.T) {
 	}
 }
 
-// renderHostDetail — прямой рендер templ-компонента карточки хоста (как
-// renderTo в templates-пакете), без HTTP-стенда: этому тесту важна только
-// разметка шапки по готовой VM.
+// Прямой рендер templ-компонента, без HTTP-стенда: важна только разметка по готовой VM.
 func renderHostDetail(t *testing.T, vm templates.HostDetailVM) string {
 	t.Helper()
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
@@ -344,11 +291,6 @@ func renderHostDetail(t *testing.T, vm templates.HostDetailVM) string {
 	return sb.String()
 }
 
-// TestHostDetailShowsAgentVersion — версия агента и бейдж обновления в шапке
-// карточки: при заполненной AgentVersion и доступном обновлении в HTML есть
-// сама версия, i18n-текст ключа "hosts.detail.agent_update" и команда
-// обновления (T13); при AgentVersion=="" — ни строки версии, ни бейджа (нет
-// данных, а не «версия неизвестна»).
 func TestHostDetailShowsAgentVersion(t *testing.T) {
 	base := templates.HostDetailVM{
 		Host: host.Host{Name: "web-1"},
@@ -372,7 +314,7 @@ func TestHostDetailShowsAgentVersion(t *testing.T) {
 		t.Errorf("нет команды обновления агента: %s", html)
 	}
 
-	empty := base // AgentVersion пуст
+	empty := base
 	html = renderHostDetail(t, empty)
 	if strings.Contains(html, wantBadge) {
 		t.Errorf("бейдж обновления показан без версии агента: %s", html)
@@ -382,9 +324,6 @@ func TestHostDetailShowsAgentVersion(t *testing.T) {
 	}
 }
 
-// TestHostDetailAgentUpdateShowsTargetVersion — rem-E ux-L16: блок «Как
-// обновить агента» должен называть версию сервера, до которой пойдёт
-// обновление, — бейдж «Есть обновление» сам по себе цель не называет.
 func TestHostDetailAgentUpdateShowsTargetVersion(t *testing.T) {
 	vm := templates.HostDetailVM{
 		Host:                 host.Host{Name: "web-1", AgentVersion: "0.5.0"},
@@ -402,9 +341,6 @@ func TestHostDetailAgentUpdateShowsTargetVersion(t *testing.T) {
 	}
 }
 
-// renderHostsListOnboarding — прямой рендер онбординга пустого списка хостов
-// (как renderHostDetail): важна только структура блока «Установить агент» +
-// свёрнутая альтернатива коллектора, не сам список.
 func renderHostsListOnboarding(t *testing.T, installCmd, config, agentReason string) string {
 	t.Helper()
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
@@ -415,12 +351,6 @@ func renderHostsListOnboarding(t *testing.T, installCmd, config, agentReason str
 	return sb.String()
 }
 
-// TestHostsOnboardingAgentDefault — T14: онбординг предлагает свой агент по
-// умолчанию (одна install.sh-команда с ключом+endpoint), коллектор otelcol —
-// свёрнутая альтернатива с прежними тремя шагами. Оба пути берут ключ одним
-// и тем же liveKeyFor-путём (h.hostInstallBlocks в hosts.go), поэтому при
-// его отсутствии подсказка hosts.onboarding.no_key
-// показывается на ОБОИХ путях, а не на одном.
 func TestHostsOnboardingAgentDefault(t *testing.T) {
 	installCmd := agentInstallCommand("https://g.example", "pk_x")
 	config := collectorConfig("https://g.example", "pk_x")
@@ -434,7 +364,7 @@ func TestHostsOnboardingAgentDefault(t *testing.T) {
 	if !strings.Contains(html, "<details") {
 		t.Errorf("нет свёрнутого блока альтернативы коллектора: %s", html)
 	}
-	if !strings.Contains(html, "otlphttp") { // фрагмент YAML коллектора внутри details
+	if !strings.Contains(html, "otlphttp") {
 		t.Errorf("свёрнутый блок без конфига коллектора: %s", html)
 	}
 
@@ -445,11 +375,6 @@ func TestHostsOnboardingAgentDefault(t *testing.T) {
 	}
 }
 
-// TestHostsOnboardingAgentDocsLink — rem-E ux-M7: на пути агента по
-// умолчанию (вне свёрнутой коллектор-альтернативы) должна быть своя ссылка
-// на /docs/hosts и подсказка про поддерживаемые платформы — до этой правки
-// на дефолтном пути не было ни того ни другого, обе жили только внутри
-// свёрнутого блока коллектора.
 func TestHostsOnboardingAgentDocsLink(t *testing.T) {
 	installCmd := agentInstallCommand("https://g.example", "pk_x")
 	config := collectorConfig("https://g.example", "pk_x")
@@ -465,10 +390,6 @@ func TestHostsOnboardingAgentDocsLink(t *testing.T) {
 	}
 }
 
-// TestHostsOnboardingNoKeyLinksToSettings — rem-E ux-M4: без активного
-// публичного ключа проекта подсказка no_key обязана вести на страницу
-// настроек проекта (/projects/{id}/settings), где ключ и заводится, а не
-// оставлять читателя угадывать путь.
 func TestHostsOnboardingNoKeyLinksToSettings(t *testing.T) {
 	html := renderHostsListOnboarding(t, "", "", "")
 
@@ -483,11 +404,6 @@ func TestHostsOnboardingNoKeyLinksToSettings(t *testing.T) {
 	}
 }
 
-// TestHostsOnboardingAgentUnavailable — rem-A sec-M1: ключ есть (коллектор
-// заполнен), но раздача бинарей агента недоступна (agentDistAvailable()
-// ложен на инстансе, собранном не из Docker-образа) — онбординг не должен
-// предлагать install.sh-команду, которая гарантированно упрётся в 404, а
-// обязан объяснить причину явно.
 func TestHostsOnboardingAgentUnavailable(t *testing.T) {
 	config := collectorConfig("https://g.example", "pk_x")
 	html := renderHostsListOnboarding(t, "", config, "dist")
@@ -504,9 +420,6 @@ func TestHostsOnboardingAgentUnavailable(t *testing.T) {
 	}
 }
 
-// TestHostsOnboardingAgentInsecure — rem-A sec-M4: BaseURL не https:// и не
-// локальный — онбординг не должен предлагать root-команду по каналу,
-// уязвимому MITM, и обязан явно предупредить про HTTPS.
 func TestHostsOnboardingAgentInsecure(t *testing.T) {
 	config := collectorConfig("http://gotcha.example", "pk_x")
 	html := renderHostsListOnboarding(t, "", config, "insecure")
@@ -523,11 +436,6 @@ func TestHostsOnboardingAgentInsecure(t *testing.T) {
 	}
 }
 
-// TestHostsListFiltersRendersChipsAndRows — B1, T5: фильтр env/role/new
-// рендерит фасет-чипы (значения + сентинел «без метки»), активное значение
-// отмечено, отфильтрованные строки несут свои env/role-бейджи. Рендерится
-// VM напрямую (rows/filter/facets, а не через хендлер+стор) — тот же приём,
-// что у renderHostDetail/renderHostsListOnboarding по соседству.
 func TestHostsListFiltersRendersChipsAndRows(t *testing.T) {
 	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	rows := []templates.HostRowVM{
@@ -542,15 +450,12 @@ func TestHostsListFiltersRendersChipsAndRows(t *testing.T) {
 	}
 	html := sb.String()
 
-	// Активное значение фасета — ссылка со сбросом (env=prod уже выбран,
-	// повторный клик снимает фильтр: href БЕЗ env=).
 	if !strings.Contains(html, `class="chip is-active"`) {
 		t.Errorf("нет активного чипа фасета: %s", html)
 	}
 	if !strings.Contains(html, "href=\"/projects/1/hosts?env=prod&amp;role=web\"") {
 		t.Errorf("нет ссылки-тоггла на значение фасета role=web: %s", html)
 	}
-	// Сентинел «без метки» присутствует в обоих фасетах.
 	wantNoneLabel := i18n.T(rctx, "hosts.label.none")
 	if got := strings.Count(html, wantNoneLabel); got != 2 {
 		t.Errorf("сентинел «без метки» встречается %d раз(а), want 2 (env+role): %s", got, html)
@@ -558,7 +463,6 @@ func TestHostsListFiltersRendersChipsAndRows(t *testing.T) {
 	if !strings.Contains(html, "role=__none__") {
 		t.Errorf("ссылка сентинела не несёт __none__: %s", html)
 	}
-	// Отфильтрованная строка со своими бейджами env/role.
 	if !strings.Contains(html, `<a href="/projects/1/hosts/web-1">web-1</a>`) {
 		t.Errorf("нет строки отфильтрованного хоста web-1: %s", html)
 	}
@@ -568,18 +472,12 @@ func TestHostsListFiltersRendersChipsAndRows(t *testing.T) {
 	if !strings.Contains(html, `<span class="badge badge-neutral">web</span>`) {
 		t.Errorf("нет бейджа role=web у строки: %s", html)
 	}
-	// Активный фильтр — ссылка полного сброса.
 	wantReset := i18n.T(rctx, "hosts.filter.reset")
 	if !strings.Contains(html, wantReset) {
 		t.Errorf("нет ссылки сброса фильтра при активном фильтре: %s", html)
 	}
 }
 
-// TestHostNewBadgeBoundary — граница hostNewWindow (24ч, T5): хост с
-// first_seen 23ч назад показывает бейдж «новый» (и в строке списка, и в
-// шапке карточки), хост с first_seen 25ч назад — не показывает. Правило
-// IsNew то же самое, что SQL-ветка HostFilter.NewOnly (host_test.go) —
-// здесь проверяется только рендер бейджа, а не сам подсчёт границы.
 func TestHostNewBadgeBoundary(t *testing.T) {
 	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	wantBadge := i18n.T(rctx, "hosts.badge.new")
@@ -611,11 +509,6 @@ func TestHostNewBadgeBoundary(t *testing.T) {
 	}
 }
 
-// TestHostsListFilterEmptyShowsResetNotOnboarding — под фильтром, давшим
-// пустой результат, список НЕ должен показывать онбординг «Хостов пока
-// нет» (проект не пуст — просто ни один хост не подошёл под фильтр) — иначе
-// текст с готовностью установить агента вводит в заблуждение владельца,
-// у которого хосты уже есть.
 func TestHostsListFilterEmptyShowsResetNotOnboarding(t *testing.T) {
 	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	filter := templates.HostsFilterVM{Environment: "nowhere", Active: true}
@@ -637,11 +530,6 @@ func TestHostsListFilterEmptyShowsResetNotOnboarding(t *testing.T) {
 	}
 }
 
-// TestGroupHostRows — группировка строк списка по env/role (T6): пустое
-// значение метки уходит в отдельную секцию «(без метки)», секции
-// сортируются по итоговому (локализованному) label, порядок строк внутри
-// секции сохраняется от sortHostRows (группировка режет уже отсортированный
-// список, не переупорядочивает).
 func TestGroupHostRows(t *testing.T) {
 	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	rows := []templates.HostRowVM{
@@ -672,16 +560,11 @@ func TestGroupHostRows(t *testing.T) {
 		t.Errorf("секция «без метки» = %+v, want [c-none]", noneSection.Rows)
 	}
 
-	// group == "" (по умолчанию, без группировки) — сечений нет вовсе.
 	if got := groupHostRows(rctx, rows, ""); got != nil {
 		t.Errorf("groupHostRows с group=\"\" = %+v, want nil", got)
 	}
 }
 
-// TestHostsListGroupRendersSections — HostsList с group=env рендерит строки
-// секциями (заголовок = label секции) вместо плоской таблицы, а переключатель
-// группировки сохраняет активный фильтр env/role/new в ссылках сегментов
-// (T6: «фильтр и группировка компонуются»).
 func TestHostsListGroupRendersSections(t *testing.T) {
 	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	rows := []templates.HostRowVM{
@@ -712,8 +595,6 @@ func TestHostsListGroupRendersSections(t *testing.T) {
 			t.Errorf("нет строки %q в сгруппированном рендере: %s", want, html)
 		}
 	}
-	// Переключатель группировки: активный сегмент "По окружению", ссылка на
-	// "По роли" сохраняет role=web (уже активный фильтр).
 	wantActiveEnv := i18n.T(rctx, "hosts.group.env")
 	if !strings.Contains(html, `aria-current="page">`+wantActiveEnv+`</a>`) {
 		t.Errorf("сегмент «по окружению» не отмечен активным: %s", html)
@@ -726,7 +607,6 @@ func TestHostsListGroupRendersSections(t *testing.T) {
 	}
 }
 
-// renderHostSettingsPage — прямой рендер страницы настроек порогов.
 func renderHostSettingsPage(t *testing.T, installCmd, config, agentReason string) string {
 	t.Helper()
 	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
@@ -737,9 +617,6 @@ func renderHostSettingsPage(t *testing.T, installCmd, config, agentReason string
 	return sb.String()
 }
 
-// TestHostsTableStatusKinds — добор покрытия TEMPL (hostsTable): все три
-// ветки switch по row.StatusKind ("problem" с несколькими OpenKinds — ветка
-// разделителя ", " при i>0, "silent", default "ok") в одном рендере.
 func TestHostsTableStatusKinds(t *testing.T) {
 	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	rows := []templates.HostRowVM{
@@ -771,9 +648,6 @@ func TestHostsTableStatusKinds(t *testing.T) {
 	}
 }
 
-// TestHostsTableMetricsValues — добор покрытия hostsTable/hostPercentText/
-// hostLoadText: строка с заполненными CPU/Mem/Disk/LoadPerCore (ветка «есть
-// значение», не «нет данных»/прочерк, покрытый другими тестами).
 func TestHostsTableMetricsValues(t *testing.T) {
 	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	cpu, mem, disk, load := 0.421, 0.75, 0.9, 1.5
@@ -792,15 +666,6 @@ func TestHostsTableMetricsValues(t *testing.T) {
 	}
 }
 
-// Прямой вызов hostLabelText с непустым значением (ветка «есть значение» —
-// в hostsTable функция вызывается только с пустой строкой, непустая метка
-// рисуется бейджем в отдельной ветке шаблона) — см.
-// internal/web/templates/hosts_helpers_test.go (тот же пакет, unexported).
-
-// TestHostsFilterBarNewOnlyAndGroupRole — добор покрытия hostsFilterBar:
-// чип «новые» активен (NewOnly=true, ветка aria-current), переключатель
-// группировки на сегменте "role" (третье значение цикла, до этого
-// покрывались только "none" и "env").
 func TestHostsFilterBarNewOnlyAndGroupRole(t *testing.T) {
 	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	rows := []templates.HostRowVM{{Name: "web-1", StatusKind: "ok"}}
@@ -823,10 +688,6 @@ func TestHostsFilterBarNewOnlyAndGroupRole(t *testing.T) {
 	}
 }
 
-// TestHostsListCollectorConfigDetailsInstallCmd — добор покрытия
-// hostsCollectorConfigDetails/HostsList: список НЕ пуст (не онбординг),
-// installCmd непуст — раскрывающийся блок команды агента; truncated=true —
-// подсказка усечения списка.
 func TestHostsListCollectorConfigDetailsInstallCmd(t *testing.T) {
 	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	rows := []templates.HostRowVM{{Name: "web-1", StatusKind: "ok"}}
@@ -851,10 +712,6 @@ func TestHostsListCollectorConfigDetailsInstallCmd(t *testing.T) {
 	}
 }
 
-// TestHostsListCollectorConfigDetailsDist/Insecure — те же ветки
-// hostsCollectorConfigDetails, что и в онбординге (rem-A sec-M1/sec-M4), но
-// в контексте непустого списка хостов, где функция вызывается отдельно от
-// hostsOnboarding.
 func TestHostsListCollectorConfigDetailsDist(t *testing.T) {
 	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	rows := []templates.HostRowVM{{Name: "web-1", StatusKind: "ok"}}
@@ -887,9 +744,6 @@ func TestHostsListCollectorConfigDetailsInsecure(t *testing.T) {
 	}
 }
 
-// TestHostDetailEnvironmentRoleBadges — добор покрытия HostDetail: бейджи
-// environment/role в шапке карточки (title=подпись колонки, тот же принцип,
-// что у строки списка).
 func TestHostDetailEnvironmentRoleBadges(t *testing.T) {
 	vm := templates.HostDetailVM{
 		Host: host.Host{Name: "web-1", Environment: "prod", Role: "db"},
@@ -903,9 +757,6 @@ func TestHostDetailEnvironmentRoleBadges(t *testing.T) {
 	}
 }
 
-// TestHostDetailUptimeShown/NotShown — добор покрытия HostDetail: плитка
-// «время работы» рисуется только при непустом Uptime (хост уже отчитался
-// метрикой), а не «0».
 func TestHostDetailUptimeShown(t *testing.T) {
 	vm := templates.HostDetailVM{Host: host.Host{Name: "web-1"}, Uptime: "3д 4ч"}
 	html := renderHostDetail(t, vm)
@@ -923,10 +774,6 @@ func TestHostDetailUptimeNotShown(t *testing.T) {
 	}
 }
 
-// TestHostDetailAgentUpdateBadgeWithoutCmd — AgentUpdateAvailable=true, но
-// AgentUpdateCmd пуст (путь агента недоступен/небезопасен, rem-A sec-M1/
-// sec-M4): бейдж «есть обновление» в плитке версии остаётся, но свёрнутый
-// блок с готовой командой не рендерится (комбинация && во втором операнде).
 func TestHostDetailAgentUpdateBadgeWithoutCmd(t *testing.T) {
 	vm := templates.HostDetailVM{
 		Host:                 host.Host{Name: "web-1", AgentVersion: "0.5.0"},
@@ -945,9 +792,6 @@ func TestHostDetailAgentUpdateBadgeWithoutCmd(t *testing.T) {
 	}
 }
 
-// TestHostDetailOpenIncidents — добор покрытия HostDetail/hostOpenIncidentRow:
-// список открытых инцидентов с двумя строками — Detail заполнен и Detail
-// пуст (обе ветки docblock-примечания hostOpenIncidentRow).
 func TestHostDetailOpenIncidents(t *testing.T) {
 	started := time.Now().Add(-time.Hour)
 	vm := templates.HostDetailVM{
@@ -975,8 +819,6 @@ func TestHostDetailOpenIncidents(t *testing.T) {
 	}
 }
 
-// TestHostDetailRecentIncidents — добор покрытия HostDetail/hostIncidentRow:
-// таблица истории инцидентов с открытой и решённой строкой.
 func TestHostDetailRecentIncidents(t *testing.T) {
 	vm := templates.HostDetailVM{
 		Host: host.Host{Name: "web-1"},
@@ -1005,9 +847,6 @@ func TestHostDetailRecentIncidents(t *testing.T) {
 	}
 }
 
-// TestHostDetailCanOperate — добор покрытия HostDetail: форма удаления
-// хоста рендерится только при CanOperate=true (operator+, остальные тесты
-// пакета держат его в значении по умолчанию false).
 func TestHostDetailCanOperate(t *testing.T) {
 	vm := templates.HostDetailVM{Host: host.Host{Name: "web-1"}, CanOperate: true}
 	html := renderHostDetail(t, vm)
@@ -1021,10 +860,6 @@ func TestHostDetailCanOperate(t *testing.T) {
 	}
 }
 
-// TestHostStatusTextKinds — добор покрытия hostStatusText: три ветки
-// switch по kind в бейдже шапки карточки (problem с несколькими
-// ProblemKinds — та же ветка разделителя ", ", что у hostsTable; silent;
-// default ok), считаем и через HostDetail напрямую.
 func TestHostStatusTextKinds(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	problem := renderHostDetail(t, templates.HostDetailVM{
@@ -1050,10 +885,6 @@ func TestHostStatusTextKinds(t *testing.T) {
 	}
 }
 
-// TestHostChartCardBranches — добор покрытия hostChartCard: три состояния
-// графика — Empty=true (пустое состояние со скрейпер-подсказкой), Empty=
-// false без легенды/усечения, Empty=false с легендой и Truncated=true
-// (подпись топ-N групп).
 func TestHostChartCardBranches(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 
@@ -1103,10 +934,6 @@ func TestHostChartCardBranches(t *testing.T) {
 	}
 }
 
-// TestHostSettingsAgentInstallBlock — T14: страница настроек порогов несёт
-// свёрнутый блок с готовой командой установки агента рядом со свёрнутым
-// блоком конфига коллектора (hostsCollectorConfigDetails, дополненный этой
-// задачей) — второй сервер подключают тем же путём, что и первый (§5.4).
 func TestHostSettingsAgentInstallBlock(t *testing.T) {
 	installCmd := agentInstallCommand("https://g.example", "pk_x")
 	config := collectorConfig("https://g.example", "pk_x")
@@ -1122,10 +949,6 @@ func TestHostSettingsAgentInstallBlock(t *testing.T) {
 	}
 }
 
-// TestHostInstallBlocksUsesAgentKey — команда установки и конфиг коллектора
-// со страницы хостов берут ключ типа agent: этот коллектор несёт
-// resourcedetection, то есть РЕГИСТРИРУЕТ хост, а регистрировать может только
-// agent (§7 дизайна).
 func TestHostInstallBlocksUsesAgentKey(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	orgSvc := org.NewService(pool, 1_000_000)
@@ -1143,7 +966,6 @@ func TestHostInstallBlocksUsesAgentKey(t *testing.T) {
 		t.Fatalf("create org: %v", err)
 	}
 
-	// Проект с типизированными ключами: коллектор берёт agent, не server.
 	proj, err := orgSvc.CreateProject(ctx, o.ID, "hia-proj", "HIA Proj", "go")
 	if err != nil {
 		t.Fatalf("create project: %v", err)
@@ -1173,8 +995,6 @@ func TestHostInstallBlocksUsesAgentKey(t *testing.T) {
 		t.Errorf("config содержит server-ключ %q, ожидался только agent: %s", serverKey, config)
 	}
 
-	// Проект только с legacy-ключом — переход без простоя: коллектор
-	// продолжает получать рабочий ключ, а не пустое состояние.
 	proj2, err := orgSvc.CreateProject(ctx, o.ID, "hia-proj-legacy", "HIA Proj Legacy", "go")
 	if err != nil {
 		t.Fatalf("create project 2: %v", err)

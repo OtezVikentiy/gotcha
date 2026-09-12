@@ -1,5 +1,3 @@
-// Package docs — встроенная (go:embed) markdown-документация Gotcha,
-// рендер через goldmark в безопасный HTML. Контент — internal/docs/{ru,en}/*.md.
 package docs
 
 import (
@@ -24,25 +22,17 @@ import (
 //go:embed ru/*.md en/*.md
 var files embed.FS
 
-// Page — запись реестра: slug, i18n-ключ группы и заголовок (H1) в текущей локали.
 type Page struct {
 	Slug  string
 	Group string // i18n-ключ группы для индекса
 	Title string
 }
 
-// registry — порядок и группировка страниц оглавления (Title заполняется из H1).
 var registry = []struct{ Slug, Group string }{
-	// Начало
 	{"getting-started", "docs.group.start"},
-	// keys — концептуальная страница уровня glossary/time-range (что такое
-	// тип ключа и какой чему разрешён), а не факт про конкретную интеграцию:
-	// ключ нужен раньше любого из разделов ниже, включая SDK, поэтому здесь,
-	// а не в docs.group.integrations рядом с sdk.
 	{"keys", "docs.group.start"},
 	{"glossary", "docs.group.start"},
 	{"time-range", "docs.group.start"},
-	// Установка и эксплуатация
 	{"installation", "docs.group.deploy"},
 	{"configuration", "docs.group.deploy"},
 	{"hardening", "docs.group.deploy"},
@@ -51,7 +41,6 @@ var registry = []struct{ Slug, Group string }{
 	{"versioning", "docs.group.deploy"},
 	{"self-monitoring", "docs.group.deploy"},
 	{"cardinality", "docs.group.deploy"},
-	// Разделы
 	{"overview", "docs.group.sections"},
 	{"issues", "docs.group.sections"},
 	{"exports", "docs.group.sections"},
@@ -73,18 +62,14 @@ var registry = []struct{ Slug, Group string }{
 	{"escalations", "docs.group.sections"},
 	{"alert-suppression", "docs.group.sections"},
 	{"incident-groups", "docs.group.sections"},
-	// Администрирование
 	{"teams", "docs.group.admin"},
 	{"sso", "docs.group.admin"},
 	{"privacy", "docs.group.admin"},
-	// Интеграции
 	{"sdk", "docs.group.integrations"},
 }
 
-// docsTableRenderer оборачивает каждую таблицу в тот же скролл-контейнер, что
-// scrollRegion в шаблонах (№31/№75): role=table возвращается в дерево
-// доступности (display:block с таблицы снят в app.css), а прокрутка и
-// клавиатурный доступ живут на обёртке.
+// Та же обёртка-скролл, что scrollRegion в шаблонах: role=table возвращается в
+// дерево доступности (display:block с таблицы снят в app.css).
 type docsTableRenderer struct{ label string }
 
 func (r *docsTableRenderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
@@ -100,14 +85,7 @@ func (r *docsTableRenderer) renderTable(w util.BufWriter, _ []byte, _ gast.Node,
 	return gast.WalkContinue, nil
 }
 
-// mdFor — рендерер документации для локали: подпись региона таблицы берётся
-// из каталога, сам goldmark собирается один раз на локаль.
-//
-// GFM даёт таблицы и автоссылки; WithUnsafe НЕ включён, поэтому raw HTML
-// экранируется. WithAutoHeadingID проставляет заголовкам id: без него якорных
-// ссылок не существовало вовсе, при том что тексты уже ссылаются на разделы
-// прозой («см. раздел о внешних получателях ниже»), а браузерная кнопка
-// «поделиться ссылкой на этот абзац» не работала ни на одной странице.
+// WithUnsafe НЕ включён: raw HTML в markdown экранируется, а не рендерится как есть.
 var (
 	mdMu    sync.Mutex
 	mdByLoc = map[string]goldmark.Markdown{}
@@ -145,7 +123,7 @@ func normalizeLocale(loc string) string {
 	if loc == "en" {
 		return "en"
 	}
-	return "ru" // дефолт и fallback
+	return "ru"
 }
 
 func known(slug string) bool {
@@ -157,8 +135,6 @@ func known(slug string) bool {
 	return false
 }
 
-// Render рендерит markdown-страницу локали в безопасный HTML.
-// Возвращает (html, title, ok). Неизвестный slug → ok=false.
 func Render(locale, slug string) (string, string, bool) {
 	if !known(slug) {
 		return "", "", false
@@ -172,7 +148,6 @@ func Render(locale, slug string) (string, string, bool) {
 	}
 	cacheMu.RUnlock()
 
-	// читаем запрошенную локаль, затем ru-fallback
 	data, err := files.ReadFile(loc + "/" + slug + ".md")
 	if err != nil && loc != "ru" {
 		data, err = files.ReadFile("ru/" + slug + ".md")
@@ -182,8 +157,7 @@ func Render(locale, slug string) (string, string, bool) {
 	}
 	title := firstH1(data)
 	var buf bytes.Buffer
-	// Генератор якорей — на КАЖДУЮ страницу свой: он ведёт список уже занятых
-	// идентификаторов, и общий на все страницы начал бы приписывать суффиксы
+	// Генератор якорей свой на каждую страницу — общий приписывал бы суффиксы
 	// «-1», «-2» заголовкам разных документов.
 	ctx := parser.NewContext(parser.WithIDs(newTranslitIDs()))
 	if err := mdFor(loc).Convert(data, &buf, parser.WithContext(ctx)); err != nil {
@@ -196,7 +170,6 @@ func Render(locale, slug string) (string, string, bool) {
 	return r.html, r.title, true
 }
 
-// firstH1 возвращает текст первого "# " заголовка markdown (для title/TOC).
 func firstH1(data []byte) string {
 	for _, line := range strings.Split(string(data), "\n") {
 		t := strings.TrimSpace(line)
@@ -207,7 +180,6 @@ func firstH1(data []byte) string {
 	return ""
 }
 
-// Pages возвращает упорядоченный реестр страниц с заголовками (H1) в локали.
 func Pages(locale string) []Page {
 	loc := normalizeLocale(locale)
 	out := make([]Page, 0, len(registry))

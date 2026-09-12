@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// TestIsBlockedIP проверяет классификацию адресов: внутренние/служебные
-// диапазоны блокируются, публичные — пропускаются.
 func TestIsBlockedIP(t *testing.T) {
 	blocked := []string{
 		"127.0.0.1",       // loopback IPv4
@@ -60,8 +58,6 @@ func TestIsBlockedIP(t *testing.T) {
 	}
 }
 
-// TestDialerBlocksLoopback проверяет, что Dialer(false) режет соединение к
-// loopback через Control, а Dialer(true) — нет.
 func TestDialerBlocksLoopback(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -80,7 +76,6 @@ func TestDialerBlocksLoopback(t *testing.T) {
 
 	addr := ln.Addr().String()
 
-	// Dialer(false) — Control блокирует loopback.
 	blocked := Dialer(false)
 	if conn, err := blocked.Dial("tcp", addr); err == nil {
 		conn.Close()
@@ -89,7 +84,6 @@ func TestDialerBlocksLoopback(t *testing.T) {
 		t.Errorf("ожидалась ошибка ErrBlockedTarget, получено: %v", err)
 	}
 
-	// Dialer(true) — Control не установлен, соединение доходит.
 	allowed := Dialer(true)
 	conn, err := allowed.Dial("tcp", addr)
 	if err != nil {
@@ -99,10 +93,7 @@ func TestDialerBlocksLoopback(t *testing.T) {
 	}
 }
 
-// TestSafeHTTPClientBlocksLoopback проверяет, что при allowPrivate=false
-// клиент режет соединение к loopback, а при allowPrivate=true — доходит.
 func TestSafeHTTPClientBlocksLoopback(t *testing.T) {
-	// Поднимаем слушателя на loopback, чтобы порт был заведомо занят.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("net.Listen: %v", err)
@@ -121,7 +112,6 @@ func TestSafeHTTPClientBlocksLoopback(t *testing.T) {
 
 	url := "http://" + ln.Addr().String() + "/"
 
-	// allowPrivate=false → соединение заблокировано.
 	blocked := SafeHTTPClient(false, 5*time.Second)
 	if _, err := blocked.Get(url); err == nil {
 		t.Error("SafeHTTPClient(false).Get(loopback) = nil error, ожидалась блокировка")
@@ -129,9 +119,8 @@ func TestSafeHTTPClientBlocksLoopback(t *testing.T) {
 		t.Errorf("ожидалась ошибка ErrBlockedTarget, получено: %v", err)
 	}
 
-	// allowPrivate=true → фильтр отключён, соединение доходит до слушателя.
-	// Тело нам не важно; соединение закрывается сервером, поэтому ошибка
-	// уровня HTTP допустима, но это НЕ ErrBlockedTarget.
+	// Ошибка уровня HTTP допустима (соединение закрывается сервером сразу), но
+	// это НЕ ErrBlockedTarget — фильтр не должен был сработать.
 	allowed := SafeHTTPClient(true, 5*time.Second)
 	if _, err := allowed.Get(url); errors.Is(err, ErrBlockedTarget) {
 		t.Error("SafeHTTPClient(true).Get(loopback) заблокирован, ожидался проход фильтра")

@@ -11,9 +11,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// mustKeyring — тестовый шорткат: однокелевое кольцо шифрования из raw.
-// NewKeyring отказывает только на пустом current — тестовые мастер-ключи
-// здесь всегда заданы литералом, поэтому ошибка означала бы баг теста.
+// NewKeyring отказывает только на пустом current — здесь мастер-ключ всегда
+// задан литералом.
 func mustKeyring(t *testing.T, raw string) secretbox.Keyring {
 	t.Helper()
 	ring, err := secretbox.NewKeyring(raw, "")
@@ -23,9 +22,6 @@ func mustKeyring(t *testing.T, raw string) secretbox.Keyring {
 	return ring
 }
 
-// TestChannelSecretEncryptedAtRest — при заданном мастер-ключе секрет канала
-// (Telegram bot-токен) хранится в БД зашифрованным (префикс enc:, plaintext не
-// виден), а Channels() расшифровывает его обратно для доставки.
 func TestChannelSecretEncryptedAtRest(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -58,11 +54,6 @@ func TestChannelSecretEncryptedAtRest(t *testing.T) {
 	}
 }
 
-// TestChannelSecretByID — путь, которым notify.Worker достаёт секрет в момент
-// отправки. Существует потому, что раньше секрет ехал в
-// notification_outbox.payload (обычный jsonb) и `SELECT payload->>'secret'`
-// отдавал живые bot-токены за всё окно хранения очереди, полностью обесценивая
-// шифрование alert_channels.secret.
 func TestChannelSecretByID(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -98,9 +89,8 @@ func TestChannelSecretByID(t *testing.T) {
 		t.Fatalf("ChannelSecret = %q, want расшифрованный %q", got, token)
 	}
 
-	// Канал удалили между постановкой в очередь и отправкой — адресат исчез,
-	// и это ErrNotFound, а не «пустой секрет», с которым воркер молча ушёл бы
-	// слать на несуществующий канал.
+	// Канал удалили между постановкой в очередь и отправкой — ErrNotFound, не
+	// пустой секрет, с которым воркер молча ушёл бы слать в никуда.
 	if err := svc.DeleteChannel(ctx, pid, id); err != nil {
 		t.Fatalf("DeleteChannel: %v", err)
 	}

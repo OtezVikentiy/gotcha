@@ -6,10 +6,6 @@ import (
 	"testing"
 )
 
-// TestEmptyStateHeadingLevel: заголовок пустого состояния продолжает структуру
-// страницы (после <h1> — h2, внутри секции с <h2>/<h3> — h3), а не
-// фиксированный <h3>, из-за которого структура прыгала h1→h3 (№78,
-// WCAG 1.3.1).
 func TestEmptyStateHeadingLevel(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {

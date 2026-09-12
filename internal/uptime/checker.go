@@ -8,8 +8,7 @@ import (
 	"time"
 )
 
-// Result — итог одной проверки; поля 1:1 с колонками CH-таблицы
-// check_results.
+// поля 1:1 с колонками CH-таблицы check_results.
 type Result struct {
 	OK         bool
 	StatusCode int
@@ -21,21 +20,14 @@ type Result struct {
 	SSLExpiresAt *time.Time // только для https
 }
 
-// Checker выполняет одну проверку монитора. Реализации чисты: без БД и без
-// Service — только сеть. Ошибки самой проверки (недоступность, таймаут,
-// неожиданный код ответа и т.п.) — это не Go-ошибка Check, а Result{OK:
-// false, Error: "..."}; Go-ошибка возвращалась бы только при программной
-// невозможности выполнить проверку в принципе, чего у этих чекеров не
-// бывает.
+// реализации чисты — без БД/Service, только сеть; сбои проверки
+// (недоступность, таймаут) это Result{OK:false}, не Go-ошибка Check.
 type Checker interface {
 	Check(ctx context.Context, m Monitor) Result
 }
 
-// CheckerFor возвращает чекер для kind монитора. kind=heartbeat не
-// проверяется активно (ждёт входящих пингов от клиента), поэтому для него
-// возвращается ошибка — планировщик не должен пытаться его чекать.
-// allowPrivate прокидывается в HTTP/TCP-чекеры: false (по умолчанию у
-// Runner/ProbeClient) включает SSRF-фильтр приватных целей.
+// kind=heartbeat не проверяется активно — ждёт входящих пингов, поэтому
+// возвращает ошибку; allowPrivate=false (дефолт) включает SSRF-фильтр.
 func CheckerFor(kind Kind, allowPrivate bool) (Checker, error) {
 	switch kind {
 	case KindHTTP:
@@ -51,17 +43,11 @@ func CheckerFor(kind Kind, allowPrivate bool) (Checker, error) {
 	}
 }
 
-// retryDelay — пауза между повторами одной проверки. Немедленный повтор почти
-// всегда проходит (транзиентный блип), но короткая пауза не даёт молотить цель.
-// var (не const) — тесты понижают её, чтобы не ждать реальную секунду.
+// var, не const — тесты понижают её, чтобы не ждать реальную секунду.
 var retryDelay = time.Second
 
-// checkWithRetries выполняет проверку и, при неуспехе, повторяет её ещё
-// m.Retries раз (с паузой retryDelay), пока не получит OK или не исчерпает
-// повторы. Возвращает первый успешный результат либо последний неуспешный.
-// Гасит транзиентные сбои (например периодический TLS-тарпит фронта, проходящий
-// на немедленном повторе), не поднимая ложных инцидентов — в отличие от
-// FailThreshold, который считает уже ЗАПИСАННЫЕ сбои подряд.
+// гасит транзиентные сбои на уровне одной проверки — в отличие от
+// FailThreshold, который считает уже записанные сбои подряд.
 func checkWithRetries(ctx context.Context, checker Checker, m Monitor) Result {
 	res := checker.Check(ctx, m)
 	for i := 0; i < m.Retries && !res.OK; i++ {
@@ -75,9 +61,7 @@ func checkWithRetries(ctx context.Context, checker Checker, m Monitor) Result {
 	return res
 }
 
-// msToUint32 переводит d в целые миллисекунды, отрицательные значения
-// (не должны возникать, но береженого бог бережёт) превращает в 0, а
-// значения, не влезающие в uint32, — насыщает math.MaxUint32.
+// отрицательные значения (не должны возникать) → 0; переполнение uint32 → MaxUint32.
 func msToUint32(d time.Duration) uint32 {
 	ms := d.Milliseconds()
 	switch {
@@ -90,17 +74,12 @@ func msToUint32(d time.Duration) uint32 {
 	}
 }
 
-// isTimeout сообщает, представляет ли err (возможно, обёрнутую) таймаут —
-// используется, чтобы добавить в Result.Error префикс "timeout:", по
-// которому его легко отличить от прочих сетевых ошибок.
 func isTimeout(err error) bool {
 	var te interface{ Timeout() bool }
 	return errors.As(err, &te) && te.Timeout()
 }
 
-// errMessage форматирует err в текст Result.Error. Для таймаутов возвращает
-// конкретный формат "timeout after Ns", если timeoutSeconds > 0; в противном
-// случае просто "timeout".
+// таймаут с известным timeoutSeconds → "timeout after Ns", иначе просто "timeout".
 func errMessage(err error, timeoutSeconds int) string {
 	if isTimeout(err) {
 		if timeoutSeconds > 0 {

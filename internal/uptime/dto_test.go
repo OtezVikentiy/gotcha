@@ -7,9 +7,6 @@ import (
 	"time"
 )
 
-// TestJobDTORoundTrip: NewJobDTO вытаскивает из задания только то, что нужно
-// чекеру (kind/config/timeout), а JobDTO.Monitor() восстанавливает из этого
-// минимальный Monitor — id и поля совпадают в обе стороны.
 func TestJobDTORoundTrip(t *testing.T) {
 	cfg := json.RawMessage(`{"url":"https://x"}`)
 	job := Job{
@@ -31,9 +28,6 @@ func TestJobDTORoundTrip(t *testing.T) {
 	}
 }
 
-// TestResultDTORoundTrip: NewResultDTO раскладывает Result по сетевому DTO
-// (тайминги в подобъект Timings), а ResultDTO.Result() собирает обратно —
-// все поля переживают оба преобразования без потерь.
 func TestResultDTORoundTrip(t *testing.T) {
 	exp := time.Now().UTC().Add(48 * time.Hour)
 	r := Result{

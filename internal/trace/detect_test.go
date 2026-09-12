@@ -9,7 +9,6 @@ import (
 
 var detectBase = time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC)
 
-// mkSpan — спан с заданным родителем, op, описанием и длительностью в мс.
 func mkSpan(id, parent, op, desc string, ms int) Span {
 	return Span{
 		SpanID:       id,
@@ -21,9 +20,6 @@ func mkSpan(id, parent, op, desc string, ms int) Span {
 	}
 }
 
-// mkSpanAt — спан, начинающийся через offMs от начала транзакции: нужен там, где
-// важно взаимное расположение спанов во времени (последовательные вызовы против
-// параллельных), а не только их длительность.
 func mkSpanAt(id, parent, op, desc string, offMs, ms int) Span {
 	start := detectBase.Add(time.Duration(offMs) * time.Millisecond)
 	return Span{
@@ -36,7 +32,6 @@ func mkSpanAt(id, parent, op, desc string, offMs, ms int) Span {
 	}
 }
 
-// mkTx — транзакция длительностью ms с указанными спанами; корень — "root".
 func mkTx(ms int, spans ...Span) Transaction {
 	return Transaction{
 		TraceID: "trace-1",
@@ -49,7 +44,6 @@ func mkTx(ms int, spans ...Span) Transaction {
 	}
 }
 
-// repeatSpans — n спанов с одним родителем и одинаковым описанием.
 func repeatSpans(n int, parent, op, desc string, ms int) []Span {
 	out := make([]Span, 0, n)
 	for i := 0; i < n; i++ {
@@ -58,7 +52,6 @@ func repeatSpans(n int, parent, op, desc string, ms int) []Span {
 	return out
 }
 
-// kindsOf — только виды находок, в порядке возврата.
 func kindsOf(fs []Finding) []string {
 	out := make([]string, 0, len(fs))
 	for _, f := range fs {
@@ -469,9 +462,7 @@ func TestDetectEvidenceInMicroseconds(t *testing.T) {
 	}
 }
 
-// Одна транзакция — не больше maxFindings находок: враждебный (или просто
-// сломанный) энвелоп с сотней разных медленных запросов не должен превращаться в
-// сотню строк perf_issues и сотню задач в outbox.
+// Враждебный энвелоп с сотней разных медленных запросов не даёт сотню строк perf_issues.
 func TestDetectCapsFindingsPerTransaction(t *testing.T) {
 	spans := make([]Span, 0, 100)
 	for i := 0; i < 100; i++ {
@@ -492,9 +483,7 @@ func TestDetectCapsFindingsPerTransaction(t *testing.T) {
 	}
 }
 
-// Один и тот же fingerprint (один запрос, N+1 под ДВУМЯ родителями) — одна
-// находка: иначе Record зовётся дважды за транзакцию, count растёт на 2, а
-// evidence второй группы затирает первую.
+// Один и тот же запрос, N+1 под ДВУМЯ родителями — одна находка, не две.
 func TestDetectMergesFindingsWithSameFingerprint(t *testing.T) {
 	const sel = "SELECT * FROM users WHERE id = 1"
 	spans := append(repeatSpans(5, "p1", "db.sql.query", sel, 10),
@@ -552,7 +541,7 @@ func TestFindingFingerprintStable(t *testing.T) {
 	}
 }
 
-// Detect — чистая функция: тот же вход даёт тот же выход.
+// Тот же вход даёт тот же выход при любом числе повторных вызовов.
 func TestDetectDeterministic(t *testing.T) {
 	tx := mkTx(1000, append(
 		repeatSpans(6, "p1", "db.sql.query", "SELECT * FROM users WHERE id = 1", 600),
@@ -568,9 +557,8 @@ func TestDetectDeterministic(t *testing.T) {
 
 func TestDefaultDetectorConfig(t *testing.T) {
 	cfg := DefaultDetectorConfig()
-	// NPlusOneMinTotalMs проверяется отдельно: его регресс к нулю сделал бы N+1
-	// «срабатывающим всегда» (пол по времени исчез бы), и ни один другой тест
-	// этого бы не поймал.
+	// Регресс NPlusOneMinTotalMs к нулю сделал бы N+1 «срабатывающим всегда» — ни один
+	// другой тест этого бы не поймал.
 	if cfg.NPlusOneMin != 5 || cfg.NPlusOneMinTotalMs != 20 || cfg.SlowDBMs != 500 || cfg.HTTPFloodMin != 10 {
 		t.Errorf("DefaultDetectorConfig() = %+v", cfg)
 	}
@@ -637,10 +625,6 @@ func TestDetectZeroConfigUsesDefaults(t *testing.T) {
 	}
 }
 
-// --- регрессии ревью этапа 3 ---
-
-// mkSpanUS — спан длительностью в МИКРОсекундах: Redis-спаны бывают
-// субмиллисекундными, а именно на них проверяется пол по времени у N+1.
 func mkSpanUS(id, parent, op, desc string, us int) Span {
 	return Span{
 		SpanID:       id,
@@ -652,10 +636,8 @@ func mkSpanUS(id, parent, op, desc string, us int) Span {
 	}
 }
 
-// Эндпойнт без шаблонизации маршрута (`GET /users/42`, `GET /users/43`, ...) с
-// одним и тем же N+1 — это ОДНА проблема, а не одна на каждый запрос: в
-// фингерпринт идёт НОРМАЛИЗОВАННОЕ имя транзакции. Иначе 100 запросов дали бы
-// 100 строк perf_issues и 100 алертов.
+// Эндпойнт без шаблонизации маршрута (`GET /users/42`, `GET /users/43`, ...) с одним и тем
+// же N+1 — это ОДНА проблема, а не сотня строк perf_issues.
 func TestDetectFingerprintNormalizesCulprit(t *testing.T) {
 	fps := map[string]bool{}
 	for i := 0; i < 100; i++ {
@@ -674,9 +656,8 @@ func TestDetectFingerprintNormalizesCulprit(t *testing.T) {
 	}
 }
 
-// Не только числовые id: ObjectID, хеши и slug'и с длинным числовым хвостом
-// тоже обязаны схлопываться в один фингерпринт — иначе perf_issues растёт по
-// строке на КАЖДЫЙ запрос (числовой маршрут это уже умел, остальные — нет).
+// Не только числовые id: ObjectID, хеши и slug'и с числовым хвостом тоже обязаны
+// схлопываться в один фингерпринт.
 func TestDetectFingerprintCollapsesIDLikeCulprits(t *testing.T) {
 	names := []string{
 		"GET /orders/5f8d0d55b54764421b7156c9",
@@ -736,9 +717,8 @@ func TestDetectNPlusOneTotalDurationFloor(t *testing.T) {
 	findingOf(t, got, KindNPlusOne)
 }
 
-// Здоровый параллельный веер (12 одновременных вызовов) — это ХОРОШО написанный
-// эндпойнт, а не проблема. http_flood — про кандидата на распараллеливание,
-// поэтому срабатывает только на последовательных вызовах.
+// Здоровый параллельный веер (12 одновременных вызовов) — не проблема, срабатывает
+// только на последовательных вызовах.
 func TestDetectHTTPFloodOnlySequential(t *testing.T) {
 	parallel := make([]Span, 0, 12)
 	for i := 0; i < 12; i++ {
@@ -763,9 +743,7 @@ func TestDetectHTTPFloodOnlySequential(t *testing.T) {
 	}
 }
 
-// Пол по суммарному времени не имеет права ГЛУШИТЬ детектор у SDK со сломанными
-// (нулевыми/обрезанными до миллисекунд) часами спанов: цикл из 40 обращений —
-// проблема независимо от того, что SDK отчитался о нулевой длительности.
+// Пол по времени не должен глушить детектор у SDK со сломанными часами (End<=Start).
 func TestDetectNPlusOneZeroClockSpans(t *testing.T) {
 	// 40 спанов с нулевой длительностью: totalUS = 0, но count вдвое выше порога.
 	loud := make([]Span, 0, 40)
@@ -788,9 +766,8 @@ func TestDetectNPlusOneZeroClockSpans(t *testing.T) {
 	}
 }
 
-// Водопад с ОГРАНИЧЕННЫМ параллелизмом (20 вызовов по 2 одновременно) — такой же
-// кандидат на распараллеливание, как чисто последовательный: доля стенного
-// времени у него ~50%, и гейт isSequential его молча ронял.
+// Водопад с ОГРАНИЧЕННЫМ параллелизмом (20 вызовов по 2 одновременно) — доля стенного
+// времени у него ~50%, гейт isSequential его молча ронял.
 func TestDetectHTTPFloodBoundedConcurrency(t *testing.T) {
 	// 10 «волн» по 2 параллельных вызова: count/max_concurrency = 10 >= HTTPFloodMin.
 	waves := make([]Span, 0, 20)
@@ -849,18 +826,11 @@ func TestDetectEmptyTransaction(t *testing.T) {
 	}
 }
 
-// Orphan-спаны (ParentSpanID не встречается среди спанов транзакции и не
-// равен корню) участвуют в N+1 наравне с остальными: место выпуска — это
-// идентификатор родителя, а не факт его присутствия в пейлоаде. Родитель мог
-// не доехать (лимит спанов SDK, битые данные), но N одинаковых запросов под
-// одним идентификатором — тот же цикл, что и под живым родителем; молчать о
-// нём значило бы ослепнуть на SDK, у которых родитель теряется.
+// Спаны с ParentSpanID, отсутствующим среди спанов транзакции (родитель не доехал),
+// участвуют в N+1 наравне с остальными: ключ группы — сам идентификатор родителя.
 func TestDetectOrphanSpans(t *testing.T) {
 	const q = "SELECT * FROM users WHERE id = 7"
 
-	// Одно скопление под несуществующим родителем: находка есть, parent_op
-	// пуст — op родителя неоткуда взять (шаблон детали проблемы пустой
-	// parent_op не показывает).
 	t.Run("single orphan cluster is N+1", func(t *testing.T) {
 		got := Detect(mkTx(1000, repeatSpans(6, "ghost", "db.sql.query", q, 5)...), DefaultDetectorConfig())
 		f := findingOf(t, got, KindNPlusOne)
@@ -872,10 +842,8 @@ func TestDetectOrphanSpans(t *testing.T) {
 		}
 	})
 
-	// Два скопления с РАЗНЫМИ несуществующими родителями и одним запросом —
-	// два места, каждое ниже порога: N+1 нет. Ключ группы — родитель, и он
-	// работает и для отсутствующих родителей; без него детектор склеил бы
-	// 3+3 в шесть и открыл ложную проблему.
+	// Разные несуществующие родители — разные места кода: без этого детектор
+	// склеил бы 3+3 в шесть и открыл ложную проблему.
 	t.Run("clusters under different missing parents stay apart", func(t *testing.T) {
 		spans := append(
 			repeatSpansFrom(0, 3, "ghost1", "db.sql.query", q, 10),
@@ -886,7 +854,6 @@ func TestDetectOrphanSpans(t *testing.T) {
 		}
 	})
 
-	// Один несуществующий родитель, разные запросы — разные группы, N+1 нет.
 	t.Run("different queries under one missing parent stay apart", func(t *testing.T) {
 		spans := append(
 			repeatSpansFrom(0, 3, "ghost", "db.sql.query", q, 10),
@@ -897,10 +864,8 @@ func TestDetectOrphanSpans(t *testing.T) {
 		}
 	})
 
-	// Один несуществующий родитель, один запрос, два «скопления» по 3 —
-	// снаружи неотличимы от одного цикла из шести: у детектора нет признака,
-	// по которому их разделить (время он не кластеризует ни для живых, ни для
-	// потерянных родителей). Это N+1 с count=6, а не два молчания.
+	// Два «скопления» по 3 под одним недостающим родителем неотличимы от одного цикла
+	// из шести — детектор не кластеризует по времени, это N+1 с count=6.
 	t.Run("same missing parent and query is one loop", func(t *testing.T) {
 		spans := append(
 			repeatSpansFrom(0, 3, "ghost", "db.sql.query", q, 10),
@@ -926,8 +891,7 @@ func TestDetectOrphanSpans(t *testing.T) {
 	})
 }
 
-// repeatSpansFrom — как repeatSpans, но с нумерацией id от from: чтобы два
-// скопления в одной транзакции не делили span_id.
+// Нумерация id от from — чтобы два скопления в одной транзакции не делили span_id.
 func repeatSpansFrom(from, n int, parent, op, desc string, ms int) []Span {
 	out := make([]Span, 0, n)
 	for i := from; i < from+n; i++ {

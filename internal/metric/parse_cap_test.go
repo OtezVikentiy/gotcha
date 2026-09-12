@@ -10,14 +10,10 @@ import (
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 )
 
-// TestMapOTLPCapsPoints — потолок числа датапойнтов на один OTLP /v1/metrics
-// запрос: свыше maxOTLPMetricPoints лишнее отбрасывается (защита от
-// амплификации памяти/CPU недоверенным экспортом).
 func TestMapOTLPCapsPoints(t *testing.T) {
 	now := time.Now().UTC()
 	pts := make(map[uint64]float64, maxOTLPMetricPoints+100)
 	for i := 0; i < maxOTLPMetricPoints+100; i++ {
-		// уникальные валидные (в окне) таймстемпы
 		ts := uint64(now.Add(-time.Duration(i) * time.Second).UnixNano())
 		pts[ts] = float64(i)
 	}
@@ -28,16 +24,8 @@ func TestMapOTLPCapsPoints(t *testing.T) {
 	}
 }
 
-// TestMapOTLPCapsHistogramBuckets — потолок длины массивов гистограммы: экспорт с
-// гигантскими bucket_counts/explicit_bounds обрезается до maxHistogramBuckets
-// границ (защита от амплификации памяти/записи недоверенным экспортом), но
-// СОГЛАСОВАННО: OTLP-инвариант len(counts) == len(bounds)+1 переживает
-// обрезку, а отрезанный хвост счётчиков складывается в последний
-// (бесконечный) бакет — сумма наблюдений сохраняется. Раньше оба массива
-// резались порознь по одному лимиту, и у обрезанной гистограммы пропадал
-// бесконечный бакет, а histogramQuantile читал границы со сдвигом.
 func TestMapOTLPCapsHistogramBuckets(t *testing.T) {
-	const bucketsIn = 600 // бакетов на входе: 600 границ, 601 счётчик
+	const bucketsIn = 600
 	bounds := make([]float64, bucketsIn)
 	buckets := make([]uint64, bucketsIn+1)
 	var sum uint64
@@ -85,8 +73,6 @@ func TestMapOTLPCapsHistogramBuckets(t *testing.T) {
 	}
 }
 
-// TestCapHistogramLeavesShortArraysAlone — гистограмма в пределах потолка
-// возвращается как есть, без копии и без изменений.
 func TestCapHistogramLeavesShortArraysAlone(t *testing.T) {
 	counts := []uint64{1, 2, 3}
 	bounds := []float64{10, 20}
@@ -99,9 +85,6 @@ func TestCapHistogramLeavesShortArraysAlone(t *testing.T) {
 	}
 }
 
-// TestMapOTLPSingleMetricCapsDatapoints — одна метрика с > maxOTLPMetricPoints
-// датапойнтов: кап проверяется ВНУТРИ цикла по точкам, поэтому результат ровно
-// maxOTLPMetricPoints, а не аллоцирует весь гигантский массив (амплификация).
 func TestMapOTLPSingleMetricCapsDatapoints(t *testing.T) {
 	now := time.Now().UTC()
 	dps := make([]*metricspb.NumberDataPoint, 0, maxOTLPMetricPoints+500)
@@ -122,9 +105,6 @@ func TestMapOTLPSingleMetricCapsDatapoints(t *testing.T) {
 	}
 }
 
-// TestMapOTLPCapsStringLengths — name/unit/service/environment и ключи/значения
-// атрибутов каппятся по длине (недоверенный ввод не должен раздувать колонки
-// metric_points).
 func TestMapOTLPCapsStringLengths(t *testing.T) {
 	long := strings.Repeat("x", 500)
 	longKey := strings.Repeat("k", 500)
@@ -153,7 +133,6 @@ func TestMapOTLPCapsStringLengths(t *testing.T) {
 	if got := len([]rune(p.Environment)); got != 200 {
 		t.Fatalf("Environment runes = %d, want 200", got)
 	}
-	// Ключ каппится до 64 рун, значение до 200.
 	var gotKey, gotVal string
 	for k, v := range p.Attributes {
 		gotKey, gotVal = k, v

@@ -12,16 +12,12 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// fakeCHConn/fakeCHBatch mirror event.fakeConn/fakeBatch: Append counts rows
-// pending in the batch, Send moves them into conn.rows on success or fails
-// when conn.fail is set.
 type fakeCHConn struct {
 	mu    sync.Mutex
 	rows  int
 	fail  bool
 	sends int
-	// poison — если задан, Send падает, когда среди аргументов Append есть
-	// «ядовитый» ряд (data-level отказ конкретной строки, не всего батча).
+	// если задан, Send падает на «ядовитом» (data-level, не всего батча) ряду.
 	poison func(args []any) bool
 }
 
@@ -90,11 +86,11 @@ func TestResultWriterRetryKeepsRows(t *testing.T) {
 	go w.Run()
 	w.Add(1, 1, "local", time.Now(), Result{OK: true})
 	w.Add(1, 1, "local", time.Now(), Result{OK: true})
-	waitForCH(t, func() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.sends >= 2 }) // ретраится
+	waitForCH(t, func() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.sends >= 2 })
 	c.mu.Lock()
 	c.fail = false
 	c.mu.Unlock()
-	waitForCH(t, func() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.rows == 2 }) // доехали
+	waitForCH(t, func() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.rows == 2 })
 	_ = w.Close(context.Background())
 }
 
@@ -116,9 +112,8 @@ func TestResultWriterDropsOldestOnOverflow(t *testing.T) {
 }
 
 func TestResultWriterBulkDropOnOverfilledBuffer(t *testing.T) {
-	// Буфер переполнен сверх maxBuf (как после возврата пачки во flush). Один
-	// Add обязан разом срезать весь избыток: при 7 рядах и maxBuf=5 добавление
-	// одного элемента дропает 3 (7+1-5) и оставляет ровно maxBuf.
+	// буфер переполнен сверх maxBuf, как после возврата пачки во flush: один
+	// Add обязан разом дропнуть избыток (7+1-5=3) и оставить ровно maxBuf.
 	c := &fakeCHConn{}
 	w := NewResultWriter(c)
 	w.maxBuf = 5
@@ -155,8 +150,8 @@ func TestResultWriterCloseIsIdempotent(t *testing.T) {
 }
 
 func TestResultWriterIsolatesPoisonRowAfterThreshold(t *testing.T) {
-	// Send падает, если среди рядов есть «ядовитый» (region == "poison").
-	// В insert region передаётся третьим аргументом Append.
+	// «ядовитый» — ряд с region == "poison"; в insert region передаётся
+	// третьим аргументом Append.
 	c := &fakeCHConn{poison: func(args []any) bool {
 		return len(args) > 2 && args[2] == "poison"
 	}}
@@ -164,13 +159,13 @@ func TestResultWriterIsolatesPoisonRowAfterThreshold(t *testing.T) {
 	w.batchSize = 100 // весь буфер уходит одним батчем
 
 	at := time.Now()
-	w.Add(1, 1, "poison", at, Result{OK: true}) // 1 ядовитый
-	for i := 0; i < 5; i++ {                    // + 5 хороших
+	w.Add(1, 1, "poison", at, Result{OK: true})
+	for i := 0; i < 5; i++ {
 		w.Add(1, 1, "local", at, Result{OK: true})
 	}
 
-	// Больше порога подряд-фейлов: обычный ретрай застревает на ядовитом ряду,
-	// после poisonThreshold флаш должен изолировать его бинарным дроблением.
+	// цикл длиной poisonThreshold+1: обычный ретрай застревает на ядовитом
+	// ряду, после порога флаш обязан изолировать его дроблением.
 	for i := 0; i < poisonThreshold+1; i++ {
 		w.flush(context.Background())
 	}
@@ -189,7 +184,6 @@ func TestResultWriterIsolatesPoisonRowAfterThreshold(t *testing.T) {
 	}
 }
 
-// Транзиентный отказ (сеть/ctx): изоляция не должна дропать валидные результаты.
 func TestResultWriterTransientFailureDropsNothing(t *testing.T) {
 	c := &fakeCHConn{fail: true}
 	w := NewResultWriter(c)

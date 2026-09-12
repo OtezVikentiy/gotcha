@@ -10,12 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0087FillsExistingNullsBeforeNotNull — миграция на непустой
-// базе: строка host_incidents с NULL в current_value/peak_value (след
-// ручной вставки мимо IncidentService, единственного продового писателя,
-// который такого NULL не оставляет) должна пережить накат 0087 с
-// current_value/peak_value, обнулёнными вместо ошибки ALTER COLUMN ...
-// SET NOT NULL на непустой колонке с NULL-строками.
+// NULL в current_value/peak_value (след ручной вставки мимо IncidentService) должен пережить 0087
+// обнулённым — иначе ALTER COLUMN SET NOT NULL падает на непустой колонке с NULL-строками.
 func TestMigrate0087FillsExistingNullsBeforeNotNull(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -38,8 +34,7 @@ func TestMigrate0087FillsExistingNullsBeforeNotNull(t *testing.T) {
 		"INSERT INTO projects (org_id, slug, name) VALUES ($1, 'm87', 'M87') RETURNING id", orgID)
 	mustScan(t, pool, &hostID,
 		"INSERT INTO hosts (project_id, name) VALUES ($1, 'web-01') RETURNING id", projectID)
-	// Строка с NULL в обеих колонках — до 0087 схема это разрешает, любой
-	// путь записи Go его не оставляет, но ручной SQL мог.
+	// До 0087 схема разрешает NULL — ни один путь записи Go его не оставляет, но ручной SQL мог.
 	mustScan(t, pool, &incidentID,
 		`INSERT INTO host_incidents (project_id, host_id, kind, status, current_value, peak_value)
 		 VALUES ($1, $2, 'disk', 'open', NULL, NULL) RETURNING id`, projectID, hostID)
@@ -74,8 +69,7 @@ func TestMigrate0087FillsExistingNullsBeforeNotNull(t *testing.T) {
 	}
 }
 
-// TestMigrate0087DownRestoresNullable — откат снимает NOT NULL: down должен
-// применяться без ошибки, а вставка NULL снова проходить.
+// down снимает NOT NULL — применяется без ошибки, вставка NULL снова проходит.
 func TestMigrate0087DownRestoresNullable(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

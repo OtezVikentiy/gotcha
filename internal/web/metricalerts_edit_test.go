@@ -13,9 +13,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 )
 
-// metricRuleUpdateForm — валидная форма правки со всеми полями, как её шлёт
-// браузер со СНЯТЫМ чекбоксом «Включено»: hidden enabled=off приходит всегда,
-// "on" от чекбокса добавляет вызывающий (form.Add("enabled", "on")).
 func metricRuleUpdateForm() url.Values {
 	return url.Values{
 		"metric_name": {"cpu.load"}, "aggregation": {"p95"}, "comparator": {"lt"},
@@ -49,7 +46,6 @@ func TestWebMetricAlertUpdate(t *testing.T) {
 	}
 	updPath := base + "/" + strconv.FormatInt(target.ID, 10)
 
-	// До правки оба правила включены — бейджа «Выключено» на странице нет.
 	resp := getWithCookie(t, s.srv, base, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -57,7 +53,6 @@ func TestWebMetricAlertUpdate(t *testing.T) {
 		t.Fatalf("page before update (status %d) must not show disabled badge", resp.StatusCode)
 	}
 
-	// Правка без чекбокса enabled → 303: все поля обновлены, правило выключено.
 	resp = postForm(t, s.srv, updPath, metricRuleUpdateForm(), s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -73,7 +68,6 @@ func TestWebMetricAlertUpdate(t *testing.T) {
 		got.LabelKey != "az" || got.LabelValue != "a1" || got.Enabled || got.Severity != "critical" {
 		t.Fatalf("updated rule = %+v", got)
 	}
-	// Свидетель не тронут — правка задела ИМЕННО целевое правило.
 	w2, found, err := s.rules.Get(ctx, witness.ID)
 	if err != nil || !found {
 		t.Fatalf("get witness: (%v,%v)", found, err)
@@ -82,7 +76,6 @@ func TestWebMetricAlertUpdate(t *testing.T) {
 		t.Fatalf("witness changed: %+v", w2)
 	}
 
-	// Выключение видно в бейдже.
 	resp = getWithCookie(t, s.srv, base, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -90,8 +83,6 @@ func TestWebMetricAlertUpdate(t *testing.T) {
 		t.Fatalf("disabled badge missing after update: %s", body)
 	}
 
-	// Включение обратно (чекбокс взведён: браузер шлёт и hidden "off", и
-	// "on") — бейдж «Выключено» пропадает.
 	form := metricRuleUpdateForm()
 	form.Add("enabled", "on")
 	resp = postForm(t, s.srv, updPath, form, s.srv.URL, ownerCookie)
@@ -107,7 +98,6 @@ func TestWebMetricAlertUpdate(t *testing.T) {
 		t.Fatalf("disabled badge must disappear after re-enable")
 	}
 
-	// Нечисловой ruleID → 400.
 	resp = postForm(t, s.srv, base+"/abc", metricRuleUpdateForm(), s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -115,7 +105,6 @@ func TestWebMetricAlertUpdate(t *testing.T) {
 		t.Fatalf("bad ruleID status = %d, want 400", resp.StatusCode)
 	}
 
-	// Без Origin → 403.
 	resp = postForm(t, s.srv, updPath, metricRuleUpdateForm(), "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -123,8 +112,6 @@ func TestWebMetricAlertUpdate(t *testing.T) {
 		t.Fatalf("no-origin status = %d, want 403", resp.StatusCode)
 	}
 
-	// Кросс-тенант, вариант 1: посторонний пользователь правит правило чужого
-	// проекта → 404 (existence-oracle requireProjectOperator).
 	_, foreignCookie := orgSettingsRegister(t, s.auth, "ma-upd-foreign@example.com")
 	resp = postForm(t, s.srv, updPath, metricRuleUpdateForm(), s.srv.URL, foreignCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -133,9 +120,6 @@ func TestWebMetricAlertUpdate(t *testing.T) {
 		t.Fatalf("foreign user update status = %d, want 404", resp.StatusCode)
 	}
 
-	// Кросс-тенант, вариант 2: владелец СВОЕГО проекта подставляет чужой
-	// ruleID в путь своего проекта → 404 из скоупа RuleService.Update,
-	// чужое правило не изменилось.
 	attackerID, attackerCookie := orgSettingsRegister(t, s.auth, "ma-upd-attacker@example.com")
 	ao, err := s.org.CreateOrg(ctx, "ma-upd-att-co", "MA Att Co", attackerID)
 	if err != nil {
@@ -182,8 +166,6 @@ func TestWebMetricAlertUpdateValidationReopensModal(t *testing.T) {
 		t.Fatalf("create r2: %v", err)
 	}
 
-	// 422 правки: переоткрывается модалка ИМЕННО правила r2 (и только она),
-	// введённое сохранено, снятый чекбокс enabled остаётся снятым.
 	bad := metricRuleUpdateForm()
 	bad.Set("metric_name", "typed.metric.value")
 	bad.Set("threshold", "NaN")
@@ -208,8 +190,6 @@ func TestWebMetricAlertUpdateValidationReopensModal(t *testing.T) {
 	if !strings.Contains(bodyStr, `value="typed.metric.value"`) {
 		t.Fatalf("typed value lost after 422: %s", bodyStr)
 	}
-	// Фрагмент открытой модалки: чекбокс enabled остался снятым (в POST
-	// пришёл только hidden "off").
 	start := strings.Index(bodyStr, `id="`+openID+`" class="modal modal--open"`)
 	end := strings.Index(bodyStr[start:], "</form>")
 	fragment := bodyStr[start : start+end]
@@ -217,7 +197,6 @@ func TestWebMetricAlertUpdateValidationReopensModal(t *testing.T) {
 		t.Fatalf("unchecked enabled must stay unchecked after 422: %s", fragment)
 	}
 
-	// 422 создания: переоткрывается модалка создания, а не правки.
 	create := metricRuleUpdateForm()
 	create.Set("metric_name", "created.metric.value")
 	create.Set("threshold", "NaN")
@@ -238,9 +217,6 @@ func TestWebMetricAlertUpdateValidationReopensModal(t *testing.T) {
 		t.Fatalf("typed value lost after create 422")
 	}
 
-	// Ошибка валидации из СЕРВИСА (форма её не ловит: aggregation проверяет
-	// только RuleService.validateRule) — тоже 422 с переоткрытием модалки
-	// именно правимого правила, а не 500.
 	svcBad := metricRuleUpdateForm()
 	svcBad.Set("aggregation", "bogus")
 	resp = postForm(t, s.srv, base+"/"+strconv.FormatInt(r2.ID, 10), svcBad, s.srv.URL, ownerCookie)
@@ -253,8 +229,6 @@ func TestWebMetricAlertUpdateValidationReopensModal(t *testing.T) {
 		t.Fatalf("service-invalid 422 must reopen edit modal %s", openID)
 	}
 
-	// Прямой POST мимо формы с посторонней severity — 422 из
-	// metricRuleFromForm (до сервиса), а не 500 от CHECK-ограничения БД.
 	sevBad := metricRuleUpdateForm()
 	sevBad.Set("severity", "bogus")
 	resp = postForm(t, s.srv, base+"/"+strconv.FormatInt(r2.ID, 10), sevBad, s.srv.URL, ownerCookie)
@@ -293,8 +267,6 @@ func TestWebMetricAlertRuleModalUniqueIDs(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("page status = %d", resp.StatusCode)
 	}
-	// Несколько правил — модалка правки на каждую строку: ни один id
-	// в документе не должен повторяться (datalist known-metrics — один).
 	seen := map[string]int{}
 	for _, m := range regexp.MustCompile(`id="([^"]+)"`).FindAllStringSubmatch(string(body), -1) {
 		seen[m[1]]++
@@ -307,10 +279,6 @@ func TestWebMetricAlertRuleModalUniqueIDs(t *testing.T) {
 	if seen["known-metrics"] != 1 {
 		t.Fatalf("datalist known-metrics must appear exactly once, got %d", seen["known-metrics"])
 	}
-	// Каждая форма (создание + правка на строку) несёт hidden enabled=off —
-	// без него снятый чекбокс не отличим от POST мимо формы; и в каждой
-	// (правила включены, у создания дефолт «включено») чекбокс взведён —
-	// позитивный контроль для негативного ассерта в тесте переоткрытия.
 	want := len(names) + 1
 	if got := strings.Count(string(body), `type="hidden" name="enabled" value="off"`); got != want {
 		t.Fatalf("hidden enabled=off: %d, want %d (one per form)", got, want)
@@ -320,10 +288,6 @@ func TestWebMetricAlertRuleModalUniqueIDs(t *testing.T) {
 	}
 }
 
-// TestWebMetricAlertCreateEnabledContract — контракт поля enabled на
-// создании: POST без поля вовсе (клиент старее формы либо запрос мимо неё) —
-// правило ВКЛЮЧЕНО, как до появления чекбокса; hidden "off" без "on" (снятый
-// чекбокс) — выключено; "off"+"on" (взведённый) — включено.
 func TestWebMetricAlertCreateEnabledContract(t *testing.T) {
 	s := newMetricAlertsStack(t, true)
 	ctx := context.Background()
@@ -379,11 +343,6 @@ func TestWebMetricAlertCreateEnabledContract(t *testing.T) {
 		}
 	}
 
-	// Правка: отсутствие поля enabled целиком — тот же контракт «включено»,
-	// что у создания. Эндпоинт — полная замена правила (отсутствие environment
-	// стирает окружение, отсутствие severity сбрасывает наследование), и
-	// результат определяется запросом, а не историей строки; из формы случай
-	// недостижим — hidden enabled=off шлётся всегда.
 	disabled, err := s.rules.Create(ctx, metric.Rule{ProjectID: project.ID, MetricName: "upd.absent", Aggregation: "avg", Comparator: "gt", Threshold: 5, WindowSeconds: 60, Enabled: false})
 	if err != nil {
 		t.Fatalf("create disabled rule: %v", err)

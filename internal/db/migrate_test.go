@@ -23,7 +23,6 @@ func TestMigratePG(t *testing.T) {
 	if err := db.MigratePG(dsn); err != nil {
 		t.Fatalf("MigratePG: %v", err)
 	}
-	// Идемпотентность: повторный прогон не ошибка.
 	if err := db.MigratePG(dsn); err != nil {
 		t.Fatalf("MigratePG (second run): %v", err)
 	}
@@ -67,11 +66,8 @@ func TestMigrateCHAndRetention(t *testing.T) {
 		return ddl
 	}
 
-	// ClickHouse desugars "INTERVAL N DAY" into "toIntervalDay(N)" at parse
-	// time; SHOW CREATE TABLE reflects the parsed AST, not the original
-	// migration source text. This is server-side normalization, not a
-	// property of the driver or of our SQL (which uses the INTERVAL syntax
-	// verbatim, per spec §5).
+	// ClickHouse разворачивает INTERVAL N DAY в toIntervalDay(N) при парсинге, и
+	// SHOW CREATE TABLE показывает это, а не исходный текст миграции.
 	ddl := showCreate("events")
 	for _, want := range []string{"event_id", "project_id", "issue_id", "toYYYYMM(timestamp)", "toIntervalDay(90)"} {
 		if !strings.Contains(ddl, want) {
@@ -89,8 +85,6 @@ func TestMigrateCHAndRetention(t *testing.T) {
 		}
 	}
 
-	// 0003: транзакции, спаны, агрегирующая MV и trace-колонки в events.
-	// 0007 добавляет колонку measurements.
 	txDDL := showCreate("transactions")
 	for _, want := range []string{
 		"trace_id", "span_id", "transaction", "duration_us", "tags", "source",
@@ -102,8 +96,6 @@ func TestMigrateCHAndRetention(t *testing.T) {
 		}
 	}
 
-	// 0008: MV web_vitals_5m существует после up. Содержимое проверяется
-	// поведением, см. TestWebVitals5mAggregates.
 	var wvExists uint64
 	if err := conn.QueryRow(ctx,
 		"SELECT count() FROM system.tables WHERE database = currentDatabase() AND name = 'web_vitals_5m'").
@@ -124,8 +116,6 @@ func TestMigrateCHAndRetention(t *testing.T) {
 		}
 	}
 
-	// Содержимое MV не проверяем по подстрокам — оно проверяется поведением,
-	// см. TestTransactions5mAggregates.
 	for _, want := range []string{"trace_id", "span_id"} {
 		if !strings.Contains(ddl, want) {
 			t.Errorf("events DDL missing trace column %q:\n%s", want, ddl)
@@ -141,24 +131,19 @@ func TestMigrateCHAndRetention(t *testing.T) {
 	if ddl := showCreate("check_results"); !strings.Contains(ddl, "toIntervalDay(180)") {
 		t.Errorf("check_results TTL not updated to 180 days:\n%s", ddl)
 	}
-	// Идемпотентность: повторный вызов не должен падать, когда TTL уже совпадает.
 	if err := db.ApplyRetention(ctx, conn, 180); err != nil {
 		t.Fatalf("ApplyRetention (second run, same days): %v", err)
 	}
 
-	// Спаны ретенируются отдельным числом дней (GOTCHA_SPAN_RETENTION_DAYS),
-	// а не вместе с events/check_results. Стартовое значение из миграции — 30.
 	if err := db.ApplySpanRetention(ctx, conn, 15); err != nil {
 		t.Fatalf("ApplySpanRetention: %v", err)
 	}
 	if ddl := showCreate("spans"); !strings.Contains(ddl, "toIntervalDay(15)") {
 		t.Errorf("spans TTL not updated to 15 days:\n%s", ddl)
 	}
-	// Спан-ретенция не должна трогать TTL events/check_results (180 дней).
 	if ddl := showCreate("events"); !strings.Contains(ddl, "toIntervalDay(180)") {
 		t.Errorf("events TTL changed by span retention:\n%s", ddl)
 	}
-	// Идемпотентность: повторный вызов с тем же числом дней — no-op, не падает.
 	if err := db.ApplySpanRetention(ctx, conn, 15); err != nil {
 		t.Fatalf("ApplySpanRetention (second run, same days): %v", err)
 	}
@@ -206,19 +191,6 @@ func TestWithMigrationLockSerializes(t *testing.T) {
 	}
 }
 
-// TestMigratePGUpDownUp — up/down/up для PostgreSQL.
-//
-// После down проверяется, что схема ДЕЙСТВИТЕЛЬНО пуста, а не только что вызов
-// вернул nil. Раньше тест смотрел лишь на err, и down-миграция, которая молча
-// ничего не делает, проходила его — все 24 down-файла PG были фактически
-// неверифицированы. CH-версия ниже таблицы считала, PG-версия — нет.
-// TestMigratePGUpDownUp проверяет, что весь набор миграций ЦЕЛИКОМ
-// применяется (up), откатывается до пустой схемы (down) и применяется снова
-// (up) без ошибок — это тест на сам факт «миграции идут и откатываются», а
-// НЕ на обратную совместимость старого бинаря с промежуточной/новой схемой
-// (за той границей метода следит статический грep destructiveForms в
-// internal/guards/migrations_test.go — см. комментарий там, qa P2-2,
-// 2026-08-12, про то, чем этот класс проверок НЕ является).
 func TestMigratePGUpDownUp(t *testing.T) {
 	dsn := testenv.PostgresDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -242,8 +214,6 @@ func TestMigratePGUpDownUp(t *testing.T) {
 	if err := db.MigrateDownPG(dsn); err != nil {
 		t.Fatalf("down: %v", err)
 	}
-	// schema_migrations заводит сам golang-migrate и down её не трогает —
-	// поэтому «пусто» здесь означает «не осталось ничего, кроме неё».
 	if after := userTableCount(t, ctx, pool); after != 0 {
 		names := userTableNames(t, ctx, pool)
 		t.Fatalf("после down осталось %d таблиц: %v — down-миграции не откатывают схему", after, names)
@@ -257,45 +227,10 @@ func TestMigratePGUpDownUp(t *testing.T) {
 	}
 }
 
-// schemaSnapshot читает форму public-схемы PostgreSQL (колонки, констрейнты,
-// индексы, представления) и возвращает её как отсортированный список строк,
-// пригодный для текстового сравнения между двумя моментами. schema_migrations
-// (служебная таблица golang-migrate) исключена — её форма не зависит от
-// миграций проекта и одинакова на любой версии схемы.
 func schemaSnapshot(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []string {
 	t.Helper()
 	var lines []string
 
-	// Позиция колонки (ordinal_position ИЛИ ранг относительно соседей по
-	// таблице) сознательно НЕ входит в снимок — ни сырым
-	// information_schema.ordinal_position, ни row_number() по нему.
-	//
-	// Причина — не гипотетическая, тест ловил обе формы FALSE POSITIVE на
-	// заведомо корректных миграциях этого репозитория при живом прогоне:
-	//   1) 0090 (dep_released_at): PostgreSQL не переиспользует физический
-	//      attnum после DROP COLUMN — ADD COLUMN, вернувший ту же колонку
-	//      после down+up round trip, получает СЛЕДУЮЩИЙ номер (был 21 —
-	//      стал 22), хотя относительный порядок (она по-прежнему последняя)
-	//      не изменился. Сырой ordinal_position считал бы это расхождением
-	//      на КАЖДОЙ миграции, добавляющей колонку, — то есть почти на любой
-	//      миграции проекта.
-	//   2) 0062/0063 (status_pages.public_id/slug): у этого теста «want»
-	//      снимается ПОСЛЕ приведения версии к v ПОСЛЕДОВАТЕЛЬНЫМИ down от
-	//      текущей верхней версии (см. докблок TestMigratePGEachDownMirrorsUp
-	//      про приведение к v) — путь, которым продовый деплой НИКОГДА не
-	//      идёт (он только up, с пустой схемы). На этом пути down 0063
-	//      (DROP COLUMN slug) под up 0062 (ADD COLUMN public_id) уже
-	//      применённым ре-добавляет slug ПОСЛЕ public_id физически — а
-	//      «до» слог стоял ДО public_id (add public_id в 0062 шёл на схеме,
-	//      где slug уже существовал). round trip именно 0062 эту пару не
-	//      трогает и восстанавливает «естественный» порядок (slug, потом
-	//      public_id) — расхождение с «want» чисто из способа приведения
-	//      теста к версии v, а не из содержимого 0062/0063.down.sql.
-	// Оба случая — не находки о миграциях, а свойства метода тестирования
-	// (down+up на приведённой последовательными откатами базе). Присутствие/
-	// тип/nullable/default колонки эти случаи не задевают — только порядок,
-	// который приложение нигде не использует (SQL обращается к колонкам по
-	// имени), поэтому вне комплекта проверяемых свойств формы схемы.
 	colRows, err := pool.Query(ctx, `
 		SELECT table_name, column_name, data_type, is_nullable, column_default
 		FROM information_schema.columns
@@ -388,9 +323,6 @@ func schemaSnapshot(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []str
 	return lines
 }
 
-// diffSnapshots возвращает до 20 строк, присутствующих в want, но не в got, и
-// до 20 строк, присутствующих в got, но не в want — читаемая сводка для
-// TestMigratePGEachDownMirrorsUp вместо полного текста снимков (сотни строк).
 func diffSnapshots(want, got []string) (missing, extra []string) {
 	inGot := make(map[string]bool, len(got))
 	for _, l := range got {
@@ -419,19 +351,6 @@ func diffSnapshots(want, got []string) (missing, extra []string) {
 	return missing, extra
 }
 
-// structuralOnly отрезает суффикс " default=..." у строк колонок (индексы/
-// констрейнты/представления проходят как есть) и пересортировывает. Нужен
-// ТОЛЬКО для промежуточной проверки «down.sql полностью откатывает свой
-// up.sql» в TestMigratePGEachDownMirrorsUp: несколько down.sql этого проекта
-// СОЗНАТЕЛЬНО выставляют другой DEFAULT, чем был у колонки до up (обратная
-// совместимость со старым бинарём на время отката релиза — «legacy»-дефолт
-// квот, 0018/0020). Живой прогон поймал ровно это на 0020
-// (organizations.event_quota): пристинная версия 19 не имеет DEFAULT вовсе
-// (0002 создаёт колонку без него), а down 0020 ставит DEFAULT 1000000 —
-// задокументированная асимметрия, а не находка K12-1. Раунд-трип-проверка
-// (want/got на одной и той же версии v, см. ниже) default НЕ теряет — она
-// сравнивает результат одного и того же up.sql версии v, применённого дважды,
-// так что легитимные «компенсирующие» дефолты down.sql там не участвуют.
 func structuralOnly(lines []string) []string {
 	out := make([]string, len(lines))
 	for i, l := range lines {
@@ -446,7 +365,6 @@ func structuralOnly(lines []string) []string {
 	return out
 }
 
-// equalSnapshots — сравнение двух уже отсортированных снимков schemaSnapshot.
 func equalSnapshots(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -459,59 +377,6 @@ func equalSnapshots(a, b []string) bool {
 	return true
 }
 
-// TestMigratePGEachDownMirrorsUp — K12-1: для каждой версии v от максимальной
-// до 1 откатывает РОВНО ОДНУ миграцию (down v) и накатывает её обратно (up v),
-// сравнивая снимок public-схемы (schemaSnapshot) до и после этого round trip.
-// Расхождение означает, что down.sql версии v не полностью зеркалит свой
-// up.sql (например, забытый DROP COLUMN/DROP INDEX оставляет за собой лишний
-// артефакт, который up создаёт заново с тем же именем и молча дублирует, или
-// вовсе не создаёт, потому что решил, что он уже есть).
-//
-// Сравнение «до/после ВСЕГО round trip» само по себе не ловит забытый
-// DROP: если down.sql — no-op (ничего не удаляет), а up.sql идемпотентен
-// (`CREATE INDEX CONCURRENTLY IF NOT EXISTS`, как у большинства индексов
-// этого проекта — см. 0031/0089), то round trip целиком не меняет схему
-// вообще, и снимки «до» и «после» совпадут, СПРЯТАВ полностью сломанный
-// down (проверено живым прогоном: временная порча down.sql версии 89 —
-// замена DROP INDEX на no-op — тест остался зелёным без промежуточной
-// проверки ниже). Поэтому тест сверяет ОБЕ половины round trip по
-// отдельности: снимок сразу ПОСЛЕ down обязан совпасть с пристинным
-// снимком версии v-1 (сохранён с прошлой итерации в prevWant — см. тело
-// цикла), и только потом отдельно проверяется, что up возвращает обратно
-// к «want».
-//
-// Отличие от TestMigratePGUpDownUp выше: тот проверяет только факт «весь набор
-// миграций откатывается до ПУСТОЙ схемы» — down-файл, который забыл снять одну
-// колонку/индекс/констрейнт, но исправно роняет свою таблицу целиком (DROP
-// TABLE), пройдёт его незамеченным. Этот тест ловит именно такую находку —
-// K12-1: расхождение ЛОКАЛИЗУЕТСЯ до конкретной версии v, а не «где-то в 90
-// миграциях».
-//
-// Проход идёт СНИЗУ ВВЕРХ (v от 1 до max), а не сверху вниз, как в первом
-// черновике брифа задачи, — направление пришлось сменить по факту двух живых
-// провалов на заведомо корректных миграциях этого репозитория при спуске
-// «сверху»:
-//
-//  1. 0090 (dep_released_at): спуск с max к v-1 идёт через ЧУЖИЕ down.sql выше
-//     v (90, 89, …), каждый из которых — DROP COLUMN. PostgreSQL не
-//     переиспользует физический attnum убитой колонки: колонка, вернувшаяся
-//     ОБРАТНО через ADD COLUMN (свой ли round trip, или down чужой более
-//     высокой миграции), получает СЛЕДУЮЩИЙ физический номер, а не старый.
-//  2. 0062/0063 (status_pages.public_id/slug): спуск через down 0063 (ADD
-//     COLUMN slug, «восстанавливает» её) выполняется на состоянии, где
-//     public_id (добавлена 0062) уже присутствует — slug физически встаёт
-//     ПОСЛЕ public_id, хотя в реальной прямой миграции (0002 создаёт slug,
-//     0062 добавляет public_id позже) порядок обратный.
-//
-// В обоих случаях «want» снимался на состоянии, куда прямой forward-деплой
-// (единственный путь, которым живёт прод — см. докблок MigratePGTo) вообще
-// никогда не попадает: спуск через ЧУЖИЕ down.sql — операция, которую прод
-// не делает НИКОГДА (down применяется только тестами). Снизу вверх «want» на
-// шаге v получается ЕДИНСТВЕННО естественным шагом вперёд MigratePGTo(dsn, v)
-// от уже провалидированного v-1 — тем же путём, каким v применяется в проде,
-// — и не может быть загрязнён чужим down.sql: round trip версии v трогает
-// СВОИ (v) down.sql/up.sql и ничьи больше. Итог не слабее спеки «каждый
-// down зеркалит свой up»: он просто снимает «want» безопасным способом.
 func TestMigratePGEachDownMirrorsUp(t *testing.T) {
 	dsn := testenv.PostgresDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
@@ -530,8 +395,6 @@ func TestMigratePGEachDownMirrorsUp(t *testing.T) {
 	if max == 0 {
 		t.Fatal("SchemaVersion: 0 после MigratePG — миграции не применились")
 	}
-	// Сброс перед проходом снизу вверх (см. докблок выше) — единственный
-	// спуск ниже уровня, где мы уже проверили round trip, во всём тесте.
 	if err := db.MigrateDownPG(dsn); err != nil {
 		t.Fatalf("MigrateDownPG (сброс перед проходом снизу вверх): %v", err)
 	}
@@ -542,14 +405,8 @@ func TestMigratePGEachDownMirrorsUp(t *testing.T) {
 	}
 	defer pool.Close()
 
-	// prevWant — пристинный снимок версии v-1, снятый на ПРЕДЫДУЩЕЙ итерации
-	// (для v=1 остаётся nil — пристинная «версия 0» это пустая схема, что
-	// проверяется отдельно ниже через len(afterDown)==0, а не через nil-срез).
 	var prevWant []string
 	for v := uint(1); v <= max; v++ {
-		// Естественный шаг вперёд — тем же путём, каким v применяется в
-		// проде: применяет РОВНО ОДНУ (v-ю) up.sql к уже провалидированному
-		// v-1 (v=1 — к пустой схеме сразу после сброса выше).
 		if err := db.MigratePGTo(dsn, v); err != nil {
 			t.Fatalf("v=%d: MigratePGTo(%d) (естественный шаг вперёд): %v", v, v, err)
 		}
@@ -564,12 +421,6 @@ func TestMigratePGEachDownMirrorsUp(t *testing.T) {
 				t.Fatalf("v=%d: MigratePGTo(%d) (down): %v", v, v-1, err)
 			}
 		}
-		// Половина 1/2: down сам по себе обязан вернуть СТРУКТУРНО пристинную
-		// v-1 (см. докблок structuralOnly про то, почему сравнение по
-		// default'ам здесь исключено, а не про идемпотентный up, прячущий
-		// сломанный down от проверки «после ВСЕГО round trip», — это
-		// отдельная причина, почему сравнение вообще есть, см. докблок
-		// теста).
 		afterDown := schemaSnapshot(t, ctx, pool)
 		if v == 1 {
 			if len(afterDown) != 0 {
@@ -585,9 +436,6 @@ func TestMigratePGEachDownMirrorsUp(t *testing.T) {
 				v, v-1, len(missing), missing, len(extra), extra)
 		}
 
-		// Половина 2/2: up возвращает обратно к «want» — тот же ROUND TRIP,
-		// что и в первом черновике теста (ловит противоположный класс
-		// поломки: up, забывший что-то досоздать после down).
 		if err := db.MigratePGTo(dsn, v); err != nil {
 			t.Fatalf("v=%d: MigratePGTo(%d) (up again): %v", v, v, err)
 		}
@@ -605,7 +453,6 @@ func TestMigratePGEachDownMirrorsUp(t *testing.T) {
 	}
 }
 
-// userTableCount — сколько таблиц в public, не считая служебной schema_migrations.
 func userTableCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool) int {
 	t.Helper()
 	var n int
@@ -640,23 +487,6 @@ func userTableNames(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []str
 	return out
 }
 
-// tableExistsIn/columnExistsIn — единая точка правды «есть ли таблица/колонка
-// с таким именем в ЭТОЙ схеме», схема — параметр, а не литерал. Раунд правок
-// 2 (находка ревью на задачу №115): тринадцать мест этого файла держали
-// фильтр по table_schema каждое своей собственной копией запроса — исчезни
-// фильтр из одной копии при будущей правке, ни доказательный тест (у него
-// своя изолированная база без конфликта имён), ни сам пострадавший тест
-// этого бы не заметил, потому что оба видят только СВОЙ экземпляр запроса.
-// Хелпер даёт всем тринадцати местам ОДНУ реализацию — а значит и одну точку,
-// которую способен проверить мутацией доказательный тест
-// (TestInformationSchemaTableCheckIgnoresOtherSchemas ниже).
-//
-// Возвращают (bool, error), а не паникуют/фатализируют сами: вызывающие тесты
-// расходятся в строгости — часть падает Fatalf-ом на первой пропавшей
-// таблице, часть копит Errorf по всем сразу в цикле, — и это решение теста,
-// не хелпера; учитывая любую степень строгости здесь означало бы либо менять
-// поведение мест, которые ничего не просили менять, либо тащить в хелпер
-// параметр «насколько падать», что хуже простого возврата ошибки.
 func tableExistsIn(ctx context.Context, pool *pgxpool.Pool, schema, table string) (bool, error) {
 	var n int
 	err := pool.QueryRow(ctx,
@@ -691,7 +521,6 @@ func TestMigrateCHUpDownUp(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// Down полностью зеркалит up: ни таблиц, ни MV не остаётся.
 	for _, table := range []string{"events", "check_results", "transactions", "spans", "transactions_5m", "web_vitals_5m"} {
 		var n uint64
 		err := conn.QueryRow(ctx,
@@ -710,9 +539,6 @@ func TestMigrateCHUpDownUp(t *testing.T) {
 	}
 }
 
-// TestTransactions5mAggregates закрепляет MV transactions_5m поведением, а не
-// подстроками в DDL: вставляем строки в transactions и читаем агрегаты через
-// -Merge. Заодно доказывает, что MV вообще наполняется вставками.
 func TestTransactions5mAggregates(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -769,11 +595,9 @@ func TestTransactions5mAggregates(t *testing.T) {
 	if totalUS != 6000 {
 		t.Errorf("sumMerge(total_us) = %d, want 6000", totalUS)
 	}
-	// quantilesState(0.5, 0.75, 0.95, 0.99) — ровно четыре уровня, в этом порядке.
 	if len(quantiles) != 4 {
 		t.Fatalf("quantilesMerge returned %d levels (%v), want 4", len(quantiles), quantiles)
 	}
-	// На [1000, 2000, 3000] ClickHouse интерполирует: p50=2000, p95=2900.
 	if quantiles[0] < 1999 || quantiles[0] > 2001 {
 		t.Errorf("p50 = %v, want ~2000 (levels: %v)", quantiles[0], quantiles)
 	}
@@ -782,10 +606,6 @@ func TestTransactions5mAggregates(t *testing.T) {
 	}
 }
 
-// TestWebVitals5mAggregates закрепляет MV web_vitals_5m поведением: вставляем
-// транзакции с measurements['lcp'] и читаем p75 через quantilesMerge. Ключевое
-// свойство — mapContains-фильтр: транзакция без lcp не считается нулём и не
-// попадает в квантиль/счётчик.
 func TestWebVitals5mAggregates(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -830,20 +650,15 @@ func TestWebVitals5mAggregates(t *testing.T) {
 		t.Fatalf("read web_vitals_5m: %v", err)
 	}
 
-	// Отсутствующий lcp (mapContains guard) не считается — три присутствующих.
 	if lcpCount != 3 {
 		t.Errorf("countMerge(lcp_count) = %d, want 3 (mapContains не отсекает отсутствующий lcp?)", lcpCount)
 	}
-	// Пер-vital счётчики: inp есть только у одной строки (нужен плану 3 для min_samples).
 	if inpCount != 1 {
 		t.Errorf("countMerge(inp_count) = %d, want 1", inpCount)
 	}
-	// quantilesStateIf(0.75) — ровно один уровень.
 	if len(quantiles) != 1 {
 		t.Fatalf("quantilesMerge returned %d levels (%v), want 1", len(quantiles), quantiles)
 	}
-	// p75 из [2000, 2400, 2600] интерполируется в ~2500; если бы отсутствующий
-	// lcp считался нулём, p75 просел бы.
 	if quantiles[0] < 2499 || quantiles[0] > 2501 {
 		t.Errorf("p75(lcp) = %v, want ~2500 (levels: %v)", quantiles[0], quantiles)
 	}
@@ -866,9 +681,7 @@ func TestPerformanceSchema(t *testing.T) {
 		},
 		"projects":      {"transaction_sample_rate", "apdex_threshold_ms", "perf_detector_config"},
 		"organizations": {"transaction_quota"},
-		// 0008: отдельный счётчик транзакций — без него транзакции ели бы бюджет
-		// ошибок (events_count).
-		"org_usage": {"transactions_count"},
+		"org_usage":     {"transactions_count"},
 	}
 	for table, names := range cols {
 		for _, col := range names {
@@ -879,8 +692,6 @@ func TestPerformanceSchema(t *testing.T) {
 		}
 	}
 
-	// Индекс списка issue'ов проекта (§3): без него листинг перф-проблем
-	// деградирует в seq scan.
 	var idx int
 	err = pool.QueryRow(ctx,
 		`SELECT count(*) FROM pg_indexes
@@ -889,7 +700,6 @@ func TestPerformanceSchema(t *testing.T) {
 		t.Errorf("index perf_issues_project_last_seen_idx: n=%d err=%v", idx, err)
 	}
 
-	// Дефолты новых колонок проекта/организации — из спеки §3.
 	orgID, projID := seedProject(t, ctx, pool)
 	var rate float64
 	var apdex int
@@ -908,12 +718,10 @@ func TestPerformanceSchema(t *testing.T) {
 		"SELECT transaction_quota FROM organizations WHERE id = $1", orgID).Scan(&quota); err != nil {
 		t.Fatalf("select org quota: %v", err)
 	}
-	// Миграция 0018 (PROD-B2) сменила дефолт на 0 (безлимит) для OSS-позиционирования.
 	if quota != 0 {
 		t.Errorf("organizations.transaction_quota default = %d, want 0", quota)
 	}
 
-	// (project_id, fingerprint) уникален.
 	for i := 0; i < 2; i++ {
 		_, err = pool.Exec(ctx,
 			"INSERT INTO perf_issues (project_id, fingerprint, kind, title) VALUES ($1,'fp','n_plus_one','N+1')",
@@ -926,7 +734,6 @@ func TestPerformanceSchema(t *testing.T) {
 		}
 	}
 
-	// Удаление проекта каскадно уносит его perf_issues.
 	if _, err := pool.Exec(ctx, "DELETE FROM projects WHERE id = $1", projID); err != nil {
 		t.Fatalf("delete project: %v", err)
 	}
@@ -940,7 +747,6 @@ func TestPerformanceSchema(t *testing.T) {
 	}
 }
 
-// seedProject создаёт организацию и проект, возвращая их id.
 func seedProject(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (orgID, projID int64) {
 	t.Helper()
 	err := pool.QueryRow(ctx,
@@ -984,8 +790,6 @@ func TestRegressionSchema(t *testing.T) {
 		}
 	}
 
-	// Оба индекса на месте: частичный уникальный на открытые инциденты и
-	// индекс списка регрессий проекта.
 	for _, idx := range []string{
 		"perf_regressions_one_open_idx", "perf_regressions_project_started_idx",
 	} {
@@ -998,7 +802,6 @@ func TestRegressionSchema(t *testing.T) {
 		}
 	}
 
-	// Дефолт новой колонки проекта — '{}'.
 	_, projID := seedProject(t, ctx, pool)
 	var cfg string
 	if err := pool.QueryRow(ctx,
@@ -1016,16 +819,12 @@ func TestRegressionSchema(t *testing.T) {
 			 VALUES ($1,'endpoint_p95','GET /checkout','duration',100,200,180)`, projID)
 		return err
 	}
-	// Частичный уникальный индекс: второй ОТКРЫТЫЙ инцидент по той же
-	// (project_id, target, metric) недопустим.
 	if err := insertOpen(); err != nil {
 		t.Fatalf("insert first open regression: %v", err)
 	}
 	if err := insertOpen(); err == nil {
 		t.Error("want unique violation for second open regression on same target")
 	}
-	// После закрытия первого можно открыть новый — индекс частичный (WHERE
-	// status='open').
 	if _, err := pool.Exec(ctx,
 		"UPDATE perf_regressions SET status='resolved', resolved_at=now() WHERE project_id=$1", projID); err != nil {
 		t.Fatalf("resolve regression: %v", err)
@@ -1034,7 +833,6 @@ func TestRegressionSchema(t *testing.T) {
 		t.Errorf("insert open regression after resolving previous: %v", err)
 	}
 
-	// status CHECK отвергает произвольные значения.
 	_, err = pool.Exec(ctx,
 		`INSERT INTO perf_regressions
 		   (project_id, target_kind, target, metric, status, baseline_value, peak_value, current_value)
@@ -1043,7 +841,6 @@ func TestRegressionSchema(t *testing.T) {
 		t.Error("want CHECK violation for invalid perf_regressions.status")
 	}
 
-	// Удаление проекта каскадно уносит его perf_regressions.
 	if _, err := pool.Exec(ctx, "DELETE FROM projects WHERE id = $1", projID); err != nil {
 		t.Fatalf("delete project: %v", err)
 	}
@@ -1071,7 +868,6 @@ func TestTenancySchema(t *testing.T) {
 			t.Errorf("table %s: exists=%v err=%v", table, ok, err)
 		}
 	}
-	// citext-уникальность email регистронезависима.
 	_, err := pool.Exec(ctx,
 		"INSERT INTO users (email, password_hash) VALUES ('A@b.c','x'), ('a@B.C','y')")
 	if err == nil {
@@ -1094,7 +890,6 @@ func TestUptimeSchema(t *testing.T) {
 			t.Errorf("table %s: exists=%v err=%v", table, ok, err)
 		}
 	}
-	// kind CHECK на monitors отвергает произвольные значения.
 	_, err := pool.Exec(ctx,
 		"INSERT INTO monitors (project_id, name, kind, interval_seconds) VALUES (1, 'x', 'bogus', 60)")
 	if err == nil {
@@ -1116,7 +911,6 @@ func TestAlertsSchema(t *testing.T) {
 			t.Errorf("table %s: exists=%v err=%v", table, ok, err)
 		}
 	}
-	// kind CHECK на alert_rules отвергает произвольные значения.
 	_, err := pool.Exec(ctx,
 		"INSERT INTO alert_rules (project_id, kind) VALUES (1, 'bogus')")
 	if err == nil {
@@ -1131,7 +925,6 @@ func TestMigrate0012OAuthIdentities(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
 
-	// password_hash должен быть nullable.
 	var isNullable string
 	if err := pool.QueryRow(ctx, `
 		SELECT is_nullable FROM information_schema.columns
@@ -1142,7 +935,6 @@ func TestMigrate0012OAuthIdentities(t *testing.T) {
 		t.Fatalf("password_hash is_nullable = %q, want YES", isNullable)
 	}
 
-	// Вставка юзера без пароля и его личности проходит.
 	var uid int64
 	if err := pool.QueryRow(ctx,
 		"INSERT INTO users (email) VALUES ('oauth-only@example.com') RETURNING id").Scan(&uid); err != nil {
@@ -1152,7 +944,6 @@ func TestMigrate0012OAuthIdentities(t *testing.T) {
 		"INSERT INTO user_identities (user_id, provider, subject, email) VALUES ($1,'oidc','sub-1','oauth-only@example.com')", uid); err != nil {
 		t.Fatalf("insert identity: %v", err)
 	}
-	// Тот же (provider, subject) второй раз → нарушение PK.
 	if _, err := pool.Exec(ctx,
 		"INSERT INTO user_identities (user_id, provider, subject) VALUES ($1,'oidc','sub-1')", uid); err == nil {
 		t.Fatal("duplicate (provider,subject) must violate PK")
@@ -1173,7 +964,6 @@ func TestMigrateMetricSchemaPG(t *testing.T) {
 			t.Fatalf("table %s: exists=%v err=%v", tbl, ok, err)
 		}
 	}
-	// CHECK на aggregation отвергает мусор.
 	if _, err := pool.Exec(ctx,
 		"INSERT INTO metric_alert_rules (project_id, metric_name, aggregation, comparator, threshold) VALUES (1,'m','bogus','gt',1)"); err == nil {
 		t.Error("want CHECK violation for invalid aggregation")
@@ -1194,7 +984,6 @@ func TestMigrateMetricPointsCH(t *testing.T) {
 	if err := conn.QueryRow(ctx, "SELECT count() FROM metric_points WHERE project_id=1").Scan(&n); err != nil || n != 1 {
 		t.Fatalf("count = %d err=%v", n, err)
 	}
-	// Ретенция идемпотентна и переопределяет TTL.
 	if err := db.ApplyMetricRetention(ctx, conn, 7); err != nil {
 		t.Fatalf("ApplyMetricRetention: %v", err)
 	}
@@ -1218,7 +1007,6 @@ func TestMigrateLogsCH(t *testing.T) {
 	if err := conn.QueryRow(ctx, "SELECT count() FROM logs WHERE project_id=1").Scan(&n); err != nil || n != 1 {
 		t.Fatalf("count = %d err=%v", n, err)
 	}
-	// Ретенция идемпотентна и переопределяет TTL.
 	if err := db.ApplyLogRetention(ctx, conn, 5); err != nil {
 		t.Fatalf("ApplyLogRetention: %v", err)
 	}
@@ -1278,7 +1066,6 @@ func TestMigrateProfileRegressions(t *testing.T) {
 	if ok, err := tableExistsIn(ctx, pool, "public", "profile_regressions"); err != nil || !ok {
 		t.Fatalf("table missing: exists=%v err=%v", ok, err)
 	}
-	// Нужен проект для FK.
 	var uid, orgID, projID int64
 	pool.QueryRow(ctx, "INSERT INTO users (email,password_hash) VALUES ('pr@e.com','x') RETURNING id").Scan(&uid)
 	pool.QueryRow(ctx, "INSERT INTO organizations (slug,name,event_quota) VALUES ('pr','pr',1000000) RETURNING id").Scan(&orgID)
@@ -1288,20 +1075,15 @@ func TestMigrateProfileRegressions(t *testing.T) {
 	if _, err := pool.Exec(ctx, ins, projID); err != nil {
 		t.Fatalf("insert open: %v", err)
 	}
-	// Второй открытый на ту же функцию → нарушение partial-индекса.
 	if _, err := pool.Exec(ctx, ins, projID); err == nil {
 		t.Fatal("want one-open unique violation")
 	}
-	// CHECK status.
 	if _, err := pool.Exec(ctx,
 		"INSERT INTO profile_regressions (project_id,service,profile_type,function,status,baseline_share,peak_share,current_share) VALUES ($1,'api','cpu','x','bogus',0,0,0)", projID); err == nil {
 		t.Fatal("want status CHECK violation")
 	}
 }
 
-// TestMigrateEventQuotaDefault — RA-6: после 0020 дефолт колонки event_quota — 0
-// (OSS-безлимит), как у tx/metric/profile-квот в 0018. Орг, вставленный без явного
-// event_quota, получает 0, а не legacy-хардкод 1000000.
 func TestMigrateEventQuotaDefault(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -1343,45 +1125,15 @@ func TestMigrateOrgSSO(t *testing.T) {
 	if _, err := pool.Exec(ctx, ins, o1, "corp.com"); err != nil {
 		t.Fatalf("insert o1: %v", err)
 	}
-	// Тот же домен у другого орга → нарушение UNIQUE.
 	if _, err := pool.Exec(ctx, ins, o2, "corp.com"); err == nil {
 		t.Fatal("want domain UNIQUE violation")
 	}
-	// CHECK default_role.
 	if _, err := pool.Exec(ctx,
 		"INSERT INTO org_sso (org_id,issuer,client_id,client_secret,domain,default_role) VALUES ($1,'https://i','c','s','x.com','owner')", o2); err == nil {
 		t.Fatal("want default_role CHECK violation")
 	}
 }
 
-// TestInformationSchemaTableCheckIgnoresOtherSchemas — находка №115: все
-// "таблица создана"/"колонка есть"-проверки в этом файле шли через
-// information_schema.tables и information_schema.columns БЕЗ фильтра по
-// table_schema, поэтому одноимённая таблица (и её колонки) в чужой схеме
-// считались бы наравне с настоящей, и проверка могла пройти по подделке, а
-// не по продуктовой таблице.
-//
-// Раунд правок 2 (см. task-10-report.md): все тринадцать мест переведены на
-// общие tableExistsIn/columnExistsIn (см. их докблок выше), и этот тест
-// теперь бьёт НЕ по копии запроса внутри себя, а по самим хелперам — иначе
-// он доказывал бы, что приём в принципе работает, но не охранял бы ни одно
-// из тринадцати мест, которые от него зависят.
-//
-// Запрос с фильтром и без него на ЧИСТОЙ базе дают ОДИНАКОВЫЙ результат —
-// обычный прогон остальных тестов файла правку не проверяет вообще, нужен
-// сценарий с реальным конфликтом имён. Схема decoy заводит ДВЕ асимметричные
-// подсадные цели:
-//   - ghost_table — имени с таким названием в public нет вовсе, только в
-//     decoy. Если бы tableExistsIn не фильтровал по схеме, запрос про
-//     public.ghost_table всё равно нашёл бы decoy.ghost_table и ошибочно
-//     подтвердил бы её существование в public.
-//   - org_sso с колонкой decoy_marker — совпадает по ИМЕНИ ТАБЛИЦЫ с
-//     настоящей public.org_sso (ровно тот сценарий, который находка №115
-//     называет реальным риском), но decoy_marker у настоящей таблицы
-//     заведомо нет (сверено по 0016_org_sso.up.sql:
-//     org_id/issuer/client_id/client_secret/domain/default_role/enforced/
-//     created_at) — так разница между «нашли у настоящей» и «нашли у чужой»
-//     видна однозначно, а не по случайному совпадению имён колонок.
 func TestInformationSchemaTableCheckIgnoresOtherSchemas(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -1399,40 +1151,24 @@ func TestInformationSchemaTableCheckIgnoresOtherSchemas(t *testing.T) {
 		t.Fatalf("create decoy.org_sso: %v", err)
 	}
 
-	// (1) tableExistsIn: подготовка сценария — ghost_table действительно
-	// существует, просто не в public.
 	if ok, err := tableExistsIn(ctx, pool, "decoy", "ghost_table"); err != nil || !ok {
 		t.Fatalf("подготовка сценария сломана: decoy.ghost_table не найден хелпером (exists=%v err=%v) — сценарий не воспроизводит находку №115", ok, err)
 	}
-	// Сама проверка: запрос про public.ghost_table обязан вернуть false —
-	// таблица есть в базе, но не в этой схеме. Если бы фильтр не работал,
-	// хелпер нашёл бы её через decoy и ошибочно ответил true.
 	if ok, err := tableExistsIn(ctx, pool, "public", "ghost_table"); err != nil || ok {
 		t.Fatalf("tableExistsIn не фильтрует по схеме: public.ghost_table сообщена найденной (exists=%v err=%v), хотя такая таблица есть только в decoy", ok, err)
 	}
-	// И настоящая public.org_sso по-прежнему находится, несмотря на
-	// одноимённую decoy.org_sso рядом.
 	if ok, err := tableExistsIn(ctx, pool, "public", "org_sso"); err != nil || !ok {
 		t.Fatalf("tableExistsIn потерял настоящую public.org_sso: exists=%v err=%v", ok, err)
 	}
 
-	// (2) columnExistsIn: подготовка сценария — decoy_marker есть у
-	// decoy.org_sso.
 	if ok, err := columnExistsIn(ctx, pool, "decoy", "org_sso", "decoy_marker"); err != nil || !ok {
 		t.Fatalf("подготовка сценария сломана: decoy.org_sso.decoy_marker не найдена хелпером (exists=%v err=%v)", ok, err)
 	}
-	// Сама проверка: у настоящей public.org_sso decoy_marker быть не должно.
-	// Если бы фильтр не работал, хелпер нашёл бы её через decoy.org_sso и
-	// ошибочно подтвердил бы существование поля, которого в реальной
-	// таблице нет.
 	if ok, err := columnExistsIn(ctx, pool, "public", "org_sso", "decoy_marker"); err != nil || ok {
 		t.Fatalf("columnExistsIn не фильтрует по схеме: public.org_sso.decoy_marker сообщена найденной (exists=%v err=%v), хотя у настоящей таблицы такой колонки нет", ok, err)
 	}
 }
 
-// TestTransactionRetention: ApplyTransactionRetention выставляет настраиваемый
-// TTL на transactions (по колонке timestamp) и на MV transactions_5m (по
-// колонке bucket). Идемпотентна: повторный прогон не ошибка.
 func TestTransactionRetention(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -1444,7 +1180,6 @@ func TestTransactionRetention(t *testing.T) {
 	if err := db.ApplyTransactionRetention(ctx, conn, 30); err != nil {
 		t.Fatalf("ApplyTransactionRetention: %v", err)
 	}
-	// Повторный прогон идемпотентен (needsRetention видит уже выставленный TTL).
 	if err := db.ApplyTransactionRetention(ctx, conn, 30); err != nil {
 		t.Fatalf("ApplyTransactionRetention (idempotent): %v", err)
 	}
@@ -1457,9 +1192,8 @@ func TestTransactionRetention(t *testing.T) {
 		t.Errorf("transactions DDL без toIntervalDay(30):\n%s", txDDL)
 	}
 
-	// transactions_5m — MATERIALIZED VIEW без TO-таблицы: TTL живёт на скрытой
-	// storage-таблице .inner_id.<uuid>, а SHOW CREATE TABLE самой вьюхи его не
-	// показывает. Поэтому проверяем TTL по внутренней таблице.
+	// MV без TO-таблицы: TTL живёт на скрытой storage-таблице .inner_id.<uuid>,
+	// не на самой вьюхе — проверяем его по внутренней таблице.
 	var inner string
 	if err := conn.QueryRow(ctx,
 		"SELECT concat('.inner_id.', toString(uuid)) FROM system.tables "+
@@ -1473,14 +1207,11 @@ func TestTransactionRetention(t *testing.T) {
 	if !strings.Contains(mvDDL, "toIntervalDay(30)") {
 		t.Errorf("transactions_5m inner DDL без toIntervalDay(30):\n%s", mvDDL)
 	}
-	// TTL у 5m должен считаться от bucket, а не от timestamp.
 	if !strings.Contains(mvDDL, "TTL bucket") {
 		t.Errorf("transactions_5m TTL не по колонке bucket:\n%s", mvDDL)
 	}
 }
 
-// TestWebVitalsRetention: ApplyWebVitalsRetention выставляет настраиваемый TTL на
-// MV web_vitals_5m (по колонке bucket её скрытой storage-таблицы). Идемпотентна.
 func TestWebVitalsRetention(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -1492,13 +1223,12 @@ func TestWebVitalsRetention(t *testing.T) {
 	if err := db.ApplyWebVitalsRetention(ctx, conn, 45); err != nil {
 		t.Fatalf("ApplyWebVitalsRetention: %v", err)
 	}
-	// Повторный прогон идемпотентен (needsRetention видит уже выставленный TTL).
 	if err := db.ApplyWebVitalsRetention(ctx, conn, 45); err != nil {
 		t.Fatalf("ApplyWebVitalsRetention (idempotent): %v", err)
 	}
 
-	// web_vitals_5m — MATERIALIZED VIEW без TO-таблицы: TTL живёт на скрытой
-	// storage-таблице .inner_id.<uuid>. Проверяем TTL по внутренней таблице.
+	// MV без TO-таблицы: TTL живёт на скрытой storage-таблице .inner_id.<uuid>,
+	// не на самой вьюхе — проверяем его по внутренней таблице.
 	var inner string
 	if err := conn.QueryRow(ctx,
 		"SELECT concat('.inner_id.', toString(uuid)) FROM system.tables "+
@@ -1512,15 +1242,11 @@ func TestWebVitalsRetention(t *testing.T) {
 	if !strings.Contains(mvDDL, "toIntervalDay(45)") {
 		t.Errorf("web_vitals_5m inner DDL без toIntervalDay(45):\n%s", mvDDL)
 	}
-	// TTL у 5m должен считаться от bucket, а не от timestamp.
 	if !strings.Contains(mvDDL, "TTL bucket") {
 		t.Errorf("web_vitals_5m TTL не по колонке bucket:\n%s", mvDDL)
 	}
 }
 
-// TestSchemaVersionAndCheck: после полной миграции SchemaVersion возвращает
-// встроенный максимум и dirty=false, а CheckSchemaCurrent проходит без ошибки
-// (RA-8: гейт для AUTO_MIGRATE=false).
 func TestSchemaVersionAndCheck(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -1542,16 +1268,12 @@ func TestSchemaVersionAndCheck(t *testing.T) {
 		t.Errorf("SchemaVersion = 0 после применения всех миграций")
 	}
 
-	// После полной миграции схема не отстаёт — гейт пропускает старт.
 	pool := testenv.MigratedPG(t)
 	if err := db.CheckSchemaCurrent(context.Background(), pool, dsn); err != nil {
 		t.Errorf("CheckSchemaCurrent после полной миграции: %v", err)
 	}
 }
 
-// TestSchemaVersionAndCheckCH: CH-аналог TestSchemaVersionAndCheck (audit3).
-// После полной CH-миграции CheckSchemaCurrentCH проходит без ошибки — гейт для
-// AUTO_MIGRATE=false и на ClickHouse (RA-8 закрыл только PG).
 func TestSchemaVersionAndCheckCH(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -1562,18 +1284,12 @@ func TestSchemaVersionAndCheckCH(t *testing.T) {
 		t.Fatalf("MigrateCH: %v", err)
 	}
 
-	// После полной миграции CH-схема не отстаёт и не впереди — гейт пропускает старт.
 	pool := testenv.MigratedPG(t)
 	if err := db.CheckSchemaCurrentCH(context.Background(), pool, dsn); err != nil {
 		t.Errorf("CheckSchemaCurrentCH после полной миграции: %v", err)
 	}
 }
 
-// №34: days=0 снимает TTL (REMOVE TTL) вместо MODIFY TTL + INTERVAL 0 DAY,
-// который удалил бы все данные немедленно. Идемпотентно в обе стороны:
-// повторное снятие с таблицы без TTL — no-op, после снятия TTL ставится
-// заново. В конце тест возвращает TTL к значениям миграций (90/30), чтобы
-// не влиять на соседние тесты, работающие с той же базой.
 func TestRetentionZeroRemovesTTL(t *testing.T) {
 	dsn := testenv.ClickHouseDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -1605,11 +1321,9 @@ func TestRetentionZeroRemovesTTL(t *testing.T) {
 			t.Errorf("%s: TTL survived removal:\n%s", table, ddl)
 		}
 	}
-	// Идемпотентность: снятие TTL с таблицы без TTL — no-op без ошибки.
 	if err := db.ApplyRetention(ctx, conn, 0); err != nil {
 		t.Fatalf("ApplyRetention(0) second run: %v", err)
 	}
-	// Обратный путь: TTL ставится заново после снятия.
 	if err := db.ApplyRetention(ctx, conn, 90); err != nil {
 		t.Fatalf("ApplyRetention(90) restore: %v", err)
 	}
@@ -1617,7 +1331,6 @@ func TestRetentionZeroRemovesTTL(t *testing.T) {
 		t.Errorf("events: TTL not restored:\n%s", ddl)
 	}
 
-	// MV: ноль снимает TTL и с transactions, и с inner-таблицы transactions_5m.
 	if err := db.ApplyTransactionRetention(ctx, conn, 30); err != nil {
 		t.Fatalf("ApplyTransactionRetention(30): %v", err)
 	}

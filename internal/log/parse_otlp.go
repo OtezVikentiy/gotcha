@@ -9,19 +9,13 @@ import (
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 )
 
-// maxLogsPerRequest — потолок числа записей, разбираемых из одного OTLP
-// /v1/logs-запроса (тот же приём, что maxOTLPMetricPoints/maxOTLPSpans):
-// защита от амплификации памяти/CPU недоверенным экспортом.
+// Защита от амплификации памяти/CPU недоверенным экспортом (тот же приём, что maxOTLPMetricPoints/maxOTLPSpans).
 const maxLogsPerRequest = 10000
 
-// maxBodyBytes — потолок тела лога, 64 КиБ. Реальные сообщения приложений
-// столько не весят; без капа одна запись раздула бы CH-колонку body и буфер
-// писателя (см. log.Writer.logRowBytes, который явно учитывает Body).
+// Реальные сообщения столько не весят; без капа запись раздула бы CH-колонку body и буфер писателя (logRowBytes).
 const maxBodyBytes = 64 << 10
 
-// MapOTLPLogs разворачивает OTLP ResourceLogs в плоские LogRecord'ы, готовые к
-// записи. fallback — серверное время приёма, идёт и в ObservedTS (всегда), и
-// как запасной timestamp при TimeUnixNano==0.
+// fallback — серверное время приёма: всегда идёт в ObservedTS и как запасной timestamp при TimeUnixNano==0.
 func MapOTLPLogs(rl []*logspb.ResourceLogs, fallback time.Time) []LogRecord {
 	var out []LogRecord
 	for _, r := range rl {
@@ -29,8 +23,7 @@ func MapOTLPLogs(rl []*logspb.ResourceLogs, fallback time.Time) []LogRecord {
 		resourceAttrs := attrsToMap(r.GetResource().GetAttributes())
 		for _, sl := range r.GetScopeLogs() {
 			for _, lr := range sl.GetLogRecords() {
-				// Кап проверяем ВНУТРИ вложенного цикла (как maxOTLPMetricPoints в
-				// metric/parse.go): один ResourceLogs с гигантским ScopeLogs иначе
+				// Кап — ВНУТРИ вложенного цикла: один ResourceLogs с гигантским ScopeLogs иначе
 				// аллоцировал бы всё, проскочив проверку снаружи.
 				if len(out) >= maxLogsPerRequest {
 					return out
@@ -53,9 +46,8 @@ func mapLogRecord(lr *logspb.LogRecord, service, environment string, resourceAtt
 	}
 
 	return LogRecord{
-		// timestamp — event-time с клампом к окну ретенции; observed_ts — ВСЕГДА
-		// серверное fallback-время приёма, ObservedTimeUnixNano не читаем (иначе
-		// теряется защита от кривых часов клиента, спека C1 §1.1).
+		// observed_ts — ВСЕГДА серверное fallback-время приёма; ObservedTimeUnixNano намеренно не читаем —
+		// иначе теряется защита от кривых часов клиента.
 		Timestamp:  logTime(lr.GetTimeUnixNano(), fallback),
 		ObservedTS: fallback,
 
@@ -77,11 +69,8 @@ func mapLogRecord(lr *logspb.LogRecord, service, environment string, resourceAtt
 	}
 }
 
-// capSeverityNumber приводит сырое OTLP SeverityNumber (int32, недоверенный
-// ввод) к uint8-колонке (см. схему logs: severity_number UInt8, 0 = не
-// задано). Валидный диапазон спецификации — 1..24; всё вне uint8 (в т.ч.
-// отрицательное) хранится как 0, а не оборачивается через int32→uint8 —
-// иначе, скажем, 300 молча стало бы 44 и врало бы в аудите/отладке.
+// Валидный диапазон спецификации — 1..24; вне uint8 (в т.ч. отрицательное) — 0, а не int32→uint8
+// обёрткой: иначе 300 молча стало бы 44 и врало бы в отладке.
 func capSeverityNumber(n int32) uint8 {
 	if n < 0 || n > 255 {
 		return 0
@@ -89,10 +78,8 @@ func capSeverityNumber(n int32) uint8 {
 	return uint8(n)
 }
 
-// anyValueToString — текстовое представление OTLP AnyValue для тела лога:
-// строка как есть; скаляры — их обычное строковое представление; структурные
-// значения (kvlist/array) — JSON-строка (в отличие от attrString в
-// sanitize.go, который для лейблов структуры не разворачивает).
+// Скаляры — обычное строковое представление; kvlist/array — JSON-строкой (в отличие от attrString,
+// который для структур не разворачивает).
 func anyValueToString(v *commonpb.AnyValue) string {
 	switch x := v.GetValue().(type) {
 	case *commonpb.AnyValue_StringValue:
@@ -108,10 +95,7 @@ func anyValueToString(v *commonpb.AnyValue) string {
 	}
 }
 
-// anyValueToNative переводит AnyValue в обычные Go-значения (map/slice/
-// строка/число/bool), пригодные для json.Marshal. Нужен только для
-// структурного тела лога (kvlist/array) — anyValueToString сама решает, когда
-// его звать.
+// Нужен только для структурного тела (kvlist/array) — anyValueToString сама решает, когда его звать.
 func anyValueToNative(v *commonpb.AnyValue) any {
 	switch x := v.GetValue().(type) {
 	case *commonpb.AnyValue_StringValue:

@@ -8,9 +8,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// PerfEvidence — распарсенный evidence проблемы для отображения (парсится в
-// web/perfissues.go, ключи — из trace/detect.go). Флаги Has* отделяют
-// «значение 0» от «поля нет»: total_us/max_us есть не у всех видов.
+// Has* отделяют «значение 0» от «поля нет» — total_us/max_us есть не у всех видов.
 type PerfEvidence struct {
 	Count          int64
 	TotalUS        int64
@@ -24,26 +22,18 @@ type PerfEvidence struct {
 	HasSequential  bool
 }
 
-// PerfCodeLoc — привязка проблемы к месту в коде из data показательного спана
-// (code.filepath/lineno/function). Заполняется, только если её прислал SDK.
+// заполняется, только если данные прислал SDK.
 type PerfCodeLoc struct {
 	File     string
 	Line     string
 	Function string
 }
 
-// PerfIssueDetailData — всё для страницы проблемы: сама строка, распарсенный
-// evidence, и обогащение из показательного спана примера-трейса: полный текст
-// запроса и привязка к коду. Кнопки смены статуса рендерятся безусловно —
-// видит их любой смотрящий, не только owner/admin (спека 2026-08-08); поле
-// видимости здесь раньше было (CanOperate), но всегда приходило true, так что
-// удалено вместе с мёртвой веткой в шаблоне (D2, полировка).
+// кнопки смены статуса рендерятся безусловно — их видит любой смотрящий, не только owner/admin.
 type PerfIssueDetailData struct {
 	Issue    trace.PerfIssue
 	Evidence PerfEvidence
-	// Query — ПОЛНЫЙ текст показательного запроса (сырой description спана, в
-	// отличие от нормализованного и обрезанного Title). Пусто для http-флуда
-	// и когда пример-трейс истёк по TTL.
+	// полный текст запроса, не обрезанный Title; пусто для http-флуда или истёкшего по TTL трейса.
 	Query          string
 	QueryOp        string
 	SpanDurationUS int64
@@ -55,15 +45,12 @@ func perfIssueStatusPath(id int64) string {
 	return perfIssueDetailPath(id) + "/status"
 }
 
-// perfMS форматирует микросекунды в миллисекунды с одним знаком после запятой:
-// evidence хранит время в µs (Redis-спаны субмиллисекундны), человек читает мс.
+// evidence хранит время в µs — Redis-спаны субмиллисекундны, отсюда дробные мс.
 func perfMS(us int64) string {
 	return strconv.FormatFloat(float64(us)/1000, 'f', 1, 64) + "ms"
 }
 
-// perfKindExplainKey/perfKindFixKey — i18n-ключи разбора «что происходит» и
-// «как чинить» по виду проблемы. Ключ строится из известного вида (иначе
-// общий), чтобы в T() не попадала произвольная строка.
+// ключ строится из известного вида, иначе общий — в T() не должна попасть произвольная строка.
 func perfKindExplainKey(kind string) string {
 	switch kind {
 	case trace.KindNPlusOne, trace.KindSlowDBQuery, trace.KindHTTPFlood:
@@ -80,8 +67,6 @@ func perfKindFixKey(kind string) string {
 	return "perf.kind.fix.default"
 }
 
-// perfQueryMeta — строка мета над запросом: операция · СУБД · длительность
-// показательного спана (что из этого есть).
 func perfQueryMeta(d PerfIssueDetailData) string {
 	var parts []string
 	if d.QueryOp != "" {
@@ -96,7 +81,6 @@ func perfQueryMeta(d PerfIssueDetailData) string {
 	return strings.Join(parts, " · ")
 }
 
-// perfCodeLine — «файл:строка» (или просто файл, если строки нет).
 func perfCodeLine(c *PerfCodeLoc) string {
 	if c == nil {
 		return ""
@@ -107,9 +91,6 @@ func perfCodeLine(c *PerfCodeLoc) string {
 	return c.File
 }
 
-// PerfIssueDetail — GET /perf-issues/{id}: шапка проблемы, метаданные,
-// человекочитаемый evidence по виду, ссылка на пример трейса и (для owner/admin)
-// кнопки смены статуса. Визуально повторяет страницу issue этапа 1.
 templ PerfIssueDetail(d PerfIssueDetailData, userEmail string) {
 	@layout(perfIssueTitle(ctx, d.Issue), userEmail) {
 		<div class="perf-issue-detail issue-detail">
@@ -145,8 +126,6 @@ templ PerfIssueDetail(d PerfIssueDetailData, userEmail string) {
 				</form>
 			</div>
 
-			// Что происходит: разбор проблемы простым языком + как чинить —
-			// главное, чего не хватало (сами числа evidence ниже).
 			<section class="perf-explain">
 				<h2>{ i18n.T(ctx, "perf.issues.detail.whats_wrong") }</h2>
 				<div class="card">
@@ -155,7 +134,6 @@ templ PerfIssueDetail(d PerfIssueDetailData, userEmail string) {
 				</div>
 			</section>
 
-			// Полный текст запроса из показательного спана (не обрезанный).
 			if d.Query != "" {
 				<section class="perf-query-sec">
 					<h2>
@@ -166,7 +144,6 @@ templ PerfIssueDetail(d PerfIssueDetailData, userEmail string) {
 				</section>
 			}
 
-			// Привязка к коду — если SDK её прислал (оппортунистично).
 			if d.Code != nil {
 				<section class="perf-code-sec">
 					<h2>{ i18n.T(ctx, "perf.issues.detail.code") }</h2>
@@ -193,8 +170,6 @@ templ PerfIssueDetail(d PerfIssueDetailData, userEmail string) {
 	}
 }
 
-// perfEvidenceView рендерит evidence человекочитаемо в зависимости от вида
-// проблемы. Нормализованный запрос уже в заголовке (Title), здесь — числа.
 templ perfEvidenceView(kind string, ev PerfEvidence) {
 	<dl class="perf-evidence-list">
 		switch kind {

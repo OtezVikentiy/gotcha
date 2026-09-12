@@ -7,14 +7,13 @@ import (
 	"time"
 )
 
-// HostActivity — хост, приславший метрики проекта, и время его последней точки.
+// Хост, приславший метрики проекта, и время его последней точки.
 type HostActivity struct {
 	Host   string
 	LastTS time.Time
 }
 
-// Hosts возвращает хосты проекта, активные в окне [from,to), с временем
-// последней точки каждого (для страницы списка хостов). Пустой host (метрики
+// Хосты проекта, активные в окне [from,to), с временем последней точки каждого — пустой host (метрики
 // без host-атрибуции) исключён.
 func (q *Query) Hosts(ctx context.Context, projectID int64, from, to time.Time) ([]HostActivity, error) {
 	rows, err := q.conn.Query(ctx, `
@@ -37,18 +36,8 @@ func (q *Query) Hosts(ctx context.Context, projectID int64, from, to time.Time) 
 	return out, rows.Err()
 }
 
-// LatestByHost — «последние значения» метрики по каждому хосту (для карточек
-// списка хостов). Двухуровневый агрегат: хост-метрики (диск, CPU и т.п.)
-// мульти-лейбловые ВНУТРИ хоста — на хосте одновременно живут точки на
-// mountpoint="/", mountpoint="/var", cpu="0", cpu="1" и т.д. Одноуровневый
-// argMax(value, ts) по одному host взял бы значение ОДНОГО случайного
-// под-лейбла (какой из них выиграет — определяется порядком строк внутри
-// ClickHouse, не значением). Поэтому сначала внутренний argMax(value, ts) по
-// (host, attributes[subKey]) берёт последнее значение КАЖДОЙ под-серии
-// (каждого mountpoint / ядра), и только затем внешний max/avg сворачивает
-// набор под-серий хоста в одно число. subKey=="" — метрика без под-лейбла
-// (одна серия на хост), тогда двухуровневая свёртка не нужна и используется
-// одноуровневый argMax по host напрямую.
+// Двухуровневый агрегат: хост-метрики мульти-лейбловые ВНУТРИ хоста — одноуровневый argMax по host
+// взял бы ОДИН случайный под-лейбл; внутренний argMax берёт каждую под-серию, внешний max/avg сворачивает их.
 func (q *Query) LatestByHost(ctx context.Context, projectID int64, name string,
 	matchers []LabelMatcher, subKey, subAgg string, from, to time.Time) (map[string]float64, error) {
 
@@ -93,38 +82,27 @@ func (q *Query) LatestByHost(ctx context.Context, projectID int64, name string,
 	return out, rows.Err()
 }
 
-// GroupedSeries — временной ряд одной группы (одного значения атрибута
-// groupKey) для мульти-линейного графика карточки хоста.
+// Временной ряд одной группы (значения атрибута groupKey) для мульти-линейного графика карточки хоста.
 type GroupedSeries struct {
 	Key    string
 	Points []Point
 }
 
-// GroupedSeriesResult — набор рядов по группам, отсортированный по убыванию
-// среднего значения, с усечением до MaxSeriesGroups.
+// Набор рядов по группам, отсортированный по убыванию среднего, с усечением до MaxSeriesGroups.
 type GroupedSeriesResult struct {
 	Groups    []GroupedSeries
 	Truncated bool
 }
 
-// MaxSeriesGroups — потолок числа линий на графике карточки хоста. Без него
-// хост с сотней mountpoint/cpu/device превратил бы график в нечитаемую кашу.
-//
-// Экспортирована, потому что подпись усечения на карточке («показаны топ-8
-// групп») обязана называть ЭТО число, а не своё: до правки «8» было вписано в
-// перевод обеих локалей и при смене потолка молча разъехалось бы с
-// действительностью (UX-аудит A1, P2-2).
+// Без него хост с сотней mountpoint/cpu/device превратил бы график в кашу. Экспортирована — подпись
+// усечения на карточке обязана называть ЭТО число, не своё захардкоженное, иначе они разъедутся.
 const MaxSeriesGroups = 8
 
-// SeriesGrouped возвращает временной ряд метрики хоста, разбитый по значению
-// атрибута groupKey (например, mountpoint или cpu) — скалярная агрегация agg
-// по бакету ВНУТРИ каждой группы. Групп оставляют не больше MaxSeriesGroups —
-// топ по среднему значению; порядок групп по убыванию среднего (стабильный
-// для легенды графика).
+// Скалярная агрегация agg по бакету ВНУТРИ каждой группы (например, mountpoint или cpu). Групп не больше
+// MaxSeriesGroups — топ по среднему, порядок по убыванию среднего (стабильный для легенды).
 func (q *Query) SeriesGrouped(ctx context.Context, projectID int64, name, host, groupKey, agg string, from, to time.Time, step time.Duration) (GroupedSeriesResult, error) {
-	// Клэмп самого step (не только его секундного слепка для SQL) — step=0
-	// иначе утекал бы в Go-арифметику при будущих правках этой функции тем же
-	// путём, что уронил SeriesGroupedRate (см. её комментарий ниже).
+	// Клэмп самого step, не только его секундного слепка для SQL — иначе step=0 утёк бы в Go-арифметику
+	// при будущих правках (см. SeriesGroupedRate ниже).
 	if step < time.Second {
 		step = time.Second
 	}
@@ -133,10 +111,8 @@ func (q *Query) SeriesGrouped(ctx context.Context, projectID int64, name, host, 
 	if err != nil {
 		return GroupedSeriesResult{}, err
 	}
-	// Пустой-байпас host — симметрия с Series (scalarSeries, query.go): host==""
-	// означает «все хосты», а не «строки с буквально пустым host». Нужно
-	// рецептам сервисов B6 — их метрики приходят без resourcedetection, host у
-	// точек пуст, и жёсткий `host = ?` оставлял бы график рецепта пустым.
+	// Пустой-байпас host — симметрия с Series: host=="" значит «все хосты», не «буквально пустой host».
+	// Нужно рецептам сервисов — их метрики без resourcedetection, host у точек пуст.
 	sqlText := fmt.Sprintf(`
 		SELECT attributes[?] AS g, toStartOfInterval(ts, INTERVAL %d second) AS b, %s
 		FROM metric_points
@@ -171,27 +147,16 @@ func (q *Query) SeriesGrouped(ctx context.Context, projectID int64, name, host, 
 	return topNSeriesGroups(groups), nil
 }
 
-// SeriesGroupedRate — rate-версия SeriesGrouped для monotonic cumulative
-// счётчиков хоста (например, system.network.io по device), где groupKey —
-// «крупный» атрибут легенды (direction), а deviceKey — «мелкий» атрибут
-// физического источника счётчика (device). Rate обязан считаться на мелкой
-// размерности (groupKey, deviceKey) — дельта СВОЕГО устройства между его
-// соседними бакетами, отрицательная → 0 (сброс счётчика), — и только ПОТОМ
-// скорости суммируются по groupKey. Если бы rate считался после max(value) по
-// (groupKey, bucket) без разбивки по device, дельта между бакетами со смесью
-// счётчиков разных устройств была бы бессмысленной (см. TestSeriesGroupedRateSumsDevices).
+// Rate считается на мелкой размерности (groupKey, deviceKey) — дельта СВОЕГО устройства между соседними
+// бакетами, отрицательная → 0; суммируется по groupKey ПОСЛЕ. Иначе дельта смешала бы разные счётчики.
 func (q *Query) SeriesGroupedRate(ctx context.Context, projectID int64, name, host, groupKey, deviceKey string, from, to time.Time, step time.Duration) (GroupedSeriesResult, error) {
-	// Клэмп самого step, а не только его секундного слепка для SQL: step
-	// напрямую участвует в Go-арифметике размазывания ниже (n := gap/step,
-	// Add(m*step)) — некэмпленный step=0 там даёт панику integer divide by
-	// zero, а суб-секундный step рассинхронил бы сетку бакетов SQL (округлённую
-	// до stepSec>=1) с сеткой размазывания в Go.
+	// Клэмп самого step: он участвует в Go-арифметике размазывания ниже (n := gap/step) — некэмпленный
+	// step=0 паникует, суб-секундный step рассинхронил бы сетки SQL и Go.
 	if step < time.Second {
 		step = time.Second
 	}
 	stepSec := int64(step.Seconds())
-	// Пустой-байпас host — та же симметрия с Series, что и в SeriesGrouped выше
-	// (см. комментарий там): host=="" = «все хосты», нужно рецептам B6.
+	// Пустой-байпас host — та же симметрия с Series, что в SeriesGrouped выше: host=="" = «все хосты».
 	sqlText := fmt.Sprintf(`
 		SELECT attributes[?] AS g, attributes[?] AS d,
 		       toStartOfInterval(ts, INTERVAL %d second) AS b, max(value) AS v
@@ -257,20 +222,14 @@ func (q *Query) SeriesGroupedRate(ctx context.Context, projectID int64, name, ho
 	return topNSeriesGroups(groups), nil
 }
 
-// addDeviceRateContribution считает rate ОДНОГО устройства (device) по его
-// кумулятивным точкам pts (уже max(value) по бакету, отсортированы по ts) и
-// добавляет вклад в acc — карту «сеточный бакет → сумма скоростей». Логика
-// дельты/сброса/деления на реальный зазор скопирована из rateSeries
-// (query.go) — та же арифметика rate для monotonic cumulative счётчика,
-// применённая на мелкой размерности одного устройства вместо всей серии.
+// Rate одного устройства по его кумулятивным точкам (max(value) по бакету, отсортированы по ts) —
+// та же арифметика, что rateSeries (query.go), на размерности одного устройства вместо всей серии.
 func addDeviceRateContribution(acc map[time.Time]float64, pts []Point, step time.Duration) {
 	if len(pts) < 2 {
 		return
 	}
-	// Защитный клэмп: step участвует в целочисленном делении (n := gap / step)
-	// ниже, некэмпленный step=0 паникует. Вызывающий (SeriesGroupedRate) уже
-	// клэмпит step перед вызовом — это второй рубеж на случай будущего вызова
-	// в обход него.
+	// Защитный клэмп: step участвует в целочисленном делении (n := gap/step) ниже — второй рубеж на случай
+	// вызова в обход клэмпа в SeriesGroupedRate.
 	if step < time.Second {
 		step = time.Second
 	}
@@ -280,11 +239,8 @@ func addDeviceRateContribution(acc map[time.Time]float64, pts []Point, step time
 		if delta < 0 {
 			delta = 0
 		}
-		// Делим на РЕАЛЬНЫЙ интервал между соседними точками УСТРОЙСТВА, а не на
-		// ширину бакета: GROUP BY возвращает только НЕПУСТЫЕ бакеты, поэтому при
-		// скрейпе реже шага соседние точки устройства отстоят на несколько шагов.
-		// Деление на step завысило бы скорость ровно в (интервал/step) раз —
-		// скрейп раз в 300с при шаге 60с дал бы 5.0/с вместо 1.0/с.
+		// Делим на РЕАЛЬНЫЙ интервал между точками устройства, не на ширину бакета — GROUP BY отдаёт только
+		// непустые бакеты; деление на step завысило бы скорость при скрейпе реже шага.
 		gap := pts[i].T.Sub(pts[i-1].T)
 		gapSec := gap.Seconds()
 		if gapSec <= 0 {
@@ -293,15 +249,8 @@ func addDeviceRateContribution(acc map[time.Time]float64, pts []Point, step time
 		}
 		rate := delta / gapSec
 
-		// «Размазывание»: A и B — соседние бакеты устройства, оба выровнены по
-		// шагу сетки, поэтому (B-A) — целое число шагов n. Если устройство
-		// скрейпится реже шага (n>1), у него физически НЕТ точки в промежуточных
-		// сеточных бакетах — но трафик шёл всё это время, и его скорость известна
-		// только как средняя по интервалу (A,B]. Поэтому вклад rate относится на
-		// КАЖДЫЙ из n сеточных бакетов интервала (A,B], а не только на бакет B.
-		// Иначе сумма по группе проседала бы ложными провалами именно там, где у
-		// ЭТОГО устройства нет собственной точки, хотя другие устройства группы
-		// продолжают сообщать данные (TestSeriesGroupedRateSparseDevice).
+		// «Размазывание»: если устройство скрейпится реже шага (n>1 шагов между A и B), у него нет точки в
+		// промежуточных бакетах — вклад rate относится на КАЖДЫЙ из n бакетов (A,B], иначе группа проседала бы ложно.
 		n := int64(gap / step)
 		if n < 1 {
 			n = 1
@@ -312,8 +261,6 @@ func addDeviceRateContribution(acc map[time.Time]float64, pts []Point, step time
 	}
 }
 
-// topNSeriesGroups сортирует группы по убыванию среднего значения (для
-// стабильной легенды графика) и оставляет не больше MaxSeriesGroups.
 func topNSeriesGroups(groups []GroupedSeries) GroupedSeriesResult {
 	// SliceStable — при равных средних порядок групп не должен «прыгать» между
 	// вызовами (стабильная легенда графика).

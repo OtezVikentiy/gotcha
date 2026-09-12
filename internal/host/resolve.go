@@ -2,8 +2,6 @@ package host
 
 import "time"
 
-// Level — уровень каскада, с которого взято эффективное значение вида
-// порога (disk/memory/load/silent).
 type Level string
 
 const (
@@ -14,19 +12,12 @@ const (
 	LevelDefault Level = "default"
 )
 
-// ThresholdSource — откуда резолвер взял эффективное значение вида порога:
-// уровень каскада и, для role/env, метка (имя роли/окружения), давшая
-// значение. Для host/project/default Label пуст — уровень однозначен и без
-// метки.
+// Label пуст для host/project/default — уровень однозначен и без метки.
 type ThresholdSource struct {
 	Level Level
 	Label string
 }
 
-// EffectiveSettings — результат ThresholdResolver.Effective для одного
-// хоста: плоский Settings (M1) для оценщика/Notifier, которым безразлично
-// происхождение каждого порога, и источник по каждому виду — для UI
-// («почему тут именно это число»).
 type EffectiveSettings struct {
 	Settings Settings
 
@@ -36,9 +27,7 @@ type EffectiveSettings struct {
 	SilentSource ThresholdSource
 }
 
-// ThresholdResolver — чистый (без БД) резолвер каскада порогов хоста:
-// host-override → role-group → env-group → project → default, отдельно по
-// каждому виду и раздельно enabled/value (M3, см. Effective).
+// Каскад: host-override → role-group → env-group → project → default, раздельно по enabled/value.
 type ThresholdResolver struct {
 	Project       Settings
 	ProjectExists bool
@@ -46,11 +35,8 @@ type ThresholdResolver struct {
 	Overrides     map[int64]ThresholdOverride
 }
 
-// group ищет групповой порог (scope,label) в r.Groups линейным поиском —
-// список короткий, отдельный индекс не нужен. Пустая метка (h.Role=="" /
-// h.Environment=="") никогда не матчит: соответствующий уровень каскада для
-// такого хоста молча пропускается (ok=false), а не совпадает с групповым
-// порогом, у которого тоже могла бы оказаться пустая метка.
+// Пустая метка (h.Role/h.Environment == "") никогда не матчит групповой порог —
+// уровень каскада для такого хоста молча пропускается, а не совпадает с пустой меткой группы.
 func (r ThresholdResolver) group(scope, label string) (ThresholdOverride, bool) {
 	if label == "" {
 		return ThresholdOverride{}, false
@@ -63,10 +49,6 @@ func (r ThresholdResolver) group(scope, label string) (ThresholdOverride, bool) 
 	return ThresholdOverride{}, false
 }
 
-// levelCandidate — один уровень каскада для резолвинга ОДНОГО вида порога:
-// значения enabled/value на этом уровне (nil = не задано здесь) и Level/
-// Label, которые попадут в ThresholdSource, если этот уровень станет
-// источником enabled.
 type levelCandidate[T any] struct {
 	level   Level
 	label   string
@@ -74,12 +56,7 @@ type levelCandidate[T any] struct {
 	value   *T
 }
 
-// levelCandidates собирает кандидатов каскада для одного вида порога в
-// порядке [host, role, env] (роль ПЕРЕД env — см. бриф). get достаёт пару
-// (enabled,value) нужного вида из ThresholdOverride; roleOv/envOv уже пустые
-// ThresholdOverride{}, если group() не нашла соответствующий уровень (в т.ч.
-// из-за пустой метки) — тогда оба указателя nil и кандидат ни на что не
-// влияет, отдельная ветка на этот случай не нужна.
+// Порядок — [host, role, env]: роль приоритетнее env.
 func levelCandidates[T any](hostOv, roleOv, envOv ThresholdOverride, h Host, get func(ThresholdOverride) (*bool, *T)) []levelCandidate[T] {
 	hostE, hostV := get(hostOv)
 	roleE, roleV := get(roleOv)
@@ -91,14 +68,8 @@ func levelCandidates[T any](hostOv, roleOv, envOv ThresholdOverride, h Host, get
 	}
 }
 
-// resolveKind — каскад одного вида порога (M3): enabled и value резолвятся
-// НЕЗАВИСИМО, каждый первым non-nil значением по кандидатам в их порядке
-// (candidates уже [host,role,env]), а после них — проектным
-// enabled/value (Project.value всегда задан, поэтому цепочка value
-// гарантированно на чём-то остановится). Источник в ThresholdSource — это
-// источник ENABLED, а не value: выключенный вид показывает «выключено» по
-// enabled-источнику, а число — эффективное унаследованное значение (может
-// прийти с более глубокого уровня, чем enabled).
+// enabled и value резолвятся НЕЗАВИСИМО первым non-nil кандидатом; Source — источник ENABLED,
+// не value: число может унаследоваться с более глубокого уровня, чем флаг включённости.
 func resolveKind[T any](candidates []levelCandidate[T], projectEnabled bool, projectValue T, projectLevel Level) (enabled bool, value T, src ThresholdSource) {
 	enabled = projectEnabled
 	value = projectValue
@@ -120,9 +91,6 @@ func resolveKind[T any](candidates []levelCandidate[T], projectEnabled bool, pro
 	return enabled, value, src
 }
 
-// Effective резолвит эффективные пороги хоста h по каскаду
-// host-override → role-group → env-group → project → default, отдельно по
-// каждому из 4 видов (disk/memory/load/silent).
 func (r ThresholdResolver) Effective(h Host) EffectiveSettings {
 	hostOv := r.Overrides[h.ID]
 	roleOv, _ := r.group("role", h.Role)

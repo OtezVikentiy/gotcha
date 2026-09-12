@@ -11,8 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// seedProject поднимает мигрированную PG-базу и одну организацию/проект,
-// возвращает project id (образец host_test.go setupProject).
 func seedProject(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -63,13 +61,11 @@ func TestSLOStore(t *testing.T) {
 	if err != nil || !ok || one.Target != 0.99 {
 		t.Fatalf("Get = %+v ok=%v err=%v", one, ok, err)
 	}
-	// чужой проект не видит
 	_, ok2, _ := st.Get(ctx, int64(999999), got.ID)
 	if ok2 {
 		t.Fatalf("чужой проект не должен видеть SLO")
 	}
 
-	// инцидент: open идемпотентен (один open на slo)
 	rem := 0.5
 	inc, created, err := st.OpenIncident(ctx, got.ID, pid, 20.0, &rem, false)
 	if err != nil || !created || inc.Status != "open" {
@@ -93,13 +89,11 @@ func TestSLOStore(t *testing.T) {
 	if err != nil || !resolved || resolvedInc.Status != "resolved" {
 		t.Fatalf("ResolveIncident = %+v resolved=%v err=%v", resolvedInc, resolved, err)
 	}
-	// повторный resolve — идемпотентен, resolved=false
 	_, resolved2, err := st.ResolveIncident(ctx, got.ID)
 	if err != nil || resolved2 {
 		t.Fatalf("повторный ResolveIncident resolved=%v err=%v", resolved2, err)
 	}
 
-	// после закрытия open снова создаёт новый инцидент
 	_, created3, err := st.OpenIncident(ctx, got.ID, pid, 30.0, nil, false)
 	if err != nil || !created3 {
 		t.Fatalf("после resolve open должен создавать: created=%v err=%v", created3, err)
@@ -113,7 +107,6 @@ func TestSLOStore(t *testing.T) {
 		t.Fatalf("после Delete список не пуст: %+v", list2)
 	}
 
-	// Кап-на-проект: 100 создаётся, 101-й отвергается ErrTooManySLOs.
 	for i := 0; i < 100; i++ {
 		if _, err := st.Create(ctx, slo.SLO{
 			ProjectID: pid, Name: "cap", Kind: slo.SLIAvailability, Target: 0.99,
@@ -129,17 +122,12 @@ func TestSLOStore(t *testing.T) {
 	if !errors.Is(err, slo.ErrTooManySLOs) {
 		t.Fatalf("101-й SLO: err = %v, want ErrTooManySLOs", err)
 	}
-	// List отдаёт не больше капа (и ≤ LIMIT 200).
 	capped, err := st.List(ctx, pid)
 	if err != nil || len(capped) != 100 {
 		t.Fatalf("List после капа = %d err=%v, want 100", len(capped), err)
 	}
 }
 
-// TestSLOStoreAcknowledge — B4: Acknowledge на открытом инциденте ставит
-// acknowledged_at/acknowledged_by и возвращает ok=true; повторный вызов и
-// вызов на закрытом инциденте — идемпотентно ok=false. scan (Incidents)
-// после ack отдаёт заполненные поля, до ack — nil.
 func TestSLOStoreAcknowledge(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -188,12 +176,10 @@ func TestSLOStoreAcknowledge(t *testing.T) {
 		t.Fatalf("после Acknowledge: AcknowledgedBy = %v, want %d", list[0].AcknowledgedBy, userID)
 	}
 
-	// Повторный ack — идемпотентно ok=false.
 	if ok2, err := st.Acknowledge(ctx, inc.ID, pid, userID); err != nil || ok2 {
 		t.Fatalf("повторный Acknowledge = (%v,%v), want (false,nil)", ok2, err)
 	}
 
-	// Acknowledge закрытого инцидента — ok=false.
 	if _, resolved, err := st.ResolveIncident(ctx, def.ID); err != nil || !resolved {
 		t.Fatalf("ResolveIncident = (%v,%v)", resolved, err)
 	}
@@ -202,8 +188,6 @@ func TestSLOStoreAcknowledge(t *testing.T) {
 	}
 }
 
-// TestSLOStoreAcknowledgeForeignProject — project_id — часть WHERE
-// Acknowledge (defense-in-depth, зеркало uptime.DeleteWindow, B3).
 func TestSLOStoreAcknowledgeForeignProject(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -211,10 +195,8 @@ func TestSLOStoreAcknowledgeForeignProject(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
 	pid := seedProject(t, pool)
-	// Второй проект — руками, а не вторым seedProject(t, pool): seedProject
-	// здесь заводит org с ФИКСИРОВАННЫМ slug 'slo-test' — второй вызов упёрся
-	// бы в organizations_slug_key. Тот же org_id вполне подходит: нужен просто
-	// ДРУГОЙ project_id.
+	// вторым seedProject(t, pool) нельзя: он заводит org с фиксированным slug
+	// 'slo-test', повтор упёрся бы в organizations_slug_key.
 	var otherPID int64
 	if err := pool.QueryRow(ctx,
 		"INSERT INTO projects (org_id, slug, name) SELECT org_id, 'slo-test-2', 'SLO Test 2' FROM projects WHERE id = $1 RETURNING id",
@@ -254,10 +236,8 @@ func TestSLOStoreAcknowledgeForeignProject(t *testing.T) {
 	}
 }
 
-// TestSLOStoreDeleteNotFound — Delete обязан отличать «удалил» от «удалять было
-// нечего». До правки метод игнорировал RowsAffected и возвращал nil всегда:
-// удаление по устаревшему id или из чужого проекта выглядело успехом, а web-слой
-// на такой «успех» отдавал 303 и рисовал список, где запись оставалась на месте.
+// Delete должен отличать «удалил» от «удалять было нечего» — иначе web-слой
+// отдаёт успех по устаревшему id, а запись остаётся на месте.
 func TestSLOStoreDeleteNotFound(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -274,12 +254,10 @@ func TestSLOStoreDeleteNotFound(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Несуществующий id.
 	if err := st.Delete(ctx, pid, def.ID+100500); !errors.Is(err, slo.ErrNotFound) {
 		t.Fatalf("Delete несуществующего = %v, want ErrNotFound", err)
 	}
 
-	// Чужой проект: id реальный, но не наш — удалять нечего, и запись обязана выжить.
 	if err := st.Delete(ctx, int64(999999), def.ID); !errors.Is(err, slo.ErrNotFound) {
 		t.Fatalf("Delete из чужого проекта = %v, want ErrNotFound", err)
 	}
@@ -287,7 +265,6 @@ func TestSLOStoreDeleteNotFound(t *testing.T) {
 		t.Fatalf("после чужого Delete list=%+v err=%v, want 1 запись", list, err)
 	}
 
-	// Свой — удаляется, второй раз уже нечего.
 	if err := st.Delete(ctx, pid, def.ID); err != nil {
 		t.Fatalf("Delete своего: %v", err)
 	}

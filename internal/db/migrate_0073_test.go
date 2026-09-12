@@ -10,10 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0073AddsHostLabels — колонки environment/role добавляются на
-// базе, где в hosts уже есть строка без них (DEFAULT пустой строки обязан
-// лечь на непустую таблицу); новый host с явными метками сохраняет их; откат
-// снимает обе колонки, не задев саму строку hosts.
 func TestMigrate0073AddsHostLabels(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -44,7 +40,6 @@ func TestMigrate0073AddsHostLabels(t *testing.T) {
 		t.Fatalf("migrate to 73: %v", err)
 	}
 
-	// DEFAULT пустой строки лёг на непустую таблицу.
 	var environment, role string
 	if err := pool.QueryRow(ctx,
 		"SELECT environment, role FROM hosts WHERE id = $1", hostID).
@@ -55,7 +50,6 @@ func TestMigrate0073AddsHostLabels(t *testing.T) {
 		t.Fatalf("existing host environment/role = (%q, %q), want (\"\", \"\")", environment, role)
 	}
 
-	// Новый host с явными метками сохраняет их.
 	var newHostID int64
 	if err := pool.QueryRow(ctx,
 		"INSERT INTO hosts (project_id, name, environment, role) VALUES ($1, 'web-2', 'production', 'gateway') RETURNING id",
@@ -71,7 +65,6 @@ func TestMigrate0073AddsHostLabels(t *testing.T) {
 		t.Fatalf("new host environment/role = (%q, %q), want (production, gateway)", environment, role)
 	}
 
-	// Откат — колонки исчезают, строка hosts уцелевает.
 	if err := db.MigratePGTo(dsn, 72); err != nil {
 		t.Fatalf("migrate down to 72: %v", err)
 	}

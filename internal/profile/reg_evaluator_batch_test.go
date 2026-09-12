@@ -14,8 +14,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// pgQueryLog — pgx.QueryTracer, копящий SQL всех запросов пула: счётчик
-// обращений к PostgreSQL для проверки «один запрос на сервис, а не на функцию».
 type pgQueryLog struct {
 	mu  sync.Mutex
 	sql []string
@@ -30,9 +28,6 @@ func (l *pgQueryLog) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.
 
 func (l *pgQueryLog) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-// openLookups — сколько SELECT'ов по profile_regressions ушло в базу
-// (INSERT/UPDATE открытия и bump'а не в счёт: их число законно растёт с
-// числом регрессий).
 func (l *pgQueryLog) openLookups() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -52,7 +47,6 @@ func (l *pgQueryLog) reset() {
 	l.sql = nil
 }
 
-// tracedPool — второй пул к той же базе, что pool, с трассировщиком запросов.
 func tracedPool(t *testing.T, pool *pgxpool.Pool, log *pgQueryLog) *pgxpool.Pool {
 	t.Helper()
 	cfg := pool.Config()
@@ -65,10 +59,6 @@ func tracedPool(t *testing.T, pool *pgxpool.Pool, log *pgQueryLog) *pgxpool.Pool
 	return traced
 }
 
-// TestRegressionEvaluatorLooksUpOpenRegressionsOnce: PG-часть тика — один
-// запрос открытых инцидентов на сервис, сколько бы функций ни проверялось.
-// Раньше OpenFor звался в цикле по функциям: до TopK×services SELECT'ов за
-// тик при уже батчированной CH-части.
 func TestRegressionEvaluatorLooksUpOpenRegressionsOnce(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -85,10 +75,6 @@ func TestRegressionEvaluatorLooksUpOpenRegressionsOnce(t *testing.T) {
 		Interval: time.Hour, Config: profile.DefaultProfileRegressionConfig(),
 	}
 
-	// Свежее окно: три функции по 40/30/30 из 100. База (вчера, позавчера):
-	// по 80 из 1000 каждая — объём функции за окно 190–200, с запасом над
-	// MinSamples=100 (тест не про границу гейта) → у всех трёх рост в разы над
-	// порогом → три Open.
 	for _, ago := range []time.Duration{24 * time.Hour, 48 * time.Hour} {
 		seedProfSample(t, ch, pid, "a", 80, ago)
 		seedProfSample(t, ch, pid, "b", 80, ago)
@@ -108,7 +94,6 @@ func TestRegressionEvaluatorLooksUpOpenRegressionsOnce(t *testing.T) {
 		t.Fatalf("open regressions after tick = %d (%v), want 3", len(open), err)
 	}
 
-	// Повторный тик: все три открыты, все три — Bump; поиск открытых по-прежнему один.
 	log.reset()
 	eval.Tick(ctx)
 	if n := log.openLookups(); n != 1 {

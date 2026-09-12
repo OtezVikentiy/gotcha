@@ -19,7 +19,7 @@ func TestWriterCollapsesAndFlushes(t *testing.T) {
 	f := func(n string) profile.Frame { return profile.Frame{Function: n} }
 	w.Add(3, profile.Profile{Type: "cpu", Service: "api", TraceID: "trace-xyz", Timestamp: time.Now().UTC(), Samples: []profile.Sample{
 		{Stack: []profile.Frame{f("root"), f("a")}, Value: 2},
-		{Stack: []profile.Frame{f("root"), f("a")}, Value: 3}, // тот же стек → схлоп в 5
+		{Stack: []profile.Frame{f("root"), f("a")}, Value: 3},
 		{Stack: []profile.Frame{f("root"), f("b")}, Value: 1},
 	}})
 	if err := w.Close(context.Background()); err != nil {

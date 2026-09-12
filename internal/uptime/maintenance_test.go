@@ -73,10 +73,6 @@ func TestCreateWindowOneOffActiveWithinAndOutsideInterval(t *testing.T) {
 	}
 }
 
-// TestDeleteWindowForeignProjectDoesNotDelete — project_id — часть WHERE, а
-// не отдельная проверка на вызывающей стороне: подобранный id окна с чужим
-// project_id не должен удалиться (0 rows), даже если запрос как-то обойдёт
-// windowBelongsToProject в web-слое.
 func TestDeleteWindowForeignProjectDoesNotDelete(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -103,9 +99,6 @@ func TestDeleteWindowForeignProjectDoesNotDelete(t *testing.T) {
 	}
 }
 
-// TestCreateWindowOneOffUnboundedValid — «бессрочно»: разовое окно с
-// ends_at == nil больше не отвергается как ErrInvalidWindowRange (миграция
-// 0076 разрешила это в CHECK; validateWindow должен соответствовать).
 func TestCreateWindowOneOffUnboundedValid(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -129,9 +122,6 @@ func TestCreateWindowOneOffUnboundedValid(t *testing.T) {
 	}
 }
 
-// TestInMaintenanceUnboundedWindow — окно, начавшееся в прошлом и без
-// ends_at, активно сейчас и остаётся активным сколь угодно далеко в будущем,
-// но неактивно до starts_at.
 func TestInMaintenanceUnboundedWindow(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -179,7 +169,6 @@ func TestWeeklyWindowMoscowTimezone(t *testing.T) {
 	defer cancel()
 	pid := newProject(t, pool)
 
-	// Monday 02:00-04:00 Europe/Moscow.
 	if _, err := svc.CreateWindow(ctx, uptime.Window{
 		ProjectID: pid,
 		Name:      "Weekly maintenance",
@@ -197,7 +186,6 @@ func TestWeeklyWindowMoscowTimezone(t *testing.T) {
 		t.Fatalf("LoadLocation: %v", err)
 	}
 
-	// 2024-01-01 is a known Monday.
 	inside := time.Date(2024, 1, 1, 3, 0, 0, 0, loc)
 	if inside.Weekday() != time.Monday {
 		t.Fatalf("test setup: %v is not Monday", inside)
@@ -210,9 +198,6 @@ func TestWeeklyWindowMoscowTimezone(t *testing.T) {
 		t.Fatalf("InMaintenance weekly inside: got false, want true")
 	}
 
-	// Same instant expressed in a different timezone must still land
-	// inside the window, since InMaintenance converts using the window's
-	// own timezone.
 	activeFromUTC, err := svc.InMaintenance(ctx, pid, inside.UTC())
 	if err != nil {
 		t.Fatalf("InMaintenance weekly inside (utc instant): %v", err)
@@ -230,7 +215,6 @@ func TestWeeklyWindowMoscowTimezone(t *testing.T) {
 		t.Fatalf("InMaintenance weekly outside (time): got true, want false")
 	}
 
-	// 2024-01-02 is Tuesday: same time-of-day, wrong weekday.
 	wrongWeekday := time.Date(2024, 1, 2, 3, 0, 0, 0, loc)
 	active, err = svc.InMaintenance(ctx, pid, wrongWeekday)
 	if err != nil {
@@ -248,12 +232,11 @@ func TestWeeklyWindowCrossesMidnight(t *testing.T) {
 	defer cancel()
 	pid := newProject(t, pool)
 
-	// Monday 23:00 - Tuesday 01:00 UTC.
 	if _, err := svc.CreateWindow(ctx, uptime.Window{
 		ProjectID: pid,
 		Name:      "Overnight",
 		Weekly:    true,
-		Weekday:   1, // Monday
+		Weekday:   1,
 		StartTime: "23:00",
 		EndTime:   "01:00",
 		Timezone:  "UTC",
@@ -261,9 +244,9 @@ func TestWeeklyWindowCrossesMidnight(t *testing.T) {
 		t.Fatalf("CreateWindow crossing midnight: %v", err)
 	}
 
-	mondayLate := time.Date(2024, 1, 1, 23, 30, 0, 0, time.UTC)  // Monday 23:30
-	tuesdayEarly := time.Date(2024, 1, 2, 0, 30, 0, 0, time.UTC) // Tuesday 00:30
-	mondayEarly := time.Date(2024, 1, 1, 22, 0, 0, 0, time.UTC)  // Monday 22:00, before window
+	mondayLate := time.Date(2024, 1, 1, 23, 30, 0, 0, time.UTC)
+	tuesdayEarly := time.Date(2024, 1, 2, 0, 30, 0, 0, time.UTC)
+	mondayEarly := time.Date(2024, 1, 1, 22, 0, 0, 0, time.UTC)
 
 	for _, tc := range []struct {
 		name string
@@ -332,9 +315,6 @@ func TestCreateWindowInvalidFields(t *testing.T) {
 			ProjectID: pid, Name: "", Weekly: true, Weekday: 1,
 			StartTime: "02:00", EndTime: "04:00", Timezone: "UTC",
 		},
-		// start_time == end_time проходило бы валидацию и трактовалось
-		// windowDuration как 24-часовое окно (P2-3 из аудита 2026-08-12) —
-		// опечатка при вводе времени молча блэкаутила бы весь день недели.
 		"start equals end": {
 			ProjectID: pid, Name: "x", Weekly: true, Weekday: 1,
 			StartTime: "02:00", EndTime: "02:00", Timezone: "UTC",
@@ -349,11 +329,6 @@ func TestCreateWindowInvalidFields(t *testing.T) {
 	}
 }
 
-// TestCreateWindowInvalidFieldsSentinels — P2-1 usability-аудита 2026-08-12:
-// validateWindow теперь оборачивает каждую причину своим сентинелем поверх
-// общего ErrInvalidWindow (см. internal/uptime/maintenance.go), чтобы
-// web-слой мог перевести конкретную причину без показа сырого err.Error().
-// Проверяем, что каждая ветка даёт СВОЙ, а не общий, сентинель.
 func TestCreateWindowInvalidFieldsSentinels(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)

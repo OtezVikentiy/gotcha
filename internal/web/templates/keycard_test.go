@@ -9,17 +9,9 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// longKey — 30-символьный ключ (>12, порог сокращения из брифа), с ясно
-// различимыми головой/хвостом, чтобы assert'ы ниже проверяли именно ИХ, а не
-// случайное совпадение с серединой строки.
 const longKey = "abc123" + "xxxxxxxxxxxxxxxxxxxx" + "wxyz"
 
-// TestKeyDisplayID — идентификатор ключа в шапке карточки: сокращаем только
-// когда DSN и так покажет ключ целиком (иначе это единственное место, где он
-// виден вообще, см. keyRowHasDSN/keyCard).
 func TestKeyDisplayID(t *testing.T) {
-	// Живой ключ с непустым DSN -> сокращённая форма: префикс, суффикс, и
-	// полный ключ в результате НЕ содержится (иначе сокращения не произошло).
 	live := ProjectKeyView{Key: org.Key{PublicKey: longKey, Revoked: false}, DSN: "https://" + longKey + "@host/1"}
 	got := keyDisplayID(live)
 	if !strings.HasPrefix(got, "abc123") {
@@ -35,32 +27,22 @@ func TestKeyDisplayID(t *testing.T) {
 		t.Errorf("keyDisplayID(live) = %q должен содержать многоточие U+2026", got)
 	}
 
-	// Отозванный ключ -> полный ключ, даже если DSN у записи заполнен (DSN
-	// отозванного ключа шаблон всё равно не показывает, см. keyRowHasDSN).
 	revoked := ProjectKeyView{Key: org.Key{PublicKey: longKey, Revoked: true}, DSN: "https://" + longKey + "@host/1"}
 	if got := keyDisplayID(revoked); got != longKey {
 		t.Errorf("keyDisplayID(revoked) = %q, want полный ключ %q", got, longKey)
 	}
 
-	// Живой ключ с пустым DSN (BaseURL инстанса не настроен) -> тоже полный:
-	// карточка без DSN-блока, сокращать нечего.
 	noDSN := ProjectKeyView{Key: org.Key{PublicKey: longKey, Revoked: false}, DSN: ""}
 	if got := keyDisplayID(noDSN); got != longKey {
 		t.Errorf("keyDisplayID(no DSN) = %q, want полный ключ %q", got, longKey)
 	}
 
-	// Короткий ключ (≤12 символов) -> без изменений: сокращённая форма
-	// (6+1+4=11 символов) не короче исходной на сколько-нибудь значимую
-	// величину, а короче исходного всего на 12 символах и меньше её нет
-	// смысла трогать вовсе.
 	short := ProjectKeyView{Key: org.Key{PublicKey: "shortpk12345", Revoked: false}, DSN: "https://shortpk12345@host/1"}
 	if got := keyDisplayID(short); got != "shortpk12345" {
 		t.Errorf("keyDisplayID(short) = %q, want %q (без изменений)", got, "shortpk12345")
 	}
 }
 
-// TestHasLiveKey — предупреждение «нет активного ключа» обязано зажигаться и
-// тогда, когда ключи есть, но ВСЕ отозваны, а не только когда их нет вовсе.
 func TestHasLiveKey(t *testing.T) {
 	cases := []struct {
 		name string
@@ -94,9 +76,6 @@ func renderKeyCard(t *testing.T, v ProjectKeyView) string {
 	return sb.String()
 }
 
-// keyCardHead вырезает содержимое .key-card-head — full-key-в-шапке
-// проверяется именно в этой границе, а не по всей карточке (полный ключ
-// легитимно живёт в DSN-блоке).
 func keyCardHead(t *testing.T, card string) string {
 	t.Helper()
 	start := strings.Index(card, `<div class="key-card-head">`)
@@ -107,9 +86,6 @@ func keyCardHead(t *testing.T, card string) string {
 	return card[start:end]
 }
 
-// TestKeyCardLive — живой ключ с DSN: карточка, кнопка копирования с
-// подписью «Скопировать DSN», DSN виден текстом, форма отзыва присутствует;
-// в шапке — сокращённый идентификатор, не полный ключ.
 func TestKeyCardLive(t *testing.T) {
 	v := ProjectKeyView{
 		Key: org.Key{ID: 42, PublicKey: longKey, Kind: org.KindServer, Revoked: false},
@@ -138,9 +114,6 @@ func TestKeyCardLive(t *testing.T) {
 	}
 }
 
-// TestKeyCardRevoked — обрубка нет: приглушённый класс, текст про отзыв,
-// НЕТ кнопки копирования и НЕТ формы отзыва, полный ключ присутствует (в
-// шапке — единственном месте, где он вообще виден).
 func TestKeyCardRevoked(t *testing.T) {
 	v := ProjectKeyView{
 		Key: org.Key{ID: 7, PublicKey: longKey, Kind: org.KindServer, Revoked: true},
@@ -165,8 +138,6 @@ func TestKeyCardRevoked(t *testing.T) {
 	}
 }
 
-// TestKeyCardLegacy — ссылка «Что это значит» присутствует и живёт ВНЕ
-// шапки (там ей не было места ни при какой ширине, см. брифа дефект 4).
 func TestKeyCardLegacy(t *testing.T) {
 	v := ProjectKeyView{
 		Key: org.Key{ID: 3, PublicKey: longKey, Kind: org.KindLegacy, Revoked: false},
@@ -186,10 +157,6 @@ func TestKeyCardLegacy(t *testing.T) {
 	}
 }
 
-// TestKeyCreateFormSegmented — форма выпуска ключа: сегмент-контрол с тремя
-// radio (browser/server/agent), четыре абзаца .key-kind-hint (включая
-// --none), и длинные описания типов НЕ сидят внутри <label> (дефект брифа
-// №3 — с ними подпись переносилась, и радио-кружок отрывался от текста).
 func TestKeyCreateFormSegmented(t *testing.T) {
 	project := org.Project{ID: 9, OrgID: 1, Slug: "seg", Name: "Seg", Platform: "go"}
 	perf := PerfSettingsForm{SampleRate: "1", ApdexMS: "500", NPlusOneMin: "5", SlowDBMs: "300"}
@@ -219,9 +186,6 @@ func TestKeyCreateFormSegmented(t *testing.T) {
 			t.Errorf("нет абзаца %s: %s", cls, form)
 		}
 	}
-	// Длинные *.hint-описания (не короткая подпись "Браузер"/"Сервер"/
-	// "Агент") не должны сидеть внутри <label>: каждое живёт в СВОЁМ <p>
-	// вне сегмент-контрола.
 	for _, hint := range []string{
 		i18nT(t, "project.settings.keys.kind.browser.hint"),
 		i18nT(t, "project.settings.keys.kind.server.hint"),

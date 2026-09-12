@@ -9,9 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 )
 
-// TestCoverSameOriginGuards — все POST-обработчики CH-страниц проверяют
-// sameOrigin ДО обращения к сервисам, поэтому запрос без Origin отвергается 403
-// даже на стенде без ClickHouse (newStack). Покрывает sameOrigin-ветку каждого.
 func TestCoverSameOriginGuards(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -42,8 +39,6 @@ func TestCoverSameOriginGuards(t *testing.T) {
 	}
 }
 
-// TestCoverBadPathIDs — read-обработчики с невалидным {id}/{monitorID} в пути
-// отдают 404 (parse-ветка), не касаясь сервисов — безопасно на newStack.
 func TestCoverBadPathIDs(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -67,9 +62,6 @@ func TestCoverBadPathIDs(t *testing.T) {
 		"/projects/not-a-number/incidents",
 	}
 	for _, p := range getPaths {
-		// Сначала — что маршрут ВООБЩЕ зарегистрирован: 404 одинаково вернут и
-		// обработчик, отвергнувший битый id, и отсутствие маршрута. Без этой
-		// проверки удаление любой регистрации оставляло тест зелёным.
 		assertRouteRegistered(t, s, http.MethodGet, p)
 
 		resp := getWithCookie(t, s.srv, p, cookie)
@@ -81,10 +73,6 @@ func TestCoverBadPathIDs(t *testing.T) {
 	}
 }
 
-// assertRouteRegistered проверяет, что путь обслуживает НЕ catch-all.
-//
-// http.ServeMux отдаёт шаблон, по которому выбран обработчик: пустая строка или
-// "/" означают, что своей регистрации у пути нет и 404 приходит от заглушки.
 func assertRouteRegistered(t *testing.T, s *stack, method, path string) {
 	t.Helper()
 	pattern := s.h.RoutePattern(method, path)
@@ -95,11 +83,6 @@ func assertRouteRegistered(t *testing.T, s *stack, method, path string) {
 	}
 }
 
-// TestCoverNilServiceGuards — на newStack сервисы Trace/PerfIssues/Regressions/
-// ProfileRegressions/Metrics/Profiles/Uptime/UptimeQuery не заведены; их
-// read-роуты отвечают 404 (nil-guard срабатывает до обращения к CH/PG). Проект
-// не обязан существовать — nil-guard проверяется раньше доступа. Для traces id —
-// строка, парсинга нет.
 func TestCoverNilServiceGuards(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -113,16 +96,9 @@ func TestCoverNilServiceGuards(t *testing.T) {
 		"/projects/999999/profiles",
 		"/projects/999999/profile-regressions",
 		"/projects/999999/metrics",
-		// Оба трейс-роута защищены nil-guard'ом на h.Trace: waterfall и flame
-		// на стенде без трейсинга отдают 404, а не падают nil-разыменованием.
 		"/traces/some-trace-id",
 		"/traces/some-trace-id/flame",
 		"/projects/999999/performance/GET%20%2Fapi%2Fusers",
-		// Read-роуты подсистемы мониторинга (h.Uptime/h.UptimeQuery nil на
-		// newStack) — guard до CanAccessProject/requireProjectRole/requireOrgRole,
-		// поэтому 404, а не паника. /alerts заведён Alerts на этом стенде, но
-		// несуществующий проект всё равно даёт 404 через requireProjectRole —
-		// сам guard проверяется на прочих роутах этого списка.
 		"/projects/999999/monitors",
 		"/projects/999999/incidents",
 		"/projects/999999/maintenance",
@@ -141,10 +117,6 @@ func TestCoverNilServiceGuards(t *testing.T) {
 	}
 }
 
-// TestCoverNilServiceGuardsPOST — POST-обработчики подсистемы мониторинга
-// (h.Uptime nil на newStack) отдают 404 через nil-guard, а не паникуют. Guard
-// стоит до requireProjectRole, поэтому несуществующий проект/монитор всё равно
-// доходит до него. sameOrigin выполняется через referer=srv.URL в postForm.
 func TestCoverNilServiceGuardsPOST(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)

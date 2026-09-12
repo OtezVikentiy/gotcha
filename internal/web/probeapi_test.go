@@ -23,10 +23,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// probeStack — стенд lease-протокола: Handler с Uptime + UptimeWriter +
-// UptimeIngestor (фейковый OnResult вместо реального детектора — проверяем,
-// что центр действительно прогоняет присланный пробой результат через
-// детекцию).
+// OnResult фейковый вместо реального детектора — проверяем, что центр прогоняет
+// присланный пробой результат через детекцию.
 type probeStack struct {
 	pool    *pgxpool.Pool
 	srv     *httptest.Server
@@ -80,9 +78,7 @@ func newProbeStack(t *testing.T) *probeStack {
 
 var probeOrgSeq atomic.Int64
 
-// newOrgProject заводит организацию и проект прямыми вставками (как
-// newProject в heartbeat_test.go), но возвращает и org_id — пробы висят на
-// организации.
+// Возвращает и org_id — пробы висят на организации.
 func newOrgProject(t *testing.T, pool *pgxpool.Pool) (orgID, projectID int64) {
 	t.Helper()
 	ctx := context.Background()
@@ -127,8 +123,7 @@ func probeHTTPMonitor(t *testing.T, projectID int64) uptime.Monitor {
 	}
 }
 
-// probePost шлёт машинный POST на эндпойнт lease-протокола. token == "" —
-// запрос без заголовка Authorization.
+// token == "" — запрос без заголовка Authorization.
 func probePost(t *testing.T, s *probeStack, path, token string, body any) *http.Response {
 	t.Helper()
 	var buf bytes.Buffer

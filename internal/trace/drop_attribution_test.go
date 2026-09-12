@@ -6,11 +6,7 @@ import (
 	"time"
 )
 
-// Follow-up (2026-08-12): при переполнении txBuf SpanWriter выбрасывает самые
-// старые транзакции; SetDropSink списывает их организациям (org_usage.
-// dropped_transactions). Проверяем per-org счётчики и пропуск транзакции без
-// OrgID (0). Дропы spanBuf в счётчик не идут — транзакция, а не спан, есть
-// квота-единица; здесь spanBuf не переполняем (maxSpanBuf по умолчанию велик).
+// Транзакция без OrgID (0) не атрибутируется в сток; квота-единица — транзакция, не спан.
 func TestSpanWriterAttributesTxDropsPerOrg(t *testing.T) {
 	var mu sync.Mutex
 	got := map[int64]int64{}

@@ -11,7 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// seedEdgeHH — явное ребро host(parent) -> host(child).
 func seedEdgeHH(t *testing.T, pool *pgxpool.Pool, projectID, parent, child int64) {
 	t.Helper()
 	mustExec(t, pool, `
@@ -60,8 +59,6 @@ func TestAttachMemberUnderInformingRoot(t *testing.T) {
 }
 
 func TestAttachSilentRoot(t *testing.T) {
-	// Немой корень (MAJOR-3): notified_open=false → attach для состава,
-	// но informing=false — член уведомляет сам.
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
 	projectID := seedProject(t, pool)
@@ -93,12 +90,10 @@ func TestAttachSelfRootAndNoRoot(t *testing.T) {
 	rootInc := seedSilent(t, pool, projectID, rootHost, true)
 
 	g, _ := newGrouper(pool)
-	// Сам корень — не член собственной группы.
 	attached, _, err := g.Attach(ctx, "host", rootInc, "host", rootHost)
 	if err != nil || attached {
 		t.Fatalf("self root must not attach: attached=%v err=%v", attached, err)
 	}
-	// Узел без упавшего корня — вне групп.
 	lonely := seedHost(t, pool, projectID, "lonely-"+randSlug(t))
 	var lonelyInc int64
 	mustScan(t, pool, &lonelyInc, `
@@ -111,9 +106,6 @@ func TestAttachSelfRootAndNoRoot(t *testing.T) {
 }
 
 func TestAttachCrossTenantIsolation(t *testing.T) {
-	// Узлы чужого проекта не матчатся: ребро и упавший корень в проекте A
-	// не притягивают инцидент одноимённого хоста проекта B (изоляция уже
-	// обеспечена явными id рёбер + project_id label-матча B5; тест — сторож).
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
 	projA := seedProject(t, pool)
@@ -138,8 +130,6 @@ func TestAttachCrossTenantIsolation(t *testing.T) {
 }
 
 func TestOnRootOpenedRetro(t *testing.T) {
-	// Ретро (Р7): disk-алерт ребёнка опередил смерть корня → при открытии
-	// корня присоединяется задним числом; notified_open члена не трогается.
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
 	projectID := seedProject(t, pool)
@@ -152,10 +142,6 @@ func TestOnRootOpenedRetro(t *testing.T) {
 		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail, notified_open)
 		VALUES ($1,$2,'disk','open',0,0,'',true) RETURNING id`, projectID, childHost)
 
-	// Ребёнок тоже замолчал (иначе он не «на цепочке упавших» — узел члена
-	// с открытым disk-инцидентом жив; членство идёт через down-родителя).
-	// Для ретро по disk-инциденту ребёнка достаточно, чтобы у ЕГО узла
-	// down-корнем был root: childHost жив, но его родитель rootHost упал.
 	rootInc := seedSilent(t, pool, projectID, rootHost, true)
 
 	g, _ := newGrouper(pool)
@@ -179,7 +165,6 @@ func TestOnRootOpenedRetro(t *testing.T) {
 }
 
 func TestOnRootOpenedLazyNoMembers(t *testing.T) {
-	// Нет членов — нет группы (ленивое создание, «пустых групп не бывает»).
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
 	projectID := seedProject(t, pool)

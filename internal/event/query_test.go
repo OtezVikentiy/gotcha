@@ -151,7 +151,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			t.Fatalf("unexpected event: %+v", got)
 		}
 
-		// Чужой projectID — не находит.
 		_, found, err = q.EventByID(ctx, projectID+1, idA2)
 		if err != nil {
 			t.Fatalf("EventByID wrong project: %v", err)
@@ -160,7 +159,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			t.Fatalf("event found under wrong projectID")
 		}
 
-		// Несуществующий UUID — не находит.
 		_, found, err = q.EventByID(ctx, projectID, "550e8400-e29b-41d4-a716-446655449999")
 		if err != nil {
 			t.Fatalf("EventByID unknown id: %v", err)
@@ -180,7 +178,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if len(points) != 6 {
 			t.Fatalf("len(points) = %d, want 6", len(points))
 		}
-		// хронологический порядок
 		for i := 1; i < len(points); i++ {
 			if !points[i].T.After(points[i-1].T) {
 				t.Fatalf("points not in chronological order: %v", points)
@@ -193,12 +190,10 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if sum != 3 {
 			t.Fatalf("sum(N) = %d, want 3", sum)
 		}
-		// Первая точка окна должна совпасть с windowFrom.
 		if !points[0].T.Equal(windowFrom) {
 			t.Fatalf("points[0].T = %v, want %v", points[0].T, windowFrom)
 		}
-		// Пропуски заполнены нулями: в окне 6 корзин, событий только 3, значит
-		// ровно 3 нуля (раньше ждали 4 — четвёртым был фантомный хвост сетки).
+		// Пропуски заполнены нулями: 6 корзин, 3 события — значит 3 нуля.
 		var zeros int
 		for _, p := range points {
 			if p.N == 0 {
@@ -209,8 +204,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			t.Fatalf("zeros = %d, want >= 3 (points=%v)", zeros, points)
 		}
 
-		// Test with step not dividing 24h evenly (7 minutes).
-		// Must verify epoch-based grid alignment with ClickHouse toStartOfInterval.
 		t.Run("epoch-aligned-7min", func(t *testing.T) {
 			points7m, err := q.Series(ctx, projectID, issueA, windowFrom, windowTo, 7*time.Minute)
 			if err != nil {
@@ -219,7 +212,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			if len(points7m) == 0 {
 				t.Fatalf("len(points) = 0, got empty result")
 			}
-			// Sum of N across all points must equal event count.
 			var sum uint64
 			for _, p := range points7m {
 				sum += p.N
@@ -231,7 +223,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("CountSince", func(t *testing.T) {
-		// issueA has 3 events at tsA1/tsA2/tsA3 (windowFrom+5m/+25m/+55m).
 		gotAll, err := q.CountSince(ctx, projectID, issueA, windowFrom)
 		if err != nil {
 			t.Fatalf("CountSince: %v", err)
@@ -240,7 +231,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			t.Fatalf("CountSince(from windowFrom) = %d, want 3", gotAll)
 		}
 
-		// since after tsA1 but before tsA2 -> only A2, A3 counted.
 		gotPartial, err := q.CountSince(ctx, projectID, issueA, tsA1.Add(time.Second))
 		if err != nil {
 			t.Fatalf("CountSince: %v", err)
@@ -249,7 +239,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			t.Fatalf("CountSince(from after tsA1) = %d, want 2", gotPartial)
 		}
 
-		// far future -> 0.
 		gotNone, err := q.CountSince(ctx, projectID, issueA, now.Add(24*time.Hour))
 		if err != nil {
 			t.Fatalf("CountSince: %v", err)
@@ -258,7 +247,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			t.Fatalf("CountSince(from future) = %d, want 0", gotNone)
 		}
 
-		// other issue in same project unaffected.
 		gotB, err := q.CountSince(ctx, projectID, issueB, windowFrom)
 		if err != nil {
 			t.Fatalf("CountSince: %v", err)
@@ -302,15 +290,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 }
 
-// TestStreamForExportOrdersByIssueThenTime — обход выгрузки обязан идти
-// ГРУППАМИ в порядке списка issueIDs, внутри группы — timestamp DESC (K4-2,
-// аудит перед 1.0): issueIDs передаётся вызывающим уже отсортированным
-// (last_seen DESC — самые активные группы первыми), а не по возрастанию
-// issue_id, и именно порядок списка обязан определять, какие группы
-// усечение LIMIT оставит первыми (см. TestStreamForExportTruncation
-// KeepsFirstListedIssues). Список ниже намеренно ставит issue2 (числом
-// БОЛЬШЕ issue1) первым — тест обязан провалиться, если реализация
-// вернулась бы к сортировке по возрастанию issue_id вместо порядка списка.
 func TestStreamForExportOrdersByIssueThenTime(t *testing.T) {
 	ctx := context.Background()
 	conn := testenv.MigratedCH(t)
@@ -353,9 +332,6 @@ func TestStreamForExportOrdersByIssueThenTime(t *testing.T) {
 	}
 }
 
-// TestStreamForExportFollowsGivenIssueOrder — три группы, список issueIDs в
-// произвольном порядке (не по возрастанию и не по времени вставки): обход
-// обязан вернуть строки группами строго в порядке списка (K4-2).
 func TestStreamForExportFollowsGivenIssueOrder(t *testing.T) {
 	ctx := context.Background()
 	conn := testenv.MigratedCH(t)
@@ -390,13 +366,6 @@ func TestStreamForExportFollowsGivenIssueOrder(t *testing.T) {
 	}
 }
 
-// TestStreamForExportTruncationKeepsFirstListedIssues — усечение LIMIT
-// обязано отбросить наименее активные группы (последние в списке issueIDs,
-// который вызывающий сортирует по last_seen DESC), а не произвольные
-// строки, оставшиеся после сортировки по issue_id (K4-2): C — первая в
-// списке и самая «активная» по числу событий, A и B — позади неё. LIMIT,
-// равный числу событий C, обязан вернуть ровно события C и ни одного
-// события A/B.
 func TestStreamForExportTruncationKeepsFirstListedIssues(t *testing.T) {
 	ctx := context.Background()
 	conn := testenv.MigratedCH(t)
@@ -443,8 +412,6 @@ func TestStreamForExportTruncationKeepsFirstListedIssues(t *testing.T) {
 	}
 }
 
-// TestStreamForExportRespectsLimit — LIMIT в запросе обязан реально
-// ограничивать число строк, а не быть декоративным параметром.
 func TestStreamForExportRespectsLimit(t *testing.T) {
 	ctx := context.Background()
 	conn := testenv.MigratedCH(t)
@@ -476,10 +443,6 @@ func TestStreamForExportRespectsLimit(t *testing.T) {
 	}
 }
 
-// TestStreamForExportTiedTimestampsNoLossOrDuplication — несколько событий
-// одной группы с ОДИНАКОВЫМ timestamp: ORDER BY issue_id, timestamp DESC не
-// уникален внутри такой группы, но обход не должен ни терять, ни задваивать
-// строки, пока LIMIT не отсекает часть связки.
 func TestStreamForExportTiedTimestampsNoLossOrDuplication(t *testing.T) {
 	ctx := context.Background()
 	conn := testenv.MigratedCH(t)
@@ -517,16 +480,6 @@ func TestStreamForExportTiedTimestampsNoLossOrDuplication(t *testing.T) {
 	}
 }
 
-// TestStreamForExportDoesNotSortByComputedKey — закрепление I2 (финревью
-// волны 1 аудита перед 1.0): ORDER BY transform(issue_id, …) исключает
-// read-in-order при любой версии ClickHouse — сервер обязан прочитать и
-// отсортировать весь отфильтрованный набор целиком вместо потокового
-// чтения по первичному ключу (project_id, issue_id, timestamp). Порядок
-// строк (группами в порядке issueIDs, внутри группы timestamp DESC)
-// закреплён поведенческими тестами выше и обязан сохраняться без
-// вычисляемого ключа сортировки — эта проверка ловит только регресс
-// СПОСОБА, а не результата: возврат к transform() молча вернул бы прежний
-// результат на тестовых объёмах, но заново снял бы потоковость на проде.
 func TestStreamForExportDoesNotSortByComputedKey(t *testing.T) {
 	src, err := os.ReadFile("query.go")
 	if err != nil {
@@ -539,10 +492,6 @@ func TestStreamForExportDoesNotSortByComputedKey(t *testing.T) {
 	}
 }
 
-// countingQueryConn оборачивает реальное соединение ClickHouse и считает
-// вызовы Query — ровно столько же делает StreamForExport на список групп
-// (см. её докблок: один точечный запрос по PK на группу, включая пустые,
-// вместо одного общего запроса с вычисляемым ключом сортировки).
 type countingQueryConn struct {
 	driver.Conn
 	n int
@@ -553,17 +502,6 @@ func (c *countingQueryConn) Query(ctx context.Context, query string, args ...any
 	return c.Conn.Query(ctx, query, args...)
 }
 
-// TestStreamForExportQueriesExactlyOncePerGroup — «хвост волны 1» устранения
-// аудита перед 1.0: докблок StreamForExport (query.go) уже измеряет и
-// сознательно принимает цену обхода групп (обход по одной группе за раз —
-// точечный поиск по PK, дешёвый даже на огромной таблице, взамен ЕДИНОГО
-// запроса с ORDER BY transform(...), который на большом проекте рискует
-// MEMORY_LIMIT_EXCEEDED, см. её докблок и TestStreamForExportDoesNotSort
-// ByComputedKey выше) — но эта цена была прозой без числа, которое ловит
-// регресс. Тест закрепляет её числом: РОВНО один Query() на КАЖДУЮ группу
-// списка issueIDs, включая пустые (обход не схлопывается в общий запрос —
-// count не может быть 1 — и не заводит скрытый N+1 внутри одной группы —
-// count не может быть больше числа групп).
 func TestStreamForExportQueriesExactlyOncePerGroup(t *testing.T) {
 	ctx := context.Background()
 	real := testenv.MigratedCH(t)

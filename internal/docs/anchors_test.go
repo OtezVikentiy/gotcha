@@ -8,11 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/docs"
 )
 
-// TestHeadingsHaveAnchors: без id у заголовков якорных ссылок не существует.
-//
-// Тексты документации уже ссылаются на разделы прозой («см. раздел о внешних
-// получателях ниже»), а браузерная ссылка на конкретный раздел не работала ни
-// на одной странице: goldmark без WithAutoHeadingID заголовкам id не ставит.
 func TestHeadingsHaveAnchors(t *testing.T) {
 	for _, locale := range []string{"ru", "en"} {
 		for _, slug := range []string{"sdk", "configuration", "privacy", "upgrade"} {
@@ -28,11 +23,6 @@ func TestHeadingsHaveAnchors(t *testing.T) {
 	}
 }
 
-// TestAnchorsAreMeaningfulAndStable: якорь кириллического заголовка обязан
-// зависеть от ТЕКСТА, а не от номера раздела.
-//
-// Штатный генератор goldmark оставляет от кириллицы «heading-3»: вставка абзаца
-// в середину страницы сдвигает нумерацию и протухает все ссылки ниже.
 func TestAnchorsAreMeaningfulAndStable(t *testing.T) {
 	html, _, ok := docs.Render("ru", "configuration")
 	if !ok {
@@ -41,14 +31,11 @@ func TestAnchorsAreMeaningfulAndStable(t *testing.T) {
 	if strings.Contains(html, `id="heading`) {
 		t.Errorf("якоря вида heading-N: ссылка привязана к порядку разделов, а не к тексту")
 	}
-	// «Security (безопасность)» → security-bezopasnost.
 	if !strings.Contains(html, `id="security-bezopasnost"`) {
 		t.Errorf("нет ожидаемого якоря security-bezopasnost — транслитерация не работает")
 	}
 }
 
-// TestSlugifyTransliterates закрепляет разбор: якорь виден в адресной строке,
-// и «что это за раздел» должно читаться по нему.
 func TestSlugifyTransliterates(t *testing.T) {
 	cases := map[string]string{
 		"Security (безопасность)":  "security-bezopasnost",
@@ -64,15 +51,8 @@ func TestSlugifyTransliterates(t *testing.T) {
 	}
 }
 
-// TestInPageAnchorLinksResolve: каждая ссылка вида [текст](#якорь) внутри
-// страницы обязана указывать на существующий id заголовка.
-//
-// Якоря кириллических заголовков ТРАНСЛИТЕРИРУЮТСЯ (см. slugify), а не
-// повторяют текст заголовка, — и написанная «по смыслу» ссылка
-// `(#удаление-и-автоматическая-очистка)` уезжает в percent-encoding и не ведёт
-// никуда. Молча: markdown-ссылка на несуществующий якорь — не ошибка сборки, и
-// автор правки замечает её, только если сам щёлкнет по ней в браузере.
-// Проверка идёт по ВСЕМ страницам обеих локалей, а не по списку известных.
+// Битая markdown-ссылка на якорь — не ошибка сборки: без этого теста её
+// находят только руками, щёлкнув по ней в браузере.
 func TestInPageAnchorLinksResolve(t *testing.T) {
 	anchorLink := regexp.MustCompile(`href="#([^"]+)"`)
 	for _, locale := range []string{"ru", "en"} {
@@ -91,25 +71,9 @@ func TestInPageAnchorLinksResolve(t *testing.T) {
 	}
 }
 
-// TestCrossPageLinksResolve: каждая ссылка вида [текст](/docs/slug) или
-// [текст](/docs/slug#якорь) обязана вести на страницу, которая реально есть
-// в registry текущей локали, а якорь (если указан) — на существующий id
-// заголовка ЦЕЛЕВОЙ страницы той же локали.
-//
-// TestInPageAnchorLinksResolve проверяет только ссылки на якоря ВНУТРИ той же
-// страницы (`href="#..."`) — опечатка в slug'е соседней страницы или в её
-// якоре (например, `/docs/upgrade` → `/docs/upgrad`, или правильный slug с
-// протухшим `#якорем`) им не ловится и не роняет сборку: markdown-ссылка на
-// несуществующую страницу — не ошибка компиляции, автор замечает её только
-// щёлкнув по ней в браузере. Целевую страницу рендерим через docs.Render —
-// это даёт готовый список id заголовков (транслитерация уже применена) без
-// повторной реализации slugify здесь.
 func TestCrossPageLinksResolve(t *testing.T) {
-	// Якорь захватывается ЛЮБЫМИ символами до закрывающей кавычки, а не
-	// закрытым классом `[a-z0-9-]+`: закрытый класс не матчится на опечатке
-	// вида `#security-bezopasnostX` (заглавная буква не входит в класс), и
-	// такая ссылка просто выпадает из FindAllStringSubmatch — регэксп молча
-	// пропускает битую ссылку вместо того, чтобы её проверить и завалить тест.
+	// Захват до закрывающей кавычки, не классом `[a-z0-9-]+`: закрытый класс
+	// молча пропускает опечатку вида `#security-bezopasnostX` вместо провала теста.
 	crossLink := regexp.MustCompile(`href="(/docs/[a-z0-9-]+)(?:#([^"]*))?"`)
 	for _, locale := range []string{"ru", "en"} {
 		pages := docs.Pages(locale)

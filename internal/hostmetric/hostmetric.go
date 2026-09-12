@@ -1,12 +1,6 @@
-// Package hostmetric — единственный источник правды об именах, атрибутах и
-// списках исключений хост-метрик. На него смотрят ТРИ стороны: агент
-// (internal/agent — что эмитить), потребители (internal/web/hostcharts,
-// internal/host/evaluator — что читать) и генератор YAML коллектора
-// (internal/web/hosts.go). Лист-пакет без зависимостей: web не должен тянуть
-// gopsutil, агент не должен тянуть web.
 package hostmetric
 
-// Имена метрик — OTel semconv, публичный контракт (фиксируются набело).
+// Публичный контракт OTel semconv — фиксируются набело, менять нельзя.
 const (
 	CPUUtilization        = "system.cpu.utilization"
 	CPULogicalCount       = "system.cpu.logical.count"
@@ -21,7 +15,6 @@ const (
 	Uptime                = "system.uptime"
 )
 
-// Атрибуты датапойнтов (semconv hostmetrics).
 const (
 	AttrState      = "state"
 	AttrDevice     = "device"
@@ -32,17 +25,13 @@ const (
 	AttrStatus     = "status"
 )
 
-// Служебные resource-атрибуты агента: в ClickHouse не попадают никогда
-// (сегодня — автоматически: metric.MapOTLP промотирует лишь три ключа и
-// остальные ресурсные атрибуты отбрасывает; правило фиксируем на будущее).
+// В ClickHouse не попадают никогда — MapOTLP пропускает только три ключа, остальное отбрасывается.
 const (
 	AgentVersionAttr = "gotcha.agent.version"
 	AgentAttrPrefix  = "gotcha.agent."
 )
 
-// ExcludedFSTypes — типы ФС, которые не считаются «диском» (A1, ревью I1):
-// squashfs заполнен на 100% по замыслу, tmpfs — ОЗУ, overlay — слои поверх
-// уже посчитанного корня, остальное — псевдо-ФС ядра.
+// squashfs всегда 100% по замыслу, tmpfs — это ОЗУ, overlay — слои поверх уже посчитанного корня.
 var ExcludedFSTypes = []string{
 	"autofs", "binfmt_misc", "bpf", "cgroup", "cgroup2", "configfs",
 	"debugfs", "devpts", "devtmpfs", "efivarfs", "fusectl", "hugetlbfs",
@@ -50,14 +39,13 @@ var ExcludedFSTypes = []string{
 	"securityfs", "squashfs", "sysfs", "tmpfs", "tracefs",
 }
 
-// ExcludedMountPrefixes — префиксы точек монтирования вне мониторинга.
-// Агент матчит их strings.HasPrefix; YAML коллектора рендерит "^<префикс>.*".
+// Агент матчит strings.HasPrefix; YAML коллектора рендерит как "^<префикс>.*".
 var ExcludedMountPrefixes = []string{
 	"/snap/", "/var/lib/docker/", "/var/lib/kubelet/",
 	"/run/", "/dev/", "/proc/", "/sys/",
 }
 
-// AllMetrics — полный набор эмиссии агента (порядок стабилен для тестов).
+// Порядок стабилен — важно для тестов.
 func AllMetrics() []string {
 	return []string{
 		CPUUtilization, CPULogicalCount, MemoryUtilization,

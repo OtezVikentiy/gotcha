@@ -5,7 +5,6 @@ import (
 	"testing"
 )
 
-// TestSpanWriterSaturationEmpty — пустой писатель не насыщен.
 func TestSpanWriterSaturationEmpty(t *testing.T) {
 	w := NewSpanWriter(nil)
 	if got := w.Saturation(); got != 0 {
@@ -13,8 +12,6 @@ func TestSpanWriterSaturationEmpty(t *testing.T) {
 	}
 }
 
-// TestSpanWriterSaturationTxRowCap — упор в потолок ПО СТРОКАМ транзакций при
-// незанятых остальных плечах.
 func TestSpanWriterSaturationTxRowCap(t *testing.T) {
 	w := NewSpanWriter(nil)
 	w.maxBuf = 4
@@ -28,15 +25,11 @@ func TestSpanWriterSaturationTxRowCap(t *testing.T) {
 	}
 }
 
-// TestSpanWriterSaturationByteCap — упор в потолок ПО БАЙТАМ при незанятых
-// счётных плечах: одна тяжёлая транзакция тяжелее потолка сама по себе не
-// вычищается (trim*Locked всегда оставляет хотя бы одну строку в каждом
-// буфере).
 func TestSpanWriterSaturationByteCap(t *testing.T) {
 	w := NewSpanWriter(nil)
 	w.maxBuf = 10000
 	w.maxSpanBuf = 100000
-	w.maxBufBytes = 50 // меньше веса одной строки ниже
+	w.maxBufBytes = 50
 	tx := sampleTx(0)
 	tx.Name = strings.Repeat("m", 500)
 	w.Add(1, 1, tx)
@@ -45,18 +38,12 @@ func TestSpanWriterSaturationByteCap(t *testing.T) {
 	}
 }
 
-// TestSpanWriterSaturationSpanShoulderSaturatesFirst — плечо spanBuf
-// насыщается раньше транзакционного: транзакция с большим числом спанов
-// упирается в maxSpanBuf, хотя занимает всего одну строку из txBuf. Если
-// Saturation считал бы только txBuf (или усреднял плечи), находка была бы
-// не видна — а именно этот случай (много спанов на одну транзакцию) и
-// оправдывает раздельный учёт.
 func TestSpanWriterSaturationSpanShoulderSaturatesFirst(t *testing.T) {
 	w := NewSpanWriter(nil)
-	w.maxBuf = 1000  // транзакционный потолок далёк
-	w.maxSpanBuf = 5 // спановый потолок маленький
+	w.maxBuf = 1000
+	w.maxSpanBuf = 5
 	w.maxBufBytes = 1 << 30
-	w.Add(1, 1, sampleTx(5)) // 1 транзакция, root+5 = 6 спанов > maxSpanBuf
+	w.Add(1, 1, sampleTx(5))
 
 	w.mu.Lock()
 	txLen := len(w.txBuf)
@@ -69,8 +56,6 @@ func TestSpanWriterSaturationSpanShoulderSaturatesFirst(t *testing.T) {
 	}
 }
 
-// TestSpanWriterSaturationPartial — частичное заполнение даёт значение строго
-// между 0 и 1.
 func TestSpanWriterSaturationPartial(t *testing.T) {
 	w := NewSpanWriter(nil)
 	w.maxBuf = 10
@@ -85,9 +70,6 @@ func TestSpanWriterSaturationPartial(t *testing.T) {
 	}
 }
 
-// TestBufSaturationZeroDenominatorIsUnbounded — потолок, выключенный нулём
-// (или отрицательным значением), означает «этим лимитом не ограничены»: вклад
-// в Saturation обязан быть 0, а не деление на ноль/панику/+Inf.
 func TestBufSaturationZeroDenominatorIsUnbounded(t *testing.T) {
 	if got := bufSaturation(5, 0); got != 0 {
 		t.Fatalf("bufSaturation(5, 0) = %v, want 0", got)

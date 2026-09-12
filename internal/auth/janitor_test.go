@@ -10,8 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestJanitorDeletesExpiredSessions: просроченная сессия удаляется тиком
-// Janitor.Run в фоне, без явного вызова DeleteExpiredSessions в тесте.
 func TestJanitorDeletesExpiredSessions(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := auth.NewService(pool)
@@ -42,9 +40,7 @@ func TestJanitorDeletesExpiredSessions(t *testing.T) {
 		<-done
 	})
 
-	// SessionUser already treats an expired-but-undeleted row as absent (its
-	// query filters expires_at > now()), so it can't tell us whether Janitor
-	// actually removed the row. Poll the table directly instead.
+	// Не отличить через SessionUser удалённую сессию от просроченной — считаем строки напрямую.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		var n int
@@ -65,10 +61,6 @@ func TestJanitorDeletesExpiredSessions(t *testing.T) {
 	}
 }
 
-// TestJanitorRunFirstPassIsImmediate — первый проход не должен ждать полного
-// Interval: он выполняется до входа в цикл тикера (см. Run), иначе после
-// каждого рестарта чаще Interval (час по умолчанию) просроченные сессии не
-// чистятся вовсе.
 func TestJanitorRunFirstPassIsImmediate(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := auth.NewService(pool)
@@ -86,8 +78,7 @@ func TestJanitorRunFirstPassIsImmediate(t *testing.T) {
 		t.Fatalf("expire: %v", err)
 	}
 
-	// Interval заведомо больше времени теста — если бы первого прохода не
-	// было, просроченная сессия дожила бы до конца теста нетронутой.
+	// Без первого прохода сессия осталась бы нетронутой — Interval нарочно больше времени всего теста.
 	j := &auth.Janitor{Svc: svc, Interval: time.Hour}
 	jCtx, jCancel := context.WithCancel(context.Background())
 	defer jCancel()

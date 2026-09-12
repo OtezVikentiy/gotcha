@@ -11,45 +11,25 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// ErrNoTraceContext — в transaction-payload нет contexts.trace или пуст
-// trace_id: связать такую транзакцию не с чем, писать её в CH — мусор.
 var ErrNoTraceContext = errors.New("ingest: transaction has no contexts.trace")
 
-// ErrTimestampOutOfWindow — timestamp транзакции вне окна хранения
-// [now-90d, now+1d] (см. timestamp.go): такую строку ClickHouse всё равно
-// выбросит по TTL, а пачка таких строк с timestamp'ами из разных месяцев
-// намертво заклинивает запись (Too many partitions for single INSERT block).
 var ErrTimestampOutOfWindow = errors.New("ingest: transaction timestamp is outside the retention window")
 
-// Лимиты недоверенных строк транзакции (та же дисциплина, что у событий, см.
-// capRunes): имя транзакции попадает в ORDER BY CH-таблицы, описание спана —
-// в самую широкую колонку, op — в LowCardinality.
+// Имя транзакции попадает в ORDER BY CH-таблицы, op и status — в LowCardinality.
 const (
 	maxTransactionName = 200
 	maxSpanDescription = 2000
 	maxOp              = 100
-	// maxStatus — статусы Sentry (ok, internal_error, deadline_exceeded, ...)
-	// короткие; колонка LowCardinality, мусор в ней дорог.
-	maxStatus = 50
-	// maxTraceID/maxSpanID — trace_id это 32 hex-символа, span_id — 16;
-	// каппим по этим же длинам, а не валидируем строго: SDK бывают вольны с
-	// форматом, но раздувать колонки им нельзя.
+	maxStatus          = 50
+	// trace_id — 32 hex-символа, span_id — 16; каппим по длине, не валидируем строго.
 	maxTraceID = 32
 	maxSpanID  = 16
-	// maxSpans — верхняя граница числа спанов в одной транзакции: защита от
-	// раздутого payload'а (лишние спаны отбрасываются, транзакция остаётся).
-	maxSpans = 1000
-	// maxMeasurements — сколько measurements кладём в CH-колонку measurements
-	// Map(String, Float64). Тот же кап, что у maxDataKeys/тегов: раздутый payload
-	// не должен утаскивать в колонку сотни ключей. Выбор при переполнении
-	// детерминирован — первые maxMeasurements в отсортированном порядке.
-	maxMeasurements = 40
-	// maxMeasurementKey — кап длины имени measurement'а (капается через capRunes,
-	// та же дисциплина, что у ключей тегов/data).
+	maxSpans   = 1000
+	// Выбор при переполнении детерминирован — первые maxMeasurements в отсортированном порядке.
+	maxMeasurements   = 40
 	maxMeasurementKey = 100
 )
 
-// sentryTraceContext — contexts.trace транзакции: корневой спан трейса.
 type sentryTraceContext struct {
 	TraceID string `json:"trace_id"`
 	SpanID  string `json:"span_id"`
@@ -57,7 +37,6 @@ type sentryTraceContext struct {
 	Status  string `json:"status"`
 }
 
-// sentrySpan — элемент spans[] transaction-payload'а.
 type sentrySpan struct {
 	SpanID       string          `json:"span_id"`
 	ParentSpanID string          `json:"parent_span_id"`
@@ -69,15 +48,12 @@ type sentrySpan struct {
 	Data         map[string]any  `json:"data"`
 }
 
-// sentryMeasurement — один measurement из блока measurements транзакции:
-// {"value": 2480.0, "unit": "millisecond"}. Unit нужен, чтобы привести секунды к
-// миллисекундам (см. parseMeasurements); у CLS unit пустой.
+// Unit нужен, чтобы привести секунды к миллисекундам; у CLS unit пустой.
 type sentryMeasurement struct {
 	Value float64 `json:"value"`
 	Unit  string  `json:"unit"`
 }
 
-// sentryTransaction — transaction-item Sentry-envelope'а.
 type sentryTransaction struct {
 	Transaction string          `json:"transaction"`
 	Start       json.RawMessage `json:"start_timestamp"`
@@ -96,21 +72,8 @@ type sentryTransaction struct {
 	Measurements map[string]sentryMeasurement `json:"measurements"`
 }
 
-// ParseTransaction разбирает Sentry transaction-payload в trace.Transaction.
-// Терпим к вариациям SDK: timestamps приходят и unix-числом, и RFC3339-строкой
-// (sentry-php/sentry-python шлют по-разному). Отсутствие contexts.trace или
-// пустой trace_id → ErrNoTraceContext.
-//
-// trace_id/span_id/parent_span_id нормализуются к нижнему регистру: регистр hex
-// выбирает тот, кто его кодирует (в OTLP trace id едет 16 СЫРЫМИ байтами), а
-// хранить и семплировать (см. trace.Keep) один и тот же трейс надо одинаково,
-// как бы его ни написал SDK.
-//
-// Timestamp'ы вне окна хранения (см. timestamp.go) ОТБРАСЫВАЮТСЯ: транзакция
-// целиком → ErrTimestampOutOfWindow, отдельный спан — молча выкидывается из
-// tx.Spans. Не теряем ничего настоящего: такие строки ClickHouse всё равно
-// снесёт по TTL, зато пачка «месяц назад, два, три...» больше не может
-// заклинить запись всего инстанса.
+// Timestamp вне окна хранения (см. timestamp.go) роняет ВСЮ транзакцию
+// (ErrTimestampOutOfWindow), а не клампится, как у событий: сдвиг сломал бы длительности.
 func ParseTransaction(raw []byte) (trace.Transaction, error) {
 	var st sentryTransaction
 	if err := json.Unmarshal(raw, &st); err != nil {
@@ -125,9 +88,7 @@ func ParseTransaction(raw []byte) (trace.Transaction, error) {
 		return trace.Transaction{}, ErrNoTraceContext
 	}
 
-	// Конец транзакции известен всегда (SDK его шлёт); если нет — считаем, что
-	// она закончилась сейчас. Начало без конца → нулевая длительность, а не
-	// отрицательная (см. trace.Transaction.DurationUS).
+	// Начало без конца → нулевая длительность, а не отрицательная.
 	now := time.Now().UTC()
 	end, ok := parseTraceTime(st.End)
 	if !ok {
@@ -137,8 +98,7 @@ func ParseTransaction(raw []byte) (trace.Transaction, error) {
 	if !ok {
 		start = end
 	}
-	// В CH timestamp транзакции — это start (см. trace.SpanWriter.Add), по нему
-	// и партиционирование, его и проверяем.
+	// В CH timestamp транзакции — это start, по нему и партиционирование.
 	if !inRetentionWindow(start, now) {
 		return trace.Transaction{}, ErrTimestampOutOfWindow
 	}
@@ -180,7 +140,7 @@ func ParseTransaction(raw []byte) (trace.Transaction, error) {
 			sStart = sEnd
 		}
 		if !inRetentionWindow(sStart, now) {
-			continue // спан-«отравитель»: см. ErrTimestampOutOfWindow
+			continue // спан-«отравитель» отбрасывается молча, транзакция остаётся
 		}
 		tx.Spans = append(tx.Spans, trace.Span{
 			SpanID:       normalizeID(ss.SpanID, maxSpanID),
@@ -190,21 +150,14 @@ func ParseTransaction(raw []byte) (trace.Transaction, error) {
 			Start:        sStart,
 			End:          sEnd,
 			Status:       transactionStatus(ss.Status),
-			// SEC: span.Data едет из SDK как есть; каппим число ключей и длины
-			// значений тем же ограничителем, что OTLP-путь (см. capDataMap/otlpAttrMap),
-			// иначе раздутый data утащит в CH-колонку сотни ключей / мегабайтные строки.
+			// Тот же ограничитель числа ключей/длины, что у OTLP-пути (capDataMap/otlpAttrMap).
 			Data: capDataMap(ss.Data),
 		})
 	}
 	return tx, nil
 }
 
-// parseMeasurements собирает measurements Sentry-транзакции в map[string]float64
-// с дисциплиной недоверенных данных: не-конечные (NaN/Inf) и отрицательные
-// значения отбрасываются (ключ не попадает в map), unit=="second" приводится к
-// миллисекундам (×1000), CLS (unit пустой) — как есть. Имена каппятся
-// (maxMeasurementKey), число ключей — maxMeasurements. Пустой/отсутствующий блок
-// → nil (в CH уедет пустой Map, см. SpanWriter.Add).
+// Не-конечные (NaN/Inf) и отрицательные значения отбрасываются, а не зануляются.
 func parseMeasurements(raw map[string]sentryMeasurement) map[string]float64 {
 	if len(raw) == 0 {
 		return nil
@@ -226,9 +179,6 @@ func parseMeasurements(raw map[string]sentryMeasurement) map[string]float64 {
 	return capMeasurements(out)
 }
 
-// capMeasurements ограничивает число measurements до maxMeasurements. Выбор при
-// переполнении детерминирован — первые maxMeasurements ключей в отсортированном
-// порядке (как capTags/otlpAttrMap).
 func capMeasurements(m map[string]float64) map[string]float64 {
 	if len(m) <= maxMeasurements {
 		return m
@@ -245,9 +195,8 @@ func capMeasurements(m map[string]float64) map[string]float64 {
 	return out
 }
 
-// transactionStatus нормализует статус: SDK его часто опускают у успешных
-// транзакций, а MV transactions_5m считает провалом всё, что != 'ok', — пустая
-// строка иначе раздула бы failure rate до 100%.
+// MV transactions_5m считает провалом всё, что != 'ok' — пустая строка
+// раздула бы failure rate до 100%, поэтому дефолт "ok".
 func transactionStatus(status string) string {
 	if status == "" {
 		return "ok"
@@ -255,10 +204,8 @@ func transactionStatus(status string) string {
 	return capRunes(status, maxStatus)
 }
 
-// parseTraceTime разбирает timestamp транзакции/спана: unix-число (в т.ч.
-// дробное) ИЛИ RFC3339-строка. В отличие от parseTimestamp (события), не
-// подставляет time.Now() — вызывающий сам решает, чем заменить отсутствующее
-// значение, чтобы длительность не считалась от «сейчас».
+// В отличие от parseTimestamp (события), не подставляет time.Now() — вызывающий
+// сам решает замену, чтобы длительность не считалась от «сейчас».
 func parseTraceTime(raw json.RawMessage) (time.Time, bool) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return time.Time{}, false
@@ -266,10 +213,8 @@ func parseTraceTime(raw json.RawMessage) (time.Time, bool) {
 	var f float64
 	if err := json.Unmarshal(raw, &f); err == nil && f > 0 {
 		sec := int64(f)
-		// Округление до микросекунды: float64 хранит unix-секунды с точностью
-		// ~0.5 мкс, и без округления 500 мс между двумя timestamp'ами дали бы
-		// duration_us = 499999. Больше микросекунды нам всё равно не нужно —
-		// колонка duration_us в микросекундах.
+		// Округление до микросекунды: float64 хранит unix-секунды с точностью ~0.5
+		// мкс, без округления 500 мс между timestamp'ами дали бы duration_us=499999.
 		return time.Unix(sec, int64((f-float64(sec))*1e9)).UTC().Round(time.Microsecond), true
 	}
 	var s string

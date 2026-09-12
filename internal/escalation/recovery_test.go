@@ -8,12 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestRecoveryChannelsDistinctAndScoped — RecoveryChannels обязана вернуть
-// DISTINCT каналы, видевшие эскалацию ИМЕННО этого (source, incident_id):
-// один канал, залогированный на нескольких ступенях, должен войти в
-// результат один раз, а строки другого инцидента и другого источника с тем
-// же incident_id — не подмешаться (M-7 брифа Task 6: recovery адресуется
-// только тем, кто реально видел тревогу этого инцидента).
 func TestRecoveryChannelsDistinctAndScoped(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -27,8 +21,6 @@ func TestRecoveryChannelsDistinctAndScoped(t *testing.T) {
 
 	const incidentID = int64(9001)
 
-	// Целевой инцидент 'host'/9001: c1 залогирован дважды на разных ступенях
-	// (должен схлопнуться в один элемент через DISTINCT), c2 — один раз.
 	if err := escalation.LogStep(ctx, pool, "host", incidentID, c1, 0); err != nil {
 		t.Fatalf("LogStep c1 step0: %v", err)
 	}
@@ -39,11 +31,9 @@ func TestRecoveryChannelsDistinctAndScoped(t *testing.T) {
 		t.Fatalf("LogStep c2 step1: %v", err)
 	}
 
-	// Шум: тот же incident_id, но другой source — не должен попасть в выборку.
 	if err := escalation.LogStep(ctx, pool, "metric", incidentID, c3, 0); err != nil {
 		t.Fatalf("LogStep noise other-source: %v", err)
 	}
-	// Шум: тот же source, но другой incident_id — не должен попасть в выборку.
 	if err := escalation.LogStep(ctx, pool, "host", incidentID+1, c3, 0); err != nil {
 		t.Fatalf("LogStep noise other-incident: %v", err)
 	}

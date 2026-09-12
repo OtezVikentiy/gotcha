@@ -54,8 +54,6 @@ func TestRegressionNotifierEnqueues(t *testing.T) {
 	}
 }
 
-// Трансграничный гейт: при политике без доверия получателю во внешние каналы не должно
-// уезжать имя функции/сервиса (тело/subject); при true — уезжает.
 func TestRegressionNotifierExternalDetailsGate(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

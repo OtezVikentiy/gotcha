@@ -13,25 +13,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 )
 
-// Тесты ниже — сторож K4-7 аудита в его исправленной постановке: находка не
-// про поля структуры Meta саму по себе, а про формат выгрузки ЦЕЛИКОМ —
-// MetaSchemaVersion (meta.go) обязана двигаться при ЛЮБОМ несовместимом
-// изменении набора колонок/ключей файла (CSV/JSON/NDJSON), не только полей
-// Meta. Иначе потребитель узнал бы о переименованной колонке только
-// сломанным парсингом, при том что version у него на руках не изменилась.
-//
-// Источник «истины» в каждом тесте — РЕАЛЬНЫЙ вывод писателя на фикстуре:
-// маппинг источника (eventSource.toRecord/issueSource.toRecord — та же
-// функция, что зовёт настоящий Stream) → NewWriter(...).Write(...).Close() →
-// разбор получившихся байт тем же способом, каким их читает настоящий
-// потребитель (encoding/csv, encoding/json). Сравнение — с ЛИТЕРАЛОМ,
-// набранным в тесте руками, а НЕ с повторным вызовом EventColumns()/
-// IssueColumns(): если источником «ожидания» была бы та же функция, что и
-// источником «факта», переименование колонки сдвинуло бы оба одним и тем же
-// изменением одной строки, и тест остался бы зелёным при реальном изменении
-// контракта (см. TestEventColumnsContractPin/TestIssueColumnsContractPin —
-// тот же принцип, только для одного лишь CSV-заголовка; тесты этого файла
-// покрывают контракт целиком, все три формата, оба вида заявки).
+// Ожидание — литерал руками, не повторный вызов EventColumns()/IssueColumns():
+// иначе переименование колонки сдвинуло бы оба конца сравнения одинаково, и тест остался бы зелёным.
 const contractBreakMsg = "%s %s: набор ключей = %v, want %v — это ломающее изменение контракта выгрузки, подними MetaSchemaVersion (meta.go)"
 
 func fixtureStoredEventForContract() event.Stored {
@@ -75,8 +58,6 @@ func fixtureIssueForContract() issue.Issue {
 	}
 }
 
-// writeOneRecord прогоняет rec через настоящий Writer формата f и отдаёт
-// сырые байты — то же самое, что получил бы потребитель, скачавший файл.
 func writeOneRecord(t *testing.T, f Format, columns []string, rec Record) []byte {
 	t.Helper()
 	var buf bytes.Buffer
@@ -93,7 +74,6 @@ func writeOneRecord(t *testing.T, f Format, columns []string, rec Record) []byte
 	return buf.Bytes()
 }
 
-// csvHeader разбирает заголовок настоящего CSV-вывода (BOM пропускается).
 func csvHeader(t *testing.T, raw []byte) []string {
 	t.Helper()
 	got, err := csv.NewReader(bytes.NewReader(bytes.TrimPrefix(raw, []byte("\ufeff")))).Read()
@@ -103,9 +83,6 @@ func csvHeader(t *testing.T, raw []byte) []string {
 	return got
 }
 
-// jsonRecordKeys разбирает единственный элемент JSON-массива и отдаёт его
-// ключи отсортированными (порядок ключей у map при кодировании и так
-// сортируется encoding/json, сортировка здесь — для устойчивости теста).
 func jsonRecordKeys(t *testing.T, raw []byte) []string {
 	t.Helper()
 	var arr []map[string]any
@@ -118,7 +95,6 @@ func jsonRecordKeys(t *testing.T, raw []byte) []string {
 	return sortedKeys(arr[0])
 }
 
-// ndjsonRecordKeys разбирает единственную строку NDJSON.
 func ndjsonRecordKeys(t *testing.T, raw []byte) []string {
 	t.Helper()
 	line := bytes.TrimRight(raw, "\n")
@@ -138,12 +114,6 @@ func sortedKeys(m map[string]any) []string {
 	return keys
 }
 
-// TestExportContractEventFieldsMatchFrozenSet — контракт выгрузки events по
-// всем трём форматам. CSV несёт подмножество колонок (EventColumns, §6
-// спеки, порядок значим — CSV-писатель кладёт значения позиционно);
-// JSON/NDJSON пишут Record целиком, это подмножество ПЛЮС
-// stacktrace/contexts/breadcrumbs/request (см. докблок EventColumns) —
-// ключи, множество без порядка.
 func TestExportContractEventFieldsMatchFrozenSet(t *testing.T) {
 	csvWant := []string{"timestamp", "event_id", "issue_id", "level", "message",
 		"exception_type", "exception_value", "environment", "release", "server_name",
@@ -164,11 +134,6 @@ func TestExportContractEventFieldsMatchFrozenSet(t *testing.T) {
 	}
 }
 
-// TestExportContractIssueFieldsMatchFrozenSet — контракт выгрузки issues по
-// всем трём форматам. В отличие от events, у issues Record не несёт полей
-// сверх IssueColumns() (докблок IssueColumns: «JSON/NDJSON пишут Record
-// целиком и порядок игнорируют») — набор ключей одинаков во всех форматах,
-// различается только то, важен ли порядок (CSV — да, JSON/NDJSON — нет).
 func TestExportContractIssueFieldsMatchFrozenSet(t *testing.T) {
 	want := []string{"id", "title", "culprit", "level", "status", "times_seen",
 		"first_seen", "last_seen", "environments", "assignee_email", "url"}
@@ -188,20 +153,6 @@ func TestExportContractIssueFieldsMatchFrozenSet(t *testing.T) {
 	}
 }
 
-// TestExportContractMetaFieldsMatchFrozenSet — тот же принцип, что у двух
-// тестов выше, применённый к самой структуре Meta (K4-7 аудита):
-// MetaSchemaVersion объявляет несовместимой правкой переименование/удаление
-// поля Meta, но без сторожа на ПОЛНЫЙ набор ключей это обещание в докблоке
-// ничем не удержано — переименуй FilterCode в структуре, и ни один из
-// прежних тестов (TestBuildMetaAlwaysSetsSchemaVersion,
-// TestMetaSchemaVersionFieldNameAndValue — оба смотрят только на
-// schema_version) не покраснеет.
-//
-// pseudonym_note — единственное опциональное поле (`omitempty`, докблок
-// PseudonymNote: непусто только у events без ПДн) — тест проверяет оба
-// состояния явно, а не только «набор ключей достаточно большой»: три
-// обязательных ключа присутствуют ВСЕГДА, pseudonym_note — РОВНО там, где
-// докблок его обещает, и нигде больше.
 func TestExportContractMetaFieldsMatchFrozenSet(t *testing.T) {
 	alwaysWant := []string{"filter_code", "schema_version", "scope_issue_id"}
 

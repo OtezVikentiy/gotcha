@@ -33,9 +33,6 @@ func monitorHeartbeatRegeneratePath(monitorID int64) string {
 	return monitorDetailPath(monitorID) + "/heartbeat/regenerate"
 }
 
-// monitorToggleAction — куда шлёт форма Pause/Resume: enabled монитор
-// паузится, paused — резюмируется. Один и тот же <button> текстом отражает
-// действие, которое произойдёт при нажатии, не текущее состояние.
 func monitorToggleAction(m uptime.Monitor) string {
 	if m.Enabled {
 		return monitorPausePath(m.ID)
@@ -43,7 +40,6 @@ func monitorToggleAction(m uptime.Monitor) string {
 	return monitorResumePath(m.ID)
 }
 
-// monitorToggleLabelKey — i18n-ключ подписи той же кнопки Pause/Resume.
 func monitorToggleLabelKey(m uptime.Monitor) string {
 	if m.Enabled {
 		return "uptime.detail.action_pause"
@@ -65,10 +61,7 @@ func checkStatusText(ctx context.Context, ok bool) string {
 	return i18n.T(ctx, "uptime.check.fail")
 }
 
-// sslExpiryText — "—" без сертификата (не https-монитор или ещё не было ни
-// одной успешной https-проверки), иначе дней до истечения + дата;
-// отрицательный остаток (сертификат уже просрочен) — отдельным словом, не
-// "-3d left".
+// Просроченный сертификат — отдельным словом, не «-3d left».
 func sslExpiryText(ctx context.Context, t *time.Time) string {
 	if t == nil {
 		return "—"
@@ -81,21 +74,16 @@ func sslExpiryText(ctx context.Context, t *time.Time) string {
 	return i18n.Tf(ctx, "uptime.ssl.days_left", "days", strconv.Itoa(days), "date", date)
 }
 
-// heartbeatGrace — допуск heartbeat-монитора из его config: тот же
-// HeartbeatConfig, которым конфиг читает форма (web/monitorform.go). Невалидный
-// config на странице детали не встречается (validateConfig отсекает его при
-// записи), поэтому ошибка разбора не обрабатывается — нулевой допуск ниже
-// печатается прочерком, а не «0 с».
+// Невалидный config на детали не встречается (validateConfig отсекает при записи) — ошибка
+// разбора не обрабатывается, нулевой допуск печатается прочерком, а не «0 с».
 func heartbeatGrace(m uptime.Monitor) time.Duration {
 	var c uptime.HeartbeatConfig
 	_ = json.Unmarshal(m.Config, &c)
 	return time.Duration(c.GraceSeconds) * time.Second
 }
 
-// heartbeatGraceText — допуск короткими единицами: «15 мин», «1 ч», «1 ч 30 мин».
-// humanize.Duration здесь не подходит: она печатает одну самую крупную
-// единицу («1 час» для полутора часов), а по допуску дежурный судит, когда
-// именно монитор сработает, — важна точная величина, не порядок.
+// humanize.Duration не подходит: печатает одну крупную единицу («1 час» для полутора) —
+// здесь важна точная величина, не порядок.
 func heartbeatGraceText(ctx context.Context, d time.Duration) string {
 	if d <= 0 {
 		return "—"
@@ -115,11 +103,8 @@ func heartbeatGraceText(ctx context.Context, d time.Duration) string {
 	return strings.Join(parts, " ")
 }
 
-// heartbeatExpectedByText — крайний срок следующего маячка: last_beat_at +
-// допуск, абсолютным временем в UTC (тот же humanize.Time, что и в title у
-// relativeTime). Пока маячка не было, срока нет — прочерк: watchdog в этом
-// случае отсчитывает допуск от created_at, но показывать дежурному дату
-// создания монитора как «ожидается до» было бы враньём о пинге.
+// Пока маячка не было — прочерк, не срок от created_at: показывать дату создания монитора
+// как «ожидается до» было бы враньём о пинге.
 func heartbeatExpectedByText(ctx context.Context, m uptime.Monitor) string {
 	if m.LastBeatAt == nil {
 		return "—"
@@ -127,9 +112,6 @@ func heartbeatExpectedByText(ctx context.Context, m uptime.Monitor) string {
 	return humanize.Time(ctx, m.LastBeatAt.Add(heartbeatGrace(m)), time.UTC)
 }
 
-// incidentStatusBadgeClass/incidentStatusTextKey — открыт (ResolvedAt == nil)
-// подсвечивается как требующий внимания (danger), решён — good, тот же
-// приём, что и statusBadgeClass в issues.templ.
 func incidentStatusBadgeClass(inc uptime.Incident) string {
 	if inc.ResolvedAt == nil {
 		return "badge badge-danger"
@@ -144,8 +126,6 @@ func incidentStatusTextKey(inc uptime.Incident) string {
 	return "uptime.incident.status_resolved"
 }
 
-// incidentDurationText — "ongoing" для ещё не закрытого инцидента, иначе
-// длительность между started_at и resolved_at.
 func incidentDurationText(ctx context.Context, inc uptime.Incident) string {
 	if inc.ResolvedAt == nil {
 		return i18n.T(ctx, "uptime.incident.ongoing")
@@ -160,14 +140,8 @@ func yesNo(ctx context.Context, b bool) string {
 	return i18n.T(ctx, "uptime.no")
 }
 
-// heartbeatPingURL/heartbeatCronSnippet — те же вычисления, что и одноимённые
-// функции в web/monitorform.go; собственная копия здесь, а не импорт
-// web-пакета — templates не может импортировать web (иначе цикл: web ->
-// templates -> web). Рекомендуемая команда — -X POST, не голый GET: URL
-// heartbeat регулярно дёргают не люди (unfurl-бот мессенджера, антивирусный
-// прокси, префетч браузера), все такие клиенты шлют GET, и POST снижает
-// шанс случайного совпадения (сам отсев по заголовкам/User-Agent — в
-// web.heartbeatIgnoreReason). GET остаётся полностью поддержан.
+// Собственная копия web/monitorform.go, не импорт web (иначе цикл web->templates->web).
+// Команда — POST, не GET: URL дёргают боты/антивирусы GET-ом, POST снижает случайные срабатывания.
 func heartbeatPingURL(baseURL, token string) string {
 	return baseURL + "/uptime/hb/" + token
 }
@@ -207,30 +181,8 @@ templ incidentRow(inc uptime.Incident) {
 	</tr>
 }
 
-// MonitorDetail — GET /monitors/{id}: крупный статус, uptime% за
-// 24ч/7д/30д (уже посчитанные web/monitors.go — без окон обслуживания
-// проекта), stacked-график задержек за выбранное окно, последние проверки,
-// таймлайн инцидентов, SSL, кнопки Pause/Resume/Edit/Delete только при
-// canManage. Страница собрана под опросные мониторы (http/tcp/dns);
-// heartbeat-монитор не пишет check_results никогда — у него нет ни задержки,
-// ни проверок, ни доступности по проверкам, зато есть last_beat_at и допуск.
-// Поэтому у heartbeat вместо плиток доступности — последний маячок / допуск /
-// срок следующего, а секции «Задержка» и «Последние проверки» не рендерятся
-// вовсе (пустой график и «проверок ещё не было» читались бы как поломка).
-// Инциденты heartbeat создаёт (watchdog), их лента остаётся. SSL-плитка —
-// только у http: tcp/dns/heartbeat сертификата не проверяют, прочерк там
-// выглядел бы как «сертификат не найден».
-// Карточка heartbeat-токена (URL пинга + кнопка Regenerate) — отдельный флаг
-// canOperate. С задачи 2 (cld/plans/2026-08-08-access-model-rework.md) оба
-// флага у всех вызывающих наполняются одним и тем же canOperateProject: и
-// Pause/Resume/Edit/Delete, и heartbeat-карточка — теперь одинаково
-// операторские (Edit-форма тоже requireProjectOperator, показывать её больше
-// не опасно). Сигнатура держит их раздельными на случай, если предикаты
-// «управлять» и «оперировать» разойдутся. Ссылка "← Monitors" в шапке — это
-// breadcrumb к родительскому списку (тот же паттерн, что у issuedetail.templ
-// и perfissuedetail.templ), не дублирование боковой панели app-shell.
-// monitorDetailIncidentsPerPage дублирует одноимённую константу из
-// web/monitors.go (не экспортирована): нужно то же число для totalPages.
+// heartbeat не пишет check_results — «Задержка»/проверки не рендерятся, SSL-плитка только у http.
+// дублирует несэкспортированную константу web/monitors.go: числа должны совпадать для totalPages.
 const monitorDetailIncidentsPerPage = 20
 
 func monitorIncidentsTotalPages(total int64) int64 {
@@ -240,9 +192,6 @@ func monitorIncidentsTotalPages(total int64) int64 {
 	return (total + monitorDetailIncidentsPerPage - 1) / monitorDetailIncidentsPerPage
 }
 
-// monitorIncidentsPageURL — ссылка на страницу ленты инцидентов монитора
-// (?incpage=N; отдельный параметр, чтобы не конфликтовать с прочими на
-// странице). Первая страница — чистый путь детали.
 func monitorIncidentsPageURL(monitorID int64, page int, rng TimeRangeVM) string {
 	q := url.Values{}
 	rng.apply(q)
@@ -252,10 +201,8 @@ func monitorIncidentsPageURL(monitorID int64, page int, rng TimeRangeVM) string 
 	return monitorDetailPath(monitorID) + "?" + q.Encode()
 }
 
-// statsFailed — ClickHouse не ответил: шапка, статус, действия и инциденты
-// (PostgreSQL) на месте, плитки аптайма — «недоступно» (не «нет данных»:
-// это отказ, а не отсутствие проверок), вместо графика задержек и проверок
-// — «данные временно недоступны».
+// ClickHouse не ответил: шапка/статус/инциденты на месте, плитки аптайма — «недоступно»
+// (не «нет данных»), вместо графика задержек и проверок — «данные временно недоступны».
 templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime30d uptime.UptimeStat, latencyChart templ.Component, rng TimeRangeVM, checks []uptime.CheckRow, incidents []uptime.Incident, incPage int, incTotal int64, canManage bool, canOperate bool, baseURL string, userEmail string, statsFailed bool) {
 	@layout(m.Name, userEmail) {
 		<div class="monitor-detail">
@@ -371,14 +318,8 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 				if len(checks) == 0 {
 					@emptyState("activity", "uptime.detail.checks_empty.title", "uptime.detail.checks_empty.body", "", "", 3)
 				} else {
-					// Прокручиваемый контейнер: последних проверок до 50
-					// (monitorDetailChecksLimit), и без ограничения высоты они
-					// вытягивали страницу так, что инциденты под ними уходили
-					// далеко за экран.
-					// Один scrollRegion вместо прежней двойной обёртки
-					// (card scroll-list > table-scroll): scroll-list сам скроллит
-					// обе оси (см. app.css), внутренний table-scroll дублировал
-					// скроллер и дал бы два табстопа на одну таблицу.
+					// без ограничения высоты проверки растянули бы страницу, инциденты ушли бы за экран.
+					// scroll-list скроллит обе оси (app.css); вложенный table-scroll дал бы два табстопа.
 					@scrollRegion("card scroll-list", "uptime.detail.checks_title") {
 						<table class="data-table">
 							<thead>
@@ -427,8 +368,7 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 				}
 				</div>
 			}
-			// Пагинатор — ВНЕ ветки len(incidents)==0 (S1): на out-of-range
-			// странице строк нет, но пейджер (ссылка на первую) обязан остаться.
+			// Пагинатор — вне ветки len(incidents)==0: пустая таблица не должна прятать пейджер.
 			if monitorIncidentsTotalPages(incTotal) > 1 || incPage > 1 {
 				<nav class="pagination" aria-label={ i18n.T(ctx, "pagination.label") }>
 					if incPage > 1 {

@@ -10,12 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestMonitorErrorsAreLocalized: сообщение об отказе проверки монитора
-// показывается на языке интерфейса и не несёт внутренностей.
-//
-// Раньше над формой висело «монитор: uptime: invalid monitor: http url must be
-// a valid http(s) URL» — слово «монитор» дважды на двух языках, имя Go-пакета и
-// английская фраза посреди русской страницы.
 func TestMonitorErrorsAreLocalized(t *testing.T) {
 	for _, lang := range []string{"ru", "en"} {
 		ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: lang})
@@ -43,8 +37,6 @@ func TestMonitorErrorsAreLocalized(t *testing.T) {
 	}
 }
 
-// TestValidationErrorStaysErrInvalidMonitor: весь существующий код проверяет
-// принадлежность через errors.Is — эта проверка обязана продолжать работать.
 func TestValidationErrorStaysErrInvalidMonitor(t *testing.T) {
 	err := error(&uptime.ValidationError{Code: "http_url"})
 	if !errors.Is(err, uptime.ErrInvalidMonitor) {

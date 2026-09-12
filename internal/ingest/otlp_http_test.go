@@ -25,22 +25,12 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
 )
 
-// --- сборка OTLP-запроса (корневой SERVER-спан + db- и http.client-дети) ---
-
 func otlpStrAttr(k, v string) *commonpb.KeyValue {
 	return &commonpb.KeyValue{Key: k, Value: &commonpb.AnyValue{
 		Value: &commonpb.AnyValue_StringValue{StringValue: v},
 	}}
 }
 
-// freshExportRequest — запрос с timestamp'ами «только что»: у CH-таблиц
-// transactions/spans TTL, и строка с прошлогодним временем отбрасывается прямо
-// на вставке (см. freshTransactionJSON).
-//
-// Тело OTLP-экспорта здесь собирается как TracesData, а не как коллекторный
-// ExportTraceServiceRequest: на проводе это одно и то же сообщение (см.
-// TestOTLPCollectorWireBytes, где те же байты собираются руками именно так, как
-// их пишет генерённый маршалер коллектора).
 func freshExportRequest(traceID []byte) *tracepb.TracesData {
 	end := time.Now().UTC()
 	start := end.Add(-500 * time.Millisecond)
@@ -114,10 +104,6 @@ func otlpProtoBody(t *testing.T, req *tracepb.TracesData) []byte {
 	return b
 }
 
-// otlpJSONBody — тело OTLP/JSON, собранное protojson'ом: идентификаторы в нём
-// уезжают в BASE64 (стандартный protobuf-JSON-маппинг байтовых полей). Это НЕ
-// то, что шлёт настоящий OTLP-клиент (см. otlpJSONBodyHexIDs) — этот вариант
-// оставлен затем, чтобы доказать: такое тело мы по-прежнему принимаем.
 func otlpJSONBody(t *testing.T, req *tracepb.TracesData) []byte {
 	t.Helper()
 	b, err := protojson.Marshal(req)
@@ -127,16 +113,8 @@ func otlpJSONBody(t *testing.T, req *tracepb.TracesData) []byte {
 	return b
 }
 
-// otlpJSONBodyHexIDs — тело OTLP/JSON ровно такое, какое шлёт НАСТОЯЩИЙ клиент:
-// trace_id/span_id/parent_span_id — HEX-СТРОКИ. Ровно здесь спека OTLP отступает
-// от стандартного protobuf-JSON, и ровно на этом молча ломается protojson,
-// декодирующий hex как base64 (он не падает: hex-символы входят в base64-алфавит,
-// а 32/16 символов кратны 4).
-//
-// Собираем из protojson-тела, переписывая base64 обратно в hex: так в фикстуре
-// не приходится дублировать всю структуру запроса руками, а на проводе получается
-// байт в байт то, что пишет OTel-JS (для него JSON — кодировка ПО УМОЛЧАНИЮ) или
-// otlphttpexporter с encoding: json.
+// id — hex-строки, как шлёт настоящий клиент. Собираем из protojson-тела,
+// переписывая base64 обратно в hex, чтобы не дублировать структуру руками.
 func otlpJSONBodyHexIDs(t *testing.T, req *tracepb.TracesData) []byte {
 	t.Helper()
 	var doc any
@@ -177,17 +155,8 @@ func otlpJSONBodyHexIDs(t *testing.T, req *tracepb.TracesData) []byte {
 	return out
 }
 
-// collectorExportBody собирает тело POST /v1/traces ровно так, как его пишет
-// настоящий OTel-коллектор: как ExportTraceServiceRequest, у которого
-// единственное поле — `repeated ResourceSpans resource_spans = 1`.
-//
-// Коллекторный пакет (go.opentelemetry.io/proto/otlp/collector/trace/v1) сюда не
-// импортируется намеренно: его сгенерённый файл тащит за собой gRPC и
-// grpc-gateway, а мы от этих зависимостей и избавляемся. Поэтому framing поля 1
-// (тег + длина + байты каждого ResourceSpans) выписан руками через protowire —
-// это ровно то, что делает генерённый маршалер коллектора, и именно этот тест
-// доказывает, что на проводе ExportTraceServiceRequest и TracesData — одно и то
-// же сообщение, а не «почти».
+// framing поля 1 выписан руками через protowire — не импортируем коллекторный
+// пакет, чтобы не тащить gRPC/grpc-gateway.
 func collectorExportBody(t *testing.T, rs []*tracepb.ResourceSpans) []byte {
 	t.Helper()
 	var out []byte
@@ -202,7 +171,6 @@ func collectorExportBody(t *testing.T, rs []*tracepb.ResourceSpans) []byte {
 	return out
 }
 
-// postOTLP шлёт тело на /v1/traces; bearer == "" → заголовка Authorization нет.
 func (s *stack) postOTLP(t *testing.T, body []byte, contentType, bearer string, gzipped bool) *http.Response {
 	t.Helper()
 	var buf bytes.Buffer
@@ -245,9 +213,6 @@ func readAllBody(t *testing.T, resp *http.Response) []byte {
 	return b
 }
 
-// assertOTLPRows проверяет то, ради чего эндпойнт и существует: транзакция и её
-// спаны (корень + 2 ребёнка) лежат в тех же таблицах, что и Sentry-путь, с
-// source='otlp'.
 func assertOTLPRows(t *testing.T, s *stack) {
 	t.Helper()
 	pid := uint64(s.project.ID)
@@ -276,8 +241,6 @@ func assertOTLPRows(t *testing.T, s *stack) {
 			name, traceID, spanID, environment, release, server, durationUS)
 	}
 
-	// Идентификаторы спанов — те же, что послал клиент: по ним трейс сшивается с
-	// ошибкой Sentry и ищется по id из логов пользователя.
 	var dbSpanID, dbParentID string
 	if err := s.ch.QueryRow(ctx,
 		"SELECT span_id, parent_span_id FROM spans WHERE project_id = ? AND op = 'db'", pid).
@@ -313,11 +276,6 @@ func assertOTLPRows(t *testing.T, s *stack) {
 	}
 }
 
-// TestOTLPProtobufEndToEnd — основной путь: protobuf-запрос → строки в CH,
-// ответ — пустой ExportTraceServiceResponse в protobuf (иначе коллектор считает
-// экспорт неуспешным и ретраит вечно). Полностью успешный
-// ExportTraceServiceResponse (partial_success не заполнен) — это сообщение без
-// единого поля, то есть ПУСТОЕ тело.
 func TestOTLPProtobufEndToEnd(t *testing.T) {
 	s := newStack(t)
 	body := otlpProtoBody(t, freshExportRequest(otlpTraceID))
@@ -336,16 +294,8 @@ func TestOTLPProtobufEndToEnd(t *testing.T) {
 	assertOTLPRows(t, s)
 }
 
-// TestOTLPJSONEndToEnd — тот же запрос в OTLP/JSON с ХЕКСОВЫМИ id, как его шлёт
-// настоящий клиент (см. otlpJSONBodyHexIDs), даёт ровно тот же результат, что и
-// protobuf, а ответ приходит в JSON: пустой ExportTraceServiceResponse в
-// OTLP/JSON — это `{}`.
-//
-// Проверка id здесь — не формальность: protojson декодирует hex как base64 и
-// молча кладёт в CH id ПРАВИЛЬНОЙ ФОРМЫ и неверного значения. Такой трейс
-// невозможно сшить с Sentry-ошибкой, несущей настоящий id, поиск по id из логов
-// не находит ничего, а trace.Keep считает вердикт семплирования от испорченного
-// id — и один трейс, пришедший из protobuf- и json-SDK, семплируется ПО-РАЗНОМУ.
+// проверка id — не формальность: если бы protojson тихо портил hex id (декодируя
+// как base64), трейс стало бы невозможно сшить с Sentry-ошибкой, несущей настоящий id.
 func TestOTLPJSONEndToEnd(t *testing.T) {
 	s := newStack(t)
 	body := otlpJSONBodyHexIDs(t, freshExportRequest(otlpTraceID))
@@ -369,10 +319,6 @@ func TestOTLPJSONEndToEnd(t *testing.T) {
 	assertOTLPRows(t, s)
 }
 
-// TestOTLPJSONBase64IDsStillAccepted — правило перекодировки узкое (только hex
-// ровно нужной длины), поэтому клиент, шлющий id в base64 по стандартному
-// protobuf-JSON-маппингу, продолжает работать: неоднозначности нет, base64 16
-// байт — это 24 символа, 8 байт — 12, ни то, ни другое не спутать с 32/16.
 func TestOTLPJSONBase64IDsStillAccepted(t *testing.T) {
 	s := newStack(t)
 	body := otlpJSONBody(t, freshExportRequest(otlpTraceID))
@@ -384,17 +330,13 @@ func TestOTLPJSONBase64IDsStillAccepted(t *testing.T) {
 	assertOTLPRows(t, s)
 }
 
-// TestOTLPCollectorWireBytes — тело, собранное ровно так, как его пишет
-// настоящий коллектор (ExportTraceServiceRequest, поле 1 = resource_spans;
-// framing выписан руками, см. collectorExportBody), принимается эндпойнтом,
-// который разбирает его как TracesData. Это и есть доказательство, что
-// зависимость от gRPC-пакета убрана без изменения проводного контракта.
+// доказывает, что ExportTraceServiceRequest и TracesData — один и тот же провод,
+// зависимость от gRPC-пакета убрана без изменения контракта.
 func TestOTLPCollectorWireBytes(t *testing.T) {
 	s := newStack(t)
 	req := freshExportRequest(otlpTraceID)
 	body := collectorExportBody(t, req.GetResourceSpans())
 
-	// Те же самые байты, что даёт маршалинг TracesData: сообщения идентичны.
 	if want := otlpProtoBody(t, req); !bytes.Equal(body, want) {
 		t.Fatalf("collector wire bytes differ from TracesData bytes:\n got %x\nwant %x", body, want)
 	}
@@ -410,7 +352,6 @@ func TestOTLPCollectorWireBytes(t *testing.T) {
 	assertOTLPRows(t, s)
 }
 
-// TestOTLPGzipBody — коллектор по умолчанию жмёт тело gzip'ом.
 func TestOTLPGzipBody(t *testing.T) {
 	s := newStack(t)
 	body := otlpProtoBody(t, freshExportRequest(otlpTraceID))
@@ -422,18 +363,12 @@ func TestOTLPGzipBody(t *testing.T) {
 	assertOTLPRows(t, s)
 }
 
-// TestOTLPAuthFailures — DSN-ключ едет в Authorization: Bearer (штатная опция
-// headers: у OTel-экспортёров). Нет заголовка / неизвестный ключ → 401.
-// Заодно проверяет, что обе ветки видны self-метрикой KeyRejectedBy: раньше
-// otlpAuthenticate, как и authenticate, не растил ни один счётчик продукта
-// (W3-D, запись 3).
 func TestOTLPAuthFailures(t *testing.T) {
 	s := newStack(t)
 	body := otlpProtoBody(t, freshExportRequest(otlpTraceID))
 
-	// Перехват логов — рядом со счётчиком: находка ревью W3-D (мутация
-	// «убрать slog.Warn из countKeyReject» проходила молча, пока тест
-	// проверял только счётчик).
+	// перехват логов рядом со счётчиком — мутация, убирающая slog.Warn, иначе
+	// проходит молча.
 	var logs syncBuf
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
@@ -447,9 +382,8 @@ func TestOTLPAuthFailures(t *testing.T) {
 	if got := s.h.KeyRejectedBy(ingest.KeyRejectMissingBearer); got != before+1 {
 		t.Errorf("KeyRejectedBy(missing_bearer) = %d, want %d", got, before+1)
 	}
-	// T6: gotcha_ingest_rejected_total{reason="key_unknown",signal="transaction"}
-	// схлопывает missing_bearer/invalid_dsn_key/project_mismatch в одну причину
-	// "этот ключ не работает здесь" — растёт на ОБЕИХ ветках ниже.
+	// rejected_total{reason="key_unknown"} схлопывает missing_bearer/invalid_dsn_key/
+	// project_mismatch в одну причину — растёт на обеих ветках ниже.
 	if got := s.h.RejectedBy(ingest.RejectKeyUnknown, ingest.SignalTransaction); got != beforeRejected+1 {
 		t.Errorf("RejectedBy(key_unknown, transaction) = %d, want %d", got, beforeRejected+1)
 	}
@@ -474,9 +408,6 @@ func TestOTLPAuthFailures(t *testing.T) {
 	}
 }
 
-// TestOTLPTransactionQuotaExhaustedStillAcceptsErrors — OTLP тратит ТУ ЖЕ квоту
-// транзакций, что и Sentry-транзакции (429 при исчерпании), и НЕ трогает квоту
-// ошибок: события тем же DSN-ключом принимаются и после 429.
 func TestOTLPTransactionQuotaExhaustedStillAcceptsErrors(t *testing.T) {
 	s := newStack(t)
 	ctx := context.Background()
@@ -508,9 +439,6 @@ func TestOTLPTransactionQuotaExhaustedStillAcceptsErrors(t *testing.T) {
 	waitIssue(t, s.pool, s.project.ID, 1)
 }
 
-// TestOTLPSampleRateZeroWritesNothing — семплирование то же самое (trace.Keep по
-// transaction_sample_rate проекта): при rate=0 запрос принимается, но в CH не
-// попадает ничего.
 func TestOTLPSampleRateZeroWritesNothing(t *testing.T) {
 	s := newStack(t)
 	ctx := context.Background()
@@ -549,13 +477,8 @@ func TestOTLPSampleRateZeroWritesNothing(t *testing.T) {
 	}
 }
 
-// TestOTLPMultiServiceBatchOwnsItsSpans — batch-процессор коллектора ШТАТНО
-// склеивает ResourceSpans разных сервисов в один экспорт, и трейс, прошедший
-// через два сервиса, приезжает с двумя корнями (SERVER-спан второго сервиса —
-// корень по правилу kind). SpanWriter копирует в строку спана transaction и
-// environment ВЛАДЕЮЩЕЙ транзакции — значит, привязка спана к чужому корню
-// заставляет врать и фильтр по окружению, и подробности медленных запросов по
-// эндпойнту. Проверяем ровно колонки CH, из которых эти вьюхи и читают.
+// batch-процессор коллектора клеит ResourceSpans разных сервисов в один
+// экспорт — трейс с двумя корнями не должен путать спаны между владеющими транзакциями.
 func TestOTLPMultiServiceBatchOwnsItsSpans(t *testing.T) {
 	s := newStack(t)
 
@@ -624,8 +547,8 @@ func TestOTLPMultiServiceBatchOwnsItsSpans(t *testing.T) {
 		"SELECT count(*) FROM transactions WHERE project_id = ?", []any{pid}, 2); got != 2 {
 		t.Fatalf("transactions = %d, want 2 (по корню на сервис)", got)
 	}
-	// 4 строки спанов: корень каждой транзакции пишется строкой спана тоже
-	// (см. SpanWriter), плюс по одному ребёнку у каждой.
+	// 4 строки: корень каждой транзакции пишется строкой спана тоже, плюс по
+	// одному ребёнку у каждой.
 	if got := waitCH(t, s, "SELECT count(*) FROM spans WHERE project_id = ?", []any{pid}, 4); got != 4 {
 		t.Fatalf("spans = %d, want 4", got)
 	}

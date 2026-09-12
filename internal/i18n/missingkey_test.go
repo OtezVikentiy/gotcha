@@ -10,9 +10,6 @@ import (
 	"testing"
 )
 
-// TestLookupFallbackStageLogsAndCounts — ключ отсутствует в выдуманной
-// локали, но есть в Messages локали по умолчанию: lookup обязан вернуть
-// значение из дефолтной локали и учесть это как MissingKeyFallback.
 func TestLookupFallbackStageLogsAndCounts(t *testing.T) {
 	var key string
 	for k := range catalogs[Default.Code].Messages {
@@ -36,8 +33,6 @@ func TestLookupFallbackStageLogsAndCounts(t *testing.T) {
 	}
 }
 
-// TestLookupFullMissReturnsKeyAndCounts — ключа нет нигде: рендер не падает,
-// возвращает сам ключ, промах учитывается как MissingKeyMissing.
 func TestLookupFullMissReturnsKeyAndCounts(t *testing.T) {
 	const fakeKey = "zz.totally.made.up.missing.key.t5.catalog"
 	before := MissingKeyTotal(Default.Code, MissingKeyMissing)
@@ -52,9 +47,6 @@ func TestLookupFullMissReturnsKeyAndCounts(t *testing.T) {
 	}
 }
 
-// TestTOnPluralOnlyKeyIsMissing — ключ, живущий только в секции "plurals",
-// вызванный через T(): lookup смотрит только в Messages, поэтому это тот же
-// класс промаха ("missing"), не особый случай.
 func TestTOnPluralOnlyKeyIsMissing(t *testing.T) {
 	var pluralOnlyKey string
 	for k := range catalogs[Default.Code].Plurals {
@@ -79,8 +71,6 @@ func TestTOnPluralOnlyKeyIsMissing(t *testing.T) {
 	}
 }
 
-// TestPluralLookupFallbackStageLogsAndCounts — то же, что
-// TestLookupFallbackStageLogsAndCounts, но для pluralLookup/Plurals.
 func TestPluralLookupFallbackStageLogsAndCounts(t *testing.T) {
 	var key string
 	for k := range catalogs[Default.Code].Plurals {
@@ -90,7 +80,7 @@ func TestPluralLookupFallbackStageLogsAndCounts(t *testing.T) {
 	if key == "" {
 		t.Skip("в дефолтном каталоге нет plural-ключей")
 	}
-	form := pluralForm(Default.Code, 5) // форма, гарантированная TestPluralFormsComplete
+	form := pluralForm(Default.Code, 5) // форма гарантированно существует — см. TestPluralFormsComplete
 	want := pluralLookup(Default.Code, key, form)
 	const fakeCode = "zz-fallback-locale-plural"
 	before := MissingKeyTotal(fakeCode, MissingKeyFallback)
@@ -105,7 +95,6 @@ func TestPluralLookupFallbackStageLogsAndCounts(t *testing.T) {
 	}
 }
 
-// TestPluralLookupFullMissReturnsKeyAndCounts — plural-ключа нет нигде.
 func TestPluralLookupFullMissReturnsKeyAndCounts(t *testing.T) {
 	const fakeKey = "zz.totally.made.up.missing.plural.key.t5"
 	before := MissingKeyTotal(Default.Code, MissingKeyMissing)
@@ -120,20 +109,6 @@ func TestPluralLookupFullMissReturnsKeyAndCounts(t *testing.T) {
 	}
 }
 
-// TestMissingKeyLogDedupDoesNotEatCounter — дедупликация лога (раз в минуту
-// на одну и ту же тройку locale/stage/key) не должна занижать счётчик:
-// метрика обязана посчитать оба промаха, а лог — подавить второй.
-//
-// missingKeyLogGate — фиксированный набор слотов на весь процесс: он не
-// сбрасывается ни между итерациями `go test -count=N` в одном бинарнике, ни
-// между тестами пакета, а слот, на который хэшируется тройка
-// (locale, stage, key), может быть недавно выставлен ЛЮБЫМ другим ключом,
-// упавшим в тот же слот (сам гейт по конструкции экономит память ценой
-// редких коллизий между разными ключами — см. missingkey.go). Тест обнуляет
-// свой слот явно перед прогоном, поэтому не зависит ни от глобального
-// состояния, ни от порядка запуска, ни от того, что до него делали другие
-// тесты пакета (включая TestMissingKeyLogGateMemoryIsConstant, который
-// намеренно засевает почти все слоты).
 func TestMissingKeyLogDedupDoesNotEatCounter(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
@@ -156,8 +131,6 @@ func TestMissingKeyLogDedupDoesNotEatCounter(t *testing.T) {
 	}
 }
 
-// TestSupportedLocalesAndStages — контракт снимка для self-метрик (T6):
-// стабильный, отсортированный список локалей и фиксированный порядок стадий.
 func TestSupportedLocalesAndStages(t *testing.T) {
 	locales := SupportedLocales()
 	if len(locales) != 2 || locales[0] != "en" || locales[1] != "ru" {
@@ -169,18 +142,6 @@ func TestSupportedLocalesAndStages(t *testing.T) {
 	}
 }
 
-// TestMissingKeyLogGateMemoryIsConstant — гейт дедупликации лога
-// (missingKeyLogGate) обязан быть структурой с константным объёмом памяти,
-// а не картой без предела: key приходит из пользовательских данных
-// (Params.Status/Params.Level в internal/web/exports.go рендерятся как
-// ключи перевода), и оператор проекта может навсегда осадить в гейте одну
-// запись на каждое уникальное значение. Проверяем это наблюдаемым свойством
-// — типом и числом слотов — а не замером heap, который флакует: сначала
-// убеждаемся, что missingKeyLogGate вообще является массивом фиксированного
-// размера (не map), затем прогоняем 100000 заведомо уникальных промахов и
-// перепроверяем, что число слотов не изменилось. reflect.TypeOf берёт тип
-// через указатель на глобал (&missingKeyLogGate), а не по значению — иначе
-// go vet справедливо ругается на копирование atomic.Int64 (copylocks).
 func TestMissingKeyLogGateMemoryIsConstant(t *testing.T) {
 	gateType := reflect.TypeOf(&missingKeyLogGate).Elem()
 	if gateType.Kind() != reflect.Array {

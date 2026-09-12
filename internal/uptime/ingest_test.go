@@ -11,9 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// leaseOneJob schedules everything due and leases a single local job — the
-// starting point of every Ingestor test (Accept works on an already-leased
-// Job, exactly like Runner.runOne and /probe/results do).
 func leaseOneJob(t *testing.T, ctx context.Context, svc *uptime.Service) uptime.Job {
 	t.Helper()
 	if _, err := svc.Schedule(ctx); err != nil {
@@ -107,9 +104,6 @@ func TestIngestorAcceptWritesResultUpdatesStateAndCompletesJob(t *testing.T) {
 	}
 }
 
-// TestIngestorAcceptWithoutWriter — Writer=nil (стенд без ClickHouse):
-// результат всё равно доходит до monitor_state и снимает задание с очереди,
-// просто не пишется в CH.
 func TestIngestorAcceptWithoutWriter(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -147,15 +141,6 @@ func TestIngestorAcceptWithoutWriter(t *testing.T) {
 	}
 }
 
-// TestIngestorAcceptAppliesAJobExactlyOnce — регрессия на гонку «одна проверка
-// применена дважды». Два одновременных Accept с ОДНИМ И ТЕМ ЖЕ заданием (два
-// параллельных POST /probe/results с одинаковым queue_id — тот же токен пробы,
-// запущенный в двух процессах; либо две реплики, из которых одна перехватила
-// протухший lease другой) обязаны дать ровно один эффект: одну строку в
-// ClickHouse, consecutive_fails == 1 и один вызов детектора. До claim-first в
-// Accept оба проходили LeasedJob, оба звали ApplyResult (атомарный, но НЕ
-// идемпотентный: consecutive_fails + 1), и один упавший чек с fail_threshold=2
-// клал монитор.
 func TestIngestorAcceptAppliesAJobExactlyOnce(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ch := testenv.MigratedCH(t)
@@ -168,7 +153,7 @@ func TestIngestorAcceptAppliesAJobExactlyOnce(t *testing.T) {
 
 	pid := newProject(t, pool)
 	m := baseHTTPMonitor(pid)
-	m.FailThreshold = 2 // ровно тот порог, при котором двойной учёт кладёт монитор
+	m.FailThreshold = 2
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
 	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
 
@@ -186,8 +171,6 @@ func TestIngestorAcceptAppliesAJobExactlyOnce(t *testing.T) {
 		},
 	}
 
-	// Оба вызывающих видят одно и то же живое задание (каждый успел бы получить
-	// его из LeasedJob) и применяют его результат одновременно.
 	res := uptime.Result{OK: false, StatusCode: 500, Error: "boom", TotalMs: 9}
 	at := time.Now().UTC()
 	start := make(chan struct{})
@@ -298,7 +281,6 @@ func TestLeasedJobOnlyForOwningProbeAndLiveLease(t *testing.T) {
 		t.Fatalf("LeasedJob for another probe: err = %v, want ErrNotFound", err)
 	}
 
-	// Протухший lease — задание больше не принадлежит пробе, даже своей.
 	if _, err := pool.Exec(ctx, "UPDATE check_queue SET lease_until = now() - interval '1 minute' WHERE id = $1", queueID); err != nil {
 		t.Fatalf("expire lease: %v", err)
 	}
@@ -306,7 +288,6 @@ func TestLeasedJobOnlyForOwningProbeAndLiveLease(t *testing.T) {
 		t.Fatalf("LeasedJob after lease expiry: err = %v, want ErrNotFound", err)
 	}
 
-	// Несуществующее задание.
 	if _, err := svc.LeasedJob(ctx, 999999, probe.ID); !errors.Is(err, uptime.ErrNotFound) {
 		t.Fatalf("LeasedJob for unknown queue id: err = %v, want ErrNotFound", err)
 	}

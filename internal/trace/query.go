@@ -13,16 +13,8 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// Query — чтение агрегатов производительности из ClickHouse. По образцу
-// internal/uptime/query.go и internal/event/query.go: параметризованные
-// запросы (значения только через ?, никогда не конкатенируются в текст),
-// выравнивание корзин по Unix epoch как в event.Query.Series.
-//
-// Список эндпойнтов (Endpoints, EndpointLatency при кратном 5м шаге) читается
-// из материализованной вьюхи transactions_5m (AggregatingMergeTree) через
-// -Merge-комбинаторы — это на порядки дешевле, чем агрегировать сырые
-// transactions. Waterfall и примеры трейсов (SlowestTraces, Trace) читают
-// сырые spans/transactions по trace_id (префиксу ключа сортировки).
+// значения только через ? — никогда не конкатенировать в текст запроса.
+// параметр environment: пустая строка = без фильтра по окружению (везде, где он есть).
 type Query struct {
 	conn driver.Conn
 }
@@ -31,7 +23,6 @@ func NewQuery(conn driver.Conn) *Query {
 	return &Query{conn: conn}
 }
 
-// EndpointStat — строка списка эндпойнтов: агрегаты за период.
 type EndpointStat struct {
 	Transaction string
 	Count       uint64  // число транзакций за период
@@ -42,17 +33,12 @@ type EndpointStat struct {
 	P99         uint32
 	FailureRate float64 // доля транзакций со status != 'ok', 0..1
 	ApdexScore  float64 // (satisfied + tolerating/2) / total, 0..1
-	// Environments — окружения, в которых эндпойнт встречался за период.
-	// Список, а не одно значение: строка агрегирует транзакции по всем
-	// окружениям сразу, и разбивать её по окружениям означало бы менять
-	// смысл строки (один эндпойнт показывался бы дважды с разными
-	// перцентилями).
+	// список, не одно значение: строка агрегирует все окружения сразу,
+	// разбивка задвоила бы эндпойнт с разными перцентилями.
 	Environments []string
 }
 
-// LatencyPoint — точка временного ряда латентности эндпойнта: T — начало
-// интервала (UTC), P50/P95 — перцентили в микросекундах, Count — число
-// транзакций в интервале (0, если их не было).
+// T — начало интервала в UTC; P50/P95 — микросекунды; Count=0, если транзакций не было.
 type LatencyPoint struct {
 	T     time.Time
 	P50   uint32
@@ -60,14 +46,12 @@ type LatencyPoint struct {
 	Count uint64
 }
 
-// DurationBucket — корзина гистограммы длительностей: UpperUS — верхняя
-// граница корзины (микросекунды), Count — число транзакций в корзине.
+// UpperUS/Count — верхняя граница корзины в микросекундах и число транзакций в ней.
 type DurationBucket struct {
 	UpperUS uint32
 	Count   uint64
 }
 
-// TraceRow — трейс как пример (для «самые медленные») или корень waterfall.
 type TraceRow struct {
 	TraceID    string
 	DurationUS uint32
@@ -75,8 +59,7 @@ type TraceRow struct {
 	Status     string
 }
 
-// SpanRow — спан для waterfall: StartUS — смещение начала спана от начала
-// трейса (микросекунды), DurationUS — длительность.
+// StartUS — смещение от начала трейса, не абсолютное время; оба поля в микросекундах.
 type SpanRow struct {
 	SpanID       string
 	ParentSpanID string
@@ -87,13 +70,8 @@ type SpanRow struct {
 	DurationUS   uint32
 }
 
-// Endpoints возвращает список эндпойнтов проекта за [from, to), отсортированный
-// по числу транзакций по убыванию. Count/перцентили/failure rate читаются из
-// MV transactions_5m (-Merge-комбинаторы). Apdex считается отдельным запросом
-// из сырых transactions: MV хранит только квантили, а не пороговые счётчики
-// длительностей, поэтому вычислить satisfied/tolerating из неё нельзя. environment
-// пустой → без фильтра по окружению; apdexT — порог в миллисекундах (≤ 0 →
-// Apdex не считается и остаётся 0).
+// apdex считается отдельным запросом по сырым transactions — MV хранит только
+// квантили, не пороговые счётчики; apdexT<=0 — без Apdex.
 func (q *Query) Endpoints(ctx context.Context, projectID int64, from, to time.Time, environment string, apdexT int) ([]EndpointStat, error) {
 	where := "project_id = ? AND bucket >= ? AND bucket < ?"
 	args := []any{uint64(projectID), from, to}
@@ -156,8 +134,6 @@ func (q *Query) Endpoints(ctx context.Context, projectID int64, from, to time.Ti
 	return out, nil
 }
 
-// Dependency — одна внешняя зависимость сервиса (узел карты C4): вид (database/
-// cache/http), цель (db.system / хранилище / хост) и агрегаты вызовов за окно.
 type Dependency struct {
 	Kind      string // database | cache | http
 	Target    string // postgresql | redis | api.stripe.com | ...
@@ -169,8 +145,6 @@ type Dependency struct {
 	ErrorRate float64 // доля спанов со status != 'ok'
 }
 
-// DataDirection — направление потока данных между сервисом и зависимостью
-// (стрелка на карте): читает, пишет, и то и другое, либо неизвестно.
 type DataDirection string
 
 const (
@@ -180,7 +154,6 @@ const (
 	DirectionBoth DataDirection = "both" // чтение и запись
 )
 
-// Direction выводит направление по счётчикам Reads/Writes.
 func (d Dependency) Direction() DataDirection {
 	switch {
 	case d.Reads > 0 && d.Writes > 0:
@@ -193,10 +166,8 @@ func (d Dependency) Direction() DataDirection {
 	return DirectionNone
 }
 
-// Списки глаголов по видам зависимостей — по одному на класс (чтение/запись),
-// через пробел. Подставляются в SQL Dependencies через verbList; на них же
-// ссылаются UI и документация. Всё, что не попало ни в один список (BEGIN,
-// COMMIT, SET у SQL, неизвестные команды), — ни чтение, ни запись.
+// подставляются в SQL через verbList; те же списки читают UI и документация —
+// менять только синхронно.
 const (
 	SQLReadVerbs  = "SELECT WITH SHOW EXPLAIN DESCRIBE DESC"
 	SQLWriteVerbs = "INSERT UPDATE DELETE MERGE REPLACE UPSERT CREATE ALTER DROP TRUNCATE COPY"
@@ -212,9 +183,7 @@ const (
 	HTTPWriteVerbs = "POST PUT PATCH DELETE"
 )
 
-// verbList превращает список глаголов через пробел в SQL-литералы для `IN (...)`.
-// Источник — только константы выше (значения фиксированы в коде), поэтому
-// экранирование не нужно.
+// экранирования нет — безопасно только для констант выше, не для внешнего ввода.
 func verbList(verbs string) string {
 	fields := strings.Fields(verbs)
 	for i, v := range fields {
@@ -223,26 +192,8 @@ func verbList(verbs string) string {
 	return strings.Join(fields, ",")
 }
 
-// Dependencies агрегирует внешние зависимости сервиса из client-op спанов за
-// окно [from,to): узлы карты C4. kind/target выводятся в SQL из op/data/
-// description (подзапрос, чтобы GROUP BY шёл по уже вычисленным полям). http.server
-// (сама транзакция) и internal-op в фильтр НЕ входят. Считается по СЫРЫМ spans
-// (не по MV) — окно защищено max_execution_time + LIMIT + дефолт-окном на слое web.
-//
-// HTTP-цель нормализуется по хосту, чтобы один хост не двоился между
-// server.address (может нести :port) и url.full (domain() порт снимает):
-// у server.address порт снимается регуляркой `:[0-9]+$`. Две известные
-// границы (косметика отображения, не корректность агрегата, редки для
-// именованных зависимостей): (1) domain() отвергает односоставные хосты без
-// точки (localhost, internal-svc через url.full) — такой уходит в общий узел
-// 'http'; (2) `:[0-9]+$` может срезать хвост числового hextet у голого
-// IPv6-литерала (fe80::1 → fe80:).
-//
-// Направление данных (Reads/Writes) — по глаголу операции: атрибут
-// (db.operation.name / db.operation у БД и кеша, http.request.method /
-// http.method у http) приоритетнее первого слова description. Глагол
-// классифицируется по виду зависимости списками *ReadVerbs/*WriteVerbs;
-// регистр не важен (upper). Не попавший в списки глагол — ни то ни другое.
+// по сырым spans, не по MV — окно защищено max_execution_time + LIMIT и дефолт-окном на web.
+// порт у server.address срезается regex `:[0-9]+$` — может задеть хвост IPv6-литерала.
 func (q *Query) Dependencies(ctx context.Context, projectID int64, from, to time.Time, limit int) ([]Dependency, error) {
 	if limit <= 0 {
 		limit = 50
@@ -325,16 +276,8 @@ func (q *Query) Dependencies(ctx context.Context, projectID int64, from, to time
 	return out, nil
 }
 
-// apdexBoundsUS переводит apdex_threshold_ms (T) в границы µs для
-// countIf-запроса: satUS = T·1000, tolUS = 4·T·1000.
-//
-// duration_us в ClickHouse — UInt32 (макс ~4295с), а валидация настройки
-// (projsettings.go) требует лишь apdex_threshold_ms > 0, без верхней границы.
-// Без клампа satUS/tolUS в uint32 арифметике при apdexT выше ~4.29M мс молча
-// переполняются и дают мусорный Apdex для всего проекта вместо клампа/ошибки
-// (P2-6 из аудита 2026-08-12). Клампим до math.MaxUint32 — порога, который в
-// любом случае удовлетворяет ЛЮБОЙ duration_us из колонки, так что клампленное
-// значение не меняет смысл сравнения, только страхует от переполнения.
+// duration_us в CH — uint32; без клампа satUS/tolUS переполнились бы при
+// apdexT выше ~4.29M мс (валидация настройки верхней границы не ставит).
 func apdexBoundsUS(apdexT int) (satUS, tolUS uint32) {
 	satUS64 := uint64(apdexT) * 1000
 	if satUS64 > math.MaxUint32 {
@@ -347,9 +290,7 @@ func apdexBoundsUS(apdexT int) (satUS, tolUS uint32) {
 	return uint32(satUS64), uint32(tolUS64)
 }
 
-// apdexByTransaction считает Apdex каждого эндпойнта из сырых transactions.
-// satisfied = duration ≤ T·1000 µs, tolerating = T·1000 < duration ≤ 4·T·1000;
-// Apdex = (satisfied + tolerating/2) / total = (satisfied + within4T) / (2·total).
+// apdex = (satisfied + tolerating/2) / total = (satisfied + within4T) / (2·total).
 func (q *Query) apdexByTransaction(ctx context.Context, projectID int64, from, to time.Time, environment string, apdexT int) (map[string]float64, error) {
 	satUS, tolUS := apdexBoundsUS(apdexT)
 
@@ -390,11 +331,8 @@ func (q *Query) apdexByTransaction(ctx context.Context, projectID int64, from, t
 	return out, nil
 }
 
-// EndpointLatency строит временной ряд p50/p95/count эндпойнта на окне
-// [from, to) с шагом step: точки идут по шагу от from до to включительно,
-// пропуски заполняются нулями. Сетка выровнена по Unix epoch (как
-// event.Query.Series). Если step кратен 5 минутам, ряд собирается из MV
-// transactions_5m (дёшево); иначе — из сырых transactions.
+// точки идут от from до to ВКЛЮЧИТЕЛЬНО, пропуски заполняются нулями; при step,
+// кратном 5м, ряд собирается из MV transactions_5m, иначе из сырых transactions.
 func (q *Query) EndpointLatency(ctx context.Context, projectID int64, transaction string, from, to time.Time, step time.Duration, environment string) ([]LatencyPoint, error) {
 	stepSec := int64(step / time.Second)
 	if stepSec <= 0 {
@@ -465,12 +403,8 @@ func (q *Query) EndpointLatency(ctx context.Context, projectID int64, transactio
 	fromUnix := from.UTC().Unix()
 	toUnix := to.UTC().Unix()
 	startUnix := (fromUnix / stepSec) * stepSec
-	// Последняя корзина — та, что СОДЕРЖИТ момент to, а не следующая за ним.
-	// Раньше граница округлялась ВВЕРХ за to, а цикл шёл по `<=`, поэтому в ряд
-	// добавлялась корзина, начинающаяся в to или позже: запрос фильтрует ts < to,
-	// так что данных в ней не могло быть ни при каких условиях. Спарклайны в
-	// списках (мониторы, эндпойнты) не проходят через fillSeries и потому
-	// заканчивались принудительным падением в ноль.
+	// endUnix — начало последней корзины, СОДЕРЖАЩЕЙ to (не следующей): запрос
+	// фильтрует ts < to, дальше в ней данных быть не может.
 	endUnix := ((toUnix - 1) / stepSec) * stepSec
 	if endUnix < startUnix {
 		endUnix = startUnix
@@ -485,15 +419,8 @@ func (q *Query) EndpointLatency(ctx context.Context, projectID int64, transactio
 	return out, nil
 }
 
-// EndpointLatencyBatch — EndpointLatency сразу для нескольких transactions ОДНИМ
-// запросом к ClickHouse (WHERE transaction IN ? вместо N отдельных запросов).
-// Список эндпойнтов (performanceList) собирает спарклайн на каждую строку —
-// раньше это было до perfEndpointLimit последовательных round-trip'ов на
-// загрузку страницы; здесь один. Сетка точек, заполнение пропусков и выбор
-// MV/сырых transactions — 1:1 с EndpointLatency (та же логика, применена per-
-// transaction после разбора одного набора строк). Пустой transactions → пустая
-// карта без обращения к ClickHouse. Отсутствующий в БД transaction получает
-// такой же ряд из нулевых точек, что и одиночный EndpointLatency для него.
+// один запрос вместо N (WHERE transaction IN ?), сетка и заполнение пропусков
+// как в EndpointLatency; несуществующий в БД transaction получает ряд из нулей.
 func (q *Query) EndpointLatencyBatch(ctx context.Context, projectID int64, transactions []string, from, to time.Time, step time.Duration, environment string) (map[string][]LatencyPoint, error) {
 	out := make(map[string][]LatencyPoint, len(transactions))
 	if len(transactions) == 0 {
@@ -571,9 +498,6 @@ func (q *Query) EndpointLatencyBatch(ctx context.Context, projectID int64, trans
 		return nil, fmt.Errorf("trace: endpoint latency batch: %w", err)
 	}
 
-	// Та же выравненная по epoch сетка, что в EndpointLatency, построенная один
-	// раз и применённая к каждому transaction — раскладка по map, а не N
-	// запросов, и есть весь смысл батча.
 	fromUnix := from.UTC().Unix()
 	toUnix := to.UTC().Unix()
 	startUnix := (fromUnix / stepSec) * stepSec
@@ -595,10 +519,7 @@ func (q *Query) EndpointLatencyBatch(ctx context.Context, projectID int64, trans
 	return out, nil
 }
 
-// DurationHistogram строит гистограмму длительностей эндпойнта за [from, to)
-// из сырых transactions: buckets корзин равной ширины по длительности. Ширина
-// определяется по максимальной длительности за период. UpperUS корзины i —
-// (i+1)·width. Сумма Count по корзинам равна числу транзакций. Пусто → nil.
+// UpperUS корзины i = (i+1)·width; пустой результат — nil, не []DurationBucket{}.
 func (q *Query) DurationHistogram(ctx context.Context, projectID int64, transaction string, from, to time.Time, environment string, buckets int) ([]DurationBucket, error) {
 	if buckets <= 0 {
 		return nil, nil
@@ -662,8 +583,6 @@ func (q *Query) DurationHistogram(ctx context.Context, projectID int64, transact
 	return out, nil
 }
 
-// SlowestTraces возвращает до n самых медленных трейсов эндпойнта за [from, to)
-// из сырых transactions, отсортированных по длительности по убыванию.
 func (q *Query) SlowestTraces(ctx context.Context, projectID int64, transaction string, from, to time.Time, n int) ([]TraceRow, error) {
 	if n <= 0 {
 		return nil, nil
@@ -694,35 +613,16 @@ func (q *Query) SlowestTraces(ctx context.Context, projectID int64, transaction 
 	return out, nil
 }
 
-// SpanRetentionDays — TTL таблицы spans по умолчанию при первой установке
-// (internal/db/migrations/ch/0004_spans.up.sql: TTL toDateTime(timestamp) +
-// INTERVAL 30 DAY). transactions живёт дольше (90 дней при дефолте,
-// ch/0003_transactions.up.sql), поэтому трейс подходящего возраста ещё виден
-// в списках (Endpoints/SlowestTraces читают transactions), но Trace() для
-// него уже не находит ни одного спана — waterfall рисовать нечем.
-//
-// ВАЖНО: TTL spans настраивается в проде (GOTCHA_SPAN_RETENTION_DAYS,
-// применяется на каждом старте через db.ApplySpanRetention →
-// ALTER TABLE spans MODIFY TTL) и на не-дефолтных инстансах отличается от
-// этой константы. web.Handler.SpanRetentionDays (проставляется из
-// cfg.SpanRetentionDays в main.go) — источник истины для UI
-// (web.traceWaterfall, templates.EndpointDetail.Slowest); эта константа —
-// только дефолт первой установки, годится для доков и тестов, но НЕ для
-// сравнения с реальным возрастом трейса в хендлерах.
+// дефолт только для новой установки — реальный TTL задаёт GOTCHA_SPAN_RETENTION_DAYS,
+// хранится в web.Handler.SpanRetentionDays; в хендлерах сравнивать с ним, не с этой константой.
 const SpanRetentionDays = 30
 
-// traceSpanLimit — верхняя граница числа спанов, читаемых Trace из ClickHouse.
-// Патологический трейс (десятки тысяч спанов) не должен грузиться в память
-// целиком; лимит с запасом превышает потолок waterfall (waterfallMaxRows=200 в
-// internal/web), который дополнительно усекает отрисовку.
+// с запасом больше waterfallMaxRows=200 (internal/web) — иначе усечение
+// случилось бы до отрисовки, а не после.
 const traceSpanLimit = 5000
 
-// Trace возвращает спаны трейса для waterfall из сырых spans, отсортированные по
-// timestamp (при равенстве — по span_id для стабильности), не более
-// traceSpanLimit штук. StartUS каждого спана — смещение от начала трейса
-// (минимального timestamp). root — корневой спан (без родителя; если такого нет
-// — первый по времени). Пустой результат (spans == nil) означает, что трейс не
-// найден.
+// root — спан без родителя, а если такого нет — первый по времени; spans == nil
+// означает, что трейс не найден.
 func (q *Query) Trace(ctx context.Context, projectID int64, traceID string) (root TraceRow, spans []SpanRow, err error) {
 	rows, err := q.conn.Query(ctx, `
 		SELECT span_id, parent_span_id, op, description, status, timestamp, duration_us
@@ -782,14 +682,11 @@ func (q *Query) Trace(ctx context.Context, projectID int64, traceID string) (roo
 	return root, spans, nil
 }
 
-// maxOffendingSpans — потолок загружаемых спанов проблемы (evidence.span_ids
-// уже ≤10, но страхуемся от кривых данных).
+// предохранитель от кривых данных — evidence.span_ids уже ограничен ≤10.
 const maxOffendingSpans = 10
 
-// SpanDetail — спан с ПОЛНЫМ описанием и распарсенным data. Нужен странице
-// perf-проблемы: полный текст запроса (в отличие от нормализованного и
-// обрезанного Title проблемы) и опциональная привязка к коду из data
-// (code.filepath/code.lineno/code.function, db.system — если их прислал SDK).
+// полный текст (Title проблемы обрезан/нормализован); Data может нести
+// code.filepath/code.lineno/code.function, db.system, если их прислал SDK.
 type SpanDetail struct {
 	SpanID      string
 	Op          string
@@ -798,11 +695,8 @@ type SpanDetail struct {
 	Data        map[string]string
 }
 
-// OffendingSpans загружает конкретные спаны трейса по их id (обычно из
-// evidence.span_ids проблемы) с полным description и data, отсортированные по
-// длительности убыв. — первым идёт самый показательный. Пустой traceID/список,
-// истёкший по TTL трейс или отсутствие спанов дают nil без ошибки: страница
-// проблемы должна отрисоваться и без примера.
+// пустой traceID/список, истёкший TTL или отсутствие спанов — nil без ошибки,
+// страница проблемы рисуется и без примера.
 func (q *Query) OffendingSpans(ctx context.Context, projectID int64, traceID string, spanIDs []string) ([]SpanDetail, error) {
 	if traceID == "" || len(spanIDs) == 0 {
 		return nil, nil
@@ -847,10 +741,8 @@ func (q *Query) OffendingSpans(ctx context.Context, projectID int64, traceID str
 	return out, nil
 }
 
-// decodeSpanData разбирает JSON-строку колонки data спана в плоскую
-// map[string]string: строковые значения как есть, числовые/булевы — их текст;
-// вложенные объекты/массивы пропускаются (нам нужны скалярные ключи вроде
-// code.filepath/code.lineno). Пустой/битый JSON → nil.
+// вложенные объекты/массивы пропускаются — нужны только скалярные ключи вроде
+// code.filepath/code.lineno; битый/пустой JSON — nil.
 func decodeSpanData(s string) map[string]string {
 	if s == "" || s == "{}" || s == "null" {
 		return nil
@@ -878,9 +770,6 @@ func decodeSpanData(s string) map[string]string {
 	return out
 }
 
-// Environments возвращает окружения проекта, встречавшиеся у транзакций за
-// [from, to), по алфавиту — для наполнения select фильтра на странице
-// производительности. Читается из MV transactions_5m (дёшево, как Endpoints).
 func (q *Query) Environments(ctx context.Context, projectID int64, from, to time.Time) ([]string, error) {
 	rows, err := q.conn.Query(ctx, `
 		SELECT DISTINCT environment
@@ -910,12 +799,8 @@ func (q *Query) Environments(ctx context.Context, projectID int64, from, to time
 	return out, nil
 }
 
-// ProjectForTrace ищет проект, которому принадлежит трейс, по trace_id из
-// сырых transactions (для связки ошибка→трейс, когда известен только
-// trace_id). found=false, если трейса нет. При (пренебрежимо редкой) коллизии
-// trace_id между проектами возвращает НЕДЕТЕРМИНИРОВАННЫЙ project_id (LIMIT 1
-// без ORDER BY), поэтому вызывающий ОБЯЗАН проверить доступ к возвращённому id
-// (обработчик /traces делает это через CanAccessProject).
+// при коллизии trace_id между проектами результат НЕДЕТЕРМИНИРОВАН (LIMIT 1 без
+// ORDER BY) — вызывающий обязан проверить доступ к возвращённому project_id.
 func (q *Query) ProjectForTrace(ctx context.Context, traceID string) (projectID int64, found bool, err error) {
 	row := q.conn.QueryRow(ctx, `
 		SELECT project_id FROM transactions WHERE trace_id = ? LIMIT 1`, traceID)
@@ -929,12 +814,8 @@ func (q *Query) ProjectForTrace(ctx context.Context, traceID string) (projectID 
 	return int64(pid), true, nil
 }
 
-// TraceExistsInProject проверяет, есть ли у trace_id хоть одна транзакция в
-// конкретном проекте. В отличие от ProjectForTrace (ищет по одному trace_id и
-// потому обходит все партиции всех проектов), project_id здесь — префикс
-// первичного ключа transactions (ORDER BY project_id, ...), поэтому запрос
-// прунит гранулы до проекта. Используется на детали issue, где project_id уже
-// известен, только чтобы решить, показывать ли ссылку «Смотреть трейс».
+// в отличие от ProjectForTrace: project_id — префикс PK transactions, запрос
+// прунит гранулы до проекта вместо обхода партиций всех проектов.
 func (q *Query) TraceExistsInProject(ctx context.Context, projectID int64, traceID string) (bool, error) {
 	row := q.conn.QueryRow(ctx, `
 		SELECT 1 FROM transactions WHERE project_id = ? AND trace_id = ? LIMIT 1`,
@@ -949,9 +830,8 @@ func (q *Query) TraceExistsInProject(ctx context.Context, projectID int64, trace
 	return true, nil
 }
 
-// Vital — один web vital с рейтингом: P75 — 75-й перцентиль (мс, кроме CLS),
-// Count — число замеров за период. Rating — оценка Google по P75
-// ("good"|"needs-improvement"|"poor"), либо "" если замеров нет (Count == 0).
+// P75 — мс, кроме CLS (безразмерный); Rating — "good"|"needs-improvement"|"poor"
+// или "", если замеров нет (Count == 0).
 type Vital struct {
 	Name   string
 	P75    float64
@@ -959,32 +839,25 @@ type Vital struct {
 	Count  uint64
 }
 
-// PageVitals — сводка Web Vitals по странице (transaction): три ключевых
-// показателя Core Web Vitals с рейтингом. Count — число замеров LCP (по нему
-// же идёт сортировка списка страниц).
+// Count — замеры LCP (по нему сортируется список страниц).
 type PageVitals struct {
 	Transaction string
 	LCP         Vital
 	INP         Vital
 	CLS         Vital
 	Count       uint64
-	// Environments — окружения, в которых страница встречалась за период.
-	// Список, а не одно значение: строка агрегирует замеры по всем
-	// окружениям сразу (см. EndpointStat.Environments).
+	// список, не одно значение — как в EndpointStat.Environments.
 	Environments []string
 }
 
-// VitalPoint — точка временного ряда p75 одного vital: T — начало корзины
-// (UTC), P75 — перцентиль в этой корзине. Пустые корзины (без замеров) в ряд
-// не попадают.
+// T — UTC; в отличие от LatencyPoint, пустые корзины (без замеров) в ряд не
+// попадают, а не зануляются.
 type VitalPoint struct {
 	T   time.Time
 	P75 float64
 }
 
-// Пороги рейтинга Web Vitals (Google, по p75): значения в миллисекундах, кроме
-// CLS (безразмерный). Граница good включительна (p75 == good → "good"), выше
-// poor — "poor", между — "needs-improvement".
+// мс, кроме CLS (безразмерный); good включительна, выше poor — poor, между — needs-improvement.
 const (
 	lcpGood, lcpPoor   = 2500.0, 4000.0
 	inpGood, inpPoor   = 200.0, 500.0
@@ -993,14 +866,10 @@ const (
 	ttfbGood, ttfbPoor = 800.0, 1800.0
 )
 
-// webVitalsPageLimit — потолок числа страниц в списке WebVitalsPages.
 const webVitalsPageLimit = 200
 
-// Rating возвращает оценку Google для vital name по перцентилю p75
-// ("good"|"needs-improvement"|"poor"). Для неизвестного имени — "".
-// Отсутствие данных ("" при нуле замеров) обрабатывает вызывающий по Count, а
-// не эта функция: p75 == 0 для известного vital (например CLS) — валидный
-// "good".
+// p75 == 0 для известного vital — валидный "good", не признак отсутствия
+// данных; это проверяет вызывающий по Count.
 func Rating(name string, p75 float64) string {
 	var good, poor float64
 	switch name {
@@ -1027,10 +896,8 @@ func Rating(name string, p75 float64) string {
 	}
 }
 
-// vitalKnown проверяет, что name — один из поддерживаемых web vitals. Нужен
-// для VitalSeries: имя vital подставляется в текст запроса как имя колонки MV
-// (не значение → не через ?), поэтому его допустимость проверяется белым
-// списком до конкатенации.
+// имя подставляется в SQL как колонка (не значение → не через ?), поэтому
+// проверяется белым списком до конкатенации.
 func vitalKnown(name string) bool {
 	switch name {
 	case "lcp", "inp", "cls", "fcp", "ttfb":
@@ -1039,10 +906,8 @@ func vitalKnown(name string) bool {
 	return false
 }
 
-// makeVital собирает Vital из результатов quantilesMerge (одноэлементный
-// массив p75) и countMerge (число замеров). При нуле замеров P75/Rating
-// остаются нулевыми: quantilesMerge пустого состояния возвращает NaN, читать
-// его нельзя, а рейтинг "" означает «нет данных».
+// при нуле замеров quantilesMerge пустого состояния возвращает NaN — не читаем,
+// P75/Rating остаются нулевыми.
 func makeVital(name string, p75 []float64, count uint64) Vital {
 	v := Vital{Name: name, Count: count}
 	if count > 0 && len(p75) > 0 {
@@ -1052,15 +917,8 @@ func makeVital(name string, p75 []float64, count uint64) Vital {
 	return v
 }
 
-// WebVitalsPages возвращает сводку Web Vitals по страницам проекта за [from, to)
-// из MV web_vitals_5m: p75 LCP/INP/CLS (quantilesMerge(0.75)) с числом замеров
-// (countMerge) и рейтингом. Отсортировано по числу замеров LCP по убыванию,
-// не более webVitalsPageLimit страниц. environment пустой → без фильтра по
-// окружению.
-//
-// HAVING отсекает транзакции без единого замера LCP/INP/CLS: MV агрегирует ВСЕ
-// транзакции проекта (включая чистые API-эндпойнты без measurements), и без
-// фильтра такие строки (Count 0, Rating "") засоряли бы хвост списка.
+// HAVING отсекает транзакции без единого замера LCP/INP/CLS — MV агрегирует ВСЕ
+// транзакции проекта, включая чистые API-эндпойнты без measurements.
 func (q *Query) WebVitalsPages(ctx context.Context, projectID int64, from, to time.Time, environment string) ([]PageVitals, error) {
 	where := "project_id = ? AND bucket >= ? AND bucket < ?"
 	args := []any{uint64(projectID), from, to}
@@ -1114,12 +972,6 @@ func (q *Query) WebVitalsPages(ctx context.Context, projectID int64, from, to ti
 	return out, nil
 }
 
-// VitalSeries строит временной ряд p75 одного vital (name: lcp|inp|cls|fcp|ttfb)
-// страницы transaction на окне [from, to) с шагом step из MV web_vitals_5m
-// (quantilesMerge(0.75)). В ряд попадают только корзины, где были замеры (пустые
-// пропускаются — у VitalPoint нет счётчика, поэтому каждый P75 должен быть
-// реальным). Сетка корзин выровнена по epoch средствами ClickHouse. environment
-// пустой → без фильтра по окружению.
 func (q *Query) VitalSeries(ctx context.Context, projectID int64, transaction, name string, from, to time.Time, step time.Duration, environment string) ([]VitalPoint, error) {
 	if !vitalKnown(name) {
 		return nil, fmt.Errorf("trace: vital series: unknown vital %q", name)
@@ -1172,12 +1024,6 @@ func (q *Query) VitalSeries(ctx context.Context, projectID int64, transaction, n
 	return out, nil
 }
 
-// PageVitalsOne возвращает общий p75 всех пяти web vitals одной транзакции за
-// [from, to) ОДНИМ запросом к MV web_vitals_5m: quantilesMerge(0.75) по каждому
-// показателю и countMerge по числу замеров, агрегированные по всему окну без
-// разбивки по корзинам (нет GROUP BY по времени → одна строка-агрегат).
-// environment пустой → без фильтра по окружению. У vital без замеров Count == 0
-// и Rating "" (см. makeVital) — по этому и решается, показывать ли панель.
 func (q *Query) PageVitalsOne(ctx context.Context, projectID int64, transaction string, from, to time.Time, environment string) (lcp, inp, cls, fcp, ttfb Vital, err error) {
 	where := "project_id = ? AND transaction = ? AND bucket >= ? AND bucket < ?"
 	args := []any{uint64(projectID), transaction, from, to}
@@ -1188,9 +1034,8 @@ func (q *Query) PageVitalsOne(ctx context.Context, projectID int64, transaction 
 
 	var lcpP, inpP, clsP, fcpP, ttfbP []float64
 	var lcpC, inpC, clsC, fcpC, ttfbC uint64
-	// Агрегат без GROUP BY всегда возвращает ровно одну строку (при отсутствии
-	// замеров — с нулевыми countMerge и пустыми quantilesMerge), поэтому
-	// ErrNoRows тут не бывает.
+	// без GROUP BY — всегда ровно одна строка (нулевая при отсутствии замеров),
+	// ErrNoRows не бывает.
 	if err := q.conn.QueryRow(ctx, `
 		SELECT
 			quantilesMerge(0.75)(lcp)  AS lcp_p,
@@ -1215,10 +1060,7 @@ func (q *Query) PageVitalsOne(ctx context.Context, projectID int64, transaction 
 		makeVital("ttfb", ttfbP, ttfbC), nil
 }
 
-// RecentVitalP75 читает p75 web-vital'а name (lcp|inp|cls|fcp|ttfb) страницы за
-// окно [from, to) из MV web_vitals_5m и число замеров. Value уже в мс (для CLS —
-// безразмерный), конвертация не нужна. name проверяется белым списком vitalKnown
-// до подстановки как имя колонки (не bindable-параметр).
+// Value уже в мс (CLS безразмерный); name — из vitalKnown, безопасно как имя колонки.
 func (q *Query) RecentVitalP75(ctx context.Context, projectID int64, transaction, name string, from, to time.Time) (RegressionSample, error) {
 	if !vitalKnown(name) {
 		return RegressionSample{}, fmt.Errorf("trace: recent vital p75: unknown vital %q", name)
@@ -1235,10 +1077,7 @@ func (q *Query) RecentVitalP75(ctx context.Context, projectID int64, transaction
 	return valueSample(p75, cnt), nil
 }
 
-// BaselineVitalP75 — скользящая база web-vital'а name страницы: медиана дневных
-// p75 за days дней (окно [now-days, now)), из MV web_vitals_5m. HAVING cnt > 0
-// отбрасывает дни без замеров этого vital'а (иначе quantilesMerge пустого
-// состояния вернул бы NaN и испортил медиану). Samples — сумма замеров за окно.
+// HAVING cnt>0 — иначе quantilesMerge пустого состояния дал бы NaN и испортил медиану.
 func (q *Query) BaselineVitalP75(ctx context.Context, projectID int64, transaction, name string, days int, now time.Time) (RegressionSample, error) {
 	if !vitalKnown(name) {
 		return RegressionSample{}, fmt.Errorf("trace: baseline vital p75: unknown vital %q", name)
@@ -1263,12 +1102,6 @@ func (q *Query) BaselineVitalP75(ctx context.Context, projectID int64, transacti
 	return valueSample(med, total), nil
 }
 
-// RecentEndpointP95s — свежие p95 сразу по списку эндпойнтов.
-//
-// Один запрос вместо запроса на эндпойнт. Прежний путь стоил оценщику по два
-// обращения к ClickHouse на каждую цель — при топ-20 эндпойнтов и трёх
-// web-vital'ах это больше двух сотен последовательных запросов на проект за
-// тик, и обходились так все проекты подряд, независимо от трафика.
 func (q *Query) RecentEndpointP95s(ctx context.Context, projectID int64, transactions []string, from, to time.Time) (map[string]RegressionSample, error) {
 	out := make(map[string]RegressionSample, len(transactions))
 	if len(transactions) == 0 {
@@ -1296,8 +1129,6 @@ func (q *Query) RecentEndpointP95s(ctx context.Context, projectID int64, transac
 	return out, rows.Err()
 }
 
-// BaselineEndpointP95s — скользящие базы сразу по списку эндпойнтов: медиана
-// дневных p95 за days дней.
 func (q *Query) BaselineEndpointP95s(ctx context.Context, projectID int64, transactions []string, days int, now time.Time) (map[string]RegressionSample, error) {
 	out := make(map[string]RegressionSample, len(transactions))
 	if len(transactions) == 0 {
@@ -1332,24 +1163,12 @@ func (q *Query) BaselineEndpointP95s(ctx context.Context, projectID int64, trans
 	return out, rows.Err()
 }
 
-// maxSeasonalWindowMinutes ограничивает окно сезонного слота. Слот «того же дня
-// недели × часа» шире суток теряет смысл, а window_minutes ≥ недели вырождает
-// фильтр modulo(...) < winSec в always-true — слот перестаёт сужать выборку и
-// запрос сканирует все бакеты ретеншена (амплификация нагрузки на ClickHouse из
-// фонового оценщика). Клампим здесь, а не только валидацией формы: конфиг мог
-// быть сохранён до появления границы или прийти из старого jsonb напрямую.
+// без клампа window_minutes ≥ недели вырождает modulo(...) в always-true — full scan вместо слота.
+// клампим и здесь, не только в валидации: в БД может быть конфиг без этой границы.
 const maxSeasonalWindowMinutes = 1440
 
-// SeasonalBaselineEndpointP95s — сезонные базы по списку эндпойнтов: медиана
-// НЕДЕЛЬНЫХ p95 по тому же окну [now−windowMinutes, now) того же дня недели за
-// k=1..weeks недель назад (сдвиг ровно на k·7 суток сохраняет день недели и час).
-//
-// Зеркало BaselineEndpointP95s, но слой недельный вместо дневного. modulo по
-// weekSec отбирает бакеты в окне слота (позиция внутри недели < windowMinutes);
-// intDiv даёт номер недели назад k; WHERE k >= 1 отбрасывает текущую (неполную)
-// неделю, чтобы недобранный текущий час не занижал базу. Нижняя граница from
-// включает −windowMinutes: иначе окно самой старой недели (k=weeks) целиком
-// оказалось бы < from и терялось.
+// k>=1 исключает текущую (неполную) неделю — иначе недобранный час занижает базу;
+// from сдвинут на -windowMinutes, иначе окно самой старой недели (k=weeks) ушло бы за from.
 func (q *Query) SeasonalBaselineEndpointP95s(ctx context.Context, projectID int64, transactions []string, windowMinutes, weeks int, now time.Time) (map[string]RegressionSample, error) {
 	out := make(map[string]RegressionSample, len(transactions))
 	if len(transactions) == 0 {
@@ -1394,17 +1213,11 @@ func (q *Query) SeasonalBaselineEndpointP95s(ctx context.Context, projectID int6
 	return out, rows.Err()
 }
 
-// VitalKey — страница и метрика: ключ карт, возвращаемых vital-запросами.
 type VitalKey struct {
 	Transaction string
 	Metric      string
 }
 
-// RecentVitalP75s — свежие p75 по списку страниц сразу по всем метрикам.
-//
-// Все метрики забираются одним запросом потому, что они лежат отдельными
-// колонками одной таблицы: спрашивать их по одной значит перечитывать те же
-// строки трижды.
 func (q *Query) RecentVitalP75s(ctx context.Context, projectID int64, transactions, metrics []string, from, to time.Time) (map[VitalKey]RegressionSample, error) {
 	out := make(map[VitalKey]RegressionSample, len(transactions)*len(metrics))
 	if len(transactions) == 0 || len(metrics) == 0 {
@@ -1435,12 +1248,8 @@ func (q *Query) RecentVitalP75s(ctx context.Context, projectID int64, transactio
 	return out, rows.Err()
 }
 
-// BaselineVitalP75s — скользящие базы по списку страниц сразу по всем метрикам:
-// медиана дневных p75 за days дней.
-//
-// Дни без замеров конкретной метрики поштучный запрос отбрасывал через HAVING;
-// здесь строка дня общая для всех метрик, поэтому пустые дни отбрасываются
-// условием внутри quantileExactIf — по счётчику этой же метрики.
+// HAVING тут не годится — строка дня общая для всех метрик; пустые по метрике
+// дни отбрасывает quantileExactIf по её счётчику.
 func (q *Query) BaselineVitalP75s(ctx context.Context, projectID int64, transactions, metrics []string, days int, now time.Time) (map[VitalKey]RegressionSample, error) {
 	out := make(map[VitalKey]RegressionSample, len(transactions)*len(metrics))
 	if len(transactions) == 0 || len(metrics) == 0 {
@@ -1479,12 +1288,7 @@ func (q *Query) BaselineVitalP75s(ctx context.Context, projectID int64, transact
 	return out, rows.Err()
 }
 
-// SeasonalBaselineVitalP75s — сезонные базы по списку страниц сразу по всем
-// метрикам: медиана НЕДЕЛЬНЫХ p75 по тому же окну того же дня недели за
-// k=1..weeks недель назад. Зеркало BaselineVitalP75s (декартово страницы×метрики,
-// ключ VitalKey), но группировка по неделе (intDiv/modulo) вместо суток; смысл
-// колонок m_daily/m_cnt тот же, только теперь per-неделя. Границы окна и
-// исключение текущей недели (k>=1) — как в SeasonalBaselineEndpointP95s.
+// то же выравнивание недели, что в SeasonalBaselineEndpointP95s, но по всем метрикам сразу.
 func (q *Query) SeasonalBaselineVitalP75s(ctx context.Context, projectID int64, transactions, metrics []string, windowMinutes, weeks int, now time.Time) (map[VitalKey]RegressionSample, error) {
 	out := make(map[VitalKey]RegressionSample, len(transactions)*len(metrics))
 	if len(transactions) == 0 || len(metrics) == 0 {
@@ -1533,8 +1337,6 @@ func (q *Query) SeasonalBaselineVitalP75s(ctx context.Context, projectID int64, 
 	return out, rows.Err()
 }
 
-// scanVitalRows раскладывает строку «страница + пары (значение, счётчик)» по
-// ключам (страница, метрика).
 func scanVitalRows(rows driver.Rows, metrics []string, out map[VitalKey]RegressionSample) error {
 	for rows.Next() {
 		var name string
@@ -1555,9 +1357,6 @@ func scanVitalRows(rows driver.Rows, metrics []string, out map[VitalKey]Regressi
 	return nil
 }
 
-// TopEndpointsByTraffic — топ-K имён эндпойнтов проекта по трафику за [from, to)
-// (число транзакций, countMerge из transactions_5m), по убыванию. Для оценщика
-// (план 4): регрессия на цели без нагрузки — шум, оцениваем только верхушку.
 func (q *Query) TopEndpointsByTraffic(ctx context.Context, projectID int64, from, to time.Time, k int) ([]string, error) {
 	if k <= 0 {
 		return nil, nil
@@ -1577,10 +1376,8 @@ func (q *Query) TopEndpointsByTraffic(ctx context.Context, projectID int64, from
 	return scanStrings(rows, "trace: top endpoints by traffic")
 }
 
-// TopVitalPages — топ-K страниц с web-vital'ами за [from, to] по числу замеров
-// (сумма countMerge по всем пяти vital'ам, из web_vitals_5m), по убыванию.
-// HAVING отсекает транзакции без единого замера vital'а (MV агрегирует и чистые
-// API-эндпойнты без measurements).
+// HAVING отсекает эндпойнты без единого замера vital'а — MV агрегирует и чистые
+// API без measurements.
 func (q *Query) TopVitalPages(ctx context.Context, projectID int64, from, to time.Time, k int) ([]string, error) {
 	if k <= 0 {
 		return nil, nil
@@ -1603,8 +1400,6 @@ func (q *Query) TopVitalPages(ctx context.Context, projectID int64, from, to tim
 	return scanStrings(rows, "trace: top vital pages")
 }
 
-// scanStrings собирает одноколоночный результат в срез строк (общий хвост
-// TopEndpointsByTraffic/TopVitalPages).
 func scanStrings(rows driver.Rows, where string) ([]string, error) {
 	var out []string
 	for rows.Next() {
@@ -1620,9 +1415,8 @@ func scanStrings(rows driver.Rows, where string) ([]string, error) {
 	return out, nil
 }
 
-// msSample собирает RegressionSample из микросекундного значения (p95 dur) с
-// переводом в миллисекунды. При нуле замеров Value 0 (quantilesMerge пустого
-// состояния — NaN, его в Decide пускать нельзя).
+// при нуле замеров Value=0 — quantilesMerge пустого состояния дал бы NaN,
+// недопустимый в Decide.
 func msSample(us float64, cnt uint64) RegressionSample {
 	if cnt == 0 {
 		return RegressionSample{Value: 0, Samples: 0}
@@ -1630,15 +1424,8 @@ func msSample(us float64, cnt uint64) RegressionSample {
 	return RegressionSample{Value: us / 1000, Samples: int(cnt)}
 }
 
-// valueSample — как msSample, но без конвертации единиц (web-vital'ы уже в мс,
-// CLS безразмерный). Только для вайтал-запросов (Recent/BaselineVitalP75[s]) —
-// путь duration идёт исключительно через msSample. Раньше пакетные запросы
-// эндпойнтов (RecentEndpointP95s, BaselineEndpointP95s) тоже звали valueSample
-// и отдавали в Decide микросекунды дур, которые сравнивались с миллисекундными
-// порогами регрессии — отсюда завышение длительности в тысячу раз и
-// фактически выключенный абсолютный пол (см. Decide в regression.go). Два
-// варианта одного запроса с разными единицами были корнем; теперь единица
-// duration держится единственной точкой конвертации — msSample.
+// только для веб-виталов (уже в мс); duration всегда через msSample — второй
+// путь смешивает единицы.
 func valueSample(v float64, cnt uint64) RegressionSample {
 	if cnt == 0 {
 		return RegressionSample{Value: 0, Samples: 0}
@@ -1646,8 +1433,6 @@ func valueSample(v float64, cnt uint64) RegressionSample {
 	return RegressionSample{Value: v, Samples: int(cnt)}
 }
 
-// usFromFloat округляет квантиль (Float64 из quantiles/quantilesMerge) до
-// микросекунд с насыщением на границах UInt32.
 func usFromFloat(v float64) uint32 {
 	// NaN проскакивает оба сравнения ниже (NaN <= 0 и NaN > MaxUint32 оба false),
 	// оставляя implementation-defined uint32(NaN); отсекаем явно.
@@ -1661,22 +1446,13 @@ func usFromFloat(v float64) uint32 {
 	return uint32(r)
 }
 
-// CountBucket — корзина ряда good/total за интервал времени, отдаваемая
-// SLI-провайдерам (internal/slo). Живёт в trace, а не в slo, специально: иначе
-// пакет trace импортировал бы slo и возник цикл (slo → trace → slo). Провайдер
-// в internal/slo конвертирует CountBucket в slo.Bucket. T — начало корзины (UTC).
+// живёт здесь, не в slo — иначе цикл slo→trace→slo; T в UTC.
 type CountBucket struct {
 	T           time.Time
 	Good, Total uint64
 }
 
-// GoodTotalBuckets строит ряд good/total транзакций проекта за [from, to) с
-// шагом step из MV transactions_5m — источник availability-SLI. total =
-// countMerge(cnt) (все транзакции корзины), good = total - failures, где
-// failures = countMerge(failures) (состояние countIfState(status != 'ok'),
-// базовый комбинатор которого — countMerge, как в Endpoints). step должен быть
-// кратен 5 минутам (гранулярность MV); пустые transaction/environment снимают
-// соответствующий фильтр. Значения только через ? (никогда не конкатенируются).
+// step должен быть кратен 5 минутам (гранулярность MV, не проверяется в коде).
 func (q *Query) GoodTotalBuckets(ctx context.Context, projectID int64, transaction, environment string, from, to time.Time, step time.Duration) ([]CountBucket, error) {
 	stepSec := int64(step / time.Second)
 	if stepSec <= 0 {
@@ -1726,11 +1502,6 @@ func (q *Query) GoodTotalBuckets(ctx context.Context, projectID int64, transacti
 	return out, nil
 }
 
-// LatencyGoodBuckets строит ряд good/total транзакций проекта за [from, to) с
-// шагом step из СЫРЫХ transactions — источник latency-SLI. total = count(),
-// good = countIf(duration_us <= thresholdUS). Порог — в микросекундах. Окно
-// защищено max_execution_time (как соседние raw-запросы, ср. Dependencies).
-// Пустые transaction/environment снимают соответствующий фильтр.
 func (q *Query) LatencyGoodBuckets(ctx context.Context, projectID int64, transaction, environment string, thresholdUS uint64, from, to time.Time, step time.Duration) ([]CountBucket, error) {
 	stepSec := int64(step / time.Second)
 	if stepSec <= 0 {

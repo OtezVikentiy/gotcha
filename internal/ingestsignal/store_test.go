@@ -10,8 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// setupProject поднимает мигрированную PG-базу и одну организацию/проект —
-// та же заготовка, что deploy_test.go/host/store_test.go.
 func setupProject(t *testing.T) (*ingestsignal.Store, int64) {
 	t.Helper()
 	pool := testenv.MigratedPG(t)
@@ -32,11 +30,6 @@ func setupProject(t *testing.T) (*ingestsignal.Store, int64) {
 	return ingestsignal.NewStore(pool), projectID
 }
 
-// TestStoreBumpUpsertsAndIgnoresUnknownProject — два Bump одной пары
-// суммируют hits и продвигают last_seen_at до максимума; Bump на
-// несуществующий project_id — no-op без ошибки и без строки (K7-5/K7-6:
-// project_id при KindKeyInvalid берётся из URL ДО проверки, что проект вообще
-// существует).
 func TestStoreBumpUpsertsAndIgnoresUnknownProject(t *testing.T) {
 	st, pid := setupProject(t)
 	ctx := context.Background()
@@ -65,8 +58,6 @@ func TestStoreBumpUpsertsAndIgnoresUnknownProject(t *testing.T) {
 		t.Errorf("last_seen_at = %v, want %v (максимум, а не последний по порядку записи)", got[0].LastSeenAt, t2)
 	}
 
-	// Bump на несуществующий проект — no-op, без ошибки и без строки где бы
-	// то ни было.
 	const unknownProject = 999999
 	if err := st.Bump(ctx, unknownProject, ingestsignal.KindKeyInvalid, 1, time.Now()); err != nil {
 		t.Fatalf("bump на неизвестный проект вернул ошибку: %v", err)
@@ -75,14 +66,11 @@ func TestStoreBumpUpsertsAndIgnoresUnknownProject(t *testing.T) {
 		t.Errorf("ForProject(неизвестный) = %+v, err=%v, want пусто без ошибки", again, err)
 	}
 
-	// Сигнал неизвестного проекта не просочился и в чужую строку.
 	if got, err := st.ForProject(ctx, pid); err != nil || len(got) != 1 {
 		t.Errorf("ForProject(pid) после bump на чужой проект = %+v, err=%v", got, err)
 	}
 }
 
-// TestStoreForProjectOrdersByKind и второй kind на том же проекте — ForProject
-// отдаёт строки в порядке kind, а не порядке вставки.
 func TestStoreForProjectOrdersByKind(t *testing.T) {
 	st, pid := setupProject(t)
 	ctx := context.Background()
@@ -102,16 +90,11 @@ func TestStoreForProjectOrdersByKind(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("сигналов %d, want 2: %+v", len(got), got)
 	}
-	// "deprecated_logs" < "key_scope" лексикографически.
 	if got[0].Kind != ingestsignal.KindDeprecatedLogs || got[1].Kind != ingestsignal.KindKeyScope {
 		t.Errorf("порядок = [%s, %s], want [deprecated_logs, key_scope]", got[0].Kind, got[1].Kind)
 	}
 }
 
-// TestStoreClosedPoolReturnsWrappedErrors — minor m1: ветки ошибок Bump/
-// ForProject не были покрыты ничем (мутация «убрать fmt.Errorf-обёртку»
-// выживала бы молча). Закрытый пул — самый дешёвый способ гарантированно
-// получить ошибку от pool.Exec/pool.Query без порчи данных других тестов.
 func TestStoreClosedPoolReturnsWrappedErrors(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	st := ingestsignal.NewStore(pool)

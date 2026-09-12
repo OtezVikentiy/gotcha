@@ -14,8 +14,6 @@ import (
 	"time"
 )
 
-// SendResult — классификация исхода Send: определяет, что делает вызывающий
-// (T7) с батчем дальше — буферизовать на повтор или отбросить навсегда.
 type SendResult int
 
 const (
@@ -27,25 +25,20 @@ const (
 const (
 	sendTimeout  = 30 * time.Second
 	metricsPath  = "/v1/metrics"
-	maxRetryWait = time.Hour // кап на Retry-After — спека §1.3: месячная квота (2592000с) не должна держать буфер сутками
+	maxRetryWait = time.Hour // месячная квота (2592000с) не должна держать буфер сутками
 
-	// maxErrBodyLog — кап на тело не-2xx ответа, которое попадает в err для
-	// логов runner'а (run.go): сервер шлёт короткий JSON-error, 512 байт с
-	// запасом (см. respError).
+	// Кап на тело не-2xx ответа для логов — сервер шлёт короткий JSON-error,
+	// 512 байт с запасом.
 	maxErrBodyLog = 512
 )
 
-// Sender — HTTP-клиент push метрик на инстанс Gotcha.
 type Sender struct {
 	cfg    Config
 	client *http.Client
 }
 
-// NewSender строит http.Client с фиксированным таймаутом и TLS-настройками
-// из Config: CACert (если задан) читается сразу — свой x509.CertPool в
-// RootCAs для самоподписанных инстансов, ошибка чтения/разбора — ошибка
-// конструктора, а не тихий фолбэк. InsecureSkipVerify — крайнее средство,
-// применяется только когда CACert не задан.
+// CACert (если задан) — свой x509.CertPool, ошибка чтения/разбора роняет
+// конструктор. InsecureSkipVerify — крайнее средство при отсутствии CACert.
 func NewSender(cfg Config) (*Sender, error) {
 	tlsCfg := &tls.Config{InsecureSkipVerify: cfg.InsecureSkipVerify}
 	if cfg.CACert != "" {
@@ -60,11 +53,8 @@ func NewSender(cfg Config) (*Sender, error) {
 		tlsCfg.RootCAs = pool
 		tlsCfg.InsecureSkipVerify = false // явный CA сильнее общего skip-verify
 	}
-	// Клонируем http.DefaultTransport, а не строим &http.Transport{} с нуля:
-	// голый транспорт теряет Proxy: http.ProxyFromEnvironment (агент в закрытой
-	// сети за HTTP_PROXY/HTTPS_PROXY/NO_PROXY просто перестаёт слать метрики —
-	// без единой ошибки в логе, транспорт молча идёт напрямую) и дефолтные
-	// настройки пула соединений (DialContext-таймауты, MaxIdleConns и т.д.).
+	// Клон DefaultTransport, не &http.Transport{} с нуля — голый транспорт
+	// теряет Proxy: http.ProxyFromEnvironment и дефолтные настройки пула.
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.TLSClientConfig = tlsCfg
 	return &Sender{
@@ -76,10 +66,8 @@ func NewSender(cfg Config) (*Sender, error) {
 	}, nil
 }
 
-// Send отправляет уже готовое (gzip+protobuf, см. EncodeBody) тело батча.
-// Второе возвращаемое значение — пол ретрая из заголовка Retry-After
-// (сервер шлёт только число секунд, см. internal/ingest/handler.go), 0 если
-// заголовка нет; капается в maxRetryWait.
+// Второе значение — пол ретрая из Retry-After (сервер шлёт секунды, см.
+// internal/ingest/handler.go), 0 если заголовка нет; капается в maxRetryWait.
 func (s *Sender) Send(ctx context.Context, body []byte) (SendResult, time.Duration, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.Endpoint+metricsPath, bytes.NewReader(body))
 	if err != nil {
@@ -94,9 +82,8 @@ func (s *Sender) Send(ctx context.Context, body []byte) (SendResult, time.Durati
 		return SendRetry, 0, err
 	}
 	defer func() {
-		// respError (ниже) читает не больше maxErrBodyLog байт тела для
-		// диагностики; здесь дочитываем остаток и закрываем, чтобы соединение
-		// можно было переиспользовать (keep-alive).
+		// respError читает не больше maxErrBodyLog байт — здесь дочитываем
+		// остаток, чтобы соединение осталось keep-alive.
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 	}()
@@ -111,11 +98,8 @@ func (s *Sender) Send(ctx context.Context, body []byte) (SendResult, time.Durati
 	}
 }
 
-// respError строит диагностическую ошибку не-2xx ответа: err — это то, что
-// видит оператор в логах runner'а (run.go), classification (SendResult)
-// определяет автомат отправки — они намеренно не смешаны: сервер отдаёт
-// строгое подмножество исходов (2xx/429/5xx/остальное), а err обязан
-// отличать «отозванный ключ» от «битый payload» от «квота» в консоли.
+// err и classification (SendResult) намеренно не смешаны: сервер отдаёт
+// строгое подмножество исходов, а err различает причину для оператора.
 func respError(resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBodyLog))
 	if trimmed := strings.TrimSpace(string(body)); trimmed != "" {
@@ -124,8 +108,8 @@ func respError(resp *http.Response) error {
 	return fmt.Errorf("server returned %d", resp.StatusCode)
 }
 
-// retryAfter парсит Retry-After как число секунд (HTTP-дата сервером не
-// используется — см. internal/ingest/handler.go) и капает в maxRetryWait.
+// Retry-After как число секунд, не HTTP-дата (сервер шлёт только секунды,
+// см. internal/ingest/handler.go); капается в maxRetryWait.
 func retryAfter(raw string) time.Duration {
 	if raw == "" {
 		return 0

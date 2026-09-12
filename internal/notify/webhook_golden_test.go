@@ -18,9 +18,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
-// Значения фикстуры issue-алерта — те же, что и в internal/docs/{ru,en}/
-// alerts.md, раздел «Формат тела вебхука»: пример JSON в доках — буквально
-// содержимое золотых файлов ниже, так что менять одно без другого нельзя.
 const (
 	fixtureProjectID   = 7
 	fixtureIssueID     = 42
@@ -32,10 +29,6 @@ const (
 	fixtureProjectName = "Storefront"
 )
 
-// capturingOutbox реализует escalation.Enqueuer, запоминая payload вместо
-// похода в Postgres — так тест гоняет РЕАЛЬНЫЙ escalation.Dispatch (резолв
-// имени проекта, сборку Extra, гейт AllowsDetails/RedactExternalPayload),
-// не переписывая эту логику фикстурой, набранной руками.
 type capturingOutbox struct {
 	payload map[string]any
 }
@@ -45,27 +38,12 @@ func (o *capturingOutbox) Enqueue(_ context.Context, _ int64, payload map[string
 	return nil
 }
 
-// fixedProjectNamer — детерминированная замена escalation.ProjectNamer:
-// реальный OrgProjectNamer ходит в БД, а имени проекта здесь достаточно
-// быть постоянным.
 type fixedProjectNamer struct{ name string }
 
 func (f fixedProjectNamer) ProjectName(_ context.Context, _ int64) (string, error) {
 	return f.name, nil
 }
 
-// dispatchIssueAlertFixture строит payload issue-алерта (new_issue) ровно
-// так, как это делает alert.Evaluator.OnIssue перед вызовом
-// escalation.Dispatch (см. internal/alert/evaluator.go) — те же ключи Extra
-// (issue_id/title/culprit/level/times_seen), тот же формат subject/body
-// через i18n-ключи notify.issue.subject/notify.issue.body. Evaluator сюда
-// не зовётся напрямую: он тянет БД (правило, троттлинг, каналы проекта), а
-// заморозке подлежит именно то, что происходит ПОСЛЕ — единая точка сборки
-// payload в Dispatch.
-//
-// Локаль фикстуры — en: контракт вебхука адресован разработчику получателя,
-// не оператору инстанса, и пример в доках должен читаться независимо от
-// GOTCHA_LOCALE конкретной инсталляции (по умолчанию — ru).
 func dispatchIssueAlertFixture(t *testing.T, allowsDetails bool) map[string]any {
 	t.Helper()
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
@@ -107,13 +85,6 @@ func dispatchIssueAlertFixture(t *testing.T, allowsDetails bool) map[string]any 
 	return out.payload
 }
 
-// TestWebhookBodyGolden замораживает тело исходящего вебхука issue-алерта
-// в обоих режимах AllowsDetails (задача 13, E3): проходит РЕАЛЬНЫЙ путь
-// escalation.Dispatch -> notify.WebhookSender.Send -> HTTP-запрос,
-// перехватывает то, что реально ушло на приёмник (httptest.Server), и
-// сравнивает с золотым файлом. Пример JSON в internal/docs/{ru,en}/
-// alerts.md — содержимое этих же золотых файлов (см. TestWebhookBodyDocsMatchGolden
-// в internal/guards).
 func TestWebhookBodyGolden(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -168,9 +139,6 @@ func TestWebhookBodyGolden(t *testing.T) {
 					tc.golden, gotCanon, wantCanon)
 			}
 
-			// Подпись — самосогласованность: HMAC-SHA256(secret) по РЕАЛЬНО
-			// отправленным байтам обязан совпасть с заголовком, ровно как
-			// описано в доках («Формат тела вебхука»).
 			mac := hmac.New(sha256.New, []byte(secret))
 			mac.Write(gotBody)
 			wantSig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
@@ -178,9 +146,6 @@ func TestWebhookBodyGolden(t *testing.T) {
 				t.Errorf("X-Gotcha-Signature = %q, want %q", gotSig, wantSig)
 			}
 
-			// Контракт transportFields (webhook.go): channel_kind/target/secret
-			// никогда не попадают в тело — это внутренние поля воркера, а
-			// secret в теле обесценил бы саму подпись.
 			for _, k := range []string{"channel_kind", "target", "secret"} {
 				needle := []byte(`"` + k + `"`)
 				if bytes.Contains(gotBody, needle) {
@@ -191,20 +156,6 @@ func TestWebhookBodyGolden(t *testing.T) {
 	}
 }
 
-// TestWebhookSendStripsSecretEvenIfProducerAddsIt закрывает дыру в
-// TestWebhookBodyGolden: сегодня НИ ОДИН продюсер (escalation.Dispatch,
-// alert/digest.go, trace/notify.go, web/alerts.go) не кладёт "secret" в
-// payload очереди — секрет достаётся отдельно через notify.SecretResolver
-// в момент отправки (см. комментарий transportFields в webhook.go), так что
-// ассерт «в теле нет transport-полей» в TestWebhookBodyGolden ни разу не
-// видит реального ключа "secret" и не может покраснеть при его утечке.
-// Контракт из брифа задачи 13 («поле transportFields в теле отсутствует»)
-// — про ВСЕ ТРИ ключа, а не только про те, что реально прислал сегодняшний
-// producer: он обязан пережить гипотетическую будущую утечку secret в
-// payload, а не полагаться на то, что её сегодня нет. Здесь "secret"
-// дописывается в уже собранный Dispatch'ем payload вручную — так тест
-// проверяет именно вырезание в WebhookSender.Send, а не то, кладёт ли его
-// туда Dispatch.
 func TestWebhookSendStripsSecretEvenIfProducerAddsIt(t *testing.T) {
 	payload := dispatchIssueAlertFixture(t, true)
 
@@ -246,9 +197,6 @@ func TestWebhookSendStripsSecretEvenIfProducerAddsIt(t *testing.T) {
 		}
 	}
 
-	// Вырезание "secret" не должно менять само тело: сравнение с тем же
-	// золотым файлом, что и режим "с деталями" в TestWebhookBodyGolden,
-	// обязано совпасть.
 	wantBody, err := os.ReadFile("testdata/webhook_body_details.json")
 	if err != nil {
 		t.Fatalf("reading golden file: %v", err)
@@ -259,10 +207,6 @@ func TestWebhookSendStripsSecretEvenIfProducerAddsIt(t *testing.T) {
 	}
 }
 
-// canonicalJSON перепечатывает JSON с отсортированными ключами и отступами
-// (json.Marshal сам сортирует ключи map[string]any) — так расхождение
-// золотого сравнения печатает читаемую дельту, а не байт-в-байт то, что
-// зависит от порядка полей в исходном marshal'е.
 func canonicalJSON(t *testing.T, raw []byte) string {
 	t.Helper()
 	var v any

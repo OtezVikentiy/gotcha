@@ -12,9 +12,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// insertProjectHT — org+project для тестов override/group-thresholds; свой
-// slug (параметр), чтобы не столкнуться с setupProject/setupSettingsProject
-// других файлов пакета по UNIQUE(slug) при параллельном запуске.
 func insertProjectHT(t *testing.T, pool *pgxpool.Pool, slug string) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -34,9 +31,6 @@ func insertProjectHT(t *testing.T, pool *pgxpool.Pool, slug string) int64 {
 	return projectID
 }
 
-// TestHostOverrideGetSave — пустой override для хоста без строки (всё nil),
-// частичный override после Save (некоторые поля пришпилены, остальные
-// по-прежнему nil = наследовать), и батч-выборка GetForHosts.
 func TestHostOverrideGetSave(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -48,14 +42,11 @@ func TestHostOverrideGetSave(t *testing.T) {
 
 	svc := host.NewHostOverrideService(pool)
 
-	// Пусто → все nil.
 	ov, err := svc.Get(ctx, hostID)
 	if err != nil || ov.DiskEnabled != nil {
 		t.Fatalf("empty override: %v %+v", err, ov)
 	}
 
-	// Частичный: disk on 0.8, silent off (без значения — разрешено, см.
-	// ValidateOverride: enabled=false не требует value).
 	on := true
 	off := false
 	dv := 0.80
@@ -71,16 +62,12 @@ func TestHostOverrideGetSave(t *testing.T) {
 		t.Fatalf("override roundtrip: %+v", got)
 	}
 
-	// Батч.
 	m, err := svc.GetForHosts(ctx, []int64{hostID})
 	if err != nil || m[hostID].DiskThreshold == nil {
 		t.Fatalf("batch: %v %+v", err, m)
 	}
 }
 
-// TestHostOverrideSaveRejectsInvalid — Save проверяет override через
-// ValidateOverride до записи: несогласованный или out-of-bounds override не
-// должен долетать до БД (и, соответственно, не должен создавать строку).
 func TestHostOverrideSaveRejectsInvalid(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -92,7 +79,7 @@ func TestHostOverrideSaveRejectsInvalid(t *testing.T) {
 	svc := host.NewHostOverrideService(pool)
 
 	on := true
-	bad := 2.0 // диск вне (0,1]
+	bad := 2.0
 	err := svc.Save(ctx, hostID, host.ThresholdOverride{DiskEnabled: &on, DiskThreshold: &bad})
 	if !errors.Is(err, host.ErrInvalidDiskThreshold) {
 		t.Fatalf("Save(вне границ) err = %v, want errors.Is(_, ErrInvalidDiskThreshold)", err)
@@ -107,9 +94,6 @@ func TestHostOverrideSaveRejectsInvalid(t *testing.T) {
 	}
 }
 
-// TestGroupThresholdListUpsertDelete — List пуст без строк, Upsert создаёт
-// строку и обновляет её при повторном вызове (тот же ключ project/scope/
-// label), Delete удаляет.
 func TestGroupThresholdListUpsertDelete(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -134,7 +118,6 @@ func TestGroupThresholdListUpsertDelete(t *testing.T) {
 		t.Fatalf("group threshold roundtrip: %+v", got[0])
 	}
 
-	// Повторный Upsert того же ключа — обновляет, не плодит вторую строку.
 	load2 := 2.5
 	if err := svc.Upsert(ctx, proj, "env", "prod", host.ThresholdOverride{LoadEnabled: &on, LoadThreshold: &load2}); err != nil {
 		t.Fatalf("upsert #2: %v", err)
@@ -152,15 +135,11 @@ func TestGroupThresholdListUpsertDelete(t *testing.T) {
 		t.Fatalf("List после delete: %v %+v", err, got)
 	}
 
-	// Delete отсутствующей строки — не ошибка (идемпотентен).
 	if err := svc.Delete(ctx, proj, "env", "prod"); err != nil {
 		t.Fatalf("delete повторно: %v", err)
 	}
 }
 
-// TestValidateOverride — таблица сочетаний enabled/value для одного вида
-// (disk) и границы silent; остальные виды (memory/load) проверены через тот
-// же validateKindOverride и не дублируются построчно.
 func TestValidateOverride(t *testing.T) {
 	on := true
 	off := false
@@ -201,8 +180,7 @@ func TestValidateOverride(t *testing.T) {
 			wantErr: host.ErrInvalidDiskThreshold,
 		},
 		{
-			// Как в Validate: 1.0 (100%) со строгим «>» оценщика не сработал бы
-			// никогда — переопределение с таким значением отвергается (K3-2).
+			// 1.0 (100%) со строгим «>» оценщика не сработало бы никогда — мёртвый порог отвергается.
 			name:    "disk: ровно 1.0 — мёртвый порог, ошибка",
 			ov:      host.ThresholdOverride{DiskEnabled: &on, DiskThreshold: &dead},
 			wantErr: host.ErrInvalidDiskThreshold,

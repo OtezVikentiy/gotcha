@@ -2,12 +2,6 @@ package alert
 
 import "testing"
 
-// TestHostOfURLRequiresHTTPScheme: хост извлекается только из абсолютного
-// http(s)-адреса.
-//
-// url.Parse отдаёт хост и для «//evil.example/x», и для «ftp://…»; здесь
-// решается, доверенный ли получатель деталей события, поэтому «хост непонятно
-// какого протокола» доверенным быть не должен.
 func TestHostOfURLRequiresHTTPScheme(t *testing.T) {
 	cases := map[string]string{
 		"https://hooks.acme.example/gotcha": "hooks.acme.example",
@@ -26,8 +20,6 @@ func TestHostOfURLRequiresHTTPScheme(t *testing.T) {
 	}
 }
 
-// TestDetailPolicyRejectsNonHTTPWebhook: канал с не-http(s) адресом не получает
-// деталей события — даже если его «хост» совпал бы с доверенным.
 func TestDetailPolicyRejectsNonHTTPWebhook(t *testing.T) {
 	p := NewDetailPolicy("https://gotcha.example.com", []string{"acme.example"}, false)
 	if p.AllowsDetails(Channel{Kind: ChannelWebhook, Target: "ftp://acme.example/hook"}) {

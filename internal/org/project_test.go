@@ -43,7 +43,6 @@ func TestProjectsAndAccess(t *testing.T) {
 		t.Fatalf("AttachTeam: %v", err)
 	}
 
-	// dev — member организации, состоит в backend → видит только api.
 	dev := newUser(t, pool, "dev2@example.com")
 	if err := svc.AddMember(ctx, o.ID, dev, org.RoleMember); err != nil {
 		t.Fatalf("AddMember: %v", err)
@@ -52,7 +51,6 @@ func TestProjectsAndAccess(t *testing.T) {
 		t.Fatalf("AddTeamMember: %v", err)
 	}
 
-	// Чужака в команду добавить нельзя.
 	outsider := newUser(t, pool, "outsider@example.com")
 	if err := svc.AddTeamMember(ctx, backend.ID, outsider); !errors.Is(err, org.ErrNotMember) {
 		t.Fatalf("outsider in team: got %v, want ErrNotMember", err)
@@ -162,7 +160,6 @@ func TestProjectsOf(t *testing.T) {
 		t.Fatalf("CreateProject: %v", err)
 	}
 
-	// Другая организация не должна протекать в выборку.
 	otherOwner := newUser(t, pool, "projectsof-other@example.com")
 	otherOrg, err := svc.CreateOrg(ctx, "projectsof-other-org", "Other", otherOwner)
 	if err != nil {
@@ -215,7 +212,6 @@ func TestDetachTeam(t *testing.T) {
 		t.Fatalf("TeamProjects after detach = %+v err=%v, want empty", projects, err)
 	}
 
-	// Идемпотентно: повторный DetachTeam (или detach несуществующей связи) → nil.
 	if err := svc.DetachTeam(ctx, proj.ID, team.ID); err != nil {
 		t.Fatalf("DetachTeam (already detached): got %v, want nil", err)
 	}
@@ -263,9 +259,6 @@ func TestRenameProject(t *testing.T) {
 	}
 }
 
-// TestUpdatePerfSettings — новый метод настроек производительности (этап 3,
-// план 5): один UPDATE пишет sample_rate/apdex/detector_config, значения
-// приезжают обратно в Project, несуществующий проект → ErrNotFound.
 func TestUpdatePerfSettings(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)
@@ -297,8 +290,6 @@ func TestUpdatePerfSettings(t *testing.T) {
 	if got.ApdexThresholdMS != 400 {
 		t.Fatalf("ApdexThresholdMS = %d, want 400", got.ApdexThresholdMS)
 	}
-	// Колонка perf_detector_config — JSONB, PG нормализует форматирование, поэтому
-	// сравниваем распарсенные пороги, а не строку байт в байт.
 	var cfg struct {
 		NPlusOneMin        int `json:"n_plus_one_min"`
 		NPlusOneMinTotalMs int `json:"n_plus_one_min_total_ms"`
@@ -317,9 +308,6 @@ func TestUpdatePerfSettings(t *testing.T) {
 	}
 }
 
-// TestDeleteProject — удаление проекта (PRIV-H2): проект и зависимые записи
-// (DSN-ключ, монитор — FK ON DELETE CASCADE) исчезают из PG; повторное
-// удаление → ErrNotFound.
 func TestDeleteProject(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)
@@ -340,9 +328,6 @@ func TestDeleteProject(t *testing.T) {
 		t.Fatalf("CreateKeys: %v", err)
 	}
 	key := keys[0]
-	// Монитор — прямой FK на projects с ON DELETE CASCADE: проверяем, что после
-	// удаления проекта не остаётся осиротевших мониторов (иначе uptime-раннер
-	// продолжил бы их дёргать).
 	var monID int64
 	if err := pool.QueryRow(ctx,
 		"INSERT INTO monitors (project_id, name, kind, interval_seconds) VALUES ($1, 'm', 'http', 60) RETURNING id",
@@ -354,11 +339,9 @@ func TestDeleteProject(t *testing.T) {
 		t.Fatalf("DeleteProject: %v", err)
 	}
 
-	// Проект исчез.
 	if _, err := svc.GetProject(ctx, proj.ID); !errors.Is(err, org.ErrNotFound) {
 		t.Fatalf("GetProject after delete: got %v, want ErrNotFound", err)
 	}
-	// Каскад: ключ и монитор исчезли.
 	var n int
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM project_keys WHERE id = $1", key.ID).Scan(&n); err != nil {
 		t.Fatalf("count keys: %v", err)
@@ -373,7 +356,6 @@ func TestDeleteProject(t *testing.T) {
 		t.Fatalf("monitors after delete = %d, want 0 (cascade)", n)
 	}
 
-	// Повторное удаление → ErrNotFound.
 	if err := svc.DeleteProject(ctx, proj.ID); !errors.Is(err, org.ErrNotFound) {
 		t.Fatalf("DeleteProject (repeat): got %v, want ErrNotFound", err)
 	}
@@ -406,9 +388,6 @@ func TestAddTeamMemberIdempotent(t *testing.T) {
 	}
 }
 
-// TestCreateProjectNormalizesPlatform — нормализация платформы живёт в домене
-// (№73): оба веб-пути создания (онбординг и модалка) получают её автоматом,
-// незнакомое значение схлопывается в PlatformOther, знакомое — как есть.
 func TestCreateProjectNormalizesPlatform(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)
@@ -436,10 +415,6 @@ func TestCreateProjectNormalizesPlatform(t *testing.T) {
 	}
 }
 
-// TestProjectsForUserInOrg — ProjectsForUserInOrg сужает ProjectsForUser до
-// одной организации (задача 4 nav-ia): топбар фильтрует список проектов
-// выбранной в селекте организацией, и без сужения переключатель показал бы
-// проекты организации, которую пользователь в данный момент не выбирал.
 func TestProjectsForUserInOrg(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)
@@ -476,18 +451,6 @@ func TestProjectsForUserInOrg(t *testing.T) {
 	}
 }
 
-// TestProjectsForUserInOrgIgnoresTeamAccessElsewhere — приоритет операторов в
-// SQL: accessCondition — это «EXISTS(...) OR EXISTS(...)», и подстановка его в
-// "WHERE p.org_id = $2 AND " + accessCondition давала
-// (p.org_id = $2 AND владелец) OR (членство в команде), потому что AND
-// связывает сильнее OR. Вторая ветвь оставалась без сужения по организации, и
-// страница «Проекты организации X» показывала проекты всех организаций, где
-// пользователь состоит хоть в одной команде.
-//
-// TestProjectsForUserInOrg выше эту ветвь не трогает: там владелец без единой
-// команды, а у web-теста TestOrgProjectsScopedToMemberTeams обе организации
-// схлопнуты в одну. Нужна ровно эта пара: владелец здесь И участник команды
-// там.
 func TestProjectsForUserInOrgIgnoresTeamAccessElsewhere(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)
@@ -540,8 +503,6 @@ func TestProjectsForUserInOrgIgnoresTeamAccessElsewhere(t *testing.T) {
 		t.Fatalf("ProjectsForUserInOrg(mine) вернул %d проектов %v, ожидался только %q: в выборку протёк проект чужой организации", len(got), names, projMine.Name)
 	}
 
-	// Обратная сторона того же правила: в своей организации проект, доступный
-	// по команде, обязан остаться видимым.
 	if got, err := svc.ProjectsForUserInOrg(ctx, user, foreign.ID); err != nil || len(got) != 1 || got[0].ID != projForeign.ID {
 		t.Fatalf("ProjectsForUserInOrg(foreign) = %+v, err = %v, ожидался только %q", got, err, projForeign.Name)
 	}

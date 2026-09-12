@@ -1,7 +1,6 @@
 -- backward-compatible: yes (новая таблица и индексы)
--- Этап 9 (регрессии профилей): рост self-CPU доли функции над скользящей базой
--- моделируется инцидентом open/close — та же механика, что perf_regressions
--- этапа 4. Ключ цели — (project_id, service, profile_type, function).
+-- Рост self-CPU доли функции над скользящей базой — инцидент open/close, та же механика,
+-- что perf_regressions. Ключ цели — (project_id, service, profile_type, function).
 CREATE TABLE profile_regressions (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     project_id bigint NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

@@ -7,9 +7,6 @@ import (
 	pp "github.com/google/pprof/profile"
 )
 
-// ParsePprof разбирает pprof (gzip-protobuf) в общую модель. sampleType — имя
-// желаемого типа значений (напр. "cpu"/"samples"); если пусто или не найдено —
-// берётся последний тип. Кадры pprof лист→корень переворачиваются в корень→лист.
 func ParsePprof(raw []byte, sampleType string, now time.Time) (Profile, error) {
 	p, err := pp.ParseData(raw)
 	if err != nil {
@@ -39,10 +36,6 @@ func ParsePprof(raw []byte, sampleType string, now time.Time) (Profile, error) {
 		if v <= 0 {
 			continue
 		}
-		// Location лист→корень → переворот в корень→лист; у Location может быть
-		// несколько Line (inlining), берём их в обратном порядке для того же
-		// направления корень→лист.
-		// Ёмкость по min(len, maxFrames) — см. тот же кап в sentry.go: длину задаёт клиент.
 		stack := make([]Frame, 0, min(len(s.Location), maxFrames))
 		for i := len(s.Location) - 1; i >= 0; i-- {
 			loc := s.Location[i]

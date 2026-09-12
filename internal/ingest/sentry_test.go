@@ -9,10 +9,6 @@ import (
 	"time"
 )
 
-// Репрезентативный payload sentry-php. timestamp относительный: абсолютную дату
-// в фикстуре держать нельзя — parseTimestamp подтягивает всё, что вне окна
-// хранения (см. timestamp.go), к его границе, и вшитая константа однажды сама по
-// себе вывалилась бы за окно.
 func phpEvent(ts time.Time) string {
 	return fmt.Sprintf(`{
   "event_id": "9ec79c33ec9942ab8353589fcb2e04dc",
@@ -47,7 +43,6 @@ func TestParseEventPHP(t *testing.T) {
 	if pe.EventID != "9ec79c33-ec99-42ab-8353-589fcb2e04dc" {
 		t.Errorf("EventID = %q, want canonical uuid", pe.EventID)
 	}
-	// float64 не хранит доли секунды точно — сравниваем с допуском 1ms.
 	if d := pe.Timestamp.Sub(want); d < -time.Millisecond || d > time.Millisecond {
 		t.Errorf("Timestamp = %v, want %v ±1ms", pe.Timestamp, want)
 	}
@@ -84,8 +79,6 @@ func TestParseEventPHP(t *testing.T) {
 	}
 }
 
-// ParseEvent сохраняет breadcrumbs события как есть (raw JSON) и не выдумывает
-// их, когда поля нет.
 func TestParseEventBreadcrumbs(t *testing.T) {
 	want := `{"values":[{"category":"query","message":"SELECT 1"}]}`
 	js := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc","level":"error","breadcrumbs":` + want + `}`
@@ -105,8 +98,6 @@ func TestParseEventBreadcrumbs(t *testing.T) {
 	}
 }
 
-// ParseEvent сохраняет Sentry request-интерфейс (method/url/query_string/data/
-// headers) как есть; без поля request — пусто.
 func TestParseEventRequest(t *testing.T) {
 	want := `{"method":"POST","url":"https://x/api","query_string":"a=1&b=2","data":{"name":"bob"},"headers":{"Content-Type":"application/json"}}`
 	js := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc","level":"error","request":` + want + `}`
@@ -127,7 +118,6 @@ func TestParseEventRequest(t *testing.T) {
 }
 
 func TestParseEventMessageOnly(t *testing.T) {
-	// sentry-js captureMessage: message-объект, ISO-timestamp, тэги массивом.
 	want := time.Now().UTC().Add(-2 * time.Hour).Truncate(100 * time.Millisecond)
 	raw := fmt.Sprintf(`{
 	  "event_id": "abcdefabcdefabcdefabcdefabcdefab",
@@ -156,11 +146,6 @@ func TestParseEventMessageOnly(t *testing.T) {
 	}
 }
 
-// TestParseEventClampsTimestampToWindow: events партиционирована по
-// toYYYYMM(timestamp), и пачка событий с timestamp'ами из сотни разных месяцев
-// заклинила бы вставку целиком («Too many partitions for single INSERT block»),
-// поэтому timestamp вне окна [now-90d, now+1d] подтягивается к границе. Само
-// событие при этом НЕ теряется: ошибка со стектрейсом ценнее её timestamp'а.
 func TestParseEventClampsTimestampToWindow(t *testing.T) {
 	now := time.Now().UTC()
 	tests := []struct {
@@ -185,7 +170,6 @@ func TestParseEventClampsTimestampToWindow(t *testing.T) {
 		}
 	}
 
-	// Внутри окна timestamp остаётся нетронутым.
 	inWindow := now.Add(-24 * time.Hour).Truncate(time.Millisecond)
 	pe, err := ParseEvent([]byte(fmt.Sprintf(`{"message":"x","timestamp":%q}`,
 		inWindow.Format(time.RFC3339Nano))))
@@ -197,9 +181,6 @@ func TestParseEventClampsTimestampToWindow(t *testing.T) {
 	}
 }
 
-// TestParseEventLowercasesTraceIDs: contexts.trace.trace_id/span_id хранятся
-// каноническим hex'ом в нижнем регистре — иначе events не сджойнятся с spans по
-// trace_id (регистр выбирает тот, кто кодирует id; в OTLP он едет сырыми байтами).
 func TestParseEventLowercasesTraceIDs(t *testing.T) {
 	pe, err := ParseEvent([]byte(`{"message":"x","contexts":{"trace":{
 		"trace_id":"4BF92F3577B34DA6A3CE929D0E0E4736","span_id":"00F067AA0BA902B7"}}}`))
@@ -323,7 +304,6 @@ func TestParseEventCapsTagCount(t *testing.T) {
 		t.Fatalf("marshal fixture: %v", err)
 	}
 
-	// Парсим дважды для проверки детерминизма.
 	pe1, err := ParseEvent(raw)
 	if err != nil {
 		t.Fatalf("ParseEvent (1st): %v", err)
@@ -333,17 +313,14 @@ func TestParseEventCapsTagCount(t *testing.T) {
 		t.Fatalf("ParseEvent (2nd): %v", err)
 	}
 
-	// Проверяем что ровно 64 тега пережили.
 	if len(pe1.Tags) != 64 {
 		t.Errorf("len(Tags) = %d, want 64 (100 offered)", len(pe1.Tags))
 	}
 
-	// Проверяем детерминизм: обе парсения дали одинаковые теги.
 	if !reflect.DeepEqual(pe1.Tags, pe2.Tags) {
 		t.Error("Tags are not deterministic: first and second parse differ")
 	}
 
-	// Проверяем что это первые 64 в отсортированном порядке (k000..k063).
 	if _, ok := pe1.Tags["k000"]; !ok {
 		t.Error("Tag k000 missing (should be first alphabetically)")
 	}
@@ -374,9 +351,6 @@ func TestParseEventCapsTagValue(t *testing.T) {
 	}
 }
 
-// TestEventBlocksAndExceptionsCapped фиксирует дочистку класса амплификации:
-// сырые JSON-блоки и exception-интерфейс были единственными частями события вне
-// дисциплины капов, а буферы ниже по конвейеру считают СТРОКИ, а не байты.
 func TestEventBlocksAndExceptionsCapped(t *testing.T) {
 	t.Run("огромный JSON-блок отбрасывается целиком", func(t *testing.T) {
 		huge := `{"a":"` + strings.Repeat("x", maxJSONBlock+1) + `"}`
@@ -391,7 +365,6 @@ func TestEventBlocksAndExceptionsCapped(t *testing.T) {
 		if pe.RequestJSON != "" {
 			t.Errorf("request не отброшен: %d байт", len(pe.RequestJSON))
 		}
-		// Отбрасывание, а не обрезка: остаток обязан быть валидным JSON либо пустым.
 		if pe.ContextsJSON != "" && !json.Valid([]byte(pe.ContextsJSON)) {
 			t.Error("contexts обрезан до невалидного JSON — скрубер такой вход не почистит")
 		}
@@ -445,11 +418,6 @@ func TestEventBlocksAndExceptionsCapped(t *testing.T) {
 	})
 }
 
-// TestCapFingerprint фиксирует кап пользовательского отпечатка: массив целиком
-// уходит в ключ группировки (fingerprint.Compute склеивает его через \x00) и
-// оседает в колонке issues, поэтому ограничен и по числу элементов, и по длине
-// каждого. Без капа одно событие несло килобайты в ключе, который затем
-// хранится, индексируется и сравнивается на каждом приёме.
 func TestCapFingerprint(t *testing.T) {
 	t.Run("пустой остаётся пустым", func(t *testing.T) {
 		if got := capFingerprint(nil); got != nil {
@@ -492,9 +460,6 @@ func TestCapFingerprint(t *testing.T) {
 	})
 }
 
-// TestCapRunesFastPath — быстрый путь не меняет семантику. Он опирается на то,
-// что в UTF-8 байт не меньше, чем рун, поэтому len(s) <= n достаточно для
-// вывода «капать нечего»; проверяем это и на многобайтовых строках.
 func TestCapRunesFastPath(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -505,8 +470,8 @@ func TestCapRunesFastPath(t *testing.T) {
 		{"abc", 5, "abc"},
 		{"abcde", 5, "abcde"},
 		{"abcdef", 5, "abcde"},
-		{"щщщ", 5, "щщщ"},      // 6 байт, 3 руны — быстрый путь не сработает, но резать нечего
-		{"щщщщщщ", 5, "щщщщщ"}, // 6 рун → режем до 5
+		{"щщщ", 5, "щщщ"},
+		{"щщщщщщ", 5, "щщщщщ"},
 		{"日本語", 3, "日本語"},
 		{"日本語です", 3, "日本語"},
 	}
@@ -517,19 +482,13 @@ func TestCapRunesFastPath(t *testing.T) {
 	}
 }
 
-// PG отвергает NUL (0x00) в text-колонках (SQLSTATE 22021): событие с NUL в
-// любом строковом поле принималось приёмом с 200 и погибало на issue-upsert —
-// клиент считал событие доставленным, данные терялись. Все недоверенные
-// строки проходят через capRunes, поэтому вычистка закреплена на ней.
 func TestCapRunesStripsNUL(t *testing.T) {
 	if got := capRunes("a\x00b\x00", 100); got != "ab" {
 		t.Fatalf("capRunes = %q, want %q", got, "ab")
 	}
-	// Быстрый путь (len(s) <= n) не должен пропускать NUL без вычистки.
 	if got := capRunes("\x00", 100); got != "" {
 		t.Fatalf("capRunes short = %q, want empty", got)
 	}
-	// Обрезка длины по-прежнему работает (после вычистки).
 	if got := capRunes("\x00abcdef", 3); got != "abc" {
 		t.Fatalf("capRunes cap = %q, want %q", got, "abc")
 	}

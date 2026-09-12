@@ -14,25 +14,15 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// Query читает агрегаты метрик из metric_points (аналог trace.Query).
 type Query struct {
 	conn driver.Conn
-	// types — необязательный кеш metricType (см. WithTypeCache). nil у обычного
-	// Query: страничные чтения делают по одному Series/Aggregate на запрос, и
-	// кешировать там нечего.
+	// nil у обычного Query: страничные чтения делают по одному Series/Aggregate
+	// на запрос, кешировать нечего.
 	types *TypeCache
 }
 
-// TypeCache — кеш типов метрик на ОДИН проход вызывающего (тик оценщика).
-// metricType не зависит ни от хоста, ни от прочих фильтров — только от
-// (проект, имя, окно), поэтому у проекта с сотней машин половина запросов тика
-// была буквально одинаковой: восемь походов в ClickHouse на хост, из них
-// четыре — повтор одного и того же «какого типа system.memory.utilization».
-//
-// Живёт столько же, сколько проход: инвалидации нет и не нужно, потому что
-// каждый тик заводит новый кеш. Долгоживущим его делать нельзя — тип метрики
-// хоть и стабилен, но окно [from,to) в ключе двигается, а вместе с ним и
-// правильный ответ для пустых окон.
+// Кеш на один тик оценщика: тип не зависит от хоста, но окно [from,to) в ключе
+// двигается — долгоживущий кеш давал бы неверный ответ для новых окон.
 type TypeCache struct {
 	mu sync.Mutex
 	m  map[typeCacheKey]typeCacheValue
@@ -54,46 +44,39 @@ func NewTypeCache() *TypeCache {
 	return &TypeCache{m: map[typeCacheKey]typeCacheValue{}}
 }
 
-// WithTypeCache возвращает КОПИЮ Query, чей metricType ходит через кеш c.
-// Копия, а не поле у общего экземпляра: *metric.Query разделяют веб-хендлеры и
-// оценщики, и кеш одного прохода не должен становиться их общим состоянием.
+// Копия, не поле общего экземпляра: *Query делят веб-хендлеры и оценщики,
+// кеш одного прохода не должен стать их общим состоянием.
 func (q *Query) WithTypeCache(c *TypeCache) *Query {
 	cp := *q
 	cp.types = c
 	return &cp
 }
 
-// labelSampleRows — потолок строк, читаемых Labels для наполнения дропдауна
-// фильтра. arrayJoin(mapKeys(attributes)) раздувает вход, поэтому без потолка
-// метрика с миллионами точек и десятком ключей давала бы сотни миллионов
-// промежуточных строк ради двух десятков значений на ключ.
+// Потолок строк для Labels: arrayJoin(mapKeys(attributes)) раздувает вход,
+// без него миллионы точек дали бы сотни миллионов промежуточных строк.
 const labelSampleRows = 200_000
 
 func NewQuery(conn driver.Conn) *Query {
 	return &Query{conn: conn}
 }
 
-// MetricInfo — метрика в перечне проекта (для страницы списка).
 type MetricInfo struct {
 	Name string
 	Type string
 	Unit string
 }
 
-// Point — точка временного ряда.
 type Point struct {
 	T time.Time
 	V float64
 }
 
-// LabelMatcher — фильтр по одному лейблу (пустой Key → без фильтра).
+// Пустой Key — без фильтра.
 type LabelMatcher struct {
 	Key   string
 	Value string
 }
 
-// ListMetrics возвращает уникальные метрики проекта (имя/тип/юнит), с
-// опциональным фильтром по environment.
 func (q *Query) ListMetrics(ctx context.Context, projectID int64, environment string) ([]MetricInfo, error) {
 	rows, err := q.conn.Query(ctx, `
 		SELECT name, any(type), any(unit)
@@ -117,11 +100,8 @@ func (q *Query) ListMetrics(ctx context.Context, projectID int64, environment st
 	return out, rows.Err()
 }
 
-// MetricInfoByName возвращает имя/тип/юнит ОДНОЙ метрики. Деталь метрики иначе
-// звала ListMetrics (GROUP BY name по всему проекту, полный 30-дневный скан) и
-// линейно искала одну в Go. Здесь (project_id, name) — префикс первичного ключа
-// metric_points, а LIMIT 1 короткозамыкает на первой гранле: тип/юнит стабильны
-// на приёме, агрегат не нужен. ok=false, если метрики нет.
+// (project_id, name) — префикс первичного ключа metric_points, LIMIT 1
+// короткозамыкает на первой гранле — не ListMetrics с полным 30-дневным сканом.
 func (q *Query) MetricInfoByName(ctx context.Context, projectID int64, name string) (MetricInfo, bool, error) {
 	row := q.conn.QueryRow(ctx, `
 		SELECT name, type, unit FROM metric_points
@@ -137,12 +117,8 @@ func (q *Query) MetricInfoByName(ctx context.Context, projectID int64, name stri
 	return m, true, nil
 }
 
-// Labels возвращает ключи→значения лейблов метрики (до 20 значений на ключ) для
-// фильтров UI. Ограничено окном [from,to] и выборкой не более labelSampleRows
-// строк: это самый тяжёлый запрос (arrayJoin(mapKeys) раздувает вход в rows ×
-// число ключей до groupUniqArray), а для наполнения дропдауна-фильтра хватает
-// выборки точек за окно страницы (LIMIT без ORDER BY — порядок первичного
-// ключа, т.е. не обязательно самые свежие; для дропдауна-фильтра достаточно).
+// Самый тяжёлый запрос: arrayJoin(mapKeys) раздувает вход, поэтому лимит.
+// LIMIT без ORDER BY — не обязательно свежие точки, для дропдауна хватает.
 func (q *Query) Labels(ctx context.Context, projectID int64, name string, from, to time.Time) (map[string][]string, error) {
 	rows, err := q.conn.Query(ctx, `
 		SELECT k, groupUniqArray(20)(v) FROM (
@@ -174,9 +150,8 @@ func (q *Query) Labels(ctx context.Context, projectID int64, name string, from, 
 	return out, rows.Err()
 }
 
-// Environments возвращает известные окружения метрики (для фильтра). Ограничено
-// окном [from,to] — как metricType/Labels на той же странице; иначе DISTINCT
-// сканировал бы весь 30-дневный ретеншн метрики.
+// Окно [from,to] ограничивает скан: без него DISTINCT читал бы весь
+// 30-дневный ретеншн метрики.
 func (q *Query) Environments(ctx context.Context, projectID int64, name string, from, to time.Time) ([]string, error) {
 	rows, err := q.conn.Query(ctx, `
 		SELECT DISTINCT environment FROM metric_points
@@ -198,12 +173,8 @@ func (q *Query) Environments(ctx context.Context, projectID int64, name string, 
 	return out, rows.Err()
 }
 
-// metricType возвращает тип метрики (gauge/sum/histogram) и признак monotonic —
-// нужно, чтобы Series/Aggregate выбрали стратегию агрегации. Ограничено окном
-// [from,to] вызывающего: тип эффективно неизменен для метрики, но без границы
-// any() читал бы весь 30-дневный ретеншн на КАЖДЫЙ Series/Aggregate (в т.ч. на
-// каждый тик оценщика метрик-алертов). Если в окне точек нет, Series/Aggregate
-// всё равно вернут пусто — тип тогда не важен.
+// Ограничено окном вызывающего: без него any() читал бы весь ретеншн на
+// каждый Series/Aggregate. Пустое окно — тип не важен, дальше вернётся пусто.
 func (q *Query) metricType(ctx context.Context, projectID int64, name string, from, to time.Time) (typ string, monotonic bool, temporality string, err error) {
 	key := typeCacheKey{projectID: projectID, name: name, from: from.UnixNano(), to: to.UnixNano()}
 	if q.types != nil {
@@ -220,18 +191,15 @@ func (q *Query) metricType(ctx context.Context, projectID int64, name string, fr
 		projectID, name, from, to)
 	var mono uint8
 	if err := row.Scan(&typ, &mono, &temporality); err != nil {
-		// Пустое окно: агрегат без GROUP BY сейчас отдаёт строку с дефолтами, но
-		// при empty_result_for_aggregation_by_empty_set=1 вернул бы ErrNoRows —
-		// трактуем как «тип не важен» (Series/Aggregate по пустому окну вернут пусто),
-		// симметрично MetricInfoByName/HasProfileForTrace.
+		// При empty_result_for_aggregation_by_empty_set=1 вернёт ErrNoRows — трактуем
+		// как «тип не важен», Series/Aggregate по пустому окну и так вернут пусто.
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", false, "", nil
 		}
 		return "", false, "", fmt.Errorf("metric: metric type: %w", err)
 	}
-	// Кешируем только успешный ответ: ошибка запроса — состояние ClickHouse, а
-	// не свойство метрики, и запоминать её на весь проход значило бы разнести
-	// одну неудачу на все хосты проекта.
+	// Кешируем только успех: ошибка — состояние ClickHouse, не метрики; кеш на
+	// весь проход иначе разнёс бы одну неудачу на все хосты проекта.
 	if q.types != nil {
 		q.types.mu.Lock()
 		q.types.m[key] = typeCacheValue{typ: typ, monotonic: mono == 1, temporality: temporality}
@@ -240,11 +208,8 @@ func (q *Query) metricType(ctx context.Context, projectID int64, name string, fr
 	return typ, mono == 1, temporality, nil
 }
 
-// Series возвращает временной ряд метрики: bucketing по step, агрегация по типу
-// (gauge/sum non-monotonic → agg; sum monotonic cumulative → rate; histogram +
-// p50/p95/p99 → перцентиль интерполяцией, histogram + avg → sum/count).
-// matchers — AND всех непустых пар (Key,Value) по attributes; host фильтрует
-// отдельную колонку host (пусто → без фильтра).
+// Стратегия по типу: sum monotonic cumulative → rate, histogram+перцентиль →
+// интерполяция, иначе — agg. matchers — AND по attributes, host — отдельная колонка.
 func (q *Query) Series(ctx context.Context, projectID int64, name, environment, host string, matchers []LabelMatcher, agg string, from, to time.Time, step time.Duration) ([]Point, error) {
 	matchers = compactMatchers(matchers)
 	typ, monotonic, temporality, err := q.metricType(ctx, projectID, name, from, to)
@@ -266,8 +231,7 @@ func (q *Query) Series(ctx context.Context, projectID int64, name, environment, 
 	}
 }
 
-// scalarSeries — простая агрегация значения по бакету. Для histogram+avg
-// используем sum(value)/sum(count) (среднее наблюдение).
+// Для histogram+avg — sum(value)/sum(count) (среднее наблюдение).
 func (q *Query) scalarSeries(ctx context.Context, projectID int64, name, environment, host string, matchers []LabelMatcher, typ, agg string, from, to time.Time, stepSec int64) ([]Point, error) {
 	aggExpr := scalarAggExpr(typ, agg)
 	sql := fmt.Sprintf(`
@@ -283,9 +247,8 @@ func (q *Query) scalarSeries(ctx context.Context, projectID int64, name, environ
 	return q.scanPoints(ctx, sql, args)
 }
 
-// rateSeries — rate для monotonic cumulative counter'а: max(value) по бакету,
-// затем разность соседних бакетов / шаг. Сброс счётчика (отрицательная
-// разность) → 0.
+// max(value) по бакету, разность соседних / шаг; отрицательная разность
+// (сброс счётчика) → 0.
 func (q *Query) rateSeries(ctx context.Context, projectID int64, name, environment, host string, matchers []LabelMatcher, from, to time.Time, stepSec int64) ([]Point, error) {
 	sql := fmt.Sprintf(`
 		SELECT toStartOfInterval(ts, INTERVAL %d second) AS b, max(value)
@@ -310,11 +273,8 @@ func (q *Query) rateSeries(ctx context.Context, projectID int64, name, environme
 		if delta < 0 {
 			delta = 0
 		}
-		// Делим на РЕАЛЬНЫЙ интервал между соседними точками, а не на ширину
-		// корзины: GROUP BY возвращает только НЕПУСТЫЕ корзины, поэтому при
-		// скрейпе реже шага соседние точки отстоят на несколько шагов. Деление на
-		// stepSec завышало скорость ровно в (интервал/шаг) раз — скрейп раз в 300с
-		// при шаге 60с давал 5.0/с вместо 1.0/с.
+		// Делим на реальный интервал между точками, не на ширину корзины: GROUP BY
+		// возвращает только непустые корзины — реже шага скрейп исказил бы скорость.
 		gapSec := cum[i].T.Sub(cum[i-1].T).Seconds()
 		if gapSec <= 0 {
 			gapSec = float64(stepSec)
@@ -324,8 +284,6 @@ func (q *Query) rateSeries(ctx context.Context, projectID int64, name, environme
 	return out, nil
 }
 
-// histogramSeries — перцентиль по бакету: суммируем bucket_counts точек бакета,
-// берём any(explicit_bounds) и считаем квантиль в Go.
 func (q *Query) histogramSeries(ctx context.Context, projectID int64, name, environment, host string, matchers []LabelMatcher, agg string, from, to time.Time, stepSec int64) ([]Point, error) {
 	sql := fmt.Sprintf(`
 		SELECT toStartOfInterval(ts, INTERVAL %d second) AS b,
@@ -358,23 +316,16 @@ func (q *Query) histogramSeries(ctx context.Context, projectID int64, name, envi
 	return out, rows.Err()
 }
 
-// Aggregate возвращает единственное значение агрегата метрики за всё окно
-// [from,to) (без бакетинга) и признак наличия данных. Для histogram+перцентиль
-// суммирует bucket_counts всего окна и считает квантиль. Используется оценщиком
-// пороговых алертов: «avg метрики за окно ⋛ порог». ok=false — данных нет.
-// matchers — AND всех непустых пар (Key,Value) по attributes; host фильтрует
-// отдельную колонку host (пусто → без фильтра).
+// Без бакетинга, единственное число за всё окно — для оценщика пороговых
+// алертов («avg метрики за окно ⋛ порог»).
 func (q *Query) Aggregate(ctx context.Context, projectID int64, name, environment, host string, matchers []LabelMatcher, agg string, from, to time.Time) (float64, bool, error) {
 	matchers = compactMatchers(matchers)
 	typ, monotonic, temporality, err := q.metricType(ctx, projectID, name, from, to)
 	if err != nil {
 		return 0, false, err
 	}
-	// Монотонный кумулятивный счётчик Series показывает СКОРОСТЬЮ (rateSeries), а
-	// не сырым значением. Агрегат обязан считать ровно то же: раньше monotonic и
-	// temporality здесь отбрасывались, и правило «avg > 10» на счётчике со
-	// значением 1 000 000 срабатывало на первом же тике и не закрывалось никогда,
-	// хотя на графике рядом рисовалось ~1.0 и пунктир порога «далеко».
+	// Должен считать то же, что Series (rateSeries для monotonic cumulative) —
+	// иначе алерт и график по одной метрике разошлись бы по значению и скорости.
 	if typ == "sum" && monotonic && temporality == "cumulative" {
 		return q.aggregateRate(ctx, projectID, name, environment, host, matchers, agg, from, to)
 	}
@@ -417,13 +368,11 @@ func (q *Query) Aggregate(ctx context.Context, projectID int64, name, environmen
 	return v, true, nil
 }
 
-// aggregateRateBuckets — на сколько корзин делить окно при агрегировании скорости.
-// Значение того же порядка, что и у графика (metricChartBuckets=120): агрегат
-// должен считаться по тем же величинам, которые видит глазами человек.
+// Порядка величины графика (metricChartBuckets=120): агрегат должен считаться
+// по тем же величинам, что видит человек.
 const aggregateRateBuckets = 60
 
-// aggregateRate сводит ряд СКОРОСТЕЙ монотонного счётчика к одному числу — тем
-// же способом, каким его строит Series, поэтому алерт и график всегда согласованы.
+// Тем же способом, что Series — алерт и график остаются согласованы.
 func (q *Query) aggregateRate(ctx context.Context, projectID int64, name, environment, host string, matchers []LabelMatcher, agg string, from, to time.Time) (float64, bool, error) {
 	stepSec := int64(to.Sub(from).Seconds()) / aggregateRateBuckets
 	if stepSec < 1 {
@@ -439,9 +388,8 @@ func (q *Query) aggregateRate(ctx context.Context, projectID int64, name, enviro
 	return aggregatePoints(pts, agg), true, nil
 }
 
-// aggregatePoints сводит точки ряда к одному числу по имени агрегации. Перцентили
-// считаются честно (ближайший ранг по отсортированным значениям), а не подменяются
-// средним, как это делал scalarAggExpr для не-гистограмм.
+// Перцентили — честный ближайший ранг по отсортированным значениям, не среднее,
+// как scalarAggExpr для не-гистограмм.
 func aggregatePoints(pts []Point, agg string) float64 {
 	vals := make([]float64, len(pts))
 	for i, p := range pts {
@@ -473,9 +421,8 @@ func aggregatePoints(pts []Point, agg string) float64 {
 	}
 	if isPercentile(agg) {
 		sort.Float64s(vals)
-		// Ближайший ранг: ceil(p*n)-1. Округление ВВЕРХ выбрано осознанно — floor
-		// линейного индекса занижал бы перцентиль, а для порогового алерта это
-		// опасное направление (пропущенное превышение хуже лишнего срабатывания).
+		// ceil(p*n)-1: округление вверх осознанно — floor занижал бы перцентиль,
+		// а для алерта пропущенное превышение хуже лишнего срабатывания.
 		idx := int(math.Ceil(percentileValue(agg)*float64(len(vals)))) - 1
 		if idx < 0 {
 			idx = 0
@@ -509,10 +456,8 @@ func (q *Query) scanPoints(ctx context.Context, sql string, args []any) ([]Point
 	return out, rows.Err()
 }
 
-// scalarAggExpr — CH-выражение агрегации для скалярных метрик.
 func scalarAggExpr(typ, agg string) string {
 	if typ == "histogram" {
-		// histogram + не-перцентиль → среднее наблюдение.
 		return "if(sum(count) = 0, 0, sum(value) / sum(count))"
 	}
 	switch agg {
@@ -525,16 +470,12 @@ func scalarAggExpr(typ, agg string) string {
 	case "last":
 		return "argMax(value, ts)"
 	}
-	// Перцентиль на НЕ-гистограмме — честный квантиль по значениям. Раньше p50/p95/
-	// p99 проваливались в default и молча считались средним: правило с подписью
-	// «p95» сравнивало с порогом avg.
 	if isPercentile(agg) {
 		return fmt.Sprintf("quantile(%g)(value)", percentileValue(agg))
 	}
 	return "avg(value)"
 }
 
-// compactMatchers отбрасывает матчеры с пустым Key (нет фильтра по такой паре).
 func compactMatchers(ms []LabelMatcher) []LabelMatcher {
 	out := ms[:0:0]
 	for _, m := range ms {
@@ -545,7 +486,6 @@ func compactMatchers(ms []LabelMatcher) []LabelMatcher {
 	return out
 }
 
-// matchersClause — AND-цепочка условий по attributes, по одному на матчер.
 // Вызывающий обязан заранее прогнать ms через compactMatchers.
 func matchersClause(ms []LabelMatcher) string {
 	var b strings.Builder
@@ -555,8 +495,6 @@ func matchersClause(ms []LabelMatcher) string {
 	return b.String()
 }
 
-// appendMatchersArgs добавляет (Key,Value) каждого матчера в args в порядке,
-// соответствующем плейсхолдерам matchersClause.
 func appendMatchersArgs(args []any, ms []LabelMatcher) []any {
 	for _, m := range ms {
 		args = append(args, m.Key, m.Value)
@@ -581,20 +519,8 @@ func percentileValue(agg string) float64 {
 	}
 }
 
-// histogramQuantile оценивает квантиль q (0..1) по счётчикам бакетов гистограммы
-// с верхними границами bounds (bucketCounts на 1 длиннее bounds — последний
-// бакет (bounds[last], +inf)). Линейная интерполяция внутри бакета; для
-// последнего (бесконечного) бакета возвращаем его нижнюю границу как суррогат.
-//
-// Первый бакет — (-inf, bounds[0]]: конечной нижней границы у него нет. Для
-// неотрицательных величин (латентность, размер) нижней границей служит ноль,
-// и интерполяция от нуля даёт осмысленную оценку. Но ноль годится, только
-// пока лежит НИЖЕ bounds[0]: при отрицательных границах (температура, дельта,
-// лаг со знаком) зашитый ноль оказывался выше верхней границы бакета, и
-// квантиль «внутри первой корзины» выходил больше bounds[0], хотя все её
-// наблюдения не больше bounds[0]. Поэтому нижняя граница первого бакета —
-// min(0, bounds[0]): для бакета целиком ниже нуля возвращается его верхняя
-// граница, как и для бесконечного последнего.
+// Нижняя граница первого бакета — min(0, bounds[0]): при отрицательных bounds
+// зашитый ноль оказался бы выше верхней границы, и квантиль вышел бы за неё.
 func histogramQuantile(bucketCounts []uint64, bounds []float64, q float64) float64 {
 	var total uint64
 	for _, c := range bucketCounts {

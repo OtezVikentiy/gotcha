@@ -14,87 +14,42 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// perfDetectBudget — бюджет ВСЕЙ детекции по одной транзакции: чтение настроек
-// проекта, запись всех находок и их алерты. Бюджет именно общий, а не на каждую
-// находку: с бюджетом на находку транзакция с максимумом находок
-// (maxFindingsPerTransaction = 20) при медленной PG удерживала бы одного из
-// четырёх воркеров до 20 x 5с ≈ 100с — а через ту же очередь на 1000 слотов идут
-// события об ОШИБКАХ, и они в это время дропаются с warn-логом. Приём ошибок
-// важнее полноты детекции: хвост находок, не поместившийся в бюджет,
-// пропускается с warn-логом (та же проблема найдётся на следующей транзакции —
-// она воспроизводится на каждом запросе к эндпойнту).
+// Бюджет общий на транзакцию, не на находку: иначе транзакция с maxFindingsPerTransaction
+// находок при медленной PG держала бы воркера сотни секунд, деля очередь с приёмом ошибок.
 const perfDetectBudget = 10 * time.Second
 
-// AlertSink получает сигналы о смене состояния issue (новая группа,
-// регрессия), чтобы решить, нужно ли поставить уведомления в очередь.
-// Отдельный интерфейс (а не прямая зависимость от *alert.Evaluator) держит
-// Pipeline тестируемым без реальной БД под алертингом и делает поле
-// необязательным: nil (см. Pipeline.Alerts) значит "алертинг выключен".
 type AlertSink interface {
 	OnIssue(ctx context.Context, ev alert.Event)
 }
 
-// SpanSink принимает семплированные транзакции для записи в ClickHouse;
-// *trace.SpanWriter ему удовлетворяет. Отдельный интерфейс (а не прямая
-// зависимость от *trace.SpanWriter) держит Pipeline тестируемым без CH и
-// делает поле необязательным: nil (см. Pipeline.Spans) значит «трейсинг
-// выключен».
 type SpanSink interface {
-	// orgID нужен только для per-org атрибуции дропов буфера писателя в
-	// org_usage.dropped_transactions (см. trace.SpanWriter.SetDropSink); на саму
-	// запись в CH не влияет.
 	Add(orgID, projectID int64, t trace.Transaction)
 }
 
-// PerfSink записывает находку детекторов производительности в perf_issues (PG);
-// *trace.IssueService ему удовлетворяет. Отдельный интерфейс (а не прямая
-// зависимость от *trace.IssueService) держит Pipeline тестируемым без PG и
-// делает поле необязательным: nil (см. Pipeline.Perf) значит «детекторы
-// выключены».
 type PerfSink interface {
 	Record(ctx context.Context, projectID int64, f trace.Finding, traceID string) (trace.RecordResult, error)
 }
 
-// PerfNotifier алертит о ПЕРВОМ обнаружении проблемы производительности и о её
-// регрессии (была resolved — снова обнаружена); *trace.OutboxNotifier ему
-// удовлетворяет. nil (см. Pipeline.PerfAlerts) — алерты по производительности
-// выключены, детекция всё равно идёт.
 type PerfNotifier interface {
 	NotifyNew(ctx context.Context, projectID int64, iss trace.PerfIssue) error
 	NotifyRegression(ctx context.Context, projectID int64, iss trace.PerfIssue) error
 }
 
-// MaintenanceChecker — проверка «проект сейчас в окне обслуживания» (B3),
-// нужная recordFinding для гейта perf-issue notify. Определён локально в
-// ingest (не переиспользует trace.MaintenanceChecker/host.MaintenanceChecker):
-// perf_issues — throttle-детектор без жизненного цикла инцидента (нет колонки
-// in_maintenance, нет close-notify), гейт здесь ДО notify по текущему окну, а
-// не флаг на записи — общий интерфейс с trace/host добавил бы зависимость
-// ради формы, не разделяемой семантики. Циклов импорта нет — проверено.
+// Не переиспользует trace/host.MaintenanceChecker: perf_issues — throttle-детектор без
+// жизненного цикла инцидента, общий интерфейс добавил бы зависимость ради формы.
 type MaintenanceChecker interface {
 	InMaintenance(ctx context.Context, projectID int64, at time.Time) (bool, error)
 }
 
-// issueUpserter — то, что нужно пайплайну от issue.Service: апсерт группы и
-// чтение (для times_seen в алерте). *issue.Service ему удовлетворяет.
-// Отдельный интерфейс (а не прямая зависимость от *issue.Service) держит
-// событийный путь Pipeline тестируемым без PG.
 type issueUpserter interface {
 	Upsert(ctx context.Context, projectID int64, fingerprint, title, culprit, level, environment string, seenAt time.Time) (issue.UpsertResult, error)
 	Get(ctx context.Context, issueID int64) (issue.Issue, error)
 }
 
-// eventSink — приёмник событий для записи в CH; *event.Batcher ему
-// удовлетворяет. Отдельный интерфейс (а не прямая зависимость от
-// *event.Batcher) держит событийный путь Pipeline тестируемым без ClickHouse.
 type eventSink interface {
 	Add(event.Event)
 }
 
-// Pipeline — асинхронная обработка принятых событий:
-// fingerprint → upsert issue (PG) → буфер батчера (CH). Транзакции идут через
-// ту же очередь вторым типом задачи: у них нет ни fingerprint'а, ни issue —
-// запись в SpanSink (CH) и детекция проблем производительности (PG + outbox).
 type Pipeline struct {
 	issues  issueUpserter
 	batcher eventSink
@@ -102,181 +57,86 @@ type Pipeline struct {
 	workers int
 	wg      sync.WaitGroup
 
-	// queueBytes/maxQueueBytes — байтовый потолок очереди в дополнение к
-	// счётному (её ёмкости).
-	//
-	// Счётный потолок сам по себе ничего не гарантирует: событие несёт до
-	// четырёх сырых JSON-блоков по 256 КиБ каждый (contexts, breadcrumbs,
-	// request, stacktrace), то есть до мегабайта на задачу, а очередь держит
-	// тысячу задач. Гигабайт резидентной памяти, и это на пути приёма, куда
-	// пишет кто угодно с публичным ключом. Все пять писателей получили
-	// байтовый бюджет ровно по этой причине; очередь была единственным
-	// буфером без него.
+	// Событие несёт до 4 сырых JSON-блоков по 256 КиБ — без байтового бюджета
+	// очередь в 1000 задач держала бы гигабайт.
 	queueBytes    atomic.Int64
 	maxQueueBytes atomic.Int64
 
-	// Alerts — опциональный колбэк для new_issue/regression (план 6).
-	// nil (значение по умолчанию) означает, что алертинг выключен —
-	// process() просто пропускает вызов.
+	// nil — алертинг выключен, process() пропускает вызов.
 	Alerts AlertSink
 
-	// Spans — приёмник транзакций; nil означает, что трейсинг выключен и
-	// Handler не принимает transaction-item'ы (см. TracingEnabled).
+	// nil — трейсинг выключен, Handler не принимает transaction-item'ы.
 	Spans SpanSink
 
-	// Perf — запись находок детекторов в perf_issues; nil выключает детекцию.
+	// nil выключает детекцию находок в perf_issues.
 	Perf PerfSink
 
-	// PerfAlerts — алерт при первом обнаружении проблемы; nil выключает алерты
-	// (детекция при этом продолжает работать).
+	// nil выключает алерт при первом обнаружении, детекция продолжает работать.
 	PerfAlerts PerfNotifier
 
-	// Maint — окна обслуживания проекта (B3): подавляет только notify в
-	// recordFinding, Record в perf_issues (сбор данных) продолжает работать
-	// как обычно. nil (дефолт) → окна не подавляют perf-алерты.
+	// Подавляет только notify в recordFinding; Record (сбор данных) работает как
+	// обычно. nil — окна не подавляют алерты.
 	Maint MaintenanceChecker
 
-	// Projects — источник настроек проекта, из которого детекция берёт пороги
-	// (projects.perf_detector_config); nil означает «на дефолтах».
+	// Источник порогов детекции (perf_detector_config); nil — дефолтные пороги.
 	Projects ProjectSettings
 
-	// Scrub — зачистка ПДн перед записью событий и транзакций (152-ФЗ). nil
-	// означает «scrubbing выключен» — все методы Scrubber nil-safe, поэтому
-	// вызовы на p.Scrub делаются напрямую без проверки на nil.
+	// nil — scrubbing выключен, методы Scrubber nil-safe (вызываются без проверки).
 	Scrub *Scrubber
 
-	// testPerfBudget подменяет perfDetectBudget в тестах; 0 — обычный бюджет.
 	testPerfBudget time.Duration
 
-	// testBackpressureBudget/testBackpressurePoll подменяют
-	// backpressureWaitBudget/backpressurePollInterval в тестах — тот же
-	// приём, что testPerfBudget выше для perfDetectBudget. Без него тесту
-	// ожидания пришлось бы либо реально стоять секундами бюджета по
-	// умолчанию на каждый прогон (пакет и так ~130с, см. CLAUDE.md), либо
-	// мочь опираться на точные миллисекунды константы — а это ровно то, от
-	// чего предостерегает бриф T6 (флейк на загруженной машине). 0 —
-	// обычные константы.
 	testBackpressureBudget time.Duration
 	testBackpressurePoll   time.Duration
 
 	closeMu sync.RWMutex
 	closed  bool
 
-	// stopping сигналит воркеру, ждущему место в насыщенном буфере записи
-	// (см. waitForRoom), что пайплайн останавливается. Дренаж в Close обязан
-	// слить очередь как можно быстрее: он может застать в очереди почти
-	// тысячу задач разом, и если каждая станет ждать свой бюджет перед
-	// Add, дренаж съест этот бюджет тысячекратно и упрётся в
-	// stop_grace_period (90с в compose) — правка против потери телеметрии
-	// сама станет её причиной.
-	//
-	// Атомарный флаг, а не канал: канал требовал бы поля, инициализируемого
-	// в NewPipeline, и у Pipeline{}, собранного тестовым литералом в обход
-	// конструктора (process/processTransaction без Start/Close — см.
-	// scrub_integration_test.go), остался бы nil — select на nil-канале
-	// никогда не срабатывает, и Close такого литерала вставал бы на весь
-	// backpressureBudget() на каждой насыщенной задаче вместо немедленного
-	// возврата. У atomic.Bool нулевое значение — валидный "не останавливаемся",
-	// ровно как для остальных полей Pipeline: поведение литерала и
-	// собранного NewPipeline пайплайна совпадает без специального случая.
-	//
-	// Store(true) — не close(): вызов идемпотентен сам по себе (повторный
-	// Store(true) не паникует), но Close всё равно вызывает его РОВНО один
-	// раз — под тем же closeMu, что и close(p.queue), защищённый проверкой
-	// p.closed.
-	//
-	// Проверяется внутри цикла опроса waitForRoom на каждый тик
-	// backpressurePoll() (50мс по умолчанию), а не немедленно по сигналу:
-	// цикл и так тикает с этим шагом ради проверки насыщенности, и
-	// задержка до полполлинга пренебрежима на фоне 90-секундного бюджета
-	// дренажа. waitForRoom сам closeMu не берёт (см. её докблок) —
-	// координация не нужна: атомарное чтение безопасно сколько угодно раз
-	// без гонки, а удержание closeMu на время ожидания заблокировало бы
-	// Enqueue у всех остальных in-flight запросов, ровно то, что не даёт
-	// делать preflight.
+	// atomic.Bool, не канал: Pipeline{} из тестового литерала не проходит
+	// NewPipeline, канал остался бы nil — select на нём не сработал бы.
 	stopping atomic.Bool
 
-	// backpressureWaits/backpressureWaitNanos — самотелеметрия ожидания
-	// перед записью в насыщенный буфер (см. waitForRoom): сколько раз
-	// воркер ждал и сколько суммарно прождал. По образцу dropped ниже —
-	// процесс-локальные атомарные счётчики без атрибуции по организации:
-	// они отвечают не «чьи данные», а «почему приём сейчас честно отвечает
-	// 503, хотя очередь неполная» — без этой пары дежурный не отличит
-	// воркеры, стоящие в ожидании, от воркеров, просто медленно
-	// работающих (см. gotcha_pipeline_backpressure_waits_total).
+	// Самотелеметрия ожидания перед записью в насыщенный буфер — отличает
+	// воркеров в ожидании от медленно работающих (gotcha_pipeline_backpressure_waits_total).
 	backpressureWaits     atomic.Int64
 	backpressureWaitNanos atomic.Int64
 
-	// dropped — потери по причинам. ПРОЦЕСС-ЛОКАЛЬНЫЙ счётчик для
-	// самотелеметрии (gotcha_pipeline_dropped_tasks_total): живёт, пока жив
-	// процесс, и ничего не знает про организацию задачи. Он и раньше
-	// существовал, но org_usage.dropped_* эти потери не видел вовсе — оператор
-	// не мог узнать, ЧЬИ события не доехали и сколько. Per-org учёт — отдельный
-	// путь, см. DropCounter/dropAgg ниже.
 	dropped map[DropReason]*atomic.Int64
 
-	// DropCounter — учёт дропов ПАЙПЛАЙНА (queue_full/queue_bytes/
-	// storage_error/panic/closed) per-org в org_usage.dropped_*; *org.Service
-	// ему удовлетворяет. nil (дефолт) — как раньше: только process-local
-	// dropped выше, без записи в БД.
-	//
-	// Это НЕ дублирует Handler.DropCounter: тот считает квотные отказы
-	// (envelope/OTLP-путь, ДО постановки в очередь), этот — потери самой
-	// очереди и обработки (ПОСЛЕ того, как квота уже списана). Точки жизненного
-	// цикла не пересекаются.
-	//
-	// Дропы идут ШТОРМОМ при перегрузке — синхронный UPSERT в PostgreSQL на
-	// каждый добил бы базу, которая и так деградирует (тот же org_usage, что
-	// под исключительной блокировкой строки списывает квоту, см.
-	// org.Service.checkAndCount). Поэтому Pipeline копит потери per-(org,kind)
-	// в памяти (dropAgg) и сливает пачкой по тику (см. runDropFlush) и на
-	// Close — а не пишет в БД на каждый дроп.
+	// Не дублирует Handler.DropCounter: тот — квотные отказы до очереди, этот —
+	// потери после списания квоты. Копится в памяти и сливается пачкой.
 	DropCounter DropCounter
 
 	dropAggMu sync.Mutex
-	// dropAgg — накопленные с прошлого флаша дропы по (orgID, kind).
-	dropAgg map[dropAggKey]int64
+	dropAgg   map[dropAggKey]int64
 
-	// dropFlushStop/dropFlushDone — управление фоновым флашем dropAgg; nil, пока
-	// Start() не запустила runDropFlush (запускает, только если DropCounter
-	// задан — иначе копить нечего и некуда сливать).
 	dropFlushStop chan struct{}
 	dropFlushDone chan struct{}
 }
 
-// dropAggKey — ключ агрегата дропов пайплайна: организация + класс задачи.
-// kind — dropKind из handler.go (dropEvent/dropTransaction); Pipeline не
-// видит дропы метрик/профилей — они идут мимо очереди (см. handler.go).
 type dropAggKey struct {
 	orgID int64
 	kind  dropKind
 }
 
-// DropReason — почему задача потеряна. Причина отделена от факта потери
-// намеренно: рост потерь от переполнения очереди лечится размером очереди и
-// числом воркеров, а рост от отказа хранилища — не лечится ничем из этого.
-// Общий счётчик заставлял оператора гадать, какую из двух проблем он видит.
+// Причина отделена от факта потери: переполнение очереди лечится размером/числом
+// воркеров, отказ хранилища — не лечится ничем из этого.
 type DropReason string
 
 const (
-	// DropQueueFull — очередь заполнена: обработка не успевает за приёмом.
+	// Очередь заполнена: обработка не успевает за приёмом.
 	DropQueueFull DropReason = "queue_full"
-	// DropQueueBytes — исчерпан байтовый бюджет очереди: задачи крупнее
-	// обычного (большие стектрейсы, много атрибутов).
+	// Исчерпан байтовый бюджет очереди: задачи крупнее обычного.
 	DropQueueBytes DropReason = "queue_bytes"
-	// DropStorageError — не удалось записать в хранилище. Обычно деградация
-	// PostgreSQL: апсерт issue отвалился по таймауту.
+	// Не удалось записать в хранилище — обычно деградация PostgreSQL.
 	DropStorageError DropReason = "storage_error"
-	// DropPanic — обработчик упал на конкретном элементе.
-	DropPanic DropReason = "panic"
-	// DropClosed — приём уже остановлен, а задача пришла из in-flight
-	// HTTP-запроса.
+	DropPanic        DropReason = "panic"
+	// Приём уже остановлен, а задача пришла из in-flight запроса.
 	DropClosed DropReason = "closed"
 )
 
-// dropReasons — полный набор причин. Существует, чтобы счётчики создавались
-// один раз при инициализации: тогда countDropped на горячем пути обходится
-// атомарным инкрементом без блокировки и без записи в map.
+// Создаются один раз при инициализации, чтобы countDropped на горячем пути
+// обходился атомарным инкрементом без записи в map.
 var dropReasons = []DropReason{
 	DropQueueFull, DropQueueBytes, DropStorageError, DropPanic, DropClosed,
 }
@@ -289,16 +149,12 @@ func newDropCounters() map[DropReason]*atomic.Int64 {
 	return m
 }
 
-// countDropped увеличивает счётчик потерянных задач по причине.
 func (p *Pipeline) countDropped(reason DropReason) {
 	if c, ok := p.dropped[reason]; ok {
 		c.Add(1)
 	}
 }
 
-// taskDropKind — класс дропа по типу задачи для per-org агрегации: событие
-// или транзакция. Pipeline не видит других классов (метрики/профили идут
-// мимо очереди, см. handler.go).
 func taskDropKind(t task) dropKind {
 	if t.tx != nil {
 		return dropTransaction
@@ -306,9 +162,6 @@ func taskDropKind(t task) dropKind {
 	return dropEvent
 }
 
-// countDroppedOrg добавляет n к накопленному дропу (orgID, kind) между
-// флашами (см. Pipeline.dropAgg). orgID<=0 (задача не провела orgID) или
-// DropCounter==nil — no-op: атрибутировать некуда или некому.
 func (p *Pipeline) countDroppedOrg(orgID int64, kind dropKind, n int64) {
 	if p.DropCounter == nil || orgID <= 0 || n <= 0 {
 		return
@@ -318,23 +171,14 @@ func (p *Pipeline) countDroppedOrg(orgID int64, kind dropKind, n int64) {
 	p.dropAggMu.Unlock()
 }
 
-// CountDroppedEvents и CountDroppedTransactions — стоки per-org дропов БУФЕРА
-// ПИСАТЕЛЯ (event.Batcher / trace.SpanWriter): их переполнение выбрасывает самое
-// старое, и без атрибуции потеря невидима per-org — тот же класс, что дропы
-// очереди (arch P1-1), но другой слой. main ставит их через SetDropSink; дропы
-// стекаются в тот же dropAgg и тот же 60с-флаш в org_usage.dropped_*, что и
-// дропы очереди — единый путь до БД. n<=0 или orgID<=0 — no-op (см. countDroppedOrg).
 func (p *Pipeline) CountDroppedEvents(orgID, n int64) {
 	p.countDroppedOrg(orgID, dropEvent, n)
 }
 
-// CountDroppedTransactions — см. CountDroppedEvents; для дропов txBuf SpanWriter.
 func (p *Pipeline) CountDroppedTransactions(orgID, n int64) {
 	p.countDroppedOrg(orgID, dropTransaction, n)
 }
 
-// drainDropAgg забирает накопленное и обнуляет агрегат под тем же мьютексом,
-// что и countDroppedOrg — окно между флашами не теряет и не задваивает дропы.
 func (p *Pipeline) drainDropAgg() map[dropAggKey]int64 {
 	p.dropAggMu.Lock()
 	defer p.dropAggMu.Unlock()
@@ -346,23 +190,10 @@ func (p *Pipeline) drainDropAgg() map[dropAggKey]int64 {
 	return out
 }
 
-// dropFlushInterval — как часто пайплайн сливает накопленные per-org дропы в
-// org_usage. Крупнее, чем интервал Batcher/SpanWriter (5с, см.
-// event/batcher.go): тем важна свежесть данных в UI, а отчёту о потерях
-// секундная точность не нужна — важно лишь не потерять его насовсем. И
-// крупнее, чем нужно было бы для UPSERT под низкой нагрузкой — специально:
-// именно при шторме дропов (перегрузка) частый флаш добивал бы БД, которая и
-// так деградирует, — см. докблок Pipeline.DropCounter.
 const dropFlushInterval = 20 * time.Second
 
-// dropFlushTimeout — бюджет ОДНОЙ попытки флаша, отдельный от parent ctx: как
-// у Batcher.flushWithTimeout, тикер всегда зовёт с context.Background(), а
-// Close передаёт свой ctx — в обоих случаях один медленный UPSERT не должен
-// зависать дольше разумного.
 const dropFlushTimeout = 5 * time.Second
 
-// runDropFlush — цикл периодического флаша; запускается горутиной из Start(),
-// только если DropCounter задан. Завершается через Close.
 func (p *Pipeline) runDropFlush() {
 	defer close(p.dropFlushDone)
 	ticker := time.NewTicker(dropFlushInterval)
@@ -377,12 +208,7 @@ func (p *Pipeline) runDropFlush() {
 	}
 }
 
-// flushDropped сливает накопленные per-org дропы в org_usage.dropped_* через
-// тот же DropCounter-интерфейс, что и Handler (см. handler.go countDrop) —
-// одна реализация (*org.Service), разные вызывающие и разный темп вызовов.
-// Best-effort, как и handler.countDrop: ошибка флаша логируется и не
-// ретраится — drainDropAgg уже забрал накопленное, поэтому неудачный флаш
-// теряет ровно это окно, а не блокирует приём или следующий флаш.
+// best-effort: ошибка логируется и не ретраится — drainDropAgg уже забрал накопленное.
 func (p *Pipeline) flushDropped(parent context.Context) {
 	if p.DropCounter == nil {
 		return
@@ -409,7 +235,6 @@ func (p *Pipeline) flushDropped(parent context.Context) {
 	}
 }
 
-// Dropped — сколько задач потеряно за время жизни процесса, всего.
 func (p *Pipeline) Dropped() int64 {
 	var total int64
 	for _, c := range p.dropped {
@@ -418,8 +243,6 @@ func (p *Pipeline) Dropped() int64 {
 	return total
 }
 
-// DroppedBy — сколько задач потеряно по конкретной причине. Для
-// самотелеметрии: метка reason у gotcha_pipeline_dropped_tasks_total.
 func (p *Pipeline) DroppedBy(reason DropReason) int64 {
 	if c, ok := p.dropped[reason]; ok {
 		return c.Load()
@@ -427,59 +250,32 @@ func (p *Pipeline) DroppedBy(reason DropReason) int64 {
 	return 0
 }
 
-// DropReasons — все причины, по которым продукт умеет терять задачи. main
-// регистрирует по метрике на причину.
 func DropReasons() []DropReason { return append([]DropReason(nil), dropReasons...) }
 
-// BackpressureWaits — сколько раз воркер ждал место в насыщенном буфере
-// записи перед Add (см. waitForRoom), за время жизни процесса. Самотелеметрия
-// наравне с Dropped выше: gotcha_pipeline_dropped_tasks_total говорит, что уже
-// потеряно, а эта метрика — почему приём мог честно отвечать 503, хотя
-// очередь пайплайна не полна: воркеры стоят перед батчером/SpanWriter, а не
-// простаивают и не заняты чем-то ещё.
+// Приём мог честно отвечать 503, хотя очередь пайплайна не полна: воркеры стоят
+// перед батчером/SpanWriter, а не простаивают.
 func (p *Pipeline) BackpressureWaits() int64 { return p.backpressureWaits.Load() }
 
-// BackpressureWaitSeconds — суммарное время всех ожиданий из
-// BackpressureWaits, в секундах, за время жизни процесса. Соотношение с
-// BackpressureWaits диагностирует ХАРАКТЕР насыщенности: растёт
-// пропорционально числу ожиданий — воркер обычно дожидается места быстрее
-// backpressureWaitBudget (флашер догоняет); растёт заметно быстрее — воркеры
-// чаще выбирают полный бюджет, не дождавшись освобождения, и стоит смотреть
-// на throughput ClickHouse, а не на сам пайплайн.
 func (p *Pipeline) BackpressureWaitSeconds() float64 {
 	return time.Duration(p.backpressureWaitNanos.Load()).Seconds()
 }
 
-// Queued — сколько задач ждёт обработки прямо сейчас.
 func (p *Pipeline) Queued() int64 { return int64(len(p.queue)) }
 
-// QueueCap — вместимость очереди (знаменатель для глубины).
 func (p *Pipeline) QueueCap() int64 { return int64(cap(p.queue)) }
 
-// task — единица работы воркера: ЛИБО событие (ev), ЛИБО транзакция (tx).
 type task struct {
 	projectID int64
-	// orgID — организация задачи, для per-org учёта дропов (см.
-	// countDroppedOrg). Заполняется в Enqueue/EnqueueTransaction из аргумента
-	// вызывающего (handler знает key.OrgID из уже пройденной аутентификации).
-	orgID int64
-	ev    *ParsedEvent
-	tx    *trace.Transaction
-	// bytes — вес задачи, посчитанный при постановке. Хранится в самой
-	// задаче, чтобы возврат бюджета не зависел от того, что с полями сделала
-	// обработка (скрубер, например, укорачивает строки).
+	orgID     int64
+	ev        *ParsedEvent
+	tx        *trace.Transaction
+	// Вес задачи на момент постановки — не пересчитывается, чтобы возврат
+	// бюджета не зависел от того, что обработка сделала с полями.
 	bytes int64
 }
 
-// NewPipeline строит Pipeline. batcher нарочно проверяется на nil ЗДЕСЬ, а не
-// присваивается полю p.batcher (eventSink) напрямую: параметр типизирован
-// конкретным *event.Batcher, и присвоение nil-указателя интерфейсному полю
-// завернуло бы его в НЕ-nil интерфейс (typed-nil) — тогда saturationOf(p.batcher)
-// прошёл бы type-assert и запаниковал бы внутри Saturation() на разыменовании
-// нулевого приёмника. Тесты пакета собирают Pipeline через NewPipeline(_, nil),
-// когда запись в CH не нужна (см. EventSaturation) — эта развилка держит
-// p.batcher настоящим nil-интерфейсом в таком случае, и saturationOf остаётся
-// простым (без reflect на горячем пути каждого запроса приёма).
+// nil-указатель, присвоенный интерфейсному полю напрямую, дал бы typed-nil —
+// saturationOf запаниковал бы в Saturation() при разыменовании.
 func NewPipeline(issues *issue.Service, batcher *event.Batcher) *Pipeline {
 	p := &Pipeline{
 		issues:  issues,
@@ -494,16 +290,8 @@ func NewPipeline(issues *issue.Service, batcher *event.Batcher) *Pipeline {
 	return p
 }
 
-// defaultMaxQueueBytes — байтовый потолок очереди по умолчанию.
-//
-// 64 МиБ подобраны так, чтобы для нормального трафика первым срабатывал
-// счётный лимит (событие в среднем единицы килобайт — тысяча таких далеко не
-// добирает до потолка), а байтовый ловил патологию: поток событий, набитых
-// предельными JSON-блоками.
 const defaultMaxQueueBytes = 64 << 20
 
-// SetMaxQueueBytes задаёт байтовый потолок очереди; 0 или меньше —
-// defaultMaxQueueBytes.
 func (p *Pipeline) SetMaxQueueBytes(n int64) {
 	if n <= 0 {
 		n = defaultMaxQueueBytes
@@ -511,9 +299,6 @@ func (p *Pipeline) SetMaxQueueBytes(n int64) {
 	p.maxQueueBytes.Store(n)
 }
 
-// queueLimit — действующий потолок; нулевое значение поля означает, что
-// SetMaxQueueBytes не звали, и берётся дефолт. Так Pipeline остаётся
-// собираемым литералом, как и раньше.
 func (p *Pipeline) queueLimit() int64 {
 	if n := p.maxQueueBytes.Load(); n > 0 {
 		return n
@@ -521,9 +306,6 @@ func (p *Pipeline) queueLimit() int64 {
 	return defaultMaxQueueBytes
 }
 
-// taskBytes — вес задачи в очереди. Считает только крупные поля (сырые
-// JSON-блоки и текст) плюс постоянную цену задачи: как и rowOverheadBytes у
-// батчера, она не даёт обойти учёт потоком пустых событий.
 func taskBytes(t task) int64 {
 	const taskOverheadBytes = 256
 	n := 0
@@ -553,13 +335,8 @@ func taskBytes(t task) int64 {
 	return int64(n) + taskOverheadBytes
 }
 
-// dataMapBytes оценивает вес span.Data (map[string]any, «сырой JSON» из SDK) —
-// то самое поле, ради которого байтовый бюджет очереди и заведён (см.
-// taskBytes), но которое таскBytes раньше не считал вовсе. capDataMap
-// (transaction.go/otlp.go) ограничивает Data сверху 64 ключами по 64 руны и
-// строковые значения — 2000 рунами (maxDataValue), но НЕ трогает размер
-// нестроковых значений: вложенные map/slice из JSON-парсинга остаются как
-// есть, поэтому вес считается рекурсивно, а не константой на ключ.
+// capDataMap ограничивает число ключей и длину строк, но не размер вложенных
+// map/slice, поэтому вес считается рекурсивно, а не константой на ключ.
 func dataMapBytes(m map[string]any) int {
 	n := 0
 	for k, v := range m {
@@ -568,11 +345,6 @@ func dataMapBytes(m map[string]any) int {
 	return n
 }
 
-// dataValueBytes — вес одного значения span.Data. Конкретные типы после
-// encoding/json.Unmarshal в map[string]any: string, float64, bool, nil,
-// map[string]interface{}, []interface{} — остальные (не встречаются на этом
-// пути) оцениваются как 8 байт, по аналогии со стоимостью measurement'а в
-// txRowBytes.
 func dataValueBytes(v any) int {
 	switch val := v.(type) {
 	case string:
@@ -594,9 +366,6 @@ func dataValueBytes(v any) int {
 	}
 }
 
-// admit резервирует место под задачу. false — очередь уже держит столько,
-// сколько позволено: вызывающий дропает задачу, как и при переполнении по
-// счёту.
 func (p *Pipeline) admit(size int64) bool {
 	limit := p.queueLimit()
 	for {
@@ -610,22 +379,10 @@ func (p *Pipeline) admit(size int64) bool {
 	}
 }
 
-// QueuedBytes — сколько байтов сейчас держат задачи в очереди. Для
-// самотелеметрии: без неё исчерпание байтового бюджета видно только по
-// счётчику дропов, а он не отличает переполнение по объёму от переполнения по
-// количеству.
 func (p *Pipeline) QueuedBytes() int64 { return p.queueBytes.Load() }
 
-// QueueSaturation — заполненность очереди в долях единицы: 0 — пусто, 1 —
-// потолок, дальше начинается дроп новых задач (см. admit/Enqueue). Считается
-// как максимум по обоим действующим потолкам очереди (задачи и байты) —
-// упереться достаточно в один, а хендлеру нужен худший из двух, чтобы
-// заранее ответить честным 503 вместо приёма в заведомо переполненную
-// очередь. Состояние очереди атомарное (len(p.queue), p.queueBytes), поэтому
-// closeMu здесь не берётся: метод читает моментальный снимок, не координируясь
-// с Enqueue/Close, и для самотелеметрии/бэкпрешера этого достаточно. Значение
-// НЕ обрезается единицей: очередь физически может перебрать потолок между
-// проверкой admit и постановкой, и это должно быть видно.
+// Максимум по обоим потолкам — упереться достаточно в один. Не обрезается
+// единицей: очередь может перебрать потолок между admit и постановкой.
 func (p *Pipeline) QueueSaturation() float64 {
 	rows := queueSaturation(int64(len(p.queue)), int64(cap(p.queue)))
 	bytes := queueSaturation(p.QueuedBytes(), p.queueLimit())
@@ -635,9 +392,7 @@ func (p *Pipeline) QueueSaturation() float64 {
 	return rows
 }
 
-// queueSaturation считает долю num/den. den<=0 — потолок выключен нулём и
-// значит «этим лимитом не ограничены», а не «делить не на что»: такой
-// потолок не должен ни паниковать, ни искусственно показывать насыщение.
+// den<=0 — лимит выключен, а не «делить не на что»: не паникует и не показывает насыщение.
 func queueSaturation(num, den int64) float64 {
 	if den <= 0 {
 		return 0
@@ -645,58 +400,26 @@ func queueSaturation(num, den int64) float64 {
 	return float64(num) / float64(den)
 }
 
-// EventSaturation — заполненность буфера ПОСТАНОВКИ СОБЫТИЙ в долях единицы:
-// максимум из очереди пайплайна (QueueSaturation — общая стадия upsert issue
-// для событий и транзакций) и буфера батчера записи в CH (p.batcher). Для
-// preflight-проверки приёма (см. Handler.overloaded): элемент, прошедший обе
-// стадии живым, дальше начал бы вытеснять более старые данные из той, что
-// ближе к потолку.
-//
-// p.batcher — ОБЯЗАТЕЛЬНАЯ зависимость Pipeline (не nil-safe, в отличие от
-// Spans/Perf/Alerts — см. process()), поэтому saturationOf здесь используется
-// не ради nil-проверки батчера, а ради узкого контракта eventSink: метода
-// Saturation() в нём нет и не будет (см. докблок saturationSource).
+// Максимум очереди пайплайна и буфера батчера (p.batcher) — обе стадии до записи
+// в CH. p.batcher обязателен (не nil-safe, в отличие от Spans/Perf/Alerts).
 func (p *Pipeline) EventSaturation() float64 {
 	return max(p.QueueSaturation(), saturationOf(p.batcher))
 }
 
-// TransactionSaturation — то же самое для ТРАНЗАКЦИЙ: очередь пайплайна и
-// буфер SpanWriter (p.Spans). p.Spans == nil (трейсинг выключен) не отличается
-// от отсутствия способности Saturation() — saturationOf вернёт 0, что верно:
-// отключённый сигнал уже отвечает успехом без записи (см.
-// Pipeline.TracingEnabled), и overloaded preflight не должен его трогать.
+// p.Spans == nil (трейсинг выключен) — saturationOf вернёт 0, верно: сигнал уже
+// отвечает успехом без записи, overloaded preflight не должен его трогать.
 func (p *Pipeline) TransactionSaturation() float64 {
 	return max(p.QueueSaturation(), saturationOf(p.Spans))
 }
 
-// release возвращает бюджет после обработки задачи.
 func (p *Pipeline) release(size int64) { p.queueBytes.Add(-size) }
 
-// backpressureWaitBudget — бюджет ожидания ОДНОЙ задачи перед записью в
-// насыщенный буфер записи (батчер событий/SpanWriter), см. waitForRoom.
-// Умышленно НЕ соотнесён с интервалом флаша батчера (5с, event.Batcher) как
-// «подождать до тика»: цель ожидания — не дождаться выздоровления
-// хранилища (батчер может не разгрузиться ни за 5с, ни за минуту, пока
-// ClickHouse лежит, — ждать этого в воркере бессмысленно, см. бриф T6), а
-// дать очереди ПЕРЕД воркерами время заполниться, чтобы входная дверь
-// (Handler.overloaded, handler.go) начала честно отвечать 503 вместо приёма
-// с гарантированной последующей потерей. Секунды, не десятки: воркеров
-// четыре, и каждая лишняя секунда ожидания на воркер — секунда, которую эти
-// четыре воркера не разбирают очередь при деградации, то есть очередь
-// заполняется медленнее и дверь остаётся ложно открытой дольше.
+// Цель — не дождаться восстановления хранилища, а дать очереди перед воркерами
+// время заполниться, чтобы Handler.overloaded успел честно ответить 503.
 const backpressureWaitBudget = 2 * time.Second
 
-// backpressurePollInterval — шаг опроса насыщенности приёмника внутри
-// backpressureWaitBudget. Мельче — дороже (Saturation() не бесплатна, хоть и
-// не ходит в сеть, см. её реализации у батчера/SpanWriter); крупнее — грубее
-// ловит момент освобождения места и удерживает воркер дольше нужного при
-// быстрой разгрузке буфера.
 const backpressurePollInterval = 50 * time.Millisecond
 
-// backpressureBudget — бюджет ожидания; отдельный метод, чтобы тесты
-// подменяли его через поле (testBackpressureBudget), не трогая константу и
-// не ожидая реальными секундами на каждый прогон. Тот же приём, что у
-// perfBudget для perfDetectBudget.
 func (p *Pipeline) backpressureBudget() time.Duration {
 	if p.testBackpressureBudget > 0 {
 		return p.testBackpressureBudget
@@ -704,7 +427,6 @@ func (p *Pipeline) backpressureBudget() time.Duration {
 	return backpressureWaitBudget
 }
 
-// backpressurePoll — шаг опроса; см. докблок backpressureBudget.
 func (p *Pipeline) backpressurePoll() time.Duration {
 	if p.testBackpressurePoll > 0 {
 		return p.testBackpressurePoll
@@ -712,30 +434,8 @@ func (p *Pipeline) backpressurePoll() time.Duration {
 	return backpressurePollInterval
 }
 
-// waitForRoom ждёт, пока насыщенность sink (батчера событий или Spans) не
-// опустится ниже 1.0, но не дольше backpressureBudget() и не дольше, чем
-// идёт остановка пайплайна (см. p.stopping и докблок Close) — остановка
-// замечается на ближайшем тике опроса, с задержкой не больше
-// backpressurePoll(). Preflight 1.2.0 закрывает входную дверь при заполнении
-// буфера записи на 95%, но
-// между дверью и буфером стоит очередь на тысячу уже принятых задач —
-// без этого ожидания воркер безусловно толкает их в переполненный
-// батчер/SpanWriter, а тот на переполнении дропает самое старое: строка,
-// на которую клиенту уже ответили 200, гибнет через секунды простоя
-// ClickHouse (см. бриф T6). sink без метода Saturation() (тестовые
-// двойники пакета, не реализующие saturationSource) — saturationOf вернёт
-// 0, цикл ожидания вообще не откроется, горячий путь не подорожает.
-//
-// Не берёт ни closeMu, ни мьютексов приёмника: удержание closeMu на секунды
-// ожидания заблокировало бы Enqueue у всех остальных in-flight запросов —
-// ровно то, чему честный 503 от preflight должен был помешать, то есть
-// свело бы правку на нет.
-//
-// Возвращается ВСЕГДА, каким бы ни было условие выхода: истёк бюджет,
-// пришёл сигнал остановки или sink освободился. Drop-oldest
-// батчера/SpanWriter остаётся последним рубежом (решение владельца, T6) —
-// задача после waitForRoom идёт на запись как раньше в любом случае:
-// ожидание только сокращает окно лжи, а не отменяет потерю совсем.
+// sink без Saturation() (тестовые двойники) — saturationOf вернёт 0, цикл не
+// откроется вовсе.
 func (p *Pipeline) waitForRoom(sink any) {
 	if saturationOf(sink) < 1.0 {
 		return
@@ -770,8 +470,6 @@ func (p *Pipeline) Start() {
 			}
 		}()
 	}
-	// Флаш дропов запускается, только если есть DropCounter — иначе копить
-	// dropAgg некуда сливать, и тикер впустую просыпался бы всю жизнь процесса.
 	if p.DropCounter != nil {
 		p.dropFlushStop = make(chan struct{})
 		p.dropFlushDone = make(chan struct{})
@@ -779,14 +477,11 @@ func (p *Pipeline) Start() {
 	}
 }
 
-// processGuarded обрабатывает одну задачу под recover(). Паника в разборе
-// одного события/транзакции (битый payload, nil-разыменование в детекторе и
-// т.п.) обязана терять РОВНО это событие, а не убивать воркер и через него весь
-// процесс приёма. Точно как recover вокруг detectPerfIssues, но на ОСНОВНОМ
-// пути: без него паника на горячем пути роняла бы go-процесс целиком.
+// Паника при разборе одного события/транзакции обязана терять только его, а
+// не убивать воркер и весь процесс приёма.
 func (p *Pipeline) processGuarded(t task) {
-	// Бюджет возвращается и при панике: иначе очередь, пережившая несколько
-	// битых событий, навсегда считала бы себя заполненной.
+	// Возвращается и при панике — иначе очередь после нескольких битых событий
+	// считала бы себя заполненной.
 	defer p.release(t.bytes)
 	defer func() {
 		if r := recover(); r != nil {
@@ -807,26 +502,8 @@ func (p *Pipeline) processGuarded(t task) {
 	p.process(t)
 }
 
-// Enqueue не блокирует: при полной очереди событие дропается с warn-логом —
-// приём ошибок не должен вставать из-за медленной обработки. После Close
-// событие тоже дропается — send в закрытый канал иначе паникует, если
-// in-flight HTTP-хендлер зовёт Enqueue параллельно с drain'ом.
-//
-// Возвращает true, если задача реально встала в очередь, и false при любом из
-// трёх дропов (закрытый пайплайн, исчерпанный байтовый бюджет, полная
-// очередь) — вызывающий (Handler) обязан знать этот факт: между preflight-
-// проверкой заполненности и этим вызовом есть окно, в котором соседний запрос
-// успевает добрать очередь, и решение «приняли» и «встало в очередь» могут
-// разойтись. Раньше дроп был виден только счётчику и логу, а клиенту уходил
-// 200 — то есть терялись данные, которые он не узнавал ретраить. Сам факт
-// дропа по-прежнему учитывается здесь же (countDropped/countDroppedOrg/лог) —
-// возвращаемое значение ничего не меняет в этой части, только делает решение
-// видимым снаружи.
-//
-// orgID — организация задачи (handler знает key.OrgID из аутентификации,
-// сделанной выше по стеку); нужен только для per-org учёта дропов (см.
-// countDroppedOrg) — на сам приём не влияет. 0 у вызывающих, которым
-// атрибутировать некуда (в проде такого не бывает).
+// false — дропнуто: вызывающий должен знать это из-за окна между
+// preflight-проверкой и постановкой.
 func (p *Pipeline) Enqueue(projectID, orgID int64, ev *ParsedEvent) bool {
 	p.closeMu.RLock()
 	defer p.closeMu.RUnlock()
@@ -859,18 +536,11 @@ func (p *Pipeline) Enqueue(projectID, orgID int64, ev *ParsedEvent) bool {
 	}
 }
 
-// TracingEnabled сообщает, есть ли куда писать транзакции. Handler смотрит на
-// это до квоты: не тратить бюджет транзакций организации, если писать их
-// всё равно некуда.
+// Handler смотрит на это до квоты — не тратить бюджет, если писать некуда.
 func (p *Pipeline) TracingEnabled() bool {
 	return p.Spans != nil
 }
 
-// EnqueueTransaction — как Enqueue, но для транзакции: не блокирует, дропает
-// с warn-логом при полной очереди или после Close. orgID — см. докблок Enqueue.
-// Возвращаемое bool — тот же протокол, что у Enqueue: true — задача встала в
-// очередь, false — дропнута одной из тех же трёх причин, и вызывающий обязан
-// это увидеть (см. докблок Enqueue).
 func (p *Pipeline) EnqueueTransaction(projectID, orgID int64, tx trace.Transaction) bool {
 	p.closeMu.RLock()
 	defer p.closeMu.RUnlock()
@@ -903,15 +573,8 @@ func (p *Pipeline) EnqueueTransaction(projectID, orgID int64, tx trace.Transacti
 	}
 }
 
-// Close перестаёт принимать и дожидается обработки очереди, но не дольше, чем
-// позволяет ctx. Идемпотентен. Возвращает ctx.Err(), если бюджет исчерпан раньше,
-// чем воркеры разобрали очередь.
-//
-// Дедлайн обязателен: каждая задача — upsert в PostgreSQL с таймаутом 5с, очередь
-// 1000 задач, воркеров 4. При деградации PG безлимитное ожидание держало бы
-// shutdown до ~20 минут, за которые остальные писатели даже не начали бы дренаж —
-// а внешний stop_grace_period всё равно убьёт процесс раньше, и тогда теряется
-// содержимое ВСЕХ буферов, а не только этой очереди.
+// Дедлайн обязателен: без него деградация PG держала бы shutdown ~20 минут — а
+// внешний stop_grace_period всё равно убьёт процесс раньше, потеряв все буферы.
 func (p *Pipeline) Close(ctx context.Context) error {
 	p.closeMu.Lock()
 	if p.closed {
@@ -920,14 +583,8 @@ func (p *Pipeline) Close(ctx context.Context) error {
 	}
 	p.closed = true
 	close(p.queue)
-	// Обрывает ожидание в waitForRoom на ближайшем тике опроса (см. её
-	// докблок и докблок p.stopping) — без этого дренаж мог бы стоять на
-	// КАЖДОЙ из тысячи задач, найденных в очереди, по backpressureBudget().
-	// Store(true), а не close(канала): atomic.Bool валиден и у Pipeline{},
-	// собранного тестовым литералом в обход NewPipeline (такие пайплайны
-	// Close сегодня не зовут, но полагаться на это молча не стоит) — в
-	// отличие от канала, здесь нет случая, требующего nil-проверки или
-	// оставляющего литерал без работающей остановки.
+	// Обрывает ожидание в waitForRoom на ближайшем тике — иначе дренаж мог бы
+	// стоять на каждой из тысячи задач по backpressureBudget().
 	p.stopping.Store(true)
 	p.closeMu.Unlock()
 
@@ -944,17 +601,8 @@ func (p *Pipeline) Close(ctx context.Context) error {
 		drainErr = ctx.Err()
 	}
 
-	// Финальный слив ПОСЛЕ дренажа очереди: воркеры дописали в dropAgg свои
-	// последние storage_error/panic-дропы, и это единственный шанс дать их
-	// увидеть org_usage — dropAgg живёт только в памяти процесса, который
-	// сейчас останавливается.
-	//
-	// СВОЙ context.Background(), а не ctx: на пути таймаута дренажа ctx уже
-	// Done(), и flushDropped (WithTimeout от НЕГО) отвалился бы немедленно —
-	// смысл финального флаша ровно в том, чтобы не потерять последнее окно, а
-	// унаследованный истёкший ctx его как раз терял. dropFlushTimeout внутри
-	// flushDropped и так ограничивает попытку, так что Close на happy-path не
-	// удлиняется дольше него.
+	// После дренажа: последние storage_error/panic-дропы попадают в org_usage.
+	// Свой context.Background(), не ctx — на таймауте дренажа ctx уже Done().
 	if p.dropFlushStop != nil {
 		close(p.dropFlushStop)
 		<-p.dropFlushDone
@@ -975,38 +623,19 @@ func (p *Pipeline) process(t task) {
 		Message:    ev.Message,
 	})
 
-	// RA-L10 (проход 4): маскируем email в свободном тексте title ДО первого его
-	// использования — Upsert (issues.title в PG) и OnIssue (payload алерта).
-	// Раньше скраб title/message ехал только перед записью в CH, и email утекал в
-	// PG и в алерт открытым. fingerprint уже посчитан выше на ИСХОДНОМ тексте
-	// (Message/Exceptions, не Title), поэтому scrubbing здесь не трогает
-	// группировку. No-op при ScrubFreeText=false.
+	// Email в title маскируем до Upsert/OnIssue — иначе утечёт в PG/алерт открытым.
+	// Fingerprint уже посчитан на исходном тексте, группировка не меняется.
 	ev.Title = p.Scrub.ScrubMessage(ev.Title)
 
-	// arch P2-1 (2026-08-12): Upsert (PG times_seen++) идёт ДО batcher.Add (CH,
-	// ниже) по необходимости — res.IssueID из Upsert нужен для самой CH-строки
-	// события (event.Event.IssueID), так что порядок иначе не построить без
-	// двухфазной записи. Следствие: если CH-батч потом дропнется (переполнение
-	// батчера/деградация CH), issues.times_seen в PG окажется больше числа
-	// реально доехавших до CH событий issue — инвариант «times_seen == count(*)
-	// событий issue в CH» не держится в общем случае. Осознанный компромисс:
-	// телеметрия дропа событий (DropStorageError/countDropped) best-effort и не
-	// продана как точная бухгалтерия; дрейф ограничен размером окна деградации
-	// CH, а откат times_seen на дропе CH-батча потребовал бы либо синхронной
-	// записи в CH перед Upsert (теряет типобезопасность IssueID), либо
-	// компенсирующей транзакции PG на асинхронный дроп батча — оба дороже, чем
-	// стоит эта метрика. Не путать с DropStorageError выше — тот считает
-	// дропнутые ДО Upsert события и НЕ покрывает этот путь.
+	// Upsert идёт до batcher.Add: IssueID нужен для строки события — из-за этого
+	// issues.times_seen может разойтись со счётом в CH при дропе CH-батча.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	res, err := p.issues.Upsert(ctx,
 		t.projectID, fp, ev.Title, ev.Culprit, ev.Level, ev.Environment, ev.Timestamp)
 	if err != nil {
-		// Потеря по отказу хранилища. Считается наравне с переполнением
-		// очереди: событие не доехало, и молчащий счётчик отправлял оператора
-		// проверять SDK вместо базы.
 		p.countDropped(DropStorageError)
-		p.countDroppedOrg(t.orgID, dropEvent, 1) // process() обрабатывает только события (tx уходит через processTransaction)
+		p.countDroppedOrg(t.orgID, dropEvent, 1)
 		slog.Error("issue upsert failed, event dropped",
 			"project_id", t.projectID, "event_id", ev.EventID, "error", err)
 		return
@@ -1016,9 +645,6 @@ func (p *Pipeline) process(t task) {
 		if res.Regression {
 			kind = alert.KindRegression
 		}
-		// times_seen требует отдельного чтения: Upsert его не возвращает.
-		// New/Regression — редкие переходы состояния (не каждое событие),
-		// так что лишний round-trip к PG здесь не на горячем пути приёма.
 		timesSeen := int64(1)
 		if iss, err := p.issues.Get(ctx, res.IssueID); err != nil {
 			slog.Error("issue lookup for alert failed", "issue_id", res.IssueID, "error", err)
@@ -1041,27 +667,19 @@ func (p *Pipeline) process(t task) {
 		excType, excValue = ev.Exceptions[n-1].Type, ev.Exceptions[n-1].Value
 	}
 
-	// Зачистка ПДн перед записью: обнуляем ip/email по флагам и редактим
-	// denylist-поля в tags/contexts/stacktrace. ScrubJSON вдобавок прогоняет
-	// текстовые ЗНАЧЕНИЯ (кадры стектрейса, поля contexts) через free-text
-	// маскирование email (RA-L10) — no-op при ScrubFreeText=false. p.Scrub == nil —
-	// no-op (методы Scrubber nil-safe).
+	// ScrubJSON дополнительно маскирует email в текстовых значениях полей —
+	// no-op при ScrubFreeText=false.
 	p.Scrub.ScrubUser(&ev.UserIP, &ev.UserEmail)
 	p.Scrub.ScrubTags(ev.Tags)
 	ev.ContextsJSON = p.Scrub.ScrubJSON(ev.ContextsJSON)
 	ev.StacktraceJSON = p.Scrub.ScrubJSON(ev.StacktraceJSON)
 	ev.BreadcrumbsJSON = p.Scrub.ScrubJSON(ev.BreadcrumbsJSON)
-	// Тело/заголовки/куки запроса часто несут PII и секреты (Authorization,
-	// session-cookie, пароли в form-data) — прогоняем через тот же denylist-скраб,
-	// что и contexts, до записи в CH.
+	// Тело/заголовки/куки часто несут PII и секреты (Authorization, session-cookie,
+	// пароли в form-data) — тот же denylist-скраб, что и contexts.
 	ev.RequestJSON = p.Scrub.ScrubJSON(ev.RequestJSON)
-	// RA-L10: опционально маскируем email в свободном тексте (message/exception
-	// value). No-op при ScrubFreeText=false — текущее поведение не меняется.
 	ev.Message = p.Scrub.ScrubMessage(ev.Message)
 	excValue = p.Scrub.ScrubMessage(excValue)
 
-	// T6: батчер уже насыщен — дать флашеру шанс разгрузиться, прежде чем
-	// безусловно толкать событие в переполненный буфер (см. waitForRoom).
 	p.waitForRoom(p.batcher)
 	p.batcher.Add(event.Event{
 		ID:             ev.EventID,
@@ -1090,48 +708,31 @@ func (p *Pipeline) process(t task) {
 	})
 }
 
-// processTransaction пишет транзакцию в SpanWriter и прогоняет по ней детекторы
-// производительности. Порядок важен: Spans.Add идёт ПЕРВЫМ, и запись в CH не
-// ждёт ни PG, ни outbox — трейс попадает в хранилище независимо от того, что
-// случится в детекции.
+// Порядок важен: Spans.Add идёт первым — запись в CH не ждёт ни PG, ни outbox.
 func (p *Pipeline) processTransaction(orgID, projectID int64, tx trace.Transaction) {
 	if p.Spans == nil { // трейсинг выключен — Handler сюда не должен доходить
 		slog.Warn("tracing disabled, dropping transaction",
 			"project_id", projectID, "trace_id", tx.TraceID)
 		return
 	}
-	// Зачистка ПДн перед записью. Теги транзакции чистятся так же, как у
-	// событий (см. process): denylist-тег на транзакции/OTLP-атрибуте иначе
-	// уехал бы в CH сырым. Данные спанов — отдельно: заголовки/куки/токены
-	// часто оседают в span.Data (напр. http.*). p.Scrub == nil — no-op
-	// (методы Scrubber nil-safe). Детекция работает поверх уже зачищенных спанов.
+	// Теги — как у событий; данные спанов — отдельно: заголовки/куки/токены
+	// часто оседают в span.Data (http.*).
 	p.Scrub.ScrubTags(tx.Tags)
-	// SEC-L2/M2: имя транзакции нередко URL-образное (GET /u?token=...&email=...);
-	// ScrubMessage чистит и email во free-text (по флагу), и query-токены в
-	// встроенном URL (всегда), иначе токены из query string оседают в CH-колонке
-	// transactions.transaction даже при дефолтном scrubbing.
+	// Имя транзакции нередко URL-образное — ScrubMessage чистит query-токены
+	// всегда, email — по флагу.
 	tx.Name = p.Scrub.ScrubMessage(tx.Name)
 	for i := range tx.Spans {
 		p.Scrub.ScrubData(tx.Spans[i].Data)
-		// span.description часто "METHOD https://host/path?token=…" — ScrubMessage
-		// вычищает query-токены всегда, email — при ScrubFreeText.
 		tx.Spans[i].Description = p.Scrub.ScrubMessage(tx.Spans[i].Description)
 	}
 
-	// T6: SpanWriter уже насыщен — дать флашеру шанс разгрузиться, прежде
-	// чем безусловно толкать транзакцию в переполненный буфер (см.
-	// waitForRoom и её докблок у события выше в process).
 	p.waitForRoom(p.Spans)
 	p.Spans.Add(orgID, projectID, tx)
 	p.detectPerfIssues(projectID, tx)
 }
 
-// detectPerfIssues прогоняет детекторы по спанам транзакции, апсертит находки в
-// perf_issues и алертит о тех, что увидены впервые или вернулись после resolve.
-//
-// Детекция не имеет права ронять приём: паника детектора или сбой PG здесь
-// логируются и на этом заканчиваются — транзакция уже записана в CH (см.
-// processTransaction), а воркер продолжает разбирать очередь.
+// Детекция не имеет права ронять приём: паника детектора логируется и на этом
+// заканчивается — транзакция уже записана в CH.
 func (p *Pipeline) detectPerfIssues(projectID int64, tx trace.Transaction) {
 	if p.Perf == nil { // детекторы выключены
 		return
@@ -1143,8 +744,6 @@ func (p *Pipeline) detectPerfIssues(projectID int64, tx trace.Transaction) {
 		}
 	}()
 
-	// ОДИН бюджет на всю детекцию: настройки, все Record и все алерты (см.
-	// perfDetectBudget). Дольше него воркер этой транзакцией не занимается.
 	ctx, cancel := context.WithTimeout(context.Background(), p.perfBudget())
 	defer cancel()
 
@@ -1162,8 +761,6 @@ func (p *Pipeline) detectPerfIssues(projectID int64, tx trace.Transaction) {
 	}
 }
 
-// perfBudget — бюджет детекции; отдельный метод, чтобы тесты подменяли его через
-// поле, не трогая глобальную переменную.
 func (p *Pipeline) perfBudget() time.Duration {
 	if p.testPerfBudget > 0 {
 		return p.testPerfBudget
@@ -1171,8 +768,7 @@ func (p *Pipeline) perfBudget() time.Duration {
 	return perfDetectBudget
 }
 
-// recordFinding пишет одну находку и алертит о ней, если она новая или вернулась.
-// ctx — общий бюджет детекции (см. detectPerfIssues), а не персональный.
+// Используется общий бюджет детекции, не персональный.
 func (p *Pipeline) recordFinding(ctx context.Context, projectID int64, tx trace.Transaction, f trace.Finding) {
 	res, err := p.Perf.Record(ctx, projectID, f, tx.TraceID)
 	if err != nil {
@@ -1180,16 +776,12 @@ func (p *Pipeline) recordFinding(ctx context.Context, projectID int64, tx trace.
 			"project_id", projectID, "trace_id", tx.TraceID, "kind", f.Kind, "error", err)
 		return
 	}
-	// Алерт — при ПЕРВОМ обнаружении и при регрессии (проблему починили, и она
-	// вернулась). На повторные обнаружения — молчим: проблема воспроизводится на
-	// каждом запросе к эндпойнту, и алерт на каждое повторение был бы лавиной.
+	// На повторные обнаружения молчим — иначе алерт на каждый запрос к эндпойнту.
 	if p.PerfAlerts == nil || (!res.Created && !res.Regression) {
 		return
 	}
-	// Гейт окна обслуживания (B3) — ДО notify, по текущему моменту: у
-	// perf_issues нет жизненного цикла инцидента и флага на записи (см.
-	// MaintenanceChecker), поэтому подавляется само уведомление, а не факт
-	// открытия — Record выше уже отработал, находка в perf_issues есть.
+	// Подавляет только notify — у perf_issues нет флага на записи, Record выше
+	// уже отработал.
 	if p.Maint != nil {
 		if inMaint, err := p.Maint.InMaintenance(ctx, projectID, time.Now()); err != nil {
 			slog.Error("perf issue maintenance check failed", "project_id", projectID, "error", err)
@@ -1207,9 +799,6 @@ func (p *Pipeline) recordFinding(ctx context.Context, projectID int64, tx trace.
 	}
 }
 
-// detectorConfig — пороги проекта (projects.perf_detector_config). Любая
-// проблема с их чтением или разбором — не повод не детектить: возвращаются
-// дефолты.
 func (p *Pipeline) detectorConfig(ctx context.Context, projectID int64) trace.DetectorConfig {
 	if p.Projects == nil {
 		return trace.DefaultDetectorConfig()

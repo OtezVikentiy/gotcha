@@ -14,9 +14,6 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// fakeCHConn/fakeCHBatch повторяют event.fakeConn/fakeBatch: Append копит строки,
-// Send при успехе переносит их в c.rows, а при заданном poison-предикате падает,
-// если в батче есть ряд ядовитого profile_type.
 type fakeCHConn struct {
 	mu     sync.Mutex
 	rows   int
@@ -74,7 +71,6 @@ func (c *fakeCHConn) PrepareBatch(_ context.Context, _ string, _ ...driver.Prepa
 }
 
 func TestWriterIsolatesPoisonRowAfterThreshold(t *testing.T) {
-	// conn.Send падает, если среди рядов есть профиль ядовитого типа.
 	c := &fakeCHConn{poison: func(pt string) bool { return pt == "poison" }}
 	w := NewWriter(c)
 	now := time.Now().UTC()
@@ -86,8 +82,8 @@ func TestWriterIsolatesPoisonRowAfterThreshold(t *testing.T) {
 			{Stack: []Frame{{Function: "ok"}}, Value: 1},
 		}})
 	}
-	// Прогоняем flush больше порога: обычный ретрай застревает на ядовитом ряду,
-	// после poisonThreshold подряд-фейлов должна сработать изоляция.
+	// обычный ретрай застревает на ядовитом ряду — после poisonThreshold подряд-фейлов
+	// должна сработать изоляция.
 	for i := 0; i < poisonThreshold+1; i++ {
 		w.flush(context.Background())
 	}
@@ -105,7 +101,6 @@ func TestWriterIsolatesPoisonRowAfterThreshold(t *testing.T) {
 	}
 }
 
-// Транзиентный отказ (сеть/ctx): изоляция не должна дропать валидные профили.
 func TestWriterTransientFailureDropsNothing(t *testing.T) {
 	c := &fakeCHConn{fail: true}
 	w := NewWriter(c)
@@ -126,10 +121,6 @@ func TestWriterTransientFailureDropsNothing(t *testing.T) {
 	}
 }
 
-// TestWriterBoundsBufferByBytes — буфер профилей был ограничен только ЧИСЛОМ
-// строк, а вес строки задаёт клиент: строка несёт весь стек кадров. maxBuf=200000
-// раздутых строк — это десятки гигабайт в буфере, заведённом под двести тысяч
-// небольших стеков.
 func TestWriterBoundsBufferByBytes(t *testing.T) {
 	w := NewWriter(nil)
 	w.maxBufBytes = 1 << 20
@@ -137,7 +128,6 @@ func TestWriterBoundsBufferByBytes(t *testing.T) {
 
 	big := strings.Repeat("F", 64<<10)
 	for i := 0; i < 40; i++ {
-		// Каждый профиль даёт одну строку со стеком из четырёх тяжёлых кадров.
 		w.Add(1, Profile{Samples: []Sample{{
 			Stack: []Frame{
 				{Function: big + strconv.Itoa(i)},

@@ -12,9 +12,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestCoverPathHelpers дёргает тривиальные path-хелперы, которые иначе
-// покрываются только через шаблоны (другой пакет) — прямой вызов проверяет,
-// что они собирают ожидаемый префикс.
 func TestCoverPathHelpers(t *testing.T) {
 	cases := map[string]string{
 		orgSettingsRolePath(1):            "/orgs/1/settings/role",
@@ -44,11 +41,9 @@ func TestCoverPathHelpers(t *testing.T) {
 	}
 }
 
-// TestCoverErrorMessages прогоняет каждую доменную ошибку через переводчики
-// сообщений — так покрываются все case-ветки switch'ей за один заход.
 func TestCoverErrorMessages(t *testing.T) {
 	ctx := context.Background()
-	dummy := context.DeadlineExceeded // «прочая» ошибка → ветка default
+	dummy := context.DeadlineExceeded
 
 	orgErrs := []error{org.ErrLastOwner, org.ErrInvalidRole, org.ErrNotMember, org.ErrOwnerOnly, org.ErrInvalidQuota, dummy}
 	for _, e := range orgErrs {
@@ -104,24 +99,19 @@ func TestCoverErrorMessages(t *testing.T) {
 	}
 }
 
-// TestCoverPeriodAndStepHelpers покрывает нормализацию шага для страниц
-// перформанса и форматирование шага (окно теперь общее — см. timerange_test).
 func TestCoverPeriodAndStepHelpers(t *testing.T) {
-	// perfBucketStep: окно, требующее округления до 5 минут, и слишком маленькое.
 	if step := perfBucketStep(23*time.Hour, 24); step%(5*time.Minute) != 0 {
 		t.Errorf("perfBucketStep not multiple of 5m: %v", step)
 	}
 	if step := perfBucketStep(time.Minute, 24); step != 5*time.Minute {
 		t.Errorf("perfBucketStep(tiny) = %v, want 5m floor", step)
 	}
-	// formatStep: проверяем ЗНАЧЕНИЕ, а не факт непустоты. Прежний ассерт
-	// («!= ""») пропустил бы перепутанные единицы — «2m» вместо «2h».
 	for _, c := range []struct {
 		in   time.Duration
 		want string
 	}{
 		{2 * time.Hour, "2h"},
-		{90 * time.Minute, "1h"}, // >= часа → часы, дробная часть отбрасывается
+		{90 * time.Minute, "1h"},
 		{30 * time.Minute, "30m"},
 		{15 * time.Second, "15s"},
 		{0, "0s"},
@@ -130,8 +120,6 @@ func TestCoverPeriodAndStepHelpers(t *testing.T) {
 			t.Errorf("formatStep(%v) = %q, want %q", c.in, got, c.want)
 		}
 	}
-	// waterfallMS: та же логика. Ошибка в 1000× между µs/ms/s превращает
-	// водопад трассы в бессмыслицу, а прежний ассерт её не видел.
 	for _, c := range []struct {
 		in   uint32
 		want string
@@ -149,30 +137,21 @@ func TestCoverPeriodAndStepHelpers(t *testing.T) {
 	}
 }
 
-// TestCoverSortHelpers проверяет РЕЗУЛЬТАТ сортировки по каждому ключу.
-//
-// Раньше тест вызывал sortEndpointStats/sortPageVitals по всем ключам и не
-// проверял ничего: покрытие 100%, а поймать он мог только панику. Перепутанные
-// p95/p99 или инвертированный порядок проезжали мимо.
 func TestCoverSortHelpers(t *testing.T) {
-	// Значения подобраны так, что порядок «b, a» или «a, b» однозначно
-	// определяет, по какому полю и в какую сторону отсортировано.
 	stats := []trace.EndpointStat{
 		{Transaction: "b", Throughput: 1, P50: 2, P75: 3, P95: 4, P99: 5, FailureRate: 0.1, ApdexScore: 0.9},
 		{Transaction: "a", Throughput: 2, P50: 1, P75: 2, P95: 3, P99: 4, FailureRate: 0.2, ApdexScore: 0.8},
 	}
-	// Числовые ключи сортируются по убыванию (сначала самое проблемное),
-	// name — по возрастанию; пустой и неизвестный ключ дают дефолт (throughput).
 	wantFirst := map[string]string{
-		"":        "a", // дефолт — по трафику убыв.: a=2 > b=1
+		"":        "a",
 		"unknown": "a",
-		"name":    "a", // по имени возр.
-		"p50":     "b", // 2 > 1
-		"p75":     "b", // 3 > 2
-		"p95":     "b", // 4 > 3
-		"p99":     "b", // 5 > 4
-		"failure": "a", // 0.2 > 0.1
-		"apdex":   "a", // apdex по возрастанию: худший (0.8) первым
+		"name":    "a",
+		"p50":     "b",
+		"p75":     "b",
+		"p95":     "b",
+		"p99":     "b",
+		"failure": "a",
+		"apdex":   "a",
 	}
 	for key, want := range wantFirst {
 		cp := append([]trace.EndpointStat(nil), stats...)
@@ -188,12 +167,12 @@ func TestCoverSortHelpers(t *testing.T) {
 		{Transaction: "a", Count: 2, LCP: trace.Vital{P75: 1}, INP: trace.Vital{P75: 4}, CLS: trace.Vital{P75: 0.2}},
 	}
 	wantFirstVitals := map[string]string{
-		"":        "a", // дефолт — по числу сэмплов убыв.
+		"":        "a",
 		"unknown": "a",
 		"name":    "a",
-		"lcp":     "b", // 3 > 1
-		"inp":     "a", // 4 > 2
-		"cls":     "a", // 0.2 > 0.1
+		"lcp":     "b",
+		"inp":     "a",
+		"cls":     "a",
 	}
 	for key, want := range wantFirstVitals {
 		cp := append([]trace.PageVitals(nil), pages...)
@@ -204,12 +183,10 @@ func TestCoverSortHelpers(t *testing.T) {
 	}
 }
 
-// TestCoverParseHelpers покрывает мелкие парсеры формы монитора и maintenance.
 func TestCoverParseHelpers(t *testing.T) {
 	if atoiOrZero("42") != 42 || atoiOrZero("nope") != 0 {
 		t.Error("atoiOrZero branches")
 	}
-	// parseHeaderLines: валидная строка, строка без ":", пустой ключ, и пусто→nil.
 	h := parseHeaderLines("X-Test: 1\nno-colon-line\n: emptykey\n\nY: 2")
 	if h["X-Test"] != "1" || h["Y"] != "2" || len(h) != 2 {
 		t.Errorf("parseHeaderLines = %v", h)
@@ -217,11 +194,9 @@ func TestCoverParseHelpers(t *testing.T) {
 	if parseHeaderLines("\n\n") != nil {
 		t.Error("parseHeaderLines(empty) should be nil")
 	}
-	// parseInt64List: валидные и мусорные значения.
 	if got := parseInt64List([]string{"1", "x", " 2 "}); len(got) != 2 || got[0] != 1 || got[1] != 2 {
 		t.Errorf("parseInt64List = %v", got)
 	}
-	// parseLocalDateTime: пусто, невалидно, валидно.
 	if _, ok := parseLocalDateTime("", time.UTC); ok {
 		t.Error("parseLocalDateTime(empty) should be false")
 	}
@@ -233,7 +208,6 @@ func TestCoverParseHelpers(t *testing.T) {
 	}
 }
 
-// TestCoverParsePerfEvidence покрывает ветки разбора JSONB evidence.
 func TestCoverParsePerfEvidence(t *testing.T) {
 	if ev := parsePerfEvidence(nil); ev.HasTotal {
 		t.Error("empty evidence should have no total")
@@ -248,10 +222,6 @@ func TestCoverParsePerfEvidence(t *testing.T) {
 	}
 }
 
-// TestValidInviteEmail — P2-10: validInviteEmail теперь переиспользует
-// auth.ValidEmailFormat вместо собственной копии regex (риск рассинхронизации
-// при будущей правке одного из них), которая заодно чинит пропуск
-// control-байтов (NUL и т.п.) в формат-валидации.
 func TestValidInviteEmail(t *testing.T) {
 	cases := map[string]bool{
 		"":                   false,

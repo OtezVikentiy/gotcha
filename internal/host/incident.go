@@ -12,36 +12,27 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 )
 
-// Kinds — виды встроенных инцидентов хоста (host_incidents.kind, CHECK
-// миграции 0066). Источник истины для сторожа i18n (Task 12): любой новый
-// вид добавляется здесь и одновременно получает переводы.
 var Kinds = []string{"disk", "memory", "load", "silent"}
 
 var ErrIncidentNotFound = errors.New("host: incident not found")
 
-// Incident — открытый или закрытый инцидент встроенного порога хоста
-// (host_incidents): диск/память/нагрузка/тишина.
 type Incident struct {
-	ID             int64
-	ProjectID      int64
-	HostID         int64
-	Kind           string
-	Status         string
-	CurrentValue   float64
-	PeakValue      float64
-	Detail         string
-	StartedAt      time.Time
-	ResolvedAt     *time.Time
-	InMaintenance  bool
-	NotifiedOpen   bool
-	NotifiedClose  bool
-	AcknowledgedAt *time.Time
-	AcknowledgedBy *int64
-	Severity       string
-	// SuppressedByDep — инцидент подавлен упавшим задекларированным
-	// родителем (B5, флаг ставит depsuppress.Suppressor.MarkSuppressed).
-	// До D3 поле не читалось UI и в структуру не поднималось; теперь его
-	// показывает бейдж «подавлен зависимостью» (лента/карточка хоста).
+	ID              int64
+	ProjectID       int64
+	HostID          int64
+	Kind            string
+	Status          string
+	CurrentValue    float64
+	PeakValue       float64
+	Detail          string
+	StartedAt       time.Time
+	ResolvedAt      *time.Time
+	InMaintenance   bool
+	NotifiedOpen    bool
+	NotifiedClose   bool
+	AcknowledgedAt  *time.Time
+	AcknowledgedBy  *int64
+	Severity        string
 	SuppressedByDep bool
 }
 
@@ -58,9 +49,6 @@ func scanIncident(row pgx.Row) (Incident, error) {
 	return in, err
 }
 
-// IncidentService — атомарные open/close встроенных инцидентов хоста
-// (калька metric.IncidentService, ключ конфликта — (host_id, kind): на
-// одном хосте disk и load могут быть открыты одновременно, но не два disk).
 type IncidentService struct {
 	pool *pgxpool.Pool
 }
@@ -69,14 +57,8 @@ func NewIncidentService(pool *pgxpool.Pool) *IncidentService {
 	return &IncidentService{pool: pool}
 }
 
-// Open открывает инцидент по (host_id, kind), если открытого такого ещё
-// нет. inMaintenance фиксируется на инциденте на всё его время (B3): вызывающий
-// решает по MaintenanceChecker в момент открытия, гейт notify — на нём же, а не
-// на состоянии окна в момент закрытия. Гонко-безопасно через частичный уникальный
-// индекс host_incidents_one_open_idx (host_id, kind) WHERE status='open': из
-// параллельных вызовов ровно один INSERT проходит, остальные ловят
-// конфликт (DO NOTHING → нет RETURNING) и дочитывают победителя через
-// OpenFor. peak=current на вставке.
+// Гонко-безопасно частичным уникальным индексом (host_id, kind) WHERE status='open':
+// параллельный INSERT ловит конфликт, RETURNING пуст, победителя дочитывает OpenFor.
 func (s *IncidentService) Open(ctx context.Context, projectID, hostID int64, kind string, current float64, detail string, inMaintenance bool) (Incident, bool, error) {
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail, in_maintenance)
@@ -101,7 +83,6 @@ func (s *IncidentService) Open(ctx context.Context, projectID, hostID int64, kin
 	return in, true, nil
 }
 
-// OpenFor возвращает открытый инцидент хоста данного вида, если он есть.
 func (s *IncidentService) OpenFor(ctx context.Context, hostID int64, kind string) (Incident, bool, error) {
 	row := s.pool.QueryRow(ctx,
 		"SELECT "+incidentColumns+" FROM host_incidents WHERE host_id = $1 AND kind = $2 AND status = 'open'",
@@ -116,9 +97,6 @@ func (s *IncidentService) OpenFor(ctx context.Context, hostID int64, kind string
 	return in, true, nil
 }
 
-// GetByID возвращает инцидент по id (любого статуса). Нужен эскалации (B4,
-// T6): планировщик и StepNotifier знают только incidentID, объект инцидента
-// приходится перегружать заново.
 func (s *IncidentService) GetByID(ctx context.Context, id int64) (Incident, bool, error) {
 	row := s.pool.QueryRow(ctx, "SELECT "+incidentColumns+" FROM host_incidents WHERE id = $1", id)
 	in, err := scanIncident(row)
@@ -131,9 +109,6 @@ func (s *IncidentService) GetByID(ctx context.Context, id int64) (Incident, bool
 	return in, true, nil
 }
 
-// Bump обновляет открытый инцидент: current_value=$2, peak_value=$3 (peak
-// вычисляет вызывающий — экстремум в сторону нарушения). Закрытый/нет →
-// ErrIncidentNotFound.
 func (s *IncidentService) Bump(ctx context.Context, id int64, current, peak float64) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE host_incidents SET current_value = $2, peak_value = $3
@@ -147,8 +122,6 @@ func (s *IncidentService) Bump(ctx context.Context, id int64, current, peak floa
 	return nil
 }
 
-// Resolve закрывает открытый инцидент. ok=false, если открытого не было
-// (идемпотентно).
 func (s *IncidentService) Resolve(ctx context.Context, id int64, current float64) (bool, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE host_incidents SET status = 'resolved', resolved_at = now(), current_value = $2
@@ -165,20 +138,6 @@ func (s *IncidentService) Resolve(ctx context.Context, id int64, current float64
 	return true, nil
 }
 
-// ResolveOpenByProjectKind закрывает ВСЕ открытые инциденты проекта данного
-// вида и возвращает их число.
-//
-// Нужен ровно одному сценарию: оператор выключил шумный порог на странице
-// настроек. Evaluator.Tick выключенные виды пропускает целиком (disk/memory/
-// load — по s.*Enabled, silent — первой строкой evalSilent), а значит закрыть
-// уже открытый инцидент выключенного вида некому — красный бейдж на списке
-// хостов остался бы навсегда, и снять его было бы нечем: ручного закрытия
-// инцидента хоста в интерфейсе нет.
-//
-// Уведомление о закрытии здесь НЕ ставится в очередь (notified_close остаётся
-// false): порог выключил сам оператор, и «инцидент закрыт» в канал — это шум о
-// его же собственном действии, а не новость. Досылки по notified_close в
-// подсистеме хостов нет — флаг читает только тот, кто уведомление отправил.
 func (s *IncidentService) ResolveOpenByProjectKind(ctx context.Context, projectID int64, kind string) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE host_incidents SET status = 'resolved', resolved_at = now()
@@ -189,23 +148,6 @@ func (s *IncidentService) ResolveOpenByProjectKind(ctx context.Context, projectI
 	return tag.RowsAffected(), nil
 }
 
-// ResolveOpenByHostKind закрывает открытый инцидент КОНКРЕТНОГО хоста
-// данного вида, если он есть, и возвращает 1 (или 0, если открытого не
-// было).
-//
-// Зеркало ResolveOpenByProjectKind, но по одному хосту: каскад порогов
-// (Task 4/5) может выключить вид ТОЧЕЧНО на одном хосте (host-override) или
-// группе (role/env-override), а не на всём проекте, и в этом случае закрывать
-// инциденты всех хостов проекта разом было бы неверно — соседей с включённым
-// видом это задело бы напрасно. Evaluator.Tick зовёт этот метод для хоста,
-// чей эффективный порог (Task 4) выключен, а открытый инцидент есть — иначе
-// он висел бы открытым вечно: ручного закрытия инцидента хоста в интерфейсе
-// нет.
-//
-// Уведомление о закрытии здесь тоже НЕ ставится в очередь — по той же
-// причине, что и у ResolveOpenByProjectKind: порог выключил сам оператор
-// (или его собственная настройка каскада), и «инцидент закрыт» в канал — это
-// шум о его же действии, а не новость.
 func (s *IncidentService) ResolveOpenByHostKind(ctx context.Context, hostID int64, kind string) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE host_incidents SET status = 'resolved', resolved_at = now()
@@ -216,11 +158,6 @@ func (s *IncidentService) ResolveOpenByHostKind(ctx context.Context, hostID int6
 	return tag.RowsAffected(), nil
 }
 
-// ListOpenKindsForHosts — батч-версия «какие виды инцидентов сейчас открыты»
-// для оценщика (evaluator.go): один запрос на ВСЕ хосты тика вместо отдельного
-// UPDATE на каждый (host, kind) с выключенным видом (M-A ремедиации Task 5,
-// см. Evaluator.evalOrCloseKind). Хосты без открытых инцидентов в карте
-// отсутствуют — как GetForHosts у HostOverrideService.
 func (s *IncidentService) ListOpenKindsForHosts(ctx context.Context, hostIDs []int64) (map[int64]map[string]bool, error) {
 	out := make(map[int64]map[string]bool, len(hostIDs))
 	if len(hostIDs) == 0 {
@@ -250,8 +187,6 @@ func (s *IncidentService) ListOpenKindsForHosts(ctx context.Context, hostIDs []i
 	return out, nil
 }
 
-// MarkNotified фиксирует отправку уведомления (open → notified_open, иначе
-// notified_close).
 func (s *IncidentService) MarkNotified(ctx context.Context, id int64, open bool) error {
 	column := "notified_close"
 	if open {
@@ -267,13 +202,6 @@ func (s *IncidentService) MarkNotified(ctx context.Context, id int64, open bool)
 	return nil
 }
 
-// Acknowledge подтверждает открытый инцидент (B4: эскалации) — фиксирует
-// acknowledged_at/acknowledged_by, чем гасит дальнейшую эскалацию (T4 читает
-// acknowledged_at IS NULL). ok=false, если инцидент уже подтверждён или закрыт
-// (идемпотентно: WHERE держит и status='open', и acknowledged_at IS NULL).
-// project_id в WHERE — defense-in-depth (зеркало uptime.DeleteWindow, B3):
-// оператор проекта A не подтвердит инцидент проекта B подобранным id, даже
-// если вызывающий код когда-нибудь забудет свериться заранее.
 func (s *IncidentService) Acknowledge(ctx context.Context, incidentID, projectID, userID int64) (bool, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE host_incidents SET acknowledged_at = now(), acknowledged_by = $3
@@ -290,37 +218,10 @@ func (s *IncidentService) Acknowledge(ctx context.Context, incidentID, projectID
 	return true, nil
 }
 
-// Name — ключ источника для эскалации (B4, T4): совпадает с incident_source
-// 'host' в incident_escalations (0077).
 func (s *IncidentService) Name() string { return "host" }
 
-// OpenUnacked возвращает открытые неподтверждённые инциденты — кандидаты
-// планировщика эскалации (T7). suppressed_by_dep=false (B5). Члены ОТКРЫТЫХ
-// групп исключаются (D3 Р5): информирование берёт на себя корень; удалённая
-// группа (висячий group_id, LEFT JOIN даёт NULL) ≡ закрытая. Для бывшего
-// члена закрытой группы база отсчёта лесенки — момент освобождения:
-// StartedAt = GREATEST(started_at, g.resolved_at) (анти-залп BLOCKER-1:
-// elapsed планировщика считается от StartedAt, и член, просидевший в группе
-// часы, иначе получил бы всю лесенку очередью за 2-3 тика).
-// Осознанно (фикс ревью плана m-1): фильтр не различает informing/немой
-// корень — член НЕМОГО корня уведомил сам (step0 из оценщика), но step1+
-// через планировщик пойдут только после закрытия группы. На практике окно
-// сужено: немой uptime-корень в maintenance ⇒ tickOne и так гейтит проект;
-// host-члены немых корней обычно на B5-гейте. Не баг — буква спеки §4.2.
-//
-// suppressed_by_dep = false (B5, T4/T5): инцидент, у чьего хоста есть
-// задекларированный родитель, эскалацию не продвигает — планировщик деп-
-// подавления (T5) сам решает, когда его разбудить (грейс + живая проверка
-// родителя), обычному тику эскалации сюда лезть незачем. Флаг ставит
-// Suppressor.MarkSuppressed, а этот пакет (K1-4, аудит перед 1.0) — снимает,
-// через ClearSuppressed, вызываемый Scheduler.releaseSuppressed.
-//
-// dep_released_at (миграция 0090, K1-4) — третий аргумент того же GREATEST,
-// что уже перезапускает часы лесенки от выхода из группы: инцидент,
-// освобождённый из-под подавления, начинает лесенку заново от момента
-// освобождения, а не от исходного i.started_at — иначе ребёнок, просидевший
-// под упавшим родителем час, получил бы все просроченные ступени лесенки
-// каскадом, по одной за тик.
+// GREATEST по started_at/resolved_at/dep_released_at — анти-залп: часы лесенки эскалации
+// перезапускаются от момента освобождения, а не от исходного открытия инцидента.
 func (s *IncidentService) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT i.id, i.project_id,
@@ -346,9 +247,6 @@ func (s *IncidentService) OpenUnacked(ctx context.Context) ([]escalation.Pending
 	return out, rows.Err()
 }
 
-// BumpEscalation атомарно продвигает уровень эскалации инцидента с from на
-// from+1 и фиксирует last_escalated_at (B4, T4). ok=false, если level уже не
-// равен from — планировщик проиграл гонку другому тику (идемпотентно).
 func (s *IncidentService) BumpEscalation(ctx context.Context, id int64, from int) (bool, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE host_incidents SET escalation_level = $2 + 1, last_escalated_at = now()
@@ -365,13 +263,6 @@ func (s *IncidentService) BumpEscalation(ctx context.Context, id int64, from int
 	return true, nil
 }
 
-// OpenSuppressed возвращает открытые неподтверждённые инциденты, подавленные
-// зависимостью (suppressed_by_dep = true) — кандидаты Scheduler.releaseSuppressed
-// на снятие подавления, если их родитель восстановился (K1-4, аудит перед
-// 1.0). Тот же SELECT, что OpenUnacked, но с перевёрнутым фильтром
-// suppressed_by_dep — часы (dep_released_at ещё NULL, суппрессия не снята)
-// здесь не нужны: PendingIncident.StartedAt читателю (DepChecker) не важен,
-// решение принимает releaseSuppressed по ID.
 func (s *IncidentService) OpenSuppressed(ctx context.Context) ([]escalation.PendingIncident, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT i.id, i.project_id, i.started_at, i.severity, i.escalation_level
@@ -393,12 +284,6 @@ func (s *IncidentService) OpenSuppressed(ctx context.Context) ([]escalation.Pend
 	return out, rows.Err()
 }
 
-// ClearSuppressed снимает подавление зависимостью (suppressed_by_dep =
-// false, dep_released_at = now(), миграция 0090) — единственный писатель в
-// false для этого флага (K1-4), симметричный Suppressor.MarkSuppressed
-// (единственный писатель в true). CAS-условие "AND suppressed_by_dep" —
-// идемпотентность: повторный вызов на уже снятом инциденте не трогает
-// dep_released_at второй раз.
 func (s *IncidentService) ClearSuppressed(ctx context.Context, id int64) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE host_incidents SET suppressed_by_dep = false, dep_released_at = now()
@@ -409,7 +294,6 @@ func (s *IncidentService) ClearSuppressed(ctx context.Context, id int64) error {
 	return nil
 }
 
-// ListByProject возвращает инциденты проекта, свежайшие первыми (для UI).
 func (s *IncidentService) ListByProject(ctx context.Context, projectID int64, limit int) ([]Incident, error) {
 	if limit <= 0 {
 		limit = 100
@@ -432,16 +316,6 @@ func (s *IncidentService) ListByProject(ctx context.Context, projectID int64, li
 	return out, rows.Err()
 }
 
-// ListOpenByProject возвращает ВСЕ открытые инциденты проекта, свежайшие
-// первыми.
-//
-// Без лимита намеренно, в отличие от ListByProject: список хостов сворачивает
-// открытые инциденты по host_id, и «последние N инцидентов проекта любого
-// статуса» для этого не годится — в проекте, где закрытых инцидентов больше
-// лимита, открытый инцидент старого хоста не попал бы в выборку вовсе, и хост
-// показался бы спокойным при живой проблеме. Открытых инцидентов по построению
-// немного: частичный уникальный индекс host_incidents_one_open_idx допускает
-// не больше одного на пару (host_id, kind), то есть потолок — хосты × 4 вида.
 func (s *IncidentService) ListOpenByProject(ctx context.Context, projectID int64) ([]Incident, error) {
 	rows, err := s.pool.Query(ctx,
 		"SELECT "+incidentColumns+" FROM host_incidents WHERE project_id = $1 AND status = 'open' ORDER BY started_at DESC",
@@ -461,7 +335,6 @@ func (s *IncidentService) ListOpenByProject(ctx context.Context, projectID int64
 	return out, rows.Err()
 }
 
-// ListOpenByHost возвращает все открытые инциденты хоста (разных видов).
 func (s *IncidentService) ListOpenByHost(ctx context.Context, hostID int64) ([]Incident, error) {
 	rows, err := s.pool.Query(ctx,
 		"SELECT "+incidentColumns+" FROM host_incidents WHERE host_id = $1 AND status = 'open' ORDER BY started_at DESC",

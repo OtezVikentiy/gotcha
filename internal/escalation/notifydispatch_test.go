@@ -17,10 +17,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// dchanFrom converts a real alert.Channel into escalation.DispatchChannel the
-// way every one of the seven callers (host/metric/slo/profile/trace/uptime/
-// alert) does — this is the actual contract Dispatch is tested against, not a
-// hand-rolled shortcut.
+// Конвертирует так же, как это делает каждый реальный вызывающий — тестируем
+// настоящий контракт Dispatch, а не самодельный шорткат.
 func dchanFrom(ch alert.Channel, emailEnabled bool, details alert.DetailPolicy) escalation.DispatchChannel {
 	return escalation.DispatchChannel{
 		ID: ch.ID, Kind: ch.Kind, Target: ch.Target,
@@ -30,10 +28,8 @@ func dchanFrom(ch alert.Channel, emailEnabled bool, details alert.DetailPolicy) 
 	}
 }
 
-// seedProject creates an organization+project with the given name directly
-// against the test PG — the escalation package doesn't own project creation
-// (org does, and org.Service.CreateProject validates the slug), so a raw
-// insert keeps this test independent of org's own rules.
+// Прямой INSERT, не org.Service.CreateProject: escalation не владеет созданием
+// проекта, и это держит тест независимым от правил валидации org.
 func seedProject(t *testing.T, pool *pgxpool.Pool, name string) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -55,9 +51,6 @@ func testDeps(ob *notify.Outbox) escalation.DispatchDeps {
 	return escalation.DispatchDeps{Outbox: ob, EmailEnabled: true, LogTag: "test"}
 }
 
-// TestDispatchSkipsNonDeliverableChannel — гейт доставляемости: канал,
-// который alert.Channel.Deliverable() считает недоставляемым (выключен),
-// не получает задачу, даже если он в списке Channels.
 func TestDispatchSkipsNonDeliverableChannel(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -100,9 +93,6 @@ func TestDispatchSkipsNonDeliverableChannel(t *testing.T) {
 	}
 }
 
-// TestDispatchChannelIDsFiltersAfterDeliverable — ContainsID: непустой
-// ChannelIDs сужает до перечисленных каналов ПОСЛЕ гейта доставляемости —
-// выключенный канал не получает задачу, даже если он в ChannelIDs.
 func TestDispatchChannelIDsFiltersAfterDeliverable(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -135,8 +125,6 @@ func TestDispatchChannelIDsFiltersAfterDeliverable(t *testing.T) {
 	}
 }
 
-// TestDispatchEmailFallbackSkipsEmailWhenDisabled — email-fallback: канал
-// kind=email пропускается при EmailEnabled=false, остальные виды — нет.
 func TestDispatchEmailFallbackSkipsEmailWhenDisabled(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -168,7 +156,6 @@ func TestDispatchEmailFallbackSkipsEmailWhenDisabled(t *testing.T) {
 	}
 }
 
-// stubProjectNamer — фиксированное имя проекта, без обращения к БД.
 type stubProjectNamer struct {
 	name string
 	err  error
@@ -178,8 +165,6 @@ func (s stubProjectNamer) ProjectName(context.Context, int64) (string, error) {
 	return s.name, s.err
 }
 
-// TestDispatchProjectNameInSubjectBodyAndPayload — W3-E требование 4: имя
-// проекта попадает в тему, тело и payload (webhook), когда Projects задан.
 func TestDispatchProjectNameInSubjectBodyAndPayload(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -219,9 +204,6 @@ func TestDispatchProjectNameInSubjectBodyAndPayload(t *testing.T) {
 	}
 }
 
-// TestDispatchNoProjectsFieldOmitsProjectName — nil-совместимость: без
-// Projects поведение в точности как до W3-E — ни в subject/body, ни в
-// payload имени проекта нет.
 func TestDispatchNoProjectsFieldOmitsProjectName(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -254,12 +236,6 @@ func TestDispatchNoProjectsFieldOmitsProjectName(t *testing.T) {
 	}
 }
 
-// TestDispatchDegradesToNoProjectNameOnResolverError — resolveProjectName
-// (найдено ревью): когда Projects.ProjectName возвращает ошибку (проект
-// успел исчезнуть между событием и доставкой, сбой БД резолвера и т.п.),
-// Dispatch не должен ронять уведомление целиком — деградирует до "" (то же
-// поведение, что и при nil Projects), молча (для получателя) отбрасывая
-// только имя проекта, не всё уведомление.
 func TestDispatchDegradesToNoProjectNameOnResolverError(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -275,13 +251,8 @@ func TestDispatchDegradesToNoProjectNameOnResolverError(t *testing.T) {
 	channels := []escalation.DispatchChannel{dchanFrom(alert.Channel{ID: ch, Kind: alert.ChannelWebhook, Enabled: true}, true, details)}
 
 	deps := testDeps(ob)
-	// name задан НАРЯДУ с err: реальный ProjectNamer тоже может отдать
-	// частичный результат вместе с ошибкой (см. ProjectName у
-	// escalation.OrgProjectNamer — org.GetProject возвращает пустой Project
-	// при ошибке, но контракт интерфейса err первичен). Если бы Dispatch
-	// читал name, не проверив err, "should-not-appear" утекло бы в subject/
-	// body/payload — этого достаточно, чтобы отличить пустое имя ПОТОМУ ЧТО
-	// резолвер ошибся от пустого имени ПОТОМУ ЧТО оно и должно быть пустым.
+	// name задан НАРЯДУ с err: если бы Dispatch читал name, не проверив err,
+	// "should-not-appear" утекло бы в subject/body/payload.
 	deps.Projects = stubProjectNamer{name: "should-not-appear", err: errors.New("project lookup boom")}
 	enqueued, err := escalation.Dispatch(ctx, deps, escalation.DispatchInput{
 		ProjectID: pid, Kind: "test_kind", Subject: "plain subject", Body: "plain body", URL: "https://x/y", Channels: channels,
@@ -304,11 +275,8 @@ func TestDispatchDegradesToNoProjectNameOnResolverError(t *testing.T) {
 	}
 }
 
-// TestDispatchRedactsExternalChannelButKeepsProjectName — редакция ПДн:
-// канал без AllowsDetails получает обезличенный payload (доменные Extra-поля
-// вырезаны), но project_name переживает редакцию (W3-E: обезличенный путь —
-// как раз тот случай, где имя проекта нужнее всего, единственный
-// опознаватель внешнего канала на несколько проектов).
+// project_name переживает редакцию ПДн — на обезличенном пути это
+// единственный опознаватель внешнего канала на несколько проектов.
 func TestDispatchRedactsExternalChannelButKeepsProjectName(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -354,14 +322,11 @@ func TestDispatchRedactsExternalChannelButKeepsProjectName(t *testing.T) {
 	if subject == "leaky subject with hostname db-07" {
 		t.Errorf("subject must be replaced by the redacted template, got original: %q", subject)
 	}
-	// Проект по-прежнему называется в обезличенном тексте.
 	if !strings.Contains(subject, "Secret Corp") || !strings.Contains(body, "Secret Corp") {
 		t.Errorf("redacted subject/body must still name the project: subject=%q body=%q", subject, body)
 	}
 }
 
-// TestDispatchRedactedURLOverridesURL — url_redacted (host): канал без
-// AllowsDetails получает URL из RedactedURL, а не полный URL.
 func TestDispatchRedactedURLOverridesURL(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -392,10 +357,6 @@ func TestDispatchRedactedURLOverridesURL(t *testing.T) {
 	}
 }
 
-// TestDispatchPartialEnqueueFailureIsAggregatedAndDoesNotBlockOthers —
-// негативный сценарий: канал с несуществующим ID (симулирует сбой Enqueue —
-// FK на alert_channels) не мешает постановке для валидного канала, и ошибка
-// возвращается агрегированной (errors.Join).
 func TestDispatchPartialEnqueueFailureIsAggregatedAndDoesNotBlockOthers(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -430,8 +391,6 @@ func TestDispatchPartialEnqueueFailureIsAggregatedAndDoesNotBlockOthers(t *testi
 // Compile-time check: OrgProjectNamer must satisfy ProjectNamer.
 var _ escalation.ProjectNamer = escalation.OrgProjectNamer{}
 
-// TestOrgProjectNamerResolvesRealProjectName — интеграционная проверка
-// адаптера поверх настоящего org.Service.GetProject.
 func TestOrgProjectNamerResolvesRealProjectName(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -450,8 +409,6 @@ func TestOrgProjectNamerResolvesRealProjectName(t *testing.T) {
 	}
 }
 
-// TestOrgProjectNamerNilServiceIsSilent — nil Svc (тесты, не заинтересованные
-// в имени проекта) — не паникует, отдаёт "".
 func TestOrgProjectNamerNilServiceIsSilent(t *testing.T) {
 	namer := escalation.OrgProjectNamer{}
 	name, err := namer.ProjectName(context.Background(), 1)

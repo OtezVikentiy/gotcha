@@ -6,27 +6,13 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// CardinalityNotice — предупреждение о том, что проект упёрся в потолок
-// различных значений поля и хвост схлопывается.
-//
-// Существует потому, что одного сигнального значения в данных мало: увидев в
-// списке «<cardinality-limit>», человек не поймёт ни что произошло, ни что с
-// этим делать. Причина почти всегда одна и та же и не злонамеренная — в имя
-// попала переменная (/users/8812/profile вместо /users/:id/profile), — и
-// узнаётся она по ПРИМЕРАМ схлопнутых значений: три строки подряд с разными
-// числами объясняют всё быстрее любого счётчика.
 type CardinalityNotice struct {
-	// Field — человекочитаемое имя поля («имя транзакции», «окружение»).
 	Field string
-	// Limit — потолок различных значений.
 	Limit int
-	// Collapsed — сколько значений схлопнуто в текущем окне.
 	Collapsed int64
-	// Samples — примеры схлопнутых значений. Ради них блок и нужен.
 	Samples []string
 }
 
-// cardinalityNoticeView рендерит предупреждения, если они есть.
 templ cardinalityNoticeView(notices []CardinalityNotice) {
 	for _, n := range notices {
 		<div class="cardinality-notice">

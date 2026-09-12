@@ -187,10 +187,8 @@ func TestNormalizeSQL(t *testing.T) {
 			want: "SELECT * FROM users WHERE deleted_at IS NULL",
 		},
 		{
-			// standard_conforming_strings=on (дефолт Postgres): 'C:\' — ПОЛНЫЙ
-			// литерал, обратный слеш в нём обычный символ. Если съесть закрывающую
-			// кавычку, сканер пересинхронизируется на следующей и вывалит наружу
-			// содержимое соседнего литерала.
+			// 'C:\' — ПОЛНЫЙ литерал при standard_conforming_strings=on (дефолт Postgres);
+			// съесть закрывающую кавычку значило бы вывалить наружу соседний литерал.
 			name: "backslash в конце литерала (Postgres) не съедает следующий литерал",
 			in:   `SELECT * FROM f WHERE path = 'C:\' AND name = 'alice' AND id = 1`,
 			want: "SELECT * FROM f WHERE path = ? AND name = ? AND id = ?",
@@ -217,9 +215,7 @@ func TestNormalizeSQL(t *testing.T) {
 	}
 }
 
-// TestNormalizeSQLIsStable — нормализация детерминирована и идемпотентна:
-// повторный прогон по уже нормализованному запросу ничего не меняет (иначе
-// фингерпринт N+1 плыл бы между репликами).
+// Повторный прогон по уже нормализованному запросу ничего не меняет.
 func TestNormalizeSQLIsStable(t *testing.T) {
 	queries := []string{
 		"SELECT * FROM users WHERE id = 42",
@@ -236,8 +232,6 @@ func TestNormalizeSQLIsStable(t *testing.T) {
 	}
 }
 
-// TestNormalizeSQLGroupsNPlusOne — тот самый случай, ради которого всё
-// затевалось: N запросов с разными литералами должны схлопнуться в одну форму.
 func TestNormalizeSQLGroupsNPlusOne(t *testing.T) {
 	var forms []string
 	for _, q := range []string{
@@ -254,10 +248,7 @@ func TestNormalizeSQLGroupsNPlusOne(t *testing.T) {
 	}
 }
 
-// TestNormalizeSQLNeverLeaksLiterals — самое важное свойство нормализации:
-// содержимое литерала (значение ПОЛЬЗОВАТЕЛЯ) не имеет права попасть в вывод.
-// Вывод уезжает в title проблемы и в её фингерпринт: утечка означает и PII в
-// хранилище, и склейку разных запросов в одну проблему.
+// Вывод уезжает в title и фингерпринт: утечка литерала — это PII в хранилище.
 func TestNormalizeSQLNeverLeaksLiterals(t *testing.T) {
 	cases := []string{
 		`SELECT * FROM f WHERE path = 'C:\' AND name = 'alice' AND id = 1`,
@@ -274,9 +265,6 @@ func TestNormalizeSQLNeverLeaksLiterals(t *testing.T) {
 	}
 }
 
-// TestNormalizeSQLKeepsDifferentQueriesApart — обратная сторона группировки:
-// разные по смыслу запросы НЕ должны схлопнуться в одну форму (иначе одна
-// проблема поглотит другую и в title попадёт чужой запрос).
 func TestNormalizeSQLKeepsDifferentQueriesApart(t *testing.T) {
 	queries := []string{
 		"SELECT * FROM users WHERE id = 1",
@@ -311,10 +299,8 @@ func TestNormalizeCacheKey(t *testing.T) {
 		{"redis GET с другим ключом даёт ту же форму", "GET user:1337", "GET user:?"},
 		{"HGETALL с буквенно-цифровым ключом", "HGETALL session:abc123", "HGETALL session:?"},
 		{"вложенные сегменты ключа", "GET user:42:posts:7", "GET user:?:posts:?"},
-		// Последний сегмент составного ключа — значение, даже если в нём нет цифр:
-		// иначе `user:jsmith` и `user:mbrown` остаются разными формами и N+1 по
-		// буквенным идентификаторам не виден. Цена — `config:global` тоже
-		// схлопывается (см. isValueSegment).
+		// Последний сегмент составного ключа маскируется, даже без цифр — иначе N+1 по
+		// буквенным идентификаторам не виден. Цена: `config:global` тоже схлопывается.
 		{"буквенный идентификатор маскируется", "GET user:jsmith", "GET user:?"},
 		{"другой буквенный идентификатор даёт ту же форму", "GET user:mbrown", "GET user:?"},
 		{"статический составной ключ тоже схлопывается", "GET config:global", "GET config:?"},
@@ -373,10 +359,8 @@ func TestNormalizeURL(t *testing.T) {
 	}
 }
 
-// Маскирование id-подобных сегментов: без него приложение с ObjectID/хешами в
-// путях даёт НОВЫЙ фингерпринт на каждый запрос — perf_issues растёт без предела.
-// Обратная сторона теста не менее важна: обычные слова (`/articles`,
-// `/hello-world`, `/v2`) маскировать нельзя, иначе схлопнутся разные эндпойнты.
+// Обратная сторона теста не менее важна: обычные слова (`/articles`, `/hello-world`,
+// `/v2`) маскировать нельзя, иначе схлопнутся разные эндпойнты.
 func TestNormalizeURLMasksIDLikeSegments(t *testing.T) {
 	masked := []struct{ name, in, want string }{
 		{"mongo objectid", "/orders/5f8d0d55b54764421b7156c9", "/orders/{id}"},
@@ -455,8 +439,6 @@ func TestNormalizeDescription(t *testing.T) {
 	}
 }
 
-// TestNormalizeDescriptionCaps — результат каппится: описание уезжает в
-// фингерпринт и в title проблемы, раздувать их нельзя.
 func TestNormalizeDescriptionCaps(t *testing.T) {
 	long := "SELECT " + strings.Repeat("col_name, ", 5000) + "x FROM t"
 	got := NormalizeDescription("db.sql.query", long)
@@ -471,8 +453,6 @@ func TestNormalizeDescriptionCaps(t *testing.T) {
 	}
 }
 
-// TestNormalizeNoPanic — вход враждебен: нормализаторы не должны падать ни на
-// чём, что приедет из SDK.
 func TestNormalizeNoPanic(t *testing.T) {
 	inputs := []string{
 		"", " ", "'", `"`, "`", "--", "/*", "*/", "$", "$$", ":", "::", "?", "(", ")",

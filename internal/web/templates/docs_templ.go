@@ -13,24 +13,15 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// DocsGroup — страницы документации сгруппированные под одним заголовком
-// секции индекса (Key — i18n-ключ, docs.group.start/sections/integrations).
-// docs.Pages уже отдаёт страницы в порядке групп (см. internal/docs
-// registry), groupDocsPages (docs.go) просто режет этот срез по границам
-// групп, не переупорядочивая.
 type DocsGroup struct {
 	Key   string
 	Pages []docs.Page
 }
 
-// docPagePath — путь до отрендеренной страницы документации.
 func docPagePath(slug string) string {
 	return "/docs/" + slug
 }
 
-// DocsIndex — GET /docs: разделы документации (Начало/Разделы/Интеграции),
-// каждая страница — ссылка на /docs/{slug} с её заголовком (H1 markdown, а не
-// из i18n-каталога, см. Page.Title).
 func DocsIndex(groups []DocsGroup, userEmail string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -71,7 +62,7 @@ func DocsIndex(groups []DocsGroup, userEmail string) templ.Component {
 			var templ_7745c5c3_Var3 string
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "docs.index.title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/docs.templ`, Line: 29, Col: 40}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/docs.templ`, Line: 20, Col: 40}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 			if templ_7745c5c3_Err != nil {
@@ -89,7 +80,7 @@ func DocsIndex(groups []DocsGroup, userEmail string) templ.Component {
 				var templ_7745c5c3_Var4 string
 				templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, g.Key))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/docs.templ`, Line: 33, Col: 50}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/docs.templ`, Line: 24, Col: 50}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 				if templ_7745c5c3_Err != nil {
@@ -107,7 +98,7 @@ func DocsIndex(groups []DocsGroup, userEmail string) templ.Component {
 					var templ_7745c5c3_Var5 templ.SafeURL
 					templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(docPagePath(p.Slug)))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/docs.templ`, Line: 36, Col: 52}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/docs.templ`, Line: 27, Col: 52}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 					if templ_7745c5c3_Err != nil {
@@ -120,7 +111,7 @@ func DocsIndex(groups []DocsGroup, userEmail string) templ.Component {
 					var templ_7745c5c3_Var6 string
 					templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(p.Title)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/docs.templ`, Line: 36, Col: 64}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/docs.templ`, Line: 27, Col: 64}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 					if templ_7745c5c3_Err != nil {
@@ -150,15 +141,8 @@ func DocsIndex(groups []DocsGroup, userEmail string) templ.Component {
 	})
 }
 
-// DocsPage — GET /docs/{slug}: отрендеренная markdown-страница документации
-// (htmlBody — безопасный вывод goldmark в safe-mode, см. docs.Render).
-// Оглавление всех страниц уже даёт контекстный сайдбар app-shell
-// (nav.Subsections для области docs, задача 2), с подсветкой активной
-// страницы по Path — здесь не дублируется. pages принят для симметрии с
-// хендлером (docs.go), но телу не нужен — оставлен на случай, если сайдбар в
-// будущем перестанет покрывать эту страницу. Собственного <h1> здесь нет:
-// markdown-файл уже начинается с "# Заголовок", который goldmark превращает в
-// <h1> внутри htmlBody — дублировать заголовок было бы двойным <h1>.
+// htmlBody — templ.Raw, безопасно только пока docs.Render в safe-mode.
+// Своего <h1> нет: markdown уже начинается с "# Заголовок".
 func DocsPage(slug, title, htmlBody string, pages []docs.Page, userEmail string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context

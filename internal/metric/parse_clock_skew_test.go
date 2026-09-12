@@ -16,7 +16,6 @@ import (
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 )
 
-// captureWarnLog подменяет slog по умолчанию буфером на время теста.
 func captureWarnLog(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var buf bytes.Buffer
@@ -26,7 +25,6 @@ func captureWarnLog(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
-// resetClockSkew обнуляет процесс-локальный учёт между тестами.
 func resetClockSkew(t *testing.T) {
 	t.Helper()
 	clockSkew = clockSkewStats{}
@@ -47,10 +45,6 @@ func hostGaugeMetrics(host string, ts uint64) []*metricspb.ResourceMetrics {
 	}}
 }
 
-// TestPointTimeClampsFutureToFallback — K3-1: время из будущего не дропается
-// и не принимается как есть, а приводится к моменту приёма; ahead — на
-// сколько точка опережала. Прошлое внутри окна проходит без изменений,
-// старше окна — дропается по-прежнему.
 func TestPointTimeClampsFutureToFallback(t *testing.T) {
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 	cases := []struct {
@@ -83,10 +77,6 @@ func TestPointTimeClampsFutureToFallback(t *testing.T) {
 	}
 }
 
-// TestMapOTLPClampsFutureAndCounts — сквозь MapOTLP: точка из будущего
-// попадает в вывод с TS == момент приёма (раньше дропалась, если опережала
-// больше суток, и принималась как есть, если меньше), и каждая такая точка
-// увеличивает счётчик self-метрики. Точки без опережения счётчик не трогают.
 func TestMapOTLPClampsFutureAndCounts(t *testing.T) {
 	resetClockSkew(t)
 	captureWarnLog(t)
@@ -121,16 +111,11 @@ func TestMapOTLPClampsFutureAndCounts(t *testing.T) {
 	}
 }
 
-// TestClockSkewLogThresholdAndRateLimit — лог пишется только при опережении
-// не меньше минуты, не чаще раза в минуту на процесс, и одна запись — отчёт
-// за период: сколько точек клэмпнуто с прошлой записи и максимальное
-// опережение, плюс имя хоста, раз оно под рукой у парсера.
 func TestClockSkewLogThresholdAndRateLimit(t *testing.T) {
 	resetClockSkew(t)
 	buf := captureWarnLog(t)
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 
-	// Джиттер: клэмпится и считается, но в лог не идёт.
 	MapOTLP(hostGaugeMetrics("web-1", uint64(now.Add(5*time.Second).UnixNano())), now)
 	if buf.Len() != 0 {
 		t.Fatalf("jitter below threshold must not log, got: %s", buf.String())
@@ -139,8 +124,7 @@ func TestClockSkewLogThresholdAndRateLimit(t *testing.T) {
 		t.Fatalf("ClockSkewPoints = %d, want 1 (jitter is still counted)", got)
 	}
 
-	// Опережение выше порога: первая запись — с накопленным «сколько» (2:
-	// джиттер + эта точка), максимальным опережением и хостом.
+	// points=2 учитывает и предыдущий джиттер.
 	MapOTLP(hostGaugeMetrics("web-1", uint64(now.Add(3*time.Minute).UnixNano())), now)
 	first := buf.String()
 	if !strings.Contains(first, "clamped to the receive time") {
@@ -152,15 +136,12 @@ func TestClockSkewLogThresholdAndRateLimit(t *testing.T) {
 		}
 	}
 
-	// Та же минута: вторая точка выше порога — молча (ограничение частоты),
-	// но накапливается.
 	buf.Reset()
 	MapOTLP(hostGaugeMetrics("web-2", uint64(now.Add(20*time.Second+10*time.Minute).UnixNano())), now.Add(20*time.Second))
 	if buf.Len() != 0 {
 		t.Fatalf("second warning within a minute must be suppressed, got: %s", buf.String())
 	}
 
-	// Минута прошла: новая запись — про накопленное с прошлой (1 точка, 10m).
 	MapOTLP(hostGaugeMetrics("web-2", uint64(now.Add(2*time.Minute).UnixNano())), now.Add(clockSkewLogInterval))
 	second := buf.String()
 	if strings.Count(second, "clamped to the receive time") != 1 {
@@ -176,15 +157,8 @@ func TestClockSkewLogThresholdAndRateLimit(t *testing.T) {
 	}
 }
 
-// TestClockSkewNoteConcurrentSingleLog — параллельные приёмники в одну минуту:
-// право на запись в лог берётся CAS'ом по lastLog, проигравшие CAS выходят
-// молча, и запись ровно одна; при этом ни один вклад в total/pending/maxAhead
-// не теряется — сумма «сколько» по всем записям за все раунды равна числу
-// вызовов, а максимум — максимальному опережению. Раундов много, а старт —
-// по атомарному флагу, на котором горутины крутятся вхолостую (а не по
-// закрытию канала, из которого рантайм будит их по одной): только так окно
-// между Load и CompareAndSwap у нескольких потоков реально пересекается, и
-// ветка проигравшего CAS исполняется, а не только могла бы.
+// Старт по атомарному флагу, а не закрытию канала: только так окно между Load
+// и CompareAndSwap реально пересекается, и проигравший CAS правда исполняется.
 func TestClockSkewNoteConcurrentSingleLog(t *testing.T) {
 	resetClockSkew(t)
 	buf := captureWarnLog(t)
@@ -226,8 +200,7 @@ func TestClockSkewNoteConcurrentSingleLog(t *testing.T) {
 		if got := clockSkew.total.Load(); got != uint64(goroutines) {
 			t.Fatalf("round %d: total = %d, want %d (a contribution was lost)", round, got, goroutines)
 		}
-		// Записанное «сколько» плюс то, что осталось на следующий период, —
-		// ровно число вызовов: вклад ни потерян, ни посчитан дважды.
+		// logged + pending — ровно число вызовов: вклад не теряется и не считается дважды.
 		var logged uint64
 		for _, f := range strings.Fields(logs) {
 			if v, ok := strings.CutPrefix(f, "points="); ok {
@@ -242,8 +215,7 @@ func TestClockSkewNoteConcurrentSingleLog(t *testing.T) {
 			t.Fatalf("round %d: logged %d + pending %d != %d calls", round, logged, clockSkew.pending.Load(), goroutines)
 		}
 		seen += logged
-		// Самый большой вклад либо ушёл в лог, либо ещё ждёт следующей
-		// записи — потеряться он не может.
+		// Наибольший вклад либо в логе, либо ещё pending — не может потеряться.
 		wantMax := clockSkewLogThreshold + time.Duration(goroutines-1)*time.Second
 		if !strings.Contains(logs, "max_ahead="+wantMax.String()) && time.Duration(clockSkew.maxAhead.Load()) != wantMax {
 			t.Fatalf("round %d: largest contribution %v neither logged nor pending (pending max %v):\n%s",

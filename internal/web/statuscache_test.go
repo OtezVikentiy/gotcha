@@ -9,16 +9,12 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// TestStatusCacheWaiterHonorsRequestContext — ждущий чужой сборки запрос обязан
-// отпустить свою горутину, как только клиент отвалился. Роут /status/{key}
-// публичный, без сессии и без rate limit'а: если PG/CH подвиснут, каждый
-// анонимный запрос по этому slug'у парковал бы горутину, которую уже некому
-// освободить (до фикса ждущие висели на голом <-b.done).
+// Роут /status/{key} публичный, без сессии и rate limit — если PG/CH подвиснут, анонимный
+// запрос не должен парковать горутину, которую уже некому освободить.
 func TestStatusCacheWaiterHonorsRequestContext(t *testing.T) {
 	var c statusCache
 	now := time.Now()
 
-	// Ведущий заходит в build и застревает там (как на подвисшей БД).
 	leaderIn := make(chan struct{})
 	release := make(chan struct{})
 	leaderDone := make(chan struct{})
@@ -32,8 +28,6 @@ func TestStatusCacheWaiterHonorsRequestContext(t *testing.T) {
 	}()
 	<-leaderIn
 
-	// Ждущий, чей запрос отменён (клиент закрыл соединение), возвращается сразу,
-	// а не висит до конца чужой сборки.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -55,7 +49,6 @@ func TestStatusCacheWaiterHonorsRequestContext(t *testing.T) {
 		t.Fatal("waiter with a cancelled request context is still blocked on the leader's build")
 	}
 
-	// Ведущий при этом свою сборку не бросает — её результат ждут другие.
 	close(release)
 	<-leaderDone
 
@@ -68,11 +61,8 @@ func TestStatusCacheWaiterHonorsRequestContext(t *testing.T) {
 	}
 }
 
-// TestStatusCacheTTLFromBuildEnd — P2-11: TTL должен отсчитываться от момента,
-// когда сборка ЗАВЕРШИЛАСЬ, а не от момента входа в load. До фикса putLocked
-// брал заранее захваченный `now` (заход в load), так что запись, положенная в
-// кеш после долгой сборки, жила заметно меньше заявленных statusCacheTTL —
-// эффективный TTL = statusCacheTTL - длительность сборки.
+// TTL должен отсчитываться от завершения сборки, не от входа в load — иначе долгая сборка
+// съедала бы часть statusCacheTTL из времени жизни записи.
 func TestStatusCacheTTLFromBuildEnd(t *testing.T) {
 	var c statusCache
 	enteredAt := time.Now()
@@ -93,10 +83,6 @@ func TestStatusCacheTTLFromBuildEnd(t *testing.T) {
 		t.Fatal("load() did not populate the cache")
 	}
 
-	// От момента входа в load TTL пришлось бы отсчитывать так, что expires
-	// оказался бы существенно раньше enteredAt+statusCacheTTL, если бы putLocked
-	// всё ещё использовал старый `now`. Проверяем, что expires близок к
-	// "сейчас + TTL" (после сборки), а не "enteredAt + TTL" (до неё).
 	wantExpiresAfterBuild := time.Now().Add(statusCacheTTL)
 	if entry.expires.Before(enteredAt.Add(statusCacheTTL).Add(buildDelay / 2)) {
 		t.Fatalf("expires = %v looks anchored to load()-entry time (%v) rather than build completion (~%v); TTL is being eaten by build duration",

@@ -10,15 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0089IssuesProjectFirstSeenIdx — issue.Service.CountNewSince
-// (задача 7 nav-ia, строка состояния «Обзора») фильтрует WHERE project_id =
-// $1 AND first_seen >= $2; issues_project_last_seen_idx (0003) начинается с
-// project_id, но продолжается last_seen — не годится под отсечку по
-// first_seen. На непустой базе (TestLatestMigrationHasDataTest): заводим два
-// issue разного возраста ДО миграции 89, проверяем появление индекса,
-// избирательность под фильтр CountNewSince, откатываем и убеждаемся, что
-// данные соседних строк не пострадали (тот же приём, что и
-// migrate_0080_test.go).
+// CountNewSince фильтрует WHERE project_id=$1 AND first_seen >= $2; issues_project_last_seen_idx
+// (0003) продолжается last_seen, а не first_seen — не годится под эту отсечку.
 func TestMigrate0089IssuesProjectFirstSeenIdx(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -63,8 +56,7 @@ func TestMigrate0089IssuesProjectFirstSeenIdx(t *testing.T) {
 		t.Fatal("индекс issues_project_first_seen_idx не найден после миграции до 89")
 	}
 
-	// Индекс избирательно покрывает именно фильтр CountNewSince: свежий issue
-	// (first_seen час назад) попадает под окно суток, старый (48ч) — нет.
+	// Свежий issue (час назад) попадает под окно суток, старый (48ч) — нет.
 	var found bool
 	if err := pool.QueryRow(ctx, `
 		SELECT EXISTS (SELECT 1 FROM issues

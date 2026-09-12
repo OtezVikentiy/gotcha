@@ -26,10 +26,7 @@ type stack struct {
 	pool *pgxpool.Pool
 	srv  *httptest.Server
 	h    *web.Handler
-	// mux — тот же роутер, что обслуживает srv. Нужен тестам, которые
-	// проверяют РЕГИСТРАЦИЮ маршрута, а не только код ответа: 404 одинаково
-	// возвращают и «обработчик отверг битый id», и «такого маршрута нет».
-	mux *http.ServeMux
+	mux  *http.ServeMux
 }
 
 func newStack(t *testing.T) *stack {
@@ -39,7 +36,7 @@ func newStack(t *testing.T) *stack {
 	authSvc := auth.NewService(pool)
 	orgSvc := org.NewService(pool, 1_000_000)
 	issueSvc := issue.NewService(pool)
-	var events *event.Query // не трогается в задаче 4
+	var events *event.Query
 
 	mux := http.NewServeMux()
 	var h *web.Handler
@@ -49,27 +46,14 @@ func newStack(t *testing.T) *stack {
 	t.Cleanup(srv.Close)
 
 	h = web.New(authSvc, orgSvc, issueSvc, events, srv.URL)
-	// Alerts (план 6, задача 5): онбординг вызывает EnsureDefaultRules при
-	// создании проекта, а /projects/{id}/alerts нужен во всех сценариях,
-	// использующих этот общий стенд (alerts_test.go, orgsettings_test.go,
-	// projsettings_test.go, onboarding_test.go) — заводим сервис здесь один
-	// раз, а не в каждом тесте отдельно.
 	h.Alerts = alert.NewService(pool)
-	// Outbox (план 6, задача 5, spec §7): страница /projects/{id}/alerts
-	// показывает failed-доставки — тот же принцип, что и Alerts выше, заводим
-	// один раз на весь стенд, а не в каждом тесте.
 	h.Outbox = notify.NewOutbox(pool)
-	// Signals (аудит перед 1.0, K7-5/K7-6): callout устаревших путей на
-	// странице настроек проекта (projsettings_test.go) читает эту таблицу
-	// через s.h.Signals.Bump напрямую, тем же приёмом, что и issuesStack.
 	h.Signals = ingestsignal.NewStore(pool)
 	h.Register(mux)
 
 	return &stack{pool: pool, srv: srv, h: h, mux: mux}
 }
 
-// noRedirectClient не следует за редиректами, чтобы можно было проверить
-// статус и Location самостоятельно.
 func noRedirectClient() *http.Client {
 	return &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -107,9 +91,6 @@ func sessionCookie(resp *http.Response) *http.Cookie {
 	return nil
 }
 
-// TestRegisterExistingEmailNeutralMessage — SEC-L1: повторная регистрация уже
-// занятого email не должна раскрывать существование аккаунта (enumeration).
-// Ответ обязан быть нейтральным, без формулировки «уже зарегистрирован».
 func TestRegisterExistingEmailNeutralMessage(t *testing.T) {
 	s := newStack(t)
 
@@ -119,7 +100,6 @@ func TestRegisterExistingEmailNeutralMessage(t *testing.T) {
 		"password2": {"correct-horse-battery"},
 	}
 
-	// Первая регистрация — успех (303).
 	resp := postForm(t, s.srv, "/register", form, s.srv.URL, nil)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -127,7 +107,6 @@ func TestRegisterExistingEmailNeutralMessage(t *testing.T) {
 		t.Fatalf("first register status = %d, want 303", resp.StatusCode)
 	}
 
-	// Повторная регистрация того же email — не должна палить существование аккаунта.
 	resp = postForm(t, s.srv, "/register", form, s.srv.URL, nil)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -139,9 +118,6 @@ func TestRegisterExistingEmailNeutralMessage(t *testing.T) {
 	}
 }
 
-// TestLoginPerIPRateLimit — SEC-L2: глобальный per-IP лимит. 21 попытка входа с
-// одного IP по РАЗНЫМ email: per-account лимит (по ip|email) не сработал бы, так
-// как каждый email уникален, а per-IP (20/мин) должен отдать 429 на 21-й.
 func TestLoginPerIPRateLimit(t *testing.T) {
 	s := newStack(t)
 
@@ -160,9 +136,6 @@ func TestLoginPerIPRateLimit(t *testing.T) {
 	}
 }
 
-// TestLoginBadCredentialsPreservesEmail — K7-12: после неверного пароля поле
-// email в форме не должно пустеть — человек уже набрал его один раз. Пароль,
-// наоборот, никогда не возвращается: поле password остаётся пустым.
 func TestLoginBadCredentialsPreservesEmail(t *testing.T) {
 	s := newStack(t)
 
@@ -187,7 +160,6 @@ func TestLoginBadCredentialsPreservesEmail(t *testing.T) {
 func TestWebAuthFlow(t *testing.T) {
 	s := newStack(t)
 
-	// GET /login → 200 + форма.
 	resp, err := http.Get(s.srv.URL + "/login")
 	if err != nil {
 		t.Fatalf("get /login: %v", err)
@@ -201,7 +173,6 @@ func TestWebAuthFlow(t *testing.T) {
 		t.Fatalf("GET /login body has no <form: %s", body)
 	}
 
-	// POST /register (валидная форма, верный Origin) → 303 на /, cookie выставлена.
 	form := url.Values{
 		"email":     {"web-user@example.com"},
 		"password":  {"correct-horse-battery"},
@@ -221,7 +192,6 @@ func TestWebAuthFlow(t *testing.T) {
 		t.Fatalf("POST /register did not set session cookie")
 	}
 
-	// GET / с cookie → 303 /onboarding (организаций нет).
 	req, _ := http.NewRequest(http.MethodGet, s.srv.URL+"/", nil)
 	req.AddCookie(cookie)
 	resp, err = noRedirectClient().Do(req)
@@ -237,7 +207,6 @@ func TestWebAuthFlow(t *testing.T) {
 		t.Fatalf("GET / Location = %q, want /onboarding", got)
 	}
 
-	// GET / с HX-Request: true, без cookie → 200 + HX-Redirect.
 	req, _ = http.NewRequest(http.MethodGet, s.srv.URL+"/", nil)
 	req.Header.Set("HX-Request", "true")
 	resp, err = noRedirectClient().Do(req)
@@ -253,7 +222,6 @@ func TestWebAuthFlow(t *testing.T) {
 		t.Fatalf("GET / (htmx) HX-Redirect = %q, want /login", got)
 	}
 
-	// POST /login без Origin → 403.
 	loginForm := url.Values{"email": {"web-user@example.com"}, "password": {"wrong-password"}}
 	resp = postForm(t, s.srv, "/login", loginForm, "", nil)
 	io.Copy(io.Discard, resp.Body)
@@ -262,7 +230,6 @@ func TestWebAuthFlow(t *testing.T) {
 		t.Fatalf("POST /login (no origin) status = %d, want 403", resp.StatusCode)
 	}
 
-	// POST /login с неверным паролем → 422 и текст ошибки.
 	resp = postForm(t, s.srv, "/login", loginForm, s.srv.URL, nil)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -273,8 +240,6 @@ func TestWebAuthFlow(t *testing.T) {
 		t.Fatalf("POST /login (wrong password) body missing error text: %s", body)
 	}
 
-	// POST /login 6 раз подряд (тот же ip|email) → шестой 429.
-	// Первая попытка уже израсходована выше — используем оставшиеся 5 слотов.
 	var last *http.Response
 	for i := 0; i < 5; i++ {
 		last = postForm(t, s.srv, "/login", loginForm, s.srv.URL, nil)
@@ -285,7 +250,6 @@ func TestWebAuthFlow(t *testing.T) {
 		t.Fatalf("6th POST /login status = %d, want 429", last.StatusCode)
 	}
 
-	// POST /logout → cookie очищена, GET / → 303 /login.
 	resp = postForm(t, s.srv, "/logout", url.Values{}, s.srv.URL, cookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -298,7 +262,7 @@ func TestWebAuthFlow(t *testing.T) {
 	}
 
 	req, _ = http.NewRequest(http.MethodGet, s.srv.URL+"/", nil)
-	req.AddCookie(cookie) // старая cookie, сессия уже уничтожена на сервере
+	req.AddCookie(cookie)
 	resp, err = noRedirectClient().Do(req)
 	if err != nil {
 		t.Fatalf("get / after logout: %v", err)

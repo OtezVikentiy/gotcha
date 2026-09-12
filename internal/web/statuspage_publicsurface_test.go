@@ -9,13 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestWebStatusPageCSSUsesVersionedURL — L1: и основной кабинет
-// (layout.templ), и публичная статус-страница ссылаются на один и тот же
-// /static/app.css, а web.go проставляет Cache-Control по наличию ?v=,
-// совпадающему с текущим хэшем (cacheControl в web.go). Раньше статус-
-// страница подключала CSS голым путём и попадала в короткую ветку
-// max-age=3600, тогда как тот же URL из кабинета обещал прокси/CDN
-// immutable — двойная политика на один URL. Ссылка обязана нести ?v=.
 func TestWebStatusPageCSSUsesVersionedURL(t *testing.T) {
 	s := newStatusPageStack(t)
 	proj, _, _ := statusPageProject(t, s, "spcss")
@@ -37,13 +30,7 @@ func TestWebStatusPageCSSUsesVersionedURL(t *testing.T) {
 	}
 }
 
-// extractHint вырезает содержимое одного из двух блоков-подсказок публичной
-// страницы по атрибуту-зацепке data-status-note="timezone"/"paused" — а не по
-// классу оформления (обе подсказки визуально используют общий класс "hint",
-// он их не различает) и не всей страницы целиком, чтобы проверка на «чужой»
-// язык (см. ниже) не спотыкалась о легитимный контент вроде имени монитора,
-// заданного пользователем по-русски, которое вполне может стоять на
-// английской странице.
+// матчим по data-status-note, не по классу — "hint" общий у обеих подсказок.
 func extractHint(t *testing.T, html, note string) string {
 	t.Helper()
 	marker := `data-status-note="` + note + `"`
@@ -59,11 +46,8 @@ func extractHint(t *testing.T, html, note string) string {
 	return rest[:end]
 }
 
-// hasCyrillic сообщает, есть ли в строке кириллица — дешёвый и надёжный
-// сторож против тихого фолбэка i18n.T на локаль по умолчанию (RU), когда в
-// запрошенной локали (EN) ключ отсутствует: english.json теряет ключ →
-// страница молча рисует русский текст → проверка вида strings.Contains(en,
-// "UTC") этого не замечает, потому что "UTC" одинаково в обоих языках.
+// ловит тихий фолбэк i18n.T на RU при отсутствии ключа в EN — сравнение по
+// общему для языков слову вроде "UTC" такой фолбэк не заметит.
 func hasCyrillic(s string) bool {
 	for _, r := range s {
 		if r >= 0x0400 && r <= 0x04FF {
@@ -73,22 +57,11 @@ func hasCyrillic(s string) bool {
 	return false
 }
 
-// TestWebStatusPagePublicSurfaceExplainsItself — I2: единственная поверхность
-// продукта, которую видит человек без учётной записи, обязана сама объяснять
-// себя — в каком часовом поясе показано время и что «Пауза» не значит отказ.
-// Проверяется на обеих локалях: подписи — новые ключи i18n, обязаны попасть
-// в обе. Ассерты ловят ЛОКАЛИЗОВАННЫЙ текст (часть фразы, которая на RU и EN
-// различается), а не общее слово вроде "UTC" — иначе тест слеп к тихому
-// фолбэку i18n.T на локаль по умолчанию при отсутствии ключа в запрошенной
-// (см. hasCyrillic выше и историю этого теста).
 func TestWebStatusPagePublicSurfaceExplainsItself(t *testing.T) {
 	s := newStatusPageStack(t)
 	proj, _, _ := statusPageProject(t, s, "spexplain")
 	m := statusPageMonitor(t, s, proj.ID, "explain-monitor", "https://example.com/explain")
-	// Подсказка про «Паузу» теперь условна (рендерится только когда есть
-	// монитор в этом статусе) — монитор страницы обязан быть на паузе,
-	// иначе блок data-status-note="paused" не появится вовсе и тест провалится не на
-	// той причине.
+	// блок data-status-note="paused" рендерится только при мониторе на паузе.
 	if err := s.uptime.SetEnabled(context.Background(), m.ID, false); err != nil {
 		t.Fatalf("pause monitor: %v", err)
 	}
@@ -129,10 +102,6 @@ func TestWebStatusPagePublicSurfaceExplainsItself(t *testing.T) {
 	}
 }
 
-// TestWebStatusPagePausedHintOnlyWhenPaused — I2 P2: подсказка про «Паузу»
-// (status.monitor.paused_hint) уместна только там, где посетитель реально
-// видит бейдж «Пауза». На странице без единого такого монитора она — шум на
-// единственной публичной поверхности продукта.
 func TestWebStatusPagePausedHintOnlyWhenPaused(t *testing.T) {
 	s := newStatusPageStack(t)
 	proj, _, _ := statusPageProject(t, s, "sppausehint")

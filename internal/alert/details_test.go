@@ -9,13 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestDetailPolicyByRecipient — гейт трансграничной передачи решает по
-// ПОЛУЧАТЕЛЮ, а не по транспорту.
-//
-// Прежнее правило (telegram/webhook — внешние, email — свой) ошибалось в обе
-// стороны: ящик на публичном сервисе получал полный текст ошибки, потому что
-// «это же email», а вебхук на собственный сервер деталей не получал, хотя
-// вообще не покидал контура.
 func TestDetailPolicyByRecipient(t *testing.T) {
 	p := alert.NewDetailPolicy("https://gotcha.corp.example", nil, false)
 
@@ -26,9 +19,8 @@ func TestDetailPolicyByRecipient(t *testing.T) {
 	}{
 		{"почта на хосте инстанса", alert.Channel{Kind: alert.ChannelEmail, Target: "oncall@gotcha.corp.example"}, true},
 		{"почта на поддомене хоста", alert.Channel{Kind: alert.ChannelEmail, Target: "a@mail.gotcha.corp.example"}, true},
-		// Родительский домен САМ по себе не доверенный: подъём на уровень вверх
-		// от хоста инстанса на public suffix (gotcha.github.io) выдал бы доверие
-		// всему github.io. Родительский домен указывается явно.
+		// Родительский домен САМ по себе не доверенный — иначе gotcha.github.io
+		// выдал бы доверие всему github.io.
 		{"почта на родительском домене", alert.Channel{Kind: alert.ChannelEmail, Target: "oncall@corp.example"}, false},
 		{"почта на публичном сервисе", alert.Channel{Kind: alert.ChannelEmail, Target: "someone@gmail.com"}, false},
 		{"вебхук на поддомен инстанса", alert.Channel{Kind: alert.ChannelWebhook, Target: "https://hooks.gotcha.corp.example/x"}, true},
@@ -45,8 +37,6 @@ func TestDetailPolicyByRecipient(t *testing.T) {
 	}
 }
 
-// TestDetailPolicyTrustedRecipients — почта и вебхуки организации живут не
-// обязательно на домене инстанса; для этого и существует список.
 func TestDetailPolicyTrustedRecipients(t *testing.T) {
 	p := alert.NewDetailPolicy("https://gotcha.example", []string{"corp.example", "Ops.Example."}, false)
 
@@ -60,8 +50,8 @@ func TestDetailPolicyTrustedRecipients(t *testing.T) {
 			t.Errorf("AllowsDetails(%s %q) = false, want true", ch.Kind, ch.Target)
 		}
 	}
-	// Суффикс совпадает по ГРАНИЦЕ метки, а не по строке: evilcorp.example не
-	// поддомен corp.example, и подставить такой домен нельзя.
+	// Суффикс — по границе метки, не по строке: evilcorp.example не поддомен
+	// corp.example.
 	denied := []alert.Channel{
 		{Kind: alert.ChannelEmail, Target: "a@evilcorp.example"},
 		{Kind: alert.ChannelWebhook, Target: "https://notcorp.example/x"},
@@ -73,8 +63,6 @@ func TestDetailPolicyTrustedRecipients(t *testing.T) {
 	}
 }
 
-// TestDetailPolicyAllowAll — глобальное разрешение оператора перекрывает всё,
-// включая Telegram: он заявил законное основание для трансграничной передачи.
 func TestDetailPolicyAllowAll(t *testing.T) {
 	p := alert.NewDetailPolicy("https://gotcha.example", nil, true)
 	for _, ch := range []alert.Channel{
@@ -88,20 +76,13 @@ func TestDetailPolicyAllowAll(t *testing.T) {
 	}
 }
 
-// TestDetailPolicyChannelTrustedFlag — отметка на самом канале разрешает
-// детали там, где получателя опознать нечем. Ради Telegram она и заведена:
-// chat_id не домен, никакой список доверенных хостов его не покроет, и без
-// этой отметки у оператора оставался только GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED,
-// открывающий детали всем каналам всех проектов разом.
 func TestDetailPolicyChannelTrustedFlag(t *testing.T) {
 	p := alert.NewDetailPolicy("https://gotcha.corp.example", nil, false)
 	for _, ch := range []alert.Channel{
 		{Kind: alert.ChannelTelegram, Target: "418885689", Trusted: true},
 		{Kind: alert.ChannelEmail, Target: "me@gmail.com", Trusted: true},
 		{Kind: alert.ChannelWebhook, Target: "https://hooks.slack.com/x", Trusted: true},
-		// Даже неразбираемый получатель: отметка означает именно «я знаю, кто
-		// это, разобрать нечем» — иначе она не решала бы задачу, ради которой
-		// заведена.
+		// Даже неразбираемый получатель подтверждается — отметка именно для этого.
 		{Kind: "sms", Target: "+70000000000", Trusted: true},
 	} {
 		if !p.AllowsDetails(ch) {
@@ -119,9 +100,6 @@ func TestDetailPolicyChannelTrustedFlag(t *testing.T) {
 	}
 }
 
-// TestDetailPolicyFailsClosed — что не разобралось или не опознано, деталей не
-// получает. Нулевая политика не доверяет никому: забытое поле у нового
-// нотифаера не должно означать «шлём всё».
 func TestDetailPolicyFailsClosed(t *testing.T) {
 	var zero alert.DetailPolicy
 	if zero.AllowsDetails(alert.Channel{Kind: alert.ChannelEmail, Target: "a@corp.example"}) {
@@ -142,9 +120,6 @@ func TestDetailPolicyFailsClosed(t *testing.T) {
 	}
 }
 
-// TestDetailPolicyNormalizesHost — регистр, порт, корневая точка и IPv6 в
-// скобках не должны менять решение: иначе доверенный получатель терял бы
-// детали из-за формы записи адреса.
 func TestDetailPolicyNormalizesHost(t *testing.T) {
 	p := alert.NewDetailPolicy("https://GOTCHA.Corp.Example./", nil, false)
 	for _, ch := range []alert.Channel{
@@ -159,10 +134,6 @@ func TestDetailPolicyNormalizesHost(t *testing.T) {
 	}
 }
 
-// TestDetailPolicyEmailLocalPartWithAt — домен берётся по ПОСЛЕДНЕМУ '@':
-// локальная часть по RFC 5321 может содержать его в кавычках, и разбор по
-// первому отдал бы за домен кусок локальной части — то есть чужой адрес мог бы
-// притвориться доверенным.
 func TestDetailPolicyEmailLocalPartWithAt(t *testing.T) {
 	p := alert.NewDetailPolicy("https://gotcha.corp.example", nil, false)
 	if p.AllowsDetails(alert.Channel{Kind: alert.ChannelEmail, Target: `"a@gotcha.corp.example"@gmail.com`}) {
@@ -170,12 +141,6 @@ func TestDetailPolicyEmailLocalPartWithAt(t *testing.T) {
 	}
 }
 
-// TestEvaluatorGatesEmailByRecipientDomain — сквозная проверка того, ради чего
-// политика и переписана: почта решается по домену получателя.
-//
-// Ящик организации получает детали, ящик на публичном почтовом сервисе — нет.
-// Раньше оба получали: гейт смотрел на транспорт, а email считался «своим» по
-// определению, и текст ошибки с возможными ПДн уезжал на @gmail.com.
 func TestEvaluatorGatesEmailByRecipientDomain(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -239,10 +204,6 @@ func TestEvaluatorGatesEmailByRecipientDomain(t *testing.T) {
 	}
 }
 
-// TestDetailPolicyDefaultStandIsTrusted — типовой локальный стенд не должен
-// требовать настройки: инстанс на localhost и почта на .local — заведомо своя
-// инфраструктура. Тест держит этот случай явно, потому что именно на нём
-// строгий дефолт заметили бы первым, если бы он оказался слишком строгим.
 func TestDetailPolicyDefaultStandIsTrusted(t *testing.T) {
 	p := alert.NewDetailPolicy("http://localhost:59080", nil, false)
 	for _, ch := range []alert.Channel{

@@ -9,9 +9,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// seedSumCumulativeHost — как seedSumCumulative (query_extra_test.go), но с
-// host и attributes: нужен для SeriesGroupedRate, где device/direction — это
-// атрибуты, а host — обязательный аргумент метода.
+// Как seedSumCumulative (query_extra_test.go), но с host/attributes — нужен для SeriesGroupedRate,
+// где device/direction — атрибуты, host — обязательный аргумент.
 func seedSumCumulativeHost(t *testing.T, conn interface {
 	Exec(ctx context.Context, query string, args ...any) error
 }, projectID int64, name, host string, ts time.Time, val float64, attrs map[string]string) {
@@ -27,10 +26,8 @@ func seedSumCumulativeHost(t *testing.T, conn interface {
 	}
 }
 
-// TestSeriesGroupedRateSumsDevices: сердце B2 ревью — rate группы должен быть
-// СУММОЙ СКОРОСТЕЙ устройств мелкой размерности (groupKey, deviceKey), а не
-// rate от max(value) по группе без разбивки на device (тот вариант дал бы
-// 100/60 — скорость только eth0, скорость lo потерялась бы в max()).
+// Rate группы должен быть СУММОЙ СКОРОСТЕЙ устройств мелкой размерности (groupKey, deviceKey), не rate
+// от max(value) по группе без разбивки на device (тот вариант дал бы 100/60 — только скорость eth0).
 func TestSeriesGroupedRateSumsDevices(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -71,11 +68,8 @@ func TestSeriesGroupedRateSumsDevices(t *testing.T) {
 	}
 }
 
-// TestSeriesGroupedRateSparseDevice: сценарий спеки §8 «отсутствие ложных
-// нулей» — eth0 отдаёт точку каждую минуту (=шаг), lo — раз в 3 минуты
-// (скрейп реже шага, разъехавшиеся наборы бакетов). Скорость lo между её
-// точками обязана «размазаться» на пропущенные бакеты, иначе сумма receive
-// проседает в бакетах, где именно у lo нет точки.
+// eth0 отдаёт точку каждую минуту (=шаг), lo — раз в 3 минуты (реже шага, разъехавшиеся бакеты).
+// Скорость lo между её точками обязана «размазаться» на пропущенные бакеты, иначе сумма receive проседает.
 func TestSeriesGroupedRateSparseDevice(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -128,10 +122,8 @@ func TestSeriesGroupedRateSparseDevice(t *testing.T) {
 	}
 }
 
-// TestSeriesGroupedRateZeroStepNoPanic: step=0 раньше утекал некэмпленным в
-// Go-арифметику размазывания (n := gap/step) и паниковал integer divide by
-// zero при ≥2 точках устройства. step=0 обязан клэмпнуться к 1s точно так же,
-// как клэмпится stepSec для SQL — результат должен совпасть с явным step=1s.
+// step=0 обязан клэмпнуться к 1s — некэмпленный утекает в Go-арифметику размазывания (n := gap/step)
+// и паникует integer divide by zero при ≥2 точках устройства.
 func TestSeriesGroupedRateZeroStepNoPanic(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -174,8 +166,6 @@ func TestSeriesGroupedRateZeroStepNoPanic(t *testing.T) {
 	}
 }
 
-// TestSeriesGroupedTopNTruncates: 10 mountpoint'ов на одном хосте → не больше
-// MaxSeriesGroups групп, Truncated=true, отброшены группы с наименьшим средним.
 func TestSeriesGroupedTopNTruncates(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -212,9 +202,8 @@ func TestSeriesGroupedTopNTruncates(t *testing.T) {
 	}
 }
 
-// TestSeriesGroupedScalar: два mountpoint'а → две группы, значение каждой
-// точки — avg по бакету, группы отсортированы по убыванию среднего (для
-// стабильной легенды графика).
+// Два mountpoint'а → две группы, значение каждой точки — avg по бакету, группы отсортированы по убыванию
+// среднего (для стабильной легенды).
 func TestSeriesGroupedScalar(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -258,11 +247,8 @@ func TestSeriesGroupedScalar(t *testing.T) {
 	}
 }
 
-// TestSeriesGroupedEmptyHostAllHosts: host=="" обязан означать «все хосты»
-// (симметрия с Series/scalarSeries), а не «строки с буквально пустым host» —
-// рецепты сервисов B6 живут без resourcedetection, их метрики приходят с
-// пустым host, и жёсткое равенство host оставляло график рецепта пустым. Контроль:
-// непустой host по-прежнему фильтрует только свои строки.
+// host=="" обязан означать «все хосты» (симметрия с Series), не «буквально пустой host» — рецепты
+// сервисов живут без resourcedetection. Непустой host по-прежнему фильтрует только свои строки.
 func TestSeriesGroupedEmptyHostAllHosts(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -301,8 +287,7 @@ func TestSeriesGroupedEmptyHostAllHosts(t *testing.T) {
 	}
 }
 
-// TestSeriesGroupedRateEmptyHostAllHosts: тот же пустой-байпас host для
-// rate-версии — счётчики без host-атрибуции должны быть видны при host=="".
+// Тот же пустой-байпас host для rate-версии — счётчики без host-атрибуции должны быть видны при host=="".
 func TestSeriesGroupedRateEmptyHostAllHosts(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -346,12 +331,8 @@ func TestSeriesGroupedRateEmptyHostAllHosts(t *testing.T) {
 	}
 }
 
-// TestLatestByHostWorstMountpoint: у web-1 два лейбла mountpoint внутри метрики
-// (/, /var) и у /var есть СТАРАЯ точка-приманка со значением 0.10 до свежих
-// 0.30 и 0.95. Одноуровневый argMax по host взял бы значение ОДНОГО случайного
-// mountpoint (или, что хуже, старую приманку) — правильный ответ 0.95 получается
-// только двухуровневым агрегатом: argMax(value, ts) по (host, mountpoint), затем
-// max по host.
+// У web-1 два mountpoint (/, /var), у /var — старая точка-приманка (0.10) до свежих (0.30, 0.95).
+// Одноуровневый argMax по host взял бы ОДНО случайное значение — верно только двухуровневый агрегат даёт 0.95.
 func TestLatestByHostWorstMountpoint(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -365,7 +346,6 @@ func TestLatestByHostWorstMountpoint(t *testing.T) {
 	// Старая точка-приманка на /var: раньше свежих, но с "заманчивым" низким значением.
 	seedGaugeHost(t, conn, pid, "system.filesystem.utilization", "prod", "web-1",
 		now.Add(-30*time.Minute), 0.10, map[string]string{"mountpoint": "/var"})
-	// Свежие точки.
 	seedGaugeHost(t, conn, pid, "system.filesystem.utilization", "prod", "web-1",
 		now.Add(-1*time.Minute), 0.30, map[string]string{"mountpoint": "/"})
 	seedGaugeHost(t, conn, pid, "system.filesystem.utilization", "prod", "web-1",
@@ -382,8 +362,7 @@ func TestLatestByHostWorstMountpoint(t *testing.T) {
 	}
 }
 
-// TestLatestByHostAvgOverCPUs: усреднение последних значений по ядрам (cpu=0,1)
-// state=idle для одного хоста.
+// Усреднение последних значений по ядрам (cpu=0,1), state=idle, для одного хоста.
 func TestLatestByHostAvgOverCPUs(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -413,8 +392,7 @@ func TestLatestByHostAvgOverCPUs(t *testing.T) {
 	}
 }
 
-// TestHostsListsActivity: два хоста, у каждого своя max(ts); Hosts возвращает
-// обе записи, отсортированные по имени хоста.
+// Два хоста, у каждого своя max(ts); Hosts возвращает обе записи, отсортированные по имени.
 func TestHostsListsActivity(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")

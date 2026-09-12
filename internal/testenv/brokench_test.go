@@ -6,9 +6,6 @@ import (
 	"time"
 )
 
-// TestBrokenCHFailsFast: соединение от BrokenCH обязано отвечать ошибкой на
-// запрос быстро — иначе тесты деградации web-страниц ждали бы dial-таймаут
-// на каждом обращении к ClickHouse (страница делает их по несколько).
 func TestBrokenCHFailsFast(t *testing.T) {
 	conn := BrokenCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -28,9 +25,6 @@ func TestBrokenCHFailsFast(t *testing.T) {
 	}
 }
 
-// TestBrokenCHCountingOneAttemptPerQuery: у BrokenCHCounting каждый запрос —
-// ровно одна попытка подключения (драйвер не ретраит рукопожатие), иначе по
-// счётчику нельзя было бы судить, сколько раз страница ходила в ClickHouse.
 func TestBrokenCHCountingOneAttemptPerQuery(t *testing.T) {
 	conn, attempts := BrokenCHCounting(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

@@ -100,9 +100,6 @@ func TestOutboxNotifierNotifyNewEnqueuesPerChannel(t *testing.T) {
 	}
 }
 
-// Трансграничный гейт: при политике без доверия получателю во внешние каналы
-// (Telegram/webhook) не должны уезжать iss.Title/iss.Culprit (имя транзакции,
-// текст SQL — потенциальные ПДн, 152-ФЗ); при true — уезжают, как раньше.
 func TestOutboxNotifierExternalDetailsGate(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	asvc := alert.NewService(pool)
@@ -187,8 +184,6 @@ func TestOutboxNotifierExternalDetailsGate(t *testing.T) {
 	})
 }
 
-// Регрессия (проблему починили, она вернулась) алертит отдельным заголовком:
-// дежурному важно отличить «нашли впервые» от «сломалось опять».
 func TestOutboxNotifierNotifyRegression(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	asvc := alert.NewService(pool)
@@ -269,9 +264,6 @@ func TestOutboxNotifierSkipsDisabledAndEmailChannels(t *testing.T) {
 	}
 }
 
-// Слот часового лимита не должен сгорать впустую: если ни один Enqueue не
-// прошёл (PG моргнула), разослано НИЧЕГО, и занятый слот означал бы, что бюджет
-// проекта на час потрачен на несостоявшийся алерт.
 func TestOutboxNotifierReleasesSlotWhenEnqueueFails(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	asvc := alert.NewService(pool)
@@ -286,8 +278,7 @@ func TestOutboxNotifierReleasesSlotWhenEnqueueFails(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	// Outbox на ЗАКРЫТОМ пуле: Enqueue гарантированно падает, клейм слота (n.Pool)
-	// при этом работает.
+	// Outbox на закрытом пуле — Enqueue гарантированно падает, клейм слота (n.Pool) при этом работает.
 	broken, err := pgxpool.New(ctx, pool.Config().ConnString())
 	if err != nil {
 		t.Fatalf("broken pool: %v", err)
@@ -316,10 +307,6 @@ func TestOutboxNotifierReleasesSlotWhenEnqueueFails(t *testing.T) {
 	}
 }
 
-// Троттлинг: у алертов о производительности не было НИ ОДНОГО ограничителя, и
-// проект, у которого детекция нашла проблему на каждом эндпойнте, получал бы
-// сообщение на каждую. Разрешено не больше maxPerfAlertsPerHour на проект в час;
-// проблемы при этом продолжают ЗАПИСЫВАТЬСЯ, не рассылается только лишнее.
 func TestOutboxNotifierThrottlesPerProject(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	asvc := alert.NewService(pool)
@@ -340,7 +327,6 @@ func TestOutboxNotifierThrottlesPerProject(t *testing.T) {
 
 	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true), Locale: i18n.Locale{Code: "en"}}
 
-	// 30 РАЗНЫХ проблем одного проекта: рассылается ровно лимит.
 	const attempts = 30
 	for i := 0; i < attempts; i++ {
 		f := nPlusOneFinding()
@@ -376,7 +362,6 @@ func TestOutboxNotifierThrottlesPerProject(t *testing.T) {
 			len(jobs), trace.MaxPerfAlertsPerHour)
 	}
 
-	// Лимит у каждого проекта свой: выбранный лимит соседа не глушит.
 	rec, err := psvc.Record(ctx, other, nPlusOneFinding(), "trace-other")
 	if err != nil {
 		t.Fatalf("Record other: %v", err)

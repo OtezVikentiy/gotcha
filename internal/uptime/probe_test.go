@@ -13,9 +13,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// newOrgID creates a bare organization (no project) — probes belong to an
-// org, not a project. Reuses the projectSeq counter from monitor_test.go so
-// slugs/emails stay globally unique across the package's tests.
+// переиспользует счётчик projectSeq (monitor_test.go), чтобы slug оставался
+// уникальным глобально по всем тестам пакета.
 func newOrgID(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	n := projectSeq.Add(1)

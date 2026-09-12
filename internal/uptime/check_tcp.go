@@ -10,11 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/netguard"
 )
 
-// TCPChecker — TCP connect-чекер: успешен, если удаётся установить
-// соединение в пределах таймаута монитора.
-//
-// SSRF: по умолчанию (AllowPrivate=false) коннекты к приватным/служебным
-// адресам режутся через netguard (по фактическому IP после резолва).
+// коннекты к приватным/служебным адресам режутся через netguard по
+// фактическому IP после резолва (см. HTTPChecker про устойчивость к SSRF).
 type TCPChecker struct {
 	// AllowPrivate=true отключает SSRF-фильтр приватных целей.
 	AllowPrivate bool

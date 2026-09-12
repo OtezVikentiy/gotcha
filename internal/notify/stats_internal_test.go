@@ -7,7 +7,6 @@ import (
 	"time"
 )
 
-// fakeProbe отдаёт заданный снимок или ошибку.
 type fakeProbe struct {
 	snap  QueueSnapshot
 	err   error
@@ -22,9 +21,7 @@ func (f *fakeProbe) QueueSnapshot(ctx context.Context) (QueueSnapshot, error) {
 	return f.snap, nil
 }
 
-// TestStatsCountersAreIndependent: три исхода доставки считаются раздельно —
-// иначе «отправлено 100» ничего не говорит о том, сколько из них дошло с
-// первого раза.
+// Иначе «отправлено 100» ничего не говорит, сколько из них дошло с первого раза.
 func TestStatsCountersAreIndependent(t *testing.T) {
 	var s Stats
 	s.countSent()
@@ -45,8 +42,6 @@ func TestStatsCountersAreIndependent(t *testing.T) {
 	}
 }
 
-// TestSnapshotBeforeFirstProbeIsZero: до первого опроса метрики отдают нули, а
-// не мусор.
 func TestSnapshotBeforeFirstProbeIsZero(t *testing.T) {
 	var s Stats
 	if got := s.Snapshot(); got != (QueueSnapshot{}) {
@@ -57,9 +52,6 @@ func TestSnapshotBeforeFirstProbeIsZero(t *testing.T) {
 	}
 }
 
-// TestRefreshKeepsLastSnapshotOnError — ключевое решение: неудачный опрос
-// оставляет прежний снимок. Обнулять его нельзя, иначе недоступная база
-// выглядела бы как здоровая доставка: «ждёт 0 задач, старейшей 0 секунд».
 func TestRefreshKeepsLastSnapshotOnError(t *testing.T) {
 	var s Stats
 	probe := &fakeProbe{snap: QueueSnapshot{Pending: 42, Failed: 7, OldestPendingAge: 3 * time.Hour}}
@@ -80,9 +72,7 @@ func TestRefreshKeepsLastSnapshotOnError(t *testing.T) {
 	}
 }
 
-// TestRunSnapshotsProbesImmediately: первый опрос идёт сразу, а не через
-// интервал. Иначе после рестарта метрики четверть минуты показывают нули —
-// ровно тогда, когда на них смотрят.
+// Иначе после рестарта метрики четверть минуты показывают нули.
 func TestRunSnapshotsProbesImmediately(t *testing.T) {
 	var s Stats
 	probe := &fakeProbe{snap: QueueSnapshot{Pending: 5}}

@@ -10,12 +10,8 @@ CREATE TABLE log_saved_filters (
     updated_at     timestamptz NOT NULL DEFAULT now()
 );
 
--- owner_user_id IS NULL означает общий фильтр проекта. Отдельной колонки
--- scope нет намеренно: два источника истины про одно и то же расходятся.
--- Две ссылки на пользователя ведут себя по-разному при удалении учётной
--- записи: личный фильтр уходит вместе с владельцем (CASCADE), общий
--- переживает уход автора (SET NULL) и показывается как созданный
--- удалённым пользователем.
+-- owner_user_id IS NULL — общий фильтр проекта (не отдельная колонка scope, чтобы не разойтись).
+-- Личный фильтр уходит с владельцем (CASCADE), общий переживает автора (SET NULL).
 
 CREATE UNIQUE INDEX log_saved_filters_shared_name_idx
     ON log_saved_filters (project_id, lower(name)) WHERE owner_user_id IS NULL;

@@ -11,12 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestAlertBudgetSuppressesFloodAndKeepsCount фиксирует дефект, из-за которого
-// потолок понадобился: троттлинг alert_throttle ключуется парой
-// (issue_id, rule_id), и у НОВОГО issue строки там нет по определению — он
-// проходит всегда. Отправитель с уникальным fingerprint на каждое событие
-// получал issue на событие и уведомление на событие, а ключ DSN публичен
-// (он лежит в браузерном SDK).
 func TestAlertBudgetSuppressesFloodAndKeepsCount(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -42,8 +36,6 @@ func TestAlertBudgetSuppressesFloodAndKeepsCount(t *testing.T) {
 	}
 	e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 
-	// Десять РАЗНЫХ issue: пер-issue троттлинг их не сдерживает — у каждого
-	// своя строка в alert_throttle, и каждая claim'ится успешно.
 	for i := 0; i < 10; i++ {
 		issueID := newEvalIssue(t, pool, pid, fmt.Sprintf("fp-budget-%d", i))
 		e.OnIssue(ctx, alert.Event{ProjectID: pid, IssueID: issueID, Kind: alert.KindNewIssue, Title: "boom"})
@@ -63,9 +55,6 @@ func TestAlertBudgetSuppressesFloodAndKeepsCount(t *testing.T) {
 	}
 }
 
-// TestAlertBudgetDigestReportsSuppressed — подавленное не теряется: после
-// истечения окна уходит сводка с числом. Потолок без сводки — молчаливая
-// потеря, а «тишина в Telegram» неотличима от «всё спокойно».
 func TestAlertBudgetDigestReportsSuppressed(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -98,8 +87,6 @@ func TestAlertBudgetDigestReportsSuppressed(t *testing.T) {
 		t.Fatalf("Claim: %v", err)
 	}
 
-	// Ждём истечения окна: сводка забирается ТОЛЬКО по его закрытию, иначе она
-	// сообщила бы неполное число посреди всплеска.
 	time.Sleep(1200 * time.Millisecond)
 
 	batches, err := svc.ClaimSuppressed(ctx, 10)
@@ -129,8 +116,6 @@ func TestAlertBudgetDigestReportsSuppressed(t *testing.T) {
 	}
 }
 
-// TestAlertBudgetDisabled — потолок 0 означает «выключено», а не «ничего не
-// пропускать».
 func TestAlertBudgetDisabled(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -167,9 +152,6 @@ func TestAlertBudgetDisabled(t *testing.T) {
 	}
 }
 
-// TestDigesterSendsSummary — рассыльщик сводок доводит подавленное до каналов.
-// Потолок без сводки — молчаливая потеря: «тишина в Telegram» неотличима от
-// «всё спокойно», а это ровно то, чего продукт мониторинга допускать не должен.
 func TestDigesterSendsSummary(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -186,7 +168,6 @@ func TestDigesterSendsSummary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	// Выключенный канал сводку получать не должен.
 	if _, err := svc.CreateChannel(ctx, alert.Channel{
 		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: false, Target: "https://example.com/off",
 	}); err != nil {
@@ -227,8 +208,7 @@ func TestDigesterSendsSummary(t *testing.T) {
 		t.Errorf("в сводке %v подавленных, want 3 (4 события − потолок 1)", jobs[0].Payload["count"])
 	}
 
-	// Повторный тик ничего не шлёт: счётчик обнулён при заборе, иначе сводка
-	// уходила бы на каждом тике.
+	// Счётчик обнулён при заборе — иначе сводка уходила бы на каждом тике.
 	d.Tick(ctx)
 	again, err := ob.Claim(ctx, 100)
 	if err != nil {
@@ -239,14 +219,6 @@ func TestDigesterSendsSummary(t *testing.T) {
 	}
 }
 
-// TestDigesterRunStops — цикл рассыльщика РЕАЛЬНО рассылает сводки и
-// завершается по отмене контекста.
-//
-// Раньше тест только запускал цикл, спал и проверял, что горутина вышла: он
-// оставался бы зелёным и с вырезанным вызовом Tick, потому что проверял
-// завершение цикла, а не его работу. Теперь в бюджете лежат подавленные
-// уведомления, и тест ждёт появления сводки в очереди — то есть результата
-// тика.
 func TestDigesterRunStops(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

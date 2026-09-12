@@ -2,10 +2,7 @@ package main
 
 import "testing"
 
-// TestHealthcheckURLFollowsAddr — дефолтный URL проверки следует за
-// GOTCHA_LISTEN_ADDR: оператор, сменивший порт, не должен получать второй
-// независимый симптом от той же правки (находка №99). Хост всегда 127.0.0.1:
-// GOTCHA_LISTEN_ADDR — адрес прослушивания, адресом назначения он быть не может.
+// GOTCHA_LISTEN_ADDR — адрес прослушивания, не назначения; хост проверки всегда 127.0.0.1
 func TestHealthcheckURLFollowsAddr(t *testing.T) {
 	cases := []struct {
 		addr string
@@ -32,8 +29,6 @@ func TestHealthcheckURLFollowsAddr(t *testing.T) {
 	}
 }
 
-// TestHealthcheckExplicitURLWins — явный --healthcheck-url перекрывает
-// и дефолт, и GOTCHA_LISTEN_ADDR.
 func TestHealthcheckExplicitURLWins(t *testing.T) {
 	getenv := func(string) string { return ":9000" }
 	url, ok := healthcheckRequested(

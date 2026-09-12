@@ -44,7 +44,6 @@ func TestSpanWriterInsertsTransactionAndSpansAndCloseFlushes(t *testing.T) {
 	}
 	w.Add(777, 777, tr)
 
-	// Close без предшествующего тика/кика обязан слить остаток буфера.
 	if err := w.Close(ctx); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -66,7 +65,7 @@ func TestSpanWriterInsertsTransactionAndSpansAndCloseFlushes(t *testing.T) {
 		"SELECT count(*) FROM spans WHERE project_id = 777").Scan(&spanCnt); err != nil {
 		t.Fatalf("count spans: %v", err)
 	}
-	if spanCnt != 4 { // 3 дочерних + корневой
+	if spanCnt != 4 {
 		t.Fatalf("spans count = %d, want 4 (3 children + root)", spanCnt)
 	}
 
@@ -97,7 +96,6 @@ func TestSpanWriterInsertsTransactionAndSpansAndCloseFlushes(t *testing.T) {
 			env, release, server, userID, source, spanID, tags)
 	}
 
-	// Корневой спан обязан быть и в spans — иначе waterfall без корня.
 	var rootParent, rootTx, rootOp string
 	var rootDur uint32
 	if err := conn.QueryRow(ctx, `SELECT parent_span_id, transaction, op, duration_us
@@ -134,12 +132,10 @@ func TestSpanWriterInsertsTransactionAndSpansAndCloseFlushes(t *testing.T) {
 	if childData != `{"http.status_code":200}` {
 		t.Fatalf("child span data = %q", childData)
 	}
-	// Спаны наследуют transaction/environment транзакции — иначе фильтры по ним слепы.
 	if childTx != "GET /api/users" || childEnv != "production" {
 		t.Fatalf("child span inherits: tx=%q env=%q", childTx, childEnv)
 	}
 
-	// Материализованная вьюха наполняется автоматически при вставке.
 	var mvCnt uint64
 	if err := conn.QueryRow(ctx, `SELECT countMerge(cnt) FROM transactions_5m
 		WHERE project_id = 777 AND transaction = 'GET /api/users'`).Scan(&mvCnt); err != nil {
@@ -150,9 +146,6 @@ func TestSpanWriterInsertsTransactionAndSpansAndCloseFlushes(t *testing.T) {
 	}
 }
 
-// TestSpanWriterWritesMeasurements — measurements транзакции доезжают до
-// CH-колонки measurements Map(String, Float64) и читаются обратно; nil-map
-// пишется как ПУСТОЙ Map (CH не принимает nil на Append), без ошибки.
 func TestSpanWriterWritesMeasurements(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -184,7 +177,6 @@ func TestSpanWriterWritesMeasurements(t *testing.T) {
 		End:         start.Add(50 * time.Millisecond),
 		Environment: "production",
 		Source:      "sentry",
-		// Measurements: nil — должно уехать пустым Map.
 	}
 	w.Add(888, 888, withM)
 	w.Add(888, 888, noM)

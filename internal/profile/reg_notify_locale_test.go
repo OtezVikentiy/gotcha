@@ -9,9 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// TestProfileNotifyLocale — subject/body регрессий профилей строятся из
-// каталога i18n по локали в контексте (класс №133–136). До правки тексты
-// были зашиты по-английски.
 func TestProfileNotifyLocale(t *testing.T) {
 	ru := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	en := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})

@@ -31,7 +31,6 @@ func TestParseSentry(t *testing.T) {
 	if p.TraceID != "trace-abc" {
 		t.Fatalf("TraceID = %q, want trace-abc", p.TraceID)
 	}
-	// Два уникальных стека: [main,handler,slow] value 2, [main,handler] value 1.
 	if len(p.Samples) != 2 {
 		t.Fatalf("samples = %d, want 2", len(p.Samples))
 	}
@@ -54,10 +53,8 @@ func TestParseSentryBadJSON(t *testing.T) {
 	}
 }
 
-// TestParseSentryCapsMetaFields: недоверенные строковые поля каппятся до
-// maxMetaField рун перед записью (иначе раздувают колонки profiles).
 func TestParseSentryCapsMetaFields(t *testing.T) {
-	big := strings.Repeat("Ж", maxMetaField+300) // многобайтные руны — проверяем кап именно по рунам
+	big := strings.Repeat("Ж", maxMetaField+300) // многобайтные руны — кап именно по рунам, не по байтам
 	raw := []byte(`{
 		"platform":"` + big + `","environment":"` + big + `",
 		"transaction":{"name":"` + big + `","trace_id":"` + big + `"},
@@ -79,10 +76,6 @@ func TestParseSentryCapsMetaFields(t *testing.T) {
 	}
 }
 
-// TestFrameFieldsCapped фиксирует P0 амплификации: формат Sentry индексный, поэтому
-// одно огромное имя функции, упомянутое во всех кадрах стека, раздувалось в
-// Writer.Add при склейке ключа (393 КБ тела → ~409 МБ аллокаций). Кап обязан
-// стоять на РАЗБОРЕ, до амплификации.
 func TestFrameFieldsCapped(t *testing.T) {
 	huge := strings.Repeat("A", 400_000)
 	body := `{"profile":{"frames":[{"function":"` + huge + `","filename":"` + huge + `"}],` +
@@ -105,8 +98,6 @@ func TestFrameFieldsCapped(t *testing.T) {
 	}
 }
 
-// buildIndexedProfile собирает Sentry-профиль с nStacks стеками глубиной depth,
-// ссылающимися на nFrames кадров с именами длиной fieldLen.
 func buildIndexedProfile(nFrames, nStacks, depth, fieldLen int) []byte {
 	var b strings.Builder
 	b.WriteString(`{"platform":"go","transaction":{"name":"t"},"profile":{"frames":[`)
@@ -142,18 +133,9 @@ func buildIndexedProfile(nFrames, nStacks, depth, fieldLen int) []byte {
 	return []byte(b.String())
 }
 
-// TestParseSentryBoundsExpandedFrames фиксирует P0-усиление памяти.
-//
-// Формат Sentry индексный: stacks[] — индексы в frames[]. Счётных капов
-// (maxFrames на стек × maxStacks на профиль) не хватало, они перемножались и
-// разрешали 1024×100000 развёрнутых кадров по 2×maxFrameField байт каждый.
-// Измерено на старом коде: 6.1 КиБ gzip-тела (индексы «0,0,0,…» жмутся в 330
-// раз) → 8.6 ГиБ аллокаций и 12.6 с CPU на горутине запроса, с публичного
-// DSN-ключа. Бюджет maxStackBytes ограничивает работу независимо от того, как
-// разложены стеки.
 func TestParseSentryBoundsExpandedFrames(t *testing.T) {
-	// Один кадр с максимально длинными именами, упомянутый 1024 раза в каждом
-	// из 1000 стеков — форма атаки: в JSON это индексы, в памяти гигабайты.
+	// один кадр, упомянутый maxFrames раз в 1000 стеках — форма атаки: в JSON
+	// это индексы, в памяти гигабайты.
 	raw := buildIndexedProfile(1, 1000, maxFrames, maxFrameField)
 
 	p, err := ParseSentry(raw, time.Now())
@@ -167,8 +149,7 @@ func TestParseSentryBoundsExpandedFrames(t *testing.T) {
 			bytesOut += len(f.Function) + len(f.File)
 		}
 	}
-	// Бюджет — потолок; допускаем перерасход не больше одного кадра, потому что
-	// проверка стоит перед добавлением.
+	// перерасход не больше одного кадра допустим: проверка бюджета стоит перед добавлением.
 	limit := maxStackBytes + 2*maxFrameField
 	if bytesOut > limit {
 		t.Fatalf("развёрнуто %d байт кадров при бюджете %d — усиление не ограничено", bytesOut, limit)
@@ -178,9 +159,6 @@ func TestParseSentryBoundsExpandedFrames(t *testing.T) {
 	}
 }
 
-// TestParseSentryKeepsRealisticProfile — обратная сторона бюджета: он не должен
-// трогать профиль правдоподобной формы. 2000 стеков глубиной 40 с именами
-// обычной длины — это 80 000 кадров, и они обязаны дойти целиком.
 func TestParseSentryKeepsRealisticProfile(t *testing.T) {
 	const nStacks, depth = 2000, 40
 	raw := buildIndexedProfile(2000, nStacks, depth, 60)
@@ -199,9 +177,6 @@ func TestParseSentryKeepsRealisticProfile(t *testing.T) {
 	}
 }
 
-// TestParseSentryCapsFrameTableOnce — кадр каппится один раз в таблице, а не на
-// каждом упоминании: именно per-упоминание capRunes давал 6.4 ГиБ из 8.6.
-// Проверяем результат кападжа при многократной ссылке на один и тот же кадр.
 func TestParseSentryCapsFrameTableOnce(t *testing.T) {
 	raw := buildIndexedProfile(1, 1, 8, maxFrameField+100)
 
@@ -220,12 +195,6 @@ func TestParseSentryCapsFrameTableOnce(t *testing.T) {
 	}
 }
 
-// TestParseSentryTruncationIsDeterministic — при срабатывании бюджета два
-// одинаковых байт-в-байт профиля обязаны дать одинаковый результат.
-//
-// Обход map случаен, а с введением байтового бюджета усечение стало штатным
-// путём: без сортировки один и тот же профиль сохранял бы разные подмножества
-// стеков, и флеймграф менялся бы от загрузки к загрузке.
 func TestParseSentryTruncationIsDeterministic(t *testing.T) {
 	raw := buildIndexedProfile(1, 1000, maxFrames, maxFrameField)
 
@@ -255,10 +224,7 @@ func TestParseSentryTruncationIsDeterministic(t *testing.T) {
 	}
 }
 
-// TestParseSentryKeepsHeaviestStacks — бюджет тратится на стеки с наибольшим
-// весом, а не на случайные: срезанный профиль должен оставаться осмысленным.
 func TestParseSentryKeepsHeaviestStacks(t *testing.T) {
-	// Три стека, у первого вес 1, у второго 2, у третьего 3 (число сэмплов).
 	raw := []byte(`{"platform":"go","transaction":{"name":"t"},"profile":{` +
 		`"frames":[{"function":"f0","filename":"a.go","lineno":1},` +
 		`{"function":"f1","filename":"b.go","lineno":2},` +
@@ -274,7 +240,6 @@ func TestParseSentryKeepsHeaviestStacks(t *testing.T) {
 	if len(p.Samples) != 3 {
 		t.Fatalf("сэмплов %d, want 3", len(p.Samples))
 	}
-	// Порядок — по убыванию веса.
 	for i := 1; i < len(p.Samples); i++ {
 		if p.Samples[i-1].Value < p.Samples[i].Value {
 			t.Fatalf("стеки не отсортированы по убыванию веса: %d < %d",
@@ -286,16 +251,7 @@ func TestParseSentryKeepsHeaviestStacks(t *testing.T) {
 	}
 }
 
-// TestParseSentryBudgetCountsEmptyFrames — бюджет обязан ограничивать и кадры с
-// ПУСТЫМИ именами.
-//
-// Раньше он списывался как len(function)+len(filename), поэтому пустые имена
-// стоили ноль и защита откатывалась к счётным капам: maxStacks × maxFrames =
-// 102 млн развёрнутых кадров. Измерено на таком входе: 47 КБ gzip → ~4 млн
-// кадров и ~240 МиБ аллокаций на горутине одного запроса, с публичного
-// DSN-ключа.
 func TestParseSentryBudgetCountsEmptyFrames(t *testing.T) {
-	// Один кадр с пустыми именами, упомянутый maxFrames раз в 1000 стеках.
 	raw := buildIndexedProfile(1, 1000, maxFrames, 0)
 
 	p, err := ParseSentry(raw, time.Now())
@@ -306,7 +262,6 @@ func TestParseSentryBudgetCountsEmptyFrames(t *testing.T) {
 	for _, s := range p.Samples {
 		frames += len(s.Stack)
 	}
-	// Бюджет / стоимость кадра — верхняя граница числа развёрнутых кадров.
 	limit := maxStackBytes/frameOverheadBytes + maxFrames
 	if frames > limit {
 		t.Fatalf("развёрнуто %d кадров с пустыми именами при потолке %d — бюджет обходится", frames, limit)

@@ -11,8 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 )
 
-// somePoints — короткий ряд для тестов multiSeriesMarkup, не привязанный к
-// конкретным значениям (сами числа тестам безразличны, важна только форма).
 func somePoints() []metric.Point {
 	base := time.Date(2026, 8, 13, 9, 0, 0, 0, time.UTC)
 	pts := make([]metric.Point, 6)
@@ -22,11 +20,8 @@ func somePoints() []metric.Point {
 	return pts
 }
 
-// TestMultiSeriesMarkupClassesAndCap: до 8 серий рисуются классом
-// series-m{i+1}; девятая и далее молча отбрасываются — не падаем и не
-// рисуем класс, для которого в CSS нет палитры (task-13-brief.md, Step 1).
 func TestMultiSeriesMarkupClassesAndCap(t *testing.T) {
-	series := make([]NamedSeries, 10) // 10 серий → рисуются первые 8
+	series := make([]NamedSeries, 10)
 	for i := range series {
 		series[i] = NamedSeries{Label: fmt.Sprintf("s%d", i), Points: somePoints()}
 	}
@@ -39,8 +34,6 @@ func TestMultiSeriesMarkupClassesAndCap(t *testing.T) {
 	}
 }
 
-// TestMultiSeriesMarkupEmpty: без серий/без данных — оси и заметка «нет
-// данных», как и у одиночного metricSeriesMarkup, а не пустой холст.
 func TestMultiSeriesMarkupEmpty(t *testing.T) {
 	out := multiSeriesMarkup(context.Background(), nil, "", nil, nil, 720, 200)
 	if !strings.Contains(out, "нет данных") {
@@ -53,8 +46,6 @@ func TestMultiSeriesMarkupEmpty(t *testing.T) {
 	}
 }
 
-// TestMultiSeriesMarkupNaNGap: NaN-точка — разрыв линии (has=false), а не
-// провал в ноль, как и в metricSeriesMarkup/bridgeSparseGaps.
 func TestMultiSeriesMarkupNaNGap(t *testing.T) {
 	base := time.Date(2026, 8, 13, 9, 0, 0, 0, time.UTC)
 	points := []metric.Point{
@@ -73,8 +64,6 @@ func TestMultiSeriesMarkupNaNGap(t *testing.T) {
 	}
 }
 
-// TestMultiSeriesMarkupThresholds: пороги рисуются пунктиром через тот же
-// metricThreshold, что и у одиночного графика метрики.
 func TestMultiSeriesMarkupThresholds(t *testing.T) {
 	series := []NamedSeries{{Label: "cpu", Points: somePoints()}}
 	out := multiSeriesMarkup(context.Background(), series, "", []metricThreshold{{Value: 6, Comparator: "gt"}}, nil, 720, 200)

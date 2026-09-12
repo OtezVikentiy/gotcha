@@ -20,8 +20,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// regressionsStack — стенд страницы регрессий: только PG (страница читает
-// trace.RegressionService, CH здесь не нужен).
 type regressionsStack struct {
 	pool   *pgxpool.Pool
 	srv    *httptest.Server
@@ -70,13 +68,10 @@ func TestWebRegressionsList(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	// Открытая регрессия эндпойнта: p95 длительности 100ms → 150ms (+50%).
 	if _, _, err := s.reg.Open(ctx, project.ID, "endpoint_p95", "GET /orders", "duration", 100, 150, false); err != nil {
 		t.Fatalf("open endpoint regression: %v", err)
 	}
-	// Закрытая регрессия web-vital: LCP p75 2000ms → пик 4000ms (+100%), затем
-	// закрыта значением восстановления 2100 (около базы). Рост % считается от
-	// ПИКА, а не от current: иначе у закрытой строки было бы +5%, а не +100%.
+	// Рост % считается от ПИКА, а не от current — иначе у закрытой строки было бы +5%, а не +100%.
 	wv, _, err := s.reg.Open(ctx, project.ID, "webvital_p75", "/checkout", "lcp", 2000, 4000, false)
 	if err != nil {
 		t.Fatalf("open webvital regression: %v", err)
@@ -87,8 +82,6 @@ func TestWebRegressionsList(t *testing.T) {
 
 	listPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/regressions"
 
-	// Дефолт (open) показывает только открытую регрессию эндпойнта с ростом %,
-	// человекочитаемой метрикой, статусом и «ongoing».
 	resp := getWithCookie(t, s.srv, listPath, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -112,8 +105,6 @@ func TestWebRegressionsList(t *testing.T) {
 		t.Fatalf("default (open) filter leaked resolved regression: %s", bs)
 	}
 
-	// ?status=resolved показывает закрытую web-vital регрессию с длительностью
-	// (не «ongoing») и метрикой LCP p75.
 	resp = getWithCookie(t, s.srv, listPath+"?status=resolved", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -137,7 +128,6 @@ func TestWebRegressionsList(t *testing.T) {
 		t.Fatalf("resolved regression must show duration, not ongoing: %s", bs)
 	}
 
-	// ?status=all показывает обе.
 	resp = getWithCookie(t, s.srv, listPath+"?status=all", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -146,7 +136,6 @@ func TestWebRegressionsList(t *testing.T) {
 		t.Fatalf("?status=all missing one of the regressions: %s", bs)
 	}
 
-	// Чужой юзер (не участник) → 404, не палим существование проекта.
 	_, outsiderCookie := orgSettingsRegister(t, s.auth, "reg-list-outsider@example.com")
 	resp = getWithCookie(t, s.srv, listPath, outsiderCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -156,9 +145,6 @@ func TestWebRegressionsList(t *testing.T) {
 	}
 }
 
-// TestWebRegressionsDeployAttribution — под регрессией показывается ближайший
-// ПРЕДШЕСТВУЮЩИЙ деплой в пределах окна привязки; деплой старше окна не
-// привязывается.
 func TestWebRegressionsDeployAttribution(t *testing.T) {
 	s := newRegressionsStack(t, true)
 	ctx := context.Background()
@@ -173,8 +159,6 @@ func TestWebRegressionsDeployAttribution(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	// Деплой в пределах окна (за час до регрессии) должен привязаться, деплой
-	// восьмидневной давности — нет (за пределами 7-дневного окна).
 	if _, err := s.deploy.Record(ctx, project.ID, deploy.Deployment{Version: "v9.9.9-recent", Environment: "prod", DeployedAt: time.Now().Add(-time.Hour)}); err != nil {
 		t.Fatalf("record recent deploy: %v", err)
 	}
@@ -182,7 +166,6 @@ func TestWebRegressionsDeployAttribution(t *testing.T) {
 		t.Fatalf("record stale deploy: %v", err)
 	}
 
-	// Открытая регрессия эндпойнта (started_at = now по умолчанию).
 	if _, _, err := s.reg.Open(ctx, project.ID, "endpoint_p95", "GET /orders", "duration", 100, 150, false); err != nil {
 		t.Fatalf("open regression: %v", err)
 	}
@@ -233,7 +216,6 @@ func TestWebRegressionsListEmpty(t *testing.T) {
 }
 
 func TestWebRegressionsNilService(t *testing.T) {
-	// h.Regressions не проставлен → 404 (nil-guard, как h.PerfIssues).
 	s := newRegressionsStack(t, false)
 	ctx := context.Background()
 

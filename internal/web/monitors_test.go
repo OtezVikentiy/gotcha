@@ -25,13 +25,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// monitorsStack — own stand (like uptimeStack in heartbeat_test.go), but
-// also wires h.UptimeQuery (ClickHouse reads) since the monitor list/detail
-// pages need uptime%/latency/recent-checks from Query, not just
-// Uptime/UptimeWriter which heartbeat needs. h.Alerts (задача 2) — monitorCreate
-// dereferences it in its nil-guard even though this file's tests don't touch
-// alert channels themselves; without it, the operator-create test below 404s
-// on the guard instead of exercising the actual gate.
 type monitorsStack struct {
 	pool   *pgxpool.Pool
 	srv    *httptest.Server
@@ -49,7 +42,7 @@ func newMonitorsStack(t *testing.T) *monitorsStack {
 	authSvc := auth.NewService(pool)
 	orgSvc := org.NewService(pool, 1_000_000)
 	issueSvc := issue.NewService(pool)
-	var events *event.Query // страницы мониторов его не используют
+	var events *event.Query
 
 	uptimeSvc := uptime.NewService(pool)
 	alertSvc := alert.NewService(pool)
@@ -77,10 +70,6 @@ func newMonitorsStack(t *testing.T) *monitorsStack {
 	return &monitorsStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc, uptime: uptimeSvc, writer: writer}
 }
 
-// flush drains the ResultWriter's buffer into ClickHouse synchronously (same
-// pattern as query_test.go): further Add calls after this would sit unread
-// until t.Cleanup's second Close, so tests call this once after seeding all
-// the CH rows they need.
 func (s *monitorsStack) flush(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -114,10 +103,6 @@ func baseMonitor(projectID int64, name string) uptime.Monitor {
 	}
 }
 
-// addTeamAccess gives userID view access to projectID the same way a
-// non-admin project member normally gets it (org.RoleMember alone does
-// NOT grant CanAccessProject — see org.accessCondition): a team, attached
-// to the project, with userID as a member.
 func addTeamAccess(t *testing.T, orgSvc *org.Service, orgID, projectID, userID int64, teamSlug string) {
 	t.Helper()
 	team, err := orgSvc.CreateTeam(context.Background(), orgID, teamSlug, teamSlug)
@@ -132,11 +117,6 @@ func addTeamAccess(t *testing.T, orgSvc *org.Service, orgID, projectID, userID i
 	}
 }
 
-// TestWebMonitorsList — owner sees both monitors with an uptime % and at
-// least one <svg (availability bars); the monitor with zero checks shows
-// "no data" instead of crashing; member (view access via team, not
-// owner/admin) sees the page but not the "New monitor" link; an outsider
-// gets 404.
 func TestWebMonitorsList(t *testing.T) {
 	s := newMonitorsStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "monlist-owner@example.com")
@@ -169,10 +149,7 @@ func TestWebMonitorsList(t *testing.T) {
 		t.Fatalf("create monitor without data: %v", err)
 	}
 
-	// checkAt sits a couple of minutes in the past, not literally "now" —
-	// see the longer comment in TestWebMonitorDetail on why a comfortable
-	// margin from the query's own time.Now() avoids a ClickHouse
-	// driver precision quirk on bare time.Time query parameters.
+	// checkAt в прошлом — ClickHouse квантует bare time.Time до секунды (см. TestWebMonitorDetail).
 	checkAt := time.Now().UTC().Add(-2 * time.Minute)
 	if _, err := s.uptime.ApplyResult(context.Background(), createdWith.ID, "local", true, "", checkAt); err != nil {
 		t.Fatalf("apply result: %v", err)
@@ -182,9 +159,6 @@ func TestWebMonitorsList(t *testing.T) {
 
 	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/monitors"
 
-	// Owner GET -> 200: both monitor names, an <svg availability bar, the
-	// "no data" monitor, a computed uptime % for the one with data, and the
-	// "Новый монитор" (New monitor, ru i18n) link (owner/admin only).
 	resp := getWithCookie(t, s.srv, path, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -197,10 +171,6 @@ func TestWebMonitorsList(t *testing.T) {
 		}
 	}
 
-	// Member (view access via team, not owner/admin) GET -> 200, and DOES see
-	// the "Новый монитор" (New monitor) link — с задачи 2 (спека
-	// 2026-08-08) кнопки монитора операторские, участник команды тоже
-	// оператор.
 	resp = getWithCookie(t, s.srv, path, memberCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -211,8 +181,6 @@ func TestWebMonitorsList(t *testing.T) {
 		t.Fatalf("GET %s (member) must show New monitor link: %s", path, body)
 	}
 
-	// Участник команды действительно может создать монитор через форму, а не
-	// просто видит рабочую на вид ссылку.
 	createPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/monitors"
 	resp = postForm(t, s.srv, createPath, validMonitorForm(), s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -221,7 +189,6 @@ func TestWebMonitorsList(t *testing.T) {
 		t.Fatalf("member create monitor = %d, want 303", resp.StatusCode)
 	}
 
-	// Outsider (no org membership at all) -> 404.
 	resp = getWithCookie(t, s.srv, path, outsiderCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -230,11 +197,6 @@ func TestWebMonitorsList(t *testing.T) {
 	}
 }
 
-// TestWebMonitorDetail — the detail page shows the monitor's incidents and
-// recent checks (with a real error/status code), SSL expiry, and — since
-// Task 2 (спека 2026-08-08) — shows the Pause/Edit/Delete controls to a
-// member with team (operator) access too, not just owner/admin; an outsider
-// still gets 404.
 func TestWebMonitorDetail(t *testing.T) {
 	s := newMonitorsStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "mondetail-owner@example.com")
@@ -261,15 +223,8 @@ func TestWebMonitorDetail(t *testing.T) {
 		t.Fatalf("create monitor: %v", err)
 	}
 
-	// checkAt/now: check timestamps sit a couple of minutes in the past
-	// (not literally "now") on purpose — the ClickHouse driver binds a bare
-	// time.Time query parameter at whole-second precision (toDateTime, not
-	// toDateTime64), so a check inserted and then queried within the same
-	// wall-clock second as the handler's own time.Now() could be excluded
-	// by the "timestamp < to" boundary purely due to that precision loss.
-	// A comfortable multi-minute margin — realistic anyway, since a check
-	// always happened measurably before any page load — avoids the flake
-	// without touching internal/uptime/query.go.
+	// ClickHouse связывает bare time.Time с точностью до секунды (toDateTime, не toDateTime64) —
+	// проверка в ту же секунду, что и запрос, могла бы выпасть из "timestamp < to".
 	now := time.Now().UTC()
 	s.writer.Add(proj.ID, created.ID, "local", now.Add(-2*time.Minute), uptime.Result{
 		OK: true, StatusCode: 200, TotalMs: 80, DNSMs: 5, ConnectMs: 10, TLSMs: 15, TTFBMs: 30,
@@ -299,17 +254,12 @@ func TestWebMonitorDetail(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s (owner) status = %d, want 200: %s", path, resp.StatusCode, body)
 	}
-	// "Приостановить"/"Удалить"/"Редактировать" — ru i18n for
-	// Pause/Delete/Edit; "дн. до истечения" is the ru SSL-expiry format
-	// (uptime.ssl.days_left).
 	for _, want := range []string{"API health", "boom", "500", "<svg", "Приостановить", "Удалить", "Редактировать", "дн. до истечения"} {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("GET %s (owner) missing %q: %s", path, want, body)
 		}
 	}
 
-	// Member (view access via team — с задачи 2 тоже оператор) -> 200, теперь
-	// ВИДИТ те же кнопки управления, что и owner.
 	resp = getWithCookie(t, s.srv, path, memberCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -322,7 +272,6 @@ func TestWebMonitorDetail(t *testing.T) {
 		}
 	}
 
-	// Outsider -> 404.
 	resp = getWithCookie(t, s.srv, path, outsiderCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -331,9 +280,6 @@ func TestWebMonitorDetail(t *testing.T) {
 	}
 }
 
-// TestWebMonitorDetailNoChecksShowsNoDataAndDoesNotCrash — a freshly created
-// monitor without a single check must still render 200 with "no data"
-// instead of failing (division by zero in uptime %, empty chart, etc.).
 func TestWebMonitorDetailNoChecksShowsNoDataAndDoesNotCrash(t *testing.T) {
 	s := newMonitorsStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "monempty-owner@example.com")
@@ -372,10 +318,6 @@ func TestWebMonitorDetailNoChecksShowsNoDataAndDoesNotCrash(t *testing.T) {
 	}
 }
 
-// TestWebMonitorPauseResumeDelete — sameOrigin + requireProjectRole gate all
-// three POST mutations: no Origin -> 403, member without project access -> 404,
-// owner can pause (enabled=false persisted), resume (enabled=true again),
-// and delete (monitor gone).
 func TestWebMonitorPauseResumeDelete(t *testing.T) {
 	s := newMonitorsStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "monpause-owner@example.com")
@@ -404,7 +346,6 @@ func TestWebMonitorPauseResumeDelete(t *testing.T) {
 	resumePath := "/monitors/" + strconv.FormatInt(created.ID, 10) + "/resume"
 	deletePath := "/monitors/" + strconv.FormatInt(created.ID, 10) + "/delete"
 
-	// No Origin -> 403.
 	resp := postForm(t, s.srv, pausePath, url.Values{}, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -412,7 +353,6 @@ func TestWebMonitorPauseResumeDelete(t *testing.T) {
 		t.Fatalf("POST %s (no origin) status = %d, want 403", pausePath, resp.StatusCode)
 	}
 
-	// Member -> 404.
 	resp = postForm(t, s.srv, pausePath, url.Values{}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -420,15 +360,12 @@ func TestWebMonitorPauseResumeDelete(t *testing.T) {
 		t.Fatalf("POST %s (member без доступа к проекту) status = %d, want 404", pausePath, resp.StatusCode)
 	}
 
-	// Owner pauses -> 303, enabled=false persisted.
 	resp = postForm(t, s.srv, pausePath, url.Values{}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST %s (owner) status = %d, want 303", pausePath, resp.StatusCode)
 	}
-	// Flash называет состояние, в котором монитор остался (K7-9): пауза и
-	// возобновление — разные ключи.
 	if !hasFlashCookie(resp, "ok|flash.monitor_paused") {
 		t.Errorf("после паузы нет flash monitor_paused: %v", resp.Header.Values("Set-Cookie"))
 	}
@@ -440,7 +377,6 @@ func TestWebMonitorPauseResumeDelete(t *testing.T) {
 		t.Fatalf("Enabled = true after pause, want false")
 	}
 
-	// Owner resumes -> 303, enabled=true again.
 	resp = postForm(t, s.srv, resumePath, url.Values{}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -458,8 +394,6 @@ func TestWebMonitorPauseResumeDelete(t *testing.T) {
 		t.Fatalf("Enabled = false after resume, want true")
 	}
 
-	// Member без доступа к проекту -> 404 (существование монитора скрыто),
-	// монитор на месте. Член С доступом, но малой ролью получил бы 403 (№72).
 	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -467,8 +401,6 @@ func TestWebMonitorPauseResumeDelete(t *testing.T) {
 		t.Fatalf("POST %s (member) status = %d, want 404", deletePath, resp.StatusCode)
 	}
 
-	// Owner без confirmed=yes -> 200, страница подтверждения называет
-	// монитор по имени (K7-3), монитор на месте.
 	resp = postForm(t, s.srv, deletePath, url.Values{}, s.srv.URL, ownerCookie)
 	confirmBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -485,7 +417,6 @@ func TestWebMonitorPauseResumeDelete(t *testing.T) {
 		t.Fatalf("monitor gone after unconfirmed delete: %v", err)
 	}
 
-	// Owner deletes -> 303, monitor gone.
 	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -497,12 +428,6 @@ func TestWebMonitorPauseResumeDelete(t *testing.T) {
 	}
 }
 
-// TestWebMonitorOperatorMutations — участник команды проекта (НЕ org
-// owner/admin) управляет мониторами: пауза, резюм, удаление. Спека
-// cld/plans/2026-08-08-access-model-rework.md: «весь мониторинг —
-// участникам команд, кроме секретов». Участник ЧУЖОЙ организации
-// по-прежнему получает 404 — граница «чужак» не сдвинулась, сдвинулась
-// только граница «участник своей команды».
 func TestWebMonitorOperatorMutations(t *testing.T) {
 	s := newMonitorsStack(t)
 	ownerID, _ := orgSettingsRegister(t, s.auth, "op-mut-owner@example.com")
@@ -532,7 +457,6 @@ func TestWebMonitorOperatorMutations(t *testing.T) {
 	resumePath := "/monitors/" + strconv.FormatInt(created.ID, 10) + "/resume"
 	deletePath := "/monitors/" + strconv.FormatInt(created.ID, 10) + "/delete"
 
-	// Участник команды паузит -> 303, состояние сохранено.
 	if code := statusOf(t, postForm(t, s.srv, pausePath, url.Values{}, s.srv.URL, memberCookie)); code != http.StatusSeeOther {
 		t.Fatalf("POST %s (team member) status = %d, want 303", pausePath, code)
 	}
@@ -544,19 +468,15 @@ func TestWebMonitorOperatorMutations(t *testing.T) {
 		t.Fatalf("Enabled = true after pause, want false")
 	}
 
-	// Участник команды резюмит -> 303.
 	if code := statusOf(t, postForm(t, s.srv, resumePath, url.Values{}, s.srv.URL, memberCookie)); code != http.StatusSeeOther {
 		t.Fatalf("POST %s (team member) status = %d, want 303", resumePath, code)
 	}
 
-	// Участник ЧУЖОЙ организации -> 404 (тот же принцип, что и в
-	// crossorg_idor_test.go: существование монитора не раскрывается).
 	_, strangerCookie := orgSettingsRegister(t, s.auth, "op-mut-stranger@example.com")
 	if code := statusOf(t, postForm(t, s.srv, pausePath, url.Values{}, s.srv.URL, strangerCookie)); code != http.StatusNotFound {
 		t.Fatalf("POST %s (stranger) status = %d, want 404", pausePath, code)
 	}
 
-	// Участник команды удаляет -> 303, монитор удалён.
 	if code := statusOf(t, postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, memberCookie)); code != http.StatusSeeOther {
 		t.Fatalf("POST %s (team member) status = %d, want 303", deletePath, code)
 	}
@@ -565,9 +485,6 @@ func TestWebMonitorOperatorMutations(t *testing.T) {
 	}
 }
 
-// TestWebIssuesPageHasMonitorsLink — the project's issues page links to its
-// monitors list (spec: navigation), the same "dead link fixed ahead of time"
-// convention as the existing Project settings/Alerts links.
 func TestWebIssuesPageHasMonitorsLink(t *testing.T) {
 	s := newMonitorsStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "monlink-owner@example.com")

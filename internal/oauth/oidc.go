@@ -10,24 +10,16 @@ import (
 	"time"
 )
 
-// OIDCConfig — параметры generic-OIDC-провайдера (из env, см. cmd/gotcha/config.go).
 type OIDCConfig struct {
 	Issuer       string
 	ClientID     string
 	ClientSecret string
-	Scopes       string // пусто → "openid email profile"
-	DisplayName  string // пусто → "OIDC"
+	Scopes       string
+	DisplayName  string
 }
 
-// discoveryTTL — срок жизни кеша discovery/JWKS. Раньше кеш жил ВЕСЬ процесс:
-// после плановой ротации подписного ключа у IdP (рутина для Keycloak/Auth0/Azure)
-// verifyRS256 переставал находить ключ, и КАЖДЫЙ OIDC-вход падал до перезапуска
-// бинаря — причём диагностировалось плохо: пользователь нормально доходил до IdP
-// и видел общую ошибку на callback.
 const discoveryTTL = 15 * time.Minute
 
-// OIDC — провайдер поверх OpenID Connect. discovery и JWKS кешируются на
-// discoveryTTL (ленивая загрузка при первом обращении).
 type OIDC struct {
 	cfg OIDCConfig
 
@@ -35,8 +27,7 @@ type OIDC struct {
 	disco     *discoveryDoc
 	keys      []jwk
 	fetchedAt time.Time
-	// now — часы (тесты перематывают время без ожидания). nil → time.Now.
-	now func() time.Time
+	now       func() time.Time
 }
 
 func (o *OIDC) clock() time.Time {
@@ -65,19 +56,8 @@ func (o *OIDC) DisplayName() string {
 	return "OIDC"
 }
 
-// scopes — список scope, отправляемый в authorization-запросе. Пусто (или
-// разбор ниже не оставил ни одного элемента) → дефолт "openid email profile".
-//
-// GOTCHA_OIDC_SCOPES принимает список через запятую — тот же разделитель,
-// что у всех остальных списочных переменных контракта (GOTCHA_SCRUB_DENY_KEYS,
-// GOTCHA_TRUSTED_RECIPIENTS, GOTCHA_TRUSTED_PROXIES в cmd/gotcha/config.go).
-// Раньше значение уходило в scope= как есть: разделителем там пробел (см.
-// RFC 6749 §3.3), и оператор, написавший по аналогии с остальными списками
-// "openid,email,profile", получал ОДИН scope из трёх слов, слипшихся через
-// запятую, — провайдер такой не знает, и вход отваливается на первом же
-// логине без единой подсказки, где искать причину. Здесь запятая разбирается
-// и нормализуется в пробел непосредственно перед отправкой; пустые элементы
-// (лишняя/двойная запятая) отбрасываются, каждый — триммится.
+// GOTCHA_OIDC_SCOPES принимает запятую, но scope= в запросе разделяется
+// пробелом (RFC 6749 §3.3) — здесь конвертируется перед отправкой.
 func (o *OIDC) scopes() string {
 	var parts []string
 	for _, s := range strings.Split(o.cfg.Scopes, ",") {
@@ -91,9 +71,6 @@ func (o *OIDC) scopes() string {
 	return strings.Join(parts, " ")
 }
 
-// discovery лениво загружает и кеширует .well-known/openid-configuration и JWKS
-// на discoveryTTL. force=true перезагружает независимо от возраста кеша — так
-// закрывается ротация ключа между обновлениями (см. Exchange).
 func (o *OIDC) discovery(ctx context.Context) (*discoveryDoc, []jwk, error) {
 	return o.discoveryFresh(ctx, false)
 }
@@ -117,13 +94,9 @@ func (o *OIDC) discoveryFresh(ctx context.Context, force bool) (*discoveryDoc, [
 	return o.disco, o.keys, nil
 }
 
-// AuthURL — ссылка на страницу согласия. Для построения нужен только
-// authorization_endpoint из discovery; если discovery ещё не загружен, грузим.
 func (o *OIDC) AuthURL(state, nonce, pkceChallenge, redirectURI string) string {
 	doc, _, err := o.discovery(context.Background())
 	if err != nil {
-		// AuthURL не возвращает ошибку по контракту Provider; при недоступном
-		// issuer вернём пустую строку — вызывающий (web) обработает как отказ.
 		return ""
 	}
 	q := url.Values{
@@ -139,9 +112,6 @@ func (o *OIDC) AuthURL(state, nonce, pkceChallenge, redirectURI string) string {
 	return doc.AuthorizationEndpoint + "?" + q.Encode()
 }
 
-// Exchange меняет код на id_token, валидирует его (подпись, iss, aud, exp,
-// nonce) и извлекает Identity. Email/verified — из claims, при отсутствии
-// email добираем userinfo. Пустой email → ErrNoEmail.
 func (o *OIDC) Exchange(ctx context.Context, code, pkceVerifier, redirectURI, nonce string) (Identity, error) {
 	doc, keys, err := o.discovery(ctx)
 	if err != nil {
@@ -167,9 +137,6 @@ func (o *OIDC) Exchange(ctx context.Context, code, pkceVerifier, redirectURI, no
 	}
 	claims, err := verifyRS256(tok.IDToken, keys)
 	if err != nil {
-		// Подпись не сошлась ни с одним известным ключом — возможно, IdP только что
-		// ротировал ключ, а наш кеш ещё свеж. Обновляем принудительно ОДИН раз и
-		// пробуем снова, иначе вход был бы сломан до истечения discoveryTTL.
 		_, freshKeys, ferr := o.discoveryFresh(ctx, true)
 		if ferr != nil {
 			return Identity{}, err
@@ -179,7 +146,6 @@ func (o *OIDC) Exchange(ctx context.Context, code, pkceVerifier, redirectURI, no
 			return Identity{}, err
 		}
 	}
-	// iss / aud / exp / nonce.
 	if iss, _ := claims["iss"].(string); iss != doc.Issuer && iss != strings.TrimRight(o.cfg.Issuer, "/") {
 		return Identity{}, fmt.Errorf("%w: iss mismatch", ErrBadToken)
 	}
@@ -189,7 +155,6 @@ func (o *OIDC) Exchange(ctx context.Context, code, pkceVerifier, redirectURI, no
 	if exp, ok := claims["exp"].(float64); !ok || nowUnix() >= int64(exp)+clockSkewLeeway {
 		return Identity{}, fmt.Errorf("%w: expired", ErrBadToken)
 	}
-	// nbf (not before), если задан — с тем же допуском на дрейф часов.
 	if nbfRaw, ok := claims["nbf"]; ok {
 		if nbf, ok := nbfRaw.(float64); ok && nowUnix()+clockSkewLeeway < int64(nbf) {
 			return Identity{}, fmt.Errorf("%w: token not yet valid (nbf)", ErrBadToken)

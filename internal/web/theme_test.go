@@ -13,13 +13,11 @@ import (
 )
 
 func TestResolveThemeNoUser(t *testing.T) {
-	// cookie theme имеет приоритет
 	r := httptest.NewRequest("GET", "/", nil)
 	r.AddCookie(&http.Cookie{Name: "theme", Value: "light"})
 	if th, _ := resolveThemeNoUser(r); th.Code != "light" {
 		t.Fatalf("cookie wins: %q", th.Code)
 	}
-	// без cookie — дефолт system
 	r2 := httptest.NewRequest("GET", "/", nil)
 	if th, _ := resolveThemeNoUser(r2); th.Code != "system" {
 		t.Fatalf("default: %q", th.Code)
@@ -42,7 +40,6 @@ func TestWithThemeSetsContextAndSkipsStatic(t *testing.T) {
 		t.Fatalf("ctx theme = %q, want dark", seen)
 	}
 
-	// /static/* — миддлвара пропускает без резолвинга (остаётся дефолт)
 	seen = ""
 	rs := httptest.NewRequest("GET", "/static/app.css", nil)
 	rs.AddCookie(&http.Cookie{Name: "theme", Value: "dark"})

@@ -10,65 +10,43 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// StatusPageView — модель публичной статус-страницы (собирается в
-// web/statuspage.go и кешируется там же на 30 секунд). Здесь только то, что
-// можно показать миру: заголовок/описание страницы, display_name мониторов,
-// их статус, uptime% и полоска за 90 дней, инциденты без причины и регионов,
-// ближайшие окна обслуживания. Ни URL/хоста/порта монитора, ни текста ошибки,
-// ни имён проекта и организации в модели нет — их неоткуда взять в шаблоне.
+// модель публичной страницы — только то, что можно показать миру.
+// URL/хоста/порта монитора, текста ошибки, имён проекта/организации здесь нет и не должно быть.
 type StatusPageView struct {
 	Title       string
 	Description string
 	Overall     string // operational | partial | major
-	// Days — фактическая глубина страницы в сутках. Раньше «90» стояло в
-	// текстах подписей, а глубина уже ограничивалась сроком хранения: при
-	// GOTCHA_EVENT_RETENTION_DAYS=30 страница рисовала 30 корзин и подписывала их
-	// «за 90 дней».
+	// фактическая глубина страницы — берётся из срока хранения событий, не захардкожена.
 	Days        int
 	Monitors    []StatusMonitorView
 	Incidents   []StatusIncidentView
 	Maintenance []StatusWindowView
 }
 
-// StatusMonitorView — плитка сервиса: публичное имя (display_name) и его
-// состояние.
 type StatusMonitorView struct {
 	Name      string
 	Status    string // up | down | unknown | paused | maintenance
 	Uptime90d uptime.UptimeStat
-	// BarStats — сырые корзины полоски за 90 дней. Готовый SVG (Bars)
-	// строится не здесь, а на рендере конкретного запроса (см.
-	// renderStatusPage в web/statuspage.go): подписи внутри полоски
-	// локализованы, а вьюха кешируется одна на всех посетителей.
+	// сырые корзины — готовый SVG с локализованными подписями строится на рендере запроса.
 	BarStats []uptime.UptimeStat
 	Bars     templ.Component
 }
 
-// StatusIncidentView — строка ленты инцидентов: сервис, начало (UTC) и
-// длительность либо "ongoing".
 type StatusIncidentView struct {
 	Name      string
 	StartedAt string
-	// Duration — длительность закрытого инцидента (нулевая для незакрытого:
-	// шаблон подставляет локализованное «идёт» по Ongoing, само слово в
-	// модель не кладётся). Это time.Duration, а не готовая строка: вьюха
-	// кешируется одна на всех посетителей независимо от языка, а перевод
-	// числа в «2ч 30м»/«2h 30m» — дело рендера конкретного запроса, где
-	// локаль уже известна из контекста (humanize.Duration в шаблоне). Так
-	// кеш и локализация перестают быть размытыми — они просто про разные
-	// стадии: число собирается один раз, слова — при каждом показе.
+	// time.Duration, не готовая строка — вьюха кешируется одна на всех, перевод числа зависит от языка.
+	// Ongoing=true — нулевая длительность, шаблон подставляет «идёт» сам.
 	Duration time.Duration
 	Ongoing  bool
 }
 
-// StatusWindowView — ближайшее окно обслуживания (на 7 дней вперёд).
 type StatusWindowView struct {
 	Name string
 	From string
 	To   string
 }
 
-// overallStatusText/Class — человекочитаемый общий статус страницы.
 func overallStatusText(ctx context.Context, overall string) string {
 	switch overall {
 	case "major":
@@ -80,10 +58,7 @@ func overallStatusText(ctx context.Context, overall string) string {
 	}
 }
 
-// statusMonitorText — человекочитаемый статус сервиса для публичной
-// страницы: сырой enum up/down/… наружу не показываем. Формулировки свои
-// (status.monitor.*), а не общие uptime.status.*: внутри кабинета уместно
-// сухое «Up», посетителю статус-страницы — «Работает».
+// свои формулировки (status.monitor.*), не uptime.status.* — посетителю «Работает», не сухое «Up».
 func statusMonitorText(ctx context.Context, status string) string {
 	switch status {
 	case "up":
@@ -99,10 +74,7 @@ func statusMonitorText(ctx context.Context, status string) string {
 	}
 }
 
-// hasPausedMonitor сообщает, есть ли среди мониторов страницы хотя бы один
-// на паузе: подсказка status.monitor.paused_hint осмысленна только тогда,
-// когда посетитель реально видит бейдж «Пауза» — иначе это шум на
-// единственной публичной поверхности продукта.
+// подсказка paused_hint осмысленна только когда посетитель видит бейдж «Пауза».
 func hasPausedMonitor(monitors []StatusMonitorView) bool {
 	for _, m := range monitors {
 		if m.Status == "paused" {
@@ -123,9 +95,7 @@ func overallStatusClass(overall string) string {
 	}
 }
 
-// statusLayout — СВОЙ layout публичной страницы: ни навигации приложения, ни
-// ссылок в кабинет, ни формы logout, ни JS (страница целиком статична).
-// Стили берутся из той же публичной статики /static/app.css.
+// свой layout публичной страницы — ни навигации приложения, ни JS, ни ссылок в кабинет.
 templ statusLayout(title string) {
 	<!DOCTYPE html>
 	if theme.FromContext(ctx).Code != "system" {
@@ -143,9 +113,7 @@ templ statusLayout(title string) {
 	}
 }
 
-// statusLayoutBody — общее тело для обеих веток statusLayout (с data-theme и
-// без). Вынесено, потому что templ не позволяет условно открыть тег без
-// закрывающего — тот же приём, что и в layout/chromeless.
+// вынесено — templ не даёт условно открыть тег без закрывающего, как в layout/chromeless.
 templ statusLayoutBody(title string) {
 	<head>
 			<meta charset="utf-8"/>
@@ -176,7 +144,6 @@ templ statusMonitorTile(m StatusMonitorView, days int) {
 	</li>
 }
 
-// PublicStatusPage — GET /status/{key}: страница для анонимного посетителя.
 templ PublicStatusPage(v StatusPageView) {
 	@statusLayout(v.Title) {
 		<h1>{ v.Title }</h1>

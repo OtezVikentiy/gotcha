@@ -18,10 +18,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 )
 
-// HostChartVM — один график карточки хоста: либо готовый SVG + легенда
-// (Empty=false), либо пустое состояние с подсказкой требуемого скрейпера
-// (Empty=true) — «данных совсем нет», а не «пусто в выбранном окне» (это
-// нарисует сам multiSeriesMarkup текстом внутри SVG).
+// Empty=true — данных совсем нет; «пусто в выбранном окне» рисует сам
+// multiSeriesMarkup текстом внутри SVG, это разные состояния.
 type HostChartVM struct {
 	Key       string // "cpu"/"mem"/"disk_usage"/"disk_io"/"net"/"load"/"proc"
 	Empty     bool
@@ -30,75 +28,43 @@ type HostChartVM struct {
 	Truncated bool // top-8 групп (SeriesGrouped/SeriesGroupedRate) — есть отброшенные
 }
 
-// HostDetailVM — GET /projects/{id}/hosts/{name}: карточка хоста.
 type HostDetailVM struct {
 	ProjectID  int64
 	Host       host.Host
 	Range      TimeRangeVM
 	StatusKind string // "problem"/"silent"/"ok" — см. hostRowStatus (web/hosts.go)
-	// ProblemKinds — виды открытых инцидентов, КРОМЕ silent (см. комментарий
-	// hostRowStatus): подпись бейджа "problem" перечисляет именно их, silent
-	// сворачивается в отдельный тир и текстом бейджа не участвует.
+	// виды открытых инцидентов, КРОМЕ silent — тот сворачивается в отдельный
+	// тир и текстом бейджа "problem" не участвует.
 	ProblemKinds    []string
 	OpenIncidents   []host.Incident
 	RecentIncidents []host.Incident
 	Charts          []HostChartVM
-	// ChartsFailed — ClickHouse не ответил: вместо графиков — «данные
-	// временно недоступны», остальная карточка (PostgreSQL) на месте.
-	ChartsFailed bool
-	CanOperate   bool
-	// AckedBy — email подтвердившего, батчем по OpenIncidents (W2-C находка
-	// 4, см. web.Handler.ackedByEmails). Ключ — id пользователя
-	// (host.Incident.AcknowledgedBy).
+	ChartsFailed    bool
+	CanOperate      bool
+	// ключ — id пользователя (host.Incident.AcknowledgedBy).
 	AckedBy map[int64]string
-	// Uptime — гуманизированное «сколько хост живёт» (humanize.Duration),
-	// последнее значение system.uptime за hostsListWindow. Пустая строка —
-	// хост ещё не отчитался этой метрикой (агент/коллектор не настроены или
-	// запрос не удался) — блок не рендерится, а не показывает «0».
+	// пустая строка — хост ещё не отчитался этой метрикой: блок не
+	// рендерится, а не показывает «0».
 	Uptime string
-	// AgentVersion — версия собственного Go-агента (A2), уже пришедшая с
-	// хоста (host.Host.AgentVersion). Задублирована здесь, а не читается из
-	// vm.Host.AgentVersion в шаблоне: тот же контракт карточки хоста
-	// переиспользуют другие VM (T14+), не всегда несущие host.Host целиком.
+	// задублирована, а не читается из vm.Host.AgentVersion: контракт карточки
+	// переиспользуют другие VM, не всегда несущие host.Host целиком.
 	AgentVersion string
-	// AgentUpdateAvailable — версия агента строго старше версии сервера (см.
-	// agentUpdateAvailable, hosts.go): включает бейдж "есть обновление" —
 	// честный сигнал независимо от того, можно ли безопасно предложить команду.
 	AgentUpdateAvailable bool
-	// AgentUpdateCmd — готовая команда переустановки install.sh (см.
-	// agentUpdateCommand, hosts.go). Пусто, если путь агента недоступен
-	// (раздача не сконфигурирована — sec-M1 — или BaseURL не https/локальный —
-	// sec-M4): свёрнутый блок с инструкцией рендерится только когда команда
-	// непуста, отдельно от бейджа (AgentUpdateAvailable).
+	// пусто, если путь агента недоступен — раздача не настроена или
+	// BaseURL не https/локальный.
 	AgentUpdateCmd string
-	// ServerVersion — версия самого сервера (version.Version(), hosts.go), та
-	// же, с которой сверяется AgentUpdateAvailable. Подставляется в заголовок
-	// блока "Как обновить агента до {version}" (rem-E ux-L16): бейдж
-	// "Есть обновление" сам по себе не называл целевую версию.
-	ServerVersion string
-	// IsNew — first_seen моложе hostNewWindow (24ч, internal/web/hosts.go,
-	// T5) — тем же окном и правилом, что row.IsNew в списке (T7): бейдж
-	// «новый» в шапке карточки и в строке списка означает одно и то же.
-	IsNew bool
+	ServerVersion  string
+	IsNew          bool
 
-	// Override — текущий per-host override этого хоста (B2, T6),
-	// host.HostOverrideService.Get: nil-поля = «наследовать» на этом виде.
-	// Форма блока «Пороги этого хоста» строит из него режим radio-группы
-	// (thresholdMode) при первом открытии (ThresholdsForm == nil).
+	// nil-поля Override = «наследовать» на этом виде.
 	Override host.ThresholdOverride
-	// Effective — результат ThresholdResolver.Effective(Host) (T3-T5):
 	// каскад host-override → role-group → env-group → project → default,
-	// отдельно по каждому из 4 видов. Источник каждого вида (Source) — для
-	// подписи «действует: 90% (проект)» рядом с полем формы/в readonly-виде.
+	// отдельно по каждому из 4 видов.
 	Effective host.EffectiveSettings
-	// ThresholdsForm — введённые значения формы порогов при переотрисовке
-	// после ошибки валидации (hostThresholdsSave, 422) — тот же приём, что
-	// form у HostSettings. nil на первом открытии (GET) — тогда поля формы
-	// берут значения из Override/Effective.
+	// nil на первом открытии — поля берут значения из Override/Effective.
 	ThresholdsForm FormState
-	// ThresholdsErr — сообщение об ошибке валидации формы порогов (пусто на
-	// первом открытии).
-	ThresholdsErr string
+	ThresholdsErr  string
 }
 
 func hostDeleteLink(projectID int64, name string) string {
@@ -109,16 +75,8 @@ func hostThresholdsPath(projectID int64, name string) string {
 	return hostLink(projectID, name) + "/thresholds"
 }
 
-// hostThresholdCascadeDocsLink — ссылка «Как работает каскад →» на раздел
-// docs/hosts, объясняющий приоритет хост→роль→окружение→проект→умолчание
-// (UX-аудит B2, P2-4). Якорь — транслитерация заголовка ("## Пороги: каскад
-// и переопределение" / "## Thresholds: cascade and overrides", см.
-// internal/docs/anchors.go, slugify) и РАЗНЫЙ для двух локалей — то же
-// содержимое, но разные заголовки, разные якоря. Захардкожен, а не вычислен
-// от slugify напрямую: templates не имеет доступа к internal/docs (импорт
-// создал бы обратную зависимость), поэтому якорь сверяется руками с текстом
-// заголовка в internal/docs/{ru,en}/hosts.md при каждой правке заголовка
-// раздела.
+// якорь захардкожен (templates не может импортировать internal/docs) и
+// разный на два языка — сверять руками с заголовком в docs/{ru,en}/hosts.md.
 func hostThresholdCascadeDocsLink(ctx context.Context) string {
 	if i18n.FromContext(ctx).Code == "en" {
 		return "/docs/hosts#thresholds-cascade-and-overrides"
@@ -126,11 +84,6 @@ func hostThresholdCascadeDocsLink(ctx context.Context) string {
 	return "/docs/hosts#porogi-kaskad-i-pereopredelenie"
 }
 
-// thresholdMode — режим формы «Пороги этого хоста» (B2, T6) для одного вида
-// порога: nil Enabled → "inherit" (наследовать со следующего уровня
-// каскада), non-nil true → "override" (пришпилено на этом хосте), non-nil
-// false → "off" (выключено на этом хосте). Тот же смысл, что у
-// ThresholdOverride в резолвере (host/resolve.go), в терминах трёх кнопок UI.
 func thresholdMode(enabled *bool) string {
 	if enabled == nil {
 		return "inherit"
@@ -141,19 +94,12 @@ func thresholdMode(enabled *bool) string {
 	return "off"
 }
 
-// thresholdModeFor — выбранный radio с учётом ThresholdsForm (переотрисовка
-// после ошибки валидации, form.Get побеждает) или, на первом открытии,
-// текущего Override (thresholdMode).
 func thresholdModeFor(form FormState, field string, current *bool) string {
 	return form.Get(field, thresholdMode(current))
 }
 
-// thresholdPercentValue/thresholdFloatValue/thresholdMinutesValue —
-// значение числового поля формы по умолчанию: текущий override, если задан,
-// иначе текущее ЭФФЕКТИВНОЕ значение (каскада) — переключение radio на
-// "Переопределить" начинается не с нуля, а с уже действующего числа.
-// Конвертация в проценты/минуты — та же граница, что у settingsPercentDefault
-// и settingsMinutesDefault (hostsettings.templ).
+// без override — текущее эффективное значение каскада, не ноль: переключение
+// radio на "Переопределить" начинается с уже действующего числа.
 func thresholdPercentValue(ov *float64, effective float64) string {
 	if ov != nil {
 		return settingsPercentDefault(*ov)
@@ -175,15 +121,8 @@ func thresholdMinutesValue(ov *time.Duration, effective time.Duration) string {
 	return settingsMinutesDefault(effective)
 }
 
-// thresholdEffectiveLabel — подпись «действует: 90% (проект)» / «действует:
-// выключено (роль web)»: значение из EffectiveSettings, форматированное
-// host.ValueLabel (тот же формат, что у значений инцидентов этой же
-// карточки, hostIncidentRow), плюс источник (ThresholdSource.Level/Label,
-// ключи host.threshold.effective_from.* — level уже совпадает с их
-// суффиксом: "host"/"role"/"env"/"project"/"default"). value — сырое
-// значение вида (доля для disk/memory, само число для load, СЕКУНДЫ для
-// silent — вызывающий передаёт SilentAfter.Seconds(), контракт
-// host.ValueLabel).
+// value — сырое значение вида: доля для disk/memory, число для load, СЕКУНДЫ
+// для silent (вызывающий передаёт SilentAfter.Seconds()).
 func thresholdEffectiveLabel(ctx context.Context, kind string, enabled bool, value float64, src host.ThresholdSource) string {
 	valueText := i18n.T(ctx, "host.threshold.off_value")
 	if enabled {
@@ -192,11 +131,6 @@ func thresholdEffectiveLabel(ctx context.Context, kind string, enabled bool, val
 	return i18n.Tf(ctx, "host.threshold.effective_from."+string(src.Level), "value", valueText, "label", src.Label)
 }
 
-// hostThresholdsSection — блок «Пороги этого хоста» (B2, T6): у оператора —
-// форма per-host override по 4 видам (наследовать/переопределить/выключить +
-// значение), у остальных — тот же набор readonly (эффективные значения +
-// источник, без формы). CanOperate — то же поле VM, что скрывает кнопку
-// удаления ниже.
 func hostThresholdsSection(vm HostDetailVM) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -225,7 +159,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.title"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 194, Col: 43}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 128, Col: 43}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
@@ -238,7 +172,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 		var templ_7745c5c3_Var3 templ.SafeURL
 		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(hostThresholdCascadeDocsLink(ctx)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 195, Col: 72}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 129, Col: 72}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 		if templ_7745c5c3_Err != nil {
@@ -251,7 +185,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 		var templ_7745c5c3_Var4 string
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.cascade_help"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 195, Col: 119}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 129, Col: 119}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
@@ -269,7 +203,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var5 string
 			templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(vm.ThresholdsErr)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 197, Col: 65}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 131, Col: 65}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 			if templ_7745c5c3_Err != nil {
@@ -288,7 +222,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var6 templ.SafeURL
 			templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(hostThresholdsPath(vm.ProjectID, vm.Host.Name)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 200, Col: 89}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 134, Col: 89}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 			if templ_7745c5c3_Err != nil {
@@ -301,7 +235,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var7 string
 			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.disk"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 203, Col: 70}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 137, Col: 70}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 			if templ_7745c5c3_Err != nil {
@@ -314,7 +248,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var8 string
 			templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(thresholdEffectiveLabel(ctx, "disk", vm.Effective.Settings.DiskEnabled, vm.Effective.Settings.DiskThreshold, vm.Effective.DiskSource))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 204, Col: 157}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 138, Col: 157}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 			if templ_7745c5c3_Err != nil {
@@ -337,7 +271,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var9 string
 			templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.inherit"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 208, Col: 47}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 142, Col: 47}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 			if templ_7745c5c3_Err != nil {
@@ -360,7 +294,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var10 string
 			templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.override"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 212, Col: 48}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 146, Col: 48}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 			if templ_7745c5c3_Err != nil {
@@ -383,7 +317,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var11 string
 			templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.off"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 216, Col: 43}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 150, Col: 43}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 			if templ_7745c5c3_Err != nil {
@@ -396,7 +330,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var12 string
 			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.settings.field.disk_threshold"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 221, Col: 60}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 155, Col: 60}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 			if templ_7745c5c3_Err != nil {
@@ -409,7 +343,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var13 string
 			templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.ResolveAttributeValue(vm.ThresholdsForm.Get("disk_value", thresholdPercentValue(vm.Override.DiskThreshold, vm.Effective.Settings.DiskThreshold)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 223, Col: 139}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 157, Col: 139}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var13)
 			if templ_7745c5c3_Err != nil {
@@ -422,7 +356,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var14 string
 			templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.memory"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 228, Col: 72}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 162, Col: 72}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 			if templ_7745c5c3_Err != nil {
@@ -435,7 +369,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var15 string
 			templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(thresholdEffectiveLabel(ctx, "memory", vm.Effective.Settings.MemoryEnabled, vm.Effective.Settings.MemoryThreshold, vm.Effective.MemorySource))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 229, Col: 165}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 163, Col: 165}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 			if templ_7745c5c3_Err != nil {
@@ -458,7 +392,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var16 string
 			templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.inherit"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 233, Col: 47}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 167, Col: 47}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 			if templ_7745c5c3_Err != nil {
@@ -481,7 +415,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var17 string
 			templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.override"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 237, Col: 48}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 171, Col: 48}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 			if templ_7745c5c3_Err != nil {
@@ -504,7 +438,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var18 string
 			templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.off"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 241, Col: 43}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 175, Col: 43}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 			if templ_7745c5c3_Err != nil {
@@ -517,7 +451,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var19 string
 			templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.settings.field.memory_threshold"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 246, Col: 62}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 180, Col: 62}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 			if templ_7745c5c3_Err != nil {
@@ -530,7 +464,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var20 string
 			templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.ResolveAttributeValue(vm.ThresholdsForm.Get("memory_value", thresholdPercentValue(vm.Override.MemoryThreshold, vm.Effective.Settings.MemoryThreshold)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 248, Col: 145}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 182, Col: 145}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var20)
 			if templ_7745c5c3_Err != nil {
@@ -543,7 +477,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var21 string
 			templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.load"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 253, Col: 70}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 187, Col: 70}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 			if templ_7745c5c3_Err != nil {
@@ -556,7 +490,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var22 string
 			templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(thresholdEffectiveLabel(ctx, "load", vm.Effective.Settings.LoadEnabled, vm.Effective.Settings.LoadThreshold, vm.Effective.LoadSource))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 254, Col: 157}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 188, Col: 157}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 			if templ_7745c5c3_Err != nil {
@@ -579,7 +513,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var23 string
 			templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.inherit"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 258, Col: 47}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 192, Col: 47}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 			if templ_7745c5c3_Err != nil {
@@ -602,7 +536,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var24 string
 			templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.override"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 262, Col: 48}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 196, Col: 48}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 			if templ_7745c5c3_Err != nil {
@@ -625,7 +559,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var25 string
 			templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.off"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 266, Col: 43}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 200, Col: 43}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 			if templ_7745c5c3_Err != nil {
@@ -638,7 +572,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var26 string
 			templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.settings.field.load_threshold"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 271, Col: 60}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 205, Col: 60}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 			if templ_7745c5c3_Err != nil {
@@ -651,7 +585,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var27 string
 			templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.ResolveAttributeValue(vm.ThresholdsForm.Get("load_value", thresholdFloatValue(vm.Override.LoadThreshold, vm.Effective.Settings.LoadThreshold)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 273, Col: 137}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 207, Col: 137}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var27)
 			if templ_7745c5c3_Err != nil {
@@ -664,7 +598,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var28 string
 			templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.silent"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 278, Col: 72}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 212, Col: 72}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 			if templ_7745c5c3_Err != nil {
@@ -677,7 +611,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var29 string
 			templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs(thresholdEffectiveLabel(ctx, "silent", vm.Effective.Settings.SilentEnabled, vm.Effective.Settings.SilentAfter.Seconds(), vm.Effective.SilentSource))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 279, Col: 171}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 213, Col: 171}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 			if templ_7745c5c3_Err != nil {
@@ -700,7 +634,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var30 string
 			templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.inherit"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 283, Col: 47}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 217, Col: 47}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
 			if templ_7745c5c3_Err != nil {
@@ -723,7 +657,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var31 string
 			templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.override"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 287, Col: 48}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 221, Col: 48}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 			if templ_7745c5c3_Err != nil {
@@ -746,7 +680,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var32 string
 			templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.off"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 291, Col: 43}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 225, Col: 43}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
 			if templ_7745c5c3_Err != nil {
@@ -759,7 +693,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var33 string
 			templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.settings.field.silent_after"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 296, Col: 58}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 230, Col: 58}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var33))
 			if templ_7745c5c3_Err != nil {
@@ -772,7 +706,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var34 string
 			templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.ResolveAttributeValue(vm.ThresholdsForm.Get("silent_value", thresholdMinutesValue(vm.Override.SilentAfter, vm.Effective.Settings.SilentAfter)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 298, Col: 137}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 232, Col: 137}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var34)
 			if templ_7745c5c3_Err != nil {
@@ -785,7 +719,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var35 string
 			templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.settings.submit"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 303, Col: 88}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 237, Col: 88}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
 			if templ_7745c5c3_Err != nil {
@@ -803,7 +737,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var36 string
 			templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.disk"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 307, Col: 44}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 241, Col: 44}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
 			if templ_7745c5c3_Err != nil {
@@ -816,7 +750,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var37 string
 			templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinStringErrs(thresholdEffectiveLabel(ctx, "disk", vm.Effective.Settings.DiskEnabled, vm.Effective.Settings.DiskThreshold, vm.Effective.DiskSource))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 307, Col: 183}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 241, Col: 183}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
 			if templ_7745c5c3_Err != nil {
@@ -829,7 +763,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var38 string
 			templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.memory"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 308, Col: 46}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 242, Col: 46}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 			if templ_7745c5c3_Err != nil {
@@ -842,7 +776,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var39 string
 			templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinStringErrs(thresholdEffectiveLabel(ctx, "memory", vm.Effective.Settings.MemoryEnabled, vm.Effective.Settings.MemoryThreshold, vm.Effective.MemorySource))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 308, Col: 193}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 242, Col: 193}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
 			if templ_7745c5c3_Err != nil {
@@ -855,7 +789,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var40 string
 			templ_7745c5c3_Var40, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.load"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 309, Col: 44}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 243, Col: 44}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var40))
 			if templ_7745c5c3_Err != nil {
@@ -868,7 +802,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var41 string
 			templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.JoinStringErrs(thresholdEffectiveLabel(ctx, "load", vm.Effective.Settings.LoadEnabled, vm.Effective.Settings.LoadThreshold, vm.Effective.LoadSource))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 309, Col: 183}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 243, Col: 183}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var41))
 			if templ_7745c5c3_Err != nil {
@@ -881,7 +815,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var42 string
 			templ_7745c5c3_Var42, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "host.threshold.silent"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 310, Col: 46}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 244, Col: 46}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var42))
 			if templ_7745c5c3_Err != nil {
@@ -894,7 +828,7 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 			var templ_7745c5c3_Var43 string
 			templ_7745c5c3_Var43, templ_7745c5c3_Err = templ.JoinStringErrs(thresholdEffectiveLabel(ctx, "silent", vm.Effective.Settings.SilentEnabled, vm.Effective.Settings.SilentAfter.Seconds(), vm.Effective.SilentSource))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 310, Col: 199}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 244, Col: 199}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var43))
 			if templ_7745c5c3_Err != nil {
@@ -913,9 +847,6 @@ func hostThresholdsSection(vm HostDetailVM) templ.Component {
 	})
 }
 
-// hostChartCard — карточка одного графика: заголовок, SVG+легенда либо
-// пустое состояние со скрейпером, подпись усечения топ-8. data-chart —
-// маркер для тестов (см. TestWebHostDetail*) и потенциальных якорей ссылок.
 func hostChartCard(c HostChartVM) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -944,7 +875,7 @@ func hostChartCard(c HostChartVM) templ.Component {
 		var templ_7745c5c3_Var45 string
 		templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.ResolveAttributeValue(c.Key)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 320, Col: 53}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 251, Col: 53}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var45)
 		if templ_7745c5c3_Err != nil {
@@ -957,7 +888,7 @@ func hostChartCard(c HostChartVM) templ.Component {
 		var templ_7745c5c3_Var46 string
 		templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.chart."+c.Key))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 321, Col: 41}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 252, Col: 41}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var46))
 		if templ_7745c5c3_Err != nil {
@@ -983,7 +914,7 @@ func hostChartCard(c HostChartVM) templ.Component {
 			var templ_7745c5c3_Var47 string
 			templ_7745c5c3_Var47, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "hosts.chart.empty", "scraper", i18n.T(ctx, "hosts.scraper_hint."+c.Key)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 325, Col: 95}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 256, Col: 95}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var47))
 			if templ_7745c5c3_Err != nil {
@@ -1038,7 +969,7 @@ func hostChartCard(c HostChartVM) templ.Component {
 				var templ_7745c5c3_Var49 string
 				templ_7745c5c3_Var49, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "hosts.chart.top_groups", "n", strconv.Itoa(metric.MaxSeriesGroups)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 335, Col: 103}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 266, Col: 103}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var49))
 				if templ_7745c5c3_Err != nil {
@@ -1058,10 +989,6 @@ func hostChartCard(c HostChartVM) templ.Component {
 	})
 }
 
-// hostStatusText — текст статус-бейджа карточки (без класса — тот берёт
-// hostStatusBadgeClass из hosts.templ, тот же набор классов). "problem"
-// перечисляет ProblemKinds (silent туда не входит, см. HostDetailVM) — та же
-// логика, что в HostsList.
 func hostStatusText(kind string, problemKinds []string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -1090,7 +1017,7 @@ func hostStatusText(kind string, problemKinds []string) templ.Component {
 					var templ_7745c5c3_Var51 string
 					templ_7745c5c3_Var51, templ_7745c5c3_Err = templ.JoinStringErrs(", ")
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 350, Col: 11}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 277, Col: 11}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var51))
 					if templ_7745c5c3_Err != nil {
@@ -1104,7 +1031,7 @@ func hostStatusText(kind string, problemKinds []string) templ.Component {
 				var templ_7745c5c3_Var52 string
 				templ_7745c5c3_Var52, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.kind."+k))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 352, Col: 34}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 279, Col: 34}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var52))
 				if templ_7745c5c3_Err != nil {
@@ -1115,7 +1042,7 @@ func hostStatusText(kind string, problemKinds []string) templ.Component {
 			var templ_7745c5c3_Var53 string
 			templ_7745c5c3_Var53, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.status.silent"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 355, Col: 39}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 282, Col: 39}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var53))
 			if templ_7745c5c3_Err != nil {
@@ -1125,7 +1052,7 @@ func hostStatusText(kind string, problemKinds []string) templ.Component {
 			var templ_7745c5c3_Var54 string
 			templ_7745c5c3_Var54, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.status.ok"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 357, Col: 35}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 284, Col: 35}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var54))
 			if templ_7745c5c3_Err != nil {
@@ -1136,12 +1063,8 @@ func hostStatusText(kind string, problemKinds []string) templ.Component {
 	})
 }
 
-// Значения инцидентов печатает host.ValueLabel, а не fmtFloat (UX-аудит A1,
-// P1-3): формат зависит от ВИДА порога — диск/память в процентах, нагрузка
-// множителем ядра, тишина длительностью. Через fmtFloat диск на карточке
-// выглядел как «0.93» при «93%» в списке строкой выше, а тишина — как «3.6K»
-// (секунды без единицы). Таблица «вид → формат» одна на карточку и на текст
-// уведомления, см. докблок host.ValueLabel.
+// host.ValueLabel, не fmtFloat: формат зависит от вида порога — доля для
+// disk/memory процентом, load множителем ядра, тишина длительностью.
 func hostOpenIncidentRow(inc host.Incident, projectID int64, canOperate bool, ackedBy map[int64]string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -1192,7 +1115,7 @@ func hostOpenIncidentRow(inc host.Incident, projectID int64, canOperate bool, ac
 		var templ_7745c5c3_Var58 string
 		templ_7745c5c3_Var58, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.kind."+inc.Kind))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 369, Col: 87}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 292, Col: 87}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var58))
 		if templ_7745c5c3_Err != nil {
@@ -1214,7 +1137,7 @@ func hostOpenIncidentRow(inc host.Incident, projectID int64, canOperate bool, ac
 			var templ_7745c5c3_Var59 string
 			templ_7745c5c3_Var59, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "incident.badge.suppressed_by_dep"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 372, Col: 72}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 295, Col: 72}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var59))
 			if templ_7745c5c3_Err != nil {
@@ -1228,7 +1151,7 @@ func hostOpenIncidentRow(inc host.Incident, projectID int64, canOperate bool, ac
 		var templ_7745c5c3_Var60 string
 		templ_7745c5c3_Var60, templ_7745c5c3_Err = templ.JoinStringErrs(host.ValueLabel(ctx, inc.Kind, inc.CurrentValue))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 374, Col: 52}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 297, Col: 52}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var60))
 		if templ_7745c5c3_Err != nil {
@@ -1246,7 +1169,7 @@ func hostOpenIncidentRow(inc host.Incident, projectID int64, canOperate bool, ac
 			var templ_7745c5c3_Var61 string
 			templ_7745c5c3_Var61, templ_7745c5c3_Err = templ.JoinStringErrs(inc.Detail)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 376, Col: 35}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 299, Col: 35}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var61))
 			if templ_7745c5c3_Err != nil {
@@ -1310,7 +1233,7 @@ func hostIncidentRow(inc host.Incident) templ.Component {
 			var templ_7745c5c3_Var63 string
 			templ_7745c5c3_Var63, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "incident.badge.suppressed_by_dep"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 388, Col: 73}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 311, Col: 73}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var63))
 			if templ_7745c5c3_Err != nil {
@@ -1328,7 +1251,7 @@ func hostIncidentRow(inc host.Incident) templ.Component {
 		var templ_7745c5c3_Var64 string
 		templ_7745c5c3_Var64, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.kind."+inc.Kind))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 391, Col: 43}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 314, Col: 43}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var64))
 		if templ_7745c5c3_Err != nil {
@@ -1349,7 +1272,7 @@ func hostIncidentRow(inc host.Incident) templ.Component {
 		var templ_7745c5c3_Var65 string
 		templ_7745c5c3_Var65, templ_7745c5c3_Err = templ.JoinStringErrs(host.ValueLabel(ctx, inc.Kind, inc.PeakValue))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 393, Col: 65}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 316, Col: 65}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var65))
 		if templ_7745c5c3_Err != nil {
@@ -1362,7 +1285,7 @@ func hostIncidentRow(inc host.Incident) templ.Component {
 		var templ_7745c5c3_Var66 string
 		templ_7745c5c3_Var66, templ_7745c5c3_Err = templ.JoinStringErrs(host.ValueLabel(ctx, inc.Kind, inc.CurrentValue))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 394, Col: 68}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 317, Col: 68}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var66))
 		if templ_7745c5c3_Err != nil {
@@ -1384,7 +1307,6 @@ func hostIncidentRow(inc host.Incident) templ.Component {
 	})
 }
 
-// HostDetail — GET /projects/{id}/hosts/{name}: карточка хоста (§5.3).
 func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -1433,7 +1355,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 			var templ_7745c5c3_Var69 string
 			templ_7745c5c3_Var69, templ_7745c5c3_Err = templ.JoinStringErrs(vm.Host.Name)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 404, Col: 21}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 326, Col: 21}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var69))
 			if templ_7745c5c3_Err != nil {
@@ -1481,7 +1403,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 				var templ_7745c5c3_Var72 string
 				templ_7745c5c3_Var72, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.badge.new"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 407, Col: 67}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 329, Col: 67}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var72))
 				if templ_7745c5c3_Err != nil {
@@ -1500,7 +1422,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 				var templ_7745c5c3_Var73 string
 				templ_7745c5c3_Var73, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "hosts.col.environment"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 410, Col: 82}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 332, Col: 82}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var73)
 				if templ_7745c5c3_Err != nil {
@@ -1513,7 +1435,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 				var templ_7745c5c3_Var74 string
 				templ_7745c5c3_Var74, templ_7745c5c3_Err = templ.JoinStringErrs(vm.Host.Environment)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 410, Col: 106}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 332, Col: 106}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var74))
 				if templ_7745c5c3_Err != nil {
@@ -1532,7 +1454,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 				var templ_7745c5c3_Var75 string
 				templ_7745c5c3_Var75, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "hosts.col.role"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 413, Col: 75}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 335, Col: 75}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var75)
 				if templ_7745c5c3_Err != nil {
@@ -1545,7 +1467,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 				var templ_7745c5c3_Var76 string
 				templ_7745c5c3_Var76, templ_7745c5c3_Err = templ.JoinStringErrs(vm.Host.Role)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 413, Col: 92}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 335, Col: 92}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var76))
 				if templ_7745c5c3_Err != nil {
@@ -1563,7 +1485,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 			var templ_7745c5c3_Var77 templ.SafeURL
 			templ_7745c5c3_Var77, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(logsForHostPath(vm.ProjectID, vm.Host.Name)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 415, Col: 88}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 337, Col: 88}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var77))
 			if templ_7745c5c3_Err != nil {
@@ -1576,7 +1498,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 			var templ_7745c5c3_Var78 string
 			templ_7745c5c3_Var78, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.detail.view_logs"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 415, Col: 130}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 337, Col: 130}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var78))
 			if templ_7745c5c3_Err != nil {
@@ -1589,7 +1511,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 			var templ_7745c5c3_Var79 string
 			templ_7745c5c3_Var79, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.detail.last_seen"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 419, Col: 68}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 341, Col: 68}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var79))
 			if templ_7745c5c3_Err != nil {
@@ -1610,7 +1532,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 			var templ_7745c5c3_Var80 string
 			templ_7745c5c3_Var80, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.detail.first_seen"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 423, Col: 69}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 345, Col: 69}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var80))
 			if templ_7745c5c3_Err != nil {
@@ -1636,7 +1558,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 				var templ_7745c5c3_Var81 string
 				templ_7745c5c3_Var81, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.detail.uptime"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 428, Col: 66}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 350, Col: 66}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var81))
 				if templ_7745c5c3_Err != nil {
@@ -1649,7 +1571,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 				var templ_7745c5c3_Var82 string
 				templ_7745c5c3_Var82, templ_7745c5c3_Err = templ.JoinStringErrs(vm.Uptime)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 429, Col: 41}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 351, Col: 41}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var82))
 				if templ_7745c5c3_Err != nil {
@@ -1668,7 +1590,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 				var templ_7745c5c3_Var83 string
 				templ_7745c5c3_Var83, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.detail.agent_version"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 434, Col: 73}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 356, Col: 73}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var83))
 				if templ_7745c5c3_Err != nil {
@@ -1681,7 +1603,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 				var templ_7745c5c3_Var84 string
 				templ_7745c5c3_Var84, templ_7745c5c3_Err = templ.JoinStringErrs(vm.AgentVersion)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 436, Col: 24}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 358, Col: 24}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var84))
 				if templ_7745c5c3_Err != nil {
@@ -1699,7 +1621,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 					var templ_7745c5c3_Var85 string
 					templ_7745c5c3_Var85, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.detail.agent_update"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 438, Col: 81}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 360, Col: 81}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var85))
 					if templ_7745c5c3_Err != nil {
@@ -1727,7 +1649,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 				var templ_7745c5c3_Var86 string
 				templ_7745c5c3_Var86, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "hosts.detail.agent_update_howto", "version", vm.ServerVersion))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 446, Col: 92}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 368, Col: 92}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var86))
 				if templ_7745c5c3_Err != nil {
@@ -1753,7 +1675,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 			var templ_7745c5c3_Var87 string
 			templ_7745c5c3_Var87, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "metrics.filter.period"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 453, Col: 43}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 375, Col: 43}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var87))
 			if templ_7745c5c3_Err != nil {
@@ -1770,7 +1692,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 			var templ_7745c5c3_Var88 string
 			templ_7745c5c3_Var88, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "metrics.filter.apply"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 456, Col: 87}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 378, Col: 87}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var88))
 			if templ_7745c5c3_Err != nil {
@@ -1783,7 +1705,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 			var templ_7745c5c3_Var89 string
 			templ_7745c5c3_Var89, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.detail.incidents_open"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 460, Col: 52}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 382, Col: 52}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var89))
 			if templ_7745c5c3_Err != nil {
@@ -1801,7 +1723,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 				var templ_7745c5c3_Var90 string
 				templ_7745c5c3_Var90, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.detail.incidents_open_empty"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 462, Col: 71}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 384, Col: 71}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var90))
 				if templ_7745c5c3_Err != nil {
@@ -1859,7 +1781,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 			var templ_7745c5c3_Var91 string
 			templ_7745c5c3_Var91, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.detail.incidents_recent"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 483, Col: 54}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 405, Col: 54}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var91))
 			if templ_7745c5c3_Err != nil {
@@ -1870,14 +1792,14 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			if len(vm.RecentIncidents) == 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 150, "     <p class=\"hint\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 150, "  <p class=\"hint\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var92 string
 				templ_7745c5c3_Var92, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.detail.incidents_empty"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 490, Col: 66}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 409, Col: 66}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var92))
 				if templ_7745c5c3_Err != nil {
@@ -1911,7 +1833,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 					var templ_7745c5c3_Var94 string
 					templ_7745c5c3_Var94, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "metrics.alerts.table.status"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 497, Col: 70}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 416, Col: 70}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var94))
 					if templ_7745c5c3_Err != nil {
@@ -1924,7 +1846,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 					var templ_7745c5c3_Var95 string
 					templ_7745c5c3_Var95, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.table.kind"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 498, Col: 59}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 417, Col: 59}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var95))
 					if templ_7745c5c3_Err != nil {
@@ -1937,7 +1859,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 					var templ_7745c5c3_Var96 string
 					templ_7745c5c3_Var96, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "incidents.table.severity"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 499, Col: 67}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 418, Col: 67}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var96))
 					if templ_7745c5c3_Err != nil {
@@ -1950,7 +1872,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 					var templ_7745c5c3_Var97 string
 					templ_7745c5c3_Var97, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "metrics.alerts.table.peak"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 500, Col: 80}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 419, Col: 80}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var97))
 					if templ_7745c5c3_Err != nil {
@@ -1963,7 +1885,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 					var templ_7745c5c3_Var98 string
 					templ_7745c5c3_Var98, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "metrics.alerts.table.current"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 501, Col: 83}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 420, Col: 83}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var98))
 					if templ_7745c5c3_Err != nil {
@@ -1976,7 +1898,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 					var templ_7745c5c3_Var99 string
 					templ_7745c5c3_Var99, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "metrics.alerts.table.started"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 502, Col: 71}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 421, Col: 71}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var99))
 					if templ_7745c5c3_Err != nil {
@@ -2023,7 +1945,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 				var templ_7745c5c3_Var100 templ.SafeURL
 				templ_7745c5c3_Var100, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(hostDeleteLink(vm.ProjectID, vm.Host.Name)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 519, Col: 86}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 438, Col: 86}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var100))
 				if templ_7745c5c3_Err != nil {
@@ -2036,7 +1958,7 @@ func HostDetail(vm HostDetailVM, userEmail string) templ.Component {
 				var templ_7745c5c3_Var101 string
 				templ_7745c5c3_Var101, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "hosts.detail.delete"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 520, Col: 86}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/hostdetail.templ`, Line: 439, Col: 86}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var101))
 				if templ_7745c5c3_Err != nil {

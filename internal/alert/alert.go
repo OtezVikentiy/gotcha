@@ -1,5 +1,3 @@
-// Package alert — правила алертинга (new_issue/regression/spike) и каналы
-// доставки (email/webhook/telegram) на уровне проекта.
 package alert
 
 import (
@@ -37,13 +35,11 @@ var (
 	ErrNotFound       = errors.New("alert: not found")
 	ErrInvalidRule    = errors.New("alert: invalid rule")
 	ErrInvalidChannel = errors.New("alert: invalid channel")
-	// ErrSecretBroken — секрет канала зашифрован (настоящий enc:-ciphertext),
-	// но мастер-ключа нет (сброшен/откачен GOTCHA_SECRET_KEY): расшифровать
-	// нечем, а отдавать ciphertext как живой секрет нельзя.
+	// Секрет зашифрован (настоящий enc:-ciphertext), но мастер-ключа нет —
+	// расшифровать нечем, а отдавать ciphertext как живой секрет нельзя.
 	ErrSecretBroken = errors.New("alert: channel secret is encrypted but no master key is set")
 )
 
-// Rule — правило алертинга проекта.
 type Rule struct {
 	ID              int64
 	ProjectID       int64
@@ -54,7 +50,6 @@ type Rule struct {
 	ThrottleMinutes int
 }
 
-// Channel — канал доставки уведомлений проекта.
 type Channel struct {
 	ID        int64
 	ProjectID int64
@@ -62,40 +57,18 @@ type Channel struct {
 	Enabled   bool
 	Target    string
 	Secret    string
-	// SecretBroken — секрет не расшифровывается (сменился или потерян
-	// GOTCHA_SECRET_KEY). Канал при этом ОСТАЁТСЯ в списке: раньше он молча
-	// выпадал из выдачи, и владелец не мог ни перевыпустить секрет, ни удалить
-	// канал — обе ручки отвечали 404, потому что проверка принадлежности
-	// строится поверх того же списка. При этом уведомления по нему просто
-	// переставали ставиться в очередь: ни следа в журнале доставок, ни отметки
-	// в интерфейсе. «Тишина в Telegram» была неотличима от «инцидентов не
-	// было».
-	//
-	// Секрет у такого канала пустой — расшифровать его нечем.
+	// Секрет не расшифровывается — канал остаётся в списке (не пропадает
+	// молча), но Secret пуст и расшифровать его уже нечем.
 	SecretBroken bool
-	// Trusted — оператор заявил, что получатель этого канала внутри его
-	// контура, и разрешил слать туда полные детали события.
-	//
-	// Нужен там, где получателя не опознать по адресу: у Telegram это
-	// chat_id, домена у него нет, и политика оставляет такой канал внешним
-	// всегда (см. DetailPolicy.AllowsDetails). На селфхосте, где оператор и
-	// получатель — один человек, это оставляло единственный рычаг —
-	// GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED, открывающий детали ВСЕМ каналам всех
-	// проектов сразу. Выбор «нигде или везде» и есть причина этого поля:
-	// то же решение, но поштучно.
-	//
-	// Дефолт — false, как и у всей политики: доверие возникает только явным
-	// действием оператора в форме канала.
+	// Оператор подтвердил, что получатель внутри контура, — детали события
+	// уходят и туда, где домен не определить (Telegram), см. DetailPolicy.
 	Trusted bool
 }
 
-// Deliverable — можно ли слать в этот канал. Одно место на все семь
-// нотифаеров: выключенный канал и канал со сломанным секретом одинаково не
-// годятся для доставки, но по разным причинам, и разложенное по семи файлам
-// правило разъехалось бы.
+// Одно место на все нотифаеры — выключенный канал и канал со сломанным
+// секретом одинаково недоступны для доставки, но по разным причинам.
 func (c Channel) Deliverable() bool { return c.Enabled && !c.SecretBroken }
 
-// Service — CRUD над правилами и каналами алертинга.
 type Service struct {
 	pool         *pgxpool.Pool
 	ring         secretbox.Keyring
@@ -108,10 +81,8 @@ type Service struct {
 	budgetSet    bool
 }
 
-// SetKeyring включает шифрование секретов каналов (Telegram bot-токен, HMAC-
-// ключ webhook) at-rest тем же кольцом ключей, что и SSO client_secret. Не
-// вызывается вовсе для dev-стендов — секреты остаются plaintext (Keyring.Open
-// распознаёт это по отсутствию префикса "enc:"). Ставится из main.go.
+// Не вызывается для dev-стендов — секреты остаются plaintext (Keyring.Open
+// распознаёт это по отсутствию префикса "enc:").
 func (s *Service) SetKeyring(ring secretbox.Keyring) {
 	s.ring = ring
 	s.secretKeySet = true
@@ -130,9 +101,8 @@ func validRuleKind(kind string) bool {
 	}
 }
 
-// validateRule проверяет правило до похода в БД: kind должен быть одним из
-// известных, a spike дополнительно требует Threshold>0 и WindowMinutes>0 —
-// иначе правило никогда не сработает. ThrottleMinutes >= 0 required (0 means no throttle).
+// spike дополнительно требует Threshold>0 и WindowMinutes>0 — иначе
+// правило никогда не сработает.
 func validateRule(r Rule) error {
 	if !validRuleKind(r.Kind) {
 		return ErrInvalidRule
@@ -146,16 +116,8 @@ func validateRule(r Rule) error {
 	return nil
 }
 
-// normalizeChannelTarget приводит получателя к тому виду, в котором он
-// пригоден к использованию, и возвращает канал с исправленным Target.
-//
-// Для email это значит «только адрес, без отображаемого имени».
-// mail.ParseAddress принимает и форму «Ops Team <ops@corp.example>», и раньше
-// она сохранялась в БД как есть — со всеми последствиями: отправитель кладёт
-// Target прямо в SMTP-команду RCPT TO, и сервер отвечает отказом, а политика
-// раскрытия деталей видит домен «corp.example>» и не признаёт его своим. Обе
-// поломки тихие: первая всплывает в журнале неудачных доставок уже после того,
-// как алерт не пришёл, вторая не всплывает нигде.
+// Email: только адрес, без отображаемого имени — mail.ParseAddress иначе
+// пропустил бы «Name <addr>» как есть, а RCPT TO такое не принимает.
 func normalizeChannelTarget(c Channel) Channel {
 	c.Target = strings.TrimSpace(c.Target)
 	if c.Kind == ChannelEmail {
@@ -166,9 +128,6 @@ func normalizeChannelTarget(c Channel) Channel {
 	return c
 }
 
-// validateChannel проверяет канал до похода в БД: email — валидный адрес,
-// webhook — http(s) URL, telegram — непустые chat_id (Target) и bot token
-// (Secret).
 func validateChannel(c Channel) error {
 	switch c.Kind {
 	case ChannelEmail:
@@ -184,11 +143,8 @@ func validateChannel(c Channel) error {
 		if c.Secret == "" {
 			return ErrInvalidChannel
 		}
-		// chat_id у Telegram — целое число (у групп и супергрупп
-		// отрицательное). Раньше проверялась только непустота, и любая
-		// опечатка — «не-урл», скопированное имя чата, пробел — принималась
-		// молча, а узнать о ней было негде: доставка падала уже в фоне, в логе
-		// неудачных отправок. Пусть форма ловит это сразу.
+		// chat_id — целое число (группы/супергруппы — отрицательное). Раньше
+		// проверялась только непустота, и опечатка ловилась лишь в логе доставки.
 		if _, err := strconv.ParseInt(c.Target, 10, 64); err != nil {
 			return ErrInvalidChannel
 		}
@@ -198,7 +154,6 @@ func validateChannel(c Channel) error {
 	return nil
 }
 
-// Rules возвращает правила проекта, отсортированные по kind.
 func (s *Service) Rules(ctx context.Context, projectID int64) ([]Rule, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, project_id, kind, enabled, threshold, window_minutes, throttle_minutes
@@ -219,8 +174,8 @@ func (s *Service) Rules(ctx context.Context, projectID int64) ([]Rule, error) {
 	return out, rows.Err()
 }
 
-// UpsertRule создаёт или обновляет правило проекта. UNIQUE(project_id, kind)
-// — повторный вызов с тем же kind обновляет существующее правило.
+// UNIQUE(project_id, kind) — повторный вызов с тем же kind обновляет
+// существующее правило.
 func (s *Service) UpsertRule(ctx context.Context, r Rule) (int64, error) {
 	if err := validateRule(r); err != nil {
 		return 0, err
@@ -242,17 +197,8 @@ func (s *Service) UpsertRule(ctx context.Context, r Rule) (int64, error) {
 	return id, nil
 }
 
-// UpsertRules сохраняет НАБОР правил проекта атомарно: либо применяются все,
-// либо ни одно.
-//
-// Раньше страница писала правила по очереди, и первая же ошибка обрывала цикл —
-// уже записанные оставались. Пользователь получал 422, форма перерисовывалась из
-// БД, и понять, что именно сохранилось, было нельзя: «нажал Сохранить, получил
-// ошибку, а половина изменений всё-таки применилась».
-//
-// Валидация идёт целиком ДО первой записи, а сами записи — в одной транзакции:
-// так частичное применение невозможно ни из-за невалидного правила, ни из-за
-// сбоя БД посередине.
+// Атомарно: валидация — целиком ДО первой записи, сами записи — в одной
+// транзакции, иначе частичное применение при ошибке ловится посередине.
 func (s *Service) UpsertRules(ctx context.Context, rules []Rule) error {
 	for _, r := range rules {
 		if err := validateRule(r); err != nil {
@@ -285,7 +231,6 @@ func (s *Service) UpsertRules(ctx context.Context, rules []Rule) error {
 	return nil
 }
 
-// DeleteRule удаляет правило по id.
 func (s *Service) DeleteRule(ctx context.Context, projectID, ruleID int64) error {
 	// project_id в условии — см. DeleteChannel.
 	tag, err := s.pool.Exec(ctx,
@@ -299,7 +244,6 @@ func (s *Service) DeleteRule(ctx context.Context, projectID, ruleID int64) error
 	return nil
 }
 
-// Channels возвращает каналы доставки проекта, отсортированные по id.
 func (s *Service) Channels(ctx context.Context, projectID int64) ([]Channel, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, project_id, kind, enabled, target, secret, trusted
@@ -319,18 +263,8 @@ func (s *Service) Channels(ctx context.Context, projectID int64) ([]Channel, err
 		if s.secretKeySet {
 			secret, err := s.ring.Open(c.Secret)
 			if err != nil {
-				// Деградируем ПОКАНАЛЬНО, а не роняем весь список: один
-				// нерасшифруемый секрет (сменившийся или потерянный
-				// GOTCHA_SECRET_KEY) не должен убивать доставку по остальным
-				// каналам проекта.
-				//
-				// Но и выбрасывать канал из списка нельзя — так было раньше, и
-				// это делало его невидимым дважды: доставка молча
-				// прекращалась, а починить или удалить канал из интерфейса
-				// было невозможно (проверка принадлежности строится поверх
-				// этого же списка и отвечала 404). Возвращаем его помеченным:
-				// Deliverable() отсечёт его у нотифаеров, а страница покажет,
-				// что именно сломано.
+				// Деградируем поканально — один нерасшифруемый секрет не должен убивать
+				// доставку по остальным каналам, и канал не должен исчезать из списка.
 				slog.Error("alert: channel secret cannot be decrypted",
 					"channel_id", c.ID, "project_id", c.ProjectID, "kind", c.Kind, "error", err)
 				c.Secret = ""
@@ -340,12 +274,8 @@ func (s *Service) Channels(ctx context.Context, projectID int64) ([]Channel, err
 			}
 			c.Secret = secret
 		} else if secretbox.IsEncrypted(c.Secret) {
-			// Мастер-ключа нет (dev-дефолт или откат GOTCHA_SECRET_KEY), но в
-			// БД лежит НАСТОЯЩИЙ ciphertext, а не legacy plaintext. Отдать его
-			// как есть — значит подсунуть нотифаеру enc:base64... вместо
-			// bot-токена/HMAC-ключа: тихий отказ доставки вместо явного. Тот
-			// же приём, что и выше при ошибке Open — помечаем сломанным и не
-			// отдаём ciphertext.
+			// Ciphertext есть, а мастер-ключа нет — отдать as-is значило бы подсунуть
+			// нотифаеру enc:base64... вместо токена; помечаем сломанным, как выше.
 			slog.Error("alert: channel secret is encrypted but no master key is set",
 				"channel_id", c.ID, "project_id", c.ProjectID, "kind", c.Kind)
 			c.Secret = ""
@@ -358,7 +288,6 @@ func (s *Service) Channels(ctx context.Context, projectID int64) ([]Channel, err
 	return out, rows.Err()
 }
 
-// CreateChannel создаёт канал доставки проекта.
 func (s *Service) CreateChannel(ctx context.Context, c Channel) (int64, error) {
 	if err := validateChannel(c); err != nil {
 		return 0, err
@@ -385,18 +314,8 @@ func (s *Service) CreateChannel(ctx context.Context, c Channel) (int64, error) {
 	return id, nil
 }
 
-// ChannelSecret возвращает РАСШИФРОВАННЫЙ секрет канала по его id — bot-токен
-// Telegram или HMAC-ключ вебхука.
-//
-// Существует ради notify.Worker: раньше секрет клали в payload задачи
-// (notification_outbox.payload — обычный jsonb), и шифрование alert_channels
-// .secret этим обесценивалось полностью — `SELECT payload->>'secret'` отдавал
-// живые токены за всё окно хранения очереди. Теперь в очереди лежит только
-// channel_id, а секрет достаётся здесь, в момент отправки, и живёт лишь в
-// памяти воркера.
-//
-// ErrNotFound — канал удалили между постановкой в очередь и отправкой; это не
-// сбой доставки, а исчезнувший адресат, и слать уже некуда.
+// Секрет достаётся здесь, в момент отправки, не хранится в outbox.payload —
+// иначе он лежал бы в очереди открытым текстом всё окно хранения.
 func (s *Service) ChannelSecret(ctx context.Context, channelID int64) (string, error) {
 	var secret string
 	err := s.pool.QueryRow(ctx,
@@ -409,9 +328,8 @@ func (s *Service) ChannelSecret(ctx context.Context, channelID int64) (string, e
 	}
 	if !s.secretKeySet {
 		if secretbox.IsEncrypted(secret) {
-			// Настоящий ciphertext без ключа для расшифровки — слать
-			// нечего; отдать его как secret значило бы отправить
-			// enc:base64... нотифаеру как bot-токен/HMAC-ключ.
+			// Ciphertext без ключа для расшифровки — отдать его как secret значило бы
+			// отправить enc:base64... нотифаеру вместо токена.
 			return "", fmt.Errorf("alert: channel %d secret is encrypted: %w", channelID, ErrSecretBroken)
 		}
 		return secret, nil
@@ -423,16 +341,8 @@ func (s *Service) ChannelSecret(ctx context.Context, channelID int64) (string, e
 	return open, nil
 }
 
-// UpdateChannel меняет канал доставки: получателя, секрет и включённость.
-//
-// Раньше у канала был только жизненный цикл «создать/удалить»: выключенный
-// Telegram-канал нельзя было включить из интерфейса, а опечатку в адресе —
-// исправить. Приходилось удалять и заводить заново, теряя историю доставок.
-//
-// Пустой Secret означает «оставить прежний»: секрет вводится вслепую
-// (type=password) и в форму не возвращается, поэтому требовать его при каждом
-// изменении адреса значило бы заставлять оператора искать bot-токен ради
-// правки опечатки.
+// Пустой Secret значит «оставить прежний» — секрет вводится вслепую и не
+// возвращается в форму, иначе правка адреса требовала бы ввода токена заново.
 func (s *Service) UpdateChannel(ctx context.Context, c Channel) error {
 	if err := validateChannelForUpdate(c); err != nil {
 		return err
@@ -459,8 +369,8 @@ func (s *Service) UpdateChannel(ctx context.Context, c Channel) error {
 		}
 		stored = sealed
 	}
-	// project_id в условии — скоуп: id канала приходит из формы, и без него
-	// владелец одного проекта мог бы править канал соседнего.
+	// project_id в условии — скоуп: без него владелец одного проекта мог бы
+	// править канал соседнего.
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE alert_channels SET target = $2, enabled = $3, secret = $4, trusted = $5
 		WHERE id = $1 AND project_id = $6`, c.ID, c.Target, c.Enabled, stored, c.Trusted, c.ProjectID)
@@ -473,8 +383,7 @@ func (s *Service) UpdateChannel(ctx context.Context, c Channel) error {
 	return nil
 }
 
-// validateChannelForUpdate — как validateChannel, но пустой секрет допустим:
-// при изменении он означает «оставить прежний».
+// Пустой секрет допустим — при изменении он означает «оставить прежний».
 func validateChannelForUpdate(c Channel) error {
 	probe := c
 	if probe.Kind == ChannelTelegram && probe.Secret == "" {
@@ -483,12 +392,10 @@ func validateChannelForUpdate(c Channel) error {
 	return validateChannel(probe)
 }
 
-// DeleteChannel удаляет канал по id. Каскадом удаляет и его записи в outbox.
+// Каскадом удаляет и его записи в outbox.
 func (s *Service) DeleteChannel(ctx context.Context, projectID, channelID int64) error {
-	// project_id в условии — тот же скоуп, что и у UpdateChannel. Хендлер и так
-	// проверяет принадлежность перед удалением, но правило «id пришёл из формы,
-	// значит скоуп в WHERE» должно жить в одном месте: разложенное по двум,
-	// оно разъедется на первом вызывающем, который про предпроверку забудет.
+	// project_id в условии — тот же скоуп, что и у UpdateChannel: правило
+	// должно жить в одном месте, а не полагаться на предпроверку хендлера.
 	tag, err := s.pool.Exec(ctx,
 		"DELETE FROM alert_channels WHERE id = $1 AND project_id = $2", channelID, projectID)
 	if err != nil {
@@ -500,12 +407,8 @@ func (s *Service) DeleteChannel(ctx context.Context, projectID, channelID int64)
 	return nil
 }
 
-// EnsureDefaultRules заводит правила new_issue и regression (enabled,
-// throttle 30 минут) для нового проекта, если их ещё нет. Идемпотентна:
-// UNIQUE(project_id, kind) + ON CONFLICT DO NOTHING не трогает уже
-// настроенные вручную правила. Вызывается из web-слоя там, где создаётся
-// проект (онбординг, настройки проекта) — не из org.CreateProject, чтобы
-// не тянуть зависимость org → alert.
+// Идемпотентна: ON CONFLICT DO NOTHING не трогает уже настроенные вручную
+// правила. Не в org.CreateProject — чтобы не тянуть зависимость org → alert.
 func (s *Service) EnsureDefaultRules(ctx context.Context, projectID int64) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO alert_rules (project_id, kind, enabled, throttle_minutes)

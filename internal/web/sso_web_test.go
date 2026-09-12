@@ -42,7 +42,6 @@ func TestLoginEnforcementAndSSO(t *testing.T) {
 	s := newSSOWebStack(t)
 	ctx := context.Background()
 
-	// enforced-SSO орг для corp.com.
 	ownerID, _ := orgSettingsRegister(t, s.auth, "sso-owner@corp.com")
 	o, err := s.org.CreateOrg(ctx, "sso-co", "SSO Co", ownerID)
 	if err != nil {
@@ -54,12 +53,10 @@ func TestLoginEnforcementAndSSO(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upsert sso: %v", err)
 	}
-	// Юзер с corp.com-паролем (существовал до enforced).
 	if _, err := s.auth.Register(ctx, "worker@corp.com", "password12"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
-	// Принуждение: POST /login с corp.com email → 422, пароль не проверяется.
 	form := url.Values{"email": {"worker@corp.com"}, "password": {"password12"}}
 	resp := postForm(t, s.srv, "/login", form, s.srv.URL, nil)
 	body, _ := io.ReadAll(resp.Body)
@@ -68,7 +65,6 @@ func TestLoginEnforcementAndSSO(t *testing.T) {
 		t.Fatalf("enforced login status=%d body=%s", resp.StatusCode, body)
 	}
 
-	// POST /sso с corp.com email → 303 на sso-start орга.
 	resp = postForm(t, s.srv, "/sso", url.Values{"email": {"anyone@corp.com"}}, s.srv.URL, nil)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -80,7 +76,6 @@ func TestLoginEnforcementAndSSO(t *testing.T) {
 		t.Fatalf("sso redirect = %q, want %q", got, wantLoc)
 	}
 
-	// POST /sso с неизвестным доменом → 422.
 	resp = postForm(t, s.srv, "/sso", url.Values{"email": {"x@unknown.com"}}, s.srv.URL, nil)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -88,7 +83,6 @@ func TestLoginEnforcementAndSSO(t *testing.T) {
 		t.Fatalf("unknown-domain sso status = %d, want 422", resp.StatusCode)
 	}
 
-	// Не-enforced SSO-домен: пароль работает как обычно.
 	owner2, _ := orgSettingsRegister(t, s.auth, "opt-owner@opt.com")
 	o2, _ := s.org.CreateOrg(ctx, "opt-co", "Opt Co", owner2)
 	s.org.UpsertSSO(ctx, org.SSOConfig{OrgID: o2.ID, Issuer: "https://i", ClientID: "c", ClientSecret: "s", Domain: "opt.com", DefaultRole: "member", Enforced: false})
@@ -103,9 +97,6 @@ func TestLoginEnforcementAndSSO(t *testing.T) {
 	}
 }
 
-// TestRegisterEnforcedSSOBlocked — SEC-H2: домен с enforced-SSO не может
-// регистрироваться паролем (обход централизованного provisioning). Register не
-// вызывается, форма возвращает 422 с сообщением про SSO.
 func TestRegisterEnforcedSSOBlocked(t *testing.T) {
 	s := newSSOWebStack(t)
 	ctx := context.Background()
@@ -133,7 +124,6 @@ func TestRegisterEnforcedSSOBlocked(t *testing.T) {
 	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(string(body), "требует вход через SSO") {
 		t.Fatalf("enforced register status=%d body=%s", resp.StatusCode, body)
 	}
-	// Юзер не должен быть создан.
 	if _, err := s.auth.UserByEmail(ctx, "newbie@corp.com"); !errors.Is(err, auth.ErrUserNotFound) {
 		t.Fatalf("user must not be created for enforced-sso domain, got err=%v", err)
 	}

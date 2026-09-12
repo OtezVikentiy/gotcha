@@ -18,26 +18,16 @@ func orgProbesPath(orgID int64) string {
 	return "/orgs/" + strconv.FormatInt(orgID, 10) + "/probes"
 }
 
-// probeOfflineAfter — порог, после которого проба считается offline. Спека
-// говорит «3 × max_interval», но max_interval у разных мониторов разный, а
-// проба стучится в центр каждую секунду независимо от заданий (см.
-// uptime.ProbeClient), поэтому фиксированные 5 минут — то же самое по смыслу и
-// проще.
+// max_interval у разных мониторов разный, а проба стучится в центр каждую секунду
+// независимо от заданий — фиксированные 5 минут то же самое по смыслу и проще.
 const probeOfflineAfter = 5 * time.Minute
 
-// probeFieldMaxLen — предел длины имени и региона пробы: та же валидация, что
-// и у регионов монитора (uptime.maxRegionLen) — непусто, не длиннее 40
-// символов. Регион пробы попадает в regions монитора один в один, поэтому
-// длиннее он быть и не может.
 const probeFieldMaxLen = 40
 
 func validProbeField(s string) bool {
 	return s != "" && utf8.RuneCountInString(s) <= probeFieldMaxLen
 }
 
-// probeStatus — статус пробы для таблицы: отозванная — revoked, молчащая
-// дольше probeOfflineAfter (или ни разу не стучавшаяся) — offline, иначе
-// online.
 func probeStatus(p uptime.Probe, now time.Time) string {
 	switch {
 	case p.Revoked:
@@ -49,21 +39,13 @@ func probeStatus(p uptime.Probe, now time.Time) string {
 	}
 }
 
-// probeRunCommand — готовая строка запуска пробы, которую показываем рядом с
-// сырым токеном (единственный момент, когда он вообще существует вне БД).
-//
-// Образ назван плейсхолдером, а не «gotcha»: публикуемого образа с таким именем
-// нет, compose собирает его локально и называет по имени папки
-// («gotcha-gotcha»). Прежняя строка копировалась целиком и падала с «Unable to
-// find image 'gotcha:latest'» — то есть готовая команда была неготовой.
+// Образ назван плейсхолдером, не «gotcha»: публикуемого образа с таким именем нет,
+// compose собирает его локально под именем папки — готовая с «gotcha:latest» команда упала бы.
 func probeRunCommand(baseURL, token string) string {
 	return "docker run -e GOTCHA_PROBE_SERVER_URL=" + baseURL +
 		" -e GOTCHA_PROBE_KEY=" + token + " <gotcha-image> --mode=probe"
 }
 
-// probeBelongsToOrg проверяет принадлежность пробы организации по уже
-// загруженному списку Probes — тот же приём, что и keyBelongsToProject: не
-// даём отозвать чужую пробу по id (см. orgProbesRevoke).
 func probeBelongsToOrg(probes []uptime.Probe, probeID int64) bool {
 	for _, p := range probes {
 		if p.ID == probeID {
@@ -73,10 +55,6 @@ func probeBelongsToOrg(probes []uptime.Probe, probeID int64) bool {
 	return false
 }
 
-// orgProbesPage — GET /orgs/{id}/probes: таблица проб организации (имя,
-// регион, статус, last seen, дата создания, кнопка Revoke) и форма создания.
-// Доступ только owner/admin (requireOrgRole — та же граница, что и у
-// остальных настроек организации).
 func (h *Handler) orgProbesPage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -87,8 +65,7 @@ func (h *Handler) orgProbesPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// renderProbes дереференсит h.Uptime.Probes — в стендах без подсистемы
-	// мониторинга 404, а не паника (тот же guard, что и в metricsList).
+	// renderProbes дереференсит h.Uptime.Probes — без подсистемы 404, а не паника.
 	if h.Uptime == nil {
 		h.notFound(w, r)
 		return
@@ -99,11 +76,8 @@ func (h *Handler) orgProbesPage(w http.ResponseWriter, r *http.Request) {
 	h.renderProbes(w, r, http.StatusOK, orgID, "", "")
 }
 
-// renderProbes — общий рендер страницы проб: GET, 422 на невалидной форме и
-// успешный POST создания. Последний рендерит эту же страницу прямо в теле
-// ответа (без редиректа), потому что сырой токен пробы нельзя протащить через
-// query string или Location — он показывается ровно один раз, здесь (тот же
-// приём, что и ссылка-приглашение в renderOrgSettings).
+// Успешный POST рендерит эту же страницу без редиректа: сырой токен пробы нельзя
+// протащить через query string или Location, он показывается ровно один раз.
 func (h *Handler) renderProbes(w http.ResponseWriter, r *http.Request, status int, orgID int64, errMsg, rawToken string) {
 	o, err := h.Org.Get(r.Context(), orgID)
 	if err != nil {
@@ -128,9 +102,6 @@ func (h *Handler) renderProbes(w http.ResponseWriter, r *http.Request, status in
 	_ = templates.Probes(o, rows, rawToken, runCmd, errMsg, h.currentEmail(r)).Render(r.Context(), w)
 }
 
-// orgProbesCreate — POST /orgs/{id}/probes: name, region. Успех — 200 с той же
-// страницей и однократным показом сырого токена (см. renderProbes); пустое или
-// слишком длинное имя/регион — 422 с перерисовкой формы.
 func (h *Handler) orgProbesCreate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -162,13 +133,8 @@ func (h *Handler) orgProbesCreate(w http.ResponseWriter, r *http.Request) {
 			i18n.T(r.Context(), "err.probe.name_region"), "")
 		return
 	}
-	// Регион встроенной пробы (in-process runner центра) занят. Сравнивать
-	// надо именно с h.localRegion() — тем именем, которое runner РЕАЛЬНО
-	// лизит (cfg.LocalRegion, GOTCHA_UPTIME_LOCAL_REGION), а не с константой
-	// DefaultRegion: при GOTCHA_UPTIME_LOCAL_REGION=eu-central выносную пробу в
-	// регионе eu-central завести было бы можно, но её задания забирал бы
-	// LeaseLocal центра (он не org-scoped) — монитор проверялся бы из центра,
-	// а страница показывала бы регион eu-central.
+	// Сравниваем с h.localRegion(), не с константой DefaultRegion: тем именем runner
+	// реально лизит (GOTCHA_UPTIME_LOCAL_REGION) — иначе задания молча заберёт LeaseLocal.
 	if region == h.localRegion() {
 		h.renderProbes(w, r, http.StatusUnprocessableEntity, orgID,
 			i18n.Tf(r.Context(), "err.probe.region_reserved", "region", h.localRegion()), "")
@@ -182,10 +148,6 @@ func (h *Handler) orgProbesCreate(w http.ResponseWriter, r *http.Request) {
 	h.renderProbes(w, r, http.StatusOK, orgID, "", token)
 }
 
-// orgProbesRevoke — POST /orgs/{id}/probes/revoke: probe_id. Проба обязана
-// принадлежать организации из пути (проверка через Probes), иначе 404 — иначе
-// можно было бы по id отозвать чужую пробу. Повторный отзыв уже отозванной
-// пробы (uptime.ErrNotFound) — 422 на месте, а не 500.
 func (h *Handler) orgProbesRevoke(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -224,9 +186,7 @@ func (h *Handler) orgProbesRevoke(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 		return
 	}
-	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
-	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
-	// показываем страницу подтверждения вместо необратимого действия.
+	// CSP блокирует inline confirm() — первый POST рендерит страницу подтверждения.
 	if r.FormValue("confirmed") != "yes" {
 		h.renderConfirm(w, r, "confirm.title", "confirm.probe_revoke.message", "confirm.revoke",
 			orgProbesPath(orgID), orgProbesPath(orgID)+"/revoke",

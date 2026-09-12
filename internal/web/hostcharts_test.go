@@ -11,9 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// chartGrid — общая сетка тестов этого файла: окно [from,to) с шагом step,
-// выровненное к unix-эпохе (truncStepEpoch), чтобы ожидаемые индексы корзин
-// считались руками, а не подгонялись под результат.
 func chartGrid() (from, to time.Time, step time.Duration) {
 	step = time.Minute
 	from = time.Unix(1_700_000_000, 0).UTC().Truncate(step)
@@ -21,7 +18,6 @@ func chartGrid() (from, to time.Time, step time.Duration) {
 	return from, to, step
 }
 
-// seriesValueAt — значение ряда в корзине idx или NaN, если индекса нет.
 func seriesValueAt(s NamedSeries, idx int) float64 {
 	if idx < 0 || idx >= len(s.Points) {
 		return math.NaN()
@@ -29,18 +25,9 @@ func seriesValueAt(s NamedSeries, idx int) float64 {
 	return s.Points[idx].V
 }
 
-// TestNamedSeriesFromGroupsAlignsGroupsToCommonGrid — ревью I4: группы с
-// РАЗНЫМИ наборами непустых корзин обязаны выйти рядами одинаковой длины, с
-// NaN там, где у группы данных нет.
-//
-// Без дозаполнения multiSeriesSVG растягивал каждый ряд на всю ширину по его
-// собственной длине (xForIndex(j, len(s.Points))): точка монтирования,
-// появившаяся в середине окна, рисовалась бы в масштабе всего графика, а общая
-// полоса наведения показывала бы её значение под временем чужой серии.
 func TestNamedSeriesFromGroupsAlignsGroupsToCommonGrid(t *testing.T) {
 	from, to, step := chartGrid()
 
-	// early — только первые две корзины, late — только последние две.
 	groups := []metric.GroupedSeries{
 		{Key: "/", Points: []metric.Point{
 			{T: from, V: 0.10},
@@ -60,13 +47,11 @@ func TestNamedSeriesFromGroupsAlignsGroupsToCommonGrid(t *testing.T) {
 		t.Fatalf("длины рядов разъехались: %d и %d — ряды нарисуются в разных временных масштабах",
 			len(series[0].Points), len(series[1].Points))
 	}
-	// Окно [from, to] с шагом step включительно по обеим границам (fillSeries
-	// идёт !t.After(to)) — шесть корзин.
+	// Границы включительны (fillSeries: !t.After(to)) — шесть корзин на 5 шагов, не пять.
 	if got := len(series[0].Points); got != 6 {
 		t.Fatalf("корзин в ряду %d, want 6 (окно 5 шагов, границы включительно)", got)
 	}
 
-	// Значения стоят в СВОИХ корзинах общей сетки и домножены на scale.
 	for i, want := range []float64{10, 20, math.NaN(), math.NaN(), math.NaN(), math.NaN()} {
 		got := seriesValueAt(series[0], i)
 		if math.IsNaN(want) != math.IsNaN(got) || (!math.IsNaN(want) && got != want) {
@@ -80,8 +65,6 @@ func TestNamedSeriesFromGroupsAlignsGroupsToCommonGrid(t *testing.T) {
 		}
 	}
 
-	// Время корзины — общее для одного индекса у обоих рядов: именно на этом
-	// держится общая полоса наведения (одна подсказка на индекс сетки).
 	for i := range series[0].Points {
 		if !series[0].Points[i].T.Equal(series[1].Points[i].T) {
 			t.Errorf("корзина %d: время рядов разное (%v и %v) — подсказка склеит чужие значения",
@@ -90,9 +73,6 @@ func TestNamedSeriesFromGroupsAlignsGroupsToCommonGrid(t *testing.T) {
 	}
 }
 
-// TestNamedSeriesFromGroupsScaleOne — scale=1 (байт/с, штуки) не трогает
-// значения, но сетку всё равно выравнивает: раньше при scale=1 точки шли в
-// multiSeriesSVG вообще как есть.
 func TestNamedSeriesFromGroupsScaleOne(t *testing.T) {
 	from, to, step := chartGrid()
 	groups := []metric.GroupedSeries{
@@ -114,10 +94,6 @@ func TestNamedSeriesFromGroupsScaleOne(t *testing.T) {
 	}
 }
 
-// TestHostLoadSeriesPartialFailure — отложенный minor T15 того же класса: одна
-// из трёх серий load average пуста (коллектор не отдаёт 15m). Остальные две
-// обязаны нарисоваться в правильном масштабе, а пустая — стать сплошным
-// разрывом той же длины, а не сжать соседей и не пропасть из легенды.
 func TestHostLoadSeriesPartialFailure(t *testing.T) {
 	from, to, step := chartGrid()
 	labels := []string{"1m", "5m", "15m"}
@@ -141,14 +117,12 @@ func TestHostLoadSeriesPartialFailure(t *testing.T) {
 		}
 	}
 
-	// 5m: данные в корзинах 0 и 2, разрыв в корзине 1 — ровно там, где точки нет.
 	if got := seriesValueAt(series[1], 1); !math.IsNaN(got) {
 		t.Errorf("5m, корзина 1 = %v, want NaN (пропуск внутри ряда — разрыв, а не сдвиг соседних точек)", got)
 	}
 	if got := seriesValueAt(series[1], 2); got != 0.8 {
 		t.Errorf("5m, корзина 2 = %v, want 0.8 (точка осталась на своём времени)", got)
 	}
-	// 15m: пусто целиком — все корзины NaN.
 	for i := range series[2].Points {
 		if !math.IsNaN(series[2].Points[i].V) {
 			t.Fatalf("15m, корзина %d = %v, want NaN — ряда нет вовсе", i, series[2].Points[i].V)
@@ -156,11 +130,7 @@ func TestHostLoadSeriesPartialFailure(t *testing.T) {
 	}
 }
 
-// TestHostGroupLabelKeysResolve — все i18n-ключи легенды графиков хоста
-// (hostGroupLabelKeys) обязаны существовать в ОБЕИХ локалях: карта не
-// литеральный вызов i18n.T, поэтому общий сканер каталога
-// (guards/i18n_keys_test.go) её не видит — тот же приём, каким закреплена
-// availabilityBarLabelKey (svg_theme_test.go).
+// Карта — не литеральный вызов i18n.T, общий сканер каталога (guards/i18n_keys_test.go) её не видит.
 func TestHostGroupLabelKeysResolve(t *testing.T) {
 	if len(hostGroupLabelKeys) == 0 {
 		t.Fatal("карта подписей легенды пуста — проверять нечего")
@@ -175,10 +145,6 @@ func TestHostGroupLabelKeysResolve(t *testing.T) {
 	}
 }
 
-// TestLocalizeGroupLabelsKeepsUnknownValues — незнакомое значение атрибута
-// (набор status у hostmetricsreceiver зависит от версии и ядра) обязано
-// доехать до легенды КАК ЕСТЬ, а не превратиться в сырой i18n-ключ. Ровно
-// поэтому подписи берутся из карты, а не конкатенацией префикса со значением.
 func TestLocalizeGroupLabelsKeepsUnknownValues(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	series := []NamedSeries{{Label: "read"}, {Label: "hypervisor-hiccup"}}

@@ -7,15 +7,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestRewrapChannelSecretCAS — whitebox: rewrapChannelSecret обязан
-// переписывать secret ТОЛЬКО если он всё ещё равен значению, прочитанному
-// RewrapSecrets в начале партии. Устаревший old (строку успел поменять
-// конкурентный UpdateChannel или бэкфилл другой реплики между чтением партии
-// и этим UPDATE) — ноль затронутых строк, а не затирание чужой записи. Тест
-// бьёт по SQL напрямую (не через полный RewrapSecrets), потому что настоящую
-// гонку «между чтением и записью» внутри одного вызова детерминированно не
-// воспроизвести без хуков в продуктовом коде — а CAS-условие в самом
-// UPDATE проверить так можно и без них.
 func TestRewrapChannelSecretCAS(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -43,8 +34,6 @@ func TestRewrapChannelSecretCAS(t *testing.T) {
 		t.Fatalf("insert channel: %v", err)
 	}
 
-	// Устаревший old не совпадает с фактическим значением в БД — CAS не
-	// затрагивает строку.
 	ok, err := svc.rewrapChannelSecret(ctx, id, "stale-old-value", "would-be-new")
 	if err != nil {
 		t.Fatalf("rewrapChannelSecret(stale): %v", err)
@@ -60,7 +49,6 @@ func TestRewrapChannelSecretCAS(t *testing.T) {
 		t.Fatalf("secret затёрт при несовпавшем old: %q, want unchanged current-value", stored)
 	}
 
-	// Актуальный old — обновление проходит.
 	ok, err = svc.rewrapChannelSecret(ctx, id, "current-value", "new-value")
 	if err != nil {
 		t.Fatalf("rewrapChannelSecret(current): %v", err)
@@ -76,10 +64,6 @@ func TestRewrapChannelSecretCAS(t *testing.T) {
 	}
 }
 
-// TestRewrapChannelSecretExecError — обрыв соединения на самом UPDATE:
-// rewrapChannelSecret обязан вернуть ошибку вызывающему, а не (false,nil) —
-// иначе RewrapSecrets молча спишет реальный сбой записи на «кто-то опередил»
-// (CAS miss, 0 затронутых строк) и не залогирует его через slog.Warn.
 func TestRewrapChannelSecretExecError(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

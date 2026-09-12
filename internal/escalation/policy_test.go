@@ -12,18 +12,13 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// newProject: прямые вставки — escalation-пакет не зависит от org. slug
-// организации/проекта фиксирован ('escorg'/'esc') — годится, пока тест
-// заводит ровно один проект; тест с двумя проектами (cross-tenant) должен
-// звать newProjectNamed с разными слагами, иначе второй INSERT упадёт на
-// organizations_slug_key.
+// Слаг фиксирован — годится, пока тест заводит ровно один проект; тест с
+// двумя проектами обязан звать newProjectNamed с разными слагами.
 func newProject(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	return newProjectNamed(t, pool, "escorg", "esc")
 }
 
-// newProjectNamed — та же прямая вставка, но с явными слагами: нужно тестам,
-// заводящим больше одного проекта в рамках одного pool (см. newProject).
 func newProjectNamed(t *testing.T, pool *pgxpool.Pool, orgSlug, projectSlug string) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -71,10 +66,6 @@ func ladderEqual(a, b escalation.Ladder) bool {
 	return true
 }
 
-// TestLadderDefaultFallback — дискриминирующий тест BLOCKER-1: проект с двумя
-// enabled-каналами и одним disabled, без настроенной политики, обязан
-// получить дефолт-лесенку из ОДНОЙ ступени delay0=0 с ДВУМЯ enabled-каналами
-// (disabled в неё не входит). Ровно старое поведение до эскалаций.
 func TestLadderDefaultFallback(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	store := escalation.NewPolicyStore(pool)
@@ -96,10 +87,6 @@ func TestLadderDefaultFallback(t *testing.T) {
 	}
 }
 
-// TestLadderConfigured — SetLadder сохраняет лесенку и Ladder возвращает её
-// отсортированной по step_no; другая severity того же проекта, для которой
-// политика не настраивалась, по-прежнему получает дефолт-fallback (не
-// пустую лесенку).
 func TestLadderConfigured(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	store := escalation.NewPolicyStore(pool)
@@ -131,7 +118,6 @@ func TestLadderConfigured(t *testing.T) {
 		t.Fatalf("Ladder(critical) = %+v, want %+v", ladder, want)
 	}
 
-	// warning для того же проекта не настраивалась — дефолт-fallback, а не пусто.
 	warnLadder, err := store.Ladder(ctx, pid, escalation.SeverityWarning)
 	if err != nil {
 		t.Fatalf("Ladder(warning): %v", err)
@@ -142,8 +128,6 @@ func TestLadderConfigured(t *testing.T) {
 	}
 }
 
-// TestSetLadderReplaces — второй вызов SetLadder затирает первую лесенку
-// целиком, без дублей и без утечки старых ступеней/каналов.
 func TestSetLadderReplaces(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	store := escalation.NewPolicyStore(pool)
@@ -225,10 +209,6 @@ func TestSetLadderValidation(t *testing.T) {
 	}
 }
 
-// TestSetLadderForeignChannel — cross-tenant (T9, concern T2): channel_id
-// принадлежащий ДРУГОМУ проекту отвергается ДО любой записи — ни новые шаги,
-// ни их каналы не должны попасть в БД (транзакция откатывается целиком, а не
-// только для чужого id).
 func TestSetLadderForeignChannel(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	store := escalation.NewPolicyStore(pool)
@@ -259,8 +239,6 @@ func TestSetLadderForeignChannel(t *testing.T) {
 	}
 }
 
-// TestLadderNoChannelsNoPolicy — проект без единого канала и без настроенной
-// политики получает дефолт-лесенку с пустым ChannelIDs, а не панику/ошибку.
 func TestLadderNoChannelsNoPolicy(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	store := escalation.NewPolicyStore(pool)
@@ -277,8 +255,6 @@ func TestLadderNoChannelsNoPolicy(t *testing.T) {
 	}
 }
 
-// TestLadders — Ladders возвращает обе severity, дефолт-fallback для той, что
-// не настраивалась.
 func TestLadders(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	store := escalation.NewPolicyStore(pool)

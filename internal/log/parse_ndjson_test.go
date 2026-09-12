@@ -11,8 +11,6 @@ import (
 
 func ndjsonFallback() time.Time { return time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC) }
 
-// Один JSON-объект без завершающего \n — тоже валидная строка (последняя
-// строка тела запроса часто без перевода строки).
 func TestParseNDJSONSingleObject(t *testing.T) {
 	body := `{"message":"boom","level":"error"}`
 	out, err := ParseNDJSON(strings.NewReader(body), ndjsonFallback())
@@ -33,7 +31,6 @@ func TestParseNDJSONSingleObject(t *testing.T) {
 	}
 }
 
-// NDJSON — три строки, три записи.
 func TestParseNDJSONThreeLines(t *testing.T) {
 	body := `{"message":"a"}
 {"message":"b"}
@@ -53,7 +50,6 @@ func TestParseNDJSONThreeLines(t *testing.T) {
 	}
 }
 
-// Пустой message пропускается — не роняя остальной батч.
 func TestParseNDJSONEmptyMessageSkipped(t *testing.T) {
 	body := `{"message":"a"}
 {"message":""}
@@ -71,7 +67,6 @@ func TestParseNDJSONEmptyMessageSkipped(t *testing.T) {
 	}
 }
 
-// Строка не-JSON пропускается, остальной батч разбирается.
 func TestParseNDJSONInvalidLineSkipped(t *testing.T) {
 	body := `{"message":"a"}
 not-json-at-all
@@ -89,11 +84,8 @@ not-json-at-all
 	}
 }
 
-// Регресс-тест на главный риск задачи: bufio.Scanner на строке длиннее
-// буфера теряет весь хвост. Строка длиннее maxNDJSONLineBytes (заведомо
-// патологическая, на порядки больше капа тела — не спутать с обычным
-// небольшим перебором из TestParseNDJSONBodyCapped) должна быть отброшена
-// целиком, а СЛЕДУЮЩИЕ строки — по-прежнему разобраны.
+// Регресс на bufio.Scanner (ErrTooLong теряет хвост батча) — длиннее maxNDJSONLineBytes, не спутать
+// с обычным перебором из TestParseNDJSONBodyCapped.
 func TestParseNDJSONLongLineDroppedTailPreserved(t *testing.T) {
 	longMsg := strings.Repeat("x", maxNDJSONLineBytes+1000)
 	longLine := `{"message":"` + longMsg + `"}`
@@ -116,7 +108,6 @@ func TestParseNDJSONLongLineDroppedTailPreserved(t *testing.T) {
 	}
 }
 
-// timestamp строкой RFC3339 распознаётся.
 func TestParseNDJSONTimestampRFC3339String(t *testing.T) {
 	ts := ndjsonFallback().Add(-time.Hour)
 	body := fmt.Sprintf(`{"message":"a","timestamp":%q}`, ts.Format(time.RFC3339))
@@ -129,7 +120,6 @@ func TestParseNDJSONTimestampRFC3339String(t *testing.T) {
 	}
 }
 
-// timestamp числом — unix-float секунды.
 func TestParseNDJSONTimestampUnixFloat(t *testing.T) {
 	ts := ndjsonFallback().Add(-2 * time.Hour)
 	sec := float64(ts.UnixNano()) / float64(time.Second)
@@ -143,7 +133,6 @@ func TestParseNDJSONTimestampUnixFloat(t *testing.T) {
 	}
 }
 
-// timestamp отсутствует → now (fallback).
 func TestParseNDJSONTimestampMissingUsesNow(t *testing.T) {
 	out, err := ParseNDJSON(strings.NewReader(`{"message":"a"}`), ndjsonFallback())
 	if err != nil {
@@ -154,7 +143,6 @@ func TestParseNDJSONTimestampMissingUsesNow(t *testing.T) {
 	}
 }
 
-// trace_id/span_id/attributes опциональны — их отсутствие не ломает разбор.
 func TestParseNDJSONOptionalFieldsAbsent(t *testing.T) {
 	out, err := ParseNDJSON(strings.NewReader(`{"message":"a"}`), ndjsonFallback())
 	if err != nil {
@@ -168,7 +156,6 @@ func TestParseNDJSONOptionalFieldsAbsent(t *testing.T) {
 	}
 }
 
-// trace_id/span_id/attributes при наличии разбираются как есть.
 func TestParseNDJSONOptionalFieldsPresent(t *testing.T) {
 	body := `{"message":"a","trace_id":"0102030405060708090a0b0c0d0e0f10","span_id":"aabbccddeeff0011","attributes":{"k":"v"}}`
 	out, err := ParseNDJSON(strings.NewReader(body), ndjsonFallback())
@@ -186,7 +173,6 @@ func TestParseNDJSONOptionalFieldsPresent(t *testing.T) {
 	}
 }
 
-// Потолок числа записей на запрос — стоп при достижении maxLogsPerRequest.
 func TestParseNDJSONMaxPerRequestStop(t *testing.T) {
 	var sb strings.Builder
 	for i := 0; i < maxLogsPerRequest+50; i++ {
@@ -201,10 +187,8 @@ func TestParseNDJSONMaxPerRequestStop(t *testing.T) {
 	}
 }
 
-// Тело сообщения >64КиБ обрезается с маркером усечения. Небольшой перебор
-// (в отличие от TestParseNDJSONLongLineDroppedTailPreserved) — строка
-// остаётся в пределах maxNDJSONLineBytes и не отбрасывается целиком, доходит
-// до capBytes.
+// В отличие от TestParseNDJSONLongLineDroppedTailPreserved: длина в пределах maxNDJSONLineBytes,
+// строка не отбрасывается целиком, а доходит до capBytes.
 func TestParseNDJSONBodyCapped(t *testing.T) {
 	huge := strings.Repeat("a", maxBodyBytes+1000)
 	body := `{"message":"` + huge + `"}`
@@ -223,10 +207,6 @@ func TestParseNDJSONBodyCapped(t *testing.T) {
 	}
 }
 
-// trace_id/span_id — недоверенный клиентский текст без встроенного ограничения
-// формата (в отличие от OTLP, где они байты фиксированной длины): аномально
-// длинное значение каппится, а не улетает в хранилище как есть; запись при
-// этом не теряется.
 func TestParseNDJSONTraceSpanIDCapped(t *testing.T) {
 	huge := strings.Repeat("f", 500)
 	body := fmt.Sprintf(`{"message":"a","trace_id":%q,"span_id":%q}`, huge, huge)
@@ -245,7 +225,6 @@ func TestParseNDJSONTraceSpanIDCapped(t *testing.T) {
 	}
 }
 
-// Окно таймстемпов: значение старше now-90d подтягивается к нижней границе.
 func TestParseNDJSONTimestampWindowLowerBound(t *testing.T) {
 	tooOld := ndjsonFallback().Add(-100 * 24 * time.Hour)
 	body := fmt.Sprintf(`{"message":"a","timestamp":%q}`, tooOld.Format(time.RFC3339))
@@ -259,7 +238,6 @@ func TestParseNDJSONTimestampWindowLowerBound(t *testing.T) {
 	}
 }
 
-// Окно таймстемпов: значение новее now+24h подтягивается к верхней границе.
 func TestParseNDJSONTimestampWindowUpperBound(t *testing.T) {
 	tooNew := ndjsonFallback().Add(48 * time.Hour)
 	body := fmt.Sprintf(`{"message":"a","timestamp":%q}`, tooNew.Format(time.RFC3339))
@@ -273,8 +251,6 @@ func TestParseNDJSONTimestampWindowUpperBound(t *testing.T) {
 	}
 }
 
-// severity/severity_text выводятся из level, severity_number всегда 0
-// (у NDJSON нет числового кода, в отличие от OTLP).
 func TestParseNDJSONSeverityFromLevel(t *testing.T) {
 	out, err := ParseNDJSON(strings.NewReader(`{"message":"a","level":"WARNING"}`), ndjsonFallback())
 	if err != nil {
@@ -291,7 +267,6 @@ func TestParseNDJSONSeverityFromLevel(t *testing.T) {
 	}
 }
 
-// Атрибуты сверх maxAttrKeys каппятся тем же приёмом, что attrsToMap.
 func TestParseNDJSONAttributesCapped(t *testing.T) {
 	attrs := make([]string, 0, maxAttrKeys+10)
 	for i := 0; i < maxAttrKeys+10; i++ {
@@ -307,7 +282,6 @@ func TestParseNDJSONAttributesCapped(t *testing.T) {
 	}
 }
 
-// Значение атрибута длиннее 200 рун каппится.
 func TestParseNDJSONAttributeValueCapped(t *testing.T) {
 	long := strings.Repeat("x", 250)
 	body := `{"message":"a","attributes":{"k":"` + long + `"}}`
@@ -320,7 +294,6 @@ func TestParseNDJSONAttributeValueCapped(t *testing.T) {
 	}
 }
 
-// timestamp явным null (не только отсутствующее поле) → now.
 func TestParseNDJSONTimestampNullUsesNow(t *testing.T) {
 	out, err := ParseNDJSON(strings.NewReader(`{"message":"a","timestamp":null}`), ndjsonFallback())
 	if err != nil {
@@ -331,10 +304,6 @@ func TestParseNDJSONTimestampNullUsesNow(t *testing.T) {
 	}
 }
 
-// Нестроковые значения атрибутов (число/bool — обычное дело у JSON-логеров)
-// раньше роняли json.Unmarshal всей строки типовой ошибкой (Attributes был
-// map[string]string) и теряли валидный message вместе с ней. Атрибут-null
-// пропускается как ключ, а не превращается в строку "null".
 func TestParseNDJSONAttributeNonStringValuesDoNotDropRecord(t *testing.T) {
 	body := `{"message":"ok","attributes":{"n":3,"b":true,"s":"x","z":null}}`
 	out, err := ParseNDJSON(strings.NewReader(body), ndjsonFallback())
@@ -358,8 +327,6 @@ func TestParseNDJSONAttributeNonStringValuesDoNotDropRecord(t *testing.T) {
 	}
 }
 
-// Вложенный объект/массив в значении атрибута сериализуется в JSON-строку —
-// та же семантика, что anyValueToString для тела OTLP-лога с kvlist/array.
 func TestParseNDJSONAttributeStructuredValueMarshaled(t *testing.T) {
 	body := `{"message":"a","attributes":{"ctx":{"k":"v"}}}`
 	out, err := ParseNDJSON(strings.NewReader(body), ndjsonFallback())
@@ -371,9 +338,7 @@ func TestParseNDJSONAttributeStructuredValueMarshaled(t *testing.T) {
 	}
 }
 
-// errReader — недоверенное тело, которое всегда падает на чтении (эмуляция
-// оборванного соединения). Единственный случай, когда ParseNDJSON обязан
-// вернуть ошибку — битая строка внутри тела на неё не похожа.
+// Единственный случай, когда ParseNDJSON возвращает ошибку — не битая строка, а обрыв самого чтения.
 type errReader struct{}
 
 func (errReader) Read(p []byte) (int, error) { return 0, errors.New("boom: connection reset") }

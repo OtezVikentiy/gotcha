@@ -17,9 +17,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// AlertSuppressionPath — адрес редактора рёбер зависимостей проекта (B5,
-// задача 9). Экспортирован для nav (nav.go добавляет пункт меню рядом с
-// escalations).
 func AlertSuppressionPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/alert-suppression"
 }
@@ -28,33 +25,16 @@ func alertSuppressionDeletePath(projectID, depID int64) string {
 	return AlertSuppressionPath(projectID) + "/" + strconv.FormatInt(depID, 10) + "/delete"
 }
 
-// alertSuppressionUpdatePath — POST правки одного ребра, по образцу delete
-// (тот же сегмент {depID}, без суффикса).
 func alertSuppressionUpdatePath(projectID, depID int64) string {
 	return AlertSuppressionPath(projectID) + "/" + strconv.FormatInt(depID, 10)
 }
 
-// SuppressionCreateModalID — якорь модалки добавления ребра: на него ведёт
-// createTrigger в шапке секции зависимостей, его же открывает заново
-// обработчик после 422 создания (alertSuppressionSave → FormState.Open).
 const SuppressionCreateModalID = "new-suppression-edge"
 
-// EditSuppressionEdgeModalID — якорь модалки правки одного ребра. Модалка на
-// строку таблицы: они построены на CSS :target, якорь обязан быть уникальным,
-// а id ребра стабилен между рендерами (Store.Update сохраняет id).
-// Экспортирована, чтобы обработчик мог сказать, какую именно открыть заново
-// после ошибки валидации (тот же приём, что EditWindowModalID).
 func EditSuppressionEdgeModalID(depID int64) string {
 	return "edit-suppression-edge-" + strconv.FormatInt(depID, 10)
 }
 
-// SuppressionEdgeView — одна строка списка: родитель/ребёнок уже сведены в
-// человекочитаемую подпись (host.name/monitor.name резолвлены в web-слое,
-// см. alert_suppression.go:suppressionParentLabel/suppressionChildLabel).
-// Defaults — значения полей модалки правки из самого ребра
-// (suppressionEdgeFormDefaults): плоская карта тех же имён, что у FormState,
-// чтобы общий фрагмент полей не знал, создание он или правка (тот же приём,
-// что windowFieldDefaults у окон обслуживания).
 type SuppressionEdgeView struct {
 	ID          int64
 	ParentLabel string
@@ -62,24 +42,16 @@ type SuppressionEdgeView struct {
 	Defaults    FormState
 }
 
-// SuppressionNodeOption — один <option> селектора хоста/монитора формы.
 type SuppressionNodeOption struct {
 	ID   int64
 	Name string
 }
 
-// SuppressionPreviewView — одна строка dry-run предпросмотра (Task 9b): «Если
-// бы ParentLabel сейчас упал, подавились бы: Children». Родитель/дети уже
-// сведены в человекочитаемые подписи в web-слое (см.
-// alert_suppression.go:suppressionPreviewRows), тем же приёмом, что и
-// SuppressionEdgeView.
 type SuppressionPreviewView struct {
 	ParentLabel string
 	Children    []string
 }
 
-// suppressionNodeOptions — опции селектора узла; selected — строковый id
-// выбранного (из FormState/Defaults), пустая строка не выбирает никого.
 func suppressionNodeOptions(opts []SuppressionNodeOption, selected string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -109,7 +81,7 @@ func suppressionNodeOptions(opts []SuppressionNodeOption, selected string) templ
 			var templ_7745c5c3_Var2 string
 			templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.ResolveAttributeValue(strconv.FormatInt(o.ID, 10))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 77, Col: 45}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 49, Col: 45}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var2)
 			if templ_7745c5c3_Err != nil {
@@ -132,7 +104,7 @@ func suppressionNodeOptions(opts []SuppressionNodeOption, selected string) templ
 			var templ_7745c5c3_Var3 string
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(o.Name)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 77, Col: 110}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 49, Col: 110}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 			if templ_7745c5c3_Err != nil {
@@ -147,12 +119,6 @@ func suppressionNodeOptions(opts []SuppressionNodeOption, selected string) templ
 	})
 }
 
-// suppressionFormValues — введённые человеком значения, если 422 вернулась
-// именно из этой модалки, иначе fallback (у создания — nil, поля пустые с
-// radio по умолчанию; у правки — Defaults самого ребра). Модалок на странице
-// N+1, а состояние формы одно — без этой развилки введённое при ошибке
-// попало бы во все модалки сразу (тот же приём, что groupThresholdFormValues
-// у групповых порогов).
 func suppressionFormValues(form FormState, open bool, fallback FormState) FormState {
 	if open {
 		return form
@@ -160,14 +126,8 @@ func suppressionFormValues(form FormState, open bool, fallback FormState) FormSt
 	return fallback
 }
 
-// suppressionEdgeFields — общие поля модалок создания и правки: radio
-// parent_kind/child_kind выбирают, какое из параллельных полей читает
-// хендлер (alertSuppressionEdgeFromForm), а CSS :has() по тем же radio
-// (.alert-suppression-form + .as-* в app.css) показывает ТОЛЬКО релевантные
-// поля — серверная логика игнорирования лишнего остаётся страховкой для
-// браузеров без :has(), не заменой. id у полей нет намеренно: фрагмент
-// рендерится в N+1 модалках одной страницы, любой id давал бы дубли в
-// документе (тот же принцип, что groupThresholdKindFields).
+// id у полей нет: фрагмент рендерится в N+1 модалках одной страницы,
+// одинаковый id дал бы дубли в документе.
 func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOption) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -196,7 +156,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var5 string
 		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.field.parent_kind"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 104, Col: 82}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 64, Col: 82}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
@@ -219,7 +179,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.kind.host"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 108, Col: 48}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 68, Col: 48}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {
@@ -242,7 +202,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var7 string
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.kind.monitor"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 112, Col: 51}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 72, Col: 51}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 		if templ_7745c5c3_Err != nil {
@@ -255,7 +215,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var8 string
 		templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.field.parent_host"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 119, Col: 56}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 79, Col: 56}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 		if templ_7745c5c3_Err != nil {
@@ -268,7 +228,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var9 string
 		templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "alert_suppression.field.parent_host"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 120, Col: 112}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 80, Col: 112}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var9)
 		if templ_7745c5c3_Err != nil {
@@ -289,7 +249,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var10 string
 		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.field.parent_monitor"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 127, Col: 59}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 87, Col: 59}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 		if templ_7745c5c3_Err != nil {
@@ -302,7 +262,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var11 string
 		templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "alert_suppression.field.parent_monitor"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 128, Col: 118}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 88, Col: 118}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var11)
 		if templ_7745c5c3_Err != nil {
@@ -323,7 +283,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var12 string
 		templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.field.child_kind"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 135, Col: 81}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 95, Col: 81}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 		if templ_7745c5c3_Err != nil {
@@ -346,7 +306,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var13 string
 		templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.kind.host"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 139, Col: 48}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 99, Col: 48}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 		if templ_7745c5c3_Err != nil {
@@ -369,7 +329,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var14 string
 		templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.kind.monitor"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 143, Col: 51}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 103, Col: 51}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 		if templ_7745c5c3_Err != nil {
@@ -392,7 +352,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var15 string
 		templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.kind.label"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 147, Col: 49}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 107, Col: 49}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 		if templ_7745c5c3_Err != nil {
@@ -405,7 +365,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var16 string
 		templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.field.child_host"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 154, Col: 55}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 114, Col: 55}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 		if templ_7745c5c3_Err != nil {
@@ -418,7 +378,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var17 string
 		templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "alert_suppression.field.child_host"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 155, Col: 110}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 115, Col: 110}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var17)
 		if templ_7745c5c3_Err != nil {
@@ -439,7 +399,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var18 string
 		templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.field.child_monitor"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 162, Col: 58}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 122, Col: 58}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 		if templ_7745c5c3_Err != nil {
@@ -452,7 +412,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var19 string
 		templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "alert_suppression.field.child_monitor"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 163, Col: 116}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 123, Col: 116}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var19)
 		if templ_7745c5c3_Err != nil {
@@ -473,7 +433,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var20 string
 		templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.field.child_label_scope"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 170, Col: 62}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 130, Col: 62}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 		if templ_7745c5c3_Err != nil {
@@ -486,7 +446,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var21 string
 		templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "alert_suppression.field.child_label_scope"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 171, Col: 121}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 131, Col: 121}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var21)
 		if templ_7745c5c3_Err != nil {
@@ -509,7 +469,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var22 string
 		templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.scope.env"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 172, Col: 132}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 132, Col: 132}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 		if templ_7745c5c3_Err != nil {
@@ -532,7 +492,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var23 string
 		templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.scope.role"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 173, Col: 135}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 133, Col: 135}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 		if templ_7745c5c3_Err != nil {
@@ -545,7 +505,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var24 string
 		templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.field.child_label_value"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 179, Col: 62}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 139, Col: 62}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 		if templ_7745c5c3_Err != nil {
@@ -558,7 +518,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var25 string
 		templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.Get("child_label_value", ""))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 184, Col: 46}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 144, Col: 46}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var25)
 		if templ_7745c5c3_Err != nil {
@@ -571,7 +531,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var26 string
 		templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "alert_suppression.field.child_label_value_placeholder"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 185, Col: 87}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 145, Col: 87}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var26)
 		if templ_7745c5c3_Err != nil {
@@ -584,7 +544,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var27 string
 		templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "alert_suppression.field.child_label_value"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 186, Col: 74}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 146, Col: 74}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var27)
 		if templ_7745c5c3_Err != nil {
@@ -597,7 +557,7 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 		var templ_7745c5c3_Var28 string
 		templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.form.hint"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 191, Col: 61}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 151, Col: 61}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 		if templ_7745c5c3_Err != nil {
@@ -611,11 +571,6 @@ func suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpti
 	})
 }
 
-// suppressionCreateModal — модалка добавления ребра (раньше форма жила
-// постоянной простынёй внизу страницы). open — 422 именно из формы создания
-// (FormState.Opens), тогда же внутри показывается ошибка и введённые
-// значения; фокус в модалку переносит modal.js (№80), как у остальных
-// модалок с формами.
 func suppressionCreateModal(projectID int64, hosts, monitors []SuppressionNodeOption, form FormState, errMsg string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -657,7 +612,7 @@ func suppressionCreateModal(projectID int64, hosts, monitors []SuppressionNodeOp
 			var templ_7745c5c3_Var31 templ.SafeURL
 			templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(AlertSuppressionPath(projectID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 202, Col: 73}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 157, Col: 73}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 			if templ_7745c5c3_Err != nil {
@@ -675,7 +630,7 @@ func suppressionCreateModal(projectID int64, hosts, monitors []SuppressionNodeOp
 				var templ_7745c5c3_Var32 string
 				templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.ResolveAttributeValue(SuppressionCreateModalID + "-error")
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 204, Col: 61}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 159, Col: 61}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var32)
 				if templ_7745c5c3_Err != nil {
@@ -688,7 +643,7 @@ func suppressionCreateModal(projectID int64, hosts, monitors []SuppressionNodeOp
 				var templ_7745c5c3_Var33 string
 				templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.JoinStringErrs(errMsg)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 204, Col: 72}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 159, Col: 72}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var33))
 				if templ_7745c5c3_Err != nil {
@@ -710,7 +665,7 @@ func suppressionCreateModal(projectID int64, hosts, monitors []SuppressionNodeOp
 			var templ_7745c5c3_Var34 string
 			templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.form.submit"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 207, Col: 95}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 162, Col: 95}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var34))
 			if templ_7745c5c3_Err != nil {
@@ -730,12 +685,8 @@ func suppressionCreateModal(projectID int64, hosts, monitors []SuppressionNodeOp
 	})
 }
 
-// suppressionEditModal — модалка правки одного ребра теми же полями, что и
-// создание; предзаполнена значениями самого ребра (e.Defaults), после 422 —
-// введёнными человеком (suppressionFormValues). Подсказка edit.hint — про
-// семантику пересчёта: флаг suppressed_by_dep на открытых инцидентах
-// одноразовый (обратного писателя нет, см. depsuppress.Store.Update), правка
-// действует только на новые решения о подавлении.
+// правка действует только на новые решения о подавлении: флаг suppressed_by_dep
+// на уже открытых инцидентах одноразовый, обратного писателя нет.
 func suppressionEditModal(projectID int64, e SuppressionEdgeView, hosts, monitors []SuppressionNodeOption, form FormState, errMsg string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -778,7 +729,7 @@ func suppressionEditModal(projectID int64, e SuppressionEdgeView, hosts, monitor
 			var templ_7745c5c3_Var37 templ.SafeURL
 			templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(alertSuppressionUpdatePath(projectID, e.ID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 222, Col: 85}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 173, Col: 85}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
 			if templ_7745c5c3_Err != nil {
@@ -796,7 +747,7 @@ func suppressionEditModal(projectID int64, e SuppressionEdgeView, hosts, monitor
 				var templ_7745c5c3_Var38 string
 				templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.ResolveAttributeValue(modalID + "-error")
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 224, Col: 44}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 175, Col: 44}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var38)
 				if templ_7745c5c3_Err != nil {
@@ -809,7 +760,7 @@ func suppressionEditModal(projectID int64, e SuppressionEdgeView, hosts, monitor
 				var templ_7745c5c3_Var39 string
 				templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinStringErrs(errMsg)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 224, Col: 55}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 175, Col: 55}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
 				if templ_7745c5c3_Err != nil {
@@ -827,7 +778,7 @@ func suppressionEditModal(projectID int64, e SuppressionEdgeView, hosts, monitor
 			var templ_7745c5c3_Var40 string
 			templ_7745c5c3_Var40, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.edit.hint"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 226, Col: 63}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 177, Col: 63}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var40))
 			if templ_7745c5c3_Err != nil {
@@ -848,7 +799,7 @@ func suppressionEditModal(projectID int64, e SuppressionEdgeView, hosts, monitor
 			var templ_7745c5c3_Var41 string
 			templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.edit.submit"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 228, Col: 95}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 179, Col: 95}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var41))
 			if templ_7745c5c3_Err != nil {
@@ -896,7 +847,7 @@ func suppressionEdgeRow(projectID int64, e SuppressionEdgeView, hosts, monitors 
 		var templ_7745c5c3_Var43 string
 		templ_7745c5c3_Var43, templ_7745c5c3_Err = templ.JoinStringErrs(e.ParentLabel)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 235, Col: 21}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 186, Col: 21}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var43))
 		if templ_7745c5c3_Err != nil {
@@ -909,7 +860,7 @@ func suppressionEdgeRow(projectID int64, e SuppressionEdgeView, hosts, monitors 
 		var templ_7745c5c3_Var44 string
 		templ_7745c5c3_Var44, templ_7745c5c3_Err = templ.JoinStringErrs(e.ChildLabel)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 236, Col: 20}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 187, Col: 20}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var44))
 		if templ_7745c5c3_Err != nil {
@@ -922,7 +873,7 @@ func suppressionEdgeRow(projectID int64, e SuppressionEdgeView, hosts, monitors 
 		var templ_7745c5c3_Var45 templ.SafeURL
 		templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("#" + EditSuppressionEdgeModalID(e.ID)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 241, Col: 65}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 192, Col: 65}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var45))
 		if templ_7745c5c3_Err != nil {
@@ -935,7 +886,7 @@ func suppressionEdgeRow(projectID int64, e SuppressionEdgeView, hosts, monitors 
 		var templ_7745c5c3_Var46 string
 		templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.Tf(ctx, "alert_suppression.action.edit_aria", "parent", e.ParentLabel, "child", e.ChildLabel))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 242, Col: 116}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 193, Col: 116}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var46)
 		if templ_7745c5c3_Err != nil {
@@ -948,7 +899,7 @@ func suppressionEdgeRow(projectID int64, e SuppressionEdgeView, hosts, monitors 
 		var templ_7745c5c3_Var47 string
 		templ_7745c5c3_Var47, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.action.edit"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 244, Col: 51}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 195, Col: 51}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var47))
 		if templ_7745c5c3_Err != nil {
@@ -961,7 +912,7 @@ func suppressionEdgeRow(projectID int64, e SuppressionEdgeView, hosts, monitors 
 		var templ_7745c5c3_Var48 templ.SafeURL
 		templ_7745c5c3_Var48, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(alertSuppressionDeletePath(projectID, e.ID)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 246, Col: 87}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 197, Col: 87}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var48))
 		if templ_7745c5c3_Err != nil {
@@ -974,7 +925,7 @@ func suppressionEdgeRow(projectID int64, e SuppressionEdgeView, hosts, monitors 
 		var templ_7745c5c3_Var49 string
 		templ_7745c5c3_Var49, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.Tf(ctx, "alert_suppression.action.delete_aria", "parent", e.ParentLabel, "child", e.ChildLabel))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 250, Col: 119}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 201, Col: 119}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var49)
 		if templ_7745c5c3_Err != nil {
@@ -987,7 +938,7 @@ func suppressionEdgeRow(projectID int64, e SuppressionEdgeView, hosts, monitors 
 		var templ_7745c5c3_Var50 string
 		templ_7745c5c3_Var50, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.action.delete"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 252, Col: 54}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 203, Col: 54}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var50))
 		if templ_7745c5c3_Err != nil {
@@ -1009,10 +960,7 @@ func suppressionEdgeRow(projectID int64, e SuppressionEdgeView, hosts, monitors 
 	})
 }
 
-// suppressionPreviewRow — одна строка dry-run: «Если бы <родитель> сейчас
-// упал, подавились бы: <дети>». aria-label дублирует видимый текст явно (как
-// у suppressionEdgeRow:delete_aria) — список не интерактивен, но повтор в
-// aria-label ничего не стоит и держит и голос, и текст в одном ключе.
+// aria-label дублирует видимый текст: список не интерактивен, но повтор ничего не стоит.
 func suppressionPreviewRow(p SuppressionPreviewView) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -1041,7 +989,7 @@ func suppressionPreviewRow(p SuppressionPreviewView) templ.Component {
 		var templ_7745c5c3_Var52 string
 		templ_7745c5c3_Var52, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.Tf(ctx, "alert_suppression.preview.row", "parent", p.ParentLabel, "children", strings.Join(p.Children, ", ")))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 266, Col: 132}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 214, Col: 132}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var52)
 		if templ_7745c5c3_Err != nil {
@@ -1054,7 +1002,7 @@ func suppressionPreviewRow(p SuppressionPreviewView) templ.Component {
 		var templ_7745c5c3_Var53 string
 		templ_7745c5c3_Var53, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "alert_suppression.preview.row", "parent", p.ParentLabel, "children", strings.Join(p.Children, ", ")))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 267, Col: 118}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 215, Col: 118}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var53))
 		if templ_7745c5c3_Err != nil {
@@ -1068,12 +1016,8 @@ func suppressionPreviewRow(p SuppressionPreviewView) templ.Component {
 	})
 }
 
-// suppressionPreview — карточка dry-run предпросмотра (Task 9b): для каждого
-// родителя с рёбрами показывает, что подавилось бы прямо сейчас, если бы он
-// упал (без БД — чистая depsuppress.PreviewSuppression, посчитанная заранее
-// в web-слое). Секция всегда показана, если у проекта есть хоть одно ребро —
-// пустой preview (все дети — label-селекторы без совпадений) отдельным
-// текстом, не молчаливым исчезновением карточки.
+// секция видна, если у проекта есть хоть одно ребро; пустой результат — текст,
+// а не исчезновение карточки (дети могут быть label-селекторами без совпадений).
 func suppressionPreview(preview []SuppressionPreviewView) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -1102,7 +1046,7 @@ func suppressionPreview(preview []SuppressionPreviewView) templ.Component {
 		var templ_7745c5c3_Var55 string
 		templ_7745c5c3_Var55, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.preview.title"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 279, Col: 74}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 223, Col: 74}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var55))
 		if templ_7745c5c3_Err != nil {
@@ -1115,7 +1059,7 @@ func suppressionPreview(preview []SuppressionPreviewView) templ.Component {
 		var templ_7745c5c3_Var56 string
 		templ_7745c5c3_Var56, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.preview.intro"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 280, Col: 66}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 224, Col: 66}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var56))
 		if templ_7745c5c3_Err != nil {
@@ -1133,7 +1077,7 @@ func suppressionPreview(preview []SuppressionPreviewView) templ.Component {
 			var templ_7745c5c3_Var57 string
 			templ_7745c5c3_Var57, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.preview.empty"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 282, Col: 67}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 226, Col: 67}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var57))
 			if templ_7745c5c3_Err != nil {
@@ -1167,18 +1111,8 @@ func suppressionPreview(preview []SuppressionPreviewView) templ.Component {
 	})
 }
 
-// AlertSuppression — GET/POST /projects/{id}/alert-suppression: список рёбер
-// зависимостей проекта, модалка добавления и модалка правки на строку.
-// Доступ — оператор проекта (requireProjectOperator, как Escalations/
-// SLOsScreen). Вводная теория убрана со страницы в свёрнутый helpPanelWith
-// (те же абзацы, что раньше стояли стеной хинтов под <h1>). grace —
-// h.SuppressionGrace (задержка первого уведомления,
-// GOTCHA_DEPENDENCY_SETTLE_SECONDS): значение и предупреждение про
-// silent_after показываются, только когда оно положительное (P2-1 устранения
-// аудита B5) — нулевое означает, что грейс выключен либо экран собран на
-// узком тестовом стенде без main.go, где показывать конкретную цифру нечего.
-// form/errMsg — введённые значения и сообщение 422 (FormState помнит, какую
-// модалку переоткрыть: создания или правки конкретного ребра).
+// grace показывается только при значении > 0: ноль означает выключенный грейс
+// либо стенд без main.go, где конкретную цифру показывать нечего.
 func AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, monitors []SuppressionNodeOption, preview []SuppressionPreviewView, grace time.Duration, form FormState, errMsg, userEmail string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -1219,7 +1153,7 @@ func AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, monit
 			var templ_7745c5c3_Var60 string
 			templ_7745c5c3_Var60, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 307, Col: 46}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 241, Col: 46}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var60))
 			if templ_7745c5c3_Err != nil {
@@ -1248,7 +1182,7 @@ func AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, monit
 				var templ_7745c5c3_Var62 string
 				templ_7745c5c3_Var62, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.intro.model"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 309, Col: 52}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 243, Col: 52}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var62))
 				if templ_7745c5c3_Err != nil {
@@ -1261,7 +1195,7 @@ func AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, monit
 				var templ_7745c5c3_Var63 string
 				templ_7745c5c3_Var63, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.intro"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 310, Col: 46}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 244, Col: 46}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var63))
 				if templ_7745c5c3_Err != nil {
@@ -1279,7 +1213,7 @@ func AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, monit
 					var templ_7745c5c3_Var64 string
 					templ_7745c5c3_Var64, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "alert_suppression.intro.grace", "grace", humanize.Duration(ctx, grace)))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 312, Col: 94}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 246, Col: 94}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var64))
 					if templ_7745c5c3_Err != nil {
@@ -1292,7 +1226,7 @@ func AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, monit
 					var templ_7745c5c3_Var65 string
 					templ_7745c5c3_Var65, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.intro.grace_warning"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 313, Col: 61}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 247, Col: 61}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var65))
 					if templ_7745c5c3_Err != nil {
@@ -1310,7 +1244,7 @@ func AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, monit
 				var templ_7745c5c3_Var66 string
 				templ_7745c5c3_Var66, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.intro.scope"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 315, Col: 52}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 249, Col: 52}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var66))
 				if templ_7745c5c3_Err != nil {
@@ -1326,7 +1260,7 @@ func AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, monit
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 96, "    ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 96, "   ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -1338,7 +1272,7 @@ func AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, monit
 				var templ_7745c5c3_Var67 string
 				templ_7745c5c3_Var67, templ_7745c5c3_Err = templ.JoinStringErrs(errMsg)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 321, Col: 28}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 254, Col: 28}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var67))
 				if templ_7745c5c3_Err != nil {
@@ -1364,7 +1298,7 @@ func AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, monit
 			var templ_7745c5c3_Var68 string
 			templ_7745c5c3_Var68, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.list.title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 325, Col: 72}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 258, Col: 72}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var68))
 			if templ_7745c5c3_Err != nil {
@@ -1399,7 +1333,7 @@ func AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, monit
 					var templ_7745c5c3_Var70 string
 					templ_7745c5c3_Var70, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.table.parent"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 333, Col: 71}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 266, Col: 71}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var70))
 					if templ_7745c5c3_Err != nil {
@@ -1412,7 +1346,7 @@ func AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, monit
 					var templ_7745c5c3_Var71 string
 					templ_7745c5c3_Var71, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "alert_suppression.table.child"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 334, Col: 70}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/alert_suppression.templ`, Line: 267, Col: 70}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var71))
 					if templ_7745c5c3_Err != nil {

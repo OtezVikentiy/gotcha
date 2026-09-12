@@ -15,11 +15,8 @@ const (
 	OpNotContains Op = "not_contains"
 )
 
-// Predicate — одно условие отбора. Это модель ХРАНЕНИЯ и обмена: в таком виде
-// условия лежат в сохранённом фильтре и разбираются из URL. Модель ЗАПРОСА —
-// ListFilter: положительные условия там плоскими полями, отрицательные —
-// срезом Not. Разделение намеренное: плоские поля читает весь веб-слой,
-// переводить их на предикаты значило бы переписать его без всякой выгоды.
+// Модель ХРАНЕНИЯ/обмена (в отличие от ListFilter — модели ЗАПРОСА с плоскими полями+Not):
+// плоские поля читает весь веб-слой, переводить его на предикаты не оправдано.
 type Predicate struct {
 	Field string
 	Key   string // только для attr и resource_attr
@@ -27,9 +24,7 @@ type Predicate struct {
 	Value string
 }
 
-// allowedOps — закрытая таблица «поле → допустимые операторы». Всё, чего
-// в ней нет, отвергается: это и есть граница, за которой начинается язык
-// запросов, которого у нас нет.
+// Закрытая таблица: чего в ней нет — отвергается, это граница языка запросов, которого у нас нет.
 var allowedOps = map[string][]Op{
 	FieldBody:         {OpContains, OpNotContains},
 	FieldSeverity:     {OpEq, OpNeq},
@@ -40,7 +35,6 @@ var allowedOps = map[string][]Op{
 	FieldResourceAttr: {OpEq, OpNeq},
 }
 
-// maxPredicateValueLen — потолок длины значения условия в символах.
 const maxPredicateValueLen = 200
 
 func (p Predicate) Validate() error {
@@ -72,9 +66,7 @@ func (p Predicate) Validate() error {
 	return nil
 }
 
-// NormalizePredicates отбрасывает негодные условия и схлопывает дубли,
-// сохраняя порядок первых вхождений: два клика по «исключить» на одном
-// значении обязаны дать один предикат и один чип, а не два одинаковых.
+// Схлопывает дубли, сохраняя порядок первых вхождений — два клика «исключить» на одном значении дают один чип.
 func NormalizePredicates(in []Predicate) []Predicate {
 	seen := make(map[Predicate]bool, len(in))
 	out := make([]Predicate, 0, len(in))
@@ -88,21 +80,8 @@ func NormalizePredicates(in []Predicate) []Predicate {
 	return out
 }
 
-// ApplyPredicates раскладывает список предикатов в фильтр: положительные —
-// в плоские поля, отрицательные — в Not. Обратная операция к сборке предикатов
-// из ListFilter (web.filterToPredicates); одиночные поля замещаются,
-// мультивыбор и атрибуты накапливаются.
-//
-// Живёт в internal/log (а не в internal/web, откуда переехала при устранении
-// находки финального ревью C4), потому что нужна ДВУМ пакетам: web —
-// применению сохранённого фильтра и фильтру по умолчанию (задачи 9/10),
-// templates/logsavedfilters.templ — построению самодостаточной ссылки
-// применения сохранённого фильтра (шаблоны не могут звать web — web и так
-// импортирует templates, обратный импорт дал бы цикл). До переезда шаблон
-// держал собственную копию того же switch — расхождение с этой функцией по
-// severity/service/environment/trace_id/attr/resource_attr прошло бы молча,
-// проверенной осталась только ветка q_not. Единственная функция, вызываемая
-// из обоих мест, устраняет самую возможность разойтись.
+// Раскладывает предикаты в фильтр — обратная операция сборке в web.filterToPredicates. Живёт в internal/log,
+// не internal/web: используется и web, и templates/logsavedfilters.templ (шаблоны не могут импортировать web).
 func ApplyPredicates(f *ListFilter, preds []Predicate) {
 	for _, p := range preds {
 		switch {

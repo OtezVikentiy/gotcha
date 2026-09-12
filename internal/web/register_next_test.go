@@ -9,10 +9,8 @@ import (
 	"testing"
 )
 
-// TestRegisterCarriesNext — форма регистрации сохраняет адресата так же, как
-// форма входа. Без этого пришедший по ссылке-приглашению после регистрации
-// оказывается на главной, а приглашение висит непринятым — именно эту дыру в
-// потоке когда-то закрыли обходом по email.
+// Без сохранения next пришедший по ссылке-приглашению после регистрации теряет её —
+// приглашение остаётся непринятым.
 func TestRegisterCarriesNext(t *testing.T) {
 	s := newStack(t)
 
@@ -27,8 +25,6 @@ func TestRegisterCarriesNext(t *testing.T) {
 	}
 }
 
-// TestRegisterRedirectsToNext — после успешной регистрации человек попадает
-// туда, куда шёл.
 func TestRegisterRedirectsToNext(t *testing.T) {
 	s := newStack(t) // режим open: гейт приглашений сюда не вмешивается
 	resp := postForm(t, s.srv, "/register", url.Values{
@@ -41,8 +37,6 @@ func TestRegisterRedirectsToNext(t *testing.T) {
 	}
 }
 
-// TestRegisterIgnoresForeignNext — чужой адрес в next не должен уводить с
-// сайта; та же защита, что у входа (safeNextPath).
 func TestRegisterIgnoresForeignNext(t *testing.T) {
 	s := newStack(t)
 	for _, next := range []string{"https://evil.example/", "//evil.example/", `/\evil.example/`} {
@@ -59,21 +53,14 @@ func TestRegisterIgnoresForeignNext(t *testing.T) {
 	}
 }
 
-// TestRegisterClosedLinksToLoginWithNext — раунд правок 1: в закрытой ветке
-// (registrationClosed) формы нет вовсе, но ссылка «уже есть аккаунт» на
-// /login обязана нести next дальше — иначе адресат из глубокой ссылки
-// теряется ровно там же, где раньше терялся при отказе (denyRegistration).
-//
-// Пример — некий защищённый путь приложения, а не /invite/{token}: последний
-// с K9-19 обзавёлся особым случаем ниже (TestRegisterClosedInvitePathAvoidsQuery)
-// именно потому, что путь приглашения в query кладётся отдельно от обычного
-// next и теперь не кладётся вовсе.
+// В закрытой ветке формы нет вовсе, но ссылка «уже есть аккаунт» обязана нести next дальше —
+// иначе адресат из глубокой ссылки теряется.
 func TestRegisterClosedLinksToLoginWithNext(t *testing.T) {
 	s := newStack(t)
 	s.h.RegistrationMode = "closed"
 
-	// Bootstrap первого пользователя: registrationClosed прячет форму только
-	// когда UserCount > 0 (первый всегда может зарегистрироваться).
+	// registrationClosed прячет форму только когда UserCount > 0 — первый пользователь
+	// регистрируется всегда (bootstrap).
 	resp := postForm(t, s.srv, "/register", regForm("closed-bootstrap@example.com"), s.srv.URL, nil)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -95,14 +82,8 @@ func TestRegisterClosedLinksToLoginWithNext(t *testing.T) {
 	}
 }
 
-// TestRegisterClosedInvitePathAvoidsQuery — K9-19: тот же сценарий (закрытая
-// ветка регистрации без формы, ссылка «уже есть аккаунт»), но next — путь
-// приглашения. Раньше ссылка несла его в query (next=/invite/{token}) —
-// ровно та находка, которую чинит T7. Токен по-прежнему не теряется: он
-// остаётся годным для восстановления адресата, но едет invite-cookie, а не
-// адресом — здесь это легаси-случай (next в query пришёл как есть, старой
-// ссылкой или руками), и resolveAuthNext зеркалит его в cookie на лету (см.
-// auth.go).
+// Путь приглашения в next не кладётся в query ссылки «войти» — токен всё равно не теряется:
+// resolveAuthNext зеркалит его в invite-cookie.
 func TestRegisterClosedInvitePathAvoidsQuery(t *testing.T) {
 	s := newStack(t)
 	s.h.RegistrationMode = "closed"

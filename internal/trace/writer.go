@@ -12,22 +12,18 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/chbatch"
 )
 
-// poisonThreshold — сколько подряд-фейлов вставки одного и того же головного
-// батча терпим (транзиентные сбои CH), прежде чем перейти к изоляции ядовитых
-// рядов бинарным дроблением (chbatch.IsolatePoison).
+// сколько подряд-фейлов транзиентных сбоев терпим, прежде чем перейти к
+// изоляции ядовитых рядов бинарным дроблением (chbatch.IsolatePoison).
 const poisonThreshold = 3
 
-// CHConn — минимум интерфейса ClickHouse, нужный SpanWriter.
 type CHConn interface {
 	PrepareBatch(ctx context.Context, query string, opts ...driver.PrepareBatchOption) (driver.Batch, error)
 }
 
-// txRow — одна строка CH-таблицы transactions (порядок колонок — как в
-// миграции 0003_traces).
+// порядок полей должен совпадать со списком колонок в insertTx.
 type txRow struct {
-	// OrgID — организация проекта. В CH НЕ пишется; нужен только для per-org
-	// атрибуции дропов txBuf в org_usage.dropped_transactions (см.
-	// SpanWriter.SetDropSink). 0 — атрибутировать некуда.
+	// не пишется в CH — только для per-org атрибуции дропов (см. SetDropSink);
+	// 0 — атрибутировать некуда.
 	OrgID       int64
 	ProjectID   uint64
 	TraceID     string
@@ -43,12 +39,11 @@ type txRow struct {
 	UserID      string
 	Tags        map[string]string
 	Source      string
-	// Measurements уезжает в CH-колонку measurements Map(String, Float64); nil
-	// приводится к пустому map при заполнении строки (CH Map не любит nil).
+	// уезжает в CH-колонку measurements Map(String, Float64); nil приводится к
+	// пустой map — CH Map не любит nil.
 	Measurements map[string]float64
 }
 
-// spanRow — одна строка CH-таблицы spans.
 type spanRow struct {
 	ProjectID       uint64
 	TraceID         string
@@ -66,15 +61,8 @@ type spanRow struct {
 	Source          string
 }
 
-// SpanWriter копит транзакции и пишет их в ClickHouse пачками: по batchSize
-// или по тику interval. Повторяет паттерн event.Batcher / uptime.ResultWriter
-// (см. internal/event/batcher.go): Add никогда не блокирует и не возвращает
-// ошибку, ошибка вставки возвращает пачку в буфер (ретрай следующим тиком),
-// буфер ограничен, при переполнении дропается самое старое.
-//
-// Отличие от предшественников — две таблицы (transactions и spans) и потому
-// два независимых буфера: неудача вставки в одну таблицу не заставляет
-// переотправлять уже вставленные строки другой (иначе были бы дубли).
+// два независимых буфера (transactions/spans) — неудача вставки в одну
+// таблицу не переотправляет уже вставленные строки другой (иначе дубли).
 type SpanWriter struct {
 	conn CHConn
 
@@ -86,15 +74,12 @@ type SpanWriter struct {
 	dropped     int64
 	insertFails int64 // накопительно: сколько флашей провалилось
 	lastDropLog time.Time
-	// Два независимых батча (transactions и spans) → два раздельных счётчика
-	// подряд-фейлов: изоляция ядовитых рядов включается по каждой таблице отдельно.
+	// два раздельных счётчика — изоляция ядовитых рядов включается по каждой
+	// таблице отдельно.
 	txFailStreak   int
 	spanFailStreak int
-	// pendingDrops — выброшенные с прошлого слива ТРАНЗАКЦИИ по orgID, для per-org
-	// атрибуции в org_usage.dropped_transactions (см. onDrop/SetDropSink). Только
-	// txBuf: транзакция — квота/биллинг-единица; дроп дочернего спана из spanBuf —
-	// потеря данных, но не «дропнутая транзакция», в счётчик не идёт. nil, пока
-	// дропов нет. Заполняется под mu, сливается ВНЕ mu (emitDrops).
+	// только txBuf — транзакция это квота/биллинг-единица, дроп спана из
+	// spanBuf в счётчик не идёт; заполняется под mu, сливается вне (emitDrops).
 	pendingDrops map[int64]int64
 	onDrop       func(orgID, n int64) // сток per-org дропов txBuf; nil — no-op. Под mu.
 
@@ -127,10 +112,8 @@ func NewSpanWriter(conn CHConn) *SpanWriter {
 	}
 }
 
-// Add кладёт транзакцию в буферы: 1 строка в transactions и len(Spans)+1
-// строк в spans (корневой спан тоже попадает в spans). Никогда не блокирует и
-// не возвращает ошибку: приём транзакций не должен зависеть от здоровья
-// ClickHouse.
+// никогда не блокирует и не возвращает ошибку — приём не должен зависеть от
+// здоровья ClickHouse.
 func (w *SpanWriter) Add(orgID, projectID int64, t Transaction) {
 	tx := txRow{
 		OrgID:        orgID,
@@ -159,7 +142,6 @@ func (w *SpanWriter) Add(orgID, projectID int64, t Transaction) {
 	}
 
 	spans := make([]spanRow, 0, len(t.Spans)+1)
-	// Корневой спан: без родителя, описание — имя транзакции.
 	spans = append(spans, spanRow{
 		ProjectID:       uint64(projectID),
 		TraceID:         t.TraceID,
@@ -216,8 +198,7 @@ func (w *SpanWriter) Add(orgID, projectID int64, t Transaction) {
 	} else {
 		logDrop = false
 	}
-	// Per-org дропы транзакций и сток захватываем под mu, сливаем — вне (сток
-	// берёт свой мьютекс).
+	// захватываем под mu, сливаем вне — сток берёт свой мьютекс.
 	drops, sink := w.takeDropsLocked()
 	w.mu.Unlock()
 	reportDrops(sink, drops)
@@ -233,16 +214,14 @@ func (w *SpanWriter) Add(orgID, projectID int64, t Transaction) {
 	}
 }
 
-// SetDropSink задаёт сток per-org дропов txBuf (см. SpanWriter.onDrop). Ставится
-// один раз из main до горячего трафика; nil-сток — no-op.
+// ставится один раз из main до горячего трафика; nil-сток — no-op.
 func (w *SpanWriter) SetDropSink(fn func(orgID, n int64)) {
 	w.mu.Lock()
 	w.onDrop = fn
 	w.mu.Unlock()
 }
 
-// takeDropsLocked забирает накопленные per-org дропы транзакций и текущий сток.
-// Под mu; вызывающий сливает через reportDrops ПОСЛЕ разблокировки.
+// вызывающий обязан слить результат через reportDrops ПОСЛЕ разблокировки.
 func (w *SpanWriter) takeDropsLocked() (map[int64]int64, func(orgID, n int64)) {
 	if len(w.pendingDrops) == 0 {
 		return nil, w.onDrop
@@ -252,8 +231,7 @@ func (w *SpanWriter) takeDropsLocked() (map[int64]int64, func(orgID, n int64)) {
 	return m, w.onDrop
 }
 
-// emitDrops сливает накопленные per-org дропы в сток. Для flush, где возврат
-// провалившейся пачки транзакций может переполнить txBuf уже под mu.
+// нужен в flush, где возврат неудачной пачки может переполнить txBuf уже под mu.
 func (w *SpanWriter) emitDrops() {
 	w.mu.Lock()
 	drops, sink := w.takeDropsLocked()
@@ -261,8 +239,6 @@ func (w *SpanWriter) emitDrops() {
 	reportDrops(sink, drops)
 }
 
-// reportDrops вызывает сток по одному разу на организацию. sink==nil или пустая
-// карта — no-op.
 func reportDrops(sink func(orgID, n int64), drops map[int64]int64) {
 	if sink == nil {
 		return
@@ -272,8 +248,7 @@ func reportDrops(sink func(orgID, n int64), drops map[int64]int64) {
 	}
 }
 
-// encodeData сериализует data спана в JSON; пустая карта и несериализуемое
-// значение дают "{}" — колонка data всегда валидный JSON.
+// несериализуемое значение даёт "{}" — колонка data всегда валидный JSON.
 func encodeData(data map[string]any) string {
 	if len(data) == 0 {
 		return "{}"
@@ -286,18 +261,12 @@ func encodeData(data map[string]any) string {
 	return string(b)
 }
 
-// defaultMaxBufBytes — потолок КАЖДОГО из буферов по байтам, в дополнение к
-// потолку по строкам. Одного потолка по строкам не хватает: размер строки задаёт
-// клиент (описание спана, теги транзакции, JSON data), и maxSpanBuf=100000
-// раздутых строк — это десятки гигабайт в буфере, заведённом под сто тысяч
-// небольших спанов. На обычном трафике первым срабатывает потолок по строкам.
+// потолка по строкам одного не хватает — размер строки задаёт клиент, и
+// раздутые строки могли бы разрастись до гигабайт в буфере на строки.
 const defaultMaxBufBytes = 256 << 20
 
-// rowOverheadBytes — постоянная цена ОДНОЙ строки в буфере помимо длины строк:
-// заголовки string (16 байт каждый), элемент среза, служебные поля. Без неё
-// учёт был обходим тем же приёмом, что и бюджет профилей: строка из пустых или
-// однобуквенных значений весила бы почти ноль, и байтовый потолок не срабатывал
-// бы никогда — работал бы только счётный.
+// без этой надбавки пустые/однобуквенные значения весили бы почти ноль, и
+// байтовый потолок не срабатывал бы никогда.
 const rowOverheadBytes = 64
 
 func txRowBytes(r txRow) int64 {
@@ -319,9 +288,7 @@ func spanRowBytes(r spanRow) int64 {
 		len(r.Environment)+len(r.Data)+len(r.Source)) + rowOverheadBytes
 }
 
-// trimTxLocked/trimSpansLocked приводят буфер к обоим потолкам, выбрасывая самое
-// старое. Стоимость — O(числа выброшенных): вес ведётся инкрементально в Add.
-// Вызываются под mu.
+// стоимость O(числа выброшенных) — вес ведётся инкрементально в Add.
 func (w *SpanWriter) trimTxLocked() bool {
 	drop := 0
 	if over := len(w.txBuf) - w.maxBuf; over > 0 {
@@ -337,9 +304,8 @@ func (w *SpanWriter) trimTxLocked() bool {
 	if drop <= 0 {
 		return false
 	}
-	// Списываем выброшенные транзакции их организациям (per-org атрибуция потерь
-	// в org_usage.dropped_transactions): без этого потеря на слое буфера писателя
-	// невидима per-org. Только txBuf — см. докблок pendingDrops.
+	// без атрибуции по org потеря на буфере писателя невидима per-org (только
+	// txBuf — см. pendingDrops).
 	for i := 0; i < drop; i++ {
 		if org := w.txBuf[i].OrgID; org > 0 {
 			if w.pendingDrops == nil {
@@ -373,8 +339,6 @@ func (w *SpanWriter) trimSpansLocked() bool {
 	return true
 }
 
-// recountTxLocked/recountSpansLocked пересчитывают вес с нуля — нужны там, где
-// буфер перестраивается целиком (возврат пачки после неудачной вставки).
 func (w *SpanWriter) recountTxLocked() {
 	w.txBytes = 0
 	for i := range w.txBuf {
@@ -389,31 +353,21 @@ func (w *SpanWriter) recountSpansLocked() {
 	}
 }
 
-// Dropped — сколько строк (транзакций и спанов) выброшено из-за переполнения
-// буферов.
 func (w *SpanWriter) Dropped() int64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.dropped
 }
 
-// Buffered — сколько строк ждёт записи прямо сейчас: транзакции и спаны
-// суммарно (у писателя два независимых буфера). Для самотелеметрии: растущая
-// глубина — первый признак, что хранилище не принимает.
+// растущая глубина — первый признак, что хранилище не принимает.
 func (w *SpanWriter) Buffered() int64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return int64(len(w.txBuf) + len(w.spanBuf))
 }
 
-// Saturation — заполненность писателя в долях единицы: 0 — пусто, 1 —
-// потолок, дальше начинается drop-oldest (см. trimTxLocked/trimSpansLocked).
-// У SpanWriter четыре независимых плеча — счёт и байты у транзакций, счёт и
-// байты у спанов — и упереться достаточно в любое одно: значение считается
-// как максимум по всем четырём, а не по их сумме или среднему. Так спановое
-// плечо (одна транзакция с тысячами спанов) видно даже когда транзакционный
-// буфер почти пуст. Значение НЕ обрезается единицей: между append и trim*
-// буфер физически перебирает потолок, и это должно быть видно.
+// максимум по четырём плечам, не сумма/среднее (иначе спановое плечо было бы
+// не видно); не клампится единицей — между append и trim* потолок бывает превышен.
 func (w *SpanWriter) Saturation() float64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -430,9 +384,8 @@ func (w *SpanWriter) Saturation() float64 {
 	return sat
 }
 
-// bufSaturation считает долю num/den. den<=0 — потолок выключен нулём и
-// значит «этим лимитом не ограничены», а не «делить не на что»: такой
-// потолок не должен ни паниковать, ни искусственно показывать насыщение.
+// den<=0 — потолок выключен, «не ограничены», не «делить не на что»: не
+// паникует и не показывает мнимое насыщение.
 func bufSaturation(num, den int64) float64 {
 	if den <= 0 {
 		return 0
@@ -440,25 +393,22 @@ func bufSaturation(num, den int64) float64 {
 	return float64(num) / float64(den)
 }
 
-// InsertFailures — сколько флашей провалилось за время жизни процесса.
-// Отличается от Dropped: неудачная вставка возвращает пачку в буфер и
-// повторяется, потеря наступает только при переполнении буфера.
+// отличается от Dropped: неудачная вставка возвращает пачку в буфер и
+// повторяется, потеря — только при переполнении буфера.
 func (w *SpanWriter) InsertFailures() int64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.insertFails
 }
 
-// flushWithTimeout ограничивает одну попытку флаша, даже если у parent ctx
-// нет собственного дедлайна (context.Background()) или его бюджет большой:
-// сетевая чёрная дыра в PrepareBatch/Send не должна вешать Run/Close навсегда.
+// ограничивает попытку, даже если у parent ctx нет своего дедлайна — сетевая
+// чёрная дыра в PrepareBatch/Send не должна вешать Run/Close навсегда.
 func (w *SpanWriter) flushWithTimeout(parent context.Context) {
 	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
 	w.flush(ctx)
 }
 
-// Run — цикл флаша; запускать горутиной. Завершается через Close.
 func (w *SpanWriter) Run() {
 	defer close(w.done)
 	ticker := time.NewTicker(w.interval)
@@ -475,11 +425,8 @@ func (w *SpanWriter) Run() {
 	}
 }
 
-// Close останавливает цикл и доливает остаток буферов. При неудачных вставках
-// ретраит с паузой, пока жив ctx; сдаётся только по ctx. Каждая попытка флаша
-// ограничена внутренним таймаутом (см. flushWithTimeout), так что бюджет ctx
-// остаётся исполнимым даже при зависшей сети. Идемпотентен — повторный вызов
-// безопасен и не паникует.
+// ретраит с паузой, пока жив ctx, сдаётся только по ctx; идемпотентен —
+// повторный вызов безопасен.
 func (w *SpanWriter) Close(ctx context.Context) error {
 	w.stopOnce.Do(func() { close(w.stop) })
 	<-w.done
@@ -517,16 +464,14 @@ func (w *SpanWriter) buffered() int {
 	return len(w.txBuf) + len(w.spanBuf)
 }
 
-// flush пишет по одной пачке в каждую таблицу. Таблицы независимы: неудача
-// одной не откатывает другую.
 func (w *SpanWriter) flush(ctx context.Context) {
 	w.flushTx(ctx)
 	w.flushSpans(ctx)
 }
 
 func (w *SpanWriter) flushTx(ctx context.Context) {
-	// Возврат провалившейся пачки транзакций может переполнить txBuf и вызвать
-	// trimTxLocked — сливаем per-org дропы после того, как секции отпустят mu.
+	// возврат неудачной пачки может переполнить txBuf и вызвать trimTxLocked —
+	// сливаем per-org дропы после того, как секции отпустят mu.
 	defer w.emitDrops()
 	w.mu.Lock()
 	n := min(len(w.txBuf), w.batchSize)
@@ -549,15 +494,14 @@ func (w *SpanWriter) flushTx(ctx context.Context) {
 		w.mu.Unlock()
 
 		if poison || streak >= poisonThreshold {
-			// Изолируем: ядовитые ряды дропнутся, хорошие вставятся, транзиентные
-			// вернутся в unresolved (обратно в буфер) без потерь.
+			// ядовитые дропнутся, хорошие вставятся, транзиентные вернутся в
+			// буфер без потерь.
 			dropped, unresolved := chbatch.IsolatePoison(ctx, batch, w.insertTx, chbatch.IsServerDataError)
 			w.mu.Lock()
 			w.dropped += int64(dropped)
 			w.insertFails++
-			// Сбрасываем счётчик подряд-фейлов ТОЛЬКО если изоляция что-то
-			// разрешила: иначе при лежащем ClickHouse дробление запускается
-			// заново каждые ~15 с, не дав ничего в прошлый раз.
+			// сбрасываем счётчик только если изоляция что-то разрешила — иначе
+			// дробление перезапускается на лежащем CH каждый тик впустую.
 			if dropped > 0 || len(unresolved) < len(batch) {
 				w.txFailStreak = 0
 			}
@@ -589,7 +533,6 @@ func (w *SpanWriter) flushTx(ctx context.Context) {
 			"rows", len(batch), "error", err, "dropped", over)
 		return
 	}
-	// Успех — сбрасываем счётчик подряд-фейлов tx.
 	w.mu.Lock()
 	w.txFailStreak = 0
 	w.mu.Unlock()
@@ -617,15 +560,14 @@ func (w *SpanWriter) flushSpans(ctx context.Context) {
 		w.mu.Unlock()
 
 		if poison || streak >= poisonThreshold {
-			// Изолируем: ядовитые ряды дропнутся, хорошие вставятся, транзиентные
-			// вернутся в unresolved (обратно в буфер) без потерь.
+			// ядовитые дропнутся, хорошие вставятся, транзиентные вернутся в
+			// буфер без потерь.
 			dropped, unresolved := chbatch.IsolatePoison(ctx, batch, w.insertSpans, chbatch.IsServerDataError)
 			w.mu.Lock()
 			w.dropped += int64(dropped)
 			w.insertFails++
-			// Сбрасываем счётчик подряд-фейлов ТОЛЬКО если изоляция что-то
-			// разрешила: иначе при лежащем ClickHouse дробление запускается
-			// заново каждые ~15 с, не дав ничего в прошлый раз.
+			// сбрасываем счётчик только если изоляция что-то разрешила — иначе
+			// дробление перезапускается на лежащем CH каждый тик впустую.
 			if dropped > 0 || len(unresolved) < len(batch) {
 				w.spanFailStreak = 0
 			}
@@ -657,7 +599,6 @@ func (w *SpanWriter) flushSpans(ctx context.Context) {
 			"rows", len(batch), "error", err, "dropped", over)
 		return
 	}
-	// Успех — сбрасываем счётчик подряд-фейлов spans.
 	w.mu.Lock()
 	w.spanFailStreak = 0
 	w.mu.Unlock()
@@ -703,12 +644,8 @@ func (w *SpanWriter) insertSpans(ctx context.Context, rows []spanRow) error {
 	return batch.Send()
 }
 
-// SetMaxBufferBytes задаёт байтовый потолок буфера. Значение по умолчанию
-// (defaultMaxBufBytes) рассчитано на инстанс без ограничения памяти; на
-// стеснённом профиле (docker-compose.small.yml: mem_limit 256m) буферы по
-// 256 МиБ физически не могут сработать раньше OOM-killer'а, то есть защита
-// инертна ровно там, где нужнее всего. Ставится из main по
-// GOTCHA_MAX_WRITER_BUFFER_BYTES. Нулевое и отрицательное значение игнорируется.
+// дефолт рассчитан на инстанс без ограничения памяти — на профиле с mem_limit
+// (docker-compose.small.yml) буфер 256 МиБ не сработает раньше OOM-killer'а.
 func (w *SpanWriter) SetMaxBufferBytes(n int64) {
 	if n <= 0 {
 		return

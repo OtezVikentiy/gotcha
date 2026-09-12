@@ -19,7 +19,6 @@ func TestUserLocaleSetGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	// по умолчанию пусто
 	code, err := svc.UserLocale(ctx, uid)
 	if err != nil || code != "" {
 		t.Fatalf("default locale = %q, err=%v", code, err)

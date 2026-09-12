@@ -43,7 +43,6 @@ type stack struct {
 	profiles *fakeProfileSink
 }
 
-// fakeProfileSink копит принятые профили для проверок envelope/pprof-путей.
 type fakeProfileSink struct {
 	mu   sync.Mutex
 	pros []profile.Profile
@@ -61,7 +60,6 @@ func (f *fakeProfileSink) count() int {
 	return len(f.pros)
 }
 
-// fakeMetricSink копит принятые metric-точки для проверок эндпоинта /v1/metrics.
 type fakeMetricSink struct {
 	mu     sync.Mutex
 	points []metric.MetricPoint
@@ -84,9 +82,8 @@ func newStack(t *testing.T) *stack {
 	return newStackTracing(t, true)
 }
 
-// newStackWithoutTracing — тот же стенд с ВЫКЛЮЧЕННЫМ трейсингом
-// (Pipeline.Spans == nil, как при незаданном писателе спанов в проде). Нужен
-// для проверки того, что квота транзакций в этом случае не расходуется вовсе.
+// Pipeline.Spans == nil, как без писателя спанов в проде — квота транзакций
+// в этом случае не расходуется.
 func newStackWithoutTracing(t *testing.T) *stack {
 	t.Helper()
 	return newStackTracing(t, false)
@@ -129,8 +126,6 @@ func newStackTracing(t *testing.T, tracing bool) *stack {
 	}
 	pipeline.Perf = trace.NewIssueService(pool)
 	pipeline.Projects = projects
-	// Wave 3: тот же orgSvc, что у Handler.DropCounter ниже — как в проде
-	// (см. cmd/gotcha/main.go), чтобы стенд не расходился с реальной проводкой.
 	pipeline.DropCounter = orgSvc
 	pipeline.Start()
 	h := ingest.NewHandler(ingest.NewKeyCache(orgSvc), ingest.NewOrgQuota(orgSvc), pipeline, 1<<20)
@@ -224,7 +219,6 @@ func TestEnvelopeEndToEnd(t *testing.T) {
 	}
 	waitIssue(t, s.pool, s.project.ID, 1)
 
-	// Повтор того же события — та же группа, times_seen=2.
 	resp = s.post(t, path, envelopeBody(testEventJSON), false, s.key.PublicKey)
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d", resp.StatusCode)
@@ -252,19 +246,10 @@ func TestStoreEndpoint(t *testing.T) {
 	waitIssue(t, s.pool, s.project.ID, 1)
 }
 
-// TestAuthFailures проверяет три ветки отказа authenticate() — заодно и то,
-// что каждая из них видна self-метрикой (KeyRejectedBy) и логом: раньше эти
-// отказы не растили ни один из 33 gotcha_*-счётчиков продукта и не писали ни
-// строки в лог, при том что соседние отказы того же файла (rate limit, квота)
-// уже логируют slog.Warn (W3-D, запись 3).
 func TestAuthFailures(t *testing.T) {
 	s := newStack(t)
 	path := fmt.Sprintf("/api/%d/envelope/", s.project.ID)
 
-	// Перехват логов — рядом со счётчиком: находка ревью W3-D (мутация
-	// «убрать slog.Warn из countKeyReject» проходила молча, пока тест
-	// проверял только счётчик). Метрика без лога даёт число, но не «кто и
-	// куда стучался» — оператору нечем понять, чей DSN протух.
 	var logs syncBuf
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
@@ -292,7 +277,6 @@ func TestAuthFailures(t *testing.T) {
 		t.Errorf("invalid_key: лог не содержит reason=invalid_key:\n%s", out)
 	}
 
-	// Ключ валиден, но не от этого проекта.
 	before = s.h.KeyRejectedBy(ingest.KeyRejectProjectMismatch)
 	other := fmt.Sprintf("/api/%d/envelope/", s.project.ID+999)
 	if resp := s.post(t, other, envelopeBody(testEventJSON), false, s.key.PublicKey); resp.StatusCode != 403 {
@@ -319,9 +303,6 @@ func TestMalformedAndTooLarge(t *testing.T) {
 	}
 }
 
-// TestZstdEnvelope зеркалит gzip-путь TestEnvelopeEndToEnd, но с
-// Content-Encoding: zstd — покрывает zstd-ветку body() целиком, включая
-// закрытие декодера.
 func TestZstdEnvelope(t *testing.T) {
 	s := newStack(t)
 	path := fmt.Sprintf("/api/%d/envelope/", s.project.ID)
@@ -355,9 +336,8 @@ func TestZstdEnvelope(t *testing.T) {
 	waitIssue(t, s.pool, s.project.ID, 1)
 }
 
-// syncBuf — буфер логов, безопасный при параллельной записи: пока тест держит
-// его дефолтным slog-хендлером, в него пишут и фоновые горутины (батчер,
-// писатель спанов).
+// Безопасен при параллельной записи: пока тест держит его slog-хендлером, в
+// него пишут и фоновые горутины (батчер, писатель спанов).
 type syncBuf struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -375,10 +355,6 @@ func (b *syncBuf) String() string {
 	return b.buf.String()
 }
 
-// TestMixedEnvelopePartialQuotaDropIsLogged: в смешанном envelope'е квота
-// исчерпана по ОДНОМУ классу (ошибки), по второму (транзакции) — нет. Ответ 200
-// (транзакции приняты), но выброшенные ошибки обязаны быть видны в логе: иначе
-// оператор не отличит «ошибок не присылали» от «ошибки молча выброшены».
 func TestMixedEnvelopePartialQuotaDropIsLogged(t *testing.T) {
 	s := newStack(t)
 	ctx := context.Background()
@@ -387,7 +363,6 @@ func TestMixedEnvelopePartialQuotaDropIsLogged(t *testing.T) {
 	}
 	path := fmt.Sprintf("/api/%d/envelope/", s.project.ID)
 
-	// Выбираем квоту ошибок целиком.
 	if resp := s.post(t, path, envelopeBody(testEventJSON), false, s.key.PublicKey); resp.StatusCode != 200 {
 		t.Fatalf("first event: status = %d, want 200", resp.StatusCode)
 	}
@@ -415,9 +390,6 @@ func TestMixedEnvelopePartialQuotaDropIsLogged(t *testing.T) {
 	}
 }
 
-// TestDecompressedBombIs413: сырое тело маленькое (gzip), но распакованное
-// сообщение превышает и maxBytes, и maxBytes*10 — ожидаем явный 413, а не
-// тихую обрезку/400.
 func TestDecompressedBombIs413(t *testing.T) {
 	s := newStack(t)
 	path := fmt.Sprintf("/api/%d/envelope/", s.project.ID)

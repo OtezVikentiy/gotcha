@@ -17,12 +17,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// seedProfSample сеет v строк функции leaf весом 1 каждая (не одну строку
-// весом v): MinSamples гейтит число строк окна, а не сумму их веса, поэтому
-// вызывающие тесты, читающие v как «v сэмплов», обязаны реально получить v
-// строк. Сумма весов группы (self) от этого не меняется — она равна v что
-// при старой, что при новой раскладке, — поэтому доля (Share) во всех местах
-// вызова остаётся прежней.
+// сеет v строк весом 1 каждая, не одну строку весом v: MinSamples гейтит
+// число строк окна, а не сумму веса.
 func seedProfSample(t *testing.T, ch driver.Conn, projectID int64, leaf string, v uint64, ago time.Duration) {
 	t.Helper()
 	ctx := context.Background()
@@ -43,8 +39,6 @@ func seedProfSample(t *testing.T, ch driver.Conn, projectID int64, leaf string, 
 	}
 }
 
-// countingQuery считает обращения цикла к ClickHouse — позитивный контроль,
-// которого тесту не хватало.
 type countingQuery struct {
 	mu    sync.Mutex
 	calls int
@@ -73,12 +67,6 @@ func (c *countingQuery) count() int {
 
 var errNoServices = errors.New("no services")
 
-// TestRegressionEvaluatorRun: цикл обязан РЕАЛЬНО тикать и завершаться по
-// отмене контекста.
-//
-// Раньше единственным утверждением было «горутина вышла после cancel» — тест
-// оставался зелёным и с вырезанным вызовом Tick, потому что проверял
-// завершение цикла, а не его работу.
 func TestRegressionEvaluatorRun(t *testing.T) {
 	queries := &countingQuery{}
 	eval := &profile.RegressionEvaluator{
@@ -108,8 +96,6 @@ func TestRegressionEvaluatorRun(t *testing.T) {
 		t.Fatal("Run не завершился после отмены контекста")
 	}
 
-	// Interval<=0 → используется evaluatorDefaultInterval (5m): тикер не успеет
-	// сработать, но ветка выбора интервала выполняется; отмена завершает цикл.
 	eval.Interval = 0
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	done2 := make(chan struct{})
@@ -139,7 +125,7 @@ func TestRegressionEvaluatorOpenCloseAlertOnce(t *testing.T) {
 		t.Fatalf("channel: %v", err)
 	}
 
-	cfg := profile.DefaultProfileRegressionConfig() // Threshold 0.5, MinSamples 100, ShareFloor 0.05, BaselineDays 7
+	cfg := profile.DefaultProfileRegressionConfig()
 	regressions := profile.NewRegressionService(pool)
 	eval := &profile.RegressionEvaluator{
 		Query: profile.NewQuery(ch), Regressions: regressions,
@@ -152,8 +138,6 @@ func TestRegressionEvaluatorOpenCloseAlertOnce(t *testing.T) {
 		Interval: time.Hour, Config: cfg,
 	}
 
-	// Свежее окно: slow — 80 из 100 (80%). Прошлые дни: slow — 30 из 300 (10%) →
-	// база (медиана) ~0.1 → рост +700% ≥ порога, доля ≥ пола, samples=100 → Open.
 	seedProfSample(t, ch, pid, "slow", 80, 5*time.Minute)
 	seedProfSample(t, ch, pid, "other", 20, 5*time.Minute)
 	seedProfSample(t, ch, pid, "slow", 30, 24*time.Hour)
@@ -170,15 +154,12 @@ func TestRegressionEvaluatorOpenCloseAlertOnce(t *testing.T) {
 		t.Fatalf("open jobs = %d, want 1", len(jobs))
 	}
 
-	// Повторный тик — новых уведомлений нет (алерт один раз).
 	eval.Tick(ctx)
 	jobs2, _ := ob.Claim(ctx, 10)
 	if len(jobs2) != 0 {
 		t.Fatalf("re-tick produced %d jobs, want 0", len(jobs2))
 	}
 
-	// Доля упала: очищаем и сеем низкую свежую долю → инцидент закрыт, одно
-	// уведомление о закрытии.
 	if err := ch.Exec(ctx, "TRUNCATE TABLE profile_samples"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
@@ -194,9 +175,6 @@ func TestRegressionEvaluatorOpenCloseAlertOnce(t *testing.T) {
 	}
 }
 
-// emptyQuery — profileQuery, чей ActiveServices успешно возвращает пустой
-// список: тику незачем идти дальше, но он обязан ЗАВЕРШИТЬСЯ успешно, в
-// отличие от countingQuery (та нарочно возвращает ошибку).
 type emptyQuery struct{}
 
 func (emptyQuery) ActiveServices(context.Context, time.Time, time.Time) ([]profile.ProjectService, error) {
@@ -211,8 +189,6 @@ func (emptyQuery) BaselineFunctionShares(context.Context, int64, string, string,
 	return nil, nil
 }
 
-// blockingQuery — profileQuery, чей ActiveServices держит вызов до отмены
-// ctx: модель повисшего ClickHouse-похода без реальной инфраструктуры.
 type blockingQuery struct {
 	calls atomic.Int64
 }
@@ -231,9 +207,6 @@ func (b *blockingQuery) BaselineFunctionShares(context.Context, int64, string, s
 	return nil, nil
 }
 
-// TestRegressionEvaluatorPublishesTickLiveness — self-метрики живости: без
-// них умерший или отставший RegressionEvaluator снаружи неотличим от
-// «регрессий профилей нет».
 func TestRegressionEvaluatorPublishesTickLiveness(t *testing.T) {
 	eval := &profile.RegressionEvaluator{Query: &emptyQuery{}, Interval: time.Hour}
 	if got := eval.LastTickUnix(); got != 0 {
@@ -251,9 +224,6 @@ func TestRegressionEvaluatorPublishesTickLiveness(t *testing.T) {
 	}
 }
 
-// TestRegressionEvaluatorTickBudgetAbortsHungTick — повисший ActiveServices
-// (голый ClickHouse-запрос без своего таймаута) не должен блокировать тик
-// дольше бюджета: тот же контракт, что host.Evaluator/metric.Evaluator.
 func TestRegressionEvaluatorTickBudgetAbortsHungTick(t *testing.T) {
 	q := &blockingQuery{}
 	eval := &profile.RegressionEvaluator{Query: q, Interval: time.Second}

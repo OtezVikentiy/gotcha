@@ -9,15 +9,8 @@ import (
 	"testing"
 )
 
-// Токены цвета правились по измерениям, а не на глаз, и без стража эти
-// измерения живут только в комментариях: следующая правка палитры откатит их
-// молча. Тест считает контраст по формуле WCAG прямо из app.css.
-
-// tokenRe вытаскивает значение токена из блока темы.
 var tokenRe = regexp.MustCompile(`--([a-z0-9-]+):\s*(#[0-9a-fA-F]{6})\s*;`)
 
-// themeTokens разбирает токены темы из app.css: dark — из :root, light — из
-// :root[data-theme="light"].
 func themeTokens(t *testing.T, theme string) map[string]string {
 	t.Helper()
 	css := mustAppCSS(t)
@@ -48,8 +41,6 @@ func themeTokens(t *testing.T, theme string) map[string]string {
 	return out
 }
 
-// mustAppCSS — таблица стилей для тестов контраста; общий readAppCSS отдаёт
-// ошибку, здесь она означает сломанный запуск теста.
 func mustAppCSS(t *testing.T) string {
 	t.Helper()
 	css, err := readAppCSS()
@@ -83,11 +74,6 @@ func contrast(fg, bg string) float64 {
 	return (l1 + 0.05) / (l2 + 0.05)
 }
 
-// TestTextTokensMeetContrast: цвета текста обязаны давать 4.5:1 на подложках,
-// на которых их реально рисуют (WCAG 1.4.3).
-//
-// --text-mute проверяется именно здесь: «Не назначено» и заголовки дней недели
-// в пикере давали 2.7-3.1:1 в тёмной теме, то есть подпись была почти не видна.
 func TestTextTokensMeetContrast(t *testing.T) {
 	const want = 4.5
 	surfaces := []string{"bg", "surface", "surface-2"}
@@ -109,8 +95,6 @@ func TestTextTokensMeetContrast(t *testing.T) {
 	}
 }
 
-// TestControlBorderMeetsContrast: граница интерактивного элемента несёт смысл
-// («вот докуда контрол»), поэтому обязана давать 3:1 (WCAG 1.4.11).
 func TestControlBorderMeetsContrast(t *testing.T) {
 	const want = 3.0
 	for _, theme := range []string{"dark", "light"} {
@@ -125,12 +109,6 @@ func TestControlBorderMeetsContrast(t *testing.T) {
 	}
 }
 
-// TestAvailabilityBarFillTokens: заливки полоски доступности — не текст, им
-// не нужен текстовый 4.5:1, поэтому у полоски свои токены, а не глобальные
-// --good/--partial/--danger. Требование к ним одно: ≥1.5:1 к карточке, чтобы
-// корзина не сливалась с фоном. Попарная разводка по светлоте и штриховка
-// «частично» сняты осознанно: палитра различает состояния оттенком (см.
-// CHANGELOG), это решение владельца продукта.
 func TestAvailabilityBarFillTokens(t *testing.T) {
 	for _, theme := range []string{"dark", "light"} {
 		tokens := themeTokens(t, theme)
@@ -149,11 +127,8 @@ func TestAvailabilityBarFillTokens(t *testing.T) {
 	}
 }
 
-// rgbaTokenRe — полупрозрачные токены вида rgba(96, 132, 255, .12).
 var rgbaTokenRe = regexp.MustCompile(`--([a-z0-9-]+):\s*rgba\((\d+),\s*(\d+),\s*(\d+),\s*([0-9.]+)\)\s*;`)
 
-// compositeToken накладывает полупрозрачный токен на подложку и возвращает
-// итоговый непрозрачный hex — то, что реально видит глаз.
 func compositeToken(t *testing.T, theme, name, bgHex string) string {
 	t.Helper()
 	css := mustAppCSS(t)
@@ -184,8 +159,6 @@ func compositeToken(t *testing.T, theme, name, bgHex string) string {
 	return ""
 }
 
-// cssRuleBody — тело первого блока по литеральному селектору (для точечных
-// проверок «этот селектор больше не делает X»).
 func cssRuleBody(css, sel string) string {
 	i := strings.Index(css, sel)
 	if i < 0 {
@@ -195,9 +168,6 @@ func cssRuleBody(css, sel string) string {
 	return css[i : i+j]
 }
 
-// TestSegmentedActiveTextContrast: подпись активного сегмента — текст на
-// подложке --accent-soft, ей нужен 4.5:1 (№30). --accent на этой подложке
-// давал 2.98:1 в тёмной теме; --link рассчитан как текст и проходит.
 func TestSegmentedActiveTextContrast(t *testing.T) {
 	css := mustAppCSS(t)
 	if !strings.Contains(css, ".segmented label:has(input:checked)") ||
@@ -213,10 +183,6 @@ func TestSegmentedActiveTextContrast(t *testing.T) {
 	}
 }
 
-// TestLatencyPhaseTokens: фазы запроса (DNS→TCP→TLS→TTFB) — заливки на
-// карточке: каждая ≥3:1 к --surface, соседние различимы (≥1.3:1), светлота
-// растёт монотонно — «бренд-градиент кодирует последовательность фаз»
-// остаётся правдой в обеих темах (№74: TTFB #c3b8fc давал 1.81:1 на светлой).
 func TestLatencyPhaseTokens(t *testing.T) {
 	order := []string{"phase-dns", "phase-tcp", "phase-tls", "phase-ttfb"}
 	for _, theme := range []string{"dark", "light"} {
@@ -239,8 +205,6 @@ func TestLatencyPhaseTokens(t *testing.T) {
 			}
 		}
 	}
-	// Оба места отрисовки читают токены, а не литералы — рассинхрон графика
-	// с легендой (№74) невозможен по построению.
 	css := mustAppCSS(t)
 	for _, want := range []string{
 		".latency-chart .seg-dns", ".legend-dns::before",
@@ -251,10 +215,6 @@ func TestLatencyPhaseTokens(t *testing.T) {
 	}
 }
 
-// TestSeriesPaletteTokens: палитра категориальных цветов серий метрик (--series-m1..8)
-// обязана давать ≥3:1 к --surface в обеих темах, чтобы линии были различимы и без
-// цветового зрения, и не сливались с фоном (см. №83). Без этого сторожа следующая
-// правка палитры может тихо откатить контраст — правило не видно в комментариях.
 func TestSeriesPaletteTokens(t *testing.T) {
 	const want = 3.0
 	order := []string{"series-m1", "series-m2", "series-m3", "series-m4",
@@ -272,9 +232,6 @@ func TestSeriesPaletteTokens(t *testing.T) {
 	}
 }
 
-// TestFlashLeavesAccessibilityTree: автоскрытая плашка обязана уходить из
-// дерева доступности, а не только с глаз: opacity:0 оставлял кнопку закрытия в
-// порядке табуляции.
 func TestFlashLeavesAccessibilityTree(t *testing.T) {
 	css := mustAppCSS(t)
 	i := strings.Index(css, "@keyframes flash-dismiss")

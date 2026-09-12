@@ -7,12 +7,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// orgProjectCard — карточка одного проекта: имя ведёт в «Обзор» (общий
-// overviewPath, incidentfeed.templ — маршрут зарегистрирован задачей 6), под
-// ним — платформа (тот же чип, что и в плоском списке /projects, projectRow)
-// и ссылка на подключение SDK (тот же аффорданс и тот же ключ, что у Setup в
-// projectRow плоского списка — карточка не должна тихо терять путь к
-// подключению SDK).
 templ orgProjectCard(p org.Project) {
 	<div class="card project-card">
 		<h2 class="card-header"><a href={ templ.URL(overviewPath(p.ID)) }>{ p.Name }</a></h2>
@@ -23,18 +17,8 @@ templ orgProjectCard(p org.Project) {
 	</div>
 }
 
-// OrgProjects — GET /orgs/{id}/projects: плоский список проектов ОДНОЙ
-// организации — дверь для селекта организации в топбаре и дом для создания
-// проекта. canCreate непуст (ровно с одним элементом — этой организацией)
-// только у owner/admin: только им показывается кнопка и модалка создания.
-//
-// Модалка создания перенесена из ProjectsList (renderProjectsList,
-// onboarding.go) без переписывания — те же поля и то же действие
-// POST /projects/new. Hidden-поле origin=org_projects говорит хендлеру, что
-// отправка пришла с этой страницы: на 422 он перерисовывает ЕЁ ЖЕ (K7-2:
-// renderOrgProjects, orgprojects.go) с открытой модалкой, сообщением об
-// ошибке и сохранённым вводом (form/errMsg — тот же контракт, что у
-// ProjectsList), а не плоский список проектов всех организаций.
+// canCreate непуст (ровно с этой организацией) только у owner/admin — иначе кнопка и модалка скрыты.
+// hidden origin=org_projects: на 422 хендлер перерисовывает эту же страницу, не общий список.
 templ OrgProjects(o org.Org, items []org.Project, canCreate []OrgOption, form FormState, errMsg, userEmail string) {
 	@layout(i18n.Tf(ctx, "org.projects.title", "org", o.Name), userEmail) {
 		<div class="org-projects">
@@ -62,9 +46,7 @@ templ OrgProjects(o org.Org, items []org.Project, canCreate []OrgOption, form Fo
 				@createModalOpen("new-project", "project.create.title", false, form.Opens("new-project")) {
 					<form method="post" action="/projects/new" class="project-create-form">
 						<input type="hidden" name="origin" value="org_projects"/>
-						// Без role="alert": фокус в модалку переносит modal.js (№80),
-						// ошибка привязана к полю slug через aria-describedby — как у
-						// ProjectsList.
+						// без role=alert: фокус в модалку переносит modal.js, ошибка привязана через aria-describedby.
 						if errMsg != "" && form.Opens("new-project") {
 							<p class="error" id="new-project-error">{ errMsg }</p>
 						}

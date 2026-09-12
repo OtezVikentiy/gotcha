@@ -8,14 +8,8 @@ import (
 	"testing"
 )
 
-// TestOIDCExchangeIssuerMismatch (audit H9) — an id_token whose `iss` claim is
-// neither the discovered issuer nor the configured issuer must be rejected.
-// This is the OIDC token-confusion boundary: a token minted by a different IdP
-// (or replayed from another tenant) must never produce a session.
 func TestOIDCExchangeIssuerMismatch(t *testing.T) {
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
-	// fakeOIDC merges these claims over its defaults, so `iss` here overrides
-	// the honest srv.URL the discovery document advertises.
 	srv := fakeOIDC(t, key, map[string]any{
 		"sub": "s", "email": "e@e.com", "email_verified": true, "nonce": "N1",
 		"iss": "https://evil.example/",
@@ -31,9 +25,6 @@ func TestOIDCExchangeIssuerMismatch(t *testing.T) {
 	}
 }
 
-// TestOIDCExchangeAudienceMismatch (audit H9) — an id_token whose `aud` is a
-// different client than the one configured must be rejected: a token minted
-// for another relying party cannot be accepted here (account-takeover surface).
 func TestOIDCExchangeAudienceMismatch(t *testing.T) {
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
 	srv := fakeOIDC(t, key, map[string]any{
@@ -51,9 +42,6 @@ func TestOIDCExchangeAudienceMismatch(t *testing.T) {
 	}
 }
 
-// TestOIDCExchangeAudienceArray (audit H9) — the `[]any` aud branch of
-// audMatches (previously uncovered): an aud array is accepted only when it
-// actually contains the configured client_id; otherwise rejected.
 func TestOIDCExchangeAudienceArray(t *testing.T) {
 	t.Run("array containing client_id is accepted", func(t *testing.T) {
 		key, _ := rsa.GenerateKey(rand.Reader, 2048)

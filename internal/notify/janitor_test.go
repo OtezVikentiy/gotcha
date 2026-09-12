@@ -10,14 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestOutboxJanitorRunLifecycle: цикл должен РЕАЛЬНО чистить очередь и
-// корректно завершаться по отмене ctx.
-//
-// Раньше единственным утверждением было «горутина вышла после cancel», и тест
-// оставался зелёным, даже если вырезать тело ветки ticker.C целиком: он
-// проверял, что цикл завершается, а не что он работает. Теперь в очередь
-// кладётся протухшая строка, и тест ждёт её исчезновения — то есть факта
-// выполненной работы, а не факта выхода.
 func TestOutboxJanitorRunLifecycle(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ob := notify.NewOutbox(pool)
@@ -72,17 +64,6 @@ func TestOutboxJanitorRunLifecycle(t *testing.T) {
 	}
 }
 
-// TestOutboxJanitorRunDefaultInterval: при Interval<=0 берётся ОСМЫСЛЕННЫЙ
-// дефолт — ПОСЛЕ первого прохода (который всегда сразу, см.
-// TestOutboxJanitorRunFirstPassIsImmediate) тикер не должен снова сработать
-// за заметное время.
-//
-// Раньше тест отменял контекст сразу после запуска и проверял только выход
-// горутины: дефолт можно было поменять с часа на наносекунду — постоянный
-// обстрел собственной базы — и тест бы этого не заметил. Строка состаривается
-// уже ПОСЛЕ первого прохода (который её ещё не застаёт и чистить нечего),
-// чтобы проверить именно период ТИКЕРА, а не факт первого прохода — тот
-// покрыт отдельным тестом.
 func TestOutboxJanitorRunDefaultInterval(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ob := notify.NewOutbox(pool)
@@ -129,9 +110,8 @@ func TestOutboxJanitorRunDefaultInterval(t *testing.T) {
 	}
 }
 
-// TestOutboxMarkErrorsCancelledCtx: MarkRetry/MarkFailed на отменённом ctx —
-// пул возвращает ошибку ещё до выполнения SQL, что покрывает ветку
-// `if err != nil { return fmt.Errorf(...) }` в обоих методах.
+// Пул возвращает ошибку ещё до выполнения SQL — покрывает ветку `if err != nil`
+// в обоих методах.
 func TestOutboxMarkErrorsCancelledCtx(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ob := notify.NewOutbox(pool)
@@ -147,10 +127,6 @@ func TestOutboxMarkErrorsCancelledCtx(t *testing.T) {
 	}
 }
 
-// TestOutboxJanitorRunFirstPassIsImmediate — первый проход не должен ждать
-// полного Interval: он выполняется до входа в цикл тикера (см. Run), иначе
-// после каждого рестарта чаще Interval (час по умолчанию) очередь с секретами
-// каналов в payload не чистится вовсе.
 func TestOutboxJanitorRunFirstPassIsImmediate(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ob := notify.NewOutbox(pool)

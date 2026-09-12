@@ -20,15 +20,13 @@ func TestSendClassification(t *testing.T) {
 		retryAfter string
 		want       SendResult
 		wantFloor  time.Duration
-		// wantErrCode — код статуса, который должен встретиться в err.Error()
-		// (диагностика для логов runner'а, см. respError в sender.go); "" —
-		// на 2xx err обязан быть nil.
+		// Код статуса, ожидаемый в err.Error(); "" — на 2xx err обязан быть nil.
 		wantErrCode string
 	}{
 		{"успех", 200, "", SendOK, 0, ""},
 		{"5xx — ретрай", 502, "", SendRetry, 0, "502"},
 		{"rate-limit", 429, "1", SendRetry, time.Second, "429"},
-		{"месячная квота", 429, "2592000", SendRetry, time.Hour, "429"}, // кап 1ч (спека §1.3)
+		{"месячная квота", 429, "2592000", SendRetry, time.Hour, "429"}, // кап 1ч
 		{"отозванный ключ", 401, "", SendDrop, 0, "401"},
 		{"битый payload", 400, "", SendDrop, 0, "400"},
 	}
@@ -82,8 +80,6 @@ func TestSendClassification(t *testing.T) {
 	}
 }
 
-// TestSendConnectionRefused — обрыв соединения (сервер закрыт до запроса)
-// классифицируется как SendRetry: сеть недоступна временно, не вина батча.
 func TestSendConnectionRefused(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	srv.Close()
@@ -101,8 +97,6 @@ func TestSendConnectionRefused(t *testing.T) {
 	}
 }
 
-// TestSendWithCACert — CACert грузится в свой x509.CertPool (RootCAs) и
-// используется для проверки TLS-сертификата инстанса.
 func TestSendWithCACert(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -128,8 +122,6 @@ func TestSendWithCACert(t *testing.T) {
 	}
 }
 
-// TestSendInsecureSkipVerify — без CACert, но с InsecureSkipVerify: TLS без
-// проверки сертификата (крайнее средство, спека допускает).
 func TestSendInsecureSkipVerify(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -149,11 +141,6 @@ func TestSendInsecureSkipVerify(t *testing.T) {
 	}
 }
 
-// TestNewSenderClonesDefaultTransport — транспорт собирается клонированием
-// http.DefaultTransport (не &http.Transport{} с нуля), поэтому уносит с собой
-// Proxy: http.ProxyFromEnvironment (HTTP_PROXY/HTTPS_PROXY/NO_PROXY) и
-// дефолтные настройки пула соединений — на голом транспорте они бы молча
-// потерялись.
 func TestNewSenderClonesDefaultTransport(t *testing.T) {
 	s, err := NewSender(Config{Endpoint: "https://example.invalid", Key: "test-key"})
 	if err != nil {

@@ -6,9 +6,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/fingerprint"
 )
 
-// TestTitleFallbacks — порядок фолбэков заголовка: exception → message →
-// transaction → logger. Если пусто везде, заголовок ОСТАЁТСЯ пустым:
-// подделывать его константой в данных нельзя, заглушку рисует интерфейс.
 func TestTitleFallbacks(t *testing.T) {
 	cases := []struct {
 		name string
@@ -34,9 +31,6 @@ func TestTitleFallbacks(t *testing.T) {
 	}
 }
 
-// TestParseEventTitleFromTransactionAndLogger — верхнеуровневые transaction и
-// logger реально доезжают из JSON события до заголовка (и каппятся, как
-// прочие недоверенные строки).
 func TestParseEventTitleFromTransactionAndLogger(t *testing.T) {
 	cases := []struct {
 		name string

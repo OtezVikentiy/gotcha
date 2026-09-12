@@ -11,10 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestChangePasswordUnknownUser — несуществующий userID: начальный SELECT
-// password_hash возвращает pgx.ErrNoRows, ChangePassword обязан отдать
-// ErrInvalidCredentials, а не голую ошибку БД (иначе хендлер утечёт
-// внутренности через 500 вместо аккуратного отказа).
 func TestChangePasswordUnknownUser(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := auth.NewService(pool)
@@ -26,15 +22,6 @@ func TestChangePasswordUnknownUser(t *testing.T) {
 	}
 }
 
-// TestChangePasswordOAuthOnlyUser — у аккаунта без пароля (OAuth-only,
-// password_hash IS NULL) ChangePassword неприменим: нужен SetPassword.
-// Должен вернуться ErrInvalidCredentials, а не паника на разыменовании
-// nil-хеша и не попытка сверить пароль с пустой строкой. Вызов ChangePassword
-// обёрнут в горутину с recover (тот же приём, что и в
-// TestJanitorRunDefaultsIntervalWhenZero): если защиту hash==nil вырезать,
-// ChangePassword паникует на *hash, а необработанная паника убивает весь
-// тестовый бинарь целиком — соседние тесты того же прогона вообще не
-// отрапортуют. С обёрткой падение остаётся обычным t.Fatalf.
 func TestChangePasswordOAuthOnlyUser(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := auth.NewService(pool)
@@ -53,9 +40,7 @@ func TestChangePasswordOAuthOnlyUser(t *testing.T) {
 	}
 }
 
-// changePasswordRecovering вызывает ChangePassword в отдельной горутине и
-// перехватывает панику через recover, превращая её в обычный t.Fatalf —
-// см. комментарий у TestChangePasswordOAuthOnlyUser.
+// Перехватывает панику через recover, превращая её в обычный t.Fatalf.
 func changePasswordRecovering(t *testing.T, svc *auth.Service, ctx context.Context, userID int64, oldPassword, newPassword string) error {
 	t.Helper()
 	type result struct {
@@ -83,11 +68,6 @@ func changePasswordRecovering(t *testing.T, svc *auth.Service, ctx context.Conte
 	}
 }
 
-// TestChangePasswordMalformedStoredHash — если сохранённый password_hash
-// повреждён (не валидная PHC-строка argon2id — например, порча данных или
-// ручное вмешательство в БД), VerifyPassword возвращает ErrMalformedHash, и
-// ChangePassword обязан обернуть эту ошибку, а не притвориться, что старый
-// пароль просто неверен, и не запаниковать.
 func TestChangePasswordMalformedStoredHash(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := auth.NewService(pool)

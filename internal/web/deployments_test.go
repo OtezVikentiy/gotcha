@@ -19,7 +19,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// deployStack — стенд экрана деплоев: только PG (экран читает deploy.Store).
 type deployStack struct {
 	pool   *pgxpool.Pool
 	srv    *httptest.Server
@@ -75,7 +74,6 @@ func TestWebDeploymentsScreen(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("record deploy: %v", err)
 	}
-	// Деплой с небезопасной схемой URL — показывается текстом, не ссылкой.
 	if _, err := s.deploy.Record(ctx, project.ID, deploy.Deployment{
 		Version:     "v3.0.0",
 		Environment: "prod",
@@ -105,7 +103,6 @@ func TestWebDeploymentsScreen(t *testing.T) {
 	if !strings.Contains(bs, "fix cart") {
 		t.Fatalf("list missing changelog: %s", bs)
 	}
-	// Небезопасная схема не должна попасть в href.
 	if strings.Contains(bs, "href=\"javascript:") || strings.Contains(bs, "href='javascript:") {
 		t.Fatalf("unsafe url scheme leaked into href: %s", bs)
 	}
@@ -162,7 +159,6 @@ func TestWebDeploymentsOutsider404(t *testing.T) {
 }
 
 func TestWebDeploymentsNilStore(t *testing.T) {
-	// h.Deploy не проставлен → 404 (nil-guard, как h.Regressions).
 	s := newDeployStack(t, false)
 	ctx := context.Background()
 

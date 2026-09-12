@@ -7,16 +7,12 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// SLOsPath — адрес раздела SLO проекта. Экспортирован: им пользуются веб-слой
-// (редиректы), навигация и экран деталей (T7).
 func SLOsPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/slos"
 }
 
-// SLORow — строка таблицы SLO: цель и посчитанные за окно достижение и остаток
-// бюджета в процентах. HasData=false — за окно не набралось событий (total==0)
-// или провайдер недоступен: проценты не показываем (прочерк), Status при этом
-// не осмыслен. Status ∈ healthy/burning/exhausted.
+// HasData=false — за окно нет событий или провайдер недоступен: проценты не показываем.
+// Status не осмыслен при HasData=false; иначе ∈ healthy/burning/exhausted.
 type SLORow struct {
 	ID                 int64
 	Name               string
@@ -28,15 +24,12 @@ type SLORow struct {
 	Status             string
 }
 
-// SLOMonitorOption — монитор проекта для выпадающего списка формы uptime-SLO.
 type SLOMonitorOption struct {
 	ID   int64
 	Name string
 }
 
-// sloKindLabel — локализованная подпись типа SLI. Литеральные i18n-ключи (не
-// конкатенация): их видит общий сканер каталога (i18n_keys_test.go), отдельная
-// динамическая группа не нужна.
+// литеральные ключи, не конкатенация — их видит сканер каталога (i18n_keys_test.go).
 func sloKindLabel(ctx context.Context, kind string) string {
 	switch kind {
 	case "latency":
@@ -48,7 +41,6 @@ func sloKindLabel(ctx context.Context, kind string) string {
 	}
 }
 
-// sloStatusLabel — локализованная подпись статуса бюджета.
 func sloStatusLabel(ctx context.Context, status string) string {
 	switch status {
 	case "exhausted":
@@ -60,8 +52,7 @@ func sloStatusLabel(ctx context.Context, status string) string {
 	}
 }
 
-// sloStatusBadgeClass — цвет бейджа статуса через дизайн-систему бейджей
-// (good/warn/danger), как incidentBadgeClass у метрик-алертов.
+// как incidentBadgeClass у метрик-алертов.
 func sloStatusBadgeClass(status string) string {
 	switch status {
 	case "exhausted":
@@ -73,7 +64,6 @@ func sloStatusBadgeClass(status string) string {
 	}
 }
 
-// sloIndicatorClass — класс цветного индикатора-точки перед остатком бюджета.
 func sloIndicatorClass(status string) string {
 	switch status {
 	case "exhausted":
@@ -85,19 +75,10 @@ func sloIndicatorClass(status string) string {
 	}
 }
 
-// fmtPct — процент с одним знаком после запятой для колонок достижения/бюджета.
 func fmtPct(v float64) string {
 	return strconv.FormatFloat(v, 'f', 1, 64) + "%"
 }
 
-// SLOsScreen — GET /projects/{id}/slos: список определений SLO с текущим
-// достижением и остатком бюджета + форма создания. errMsg — ошибка валидации
-// формы (показывается внутри модалки), form — введённые значения для повторной
-// отрисовки. monitors — мониторы проекта для выбора в uptime-SLO.
-//
-// Отклонение от эталонной сигнатуры плана (там был неиспользуемый параметр
-// filter): раздел SLO фильтров не имеет — вместо него проброшены errMsg и
-// monitors, как у соседних форм (metricalerts).
 templ SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, form FormState, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "slo.title"), userEmail) {
 		<div class="slos">

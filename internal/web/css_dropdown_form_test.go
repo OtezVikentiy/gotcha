@@ -6,22 +6,6 @@ import (
 	"testing"
 )
 
-// Сторож раскладки форм внутри раскрывающихся кнопок (<details
-// class="dropdown-control">).
-//
-// Живой случай (приёмка v0.22.0 в браузере): правило `.issue-actions form`
-// задавало display:flex ЛЮБОМУ вложенному <form>, а не только строке кнопок
-// статуса — и ловило форму экспорта, приехавшую внутрь dropdown-control на
-// той же странице. Поля вертикальной формы раскладывались в строку внутри
-// max-width:280px: селект формата обрезан, подсказка PII — колонка в одно
-// слово, кнопка — вертикальная плита. Ни один тест этого не видел: templ-тесты
-// проверяют разметку, CSS в них не применяется, а браузерная приёмка до того
-// момента гоняла только список ошибок, где обёртка другая.
-//
-// Правило простое: селектор, задающий раскладку форме на странице ошибки или
-// в списке кнопок экспорта, обязан быть по ПРЯМОМУ потомку. Иначе он
-// протекает во всё, что окажется вложено внутрь, — и протечка видна только
-// глазами в браузере.
 func TestActionRowFormSelectorsAreDirectChild(t *testing.T) {
 	css, err := readAppCSS()
 	if err != nil {
@@ -29,9 +13,6 @@ func TestActionRowFormSelectorsAreDirectChild(t *testing.T) {
 	}
 	css = cssCommentRe.ReplaceAllString(css, " ")
 
-	// Контейнеры, внутри которых живёт раскрывающаяся форма (dropdown-control):
-	// строка действий на странице issue и тулбар списка ошибок (.card-toolbar,
-	// .card-toolbar-group — там же лежат кнопки массовых действий).
 	for _, container := range []string{".issue-actions", ".card-toolbar", ".card-toolbar-group"} {
 		re := regexp.MustCompile(regexp.QuoteMeta(container) + `\s+form\s*[,{]`)
 		if loc := re.FindString(css); loc != "" {

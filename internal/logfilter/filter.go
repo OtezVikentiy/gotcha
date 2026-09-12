@@ -1,5 +1,3 @@
-// Package logfilter хранит сохранённые фильтры логов — личные и общие
-// по проекту — а также фильтр по умолчанию для пары (проект, пользователь).
 package logfilter
 
 import (
@@ -11,28 +9,21 @@ import (
 )
 
 const (
-	// maxNameLen — потолок длины имени фильтра в символах.
+	// Потолок длины имени фильтра в символах.
 	maxNameLen = 60
-	// maxPredicates — потолок числа условий в одном фильтре.
+	// Потолок числа условий в одном фильтре.
 	maxPredicates = 20
-	// maxPersonalPerUser — потолок личных фильтров одного пользователя
-	// в проекте.
+	// Потолок личных фильтров одного пользователя в проекте.
 	maxPersonalPerUser = 30
-	// maxSharedPerProject — потолок общих фильтров проекта. Отдельный
-	// от личного: общий фильтр — общий ресурс проекта, а не одного автора,
-	// у него свой потолок и своя гонка.
+	// Отдельный потолок от личного: общий фильтр — ресурс проекта, а не одного автора, своя гонка.
 	maxSharedPerProject = 30
-	// payloadVersion — текущая версия формата payload. Фильтр с другой
-	// версией не роняет чтение, а показывается неприменимым (Applicable=false):
-	// формат мог измениться в новой версии продукта, и старая запись должна
-	// остаться видимой в списке, а не исчезнуть или упасть на разборе.
+	// Фильтр с другой версией не роняет чтение, а показывается неприменимым (Applicable=false) — формат мог
+	// измениться, старая запись должна остаться видимой, не исчезнуть и не упасть на разборе.
 	payloadVersion = 1
 )
 
-// Filter — сохранённый фильтр логов. OwnerUserID == nil означает общий
-// фильтр проекта (см. Shared). AuthorUserID переживает удаление автора
-// (ON DELETE SET NULL) — общий пресет показывается как созданный удалённым
-// пользователем, а не исчезает и не меняет владельца.
+// OwnerUserID == nil означает общий фильтр проекта (см. Shared). AuthorUserID переживает удаление автора
+// (ON DELETE SET NULL) — общий пресет показывается созданным удалённым пользователем, не исчезает.
 type Filter struct {
 	ID           int64
 	ProjectID    int64
@@ -45,13 +36,11 @@ type Filter struct {
 	UpdatedAt    time.Time
 }
 
-// Shared — true для общего фильтра проекта (без личного владельца).
+// true для общего фильтра проекта (без личного владельца).
 func (f Filter) Shared() bool { return f.OwnerUserID == nil }
 
-// ValidationError — отказ проверки фильтра с машинным кодом причины.
-// По образцу internal/uptime/validation.go: доменный код, который веб-слой
-// раскладывает в ключ "error.logfilter.<code>" — сам домен текста для
-// интерфейса не собирает.
+// Отказ проверки с машинным кодом причины — по образцу internal/uptime/validation.go: доменный код,
+// который веб-слой раскладывает в ключ "error.logfilter.<code>".
 type ValidationError struct {
 	Code  string
 	Field string
@@ -59,16 +48,13 @@ type ValidationError struct {
 
 func (e *ValidationError) Error() string { return "logfilter: " + e.Field + ": " + e.Code }
 
-// payload — версионируемая форма хранения условий фильтра в jsonb.
-// V != payloadVersion при чтении означает «формат неизвестен» — фильтр
-// возвращается с Applicable=false и пустыми Predicates, а не роняет чтение.
+// Версионируемая форма хранения условий в jsonb. V != payloadVersion при чтении — формат неизвестен,
+// фильтр возвращается с Applicable=false и пустыми Predicates, не роняет чтение.
 type payload struct {
 	V          int             `json:"v"`
 	Predicates []log.Predicate `json:"predicates"`
 }
 
-// validateName проверяет имя фильтра: непустое после обрезки пробелов,
-// не длиннее maxNameLen символов.
 func validateName(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return &ValidationError{Code: "name_required", Field: "name"}
@@ -79,11 +65,8 @@ func validateName(name string) error {
 	return nil
 }
 
-// validatePredicates проверяет каждое условие по отдельности. Потолок числа
-// условий сюда НЕ входит — validatePredicateCount вызывается отдельно,
-// ПОСЛЕ log.NormalizePredicates (см. Store.Create/Update): здесь, до
-// схлопывания дублей, count ещё может быть завышен кликами по одному и тому
-// же условию.
+// Потолок числа условий сюда НЕ входит — validatePredicateCount вызывается отдельно, ПОСЛЕ
+// log.NormalizePredicates: до схлопывания дублей count ещё может быть завышен повторными кликами.
 func validatePredicates(preds []log.Predicate) error {
 	for _, p := range preds {
 		if err := p.Validate(); err != nil {
@@ -93,11 +76,8 @@ func validatePredicates(preds []log.Predicate) error {
 	return nil
 }
 
-// validatePredicateCount проверяет потолок числа условий в ОДНОМ фильтре.
-// Вызывается ПОСЛЕ log.NormalizePredicates (находка финального ревью C6):
-// до фикса лимит считался ДО нормализации, и двадцать один одинаковый клик
-// «исключить» давал ErrLimitReached/too_many_predicates там, где после
-// схлопывания дублей реально остаётся одно условие.
+// Вызывается ПОСЛЕ log.NormalizePredicates: до неё count может быть завышен повторными «исключить»
+// по одному условию, что дало бы ложный too_many_predicates.
 func validatePredicateCount(preds []log.Predicate) error {
 	if len(preds) > maxPredicates {
 		return &ValidationError{Code: "too_many_predicates", Field: "predicates"}

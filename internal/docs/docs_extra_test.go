@@ -2,9 +2,6 @@ package docs
 
 import "testing"
 
-// TestRenderCacheHit — второй рендер той же страницы обслуживается из кеша.
-// Проверяем, что результат идентичен первому (та же html/title) и ok=true —
-// это покрывает ветку чтения из cache в Render.
 func TestRenderCacheHit(t *testing.T) {
 	h1, t1, ok1 := Render("ru", "installation")
 	if !ok1 {
@@ -19,8 +16,6 @@ func TestRenderCacheHit(t *testing.T) {
 	}
 }
 
-// TestRenderEnglishLocale — явная английская локаль читает en/*.md напрямую
-// (без ru-fallback) и отдаёт непустой заголовок.
 func TestRenderEnglishLocale(t *testing.T) {
 	_, title, ok := Render("en", "getting-started")
 	if !ok {
@@ -31,16 +26,12 @@ func TestRenderEnglishLocale(t *testing.T) {
 	}
 }
 
-// TestFirstH1NoHeading — файл без "# " заголовка даёт пустую строку, а не панику
-// и не мусор. Это ветка `return ""` в конце firstH1.
 func TestFirstH1NoHeading(t *testing.T) {
 	if got := firstH1([]byte("нет заголовка\nпросто текст\n## подзаголовок")); got != "" {
 		t.Fatalf("firstH1 без H1 = %q, want пустую строку", got)
 	}
 }
 
-// TestFirstH1SkipsLeadingContentAndPicksFirst — H1 берётся первым по порядку,
-// даже если ему предшествует текст, и обрезаются пробелы.
 func TestFirstH1SkipsLeadingContentAndPicksFirst(t *testing.T) {
 	data := []byte("вводная строка\n\n#   Настоящий заголовок  \n\n# Второй\n")
 	if got := firstH1(data); got != "Настоящий заголовок" {
@@ -48,8 +39,6 @@ func TestFirstH1SkipsLeadingContentAndPicksFirst(t *testing.T) {
 	}
 }
 
-// TestPagesTitlesMatchRender — заголовки из Pages совпадают с тем, что отдаёт
-// Render для той же страницы: реестр и рендер согласованы по H1.
 func TestPagesTitlesMatchRender(t *testing.T) {
 	for _, p := range Pages("ru") {
 		_, title, ok := Render("ru", p.Slug)

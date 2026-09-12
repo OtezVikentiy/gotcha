@@ -12,36 +12,24 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 )
 
-// defaultSLOInterval — период тика оценщика по умолчанию. SLO живут на скользящих
-// окнах в дни, поэтому дорогой минутный такт (как у metric/host) не нужен: две
-// минуты достаточно, чтобы burn-rate инцидент открылся почти вовремя, но не гонять
-// CH попусту.
+// SLO живут на скользящих окнах в дни, дорогой минутный такт не нужен: двух
+// минут достаточно, чтобы burn-rate инцидент открылся почти вовремя.
 const defaultSLOInterval = 2 * time.Minute
 
-// defaultCloseStreak — сколько тиков подряд короткое окно должно оставаться ниже
-// порога, прежде чем инцидент реально закрывается (гистерезис против флапа:
-// одиночный «остывший» тик на грани порога не должен схлопывать инцидент, который
-// тут же откроется снова).
+// сколько тиков подряд короткое окно должно оставаться ниже порога, прежде чем
+// инцидент реально закроется — гистерезис против флапа на грани порога.
 const defaultCloseStreak = 3
 
-// tickBudgetShare/minTickBudget — та же пара, что host.Evaluator/trace.Evaluator
-// (K15-1): дедлайн тика — доля Interval, но не меньше пола, иначе повисший
-// ClickHouse-запрос (Provider.Buckets здесь без собственного таймаута) держал
-// бы тик (и self-метрику живости LastTickUnix) бесконечно.
+// без пола тик может зависнуть навсегда: Provider.Buckets бьёт по CH без своего таймаута.
 const (
 	tickBudgetShare = 0.8
 	minTickBudget   = 10 * time.Second
 )
 
-// fullWindowStep — шаг корзин при расчёте остатка бюджета за ПОЛНОЕ окно SLO.
-// Час крупнее burn-шага (минуты): полный бюджет считается только в момент
-// перехода (открытие/закрытие), а не каждый тик, поэтому точность до часа
-// достаточна и на порядок дешевле.
+// час крупнее burn-шага: полный бюджет считается только на переходе, не на
+// каждом тике, точности до часа достаточно и это на порядок дешевле.
 const fullWindowStep = time.Hour
 
-// SLOEvent — то, что оценщик передаёт нотифаеру на переходе инцидента. Реализация
-// нотифаера — в отдельном файле (notify.go, Task 5); здесь определён минимальный
-// контракт, чтобы оценщик компилировался и тестировался с заглушкой/nil.
 type SLOEvent struct {
 	SLO             SLO
 	Incident        Incident
@@ -51,33 +39,22 @@ type SLOEvent struct {
 	BurnRate        float64 // burn rate короткого (fast) окна на момент перехода
 }
 
-// Notifier рассылает уведомление о переходе SLO-инцидента. nil-совместим:
-// оценщик работает и без нотифаера (тесты, инсталляции без каналов).
+// nil-совместим: оценщик работает и без нотифаера (тесты, инсталляции без каналов).
 type Notifier interface {
 	Notify(ctx context.Context, ev SLOEvent)
 
-	// NotifyStep/NotifyRecovery (B4, T7) — реролл open/recovery на лесенку
-	// эскалации: Evaluator больше не зовёт Notify напрямую на открытии/
-	// закрытии (см. notifyOpen/notifyClose), а шлёт СТУПЕНЬ лесенки и
-	// адресованный recovery через них. Реализованы SLOBurnNotifier (T6).
+	// Evaluator шлёт ступень лесенки и адресованный recovery через эти методы,
+	// не зовёт Notify напрямую на открытии/закрытии (см. notifyOpen/notifyClose).
 	NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) ([]int64, error)
 	NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error
 }
 
-// sloGroupHook — членство в группах инцидентов (D3, incidentgroup.Grouper)
-// для SLO с sli_kind='uptime': узел — привязанный монитор (slos.monitor_id,
-// Р1). Duck-typed локально, как MaintenanceChecker: пакет slo не импортирует
-// incidentgroup. Nil-совместим — деградированная сборка без групп ведёт себя
-// как до D3.
+// duck-typed локально, как MaintenanceChecker: slo не импортирует incidentgroup.
+// nil-совместим — деградированная сборка без групп работает как раньше.
 type sloGroupHook interface {
 	Attach(ctx context.Context, source string, incidentID int64, nodeKind string, nodeID int64) (attached, rootInforming bool, err error)
 }
 
-// Evaluator периодически считает burn rate каждого включённого SLO по двум окнам
-// (длинное slow + короткое fast) и открывает/закрывает инцидент сжигания бюджета,
-// рассылая уведомление ровно один раз на открытие и закрытие. Та же ниша, что
-// metric/host/profile-оценщики: периодическая джоба поверх PostgreSQL (стор
-// определений/инцидентов) и ClickHouse (ряды good/total через провайдеры).
 type Evaluator struct {
 	Pool      *pgxpool.Pool
 	Store     *Store
@@ -86,28 +63,20 @@ type Evaluator struct {
 	Interval  time.Duration
 	Maint     MaintenanceChecker
 
-	// Policy — политика эскалации (B4, T7): резолвит лесенку (project,
-	// severity) на открытии инцидента сжигания бюджета. Nil-совместим —
-	// деградированная сборка без него просто не уведомляет об открытии.
+	// nil-совместим: без него открытие просто не уведомляет об эскалации.
 	Policy *escalation.PolicyStore
 
-	// IncidentGroups — группы инцидентов (D3, incidentgroup.Grouper):
-	// членство свежеоткрытого инцидента uptime-SLO в группе down-корня его
-	// монитора. Уведомление уходит только при конъюнкции гейтов
-	// «не maintenance И не grouped» (исход от порядка проверок не зависит).
-	// Nil-совместим, как Maint.
+	// членство свежеоткрытого uptime-инцидента в группе down-корня его монитора;
+	// уведомление уходит только при «не maintenance И не grouped» — порядок проверок не важен.
 	IncidentGroups sloGroupHook
 
-	// closeStreak — счётчик подряд идущих «остывших» тиков на SLO (гистерезис
-	// флапа). Ленивая инициализация в Tick: структуру собирают литералом без
-	// этого поля.
+	// ленивая инициализация в Tick: структуру собирают литералом без этого поля.
 	closeStreak map[int64]int
 
-	lastTickUnix    atomic.Int64  // unix-время последнего завершённого тика
-	lastTickSeconds atomic.Uint64 // длительность последнего тика, math.Float64bits
+	lastTickUnix    atomic.Int64
+	lastTickSeconds atomic.Uint64 // math.Float64bits: atomic.Uint64 не хранит float64
 }
 
-// Run тикает каждый Interval, пока не отменят ctx.
 func (e *Evaluator) Run(ctx context.Context) {
 	interval := e.Interval
 	if interval <= 0 {
@@ -127,21 +96,15 @@ func (e *Evaluator) Run(ctx context.Context) {
 	}
 }
 
-// LastTickUnix — unix-время последнего завершённого тика (0, если ни одного ещё
-// не было). Self-метрика живости: умерший или отставший оценщик снаружи выглядит
-// ровно как «по всем SLO спокойно» — тишина и есть его нормальный вывод.
+// умерший или отставший оценщик снаружи выглядит ровно как «по всем SLO
+// спокойно» — тишина и есть его нормальный вывод.
 func (e *Evaluator) LastTickUnix() int64 { return e.lastTickUnix.Load() }
 
-// LastTickSeconds — длительность последнего завершённого тика в секундах.
-// Приближение к Interval означает, что оценщик перестаёт укладываться в период.
+// приближение к Interval означает, что оценщик перестаёт укладываться в период.
 func (e *Evaluator) LastTickSeconds() float64 {
 	return math.Float64frombits(e.lastTickSeconds.Load())
 }
 
-// tickBudget — дедлайн одного тика (см. tickBudgetShare/minTickBudget). Interval
-// <= 0 (не задан явно — ленивая инициализация литералом в тестах, либо прод-конфиг
-// с дефолтом до подстановки) трактуется как defaultSLOInterval, тот же дефолт, что
-// Run использует для периода тикера.
 func (e *Evaluator) tickBudget() time.Duration {
 	interval := e.Interval
 	if interval <= 0 {
@@ -154,14 +117,6 @@ func (e *Evaluator) tickBudget() time.Duration {
 	return budget
 }
 
-// Tick — один проход по всем включённым SLO. Возвращает число переходов инцидентов
-// (открытий+закрытий) за проход — публичный сигнал для тестов и наблюдаемости.
-// Ошибка по одному SLO не роняет остальные (error-isolation, как у metric.Evaluator).
-//
-// Тик ограничен дедлайном (tickBudget, K15-1): Provider.Buckets бьёт по CH голым
-// запросом без собственного таймаута, и без внешнего дедлайна повисший запрос
-// держал бы тик (и self-метрику живости) бесконечно — тот же контракт, что у
-// trace.Evaluator.tick/host.Evaluator.
 func (e *Evaluator) Tick(ctx context.Context) (int, error) {
 	if e.closeStreak == nil {
 		e.closeStreak = make(map[int64]int)
@@ -183,9 +138,7 @@ func (e *Evaluator) Tick(ctx context.Context) (int, error) {
 	}
 	e.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
 	if ctx.Err() != nil {
-		// Тик вышел по дедлайну — отметку «последний завершённый проход» не
-		// публикуем, иначе постоянно обрывающийся тик снаружи выглядел бы
-		// здоровым (тот же выбор, что у trace.Evaluator.tick).
+		// отметку живости не публикуем — иначе обрывающийся тик выглядел бы здоровым.
 		slog.Warn("slo evaluator: tick did not finish within its budget",
 			"budget", e.tickBudget(), "slos", len(slos))
 		return transitions, nil
@@ -194,12 +147,9 @@ func (e *Evaluator) Tick(ctx context.Context) (int, error) {
 	return transitions, nil
 }
 
-// evalSLO оценивает один SLO и возвращает true, если произошёл переход инцидента.
 func (e *Evaluator) evalSLO(ctx context.Context, s SLO, now time.Time) bool {
 	p, ok := e.Providers[s.Kind]
 	if !ok {
-		// Неизвестный тип SLI (например, uptime без сконфигурированного провайдера)
-		// — пропуск, а не паника: оценщик соседей продолжает работать.
 		return false
 	}
 	long, short, err := e.burnWindows(ctx, p, s, now)
@@ -228,9 +178,7 @@ func (e *Evaluator) evalSLO(ctx context.Context, s SLO, now time.Time) bool {
 	}
 }
 
-// burnWindows одним запросом достаёт ряд корзин burn-окна [now-BurnLongMin, now)
-// с шагом BurnShortMin. long — весь ряд (slow-окно), short — последняя корзина
-// (последнее fast-под-окно длиной BurnShortMin).
+// long — весь ряд корзин (slow-окно), short — последняя корзина (fast-под-окно).
 func (e *Evaluator) burnWindows(ctx context.Context, p Provider, s SLO, now time.Time) (long, short []Bucket, err error) {
 	longMin, shortMin := s.BurnLongMin, s.BurnShortMin
 	if longMin <= 0 {
@@ -252,22 +200,17 @@ func (e *Evaluator) burnWindows(ctx context.Context, p Provider, s SLO, now time
 	return long, short, nil
 }
 
-// open открывает инцидент, если открытого ещё нет. Полный бюджет считается ТОЛЬКО
-// когда инцидента ещё нет (отдельный запрос за WindowDays): проверка OpenIncidentFor
-// впереди гарантирует, что дорогой запрос за полным окном не летит на каждом тике,
-// пока инцидент уже открыт.
+// проверка OpenIncidentFor впереди гарантирует, что дорогой запрос за полным
+// окном не летит на каждом тике, пока инцидент уже открыт.
 func (e *Evaluator) open(ctx context.Context, p Provider, s SLO, now time.Time, d BurnDecision) bool {
 	if _, already, err := e.Store.OpenIncidentFor(ctx, s.ID); err != nil {
 		slog.Error("slo evaluator: open-for failed", "slo_id", s.ID, "error", err)
 		return false
 	} else if already {
-		return false // инцидент уже открыт — прожог продолжается, ничего нового
+		return false
 	}
-	// attainment/remaining игнорируются: реролл (B4, T7) больше не собирает
-	// SLOEvent здесь напрямую — notifyOpen шлёт ступень лесенки по incidentID,
-	// а StepNotifier перечитывает инцидент и сам восстанавливает эти поля
-	// (см. SLOBurnNotifier.reloadEvent). budget — единственное, что реально
-	// нужно ниже: он персистится в slo_incidents.budget_remaining.
+	// attainment/remaining игнорируются — StepNotifier перечитывает инцидент и сам
+	// восстанавливает их; budget персистится в slo_incidents.budget_remaining.
 	budget, _, _ := e.fullWindowBudget(ctx, p, s, now)
 	inMaint := e.inMaintenance(ctx, s.ProjectID, now)
 	inc, created, err := e.Store.OpenIncident(ctx, s.ID, s.ProjectID, d.BurnShort, budget, inMaint)
@@ -276,10 +219,9 @@ func (e *Evaluator) open(ctx context.Context, p Provider, s SLO, now time.Time, 
 		return false
 	}
 	if !created {
-		return false // гонка: параллельный тик успел открыть — не дублируем уведомление
+		return false
 	}
-	// D3: членство решается и для инцидента, открытого в maintenance, —
-	// состав группы собирается всегда, гейтится только уведомление.
+	// состав группы собирается всегда, даже в maintenance — гейтится только уведомление.
 	grouped := e.groupGate(ctx, s, inc)
 	if !inMaint && !grouped {
 		e.notifyOpen(ctx, s.ProjectID, inc)
@@ -287,12 +229,8 @@ func (e *Evaluator) open(ctx context.Context, p Provider, s SLO, now time.Time, 
 	return true
 }
 
-// groupGate — D3-гейт открытия SLO-инцидента: только uptime-SLI с привязанным
-// монитором (у availability/latency нет узла дерева зависимостей, Р1). true —
-// член ИНФОРМИРУЮЩЕЙ группы (Р4, root.notified_open на момент attach): step0
-// не зовётся, информирует корень. Немой корень — attach только для состава,
-// уведомление штатно. Fail-safe (fail-noisy): ошибка → шумим как без D3 —
-// лучше лишний алерт, чем пропущенный.
+// только uptime-SLI с привязанным монитором; true — член информирующей группы
+// (за неё говорит корень). Ошибка — шумим как без групп: лишний алерт лучше пропущенного.
 func (e *Evaluator) groupGate(ctx context.Context, s SLO, inc Incident) bool {
 	if e.IncidentGroups == nil || s.Kind != SLIUptime || s.MonitorID == nil {
 		return false
@@ -305,11 +243,6 @@ func (e *Evaluator) groupGate(ctx context.Context, s SLO, inc Incident) bool {
 	return attached && informing
 }
 
-// close закрывает открытый инцидент. Бюджет за полное окно больше не
-// пересчитывается на закрытии (реролл B4, T7): recovery шлётся адресно через
-// notifyClose, который перечитывает инцидент по ID и не нуждается в
-// attainment/remaining, посчитанных здесь заново — в отличие от старого
-// SLOEvent, собираемого evalSLO напрямую.
 func (e *Evaluator) close(ctx context.Context, s SLO) bool {
 	inc, resolved, err := e.Store.ResolveIncident(ctx, s.ID)
 	if err != nil {
@@ -317,16 +250,13 @@ func (e *Evaluator) close(ctx context.Context, s SLO) bool {
 		return false
 	}
 	if !resolved {
-		return false // открытого не было — закрывать нечего
+		return false
 	}
 	e.notifyClose(ctx, inc)
 	return true
 }
 
-// fullWindowBudget считает достижение и остаток бюджета за полное окно SLO
-// (WindowDays), клипуя начало окна к пределу хранения провайдера (RetentionCap>0).
-// budget — nil, если за окном нет данных (Total==0): NULL в slo_incidents честнее
-// подставного нуля.
+// budget — nil, если за окном нет данных: NULL в slo_incidents честнее подставного нуля.
 func (e *Evaluator) fullWindowBudget(ctx context.Context, p Provider, s SLO, now time.Time) (budget *float64, attainment, remaining float64) {
 	from := now.Add(-time.Duration(s.WindowDays) * 24 * time.Hour)
 	if capD := p.RetentionCap(); capD > 0 {
@@ -347,12 +277,8 @@ func (e *Evaluator) fullWindowBudget(ctx context.Context, p Provider, s SLO, now
 	return &rem, att, rem
 }
 
-// inMaintenance — проект сейчас в окне обслуживания (B3), для гейта open/close-
-// notify в open/close. Ошибка проверки НЕ отменяет открытие инцидента: она
-// лишь означает, что не удалось выяснить, плановые ли это работы, и трактуется
-// как «не в окне» — молчать о реальном прожоге бюджета дороже, чем уведомить
-// лишний раз (то же решение, что host.Evaluator.inMaintenance). Maint==nil
-// (деградированная сборка) — тот же результат.
+// ошибка проверки трактуется как «не в окне»: молчать о реальном прожоге
+// бюджета дороже, чем лишнее уведомление.
 func (e *Evaluator) inMaintenance(ctx context.Context, projectID int64, now time.Time) bool {
 	if e.Maint == nil {
 		return false
@@ -366,12 +292,8 @@ func (e *Evaluator) inMaintenance(ctx context.Context, projectID int64, now time
 	return v
 }
 
-// notifyOpen — реролл (B4, T7): открытие инцидента сжигания бюджета резолвит
-// лесенку эскалации (project, severity — SLO не имеют per-цель override,
-// всегда table-DEFAULT slo_incidents.severity, 'critical', 0077) и шлёт РОВНО
-// СТУПЕНЬ 0, если её задержка (обычно 0) уже настала; остальные ступени
-// досылает планировщик (T8). Ошибка политики/уведомления не должна ронять
-// оценку.
+// шлёт сразу только ступень 0, если её задержка уже настала; остальные
+// ступени досылает планировщик.
 func (e *Evaluator) notifyOpen(ctx context.Context, projectID int64, inc Incident) {
 	if e.Policy == nil || e.Notifier == nil || e.Pool == nil {
 		return
@@ -395,10 +317,8 @@ func (e *Evaluator) notifyOpen(ctx context.Context, projectID int64, inc Inciden
 	}
 }
 
-// notifyClose — реролл (B4, T7): закрытие инцидента сжигания бюджета шлёт
-// recovery адресно, в каналы из лога эскалации (escalation.RecoveryChannels);
-// пустой набор — молчание (M-7 брифа Task 6, ничего не отправлялось —
-// отправлять «закрыт» нечего).
+// закрытие шлёт recovery только в каналы из лога эскалации; пустой набор —
+// намеренное молчание.
 func (e *Evaluator) notifyClose(ctx context.Context, inc Incident) {
 	if e.Pool == nil || e.Notifier == nil {
 		return

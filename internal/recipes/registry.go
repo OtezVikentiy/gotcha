@@ -6,31 +6,11 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 )
 
-// Конфиг-сниппеты собираются fmt.Sprintf-строкой, а не YAML-маршалингом
-// структуры, — по тем же соображениям, что collectorConfigTmpl (hosts.go):
-// это конфиг ЧУЖОЙ программы (otelcol-contrib), маршалинг завёл бы Go-типы
-// под формат, которым мы не управляем, ради двух подстановок. endpoint
-// экспортёра — БАЗОВЫЙ URL без /v1/metrics: путь дописывает сам
-// otlphttp-экспортёр. resourcedetection в сниппеты НЕ ставим (спека §5
-// MAJOR-2): host у точек остаётся пустым, страница рецепта работает без
-// host-скоупа. Чужие секреты (пароли сервисов) — CHANGE_ME-плейсхолдеры,
-// наших секретов в сниппете нет (только ключ проекта, как /hosts).
-//
-// Transform-процессор в сниппетах postgres/docker обязателен (BLOCKER-1,
-// см. package doc): продвигает resource-атрибуты в datapoint-атрибуты.
-// Синтаксис — «advanced» форма transformprocessor (`context: datapoint` +
-// `set(attributes[...], resource.attributes[...])`): поддерживается и
-// старыми, и текущими версиями коллектора, в отличие от flat-путей
-// (`datapoint.attributes[...]`), требующих свежего контекст-инференса.
+// сниппеты — fmt.Sprintf-строка, не YAML-маршалинг чужого конфига otelcol-contrib.
+// resourcedetection не ставим: host у точек пуст, страница рецепта работает без host-скоупа.
 
-// postgresConfigTmpl: postgresql-ресивер. postgresql.deadlocks по умолчанию
-// ВЫКЛЮЧЕНА в metadata.yaml ресивера (сверка T1 Step 1) — включаем явно,
-// иначе рекомендованный critical-порог по дедлокам был бы мёртвым.
-// Строка databases закомментирована нарочно (финревью P1-1): без неё ресивер
-// собирает ВСЕ базы, и порог по дедлокам следит за суммой/максимумом — для
-// точного порога по одной базе пользователь раскомментирует и сужает список.
-// Комментарий в YAML — по-английски: сниппет один на обе локали, а кириллица
-// в проде живёт только в i18n-каталогах.
+// postgresql.deadlocks выключена в metadata.yaml — включаем явно, иначе critical-порог мёртв.
+// databases закомментирована нарочно: без неё ресивер берёт все базы, порог — по сумме/максимуму.
 const postgresConfigTmpl = `receivers:
   postgresql:
     endpoint: localhost:5432
@@ -63,13 +43,8 @@ service:
       exporters: [otlphttp]
 `
 
-// mariadbConfigTmpl: mysql-ресивер (README ресивера заявляет поддержку и
-// MySQL 5.7–9.x, и MariaDB 10.5.x–11.x, LTS 11.4/11.8 — сверка Step 1 B6-2).
-// mysql.query.slow.count по умолчанию ВЫКЛЮЧЕНА в metadata.yaml — включаем
-// явно (прецедент postgresql.deadlocks), иначе рекомендованный порог по
-// slow queries был бы мёртвым. TLS не задаём: у ресивера «tls not set» и есть
-// подключение без TLS (локальный сокет/порт на том же сервере); transform не
-// нужен — все ключи группировок (kind/operation) — родные datapoint-атрибуты.
+// ресивер mysql, но поддерживает и MariaDB — отсюда несовпадение с ID рецепта mariadb.
+// query.slow.count по умолчанию выключена в metadata.yaml — включаем явно, иначе порог мёртв.
 const mariadbConfigTmpl = `receivers:
   mysql:
     endpoint: localhost:3306
@@ -93,9 +68,8 @@ service:
       exporters: [otlphttp]
 `
 
-// nginxConfigTmpl: nginx-ресивер поверх stub_status (модуль надо включить в
-// nginx: location /status { stub_status; }). Transform не нужен: state —
-// родной datapoint-атрибут nginx.connections_current.
+// нужен модуль stub_status в nginx (location /status { stub_status; }).
+// Transform не нужен: state — родной атрибут nginx.connections_current.
 const nginxConfigTmpl = `receivers:
   nginx:
     endpoint: http://localhost:80/status
@@ -115,8 +89,7 @@ service:
       exporters: [otlphttp]
 `
 
-// redisConfigTmpl: redis-ресивер. Все нужные метрики включены по умолчанию;
-// группировок по resource-атрибутам нет — transform не нужен.
+// все нужные метрики включены по умолчанию; группировок по атрибутам нет — transform не нужен.
 const redisConfigTmpl = `receivers:
   redis:
     endpoint: localhost:6379
@@ -137,12 +110,8 @@ service:
       exporters: [otlphttp]
 `
 
-// dockerConfigTmpl: docker_stats-ресивер (нужен доступ к докер-сокету).
-// Каждый контейнер у ресивера — отдельный Resource; container.name —
-// resource-атрибут, продвигаем обязательно, иначе пер-контейнерные графики
-// слипнутся в одну группу "". container.image.name НЕ продвигаем (аудит P2):
-// им не пользуется ни один график/порог, а лишний datapoint-атрибут — лишняя
-// кардинальность в metric_points.
+// container.name продвигаем обязательно — иначе пер-контейнерные графики схлопнутся в одну группу.
+// container.image.name не продвигаем: график им не пользуется, а это лишняя кардинальность.
 const dockerConfigTmpl = `receivers:
   docker_stats:
     endpoint: unix:///var/run/docker.sock
@@ -167,15 +136,6 @@ service:
       exporters: [otlphttp]
 `
 
-// registry — рецепты в порядке показа. Имена метрик, типы и атрибуты сверены
-// с metadata.yaml ресиверов otel-collector-contrib (T1 Step 1); ключевые
-// расхождения со спекой §3 зафиксированы в отчёте T1:
-//   - сигнатуры postgres/nginx/redis — не gauge, а НЕ-monotonic cumulative
-//     sum; для детекции это эквивалентно (наш тракт агрегирует их скалярно
-//     с первой же точки, rate-путь не включается);
-//   - postgresql.rows — НЕ-monotonic sum (текущие live/dead строки), поэтому
-//     график rows скалярный (Rate=false), группировка по родному
-//     datapoint-атрибуту state, а не «rate» из чернового списка спеки.
 var registry = []Recipe{
 	{
 		ID:        "postgres",
@@ -195,28 +155,23 @@ var registry = []Recipe{
 			}},
 			{Key: "db_size", Unit: "By", Series: []ChartSeries{{Metric: "postgresql.db_size"}},
 				GroupKey: "postgresql.database.name", Agg: "avg"},
-			// blocks_read и deadlocks — пер-базовая группировка (финревью
-			// P1-1): без GroupKey счётчики РАЗНЫХ баз складывались бы в одну
-			// линию, а rate на сумме кумулятивов от нескольких баз даёт
-			// артефакты при рестарте любой из них.
+			// пер-базовая группировка: без GroupKey счётчики разных баз сложились бы
+			// в одну линию, а rate на сумме кумулятивов даёт артефакты при рестарте любой из них.
 			{Key: "blocks_read", Unit: "1/s", Agg: "avg",
 				Series:   []ChartSeries{{Metric: "postgresql.blocks_read", Rate: true}},
 				GroupKey: "postgresql.database.name"},
 			{Key: "deadlocks", Unit: "1/s", Agg: "avg",
 				Series:   []ChartSeries{{Metric: "postgresql.deadlocks", Rate: true}},
 				GroupKey: "postgresql.database.name"},
-			// rows — не-monotonic sum (текущее число строк), скалярный график
-			// с группировкой по родному datapoint-атрибуту state (live/dead).
+			// не-monotonic sum (текущее число строк): скалярный график, группировка по родному state.
 			{Key: "rows", Series: []ChartSeries{{Metric: "postgresql.rows"}},
 				GroupKey: "state", Agg: "avg"},
 		},
 		Rules: []RuleSpec{
-			// sum по monotonic cumulative = прирост за окно (Aggregate делает
-			// rate): «были новые дедлоки за 5 минут», НЕ «всего дедлоков».
+			// sum по monotonic cumulative = прирост за окно: «новые дедлоки за 5 минут», не «всего».
 			{Metric: "postgresql.deadlocks", Agg: "sum", Comparator: "gt", Threshold: 0,
 				WindowSeconds: 300, Severity: "critical", NoteKey: "deadlocks"},
-			// NoteKey поясняет: подстройте под ваш max_connections; значение
-			// усреднено по базам и скрейпам (ревью MINOR-5).
+			// значение усреднено по базам и скрейпам — NoteKey просит подстроить под max_connections.
 			{Metric: "postgresql.backends", Agg: "avg", Comparator: "gt", Threshold: 80,
 				WindowSeconds: 300, NoteKey: "backends"},
 		},
@@ -225,13 +180,6 @@ var registry = []Recipe{
 		},
 	},
 	{
-		// mariadb — первый рецепт поверх обкатанного реестра (B6-2):
-		// ресивер называется mysql (совместим с MariaDB, см. mariadbConfigTmpl),
-		// продуктовое имя рецепта — MariaDB. Сверка с metadata.yaml
-		// mysqlreceiver (main, 2026-08-21): все метрики ниже — default-enabled
-		// cumulative sum'ы, КРОМЕ mysql.query.slow.count (default=off,
-		// включается сниппетом); kind/operation — datapoint-атрибуты,
-		// resource-атрибуты не нужны → PromotedAttrs пуст, transform не нужен.
 		ID:        "mariadb",
 		Signature: "mysql.threads", // не-monotonic sum: скалярный путь, детекция с первого скрейпа
 		Metrics: []string{
@@ -239,13 +187,8 @@ var registry = []Recipe{
 			"mysql.row_operations", "mysql.locks", "mysql.query.slow.count",
 		},
 		Charts: []Chart{
-			// threads — не-monotonic sum по kind; НЕ GroupKey, а три ряда с
-			// пер-серийными матчерами (ревью IMP-1): kind=created —
-			// накопленный с рестарта счётчик созданных тредов, на порядки
-			// выше остальных — в группировке он задавал бы масштаб оси и
-			// прижимал connected/running/cached к нулю. Цена — захардкоженный
-			// енум kind (сверен с metadata.yaml, Step 1): новое значение у
-			// ресивера само на график не попадёт.
+			// три ряда с матчерами, не GroupKey: kind=created на порядки больше остальных —
+			// в общей группировке он задавал бы масштаб оси и прижимал остальные к нулю.
 			{Key: "threads", Agg: "avg", Series: []ChartSeries{
 				{Metric: "mysql.threads", LabelSuffix: "connected",
 					Matchers: []metric.LabelMatcher{{Key: "kind", Value: "connected"}}},
@@ -254,37 +197,26 @@ var registry = []Recipe{
 				{Metric: "mysql.threads", LabelSuffix: "cached",
 					Matchers: []metric.LabelMatcher{{Key: "kind", Value: "cached"}}},
 			}},
-			// operations — monotonic cumulative InnoDB-операции файлов
-			// (fsyncs/reads/writes), rate по operation.
 			{Key: "operations", Unit: "1/s", Agg: "avg",
 				Series:   []ChartSeries{{Metric: "mysql.operations", Rate: true}},
 				GroupKey: "operation"},
-			// buffer_pool.pages — не-monotonic sum; атрибут страниц — kind
-			// (data/free/misc), а не status: status живёт у
-			// mysql.buffer_pool.data_pages (dirty/clean) — сверка Step 1.
+			// атрибут — kind (data/free/misc), не status: тот у mysql.buffer_pool.data_pages.
 			{Key: "buffer_pool_pages", Series: []ChartSeries{{Metric: "mysql.buffer_pool.pages"}},
 				GroupKey: "kind", Agg: "avg"},
-			// row_operations — monotonic cumulative, rate по operation
-			// (deleted/inserted/read/updated).
 			{Key: "row_operations", Unit: "1/s", Agg: "avg",
 				Series:   []ChartSeries{{Metric: "mysql.row_operations", Rate: true}},
 				GroupKey: "operation"},
-			// locks — monotonic cumulative запросы блокировок таблиц, rate по
-			// kind (immediate/waited): рост waited — ранний сигнал контеншена.
+			// рост kind=waited — ранний сигнал контеншена.
 			{Key: "locks", Unit: "1/s", Agg: "avg",
 				Series:   []ChartSeries{{Metric: "mysql.locks", Rate: true}},
 				GroupKey: "kind"},
 		},
 		Rules: []RuleSpec{
-			// 120 ≈ 80% дефолтного max_connections=151; матчер kind=connected —
-			// прецедент nginx state=active. NoteKey велит подстроить под свой
-			// max_connections.
+			// 120 ≈ 80% дефолтного max_connections=151 — NoteKey просит подстроить под свой.
 			{Metric: "mysql.threads", Agg: "avg", Comparator: "gt", Threshold: 120,
 				WindowSeconds: 300, LabelKey: "kind", LabelValue: "connected", NoteKey: "threads_connected"},
-			// sum по monotonic cumulative = прирост за окно: «появились новые
-			// медленные запросы за 5 минут». Метрика default=off — сниппет
-			// включает её явно. warning, не critical: slow query — повод
-			// разобраться, а не однозначная авария (в отличие от дедлока).
+			// метрика default=off — сниппет включает её явно; warning, не critical:
+			// slow query — повод разобраться, не однозначная авария.
 			{Metric: "mysql.query.slow.count", Agg: "sum", Comparator: "gt", Threshold: 0,
 				WindowSeconds: 300, NoteKey: "slow_queries"},
 		},
@@ -294,7 +226,7 @@ var registry = []Recipe{
 	},
 	{
 		ID:        "nginx",
-		Signature: "nginx.connections_current", // не-monotonic sum (НЕ requests: тот monotonic — ревью MINOR-3)
+		Signature: "nginx.connections_current", // не-monotonic sum (не requests: тот monotonic)
 		Metrics: []string{
 			"nginx.requests", "nginx.connections_current",
 			"nginx.connections_accepted", "nginx.connections_handled",
@@ -310,9 +242,7 @@ var registry = []Recipe{
 			}},
 		},
 		Rules: []RuleSpec{
-			// Один мягкий порог (развилка F7): «дропы» accepted−handled
-			// одно-метричным правилом не выразимы. NoteKey: подстройте под
-			// мощность вашего nginx.
+			// единственный порог: «дропы» accepted−handled одной метрикой не выразимы.
 			{Metric: "nginx.connections_current", Agg: "avg", Comparator: "gt", Threshold: 1000,
 				WindowSeconds: 300, LabelKey: "state", LabelValue: "active", NoteKey: "active_connections"},
 		},
@@ -338,7 +268,7 @@ var registry = []Recipe{
 				{Metric: "redis.keyspace.misses", Rate: true, LabelSuffix: "misses"},
 			}},
 			// redis.commands — gauge ops/sec от самого Redis (Rate=false);
-			// НЕ путать с monotonic redis.commands.processed (ревью MINOR-4).
+			// не путать с monotonic redis.commands.processed.
 			{Key: "commands", Unit: "1/s", Agg: "avg",
 				Series: []ChartSeries{{Metric: "redis.commands"}}},
 			{Key: "fragmentation", Agg: "avg",
@@ -370,11 +300,8 @@ var registry = []Recipe{
 				GroupKey: "container.name", Agg: "avg"},
 			{Key: "memory", Series: []ChartSeries{{Metric: "container.memory.percent"}},
 				GroupKey: "container.name", Agg: "avg"},
-			// Сеть — ДВА графика, по направлению на каждый (аудит QA P1-2):
-			// парный rx+tx без GroupKey складывал счётчики всех контейнеров в
-			// две безымянные линии; пер-контейнерная группировка (как у cpu и
-			// memory) требует ровно одной Series на график — направление
-			// поэтому разнесено по графикам, а не по рядам.
+			// два графика по направлению, не по рядам: пер-контейнерная группировка
+			// (как у cpu/memory) требует ровно одной Series на график.
 			{Key: "network_rx", Unit: "By/s", Agg: "avg",
 				Series:   []ChartSeries{{Metric: "container.network.io.usage.rx_bytes", Rate: true}},
 				GroupKey: "container.name"},
@@ -382,9 +309,6 @@ var registry = []Recipe{
 				Series:   []ChartSeries{{Metric: "container.network.io.usage.tx_bytes", Rate: true}},
 				GroupKey: "container.name"},
 		},
-		// Rules пусты намеренно (развилка F1): метрики пер-контейнерные,
-		// разумный дефолт «на все контейнеры разом» невозможен; страница
-		// честно объясняет отсутствие порогов.
 		Config: func(baseURL, apiKey string) string {
 			return fmt.Sprintf(dockerConfigTmpl, baseURL, apiKey)
 		},

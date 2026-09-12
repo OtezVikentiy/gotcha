@@ -8,12 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestGrantInstanceAdminUnknownUser — хвост 1 волны 1: grant в передаче роли
-// администратора инстанса обязан проверять RowsAffected. Получатель найден
-// по email до транзакции; если его строка исчезла к моменту UPDATE (удалил
-// аккаунт), UPDATE молча трогал 0 строк, commit проходил — и инстанс
-// оставался вовсе без администратора. Теперь — ErrUserNotFound, транзакция
-// откатывается вызывающим.
 func TestGrantInstanceAdminUnknownUser(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -29,8 +23,6 @@ func TestGrantInstanceAdminUnknownUser(t *testing.T) {
 	}
 }
 
-// TestGrantInstanceAdminExistingUser — положительная ветка того же хелпера:
-// существующему пользователю флаг ставится, ошибки нет.
 func TestGrantInstanceAdminExistingUser(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()

@@ -1,14 +1,7 @@
 package uptime
 
-// Concurrency tests for the SSL/reminder claim-before-notify fix. These live
-// in package uptime (not uptime_test) because they call checkSSL/
-// checkReminders directly — both unexported — to simulate two
-// `gotcha --mode=uptime` replicas racing checkSSL (resp. checkReminders)
-// against the same monitor/incident in the same DB. The rest of the
-// package's tests use the external uptime_test package and its own
-// fakeNotifier/newProject helpers; those aren't reachable from here (package
-// uptime can't import uptime_test — uptime_test imports uptime, so the
-// reverse would cycle), hence the small duplicated helpers below.
+// package uptime, не uptime_test: тесты зовут неэкспортируемые checkSSL/
+// checkReminders напрямую; uptime_test отсюда не импортировать (цикл).
 
 import (
 	"context"
@@ -23,9 +16,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// countingNotifier — minimal Notifier for these tests: counts Notify calls
-// per Event.Kind. The external fakeNotifier (watchdog_test.go, package
-// uptime_test) records full events, which these tests don't need.
+// минимальный Notifier: считает вызовы по Event.Kind, полные события не нужны.
 type countingNotifier struct {
 	mu     sync.Mutex
 	counts map[string]int
@@ -41,8 +32,7 @@ func (n *countingNotifier) Notify(_ context.Context, ev Event) error {
 	return nil
 }
 
-// NotifyOpenStep0/NotifyRecovery — not exercised by these SSL/reminder races
-// (they never open an incident), kept minimal to satisfy Notifier.
+// не участвуют в SSL/reminder гонках — только чтобы удовлетворить интерфейс Notifier.
 func (n *countingNotifier) NotifyOpenStep0(_ context.Context, ev Event) ([]int64, error) {
 	if err := n.Notify(context.Background(), ev); err != nil {
 		return nil, err
@@ -60,10 +50,6 @@ func (n *countingNotifier) count(kind string) int {
 	return n.counts[kind]
 }
 
-// newConcurrencyTestProject inserts the minimal user/org/project chain —
-// mirrors uptime_test's newProject (monitor_test.go); duplicated here since
-// this package's test files can't reach that external-package helper (see
-// the package comment above).
 func newConcurrencyTestProject(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -102,11 +88,6 @@ func concurrencyTestHTTPMonitor(projectID int64) Monitor {
 	}
 }
 
-// TestCheckSSLConcurrentTicksNotifyExactlyOnce simulates two
-// `--mode=uptime` replicas whose watchdog ticks land on checkSSL at the same
-// moment for the same monitor: both read the same not-yet-alerted
-// thresholds, so without an atomic claim (see ClaimSSLAlert) both would
-// Notify. Exactly one must win.
 func TestCheckSSLConcurrentTicksNotifyExactlyOnce(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := NewService(pool)
@@ -158,9 +139,6 @@ func TestCheckSSLConcurrentTicksNotifyExactlyOnce(t *testing.T) {
 	}
 }
 
-// TestCheckRemindersConcurrentTicksNotifyExactlyOnce mirrors the SSL test
-// above for checkReminders/ClaimReminder: two replicas racing on the same
-// open incident, due for exactly one reminder.
 func TestCheckRemindersConcurrentTicksNotifyExactlyOnce(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := NewService(pool)
@@ -182,10 +160,8 @@ func TestCheckRemindersConcurrentTicksNotifyExactlyOnce(t *testing.T) {
 	if !openedNow {
 		t.Fatalf("OpenIncident: created = false, want true")
 	}
-	// OpenIncident alone leaves notified_open=false (MarkNotified is the
-	// detector's job after a successful "down" notify) — IncidentsDueForReminder
-	// (B5, задача 6) now gates on notified_open=true, and this test is about
-	// the reminder claim race, not that gate.
+	// OpenIncident сам оставляет notified_open=false — без явного MarkNotified
+	// гейт по этому полю исключил бы инцидент, и тест не дошёл бы до гонки claim.
 	if err := svc.MarkNotified(ctx, inc.ID, true); err != nil {
 		t.Fatalf("MarkNotified: %v", err)
 	}

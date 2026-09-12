@@ -17,12 +17,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// suppressionSeedHost/suppressionSeedMonitor — минимальные вставки узла в
-// проект напрямую через пул, тем же приёмом, что и seedHost в
-// internal/depsuppress/store_test.go (Task 2): здесь важна форма запроса, а
-// не путь через host.Store.Upsert/uptime.Service.Create, которым для
-// создания одной строки пришлось бы тащить лишние обязательные поля
-// (troch-протокол хоста, регионы/каналы монитора).
 func suppressionSeedHost(t *testing.T, s *stack, projectID int64, name string) int64 {
 	t.Helper()
 	var id int64
@@ -34,13 +28,6 @@ func suppressionSeedHost(t *testing.T, s *stack, projectID int64, name string) i
 	return id
 }
 
-// suppressionSeedHostRole — как suppressionSeedHost, но с явной ролью:
-// нужна TestWebAlertSuppressionPreview для label-ребра, где парент и
-// раскрываемый ребёнок должны быть в РАЗНЫХ ролях (иначе
-// depsuppress.Store.Create сам отвергнет ребро как ErrSelfMatch — self-match
-// уже не даёт создать такое ребро через настоящий Create, поэтому его
-// исключение проверено отдельно в internal/depsuppress/preview_test.go на
-// самой чистой функции, где Edge собирается напрямую в обход валидации Store).
 func suppressionSeedHostRole(t *testing.T, s *stack, projectID int64, name, role string) int64 {
 	t.Helper()
 	var id int64
@@ -63,22 +50,12 @@ func suppressionSeedMonitor(t *testing.T, s *stack, projectID int64, name string
 	return id
 }
 
-// wireAlertSuppression заводит h.AlertDeps/h.Hosts/h.Uptime на стенде —
-// узкий стенд newStack их не проводит (как и h.EscalationPolicy в
-// escalations_test.go), а странице нужны все три: Store для CRUD рёбер,
-// Hosts/Uptime — резолвить id в человекочитаемое имя и наполнить селекты
-// формы.
 func wireAlertSuppression(s *stack) {
 	s.h.AlertDeps = depsuppress.NewStore(s.pool)
 	s.h.Hosts = host.NewStore(s.pool)
 	s.h.Uptime = uptime.NewService(s.pool)
 }
 
-// TestWebAlertSuppressionPage — owner (оператор проекта) видит свёрнутую
-// справку, кнопку-триггер модалки добавления, список рёбер с резолвленными
-// именами узлов, действиями «Редактировать»/«Удалить» и модалкой правки на
-// строку; member без командного доступа к проекту — 404 (тот же
-// existence-oracle, что и escalations).
 func TestWebAlertSuppressionPage(t *testing.T) {
 	s := newStack(t)
 	wireAlertSuppression(s)
@@ -123,36 +100,23 @@ func TestWebAlertSuppressionPage(t *testing.T) {
 	editModalID := "edit-suppression-edge-" + strconv.FormatInt(edges[0].ID, 10)
 	for _, want := range []string{
 		"ping-gw", "web-1", "parent_kind", "child_kind",
-		// теория — в свёрнутой справке, не стеной хинтов на странице.
 		`class="help-panel"`, `href="/docs/alert-suppression"`,
-		// кнопка-триггер модалки добавления + сама модалка.
 		`href="#new-suppression-edge"`, `id="new-suppression-edge"`,
-		// класс формы — крючок CSS :has()-скрытия нерелевантных полей —
-		// и классы самих скрываемых полей.
 		`class="alert-suppression-form"`,
 		`class="field as-parent-host"`, `class="field as-parent-monitor"`,
 		`class="field as-child-host"`, `class="field as-child-monitor"`,
 		`class="field as-child-label"`,
-		// строка ребра: модалка правки со стабильным якорем по id ребра,
-		// «Удалить» — кнопкой btn-danger, как на прочих страницах.
 		`href="#` + editModalID + `"`, `id="` + editModalID + `"`,
 		`class="btn btn-danger"`,
-		// ритм секций: карточки списка и предпросмотра несут класс отступа.
 		`class="card suppression-section"`,
 	} {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("GET %s missing %q: %s", path, want, body)
 		}
 	}
-	// Класс-крючок CSS обязан стоять на КАЖДОЙ форме ребра: модалка создания
-	// плюс модалка правки на строку (1 ребро → 2 формы). Contains нашёл бы и
-	// одну из двух — форма без класса показывала бы все поля разом.
 	if got := strings.Count(string(body), `class="alert-suppression-form"`); got != 2 {
 		t.Fatalf("GET %s: %d forms with class alert-suppression-form, want 2 (create + 1 edit)", path, got)
 	}
-	// Стены вводных абзацев на самой странице больше нет: текст модели живёт
-	// только внутри help-panel (сам текст присутствует — проверяем один из
-	// ключей), а прежних четырёх <p class="hint"> подряд под <h1> нет.
 	if !strings.Contains(string(body), "одно уведомление о корневой причине") {
 		t.Fatalf("GET %s: intro text missing entirely (must live inside help panel): %s", path, body)
 	}
@@ -165,9 +129,6 @@ func TestWebAlertSuppressionPage(t *testing.T) {
 	}
 }
 
-// TestWebAlertSuppressionSaveAndDelete — POST с валидным ребром создаёт
-// строку в Store (303 редирект), она видна в GET-списке; POST на
-// .../{depID}/delete удаляет её (303 редирект), List снова пуст.
 func TestWebAlertSuppressionSaveAndDelete(t *testing.T) {
 	s := newStack(t)
 	wireAlertSuppression(s)
@@ -210,8 +171,6 @@ func TestWebAlertSuppressionSaveAndDelete(t *testing.T) {
 	}
 
 	deletePath := path + "/" + strconv.FormatInt(edges[0].ID, 10) + "/delete"
-	// Без confirmed=yes — страница подтверждения, называющая оба узла ребра
-	// (K7-7: раньше удаление было одним кликом), ребро на месте.
 	resp = postForm(t, s.srv, deletePath, url.Values{}, s.srv.URL, ownerCookie)
 	confirmBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -228,7 +187,6 @@ func TestWebAlertSuppressionSaveAndDelete(t *testing.T) {
 		t.Fatalf("edge gone after unconfirmed delete: %+v err=%v", edges, err)
 	}
 
-	// Несуществующее ребро без confirmed=yes — 404 (нечего подтверждать).
 	resp = postForm(t, s.srv, path+"/999999/delete", url.Values{}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -236,9 +194,6 @@ func TestWebAlertSuppressionSaveAndDelete(t *testing.T) {
 		t.Fatalf("delete unknown edge (unconfirmed) status = %d, want 404", resp.StatusCode)
 	}
 
-	// Шаг подтверждения гейтится теми же правами, что и само удаление:
-	// чужой для проекта пользователь без confirmed=yes получает 404, а не
-	// страницу подтверждения с именами узлов.
 	_, outsiderCookie := orgSettingsRegister(t, authSvc, "dep-save-outsider@example.com")
 	resp = postForm(t, s.srv, deletePath, url.Values{}, s.srv.URL, outsiderCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -262,8 +217,6 @@ func TestWebAlertSuppressionSaveAndDelete(t *testing.T) {
 		t.Fatalf("List after delete = %+v, want empty", edges)
 	}
 
-	// Повтор подтверждённого POST по уже удалённому ребру (кнопка «назад»,
-	// вторая вкладка) — идемпотентно, 303 без ошибки (Store.Delete).
 	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -272,9 +225,6 @@ func TestWebAlertSuppressionSaveAndDelete(t *testing.T) {
 	}
 }
 
-// TestWebAlertSuppressionCrossTenant — concern T2: узел (хост) чужого
-// проекта в форме отвергается ДО вставки (defense-in-depth самого
-// depsuppress.Store.Create, ErrForeignNode → 422), ребро не создаётся.
 func TestWebAlertSuppressionCrossTenant(t *testing.T) {
 	s := newStack(t)
 	wireAlertSuppression(s)
@@ -320,12 +270,6 @@ func TestWebAlertSuppressionCrossTenant(t *testing.T) {
 	}
 }
 
-// TestWebAlertSuppressionPreview — Task 9b: экран реально рендерит текст
-// dry-run предпросмотра «если бы <родитель> сейчас упал, подавились бы:
-// <дети>» (а не просто не падает, как проверяют остальные тесты этого
-// файла). Локаль стенда по умолчанию — ru (i18n.Default, нет
-// Accept-Language в запросе, см. internal/i18n/match.go) — ожидаемый текст
-// сверен с internal/i18n/locales/ru.json дословно.
 func TestWebAlertSuppressionPreview(t *testing.T) {
 	s := newStack(t)
 	wireAlertSuppression(s)
@@ -343,9 +287,6 @@ func TestWebAlertSuppressionPreview(t *testing.T) {
 	}
 	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/alert-suppression"
 
-	// Без единого ребра шаблон вообще не рендерит секцию предпросмотра
-	// (AlertSuppression: `if len(edges) > 0 { @suppressionPreview(...) }`) —
-	// проверяем это ДО того, как заводим первое ребро ниже.
 	resp := getWithCookie(t, s.srv, path, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -356,11 +297,6 @@ func TestWebAlertSuppressionPreview(t *testing.T) {
 		t.Fatalf("GET %s (no edges) unexpectedly rendered preview section: %s", path, body)
 	}
 
-	// Explicit-ребро: монитор-родитель -> хост-ребёнок. Роль "app" (а не
-	// дефолтная "web" из suppressionSeedHost) нарочно отличается от роли
-	// в label-ребре ниже — иначе этот же хост попал бы ЕЩЁ и в
-	// label-раскрытие role=web, и строку предпросмотра пришлось бы
-	// сверять с двумя детьми вместо одного.
 	monID := suppressionSeedMonitor(t, s, proj.ID, "ping-gw")
 	hostChild := suppressionSeedHostRole(t, s, proj.ID, "web-child", "app")
 	if _, err := s.h.AlertDeps.Create(context.Background(), depsuppress.Edge{
@@ -369,13 +305,6 @@ func TestWebAlertSuppressionPreview(t *testing.T) {
 		t.Fatalf("seed explicit edge: %v", err)
 	}
 
-	// Label-ребро: хост-родитель роли "lb" -> селектор role=web,
-	// раскрывается в хост роли "web". Родитель и раскрываемая роль
-	// нарочно разные: Store.Create сам отвергает ребро с ErrSelfMatch,
-	// если бы родитель совпадал с собственным селектором (MAJOR-5) — то
-	// исключение проверено на чистой функции в preview_test.go, здесь же
-	// цель — конец-в-конец убедиться, что раскрытие label в реальный
-	// найденный хост доходит до HTML.
 	hostParent := suppressionSeedHostRole(t, s, proj.ID, "gw-parent", "lb")
 	suppressionSeedHostRole(t, s, proj.ID, "web-sibling", "web")
 	scope, value := "role", "web"
@@ -393,25 +322,17 @@ func TestWebAlertSuppressionPreview(t *testing.T) {
 	}
 	bodyStr := string(body)
 
-	// Explicit-ребро: точная строка предпросмотра целиком (родитель И
-	// ребёнок в одном "если бы...подавились бы" блоке).
 	wantExplicit := "Если бы Монитор: ping-gw сейчас упал, подавились бы: Хост: web-child"
 	if !strings.Contains(bodyStr, wantExplicit) {
 		t.Fatalf("GET %s missing explicit-edge preview row %q: %s", path, wantExplicit, bodyStr)
 	}
 
-	// Label-ребро: role=web раскрылось РОВНО в web-sibling (родитель
-	// gw-parent — роли "lb", в раскрытие не попадает никак). Строка
-	// целиком, а не раздельные Contains — фиксирует и парента, и
-	// единственного раскрытого ребёнка в одном блоке.
 	wantLabel := "Если бы Хост: gw-parent сейчас упал, подавились бы: Хост: web-sibling"
 	if !strings.Contains(bodyStr, wantLabel) {
 		t.Fatalf("GET %s missing label-edge preview row %q: %s", path, wantLabel, bodyStr)
 	}
 }
 
-// TestWebAlertSuppressionNilService — h.AlertDeps не проведён (узкий
-// тестовый стенд) -> 404, тот же nil-guard, что у escalationsPage/slosPage.
 func TestWebAlertSuppressionNilService(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -436,11 +357,6 @@ func TestWebAlertSuppressionNilService(t *testing.T) {
 	}
 }
 
-// suppressionSelectChunk вырезает из куска формы разметку одного <select>
-// по его name: id хостов и мониторов — независимые последовательности, в
-// свежей БД первый хост и первый монитор оба получают id=1, и Contains
-// `value="1" selected` по всей форме матчился бы селектом РОДИТЕЛЯ-хоста,
-// а не проверяемым селектом ребёнка.
 func suppressionSelectChunk(t *testing.T, formChunk, selectName string) string {
 	t.Helper()
 	marker := `name="` + selectName + `"`
@@ -455,10 +371,6 @@ func suppressionSelectChunk(t *testing.T, formChunk, selectName string) string {
 	return formChunk[start : start+end]
 }
 
-// suppressionEditFormChunk вырезает из HTML кусок формы модалки правки
-// конкретного ребра (от action до </form>): create-модалка на той же
-// странице содержит те же поля, и Contains по всему телу проверял бы не ту
-// форму.
 func suppressionEditFormChunk(t *testing.T, body string, projectID, depID int64) string {
 	t.Helper()
 	action := `action="/projects/` + strconv.FormatInt(projectID, 10) + `/alert-suppression/` + strconv.FormatInt(depID, 10) + `"`
@@ -473,10 +385,6 @@ func suppressionEditFormChunk(t *testing.T, body string, projectID, depID int64)
 	return body[start : start+end]
 }
 
-// TestWebAlertSuppressionUpdate — POST /projects/{id}/alert-suppression/{depID}
-// меняет содержимое ребра (303), id ребра остаётся прежним; модалка правки
-// на GET предзаполнена значениями самого ребра (radio checked + option
-// selected).
 func TestWebAlertSuppressionUpdate(t *testing.T) {
 	s := newStack(t)
 	wireAlertSuppression(s)
@@ -504,7 +412,6 @@ func TestWebAlertSuppressionUpdate(t *testing.T) {
 	}
 	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/alert-suppression"
 
-	// Предзаполнение модалки правки — из самого ребра.
 	resp := getWithCookie(t, s.srv, path, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -521,9 +428,6 @@ func TestWebAlertSuppressionUpdate(t *testing.T) {
 	for _, want := range []string{
 		`name="parent_kind" value="host" checked`,
 		`name="child_kind" value="monitor" checked`,
-		// честная подсказка про пересчёт: правка действует на новые решения
-		// о подавлении, уже подавленные открытые инциденты не пересчитываются
-		// (флаг suppressed_by_dep одноразовый — см. depsuppress.Store.Update).
 		"Правка действует на новые решения о подавлении",
 	} {
 		if !strings.Contains(chunk, want) {
@@ -531,7 +435,6 @@ func TestWebAlertSuppressionUpdate(t *testing.T) {
 		}
 	}
 
-	// Правка: ребёнок mon1 → mon2.
 	form := url.Values{
 		"parent_kind":      {"host"},
 		"parent_host_id":   {strconv.FormatInt(hostID, 10)},
@@ -555,9 +458,6 @@ func TestWebAlertSuppressionUpdate(t *testing.T) {
 	}
 }
 
-// TestWebAlertSuppressionUpdate422Reopen — 422 правки (дубликат другого
-// ребра) переоткрывает модалку ИМЕННО этого ребра с введёнными значениями;
-// модалка создания и модалки прочих рёбер остаются закрытыми.
 func TestWebAlertSuppressionUpdate422Reopen(t *testing.T) {
 	s := newStack(t)
 	wireAlertSuppression(s)
@@ -591,7 +491,6 @@ func TestWebAlertSuppressionUpdate422Reopen(t *testing.T) {
 	}
 
 	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/alert-suppression"
-	// e2 правим в точную копию e1 → ErrDuplicate → 422.
 	form := url.Values{
 		"parent_kind":      {"host"},
 		"parent_host_id":   {strconv.FormatInt(hostID, 10)},
@@ -618,9 +517,6 @@ func TestWebAlertSuppressionUpdate422Reopen(t *testing.T) {
 		!strings.Contains(bodyStr, `id="new-suppression-edge" class="modal"`) {
 		t.Fatalf("other modals must stay closed: %s", bodyStr)
 	}
-	// Введённое сохранено именно в переоткрытой модалке: выбран mon1
-	// (введённый дубликат), а не mon2 (текущее значение ребра e2); рядом —
-	// текст доменной ошибки.
 	chunk := suppressionEditFormChunk(t, bodyStr, proj.ID, e2)
 	if sel := suppressionSelectChunk(t, chunk, "child_monitor_id"); !strings.Contains(sel, `value="`+strconv.FormatInt(mon1, 10)+`" selected`) {
 		t.Fatalf("reopened modal must keep entered child monitor %d: %s", mon1, sel)
@@ -630,9 +526,6 @@ func TestWebAlertSuppressionUpdate422Reopen(t *testing.T) {
 	}
 }
 
-// TestWebAlertSuppressionCreate422ReopensCreateModal — 422 создания
-// переоткрывает модалку создания с введёнными значениями (метка label-ребра
-// сохраняется в поле), модалки правки остаются закрытыми.
 func TestWebAlertSuppressionCreate422ReopensCreateModal(t *testing.T) {
 	s := newStack(t)
 	wireAlertSuppression(s)
@@ -648,8 +541,6 @@ func TestWebAlertSuppressionCreate422ReopensCreateModal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	// Хост роли web + label-ребро на роль db существует; повтор той же формы
-	// из модалки создания — ErrDuplicate → 422.
 	hostID := suppressionSeedHost(t, s, proj.ID, "web-1")
 	scope, value := "role", "db"
 	if _, err := s.h.AlertDeps.Create(context.Background(), depsuppress.Edge{
@@ -679,7 +570,6 @@ func TestWebAlertSuppressionCreate422ReopensCreateModal(t *testing.T) {
 	if got := strings.Count(bodyStr, "modal--open"); got != 1 {
 		t.Fatalf("want exactly 1 open modal (create), got %d: %s", got, bodyStr)
 	}
-	// Введённые значения сохранены: radio label выбран, значение метки в поле.
 	start := strings.Index(bodyStr, `id="new-suppression-edge" class="modal modal--open"`)
 	end := strings.Index(bodyStr[start:], "</form>")
 	if end < 0 {
@@ -696,10 +586,6 @@ func TestWebAlertSuppressionCreate422ReopensCreateModal(t *testing.T) {
 	}
 }
 
-// TestWebAlertSuppressionUpdateCrossTenant — правка чужого ребра не проходит:
-// depID другого проекта той же организации — 404 (Store.Update скоупит по
-// project_id, ErrNotFound), проект другой организации — 404 existence-oracle
-// requireProjectOperator. Чужое ребро в обоих случаях остаётся нетронутым.
 func TestWebAlertSuppressionUpdateCrossTenant(t *testing.T) {
 	s := newStack(t)
 	wireAlertSuppression(s)
@@ -737,7 +623,6 @@ func TestWebAlertSuppressionUpdateCrossTenant(t *testing.T) {
 		"child_kind":       {"monitor"},
 		"child_monitor_id": {strconv.FormatInt(myMon, 10)},
 	}
-	// depID чужого проекта под МОИМ /projects/{id} — 404 от ErrNotFound.
 	minePath := "/projects/" + strconv.FormatInt(mine.ID, 10) + "/alert-suppression/" + strconv.FormatInt(theirEdge, 10)
 	resp := postForm(t, s.srv, minePath, form, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -746,8 +631,6 @@ func TestWebAlertSuppressionUpdateCrossTenant(t *testing.T) {
 		t.Fatalf("update foreign depID status = %d, want 404", resp.StatusCode)
 	}
 
-	// Чужая организация: пользователь без доступа к проекту theirs — 404 от
-	// requireProjectOperator, existence-oracle.
 	_, strangerCookie := orgSettingsRegister(t, authSvc, "dep-uct-stranger@example.com")
 	theirsPath := "/projects/" + strconv.FormatInt(theirs.ID, 10) + "/alert-suppression/" + strconv.FormatInt(theirEdge, 10)
 	resp = postForm(t, s.srv, theirsPath, form, s.srv.URL, strangerCookie)
@@ -765,9 +648,6 @@ func TestWebAlertSuppressionUpdateCrossTenant(t *testing.T) {
 	}
 }
 
-// TestWebAlertSuppressionNoDuplicateIDs — модалка правки на каждую строку
-// плюс модалка создания: все id="" документа обязаны быть уникальны (якоря
-// CSS :target перестают работать при дублях, aria-labelledby — тоже).
 func TestWebAlertSuppressionNoDuplicateIDs(t *testing.T) {
 	s := newStack(t)
 	wireAlertSuppression(s)
@@ -809,7 +689,6 @@ func TestWebAlertSuppressionNoDuplicateIDs(t *testing.T) {
 		}
 		seen[m[1]] = true
 	}
-	// Санити: модалки правки обоих рёбер действительно в документе.
 	edges, err := s.h.AlertDeps.List(context.Background(), proj.ID)
 	if err != nil || len(edges) != 2 {
 		t.Fatalf("List = %+v / %v, want 2 edges", edges, err)

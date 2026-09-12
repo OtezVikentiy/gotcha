@@ -7,12 +7,8 @@ import (
 	"testing"
 )
 
-// keyIDFixedMaster/keyIDFixedID — закреплённый вектор key-id: фиксированный
-// мастер даёт фиксированные 8 hex-символов id, посчитанные по формуле §4
-// спеки (hex(sha256("gotcha-secretbox-keyid\x00" ‖ sha256(master)))[:8]) один
-// раз и записанные здесь константой. Будущая правка deriveKey/deriveKeyID
-// обязана уронить именно этот тест, а не молча перевыпустить id для чужой
-// продовой БД.
+// правка deriveKey/deriveKeyID обязана уронить именно этот тест, а не молча
+// перевыпустить id для чужой продовой БД.
 const (
 	keyIDFixedMaster = "vector-master-v2-fixed-key-id-do-not-change"
 	keyIDFixedID     = "92543729"
@@ -59,9 +55,6 @@ func TestNewKeyringValidation(t *testing.T) {
 	})
 }
 
-// TestPreviousID — PreviousID отдаёт id предыдущего ключа, выведенный той же
-// деривацией, что и CurrentID (а не отдельной копией с иным путём вычисления),
-// и пустую строку, когда предыдущего ключа нет.
 func TestPreviousID(t *testing.T) {
 	t.Run("предыдущий ключ есть — та же деривация, что у CurrentID", func(t *testing.T) {
 		ring, err := NewKeyring("current-master-for-previd", "previous-master-for-previd")
@@ -109,9 +102,6 @@ func TestSealOpenRoundtripSingleKey(t *testing.T) {
 	}
 }
 
-// TestOpenV1LegacyVector — v1-конверт, запечатанный старым (докольцевым)
-// кодом, открывается кольцом с тем же мастером как текущим ключом. Вектор —
-// константа v1FixedEnvelope из secretbox_test.go, не вызов удалённой функции.
 func TestOpenV1LegacyVector(t *testing.T) {
 	r, err := NewKeyring(v1FixedMaster, "")
 	if err != nil {
@@ -123,9 +113,6 @@ func TestOpenV1LegacyVector(t *testing.T) {
 	}
 }
 
-// TestRingWithPrevOpensAllForms — кольцо с previous обязано открывать все три
-// читаемые формы (v1 старым ключом, v2 старым, v2 текущим) и отказывать с
-// понятной диагностикой на v2 постороннего ключа.
 func TestRingWithPrevOpensAllForms(t *testing.T) {
 	ring, err := NewKeyring("current-master-for-prev-test", v1FixedMaster)
 	if err != nil {
@@ -184,11 +171,6 @@ func TestRingWithPrevOpensAllForms(t *testing.T) {
 	})
 }
 
-// TestOpenV1UnknownKeyNeitherRingMember — v1-конверт, запечатанный ключом,
-// которого нет в кольце ни текущим, ни предыдущим: обе попытки openRaw
-// проваливаются, Open обязан отдать ErrOpen. Отличается от
-// TestOpenV1LegacyVector (там текущий ключ кольца совпадает с ключом
-// вектора) — здесь не совпадает ни один из двух.
 func TestOpenV1UnknownKeyNeitherRingMember(t *testing.T) {
 	ring, err := NewKeyring("v1-unknown-current-master", "v1-unknown-previous-master")
 	if err != nil {
@@ -203,13 +185,8 @@ func TestOpenV1UnknownKeyNeitherRingMember(t *testing.T) {
 	}
 }
 
-// TestOpenV2BitFlippedCiphertext — v2-конверт, запечатанный ТЕКУЩИМ ключом
-// кольца, у которого затем испорчен байт в теле ciphertext (id конверта
-// остаётся верным). keyByID находит ключ по id без проблем, поэтому падение
-// происходит именно на проверке Poly1305 внутри openRaw — сценарий, который
-// старый пакет покрывал TestOpenBitFlippedCiphertext, а новые тесты Keyring
-// не унаследовали (существующие «нечитаемые» кейсы используют ЧУЖОЙ id и
-// бьют мимо, отказывая ещё в keyByID).
+// id конверта остаётся верным — keyByID находит ключ без проблем, падение
+// происходит именно на проверке Poly1305 внутри openRaw.
 func TestOpenV2BitFlippedCiphertext(t *testing.T) {
 	ring, err := NewKeyring("bitflip-current-master", "")
 	if err != nil {
@@ -219,10 +196,8 @@ func TestOpenV2BitFlippedCiphertext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
-	// sealed = "enc:v2:<id>:<base64(nonce24‖ciphertext)>" — портим байт
-	// строго внутри тела ciphertext (после 24-байтного nonce), а не в id и
-	// не в base64-обвязке, чтобы декодирование не свалилось раньше времени
-	// и падение случилось на Poly1305, а не на разборе конверта.
+	// портим байт строго внутри тела ciphertext, после 24-байтного nonce — не в id
+	// и не в base64-обвязке, чтобы падение случилось на Poly1305, а не на разборе.
 	prefix := v2Prefix + ring.CurrentID() + ":"
 	if !strings.HasPrefix(sealed, prefix) {
 		t.Fatalf("Seal() = %q, want prefix %q", sealed, prefix)
@@ -246,7 +221,6 @@ func TestOpenV2BitFlippedCiphertext(t *testing.T) {
 	}
 }
 
-// TestRewrapMatrix — матрица §4 спеки целиком.
 func TestRewrapMatrix(t *testing.T) {
 	ring, err := NewKeyring("rewrap-current-master", v1FixedMaster)
 	if err != nil {

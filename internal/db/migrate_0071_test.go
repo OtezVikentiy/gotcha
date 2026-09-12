@@ -1,10 +1,5 @@
 package db_test
 
-// TestLatestMigrationHasDataTest (internal/guards) требует, чтобы НОВЕЙШАЯ
-// миграция PostgreSQL приезжала с тестом на непустой базе — db.MigratePGTo на
-// схему, уже содержащую строки. На момент этой правки новейшая —
-// 0071_deployments.up.sql (C5, задача 1).
-
 import (
 	"context"
 	"testing"
@@ -16,9 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0071CreatesDeployments — таблица deployments создаётся на базе,
-// где уже есть организация и проект, принимает строку с FK на проект и уходит
-// вместе с проектом при откате (DROP TABLE), не задев ни организацию, ни проект.
 func TestMigrate0071CreatesDeployments(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -44,8 +36,6 @@ func TestMigrate0071CreatesDeployments(t *testing.T) {
 		t.Fatalf("migrate to 71: %v", err)
 	}
 
-	// Таблица принимает строку с FK на существующий проект; DEFAULT-поля
-	// заполняются без явных значений.
 	var depID int64
 	if err := pool.QueryRow(ctx,
 		"INSERT INTO deployments (project_id, version, deployed_at) VALUES ($1, 'v1.0.0', $2) RETURNING id",
@@ -80,7 +70,6 @@ func TestMigrate0071CreatesDeployments(t *testing.T) {
 		t.Fatal("таблица deployments должна исчезнуть после отката 0071")
 	}
 
-	// Откат — DROP TABLE deployments, проект и организация обязаны уцелеть.
 	var name string
 	if err := pool.QueryRow(ctx, "SELECT name FROM projects WHERE id = $1", projectID).Scan(&name); err != nil {
 		t.Fatalf("project row must survive down-migration: %v", err)

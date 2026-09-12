@@ -33,7 +33,6 @@ func TestSweepClosesGroupWhenRootDeleted(t *testing.T) {
 		t.Fatalf("SetGroup: %v", err)
 	}
 
-	// Член открытой группы невидим эскалации — точка отсчёта для ассерта ниже.
 	svc := host.NewIncidentService(pool)
 	pending, err := svc.OpenUnacked(ctx)
 	if err != nil {
@@ -45,7 +44,7 @@ func TestSweepClosesGroupWhenRootDeleted(t *testing.T) {
 		}
 	}
 
-	// Удаляем хост-корень: каскад 0066 сносит его инциденты, группа сиротеет.
+	// Удаляем хост-корень — каскад сносит его инциденты, группа сиротеет.
 	mustExec(t, pool, `DELETE FROM hosts WHERE id = $1`, rootHost)
 
 	n, err := incidentgroup.SweepOrphanGroups(ctx, pool)
@@ -59,7 +58,6 @@ func TestSweepClosesGroupWhenRootDeleted(t *testing.T) {
 	if resolved == nil {
 		t.Fatalf("group must be resolved by sweep")
 	}
-	// Член снова виден эскалации (досылается step0): host.OpenUnacked.
 	pending, err = svc.OpenUnacked(ctx)
 	if err != nil {
 		t.Fatalf("OpenUnacked: %v", err)
@@ -76,8 +74,6 @@ func TestSweepClosesGroupWhenRootDeleted(t *testing.T) {
 }
 
 func TestSweepClosesGroupWhenRootResolvedWithoutHook(t *testing.T) {
-	// Корень закрыт мимо хука (ResolveOpenByProjectKind — выключение порога
-	// оператором): sweep подхватывает. Контроль: группа живого корня не тронута.
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
 	projectID := seedProject(t, pool)
@@ -119,8 +115,6 @@ func TestSweepClosesGroupWhenRootResolvedWithoutHook(t *testing.T) {
 }
 
 func TestSweepClosesGroupWhenUptimeRootResolved(t *testing.T) {
-	// Ветка root_source='uptime' той же врезки: открытый uptime-корень группу
-	// держит, закрытый (мимо хука OnRootClosed) — отдаёт sweep'у.
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
 	projectID := seedProject(t, pool)
@@ -157,10 +151,6 @@ func TestSweepClosesGroupWhenUptimeRootResolved(t *testing.T) {
 	}
 }
 
-// TestJanitorRunSweepsOrphanGroups — Janitor.Run тикает и на каждом тике
-// гоняет SweepOrphanGroups (§4.3: fail-noisy, работает всегда). Мимикрируем
-// escalation.Janitor'овский образец теста (retention_test.go): короткий
-// SweepInterval + поллинг до дедлайна вместо синхронного ожидания тика.
 func TestJanitorRunSweepsOrphanGroups(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -174,7 +164,6 @@ func TestJanitorRunSweepsOrphanGroups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureGroup: %v", err)
 	}
-	// Осиротить группу мимо хука закрытия — ровно то, что должен подхватить sweep-тик.
 	mustExec(t, pool, `DELETE FROM hosts WHERE id = $1`, rootHost)
 
 	j := &incidentgroup.Janitor{Pool: pool, SweepInterval: 10 * time.Millisecond}
@@ -197,7 +186,6 @@ func TestJanitorRunSweepsOrphanGroups(t *testing.T) {
 }
 
 func TestPurgeOldGroups(t *testing.T) {
-	// resolved-группа старше ретеншена удаляется, открытая — не тронута.
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
 	projectID := seedProject(t, pool)
@@ -233,15 +221,6 @@ func TestPurgeOldGroups(t *testing.T) {
 	}
 }
 
-// TestPurgeOldGroupsSurvivesOpenMember — R2b/W5: группа сама резолвнута и
-// старше ретеншена, но у неё есть ОТКРЫТЫЙ член (один из 4 источников) —
-// PurgeOldGroups обязана её пропустить. Пока строка группы жива, лесенка
-// эскалации (host/metric/slo — Р9) считает elapsed от GREATEST(started_at,
-// COALESCE(g.resolved_at, started_at)); удали её раньше времени — LEFT JOIN
-// схлопнется в NULL, COALESCE откатится к started_at, и остаток лесенки
-// уйдёт залпом за несколько тиков. Табличный прогон по всем 4 источникам:
-// группа переживает purge, пока член открыт, и удаляется сразу после его
-// закрытия.
 func TestPurgeOldGroupsSurvivesOpenMember(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -337,7 +316,6 @@ func TestPurgeOldGroupsSurvivesOpenMember(t *testing.T) {
 				t.Fatalf("SetGroup %s: %v", tc.source, err)
 			}
 
-			// Группа резолвнута и старше ретеншена, но член ещё открыт.
 			mustExec(t, pool,
 				`UPDATE incident_groups SET resolved_at = now() - interval '48 hours' WHERE id = $1`, g.ID)
 
@@ -365,11 +343,6 @@ func TestPurgeOldGroupsSurvivesOpenMember(t *testing.T) {
 	}
 }
 
-// TestPurgeOldGroupsRetentionBoundary — R2b/W35: обе стороны cutoff'а.
-// Группа, резолвнутая заметно моложе ретеншена, не трогается; резолвнутая
-// заметно старше — удаляется. Мутация знака/оператора сравнения в
-// PurgeOldGroups (cutoff := time.Now().Add(-olderThan); resolved_at < $1)
-// ловится любой из двух половин.
 func TestPurgeOldGroupsRetentionBoundary(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -409,13 +382,6 @@ func TestPurgeOldGroupsRetentionBoundary(t *testing.T) {
 	}
 }
 
-// TestJanitorRunPurgesThenRespectsRetentionEvery — R2b/W35: покрывает ветку
-// Janitor.Run с Retention>0 (janitor.go:84), не задействованную ни одним
-// прежним тестом (grep по Retention в *_test.go был пуст). lastPurge —
-// нулевое time.Time — на первом же тике должен пройти purge независимо от
-// retentionEvery (1 час); сразу после этого заводим вторую старую группу и
-// убеждаемся, что она НЕ удаляется на следующих тиках короткого окна —
-// именно retentionEvery-гейт (не «purge каждый тик») не даёт её тронуть.
 func TestJanitorRunPurgesThenRespectsRetentionEvery(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -449,11 +415,6 @@ func TestJanitorRunPurgesThenRespectsRetentionEvery(t *testing.T) {
 		t.Fatalf("Janitor.Run must purge the old group on its first tick despite zero-value lastPurge")
 	}
 
-	// Вторая старая группа, заведённая ПОСЛЕ первого purge: retentionEvery
-	// (1 час) не пройден — janitor не должен снова тронуть ретеншен ещё
-	// долго. Короткое окно ожидания — если гейт по lastPurge сломан (например,
-	// удалено условие time.Since(j.lastPurge) >= retentionEvery), эта группа
-	// исчезнет на одном из ближайших тиков.
 	host2 := seedHost(t, pool, projectID, "root2-"+randSlug(t))
 	inc2 := seedSilent(t, pool, projectID, host2, true)
 	g2, err := store.EnsureGroup(ctx, projectID, "host", inc2, "host", host2)

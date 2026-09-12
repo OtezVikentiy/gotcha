@@ -11,9 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// mustKeyring — тестовый шорткат: однокелевое кольцо шифрования из raw.
-// NewKeyring отказывает только на пустом current — тестовые мастер-ключи
-// здесь всегда заданы литералом, поэтому ошибка означала бы баг теста.
 func mustKeyring(t *testing.T, raw string) secretbox.Keyring {
 	t.Helper()
 	ring, err := secretbox.NewKeyring(raw, "")
@@ -40,24 +37,19 @@ func TestSSOConfigCRUD(t *testing.T) {
 	if err := svc.UpsertSSO(ctx, cfg); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	// SSOByOrg — домен нормализован в lower, default_role=member.
 	got, ok, err := svc.SSOByOrg(ctx, oa.ID)
 	if err != nil || !ok || got.Domain != "corp.com" || got.DefaultRole != "member" || !got.Enforced {
 		t.Fatalf("by org = (%+v,%v,%v)", got, ok, err)
 	}
-	// SSOByDomain (регистронезависимо).
 	if d, ok, _ := svc.SSOByDomain(ctx, "CORP.com"); !ok || d.OrgID != oa.ID {
 		t.Fatalf("by domain = (%+v,%v)", d, ok)
 	}
-	// Невалидный конфиг.
 	if err := svc.UpsertSSO(ctx, org.SSOConfig{OrgID: oa.ID, Domain: "x.com"}); !errors.Is(err, org.ErrInvalidSSO) {
 		t.Fatalf("invalid = %v, want ErrInvalidSSO", err)
 	}
-	// Домен занят другой организацией → ErrDomainTaken.
 	if err := svc.UpsertSSO(ctx, org.SSOConfig{OrgID: ob.ID, Issuer: "https://i", ClientID: "c", ClientSecret: "s", Domain: "corp.com"}); !errors.Is(err, org.ErrDomainTaken) {
 		t.Fatalf("domain taken = %v, want ErrDomainTaken", err)
 	}
-	// Повторный upsert своей орги обновляет (enforced → false).
 	cfg.Enforced = false
 	if err := svc.UpsertSSO(ctx, cfg); err != nil {
 		t.Fatalf("re-upsert: %v", err)
@@ -65,7 +57,6 @@ func TestSSOConfigCRUD(t *testing.T) {
 	if got, _, _ := svc.SSOByOrg(ctx, oa.ID); got.Enforced {
 		t.Fatalf("enforced should be false after update")
 	}
-	// Delete.
 	if err := svc.DeleteSSO(ctx, oa.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -74,8 +65,6 @@ func TestSSOConfigCRUD(t *testing.T) {
 	}
 }
 
-// TestSSOSecretEncryptedAtRest — при заданном мастер-ключе client_secret
-// возвращается чтением в исходном виде, но в БД лежит зашифрованным ("enc:").
 func TestSSOSecretEncryptedAtRest(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -94,7 +83,6 @@ func TestSSOSecretEncryptedAtRest(t *testing.T) {
 		t.Fatalf("upsert: %v", err)
 	}
 
-	// Чтение через сервис возвращает расшифрованный секрет.
 	got, ok, err := svc.SSOByOrg(ctx, o.ID)
 	if err != nil || !ok {
 		t.Fatalf("by org = (%v,%v)", ok, err)
@@ -106,7 +94,6 @@ func TestSSOSecretEncryptedAtRest(t *testing.T) {
 		t.Fatalf("by domain client_secret = %q ok=%v", d.ClientSecret, ok)
 	}
 
-	// В БД client_secret хранится зашифрованным и не содержит plaintext.
 	var stored string
 	if err := pool.QueryRow(ctx, "SELECT client_secret FROM org_sso WHERE org_id = $1", o.ID).Scan(&stored); err != nil {
 		t.Fatalf("select: %v", err)
@@ -119,13 +106,6 @@ func TestSSOSecretEncryptedAtRest(t *testing.T) {
 	}
 }
 
-// TestSSOSecretEncryptedWithoutMasterKey — воспроизводит W2/P1-7: SSO-конфиг
-// заведён под мастер-ключом (client_secret зашифрован, enc:-ciphertext в БД),
-// а читается сервисом БЕЗ ключа вовсе (откат GOTCHA_SECRET_KEY на dev-дефолт:
-// main.go SetKeyring тогда не вызывается, secretKeySet остаётся false).
-// Раньше decryptSSO при !secretKeySet отдавал c.ClientSecret как есть — и
-// SSO-логин ушёл бы в OIDC token-обмен с client_secret=enc:base64.... Теперь
-// такое чтение должно отказывать, а не отдавать ciphertext.
 func TestSSOSecretEncryptedWithoutMasterKey(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -152,7 +132,6 @@ func TestSSOSecretEncryptedWithoutMasterKey(t *testing.T) {
 		t.Fatalf("precondition: client_secret must be encrypted at rest, got %q", stored)
 	}
 
-	// Ключ откатился на dev-дефолт: новый сервис БЕЗ SetKeyring.
 	noKey := org.NewService(pool, 1_000_000)
 	if _, ok, err := noKey.SSOByOrg(ctx, o.ID); err == nil {
 		t.Fatal("SSOByOrg вернул nil-ошибку — должен отказать, а не отдать ciphertext как client_secret")
@@ -180,7 +159,6 @@ func TestEnsureMemberIdempotent(t *testing.T) {
 	if err := svc.EnsureMember(ctx, o.ID, u, org.RoleMember); err != nil {
 		t.Fatalf("ensure 1: %v", err)
 	}
-	// Повторно — не ошибка, роль не меняется.
 	if err := svc.EnsureMember(ctx, o.ID, u, org.RoleAdmin); err != nil {
 		t.Fatalf("ensure 2: %v", err)
 	}

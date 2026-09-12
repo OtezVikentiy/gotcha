@@ -15,16 +15,12 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// SLOsPath — адрес раздела SLO проекта. Экспортирован: им пользуются веб-слой
-// (редиректы), навигация и экран деталей (T7).
 func SLOsPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/slos"
 }
 
-// SLORow — строка таблицы SLO: цель и посчитанные за окно достижение и остаток
-// бюджета в процентах. HasData=false — за окно не набралось событий (total==0)
-// или провайдер недоступен: проценты не показываем (прочерк), Status при этом
-// не осмыслен. Status ∈ healthy/burning/exhausted.
+// HasData=false — за окно нет событий или провайдер недоступен: проценты не показываем.
+// Status не осмыслен при HasData=false; иначе ∈ healthy/burning/exhausted.
 type SLORow struct {
 	ID                 int64
 	Name               string
@@ -36,15 +32,12 @@ type SLORow struct {
 	Status             string
 }
 
-// SLOMonitorOption — монитор проекта для выпадающего списка формы uptime-SLO.
 type SLOMonitorOption struct {
 	ID   int64
 	Name string
 }
 
-// sloKindLabel — локализованная подпись типа SLI. Литеральные i18n-ключи (не
-// конкатенация): их видит общий сканер каталога (i18n_keys_test.go), отдельная
-// динамическая группа не нужна.
+// литеральные ключи, не конкатенация — их видит сканер каталога (i18n_keys_test.go).
 func sloKindLabel(ctx context.Context, kind string) string {
 	switch kind {
 	case "latency":
@@ -56,7 +49,6 @@ func sloKindLabel(ctx context.Context, kind string) string {
 	}
 }
 
-// sloStatusLabel — локализованная подпись статуса бюджета.
 func sloStatusLabel(ctx context.Context, status string) string {
 	switch status {
 	case "exhausted":
@@ -68,8 +60,7 @@ func sloStatusLabel(ctx context.Context, status string) string {
 	}
 }
 
-// sloStatusBadgeClass — цвет бейджа статуса через дизайн-систему бейджей
-// (good/warn/danger), как incidentBadgeClass у метрик-алертов.
+// как incidentBadgeClass у метрик-алертов.
 func sloStatusBadgeClass(status string) string {
 	switch status {
 	case "exhausted":
@@ -81,7 +72,6 @@ func sloStatusBadgeClass(status string) string {
 	}
 }
 
-// sloIndicatorClass — класс цветного индикатора-точки перед остатком бюджета.
 func sloIndicatorClass(status string) string {
 	switch status {
 	case "exhausted":
@@ -93,19 +83,10 @@ func sloIndicatorClass(status string) string {
 	}
 }
 
-// fmtPct — процент с одним знаком после запятой для колонок достижения/бюджета.
 func fmtPct(v float64) string {
 	return strconv.FormatFloat(v, 'f', 1, 64) + "%"
 }
 
-// SLOsScreen — GET /projects/{id}/slos: список определений SLO с текущим
-// достижением и остатком бюджета + форма создания. errMsg — ошибка валидации
-// формы (показывается внутри модалки), form — введённые значения для повторной
-// отрисовки. monitors — мониторы проекта для выбора в uptime-SLO.
-//
-// Отклонение от эталонной сигнатуры плана (там был неиспользуемый параметр
-// filter): раздел SLO фильтров не имеет — вместо него проброшены errMsg и
-// monitors, как у соседних форм (metricalerts).
 func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, form FormState, errMsg, userEmail string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -146,7 +127,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 			var templ_7745c5c3_Var3 string
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 104, Col: 33}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 85, Col: 33}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 			if templ_7745c5c3_Err != nil {
@@ -193,7 +174,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 					var templ_7745c5c3_Var5 string
 					templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.list.name"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 115, Col: 55}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 96, Col: 55}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 					if templ_7745c5c3_Err != nil {
@@ -206,7 +187,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 					var templ_7745c5c3_Var6 string
 					templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.list.kind"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 116, Col: 55}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 97, Col: 55}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 					if templ_7745c5c3_Err != nil {
@@ -219,7 +200,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 					var templ_7745c5c3_Var7 string
 					templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.list.target"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 117, Col: 69}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 98, Col: 69}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 					if templ_7745c5c3_Err != nil {
@@ -232,7 +213,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 					var templ_7745c5c3_Var8 string
 					templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.list.attainment"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 118, Col: 73}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 99, Col: 73}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 					if templ_7745c5c3_Err != nil {
@@ -245,7 +226,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 					var templ_7745c5c3_Var9 string
 					templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.list.budget"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 119, Col: 69}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 100, Col: 69}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 					if templ_7745c5c3_Err != nil {
@@ -258,7 +239,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 					var templ_7745c5c3_Var10 string
 					templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.list.status"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 120, Col: 57}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 101, Col: 57}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 					if templ_7745c5c3_Err != nil {
@@ -276,7 +257,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 						var templ_7745c5c3_Var11 templ.SafeURL
 						templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(sloDetailPath(projectID, row.ID)))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 127, Col: 67}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 108, Col: 67}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 						if templ_7745c5c3_Err != nil {
@@ -289,7 +270,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 						var templ_7745c5c3_Var12 string
 						templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(row.Name)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 127, Col: 80}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 108, Col: 80}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 						if templ_7745c5c3_Err != nil {
@@ -302,7 +283,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 						var templ_7745c5c3_Var13 string
 						templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(sloKindLabel(ctx, row.Kind))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 128, Col: 43}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 109, Col: 43}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 						if templ_7745c5c3_Err != nil {
@@ -315,7 +296,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 						var templ_7745c5c3_Var14 string
 						templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(fmtPct(row.TargetPct))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 129, Col: 49}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 110, Col: 49}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 						if templ_7745c5c3_Err != nil {
@@ -333,7 +314,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 							var templ_7745c5c3_Var15 string
 							templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(fmtPct(row.AttainmentPct))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 131, Col: 54}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 112, Col: 54}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 							if templ_7745c5c3_Err != nil {
@@ -368,7 +349,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 							var templ_7745c5c3_Var18 string
 							templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(fmtPct(row.BudgetRemainingPct))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 134, Col: 44}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 115, Col: 44}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 							if templ_7745c5c3_Err != nil {
@@ -403,7 +384,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 							var templ_7745c5c3_Var21 string
 							templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(sloStatusLabel(ctx, row.Status))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 136, Col: 96}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 117, Col: 96}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 							if templ_7745c5c3_Err != nil {
@@ -421,7 +402,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 							var templ_7745c5c3_Var22 string
 							templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "slo.list.no_data_hint"))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 138, Col: 71}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 119, Col: 71}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var22)
 							if templ_7745c5c3_Err != nil {
@@ -434,7 +415,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 							var templ_7745c5c3_Var23 string
 							templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.list.no_data"))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 138, Col: 107}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 119, Col: 107}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 							if templ_7745c5c3_Err != nil {
@@ -447,7 +428,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 							var templ_7745c5c3_Var24 string
 							templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "slo.list.no_data_hint"))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 139, Col: 71}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 120, Col: 71}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var24)
 							if templ_7745c5c3_Err != nil {
@@ -460,7 +441,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 							var templ_7745c5c3_Var25 string
 							templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.list.no_data"))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 139, Col: 107}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 120, Col: 107}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 							if templ_7745c5c3_Err != nil {
@@ -473,7 +454,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 							var templ_7745c5c3_Var26 string
 							templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "slo.list.no_data_hint"))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 140, Col: 93}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 121, Col: 93}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var26)
 							if templ_7745c5c3_Err != nil {
@@ -486,7 +467,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 							var templ_7745c5c3_Var27 string
 							templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.list.no_data"))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 140, Col: 129}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 121, Col: 129}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 							if templ_7745c5c3_Err != nil {
@@ -504,7 +485,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 						var templ_7745c5c3_Var28 templ.SafeURL
 						templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(SLOsPath(projectID) + "/" + strconv.FormatInt(row.ID, 10) + "/delete"))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 143, Col: 120}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 124, Col: 120}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 						if templ_7745c5c3_Err != nil {
@@ -517,7 +498,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 						var templ_7745c5c3_Var29 string
 						templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.delete"))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 144, Col: 84}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 125, Col: 84}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 						if templ_7745c5c3_Err != nil {
@@ -562,7 +543,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var31 templ.SafeURL
 				templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(SLOsPath(projectID)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 155, Col: 63}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 136, Col: 63}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 				if templ_7745c5c3_Err != nil {
@@ -580,7 +561,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 					var templ_7745c5c3_Var32 string
 					templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinStringErrs(errMsg)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 157, Col: 50}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 138, Col: 50}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
 					if templ_7745c5c3_Err != nil {
@@ -598,7 +579,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var33 string
 				templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.form.name"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 162, Col: 38}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 143, Col: 38}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var33))
 				if templ_7745c5c3_Err != nil {
@@ -611,7 +592,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var34 string
 				templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.Get("name", ""))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 163, Col: 90}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 144, Col: 90}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var34)
 				if templ_7745c5c3_Err != nil {
@@ -634,7 +615,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var35 string
 				templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.form.kind"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 173, Col: 38}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 154, Col: 38}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
 				if templ_7745c5c3_Err != nil {
@@ -652,7 +633,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 					var templ_7745c5c3_Var36 string
 					templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.sli.availability"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 176, Col: 85}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 157, Col: 85}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
 					if templ_7745c5c3_Err != nil {
@@ -670,7 +651,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 					var templ_7745c5c3_Var37 string
 					templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.sli.availability"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 178, Col: 76}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 159, Col: 76}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
 					if templ_7745c5c3_Err != nil {
@@ -689,7 +670,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 					var templ_7745c5c3_Var38 string
 					templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.sli.latency"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 181, Col: 75}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 162, Col: 75}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 					if templ_7745c5c3_Err != nil {
@@ -707,7 +688,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 					var templ_7745c5c3_Var39 string
 					templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.sli.latency"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 183, Col: 66}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 164, Col: 66}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
 					if templ_7745c5c3_Err != nil {
@@ -726,7 +707,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 					var templ_7745c5c3_Var40 string
 					templ_7745c5c3_Var40, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.sli.uptime"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 186, Col: 73}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 167, Col: 73}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var40))
 					if templ_7745c5c3_Err != nil {
@@ -744,7 +725,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 					var templ_7745c5c3_Var41 string
 					templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.sli.uptime"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 188, Col: 64}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 169, Col: 64}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var41))
 					if templ_7745c5c3_Err != nil {
@@ -762,7 +743,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var42 string
 				templ_7745c5c3_Var42, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.form.target"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 195, Col: 40}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 176, Col: 40}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var42))
 				if templ_7745c5c3_Err != nil {
@@ -775,7 +756,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var43 string
 				templ_7745c5c3_Var43, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.Get("target", ""))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 196, Col: 111}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 177, Col: 111}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var43)
 				if templ_7745c5c3_Err != nil {
@@ -788,7 +769,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var44 string
 				templ_7745c5c3_Var44, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.form.window"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 201, Col: 40}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 182, Col: 40}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var44))
 				if templ_7745c5c3_Err != nil {
@@ -801,7 +782,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var45 string
 				templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.Get("window_days", "30"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 202, Col: 85}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 183, Col: 85}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var45)
 				if templ_7745c5c3_Err != nil {
@@ -814,7 +795,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var46 string
 				templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.form.transaction"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 207, Col: 45}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 188, Col: 45}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var46))
 				if templ_7745c5c3_Err != nil {
@@ -827,7 +808,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var47 string
 				templ_7745c5c3_Var47, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "slo.form.any"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 208, Col: 87}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 189, Col: 87}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var47)
 				if templ_7745c5c3_Err != nil {
@@ -840,7 +821,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var48 string
 				templ_7745c5c3_Var48, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.Get("transaction", ""))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 208, Col: 139}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 189, Col: 139}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var48)
 				if templ_7745c5c3_Err != nil {
@@ -853,7 +834,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var49 string
 				templ_7745c5c3_Var49, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.form.environment"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 213, Col: 45}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 194, Col: 45}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var49))
 				if templ_7745c5c3_Err != nil {
@@ -866,7 +847,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var50 string
 				templ_7745c5c3_Var50, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "slo.form.any"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 214, Col: 87}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 195, Col: 87}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var50)
 				if templ_7745c5c3_Err != nil {
@@ -879,7 +860,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var51 string
 				templ_7745c5c3_Var51, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.Get("environment", ""))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 214, Col: 139}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 195, Col: 139}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var51)
 				if templ_7745c5c3_Err != nil {
@@ -892,7 +873,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var52 string
 				templ_7745c5c3_Var52, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.form.threshold"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 219, Col: 43}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 200, Col: 43}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var52))
 				if templ_7745c5c3_Err != nil {
@@ -905,7 +886,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var53 string
 				templ_7745c5c3_Var53, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.Get("threshold_ms", ""))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 220, Col: 125}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 201, Col: 125}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var53)
 				if templ_7745c5c3_Err != nil {
@@ -918,7 +899,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var54 string
 				templ_7745c5c3_Var54, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.form.monitor"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 225, Col: 41}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 206, Col: 41}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var54))
 				if templ_7745c5c3_Err != nil {
@@ -936,7 +917,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 					var templ_7745c5c3_Var55 string
 					templ_7745c5c3_Var55, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.form.monitor_none"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 227, Col: 66}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 208, Col: 66}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var55))
 					if templ_7745c5c3_Err != nil {
@@ -954,7 +935,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 					var templ_7745c5c3_Var56 string
 					templ_7745c5c3_Var56, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.form.monitor_pick"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 231, Col: 65}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 212, Col: 65}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var56))
 					if templ_7745c5c3_Err != nil {
@@ -973,7 +954,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 							var templ_7745c5c3_Var57 string
 							templ_7745c5c3_Var57, templ_7745c5c3_Err = templ.ResolveAttributeValue(strconv.FormatInt(m.ID, 10))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 234, Col: 55}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 215, Col: 55}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var57)
 							if templ_7745c5c3_Err != nil {
@@ -986,7 +967,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 							var templ_7745c5c3_Var58 string
 							templ_7745c5c3_Var58, templ_7745c5c3_Err = templ.JoinStringErrs(m.Name)
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 234, Col: 75}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 215, Col: 75}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var58))
 							if templ_7745c5c3_Err != nil {
@@ -1004,7 +985,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 							var templ_7745c5c3_Var59 string
 							templ_7745c5c3_Var59, templ_7745c5c3_Err = templ.ResolveAttributeValue(strconv.FormatInt(m.ID, 10))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 236, Col: 55}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 217, Col: 55}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var59)
 							if templ_7745c5c3_Err != nil {
@@ -1017,7 +998,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 							var templ_7745c5c3_Var60 string
 							templ_7745c5c3_Var60, templ_7745c5c3_Err = templ.JoinStringErrs(m.Name)
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 236, Col: 66}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 217, Col: 66}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var60))
 							if templ_7745c5c3_Err != nil {
@@ -1041,7 +1022,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var61 string
 				templ_7745c5c3_Var61, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.form.burn"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 245, Col: 38}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 226, Col: 38}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var61))
 				if templ_7745c5c3_Err != nil {
@@ -1054,7 +1035,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var62 string
 				templ_7745c5c3_Var62, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.Get("burn_threshold", "14.4"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 246, Col: 124}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 227, Col: 124}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var62)
 				if templ_7745c5c3_Err != nil {
@@ -1067,7 +1048,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var63 string
 				templ_7745c5c3_Var63, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.form.burn_hint"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 248, Col: 61}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 229, Col: 61}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var63))
 				if templ_7745c5c3_Err != nil {
@@ -1080,7 +1061,7 @@ func SLOsScreen(projectID int64, rows []SLORow, monitors []SLOMonitorOption, for
 				var templ_7745c5c3_Var64 string
 				templ_7745c5c3_Var64, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "slo.form.submit"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 251, Col: 83}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/slos.templ`, Line: 232, Col: 83}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var64))
 				if templ_7745c5c3_Err != nil {

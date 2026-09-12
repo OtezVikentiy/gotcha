@@ -35,22 +35,14 @@ func TestAreaForPath(t *testing.T) {
 		{"/projects/7/escalations", "alerts"},
 		{"/projects/7/maintenance", "alerts"},
 		{"/projects/7/statuspages", "settings"},
-		// Управление организацией (участники/команды/пробы) переехало в
-		// задаче 4 в группу «Организация» области «Настройки» — область
-		// "org" упразднена (см. Subsections, case "settings").
 		{"/orgs/5/settings", "settings"},
 		{"/orgs/5/teams", "settings"},
 		{"/orgs/5/probes", "settings"},
-		// Список проектов организации и профиль пользователя ни в какую
-		// область не входят (осознанно, задача 5).
 		{"/orgs/5/projects", ""},
 		{"/profile", ""},
-		// «Организация» упразднена: /projects больше не мапится ни на
-		// какую область рейла (страница переезжает в задачах 5–7).
 		{"/projects", ""},
-		// Настройки проекта — не область рейла (в рейле ничего не
-		// подсвечивается), но сайдбар они наполняют своими пунктами:
-		// иначе там оставался бы один переключатель проекта.
+		// Настройки — не область рейла, но наполняют сайдбар: без них там был бы
+		// только переключатель проекта.
 		{"/projects/7/settings", "settings"},
 		{"/projects/7/setup", "settings"},
 		{"/docs", "docs"},
@@ -92,23 +84,13 @@ func TestBackLabelKey(t *testing.T) {
 		{"/projects/7/alerts/deliveries", "nav.alert_deliveries"},
 		{"/projects/7/slos", "nav.slo"},
 		{"/projects/7/escalations", "nav.escalations"},
-		// «Организация» упразднена: /projects не опознаётся ни одной
-		// областью, общий ключ подставляет вызывающий.
 		{"/projects", ""},
 		{"/projects/7/settings", "nav.project_settings"},
 		{"/docs/glossary", "docs.index.title"},
-		// Реревью фикс-раунда 2: /orgs/{id}/... потерял специфичные ключи,
-		// когда I2 развела AreaForPath (settings/teams/probes → "settings",
-		// projects → "") — крошка «назад» с этих страниц откатывалась на
-		// общее "" (nav.back) либо на чужое "nav.project_settings". Ключи —
-		// подраздел-специфичные, та же подпись, что и у пункта сайдбара,
-		// на который эта страница и есть (см. Subsections case "settings",
-		// группа "nav.group.org").
 		{"/orgs/5/settings", "nav.members"},
 		{"/orgs/5/teams", "nav.teams"},
 		{"/orgs/5/probes", "nav.probes"},
 		{"/orgs/5/projects", "nav.projects"},
-		// Неопознанный путь — общий ключ подставляет вызывающий, здесь "".
 		{"/setup", ""},
 		{"/whatever", ""},
 	}
@@ -213,8 +195,6 @@ func TestSubsectionsPerformance(t *testing.T) {
 	}
 }
 
-// TestSubsectionsUnknownAreaIsNil — область без обработчика (в т.ч. пустая
-// строка — до входа в первую область) не рисует сайдбар вовсе.
 func TestSubsectionsUnknownAreaIsNil(t *testing.T) {
 	s := Shell{ProjectID: 7, Area: "", Path: "/projects/7/settings"}
 	if got := Subsections(s); got != nil {
@@ -222,10 +202,6 @@ func TestSubsectionsUnknownAreaIsNil(t *testing.T) {
 	}
 }
 
-// TestSubsectionsSettingsOrgGroupGating — группа «Организация» внутри
-// «Настроек» требует одновременно резолвленный OrgID и CanManage: без OrgID
-// ссылки вели бы на /orgs/0/…, что 404-ит, участнику без CanManage они
-// 404-ят независимо от id.
 func TestSubsectionsSettingsOrgGroupGating(t *testing.T) {
 	hasOrgGroup := func(items []NavItem) bool {
 		for _, it := range items {
@@ -252,13 +228,6 @@ func TestSubsectionsSettingsOrgGroupGating(t *testing.T) {
 	}
 }
 
-// TestSubsectionsHideManagementPagesFromMembers — зритель без доступа к
-// проекту не должен видеть в навигации страницы, которые ему отдадут 404.
-//
-// Настройки проекта (CanManage) и статус-страницы (CanOperate) внутри
-// области «Настройки» — та же граница, что раньше стояла у «Организации»:
-// показывать их всем означало отправлять зрителя на страницу, которая
-// молча отдаёт 404.
 func TestSubsectionsHideManagementPagesFromMembers(t *testing.T) {
 	viewer := Shell{ProjectID: 7, OrgID: 5, Area: "settings", Path: "/projects/7/settings"}
 	got := Subsections(viewer)
@@ -297,12 +266,6 @@ func TestSubsectionsHideManagementPagesFromMembers(t *testing.T) {
 	}
 }
 
-// TestSubsectionsIssuesExportsGatedByCanOperate — «Выгрузки» (E1, задача 11)
-// висят в области issues рядом со списком проблем, но требуют CanOperate —
-// той же границы, что и хендлеры создания/скачивания/удаления заявки
-// (requireProjectOperator в internal/web/exports.go) — И ExportsEnabled:
-// на инстансе без каталога выгрузок (h.Exports == nil) пункт меню не
-// показывается вовсе, даже оператору (ревью веб-части E1, п.3).
 func TestSubsectionsIssuesExportsGatedByCanOperate(t *testing.T) {
 	base := Shell{ProjectID: 7, Area: "issues", Path: "/projects/7/issues", ExportsEnabled: true}
 
@@ -327,13 +290,6 @@ func TestSubsectionsIssuesExportsGatedByCanOperate(t *testing.T) {
 	}
 }
 
-// TestSubsectionsPerformanceProfileRegressionsGatedByFlag — K7-14: раздел
-// «Регрессии профилей» существовал (/projects/{id}/profile-regressions,
-// CanAccessProject — доступен и не-оператору), но в подразделах рейла его не
-// было — попасть в него из навигации было нельзя. Пункт гейтится ТОЛЬКО
-// ProfileRegressionsEnabled (h.ProfileRegressions != nil в web-слое) — тем же
-// приёмом, что и «Выгрузки» (TestSubsectionsIssuesExportsGatedByCanOperate),
-// но без требования CanOperate: обычному участнику проекта пункт тоже нужен.
 func TestSubsectionsPerformanceProfileRegressionsGatedByFlag(t *testing.T) {
 	base := Shell{ProjectID: 7, Area: "performance", Path: "/projects/7/performance"}
 
@@ -427,9 +383,6 @@ func TestAreas(t *testing.T) {
 	}
 }
 
-// TestAreasOrderAndTiers — новый порядок областей рейла и разбивка на
-// ярусы: рабочие области сверху, «Настройки» и «Документация» — в подвале
-// (NavArea.Footer), «Организация» из рейла упразднена.
 func TestAreasOrderAndTiers(t *testing.T) {
 	s := Shell{Projects: []Project{{ID: 7}}, ProjectID: 7, OrgID: 3, CanOperate: true, CanManage: true}
 	var got []string
@@ -456,9 +409,6 @@ func TestAreasOrderAndTiers(t *testing.T) {
 	}
 }
 
-// TestAreasIncludeOverviewFirst — «Обзор» (задача 6 nav-ia) встаёт первой
-// областью рейла с явным href (firstSubsectionHref для неё не сработал бы —
-// у неё нет подразделов) и не отдаёт подразделов вовсе.
 func TestAreasIncludeOverviewFirst(t *testing.T) {
 	s := Shell{Projects: []Project{{ID: 7}}, ProjectID: 7, OrgID: 3}
 	areas := Areas(s)
@@ -473,8 +423,6 @@ func TestAreasIncludeOverviewFirst(t *testing.T) {
 	}
 }
 
-// TestAreasHideAlertsForPlainMember — участник без CanOperate не видит
-// область «Оповещения»: все её подразделы закрыты, и иконка вела бы на 404.
 func TestAreasHideAlertsForPlainMember(t *testing.T) {
 	s := Shell{Projects: []Project{{ID: 7}}, ProjectID: 7, OrgID: 3}
 	for _, a := range Areas(s) {
@@ -484,7 +432,6 @@ func TestAreasHideAlertsForPlainMember(t *testing.T) {
 	}
 }
 
-// TestAreaForOrigin — подсветка области рейла для подраздела-источника.
 func TestAreaForOrigin(t *testing.T) {
 	cases := []struct{ origin, want string }{
 		{"web-vitals", "performance"},
@@ -501,10 +448,6 @@ func TestAreaForOrigin(t *testing.T) {
 	}
 }
 
-// TestAreasDocsPresentRegardlessOfArea — the docs area is visible to all
-// roles and must appear in Areas(shell) for any shell with projects,
-// independent of the currently active area (unlike CanManage-gated org
-// sub-links, it is never conditionally omitted).
 func TestAreasDocsPresentRegardlessOfArea(t *testing.T) {
 	s := Shell{Projects: []Project{{ID: 1, Slug: "demo"}}, ProjectID: 1, Area: "issues", Path: "/projects/1/issues"}
 	areas := Areas(s)
@@ -522,8 +465,6 @@ func TestAreasDocsPresentRegardlessOfArea(t *testing.T) {
 	}
 }
 
-// TestAreasDocsActiveOnDocsPath — the docs rail item is marked Active for
-// any /docs* path.
 func TestAreasDocsActiveOnDocsPath(t *testing.T) {
 	s := Shell{Projects: []Project{{ID: 1, Slug: "demo"}}, Area: "docs", Path: "/docs/glossary"}
 	for _, a := range Areas(s) {
@@ -533,16 +474,11 @@ func TestAreasDocsActiveOnDocsPath(t *testing.T) {
 	}
 }
 
-// TestSubsectionsDocs — Subsections for the docs area lists the doc
-// registry pages by their localized Title (H1), not by an i18n LabelKey,
-// since doc titles come from markdown content rather than the i18n
-// catalog. Active is set on the page matching the current path.
 func TestSubsectionsDocs(t *testing.T) {
 	s := Shell{Area: "docs", Locale: "ru", Path: "/docs/glossary"}
 	items := Subsections(s)
-	// Docs subsections mirror the doc registry 1:1 (each page is a subsection),
-	// so compare to the registry size rather than a hardcoded count — the
-	// registry grows as pages are added and this test must not need editing.
+	// Сравниваем с размером реестра, не с хардкодным числом — тест не должен
+	// править при росте реестра.
 	if want := len(docs.Pages(s.Locale)); len(items) != want {
 		t.Fatalf("Subsections(docs) len = %d, want %d (docs registry size)", len(items), want)
 	}
@@ -569,12 +505,6 @@ func TestSubsectionsDocs(t *testing.T) {
 	}
 }
 
-// TestAreasHideAreaWithNothingVisible — область рейла, у которой для этого
-// человека нет ни одного доступного подраздела, не показывается: иначе иконка
-// вела бы прямиком на 404 (см. Areas: href == "" → continue). С переездом
-// ленты инцидентов в «Обзор» (задача 7) «Оповещения» снова целиком требуют
-// CanOperate (см. Subsections case "alerts") — зритель эту область не видит,
-// оператор идёт по иконке на первый пункт группы «Правила».
 func TestAreasHideAreaWithNothingVisible(t *testing.T) {
 	viewerAreas := Areas(Shell{ProjectID: 7, OrgID: 5, Area: "issues", Path: "/projects/7/issues"})
 	for _, a := range viewerAreas {
@@ -600,9 +530,6 @@ func TestAreasHideAreaWithNothingVisible(t *testing.T) {
 	}
 }
 
-// TestProjectSwitchHref — смена проекта из переключателя держит текущий
-// раздел (№60): из «Транзакций» проекта 1 — в «Транзакции» проекта 2; из
-// областей вне проекта (org/docs/пусто) — на issues целевого проекта.
 func TestProjectSwitchHref(t *testing.T) {
 	shell := Shell{
 		Projects:  []Project{{ID: 1, Name: "one"}, {ID: 2, Name: "two"}},
@@ -614,16 +541,13 @@ func TestProjectSwitchHref(t *testing.T) {
 	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/performance" {
 		t.Errorf("performance → %q, want /projects/2/performance", got)
 	}
-	// hosts: Subsections области непустой при любом CanOperate (пункт
-	// «Хосты» виден всем с доступом к проекту) — переключатель может
-	// безопасно остаться в разделе хостов, а не падать в issues-фолбэк.
+	// hosts: Subsections непустой при любом CanOperate — переключатель может
+	// остаться в разделе вместо issues-фолбэка.
 	shell.Area = "hosts"
 	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/hosts" {
 		t.Errorf("hosts → %q, want /projects/2/hosts", got)
 	}
-	// logs: та же логика, что и у hosts выше — единственный подраздел
-	// открыт всем с доступом к проекту, переключатель остаётся в разделе
-	// логов вместо issues-фолбэка (задача 2, C2).
+	// logs: та же логика — единственный подраздел открыт всем с доступом к проекту.
 	shell.Area = "logs"
 	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/logs" {
 		t.Errorf("logs → %q, want /projects/2/logs", got)
@@ -641,13 +565,8 @@ func TestProjectSwitchHref(t *testing.T) {
 		t.Errorf("пустая область → %q, want overview-фолбэк", got)
 	}
 
-	// C1 (закрыт в задаче 4): CanOperate — флаг ТЕКУЩЕГО проекта, не
-	// целевого — team-членство не переносится между проектами. "alerts"
-	// целиком гейтится CanOperate (см. Subsections case "alerts"), поэтому
-	// перенос флага текущего проекта на целевой мог дать 404 у пользователя,
-	// которому CanOperate на целевом проекте не положен. Переключатель
-	// больше не пытается остаться в "alerts" для другого проекта — падает
-	// в issues-фолбэк, безопасный при любых правах на целевом проекте.
+	// CanOperate текущего проекта не переносится на целевой — alerts целиком
+	// им гейтится, поэтому переключатель падает в overview-фолбэк.
 	shell.Area = "alerts"
 	shell.CanOperate = true
 	if got := ProjectSwitchHref(shell, 2); got != "/projects/2/overview" {
@@ -655,12 +574,6 @@ func TestProjectSwitchHref(t *testing.T) {
 	}
 }
 
-// TestProjectSwitchHrefDoesNotTrustCanOperateAcrossProjects — сценарий
-// задачи 4 (обязательный пункт сверх брифа): оператор проекта A, где
-// CanOperate=true, переключается на проект B, где оператором не является.
-// Падает на старом поведении (ProjectSwitchHref возвращал
-// "/projects/2/alerts" — страницу, требующую requireProjectOperator, — не
-// проверив, держится ли CanOperate на проекте B).
 func TestProjectSwitchHrefDoesNotTrustCanOperateAcrossProjects(t *testing.T) {
 	shell := Shell{
 		Projects:   []Project{{ID: 1, Name: "A"}, {ID: 2, Name: "B"}},
@@ -669,7 +582,7 @@ func TestProjectSwitchHrefDoesNotTrustCanOperateAcrossProjects(t *testing.T) {
 		Area:       "alerts",
 		CanOperate: true, // оператор проекта A (текущего)
 	}
-	got := ProjectSwitchHref(shell, 2) // переключение на B, где оператором не является
+	got := ProjectSwitchHref(shell, 2)
 	if got == "/projects/2/alerts" {
 		t.Fatalf("ProjectSwitchHref(A→B) = %q, ведёт на страницу, требующую CanOperate целевого проекта — небезопасно", got)
 	}
@@ -678,10 +591,6 @@ func TestProjectSwitchHrefDoesNotTrustCanOperateAcrossProjects(t *testing.T) {
 	}
 }
 
-// TestGroupedSubsectionsSkipsEmptyGroups покрывает groupItems: пункты
-// собираются в группы в порядке первого появления, а группа, у которой не
-// осталось пунктов (все отфильтрованы правами выше по стеку), не оставляет
-// после себя пустой заголовок.
 func TestGroupedSubsectionsSkipsEmptyGroups(t *testing.T) {
 	items := []NavItem{
 		{LabelKey: "a", Href: "/a"},
@@ -698,19 +607,11 @@ func TestGroupedSubsectionsSkipsEmptyGroups(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("groupItems() = %#v, want %#v", got, want)
 	}
-	// Группа, все пункты которой отфильтрованы правами, не должна
-	// оставлять после себя пустой заголовок.
 	if got := groupItems(items[0:1]); len(got) != 1 || got[0].LabelKey != "" {
 		t.Fatalf("groupItems(single ungrouped) = %#v, want one headerless group", got)
 	}
 }
 
-// TestSubsectionsTargetLayout — целевая раскладка подразделов (спека §4,
-// задача 2): переезды находок детекторов в «Проблемы», три группы в
-// «Оповещениях», новая область «Настройки» с проектной и организационной
-// группами, упразднение «Организации». Дополнительные операторские кейсы
-// для metrics/hosts/uptime/settings защищают от разрастания областей,
-// которые с этой задачи больше не гейтятся ролью вовсе.
 func TestSubsectionsTargetLayout(t *testing.T) {
 	base := Shell{Projects: []Project{{ID: 7}}, ProjectID: 7, OrgID: 3}
 

@@ -17,10 +17,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// newMetricGrouper — РЕАЛЬНЫЙ incidentgroup.Grouper поверх реального
-// depsuppress.Suppressor (образец host/group_test.go, T4): интеграция
-// metric↔группы тестируется без фейков резолвера корней. Присваивается в
-// поле Evaluator.IncidentGroups структурно (duck-typing metricGroupHook).
+// РЕАЛЬНЫЙ incidentgroup.Grouper — интеграция metric↔группы тестируется без фейков резолвера корней.
 func newMetricGrouper(pool *pgxpool.Pool) *incidentgroup.Grouper {
 	return &incidentgroup.Grouper{
 		Pool:  pool,
@@ -29,7 +26,6 @@ func newMetricGrouper(pool *pgxpool.Pool) *incidentgroup.Grouper {
 	}
 }
 
-// seedGroupHost — хост проекта напрямую (пакету metric host.Store не нужен).
 func seedGroupHost(t *testing.T, pool *pgxpool.Pool, projectID int64, name string) int64 {
 	t.Helper()
 	var id int64
@@ -41,7 +37,6 @@ func seedGroupHost(t *testing.T, pool *pgxpool.Pool, projectID int64, name strin
 	return id
 }
 
-// seedGroupDepEdge — явное ребро зависимости host(parent) -> host(child) (B5).
 func seedGroupDepEdge(t *testing.T, pool *pgxpool.Pool, projectID, parentHostID, childHostID int64) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `
@@ -51,8 +46,7 @@ func seedGroupDepEdge(t *testing.T, pool *pgxpool.Pool, projectID, parentHostID,
 	}
 }
 
-// seedGroupSilentIncident — уже открытый silent-инцидент хоста, минуя
-// host-оценщик; notified управляет гейтом «информирующего корня» (Р4).
+// Уже открытый silent-инцидент хоста, минуя host-оценщик — notified управляет гейтом «информирующего корня».
 func seedGroupSilentIncident(t *testing.T, pool *pgxpool.Pool, projectID, hostID int64, notified bool) int64 {
 	t.Helper()
 	var id int64
@@ -65,8 +59,7 @@ func seedGroupSilentIncident(t *testing.T, pool *pgxpool.Pool, projectID, hostID
 	return id
 }
 
-// seedHostLabeledGauge — gauge-точка с лейблом host в attributes: её ловит
-// правило с label_key='host' (матчер идёт по attributes, не по колонке host).
+// Матчер label_key='host' идёт по attributes, не по колонке host.
 func seedHostLabeledGauge(t *testing.T, ch driver.Conn, projectID int64, name, hostName string, val float64, ago time.Duration) {
 	t.Helper()
 	if err := ch.Exec(context.Background(), `
@@ -78,7 +71,6 @@ func seedHostLabeledGauge(t *testing.T, ch driver.Conn, projectID int64, name, h
 	}
 }
 
-// readMetricGroupID — group_id metric-инцидента (nil — вне групп).
 func readMetricGroupID(t *testing.T, pool *pgxpool.Pool, incidentID int64) *int64 {
 	t.Helper()
 	var gid *int64
@@ -89,9 +81,7 @@ func readMetricGroupID(t *testing.T, pool *pgxpool.Pool, incidentID int64) *int6
 	return gid
 }
 
-// newGroupEvaluator — оценщик с реальным нотифаером поверх outbox (образец
-// TestEvaluatorOpenCloseAlertOnce): наблюдаемое «уведомление ушло/не ушло» —
-// задачи в outbox, как во всех тестах этого пакета.
+// Реальный нотифаер поверх outbox — наблюдаемое «уведомление ушло/не ушло» — задачи в outbox, как везде в пакете.
 func newGroupEvaluator(pool *pgxpool.Pool, ch driver.Conn, rules *metric.RuleService, incidents *metric.IncidentService, ob *notify.Outbox) *metric.Evaluator {
 	return &metric.Evaluator{
 		Rules: rules, Query: metric.NewQuery(ch), Incidents: incidents,
@@ -102,11 +92,8 @@ func newGroupEvaluator(pool *pgxpool.Pool, ch driver.Conn, rules *metric.RuleSer
 	}
 }
 
-// TestMetricMemberSilencedUnderInformingRoot — «metric-алерт хоста-ребёнка
-// молчит и в составе» (сценарий 1 брифа): правило label_key='host' по хосту
-// под упавшим ИНФОРМИРУЮЩИМ silent-корнем (notified_open=true) → инцидент
-// открыт, присоединён к группе корня (group_id), step0 (задача в outbox) НЕ
-// отправлен — информирует корень.
+// Правило label_key='host' по хосту под упавшим ИНФОРМИРУЮЩИМ silent-корнем (notified_open=true) —
+// инцидент открыт, присоединён к группе корня, step0 в outbox НЕ отправлен: информирует корень.
 func TestMetricMemberSilencedUnderInformingRoot(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -172,9 +159,8 @@ func TestMetricMemberSilencedUnderInformingRoot(t *testing.T) {
 	}
 }
 
-// TestMetricUnknownHostNameStaysNoisy — fail-noisy по метке: правило
-// label_key='host' на имя, которого нет в hosts проекта → AttachMetric не
-// находит узел, attach не происходит, уведомление уходит штатно.
+// Fail-noisy по метке: правило label_key='host' на неизвестное имя — AttachMetric не находит узел,
+// attach не происходит, уведомление уходит штатно.
 func TestMetricUnknownHostNameStaysNoisy(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -220,11 +206,8 @@ func TestMetricUnknownHostNameStaysNoisy(t *testing.T) {
 	}
 }
 
-// TestMetricOpenUnackedGroupGating — анти-залповый OpenUnacked (зеркало
-// host T4/3-4 на metric_incidents): член ОТКРЫТОЙ группы исключён из выборки
-// планировщика (Р5); после Resolve группы — вернулся, и его StartedAt =
-// GREATEST(started_at, resolved_at) — лесенка бывшего члена стартует от
-// момента освобождения, а не от started_at трёхчасовой давности (BLOCKER-1).
+// Анти-залповый OpenUnacked (зеркало host-теста): член ОТКРЫТОЙ группы исключён из выборки планировщика;
+// после Resolve группы — вернулся, StartedAt = GREATEST(started_at, resolved_at), не старый started_at.
 func TestMetricOpenUnackedGroupGating(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()

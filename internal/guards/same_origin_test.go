@@ -5,17 +5,9 @@ import (
 	"testing"
 )
 
-// minSameOriginBranches — нижняя граница: на момент написания в internal/web
-// 60 веток if !sameOrigin. Меньше 55 найденных — обход ослеп (сузился до
-// части файлов), а не код стал чище: ветки уходят только вместе со своими
-// ручками, десятками за раз они не исчезают.
+// ниже порога — обход ослеп (сузился до части файлов), а не ветки вычищены.
 const minSameOriginBranches = 55
 
-// TestSameOriginBranchesUseDenyCrossOrigin — каждая ветка if !sameOrigin в
-// internal/web обязана отвечать через h.denyCrossOrigin(w, r): он даёт лог,
-// метрику и страницу с объяснением разом. Голый http.Error("forbidden")
-// возвращает находку №37 — 403 на регистрации при зелёном /readyz и пустом
-// журнале; renderError мимо denyCrossOrigin теряет лог и метрику.
 func TestSameOriginBranchesUseDenyCrossOrigin(t *testing.T) {
 	tree := Load(t)
 	branches := 0
@@ -31,7 +23,6 @@ func TestSameOriginBranchesUseDenyCrossOrigin(t *testing.T) {
 				continue
 			}
 			branches++
-			// Тело ветки — от строки if до парной закрывающей скобки.
 			depth := strings.Count(line, "{") - strings.Count(line, "}")
 			var body []string
 			for j := i + 1; j < len(lines) && depth > 0; j++ {

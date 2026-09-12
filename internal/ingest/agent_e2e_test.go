@@ -13,10 +13,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// fakeAgentSample — полный Sample (все секции заполнены, включая CPU-дельту,
-// которой у Collector не бывает на первом тике — см. collect.go) для
-// e2e-проверки: агент должен эмитить ровно ту же форму данных, что и
-// коллектор hostmetrics (hostmetric.AllMetrics()).
 func fakeAgentSample() agent.Sample {
 	return agent.Sample{
 		Time:     time.Now(),
@@ -37,15 +33,6 @@ func fakeAgentSample() agent.Sample {
 	}
 }
 
-// TestAgentExportEndToEnd: agent.BuildExport+EncodeBody (T5) → gzip POST в
-// реальный Handler.otlpMetrics — тем же путём, каким на проде шлёт
-// OTel-коллектор hostmetrics (postOTLPMetrics, otlp_test.go:1492, но с
-// Content-Encoding: gzip, как реально шлёт Sender, sender.go). Приёмник
-// должен получить точки ВСЕХ метрик hostmetric.AllMetrics(), host.name —
-// промоутирован в MetricPoint.Host, а служебный gotcha.agent.version
-// (resource-атрибут агента, не datapoint-атрибут) в CH-атрибуты точек не
-// попадает — контракт §1.3 спеки: агент неотличим по форме данных от
-// коллектора hostmetrics.
 func TestAgentExportEndToEnd(t *testing.T) {
 	sink := &collectMetricSink{}
 	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindAgent}}), nil, nil, 1<<20)

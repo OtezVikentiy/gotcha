@@ -9,8 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/slo"
 )
 
-// TestSLOBudgetPct покрывает форматирование доли бюджета в проценты без
-// дробной части: полный бюджет, исчерпанный и перерасход (отрицательный).
 func TestSLOBudgetPct(t *testing.T) {
 	for _, tc := range []struct {
 		frac float64
@@ -27,10 +25,6 @@ func TestSLOBudgetPct(t *testing.T) {
 	}
 }
 
-// TestSLOBudgetBurndownMarkupNoData — окно без единого события (Total==0 в
-// каждой корзине): линия остатка не может быть посчитана НИ В ОДНОЙ точке
-// префикса, график обязан показать заглушку «нет данных», а не пустой SVG или
-// панику на делении на ноль total.
 func TestSLOBudgetBurndownMarkupNoData(t *testing.T) {
 	base := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	points := []slo.Bucket{
@@ -47,16 +41,11 @@ func TestSLOBudgetBurndownMarkupNoData(t *testing.T) {
 	if !strings.Contains(out, "<text") {
 		t.Errorf("нет текстовой заглушки «нет данных»: %s", out)
 	}
-	// Заглушка — это ранний выход: осей/сетки/hover-полос без данных быть не
-	// должно (иначе это не «нет данных», а обычный график с пустой линией).
 	if strings.Contains(out, "chart-axis") {
 		t.Errorf("оси нарисованы при отсутствии данных, ожидался ранний выход: %s", out)
 	}
 }
 
-// TestSLOBudgetBurndownMarkupNoOverspend — бюджет ни разу не уходит в минус:
-// красная зона перерасхода не должна рисоваться (иначе узкая полоска запаса
-// пугала бы зря).
 func TestSLOBudgetBurndownMarkupNoOverspend(t *testing.T) {
 	base := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	points := []slo.Bucket{
@@ -71,19 +60,14 @@ func TestSLOBudgetBurndownMarkupNoOverspend(t *testing.T) {
 	if strings.Contains(out, "slo-burndown-overspend") {
 		t.Errorf("зона перерасхода нарисована без перерасхода: %s", out)
 	}
-	// Полосы наведения — по одной на корзину (все три с данными).
 	if n := strings.Count(out, "chart-hover-band") + strings.Count(out, "<title>"); n == 0 {
 		t.Errorf("нет полос наведения: %s", out)
 	}
 }
 
-// TestSLOBudgetBurndownMarkupOverspend — накопленный остаток уходит в минус
-// (перерасход бюджета): должна нарисоваться красная зона под нулевой линией.
 func TestSLOBudgetBurndownMarkupOverspend(t *testing.T) {
 	base := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	points := []slo.Bucket{
-		// attainment всей корзины 500/1000=0.5, target 0.99 → consumed
-		// огромный, remaining сильно отрицателен.
 		{T: base, Good: 500, Total: 1000},
 		{T: base.Add(time.Hour), Good: 999, Total: 1000},
 	}
@@ -93,10 +77,6 @@ func TestSLOBudgetBurndownMarkupOverspend(t *testing.T) {
 	}
 }
 
-// TestSLOBudgetBurndownMarkupLeadingGap — до первого события накопленный
-// total==0 (пустой префикс): эта корзина обязана стать разрывом линии
-// (has=false), а не мнимым нулевым остатком, как только события начинаются —
-// линия рисуется по остальным точкам.
 func TestSLOBudgetBurndownMarkupLeadingGap(t *testing.T) {
 	base := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	points := []slo.Bucket{

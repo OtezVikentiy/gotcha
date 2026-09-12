@@ -10,9 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 )
 
-// parseLogsLink разбирает URL, построенный хелперами контекст-ссылок C3, и
-// отдаёт его query-параметры для проверки. Заодно проверяет, что путь — тот же
-// относительный /projects/{id}/logs (не абсолютный, не чужой).
 func parseLogsLink(t *testing.T, raw string, projectID int64) url.Values {
 	t.Helper()
 	u, err := url.Parse(raw)
@@ -25,9 +22,6 @@ func parseLogsLink(t *testing.T, raw string, projectID int64) url.Values {
 	return u.Query()
 }
 
-// unixWindow достаёт start/end из query и проверяет, что они заданы, парсятся
-// как unix-секунды и образуют невырожденное окно (start < end). Возвращает обе
-// границы для дополнительных проверок.
 func unixWindow(t *testing.T, q url.Values) (from, to time.Time) {
 	t.Helper()
 	s, e := q.Get("start"), q.Get("end")
@@ -48,14 +42,9 @@ func unixWindow(t *testing.T, q url.Values) (from, to time.Time) {
 	return time.Unix(si, 0).UTC(), time.Unix(ei, 0).UTC()
 }
 
-// TestLogsAroundEventWindowAlways — ключевой инвариант блокера ревью плана:
-// «Логи вокруг события» ВСЕГДА задают временное окно, в ОБЕИХ ветках (с trace_id
-// и без) — без окна /logs берёт дефолтные 24ч и отсёк бы логи события старше
-// суток.
 func TestLogsAroundEventWindowAlways(t *testing.T) {
 	ts := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 
-	// Ветка с trace_id: окно есть И trace_id добавлен поверх, environment нет.
 	q := parseLogsLink(t, logsAroundEventPath(1, "tr-abc", ts, "prod"), 1)
 	from, to := unixWindow(t, q)
 	if q.Get("trace_id") != "tr-abc" {
@@ -68,7 +57,6 @@ func TestLogsAroundEventWindowAlways(t *testing.T) {
 		t.Fatalf("окно [%v,%v] не окружает событие %v", from, to, ts)
 	}
 
-	// Ветка без trace_id: окно есть, скоуп по environment, trace_id нет.
 	q2 := parseLogsLink(t, logsAroundEventPath(1, "", ts, "prod"), 1)
 	unixWindow(t, q2)
 	if q2.Get("trace_id") != "" {
@@ -78,7 +66,6 @@ func TestLogsAroundEventWindowAlways(t *testing.T) {
 		t.Fatalf("без-trace-ветка: environment=%q, ожидался prod", q2.Get("environment"))
 	}
 
-	// Без trace_id и без environment: только окно, ничего лишнего.
 	q3 := parseLogsLink(t, logsAroundEventPath(1, "", ts, ""), 1)
 	unixWindow(t, q3)
 	if q3.Get("trace_id") != "" || q3.Get("environment") != "" {
@@ -86,20 +73,15 @@ func TestLogsAroundEventWindowAlways(t *testing.T) {
 	}
 }
 
-// TestLogsForTraceSaturatedWindow — аудит QA P1: TotalUS насыщается на ^uint32(0)
-// (~71 мин) у очень длинных трейсов; тесное окно отсекло бы хвост логов. При
-// насыщении окно обязано быть заведомо широким (>=24ч от начала), а не ~71 мин.
 func TestLogsForTraceSaturatedWindow(t *testing.T) {
 	from := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 
-	// Нормальный трейс: окно ~= длительность (+1с), несколько секунд.
 	qn := parseLogsLink(t, logsForTracePath(1, "tr", from, 5_000_000 /* 5s */), 1)
 	_, tn := unixWindow(t, qn)
 	if span := tn.Sub(from); span > time.Minute {
 		t.Fatalf("нормальный трейс: окно %v неожиданно широкое", span)
 	}
 
-	// Насыщенный TotalUS: окно должно быть >=24ч, а не ~71 мин.
 	qs := parseLogsLink(t, logsForTracePath(1, "tr", from, ^uint32(0)), 1)
 	_, ts := unixWindow(t, qs)
 	if span := ts.Sub(from); span < 24*time.Hour {
@@ -110,9 +92,6 @@ func TestLogsForTraceSaturatedWindow(t *testing.T) {
 	}
 }
 
-// TestLogsForHostPathEncoding — host→логи: значение host.name с спецсимволами
-// (точки, дефисы, двоеточия) должно корректно кодироваться в ?attr=res:host.name:…
-// и переживать разбор web.parseLogAttrFilter (режет по ПЕРВОМУ ":").
 func TestLogsForHostPathEncoding(t *testing.T) {
 	q := parseLogsLink(t, logsForHostPath(1, "web-01.dc:eu"), 1)
 	attr := q.Get("attr")
@@ -122,9 +101,6 @@ func TestLogsForHostPathEncoding(t *testing.T) {
 	}
 }
 
-// TestLogAttrChipRemoveURL — снятие attr-чипа убирает ИМЕННО целевой фильтр (по
-// Resource+Key+Value), не трогая остальные; работает и для resource-атрибута
-// (host.name из ссылки «Логи хоста»), у которого фасета в сайдбаре нет.
 func TestLogAttrChipRemoveURL(t *testing.T) {
 	f := LogsFilter{Attrs: []log.AttrFilter{
 		{Resource: true, Key: "host.name", Value: "web-01"},
@@ -138,14 +114,6 @@ func TestLogAttrChipRemoveURL(t *testing.T) {
 	}
 }
 
-// TestNewAttrFacetsExpandedKeyOutsideTop — carry-fix из ревью задачи T5
-// (задача 6, C2): раскрытый в URL ключ (?facet=<key>), найденный автокомплитом
-// (web.logsAttrKeys, задача 6), может не входить в топ-N сайдбара
-// (log.Query.AttrKeys с ограниченной выборкой). До фикса цикл NewAttrFacets
-// искал expandedKey ТОЛЬКО среди keys — если совпадения не было, посчитанные
-// для него values нигде не оказывались: клик по такому ключу из автокомплита
-// визуально ничего не раскрывал. Теперь для него добавляется синтетический
-// элемент списка с values.
 func TestNewAttrFacetsExpandedKeyOutsideTop(t *testing.T) {
 	keys := []log.FacetValue{
 		{Value: "http.method", Count: 100},
@@ -162,9 +130,6 @@ func TestNewAttrFacetsExpandedKeyOutsideTop(t *testing.T) {
 		t.Fatalf("Keys len = %d, want 3 (2 из топа + 1 синтетический): %+v", len(got.Keys), got.Keys)
 	}
 
-	// Синтетический элемент раскрытого ключа вне топа — с values и
-	// Expanded=true, иначе то же самое, что "кликнул из автокомплита —
-	// ничего не раскрылось".
 	item := got.Keys[0]
 	if item.Key != "environment.tier" {
 		t.Fatalf("первый элемент Key = %q, want %q (синтетический элемент ожидается в начале списка): %+v", item.Key, "environment.tier", got.Keys)
@@ -178,13 +143,10 @@ func TestNewAttrFacetsExpandedKeyOutsideTop(t *testing.T) {
 	if item.Values[0].Value != "prod" || item.Values[0].Count != 7 {
 		t.Errorf("Values[0] = %+v, want {prod 7 ...}", item.Values[0])
 	}
-	// Count синтетического элемента — сумма values (10), а не 0 и не
-	// придуманное число: точного счётчика AttrKeys для ключа вне выборки нет.
 	if item.Count != 10 {
 		t.Errorf("синтетический элемент Count = %d, want 10 (сумма values)", item.Count)
 	}
 
-	// Обычные ключи из топа остаются на месте, без values (не раскрыты).
 	if got.Keys[1].Key != "http.method" || got.Keys[1].Expanded {
 		t.Errorf("Keys[1] = %+v, want нераскрытый http.method", got.Keys[1])
 	}
@@ -193,9 +155,6 @@ func TestNewAttrFacetsExpandedKeyOutsideTop(t *testing.T) {
 	}
 }
 
-// TestNewAttrFacetsExpandedKeyInsideTop — обычный случай (не carry-fix):
-// раскрытый ключ найден среди keys — синтетический элемент не добавляется,
-// длина списка не меняется.
 func TestNewAttrFacetsExpandedKeyInsideTop(t *testing.T) {
 	keys := []log.FacetValue{
 		{Value: "http.method", Count: 100},
@@ -222,8 +181,6 @@ func TestNewAttrFacetsExpandedKeyInsideTop(t *testing.T) {
 	}
 }
 
-// TestNewAttrFacetsNoExpandedKey — ?facet= отсутствует: ни один элемент не
-// раскрыт, синтетический элемент не добавляется.
 func TestNewAttrFacetsNoExpandedKey(t *testing.T) {
 	keys := []log.FacetValue{{Value: "http.method", Count: 100}}
 
@@ -237,10 +194,6 @@ func TestNewAttrFacetsNoExpandedKey(t *testing.T) {
 	}
 }
 
-// TestLogsPageURLPreservesFacet — правка ревью UX Minor #1: раскрытый
-// атрибут-фасет (?facet=<key>) должен сохраняться в ссылке «показать
-// старее» — иначе раскрытая секция сайдбара схлопывалась бы при переходе на
-// следующую страницу списка.
 func TestLogsPageURLPreservesFacet(t *testing.T) {
 	got := LogsPageURL(1, LogsFilter{Facet: "http.method"}, time.UnixMilli(1000), 2)
 	if !strings.Contains(got, "facet=http.method") {
@@ -248,8 +201,6 @@ func TestLogsPageURLPreservesFacet(t *testing.T) {
 	}
 }
 
-// TestLogsPageURLNoFacetWhenEmpty — пустой Filter.Facet не добавляет
-// параметр в URL (обычная ссылка без раскрытого атрибут-фасета).
 func TestLogsPageURLNoFacetWhenEmpty(t *testing.T) {
 	got := LogsPageURL(1, LogsFilter{}, time.Time{}, 0)
 	if strings.Contains(got, "facet=") {
@@ -257,13 +208,6 @@ func TestLogsPageURLNoFacetWhenEmpty(t *testing.T) {
 	}
 }
 
-// TestLogsPageURLCarriesDefaultSuppression — находка финального ревью C3:
-// nodefault обязан пережить ЛЮБОЙ переход по ссылке, построенной из текущего
-// состояния — конкретно пагинацию «показать старее» (LogsPageURL), а не
-// только самый первый переход по ссылке «показать всё» (та собирается
-// отдельно в web.renderLogsPage, logs.go, и уже была покрыта). До фикса
-// logsPageURLValues не несла nodefault вовсе — умолчание молча возвращалось
-// на второй странице после того, как пользователь его явно отключил.
 func TestLogsPageURLCarriesDefaultSuppression(t *testing.T) {
 	f := LogsFilter{DefaultSuppressed: true}
 	got := LogsPageURL(1, f, time.UnixMilli(1000), 0)
@@ -273,10 +217,6 @@ func TestLogsPageURLCarriesDefaultSuppression(t *testing.T) {
 	}
 }
 
-// TestLogsPageURLOmitsDefaultSuppressionWhenNotSuppressed — обратная
-// сторона предыдущего теста: умолчание НЕ подавлено — nodefault в ссылке
-// появляться не должен (иначе обычная пагинация без плашки умолчания вела
-// бы себя иначе, чем прежде).
 func TestLogsPageURLOmitsDefaultSuppressionWhenNotSuppressed(t *testing.T) {
 	got := LogsPageURL(1, LogsFilter{}, time.UnixMilli(1000), 0)
 	if strings.Contains(got, "nodefault") {
@@ -284,12 +224,6 @@ func TestLogsPageURLOmitsDefaultSuppressionWhenNotSuppressed(t *testing.T) {
 	}
 }
 
-// TestLogNotChipRemoveURLCarriesDefaultSuppression — вторая часть находки
-// C3: снятие ПОСЛЕДНЕГО чипа-исключения в подавленном состоянии тоже обязано
-// сохранить nodefault — иначе на опустевшем списке условий
-// web.hasLogFilterParams снова видит «чистый URL» и умолчание молча
-// возвращается ровно там, где пользователь только что убрал последнее
-// условие своими руками.
 func TestLogNotChipRemoveURLCarriesDefaultSuppression(t *testing.T) {
 	p := log.Predicate{Field: log.FieldService, Op: log.OpNeq, Value: "worker"}
 	f := LogsFilter{DefaultSuppressed: true, Not: []log.Predicate{p}}
@@ -303,9 +237,6 @@ func TestLogNotChipRemoveURLCarriesDefaultSuppression(t *testing.T) {
 	}
 }
 
-// TestLogTracePath — правка ревью UX Important #4: trace_id лога должен
-// вести на реальную страницу трейса (/traces/{trace_id}), не на общий
-// раздел «Производительность».
 func TestLogTracePath(t *testing.T) {
 	got := logTracePath("abc123")
 	want := "/traces/abc123"
@@ -314,9 +245,6 @@ func TestLogTracePath(t *testing.T) {
 	}
 }
 
-// TestIncludeURLReplacesSingleValueField — задача 6: service и environment
-// одиночные, у них двух значений одновременно быть не может, поэтому клик
-// «оставить только это» замещает прежнее значение, а не накапливает его.
 func TestIncludeURLReplacesSingleValueField(t *testing.T) {
 	f := LogsFilter{Service: "api"}
 	got := logIncludeURL(7, f, log.Predicate{Field: log.FieldService, Op: log.OpEq, Value: "worker"})
@@ -329,9 +257,6 @@ func TestIncludeURLReplacesSingleValueField(t *testing.T) {
 	}
 }
 
-// TestIncludeURLAccumulatesSeverity — severity мультивыбираема: включение
-// нового значения добавляется к уже выбранным, не замещая их (в отличие от
-// service/environment выше).
 func TestIncludeURLAccumulatesSeverity(t *testing.T) {
 	f := LogsFilter{Severity: []string{"info"}}
 	got := logIncludeURL(7, f, log.Predicate{Field: log.FieldSeverity, Value: "error"})
@@ -342,8 +267,6 @@ func TestIncludeURLAccumulatesSeverity(t *testing.T) {
 	}
 }
 
-// TestIncludeURLAccumulatesAttr — то же самое для attr-фильтров: клик по
-// значению атрибута из строки лога не должен снимать уже активные attr.
 func TestIncludeURLAccumulatesAttr(t *testing.T) {
 	f := LogsFilter{Attrs: []log.AttrFilter{{Key: "host", Value: "a1"}}}
 	got := logIncludeURL(7, f, log.Predicate{Field: log.FieldAttr, Key: "source", Value: "nginx"})
@@ -355,10 +278,6 @@ func TestIncludeURLAccumulatesAttr(t *testing.T) {
 	}
 }
 
-// TestLogRowAttrPredicate — logRowAttrPredicate строит предикат из явных
-// полей logAttrRow (Resource/RawKey), а не разбором отображаемого Key —
-// см. её докблок и находку ревью задачи 6 (лог-атрибут, буквально названный
-// "resource.foo", не должен уйти как resource_attr).
 func TestLogRowAttrPredicate(t *testing.T) {
 	got := logRowAttrPredicate(logAttrRow{Key: "resource.host.name", RawKey: "host.name", Val: "web-1", Resource: true}, log.OpNeq)
 	want := log.Predicate{Field: log.FieldResourceAttr, Key: "host.name", Op: log.OpNeq, Value: "web-1"}
@@ -372,10 +291,6 @@ func TestLogRowAttrPredicate(t *testing.T) {
 		t.Fatalf("logRowAttrPredicate(log attr) = %+v, want %+v", got, want)
 	}
 
-	// Лог-атрибут, чей отображаемый ключ СЛУЧАЙНО совпадает с префиксом
-	// "resource." (Resource=false, RawKey сохранил ключ целиком) — не
-	// должен превратиться в resource_attr при обратном разборе строки,
-	// которого здесь больше нет.
 	got = logRowAttrPredicate(logAttrRow{Key: "resource.pool", RawKey: "resource.pool", Val: "db-1"}, log.OpNeq)
 	want = log.Predicate{Field: log.FieldAttr, Key: "resource.pool", Op: log.OpNeq, Value: "db-1"}
 	if got != want {

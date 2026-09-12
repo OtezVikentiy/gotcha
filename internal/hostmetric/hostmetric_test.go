@@ -2,9 +2,6 @@ package hostmetric
 
 import "testing"
 
-// AllMetrics — канон эмиссии агента; потребители (hostcharts/evaluator)
-// используют те же константы по именам. Тест фиксирует состав и отсутствие
-// дублей: выпадение имени из AllMetrics молча сломало бы паритет агента.
 func TestAllMetricsComplete(t *testing.T) {
 	want := []string{
 		CPUUtilization, CPULogicalCount, MemoryUtilization,

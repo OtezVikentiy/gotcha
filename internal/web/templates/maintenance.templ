@@ -18,10 +18,8 @@ func maintenanceDeletePath(projectID int64) string {
 	return maintenancePath(projectID) + "/delete"
 }
 
-// EditWindowModalID — якорь модалки правки окна обслуживания. Одна модалка на
-// строку таблицы: они построены на CSS :target, а якорь обязан быть уникальным.
-// Экспортирована, чтобы обработчик мог сказать, какую именно открыть заново
-// после ошибки валидации.
+// Построена на CSS :target — якорь обязан быть уникальным на строку.
+// Экспортирована, чтобы обработчик мог переоткрыть нужную модалку после ошибки валидации.
 func EditWindowModalID(windowID int64) string {
 	return "edit-window-" + strconv.FormatInt(windowID, 10)
 }
@@ -30,11 +28,7 @@ func maintenanceUpdatePath(projectID int64) string {
 	return maintenancePath(projectID) + "/update"
 }
 
-// windowFieldDefaults — значения полей формы для уже сохранённого окна.
-//
-// Форма одна на создание и на правку, а значения полей у них берутся из разных
-// мест: у создания — пустые, у правки — из окна. Возвращаем плоскую карту тех
-// же имён, что и у FormState, чтобы фрагмент полей не знал, какой он из двух.
+// Общая карта для создания/правки (как FormState) — фрагмент полей не знает, какой он из двух.
 func windowFieldDefaults(w uptime.Window) FormState {
 	f := FormState{"name": w.Name, "kind": "oneoff", "timezone": w.Timezone}
 	if w.Weekly {
@@ -43,8 +37,7 @@ func windowFieldDefaults(w uptime.Window) FormState {
 		f["start_time"] = w.StartTime
 		f["end_time"] = w.EndTime
 	} else {
-		// datetime-local понимает только этот формат и только местное время —
-		// то же, в котором окно и было задано, поэтому переводим в его пояс.
+		// datetime-local понимает только этот формат и местное время — переводим в пояс окна.
 		loc, err := time.LoadLocation(w.Timezone)
 		if err != nil {
 			loc = time.UTC
@@ -55,15 +48,13 @@ func windowFieldDefaults(w uptime.Window) FormState {
 		if w.EndsAt != nil {
 			f["ends_at"] = w.EndsAt.In(loc).Format("2006-01-02T15:04")
 		} else {
-			// Бессрочное окно (EndsAt == nil) — чекбокс «без даты окончания»
-			// предотмечен при открытии формы правки, иначе сохранение без
-			// изменений тут же упёрлось бы в oneOffEndRequired.
+			// Чекбокс «без даты окончания» предотмечен для бессрочного окна — иначе сохранение без
+			// правок тут же упёрлось бы в oneOffEndRequired.
 			f["indefinite"] = "1"
 		}
 	}
 	if !knownTimezone(w.Timezone) {
-		// Пояса нет в фиксированном списке — select переключается на «Другой»
-		// (пустое значение), а сам пояс уезжает в соседнее свободное поле.
+		// Пояс не из списка — select показывает «Другой», сам пояс уезжает в соседнее свободное поле.
 		f["timezone"] = ""
 		f["timezone_custom"] = w.Timezone
 	}
@@ -79,10 +70,7 @@ func knownTimezone(tz string) bool {
 	return false
 }
 
-// windowFormValues — какие значения показывать в полях: введённые человеком,
-// если ошиблась именно эта форма, иначе значения самого окна (или пустые у
-// формы создания). Модалок правки на странице столько же, сколько окон, а
-// состояние формы одно — без этой развилки введённое попало бы во все сразу.
+// Модалок правки — по одной на окно, а FormState одна: без развилки введённое попало бы во все.
 func windowFormValues(form FormState, open bool, defaults FormState) FormState {
 	if open {
 		return form
@@ -90,13 +78,9 @@ func windowFormValues(form FormState, open bool, defaults FormState) FormState {
 	return defaults
 }
 
-// maintenanceTimezones — фиксированный список TZ из спеки задачи; "Другой"
-// (пустое значение select'а) переключает форму на соседнее свободное
-// IANA-поле, см. web/maintenance.go:maintenanceTimezone.
 var maintenanceTimezones = []string{"UTC", "Europe/Moscow", "Europe/Berlin", "Asia/Yekaterinburg"}
 
-// weekdayLabelKeys — i18n-ключи дней недели, индекс совпадает со значением
-// select'а weekday (0 = воскресенье, как в БД/уже сохранённых окнах).
+// Индекс совпадает со значением select'а weekday (0 = воскресенье, как в БД).
 var weekdayLabelKeys = [7]string{
 	"uptime.weekday.0", "uptime.weekday.1", "uptime.weekday.2", "uptime.weekday.3",
 	"uptime.weekday.4", "uptime.weekday.5", "uptime.weekday.6",
@@ -123,14 +107,10 @@ func windowScheduleText(ctx context.Context, w uptime.Window) string {
 	if w.Weekly {
 		return i18n.T(ctx, weekdayLabelKey(w.Weekday)) + " " + w.StartTime + "–" + w.EndTime + " (" + w.Timezone + ")"
 	}
-	// Время показывается В ПОЯСЕ ОКНА. Раньше здесь стоял RFC3339 от значения
-	// в UTC, а рядом подписывался пояс окна: «2026-07-31T00:00:00Z
-	// (Europe/Moscow)» — число одного пояса под именем другого. Соседняя
-	// функция этого же файла переводила время честно.
+	// Время показывается В ПОЯСЕ ОКНА, не UTC: RFC3339 от UTC-значения с подписанным поясом окна
+	// печатал бы число одного пояса под именем другого.
 	loc := humanize.LocationOrUTC(w.Timezone)
-	// EndsAt == nil — не «неизвестно», а «бессрочно» (validateWindow требует
-	// StartsAt всегда, так что "?" у начала — чисто defensive и на практике
-	// у сохранённых окон не встречается).
+	// EndsAt == nil — «бессрочно», не «неизвестно» (validateWindow требует StartsAt всегда).
 	starts, ends := "?", i18n.T(ctx, "uptime.maintenance.indefinite")
 	if w.StartsAt != nil {
 		starts = humanize.Time(ctx, *w.StartsAt, loc)
@@ -175,7 +155,6 @@ templ windowRow(projectID int64, w uptime.Window, form FormState, errMsg string)
 	</tr>
 }
 
-// windowEditModal — правка окна обслуживания теми же полями, что и создание.
 templ windowEditModal(projectID int64, w uptime.Window, form FormState, errMsg string) {
 	{{ open := form.Opens(EditWindowModalID(w.ID)) }}
 	{{ errID := "" }}
@@ -184,8 +163,7 @@ templ windowEditModal(projectID int64, w uptime.Window, form FormState, errMsg s
 	}
 	@createModalOpen(EditWindowModalID(w.ID), "uptime.maintenance.edit.title", false, open) {
 		<form method="post" action={ templ.URL(maintenanceUpdatePath(projectID)) } class="maintenance-form">
-			// Без role="alert": фокус в модалку переносит modal.js (№80),
-			// ошибка привязана к полю имени (maintenanceFields) через errID.
+			// Без role="alert": фокус переносит modal.js, ошибка привязана к полю через errID.
 			if errID != "" {
 				<p class="error" id={ errID }>{ errMsg }</p>
 			}
@@ -195,24 +173,8 @@ templ windowEditModal(projectID int64, w uptime.Window, form FormState, errMsg s
 	}
 }
 
-// maintenanceFields — поля окна обслуживания. Общие для создания и правки:
-// формы отличаются только адресом, идентификатором окна и подписью кнопки, а
-// восемь полей с их взаимными зависимостями (тип окна прячет половину, «Другой»
-// пояс открывает свободное поле) незачем держать в двух экземплярах — они
-// разъедутся при первой же правке.
-//
-// values — что показывать в полях: введённое человеком после ошибки либо
-// значения самого окна; см. windowFormValues.
-//
-// errID — id блока ошибки валидации в вызывающей модалке (пустой, если
-// ошибки нет): первое текстовое поле получает aria-invalid/aria-describedby,
-// чтобы скринридер связал сообщение с полем (№80).
-//
-// idPrefix — модалка создания и модалка правки каждого окна рендерят этот
-// фрагмент на одной странице ("new-maintenance-window" / EditWindowModalID),
-// поэтому статичные id полей (сейчас — подсказки под ends_at) собираются из
-// него, а не зашиты в разметке: иначе на странице с несколькими окнами id
-// задвоились бы.
+// Общий для создания и правки — 8 полей с зависимостями иначе разъехались бы в двух копиях.
+// idPrefix обязателен: несколько модалок (одна на окно) рендерят фрагмент на одной странице.
 templ maintenanceFields(values FormState, submitKey string, errID string, idPrefix string) {
 	<div class="field">
 		<label>
@@ -231,9 +193,7 @@ templ maintenanceFields(values FormState, submitKey string, errID string, idPref
 		</label>
 	</div>
 	<fieldset class="field">
-		// fieldset/legend, а не span: без группы скринридер читает «Разовое» и
-		// «Еженедельное» как одиночные radio без общего вопроса (№79,
-		// WCAG 1.3.1). Визуально ничего не меняется — рамка снята в app.css.
+		// fieldset/legend, не span: без группы скринридер читает radio как одиночные без общего вопроса.
 		<legend class="field-label">{ i18n.T(ctx, "uptime.maintenance.field.kind") }</legend>
 		<div class="segmented">
 			<label>
@@ -254,18 +214,10 @@ templ maintenanceFields(values FormState, submitKey string, errID string, idPref
 			</label>
 		</div>
 	</fieldset>
-	// Показывается только выбранный блок: тип окна — «либо-либо», хендлер
-	// берёт поля только выбранной ветки (см. maintenance.go), поэтому второй
-	// блок при активном первом только сбивал бы с толку. Скрытие — чистый CSS
-	// через :has() по radio, без JS (см. .maintenance-form в app.css).
+	// Показывается только выбранный тип окна — переключение чистым CSS через :has() по radio, без JS.
 	<div class="mw-oneoff">
-		// Чекбокс явного выбора «бессрочно» стоит ПЕРЕД полем конца: пустой
-		// ends_at раньше молча значил то же самое (T2 смягчил validateWindow),
-		// а забытая дата тихо глушила весь проект навсегда вместо ошибки —
-		// см. oneOffEndRequired в web/maintenance.go. Предупреждение о
-		// последствии бессрочного окна для SLO живёт прямо под чекбоксом
-		// (aria-describedby на нём же), а не постоянным жёлтым баннером под
-		// ends_at для ЛЮБОГО разового окна.
+	// Чекбокс «бессрочно» — перед полем даты: раньше пустой ends_at молча значил то же самое, и
+	// забытая дата тихо глушила весь проект навсегда вместо ошибки (см. oneOffEndRequired).
 		<div class="checkbox-field">
 			<label class="checkbox-inline">
 				if values.Checked("indefinite", false) {
@@ -334,9 +286,7 @@ templ maintenanceFields(values FormState, submitKey string, errID string, idPref
 				</select>
 			</label>
 		</div>
-		// Поле своего IANA-пояса нужно только при выборе «Другой» (пустое value
-		// в select). Показывается через CSS :has() по выбранной option, без JS
-		// (см. .maintenance-form в app.css).
+		// Поле своего пояса нужно только при «Другой» — показывается через CSS :has(), без JS.
 		<div class="field mw-custom-tz">
 			<label>
 				{ i18n.T(ctx, "uptime.maintenance.field.timezone_custom") }
@@ -347,8 +297,6 @@ templ maintenanceFields(values FormState, submitKey string, errID string, idPref
 	<button type="submit" class="btn btn-primary">{ i18n.T(ctx, submitKey) }</button>
 }
 
-// Maintenance — GET/POST /projects/{id}/maintenance: список окон
-// обслуживания проекта + форма создания (разового или еженедельного).
 // Доступ только owner/admin организации проекта (requireProjectRole).
 templ Maintenance(projectID int64, windows []uptime.Window, form FormState, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "nav.maintenance"), userEmail) {
@@ -391,8 +339,7 @@ templ Maintenance(projectID int64, windows []uptime.Window, form FormState, errM
 			}
 			@createModalOpen("new-maintenance-window", "uptime.maintenance.new_title", false, form.Opens("new-maintenance-window")) {
 			<form method="post" action={ templ.URL(maintenancePath(projectID)) } class="maintenance-form">
-				// Без role="alert": фокус в модалку переносит modal.js (№80),
-				// ошибка привязана к полю имени (maintenanceFields) через errID.
+				// Без role="alert": фокус переносит modal.js, ошибка привязана к полю через errID.
 				if createErrID != "" {
 					<p class="error" id={ createErrID }>{ errMsg }</p>
 				}

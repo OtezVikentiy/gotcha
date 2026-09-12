@@ -16,14 +16,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestEvaluatorLifecycle прогоняет полный жизненный цикл регрессии через
-// tick оценщика на живых PG+CH: стабильная база ~800 мс за неделю, свежий скачок
-// до 1200 мс → открытие инцидента ровно один раз и ровно одна задача в outbox
-// (notified_open); повторный tick при той же нагрузке → без нового алерта (Bump);
-// свежее окно вернулось к ~800 → закрытие и ровно одна задача close
-// (notified_close). Плюс проверки: enabled=false не оценивается; топ-K отсекает
-// низкотрафичную цель; web-vital открывается по своей ветке. Внутренний тест
-// (package trace) — чтобы звать неэкспортированный tick напрямую.
+// Внутренний тест (package trace) — чтобы звать неэкспортированный tick напрямую.
 func TestEvaluatorLifecycle(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	conn := testenv.MigratedCH(t)
@@ -46,7 +39,6 @@ func TestEvaluatorLifecycle(t *testing.T) {
 		BaselineDays: 7,
 	}
 
-	// --- projMain: полный цикл open → re-tick → resolve --------------------
 	pid := createEvalProject(t, pool, "eval-main")
 	if _, err := asvc.CreateChannel(ctx, alert.Channel{
 		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
@@ -68,7 +60,6 @@ func TestEvaluatorLifecycle(t *testing.T) {
 		t.Fatalf("seed phase A close: %v", err)
 	}
 
-	// Tick 1: открытие инцидента + одна задача open.
 	ev.tick(ctx)
 	if got := countIncidents(t, ctx, pool, pid); got != 1 {
 		t.Fatalf("after open tick: incidents = %d, want 1", got)
@@ -81,7 +72,6 @@ func TestEvaluatorLifecycle(t *testing.T) {
 		t.Fatalf("after open tick: outbox rows = %d, want 1", got)
 	}
 
-	// Tick 2: та же нагрузка → без нового инцидента и без нового алерта (Bump).
 	ev.tick(ctx)
 	if got := countIncidents(t, ctx, pool, pid); got != 1 {
 		t.Fatalf("after re-tick: incidents = %d, want still 1", got)
@@ -100,7 +90,6 @@ func TestEvaluatorLifecycle(t *testing.T) {
 		t.Fatalf("seed recovery close: %v", err)
 	}
 
-	// Tick 3: закрытие инцидента + одна задача close.
 	ev.tick(ctx)
 	status, no, nc = incidentState(t, ctx, pool, pid, target, "duration")
 	if status != "resolved" || !no || !nc {
@@ -110,7 +99,6 @@ func TestEvaluatorLifecycle(t *testing.T) {
 		t.Fatalf("after resolve tick: outbox rows = %d, want 2 (open + close)", got)
 	}
 
-	// --- web-vital: открытие по ветке webvital_p75 -------------------------
 	pidV := createEvalProject(t, pool, "eval-vital")
 	const vpage = "GET /vp"
 	wv := NewSpanWriter(conn)
@@ -137,7 +125,6 @@ func TestEvaluatorLifecycle(t *testing.T) {
 		t.Fatalf("vital target_kind = %q, want webvital_p75", kind)
 	}
 
-	// --- enabled=false: проект не оценивается ------------------------------
 	pidD := createEvalProject(t, pool, "eval-disabled")
 	setRegConfig(t, ctx, pool, pidD, `{"enabled":false}`)
 	const dtarget = "GET /disabled"
@@ -155,7 +142,6 @@ func TestEvaluatorLifecycle(t *testing.T) {
 		t.Fatalf("disabled project: incidents = %d, want 0 (not evaluated)", got)
 	}
 
-	// --- топ-K: низкотрафичная цель отсекается -----------------------------
 	pidK := createEvalProject(t, pool, "eval-topk")
 	const hiTarget = "GET /hi" // высокий трафик, стабильный
 	const loTarget = "GET /lo" // низкий трафик, но со скачком
@@ -170,8 +156,6 @@ func TestEvaluatorLifecycle(t *testing.T) {
 	if err := wk.Close(ctx); err != nil {
 		t.Fatalf("seed topk close: %v", err)
 	}
-	// TopK=1: TopEndpointsByTraffic вернёт только самый нагруженный (hi, 300 >
-	// 120), низкотрафичный lo даже не оценивается.
 	evK := &Evaluator{
 		Pool: pool, Query: NewQuery(conn), Regressions: NewRegressionService(pool),
 		Notifier: notifier, TopK: 1, BaselineDays: 7,
@@ -182,22 +166,8 @@ func TestEvaluatorLifecycle(t *testing.T) {
 	}
 }
 
-// TestEvaluatorSeasonalOpensAndFallback проверяет сезонный режим оценщика на
-// живых PG+CH. Проект с cfg.SeasonalEnabled=true оценивается по сезонному base
-// (то же окно того же дня недели за прошлые недели), а не по скользящему:
-//
-//   - «GET /seasonal» имеет сезонный слот ~200мс за 3 прошлые недели (в окне
-//     [now−60м, now), сдвинутом на 7/14/21 сут) и свежий скачок ~400мс →
-//     открывается по СЕЗОННОМУ коридору (400 > 200×1.25 и > 200+floor). У этой
-//     цели НЕТ дневной истории внутри скользящего окна [now−7д, now) (слоты
-//     лежат ≥7 сут назад), поэтому при скользящем base она бы не открылась —
-//     открытие доказывает, что взят именно сезонный base (baseline_value ≈ 200).
-//   - «GET /nohist» сезонной истории не имеет (слот < min_samples) → fallback на
-//     скользящий: дневная база ~200мс за 6 прошлых суток + свежий скачок ~400мс →
-//     открывается по скользящему коридору, без паники.
-//
-// Внутренний тест (package trace) — чтобы звать evalProject с управляемым now
-// (сезонный якорь должен быть детерминированным, а не time.Now в tick).
+// «GET /seasonal» не имеет дневной истории в скользящем окне — открытие доказывает, что взят
+// именно сезонный base. «GET /nohist» сезонной истории не имеет вовсе и идёт через fallback.
 func TestEvaluatorSeasonalOpensAndFallback(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	conn := testenv.MigratedCH(t)
@@ -274,25 +244,8 @@ func TestEvaluatorSeasonalOpensAndFallback(t *testing.T) {
 	}
 }
 
-// TestEvaluatorSeasonalVitalPartialFallback покрывает vital-ветку сезонного
-// оценщика e2e (SeasonalBaselineVitalP75s + пер-ключевой merge fallback), которую
-// TestEvaluatorSeasonalOpensAndFallback не исполняет (там только эндпойнты). Самое
-// нетривиальное — merge «переопределить только недобравшие ключи (страница,
-// метрика), набравшие оставить сезонными» — до этого теста e2e не проверялось.
-//
-// Одна страница, две метрики с разной судьбой:
-//   - lcp: сезонный слот ~200 за 3 недели (в окне [now−60м, now), сдвинутом на
-//     7/14/21 сут) + свежий скачок 600 → открывается по СЕЗОННОМУ коридору
-//     (600 > 200×1.25 и > 200+floorLCP(200)); baseline_value ≈ 200. Слоты лежат
-//     ≥7 сут назад — скользящей истории у lcp нет, при скользящем base не открылся бы.
-//   - inp: сезонной истории НЕТ (слот < min_samples) → страница попадает в добор,
-//     но переопределяется ТОЛЬКО ключ inp: дневная база ~150 за 6 суток внутри
-//     скользящего окна + свежий скачок 500 → открывается по СКОЛЬЗЯЩЕМУ коридору
-//     (500 > 150×1.25 и > 150+floorINP(50)); baseline_value ≈ 150.
-//
-// Совпадение ОБЕИХ баз (lcp≈200 сезонный, inp≈150 скользящий) на одной странице
-// доказывает частичный merge: затри он набравший ключ или не добери недобравший —
-// одна из баз оказалась бы не той или инцидент не открылся.
+// Одна страница, две метрики: lcp набирает сезонный слот, inp — нет и добирается скользящим.
+// Совпадение обеих баз на одной странице доказывает merge только недобравшего ключа.
 func TestEvaluatorSeasonalVitalPartialFallback(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	conn := testenv.MigratedCH(t)
@@ -361,18 +314,13 @@ func TestEvaluatorSeasonalVitalPartialFallback(t *testing.T) {
 	}
 }
 
-// mockMaint — trace.MaintenanceChecker для тестов: func-обёртка вместо
-// полноценного uptime.Service (интерфейс здесь в один метод — реальный сервис
-// с окнами обслуживания и своей БД тестам этого пакета не нужен). Калька
-// host.mockMaint (Task 3).
+// func-обёртка вместо полноценного uptime.Service — тестам этого пакета своя БД не нужна.
 type mockMaint func(ctx context.Context, projectID int64, at time.Time) (bool, error)
 
 func (m mockMaint) InMaintenance(ctx context.Context, projectID int64, at time.Time) (bool, error) {
 	return m(ctx, projectID, at)
 }
 
-// regressionInMaintenance читает in_maintenance инцидента регрессии по
-// (target, metric) — что записал Evaluator.Regressions.Open в момент открытия.
 func regressionInMaintenance(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid int64, target, metric string) bool {
 	t.Helper()
 	var v bool
@@ -384,13 +332,8 @@ func regressionInMaintenance(t *testing.T, ctx context.Context, pool *pgxpool.Po
 	return v
 }
 
-// TestEvaluatorMaintenanceSuppressesRegressionNotify — B3 Task 5, Путь A:
-// открытие регрессии в окне обслуживания (Maint→true) пишет инцидент с
-// in_maintenance=true, но НЕ уведомляет; закрытие того же инцидента (ещё
-// внутри окна) тоже не уведомляет. Зеркало
-// host.TestEvaluatorMaintenanceSuppressesThresholdNotify (Task 3), но по пути
-// регрессий perf: open/close идут через один evalTarget, а не через
-// applyDecision.
+// Открытие регрессии в окне обслуживания пишет инцидент с in_maintenance=true, но НЕ
+// уведомляет; закрытие того же инцидента (ещё внутри окна) тоже не уведомляет.
 func TestEvaluatorMaintenanceSuppressesRegressionNotify(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	conn := testenv.MigratedCH(t)
@@ -409,10 +352,8 @@ func TestEvaluatorMaintenanceSuppressesRegressionNotify(t *testing.T) {
 	}
 
 	pid := createEvalProject(t, pool, "eval-maint-open")
-	// Канал ОБЯЗАТЕЛЕН: без него Notify не пишет outbox независимо от гейта
-	// (Notifier.Notify: "проект без включённых каналов — задач не будет"), и
-	// проверка outboxCount()==0 ниже доказывала бы только отсутствие канала, а
-	// не работу гейта maintenance.
+	// Канал ОБЯЗАТЕЛЕН: без него outboxCount()==0 ниже доказывал бы только отсутствие
+	// канала, а не работу гейта maintenance.
 	if _, err := asvc.CreateChannel(ctx, alert.Channel{
 		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
 	}); err != nil {
@@ -443,9 +384,8 @@ func TestEvaluatorMaintenanceSuppressesRegressionNotify(t *testing.T) {
 		t.Errorf("outbox rows after open tick = %d, want 0 (suppressed by maintenance)", got)
 	}
 
-	// Восстановление: заливаем много замеров по 800 мс в свежее окно, чтобы p95
-	// окна опустился под recovery-порог. Окно обслуживания всё ещё активно
-	// (mockMaint не менялся) — закрытие тоже не должно уведомлять.
+	// Окно обслуживания всё ещё активно (mockMaint не менялся) — закрытие тоже не
+	// должно уведомлять.
 	now2 := time.Now().UTC()
 	w2 := NewSpanWriter(conn)
 	go w2.Run()
@@ -464,10 +404,7 @@ func TestEvaluatorMaintenanceSuppressesRegressionNotify(t *testing.T) {
 	}
 }
 
-// TestEvaluatorMaintenanceFalseStillNotifies — Maint заполнен (не nil), но вне
-// окна (InMaintenance→false): поведение обычное, уведомление уходит. Отличает
-// «MaintenanceChecker сконфигурирован и говорит false» от «MaintenanceChecker
-// ==nil» (последнее уже покрыто TestEvaluatorLifecycle back-compat'ом).
+// Maint заполнен (не nil), но вне окна: поведение обычное, уведомление уходит.
 func TestEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	conn := testenv.MigratedCH(t)
@@ -517,12 +454,8 @@ func TestEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 	}
 }
 
-// TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds — дискриминирует
-// close-гейт «по сохранённому флагу» (!open.InMaintenance) от ошибочного «по
-// текущему окну» (!e.inMaintenance(now)): открываем регрессию В окне, затем
-// окно ЗАКАНЧИВАЕТСЯ (mock→false) — close всё равно должен быть подавлен, т.к.
-// читается сохранённый флаг инцидента. Зеркало
-// host.TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds.
+// Открываем регрессию В окне, окно ЗАКАНЧИВАЕТСЯ — close всё равно подавлен: гейт читает
+// сохранённый флаг инцидента, а не текущее состояние окна.
 func TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	conn := testenv.MigratedCH(t)
@@ -594,8 +527,6 @@ func TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.T) 
 	}
 }
 
-// regConfigRaw читает сырой perf_regression_config проекта — чтобы тест разобрал
-// его тем же RegressionConfigFromJSON, что и оценщик в проде.
 func regConfigRaw(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid int64) []byte {
 	t.Helper()
 	var raw []byte
@@ -606,8 +537,7 @@ func regConfigRaw(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid int
 	return raw
 }
 
-// addEndpointTx добавляет n одинаковых http.server-транзакций (все durMs мс) с
-// уникальными id — так перцентиль окна равен ровно durMs.
+// Уникальные id, так перцентиль окна равен ровно durMs.
 func addEndpointTx(w *SpanWriter, pid int64, name string, at time.Time, durMs, n int, prefix string) {
 	for i := 0; i < n; i++ {
 		w.Add(pid, pid, Transaction{
@@ -623,9 +553,7 @@ func addEndpointTx(w *SpanWriter, pid int64, name string, at time.Time, durMs, n
 	}
 }
 
-// addVitalTx добавляет n одинаковых pageload-транзакций с фиксированным lcp
-// (мс), длительность самой транзакции постоянна (1 с) — чтобы её эндпойнтный
-// p95 не дрейфовал и не открыл лишний duration-инцидент.
+// Длительность транзакции постоянна (1с), чтобы её p95 не открыл лишний duration-инцидент.
 func addVitalTx(w *SpanWriter, pid int64, name string, at time.Time, lcp float64, n int, prefix string) {
 	for i := 0; i < n; i++ {
 		w.Add(pid, pid, Transaction{
@@ -642,9 +570,7 @@ func addVitalTx(w *SpanWriter, pid int64, name string, at time.Time, lcp float64
 	}
 }
 
-// addVitalMetricTx добавляет n pageload-транзакций страницы name с фиксированным
-// значением одной web-vital-метрики; длительность транзакции постоянна (1 с),
-// чтобы её эндпойнтный p95 не дрейфовал и не открыл лишний duration-инцидент.
+// Длительность транзакции постоянна (1с), чтобы её p95 не открыл лишний duration-инцидент.
 func addVitalMetricTx(w *SpanWriter, pid int64, name string, at time.Time, metric string, val float64, n int, prefix string) {
 	for i := 0; i < n; i++ {
 		w.Add(pid, pid, Transaction{
@@ -661,7 +587,6 @@ func addVitalMetricTx(w *SpanWriter, pid int64, name string, at time.Time, metri
 	}
 }
 
-// vitalBaseline читает baseline_value инцидента vital-метрики (страница, метрика).
 func vitalBaseline(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid int64, target, metric string) float64 {
 	t.Helper()
 	var v float64
@@ -673,8 +598,7 @@ func vitalBaseline(t *testing.T, ctx context.Context, pool *pgxpool.Pool, pid in
 	return v
 }
 
-// createEvalProject заводит проект прямыми вставками (пакет trace не зависит от
-// org), возвращает project_id. Конфиг регрессий — дефолтный '{}' (enabled=true).
+// Прямые вставки — пакет trace не зависит от org. Конфиг регрессий — дефолтный '{}'.
 func createEvalProject(t *testing.T, pool *pgxpool.Pool, slug string) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -733,14 +657,8 @@ func outboxCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool) int {
 	return c
 }
 
-// countingRegressions оборачивает настоящий RegressionService, считая заходы
-// в PostgreSQL за снимком открытых регрессий — то единственное, что интересует
-// находку №43. Обёртка, а не полностью in-memory подделка: это позволяет
-// прогнать реальный evalProject через настоящую БД (тот же стенд, что и у
-// TestEvaluatorLifecycle) и при этом точно, не по логам, посчитать число
-// обращений — способ посчитать запросы взят из соседнего fakeCHConn
-// (writer_unit_test.go): там тоже считающая обёртка над интерфейсом, а не
-// разбор журнала.
+// Обёртка, а не in-memory подделка: позволяет прогнать реальный evalProject через
+// настоящую БД и точно, не по логам, посчитать число обращений за снимком.
 type countingRegressions struct {
 	*RegressionService
 	reads atomic.Int64
@@ -751,22 +669,8 @@ func (c *countingRegressions) OpenForProject(ctx context.Context, projectID int6
 	return c.RegressionService.OpenForProject(ctx, projectID)
 }
 
-// TestEvaluatorReadsOpenRegressionsOnce: решение по каждой цели начиналось с
-// отдельного запроса в PostgreSQL. При полусотне целей на проект это двести
-// round-trip'ов на проект за тик, последовательно, в одной горутине (находка
-// №43). Три цели здесь — не полусотня, но принцип виден: число обращений не
-// должно расти вместе с числом целей.
-//
-// Раунд правок 1 (ревью): чтение снимка стоит ДО циклов по целям и
-// безусловно — «один запрос» было бы верно даже при НУЛЕ обработанных целей
-// (например, если правка сломает подбор целей и тик перестанет их видеть
-// вовсе). Поэтому одного `reads == 1` недостаточно: тест обязан НЕЗАВИСИМО
-// от этого счётчика доказать, что целей было заведомо больше одной. Для
-// этого все три цели дают настоящий скачок (как в TestEvaluatorLifecycle) —
-// после тика в perf_regressions обязано появиться РОВНО len(targets) строк,
-// и это проверяется прямым запросом к базе (countIncidents), а не через
-// countingRegressions: два разных источника истины для двух разных
-// утверждений, ни один не выводится из другого.
+// reads == 1 само по себе не доказывает, что целей было больше одной (тот же результат
+// дал бы и тик без единой цели) — независимая проверка через countIncidents закрывает это.
 func TestEvaluatorReadsOpenRegressionsOnce(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	conn := testenv.MigratedCH(t)
@@ -788,9 +692,7 @@ func TestEvaluatorReadsOpenRegressionsOnce(t *testing.T) {
 		for d := 1; d <= 6; d++ {
 			addEndpointTx(w, pid, target, now.Add(-time.Duration(d)*24*time.Hour), 800, 20, fmt.Sprintf("%s-base-%d", target, d))
 		}
-		// Настоящий скачок в свежем окне — не стабильная нагрузка: нужен
-		// независимый от countingRegressions сигнал, что цель дошла до
-		// конца обработки, а не просто была прочитана из CH и отброшена.
+		// Настоящий скачок, не стабильная нагрузка: сигнал, что цель дошла до конца обработки.
 		addEndpointTx(w, pid, target, now.Add(-2*time.Minute), 1200, 120, target+"-spike")
 	}
 	if err := w.Close(ctx); err != nil {
@@ -799,12 +701,8 @@ func TestEvaluatorReadsOpenRegressionsOnce(t *testing.T) {
 
 	ev.tick(ctx)
 
-	// Независимая проверка: целей было действительно len(targets), а не
-	// ноль и не одна — прямым запросом к perf_regressions, в обход
-	// countingRegressions. Если бы чтение снимка "случайно" проходило один
-	// раз просто потому, что целей не было вовсе, эта проверка упала бы
-	// первой и не позволила бы утверждению ниже создать ложное чувство
-	// доказанности (см. мутацию в task-5-report.md, раунд правок 1).
+	// Прямой запрос к perf_regressions, в обход countingRegressions: доказывает, что целей
+	// было действительно len(targets), а не ноль.
 	if got := countIncidents(t, ctx, pool, pid); got != len(targets) {
 		t.Fatalf("подготовка сценария сломана: %d целей дошли до открытия инцидента, ожидалось %d — тест не доказывает то, что заявляет его докблок", got, len(targets))
 	}
@@ -813,10 +711,7 @@ func TestEvaluatorReadsOpenRegressionsOnce(t *testing.T) {
 	}
 }
 
-// TestEvaluatorPublishesTickLiveness — self-метрики живости: без них умерший
-// или отставший trace.Evaluator снаружи неотличим от «регрессий нет».
-// Список проектов пуст — тику незачем ходить в ClickHouse вовсе, поэтому
-// достаточно PG.
+// Список проектов пуст — тику незачем ходить в ClickHouse вовсе, поэтому достаточно PG.
 func TestEvaluatorPublishesTickLiveness(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -837,10 +732,8 @@ func TestEvaluatorPublishesTickLiveness(t *testing.T) {
 	}
 }
 
-// stuckCH — ClickHouse, который «висит»: любой запрос блокируется до отмены
-// контекста. Ровно так выглядит недоступная база для драйвера с ReadTimeout в
-// 300 секунд. Образец — internal/host/evaluator_test.go:stuckCH. Прочие методы
-// наследуются от вложенного nil-интерфейса — оценщик их не зовёт.
+// Любой запрос блокируется до отмены контекста — так выглядит недоступная база для
+// драйвера с ReadTimeout. Прочие методы наследуются от вложенного nil-интерфейса.
 type stuckCH struct {
 	driver.Conn
 	calls atomic.Int64
@@ -864,19 +757,13 @@ func (r stuckRow) Err() error           { return r.err }
 func (r stuckRow) Scan(...any) error    { return r.err }
 func (r stuckRow) ScanStruct(any) error { return r.err }
 
-// TestEvaluatorTickBudgetAbortsHungTick — повисший ClickHouse (голый запрос
-// без своего таймаута — см. tickBudget) не должен блокировать тик дольше
-// бюджета: тот же контракт, что host.Evaluator/metric.Evaluator. Проект с
-// enabled-конфигом (дефолт createEvalProject) гонит evalProject в CH и
-// упирается в stuckCH.
+// Повисший ClickHouse не должен блокировать тик дольше бюджета (tickBudget).
 func TestEvaluatorTickBudgetAbortsHungTick(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	stuck := &stuckCH{}
 	createEvalProject(t, pool, "eval-hung")
 
-	// Interval мал — бюджет тика упирается в пол (minTickBudget), как у
-	// host.Evaluator в его аналогичном тесте. Regressions — реальный PG-стор
-	// (открытых регрессий нет, снимок пуст мгновенно), вешается только CH.
+	// Interval мал — бюджет тика упирается в пол (minTickBudget).
 	ev := &Evaluator{
 		Pool: pool, Query: NewQuery(stuck), Regressions: NewRegressionService(pool),
 		Interval: time.Second,
@@ -896,9 +783,8 @@ func TestEvaluatorTickBudgetAbortsHungTick(t *testing.T) {
 	if stuck.calls.Load() == 0 {
 		t.Error("оценщик не ходил в ClickHouse вовсе — тест не проверяет то, что должен")
 	}
-	// Тик вышел по дедлайну — отметку «последний завершённый проход» он
-	// публиковать не должен, иначе постоянно обрывающийся тик снаружи выглядел
-	// бы здоровым.
+	// Тик вышел по дедлайну — отметку живости он публиковать не должен, иначе постоянно
+	// обрывающийся тик снаружи выглядел бы здоровым.
 	if got := ev.LastTickUnix(); got != 0 {
 		t.Errorf("LastTickUnix = %d после оборванного по дедлайну тика, want 0", got)
 	}

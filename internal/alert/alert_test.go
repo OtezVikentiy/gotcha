@@ -12,7 +12,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// newProject: прямые вставки — alert-пакет не зависит от org.
+// Прямые вставки — alert-пакет не зависит от org.
 func newProject(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -108,14 +108,12 @@ func TestRuleNegativeThrottle(t *testing.T) {
 	defer cancel()
 	pid := newProject(t, pool)
 
-	// ThrottleMinutes -1 should reject.
 	if _, err := svc.UpsertRule(ctx, alert.Rule{
 		ProjectID: pid, Kind: alert.KindNewIssue, ThrottleMinutes: -1,
 	}); !errors.Is(err, alert.ErrInvalidRule) {
 		t.Fatalf("ThrottleMinutes=-1: got %v, want ErrInvalidRule", err)
 	}
 
-	// Valid rule with ThrottleMinutes 0 should work (0 means no throttle).
 	if _, err := svc.UpsertRule(ctx, alert.Rule{
 		ProjectID: pid, Kind: alert.KindNewIssue, ThrottleMinutes: 0,
 	}); err != nil {
@@ -233,11 +231,6 @@ func TestEnsureDefaultRules(t *testing.T) {
 	}
 }
 
-// TestUpsertRulesIsAtomic — набор правил применяется целиком или никак.
-//
-// Раньше страница писала правила по очереди, и первая ошибка обрывала цикл:
-// уже записанные оставались, пользователь получал 422, форма перерисовывалась
-// из БД, и понять, что именно сохранилось, было нельзя.
 func TestUpsertRulesIsAtomic(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -247,8 +240,6 @@ func TestUpsertRulesIsAtomic(t *testing.T) {
 	ctx := context.Background()
 	pid := newEvalProject(t, pool, "atomic")
 
-	// Второе правило невалидно (spike без порога и окна) — не должно записаться
-	// НИЧЕГО, включая валидное первое.
 	err := svc.UpsertRules(ctx, []alert.Rule{
 		{ProjectID: pid, Kind: alert.KindNewIssue, Enabled: true, ThrottleMinutes: 30},
 		{ProjectID: pid, Kind: alert.KindSpike, Enabled: true, Threshold: 0, WindowMinutes: 0},
@@ -264,7 +255,6 @@ func TestUpsertRulesIsAtomic(t *testing.T) {
 		t.Fatalf("записано %d правил при ошибке — применение частичное: %+v", len(rules), rules)
 	}
 
-	// Валидный набор применяется целиком.
 	if err := svc.UpsertRules(ctx, []alert.Rule{
 		{ProjectID: pid, Kind: alert.KindNewIssue, Enabled: true, ThrottleMinutes: 30},
 		{ProjectID: pid, Kind: alert.KindRegression, Enabled: false, ThrottleMinutes: 60},

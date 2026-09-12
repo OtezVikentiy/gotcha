@@ -11,26 +11,9 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestHTTPCheckerRedirectToPrivateIsBlocked (audit H5) — a follow-redirects
-// HTTP monitor pointed at a server that 3xx-redirects into the internal
-// network must NOT connect to the redirect target. netguard's per-hop
-// DialContext is the guard: every hop (including each redirect) opens a fresh
-// connection through the same guarded dialer, so a private/loopback Location
-// is refused before any bytes are exchanged with it.
-//
-// Limitation worth stating plainly: httptest.Server binds to loopback
-// (127.0.0.1), which netguard also blocks when AllowPrivate=false, so with the
-// guard ON the *first* hop is already refused and the redirect handler never
-// runs. That still proves the security outcome we care about — the private
-// redirect target is never dialed — but it does not, on its own, isolate the
-// per-redirect-hop guard from the first-hop guard (no public IP is bindable in
-// the test env to serve an "allowed" first hop). The AllowPrivate=true control
-// below pins that redirects ARE followed to that same target when the guard is
-// off, so the only thing standing between the monitor and the internal target
-// is netguard.
+// httptest слушает loopback, которое netguard блокирует и на первом хопе,
+// так что это не изолирует именно редирект-хоп, но исход (SSRF не пройдёт) верен.
 func TestHTTPCheckerRedirectToPrivateIsBlocked(t *testing.T) {
-	// Redirect target: a loopback listener that must never be dialed by a
-	// guarded checker. atomic flag records whether it ever served a request.
 	var targetHit atomic.Bool
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		targetHit.Store(true)
@@ -39,7 +22,6 @@ func TestHTTPCheckerRedirectToPrivateIsBlocked(t *testing.T) {
 	}))
 	defer target.Close()
 
-	// First hop: 302-redirects into the (private/loopback) target.
 	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, target.URL, http.StatusFound)
 	}))
@@ -51,8 +33,6 @@ func TestHTTPCheckerRedirectToPrivateIsBlocked(t *testing.T) {
 		FollowRedirects: true,
 	})
 
-	// Guard ON: the check must fail with a "blocked" error and the internal
-	// target must never be reached.
 	blocked := uptime.NewHTTPChecker(false)
 	got := blocked.Check(context.Background(), checkerMonitor(uptime.KindHTTP, 5, cfg))
 	if got.OK {
@@ -65,8 +45,8 @@ func TestHTTPCheckerRedirectToPrivateIsBlocked(t *testing.T) {
 		t.Error("guarded checker connected to the private redirect target — SSRF")
 	}
 
-	// Positive control, guard OFF: redirects are genuinely followed to that
-	// same target, so the block above is netguard's doing, not a broken chain.
+	// guard OFF контролирует, что редирект вообще работает — иначе блокировка
+	// выше могла быть просто сломанной цепочкой, а не заслугой netguard.
 	targetHit.Store(false)
 	allowed := uptime.NewHTTPChecker(true)
 	got = allowed.Check(context.Background(), checkerMonitor(uptime.KindHTTP, 5, cfg))
@@ -78,11 +58,8 @@ func TestHTTPCheckerRedirectToPrivateIsBlocked(t *testing.T) {
 	}
 }
 
-// TestAggregateEvenRegionTie (audit H6) — фиксирует разрешение чётной ничьей по
-// регионам (2 down / 2 up) для каждого режима консенсуса. Ничья под majority
-// разрешается fail-safe в "down" (см. detector.go, `down*2 >= decided`): для
-// инструмента мониторинга пропустить недоступность половины флота хуже, чем
-// поднять инцидент на ничьей. Тест ловит регресс `>=`→`>` в detector.go.
+// ничья под majority — fail-safe в down (down*2 >= decided): пропустить
+// недоступность половины флота хуже, чем поднять инцидент зря.
 func TestAggregateEvenRegionTie(t *testing.T) {
 	states := []uptime.State{
 		{Region: "r1", Status: "down"},
