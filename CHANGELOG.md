@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- The retention window actually applied to each ClickHouse dataset (events,
+  spans, metrics, profiles, logs) is now visible at runtime: it is logged at
+  startup and exposed as the `gotcha_retention_days{dataset="…"}` metric,
+  reflecting whichever replica last applied it — useful when replicas run
+  with different `.env` files or with `GOTCHA_AUTO_MIGRATE_ENABLED=false`.
+
 ### Changed
 - Self-registration and email-based auto-linking through a generic OIDC
   provider (`GOTCHA_OIDC_ENABLED`) now require explicitly opting in with
@@ -18,6 +25,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `email_verified`. Enable the new variable only for a single-tenant IdP you
   control yourself; never for a public multi-tenant one. Yandex ID and VK ID
   are unaffected — they already confirm the address themselves.
+
+### Fixed
+- **Export subject data** now reports, per table, how many rows were exported
+  against how many exist, and flags the export as truncated when the
+  ten-thousand-row-per-table cap was hit — in the file itself, in the log, and
+  next to the export form — instead of silently handing over a partial export
+  as if it were complete. Deletion and export now walk the same table list, so
+  a subject's spans are exported as well as deleted, and a request scoped to
+  only an IP address no longer skips tables that had no matching key.
+- An instance running against a PostgreSQL replica that only accepts reads,
+  with `GOTCHA_AUTO_MIGRATE_ENABLED=false`, now starts and serves reads
+  instead of crash-looping. Sign-in and sign-up still don't work there — both
+  need to write a session — and a failed session write is now logged instead
+  of failing silently. Restoring a backup older than the current retention
+  window now warns, naming the affected table, instead of quietly losing that
+  data.
+- An incident opened for a missed check is no longer opened, or notified,
+  twice when two replicas or two evaluation ticks observe the same miss.
+- Project-level alert settings — the silence badge on the hosts list, closing
+  an already-open incident, and escalation renotification — now consistently
+  use a host's own override or its group's threshold instead of falling back
+  to the project-wide setting in some of those three places.
+- The performance page's endpoint list, and the "problems" listed for a given
+  endpoint, are now capped in row count and execution time, with a note next
+  to the table when the cap was hit, instead of silently showing whichever
+  rows happened to come back first; per-endpoint problems are now filtered by
+  that endpoint before the cap is applied rather than after, so they no longer
+  show unrelated problems from elsewhere in the project. The logs page now
+  rejects a filter with more than 20 attribute conditions or more than 4 KB of
+  combined filter text, with a clear error pointing at resetting filters,
+  instead of building an unbounded database query.
+- The Go agent now counts the metric points it drops when the collector is
+  unreachable for a long time, distinguishing "batch too large to buffer" from
+  "buffer full", and says so both in its own log and in the "delivery resumed"
+  message it used to send unconditionally on recovery. The dropped-point count
+  is exported to the server as the `gotcha.agent.metrics_dropped` metric, so
+  the gap is visible and can be alerted on.
+- An SLO evaluation window with no check results at all is no longer treated
+  as a healthy window: previously, a monitor that stopped reporting for a few
+  ticks could resolve an open burn-rate incident and send "SLO recovered"
+  everywhere. A short evaluation window also no longer picks up a stale bucket
+  whose interval merely overlaps it, as if it were current data.
+
+### Security
+- A metric value at the extreme edge of what `float64` can represent could
+  hang the handler rendering its chart forever — burning a CPU core per open
+  page until the process was restarted — while a value near the opposite edge
+  overflowed the chart's axis to infinity and rendered every point on the zero
+  line with "Infinity" labels. Ingest reachable with a project's public key
+  (the one embedded in browser-side SDK snippets) now rejects such values the
+  same way it already rejects NaN.
+- The only sign an instance was running without `GOTCHA_SECRET_KEY` used to be
+  a line in the startup log, which does not survive container log rotation —
+  an instance could keep alert-channel tokens, SSO client secrets, and HTTP
+  monitor headers in the database as plain text for months without the
+  operator noticing. This is now also visible as the
+  `gotcha_secret_key_insecure` gauge on `/metrics` and as a warning right on
+  the form where such a secret is entered. **If this ever applied to your
+  instance, re-encrypting after setting the key is not enough** — anything
+  written under the dev key has already reached the WAL and backups in plain
+  text; revoke and reissue every affected secret (alert channel tokens, SSO
+  client secrets, HTTP monitor auth headers) instead of only re-encrypting.
+  The agent install script now checks the install URL's scheme the same way
+  the web UI does, so a plain-HTTP address can't be used to fetch the checksum
+  over the same unauthenticated channel as the binary.
+- A rate limiter whose key map filled up used to reject every request,
+  including unrelated ones, until entries expired — exactly the outcome it
+  exists to prevent. It now evicts its oldest entry instead, so a flood of
+  distinct keys no longer takes sign-in, sign-up, or public status pages down
+  for everyone else.
+- Parsing a performance profile, including one embedded in a monitoring
+  envelope, is now bounded by a fixed memory budget, the same kind already
+  used for envelope parsing — a crafted or malformed profile could previously
+  exhaust server memory, inflating a few kilobytes of input to several
+  gigabytes of heap and multiple seconds of CPU time in one parse. Parsing
+  that hits its budget now fails fast and is logged with the reason, rather
+  than silently truncating or stalling.
 
 ## [1.3.1] - 2026-09-11
 
