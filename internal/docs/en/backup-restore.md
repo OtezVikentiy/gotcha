@@ -106,6 +106,8 @@ loaded afterwards meets a schema that already exists.
 
 Restoring a full copy (both databases) is one continuous procedure, not two independent ones. The PostgreSQL dump carries its own schema (`CREATE TABLE` statements baked into the dump itself), but a ClickHouse `Native` dump is rows only — Gotcha's own migrations create the schema for it. Between restoring PostgreSQL and inserting into ClickHouse there's a mandatory step in between: apply migrations without starting the application, or ClickHouse has no tables yet to insert into:
 
+If the archive being restored is older than the current `*_RETENTION_DAYS`, step 4 applies the TTL before the rows exist, and after they're inserted in step 5 they only survive until ClickHouse's next background merge — regardless of what step 6's "success" looks like. The tell is a `retention: rows already older than the active window exist` warning in the log of the application's first start in step 6: if you see it, raise the relevant `*_RETENTION_DAYS` (or set it to `0` temporarily) before that start if you need the data for its full original age.
+
 ```bash
 # 1. Bring up ONLY the databases, without the application, or it creates the schema first.
 docker compose up -d postgres clickhouse

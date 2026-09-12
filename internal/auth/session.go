@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -33,6 +34,9 @@ func (s *Service) CreateSession(ctx context.Context, userID int64) (string, erro
 		"INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)",
 		tokenHash(token), userID, time.Now().Add(SessionTTL))
 	if err != nil {
+		// Единственная точка для всех вызывающих (вход, регистрация, OAuth, смена
+		// пароля): без неё сбой доходит до пользователя голым 500 без строки в логе.
+		slog.Error("auth: create session failed", "user_id", userID, "error", err)
 		return "", fmt.Errorf("auth: create session: %w", err)
 	}
 	return token, nil

@@ -40,3 +40,26 @@ func RecordRetention(ctx context.Context, pool *pgxpool.Pool, values map[string]
 	}
 	return out, nil
 }
+
+// Значение — от реальной записи любой реплики, не cfg этой: с выключенной
+// автомиграцией они могут расходиться, и именно расхождение здесь нужно видеть.
+func LoadRetention(ctx context.Context, pool *pgxpool.Pool) (map[string]int, error) {
+	rows, err := pool.Query(ctx, "SELECT key, days FROM retention_state")
+	if err != nil {
+		return nil, fmt.Errorf("retention state: load: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var key string
+		var days int
+		if err := rows.Scan(&key, &days); err != nil {
+			return nil, fmt.Errorf("retention state: scan: %w", err)
+		}
+		out[key] = days
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("retention state: load: %w", err)
+	}
+	return out, nil
+}

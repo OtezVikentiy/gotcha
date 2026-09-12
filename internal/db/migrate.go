@@ -433,6 +433,7 @@ func applyMVTTL(ctx context.Context, conn driver.Conn, mv, timeExpr string, days
 		}
 		return nil
 	}
+	warnStaleBeyondRetention(ctx, conn, mv, inner, timeExpr, days)
 	if !needsRetention(ddl, days) {
 		return nil
 	}
@@ -489,6 +490,7 @@ func applyTableTTLColumn(ctx context.Context, conn driver.Conn, table, timeExpr 
 		}
 		return nil
 	}
+	warnStaleBeyondRetention(ctx, conn, table, table, timeExpr, days)
 	if !needsRetention(ddl, days) {
 		return nil
 	}
@@ -497,6 +499,25 @@ func applyTableTTLColumn(ctx context.Context, conn driver.Conn, table, timeExpr 
 		return fmt.Errorf("apply retention %s: %w", table, err)
 	}
 	return nil
+}
+
+// ALTER MODIFY TTL — метаданные: уже устаревшие строки исчезают молча при следующем
+// мердже, не сразу — предупреждаем явно, а не оставляем узнавать по факту.
+func warnStaleBeyondRetention(ctx context.Context, conn driver.Conn, label, physicalTable, timeExpr string, days int) {
+	if days <= 0 {
+		return
+	}
+	var stale uint64
+	q := fmt.Sprintf("SELECT count() FROM `%s` WHERE %s < now() - INTERVAL %d DAY", physicalTable, timeExpr, days)
+	if err := conn.QueryRow(ctx, q).Scan(&stale); err != nil {
+		slog.Warn("retention: stale data check failed", "table", label, "error", err)
+		return
+	}
+	if stale > 0 {
+		slog.Warn("retention: rows already older than the active window exist and will be removed "+
+			"by the next TTL merge without further notice; if this follows a restore, see backup-restore.md",
+			"table", label, "rows", stale, "retention_days", days)
+	}
 }
 
 // Общий и для CH-миграций — у них нет своего межпроцессного лока.

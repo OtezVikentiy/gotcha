@@ -188,7 +188,7 @@ How many days ClickHouse keeps each kind of data before deleting old rows. Lower
 | `GOTCHA_PROJECT_PURGE_RECONCILE_HOURS` | `24` | How often to look for ClickHouse telemetry of projects that no longer exist and queue it for deletion. Deleting a project queues that work itself, in the same transaction that removes the row; this check covers the case where no request was ever queued — a crash before commit, a manual row edit, data left over from earlier versions. `0` turns the check off, which an installation needs when something other than gotcha writes into the same ClickHouse. |
 | `GOTCHA_OUTBOX_RETENTION_DAYS` | `7` | Retention for records of already-delivered/failed notifications (email/webhook/Telegram) in PostgreSQL. Deliberately short: this is a working queue rather than an archive: it lives in PostgreSQL and grows with notification volume. Must be at least 1 — `0` is rejected at startup. |
 
-Retention changes apply on the next application start (the value is used to set a TTL on the ClickHouse tables) — data already deleted doesn't come back retroactively.
+Retention changes apply on the next application start (the value is used to set a TTL on the ClickHouse tables) — data already deleted doesn't come back retroactively. The TTL is a property of the ClickHouse tables themselves, not of any one replica: keep every `*_RETENTION_DAYS` variable identical across all replicas that share the same PostgreSQL/ClickHouse pair — replicas that disagree fight over the TTL on every start that has `GOTCHA_AUTO_MIGRATE_ENABLED=true`. The currently active values (as last recorded by whichever replica applied them, which may differ from this replica's own `.env` when auto-migration is disabled) are visible as `gotcha_retention_days{dataset="…"}` — see [Monitoring gotcha itself](/docs/self-monitoring).
 
 ## Quotas & edition
 
@@ -281,6 +281,8 @@ Detail level and format of the instance's own logs.
 | `GOTCHA_TRUSTED_RECIPIENTS` | empty | Comma-separated domains and hosts of your own perimeter: mail on these domains and webhooks on these hosts receive event details even with `GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED` off. Matching is on label boundaries (`corp.example` covers `mail.corp.example`, not `evilcorp.example`). The instance host from `GOTCHA_BASE_URL` and internal-network addresses are always trusted, with no configuration. See [Privacy and 152-FZ](/docs/privacy). |
 
 > The `--migrate-only` command-line flag applies the schema and exits without starting any component: an init job for deployments with `GOTCHA_AUTO_MIGRATE_ENABLED=false`. See [Upgrade](/docs/upgrade).
+
+> `GOTCHA_AUTO_MIGRATE_ENABLED=false` is also the configuration that survives a PostgreSQL primary that has gone read-only (a managed database's failover or maintenance window): startup itself issues no writes to PostgreSQL and succeeds. The running instance is only partially usable in that state, though: pages that read telemetry and configuration work, but **signing in and registering do not** — creating a session needs to write to PostgreSQL, which rejects it (this failure is logged, not silent, but the visitor still sees a plain error page). With auto-migration on (the default), a read-only primary fails startup outright — that is expected, since applying migrations requires write access.
 
 ## Process modes: what each `--mode=` runs
 

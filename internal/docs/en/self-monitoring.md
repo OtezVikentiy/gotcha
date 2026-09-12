@@ -407,6 +407,12 @@ the HOST runs out of memory, and the kernel's OOM killer gets there first — it
 throws away everything buffered, not just the excess. If this reads zero, set
 `mem_limit` on the container or `GOMEMLIMIT` by hand.
 
+**`gotcha_retention_days{dataset="…"}`** — the retention window actually applied
+in ClickHouse (`events`, `spans`, `metrics`, `profiles`, `logs`), not what this
+particular replica's `.env` asks for: with auto-migration disabled they can drift
+apart. `0` means "kept forever", not "disabled" — read the number literally. The
+value is fixed at startup and does not change until the next restart.
+
 **`gotcha_entities_purged_total`** — rows deleted from PostgreSQL once they
 outlived `GOTCHA_EVENT_RETENTION_DAYS`: issues, closed incidents, regressions. This is
 expected behaviour, not a failure; the counter exists because every disappearance

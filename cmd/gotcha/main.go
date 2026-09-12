@@ -374,7 +374,8 @@ func run() error {
 	}
 	defer ch.Close()
 
-	if err := applyMigrations(ctx, cfg, pg, ch); err != nil {
+	retention, err := applyMigrations(ctx, cfg, pg, ch)
+	if err != nil {
 		return err
 	}
 
@@ -400,6 +401,7 @@ func run() error {
 		},
 		func() float64 { return 1 })
 	registerSecretKeyMetric(&selfMetrics, cfg.SecretKey)
+	registerRetentionMetrics(&selfMetrics, retention)
 	// Не зависит от cfg.Mode: i18n.T зовётся и из web, и из notify независимо
 	// от режима процесса.
 	for _, locale := range i18n.SupportedLocales() {

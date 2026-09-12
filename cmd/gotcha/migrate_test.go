@@ -46,7 +46,7 @@ func TestMigrationStagesAreLogged(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	if err := applyMigrations(ctx, cfg, pg, ch); err != nil {
+	if _, err := applyMigrations(ctx, cfg, pg, ch); err != nil {
 		t.Fatalf("applyMigrations: %v", err)
 	}
 
@@ -120,7 +120,7 @@ func TestFailedCHMigrationLeavesPGRollbackable(t *testing.T) {
 		AutoMigrate:   true,
 	}
 
-	if err := applyMigrations(ctx, cfg, pg, ch); err == nil {
+	if _, err := applyMigrations(ctx, cfg, pg, ch); err == nil {
 		t.Fatal("applyMigrations с недоступным ClickHouse должен был вернуть ошибку")
 	}
 
