@@ -39,6 +39,9 @@ type LogsFilter struct {
 	// Форма эхом переносит это скрытым полем — иначе сабмит без условий воскресил бы умолчание.
 	// hasLogFilterParams проверяет наличие ключа, не непустоту значения — учитывать при рефакторинге.
 	DefaultSuppressed bool
+	// attr= в URL превысил потолок числа/суммарного размера условий — запрос к ClickHouse
+	// не выполнялся вовсе, а не тихо обрезался до первых N.
+	AttrsRejected bool
 }
 
 // Empty=true — данных нет: график не рисуется вовсе, не пустая шкала.
@@ -641,6 +644,8 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 				<div id="logs-table">
 					if loadFailed {
 						@emptyState("file-text", "logs.error.title", "logs.error.body", "", "", 2)
+					} else if filter.AttrsRejected {
+						@emptyState("file-text", "logs.attrs_limit.title", "logs.attrs_limit.body", "logs.empty.filter.cta", logsPath(projectID), 2)
 					} else if len(rows) == 0 && filter.Active {
 						@emptyState("file-text", "logs.empty.filter.title", "logs.empty.filter.body", "logs.empty.filter.cta", logsPath(projectID), 2)
 					} else if len(rows) == 0 {

@@ -110,7 +110,8 @@ templ perfEnvOption(value, label, selected string) {
 
 // total — полное число до усечения списка (len(rows) — показанные).
 // loadFailed — ClickHouse не ответил: фильтры на месте, вместо таблицы «данные временно недоступны».
-templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter PerfFilter, environments []string, apdexT int, cardinality []CardinalityNotice, userEmail string, loadFailed bool) {
+// capped — само окно несёт больше endpointsRowCap транзакций: total тоже неполон, не только rows.
+templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter PerfFilter, environments []string, apdexT int, cardinality []CardinalityNotice, userEmail string, loadFailed bool, capped bool) {
 	// раздел называется «Транзакции» везде (рейл/сайдбар/h1/title/крошки).
 	// «Эндпойнты» (perf.endpoints) — термин данных, не имя раздела.
 	@layout(i18n.T(ctx, "nav.transactions"), userEmail) {
@@ -138,7 +139,9 @@ templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter Per
 				@emptyState("zap", "perf.empty.title", "perf.empty.body", "perf.empty.cta", "/docs/performance", 2)
 			} else {
 				<p class="apdex-note">{ i18n.Tf(ctx, "perf.apdex_note", "t", strconv.Itoa(apdexT)) }</p>
-				if total > len(rows) {
+				if capped {
+					<p class="perf-cap-note">{ i18n.T(ctx, "perf.endpoints.capped") }</p>
+				} else if total > len(rows) {
 					<p class="perf-cap-note">{ i18n.Tf(ctx, "perf.truncated", "shown", strconv.Itoa(len(rows)), "total", strconv.Itoa(total)) }</p>
 				}
 				<div class="card">

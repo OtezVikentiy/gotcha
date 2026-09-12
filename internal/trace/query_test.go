@@ -415,7 +415,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	q := trace.NewQuery(conn)
 
 	t.Run("Endpoints", func(t *testing.T) {
-		got, err := q.Endpoints(ctx, projectID, from, to, "production", 50)
+		got, _, err := q.Endpoints(ctx, projectID, from, to, "production", 50)
 		if err != nil {
 			t.Fatalf("Endpoints: %v", err)
 		}
@@ -446,7 +446,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("EndpointsEnvironmentFilter", func(t *testing.T) {
-		stg, err := q.Endpoints(ctx, projectID, from, to, "staging", 50)
+		stg, _, err := q.Endpoints(ctx, projectID, from, to, "staging", 50)
 		if err != nil {
 			t.Fatalf("Endpoints staging: %v", err)
 		}
@@ -454,7 +454,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			t.Fatalf("staging endpoints = %+v, want single users with count 5", stg)
 		}
 
-		all, err := q.Endpoints(ctx, projectID, from, to, "", 50)
+		all, _, err := q.Endpoints(ctx, projectID, from, to, "", 50)
 		if err != nil {
 			t.Fatalf("Endpoints all: %v", err)
 		}
@@ -470,7 +470,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("EndpointsEmptyProject", func(t *testing.T) {
-		got, err := q.Endpoints(ctx, 999999, from, to, "", 50)
+		got, _, err := q.Endpoints(ctx, 999999, from, to, "", 50)
 		if err != nil {
 			t.Fatalf("Endpoints empty: %v", err)
 		}
@@ -881,7 +881,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("ApdexBoundary", func(t *testing.T) {
-		got, err := q.Endpoints(ctx, projectID2, from, to, "production", 50)
+		got, _, err := q.Endpoints(ctx, projectID2, from, to, "production", 50)
 		if err != nil {
 			t.Fatalf("Endpoints apdex: %v", err)
 		}

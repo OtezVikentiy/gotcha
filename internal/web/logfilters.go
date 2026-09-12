@@ -37,7 +37,7 @@ func logFilterFormParams(r *http.Request) url.Values {
 // TimeRange{} и retentionDays=0 не участвуют в результате: filterToPredicates не читает
 // From/To, сохранённый фильтр не несёт временное окно.
 func logFilterPredicatesFromForm(r *http.Request) []log.Predicate {
-	f, _ := parseLogFilter(logFilterFormParams(r), TimeRange{}, 0)
+	f, _, _ := parseLogFilter(logFilterFormParams(r), TimeRange{}, 0)
 	return filterToPredicates(f)
 }
 

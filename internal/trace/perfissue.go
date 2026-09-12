@@ -227,7 +227,9 @@ func (s *IssueService) claimNewIssue(ctx context.Context, projectID int64) (clai
 }
 
 // невалидный status → ErrInvalidStatus, иначе фильтр тихо вернул бы пустой список.
-func (s *IssueService) List(ctx context.Context, projectID int64, status string, limit int) ([]PerfIssue, error) {
+// culprit="" — без фильтра по culprit (тот же приём, что и со status); непустой сужает
+// выборку в SQL, а не отбирает её из уже усечённых limit строк всего проекта.
+func (s *IssueService) List(ctx context.Context, projectID int64, status, culprit string, limit int) ([]PerfIssue, error) {
 	if status != "" && !validStatuses[status] {
 		return nil, ErrInvalidStatus
 	}
@@ -238,13 +240,13 @@ func (s *IssueService) List(ctx context.Context, projectID int64, status string,
 		limit = maxListLimit
 	}
 
-	// $2 = '' означает «без фильтра по статусу» — одна форма запроса вместо
+	// $2 = '' / $3 = '' означает «без фильтра» — одна форма запроса вместо
 	// склейки SQL-строки.
 	rows, err := s.pool.Query(ctx, `SELECT `+perfIssueColumns+`
 		FROM perf_issues
-		WHERE project_id = $1 AND ($2 = '' OR status = $2)
+		WHERE project_id = $1 AND ($2 = '' OR status = $2) AND ($3 = '' OR culprit = $3)
 		ORDER BY last_seen DESC
-		LIMIT $3`, projectID, status, limit)
+		LIMIT $4`, projectID, status, culprit, limit)
 	if err != nil {
 		return nil, fmt.Errorf("trace: list perf issues: %w", err)
 	}

@@ -60,7 +60,7 @@ func (h *Handler) perfIssuesList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status, filterName := perfIssueStatusFilter(r.URL.Query().Get("status"))
-	items, err := h.PerfIssues.List(r.Context(), projectID, status, perfIssuesListLimit)
+	items, err := h.PerfIssues.List(r.Context(), projectID, status, "", perfIssuesListLimit)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return

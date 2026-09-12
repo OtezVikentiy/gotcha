@@ -36,6 +36,26 @@ func (h *Handler) recipeDataArrives(ctx context.Context, projectID int64, rec re
 	return ok
 }
 
+// Список рецептов проверяет ВСЕ сигнатуры разом — один запрос вместо recipeDataArrives
+// на каждый рецепт (тот тянет ещё metricType и, для monotonic-счётчиков, второй запрос
+// на rate); страница деталей одного рецепта продолжает использовать recipeDataArrives.
+func (h *Handler) recipeSignaturesWithData(ctx context.Context, projectID int64, all []recipes.Recipe) map[string]bool {
+	if h.Metrics == nil {
+		return nil
+	}
+	signatures := make([]string, len(all))
+	for i, rec := range all {
+		signatures[i] = rec.Signature
+	}
+	now := time.Now()
+	arrived, err := h.Metrics.NamesWithData(ctx, projectID, signatures, now.Add(-recipeDetectWindow), now)
+	if err != nil {
+		slog.Warn("recipes: signature detection failed", "project_id", projectID, "error", err)
+		return nil
+	}
+	return arrived
+}
+
 func (h *Handler) recipesListPage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -68,6 +88,7 @@ func (h *Handler) recipesListPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	all := recipes.All()
+	arrived := h.recipeSignaturesWithData(r.Context(), projectID, all)
 	cards := make([]templates.RecipeCardVM, 0, len(all))
 	for _, rec := range all {
 		created := 0
@@ -79,7 +100,7 @@ func (h *Handler) recipesListPage(w http.ResponseWriter, r *http.Request) {
 		}
 		cards = append(cards, templates.RecipeCardVM{
 			ID:           rec.ID,
-			DataArrives:  h.recipeDataArrives(r.Context(), projectID, rec),
+			DataArrives:  arrived[rec.Signature],
 			CreatedRules: created,
 			TotalRules:   len(statuses),
 		})

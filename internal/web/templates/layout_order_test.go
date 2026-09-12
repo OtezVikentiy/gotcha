@@ -48,7 +48,7 @@ func TestPerformanceTableColumnOrder(t *testing.T) {
 		Stat:      trace.EndpointStat{Transaction: "GET /api", Count: 10, P50: 1, P75: 2, P95: 3, P99: 4},
 		Sparkline: stub(),
 	}}
-	out := renderTo(t, PerformanceList(7, rows, 1, PerfFilter{Range: TimeRangeVM{Key: "24h"}}, nil, 500, nil, "u@e.com", false))
+	out := renderTo(t, PerformanceList(7, rows, 1, PerfFilter{Range: TimeRangeVM{Key: "24h"}}, nil, 500, nil, "u@e.com", false, false))
 	got := tableHeaders(t, out)
 
 	want := []string{"Эндпойнт", "Окружение", "События", "Трафик", "p50", "p75", "p95", "p99", "Ошибки", "Apdex"}

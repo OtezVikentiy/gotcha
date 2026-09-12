@@ -4,16 +4,20 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/recipes"
+	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
+	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
@@ -84,6 +88,72 @@ func TestWebRecipesListPage(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("GET %s (member, no team) status = %d, want 404", path, resp.StatusCode)
+	}
+}
+
+// Список бьёт по одной сигнатуре среди пяти намеренно: если бы список рецептов всё ещё
+// делал по Aggregate на рецепт (или батч сравнивал сигнатуры неверно), «Данные приходят»
+// расползлось бы на все карточки или не появилось бы вовсе.
+func TestWebRecipesListPageMixedDataArrival(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	authSvc := auth.NewService(pool)
+	orgSvc := org.NewService(pool, 1_000_000)
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	h := web.New(authSvc, orgSvc, nil, nil, srv.URL)
+	h.MetricRules = metric.NewRuleService(pool)
+	h.Metrics = metric.NewQuery(ch)
+	h.Register(mux)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "rcp-mixed-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "rcp-mixed-co", "Recipes Mixed Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := orgSvc.CreateProject(context.Background(), o.ID, "rcp-mixed-proj", "Recipes Mixed Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	// Единственный засеянный рецепт — postgres (Signature: postgresql.backends).
+	if err := ch.Exec(context.Background(), `
+		INSERT INTO metric_points (project_id, name, type, unit, service, environment, attributes, ts, value, count, bucket_counts, explicit_bounds, monotonic, temporality)
+		VALUES (?, 'postgresql.backends', 'gauge', '1', 'api', 'production', {}, ?, 3, 0, [], [], 0, '')`,
+		proj.ID, time.Now().UTC().Add(-time.Minute)); err != nil {
+		t.Fatalf("seed postgresql.backends: %v", err)
+	}
+
+	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/recipes"
+	resp := getWithCookie(t, srv, path, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", path, resp.StatusCode, body)
+	}
+	bodyStr := string(body)
+
+	if got := strings.Count(bodyStr, "Данные приходят"); got != 1 {
+		t.Fatalf("GET %s: бейджей «Данные приходят» = %d, want 1 (только postgres)", path, got)
+	}
+	if got := strings.Count(bodyStr, "Ждём данные"); got != len(recipes.All())-1 {
+		t.Fatalf("GET %s: бейджей «Ждём данные» = %d, want %d", path, got, len(recipes.All())-1)
+	}
+	pgAt := strings.Index(bodyStr, `data-recipe="postgres"`)
+	if pgAt < 0 {
+		t.Fatalf("GET %s: нет карточки postgres", path)
+	}
+	window := pgAt + 800
+	if window > len(bodyStr) {
+		window = len(bodyStr)
+	}
+	if !strings.Contains(bodyStr[pgAt:window], "Данные приходят") {
+		t.Errorf("GET %s: карточка postgres не несёт «Данные приходят» рядом с маркером", path)
 	}
 }
 

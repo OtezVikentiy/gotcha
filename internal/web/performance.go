@@ -18,11 +18,11 @@ import (
 const perfDefaultPeriod = "24h"
 
 const (
-	perfSparklineBuckets = 24
-	perfHistogramBuckets = 20
-	perfLatencyBuckets   = 48
-	perfSlowestLimit     = 10
-	perfIssuesLimit      = 100
+	perfSparklineBuckets     = 24
+	perfHistogramBuckets     = 20
+	perfLatencyBuckets       = 48
+	perfSlowestLimit         = 10
+	perfIssuesByCulpritLimit = 20
 )
 
 // На каждую строку идёт отдельный CH-запрос спарклайна p95 — без потолка
@@ -85,7 +85,7 @@ func (h *Handler) performanceList(w http.ResponseWriter, r *http.Request) {
 
 	// Отказ ClickHouse — НЕ 500: фильтры остаются, на месте таблицы — «данные
 	// временно недоступны».
-	stats, environments, latencyByTx, loadErr := h.performanceListData(r.Context(), projectID, from, now, tr.Window(), environment, sortKey, int(project.ApdexThresholdMS))
+	stats, environments, latencyByTx, capped, loadErr := h.performanceListData(r.Context(), projectID, from, now, tr.Window(), environment, sortKey, int(project.ApdexThresholdMS))
 	loadFailed := loadErr != nil
 	if loadFailed {
 		slog.Warn("perf: endpoints list failed", "project_id", projectID, "err", loadErr)
@@ -106,20 +106,22 @@ func (h *Handler) performanceList(w http.ResponseWriter, r *http.Request) {
 
 	filter := templates.PerfFilter{Range: timeRangeVM(tr), Environment: environment, Sort: sortKey}
 	_ = templates.PerformanceList(projectID, rows, total, filter, environments, int(project.ApdexThresholdMS),
-		h.cardinalityNotices(projectID), h.currentEmail(r), loadFailed).
+		h.cardinalityNotices(projectID), h.currentEmail(r), loadFailed, capped).
 		Render(r.Context(), w)
 }
 
 // EndpointLatencyBatch читает все строки ОДНИМ запросом (WHERE transaction IN ?)
 // вместо отдельного round-trip'а на каждую из первых perfEndpointLimit транзакций.
-func (h *Handler) performanceListData(ctx context.Context, projectID int64, from, now time.Time, window time.Duration, environment, sortKey string, apdexT int) ([]trace.EndpointStat, []string, map[string][]trace.LatencyPoint, error) {
-	stats, err := h.Trace.Endpoints(ctx, projectID, from, now, environment, apdexT)
+// capped — trace.Query.Endpoints упёрся в endpointsRowCap: строки за пределами потолка
+// не попали в stats вовсе, независимо от perfEndpointLimit ниже.
+func (h *Handler) performanceListData(ctx context.Context, projectID int64, from, now time.Time, window time.Duration, environment, sortKey string, apdexT int) (stats []trace.EndpointStat, environments []string, latencyByTx map[string][]trace.LatencyPoint, capped bool, err error) {
+	stats, capped, err = h.Trace.Endpoints(ctx, projectID, from, now, environment, apdexT)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, false, err
 	}
-	environments, err := h.Trace.Environments(ctx, projectID, from, now)
+	environments, err = h.Trace.Environments(ctx, projectID, from, now)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, false, err
 	}
 	sortEndpointStats(stats, sortKey)
 
@@ -132,11 +134,11 @@ func (h *Handler) performanceListData(ctx context.Context, projectID int64, from
 	for i, st := range head {
 		transactions[i] = st.Transaction
 	}
-	latencyByTx, err := h.Trace.EndpointLatencyBatch(ctx, projectID, transactions, from, now, step, environment)
+	latencyByTx, err = h.Trace.EndpointLatencyBatch(ctx, projectID, transactions, from, now, step, environment)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, false, err
 	}
-	return stats, environments, latencyByTx, nil
+	return stats, environments, latencyByTx, capped, nil
 }
 
 // Пустой/незнакомый ключ означает сортировку по throughput — заголовок таблицы должен
@@ -259,19 +261,12 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// List отдаёт проблемы всего проекта; culprit (имя транзакции) фильтруем здесь,
-	// без отдельного метода IssueService.
 	var perfIssues []trace.PerfIssue
 	if h.PerfIssues != nil {
-		all, err := h.PerfIssues.List(r.Context(), projectID, "", perfIssuesLimit)
+		perfIssues, err = h.PerfIssues.List(r.Context(), projectID, "", transaction, perfIssuesByCulpritLimit)
 		if err != nil {
 			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
-		}
-		for _, iss := range all {
-			if iss.Culprit == transaction {
-				perfIssues = append(perfIssues, iss)
-			}
 		}
 	}
 

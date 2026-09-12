@@ -316,6 +316,33 @@ func (q *Query) histogramSeries(ctx context.Context, projectID int64, name, envi
 	return out, rows.Err()
 }
 
+// Существование, не значение — один запрос вместо Aggregate на каждое имя (тот тянет
+// ещё metricType и, для monotonic-счётчиков, второй запрос на rate).
+func (q *Query) NamesWithData(ctx context.Context, projectID int64, names []string, from, to time.Time) (map[string]bool, error) {
+	out := make(map[string]bool, len(names))
+	if len(names) == 0 {
+		return out, nil
+	}
+	rows, err := q.conn.Query(ctx, `
+		SELECT DISTINCT name
+		FROM metric_points
+		WHERE project_id = ? AND name IN ? AND ts >= ? AND ts < ?
+		SETTINGS max_execution_time = 10`,
+		projectID, names, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("metric: names with data: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("metric: names with data scan: %w", err)
+		}
+		out[name] = true
+	}
+	return out, rows.Err()
+}
+
 // Без бакетинга, единственное число за всё окно — для оценщика пороговых
 // алертов («avg метрики за окно ⋛ порог»).
 func (q *Query) Aggregate(ctx context.Context, projectID int64, name, environment, host string, matchers []LabelMatcher, agg string, from, to time.Time) (float64, bool, error) {
