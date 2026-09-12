@@ -853,9 +853,10 @@ func (h *Handler) orgSettingsExportSubject(w http.ResponseWriter, r *http.Reques
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	// Аудит: фиксируем ФАКТ выгрузки и её критерий, но НЕ значения ПДн — в лог
-	// уходит только вид использованного идентификатора.
-	slog.Info("subject data export", "org_id", orgID, "project_id", projectID, "criteria", subjectCriteria(sub))
+	// Аудит: ФАКТ выгрузки, критерий и усечение, но НЕ значения ПДн — в лог уходит
+	// только вид идентификатора; сами числа усечения субъект видит в файле (Counts).
+	slog.Info("subject data export", "org_id", orgID, "project_id", projectID,
+		"criteria", subjectCriteria(sub), "truncated", export.Truncated)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", `attachment; filename="subject-export.json"`)
 	if err := json.NewEncoder(w).Encode(export); err != nil {

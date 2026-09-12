@@ -990,6 +990,8 @@
     "org.gdpr.field.ip": "End-user IP address",
     "org.gdpr.export.hint": "Provide at least one subject field. The response is a JSON file.",
     "org.gdpr.export.submit": "Export subject data",
+    "org.gdpr.export.truncated": "The export is incomplete — some tables did not return their full history:",
+    "org.gdpr.export.truncated_row": "{table}: {returned} of {total}",
     "org.gdpr.purge.title": "Delete subject data",
     "org.gdpr.hint": "Pick a project and fill at least one subject field. A match on any one field attributes the record to the subject.",
     "org.gdpr.purge.submit": "Delete subject data",

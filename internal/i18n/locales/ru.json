@@ -990,6 +990,8 @@
     "org.gdpr.field.ip": "IP-адрес пользователя",
     "org.gdpr.export.hint": "Укажите хотя бы одно поле субъекта. Ответ — JSON-файл.",
     "org.gdpr.export.submit": "Экспортировать данные субъекта",
+    "org.gdpr.export.truncated": "Выгрузка неполна — по части таблиц отдана не вся история:",
+    "org.gdpr.export.truncated_row": "{table}: {returned} из {total}",
     "org.gdpr.purge.title": "Удалить данные субъекта",
     "org.gdpr.hint": "Укажите проект и хотя бы одно поле субъекта. Совпадение хотя бы по одному полю относит запись к субъекту.",
     "org.gdpr.purge.submit": "Удалить данные субъекта",

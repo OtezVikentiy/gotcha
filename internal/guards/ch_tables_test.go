@@ -39,7 +39,7 @@ func TestProjectScopedCHTablesTracked(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	scopedTables, scopedViews, createdBy := scanCHSchema(t, root)
+	scopedTables, scopedViews, createdBy := scanCHSchema(t, root, projectIDRe)
 
 	if len(scopedTables) < 7 {
 		t.Fatalf("обход миграций ослеп: project-scoped таблиц в схеме найдено %d "+
@@ -60,7 +60,7 @@ func TestProjectScopedCHTablesTracked(t *testing.T) {
 		wantPurge[n] = true
 	}
 
-	gotPurge := extractProjectTables(t, root)
+	gotPurge := extractStringListVar(t, filepath.Join(root, purgeFile), projectTablesVar)
 	gotPurgeSet := map[string]bool{}
 	for _, n := range gotPurge {
 		gotPurgeSet[n] = true
@@ -104,7 +104,7 @@ func TestProjectScopedCHTablesTracked(t *testing.T) {
 	}
 }
 
-func scanCHSchema(t *testing.T, root string) (tables, views map[string]bool, createdBy map[string]string) {
+func scanCHSchema(t *testing.T, root string, colRe *regexp.Regexp) (tables, views map[string]bool, createdBy map[string]string) {
 	t.Helper()
 	dir := filepath.Join(root, chMigrationsDir)
 	entries, err := os.ReadDir(dir)
@@ -144,7 +144,7 @@ func scanCHSchema(t *testing.T, root string) (tables, views map[string]bool, cre
 			body := text[loc[0]:end]
 			kind := text[loc[2]:loc[3]]
 			name := text[loc[4]:loc[5]]
-			if !projectIDRe.MatchString(body) {
+			if !colRe.MatchString(body) {
 				continue
 			}
 			if strings.Contains(strings.ToUpper(kind), "VIEW") {
@@ -169,13 +169,14 @@ func scanCHSchema(t *testing.T, root string) (tables, views map[string]bool, cre
 	return tables, views, createdBy
 }
 
-func extractProjectTables(t *testing.T, root string) []string {
+// extractStringListVar достаёт литерал []string{"a", "b", ...} пакетной var по имени —
+// используется и для projectTablesVar, и для subjectColumnTablesVar в purgeFile.
+func extractStringListVar(t *testing.T, path, varName string) []string {
 	t.Helper()
 	fset := token.NewFileSet()
-	path := filepath.Join(root, purgeFile)
 	f, err := parser.ParseFile(fset, path, nil, 0)
 	if err != nil {
-		t.Fatalf("разбор %s: %v", purgeFile, err)
+		t.Fatalf("разбор %s: %v", path, err)
 	}
 
 	for _, d := range f.Decls {
@@ -189,7 +190,7 @@ func extractProjectTables(t *testing.T, root string) []string {
 				continue
 			}
 			for i, name := range vs.Names {
-				if name.Name != projectTablesVar || i >= len(vs.Values) {
+				if name.Name != varName || i >= len(vs.Values) {
 					continue
 				}
 				cl, ok := vs.Values[i].(*ast.CompositeLit)
@@ -212,7 +213,7 @@ func extractProjectTables(t *testing.T, root string) []string {
 			}
 		}
 	}
-	t.Fatalf("%s: не найден литерал %s — сторож ослеп, а не код исправился", purgeFile, projectTablesVar)
+	t.Fatalf("%s: не найден литерал %s — сторож ослеп, а не код исправился", path, varName)
 	return nil
 }
 
