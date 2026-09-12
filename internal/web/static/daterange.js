@@ -1,32 +1,12 @@
-/* daterange.js — прогрессивное улучшение селектора окна времени (.time-range).
- *
- * Без JS control работает как есть: <select> пресетов + два нативных
- * <input type="datetime-local"> (начало/конец) + кнопка «Применить». Этот скрипт
- * НЕ обязателен: если он не загрузился или отключён, нативные поля полностью
- * функциональны (фолбэк, доступность, боты).
- *
- * С JS: нативные части прячутся (остаются в DOM как источник значений для
- * сабмита формы), а вместо них — одна кнопка-триггер и попап с пресетами слева
- * и календарём на два месяца справа: клик — начало интервала, второй клик —
- * конец, «Применить» пишет значения в скрытые нативные поля и сабмитит форму.
- *
- * CSP: строгий (default-src 'self', без unsafe-inline). Поэтому — внешний файл
- * с того же origin, слушатели через addEventListener, БЕЗ inline-обработчиков и
- * БЕЗ inline-стилей (вся стилистика — классами в app.css).
- */
 (function () {
 	"use strict";
 
-	// Локаль берём из <html lang> (её ставит layout.templ по i18n). Месяцы, дни
-	// недели и формат дат локализуются через Intl — без хардкода языка. Кнопки и
-	// aria-подписи приходят из data-l-* на .time-range (см. timeRangeFields).
 	var LANG = (document.documentElement.getAttribute("lang") || "ru");
 	var fmtMonthTitle = new Intl.DateTimeFormat(LANG, { month: "long", year: "numeric" });
 	var fmtDayAria = new Intl.DateTimeFormat(LANG, { day: "numeric", month: "long", year: "numeric" });
 	var fmtDate = new Intl.DateTimeFormat(LANG, { day: "2-digit", month: "2-digit", year: "numeric" });
 
-	// Короткие имена дней недели в ISO-порядке (Пн…Вс). 2024-01-01 — понедельник,
-	// поэтому семь дней от него дают нужный порядок в любой локали.
+	// 2024-01-01 — понедельник, семь дней от него дают ISO-порядок (Пн…Вс) в любой локали.
 	var WEEKDAYS = (function () {
 		var f = new Intl.DateTimeFormat(LANG, { weekday: "short" }), out = [];
 		for (var i = 0; i < 7; i++) out.push(f.format(new Date(2024, 0, 1 + i)));
@@ -57,7 +37,6 @@
 	function addMonths(d, n) { return new Date(d.getFullYear(), d.getMonth() + n, 1); }
 	function fmtHuman(d) { return fmtDate.format(d); }
 
-	// Создать элемент с классом и (опц.) текстом. Атрибуты — объектом.
 	function el(tag, cls, text, attrs) {
 		var e = document.createElement(tag);
 		if (cls) e.className = cls;
@@ -66,10 +45,7 @@
 		return e;
 	}
 
-	// icon — та же иконка Lucide, что и серверный @icon: <use> на символ из
-	// общего спрайта (iconSprite отрендерена в документе). Строим в SVG-
-	// namespace через createElementNS (без innerHTML): name всегда наш
-	// литерал, но так надёжнее и без XSS-поверхности вовсе.
+	// createElementNS, не innerHTML — без XSS-поверхности, даже с постоянным name.
 	var SVG_NS = "http://www.w3.org/2000/svg";
 	function icon(name) {
 		var svg = document.createElementNS(SVG_NS, "svg");
@@ -91,7 +67,6 @@
 		root.dataset.drReady = "1";
 		root.classList.add("dr-enhanced");
 
-		// Локализованные подписи из data-l-* (fallback — RU, если атрибут снят).
 		var L = {
 			apply: root.dataset.lApply || "Применить",
 			cancel: root.dataset.lCancel || "Отмена",
@@ -102,16 +77,14 @@
 			next: root.dataset.lNext || "Следующий месяц",
 		};
 
-		// Текущее состояние из уже отрендеренного сервером control:
-		//  - активный произвольный диапазон переносится скрытыми cstart/cend;
-		//  - иначе активен пресет (выбранная опция, кроме "custom").
+		// Активный произвольный диапазон переносится скрытыми cstart/cend,
+		// иначе активен пресет (выбранная опция, кроме "custom").
 		var cStart = root.querySelector('input[name="cstart"]');
 		var cEnd = root.querySelector('input[name="cend"]');
 		var isCustom = !!(cStart && cEnd);
 		var initStart = isCustom ? parseLocal(cStart.value) : null;
 		var initEnd = isCustom ? parseLocal(cEnd.value) : null;
 
-		// Пресеты — из опций <select>, кроме "custom".
 		var presets = [];
 		Array.prototype.forEach.call(select.options, function (o) {
 			if (o.value !== "custom") presets.push({ value: o.value, label: o.textContent });
@@ -130,18 +103,14 @@
 			return sel ? sel.textContent : "";
 		}
 		triggerLabel.textContent = currentLabel();
-		// Accessible name должен СОДЕРЖАТЬ видимый текст (WCAG 2.5.3 Label in
-		// Name): иначе SR/голосовое управление не знают текущее окно. Компонуем
-		// «Выбрать окно времени: 24 ч».
+		// Accessible name обязан содержать видимый текст (WCAG 2.5.3 Label in Name).
 		trigger.setAttribute("aria-label", L.trigger + ": " + currentLabel());
 
 		root.insertBefore(trigger, root.firstChild);
 
-		// --- Попап ---
 		var popup = el("div", "dr-popup", null, { role: "dialog", "aria-modal": "true", "aria-label": L.dialog, id: popupId });
 		popup.hidden = true;
 
-		// Пресеты (слева).
 		var presetCol = el("div", "dr-presets");
 		presets.forEach(function (p) {
 			var b = el("button", "dr-preset", p.label, { type: "button", "data-v": p.value });
@@ -156,7 +125,6 @@
 			presetCol.appendChild(b);
 		});
 
-		// Календарь (справа).
 		var calWrap = el("div", "dr-cal");
 		var calHead = el("div", "dr-cal-head");
 		var prevBtn = el("button", "dr-nav", null, { type: "button", "aria-label": L.prev });
@@ -183,7 +151,6 @@
 		popup.appendChild(calWrap);
 		root.appendChild(popup);
 
-		// Состояние выбора.
 		var now = new Date();
 		var selStart = initStart ? startOfDay(initStart) : null;
 		var selEnd = initEnd ? startOfDay(initEnd) : null;
@@ -260,22 +227,19 @@
 			monthsWrap.textContent = "";
 			monthsWrap.appendChild(renderMonth(view));
 			monthsWrap.appendChild(renderMonth(addMonths(view, 1)));
-			// Не пускаем «вперёд» за текущий месяц.
 			var nextMonthStart = addMonths(view, 2);
 			nextBtn.disabled = nextMonthStart > new Date(now.getFullYear(), now.getMonth() + 1, 1);
 			updateFooter();
 		}
 
-		// Вернуть фокус на ячейку focusDay после пересборки сетки: renderCal
-		// стирает DOM, иначе фокус клавиатурника падал бы на <body> при каждом
-		// выборе дня или сдвиге стрелкой.
+		// renderCal стирает DOM — без возврата фокуса он падал бы на <body>
+		// при каждом выборе дня или сдвиге стрелкой.
 		function focusFocusDay() {
 			if (!focusDay) return;
 			var c = monthsWrap.querySelector('[data-ymd="' + ymd(focusDay) + '"]');
 			if (c) c.focus();
 		}
 
-		// Держим focusDay в пределах двух видимых месяцев, сдвигая view.
 		function ensureVisible(d) {
 			var leftStart = new Date(view.getFullYear(), view.getMonth(), 1);
 			var rightEnd = new Date(view.getFullYear(), view.getMonth() + 2, 0);
@@ -283,10 +247,8 @@
 			else if (d > rightEnd) view = new Date(d.getFullYear(), d.getMonth() - 1, 1);
 		}
 
-		// Обратное к ensureVisible: после смены view кнопками месяца затягиваем
-		// focusDay в новые видимые месяцы. Иначе tabindex="0" стоит на ячейке,
-		// которой в сетке уже нет, и вся сетка становится недостижимой с
-		// клавиатуры (roving-tabindex оставляет ровно одну таббельную ячейку).
+		// Без затяжки focusDay в видимые месяцы tabindex="0" остаётся на ячейке,
+		// которой в сетке уже нет, и вся сетка становится недостижимой с клавиатуры.
 		function clampFocusToView() {
 			var leftStart = new Date(view.getFullYear(), view.getMonth(), 1);
 			var rightEnd = new Date(view.getFullYear(), view.getMonth() + 2, 0);
@@ -295,7 +257,6 @@
 			if (focusDay > now) focusDay = startOfDay(now); // не в будущее
 		}
 
-		// Перенести фокус клавиатуры на день nd (не в будущее), сдвинув месяцы.
 		function moveFocus(nd) {
 			if (nd > now) nd = now;
 			focusDay = startOfDay(nd);
@@ -317,10 +278,8 @@
 			focusFocusDay();
 		}
 
-		// Навигация по сетке дней с клавиатуры (WAI-ARIA date-grid): стрелки — на
-		// день/неделю, Home/End — на края недели, PageUp/Down — на ±месяц. Enter/
-		// Space обрабатывает сама кнопка-ячейка (нативный click), поэтому здесь их
-		// не трогаем, чтобы выбор не срабатывал дважды.
+		// Enter/Space не трогаем — их обрабатывает сама кнопка-ячейка (нативный
+		// click), иначе выбор срабатывал бы дважды.
 		monthsWrap.addEventListener("keydown", function (ev) {
 			if (!focusDay) return;
 			var f = focusDay, nd, wd = (f.getDay() + 6) % 7; // 0 = понедельник
@@ -348,9 +307,7 @@
 			if (!selStart || !selEnd) return;
 			var s = startOfDay(selStart);
 			var e = endOfDay(selEnd);
-			// Симметрично концу: pickDay уже не допускает будущих дней (кнопки
-			// disabled), так что на практике сюда не долетает, но не полагаемся
-			// на это молча — начало тоже не должно уйти в будущее.
+			// pickDay уже не допускает будущих дней, но не полагаемся на это молча.
 			if (s > now) s = now;
 			if (e > now) e = now;
 			startIn.value = localValue(s);
@@ -361,14 +318,10 @@
 			form.submit();
 		});
 
-		// Снимок выбора на момент открытия — чтобы закрытие без «Применить»
-		// (Отмена/Esc/клик мимо) откатывало недособранный диапазон, а не
-		// оставляло «01.07.2026 – …» до следующего открытия.
+		// Снимок выбора на момент открытия — закрытие без «Применить» откатывает
+		// недособранный диапазон к нему, а не оставляет его висеть в UI.
 		var snapStart = null, snapEnd = null;
 
-		// refocus=true возвращает фокус на триггер (закрытие по Esc/Отмена/клику
-		// по триггеру); при закрытии кликом мимо фокус остаётся там, куда кликнули.
-		// Любое закрытие БЕЗ применения откатывает выбор к снимку open().
 		function close(refocus) {
 			selStart = snapStart;
 			selEnd = snapEnd;
@@ -381,9 +334,6 @@
 		function open() {
 			snapStart = selStart;
 			snapEnd = selEnd;
-			// Начальная таббельная ячейка: выбранное начало, иначе сегодня; не в
-			// будущем и обязательно в пределах видимых месяцев (иначе в сетке не
-			// было бы ячейки с tabindex=0).
 			focusDay = startOfDay(selStart || now);
 			if (focusDay > now) focusDay = startOfDay(now);
 			ensureVisible(focusDay);
@@ -439,14 +389,7 @@
 	}
 })();
 
-/* Сообщения о результате действия: крестик закрывает сразу.
- *
- * Прогрессивное улучшение. Без скрипта сообщение уходит само через шесть секунд
- * по CSS-анимации, а кнопка скрыта — мёртвая кнопка хуже её отсутствия. Класс
- * js на <html> её показывает.
- *
- * Отдельным слушателем на document, а не на каждой плашке: сообщение рисуется
- * один раз за загрузку страницы, и делегирование дешевле поиска элементов. */
+// Класс js на <html> включает CSS кнопки закрытия флеш-сообщений (см. app.css).
 (function () {
 	"use strict";
 	document.documentElement.classList.add("js");

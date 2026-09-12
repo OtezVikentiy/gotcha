@@ -1,8 +1,5 @@
-/* copy.js — прогрессивное улучшение: копирование контекста ошибки в буфер.
- * Без JS кнопок нет (их рендерит шаблон рядом с textarea-источниками), базовая
- * страница не ломается. CSP строгий: внешний файл, слушатели через
- * addEventListener. navigator.clipboard есть только в secure-context (https/
- * localhost); на bare-HTTP LAN — фолбэк execCommand по выделенной textarea. */
+/* navigator.clipboard работает только в secure-context (https/localhost);
+ * на bare-HTTP — фолбэк execCommand по выделенной textarea. */
 (function () {
 	"use strict";
 	function flashDone(root) {
@@ -20,9 +17,8 @@
 		if (window.getSelection) window.getSelection().removeAllRanges();
 	}
 	function copyText(ta, root) {
-		// navigator.clipboard есть только в secure-context; вдобавок writeText может
-		// ОТКЛОНИТЬСЯ (нет фокуса/жеста, permissions-policy). Реджект тоже уводим в
-		// фолбэк execCommand — иначе кнопка молча ничего не делает (ни копии, ни тоста).
+		// writeText может отклониться без фокуса/жеста или по permissions-policy —
+		// реджект уходит в fallbackCopy, иначе кнопка молча ничего не делает.
 		if (navigator.clipboard && navigator.clipboard.writeText) {
 			navigator.clipboard.writeText(ta.value).then(
 				function () { flashDone(root); },

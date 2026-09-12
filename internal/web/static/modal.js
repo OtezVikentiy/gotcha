@@ -1,19 +1,3 @@
-// Клавиатурное поведение модалки: Escape, фокус при открытии, возврат фокуса
-// при закрытии.
-//
-// Модалка построена на CSS :target и работает без JS: открытие — переход на
-// #id, закрытие — переход на #id-close. Без JS так и остаётся. Улучшения
-// прогрессивные:
-//  - Escape закрывает открытую модалку (в т.ч. открытую сервером);
-//  - при открытии фокус уходит на заголовок диалога (tabindex=-1), при
-//    серверном переоткрытии после ошибки валидации — тоже, иначе клавиатура
-//    остаётся в начале страницы и модалку «не видит»;
-//  - при закрытии фокус возвращается на элемент, с которого открывали
-//    (образец — close(refocus) в daterange.js);
-//  - Tab/Shift+Tab циклят по фокусируемым элементам внутри открытой модалки:
-//    фон не изолирован ([inert] нет, aria-modal намеренно не выставлен — см.
-//    modalShell), и без ловушки Tab с последнего поля уходил на десятки
-//    фокусируемых элементов позади диалога.
 (function () {
 	"use strict";
 
@@ -35,15 +19,12 @@
 		}
 	}
 
-	// openModal — открытая модалка: либо та, на которую указывает адресная
-	// строка (:target), либо открытая сервером (modal--open).
 	function openModal() {
 		return modalFromHash() || document.querySelector(".modal.modal--open");
 	}
 
-	// focusables — элементы карточки диалога, достижимые по Tab, в порядке
-	// DOM. Заголовок (tabindex=-1) и всё, что скрыто CSS (getClientRects
-	// пуст), не считаются; фон-якорь .modal-backdrop лежит вне .modal-card.
+	// Заголовок (tabindex=-1) и элементы, скрытые CSS (getClientRects пуст),
+	// в список не попадают.
 	function focusables(modal) {
 		var card = modal.querySelector(".modal-card") || modal;
 		var all = card.querySelectorAll(
@@ -63,9 +44,8 @@
 		return out;
 	}
 
-	// trapTab — цикл фокуса: Tab с последнего элемента → на первый, Shift+Tab
-	// с первого → на последний; фокус вне диалога (или на заголовке при
-	// Shift+Tab, когда перед ним ничего нет) возвращается в цикл.
+	// Фон не изолирован ([inert] нет, aria-modal намеренно не выставлен, см.
+	// modalShell) — без ручного цикла Tab уходит на элементы позади диалога.
 	function trapTab(ev) {
 		var modal = openModal();
 		if (!modal) {
@@ -91,9 +71,6 @@
 		}
 	}
 
-	// closeAnchor находит якорь закрытия для открытой модалки: либо той, на
-	// которую указывает адресная строка (:target), либо открытой сервером
-	// (класс modal--open — форма вернулась с ошибкой валидации).
 	function closeAnchor() {
 		var targeted = modalFromHash();
 		if (targeted) {
@@ -103,9 +80,8 @@
 		return served ? served.id + "-close" : "";
 	}
 
-	// Открыватель запоминается на click (capture), ДО навигации по якорю:
-	// к моменту hashchange браузер уже обработал фрагмент и увёл фокус с
-	// триггера, activeElement там — body. Enter на ссылке тоже даёт click.
+	// Открыватель запоминается на click (capture), до навигации по якорю —
+	// к моменту hashchange фокус уже увёден на body.
 	document.addEventListener("click", function (ev) {
 		var a = ev.target.closest ? ev.target.closest('a[href^="#"]') : null;
 		if (!a) {
@@ -142,15 +118,10 @@
 		if (!anchor) {
 			return;
 		}
-		// Тот же переход, что делает крестик: правило .modal-dismiss:target
-		// перебивает и :target, и открытие с сервера. Возврат фокуса сделает
-		// обработчик hashchange выше.
+		// .modal-dismiss:target перебивает и :target, и серверное открытие.
 		window.location.hash = anchor;
 	});
 
-	// Серверное переоткрытие: страница загрузилась с .modal.modal--open —
-	// увести фокус в диалог сразу (opener пуст: возвращать некуда, фокус
-	// после закрытия останется на закрывшем элементе).
 	var served = document.querySelector(".modal.modal--open");
 	if (served) {
 		focusHeading(served);
