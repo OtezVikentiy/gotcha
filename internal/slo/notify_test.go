@@ -14,10 +14,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestSLOBurnNotifierEnqueues: открытие инцидента сжигания бюджета → по одной
-// задаче в outbox на каждый включённый канал проекта, с корректным payload.
-// Ключевая проверка — ловушка имён: адрес канала лежит под "target" (его читает
-// notify.Worker), а имя SLO — под "target_name".
 func TestSLOBurnNotifierEnqueues(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -78,8 +74,6 @@ func TestSLOBurnNotifierEnqueues(t *testing.T) {
 	}
 }
 
-// TestSLOBurnNotifierExternalRedaction: при политике без доверия получателю во
-// внешний канал не уезжает имя SLO (target_name/тело), но остаётся url.
 func TestSLOBurnNotifierExternalRedaction(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

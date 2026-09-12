@@ -9,10 +9,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// newLogFailureProject/newLogFailureChannel — минимальные raw-SQL сиды,
-// продублированные из escalation_test (package escalation_test, недоступен
-// отсюда — этот файл package escalation, ради доступа к неэкспортированным
-// maxLogFailureAttempts/recordLogFailure/clearLogFailure).
+// Продублировано из escalation_test: этот файл — package escalation, для доступа
+// к неэкспортированным maxLogFailureAttempts/recordLogFailure/clearLogFailure.
 func newLogFailureProject(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -39,21 +37,6 @@ func newLogFailureChannel(t *testing.T, pool *pgxpool.Pool, projectID int64) int
 	return chID
 }
 
-// TestSendStepIfDueClaimFailureNeverForcesBump — АДАПТИРОВАН под
-// claim-before-notify (аудит перед 1.0, K1-1): до этой правки SendStepIfDue
-// логировал ПОСЛЕ notifyStep, и устойчиво падающий LogStep грозил
-// пейджинг-штормом (bump заблокирован → тот же шаг на следующем тике →
-// notifyStep пейджит снова → LogStep падает снова, каждый тик) —
-// maxLogFailureAttempts продавливал bump принудительно после N провалов,
-// проверялось это здесь. Теперь ЛОГ И ЕСТЬ CLAIM (ClaimStepChannels), и он
-// стоит ДО notifyStep — устойчивый провал claim (тот же forcing-constraint,
-// что и раньше) означает, что notifyStep вообще ни разу не вызывается, и
-// пейджинг-шторма, от которого защищал потолок, физически быть не может:
-// продавливать прогресс уже нечем и незачем (см. докблок SendStepIfDue,
-// случай 4). Тест теперь фиксирует обратное: claim падает на КАЖДОМ вызове
-// без ограничения попыток, sent всегда false, bump никогда не зовётся —
-// maxLogFailureAttempts/escalation_step_log_failures в эту функцию больше
-// не участвуют (остаются только для LogStepChannels — uptime-шаг 0).
 func TestSendStepIfDueClaimFailureNeverForcesBump(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -65,8 +48,7 @@ func TestSendStepIfDueClaimFailureNeverForcesBump(t *testing.T) {
 	const incidentID = int64(9600)
 	const source = "metric"
 
-	// ClaimStepChannels — тот же INSERT в incident_escalations, что раньше
-	// делал LogStep — обязан провалиться детерминированно.
+	// INSERT в incident_escalations обязан провалиться детерминированно.
 	if _, err := pool.Exec(ctx, "ALTER TABLE incident_escalations ADD CONSTRAINT test_force_log_fail CHECK (false)"); err != nil {
 		t.Fatalf("add forcing constraint: %v", err)
 	}
@@ -79,9 +61,7 @@ func TestSendStepIfDueClaimFailureNeverForcesBump(t *testing.T) {
 	notifyStep := func(chs []int64, step int) ([]int64, error) { notifyCalled = true; return chs, nil }
 	bump := func(id int64, from int) (bool, error) { bumpCalled = true; return true, nil }
 
-	// Несколько подряд вызовов — больше maxLogFailureAttempts: старый
-	// потолок попыток здесь бы уже продавил bump, новый claim-путь не
-	// продавливает НИКОГДА, пока PG (constraint) не отпустит.
+	// Claim-путь не продавливает прогресс никогда, пока PG (constraint) не отпустит.
 	for i := 0; i < maxLogFailureAttempts+2; i++ {
 		notifyCalled, bumpCalled = false, false
 		sent, err := SendStepIfDue(ctx, ladder, source, pool, incidentID, 0, 0, notifyStep, bump)
@@ -112,11 +92,6 @@ func TestSendStepIfDueClaimFailureNeverForcesBump(t *testing.T) {
 	}
 }
 
-// TestRecordLogFailureIncrementsAndClearResets проверяет саму механику
-// счётчика в изоляции от SendStepIfDue: последовательные вызовы
-// recordLogFailure на одну и ту же (source, incident, step) увеличивают
-// attempts на 1 каждый раз; clearLogFailure сбрасывает его — следующий
-// recordLogFailure снова возвращает 1, не продолжает с прежнего значения.
 func TestRecordLogFailureIncrementsAndClearResets(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

@@ -10,8 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// renderDeployMarkerForTest собирает реальный chartGeom (как markup-функции) и
-// прогоняет writeDeployMarker в буфер — возвращает получившийся SVG-фрагмент.
 func renderDeployMarkerForTest(times []time.Time, deploys []deploy.Deployment) string {
 	g := newChartGeom(600, 200, 58, 16, 12, 26)
 	var sb strings.Builder
@@ -23,7 +21,6 @@ func TestWriteDeployMarker(t *testing.T) {
 	base := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
 	times := []time.Time{base, base.Add(time.Hour), base.Add(2 * time.Hour)}
 
-	// Деплой в середине окна: рисуется линия маркера + подпись версии.
 	out := renderDeployMarkerForTest(times, []deploy.Deployment{{Version: "v9", DeployedAt: base.Add(time.Hour)}})
 	if !strings.Contains(out, "chart-deploy-marker") {
 		t.Errorf("нет линии маркера: %s", out)
@@ -32,13 +29,11 @@ func TestWriteDeployMarker(t *testing.T) {
 		t.Errorf("нет подписи версии: %s", out)
 	}
 
-	// Деплой ВНЕ диапазона точек не рисуется.
 	out2 := renderDeployMarkerForTest(times, []deploy.Deployment{{Version: "old", DeployedAt: base.Add(-time.Hour)}})
 	if strings.Contains(out2, "old") || strings.Contains(out2, "chart-deploy-marker") {
 		t.Errorf("деплой вне окна не должен рисоваться: %s", out2)
 	}
 
-	// Версия экранируется (никакого сырого <script> в разметке).
 	out3 := renderDeployMarkerForTest(times, []deploy.Deployment{{Version: `<script>`, DeployedAt: base.Add(time.Hour)}})
 	if strings.Contains(out3, "<script>") {
 		t.Errorf("версия не экранирована: %s", out3)
@@ -47,7 +42,6 @@ func TestWriteDeployMarker(t *testing.T) {
 		t.Errorf("ожидалась экранированная версия: %s", out3)
 	}
 
-	// Пустой список деплоев и одна точка — ничего не рисуется (без паники).
 	if got := renderDeployMarkerForTest(times, nil); got != "" {
 		t.Errorf("пустой список деплоев должен дать пусто: %q", got)
 	}
@@ -56,10 +50,6 @@ func TestWriteDeployMarker(t *testing.T) {
 	}
 }
 
-// TestWriteDeployMarkerTail — деплой в хвосте (позже times[last], т.е. между
-// последней корзиной и now) обязан рисоваться у правого края графика (x1), а не
-// отбрасываться: это ядро фичи «только что выкатил». Подпись у края
-// разворачивается на text-anchor="end", иначе версия вылезла бы за холст.
 func TestWriteDeployMarkerTail(t *testing.T) {
 	base := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
 	times := []time.Time{base, base.Add(time.Hour), base.Add(2 * time.Hour)}
@@ -77,14 +67,11 @@ func TestWriteDeployMarkerTail(t *testing.T) {
 	if !strings.Contains(out, `text-anchor="end"`) {
 		t.Errorf("подпись у правого края должна иметь якорь end: %s", out)
 	}
-	// <title> маркера несёт версию и человекочитаемое время (разделитель «·»).
 	if !strings.Contains(out, "<title>") || !strings.Contains(out, "·") {
 		t.Errorf("нет title с временем на линии маркера: %s", out)
 	}
 }
 
-// TestWriteDeployMarkerMidAnchor — деплой в середине окна подписывается с
-// якорем start (текст вправо от линии), не end: край переопределяет только у x1.
 func TestWriteDeployMarkerMidAnchor(t *testing.T) {
 	base := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
 	times := []time.Time{base, base.Add(time.Hour), base.Add(2 * time.Hour)}
@@ -94,9 +81,6 @@ func TestWriteDeployMarkerMidAnchor(t *testing.T) {
 	}
 }
 
-// TestWriteDeployMarkerLabelAntiCollision — при кучных деплоях ЛИНИИ рисуются
-// все (маркер важнее подписи), а ПОДПИСИ прореживаются: вторая версия ближе
-// minGap к первой нарисованной не печатается, иначе они наехали бы в кашу.
 func TestWriteDeployMarkerLabelAntiCollision(t *testing.T) {
 	base := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
 	times := []time.Time{base, base.Add(time.Hour), base.Add(2 * time.Hour)}
@@ -113,8 +97,6 @@ func TestWriteDeployMarkerLabelAntiCollision(t *testing.T) {
 	}
 }
 
-// TestThroughputBarsDeployMarker — на СТОЛБЧАТОМ графике (в отличие от линейной
-// геометрии svg_deploy выше) маркер деплоя тоже ложится в шкалу времени слотов.
 func TestThroughputBarsDeployMarker(t *testing.T) {
 	base := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
 	points := []trace.LatencyPoint{

@@ -5,11 +5,6 @@ import (
 	"testing"
 )
 
-// TestStatusTabsCarryAllExplicitly — вкладка «Все» должна нести status=all в
-// адресе. Раньше общий хелпер tabQuery заменял «all» на пустую строку, считая
-// «без фильтра» значением по умолчанию, а хендлеры считают своим дефолтом
-// «открытые»/«нерешённые». Из-за расхождения клик по «Все» возвращал на
-// первую вкладку — во всех трёх разделах сразу.
 func TestStatusTabsCarryAllExplicitly(t *testing.T) {
 	cases := []struct {
 		name string

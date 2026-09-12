@@ -23,9 +23,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// incidentFeedStack — Handler + Store поверх мигрированной PG, без
-// ClickHouse (шкала «Обзора» его не читает) — облегчённая версия
-// newHostsStack (hosts_web_test.go) для overview.
 type incidentFeedStack struct {
 	pool   *pgxpool.Pool
 	srv    *httptest.Server
@@ -35,9 +32,6 @@ type incidentFeedStack struct {
 	groups *incidentgroup.Store
 }
 
-// newIncidentFeedStack — wire=false воспроизводит стенд без подсистемы
-// корреляции (h.IncidentGroups остаётся nil), как newHostsStack(t, false)
-// для Metrics/Hosts.
 func newIncidentFeedStack(t *testing.T, wire bool) *incidentFeedStack {
 	t.Helper()
 	pool := testenv.MigratedPG(t)
@@ -59,8 +53,6 @@ func newIncidentFeedStack(t *testing.T, wire bool) *incidentFeedStack {
 	return &incidentFeedStack{pool: pool, srv: srv, h: h, org: orgSvc, auth: authSvc, groups: groups}
 }
 
-// seedFeedHost — минимальная строка hosts (как seedHost в
-// internal/incidentgroup/group_test.go, недоступном отсюда — другой пакет).
 func (s *incidentFeedStack) seedFeedHost(t *testing.T, projectID int64, name string) int64 {
 	t.Helper()
 	var id int64
@@ -72,7 +64,6 @@ func (s *incidentFeedStack) seedFeedHost(t *testing.T, projectID int64, name str
 	return id
 }
 
-// seedFeedHostIncident — открытый host_incidents (kind/detail минимальны).
 func (s *incidentFeedStack) seedFeedHostIncident(t *testing.T, projectID, hostID int64, kind string) int64 {
 	t.Helper()
 	var id int64
@@ -89,10 +80,6 @@ func overviewPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/overview"
 }
 
-// TestOverviewEmptyProject — проект без единого инцидента получает не три
-// «нет данных» подряд, а одно приглашение подключить SDK (задача 6 nav-ia,
-// §7 спеки — «пустое состояние — приглашение к следующему шагу, а не «нет
-// данных»»).
 func TestOverviewEmptyProject(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	ctx := context.Background()
@@ -124,11 +111,8 @@ func TestOverviewEmptyProject(t *testing.T) {
 	}
 }
 
-// TestOverviewEmptyWindowStillOffersRangeTabs — M1 финревью: проект, у
-// которого всё закрылось за пределами дефолтного окна 24ч (но данные есть —
-// SDK уже шлёт события), получал «Обзор пока пуст» без единой двери к окну
-// 7д, где инцидент нашёлся бы. Вкладки переключателя обязаны рендериться и
-// в пустой ветке (см. overviewRangeTabs).
+// Вкладки переключателя окна обязаны рендериться и в пустой ветке — иначе окно 24ч
+// без данных отрезало бы дверь к 7д, где инцидент нашёлся бы.
 func TestOverviewEmptyWindowStillOffersRangeTabs(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	ctx := context.Background()
@@ -142,9 +126,7 @@ func TestOverviewEmptyWindowStillOffersRangeTabs(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	// Инцидент закрылся трое суток назад — за пределами дефолтного окна 24ч
-	// (внутри 7д). Ни одного открытого инцидента нет, поэтому empty=true на
-	// 24ч, хотя у проекта данные ЕСТЬ.
+	// Закрылся трое суток назад (вне окна 24ч, внутри 7д) — empty=true на 24ч, хотя данные есть.
 	host := s.seedFeedHost(t, project.ID, "closed-host")
 	resolvedAt := time.Now().Add(-72 * time.Hour)
 	if _, err := s.pool.Exec(ctx, `
@@ -257,12 +239,6 @@ func TestOverviewAccessDenied(t *testing.T) {
 	}
 }
 
-// TestOverviewNilStoreRendersEmpty — задача 6 nav-ia: в отличие от прежней
-// /incident-feed (404 на h.IncidentGroups == nil, «стенд без подсистемы»),
-// «Обзор» — теперь дверь по умолчанию (index() ведёт сюда), и 404 на голом
-// входе в приложение читался бы как поломка. Инстанс/стенд без подсистемы
-// D3 получает страницу с пустыми секциями (то же приглашение, что и у
-// TestOverviewEmptyProject), а не ошибку.
 func TestOverviewNilStoreRendersEmpty(t *testing.T) {
 	s := newIncidentFeedStack(t, false)
 	ctx := context.Background()
@@ -287,14 +263,6 @@ func TestOverviewNilStoreRendersEmpty(t *testing.T) {
 	}
 }
 
-// TestOverviewInvalidProjectID — {id} в пути не парсится как int64:
-// parsePathProjectID отдаёт 404 тем же путём, что и остальные ручки проекта
-// (projsettings.go), а не 500/панику на мусорном сегменте URL. Тело страницы
-// проверяем на ОДНОКРАТНОЕ вхождение текста 404 — если бы ручка не
-// прервалась сразу после parsePathProjectID (return по !ok), выполнение
-// продолжилось бы с нулевым projectID и дошло бы до собственного notFound
-// ручки ещё раз: тот же статус 404 замаскировал бы пропавший return, а
-// задвоенное тело — нет.
 func TestOverviewInvalidProjectID(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	_, ownerCookie := orgSettingsRegister(t, s.auth, "feed-badid@example.com")
@@ -305,21 +273,15 @@ func TestOverviewInvalidProjectID(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("invalid project id in path: status = %d, want 404: %s", resp.StatusCode, body)
 	}
-	// ErrorPage сама повторяет текст дважды (заголовок h1 + тело p) — один
-	// рендер даёт 2 вхождения; удвоение (return пропал) даёт 4.
+	// ErrorPage повторяет текст дважды (h1+p) сама по себе — если бы return после
+	// parsePathProjectID пропал, ручка отрендерила бы страницу дважды, и счёт стал бы 4.
 	if n := strings.Count(string(body), "Страница не найдена"); n != 2 {
 		t.Fatalf("404 body must render exactly once (return after parsePathProjectID failure), got %d occurrences of the message (want 2, one render): %s", n, body)
 	}
 }
 
-// TestOverviewCanAccessProjectQueryError — сбой самого запроса
-// CanAccessProject (не «доступа нет», а поломка БД) обязан отдать 500, а не
-// молча отрендерить 404 (это была бы неразличимая с «нет доступа» тишина —
-// ровно то, чего инженерные правила требуют избегать). Ломаем role — из неё
-// целиком строится org_members-ветка accessCondition (см. org/project.go),
-// БД для теста изолирована (testenv.MigratedPG(t) выдаёт свою t_<hash> на
-// тест), так что ALTER TABLE не аукается соседям — тот же приём, что и
-// TestProfileDeleteLogsWhenEmailReadFails (cover_profile_delete_test.go).
+// Ломаем role — из неё целиком строится org_members-ветка accessCondition; тестовая
+// БД изолирована (testenv.MigratedPG выдаёт свою t_<hash>), ALTER TABLE не аукается соседям.
 func TestOverviewCanAccessProjectQueryError(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	ctx := context.Background()
@@ -345,11 +307,8 @@ func TestOverviewCanAccessProjectQueryError(t *testing.T) {
 	}
 }
 
-// TestOverviewOpenGroupsQueryError — сбой OpenGroups (queryGroupRows)
-// обязан отдать 500. Ломаем root_node_kind — колонку groupRowSelect'а
-// (group.go), которую feedMemberSelect/feedProjectQuery (Composition,
-// OpenOutOfGroup, ClosedSince) не используют вовсе — обломка бьёт ровно по
-// OpenGroups/ClosedGroupsSince, ничего больше в ручке задеть не может.
+// Ломаем root_node_kind — колонку groupRowSelect'а, которую feedMemberSelect/
+// feedProjectQuery не используют, так что обломка бьёт ровно по OpenGroups.
 func TestOverviewOpenGroupsQueryError(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	ctx := context.Background()
@@ -376,17 +335,8 @@ func TestOverviewOpenGroupsQueryError(t *testing.T) {
 	}
 }
 
-// TestOverviewCompositionQueryError — сбой Compositions (состав ВСЕХ
-// открытых/закрытых групп разом, один батч-запрос, W7) обязан отдать 500.
-// Заводим ровно одну открытую группу — иначе overview вообще не собрал бы
-// непустой groupIDs и не позвал бы Compositions. Ломаем ТИП
-// host_incidents.group_id (bigint -> text): его сравнивает С ПАРАМЕТРОМ
-// ($1 = ANY(group IDs)) только feedMemberSelectBatch (group.go, WHERE
-// hi.group_id = ANY($1)) — feedProjectQuery (OpenOutOfGroup/ClosedSince)
-// тот же столбец только проверяет на IS NULL, чему тип безразличен, так что
-// смена типа рвёт РОВНО Compositions и никого из соседей (обычный
-// ALTER COLUMN … RENAME сломал бы саму SELECT-колонку и задел бы оба
-// запроса — здесь нужна асимметрия именно по сравнению типов).
+// Ломаем ТИП group_id (bigint->text): сравнение с параметром задевает только
+// feedMemberSelectBatch — feedProjectQuery лишь проверяет IS NULL, типу безразличное.
 func TestOverviewCompositionQueryError(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	ctx := context.Background()
@@ -424,11 +374,8 @@ func TestOverviewCompositionQueryError(t *testing.T) {
 	}
 }
 
-// TestOverviewOpenOutOfGroupQueryError — сбой OpenOutOfGroup (6-источник-
-// ный feedProjectQuery) обязан отдать 500. Групп в проекте нет (иначе
-// Composition сработал бы раньше и замаскировал бы именно эту ветку), ломаем
-// perf_regressions.metric — колонку trace-ветки feedProjectQuery, которую ни
-// groupRowSelect, ни feedMemberSelect не используют.
+// Групп в проекте нет — иначе Composition сработал бы раньше и замаскировал бы эту ветку;
+// ломаем perf_regressions.metric, которую groupRowSelect/feedMemberSelect не используют.
 func TestOverviewOpenOutOfGroupQueryError(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	ctx := context.Background()
@@ -455,13 +402,8 @@ func TestOverviewOpenOutOfGroupQueryError(t *testing.T) {
 	}
 }
 
-// TestOverviewMultipleGroupsCompositionNotCrossed — W7: overview собирает
-// состав ВСЕХ карточек одним батч-запросом (h.IncidentGroups.Compositions)
-// вместо цикла Composition-по-группе. Главный риск батча — перепутать
-// member'ов между группами через общий список groupIDs/map (см. ту же
-// тревогу в feed_test.go: TestFeedCompositionsBatch на уровне стора). Здесь
-// та же проверка на уровне HTTP-ответа: две открытые группы с РАЗНЫМИ по
-// имени членами, каждая карточка обязана показать ТОЛЬКО своего.
+// Главный риск батч-запроса Compositions — перепутать member'ов между группами через
+// общий groupIDs/map; две открытые группы с разными членами не должны смешаться.
 func TestOverviewMultipleGroupsCompositionNotCrossed(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	ctx := context.Background()
@@ -509,8 +451,7 @@ func TestOverviewMultipleGroupsCompositionNotCrossed(t *testing.T) {
 	if alphaIdx < 0 || betaIdx < 0 {
 		t.Fatalf("both group root names must appear: %s", text)
 	}
-	// Каждая карточка — от своего заголовка до начала следующей (или конца
-	// секции) — обязана содержать СВОЕГО члена и не содержать чужого.
+	// Карточка — от своего заголовка до начала следующей; должна содержать своего члена и не чужого.
 	var alphaCard, betaCard string
 	if alphaIdx < betaIdx {
 		alphaCard, betaCard = text[alphaIdx:betaIdx], text[betaIdx:]
@@ -528,13 +469,8 @@ func TestOverviewMultipleGroupsCompositionNotCrossed(t *testing.T) {
 	}
 }
 
-// TestOverviewCapCaptions — W7/W8: подписи потолков рядом с заголовками
-// секций — реальные числа (incidentgroup.MaxOpenGroups/MaxOpenOutOfGroup,
-// overviewClosedGroupsLimit/overviewClosedOutOfGroupLimit), а не нули
-// FeedCaps{} и не единое (уже неверное) число на обе закрытые секции разом
-// (см. докблок overviewClosedGroupsLimit/overviewClosedOutOfGroupLimit).
-// Заводим одну открытую группу — иначе рендер ушёл бы в ветку «проект
-// совсем пуст» (задача 6 nav-ia) и заголовки секций не появились бы вовсе.
+// Заводим одну открытую группу — иначе рендер ушёл бы в ветку «проект совсем пуст»
+// и заголовки секций не появились бы вовсе.
 func TestOverviewCapCaptions(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	ctx := context.Background()
@@ -571,12 +507,8 @@ func TestOverviewCapCaptions(t *testing.T) {
 	}
 }
 
-// TestOverviewRangeToggleSelectsWindow — переключатель ?range= секции
-// «недавно решённые» (задача 6 nav-ia): 24ч — умолчание, канонический адрес
-// без параметра; 7д — явный ?range=7d, отражается и в подписи окна, и в
-// активной вкладке; нераспознанное значение откатывается на 24ч, а не падает.
-// Заводим одну открытую группу — иначе рендер ушёл бы в ветку «проект
-// совсем пуст», где ни подписи, ни вкладок вовсе нет.
+// Заводим одну открытую группу — иначе рендер ушёл бы в ветку «проект совсем пуст»,
+// где ни подписи, ни вкладок вовсе нет.
 func TestOverviewRangeToggleSelectsWindow(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	ctx := context.Background()
@@ -622,15 +554,8 @@ func TestOverviewRangeToggleSelectsWindow(t *testing.T) {
 	}
 }
 
-// TestOverviewRangeWidensClosedWindowFiltering — фикс-раунд 1 (ревью
-// задачи 6): TestOverviewRangeToggleSelectsWindow проверяет только подпись
-// окна и активную вкладку — обе выводятся из строки rangeKey, не из
-// данных, и не заметили бы, если бы since перестал зависеть от диапазона
-// (ревьюер воспроизвёл это, зашив since на фиксированные 24ч — весь набор
-// TestOverview* остался зелёным). Здесь — фактическая фильтрация по
-// границе окна: инцидент, закрытый 3 суток назад (старше 24ч, моложе 7д),
-// отсутствует в выдаче на умолчании (?range пусто/24h) и появляется на
-// ?range=7d.
+// Подпись и вкладка выводятся из rangeKey, не из данных, и не заметили бы, если since
+// перестал зависеть от диапазона — здесь проверяется фактическая фильтрация.
 func TestOverviewRangeWidensClosedWindowFiltering(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	ctx := context.Background()
@@ -675,9 +600,6 @@ func TestOverviewRangeWidensClosedWindowFiltering(t *testing.T) {
 	}
 }
 
-// TestIncidentFeedRedirectsToOverview — старый адрес ленты (D3) целиком
-// редиректит на «Обзор» (задача 6 nav-ia): экран не должен остаться
-// достижимым по двум разным путям.
 func TestIncidentFeedRedirectsToOverview(t *testing.T) {
 	s := newIssuesStack(t)
 	uid, cookie := registerAndLogin(t, s, "feed@example.com")
@@ -694,10 +616,6 @@ func TestIncidentFeedRedirectsToOverview(t *testing.T) {
 	}
 }
 
-// TestIncidentFeedRedirectInvalidProjectID — редирект со старого адреса
-// ленты, как и сама /overview, отдаёт 404 на нечисловой {id}, а не 500/пустой
-// Location (несуществующий числовой id тоже безопасен: редирект слепой,
-// доступ проверяет цель редиректа — overview).
 func TestIncidentFeedRedirectInvalidProjectID(t *testing.T) {
 	s := newIssuesStack(t)
 	_, cookie := registerAndLogin(t, s, "feed-badid@example.com")
@@ -709,22 +627,17 @@ func TestIncidentFeedRedirectInvalidProjectID(t *testing.T) {
 	}
 }
 
-// TestCookieOnlyDecidesTheDoor — правило состояния (§5 спеки): кука имеет
-// право голоса только на голом /, все остальные экраны берут истину из URL.
-// Без этого теста через полгода правило «оптимизируют»: две вкладки с
-// разными проектами начнут перебивать друг друга.
+// Кука решает дверь только на голом /, остальные экраны берут истину из URL —
+// без этого две вкладки с разными проектами начали бы перебивать друг друга.
 func TestCookieOnlyDecidesTheDoor(t *testing.T) {
 	s := newIssuesStack(t)
 	uid, cookie := registerAndLogin(t, s, "tabs@example.com")
 	a := createProject(t, s, uid, "org-a", "proj-a")
 	b := createProject(t, s, uid, "org-b", "proj-b")
 
-	// заходим в проект A — кука запоминает его
 	respA := getWithCookie(t, s.srv, "/projects/"+strconv.FormatInt(a.ID, 10)+"/overview", cookie)
 	respA.Body.Close()
 
-	// прямой адрес проекта B обязан открыть B, а не запомненный A:
-	// иначе две вкладки с разными проектами перебивают друг друга
 	respB := getWithCookie(t, s.srv, "/projects/"+strconv.FormatInt(b.ID, 10)+"/overview", cookie)
 	defer respB.Body.Close()
 	body, _ := io.ReadAll(respB.Body)
@@ -733,20 +646,11 @@ func TestCookieOnlyDecidesTheDoor(t *testing.T) {
 	}
 }
 
-// index()'s cookie-remembers-project / falls-back-to-org-projects behavior
-// (задача 6 nav-ia, шаг 5) is covered by TestIndexStickyProject
-// (projcookie_test.go) — the authoritative test for that logic, updated in
-// this same task; no separate copy here to avoid duplicate, weaker coverage
-// of the same rule.
+// index()'s cookie-remembers-project behavior is covered by TestIndexStickyProject
+// (projcookie_test.go) — no separate copy here to avoid weaker duplicate coverage.
 
-// TestOverviewStatusLineIsClickable — строка состояния (задача 7 nav-ia):
-// три числа над шкалой инцидентов, каждое ссылкой в свой раздел (аптайм →
-// мониторы, хосты за порогом → хосты, новые проблемы → issues). Проверяем
-// только наличие живых ссылок, не значения самих чисел — те завязаны на
-// данные, которых в свежесозданном проекте нет ни по одному источнику
-// (h.Uptime/h.HostIncidents/h.Deploy остаются nil в newIssuesStack), а
-// строка обязана рендериться и в этом состоянии (без данных — не значит без
-// ссылок).
+// h.Uptime/h.HostIncidents/h.Deploy остаются nil в newIssuesStack — проверяем только
+// наличие ссылок, не значения (данных для них тут нет ни по одному источнику).
 func TestOverviewStatusLineIsClickable(t *testing.T) {
 	s := newIssuesStack(t)
 	uid, cookie := registerAndLogin(t, s, "status@example.com")
@@ -763,12 +667,8 @@ func TestOverviewStatusLineIsClickable(t *testing.T) {
 	}
 }
 
-// TestOverviewStatusLineShowsExactCounts — I1..I4 финревью, I3: мутация
-// «sl.HostsOverThreshold = 0, sl.NewIssues24h = 0» переживала весь пакет
-// (TestOverviewStatusLineIsClickable проверял только наличие ссылок — их
-// печатает рейл и без строки состояния). Здесь проверяются САМИ числа:
-// сид с известными счётчиками → ассерт на конкретные значения в HTML, а не
-// на хрефы, которые (по I2) те же самые области печатают и без плитки.
+// Проверяются сами числа, не только хрефы — те печатает рейл и без строки состояния,
+// так что мутация, обнуляющая счётчики, ссылками не ловится.
 func TestOverviewStatusLineShowsExactCounts(t *testing.T) {
 	s := newIncidentFeedStack(t, true)
 	issueSvc := issue.NewService(s.pool)
@@ -786,17 +686,14 @@ func TestOverviewStatusLineShowsExactCounts(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	// Хосты за порогом: дедуп по HostID (не по инциденту) — два открытых
-	// инцидента на hostA считаются одним хостом, hostB добавляет второй →
-	// итог 2, а не 3.
+	// Дедуп по HostID, не по инциденту: два инцидента на hostA — один хост, hostB — второй.
 	hostA := s.seedFeedHost(t, project.ID, "host-a")
 	hostB := s.seedFeedHost(t, project.ID, "host-b")
 	s.seedFeedHostIncident(t, project.ID, hostA, "disk")
 	s.seedFeedHostIncident(t, project.ID, hostA, "memory")
 	s.seedFeedHostIncident(t, project.ID, hostB, "load")
 
-	// Новые проблемы за сутки: два issue с first_seen внутри окна (сейчас,
-	// час назад), один — за пределами (48ч назад) не должен попасть в счёт.
+	// Два issue внутри окна 24ч, один (48ч назад) — вне, не должен попасть в счёт.
 	now := time.Now().UTC()
 	if _, err := issueSvc.Upsert(ctx, project.ID, "fp-new-1", "new issue 1", "", "error", "", now); err != nil {
 		t.Fatalf("upsert fp-new-1: %v", err)
@@ -834,27 +731,14 @@ func TestOverviewStatusLineShowsExactCounts(t *testing.T) {
 	}
 }
 
-// TestOverviewShowsDeployMarkers — деплои (C5) на той же временной оси, что
-// и инциденты (задача 7 nav-ia): деплой внутри окна обзора должен быть
-// виден на странице, чтобы отвечать на вопрос «после выкатки или само». В
-// отличие от исходной версии теста (ревью фикс-раунда 1: ревьюер снял окно
-// целиком — `since, now` → `time.Time{}, now.Add(999*time.Hour)` — и весь
-// TestOverview* остался зелёным, потому что отсутствие деплоя ВНЕ окна не
-// проверял никто), здесь второй деплой заведён ЗА пределами окна 24ч (но
-// внутри 7д) и должен ОТСУТСТВОВАТЬ на дефолтном (24ч) экране, а при явном
-// расширении окна (?range=7d, тот же переключатель, что и у «недавно
-// решённых») — появиться.
+// Второй деплой заведён за пределами окна 24ч (но внутри 7д): должен отсутствовать на
+// дефолтном экране и появиться при ?range=7d — иначе окно не проверяется вовсе.
 func TestOverviewShowsDeployMarkers(t *testing.T) {
 	s := newIssuesStack(t)
 	uid, cookie := registerAndLogin(t, s, "deploy@example.com")
 	p := createProject(t, s, uid, "dep-org", "dep-proj")
 	pid := strconv.FormatInt(p.ID, 10)
-	// Деплои внутри/вне окна обзора. Отдельного помощника вставки в пакете
-	// нет: TestWebDeploymentsScreen (internal/web/deployments_test.go:54)
-	// пишет деплой в БД прямо в теле теста — повторить оттуда те же вызовы,
-	// подставив нужное время. newIssuesStack не заводит h.Deploy (стенд
-	// задачи 4 issues его не знает) — заводим сами через тот же
-	// deploy.NewStore(s.pool), что и newDeployStack.
+	// newIssuesStack не заводит h.Deploy — заводим сами через deploy.NewStore(s.pool).
 	depSvc := deploy.NewStore(s.pool)
 	s.h.Deploy = depSvc
 

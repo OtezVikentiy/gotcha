@@ -6,19 +6,14 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// TestDecide проверяет чистую логику §6 таблицей: относительный порог И
-// абсолютный пол на открытие, гистерезис на закрытие, отсечка по сэмплам и
-// отсутствию базы. Docker не нужен, под -short не скипается.
 func TestDecide(t *testing.T) {
-	// Конфиг из дефолтов, но с явными значениями из брифа: threshold 0.25,
-	// recovery 0.10, min_samples 100, duration floor 100.
 	cfg := trace.DefaultRegressionConfig()
 	cfg.ThresholdPct = 0.25
 	cfg.RecoveryPct = 0.10
 	cfg.MinSamples = 100
 	cfg.DurationFloorMs = 100
 
-	const md = "duration" // метрика с полом 100
+	const md = "duration"
 
 	s := func(v float64, n int) trace.RegressionSample {
 		return trace.RegressionSample{Value: v, Samples: n}
@@ -31,16 +26,13 @@ func TestDecide(t *testing.T) {
 		open   bool
 		want   string
 	}{
-		// База 800, порог даёт 1000, пол даёт 900.
-		{"open both conditions", s(800, 200), s(1100, 200), false, "open"},   // 1100 > 1000 и > 900
-		{"below threshold", s(800, 200), s(900, 200), false, "none"},         // +12.5% < 25%
-		{"open floor not binding", s(800, 200), s(1050, 200), false, "open"}, // 1050 > 1000 и > 900
-		{"floor blocks small base", s(40, 200), s(80, 200), false, "none"},   // +100% но 80 < 40+100=140
-		// Открытый инцидент: recovery-порог 800×1.1 = 880.
-		{"resolve under recovery", s(800, 200), s(860, 200), true, "resolve"},       // 860 ≤ 880
-		{"resolve at recovery boundary", s(800, 200), s(880, 200), true, "resolve"}, // 880 == 880, граница включительна
-		{"stay open above recovery", s(800, 200), s(900, 200), true, "none"},        // 900 > 880
-		// Отсечки.
+		{"open both conditions", s(800, 200), s(1100, 200), false, "open"},
+		{"below threshold", s(800, 200), s(900, 200), false, "none"},
+		{"open floor not binding", s(800, 200), s(1050, 200), false, "open"},
+		{"floor blocks small base", s(40, 200), s(80, 200), false, "none"},
+		{"resolve under recovery", s(800, 200), s(860, 200), true, "resolve"},
+		{"resolve at recovery boundary", s(800, 200), s(880, 200), true, "resolve"},
+		{"stay open above recovery", s(800, 200), s(900, 200), true, "none"},
 		{"low recent samples", s(800, 200), s(1100, 50), false, "none"},
 		{"low base samples", s(800, 50), s(1100, 200), false, "none"},
 		{"no baseline", s(0, 200), s(1100, 200), false, "none"},
@@ -57,15 +49,10 @@ func TestDecide(t *testing.T) {
 	}
 }
 
-// TestDecideFloorRejectsSmallAbsoluteGrowth: пол существует ради сценария из
-// комментария regression_config.go:36-37 — «+100% на 20→40 мс без него поднял
-// бы ложную тревогу». Пока значения приезжали микросекундными, пол в 100
-// «миллисекунд» сравнивался с микросекундами и работал как 0.1 мс, то есть не
-// работал вовсе.
 func TestDecideFloorRejectsSmallAbsoluteGrowth(t *testing.T) {
 	cfg := trace.DefaultRegressionConfig()
-	base := trace.RegressionSample{Value: 20, Samples: 1000}   // 20 мс
-	recent := trace.RegressionSample{Value: 40, Samples: 1000} // 40 мс, +100%
+	base := trace.RegressionSample{Value: 20, Samples: 1000}
+	recent := trace.RegressionSample{Value: 40, Samples: 1000}
 
 	got := trace.Decide(base, recent, cfg, "duration", false)
 	if got.Kind == trace.DecisionOpen {
@@ -74,8 +61,6 @@ func TestDecideFloorRejectsSmallAbsoluteGrowth(t *testing.T) {
 	}
 }
 
-// TestDecideFloorAllowsRealGrowth — обратная сторона: пол не должен глушить
-// настоящую регрессию.
 func TestDecideFloorAllowsRealGrowth(t *testing.T) {
 	cfg := trace.DefaultRegressionConfig()
 	base := trace.RegressionSample{Value: 400, Samples: 1000}

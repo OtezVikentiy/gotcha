@@ -11,18 +11,13 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestMultiColourChartsEmitClassesNotHex — многоцветные графики должны
-// краситься из app.css по классу. Пока цвета были впечатаны hex-литералами
-// тёмной палитры, в светлой теме полоска доступности и waterfall оставались
-// тёмными: одного currentColor там мало (нужно несколько цветов в одном SVG),
-// и это «мало» раньше решали хардкодом.
 func TestMultiColourChartsEmitClassesNotHex(t *testing.T) {
 	ctx := context.Background()
 	bars := []uptime.UptimeStat{
-		{Total: 10, OK: 10}, // все успешны → зелёная
-		{Total: 10, OK: 9},  // мелкие сбои, большинство ок → жёлтая
-		{Total: 10, OK: 3},  // большинство провалилось → красная
-		{Total: 0},          // проверок не было → серая
+		{Total: 10, OK: 10},
+		{Total: 10, OK: 9},
+		{Total: 10, OK: 3},
+		{Total: 0},
 	}
 
 	got := availabilityBarsMarkup(ctx, bars, 300, 24)
@@ -38,16 +33,12 @@ func TestMultiColourChartsEmitClassesNotHex(t *testing.T) {
 		}
 	}
 
-	// Пустая полоска — та же история: серый прямоугольник «нет данных».
 	empty := availabilityBarsMarkup(ctx, nil, 300, 24)
 	if strings.Contains(empty, "#263041") || !strings.Contains(empty, "bar-empty") {
 		t.Errorf("пустая полоска не переведена на класс: %s", empty)
 	}
 }
 
-// TestAvailabilityBarPartialPlainFill: «частично» — одна заливка классом
-// bar-partial, без оверлея и <pattern>: штриховка снята вместе с переходом на
-// палитру по оттенку (см. CHANGELOG). На корзину — ровно один <rect>.
 func TestAvailabilityBarPartialPlainFill(t *testing.T) {
 	ctx := context.Background()
 	bars := []uptime.UptimeStat{{Total: 10, OK: 9}, {Total: 10, OK: 10}, {Total: 10, OK: 2}}
@@ -62,9 +53,6 @@ func TestAvailabilityBarPartialPlainFill(t *testing.T) {
 	}
 }
 
-// TestAvailabilityBarClassThresholds пришпиливает пороги окраски корзины:
-// зелёная — все ок, жёлтая — большинство ок при наличии сбоев (граница ровно
-// 50%), красная — большинство провалилось, серая — нет данных.
 func TestAvailabilityBarClassThresholds(t *testing.T) {
 	cases := []struct {
 		stat    uptime.UptimeStat
@@ -86,11 +74,8 @@ func TestAvailabilityBarClassThresholds(t *testing.T) {
 			t.Errorf("labelKey(%+v) = %q, want %q", c.stat, got, c.wantKey)
 		}
 	}
-	// Полнота таблицы: новый класс без подписи должен ронять тест, а не
-	// молча получать пустую строку (как это делала ветвистая версия №29).
-	// Резолв в ОБОИХ каталогах — тоже здесь: ключи таблицы не литеральные
-	// вызовы i18n.T, общий сканер каталога (i18n_keys_test.go) их не видит —
-	// тот же приём, каким TestDynamicKeysResolve страхует конкатенации.
+	// ключи этой таблицы не литеральные вызовы i18n.T — статический сканер
+	// каталога их не видит, резолв проверяется здесь.
 	for _, cls := range []string{availabilityClassUp, availabilityClassPartial, availabilityClassDown, availabilityClassEmpty} {
 		key := availabilityBarLabelKey[cls]
 		if key == "" {
@@ -106,17 +91,8 @@ func TestAvailabilityBarClassThresholds(t *testing.T) {
 	}
 }
 
-// TestAvailabilityBarsStretchToCardWidth — полоска доступности рисуется в
-// фиксированные 192×24 (availabilityBarsWidth/Height), а на публичной
-// статус-странице карточка шире (646px/255px). Дефолтный
-// preserveAspectRatio="xMidYMid meet" держит натуральный масштаб и
-// центрирует SVG внутри карточки — полоска выглядит крошечной. object-fit
-// тут не помогает (не замещаемый элемент, инлайновый корневой <svg>),
-// поэтому растягивать обязан сам preserveAspectRatio="none" на ЭТОМ
-// графике. Второй ассерт — обязательная защита от расползания: у ПРОИЗВОЛЬНОГО
-// другого графика (chartBars) атрибут должен остаться отсутствующим
-// (дефолтное поведение) — иначе правка молча тронула бы svgRoot() и все
-// графики продукта разом.
+// object-fit не работает на инлайновом корневом <svg> (не замещаемый элемент) —
+// растягивать обязан сам preserveAspectRatio="none" на этом графике.
 func TestAvailabilityBarsStretchToCardWidth(t *testing.T) {
 	ctx := context.Background()
 
@@ -136,9 +112,6 @@ func TestAvailabilityBarsStretchToCardWidth(t *testing.T) {
 	}
 }
 
-// TestChartColourClassesAreStyled — класс без правила в app.css красит SVG
-// ничем: элемент просто отрисуется чёрным/прозрачным. Проверяем, что каждому
-// классу назначен цвет.
 func TestChartColourClassesAreStyled(t *testing.T) {
 	css, err := readAppCSS()
 	if err != nil {

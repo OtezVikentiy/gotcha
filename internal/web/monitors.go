@@ -16,24 +16,17 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// monitorsListWindow/Buckets — окно и разрешение полоски доступности и
-// uptime%/latency в списке мониторов: 24 часа, 24 корзины (одна на час).
 const (
 	monitorsListWindow  = 24 * time.Hour
 	monitorsListBuckets = 24
 )
 
-// monitorDetailChecksLimit — сколько последних проверок показывает страница
-// монитора. monitorDetailIncidentsPerPage — размер страницы ленты инцидентов
-// на детали монитора (постранично через ?incpage=N, а не единый кап-список).
 const (
 	monitorDetailChecksLimit      = 50
 	monitorDetailIncidentsPerPage = 20
 )
 
-// monitorLatencyBuckets — целевое число точек графика задержек монитора; шаг
-// подбирает autoStep по выбранному окну (для 24ч по умолчанию — 30м). Данные
-// из сырых проверок, поэтому выравнивание не нужно (align=0), только пол 5 мин.
+// данные из сырых проверок, выравнивание не нужно (align=0), только пол 5 мин.
 const monitorLatencyBuckets = 48
 
 func monitorsPath(projectID int64) string {
@@ -56,10 +49,6 @@ func monitorDeletePath(monitorID int64) string {
 	return monitorDetailPath(monitorID) + "/delete"
 }
 
-// monitorStatus — статус монитора для отображения: enabled=false → "paused";
-// активное окно обслуживания проекта → "maintenance"; иначе агрегат по
-// consensus-политике монитора (uptime.Aggregate) — тот же приоритет, что
-// требует спека задачи 2 (не дублировать consensus-логику детектора).
 func monitorStatus(m uptime.Monitor, states []uptime.State, inMaintenance bool) string {
 	if !m.Enabled {
 		return "paused"
@@ -70,9 +59,6 @@ func monitorStatus(m uptime.Monitor, states []uptime.State, inMaintenance bool) 
 	return uptime.Aggregate(m, states)
 }
 
-// latestCheckedAt возвращает самый свежий LastCheckedAt среди states монитора
-// (регион с самой недавней проверкой), либо nil, если ни один регион ещё не
-// проверялся (свежесозданный монитор).
 func latestCheckedAt(states []uptime.State) *time.Time {
 	var latest *time.Time
 	for _, st := range states {
@@ -86,11 +72,7 @@ func latestCheckedAt(states []uptime.State) *time.Time {
 	return latest
 }
 
-// avgLatencyMs усредняет AvgTotalMs по непустым бакетам points — грубое, но
-// достаточное для списочной колонки приближение "средней задержки за
-// период" (Query не отдаёт единое агрегированное среднее одним вызовом,
-// только временной ряд), взвешенное поровну по бакетам, а не по числу
-// проверок в каждом.
+// грубое приближение: взвешено поровну по бакетам, а не по числу проверок в каждом.
 func avgLatencyMs(points []uptime.LatencyPoint) uint32 {
 	var sum uint64
 	var count uint64
@@ -106,11 +88,8 @@ func avgLatencyMs(points []uptime.LatencyPoint) uint32 {
 	return uint32(sum / count)
 }
 
-// canManageOrg — owner/admin организации orgID. org.ErrNotMember не должен
-// ронять страницу (юзер мог получить доступ к проекту только через команду) —
-// тот же приём, что и canManage в issuesList. Вынесена из canManageProject
-// (находка B4): requireProjectOperator уже знает orgID и вызывает эту часть
-// напрямую, без повторного резолва projectID -> orgID.
+// org.ErrNotMember не должен ронять страницу — юзер мог получить доступ к проекту
+// только через команду, не будучи членом организации.
 func (h *Handler) canManageOrg(ctx context.Context, orgID, userID int64) (bool, error) {
 	role, err := h.Org.Role(ctx, orgID, userID)
 	if err != nil && !errors.Is(err, org.ErrNotMember) {
@@ -119,7 +98,6 @@ func (h *Handler) canManageOrg(ctx context.Context, orgID, userID int64) (bool, 
 	return role == org.RoleOwner || role == org.RoleAdmin, nil
 }
 
-// canManageProject — owner/admin организации проекта.
 func (h *Handler) canManageProject(ctx context.Context, projectID, userID int64) (bool, error) {
 	orgID, err := h.Org.ProjectOrg(ctx, projectID)
 	if err != nil {
@@ -128,9 +106,6 @@ func (h *Handler) canManageProject(ctx context.Context, projectID, userID int64)
 	return h.canManageOrg(ctx, orgID, userID)
 }
 
-// monitorsList — GET /projects/{id}/monitors: таблица мониторов проекта
-// (доступ — CanAccessProject, иначе 404, тот же принцип, что и у
-// issuesList).
 func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -141,9 +116,7 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// h.Uptime/h.UptimeQuery могут быть nil в стендах без подсистемы
-	// мониторинга — тогда 404 (как несуществующая фича), а не паника при
-	// разыменовании (тот же guard, что и h.Metrics в metricsList).
+	// h.Uptime/h.UptimeQuery == nil в стендах без подсистемы мониторинга — 404, а не паника.
 	if h.Uptime == nil || h.UptimeQuery == nil {
 		h.notFound(w, r)
 		return
@@ -158,9 +131,6 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// С задачи 2 (спека 2026-08-08) кнопка «New monitor» — операторская, не
-	// owner/admin-only: canOperate наполняется canOperateProject, а не
-	// canManageProject.
 	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -186,19 +156,13 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 	for i, m := range monitors {
 		ids[i] = m.ID
 	}
-	// Пакетные запросы по всему набору мониторов вместо N+1 в цикле: uptime,
-	// состояния (PG), латентность и полоски доступности (CH) — по одному запросу
-	// на всех (списочная страница иначе делала ~3N round-trip, из них ~2N в CH).
+	// пакетные запросы по всему набору мониторов вместо N+1 в цикле.
 	statesByMon, err := h.Uptime.StatesBatch(r.Context(), ids)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	// Аптайм, задержка и полосы — из ClickHouse; мониторы и их состояния —
-	// из PostgreSQL. Отказ CH не роняет список (единый приём CH-страниц,
-	// образец — logsList): строки со статусами показываем, колонки статистики
-	// — «нет данных», над таблицей — «статистика временно недоступна».
-	// Первый отказ прекращает опрос хранилища.
+	// отказ CH не роняет список: строки со статусами показываем, колонки статистики — «нет данных».
 	uptimeStats, latencyByMon, barsByMon, statsFailed := h.monitorsListStats(r.Context(), projectID, ids, from, now)
 
 	rows := make([]templates.MonitorRow, len(monitors))
@@ -220,9 +184,7 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 	_ = templates.MonitorsList(projectID, rows, canOperate, h.currentEmail(r), statsFailed).Render(r.Context(), w)
 }
 
-// monitorsListStats — три батч-запроса списка мониторов к ClickHouse. Любой
-// отказ возвращает failed=true и пустые карты (nil-карта читается как
-// «нет данных» для каждого монитора); ошибка уходит в лог, не в ответ.
+// любой отказ возвращает failed=true и пустые карты (nil-карта читается как «нет данных»).
 func (h *Handler) monitorsListStats(ctx context.Context, projectID int64, ids []int64, from, now time.Time) (map[int64]uptime.UptimeStat, map[int64][]uptime.LatencyPoint, map[int64][]uptime.UptimeStat, bool) {
 	uptimeStats, err := h.UptimeQuery.UptimeBatch(ctx, ids, from, now)
 	if err != nil {
@@ -242,11 +204,8 @@ func (h *Handler) monitorsListStats(ctx context.Context, projectID int64, ids []
 	return uptimeStats, latencyByMon, barsByMon, false
 }
 
-// loadAccessibleMonitor — общая часть GET/POST monitor-обработчиков: находит
-// монитор по id и проверяет, что текущий юзер видит его проект. Оба случая
-// (монитор не существует, монитор существует но проект чужой) отдают 404 —
-// не палим существование чужих числовых id, тот же принцип, что и в
-// loadAccessibleIssue.
+// монитор не существует и монитор существует, но проект чужой — оба случая 404:
+// не палим существование чужих числовых id.
 func (h *Handler) loadAccessibleMonitor(w http.ResponseWriter, r *http.Request, uid int64) (uptime.Monitor, bool) {
 	monitorID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -274,29 +233,19 @@ func (h *Handler) loadAccessibleMonitor(w http.ResponseWriter, r *http.Request, 
 	return m, true
 }
 
-// monitorUptimeStat — uptime% монитора на [from,to), исключая интервалы окон
-// обслуживания проекта (WindowIntervals из уже загруженных windows) — та
-// часть спеки, которая отличает страницу монитора (skрытые окна) от
-// списочной колонки (сырой аптайм за 24ч, UptimeBatch без исключений).
+// в отличие от списочной колонки (UptimeBatch, сырой аптайм без исключений), страница
+// монитора исключает интервалы окон обслуживания из подсчёта.
 func (h *Handler) monitorUptimeStat(ctx context.Context, monitorID int64, windows []uptime.Window, from, to time.Time) (uptime.UptimeStat, error) {
 	exclude := uptime.WindowIntervals(windows, from, to)
 	return h.UptimeQuery.Uptime(ctx, monitorID, from, to, exclude)
 }
 
-// monitorDetail — GET /monitors/{id}: крупный статус, uptime% за
-// 24ч/7д/30д (без окон обслуживания), stacked-график задержек за 24ч,
-// последние 50 проверок, таймлайн инцидентов, SSL, кнопки
-// Pause/Resume/Edit/Delete (с задачи 2 — оператору проекта, не только
-// owner/admin).
 func (h *Handler) monitorDetail(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	// nil-guard до loadAccessibleMonitor (сам дереференсит h.Uptime) и до
-	// renderMonitorDetail (дереференсит h.UptimeQuery): в стендах без
-	// мониторинга — 404, а не паника (тот же класс, что и traceWaterfall).
 	if h.Uptime == nil || h.UptimeQuery == nil {
 		h.notFound(w, r)
 		return
@@ -306,11 +255,6 @@ func (h *Handler) monitorDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// С задачи 2 обе группы флагов на странице детали — операторские: и
-	// Pause/Resume/Edit/Delete (canManage), и карточка heartbeat-токена
-	// (canOperate). Один и тот же canOperateProject наполняет оба параметра —
-	// разошлись бы они только если предикаты «управлять» и «оперировать»
-	// когда-нибудь разъедутся (см. canOperateProject в operate.go).
 	canOperate, err := h.canOperateProject(r.Context(), m.ProjectID, uid)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -319,15 +263,8 @@ func (h *Handler) monitorDetail(w http.ResponseWriter, r *http.Request) {
 	h.renderMonitorDetail(w, r, m, canOperate, canOperate)
 }
 
-// renderMonitorDetail собирает и рендерит страницу детали монитора. Для показа
-// heartbeat-URL один раз сразу после создания/ротации токена вызывающий выставляет
-// сырой токен в m.HeartbeatToken (в БД хранится только его sha256): при обычном
-// GET поле пустое и URL пинга не рендерится — нужно перегенерировать токен.
-// canManage гейтит кнопки Pause/Resume/Edit/Delete; canOperate отдельно
-// гейтит карточку heartbeat-токена. С задачи 2 оба параметра у всех вызывающих
-// наполняются одним и тем же canOperateProject (весь набор кнопок монитора —
-// операторский, спека 2026-08-08); флаги остаются раздельными в сигнатуре на
-// случай, если предикаты «управлять» и «оперировать» разойдутся в будущем.
+// для показа heartbeat-URL один раз сразу после создания/ротации вызывающий выставляет
+// сырой токен в m.HeartbeatToken (в БД — только sha256); при обычном GET поле пустое.
 func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m uptime.Monitor, canManage, canOperate bool) {
 	states, err := h.Uptime.States(r.Context(), m.ID)
 	if err != nil {
@@ -352,11 +289,8 @@ func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m 
 	tr := h.resolveTimeRange(w, r, "24h")
 	latencyStep := autoStep(tr.Window(), 5*time.Minute, 0, monitorLatencyBuckets)
 
-	// Все чтения ClickHouse карточки (аптайм за три окна, задержки, последние
-	// проверки) — одним блоком: отказ хранилища не роняет страницу (единый
-	// приём CH-страниц, образец — logsList), шапка, статус, действия и
-	// инциденты (PostgreSQL) остаются, на месте графика и проверок — «данные
-	// временно недоступны». Первый отказ прекращает опрос хранилища.
+	// отказ ClickHouse не роняет страницу: шапка/статус/инциденты (PostgreSQL) остаются,
+	// на месте графика — «данные временно недоступны».
 	var (
 		uptime24h, uptime7d, uptime30d uptime.UptimeStat
 		latencyPoints                  []uptime.LatencyPoint
@@ -386,8 +320,6 @@ func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m 
 	latencyPoints = fillSeries(latencyPoints, tr.From, tr.To, latencyStep,
 		func(p uptime.LatencyPoint) time.Time { return p.T },
 		func(t time.Time) uptime.LatencyPoint { return uptime.LatencyPoint{T: t} })
-	// Маркеры деплоев на графике задержек монитора (C5): выкладки проекта в
-	// том же выбранном окне графика.
 	var deploys []deploy.Deployment
 	if h.Deploy != nil {
 		deploys, _ = h.Deploy.List(r.Context(), m.ProjectID, tr.From, tr.To, 20)
@@ -407,9 +339,6 @@ func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m 
 	_ = templates.MonitorDetail(m, status, uptime24h, uptime7d, uptime30d, latencyChart, timeRangeVM(tr), checks, incidents, incPage, incTotal, canManage, canOperate, h.BaseURL, h.currentEmail(r), statsFailed).Render(r.Context(), w)
 }
 
-// monitorSetEnabled — общая часть POST /monitors/{id}/pause и /resume:
-// sameOrigin + requireProjectOperator (оператор, спека 2026-08-08) →
-// SetEnabled → 303 обратно на страницу монитора.
 func (h *Handler) monitorSetEnabled(w http.ResponseWriter, r *http.Request, enabled bool) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -435,8 +364,6 @@ func (h *Handler) monitorSetEnabled(w http.ResponseWriter, r *http.Request, enab
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	// Flash различает паузу и возобновление (K7-9): «Сохранено» здесь не
-	// сказало бы, в каком состоянии монитор остался.
 	if enabled {
 		h.flashOK(w, "flash.monitor_resumed", 0)
 	} else {
@@ -453,9 +380,6 @@ func (h *Handler) monitorResume(w http.ResponseWriter, r *http.Request) {
 	h.monitorSetEnabled(w, r, true)
 }
 
-// monitorDelete — POST /monitors/{id}/delete: sameOrigin +
-// requireProjectOperator (оператор, спека 2026-08-08) → Delete → 303 на
-// список мониторов проекта.
 func (h *Handler) monitorDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -480,9 +404,7 @@ func (h *Handler) monitorDelete(w http.ResponseWriter, r *http.Request) {
 	if !h.parseForm(w, r) {
 		return
 	}
-	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
-	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
-	// показываем страницу подтверждения вместо необратимого действия.
+	// CSP без unsafe-inline не исполняет inline confirm() — подтверждение отдельной страницей.
 	if r.FormValue("confirmed") != "yes" {
 		h.renderConfirmf(w, r, "confirm.title", "confirm.monitor_delete.message", "confirm.delete",
 			monitorDetailPath(m.ID), monitorDeletePath(m.ID), nil,

@@ -16,7 +16,6 @@ func TestComputePriorities(t *testing.T) {
 		Frames: append(frames(false, "django.core", "handler"), frames(true, "app.views", "get_user")...),
 	}}}
 
-	// 1. Стек стабилен: другой message/value — тот же отпечаток.
 	other := stackIn
 	other.Exceptions = []Exception{{
 		Type: "ValueError", Value: "bad id 777",
@@ -26,7 +25,6 @@ func TestComputePriorities(t *testing.T) {
 		t.Error("same stack, different value: fingerprints must match")
 	}
 
-	// 2. Только in-app фреймы участвуют: добавление системного фрейма не меняет отпечаток.
 	withExtraSystem := stackIn
 	withExtraSystem.Exceptions = []Exception{{
 		Type: "ValueError", Value: "bad id 42",
@@ -36,7 +34,6 @@ func TestComputePriorities(t *testing.T) {
 		t.Error("extra system frame must not change fingerprint")
 	}
 
-	// 3. Другой in-app стек — другой отпечаток.
 	otherStack := Input{Exceptions: []Exception{{
 		Type: "ValueError", Value: "bad id 42",
 		Frames: frames(true, "app.views", "delete_user"),
@@ -45,7 +42,6 @@ func TestComputePriorities(t *testing.T) {
 		t.Error("different in-app stack must change fingerprint")
 	}
 
-	// 4. Нет in-app — используются все фреймы.
 	sysOnly := Input{Exceptions: []Exception{{
 		Type: "OperationalError", Value: "x",
 		Frames: frames(false, "psycopg2", "connect"),
@@ -58,7 +54,6 @@ func TestComputePriorities(t *testing.T) {
 		t.Error("system-only stacks with different frames must differ")
 	}
 
-	// 5. Нет стека: type + нормализованное value.
 	noStack1 := Input{Exceptions: []Exception{{Type: "UserNotFound", Value: "user 123 not found"}}}
 	noStack2 := Input{Exceptions: []Exception{{Type: "UserNotFound", Value: "user 456 not found"}}}
 	if Compute(noStack1) != Compute(noStack2) {
@@ -69,14 +64,12 @@ func TestComputePriorities(t *testing.T) {
 		t.Error("different exception type must change fingerprint")
 	}
 
-	// 6. Совсем без exception: message.
 	msg1 := Input{Message: "timeout after 30s for request 0xdeadbeef"}
 	msg2 := Input{Message: "timeout after 60s for request 0xcafebabe"}
 	if Compute(msg1) != Compute(msg2) {
 		t.Error("message events must group after normalization")
 	}
 
-	// 7. Кастомный fingerprint перекрывает всё; {{ default }} подставляется.
 	custom1 := stackIn
 	custom1.Custom = []string{"payments", "timeout"}
 	custom2 := otherStack
@@ -92,7 +85,6 @@ func TestComputePriorities(t *testing.T) {
 		t.Error("{{ default }} must expand to the default component")
 	}
 
-	// 8. Пустой вход детерминирован и не паникует.
 	if Compute(Input{}) == "" || Compute(Input{}) != Compute(Input{}) {
 		t.Error("empty input must produce stable non-empty fingerprint")
 	}

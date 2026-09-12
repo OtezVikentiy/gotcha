@@ -9,21 +9,17 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// sloDetailPath — адрес экрана деталей SLO. Должен совпадать со ссылкой
-// url-нотифаера (T5) и с роутом web.go: /projects/{id}/slos/{sloID}.
+// должен совпадать со ссылкой url-нотифаера и роутом web.go: /projects/{id}/slos/{sloID}.
 func sloDetailPath(projectID, sloID int64) string {
 	return SLOsPath(projectID) + "/" + strconv.FormatInt(sloID, 10)
 }
 
-// SLOIncidentRow — строка истории инцидентов сжигания бюджета SLO.
 type SLOIncidentRow struct {
 	ID             int64
 	Open           bool
 	Severity       string
 	AcknowledgedAt *time.Time
-	// AcknowledgedByEmail — W2-C находка 4: email подтвердившего, уже
-	// резолвлен вызывающей стороной (web.Handler.ackedByEmails), пустая
-	// строка — не подтверждён или пользователь с тех пор удалён.
+	// уже резолвлен в web.Handler.ackedByEmails; пусто — не подтверждён или пользователь удалён.
 	AcknowledgedByEmail string
 	StartedAt           time.Time
 	ResolvedAt          *time.Time
@@ -32,9 +28,8 @@ type SLOIncidentRow struct {
 	BudgetRemainingPct  float64
 }
 
-// SLODetailVM — вью-модель экрана деталей одного SLO. HasData=false — за окно
-// нет событий или провайдер недоступен (проценты и график не показываем).
-// HasBurn=false — узкое burn-окно пусто (burn сейчас не считается).
+// HasData=false — за окно нет событий или провайдер недоступен, проценты и график не показываем.
+// HasBurn=false — узкое burn-окно пусто (сейчас не считается).
 type SLODetailVM struct {
 	ProjectID     int64
 	ID            int64
@@ -60,14 +55,11 @@ type SLODetailVM struct {
 	Incidents []SLOIncidentRow
 }
 
-// sloBurnText — burn rate в виде «×N» с одним знаком после запятой.
 func sloBurnText(rate float64) string {
 	return "×" + strconv.FormatFloat(rate, 'f', 1, 64)
 }
 
-// sloIncidentStatusBadgeClass/sloIncidentStatusKey — открытый инцидент требует
-// внимания (danger), закрытый — good, тот же приём, что incidentStatusBadgeClass
-// в monitordetail.templ.
+// тот же приём, что incidentStatusBadgeClass в monitordetail.templ.
 func sloIncidentStatusBadgeClass(open bool) string {
 	if open {
 		return "badge badge-danger"
@@ -82,8 +74,6 @@ func sloIncidentStatusKey(open bool) string {
 	return "slo.detail.incident_resolved"
 }
 
-// sloIncidentDuration — «идёт» для открытого, иначе длительность между
-// started_at и resolved_at (humanize.Duration, не свой макет).
 func sloIncidentDuration(ctx context.Context, row SLOIncidentRow) string {
 	if row.ResolvedAt == nil {
 		return i18n.T(ctx, "slo.detail.ongoing")
@@ -91,9 +81,6 @@ func sloIncidentDuration(ctx context.Context, row SLOIncidentRow) string {
 	return humanize.Duration(ctx, row.ResolvedAt.Sub(row.StartedAt))
 }
 
-// SLODetailScreen — GET /projects/{id}/slos/{sloID}: карточки (цель/достижение/
-// остаток бюджета/burn сейчас), открытый инцидент, burn-down график сжигания
-// бюджета и история инцидентов SLO. Хлебные крошки ведут в список SLO.
 templ SLODetailScreen(vm SLODetailVM, userEmail string) {
 	@layout(vm.Name, userEmail) {
 		<div class="slo-detail">

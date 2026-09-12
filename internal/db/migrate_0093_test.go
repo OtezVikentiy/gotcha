@@ -10,14 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0093LogFiltersFKIndexes — правка находки финального ревью C13
-// (internal/guards, TestForeignKeysHaveCoveringIndex): пять внешних ключей
-// log_saved_filters/log_default_filters (0092) без покрывающего индекса.
-// На непустой базе (TestLatestMigrationHasDataTest, C15): заводим личный и
-// общий фильтр ДО миграции 93 (общий — с NULL owner_user_id, ровно тот
-// случай, который проверяет частичный индекс), проверяем появление всех
-// пяти индексов, откатываем и убеждаемся, что данные не пострадали — тот же
-// приём, что и migrate_0089_test.go.
+// TestForeignKeysHaveCoveringIndex флагует пять FK log_saved_filters/log_default_filters (0092) без
+// покрывающего индекса; общий фильтр (owner_user_id NULL) — случай, который проверяет частичный индекс.
 func TestMigrate0093LogFiltersFKIndexes(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -46,10 +40,8 @@ func TestMigrate0093LogFiltersFKIndexes(t *testing.T) {
 	mustScan(t, pool, &personalID, `
 		INSERT INTO log_saved_filters (project_id, owner_user_id, author_user_id, name)
 		VALUES ($1, $2, $2, 'личный') RETURNING id`, projectID, userID)
-	// Общий фильтр: owner_user_id NULL (сам смысл "общий") — ровно та строка,
-	// которую частичный индекс log_saved_filters_owner_user_id_idx (WHERE
-	// owner_user_id IS NOT NULL) обязан НЕ включать, author_user_id при этом
-	// заполнен и обязан попасть под свой частичный индекс.
+	// Общий фильтр: owner_user_id NULL — строка, которую партиальный индекс владельца (WHERE
+	// owner_user_id IS NOT NULL) обязан НЕ включать; author_user_id заполнен и попадает под свой индекс.
 	var sharedID int64
 	mustScan(t, pool, &sharedID, `
 		INSERT INTO log_saved_filters (project_id, owner_user_id, author_user_id, name)
@@ -79,9 +71,7 @@ func TestMigrate0093LogFiltersFKIndexes(t *testing.T) {
 		}
 	}
 
-	// Частичные индексы владельца/автора реально избирательны: общий фильтр
-	// (owner_user_id IS NULL) не должен попадать под индекс владельца, но
-	// обязан находиться по индексу автора.
+	// Партиальные индексы избирательны: общий фильтр не под индексом владельца, но под индексом автора.
 	var ownerHit, authorHit bool
 	if err := pool.QueryRow(ctx,
 		"SELECT EXISTS (SELECT 1 FROM log_saved_filters WHERE id = $1 AND owner_user_id IS NOT NULL)",

@@ -16,9 +16,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// baseHeartbeatMonitor creates a kind=heartbeat monitor with the given
-// fail_threshold and grace period — mirrors baseHTTPMonitor/createMonitor
-// (monitor_test.go, state_test.go) for the watchdog-specific kind.
 func baseHeartbeatMonitor(t *testing.T, projectID int64, failThreshold, graceSeconds int) uptime.Monitor {
 	t.Helper()
 	return uptime.Monitor{
@@ -35,8 +32,6 @@ func baseHeartbeatMonitor(t *testing.T, projectID int64, failThreshold, graceSec
 	}
 }
 
-// fastWatchdog builds a Watchdog with tickers fast enough for tests
-// (mirrors newFastRunner in runner_test.go).
 func fastWatchdog(svc *uptime.Service, d *uptime.Detector, n uptime.Notifier) *uptime.Watchdog {
 	return &uptime.Watchdog{
 		Svc:      svc,
@@ -55,8 +50,7 @@ func TestWatchdogHeartbeatOpensIncidentOnStaleBeat(t *testing.T) {
 	defer cancel()
 
 	pid := newProject(t, pool)
-	// fail_threshold=1 — a single missed-beat tick is enough to reach "down"
-	// (see task brief: "один тик = одна неудача").
+	// fail_threshold=1 — одного пропущенного тика достаточно, чтобы дойти до down.
 	m := baseHeartbeatMonitor(t, pid, 1, 60)
 	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
 
@@ -73,11 +67,8 @@ func TestWatchdogHeartbeatOpensIncidentOnStaleBeat(t *testing.T) {
 	defer wcancel()
 	go wd.Run(wctx)
 
-	// Ждём именно ИНЦИДЕНТА, а не состояния. Состояние монитора пишется на шаг
-	// раньше открытия инцидента, и ожидание по нему возвращало управление в
-	// промежутке между двумя записями: тест шёл проверять инцидент, которого
-	// ещё секунду не будет. Гонка была латентной и вылезла, когда порядок
-	// работ в Run сдвинулся на пару миллисекунд.
+	// ждём именно инцидента: состояние пишется на шаг раньше его открытия,
+	// и ожидание по состоянию ловит окно между двумя записями.
 	waitForRunner(t, func() bool {
 		_, found, err := svc.OpenIncidentFor(context.Background(), created.ID)
 		return err == nil && found
@@ -110,12 +101,8 @@ func TestWatchdogHeartbeatFreshBeatDoesNothing(t *testing.T) {
 		t.Fatalf("set last_beat_at: %v", err)
 	}
 
-	// Позитивный контроль: второй монитор с ПРОТУХШИМ ударом. Раньше тест
-	// запускал watchdog, спал и утверждал, что ничего не произошло — и оставался
-	// зелёным, даже если бы watchdog не тикнул ни разу (сломанный тикер,
-	// упавший Run, изменившийся запрос выборки). «Ничего не произошло» — это
-	// утверждение о бездействии, и оно чего-то стоит только рядом с
-	// доказательством, что действовать было кому.
+	// позитивный контроль — второй монитор с протухшим ударом: без него тест
+	// зеленел бы даже если watchdog не тикнул ни разу.
 	stale := mustCreateMonitor(t, pool, svc, ctx, baseHeartbeatMonitor(t, pid, 1, 60), []string{"local"})
 	if _, err := pool.Exec(ctx,
 		"UPDATE monitors SET last_beat_at = now() - interval '5 minutes' WHERE id = $1", stale.ID); err != nil {
@@ -130,7 +117,6 @@ func TestWatchdogHeartbeatFreshBeatDoesNothing(t *testing.T) {
 	defer wcancel()
 	go wd.Run(wctx)
 
-	// Ждём срабатывания по протухшему — этим и доказано, что тик состоялся.
 	waitForRunner(t, func() bool {
 		states, err := svc.States(context.Background(), stale.ID)
 		return err == nil && len(states) == 1 && states[0].Status == "down"
@@ -152,13 +138,6 @@ func TestWatchdogHeartbeatFreshBeatDoesNothing(t *testing.T) {
 	}
 }
 
-// TestStaleHeartbeatsPopulatesRegionCount: StaleHeartbeats must fill in
-// Regions/RegionCount like Get/List do (finding P1-3) — checkHeartbeats feeds
-// its result straight into Detector.OnResult/aggregate(), which uses
-// RegionCount as consensus's denominator. Left at zero, a multi-region
-// heartbeat monitor's chosen consensus (all/majority) silently degraded to
-// "whichever region's watchdog reports first" instead of waiting for every
-// configured region.
 func TestStaleHeartbeatsPopulatesRegionCount(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -195,13 +174,6 @@ func TestStaleHeartbeatsPopulatesRegionCount(t *testing.T) {
 	}
 }
 
-// TestWatchdogHeartbeatConsensusAllWaitsForAllRegions: a two-region
-// deployment (two Watchdog processes, one per region — cfg.LocalRegion in
-// cmd/gotcha, see checkSSL's doc comment) with consensus=all must NOT open
-// an incident off just one region's report. Before the RegionCount fix,
-// StaleHeartbeats left RegionCount at 0, so aggregate() fell back to
-// total=decided and "all" was satisfied (down==total==1) the instant the
-// FIRST region's watchdog ticked — defeating the point of choosing "all".
 func TestWatchdogHeartbeatConsensusAllWaitsForAllRegions(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -219,8 +191,7 @@ func TestWatchdogHeartbeatConsensusAllWaitsForAllRegions(t *testing.T) {
 
 	notifier := &fakeNotifier{}
 	d := &uptime.Detector{Svc: svc, Notifier: notifier, Pool: pool}
-	// Только регион "local" тикает — "eu" пока не сообщил ничего. С
-	// consensus=all и корректным RegionCount=2 инцидент открыться не должен.
+	// только local тикает — с consensus=all и RegionCount=2 инцидент открыться не должен.
 	localWD := fastWatchdog(svc, d, notifier)
 	localWD.Region = "local"
 
@@ -232,13 +203,9 @@ func TestWatchdogHeartbeatConsensusAllWaitsForAllRegions(t *testing.T) {
 		states, err := svc.States(context.Background(), created.ID)
 		return err == nil && len(states) == 1 && states[0].Status == "down"
 	})
-	// Регион "local" уже отчитался down; "eu" ещё нет — только один из двух
-	// настроенных регионов определился. С consensus=all этого недостаточно.
 	assertNoOpenIncident(t, ctx, svc, created.ID)
 	wcancel()
 
-	// Второй регион "eu" тоже тикает: теперь оба региона определились и
-	// оба down — consensus=all должен открыть инцидент.
 	euWD := fastWatchdog(svc, d, notifier)
 	euWD.Region = "eu"
 	wctx2, wcancel2 := context.WithCancel(ctx)
@@ -263,8 +230,7 @@ func TestWatchdogSSLExpiringNotifiesLargestUnalertedThresholdOnce(t *testing.T) 
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
 	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"local"})
 
-	// Pin daysLeft deterministically to 5: ceil((expires-now)/24h) == 5 for
-	// anything in (4d, 5d] from now.
+	// daysLeft детерминированно 5: ceil((expires-now)/24ч) = 5 для (4д,5д].
 	expires := time.Now().UTC().Add(4*24*time.Hour + 12*time.Hour)
 	if err := svc.SetSSLExpiry(ctx, created.ID, expires); err != nil {
 		t.Fatalf("SetSSLExpiry: %v", err)
@@ -281,8 +247,7 @@ func TestWatchdogSSLExpiringNotifiesLargestUnalertedThresholdOnce(t *testing.T) 
 	waitForRunner(t, func() bool {
 		return len(notifier.kindEvents("ssl_expiring")) >= 1
 	})
-	// Give a few more fast ticks a chance to (wrongly) double-fire before we
-	// assert the final count.
+	// даём ещё нескольким быстрым тикам шанс (ошибочно) сработать повторно.
 	time.Sleep(150 * time.Millisecond)
 
 	events := notifier.kindEvents("ssl_expiring")
@@ -301,25 +266,20 @@ func TestWatchdogSSLExpiringNotifiesLargestUnalertedThresholdOnce(t *testing.T) 
 	for _, d := range alerted {
 		alertedSet[d] = true
 	}
-	// daysLeft=5 satisfies both the 14 (ssl_alert_days) and the built-in 7
-	// thresholds at once — both get recorded from a single notification so
-	// a later tick at the same daysLeft doesn't re-fire for 7.
+	// daysLeft=5 пересекает и 14 (ssl_alert_days), и встроенный 7 разом —
+	// оба фиксируются одним Notify, иначе следующий тик переалертил бы 7.
 	if !alertedSet[14] || !alertedSet[7] {
 		t.Fatalf("ssl_alerted_days = %v, want it to contain 14 and 7", alerted)
 	}
 
 	wcancel()
 
-	// A day later (simulated): daysLeft drops to 3, crossing the built-in 3
-	// threshold — a new, single notification.
+	// имитируем сутки спустя: daysLeft падает до 3, пересекая встроенный порог 3.
 	expires3 := time.Now().UTC().Add(2*24*time.Hour + 12*time.Hour)
 	if err := svc.SetSSLExpiry(ctx, created.ID, expires3); err != nil {
 		t.Fatalf("SetSSLExpiry (day later): %v", err)
 	}
-	// SetSSLExpiry only clears ssl_alerted_days when the new expiry is
-	// LATER than the stored one (a fresh cert) — here it's earlier, so the
-	// previously recorded {14,7} survive, as intended.
-
+	// expiry earlier, не later — ssl_alerted_days не обнуляется, {14,7} остаются.
 	wd2 := fastWatchdog(svc, d, notifier)
 	wctx2, wcancel2 := context.WithCancel(ctx)
 	defer wcancel2()
@@ -358,8 +318,7 @@ func TestWatchdogReminderNotifiesAndTouchesOnce(t *testing.T) {
 	applyAndDetect(t, ctx, svc, d, created, "local", false, "boom", time.Now().UTC(), nil)
 	assertOpenIncident(t, ctx, svc, created.ID)
 
-	// Backdate the incident so it's already 30 minutes old — remind_every=10
-	// means it's due immediately.
+	// инцидент состарен на 30 минут — при remind_every=10 напоминание уже просрочено.
 	if _, err := pool.Exec(ctx,
 		"UPDATE incidents SET started_at = started_at - interval '30 minutes' WHERE monitor_id = $1 AND resolved_at IS NULL",
 		created.ID); err != nil {
@@ -374,9 +333,7 @@ func TestWatchdogReminderNotifiesAndTouchesOnce(t *testing.T) {
 	waitForRunner(t, func() bool {
 		return len(notifier.kindEvents("reminder")) >= 1
 	})
-	// A handful more fast ticks: last_reminded_at should now be "now", so
-	// remind_every=10 keeps it from firing again for a long time — no
-	// second reminder should show up.
+	// ещё тики: last_reminded_at теперь "сейчас", второе напоминание не должно прийти долго.
 	time.Sleep(150 * time.Millisecond)
 	wcancel()
 
@@ -397,11 +354,6 @@ func TestWatchdogReminderNotifiesAndTouchesOnce(t *testing.T) {
 	}
 }
 
-// TestWatchdogNilNotifierDoesNotMarkDelivered — in "incidents only, no
-// notifications" mode (Watchdog.Notifier == nil), checkSSL/checkReminders
-// must not record ssl_alerted_days/last_reminded_at either: doing so would
-// permanently swallow the alert once a real Notifier is configured later,
-// since the threshold/reminder would already look "delivered".
 func TestWatchdogNilNotifierDoesNotMarkDelivered(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -410,7 +362,6 @@ func TestWatchdogNilNotifierDoesNotMarkDelivered(t *testing.T) {
 
 	pid := newProject(t, pool)
 
-	// SSL side: a monitor whose cert is already within every threshold.
 	sslMon := baseHTTPMonitor(pid)
 	sslMon.SSLAlertDays = 14
 	sslMon.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
@@ -420,7 +371,6 @@ func TestWatchdogNilNotifierDoesNotMarkDelivered(t *testing.T) {
 		t.Fatalf("SetSSLExpiry: %v", err)
 	}
 
-	// Reminder side: an open incident already due for a reminder.
 	remMon := baseHTTPMonitor(pid)
 	remMon.FailThreshold = 1
 	remMon.RemindEveryMinutes = 10
@@ -435,19 +385,14 @@ func TestWatchdogNilNotifierDoesNotMarkDelivered(t *testing.T) {
 		t.Fatalf("backdate incident: %v", err)
 	}
 
-	// Позитивный контроль: heartbeat-монитор с протухшим ударом. Он не требует
-	// Notifier — инцидент открывает Detector, — поэтому годится маркером «тик
-	// состоялся» именно в этом тесте. Без него утверждения ниже («ничего не
-	// помечено доставленным») остались бы зелёными и в случае, когда watchdog не
-	// тикнул ни разу.
+	// позитивный контроль: heartbeat не требует Notifier — маркер «тик
+	// состоялся» в этом тесте, иначе assertions ниже были бы пусто зелёными.
 	beatMon := mustCreateMonitor(t, pool, svc, ctx, baseHeartbeatMonitor(t, pid, 1, 60), []string{"local"})
 	if _, err := pool.Exec(ctx,
 		"UPDATE monitors SET last_beat_at = now() - interval '5 minutes' WHERE id = $1", beatMon.ID); err != nil {
 		t.Fatalf("backdate last_beat_at: %v", err)
 	}
 
-	// wd.Notifier is deliberately nil — the field's zero value, matching the
-	// "incidents only" deployment mode.
 	wd := fastWatchdog(svc, d, nil)
 	wctx, wcancel := context.WithCancel(ctx)
 	defer wcancel()
@@ -472,11 +417,6 @@ func TestWatchdogNilNotifierDoesNotMarkDelivered(t *testing.T) {
 	}
 }
 
-// TestWatchdogHeartbeatMissRecordsCheckResult фиксирует P0: пропущенный удар
-// обязан попадать в check_results. Успешный пинг строку пишет (web/heartbeat.go),
-// поэтому без записи промаха в знаменателе аптайма остаются ОДНИ УСПЕХИ и доля
-// heartbeat-монитора никогда не опускается ниже 100% — на той же странице, где
-// горит "down" и висит открытый инцидент.
 func TestWatchdogHeartbeatMissRecordsCheckResult(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ch := testenv.MigratedCH(t)
@@ -504,7 +444,6 @@ func TestWatchdogHeartbeatMissRecordsCheckResult(t *testing.T) {
 	wctx, wcancel := context.WithCancel(ctx)
 	go wd.Run(wctx)
 
-	// Ждём, пока сторож переведёт монитор в down (значит промах обработан).
 	waitForRunner(t, func() bool {
 		states, err := svc.States(context.Background(), created.ID)
 		return err == nil && len(states) == 1 && states[0].Status == "down"
@@ -531,11 +470,7 @@ func TestWatchdogHeartbeatMissRecordsCheckResult(t *testing.T) {
 	}
 }
 
-// TestWatchdogPublishesTickLiveness — self-метрики живости прохода
-// heartbeat+reminder: без них умерший или отставший Watchdog снаружи
-// неотличим от «пропущенных heartbeat и созревших напоминаний сейчас нет».
-// Мониторов и инцидентов не заводим — оба запроса тика пусты, но обязаны
-// УСПЕШНО завершаться.
+// мониторов и инцидентов нет — оба запроса тика пусты, но обязаны успешно завершаться.
 func TestWatchdogPublishesTickLiveness(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -566,12 +501,8 @@ func TestWatchdogPublishesTickLiveness(t *testing.T) {
 	}
 }
 
-// TestWatchdogTickBudgetAbortsHungTick — повисший Svc (недоступный
-// PostgreSQL) не должен блокировать проход heartbeat+reminder дольше
-// tickBudget: тот же контракт, что host.Evaluator/metric.Evaluator.
-// Notifier нарочно не задан: checkSSL (первый прогон, вне бюджета — см. его
-// докблок) с нулевым Notifier выходит сразу же, не трогая Svc вовсе, иначе
-// Run завис бы на SSLCandidates ещё ДО первого тика.
+// Notifier не задан: checkSSL пропускает claim/Notify целиком (см. её
+// нулевой-Notifier ветку) и не трогает Svc — иначе завис бы ещё до первого тика.
 func TestWatchdogTickBudgetAbortsHungTick(t *testing.T) {
 	svc := uptime.NewService(blackholePool(t))
 	w := &uptime.Watchdog{Svc: svc, Region: "local", Interval: time.Second}
@@ -592,9 +523,8 @@ func TestWatchdogTickBudgetAbortsHungTick(t *testing.T) {
 	}
 }
 
-// syncBuf — mutex-guarded log sink, safe to poll from the test goroutine
-// while slog writes concurrently from the Watchdog's own goroutine (a plain
-// bytes.Buffer would race under `go test -race`).
+// mutex вокруг bytes.Buffer — иначе гонка под -race: slog пишет из горутины
+// Watchdog, тест читает из своей.
 type syncBuf struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -612,16 +542,8 @@ func (b *syncBuf) String() string {
 	return b.buf.String()
 }
 
-// TestWatchdogSSLCheckBudgetAbortsHungCheck — повисший checkSSL (недоступный
-// PostgreSQL — SSLCandidates без своего таймаута) не должен блокировать
-// проверку сертификатов дольше sslCheckBudget (ревью W3-D, финальная
-// находка): без бюджета первый же безусловный прогон checkSSL в Run вешал бы
-// Watchdog целиком на самом старте процесса, ещё до первого
-// heartbeat/reminder-тика. checkSSL не публикует свою self-метрику
-// (суточный горизонт нельзя валидно смешивать с минутным LastTickUnix/
-// LastTickSeconds — см. докблок sslCheckBudget), поэтому наблюдаем через
-// лог: budget истёк → SSLCandidates вернула context.deadlineExceeded →
-// slog.Error с "ssl candidates failed".
+// checkSSL не публикует свою self-метрику (суточный горизонт с минутным
+// LastTick* не смешать) — наблюдаем по логу: budget истёк → slog.Error.
 func TestWatchdogSSLCheckBudgetAbortsHungCheck(t *testing.T) {
 	var logs syncBuf
 	prev := slog.Default()
@@ -633,9 +555,7 @@ func TestWatchdogSSLCheckBudgetAbortsHungCheck(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	// Run зовёт checkSSL безусловно ДО входа в тикер (см. её докблок) — сам
-	// факт вызова Run уже запускает первый (и единственный нужный тесту)
-	// прогон.
+	// Run зовёт checkSSL безусловно до тикера — сам вызов Run уже даёт нужный прогон.
 	go w.Run(ctx)
 
 	deadline := time.Now().Add(60 * time.Second)
@@ -651,9 +571,8 @@ func TestWatchdogSSLCheckBudgetAbortsHungCheck(t *testing.T) {
 	}
 }
 
-// reminderMonitor — монитор с напоминаниями раз в 10 минут и уже открытым,
-// доставленным (notified_open) инцидентом, отодвинутым на 30 минут назад:
-// напоминание по нему созрело сразу. Общая заготовка тестов напоминаний.
+// напоминание раз в 10 минут, инцидент открыт, notified_open, отодвинут на
+// 30 минут назад — напоминание по нему созрело сразу.
 func reminderMonitor(t *testing.T, ctx context.Context, pool *pgxpool.Pool, svc *uptime.Service, d *uptime.Detector, pid int64) uptime.Monitor {
 	t.Helper()
 	m := baseHTTPMonitor(pid)
@@ -674,8 +593,6 @@ func reminderMonitor(t *testing.T, ctx context.Context, pool *pgxpool.Pool, svc 
 	return created
 }
 
-// dueReminderIDs — идентификаторы инцидентов, которые IncidentsDueForReminder
-// считает созревшими прямо сейчас.
 func dueReminderIDs(t *testing.T, ctx context.Context, svc *uptime.Service) map[int64]bool {
 	t.Helper()
 	items, err := svc.IncidentsDueForReminder(ctx)
@@ -689,13 +606,8 @@ func dueReminderIDs(t *testing.T, ctx context.Context, svc *uptime.Service) map[
 	return ids
 }
 
-// TestRemindersSkippedDuringMaintenanceWindow (K2-1): окно обслуживания,
-// начавшееся ПОСЛЕ открытия инцидента, глушит напоминания живой проверкой
-// Watchdog.Maint — снимок in_maintenance=false этого окна не видит. Пока окно
-// идёт, напоминание не уходит и last_reminded_at не двигается (клейма нет);
-// как только окно снято, напоминание уходит первым же тиком. Два монитора в
-// одном проекте — чтобы проход прошёл и через живой вызов InMaintenance, и
-// через кэш решения на тик.
+// окно, начавшееся после открытия инцидента, снимок in_maintenance=false не видит —
+// напоминание уйдёт первым тиком после снятия окна; два монитора кроют live+кэш.
 func TestRemindersSkippedDuringMaintenanceWindow(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -708,7 +620,6 @@ func TestRemindersSkippedDuringMaintenanceWindow(t *testing.T) {
 	first := reminderMonitor(t, ctx, pool, svc, d, pid)
 	second := reminderMonitor(t, ctx, pool, svc, d, pid)
 
-	// Окно начинается после открытия инцидента: снимок остаётся false.
 	start := time.Now().UTC().Add(-time.Minute)
 	end := time.Now().UTC().Add(time.Hour)
 	w, err := svc.CreateWindow(ctx, uptime.Window{
@@ -724,7 +635,6 @@ func TestRemindersSkippedDuringMaintenanceWindow(t *testing.T) {
 	defer wcancel()
 	go wd.Run(wctx)
 
-	// Дождаться хотя бы одного завершённого прохода и дать ещё несколько.
 	waitForRunner(t, func() bool { return wd.LastTickUnix() != 0 })
 	time.Sleep(150 * time.Millisecond)
 
@@ -738,7 +648,6 @@ func TestRemindersSkippedDuringMaintenanceWindow(t *testing.T) {
 		}
 	}
 
-	// Окно снято — напоминания уходят следующим тиком, по одному на инцидент.
 	if err := svc.DeleteWindow(ctx, w.ID, pid); err != nil {
 		t.Fatalf("DeleteWindow: %v", err)
 	}
@@ -757,16 +666,12 @@ func TestRemindersSkippedDuringMaintenanceWindow(t *testing.T) {
 	}
 }
 
-// failingMaint — проверка окна, которая всегда падает.
 type failingMaint struct{}
 
 func (failingMaint) InMaintenance(context.Context, int64, time.Time) (bool, error) {
 	return false, errors.New("windows unavailable")
 }
 
-// TestRemindersSentWhenMaintenanceCheckFails (K2-1): ошибка живой проверки
-// окна НЕ глушит напоминание — отказ падает в сторону оповещения, не тишины
-// (см. докблок checkReminders), и пишется в журнал предупреждением.
 func TestRemindersSentWhenMaintenanceCheckFails(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -800,9 +705,6 @@ func TestRemindersSentWhenMaintenanceCheckFails(t *testing.T) {
 	}
 }
 
-// TestRemindersSkippedForDisabledMonitor (K2-2): монитор на паузе не даёт
-// напоминаний по своему открытому инциденту, но инцидент при этом НЕ
-// закрывается; снятие паузы возвращает напоминание в выдачу.
 func TestRemindersSkippedForDisabledMonitor(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)

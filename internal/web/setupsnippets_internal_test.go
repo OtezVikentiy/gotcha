@@ -8,11 +8,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// TestLiveKeyFor — правило выбора ключа для сценария (§7 спеки): первый живой
-// ключ нужного типа → иначе первый живой legacy → иначе пусто.
-//
-// Фолбэк на legacy — это и есть переход без простоя: проект, у которого типов
-// ещё нет, продолжает видеть рабочий DSN везде, где видел.
+// Первый живой ключ нужного типа, иначе первый живой legacy, иначе пусто — фолбэк на legacy
+// даёт переход без простоя для проектов без типов.
 func TestLiveKeyFor(t *testing.T) {
 	keys := []org.Key{
 		{ID: 1, PublicKey: "revoked-agent", Kind: org.KindAgent, Revoked: true},
@@ -33,24 +30,20 @@ func TestLiveKeyFor(t *testing.T) {
 			t.Errorf("liveKeyFor(%q) = %q, ожидался %q", c.kind, got, c.want)
 		}
 	}
-	// Отозванный legacy не спасает: выдавать мёртвый ключ хуже, чем показать
-	// пустое состояние с кнопкой «создать».
+	// Отозванный legacy не спасает: мёртвый ключ хуже пустого состояния с кнопкой «создать».
 	dead := []org.Key{{ID: 1, PublicKey: "legacy", Kind: org.KindLegacy, Revoked: true}}
 	if got := liveKeyFor(dead, org.KindAgent); got != "" {
 		t.Errorf("liveKeyFor по отозванным = %q, ожидалась пустая строка", got)
 	}
-	// Ключ с незаданным типом НЕ считается legacy и не отдаётся: приём
-	// трактует "" как отказ по всему (fail-closed, §3.1), и предложить DSN,
-	// который приём молча отобьёт 403, хуже пустого состояния.
+	// Ключ без типа не считается legacy: приём трактует "" как отказ по всему (fail-closed),
+	// а DSN, который приём молча отобьёт 403, хуже пустого состояния.
 	untyped := []org.Key{{ID: 1, PublicKey: "old"}}
 	if got := liveKeyFor(untyped, org.KindServer); got != "" {
 		t.Errorf("liveKeyFor по ключу без типа = %q, ожидалась пустая строка", got)
 	}
 }
 
-// TestSetupSnippetsPerPlatformDSN — JS получает браузерный DSN, серверные
-// языки — серверный. Иначе онбординг сам учит ставить серверный ключ в
-// браузер.
+// Иначе онбординг сам учит ставить серверный ключ в браузер.
 func TestSetupSnippetsPerPlatformDSN(t *testing.T) {
 	sn := setupSnippets("go", "dsn-browser", "dsn-server")
 	byLang := map[string]string{}
@@ -67,12 +60,6 @@ func TestSetupSnippetsPerPlatformDSN(t *testing.T) {
 	}
 }
 
-// TestSetupSnippetsUseRealSDKs фиксирует блокер онбординга: страница подключения
-// раздавала сниппеты с пакетами, которых не существует
-// (gitflic.ru/otezvikentiy/gotcha-go, @gotcha/browser, Gotcha\init) и без единой
-// команды установки. Первый же шаг нового пользователя упирался в 404 от
-// go get / npm install — притом что /docs/sdk прямо говорит обратное: своего
-// протокола у Gotcha нет, ставится официальный Sentry SDK нужного языка.
 func TestSetupSnippetsUseRealSDKs(t *testing.T) {
 	const dsn = "https://pub@gotcha.example/7"
 	snips := setupSnippets("go", dsn, dsn)
@@ -81,7 +68,6 @@ func TestSetupSnippetsUseRealSDKs(t *testing.T) {
 		t.Fatalf("сниппетов %d, want 4 (go/php/javascript/python)", len(snips))
 	}
 
-	// Несуществующих пакетов не должно остаться ни в одном блоке.
 	ghosts := []string{"gotcha-go", "@gotcha/browser", `Gotcha\init`, "gotcha.Init"}
 	for _, sn := range snips {
 		joined := sn.Install + "\n" + sn.Code
@@ -98,7 +84,6 @@ func TestSetupSnippetsUseRealSDKs(t *testing.T) {
 		}
 	}
 
-	// Реальные пакеты на месте.
 	want := map[string]string{
 		"Go":         "github.com/getsentry/sentry-go",
 		"PHP":        "sentry/sentry",
@@ -116,9 +101,6 @@ func TestSetupSnippetsUseRealSDKs(t *testing.T) {
 	}
 }
 
-// TestSetupSnippetsPlatformFirst — платформа, выбранная при создании проекта,
-// показывается первой. Раньше страница не знала о ней вовсе: проект на Python
-// получал Go/PHP/JS и ни одного питоновского примера.
 func TestSetupSnippetsPlatformFirst(t *testing.T) {
 	for platform, wantLang := range map[string]string{
 		"python":     "Python",
@@ -135,7 +117,6 @@ func TestSetupSnippetsPlatformFirst(t *testing.T) {
 		}
 	}
 
-	// Неизвестная платформа («other») — показываем все, без дублей.
 	snips := setupSnippets("other", "dsn", "dsn")
 	if len(snips) != 4 {
 		t.Fatalf("платформа other: сниппетов %d, want 4", len(snips))
@@ -149,10 +130,8 @@ func TestSetupSnippetsPlatformFirst(t *testing.T) {
 	}
 }
 
-// TestGoSnippetCompiles — Go-сниппет вручается пользователю как есть, значит он
-// обязан быть валидным Go. Проверяем, что все использованные пакеты
-// импортированы: первая версия правки использовала time.Second без импорта
-// "time", то есть выдавала заведомо несобирающийся код.
+// Сниппет вручается пользователю как есть — обязан быть валидным Go, проверяем, что все
+// использованные пакеты импортированы.
 func TestGoSnippetCompiles(t *testing.T) {
 	var code string
 	for _, sn := range setupSnippets("go", "https://pub@host/1", "https://pub@host/1") {
@@ -163,7 +142,6 @@ func TestGoSnippetCompiles(t *testing.T) {
 	if code == "" {
 		t.Fatal("Go-сниппет не найден")
 	}
-	// Каждый использованный пакет должен быть в блоке import.
 	imports := code[strings.Index(code, "import ("):strings.Index(code, ")\n\n")]
 	for _, pkg := range []string{"log", "time", "sentry-go"} {
 		if !strings.Contains(imports, pkg) {
@@ -177,15 +155,8 @@ func TestGoSnippetCompiles(t *testing.T) {
 	}
 }
 
-// TestSubjectPurgeVMWarnsAboutInertCriteria — форма удаления ПДн обязана
-// предупреждать, что при включённом обезличивании поиск по email и IP не найдёт
-// ничего: иначе владелец орга вводит email субъекта, получает «не найдено» и не
-// понимает почему.
-//
-// Итог самого удаления сюда больше не входит — он показывается общим
-// сообщением о результате действия (flash), а не query-параметром: параметр
-// залипал в адресе при F5, и ссылку вида ?purged=9999 можно было подсунуть
-// владельцу, показав ему выдуманное число.
+// Форма предупреждает, что при обезличивании поиск по email/IP не найдёт ничего — иначе
+// владелец получает «не найдено» без объяснения.
 func TestSubjectPurgeVMWarnsAboutInertCriteria(t *testing.T) {
 	ctx := context.Background()
 
@@ -197,7 +168,6 @@ func TestSubjectPurgeVMWarnsAboutInertCriteria(t *testing.T) {
 	if onlyEmail.InertKey() != "org.gdpr.purge.inert_email" {
 		t.Errorf("мёртв только email: ключ %q", onlyEmail.InertKey())
 	}
-	// Скрубинг выключен — предупреждать не о чем.
 	off := (&Handler{}).subjectPurgeVM(ctx, 1)
 	if off.InertKey() != "" {
 		t.Errorf("при выключенном скрубинге предупреждение не нужно: %q", off.InertKey())

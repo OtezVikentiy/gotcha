@@ -1,9 +1,3 @@
-// Package incidentgroup реализует корреляцию алертов (D3): группы инцидентов
-// вокруг корневого инцидента недоступности узла (host silent / uptime down)
-// поверх графа зависимостей B5 (depsuppress). Хранение — таблица
-// incident_groups + колонка group_id на 4 таблицах инцидентов (миграция
-// 0079, Р6: без таблицы членов и без FK — состав группы == выборка по
-// group_id, группа переживает ретеншен инцидентов).
 package incidentgroup
 
 import (
@@ -16,8 +10,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Group — группа инцидентов: корневой инцидент недоступности узла + члены
-// (инциденты 4 источников с group_id = ID).
 type Group struct {
 	ID             int64
 	ProjectID      int64
@@ -38,9 +30,7 @@ func scanGroup(row pgx.Row) (Group, error) {
 	return g, err
 }
 
-// Store — CRUD групп поверх incident_groups; единственный писатель колонки
-// group_id всех 4 таблиц инцидентов (SetGroup) — симметрия с
-// однописательством suppressed_by_dep (см. depsuppress.MarkSuppressed).
+// Единственный писатель group_id всех 4 таблиц инцидентов — симметрия с однописательством suppressed_by_dep.
 type Store struct {
 	pool *pgxpool.Pool
 }
@@ -49,10 +39,7 @@ func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
-// EnsureGroup идемпотентно создаёт группу корневого инцидента. Гонка двух
-// открытий безопасна: INSERT .. ON CONFLICT (root_source, root_incident_id)
-// DO NOTHING, проигравший дочитывает победителя (тот же приём, что
-// host.IncidentService.Open).
+// Гонка двух открытий безопасна: INSERT ON CONFLICT DO NOTHING, проигравший дочитывает победителя.
 func (s *Store) EnsureGroup(ctx context.Context, projectID int64, rootSource string, rootIncidentID int64, rootNodeKind string, rootNodeID int64) (Group, error) {
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO incident_groups (project_id, root_source, root_incident_id, root_node_kind, root_node_id)
@@ -73,8 +60,7 @@ func (s *Store) EnsureGroup(ctx context.Context, projectID int64, rootSource str
 	return g, nil
 }
 
-// Resolve закрывает открытую группу корневого инцидента. ok=false — открытой
-// не было (идемпотентно; sweep и хук закрытия корня могут гоняться).
+// ok=false — открытой не было; идемпотентно, потому что sweep и хук закрытия корня могут гоняться.
 func (s *Store) Resolve(ctx context.Context, rootSource string, rootIncidentID int64) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE incident_groups SET resolved_at = now()
@@ -86,15 +72,8 @@ func (s *Store) Resolve(ctx context.Context, rootSource string, rootIncidentID i
 	return tag.RowsAffected() > 0, nil
 }
 
-// sourceMeta — таблица инцидентов и предикат «инцидент источника принадлежит
-// project_id $2» (W6) для каждого источника-члена, одной картой (MINOR-4):
-// раньше это были две раздельные карты (sourceTables/sourceProjectCond) с
-// одной ok-проверкой на двоих — источник, добавленный в одну и забытый в
-// другой, давал бы пустую строку условия и синтаксическую ошибку SQL в
-// рантайме вместо отказа на этапе поиска ключа. trace/profile в группы не
-// входят (Р2 — у них нет узла), в карте их нет. У host/metric/slo есть своя
-// колонка project_id, у uptime (таблица `incidents`) её нет — фильтр идёт
-// через monitors, тем же путём, что и в feedProjectQuery.
+// trace/profile не входят — у них нет узла, в карте их нет.
+// У uptime (таблица `incidents`) нет своей project_id — фильтр идёт через monitors, как в feedProjectQuery.
 var sourceMeta = map[string]struct {
 	table       string
 	projectCond string
@@ -105,15 +84,8 @@ var sourceMeta = map[string]struct {
 	"slo":    {"slo_incidents", `x.project_id = $2`},
 }
 
-// SetGroup присоединяет инцидент к группе, если он ещё не член ОТКРЫТОЙ
-// группы (W1/W2): первое присоединение выигрывает; инцидент, чей group_id
-// указывает на группу, которая уже резолвнута или удалена (janitor purge),
-// присоединяется заново — та же трактовка, что в гейтах уведомлений
-// (host/incident.go, metric/incident.go, slo/store.go). project_id в WHERE
-// (W6) — защита от кросс-проектной записи прямо в запросе, не только на
-// инвариантах вызывающих. Возвращает true, если присоединение реально
-// состоялось (RowsAffected > 0) — Attach решает по этому факту, создавать
-// ли пустую группу (W4).
+// group_id на резолвнутую/удалённую группу не блокирует новое присоединение — первое побеждает.
+// project_id в WHERE — защита от кросс-проектной записи; RowsAffected>0 решает судьбу пустой группы.
 func (s *Store) SetGroup(ctx context.Context, projectID int64, source string, incidentID, groupID int64) (bool, error) {
 	meta, ok := sourceMeta[source]
 	if !ok {
@@ -131,13 +103,8 @@ func (s *Store) SetGroup(ctx context.Context, projectID int64, source string, in
 	return tag.RowsAffected() > 0, nil
 }
 
-// MemberEligible — true, если инцидент источника ЕЩЁ не член ОТКРЫТОЙ
-// группы (тот же предикат, что и в SetGROUP). Grouper.Attach зовёт его ДО
-// EnsureGroup (W4): если присоединение заведомо не состоится, группа нового
-// корня не создаётся — иначе на карточке повисает пустая группа
-// («host 0 · uptime 0 · metric 0 · slo 0»), которую sweep не тронет (корень
-// открыт). Несуществующий (чужой проект/удалённый) инцидент — не
-// присоединяем.
+// Зовётся ДО EnsureGroup: если присоединение не состоится, группа нового корня не создаётся.
+// Иначе на карточке повисает пустая группа, которую sweep не тронет — корень ещё открыт.
 func (s *Store) MemberEligible(ctx context.Context, projectID int64, source string, incidentID int64) (bool, error) {
 	meta, ok := sourceMeta[source]
 	if !ok {
@@ -158,18 +125,11 @@ func (s *Store) MemberEligible(ctx context.Context, projectID int64, source stri
 	return eligible, nil
 }
 
-// GroupRow — группа с резолвнутым именем корневого узла (для карточки ленты).
 type GroupRow struct {
 	Group
 	RootName string
-	// RootSeverity — severity корневого инцидента (W24, R5): карточка группы
-	// сама не несёт бейджа severity, дизайн §6.1/1 требует его в шапке.
-	// Есть только у host-корня (host_incidents.severity) — у таблицы
-	// `incidents` (uptime) колонки severity вовсе нет (сама категория
-	// неприменима к даунтайму монитора), для root_source='uptime' всегда ''
-	// — тот же случай, что и пустая Severity строки-члена uptime в
-	// feedMemberSelect/feedProjectQuery ниже; incidentSeverityBadge не
-	// рисует бейдж на пустой строке.
+	// Есть только у host-корня — у uptime (`incidents`) колонки severity нет вовсе, категория неприменима.
+	// incidentSeverityBadge не рисует бейдж на пустой строке — тот же случай, что у uptime-члена.
 	RootSeverity string
 }
 
@@ -200,26 +160,13 @@ func (s *Store) queryGroupRows(ctx context.Context, tail string, args ...any) ([
 	return out, rows.Err()
 }
 
-// MaxOpenGroups/MaxOpenOutOfGroup — потолки открытых секций ленты (§6.1/1,
-// §6.1/2, W7). Раньше OpenGroups и OpenOutOfGroup шли вовсе без LIMIT — в
-// отличие от закрытых секций (ClosedGroupsSince/ClosedSince, свой лимит на
-// вызов), допущение «открытых инцидентов единицы-десятки» было гарантией
-// только пока не было проекта со штормом: без потолка одна отрисовка ленты
-// делала бы неограниченный SELECT на доступной ЛЮБОМУ участнику странице.
-// Потолок — экспортированные константы пакета, а не параметр метода: сигнатуры
-// OpenGroups/OpenOutOfGroup зовутся и вне web-слоя (grouper2_test.go), где
-// произвольный лимит не нужен и не должен становиться обязательным
-// параметром вызова; web-слой берёт те же константы для честной подписи
-// потолка рядом с заголовком секции, а не заводит собственное магическое
-// число. Значение то же, что и у соседней страницы /incidents
-// (incidentsPerPage) и у закрытых секций ленты — 50.
+// Раньше — без LIMIT: открытых единицы-десятки было гарантией, пока не было проекта со штормом.
+// Константа пакета, не параметр — используется и вне web-слоя, где произвольный лимит не нужен.
 const (
 	MaxOpenGroups     = 50
 	MaxOpenOutOfGroup = 50
 )
 
-// OpenGroups — открытые группы проекта, свежайшие первыми (лента §6.1/1),
-// не больше MaxOpenGroups (W7).
 func (s *Store) OpenGroups(ctx context.Context, projectID int64) ([]GroupRow, error) {
 	return s.queryGroupRows(ctx, `
 		WHERE g.project_id = $1 AND g.resolved_at IS NULL
@@ -227,7 +174,6 @@ func (s *Store) OpenGroups(ctx context.Context, projectID int64) ([]GroupRow, er
 		LIMIT $2`, projectID, MaxOpenGroups)
 }
 
-// ClosedGroupsSince — группы, закрытые не раньше since (лента §6.1/3).
 func (s *Store) ClosedGroupsSince(ctx context.Context, projectID int64, since time.Time, limit int) ([]GroupRow, error) {
 	return s.queryGroupRows(ctx, `
 		WHERE g.project_id = $1 AND g.resolved_at IS NOT NULL AND g.resolved_at >= $2
@@ -235,8 +181,6 @@ func (s *Store) ClosedGroupsSince(ctx context.Context, projectID int64, since ti
 		LIMIT $3`, projectID, since, limit)
 }
 
-// FeedItem — унифицированная строка ленты/состава: инцидент любого из 6
-// источников с именем объекта и данными для ссылки/бейджей.
 type FeedItem struct {
 	Source          string
 	IncidentID      int64
@@ -249,34 +193,12 @@ type FeedItem struct {
 	SuppressedByDep bool
 	RefID           int64
 	RefName         string
-	// FormerGroupID/FormerGroupRootName — данные для бейджа «был в группе»
-	// (W1, feed.badge.was_grouped — сам бейдж рисует R5): непустые только у
-	// строк OpenOutOfGroup/ClosedSince, чей group_id указывает на группу,
-	// которая уже резолвнута; group_id, указывающий на удалённую (purge)
-	// группу, даёт FormerGroupID=0 — сведений о ней не осталось нигде.
+	// Непустые только у OpenOutOfGroup/ClosedSince строк, чей group_id указывает на резолвнутую группу.
+	// group_id на удалённую (purge) группу даёт FormerGroupID=0 — сведений о ней не осталось.
 	FormerGroupID       int64
 	FormerGroupRootName string
-	// HeldByGroup — true, если СЕЙЧАС член ОТКРЫТОЙ группы с ЕЩЁ открытым
-	// собственным инцидентом, чей корень на момент присоединения был
-	// «информирующим» (W15): такой член не шлёт своё open-уведомление —
-	// молчит, потому что вместо него уже проинформировал корень (Р4,
-	// groupGate в host/metric/slo Evaluator — attached && rootInforming,
-	// см. AttachMetric/Attach). Это НЕ suppressed_by_dep (B5, независимый
-	// механизм подавления эскалации по факту упавшего родителя, гейтится
-	// отдельно и совсем в другой момент — escalation.Scheduler, а не
-	// открытие инцидента) — оба поля могут быть true одновременно, каждое
-	// про свою причину молчания, путать их нельзя.
-	//
-	// «informing» не хранится персистентно нигде (транзитное решение
-	// groupGate в момент attach), поэтому здесь не читается напрямую, а
-	// восстанавливается по инварианту: notified_open корневого инцидента
-	// МОНОТОНЕН (host/incident.go, uptime/incident.go — MarkNotified
-	// выставляет true и никогда не сбрасывает обратно, пока инцидент
-	// открыт), а сам root успевает решить, уведомлять ли, ДО того как у
-	// него вообще может появиться член (DownRoot члена обязан сначала
-	// увидеть открытый корень) — так что текущее значение notified_open
-	// корня совпадает с его значением на момент attach члена в любом
-	// реальном сценарии. См. feedMemberSelect (CTE grp) ниже.
+	// Не suppressed_by_dep — разные механизмы молчания, оба флага могут быть true одновременно.
+	// Не хранится персистентно — восстанавливается из notified_open корня, монотонного пока открыт.
 	HeldByGroup bool
 }
 
@@ -296,27 +218,8 @@ func scanFeedItems(rows pgx.Rows) ([]FeedItem, error) {
 	return out, rows.Err()
 }
 
-// feedMemberSelect — 4 источника-члена по group_id (состав группы, Р6:
-// выборка по колонке, без таблицы членов). LEFT JOIN + COALESCE на
-// host/metric/slo — защитный приём на случай NULL-справочника, а не защита
-// от реального состояния: справочник (host/правило/SLO) исчезнуть, пока сам
-// инцидент жив, не может — host_id/rule_id/slo_id все FK ON DELETE CASCADE,
-// удаление справочника уносит каскадом и сам инцидент (тот же инвариант,
-// что и у groupRootHref/feedItemRow в шаблоне, W22). У uptime дополнительно:
-// своей колонки project_id у `incidents` нет, фильтр W6 идёт через
-// `m.project_id = $2` (тем же путём, что sourceMeta.projectCond у SetGroup)
-// — если бы monitors-справочник исчез, m.project_id в WHERE стал бы NULL и
-// строку отсеяло, так что для uptime LEFT JOIN monitors фактически ведёт
-// себя как INNER; по тому же каскаду и это недостижимо на проде. Два
-// предпоследних столбца каждой ветки — заглушки под
-// FormerGroup* (у члена ТЕКУЩЕЙ группы бывшей группы, по определению, нет).
-// Последний — HeldByGroup (W15): вычисляется через CTE grp, общий на все 4
-// ветки (сама группа и её корень — одни и те же для всего состава, $1 не
-// меняется по веткам) — «группа ещё открыта, СВОЙ инцидент ещё открыт, а
-// корень на момент присоединения был информирующим» (инвариант монотонности
-// notified_open — см. докблок FeedItem.HeldByGroup). rh/ri резолвят корневой
-// инцидент по root_source тем же приёмом, что и groupRowSelect резолвит имя
-// корня, только по incident-таблицам, а не по узлам.
+// У uptime LEFT JOIN monitors фактически ведёт себя как INNER — m.project_id в WHERE отсеивает NULL-строки.
+// HeldByGroup — через общий CTE grp: группа/корень одни на весь состав, $1 не меняется по веткам.
 const feedMemberSelect = `
 	WITH grp AS (
 		SELECT g.resolved_at AS group_resolved_at,
@@ -366,9 +269,7 @@ const feedMemberSelect = `
 	LEFT JOIN grp ON true
 	WHERE si.group_id = $1 AND si.project_id = $2`
 
-// Composition — состав группы: члены 4 источников, старейшие первыми.
-// projectID (W6) — вторая линия защиты поверх group_id: группа чужого
-// проекта отдаст пустой список, а не чужие инциденты.
+// projectID — вторая линия защиты: группа чужого проекта отдаст пустой список, не чужие инциденты.
 func (s *Store) Composition(ctx context.Context, projectID, groupID int64) ([]FeedItem, error) {
 	rows, err := s.pool.Query(ctx, feedMemberSelect+` ORDER BY 5`, groupID, projectID)
 	if err != nil {
@@ -377,17 +278,8 @@ func (s *Store) Composition(ctx context.Context, projectID, groupID int64) ([]Fe
 	return scanFeedItems(rows)
 }
 
-// feedMemberSelectBatch — состав НЕСКОЛЬКИХ групп одним запросом (W7,
-// Compositions ниже): та же форма, что feedMemberSelect, с двумя отличиями.
-// (1) $1 — не id одной группы, а МАССИВ id (`= ANY($1)`), CTE grp несёт
-// group_id и отдаёт по строке на каждую запрошенную группу, а не одну
-// строку на весь запрос — поэтому `LEFT JOIN grp ON true` (годился, пока
-// grp был максимум одной строкой на весь список) заменён на явный
-// `grp.group_id = <alias>.group_id`. (2) первым столбцом каждой ветки идёт
-// сам group_id — Compositions группирует строки по нему в Go
-// (scanFeedItemsBatch), группировка на стороне SQL (array_agg/json)
-// усложнила бы запрос сильнее, чем экономит один проход по срезу. Остальные
-// 14 столбцов — ровно feedMemberSelect, тот же порядок.
+// Как feedMemberSelect, но $1 — массив id; join на grp — по group_id, не `ON true`.
+// group_id первым столбцом — группировка по группам в Go (scanFeedItemsBatch), не array_agg в SQL.
 const feedMemberSelectBatch = `
 	WITH grp AS (
 		SELECT g.id AS group_id, g.resolved_at AS group_resolved_at,
@@ -437,9 +329,6 @@ const feedMemberSelectBatch = `
 	LEFT JOIN grp ON grp.group_id = si.group_id
 	WHERE si.group_id = ANY($1) AND si.project_id = $2`
 
-// scanFeedItemsBatch — как scanFeedItems, но первый столбец каждой строки —
-// group_id (feedMemberSelectBatch): группировка по группе в Go через map,
-// без array_agg/json на стороне БД.
 func scanFeedItemsBatch(rows pgx.Rows) (map[int64][]FeedItem, error) {
 	defer rows.Close()
 	out := map[int64][]FeedItem{}
@@ -457,15 +346,7 @@ func scanFeedItemsBatch(rows pgx.Rows) (map[int64][]FeedItem, error) {
 	return out, rows.Err()
 }
 
-// Compositions — состав СРАЗУ нескольких групп одним запросом (W7):
-// incidentfeed.go раньше звал Composition в цикле по каждой группе ленты
-// (открытые + до MaxOpenGroups+2×feedClosedGroupsLimit закрытых) — на одну
-// отрисовку страницы уходили десятки round-trip, каждый — четырёхветвевой
-// UNION. group_id = ANY($2) заменяет цикл одним запросом; группировка по
-// группе — в Go (scanFeedItemsBatch). projectID (W6) — та же вторая линия
-// защиты, что у Composition: группа чужого проекта отдаст пустой список.
-// Пустой groupIDs — пустая карта без похода в БД (частый случай: свежий
-// проект без единой группы).
+// Заменяет цикл Composition по каждой группе ленты — десятки round-trip на одну отрисовку страницы.
 func (s *Store) Compositions(ctx context.Context, projectID int64, groupIDs []int64) (map[int64][]FeedItem, error) {
 	if len(groupIDs) == 0 {
 		return map[int64][]FeedItem{}, nil
@@ -477,34 +358,14 @@ func (s *Store) Compositions(ctx context.Context, projectID int64, groupIDs []in
 	return scanFeedItemsBatch(rows)
 }
 
-// notOpenGroupMember — «инцидент не член ОТКРЫТОЙ группы» (W1/W2): group_id
-// колонки alias NULL, либо LEFT JOIN на incident_groups под алиасом wg не
-// нашёл строку (группа удалена janitor'ом), либо нашёл резолвнутую. Та же
-// трактовка, что в гейтах уведомлений (host/incident.go, metric/incident.go,
-// slo/store.go), перенесённая на LEFT JOIN, потому что тем же wg отдаём
-// FormerGroup* ниже. alias — hi/i/mi/si (те же, что в hostNotRoot и др.).
+// group_id NULL, группа удалена janitor'ом (wg.id NULL), либо резолвнута.
+// LEFT JOIN, не NOT EXISTS — тем же wg отдаём данные FormerGroup* ниже.
 func notOpenGroupMember(alias string) string {
 	return `(` + alias + `.group_id IS NULL OR wg.id IS NULL OR wg.resolved_at IS NOT NULL)`
 }
 
-// feedProjectQuery — 6 источников по проекту; условия статуса подставляются
-// готовыми строками-константами этого файла (не пользовательский ввод —
-// конкатенация безопасна). $1 — project_id; условия ClosedSince
-// дополнительно ссылаются на $2 (since), LIMIT — $3.
-// host/uptime/metric/slo дополнительно LEFT JOIN'ят incident_groups (wg) —
-// одним и тем же приёмом решают два вопроса: гейт notOpenGroupMember (W1/W2,
-// применяется всегда, вне зависимости от cond) и данные бывшей группы для
-// бейджа feed.badge.was_grouped (W1) — id + имя корня, восстановленное тем
-// же способом, что groupRowSelect. trace/profile group_id не имеют
-// (Р2 — у них нет узла) — вне групп всегда, заглушки под FormerGroup*.
-// Последний столбец каждой ветки — HeldByGroup, всегда false: строки этого
-// запроса по определению не члены ОТКРЫТОЙ группы (notOpenGroupMember для
-// host/uptime/metric/slo, отсутствие узла для trace/profile) — «уведомление
-// идёт за корнем» неприменимо к тому, что уже показано отдельной строкой.
-// MINOR-10: все ветки ходят по project_id + status/resolved_at — у
-// host/metric/slo есть индексы по project_id (см. существующие
-// ListByProject), incident_groups_open_idx частичный по project_id;
-// таблицы малы, отдельных индексов под ленту не заводим.
+// Условия статуса — константы этого файла, не пользовательский ввод, конкатенация безопасна.
+// HeldByGroup всегда false — строки этого запроса по определению не члены ОТКРЫТОЙ группы.
 func feedProjectQuery(hostCond, uptimeCond, metricCond, sloCond, traceCond, profileCond string) string {
 	return `
 	SELECT 'host'::text, hi.id, COALESCE(h.name,''), hi.kind,
@@ -566,45 +427,14 @@ func feedProjectQuery(hostCond, uptimeCond, metricCond, sloCond, traceCond, prof
 	WHERE pf.project_id = $1 AND ` + profileCond
 }
 
-// hostNotRoot/uptimeNotRoot — «инцидент не является корнем ОТКРЫТОЙ группы».
-// Корню group_id намеренно не проставляется (Grouper.Attach: корень не член
-// собственной группы), поэтому по одному `group_id IS NULL` он попадал бы и в
-// шапку карточки группы, и во «Вне групп» — один инцидент двумя строками.
-// Корнями бывают только host- и uptime-инциденты (rootIncident, §4.1),
-// остальным источникам условие не нужно. Отбор идёт по уникальному индексу
-// (root_source, root_incident_id); группа, удалённая как осиротевшая
-// (janitor purge), корень снова показывает — это верно, карточки уже нет.
-//
-// `g.resolved_at IS NULL` (R4, W7-warning) — раньше условия не было вовсе,
-// и NOT EXISTS исключал корень безусловно, пока хоть какая-то группа (даже
-// давно закрытая) на него ссылалась. Резолвнутый корень резолвнутой группы
-// от этого не показывался НИГДЕ, кроме шапки карточки закрытой группы: не
-// в ClosedSince (условие исключало его навсегда), а если саму карточку
-// не отрисовать (ClosedGroupsSince ушла за потолок MaxOpenGroups+... или
-// вылетела за окно feedClosedWindow, см. ClosedGroupsSince/ClosedSince),
-// он пропадал с ленты целиком — ни в карточке, ни в списке. Пока потолок и
-// окно ClosedGroupsSince/ClosedSince совпадали, это было незаметно на глаз,
-// но структурная дыра существовала независимо от совпадения чисел. Условие
-// `g.resolved_at IS NULL` сужает исключение до «корень ЕЩЁ открытой группы»
-// — ровно то же деление, что notOpenGroupMember уже делает для членов
-// (сравни: `wg.resolved_at IS NOT NULL` там же означает «был в группе,
-// группа закрылась — больше не прячем»). Как только группа закрывается,
-// resolved-корень становится обычным резолвнутым инцидентом источника и
-// попадает в ClosedSince независимо от судьбы карточки его группы — тот же
-// намеренный дубль с (отрисованной) карточкой, что уже описан у ClosedSince
-// для обычных членов, просто симметрично распространённый на корень.
+// Корню group_id не проставляется — без исключения он дублировался бы в шапке карточки и «Вне групп».
+// resolved_at IS NULL исключает только корень ЕЩЁ открытой группы — закрытая его больше не прячет.
 const (
 	hostNotRoot   = `NOT EXISTS (SELECT 1 FROM incident_groups g WHERE g.project_id = $1 AND g.root_source = 'host' AND g.root_incident_id = hi.id AND g.resolved_at IS NULL)`
 	uptimeNotRoot = `NOT EXISTS (SELECT 1 FROM incident_groups g WHERE g.project_id = $1 AND g.root_source = 'uptime' AND g.root_incident_id = i.id AND g.resolved_at IS NULL)`
 )
 
-// OpenOutOfGroup — открытые ВНЕгрупповые инциденты всех 6 источников
-// (§6.1/2): trace/profile всегда вне групп (Р2 — узла нет). «Внегрупповой»
-// (W1) — не член ОТКРЫТОЙ группы (гейт notOpenGroupMember, вшит в
-// feedProjectQuery): открытый член резолвнутой или удалённой группы отсюда
-// не прячется — он «открытая работа» (сюда) и одновременно «упало вместе с
-// этим» (в свёрнутой карточке группы, Composition), это не дубль.
-// OpenOutOfGroup — не больше MaxOpenOutOfGroup (W7, см. докблок константы).
+// Открытый член резолвнутой группы не прячется — здесь «открытая работа», в карточке «упало вместе».
 func (s *Store) OpenOutOfGroup(ctx context.Context, projectID int64) ([]FeedItem, error) {
 	q := feedProjectQuery(
 		`hi.status = 'open' AND `+hostNotRoot,
@@ -621,13 +451,8 @@ func (s *Store) OpenOutOfGroup(ctx context.Context, projectID int64) ([]FeedItem
 	return scanFeedItems(rows)
 }
 
-// ClosedSince — внегрупповые инциденты, закрытые не раньше since (§6.1/3,
-// LIMIT с подписью — окно суток с потолком). Член ОТКРЫТОЙ группы сюда не
-// попадает (показан внутри её карточки, Composition, и там же появится
-// после закрытия). Закрывшийся член группы, которая САМА уже резолвнута или
-// удалена (W1), — попадает: это симметрично OpenOutOfGroup, дубль с
-// (свёрнутой) карточкой закрытой группы намеренный, те же два разных
-// смысла.
+// Член ОТКРЫТОЙ группы не попадает — показан в её карточке, появится здесь после закрытия.
+// Член уже резолвнутой/удалённой группы попадает — намеренный дубль, симметричный OpenOutOfGroup.
 func (s *Store) ClosedSince(ctx context.Context, projectID int64, since time.Time, limit int) ([]FeedItem, error) {
 	q := feedProjectQuery(
 		`hi.status = 'resolved' AND hi.resolved_at >= $2 AND `+hostNotRoot,

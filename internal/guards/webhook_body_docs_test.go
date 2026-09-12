@@ -8,31 +8,17 @@ import (
 	"testing"
 )
 
-// webhookGoldenFiles — золотые файлы тела issue-алерта (E3, заморозка
-// контракта вебхука): внутри internal/notify/testdata, потому что их
-// снимает internal/notify/webhook_golden_test.go с РЕАЛЬНОГО пути
-// (escalation.Dispatch -> notify.WebhookSender.Send). Порядок здесь ОБЯЗАН
-// совпадать с порядком ```json-блоков в internal/docs/{ru,en}/alerts.md,
-// раздел «Формат тела вебхука» / «Webhook body format»: сначала пример «с
-// деталями», затем «без деталей».
+// порядок обязан совпадать с порядком ```json-блоков в alerts.md обеих локалей,
+// раздел «Формат тела вебхука»: сначала пример «с деталями», затем «без деталей».
 var webhookGoldenFiles = []string{
 	filepath.Join("internal", "notify", "testdata", "webhook_body_details.json"),
 	filepath.Join("internal", "notify", "testdata", "webhook_body_redacted.json"),
 }
 
-// jsonFenceRe находит содержимое ```json-блоков markdown. (?s) — точка ловит
-// перевод строки внутри блока; нежадный (.*?) — чтобы не схватить сразу все
-// блоки страницы одним совпадением.
+// (?s) — точка ловит перевод строки внутри блока; нежадный (.*?), чтобы не
+// схватить сразу все блоки страницы одним совпадением.
 var jsonFenceRe = regexp.MustCompile("(?s)```json\n(.*?)\n```")
 
-// TestWebhookBodyDocsMatchGolden — E3 (заморозка контракта): пример JSON в
-// разделе «Формат тела вебхука» обеих локалей alerts.md обязан побайтово (по
-// каноническому представлению) совпадать с золотым файлом, который реально
-// проходит через escalation.Dispatch и notify.WebhookSender.Send
-// (internal/notify/webhook_golden_test.go). Без этого сторожа доки и код
-// расходятся молча: тест в internal/notify замораживает то, что ОТПРАВЛЯЕТСЯ,
-// а не то, что НАПИСАНО в документации — пример мог быть подправлен от руки
-// и разъехаться с реальным контрактом.
 func TestWebhookBodyDocsMatchGolden(t *testing.T) {
 	tree := Load(t)
 
@@ -66,10 +52,6 @@ func TestWebhookBodyDocsMatchGolden(t *testing.T) {
 	}
 }
 
-// canonicalizeJSONForTest перепечатывает JSON с отсортированными ключами и
-// отступами (json.Marshal сам сортирует ключи map[string]any), чтобы
-// сравнение не зависело от форматирования исходника и печатало читаемую
-// дельту при расхождении.
 func canonicalizeJSONForTest(t *testing.T, source string, raw []byte) string {
 	t.Helper()
 	var v any

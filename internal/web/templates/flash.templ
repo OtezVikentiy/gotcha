@@ -7,20 +7,10 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/flashctx"
 )
 
-// flashView рендерит одноразовое сообщение о результате действия, если оно есть.
-//
-// Читается из контекста, а не из параметров: layout зовут все страницы, и
-// протаскивать сообщение через каждую сигнатуру значило бы менять их все ради
-// того, что к содержимому страницы отношения не имеет. Так же сделаны локаль и
-// тема.
-//
-// role="status" + aria-live="polite": сообщение появляется после перезагрузки,
-// и пользователь скринридера должен его услышать, не потеряв фокус.
 templ flashView() {
 	if f := flashctx.FromContext(ctx); f != nil {
 		<div class={ "flash", templ.KV("flash--warn", f.Kind == "warn") } role="status" aria-live="polite">
-			// Парный ключ (Pair, web/flash.go) несёт два счётчика — плоский
-			// перевод с {n}/{m}; плюральный Tn с одним {n} его не выразит.
+			// парный ключ несёт два счётчика — плюральный Tn с одним {n} их не выразит.
 			if f.Pair {
 				{ i18n.Tf(ctx, f.Key, "n", strconv.Itoa(f.N), "m", strconv.Itoa(f.M)) }
 			} else if f.N > 0 {
@@ -28,10 +18,7 @@ templ flashView() {
 			} else {
 				{ i18n.T(ctx, f.Key) }
 			}
-			// Кнопка, а не ссылка: это действие на странице, а не переход, и
-			// href="#" сбросил бы :target у модалок на той же странице. Без JS
-			// скрыта — сообщение и так уходит по таймеру, а мёртвая кнопка хуже
-			// её отсутствия.
+			// кнопка, не ссылка: href="#" сбросил бы :target у модалок на странице.
 			<button type="button" class="flash-close" aria-label={ i18n.T(ctx, "flash.close") }>&times;</button>
 		</div>
 	}

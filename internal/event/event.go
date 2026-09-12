@@ -1,15 +1,12 @@
-// Package event — поток событий: доменный тип и батч-запись в ClickHouse.
 package event
 
 import "time"
 
-// Event — одно событие ошибки; поля соответствуют колонкам CH-таблицы events.
+// Поля соответствуют колонкам CH-таблицы events.
 type Event struct {
 	ID string // canonical UUID
-	// OrgID — организация проекта. В CH-таблицу events НЕ пишется (там proj-скоуп),
-	// нужен только для per-org атрибуции дропов буфера писателя в org_usage.dropped_*
-	// (см. Batcher.SetDropSink): при переполнении буфера выброшенные строки надо
-	// списать той организации, которой они принадлежали. 0 — атрибутировать некуда.
+	// В CH-таблицу events не пишется (там proj-скоуп) — нужен для атрибуции
+	// дропов буфера писателя в org_usage.dropped_*; 0 — атрибутировать некуда.
 	OrgID          int64
 	ProjectID      int64
 	IssueID        int64
@@ -30,8 +27,7 @@ type Event struct {
 	Contexts       string // JSON
 	Breadcrumbs    string // JSON (Sentry breadcrumbs.values)
 	Request        string // JSON (Sentry request-интерфейс: method/url/query_string/data/headers)
-	// TraceID/SpanID — из contexts.trace события: связывают ошибку с
-	// транзакцией трейсинга (пустые, если SDK трейсинг не включил).
+	// Из contexts.trace события; пустые, если SDK трейсинг не включил.
 	TraceID string
 	SpanID  string
 }

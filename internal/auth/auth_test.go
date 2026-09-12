@@ -68,8 +68,7 @@ func TestRegisterInvalidEmail(t *testing.T) {
 		"no-at-sign",
 		"",
 		strings.Repeat("a", 251) + "@b.c", // 255 байт целиком, >254
-		// P2-10: control-байты (NUL и прочие) не должны проходить
-		// формат-валидацию и падать уже на INSERT в Postgres голым 500.
+		// Control-байты (NUL и прочие) не должны проходить формат-валидацию.
 		"a\x00b@example.com",
 		"a@ex\x00ample.com",
 		"a\x7fb@example.com",
@@ -106,7 +105,6 @@ func TestChangePassword(t *testing.T) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
-	// Неверный старый пароль → ErrInvalidCredentials, ничего не меняется.
 	if err := svc.ChangePassword(ctx, uid, "wrong-old-password", "new-password-1"); !errors.Is(err, auth.ErrInvalidCredentials) {
 		t.Fatalf("ChangePassword (wrong old): got %v, want ErrInvalidCredentials", err)
 	}
@@ -114,7 +112,6 @@ func TestChangePassword(t *testing.T) {
 		t.Fatalf("session should survive failed ChangePassword: %v", err)
 	}
 
-	// Слабый новый пароль → ErrWeakPassword, ничего не меняется.
 	if err := svc.ChangePassword(ctx, uid, "old-password-1", "short"); !errors.Is(err, auth.ErrWeakPassword) {
 		t.Fatalf("ChangePassword (weak new): got %v, want ErrWeakPassword", err)
 	}
@@ -122,8 +119,6 @@ func TestChangePassword(t *testing.T) {
 		t.Fatalf("session should survive rejected ChangePassword: %v", err)
 	}
 
-	// Успешная смена пароля: старый хеш больше не подходит, новый — работает,
-	// все сессии юзера (включая текущую) уничтожены.
 	if err := svc.ChangePassword(ctx, uid, "old-password-1", "new-password-1"); err != nil {
 		t.Fatalf("ChangePassword: %v", err)
 	}

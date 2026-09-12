@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// SessionTTL — срок жизни сессии (спека §4: без скользящего продления).
+// Без скользящего продления — TTL не сдвигается активностью.
 const SessionTTL = 30 * 24 * time.Hour
 
 var ErrNoSession = errors.New("auth: no such session")
@@ -22,7 +22,7 @@ func tokenHash(token string) []byte {
 	return sum[:]
 }
 
-// CreateSession выпускает токен сессии. В БД хранится только sha256-хеш.
+// В БД хранится только sha256-хеш токена, не сам токен.
 func (s *Service) CreateSession(ctx context.Context, userID int64) (string, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
@@ -38,7 +38,6 @@ func (s *Service) CreateSession(ctx context.Context, userID int64) (string, erro
 	return token, nil
 }
 
-// SessionUser возвращает id пользователя по живой сессии.
 func (s *Service) SessionUser(ctx context.Context, token string) (int64, error) {
 	var userID int64
 	err := s.pool.QueryRow(ctx,
@@ -61,9 +60,6 @@ func (s *Service) DestroySession(ctx context.Context, token string) error {
 	return nil
 }
 
-// DestroyOtherSessions удаляет все сессии пользователя, кроме той, чей токен
-// передан в keepToken («выйти на всех остальных устройствах»). Возвращает
-// число удалённых сессий.
 func (s *Service) DestroyOtherSessions(ctx context.Context, userID int64, keepToken string) (int64, error) {
 	tag, err := s.pool.Exec(ctx,
 		"DELETE FROM sessions WHERE user_id = $1 AND token_hash <> $2",
@@ -74,7 +70,6 @@ func (s *Service) DestroyOtherSessions(ctx context.Context, userID int64, keepTo
 	return tag.RowsAffected(), nil
 }
 
-// DeleteExpiredSessions удаляет просроченные сессии, возвращает число удалённых.
 func (s *Service) DeleteExpiredSessions(ctx context.Context) (int64, error) {
 	tag, err := s.pool.Exec(ctx, "DELETE FROM sessions WHERE expires_at <= now()")
 	if err != nil {

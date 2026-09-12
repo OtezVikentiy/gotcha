@@ -15,7 +15,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// newPerfProject: прямые вставки — пакет trace не зависит от org.
+// прямые вставки, не через org — пакет trace не должен зависеть от org.
 func newPerfProject(t *testing.T, pool *pgxpool.Pool, slug string) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -126,7 +126,6 @@ func TestIssueServiceRecordResolvedRegression(t *testing.T) {
 		t.Errorf("status = %q, want unresolved (регрессия)", back.Issue.Status)
 	}
 
-	// Третье обнаружение — уже не регрессия: проблема и так unresolved.
 	third, err := svc.Record(ctx, pid, nPlusOneFinding(), "trace-c")
 	if err != nil {
 		t.Fatalf("Record: %v", err)
@@ -178,14 +177,12 @@ func TestIssueServiceRecordSeparatesFindingsAndProjects(t *testing.T) {
 		Evidence:    map[string]any{"count": 1},
 	}
 
-	// Две разные проблемы одного проекта — две строки.
 	if r, err := svc.Record(ctx, pid1, nPlusOneFinding(), "t1"); err != nil || !r.Created {
 		t.Fatalf("Record n+1: created=%v err=%v", r.Created, err)
 	}
 	if r, err := svc.Record(ctx, pid1, slow, "t1"); err != nil || !r.Created {
 		t.Fatalf("Record slow: created=%v err=%v", r.Created, err)
 	}
-	// Тот же fingerprint в ДРУГОМ проекте — независимая строка.
 	otherRes, err := svc.Record(ctx, pid2, nPlusOneFinding(), "t2")
 	if err != nil || !otherRes.Created {
 		t.Fatalf("Record other project: created=%v err=%v", otherRes.Created, err)
@@ -228,7 +225,6 @@ func TestIssueServiceListFilterGetSetStatus(t *testing.T) {
 	if err != nil || got.ID != iss.ID || got.Fingerprint != "fp-n1" {
 		t.Fatalf("Get = %+v err=%v", got, err)
 	}
-	// Чужой проект не видит проблему по её id (IDOR на /perf-issues/{id}).
 	if _, err := svc.Get(ctx, newPerfProject(t, pool, "perf4-other"), iss.ID); !errors.Is(err, trace.ErrNotFound) {
 		t.Errorf("Get(чужой проект) = %v, want ErrNotFound", err)
 	}
@@ -259,14 +255,6 @@ func TestIssueServiceListFilterGetSetStatus(t *testing.T) {
 	}
 }
 
-// Гонка двух первых обнаружений одного fingerprint: created=true имеет право
-// вернуть РОВНО ОДИН из них — perf-алерты шлются по created, и второй true
-// разбудил бы дежурного второй раз тем же самым.
-//
-// Гонка воспроизводится детерминированно: конкурент вставляет строку в открытой
-// транзакции и не коммитит, Record упирается в уникальный индекс и ждёт. Его
-// снимок (а значит, и CTE old) взят ДО коммита конкурента — старый код по этому
-// снимку и решал, что проблема новая.
 func TestIssueServiceRecordConcurrentFirstDetection(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := trace.NewIssueService(pool)
@@ -275,6 +263,8 @@ func TestIssueServiceRecordConcurrentFirstDetection(t *testing.T) {
 	pid := newPerfProject(t, pool, "perfrace")
 	f := nPlusOneFinding()
 
+	// гонка воспроизводится детерминированно: конкурент вставляет строку в
+	// открытой незакоммиченной транзакции, Record упирается в уникальный индекс и ждёт.
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
@@ -314,9 +304,7 @@ func TestIssueServiceRecordConcurrentFirstDetection(t *testing.T) {
 	}
 }
 
-// waitBlockedOnPerfIssues ждёт, пока Record упрётся в блокировку уникального
-// индекса: без этого коммит конкурента мог бы обогнать его снимок и гонка не
-// воспроизвелась бы.
+// без ожидания коммит конкурента мог бы обогнать снимок Record, и гонка не воспроизвелась бы.
 func waitBlockedOnPerfIssues(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
@@ -335,10 +323,6 @@ func waitBlockedOnPerfIssues(t *testing.T, pool *pgxpool.Pool) {
 	t.Fatal("Record так и не заблокировался на уникальном индексе")
 }
 
-// Повторное обнаружение НЕ переписывает evidence и sample_trace_id на каждом
-// запросе: это jsonb, и переписывание горячей строки на каждой семплированной
-// транзакции — лишняя запись WAL и лишний TOAST. Обновляются только count и
-// last_seen; пример обновляется не чаще раза в час (см. perfSampleTTL).
 func TestIssueServiceRecordKeepsSampleOnRepeat(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := trace.NewIssueService(pool)
@@ -376,8 +360,6 @@ func TestIssueServiceRecordKeepsSampleOnRepeat(t *testing.T) {
 	}
 }
 
-// Осознанно заглушённая (ignored) проблема продолжает считаться, но НЕ всплывает
-// наверх списка: last_seen у неё не двигается (List сортирует по last_seen DESC).
 func TestIssueServiceIgnoredDoesNotResurface(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := trace.NewIssueService(pool)
@@ -407,11 +389,6 @@ func TestIssueServiceIgnoredDoesNotResurface(t *testing.T) {
 	}
 }
 
-// Создание новых проблем ограничено MaxNewPerfIssuesPerHour на проект: без этого
-// приложение с ObjectID/slug'ами в путях (и без шаблонизации маршрутов) льёт по
-// новой строке perf_issues на КАЖДЫЙ запрос — таблица растёт без предела, а
-// retention-задачи для неё нет. Уже существующие проблемы продолжают считаться:
-// ограничивается создание, а не обнаружение.
 func TestIssueServiceRecordCapsNewIssuesPerHour(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := trace.NewIssueService(pool)
@@ -455,7 +432,6 @@ func TestIssueServiceRecordCapsNewIssuesPerHour(t *testing.T) {
 			rows, trace.MaxNewPerfIssuesPerHour)
 	}
 
-	// Существующая проблема после выбранного капа продолжает инкрементиться.
 	f := nPlusOneFinding()
 	f.Fingerprint = "fp-cap-0"
 	again, err := svc.Record(ctx, pid, f, "trace-again")
@@ -466,7 +442,6 @@ func TestIssueServiceRecordCapsNewIssuesPerHour(t *testing.T) {
 		t.Fatalf("повтор существующей проблемы: %+v, want count=2 без created/suppressed", again)
 	}
 
-	// Кап у каждого проекта свой: выбранный лимит соседа не глушит.
 	neighbour, err := svc.Record(ctx, other, nPlusOneFinding(), "trace-other")
 	if err != nil {
 		t.Fatalf("Record соседа: %v", err)
@@ -476,8 +451,6 @@ func TestIssueServiceRecordCapsNewIssuesPerHour(t *testing.T) {
 	}
 }
 
-// SetStatus обязан быть привязан к проекту: иначе участник чужой организации
-// закрывает или глушит проблему по угаданному id (IDOR).
 func TestIssueServiceSetStatusIsTenantScoped(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := trace.NewIssueService(pool)

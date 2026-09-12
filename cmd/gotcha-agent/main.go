@@ -1,5 +1,3 @@
-// cmd/gotcha-agent — тонкая точка входа: вся логика в internal/agent (сборка
-// покрытия относит этот пакет к щадящей CMD-группе, не к BACK).
 package main
 
 import (
@@ -20,9 +18,7 @@ func main() {
 		return
 	}
 	if len(os.Args) > 1 && os.Args[1] == "--check" {
-		// Только валидация конфига, без сети и без цикла сбора — install.sh
-		// зовёт это ДО systemctl enable, чтобы не соврать "installed and
-		// running" на битом ключе/URL (ревью аудита ops-H2).
+		// валидация без сети и цикла сбора: install.sh вызывает это до systemctl enable
 		if _, err := agent.LoadConfig(os.Getenv, os.Environ); err != nil {
 			fmt.Fprintln(os.Stderr, "gotcha-agent --check: "+err.Error())
 			os.Exit(2)

@@ -14,37 +14,24 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 )
 
-// maxJSONBlock — потолок сырого JSON-блока события (contexts/breadcrumbs/
-// request/exception). 256 КиБ с запасом покрывают легитимный стектрейс с исходным
-// контекстом и большой request-интерфейс; всё, что крупнее, — злоупотребление.
+// 256 КиБ с запасом покрывает легитимный стектрейс/request; крупнее — злоупотребление.
 const maxJSONBlock = 256 << 10
 
-// Потолки разбора exception-интерфейса. Число исключений и кадров задаёт КЛИЕНТ,
-// а строки кадров попадают в fingerprint.Frame и дальше в вычисление отпечатка —
-// без потолков 10 МиБ тела разворачивались в ~130 МБ структур (та же механика,
-// что у кадров профиля: ограничено количество ЭЛЕМЕНТОВ, но не размер строк).
+// Число исключений и кадров задаёт клиент, а строки кадров идут в вычисление
+// отпечатка — без потолков 10 МиБ тела разворачивались в ~130 МБ структур.
 const (
 	maxExceptions      = 32
 	maxFramesPerExc    = 1024
 	maxExceptionField  = 1024 // type/value одного исключения
 	maxFrameFieldRunes = 512  // module/function одного кадра
 	maxTitleRunes      = 1024
-	// Пользовательский fingerprint: массив целиком уходит в ключ группировки и
-	// оседает в колонке issues, поэтому ограничен и по числу элементов, и по
-	// длине каждого — как и всё остальное, что приходит из события.
+	// Массив целиком уходит в ключ группировки и оседает в колонке issues.
 	maxFingerprintParts = 32
 	maxFingerprintPart  = 256
 )
 
-// capJSONBlock возвращает блок, если он влезает в maxJSONBlock, иначе ОТБРАСЫВАЕТ
-// его целиком. Именно отбрасывает, а не обрезает: обрезанный JSON невалиден, его
-// не разберёт ни скрубер (тогда ПДн уехали бы сырыми — ScrubJSON возвращает вход
-// как есть на невалидном JSON), ни отрисовка детали issue.
-//
-// Без этого капа четыре сырых блока были единственными строками события вне
-// дисциплины capRunes, а буферы ниже по конвейеру считают СТРОКИ, а не байты:
-// очередь пайплайна 1000 задач и батч событий 10000 строк по 10 МиБ каждая дают
-// потолок памяти в десятки гигабайт от потока сжатых до килобайтов запросов.
+// Отбрасывает блок целиком, а не обрезает: обрезанный JSON невалиден — ScrubJSON
+// вернул бы его сырым (PII уехала бы неотредактированной), а не почистил.
 func capJSONBlock(raw []byte, field string) string {
 	if len(raw) <= maxJSONBlock {
 		return string(raw)
@@ -54,25 +41,14 @@ func capJSONBlock(raw []byte, field string) string {
 	return ""
 }
 
-// capRunes обрезает s до n рун (недоверенные поля из событий SDK не должны
-// раздувать строки/индексы БД без ограничений) и вычищает NUL (0x00).
-//
-// NUL в JSON легален, а в text-колонках PostgreSQL — нет (SQLSTATE
-// 22021): событие с NUL в любом строковом поле принималось приёмом с 200 и
-// погибало на issue-upsert — клиент считал его доставленным, данные терялись.
-// Все недоверенные строки всех поверхностей приёма (sentry/envelope/OTLP/
-// pprof) проходят через эту функцию, поэтому вычистка закреплена здесь.
+// NUL в JSON легален, а в text-колонках PostgreSQL — нет (SQLSTATE 22021):
+// событие с NUL принималось приёмом с 200 и погибало на issue-upsert молча.
 func capRunes(s string, n int) string {
-	// IndexByte — дешёвый просмотр без аллокаций; ReplaceAll платится только
-	// строками, реально несущими NUL.
 	if strings.IndexByte(s, 0) >= 0 {
 		s = strings.ReplaceAll(s, "\x00", "")
 	}
-	// Быстрый путь без единой аллокации. В UTF-8 байт всегда не меньше, чем рун,
-	// поэтому len(s) <= n гарантирует, что рун тоже не больше n. Проверка стоит
-	// ДО []rune(s) намеренно: подавляющее большинство строк приёма короткие, и
-	// раньше каждая из них платила копией всей строки в срез рун — на индексных
-	// профилях это давало миллионы копий и гигабайты аллокаций.
+	// Байт в UTF-8 всегда не меньше рун — len(s) <= n гарантирует и рун не больше
+	// n, без копирования в []rune на общем (короткие строки) пути.
 	if len(s) <= n {
 		return s
 	}
@@ -83,16 +59,8 @@ func capRunes(s string, n int) string {
 	return string(r[:n])
 }
 
-// capFingerprint ограничивает пользовательский fingerprint по числу элементов и
-// длине каждого. Массив приходит из события как есть и целиком уходит в ключ
-// группировки (fingerprint.Compute склеивает его через \x00), а оттуда — в
-// колонку issues. Без капа одно событие могло нести килобайты в ключе группы,
-// который потом хранится, индексируется и сравнивается на каждом приёме.
-//
-// Кап НЕ защищает от размножения issue: уникальный отпечаток на каждое событие
-// по-прежнему создаёт новый issue, а троттлинг алертов ключуется парой
-// (issue_id, rule_id) и у нового issue не срабатывает никогда. Это отдельная
-// задача — потолок уведомлений на проект.
+// Не защищает от размножения issue: троттлинг алертов ключуется (issue_id,
+// rule_id), и у нового issue с уникальным отпечатком он не срабатывает никогда.
 func capFingerprint(fp []string) []string {
 	if len(fp) == 0 {
 		return nil
@@ -107,17 +75,12 @@ func capFingerprint(fp []string) []string {
 	return out
 }
 
-// normalizeID приводит trace_id/span_id/parent_span_id к каноническому виду:
-// обрезка пробелов, нижний регистр, кап длины. Регистр hex'а выбирает тот, кто
-// его кодирует (OTLP везёт trace id 16 сырыми байтами), поэтому один и тот же
-// трейс от разных источников должен храниться одинаково — иначе развалятся и
-// join spans↔transactions по trace_id, и детерминированное семплирование
-// (см. trace.Keep).
+// Один трейс от разных источников должен храниться одинаково по регистру —
+// иначе развалятся join spans↔transactions по trace_id и детерминированное семплирование.
 func normalizeID(s string, n int) string {
 	return capRunes(strings.ToLower(strings.TrimSpace(s)), n)
 }
 
-// ParsedEvent — нормализованное Sentry-событие, готовое для пайплайна.
 type ParsedEvent struct {
 	EventID         string
 	Timestamp       time.Time
@@ -135,22 +98,15 @@ type ParsedEvent struct {
 	Tags            map[string]string
 	ContextsJSON    string
 	BreadcrumbsJSON string
-	// RequestJSON — Sentry-интерфейс request верхнего уровня (method/url/
-	// query_string/data/headers/cookies). Хранится как есть (после скраба PII в
-	// пайплайне), парсится к показу на детали issue.
-	RequestJSON string
-	Fingerprint []string
-	// Transaction/Logger — верхнеуровневые transaction и logger события:
-	// фолбэки заголовка, когда нет ни exception, ни message (см.
-	// titleAndCulprit). Выдумывать заголовок константой нельзя — это подделка
-	// данных; если пусто и здесь, Title остаётся пустым, заглушку рисует UI.
+	RequestJSON     string
+	Fingerprint     []string
+	// Transaction/Logger — фолбэки заголовка, когда нет ни exception, ни message
+	// (см. titleAndCulprit); если пусто и здесь, Title остаётся пустым.
 	Transaction string
 	Logger      string
 	Title       string
 	Culprit     string
-	// TraceID/SpanID — из contexts.trace: SDK кладут их в событие, когда
-	// включён трейсинг. Едут в одноимённые колонки events и связывают ошибку
-	// с транзакцией (пустые, если трейсинга нет).
+	// Из contexts.trace — связывают событие с транзакцией; пустые, если трейсинга нет.
 	TraceID string
 	SpanID  string
 }
@@ -198,9 +154,6 @@ type sentryEvent struct {
 	Fingerprint []string        `json:"fingerprint"`
 }
 
-// ParseEvent разбирает Sentry event JSON, терпимо к вариациям SDK:
-// timestamp числом или ISO-строкой, message строкой или объектом,
-// tags map'ой или массивом пар, exception объектом {values:[...]} или массивом.
 func ParseEvent(raw []byte) (*ParsedEvent, error) {
 	var se sentryEvent
 	if err := json.Unmarshal(raw, &se); err != nil {
@@ -239,8 +192,6 @@ func ParseEvent(raw []byte) (*ParsedEvent, error) {
 		pe.SDK = capRunes(se.SDK.Name+"/"+se.SDK.Version, 200)
 	}
 	if se.User != nil {
-		// user_* — недоверенные строки события, каппим по длине как прочие поля
-		// (Environment/Release/ServerName выше), чтобы не раздувать колонки events.
 		pe.UserID = capRunes(se.User.ID, 200)
 		pe.UserIP = capRunes(se.User.IP, 200)
 		pe.UserEmail = capRunes(se.User.Email, 200)
@@ -270,9 +221,7 @@ func ParseEvent(raw []byte) (*ParsedEvent, error) {
 	return pe, nil
 }
 
-// capTags ограничивает недоверенные теги: не более 64 штук, ключ до 64 рун,
-// значение до 256 рун (лишнее обрезается, а не отбрасывается целиком).
-// Порядок выбора тегов детерминирован: первые 64 в отсортированном порядке.
+// Выбор тегов при переполнении детерминирован: первые 64 в отсортированном порядке.
 func capTags(tags map[string]string) map[string]string {
 	if len(tags) <= 64 {
 		out := make(map[string]string, len(tags))
@@ -282,14 +231,12 @@ func capTags(tags map[string]string) map[string]string {
 		return out
 	}
 
-	// Сортируем ключи для детерминированного выбора.
 	keys := make([]string, 0, len(tags))
 	for k := range tags {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 
-	// Берем первые 64 ключей в отсортированном порядке.
 	out := make(map[string]string, 64)
 	for i := 0; i < 64 && i < len(keys); i++ {
 		k := keys[i]
@@ -298,8 +245,7 @@ func capTags(tags map[string]string) map[string]string {
 	return out
 }
 
-// parseTraceIDs достаёт contexts.trace.trace_id/span_id события. Битые или
-// отсутствующие contexts — не ошибка события: просто нет связи с трейсом.
+// Битые или отсутствующие contexts — не ошибка события: просто нет связи с трейсом.
 func parseTraceIDs(contexts json.RawMessage) (traceID, spanID string) {
 	var c struct {
 		Trace *struct {
@@ -313,11 +259,8 @@ func parseTraceIDs(contexts json.RawMessage) (traceID, spanID string) {
 	return normalizeID(c.Trace.TraceID, maxTraceID), normalizeID(c.Trace.SpanID, maxSpanID)
 }
 
-// parseTimestamp разбирает timestamp события (unix-число или RFC3339-строка) и
-// ПОДТЯГИВАЕТ его к окну хранения [now-90d, now+1d] (см. timestamp.go): events
-// партиционируется по toYYYYMM(timestamp), и пачка событий с timestamp'ами из
-// сотни разных месяцев иначе заклинила бы вставку целиком. Отсутствующий или
-// нечитаемый timestamp — «сейчас», как и раньше.
+// Подтягивает timestamp к окну хранения [now-90d, now+1d]: events партиционируется
+// по toYYYYMM(timestamp), и пачка из сотни разных месяцев иначе заклинила бы вставку.
 func parseTimestamp(raw json.RawMessage) time.Time {
 	now := time.Now().UTC()
 	var f float64
@@ -440,10 +383,8 @@ func titleAndCulprit(pe *ParsedEvent) (title, culprit string) {
 			culprit = last.Module + "." + last.Function
 		}
 	}
-	// Фолбэки заголовка: message (первая строка), затем реальные поля события
-	// — transaction и logger. Пустой exception без type/value тоже сюда. Если
-	// пусто везде, заголовок остаётся пустым: подделывать его константой в
-	// данных нельзя, заглушку рисует интерфейс.
+	// Если пусто везде, заголовок остаётся пустым — подделывать его константой
+	// нельзя, заглушку рисует интерфейс.
 	if title == "" {
 		title, _, _ = strings.Cut(pe.Message, "\n")
 	}

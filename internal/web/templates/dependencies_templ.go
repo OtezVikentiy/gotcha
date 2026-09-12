@@ -14,9 +14,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// DependencyRow — строка таблицы деталей: агрегат зависимости (trace.Dependency)
-// в готовом для рендера виде (числовая агрегация уже сделана в web/dependencies.go,
-// шаблон только форматирует — тот же приём, что EndpointRow/MonitorRow).
 type DependencyRow struct {
 	Kind      string
 	Target    string
@@ -27,25 +24,16 @@ type DependencyRow struct {
 	Direction string // trace.DataDirection: "in" / "out" / "both" / ""
 }
 
-// DepsFilter — состояние фильтра окна времени экрана зависимостей.
 type DepsFilter struct {
 	Range  TimeRangeVM
 	Active bool
 }
 
-// dependenciesPath — путь экрана зависимостей. В package templates (как
-// performancePath, performance.templ:13), т.к. вызывается из шаблона (form
-// action) и нав-подменю.
 func dependenciesPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/dependencies"
 }
 
-// depDirectionIcon — иконка спрайта для колонки «Данные» по направлению
-// потока (trace.DataDirection): «читаем» — стрелка к сервису (влево, как на
-// карте, где сервис в центре), «пишем» — от него. Минус — операции не
-// распознаны (BEGIN/COMMIT, неизвестные команды). Иконка, а не текстовый
-// глиф: глиф зависит от шрифта и выпадает из общей иконографики (см.
-// TestNoTextGlyphsInsteadOfIcons).
+// текстовый глиф вместо иконки уронит TestNoTextGlyphsInsteadOfIcons.
 func depDirectionIcon(dir string) string {
 	switch dir {
 	case "in":
@@ -59,7 +47,6 @@ func depDirectionIcon(dir string) string {
 	}
 }
 
-// depDirectionKey — ключ локали текстовой подсказки к глифу направления.
 func depDirectionKey(dir string) string {
 	switch dir {
 	case "in", "out", "both":
@@ -109,7 +96,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 			var templ_7745c5c3_Var3 string
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "deps.title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 67, Col: 34}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 54, Col: 34}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 			if templ_7745c5c3_Err != nil {
@@ -130,7 +117,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 			var templ_7745c5c3_Var4 templ.SafeURL
 			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(dependenciesPath(projectID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 69, Col: 69}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 56, Col: 69}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 			if templ_7745c5c3_Err != nil {
@@ -151,7 +138,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 			var templ_7745c5c3_Var5 string
 			templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "deps.apply"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 71, Col: 77}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 58, Col: 77}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 			if templ_7745c5c3_Err != nil {
@@ -209,7 +196,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 				var templ_7745c5c3_Var7 string
 				templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "deps.legend.in"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 85, Col: 38}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 72, Col: 38}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 				if templ_7745c5c3_Err != nil {
@@ -226,7 +213,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 				var templ_7745c5c3_Var8 string
 				templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "deps.legend.out"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 89, Col: 39}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 76, Col: 39}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 				if templ_7745c5c3_Err != nil {
@@ -243,7 +230,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 				var templ_7745c5c3_Var9 string
 				templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "deps.legend.both"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 93, Col: 40}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 80, Col: 40}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 				if templ_7745c5c3_Err != nil {
@@ -261,7 +248,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 					var templ_7745c5c3_Var10 string
 					templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "deps.truncated", "n", strconv.Itoa(len(deps))))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 98, Col: 98}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 85, Col: 98}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 					if templ_7745c5c3_Err != nil {
@@ -295,7 +282,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 					var templ_7745c5c3_Var12 string
 					templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "deps.table.dependency"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 105, Col: 63}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 92, Col: 63}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 					if templ_7745c5c3_Err != nil {
@@ -308,7 +295,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 					var templ_7745c5c3_Var13 string
 					templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "deps.table.direction"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 106, Col: 62}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 93, Col: 62}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 					if templ_7745c5c3_Err != nil {
@@ -321,7 +308,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 					var templ_7745c5c3_Var14 string
 					templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "deps.table.calls"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 107, Col: 58}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 94, Col: 58}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 					if templ_7745c5c3_Err != nil {
@@ -334,7 +321,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 					var templ_7745c5c3_Var15 string
 					templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "deps.table.p50"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 108, Col: 56}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 95, Col: 56}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 					if templ_7745c5c3_Err != nil {
@@ -347,7 +334,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 					var templ_7745c5c3_Var16 string
 					templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "deps.table.p95"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 109, Col: 56}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 96, Col: 56}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 					if templ_7745c5c3_Err != nil {
@@ -360,7 +347,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 					var templ_7745c5c3_Var17 string
 					templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "deps.table.error_rate"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 110, Col: 63}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 97, Col: 63}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 					if templ_7745c5c3_Err != nil {
@@ -378,7 +365,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 						var templ_7745c5c3_Var18 string
 						templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "deps.kind."+d.Kind))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 116, Col: 50}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 103, Col: 50}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 						if templ_7745c5c3_Err != nil {
@@ -391,7 +378,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 						var templ_7745c5c3_Var19 string
 						templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(d.Target)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 116, Col: 64}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 103, Col: 64}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 						if templ_7745c5c3_Err != nil {
@@ -404,7 +391,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 						var templ_7745c5c3_Var20 string
 						templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, depDirectionKey(d.Direction)))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 117, Col: 97}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 104, Col: 97}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var20)
 						if templ_7745c5c3_Err != nil {
@@ -417,7 +404,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 						var templ_7745c5c3_Var21 string
 						templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, depDirectionKey(d.Direction)))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 117, Col: 154}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 104, Col: 154}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var21)
 						if templ_7745c5c3_Err != nil {
@@ -438,7 +425,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 						var templ_7745c5c3_Var22 string
 						templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatInt(d.Calls, 10))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 118, Col: 46}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 105, Col: 46}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 						if templ_7745c5c3_Err != nil {
@@ -451,7 +438,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 						var templ_7745c5c3_Var23 string
 						templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(formatDurationUS(d.P50US))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 119, Col: 41}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 106, Col: 41}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 						if templ_7745c5c3_Err != nil {
@@ -464,7 +451,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 						var templ_7745c5c3_Var24 string
 						templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinStringErrs(formatDurationUS(d.P95US))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 120, Col: 41}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 107, Col: 41}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 						if templ_7745c5c3_Err != nil {
@@ -477,7 +464,7 @@ func DependenciesScreen(projectID int64, deps []DependencyRow, filter DepsFilter
 						var templ_7745c5c3_Var25 string
 						templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(formatFailureRate(d.ErrorRate))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 121, Col: 46}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dependencies.templ`, Line: 108, Col: 46}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 						if templ_7745c5c3_Err != nil {

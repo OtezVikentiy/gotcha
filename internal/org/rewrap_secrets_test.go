@@ -14,20 +14,12 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// Тот же зафиксированный v1-вектор, что и internal/secretbox/secretbox_test.go
-// и internal/alert/rewrap_secrets_test.go (literal скопирован, а не получен
-// через публичный API кольца — способа запечатать v1 через Keyring в
-// продуктовом коде больше нет намеренно).
 const (
 	rewrapV1Master   = "vector-master-v1-legacy-old-code"
 	rewrapV1Plain    = "legacy-v1-secret-value"
 	rewrapV1Envelope = "enc:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYudf0xP3/sKnysGe0CDB7Uzw42DGYRgM/gl3FF8KMFQgpVnZw4I4="
 )
 
-// TestSSORewrapSecrets — бэкфилл §6 спеки ротации для org_sso.client_secret,
-// зеркало TestChannelsRewrapSecrets в internal/alert: поднимает всё читаемое
-// (legacy plaintext, v1, v2 предыдущим ключом) до v2 текущего, не трогает
-// уже-текущее и нечитаемое, идемпотентен.
 func TestSSORewrapSecrets(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -108,8 +100,6 @@ func TestSSORewrapSecrets(t *testing.T) {
 	if got := readSecret(orgV2Cur); got != v2Current {
 		t.Fatalf("v2-текущий client_secret изменён: %q, want unchanged %q", got, v2Current)
 	}
-	// Пустой client_secret НЕ запечатан: пустое значение здесь означает
-	// "SSO без секрета" (или ещё не заполнено), а не значение для шифрования.
 	if got := readSecret(orgEmpty); got != "" {
 		t.Fatalf("пустой client_secret запечатан: %q, want \"\"", got)
 	}
@@ -123,7 +113,6 @@ func TestSSORewrapSecrets(t *testing.T) {
 	}
 }
 
-// TestSSORewrapSecretsNoKey — без заданного кольца проход — no-op.
 func TestSSORewrapSecretsNoKey(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -146,10 +135,6 @@ func TestSSORewrapSecretsNoKey(t *testing.T) {
 	}
 }
 
-// capturingLogHandler — slog.Handler, копящий Record'ы в срез вместо вывода.
-// Используется только тестом капа лога (ниже), зеркало
-// internal/alert.capturingLogHandler — не запускается с t.Parallel(),
-// потому что slog.SetDefault меняет глобальный логгер процесса.
 type capturingLogHandler struct {
 	records *[]slog.Record
 }
@@ -162,13 +147,6 @@ func (h capturingLogHandler) Handle(_ context.Context, r slog.Record) error {
 func (h capturingLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h capturingLogHandler) WithGroup(string) slog.Handler      { return h }
 
-// TestSSORewrapSecretsLogCap — свойство rewrapLogCap (internal/org/
-// rewrap_secrets.go), зеркало internal/alert.TestChannelsRewrapSecretsLogCap:
-// подробный лог нерасшифруемых client_secret капируется пятью записями на
-// проход, но итоговая строка (slog.Info) считает ВСЕ нерасшифруемые — кап
-// режет детализацию, а не сам факт нечитаемости. Организаций с нечитаемым
-// client_secret заведено заведомо больше капа, иначе тест не отличил бы
-// «кап работает» от «их и так меньше пяти».
 func TestSSORewrapSecretsLogCap(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -186,7 +164,7 @@ func TestSSORewrapSecretsLogCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewKeyring(garbage): %v", err)
 	}
-	const unreadableCount = 8 // > rewrapLogCap(5) по спеке
+	const unreadableCount = 8
 	for i := 0; i < unreadableCount; i++ {
 		garbage, err := garbageRing.Seal(fmt.Sprintf("garbage-sso-secret-%d", i))
 		if err != nil {
@@ -208,7 +186,7 @@ func TestSSORewrapSecretsLogCap(t *testing.T) {
 		t.Fatalf("RewrapSecrets updated = %d, want 0 (все секреты нечитаемы)", updated)
 	}
 
-	const wantSkipLogs = 5 // rewrapLogCap
+	const wantSkipLogs = 5
 	var skipLogs int
 	var summarySeen bool
 	for _, r := range records {
@@ -233,13 +211,6 @@ func TestSSORewrapSecretsLogCap(t *testing.T) {
 	}
 }
 
-// TestSSORewrapSecretsPoolClosed — обрыв соединения на самом SELECT партии,
-// зеркало internal/alert.TestChannelsRewrapSecretsPoolClosed: RewrapSecrets
-// обязан вернуть ошибку вызывающему, а не (0,nil). Единственная ветка ошибки
-// RewrapSecrets, которую честно достать закрытием пула: он рвёт соединение
-// уже на pool.Query, до чтения партии, так что ветки rows.Scan/rows.Err и
-// slog.Warn-путь одиночного UPDATE внутри цикла этим способом не
-// воспроизвести (см. отчёт задачи).
 func TestSSORewrapSecretsPoolClosed(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -259,10 +230,6 @@ func TestSSORewrapSecretsPoolClosed(t *testing.T) {
 	}
 }
 
-// newOrgWithSSO заводит организацию и её org_sso напрямую SQL с заданным
-// client_secret as is — в отличие от UpsertSSO, ничего не запечатывает и не
-// валидирует issuer/client_id, так тест управляет точным байтовым
-// содержимым секрета.
 func newOrgWithSSO(t *testing.T, pool *pgxpool.Pool, slug, secret string) int64 {
 	t.Helper()
 	ctx := context.Background()

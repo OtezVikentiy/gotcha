@@ -10,12 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/nav"
 )
 
-// customRange — произвольный диапазон для веток r.Custom селектора/подписи/ссылок.
 var customRange = TimeRangeVM{Key: "custom", Custom: true, Start: "2026-07-01T00:00", End: "2026-07-10T00:00"}
 
-// TestTimeRangeFieldsCustom рендерит селектор с активным произвольным
-// диапазоном: option «custom» отмечен, поля start/end заполнены (ветки, которые
-// пресетные страницы не задевают).
 func TestTimeRangeFieldsCustom(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	var sb strings.Builder
@@ -30,22 +26,16 @@ func TestTimeRangeFieldsCustom(t *testing.T) {
 	}
 }
 
-// TestTimeRangeLabelCustom — подпись произвольного диапазона («с – по»),
-// в отличие от локализованного короткого имени пресета.
 func TestTimeRangeLabelCustom(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	var sb strings.Builder
 	if err := timeRangeLabel(customRange).Render(ctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	// Подпись — в читаемом числовом формате ГГГГ-ММ-ДД ЧЧ:ММ (не ДД.ММ.ГГГГ:
-	// тот неоднозначен в английском интерфейсе, см. TestRangeBoundIsUnambiguous),
-	// с зоной UTC на каждой границе — её пишет humanize.Time.
 	if out := sb.String(); !strings.Contains(out, "2026-07-01 00:00 UTC") || !strings.Contains(out, "2026-07-10 00:00 UTC") {
 		t.Errorf("timeRangeLabel(custom) = %q", out)
 	}
 
-	// пресет — короткая локализованная подпись.
 	sb.Reset()
 	if err := timeRangeLabel(TimeRangeVM{Key: "24h"}).Render(ctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
@@ -54,7 +44,6 @@ func TestTimeRangeLabelCustom(t *testing.T) {
 		t.Error("timeRangeLabel(preset) empty")
 	}
 
-	// нераспарсенная граница — prettyBound отдаёт её как есть (fallback).
 	sb.Reset()
 	if err := timeRangeLabel(TimeRangeVM{Custom: true, Start: "raw-x", End: "raw-y"}).Render(ctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
@@ -64,13 +53,8 @@ func TestTimeRangeLabelCustom(t *testing.T) {
 	}
 }
 
-// TestRangeBoundIsUnambiguous: prettyBound форматировал 02.01.2006 безусловно.
-// В английском интерфейсе «02.01.2026» читается и как второе января, и как
-// первое февраля — то есть подпись диапазона неоднозначна ровно там, где
-// точность важнее всего.
-//
-// Формат числовой и одинаковый в обеих локалях намеренно: то же обоснование,
-// что записано в докблоке humanize.Time.
+// «02.01.2026» в англоязычном интерфейсе неоднозначен (2 января или 1 февраля).
+// формат числовой и одинаковый в обеих локалях — тот же приём, что у humanize.Time.
 func TestRangeBoundIsUnambiguous(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
 	got := prettyBound(ctx, "2026-01-02T15:04")
@@ -82,8 +66,6 @@ func TestRangeBoundIsUnambiguous(t *testing.T) {
 	}
 }
 
-// TestTimeRangeApply — apply переносит окно в query: произвольный диапазон
-// несёт period=custom+start+end, пресет — только period.
 func TestTimeRangeApply(t *testing.T) {
 	q := url.Values{}
 	customRange.apply(q)
@@ -98,8 +80,6 @@ func TestTimeRangeApply(t *testing.T) {
 	}
 }
 
-// TestTimeRangeURLBuildersCarryCustom — все ссылки рядом с графиком сохраняют
-// произвольный диапазон (период+границы), чтобы клик не сбрасывал окно.
 func TestTimeRangeURLBuildersCarryCustom(t *testing.T) {
 	builders := map[string]string{
 		"perfListSortURL":         perfListSortURL(7, PerfFilter{Range: customRange}, "p95"),
@@ -115,8 +95,6 @@ func TestTimeRangeURLBuildersCarryCustom(t *testing.T) {
 	}
 }
 
-// TestBackTargetFromReferer — когда в контексте есть nav.Shell.Back (Referer),
-// breadcrumbBackTo ведёт туда с меткой раздела, а не на дефолтного родителя.
 func TestBackTargetFromReferer(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	ctx = nav.WithShell(ctx, nav.Shell{Back: "/projects/7/incidents?incpage=2"})
@@ -129,14 +107,12 @@ func TestBackTargetFromReferer(t *testing.T) {
 		t.Errorf("label = %q, want the section-specific label", label)
 	}
 
-	// Неопознанный путь — общий «Назад» (nav.back), не дефолтная метка.
 	ctx2 := nav.WithShell(i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"}), nav.Shell{Back: "/whatever"})
 	_, generic := backTarget(ctx2, "/x", "Default")
 	if generic == "Default" || generic == "" {
 		t.Errorf("unknown referer path label = %q, want generic nav.back", generic)
 	}
 
-	// Без Back — падаем на дефолт.
 	href3, label3 := backTarget(ctx, "", "")
 	_ = href3
 	if string(href3) == "" && label3 == "" {

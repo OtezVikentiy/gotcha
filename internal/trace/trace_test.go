@@ -59,7 +59,6 @@ func TestDescriptionHashDependsOnOpAndDescription(t *testing.T) {
 	if got := trace.DescriptionHash("db.query", "SELECT 2"); got == base {
 		t.Fatal("hash ignores description")
 	}
-	// Разделитель между op и description: склейка не должна коллизировать.
 	if trace.DescriptionHash("ab", "c") == trace.DescriptionHash("a", "bc") {
 		t.Fatal("op/description boundary collision")
 	}
@@ -91,11 +90,6 @@ func TestKeepIsDeterministic(t *testing.T) {
 	}
 }
 
-// TestKeepIgnoresTraceIDCase: регистр hex'а не должен влиять на решение. Иначе
-// один и тот же трейс, чей id один источник закодировал в верхнем регистре
-// (OTLP везёт его сырыми байтами), а другой — в нижнем, окажется наполовину
-// сохранён, наполовину выброшен. При каком-нибудь rate это обязано «выстрелить»
-// на любом наборе id, поэтому перебираем и id, и rate.
 func TestKeepIgnoresTraceIDCase(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		lower := fmt.Sprintf("%032x", i*2654435761)
@@ -107,7 +101,6 @@ func TestKeepIgnoresTraceIDCase(t *testing.T) {
 			}
 		}
 	}
-	// Пробелы по краям (кривой SDK) тоже не должны менять решение.
 	for i := 0; i < 200; i++ {
 		id := fmt.Sprintf("%032x", i*2654435761)
 		if trace.Keep(" "+id+"\n", 0.5) != trace.Keep(id, 0.5) {
@@ -131,7 +124,6 @@ func TestKeepSplitsTraceIDsAtHalfRate(t *testing.T) {
 }
 
 func TestKeepIsNotAllOrNothing(t *testing.T) {
-	// Разные trace_id должны получать разные решения при одном и том же rate.
 	var sawKeep, sawDrop bool
 	for i := 0; i < 100; i++ {
 		if trace.Keep(fmt.Sprintf("trace-%d", i), 0.5) {

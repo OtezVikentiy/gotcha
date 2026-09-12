@@ -1,10 +1,5 @@
 package db_test
 
-// TestLatestMigrationHasDataTest (internal/guards) требует, чтобы НОВЕЙШАЯ
-// миграция PostgreSQL приезжала с тестом на непустой базе — db.MigratePGTo на
-// схему, уже содержащую строки. На момент этой правки новейшая —
-// 0064_hosts.up.sql.
-
 import (
 	"context"
 	"testing"
@@ -15,13 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0064HostsCreateThenDrop — 0064 добавляет таблицу hosts
-// (реестр имён хостов, видевших события проекта, для оценки метрик по хосту).
-// Чистое добавление, поэтому цена ошибки ниже, чем у деструктивных миграций,
-// но тест на непустой базе всё равно нужен: FK на projects(id) обязан
-// принимать существующие проекты, а UNIQUE(project_id, name) — обычный
-// upsert-сценарий (тот же (project_id, name) дважды через ON CONFLICT).
-// down проверяет, что таблица исчезает целиком.
+// Чистое добавление — цена ошибки ниже, но тест нужен: FK на projects(id) должен принимать существующие
+// проекты, а UNIQUE(project_id, name) — реальный upsert-сценарий (ON CONFLICT).
 func TestMigrate0064HostsCreateThenDrop(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -51,8 +41,7 @@ func TestMigrate0064HostsCreateThenDrop(t *testing.T) {
 	mustScan(t, pool, &hostID,
 		"INSERT INTO hosts (project_id, name) VALUES ($1, 'web-01') RETURNING id", projectID)
 
-	// UNIQUE(project_id, name) + upsert-сценарий, каким его использует
-	// host.Store.Upsert (см. internal/host/host.go).
+	// Тот же upsert-сценарий, что host.Store.Upsert (internal/host/host.go).
 	var reUpsertedID int64
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO hosts (project_id, name) VALUES ($1, 'web-01')

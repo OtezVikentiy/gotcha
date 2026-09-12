@@ -8,15 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// TestOrgQuotaCachesAreBounded — обе карты кеша квот обязаны иметь границу и
-// вытеснять записи, а не расти без предела и не стираться целиком.
-//
-// entries раньше не имел границы вообще: записи только перезаписывались, по
-// истечении TTL не удалялись, и карта росла до числа организаций, когда-либо
-// приходивших на приём. exhausted при переполнении стирался целиком — учёт от
-// этого не ломался, но выбрасывались ровно те записи, ради которых кеш и
-// заведён, и организации, стабильно упирающиеся в квоту, снова шли в PostgreSQL
-// на каждом событии.
 func TestOrgQuotaCachesAreBounded(t *testing.T) {
 	now := time.Unix(0, 0)
 	q := &OrgQuota{
@@ -42,7 +33,6 @@ func TestOrgQuotaCachesAreBounded(t *testing.T) {
 
 	t.Run("истёкшие уходят первыми", func(t *testing.T) {
 		q.exhausted = map[int64]time.Time{}
-		// Половина записей уже протухла.
 		for id := int64(0); id < maxKeyCacheEntries; id++ {
 			if id%2 == 0 {
 				q.exhausted[id] = now.Add(-time.Second)
@@ -74,14 +64,6 @@ func TestOrgQuotaCachesAreBounded(t *testing.T) {
 	})
 }
 
-// TestOrgQuotaUsesInjectedClock — CheckAndCount обязан считать месячное окно по
-// ИНЖЕКТИРУЕМЫМ часам, а не по time.Now().
-//
-// Раньше в единственном месте, где определяется граница месяца, стояло
-// `time.Now()`, поэтому поведение «квота обнулилась 1-го числа» было
-// непроверяемо в принципе — для биллинговой логики это дорого. Тест ловит
-// возврат к реальным часам: он двигает часы через границу месяца и смотрит,
-// какой момент дошёл до checkCount.
 func TestOrgQuotaUsesInjectedClock(t *testing.T) {
 	var now time.Time
 	var seen []time.Time
@@ -112,8 +94,6 @@ func TestOrgQuotaUsesInjectedClock(t *testing.T) {
 	if len(seen) != 2 {
 		t.Fatalf("checkCount вызван %d раз, want 2", len(seen))
 	}
-	// Ключевая проверка: до checkCount доехали ИМЕННО инжектированные моменты.
-	// С time.Now() оба были бы «сейчас» и попали бы в один и тот же месяц.
 	if !seen[0].Equal(time.Date(2026, time.January, 31, 23, 59, 59, 0, time.UTC)) {
 		t.Errorf("первый вызов получил %v, ожидались инжектированные часы", seen[0])
 	}
@@ -122,13 +102,6 @@ func TestOrgQuotaUsesInjectedClock(t *testing.T) {
 	}
 }
 
-// TestOrgQuotaRefundUsesChargedAtNotFreshNow — сердце фикса T8 на уровне
-// OrgQuota (не двойника): Refund обязан списать из ТОЙ ЖЕ строки org_usage,
-// что и парный CheckAndCount, даже если между ними успели переехать часы.
-// Часы двигаются на границу месяца между вызовами — с багом (Refund зовёт
-// собственный q.now()) возврат ушёл бы в февраль, хотя списание было в
-// январе, и refundCount увидел бы январский granted-месяц лишь у CheckAndCount,
-// а Refund — уже другой.
 func TestOrgQuotaRefundUsesChargedAtNotFreshNow(t *testing.T) {
 	var now time.Time
 	var refundMonth time.Time
@@ -156,8 +129,6 @@ func TestOrgQuotaRefundUsesChargedAtNotFreshNow(t *testing.T) {
 		t.Fatalf("CheckAndCount: %v", err)
 	}
 
-	// Часы уходят за границу месяца ДО возврата — имитирует реальную задержку
-	// между списанием квоты и решением об отказе по ёмкости.
 	now = time.Date(2026, time.February, 1, 0, 0, 1, 0, time.UTC)
 	if err := q.Refund(ctx, 7, 1, chargedAt); err != nil {
 		t.Fatalf("Refund: %v", err)

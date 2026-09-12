@@ -8,8 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// TestLogAttrFacetSectionTooMuchData — деградация AttrKeys (таймаут/ошибка):
-// секция печатает предупреждение и не пытается рисовать список ключей.
 func TestLogAttrFacetSectionTooMuchData(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	wantNote := i18n.T(ctx, "logs.facet.too_much_data")
@@ -26,8 +24,6 @@ func TestLogAttrFacetSectionTooMuchData(t *testing.T) {
 	}
 }
 
-// TestLogAttrFacetSectionEmpty — ключей нет (не TooMuchData): показывает
-// отдельную пометку "пусто", а не список.
 func TestLogAttrFacetSectionEmpty(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	wantNote := i18n.T(ctx, "logs.facet.empty")
@@ -44,8 +40,6 @@ func TestLogAttrFacetSectionEmpty(t *testing.T) {
 	}
 }
 
-// TestLogAttrFacetSectionCollapsedKey — ключ без Expanded: просто счётчик,
-// без aria-current и без вложенного списка значений.
 func TestLogAttrFacetSectionCollapsedKey(t *testing.T) {
 	facet := LogAttrFacets{Keys: []LogAttrKeyFacet{
 		{Key: "region", Count: 5, Href: "/p/1/logs?facet=region"},
@@ -62,9 +56,6 @@ func TestLogAttrFacetSectionCollapsedKey(t *testing.T) {
 	}
 }
 
-// TestLogAttrFacetSectionExpandedKeyNoValues — раскрытый ключ, но лениво
-// подгруженные значения не пришли (отказ AttrValues, см. NewAttrFacets):
-// ключ остаётся раскрытым (aria-current), но вместо списка — пометка пусто.
 func TestLogAttrFacetSectionExpandedKeyNoValues(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	wantNote := i18n.T(ctx, "logs.facet.empty")
@@ -87,9 +78,6 @@ func TestLogAttrFacetSectionExpandedKeyNoValues(t *testing.T) {
 	}
 }
 
-// TestLogAttrFacetSectionExpandedKeyWithValues — раскрытый ключ со
-// значениями: рендерит вложенный список, активное значение получает
-// aria-current и модификатор класса -active, неактивное — нет.
 func TestLogAttrFacetSectionExpandedKeyWithValues(t *testing.T) {
 	facet := LogAttrFacets{Keys: []LogAttrKeyFacet{
 		{Key: "host", Count: 3, Href: "/p/1/logs?facet=host", Expanded: true, Values: []LogAttrValueFacet{

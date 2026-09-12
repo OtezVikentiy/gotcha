@@ -17,24 +17,14 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
 )
 
-// errReader — тело запроса, чтение которого обрывается ошибкой ввода-вывода
-// (оборванное соединение), а не EOF и не превышением лимита. Единственный
-// способ достать ветку «тело не дочитано» на входах, где ReadAll/ParseNDJSON
-// обязаны отличать её от too_large: без него ветка недостижима из httptest,
-// а именно она даёт reason=malformed.
 type errReader struct{}
 
 func (errReader) Read([]byte) (int, error) { return 0, errors.New("connection reset") }
 
-// countingProfileSink — ProfileSink, считающий записанные профили: тестам
-// отказов нужно убедиться, что отклонённый запрос НИЧЕГО не записал.
-// Собственный, а не общий с handler_test.go: тот живёт в пакете ingest_test.
 type countingProfileSink struct{ n int }
 
 func (s *countingProfileSink) Add(_ int64, _ profile.Profile) { s.n++ }
 
-// newRejectHandler — приёмник с валидным ключом (Bearer pub / sentry_key любой)
-// и заданным потолком тела. Квоты/приёмники подставляют сами тесты.
 func newRejectHandler(maxBytes int64) *Handler {
 	return NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, maxBytes)
 }
@@ -58,25 +48,12 @@ func otlpLogsRequest(body io.Reader, contentType, contentEncoding string) *http.
 	return req
 }
 
-// TestIngestRejectionPairsContract — контракт закрытого набора пар
-// gotcha_ingest_rejected_total{reason,signal}: набор отдаётся КОПИЕЙ (чужая
-// мутация не должна портить общий слайс, на котором main регистрирует
-// self-метрики), key_revoked зарезервирован и в наборе отсутствовать обязан,
-// (quota, deploy) и (overloaded, deploy) невозможны (деплои не расходуют
-// месячную квоту и не буферизуются в RAM), у каждой пары набора есть живой
-// счётчик, а пара ВНЕ набора молча игнорируется.
 func TestIngestRejectionPairsContract(t *testing.T) {
 	pairs := IngestRejectionPairs()
-	// 29 (5 сигналов × 4 причины + 5 quota-сигналов, без deploy) + 5 пар
-	// overloaded (те же пять сигналов, тоже без deploy — см. докблок
-	// ingestRejectionPairs) + 6 пар key_scope (по одной на каждый сигнал —
-	// вычислены из keyScopeMatrix, см. keyScopeRejectionPairs).
 	if len(pairs) != 40 {
 		t.Fatalf("пар в наборе = %d, want 40 (29 старых + 5 overloaded + 6 key_scope)", len(pairs))
 	}
 
-	// Копия, а не общий слайс: порча вернувшегося набора не должна доезжать
-	// до ingestRejectionPairs.
 	poison := IngestRejectionKey{RejectKeyRevoked, SignalDeploy}
 	pairs[0] = poison
 	fresh := IngestRejectionPairs()
@@ -96,7 +73,6 @@ func TestIngestRejectionPairsContract(t *testing.T) {
 		}
 	}
 
-	// Каждая пара набора инкрементируется и читается.
 	h := newRejectHandler(1 << 20)
 	for _, p := range fresh {
 		before := h.RejectedBy(p.Reason, p.Signal)
@@ -106,21 +82,14 @@ func TestIngestRejectionPairsContract(t *testing.T) {
 		}
 	}
 
-	// Пара вне набора: счётчика нет — RejectedBy отдаёт 0, countRejected не паникует.
 	h.countRejected(RejectKeyRevoked, SignalEvent)
 	if got := h.RejectedBy(RejectKeyRevoked, SignalEvent); got != 0 {
 		t.Errorf("RejectedBy(key_revoked, event) = %d, want 0 (пары нет в наборе)", got)
 	}
 }
 
-// TestPprofRejectCounters — каждый отказ /api/v1/profiles/pprof виден
-// gotcha_ingest_rejected_total с ПРАВИЛЬНОЙ причиной: дежурный обязан
-// отличать «клиента троттлит» от «квота исчерпана» и «тело битое» от «тело
-// слишком большое», а не видеть один общий рост 4xx.
 func TestPprofRejectCounters(t *testing.T) {
 	t.Run("profiles-disabled", func(t *testing.T) {
-		// h.Profiles == nil → 202 без записи и БЕЗ отказа: выключенный приём
-		// профилей — не отказ, счётчик расти не должен.
 		h := newRejectHandler(1 << 20)
 		before := h.RejectedBy(RejectMalformed, SignalProfile)
 		w := httptest.NewRecorder()
@@ -137,9 +106,8 @@ func TestPprofRejectCounters(t *testing.T) {
 		h := newRejectHandler(1 << 20)
 		h.Profiles = &countingProfileSink{}
 		now := time.Unix(0, 0)
-		h.SetRateLimit(func() time.Time { return now }, 1, 1) // 1 ток/с, запас 1
+		h.SetRateLimit(func() time.Time { return now }, 1, 1)
 
-		// Первый запрос съедает единственный токен (чем он кончится — неважно).
 		h.pprofIngest(httptest.NewRecorder(), pprofRequest(strings.NewReader("x"), ""))
 
 		before := h.RejectedBy(RejectRateLimit, SignalProfile)
@@ -173,7 +141,6 @@ func TestPprofRejectCounters(t *testing.T) {
 	})
 
 	t.Run("bad-body-encoding", func(t *testing.T) {
-		// Content-Encoding: gzip на не-gzip теле — h.body падает на gzip.NewReader.
 		h := newRejectHandler(1 << 20)
 		h.Profiles = &countingProfileSink{}
 
@@ -189,7 +156,6 @@ func TestPprofRejectCounters(t *testing.T) {
 	})
 
 	t.Run("body-too-large", func(t *testing.T) {
-		// Тело сверх GOTCHA_MAX_EVENT_BYTES → 413 и reason=too_large, НЕ malformed.
 		h := newRejectHandler(8)
 		h.Profiles = &countingProfileSink{}
 
@@ -209,7 +175,6 @@ func TestPprofRejectCounters(t *testing.T) {
 	})
 
 	t.Run("body-read-error", func(t *testing.T) {
-		// Оборванное чтение тела — malformed, а не too_large.
 		h := newRejectHandler(1 << 20)
 		h.Profiles = &countingProfileSink{}
 
@@ -229,10 +194,6 @@ func TestPprofRejectCounters(t *testing.T) {
 	})
 
 	t.Run("corrupt-gzip-header", func(t *testing.T) {
-		// Тело начинается gzip-магией (0x1f 0x8b), но заголовок оборван:
-		// gunzipLimited отдаёт ошибку, НЕ равную ErrTooLarge → 400 malformed,
-		// а не 413. pprof приходит gzip'ом ВНУТРИ тела (без Content-Encoding),
-		// поэтому эта ветка отдельна от bad-body-encoding выше.
 		h := newRejectHandler(1 << 20)
 		sink := &countingProfileSink{}
 		h.Profiles = sink
@@ -256,8 +217,6 @@ func TestPprofRejectCounters(t *testing.T) {
 	})
 
 	t.Run("malformed-pprof", func(t *testing.T) {
-		// Тело не gzip вовсе (gunzipLimited пропускает его как есть) и не pprof:
-		// отказ приходит от ParsePprof и тоже обязан быть malformed.
 		h := newRejectHandler(1 << 20)
 		sink := &countingProfileSink{}
 		h.Profiles = sink
@@ -277,7 +236,6 @@ func TestPprofRejectCounters(t *testing.T) {
 	})
 }
 
-// TestOTLPLogsRejectCounters — отказы /v1/logs с правильными причинами.
 func TestOTLPLogsRejectCounters(t *testing.T) {
 	t.Run("unsupported-content-type", func(t *testing.T) {
 		h := newRejectHandler(1 << 20)
@@ -385,7 +343,6 @@ func TestOTLPLogsRejectCounters(t *testing.T) {
 	})
 }
 
-// TestNDJSONLogsRejectCounters — отказы /api/v1/logs (NDJSON) с правильными причинами.
 func TestNDJSONLogsRejectCounters(t *testing.T) {
 	t.Run("missing-bearer", func(t *testing.T) {
 		h := newRejectHandler(1 << 20)
@@ -428,8 +385,6 @@ func TestNDJSONLogsRejectCounters(t *testing.T) {
 	})
 
 	t.Run("body-read-error", func(t *testing.T) {
-		// ParseNDJSON вернула I/O-ошибку: частичный результат отбрасывается
-		// целиком, причина — malformed, не too_large.
 		sink := &collectLogSink{}
 		h := newRejectHandler(1 << 20)
 		h.Logs = sink

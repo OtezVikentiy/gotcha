@@ -15,9 +15,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/nav"
 )
 
-// errorTitleKey/errorBodyKey — заголовок и текст страницы ошибки по HTTP-
-// статусу. Для нераспознанных статусов возвращают "" — тогда заголовком
-// становится переданный msg, а тела нет.
 func errorTitleKey(status int) string {
 	switch status {
 	case 403:
@@ -42,23 +39,8 @@ func errorBodyKey(status int) string {
 	return ""
 }
 
-// ErrorPage — стилизованная страница ошибки (404/403/500 и т.д.) поверх
-// chromeless-layout. Код статуса — герой в фирменной уголковой рамке
-// ([код]), под ним заголовок и направляющий текст по статусу; для прочих
-// статусов заголовком служит переданный msg. status/msg приходят от
-// web.Handler.renderError / notFound.
-//
-// msg — это конкретная причина отказа («для этого email нет приглашения»,
-// «email не из домена организации», ...), а не короткий заголовок: для
-// известных статусов (403/404/500) заголовком остаётся шаблонный
-// errorTitleKey (категория — "нет доступа"), а msg, если он есть, заменяет
-// собой шаблонный errorBodyKey в пояснении под заголовком — так причина не
-// задваивает заголовок и не теряется. Раньше msg отбрасывался целиком, когда
-// у статуса был свой заголовок: восемь разных тупиков первого входа через
-// OAuth-провайдера (нет приглашения / чужой домен / email не подтверждён и
-// т.д.) печатали одинаковый общий текст по статусу 403, и было не понять, что
-// делать дальше. Без причины поведение не меняется — печатается шаблонный
-// errorBodyKey, страница остаётся осмысленной.
+// для известных статусов msg заменяет собой errorBodyKey в пояснении, а не
+// заголовок — иначе конкретная причина отказа задваивала бы категорию.
 func ErrorPage(status int, msg string, userEmail string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -99,7 +81,7 @@ func ErrorPage(status int, msg string, userEmail string) templ.Component {
 			var templ_7745c5c3_Var3 string
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(status))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/error.templ`, Line: 57, Col: 49}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/error.templ`, Line: 39, Col: 49}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 			if templ_7745c5c3_Err != nil {
@@ -117,7 +99,7 @@ func ErrorPage(status int, msg string, userEmail string) templ.Component {
 				var templ_7745c5c3_Var4 string
 				templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, errorTitleKey(status)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/error.templ`, Line: 59, Col: 64}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/error.templ`, Line: 41, Col: 64}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 				if templ_7745c5c3_Err != nil {
@@ -135,7 +117,7 @@ func ErrorPage(status int, msg string, userEmail string) templ.Component {
 					var templ_7745c5c3_Var5 string
 					templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(msg)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/error.templ`, Line: 61, Col: 32}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/error.templ`, Line: 43, Col: 32}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 					if templ_7745c5c3_Err != nil {
@@ -153,7 +135,7 @@ func ErrorPage(status int, msg string, userEmail string) templ.Component {
 					var templ_7745c5c3_Var6 string
 					templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, errorBodyKey(status)))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/error.templ`, Line: 63, Col: 62}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/error.templ`, Line: 45, Col: 62}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 					if templ_7745c5c3_Err != nil {
@@ -172,7 +154,7 @@ func ErrorPage(status int, msg string, userEmail string) templ.Component {
 				var templ_7745c5c3_Var7 string
 				templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(msg)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/error.templ`, Line: 66, Col: 33}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/error.templ`, Line: 48, Col: 33}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 				if templ_7745c5c3_Err != nil {
@@ -190,7 +172,7 @@ func ErrorPage(status int, msg string, userEmail string) templ.Component {
 			var templ_7745c5c3_Var8 string
 			templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "error.home_link"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/error.templ`, Line: 68, Col: 71}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/error.templ`, Line: 50, Col: 71}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 			if templ_7745c5c3_Err != nil {
@@ -208,7 +190,7 @@ func ErrorPage(status int, msg string, userEmail string) templ.Component {
 				var templ_7745c5c3_Var9 templ.SafeURL
 				templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(issuesPath(pid)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/error.templ`, Line: 75, Col: 62}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/error.templ`, Line: 54, Col: 62}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 				if templ_7745c5c3_Err != nil {
@@ -221,7 +203,7 @@ func ErrorPage(status int, msg string, userEmail string) templ.Component {
 				var templ_7745c5c3_Var10 string
 				templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "error.issues_link"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/error.templ`, Line: 75, Col: 99}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/error.templ`, Line: 54, Col: 99}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 				if templ_7745c5c3_Err != nil {

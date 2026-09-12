@@ -10,15 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/logfilter"
 )
 
-// TestLogSavedFilterApplyURLBranches — logSavedFilterApplyURL раскладывает
-// предикаты сохранённого фильтра в параметры ссылки через log.ApplyPredicates
-// (устранение находки финального ревью C4: до переезда в internal/log здесь
-// жила независимая копия того же switch, комментарий над которой ссылался на
-// несуществующий «круговой тест», а реально покрытой оставалась лишь одна
-// ветка из семи — q_not, через несвязанный сценарий фильтра по умолчанию).
-// Таблица гоняет по одному предикату каждого вида — шесть положительных полей
-// плюс одно отрицательное условие — и проверяет параметр, который обязана
-// нести получившаяся ссылка.
 func TestLogSavedFilterApplyURLBranches(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -49,10 +40,6 @@ func TestLogSavedFilterApplyURLBranches(t *testing.T) {
 	}
 }
 
-// TestLogSavedFilterApplyURLCombinesPredicates — реалистичный сохранённый
-// фильтр несёт несколько условий сразу (severity + исключающий service) —
-// проверяет, что ветки switch не затирают друг друга при совместном
-// применении, а не только по одной в изоляции.
 func TestLogSavedFilterApplyURLCombinesPredicates(t *testing.T) {
 	f := logfilter.Filter{Predicates: []log.Predicate{
 		{Field: log.FieldSeverity, Op: log.OpEq, Value: "warn"},
@@ -67,9 +54,6 @@ func TestLogSavedFilterApplyURLCombinesPredicates(t *testing.T) {
 	}
 }
 
-// renderLogSavedFiltersSection рендерит панель целиком (заголовок, две группы,
-// форма сохранения) — в отличие от renderLogSavedFilterRow, который берёт одну
-// строку списка.
 func renderLogSavedFiltersSection(t *testing.T, panel LogSavedFiltersPanel) string {
 	t.Helper()
 	var buf bytes.Buffer
@@ -79,9 +63,6 @@ func renderLogSavedFiltersSection(t *testing.T, panel LogSavedFiltersPanel) stri
 	return buf.String()
 }
 
-// TestLogSavedFiltersSectionCountsFilters — счётчик в заголовке свёрнутой
-// панели считает ОБЕ группы: закрытая панель иначе выглядит одинаково и с
-// фильтрами, и без них, и раскрывать её приходится наугад.
 func TestLogSavedFiltersSectionCountsFilters(t *testing.T) {
 	panel := LogSavedFiltersPanel{
 		Personal: []LogSavedFilterRow{
@@ -99,8 +80,6 @@ func TestLogSavedFiltersSectionCountsFilters(t *testing.T) {
 	}
 }
 
-// TestLogSavedFiltersSectionOmitsCountWhenEmpty — на пустой панели счётчика
-// нет вовсе: «0» в заголовке — это шум, а не сведение.
 func TestLogSavedFiltersSectionOmitsCountWhenEmpty(t *testing.T) {
 	html := renderLogSavedFiltersSection(t, LogSavedFiltersPanel{})
 	if strings.Contains(html, "logs-saved-filters-count") {
@@ -108,11 +87,6 @@ func TestLogSavedFiltersSectionOmitsCountWhenEmpty(t *testing.T) {
 	}
 }
 
-// TestLogSavedFilterRowPutsEditFormInModal — поля правки (имя, видимость)
-// живут в модалке, а не в строке списка: строка показывает только имя и
-// действия. Проверяем и якорь-триггер, и то, что форма «Обновить» лежит
-// ВНУТРИ разметки модалки — до правки оформления она стояла прямо в <li>,
-// растягивая каждую строку списка полноширинным полем ввода.
 func TestLogSavedFilterRowPutsEditFormInModal(t *testing.T) {
 	row := LogSavedFilterRow{
 		Filter:  logfilter.Filter{ID: 7, Name: "шумный nginx", Applicable: true},

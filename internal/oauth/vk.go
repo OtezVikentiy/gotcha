@@ -8,15 +8,11 @@ import (
 	"strings"
 )
 
-// VKConfig — параметры VK ID (из env).
 type VKConfig struct {
 	ClientID     string
 	ClientSecret string
 }
 
-// VK — провайдер VK ID (OAuth2). Особенность: email и user_id приходят в
-// token-ответе, а не в профиле; имя добираем через users.get. Email считаем
-// verified. Если VK не вернул email (юзер не выдал доступ) → ErrNoEmail.
 type VK struct {
 	cfg VKConfig
 
@@ -75,7 +71,6 @@ func (v *VK) Exchange(ctx context.Context, code, _, redirectURI, _ string) (Iden
 		EmailVerified: true,
 		TrustedIssuer: true,
 	}
-	// Имя — best-effort через users.get; ошибка не критична для входа.
 	q := url.Values{
 		"user_ids":     {id.Subject},
 		"access_token": {tok.AccessToken},

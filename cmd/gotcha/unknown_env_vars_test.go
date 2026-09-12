@@ -12,9 +12,6 @@ func environFrom(kv ...string) func() []string {
 	return func() []string { return kv }
 }
 
-// TestCheckUnknownEnvVarsAcceptsKnownServerVars — переменные, реально
-// читаемые cmd/gotcha, не отказывают старту (регрессия: сама проверка не
-// должна отказывать на легитимном имени, ради которого её и завели).
 func TestCheckUnknownEnvVarsAcceptsKnownServerVars(t *testing.T) {
 	if err := checkUnknownEnvVars(environFrom(
 		"GOTCHA_BASE_URL=https://gotcha.example.com",
@@ -25,21 +22,12 @@ func TestCheckUnknownEnvVarsAcceptsKnownServerVars(t *testing.T) {
 	}
 }
 
-// TestCheckUnknownEnvVarsAcceptsAgentVarsOnServer — прод-сценарий из брифа:
-// агент штатно ставится на тот же хост, что и сервер, с общим `.env`.
-// GOTCHA_AGENT_INGEST_KEY в окружении процесса gotcha (не gotcha-agent) —
-// легитимный сосед по файлу, а не опечатка.
 func TestCheckUnknownEnvVarsAcceptsAgentVarsOnServer(t *testing.T) {
 	if err := checkUnknownEnvVars(environFrom("GOTCHA_AGENT_INGEST_KEY=some-ingest-key")); err != nil {
 		t.Errorf("checkUnknownEnvVars: %v, want nil для GOTCHA_AGENT_INGEST_KEY в окружении сервера", err)
 	}
 }
 
-// TestCheckUnknownEnvVarsAcceptsComposeAndBuildPrefixes — второй
-// прод-сценарий из брифа: `docker-compose.yml` подключает `env_file: .env`
-// целиком, так что compose-only и build-only переменные легитимно попадают
-// в окружение процесса gotcha, который их не читает и знать поимённо не
-// обязан — исключены целиком по префиксу.
 func TestCheckUnknownEnvVarsAcceptsComposeAndBuildPrefixes(t *testing.T) {
 	if err := checkUnknownEnvVars(environFrom(
 		"GOTCHA_COMPOSE_PG_PASSWORD=secret",
@@ -49,42 +37,26 @@ func TestCheckUnknownEnvVarsAcceptsComposeAndBuildPrefixes(t *testing.T) {
 	}
 }
 
-// TestCheckUnknownEnvVarsIgnoresNonGotchaVars — переменные без префикса
-// GOTCHA_ (PATH и подобные, штатно присутствующие в окружении любого
-// процесса) проверку не касаются вовсе.
 func TestCheckUnknownEnvVarsIgnoresNonGotchaVars(t *testing.T) {
 	if err := checkUnknownEnvVars(environFrom("PATH=/usr/bin", "HOME=/root")); err != nil {
 		t.Errorf("checkUnknownEnvVars: %v, want nil для переменных без префикса GOTCHA_", err)
 	}
 }
 
-// TestCheckUnknownEnvVarsIsCasePreserving — префикс "GOTCHA_" сравнивается
-// РЕГИСТРОЗАВИСИМО: "gotcha_lower" и "Gotcha_Port" не наши переменные вовсе
-// (продукт всегда пишет имена капсом, см. конвенцию именования), а не
-// "неизвестные GOTCHA_*" — strings.HasPrefix(name, "GOTCHA_") обязан
-// остаться без нормализации регистра перед сравнением. Без этого теста
-// вставка strings.ToUpper(name) перед проверкой префикса (или аналогичная
-// мутация) не ловится ни одним другим тестом.
+// Префикс "GOTCHA_" сравнивается регистрозависимо: "gotcha_lower" и
+// "Gotcha_Port" не наши переменные вовсе, а не "неизвестные GOTCHA_*".
 func TestCheckUnknownEnvVarsIsCasePreserving(t *testing.T) {
 	if err := checkUnknownEnvVars(environFrom("gotcha_lower=1", "Gotcha_Port=1")); err != nil {
 		t.Errorf("checkUnknownEnvVars: %v, want nil — 'gotcha_lower'/'Gotcha_Port' не начинаются с 'GOTCHA_' регистрозависимо, это не наши переменные", err)
 	}
 }
 
-// TestCheckUnknownEnvVarsIgnoresMalformedEntries — запись без "=" (которую
-// os.Environ() в реальности не производит никогда) не паникует и не
-// считается неизвестным именем: strings.Cut возвращает ok=false, вся
-// строка целиком пропускается тем же условием, что отсекает переменные без
-// префикса GOTCHA_.
 func TestCheckUnknownEnvVarsIgnoresMalformedEntries(t *testing.T) {
 	if err := checkUnknownEnvVars(environFrom("GOTCHA_WEIRD_NO_EQUALS_SIGN")); err != nil {
 		t.Errorf("checkUnknownEnvVars: %v, want nil для записи без '='", err)
 	}
 }
 
-// TestCheckUnknownEnvVarsRejectsTypo — B12/бриф: GOTCHA_HSTS_ENABLE (без
-// D) сегодня молча проходит с дефолтом; после этой задачи — отказ старта с
-// подсказкой ближайшего известного имени.
 func TestCheckUnknownEnvVarsRejectsTypo(t *testing.T) {
 	err := checkUnknownEnvVars(environFrom("GOTCHA_HSTS_ENABLE=false"))
 	if err == nil {
@@ -98,9 +70,6 @@ func TestCheckUnknownEnvVarsRejectsTypo(t *testing.T) {
 	}
 }
 
-// TestCheckUnknownEnvVarsListsAllFindingsSorted — несколько неизвестных
-// имён сразу: сообщение перечисляет все, в детерминированном (алфавитном)
-// порядке — не в порядке os.Environ(), который ничего не гарантирует.
 func TestCheckUnknownEnvVarsListsAllFindingsSorted(t *testing.T) {
 	err := checkUnknownEnvVars(environFrom(
 		"GOTCHA_ZZZ_TOTALLY_MADE_UP=1",
@@ -120,11 +89,8 @@ func TestCheckUnknownEnvVarsListsAllFindingsSorted(t *testing.T) {
 	}
 }
 
-// sortedAgentOwnedOldNames — envcontract.AgentOwned, отсортировано, для
-// детерминированного выбора одного из трёх старых АГЕНТСКИХ имён.
-// Динамически, не литералом: internal/guards/renamed_env_vars_test.go
-// (TestNoRenamedEnvVarNames) не пускает старые имена литералом за пределы
-// renamed.go/CHANGELOG/upgrade.md/renamed_env_contract_test.go.
+// Динамически, не литералом: TestNoRenamedEnvVarNames (internal/guards) не
+// пускает старые имена литералом за пределы renamed_env_contract_test.go.
 func sortedAgentOwnedOldNames() []string {
 	names := make([]string, len(envcontract.AgentOwned))
 	copy(names, envcontract.AgentOwned)
@@ -132,18 +98,8 @@ func sortedAgentOwnedOldNames() []string {
 	return names
 }
 
-// TestCheckUnknownEnvVarsRejectsEmptyRenamedName — W3-1 (повторное ревью):
-// одна и та же переменная общего .env хоста обязана давать один и тот же
-// вердикт у сервера и у агента. Живой прогон нашёл: агентское старое имя
-// (envcontract.AgentOwned) с ПУСТЫМ значением на сервере говорило «unknown,
-// check for typos», а на агенте — «renamed to» (см.
-// internal/agent/config.go). Причина: CheckRenamedAll (loadConfig, самая
-// первая операция) проверяет только НЕПУСТОЕ значение — declared-but-unset
-// для по-настоящему живого имени легитимно, — так что переименованное имя
-// с пустым значением долетало сюда, минуя её, и checkUnknownEnvVars до этой
-// правки не знала про envcontract.Renamed вовсе. Тот же контракт, что у
-// internal/agent.checkUnknownAgentEnvVars: declared-but-unset не спасает
-// имя, которое не читает уже никто.
+// declared-but-unset не спасает переименованное имя, которое не читает уже
+// никто — тот же контракт, что у internal/agent.checkUnknownAgentEnvVars.
 func TestCheckUnknownEnvVarsRejectsEmptyRenamedName(t *testing.T) {
 	old := sortedAgentOwnedOldNames()[0]
 	newName := envcontract.Renamed[old]
@@ -159,15 +115,8 @@ func TestCheckUnknownEnvVarsRejectsEmptyRenamedName(t *testing.T) {
 	}
 }
 
-// TestLoadConfigCheckedOrderRenamedBeforeUnknown — устаревшее имя из
-// envcontract.Renamed обязано получить ТОЧНЫЙ ответ CheckRenamedAll
-// ("renamed to NEW_NAME"), а не догадку checkUnknownEnvVars по Левенштейну:
-// старое имя не входит в envcontract.Known (оно больше не читается), так
-// что без правильного порядка вызовов в loadConfigChecked оно попало бы под
-// checkUnknownEnvVars как обычная опечатка. Имя берётся из
-// envcontract.Renamed динамически (sortedRenamedOldNames), а не литералом —
-// internal/guards/renamed_env_vars_test.go (TestNoRenamedEnvVarNames) не
-// пускает старые имена литералом за пределы renamed_env_contract_test.go.
+// Старое имя не входит в envcontract.Known — без верного порядка вызовов оно
+// попало бы под checkUnknownEnvVars как обычная опечатка.
 func TestLoadConfigCheckedOrderRenamedBeforeUnknown(t *testing.T) {
 	old := sortedRenamedOldNames()[0]
 	newName := envcontract.Renamed[old]
@@ -184,9 +133,6 @@ func TestLoadConfigCheckedOrderRenamedBeforeUnknown(t *testing.T) {
 	}
 }
 
-// TestLoadConfigCheckedPropagatesUnknownAfterRenamedPasses — когда
-// устаревших имён нет, но есть опечатка в текущем, loadConfigChecked
-// доходит до checkUnknownEnvVars и возвращает её ошибку.
 func TestLoadConfigCheckedPropagatesUnknownAfterRenamedPasses(t *testing.T) {
 	_, err := loadConfigChecked(getenvFrom(nil), environFrom("GOTCHA_HSTS_ENABLE=false"), nil)
 	if err == nil {
@@ -197,8 +143,6 @@ func TestLoadConfigCheckedPropagatesUnknownAfterRenamedPasses(t *testing.T) {
 	}
 }
 
-// TestLoadConfigCheckedSucceedsOnCleanEnv — путь без единой находки:
-// loadConfigChecked отдаёт тот же Config, что и loadConfig, err == nil.
 func TestLoadConfigCheckedSucceedsOnCleanEnv(t *testing.T) {
 	cfg, err := loadConfigChecked(getenvFrom(nil), environFrom(), nil)
 	if err != nil {
@@ -209,9 +153,6 @@ func TestLoadConfigCheckedSucceedsOnCleanEnv(t *testing.T) {
 	}
 }
 
-// levenshteinDistanceCases — таблица, ПО КОТОРОЙ ИТЕРИРУЮТ (не фикстура,
-// защищающая одну строку из многих): классические регрессии алгоритма
-// редактирования плюс характерные для проекта опечатки имён переменных.
 var levenshteinDistanceCases = []struct {
 	a, b string
 	want int
@@ -232,18 +173,12 @@ func TestLevenshteinDistance(t *testing.T) {
 		if got := levenshteinDistance(c.a, c.b); got != c.want {
 			t.Errorf("levenshteinDistance(%q, %q) = %d, want %d", c.a, c.b, got, c.want)
 		}
-		// Симметрично: расстояние редактирования не зависит от порядка
-		// аргументов.
 		if got := levenshteinDistance(c.b, c.a); got != c.want {
 			t.Errorf("levenshteinDistance(%q, %q) = %d, want %d (симметрия)", c.b, c.a, got, c.want)
 		}
 	}
 }
 
-// TestSuggestKnownNamesThreshold — граница порога maxSuggestDistance (2):
-// расстояние 2 до GOTCHA_HSTS_ENABLED предлагается, расстояние 3 до того
-// же имени — уже нет. Оба случая построены от одного известного имени,
-// чтобы разница была ровно в пороге, а не в случайно подвернувшемся имени.
 func TestSuggestKnownNamesThreshold(t *testing.T) {
 	if got := suggestKnownNames("GOTCHA_HSTS_ENABLEDXX"); len(got) != 1 || got[0] != "GOTCHA_HSTS_ENABLED" {
 		t.Errorf("suggestKnownNames(distance 2) = %v, want [GOTCHA_HSTS_ENABLED]", got)
@@ -253,10 +188,6 @@ func TestSuggestKnownNamesThreshold(t *testing.T) {
 	}
 }
 
-// TestSuggestKnownNamesDeterministicOrderWithTies — несколько кандидатов на
-// одном расстоянии: GOTCHA_SMTP_HRT в двух правках от GOTCHA_SMTP_HOST и в
-// двух от GOTCHA_SMTP_PORT — порядок обязан быть алфавитным, а не порядком
-// обхода map (envcontract.Known), который недетерминирован сам по себе.
 func TestSuggestKnownNamesDeterministicOrderWithTies(t *testing.T) {
 	got := suggestKnownNames("GOTCHA_SMTP_HRT")
 	want := []string{"GOTCHA_SMTP_HOST", "GOTCHA_SMTP_PORT"}
@@ -270,23 +201,14 @@ func TestSuggestKnownNamesDeterministicOrderWithTies(t *testing.T) {
 	}
 }
 
-// TestSuggestKnownNamesNoCandidate — имя, не похожее ни на одно известное
-// в пределах порога: пустой список кандидатов, а не паника или произвольный
-// результат.
 func TestSuggestKnownNamesNoCandidate(t *testing.T) {
 	if got := suggestKnownNames("GOTCHA_TOTALLY_UNKNOWN_NAME_THAT_MATCHES_NOTHING"); len(got) != 0 {
 		t.Errorf("suggestKnownNames = %v, want пустой список", got)
 	}
 }
 
-// TestSuggestKnownNamesOrdersByDistanceFirst — находка ревью: ветка
-// sort.Slice, где кандидаты РАЗЛИЧАЮТСЯ расстоянием (candidates[i].dist !=
-// candidates[j].dist), раньше не была покрыта ни одним тестом —
-// TestSuggestKnownNamesDeterministicOrderWithTies проверяет только ничью
-// (оба расстояния равны). GOTCHA_SMTP_PONT — расстояние 1 до
-// GOTCHA_SMTP_PORT и расстояние 2 до GOTCHA_SMTP_HOST: ближайший кандидат
-// обязан идти первым независимо от алфавита (HOST < PORT по буквам, но
-// PORT ближе и обязан быть первым).
+// Ближайший кандидат обязан идти первым независимо от алфавита (HOST < PORT
+// по буквам, но PORT ближе к GOTCHA_SMTP_PONT).
 func TestSuggestKnownNamesOrdersByDistanceFirst(t *testing.T) {
 	got := suggestKnownNames("GOTCHA_SMTP_PONT")
 	want := []string{"GOTCHA_SMTP_PORT", "GOTCHA_SMTP_HOST"}

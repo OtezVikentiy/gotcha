@@ -13,9 +13,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestChartsHaveTooltips — у каждого графика должна быть подсказка со
-// значением: без неё пользователь видит форму линии, но не может прочитать
-// величину ни в одной точке.
 func TestChartsHaveTooltips(t *testing.T) {
 	base := time.Date(2026, 7, 20, 14, 0, 0, 0, time.UTC)
 
@@ -25,8 +22,8 @@ func TestChartsHaveTooltips(t *testing.T) {
 		if !strings.Contains(out, "hover-band") {
 			t.Errorf("нет полос наведения: %s", out)
 		}
-		// K9-15: время в подсказке — через humanize.Time, с подписью пояса,
-		// а не «20.07 14:00» без года и зоны.
+		// время в подсказке — через humanize.Time с подписью пояса, не
+		// «20.07 14:00» без года и зоны.
 		for _, want := range []string{"2026-07-20 14:00 UTC", "738 ms"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("подсказка без %q: %s", want, out)
@@ -47,8 +44,6 @@ func TestChartsHaveTooltips(t *testing.T) {
 	})
 
 	t.Run("час с таймаутом не ломает шкалу, помечен меткой", func(t *testing.T) {
-		// Здоровые часы ~90мс задают шкалу; час с таймаутом (фазы 0, total
-		// 30000мс) не должен её вытягивать, но обязан быть виден как выброс.
 		points := []uptime.LatencyPoint{
 			{T: base, AvgTotalMs: 90, AvgDNSMs: 10, AvgConnectMs: 20, AvgTLSMs: 25, AvgTTFBMs: 30},
 			{T: base.Add(time.Hour), AvgTotalMs: 30000},
@@ -64,8 +59,6 @@ func TestChartsHaveTooltips(t *testing.T) {
 		if !strings.Contains(out, "выше шкалы") {
 			t.Errorf("нет пометки «выше шкалы»: %s", out)
 		}
-		// Шкала не должна доходить до секунд: верх ~100мс, значит на оси есть
-		// подпись в мс и нет «30s».
 		if strings.Contains(out, "30s") || strings.Contains(out, "30.0s") {
 			t.Errorf("выброс вытянул шкалу до секунд: %s", out)
 		}
@@ -90,10 +83,8 @@ func TestChartsHaveTooltips(t *testing.T) {
 	})
 }
 
-// TestChartTooltipsUseHumanizeTime — K9-15: все подсказки графиков печатают
-// время одним видом с остальным интерфейсом (humanize.Time: дата, время,
-// подпись пояса), а не «02.01 15:04» мимо humanize. Подписи оси X (короткие
-// «02.01»/«15:04») сюда не входят — это не подсказка.
+// все подсказки печатают время через humanize.Time — короткие подписи оси X
+// (не подсказки) сюда не входят.
 func TestChartTooltipsUseHumanizeTime(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 7, 20, 14, 0, 0, 0, time.UTC)
@@ -115,16 +106,14 @@ func TestChartTooltipsUseHumanizeTime(t *testing.T) {
 		}
 	}
 
-	// vitalSeriesMarkup: в <title> — границы диапазона, обе через humanize.
 	vital := vitalSeriesMarkup(ctx, []trace.VitalPoint{{T: base, P75: 1.5}, {T: base.Add(48 * time.Hour), P75: 2.5}}, 720, 200, func(v float64) string { return "x" })
 	if !strings.Contains(vital, stamp+" – 2026-07-22 14:00 UTC") {
 		t.Errorf("vitalSeriesMarkup: границы диапазона не через humanize.Time: %s", vital)
 	}
 }
 
-// logSeriesAllSeverities — серии гистограммы логов: logHistogramMarkup
-// индексирует series[sev][i] по всему log.Severities, поэтому у каждой
-// серьёзности обязан быть срез длины n; ненулевые значения — только у error.
+// logHistogramMarkup индексирует series[sev][i] по всем log.Severities — у
+// каждой обязан быть срез длины n.
 func logSeriesAllSeverities(n int, errorCounts []int64) map[string][]int64 {
 	series := map[string][]int64{}
 	for _, sev := range log.Severities {

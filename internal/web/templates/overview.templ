@@ -8,30 +8,17 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// StatusLine — три числа строки состояния «Обзора» (задача 7 nav-ia): ответ
-// на «дом горит?» с одного экрана, каждое число — ссылка в свой раздел
-// (см. statusLine ниже). Uptime — доля успешных проверок за то же окно, что
-// и секция «недавно решённые» (rangeKey); нулевой uptime.UptimeStat{} (нет
-// мониторов или подсистема не подключена) рисуется как «нет данных» тем же
-// uptimeStatTextCtx, что и на странице монитора. HostsOverThreshold/
-// NewIssues24h — простые счётчики, 0 — легитимное («всё спокойно»)
-// значение, не «нет данных» (в отличие от Uptime, у них нет отдельного
-// признака «подсистема недоступна» — web.overviewStatusLine оставляет 0 и
-// когда HostIncidents/Issues пустые данными, и когда сервис не подключён:
-// разница между «спокойно» и «нечем измерить» здесь не имеет отдельного
-// действия для читателя).
+// Uptime=0 рисуется как «нет данных»; HostsOverThreshold/NewIssues24h — 0 значит «всё спокойно».
+// для них нет отдельного признака «недоступно» — эта разница не имеет действия для читателя.
 type StatusLine struct {
 	Uptime uptime.UptimeStat
-	// UptimeUnavailable — ClickHouse не ответил: плитка аптайма показывает
-	// «недоступно» вместо значения.
+	// true — плитка аптайма показывает «недоступно» вместо значения.
 	UptimeUnavailable  bool
 	HostsOverThreshold int
 	NewIssues24h       int64
 }
 
-// overviewRangeHref — ссылка переключателя окна «недавно решённые»: 24ч —
-// канонический адрес без параметра (умолчание, не грязнит URL закладок),
-// 7д — явный ?range=7d.
+// 24ч — канонический адрес без параметра: не грязнит URL закладок значением по умолчанию.
 func overviewRangeHref(projectID int64, value string) string {
 	if value == "24h" {
 		return overviewPath(projectID)
@@ -46,18 +33,12 @@ func overviewRangeTabClass(active bool) string {
 	return "tab"
 }
 
-// overviewRangeTab — вкладка окна «недавно решённые», тем же приёмом, что
-// perfStatusTab (perfissues.templ): обычная ссылка с query-параметром, без
-// JS. Подпись — переиспользованные ключи range.24h/range.7d (тот же
-// словарь, что и у графиков TimeRangePresets).
+// переиспользует ключи range.24h/range.7d — тот же словарь, что у графиков.
 templ overviewRangeTab(projectID int64, value, rangeKey string) {
 	<a class={ overviewRangeTabClass(value == rangeKey) } href={ templ.URL(overviewRangeHref(projectID, value)) } if value == rangeKey { aria-current="page" }>{ i18n.T(ctx, "range."+value) }</a>
 }
 
-// overviewRangeTabs — переключатель окна «недавно решённые»: вынесен из
-// непустой ветки Overview, чтобы быть доступным и в пустой — проект без
-// данных в окне 24ч, у которого всё закрылось, скажем, трое суток назад,
-// без этого не имел ни одной двери к окну 7д.
+// показывается и в пустом состоянии — иначе проект без данных за 24ч не имел бы двери к окну 7д.
 templ overviewRangeTabs(projectID int64, rangeKey string) {
 	<nav class="tabs" aria-label={ i18n.T(ctx, "overview.range.aria") }>
 		@overviewRangeTab(projectID, "24h", rangeKey)
@@ -65,12 +46,8 @@ templ overviewRangeTabs(projectID int64, rangeKey string) {
 	</nav>
 }
 
-// statusLine — строка состояния (§ шаг 3 брифа задачи 7): три плитки,
-// повторяющие вёрстку .stat-tile (monitordetail/hostdetail/slodetail), но
-// каждая — ссылка на свой раздел, а не просто число. .monitor-meta —
-// тот же контейнер-строка, что и у тех страниц (flex-item блокируется сам,
-// без отдельного правила display на ссылке); своей новой сетки под три
-// плитки не заводим.
+// .stat-tile — та же вёрстка, что у monitordetail/hostdetail/slodetail, но с ссылкой вместо числа.
+// .monitor-meta переиспользован как контейнер — своей сетки под три плитки не заводим.
 templ statusLine(projectID int64, sl StatusLine) {
 	<div class="monitor-meta">
 		<a class="stat-tile" href={ templ.URL(monitorsPath(projectID)) }>
@@ -92,13 +69,8 @@ templ statusLine(projectID int64, sl StatusLine) {
 	</div>
 }
 
-// overviewDeploys — маркеры деплоев (C5) на той же временной оси, что и
-// секция «недавно решённые» ниже (то же окно rangeKey/since, см.
-// web.overviewDeployMarkers): читатель видит и деплой, и инциденты того же
-// окна на одном экране — «после выкатки или само» решается без похода на
-// /deployments. Пусто → секция не рисуется вовсе (в отличие от групп
-// инцидентов, деплои — вспомогательный контекст, не первичное содержимое
-// страницы, отдельного пустого состояния не заслуживают).
+// то же окно rangeKey, что у «недавно решённых» — деплой и инциденты видны на одном экране.
+// пусто → секция не рисуется вовсе (в отличие от групп) — деплои вспомогательный контекст.
 templ overviewDeploys(projectID int64, deploys []DeploymentRow) {
 	if len(deploys) > 0 {
 		<h2>{ i18n.T(ctx, "deploy.title") }</h2>
@@ -128,18 +100,8 @@ templ overviewDeploys(projectID int64, deploys []DeploymentRow) {
 	}
 }
 
-// Overview — GET /projects/{id}/overview (задача 6 nav-ia): первый экран
-// проекта, шкала инцидентов. Тело страницы — прежняя /incident-feed БЕЗ
-// урезания (инвентаризация, см. докблок web.overview): открытые группы и
-// внегрупповые открытые инциденты остаются без временного окна (они
-// открыты сейчас, обрезать нечего), у «недавно решённых» окно стало
-// выбираемым (rangeKey — "24h"/"7d") вместо жёстко зашитых суток. Отдельной
-// «полной ленты» не остаётся — /incident-feed целиком редиректит сюда.
-//
-// Совсем пустой проект (ни одной секции ни по одному источнику) получает не
-// «нет данных» по трём секциям сразу, а одно приглашение подключить SDK,
-// ссылкой на «Первые шаги» — три одинаковых «здесь пока пусто» подряд на
-// первом экране проекта выглядели бы как поломка, а не как чистый старт.
+// совсем пустой проект получает одно приглашение подключить SDK, не «нет данных» по трём секциям —
+// три одинаковых «пусто» подряд выглядели бы как поломка, а не чистый старт.
 templ Overview(projectID int64, rangeKey string, openGroups []GroupCard, outOfGroup []incidentgroup.FeedItem, closedGroups []GroupCard, closed []incidentgroup.FeedItem, caps FeedCaps, canOperate bool, sl StatusLine, deploys []DeploymentRow, userEmail string) {
 	{{ closedIDs := closedGroupIDSet(closedGroups) }}
 	{{ empty := len(openGroups) == 0 && len(outOfGroup) == 0 && len(closedGroups) == 0 && len(closed) == 0 }}

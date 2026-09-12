@@ -11,8 +11,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// countingRules считает обращения цикла к источнику правил — тот самый
-// позитивный контроль, которого тесту не хватало.
+// Считает обращения цикла к источнику правил — позитивный контроль, что цикл действительно работает.
 type countingRules struct {
 	mu    sync.Mutex
 	calls int
@@ -31,13 +30,8 @@ func (c *countingRules) count() int {
 	return c.calls
 }
 
-// TestEvaluatorRunLifecycle: цикл Run обязан РЕАЛЬНО тикать и завершаться по
-// отмене ctx.
-//
-// Раньше единственным утверждением было «горутина вышла после cancel»: тест
-// оставался зелёным, даже если вырезать вызов Tick целиком, — он проверял
-// завершение цикла, а не его работу. Теперь ждём подтверждённого обращения к
-// правилам и только после этого гасим.
+// Цикл Run обязан РЕАЛЬНО тикать и завершаться по отмене ctx — проверка ждёт подтверждённого обращения
+// к источнику правил, не только выхода горутины после cancel (иначе вырезанный Tick прошёл бы тест).
 func TestEvaluatorRunLifecycle(t *testing.T) {
 	rules := &countingRules{}
 	eval := &metric.Evaluator{
@@ -70,12 +64,8 @@ func TestEvaluatorRunLifecycle(t *testing.T) {
 	}
 }
 
-// TestEvaluatorRunDefaultInterval: при Interval<=0 берётся ОСМЫСЛЕННЫЙ дефолт.
-//
-// Раньше тест только отменял контекст сразу после запуска и проверял, что
-// горутина вышла: дефолт можно было поменять с минуты на наносекунду —
-// постоянный обстрел собственной базы — и тест бы этого не заметил. Теперь он
-// требует, чтобы за заметное время тика НЕ случилось.
+// При Interval<=0 берётся ОСМЫСЛЕННЫЙ дефолт — тест требует, чтобы за заметное время тика НЕ случилось,
+// не только что горутина завершилась по cancel (иначе дефолт можно было бы уронить до наносекунды незаметно).
 func TestEvaluatorRunDefaultInterval(t *testing.T) {
 	rules := &countingRules{}
 	eval := &metric.Evaluator{Rules: rules, Interval: 0}
@@ -101,10 +91,8 @@ func TestEvaluatorRunDefaultInterval(t *testing.T) {
 	}
 }
 
-// TestEvaluatorBumpAndNilNotifier: без Notifier открытие инцидента не должно
-// падать (notifyOpen() рано выходит при Notifier==nil), а повторный тик с более
-// экстремальным значением при уже открытом инциденте идёт по ветке d.Bump —
-// обновляет current/peak, не открывая новый и не закрывая.
+// Без Notifier открытие не должно падать (notifyOpen рано выходит при Notifier==nil); повторный тик
+// с более экстремальным значением при открытом инциденте идёт по ветке Bump — обновляет current/peak.
 func TestEvaluatorBumpAndNilNotifier(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -167,8 +155,7 @@ func TestEvaluatorBumpAndNilNotifier(t *testing.T) {
 	}
 }
 
-// TestIncidentBumpNotFound: Bump по несуществующему (или закрытому) инциденту →
-// ErrIncidentNotFound (RowsAffected==0).
+// Bump по несуществующему (или закрытому) инциденту → ErrIncidentNotFound (RowsAffected==0).
 func TestIncidentBumpNotFound(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -182,8 +169,7 @@ func TestIncidentBumpNotFound(t *testing.T) {
 	}
 }
 
-// TestIncidentBumpCancelledCtx: Bump на отменённом ctx — пул возвращает ошибку
-// до выполнения SQL, покрывает ветку `if err != nil` в Bump.
+// Bump на отменённом ctx — пул возвращает ошибку до выполнения SQL, покрывает ветку `if err != nil`.
 func TestIncidentBumpCancelledCtx(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

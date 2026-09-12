@@ -12,21 +12,12 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// mockMaint — slo.MaintenanceChecker для тестов: func-обёртка вместо
-// полноценного uptime.Service (интерфейс здесь в один метод — реальный сервис
-// с окнами обслуживания и своей БД тестам этого пакета не нужен). Калька
-// host.mockMaint / trace.mockMaint / profile.mockMaint (Task 3/5/6).
 type mockMaint func(ctx context.Context, projectID int64, at time.Time) (bool, error)
 
 func (m mockMaint) InMaintenance(ctx context.Context, projectID int64, at time.Time) (bool, error) {
 	return m(ctx, projectID, at)
 }
 
-// TestSLOEvaluatorMaintenanceSuppressesNotify — B3 Task 6: открытие инцидента
-// сжигания бюджета в окне обслуживания (Maint→true) пишет slo_incidents с
-// InMaintenance=true, но НЕ уведомляет; закрытие того же инцидента (ещё
-// внутри окна, после флап-защиты) тоже не уведомляет. Зеркало
-// trace.TestEvaluatorMaintenanceSuppressesRegressionNotify (Task 5).
 func TestSLOEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres and clickhouse containers")
@@ -46,15 +37,12 @@ func TestSLOEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Прожог: 100 транзакций в свежем бакете, 20 плохих → badRate 0.2 →
-	// burn 0.2/(1-0.99)=20× > порог 14.4.
 	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC().Add(-10*time.Minute), goodBadSpecs(100, 20, "production"))
 
 	notifier := &capturingNotifier{store: st}
 	e := &slo.Evaluator{
-		// Interval задан явно: тикер не используем (Tick дёргается вручную), но от
-		// него считается бюджет тика — с дефолтом бюджет упирается в пол 10s, и на
-		// нагруженной машине (полный прогон, контейнеры) запрос в CH не укладывается.
+		// от Interval считается бюджет тика — с дефолтом он упирается в пол 10s,
+		// и на нагруженной машине запрос в CH может не уложиться.
 		Interval:  time.Hour,
 		Pool:      pool,
 		Store:     st,
@@ -64,8 +52,6 @@ func TestSLOEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 		Maint:     mockMaint(func(context.Context, int64, time.Time) (bool, error) { return true, nil }),
 	}
 
-	// Открытие: инцидент должен быть создан (окно обслуживания не отменяет
-	// открытие), но уведомление подавлено.
 	n, err := e.Tick(ctx)
 	if err != nil {
 		t.Fatalf("Tick(open): %v", err)
@@ -84,18 +70,14 @@ func TestSLOEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 		t.Errorf("notify events after open tick = %d, want 0 (suppressed by maintenance)", len(evs))
 	}
 
-	// Остывание: свежий бакет полностью хороший → короткое (последнее) окно < порога.
 	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC().Add(-1*time.Minute), goodBadSpecs(100, 0, "production"))
 
-	// Флап-защита: два тика остывания подряд НЕ закрывают инцидент.
 	for i := 0; i < 2; i++ {
 		if n3, err := e.Tick(ctx); err != nil || n3 != 0 {
 			t.Fatalf("тик %d остывания: переходов %d err=%v, want 0 (рано закрывать)", i+1, n3, err)
 		}
 	}
 
-	// Третий тик остывания подряд — закрывает. Окно обслуживания всё ещё
-	// активно (mockMaint не менялся) — закрытие тоже не должно уведомлять.
 	n4, err := e.Tick(ctx)
 	if err != nil {
 		t.Fatalf("Tick(close): %v", err)
@@ -112,10 +94,6 @@ func TestSLOEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 	}
 }
 
-// TestSLOEvaluatorMaintenanceFalseStillNotifies — Maint сконфигурирован (не
-// nil), но вне окна (InMaintenance→false): поведение обычное, уведомление
-// уходит. Отличает «MaintenanceChecker сконфигурирован и говорит false» от
-// «MaintenanceChecker==nil» (последнее уже покрыто TestSLOEvaluatorOpensAndCloses).
 func TestSLOEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres and clickhouse containers")
@@ -125,12 +103,8 @@ func TestSLOEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 	ctx := context.Background()
 	pid := seedProject(t, pool)
 	st := slo.NewStore(pool)
-	// Дефолт-лесенка эскалации резолвится из РЕАЛЬНЫХ enabled-каналов проекта
-	// (escalation.PolicyStore.defaultLadder) — без единого канала её
-	// ChannelIDs пуст, и claim-before-notify (аудит K1-1) бампит ступень
-	// НАПРЯМУЮ, не зовя notifyStep вовсе (уже нечего занимать/слать). Этому
-	// тесту важно, что notifyStep реально позван при открытии вне окна
-	// обслуживания — нужен хотя бы один канал, как в TestSLOEvaluatorOpensAndCloses.
+	// без хотя бы одного канала claim-before-notify бампит ступень напрямую, не
+	// зовя notifyStep вовсе — тесту важно, что notifyStep реально позван.
 	if _, err := alert.NewService(pool).CreateChannel(ctx, alert.Channel{
 		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
 	}); err != nil {
@@ -150,9 +124,8 @@ func TestSLOEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 
 	notifier := &capturingNotifier{store: st}
 	e := &slo.Evaluator{
-		// Interval задан явно: тикер не используем (Tick дёргается вручную), но от
-		// него считается бюджет тика — с дефолтом бюджет упирается в пол 10s, и на
-		// нагруженной машине (полный прогон, контейнеры) запрос в CH не укладывается.
+		// от Interval считается бюджет тика — с дефолтом он упирается в пол 10s,
+		// и на нагруженной машине запрос в CH может не уложиться.
 		Interval:  time.Hour,
 		Pool:      pool,
 		Store:     st,
@@ -181,12 +154,6 @@ func TestSLOEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 	}
 }
 
-// TestSLOEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds —
-// дискриминирует close-гейт «по сохранённому флагу» (!inc.InMaintenance) от
-// ошибочного «по текущему окну» (!e.inMaintenance(now)): открываем инцидент
-// сжигания бюджета В окне, затем окно ЗАКАНЧИВАЕТСЯ (mock→false) — close всё
-// равно должен быть подавлен, т.к. читается сохранённый флаг инцидента.
-// Зеркало trace/profile-аналогов.
 func TestSLOEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres and clickhouse containers")
@@ -211,9 +178,8 @@ func TestSLOEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.
 	notifier := &capturingNotifier{store: st}
 	inWindow := true
 	e := &slo.Evaluator{
-		// Interval задан явно: тикер не используем (Tick дёргается вручную), но от
-		// него считается бюджет тика — с дефолтом бюджет упирается в пол 10s, и на
-		// нагруженной машине (полный прогон, контейнеры) запрос в CH не укладывается.
+		// от Interval считается бюджет тика — с дефолтом он упирается в пол 10s,
+		// и на нагруженной машине запрос в CH может не уложиться.
 		Interval:  time.Hour,
 		Pool:      pool,
 		Store:     st,
@@ -241,8 +207,6 @@ func TestSLOEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.
 		t.Fatalf("notify events after open tick = %d, want 0 (suppressed by maintenance)", len(evs))
 	}
 
-	// Окно обслуживания закончилось — close-гейт должен смотреть на
-	// сохранённый флаг инцидента, а не на текущее состояние окна.
 	inWindow = false
 
 	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC().Add(-1*time.Minute), goodBadSpecs(100, 0, "production"))
@@ -269,15 +233,8 @@ func TestSLOEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.
 	}
 }
 
-// TestSLOEvaluatorRecoveryReachesWokenChannelAfterMaintenanceWindowEnds — M-7
-// (аудит B4, remediation A): инцидент сжигания бюджета открыт В окне
-// обслуживания (in_maintenance заморожен=true, open-гейт не тронут — открытие
-// молчит), но за время жизни инцидента эскалация реально разбудила канал
-// (планировщик T8, здесь симулируем логом эскалации напрямую, как советует
-// бриф — вне этого пакета). Окно кончается, инцидент закрывается ВНЕ окна:
-// close ОБЯЗАН прислать recovery разбуженному каналу, несмотря на замороженный
-// InMaintenance=true — старый гейт `!inc.InMaintenance` на close-пути гасил
-// именно этот случай (M-7). Дискриминирует: падает, если гейт вернуть.
+// инцидент открыт в окне (заморожен InMaintenance=true), эскалация успела разбудить
+// канал; после закрытия вне окна recovery обязан дойти, несмотря на замороженный флаг.
 func TestSLOEvaluatorRecoveryReachesWokenChannelAfterMaintenanceWindowEnds(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres and clickhouse containers")
@@ -310,9 +267,8 @@ func TestSLOEvaluatorRecoveryReachesWokenChannelAfterMaintenanceWindowEnds(t *te
 	notifier := &capturingNotifier{store: st}
 	inWindow := true
 	e := &slo.Evaluator{
-		// Interval задан явно: тикер не используем (Tick дёргается вручную), но от
-		// него считается бюджет тика — с дефолтом бюджет упирается в пол 10s, и на
-		// нагруженной машине (полный прогон, контейнеры) запрос в CH не укладывается.
+		// от Interval считается бюджет тика — с дефолтом он упирается в пол 10s,
+		// и на нагруженной машине запрос в CH может не уложиться.
 		Interval:  time.Hour,
 		Pool:      pool,
 		Store:     st,
@@ -340,13 +296,11 @@ func TestSLOEvaluatorRecoveryReachesWokenChannelAfterMaintenanceWindowEnds(t *te
 		t.Fatalf("notify events after open tick = %d, want 0 (open suppressed by maintenance, open-гейт не тронут)", len(evs))
 	}
 
-	// Планировщик (T8, вне этого пакета) реально эскалировал инцидент после
-	// открытия — разбудил канал. Симулируем логом эскалации напрямую.
+	// симулируем логом эскалации то, что реально делает планировщик после открытия.
 	if err := escalation.LogStep(ctx, pool, "slo", incs[0].ID, chanID, 0); err != nil {
 		t.Fatalf("log step: %v", err)
 	}
 
-	// Окно обслуживания закончилось.
 	inWindow = false
 
 	seedTransactions(t, conn, pid, "GET /checkout", time.Now().UTC().Add(-1*time.Minute), goodBadSpecs(100, 0, "production"))

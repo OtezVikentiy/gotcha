@@ -12,9 +12,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// migratedWithDSN выдаёт уникальную базу с применёнными миграциями и её DSN.
-// Отдельно от testenv.MigratedPG, потому что тестам окна совместимости нужен и
-// пул, и DSN одной и той же базы: каждый вызов PostgresDSN создаёт новую.
+// Нужны и пул, и DSN одной базы — testenv.PostgresDSN каждый раз создаёт новую.
 func migratedWithDSN(t *testing.T) (*pgxpool.Pool, string) {
 	t.Helper()
 	dsn := testenv.PostgresDSN(t)
@@ -31,9 +29,7 @@ func migratedWithDSN(t *testing.T) (*pgxpool.Pool, string) {
 	return pool, dsn
 }
 
-// forceSchemaVersion переписывает версию в schema_migrations, изображая базу,
-// к которой применили миграции, которых в этом бинаре нет. Так выглядит откат
-// релиза: схема ушла вперёд, бинарь вернулся назад.
+// Изображает откат релиза: схема ушла вперёд, бинарь — назад.
 func forceSchemaVersion(t *testing.T, pool *pgxpool.Pool, version int64) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),
@@ -42,7 +38,6 @@ func forceSchemaVersion(t *testing.T, pool *pgxpool.Pool, version int64) {
 	}
 }
 
-// declareCompat вручную объявляет признак версии, которой в этом бинаре нет.
 func declareCompat(t *testing.T, pool *pgxpool.Pool, target string, version int64, compatible bool) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),
@@ -65,8 +60,6 @@ func currentSchemaVersion(t *testing.T, dsn string) int64 {
 	return int64(v)
 }
 
-// TestRecordSchemaCompatWritesBothSchemas — признаки обеих схем записываются и
-// переживают повторный вызов: миграции применяет каждый старт.
 func TestRecordSchemaCompatWritesBothSchemas(t *testing.T) {
 	pool, dsn := migratedWithDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -112,10 +105,6 @@ func TestRecordSchemaCompatWritesBothSchemas(t *testing.T) {
 	}
 }
 
-// TestSchemaGateAllowsRollbackThroughAdditiveMigration — то, ради чего окно
-// заводилось: бинарь, не знающий последней применённой миграции, стартует, если
-// та аддитивна. Раньше здесь был безусловный отказ, и вернуть прошлый релиз
-// можно было только восстановлением базы из бэкапа.
 func TestSchemaGateAllowsRollbackThroughAdditiveMigration(t *testing.T) {
 	pool, dsn := migratedWithDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -126,7 +115,6 @@ func TestSchemaGateAllowsRollbackThroughAdditiveMigration(t *testing.T) {
 	}
 	applied := currentSchemaVersion(t, dsn)
 
-	// База ушла на две версии вперёд относительно этого бинаря; обе аддитивны.
 	declareCompat(t, pool, "pg", applied+1, true)
 	declareCompat(t, pool, "pg", applied+2, true)
 	forceSchemaVersion(t, pool, applied+2)
@@ -136,10 +124,6 @@ func TestSchemaGateAllowsRollbackThroughAdditiveMigration(t *testing.T) {
 	}
 }
 
-// TestSchemaGateRejectsRollbackThroughBreakingMigration — если среди
-// недостающих версий есть ломающая, отказ остаётся: стартовать на схеме, где
-// нужной колонки уже нет, значит менять внятную ошибку при старте на ошибку в
-// каждой вставке телеметрии.
 func TestSchemaGateRejectsRollbackThroughBreakingMigration(t *testing.T) {
 	pool, dsn := migratedWithDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -163,9 +147,6 @@ func TestSchemaGateRejectsRollbackThroughBreakingMigration(t *testing.T) {
 	}
 }
 
-// TestSchemaGateRejectsUnknownAheadVersion — версия впереди, признака нет:
-// схему применял бинарь, не знавший о признаке, и утверждать о ней нечего.
-// Fail-closed.
 func TestSchemaGateRejectsUnknownAheadVersion(t *testing.T) {
 	pool, dsn := migratedWithDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -186,8 +167,6 @@ func TestSchemaGateRejectsUnknownAheadVersion(t *testing.T) {
 	}
 }
 
-// TestSchemaGateStillRejectsLaggingSchema — послабление касается только одной
-// стороны: отставшая схема по-прежнему не даёт стартовать.
 func TestSchemaGateStillRejectsLaggingSchema(t *testing.T) {
 	pool, dsn := migratedWithDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

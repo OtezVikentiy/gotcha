@@ -13,9 +13,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// fakeCHConn/fakeCHBatch повторяют профильные/трейсовые фейки: Append копит строки,
-// Send при успехе переносит их в c.rows, а при заданном poison-предикате падает,
-// если в батче есть ряд ядовитого name (args[1] в insert — это Name).
+// poison предикат проверяет args[1] в Append — это Name.
 type fakeCHConn struct {
 	mu     sync.Mutex
 	rows   int
@@ -73,7 +71,6 @@ func (c *fakeCHConn) PrepareBatch(_ context.Context, _ string, _ ...driver.Prepa
 }
 
 func TestMetricWriterIsolatesPoisonRowAfterThreshold(t *testing.T) {
-	// conn.Send падает, если среди рядов есть метрика с Name=="poison".
 	c := &fakeCHConn{poison: func(name string) bool { return name == "poison" }}
 	w := NewWriter(c)
 	now := time.Now().UTC()
@@ -81,8 +78,8 @@ func TestMetricWriterIsolatesPoisonRowAfterThreshold(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		w.Add(1, MetricPoint{Name: "ok", Type: "gauge", TS: now, Value: 1})
 	}
-	// Прогоняем flush больше порога: обычный ретрай застревает на ядовитом ряду,
-	// после poisonThreshold подряд-фейлов должна сработать изоляция.
+	// Больше порога: ретрай застревает на ядовитом ряду, после poisonThreshold
+	// подряд-фейлов должна сработать изоляция.
 	for i := 0; i < poisonThreshold+1; i++ {
 		w.flush(context.Background())
 	}
@@ -119,10 +116,6 @@ func TestMetricWriterTransientFailureDropsNothing(t *testing.T) {
 	}
 }
 
-// TestWriterBoundsBufferByBytes — буфер метрик был ограничен только ЧИСЛОМ
-// строк, а размер строки задаёт клиент: имя, атрибуты и границы гистограммы
-// приходят из payload. maxBuf=100000 раздутых строк — это десятки гигабайт в
-// буфере, заведённом под сто тысяч небольших точек.
 func TestWriterBoundsBufferByBytes(t *testing.T) {
 	w := NewWriter(nil)
 	w.maxBufBytes = 1 << 20
@@ -146,7 +139,6 @@ func TestWriterBoundsBufferByBytes(t *testing.T) {
 	if limit := w.maxBufBytes + int64(len(big)) + 256; bytes > limit {
 		t.Fatalf("вес буфера %d при потолке %d", bytes, w.maxBufBytes)
 	}
-	// Учёт не разъехался с содержимым.
 	w.mu.Lock()
 	var want int64
 	for i := range w.buf {
@@ -159,9 +151,6 @@ func TestWriterBoundsBufferByBytes(t *testing.T) {
 	}
 }
 
-// TestMetricRowBytesCountsHost проверяет, что вес строки метрики корректно
-// считает поле Host. Строка с Host="web-1" (5 символов) должна быть на 5 байт
-// тяжелее, чем строка без Host (тот же Name).
 func TestMetricRowBytesCountsHost(t *testing.T) {
 	a := metricRowBytes(metricRow{Name: "m"})
 	b := metricRowBytes(metricRow{Name: "m", Host: "web-1"})

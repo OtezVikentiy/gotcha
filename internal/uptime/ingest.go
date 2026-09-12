@@ -8,42 +8,16 @@ import (
 	"time"
 )
 
-// Ingestor — общий хвост обработки результата проверки: ClaimJob → буфер CH →
-// ApplyResult → OnResult (детекция). Через него идут ОБА источника
-// результатов — локальная проба (Runner.runOne) и выносная (HTTP-эндпойнт
-// /probe/results), поэтому детекция инцидентов и запись в ClickHouse
-// существуют ровно в одном экземпляре: центр обрабатывает присланный пробой
-// результат тем же кодом, что и свой собственный.
-//
-// Само выполнение проверки (Checker) в Ingestor не входит — он принимает уже
-// готовый Result: у выносной пробы чекер отработал на её стороне.
+// один и тот же путь обрабатывает результат и локальной, и выносной пробы —
+// детекция инцидентов и запись в ClickHouse существуют в одном экземпляре.
 type Ingestor struct {
-	Svc    *Service
-	Writer *ResultWriter // может быть nil — тогда без записи в CH
-	// OnResult — колбэк детекции (uptime.Detector.OnResult в проде), после
-	// ApplyResult; nil — ничего не делает.
-	OnResult func(ctx context.Context, m Monitor, region string, r Result, st State)
+	Svc      *Service
+	Writer   *ResultWriter                                                           // может быть nil — тогда без записи в CH
+	OnResult func(ctx context.Context, m Monitor, region string, r Result, st State) // nil — детекция не запускается
 }
 
-// Accept проводит результат r задания j (снятое с очереди временем at,
-// которое ставит ЦЕНТР, а не проба) через весь хвост обработки — но СНАЧАЛА
-// забирает задание себе (ClaimJob) и только потом трогает что-либо ещё.
-// Claim и есть завершение задания: удавшийся claim снимает строку с очереди и
-// делает этот вызов единственным, кому позволено применить результат.
-//
-// Claim не удался (false, без ошибки) — задание уже применено параллельным
-// вызовом или перевыдано после истечения lease: результат молча
-// выбрасывается, БЕЗ записи в ClickHouse, БЕЗ ApplyResult и БЕЗ OnResult.
-// Иначе одна реальная проверка увеличила бы consecutive_fails дважды
-// (ApplyResult атомарен, но не идемпотентен) и дважды дёрнула бы детектор —
-// см. ClaimJob.
-//
-// Компромисс: если ApplyResult упадёт уже ПОСЛЕ claim'а, результат этой
-// проверки потерян — задание из очереди снято, и монитор будет проверен
-// заново, когда планировщик поставит его в очередь по следующему сроку. Это
-// сознательно: потерять одну проверку дешевле, чем применить её дважды.
-// Держать транзакцию открытой на всё время записи в CH и вызова детектора мы
-// не хотим (это внешние по отношению к PG вызовы).
+// claim идёт первым и монопольным: неудачный claim (уже применено или lease
+// истёк) молча отбрасывает результат — иначе ApplyResult сработал бы дважды.
 func (i *Ingestor) Accept(ctx context.Context, j Job, at time.Time, r Result) error {
 	claimed, err := i.Svc.ClaimJob(ctx, j.QueueID, j.LeaseUntil)
 	if err != nil {
@@ -57,10 +31,8 @@ func (i *Ingestor) Accept(ctx context.Context, j Job, at time.Time, r Result) er
 	return i.AcceptClaimed(ctx, j, at, r)
 }
 
-// AcceptClaimed — Accept для задания, уже изъятого из очереди (ClaimJobs
-// пачкой в POST /probe/results): запись результата и применение к состоянию
-// монитора. Вызывающий обязан сам обеспечить «ровно один раз» — здесь claim
-// не повторяется.
+// вызывающий уже изъял задание из очереди (пачка POST /probe/results) — здесь
+// claim не повторяется, гарантия «ровно один раз» лежит на нём.
 func (i *Ingestor) AcceptClaimed(ctx context.Context, j Job, at time.Time, r Result) error {
 	if i.Writer != nil {
 		i.Writer.Add(j.Monitor.ProjectID, j.MonitorID, j.Region, at, r)
@@ -77,34 +49,26 @@ func (i *Ingestor) AcceptClaimed(ctx context.Context, j Job, at time.Time, r Res
 	return nil
 }
 
-// Ниже — DTO протокола проб (спека §4). Живут в uptime, а не в web: их
-// используют обе стороны — серверные ручки /probe/lease и /probe/results
-// (internal/web/probeapi.go) и клиент выносной пробы, — и формат обязан быть
-// один на всех.
+// эти DTO используют обе стороны — серверные ручки /probe/lease и
+// /probe/results и клиент выносной пробы — формат должен быть общим.
 
-// LeaseRequest — тело POST /probe/lease. Limit ≤ 0 означает «сколько дашь»
-// (сервер подставит свой дефолт и обрежет по своему максимуму).
+// Limit ≤ 0 значит «сколько дашь» — сервер подставит свой дефолт и обрежет
+// по своему максимуму.
 type LeaseRequest struct {
 	Limit int `json:"limit"`
 }
 
-// JobDTO — задание, выданное пробе. Всё, что нужно чекеру, и ничего лишнего:
-// ни project_id, ни порогов, ни регионов — проба «тупая» и о состоянии
-// монитора ничего не знает. Config — monitors.config как есть; URL/хост
-// проверяемого сервиса в нём — норма, проба его и должна дёрнуть.
+// из задания берётся только то, что нужно чекеру — ни project_id, ни
+// порогов, ни регионов: проба ничего не знает о состоянии монитора.
 type JobDTO struct {
 	QueueID        int64           `json:"queue_id"`
 	MonitorID      int64           `json:"monitor_id"`
 	Kind           Kind            `json:"kind"`
 	Config         json.RawMessage `json:"config"`
 	TimeoutSeconds int             `json:"timeout_seconds"`
-	// Retries — параметр ВЫПОЛНЕНИЯ проверки (как timeout), поэтому едет пробе:
-	// повтор делает сама проба, а не сервер. Пороги (fail/recovery) — состояние,
-	// их пробе знать не надо.
-	Retries int `json:"retries"`
+	Retries        int             `json:"retries"` // повтор делает сама проба, поэтому едет с заданием
 }
 
-// NewJobDTO переводит задание из очереди в его сетевое представление.
 func NewJobDTO(j Job) JobDTO {
 	return JobDTO{
 		QueueID:        j.QueueID,
@@ -116,8 +80,6 @@ func NewJobDTO(j Job) JobDTO {
 	}
 }
 
-// Monitor собирает из задания минимальный Monitor для чекера — больше
-// чекерам ничего не нужно (см. Checker.Check).
 func (j JobDTO) Monitor() Monitor {
 	return Monitor{
 		ID:             j.MonitorID,
@@ -128,14 +90,13 @@ func (j JobDTO) Monitor() Monitor {
 	}
 }
 
-// LeaseResponse — ответ POST /probe/lease.
 type LeaseResponse struct {
 	ProbeID int64    `json:"probe_id"`
 	Region  string   `json:"region"`
 	Jobs    []JobDTO `json:"jobs"`
 }
 
-// Timings — тайминги проверки в миллисекундах.
+// миллисекунды.
 type Timings struct {
 	DNS     uint32 `json:"dns"`
 	Connect uint32 `json:"connect"`
@@ -144,9 +105,8 @@ type Timings struct {
 	Total   uint32 `json:"total"`
 }
 
-// ResultDTO — результат одной проверки, присланный пробой. Времени проверки
-// здесь нет намеренно: timestamp ставит центр (time.Now().UTC() в момент
-// приёма) — часам пробы центр не доверяет.
+// timestamp здесь нет намеренно — его ставит центр при приёме, часам пробы
+// он не доверяет.
 type ResultDTO struct {
 	QueueID      int64      `json:"queue_id"`
 	OK           bool       `json:"ok"`
@@ -157,7 +117,6 @@ type ResultDTO struct {
 	SSLExpiresAt *time.Time `json:"ssl_expires_at,omitempty"`
 }
 
-// NewResultDTO — сетевое представление результата чекера.
 func NewResultDTO(queueID int64, r Result) ResultDTO {
 	return ResultDTO{
 		QueueID:    queueID,
@@ -172,7 +131,6 @@ func NewResultDTO(queueID int64, r Result) ResultDTO {
 	}
 }
 
-// Result восстанавливает Result из присланного пробой DTO.
 func (r ResultDTO) Result() Result {
 	return Result{
 		OK:           r.OK,
@@ -188,13 +146,12 @@ func (r ResultDTO) Result() Result {
 	}
 }
 
-// ResultsRequest — тело POST /probe/results (пачка ≤ 100 результатов).
+// пачка ≤ 100 результатов.
 type ResultsRequest struct {
 	Results []ResultDTO `json:"results"`
 }
 
-// ResultsResponse — ответ POST /probe/results: сколько результатов принято и
-// сколько отвергнуто (задание чужое, lease истёк или задание уже выполнено).
+// Rejected — задание чужое, lease истёк или уже выполнено.
 type ResultsResponse struct {
 	Accepted int `json:"accepted"`
 	Rejected int `json:"rejected"`

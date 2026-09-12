@@ -10,17 +10,12 @@ import (
 	"golang.org/x/crypto/nacl/secretbox"
 )
 
-// keyIDDomain — метка домена для отпечатка ключа (key-id), отделяющая его от
-// любого другого использования того же производного ключа. id — не секрет
-// (32 бита односторонней функции, не даёт атакующему ничего сверх того, что
-// уже даёт сам ciphertext), но домен исключает даже теоретическую путаницу с
-// другим хешем от того же key.
+// id не секретен, но домен исключает даже теоретическую путаницу с другим
+// хешем от того же производного ключа.
 const keyIDDomain = "gotcha-secretbox-keyid\x00"
 
-// Keyring — набор ключей at-rest шифрования: текущим запечатывают (Seal),
-// предыдущим (при наличии) только распечатывают. Так инстанс переживает
-// ротацию GOTCHA_SECRET_KEY, не теряя то, что уже зашифровано старым ключом —
-// Rewrap переводит такие значения на текущий ключ на лету.
+// текущим ключом Seal запечатывает, предыдущим (если есть) только распечатывает —
+// так ротация GOTCHA_SECRET_KEY не теряет то, что уже зашифровано старым ключом.
 type Keyring struct {
 	cur     [32]byte
 	curID   string
@@ -29,15 +24,13 @@ type Keyring struct {
 	hasPrev bool
 }
 
-// deriveKey — sha256 от сырой строки мастер-ключа. Байт-в-байт та же
-// деривация, что была в трёх сервисах (org/alert/uptime) до кольца: ею
-// запечатаны все существующие v1-значения, менять нельзя — иначе они
-// перестанут открываться.
+// та же деривация, что была в org/alert/uptime до кольца — менять нельзя,
+// иначе все существующие v1-значения перестанут открываться.
 func deriveKey(raw string) [32]byte {
 	return sha256.Sum256([]byte(raw))
 }
 
-// deriveKeyID — отпечаток производного ключа: hex(sha256(domain‖key))[:8].
+// hex(sha256(domain‖key))[:8].
 func deriveKeyID(key [32]byte) string {
 	h := sha256.New()
 	h.Write([]byte(keyIDDomain))
@@ -46,13 +39,8 @@ func deriveKeyID(key [32]byte) string {
 	return hex.EncodeToString(sum[:4])
 }
 
-// NewKeyring строит кольцо из текущего и (опционально) предыдущего
-// мастер-ключа. current не может быть пустым: кольцо без ключа для записи
-// бессмысленно (dev-стенды с выключенным шифрованием кольцо не строят вовсе —
-// см. вызывающих в cmd/gotcha/main.go). previous, равный current по
-// ВЫВЕДЕННОМУ ключу (сырые строки могут отличаться, ключ — нет), тоже отказ:
-// это не ротация, а конфигурационная ошибка, и молчаливо считать её нормой
-// значило бы спрятать от оператора, что PREV ничего не делает.
+// current обязателен; previous, совпадающий с current по выведенному ключу, —
+// тоже отказ: молча принять его значило бы спрятать, что PREV ничего не делает.
 func NewKeyring(current, previous string) (Keyring, error) {
 	if current == "" {
 		return Keyring{}, fmt.Errorf("secretbox: keyring requires a non-empty current key")
@@ -72,17 +60,11 @@ func NewKeyring(current, previous string) (Keyring, error) {
 	return r, nil
 }
 
-// CurrentID — id текущего ключа кольца. Нужен для логов и диагностики:
-// оператор вписывает его в проверочный SELECT при ротации (privacy.md).
+// нужен оператору для проверочного SELECT при ротации ключа (privacy.md).
 func (r Keyring) CurrentID() string { return r.curID }
 
-// PreviousID — id предыдущего ключа кольца, если он есть. Это и есть
-// <old-id> из шага 2 процедуры ротации (privacy.md): оператор знает старый
-// мастер-ключ (сам вписал его в GOTCHA_SECRET_KEY_PREV), но не его отпечаток —
-// а без отпечатка проверочный SELECT, которым подтверждают, что в БД не
-// осталось конвертов со старым ключом, составить нечем. Пустая строка
-// означает «предыдущего ключа нет» и однозначно отличима от настоящего id:
-// формат deriveKeyID всегда даёт 8 hex-символов.
+// пустая строка — «предыдущего нет», не спутать с id: deriveKeyID всегда
+// даёт 8 hex-символов. Нужен оператору для проверочного SELECT при ротации.
 func (r Keyring) PreviousID() string {
 	if !r.hasPrev {
 		return ""
@@ -90,9 +72,7 @@ func (r Keyring) PreviousID() string {
 	return r.prevID
 }
 
-// Seal шифрует plaintext и возвращает конверт версии 2, запечатанный текущим
-// ключом кольца. Пишется всегда только v2 — даже если в кольце есть
-// предыдущий ключ (им только открывают, никогда не запечатывают).
+// всегда пишет v2 текущим ключом — предыдущим только открывают, никогда не запечатывают.
 func (r Keyring) Seal(plaintext string) (string, error) {
 	var nonce [24]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
@@ -102,7 +82,6 @@ func (r Keyring) Seal(plaintext string) (string, error) {
 	return fmt.Sprintf("%s%s:%s", v2Prefix, r.curID, base64.StdEncoding.EncodeToString(sealed)), nil
 }
 
-// keyByID возвращает ключ кольца с данным id (текущий или предыдущий).
 func (r Keyring) keyByID(id string) ([32]byte, bool) {
 	if id == r.curID {
 		return r.cur, true
@@ -113,7 +92,7 @@ func (r Keyring) keyByID(id string) ([32]byte, bool) {
 	return [32]byte{}, false
 }
 
-// openRaw открывает nonce24‖ciphertext ключом key.
+// первые 24 байта raw — nonce, остальное — ciphertext.
 func openRaw(raw []byte, key [32]byte) (string, bool) {
 	var nonce [24]byte
 	copy(nonce[:], raw[:24])
@@ -124,15 +103,8 @@ func openRaw(raw []byte, key [32]byte) (string, bool) {
 	return string(plaintext), true
 }
 
-// Open расшифровывает значение, сохранённое Seal (v2) или старым форматом
-// (v1), либо отдаёт legacy plaintext как есть.
-//
-// v2: ключ выбирается по id конверта, при отсутствии совпадения в кольце —
-// сразу ErrOpen с id в сообщении (перебор бессмыслен: Poly1305 всё равно не
-// сойдётся, а сообщение станет только хуже).
-// v1: у него нет id, поэтому пробуем сначала текущий ключ, затем предыдущий.
-// Конверт неизвестной версии — fail closed: ErrOpen, а не passthrough (см.
-// envUnknown в secretbox.go).
+// v2 выбирает ключ по id конверта, без перебора — Poly1305 всё равно не сойдётся
+// с чужим ключом. Неизвестная версия — fail closed (ErrOpen), не passthrough.
 func (r Keyring) Open(stored string) (string, error) {
 	env := parseEnvelope(stored)
 	switch env.version {
@@ -162,20 +134,8 @@ func (r Keyring) Open(stored string) (string, error) {
 	}
 }
 
-// Rewrap приводит stored к конверту версии 2 текущего ключа, если это
-// возможно.
-//
-// Пустая строка — «нет секрета», а не значение для шифрования: проходит без
-// изменений. Это не мелочь — пустой Secret в UpdateChannel означает «оставить
-// прежний» (internal/alert/alert.go), запечатанная пустая строка сломала бы
-// оба смысла разом.
-//
-// Значение, уже лежащее в v2 текущего ключа, не трогается — важно и для
-// идемпотентности CAS-бэкфилла (второй проход не должен считать «изменил» то,
-// что не менялось), и для write-пути (sealHTTPHeaders).
-//
-// Нерасшифруемое значение НЕ трогается: возвращается как есть вместе с
-// ErrOpen — потерять его хуже, чем оставить нечитаемым.
+// пустая строка — «нет секрета», не значение для шифрования, проходит без изменений.
+// Нерасшифруемое — тоже без изменений, с ErrOpen: потерять хуже, чем оставить нечитаемым.
 func (r Keyring) Rewrap(stored string) (string, bool, error) {
 	if stored == "" {
 		return stored, false, nil

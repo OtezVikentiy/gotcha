@@ -8,9 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestStoreQueueSnapshotEmptyQueue: очередь без заявок обязана отдавать
-// нули, а не ошибку — то же поведение, что у telemetry.PurgeQueue.Stats и
-// notify.Outbox.QueueSnapshot на пустой очереди.
 func TestStoreQueueSnapshotEmptyQueue(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
@@ -24,9 +21,6 @@ func TestStoreQueueSnapshotEmptyQueue(t *testing.T) {
 	}
 }
 
-// TestStoreQueueSnapshotCountsPendingJobs: заявка, поставленная в очередь и
-// ещё не добитая (queued или running), обязана быть видна как Pending —
-// иначе дежурный не увидит вставшую очередь (P1-OPS-1), только тишину в логе.
 func TestStoreQueueSnapshotCountsPendingJobs(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -44,8 +38,6 @@ func TestStoreQueueSnapshotCountsPendingJobs(t *testing.T) {
 		t.Errorf("Pending = %d, want 2 — обе заявки в статусе queued не видны", snap.Pending)
 	}
 
-	// Заявка, забранная в работу (running), остаётся в очереди с точки
-	// зрения дежурного — она ещё не досчитана.
 	if _, ok, err := st.Claim(ctx); err != nil || !ok {
 		t.Fatalf("Claim: ok=%v err=%v", ok, err)
 	}
@@ -58,10 +50,6 @@ func TestStoreQueueSnapshotCountsPendingJobs(t *testing.T) {
 	}
 }
 
-// TestStoreQueueSnapshotCountsFailedJobs: заявки, добитые в failed
-// (исчерпаны попытки), обязаны попадать в Failed и НЕ засчитываться в
-// Pending — иначе метрика вставшей очереди маскирует уже мёртвые заявки под
-// живые.
 func TestStoreQueueSnapshotCountsFailedJobs(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -85,10 +73,6 @@ func TestStoreQueueSnapshotCountsFailedJobs(t *testing.T) {
 	}
 }
 
-// TestStoreQueueSnapshotOldestPendingAge: возраст должен считаться от
-// момента постановки заявки (created_at), а не от текущего времени — иначе
-// заявка, третьи сутки ждущая обработки, неотличима от только что
-// поставленной.
 func TestStoreQueueSnapshotOldestPendingAge(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -100,10 +84,6 @@ func TestStoreQueueSnapshotOldestPendingAge(t *testing.T) {
 		`UPDATE export_jobs SET created_at = now() - interval '3 days' WHERE id = $1`, id); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	// Вторая, свежепоставленная заявка: без неё запрос, перепутавший min с
-	// max (или вовсе не фильтрующий по статусу), на ОДНОЙ строке дал бы тот
-	// же ответ, что и правильный — только вторая заявка отличает
-	// «старейшая» от «любая».
 	mustEnqueue(t, st, projectID, userID)
 
 	snap, err := st.QueueSnapshot(ctx)
@@ -115,11 +95,6 @@ func TestStoreQueueSnapshotOldestPendingAge(t *testing.T) {
 	}
 }
 
-// TestStatsRunSnapshotsPublishesQueueState: Stats — обёртка над
-// QueueSnapshot для самометрик, тот же приём, что у notify.Stats
-// (internal/notify/stats.go). RunSnapshots обязан опросить очередь сразу
-// же, не дожидаясь первого тика — иначе метрики после старта процесса
-// показывали бы нули до истечения snapshotInterval.
 func TestStatsRunSnapshotsPublishesQueueState(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

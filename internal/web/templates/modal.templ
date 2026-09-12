@@ -2,19 +2,8 @@ package templates
 
 import "gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 
-// createModalOpen — no-JS модальное окно через CSS :target (см. .modal в
-// app.css), которое можно открыть и С СЕРВЕРА (open=true).
-//
-// id — якорь модалки: триггер ведёт на #id, крестик и фон — на #id-close.
-// titleKey — i18n-ключ заголовка. wide даёт более широкую карточку (для форм с
-// длинными подписями полей, где узкая колонка рвёт вёрстку). Содержимое формы
-// передаётся children.
-//
-// open нужен при ошибке валидации: страница отрисовывается заново, фрагмента
-// #id в адресе нет, и без этого модалка закрывалась бы вместе с введёнными
-// данными. Раньше рядом жили обёртки createModal/createModalWide с
-// зафиксированным open=false — после того, как все формы научились
-// возвращаться открытыми, их не осталось кому вызывать.
+// open нужен при ошибке валидации: страница отрисовывается заново без #id в адресе, и без него
+// модалка закрывалась бы вместе с введёнными данными.
 templ createModalOpen(id, titleKey string, wide, open bool) {
 	@modalShell(id, titleKey, wide, open) {
 		{ children... }
@@ -22,32 +11,22 @@ templ createModalOpen(id, titleKey string, wide, open bool) {
 }
 
 templ modalShell(id, titleKey string, wide, open bool) {
-	// Якорь закрытия. Модалку, открытую С СЕРВЕРА (класс modal--open), нельзя
-	// закрыть переходом на "#": она держится классом, а не :target, и крестик с
-	// фоном переставали работать вовсе. Переход на этот якорь снимает :target с
-	// самой модалки (закрывает обычную) и одновременно включает правило
-	// .modal-dismiss:target + .modal, которое перебивает modal--open.
+	// Модалку, открытую С СЕРВЕРА (modal--open), нельзя закрыть переходом на "#" — она держится
+	// классом, не :target. Переход на #id-close снимает :target и включает правило поверх modal--open.
 	<span id={ id + "-close" } class="modal-dismiss" aria-hidden="true"></span>
 	<div id={ id } class={ "modal", templ.KV("modal--open", open) }>
 		<a class="modal-backdrop" href={ templ.SafeURL("#" + id + "-close") } aria-label={ i18n.T(ctx, "modal.close") } tabindex="-1"></a>
-		// aria-modal НЕ выставляем намеренно. Модалка построена на CSS :target и не
-		// изолирует фон: измерено 43 фокусируемых элемента позади неё остаются
-		// доступны, [inert] и aria-hidden отсутствуют. aria-modal="true" заставил бы
-		// вспомогательные технологии скрыть всё вне диалога, а клавиатура при этом
-		// выводит наружу — пользователь уходил бы в область, которую скринридер не
-		// озвучивает. Врать AT хуже, чем не заявлять модальность.
+		// aria-modal не выставляем: фон не изолирован ([inert]/aria-hidden нет), фокусируемые элементы
+		// позади доступны — aria-modal="true" скрыл бы их от AT, а клавиатура туда всё же уводит.
 		<div class={ "modal-card", templ.KV("modal-card--wide", wide) } role="dialog" aria-labelledby={ id + "-title" }>
 			<a class="modal-close" href={ templ.SafeURL("#" + id + "-close") } aria-label={ i18n.T(ctx, "modal.close") }>&times;</a>
-			// tabindex=-1: цель программного фокуса для modal.js — при серверном
-			// переоткрытии после ошибки валидации фокус остаётся в начале
-			// страницы, и пользователь клавиатуры модалку не видит (№80).
+			// tabindex=-1 — цель программного фокуса modal.js при серверном переоткрытии после ошибки.
 			<h2 class="card-header" id={ id + "-title" } tabindex="-1">{ i18n.T(ctx, titleKey) }</h2>
 			{ children... }
 		</div>
 	</div>
 }
 
-// createTrigger — кнопка «+ …» в шапке раздела, открывающая модалку #id.
 templ createTrigger(id, labelKey string) {
 	<a class="btn btn-primary create-trigger" href={ templ.SafeURL("#" + id) }>
 		@icon("plus")

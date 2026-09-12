@@ -13,13 +13,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// TestWebProjectCreate — второй проект заводится из интерфейса.
-//
-// До этого CreateProject вызывался ровно из одного места — формы онбординга, а
-// она отдаётся только тому, у кого нет ни одного проекта. То есть добавить
-// второй сервис в работающую установку было нельзя вообще: ни кнопки, ни
-// маршрута. Для продукта, наблюдающего за сервисами, это повторяющийся
-// сценарий, а не разовая настройка.
 func TestWebProjectCreate(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -34,8 +27,6 @@ func TestWebProjectCreate(t *testing.T) {
 		t.Fatalf("create first project: %v", err)
 	}
 
-	// На странице проектов организации (/projects теперь лишь дверь туда,
-	// задача 5 nav-ia) есть форма создания.
 	orgProjectsPath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/projects"
 	resp := getWithCookie(t, s.srv, orgProjectsPath, ownerCookie)
 	page, _ := io.ReadAll(resp.Body)
@@ -66,20 +57,15 @@ func TestWebProjectCreate(t *testing.T) {
 	if created.ID == 0 {
 		t.Fatalf("проект не создан: %+v", projects)
 	}
-	// Ключ приёма заведён — иначе страница подключения SDK показала бы проект
-	// без DSN, то есть бесполезный.
 	keys, err := orgSvc.KeysForProject(context.Background(), created.ID)
 	if err != nil || len(keys) == 0 {
 		t.Fatalf("Keys = %+v err=%v, want at least one", keys, err)
 	}
-	// Редирект ведёт на страницу подключения — как и после онбординга.
 	if loc := resp.Header.Get("Location"); !strings.Contains(loc, "/setup") {
 		t.Errorf("Location = %q, want страницу подключения SDK", loc)
 	}
 }
 
-// TestWebProjectCreateInvalidSlugReopensForm — на 422 форма возвращается
-// открытой и с введённым, как у остальных модалок.
 func TestWebProjectCreateInvalidSlugReopensForm(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -107,9 +93,6 @@ func TestWebProjectCreateInvalidSlugReopensForm(t *testing.T) {
 	}
 }
 
-// TestWebProjectCreateForbiddenForMember — обычный участник организации
-// проектов не заводит: те же owner/admin, что и на остальных управляющих
-// действиях.
 func TestWebProjectCreateForbiddenForMember(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -138,12 +121,6 @@ func TestWebProjectCreateForbiddenForMember(t *testing.T) {
 	}
 }
 
-// TestWebProjectCreateInvalidSlugFromOrgPageStaysOnOrgPage — K7-2: ошибка
-// валидации формы, отправленной с карточной страницы организации
-// (hidden origin=org_projects), возвращает ТУ ЖЕ страницу ЭТОЙ организации
-// (маркер — её заголовок), а не плоский список проектов всех организаций
-// пользователя; модалка открыта, введённое сохранено, чужая организация в
-// теле не упоминается.
 func TestWebProjectCreateInvalidSlugFromOrgPageStaysOnOrgPage(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -154,8 +131,6 @@ func TestWebProjectCreateInvalidSlugFromOrgPageStaysOnOrgPage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create org: %v", err)
 	}
-	// Вторая организация того же пользователя — плоский список перечислил
-	// бы проекты и её тоже; маркер страницы — корневой блок разметки.
 	if _, err := orgSvc.CreateOrg(context.Background(), "projcreate-orgpage-other", "Other Org", ownerID); err != nil {
 		t.Fatalf("create other org: %v", err)
 	}
@@ -186,7 +161,6 @@ func TestWebProjectCreateInvalidSlugFromOrgPageStaysOnOrgPage(t *testing.T) {
 		t.Fatalf("нет сообщения об ошибке в модалке:\n%s", text)
 	}
 
-	// Без origin (плоская форма) поведение прежнее — плоский список.
 	resp = postForm(t, s.srv, "/projects/new", url.Values{
 		"org_id": {strconv.FormatInt(o.ID, 10)}, "slug": {"Не Слаг"}, "name": {"Имя"}, "platform": {"go"},
 	}, s.srv.URL, ownerCookie)

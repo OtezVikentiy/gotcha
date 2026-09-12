@@ -18,24 +18,16 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// issueChartBuckets — целевое число столбиков графика частоты (при окне по
-// умолчанию 7д даёт шаг 3ч — прежнее разрешение). Шаг подбирает autoStep по
-// выбранному окну; события читаются из сырой events (без 5m-MV), поэтому
-// выравнивание не нужно (align=0), лишь пол в 5 минут.
+// События читаются из сырой events (без 5m-MV) — выравнивание не нужно, только пол в 5 минут.
 const issueChartBuckets = 56
 
-// issueEventsLimit — сколько последних событий issue показывается списком.
 const issueEventsLimit = 20
 
 func issueDetailPath(issueID int64) string {
 	return "/issues/" + strconv.FormatInt(issueID, 10)
 }
 
-// loadAccessibleIssue — общая часть GET/POST issue-обработчиков: находит
-// issue по id и проверяет, что текущий юзер видит его проект. Оба случая
-// (issue не существует, issue существует но проект чужой) отдают 404 —
-// не палим существование чужих числовых id, тот же принцип, что и в
-// issuesList/projectSetup.
+// Issue не существует и issue чужого проекта — оба 404: не палим существование чужих id.
 func (h *Handler) loadAccessibleIssue(w http.ResponseWriter, r *http.Request, uid int64) (issue.Issue, bool) {
 	issueID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -63,9 +55,6 @@ func (h *Handler) loadAccessibleIssue(w http.ResponseWriter, r *http.Request, ui
 	return it, true
 }
 
-// issueDetail — GET /issues/{id}: шапка, статус/assign-формы, график за
-// 7 дней, последние 20 событий, детали ?event=<id> (стектрейс, tags, user,
-// sdk, contexts).
 func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -92,11 +81,8 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 	step := autoStep(tr.Window(), 5*time.Minute, 0, issueChartBuckets)
 	selectedID := r.URL.Query().Get("event")
 
-	// Все чтения ClickHouse карточки (события, график, выбранное событие) —
-	// одним блоком: отказ хранилища не роняет страницу (единый приём
-	// CH-страниц, образец — logsList), шапка, статус и участники (PostgreSQL)
-	// остаются, на месте графика и событий — «данные временно недоступны».
-	// Первый отказ прекращает опрос хранилища.
+	// Чтения ClickHouse — одним блоком: отказ не роняет страницу, PostgreSQL-часть остаётся,
+	// на месте графика/событий — «данные временно недоступны».
 	var (
 		events   []event.Stored
 		points   []event.Point
@@ -130,8 +116,6 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("issues: detail events failed", "project_id", it.ProjectID, "issue_id", it.ID, "err", loadErr)
 		events, points, selected, frames = nil, nil, nil, nil
 	}
-	// Дозаполняем окно пустыми корзинами, чтобы ось шла по выбранному
-	// интервалу целиком.
 	points = fillSeries(points, tr.From, tr.To, step,
 		func(p event.Point) time.Time { return p.T },
 		func(t time.Time) event.Point { return event.Point{T: t} })
@@ -143,44 +127,30 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 		frames = parseStacktraceFrames(events[0].Stacktrace)
 	}
 
-	// Ссылку «Смотреть трейс» показываем только если для trace_id реально есть
-	// транзакция: при сэмплировании (traces_sample_rate<1) трейс ошибки часто
-	// не записан, и страница трейса отдала бы 404 (см. traceWaterfall).
+	// Ссылку показываем только если транзакция реально записана: при sampling<1 трейс ошибки
+	// часто не сохранён, и страница трейса отдала бы 404.
 	hasTrace := false
 	if selected != nil && selected.TraceID != "" && h.Trace != nil {
-		// Проверяем существование трейса В ЭТОМ проекте (project_id уже известен)
-		// — префикс первичного ключа прунит запрос до проекта, а не сканирует
-		// транзакции всех проектов, как это делал ProjectForTrace на самой
-		// частой странице (деталь issue). См. TraceExistsInProject.
+		// Префикс первичного ключа прунит запрос до проекта, не сканирует транзакции всех проектов.
 		if found, err := h.Trace.TraceExistsInProject(r.Context(), it.ProjectID, selected.TraceID); err == nil {
 			hasTrace = found
 		}
 	}
 
-	// showAllFrames (?frames=all) раскрывает системные кадры стектрейса серверно
-	// (строгий CSP запрещает клиентский JS) — переключается ссылкой на странице.
+	// Раскрывает системные кадры стектрейса серверно: строгий CSP запрещает клиентский JS.
 	showAllFrames := r.URL.Query().Get("frames") == "all"
 
-	// Дампы для «Скопировать для ИИ» считаем только при выбранном событии —
-	// без него copyToolbar не рендерится (см. issuedetail.templ).
 	var copyMD, copyTXT string
 	if selected != nil {
 		copyMD = renderEventForLLM(it, *selected, dumpMarkdown)
 		copyTXT = renderEventForLLM(it, *selected, dumpPlain)
 	}
 
-	// exportsEnabled — h.Exports != nil: на инстансе без каталога выгрузок
-	// воркер не стартует, форма экспорта событий issue поведёт на 404
-	// (ревью веб-части E1, п.3; та же граница, что canExport на issues.go).
+	// h.Exports == nil на инстансе без каталога выгрузок — воркер не стартовал, форма ведёт на 404.
 	exportsEnabled := h.Exports != nil
 
-	// canManagePII — тот же predicate, что canManage в issues.go (owner/
-	// admin организации), и то же правило, что authz.CanManage в
-	// exports.go: галка «выгрузить как есть» на раскрытой форме экспорта
-	// событий issue видна только ей — от оператора include_pii молча
-	// игнорируется на постановке (спека §7/§8, находка аудита P2-UX-3: до
-	// этой находки галка не показывалась здесь вовсе, даже CanManage не мог
-	// выгрузить события ОДНОЙ issue без маски).
+	// Галка «выгрузить как есть» видна только owner/admin — у оператора include_pii
+	// молча игнорируется на постановке.
 	role, err := h.Org.Role(r.Context(), orgID, uid)
 	if err != nil && !errors.Is(err, org.ErrNotMember) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -191,8 +161,6 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 	_ = templates.IssueDetail(it, members, chart, timeRangeVM(tr), events, selectedID, selected, frames, h.currentEmail(r), hasTrace, showAllFrames, copyMD, copyTXT, exportsEnabled, canManagePII, loadFailed).Render(r.Context(), w)
 }
 
-// issueSetStatus — POST /issues/{id}/status: status=unresolved|resolved|ignored
-// → 303 обратно на страницу issue.
 func (h *Handler) issueSetStatus(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -227,9 +195,6 @@ func (h *Handler) issueSetStatus(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, issueDetailPath(it.ID), http.StatusSeeOther)
 }
 
-// issueAssign — POST /issues/{id}/assign: assignee=<user id>|"" → 303 обратно
-// на страницу issue. assignee должен быть участником организации проекта
-// (иначе 422) — та же организация, что отдаёт assign-select на странице.
 func (h *Handler) issueAssign(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -281,7 +246,6 @@ func (h *Handler) issueAssign(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	// Flash различает назначение и снятие ответственного (K7-9).
 	if assigneeID != nil {
 		h.flashOK(w, "flash.issue_assigned", 0)
 	} else {
@@ -299,12 +263,8 @@ func isOrgMember(members []org.Member, userID int64) bool {
 	return false
 }
 
-// exceptionFrame/exceptionValue/exceptionPayload — минимальный локальный
-// парсер JSON исключения, хранящегося в event.Stored.Stacktrace:
-// {"values":[{"type","value","stacktrace":{"frames":[{"function","module",
-// "filename","lineno","in_app"}]}}]}. Не переиспользует internal/ingest
-// (у него свой более широкий тип события) — этому пакету нужны только
-// фреймы для отображения.
+// Минимальный локальный парсер JSON исключения из event.Stored.Stacktrace — не переиспользует
+// internal/ingest (свой более широкий тип): этому пакету нужны только фреймы для отображения.
 type exceptionFrame struct {
 	Function    string          `json:"function"`
 	Module      string          `json:"module"`
@@ -330,11 +290,8 @@ type exceptionPayload struct {
 	Values []exceptionValue `json:"values"`
 }
 
-// parseStacktraceFrames разбирает exception-JSON первого value и возвращает
-// фреймы в обратном порядке (новые/самые глубокие — сверху), как того
-// требует UI. Невалидный/пустой JSON и отсутствие фреймов — пустой результат,
-// а не ошибка: страница issue должна отрисоваться даже без стектрейса
-// (например, событие без исключения, просто message).
+// Фреймы возвращаются в обратном порядке (новые/глубокие — сверху). Невалидный/пустой JSON —
+// nil, не ошибка: страница должна отрисоваться и без стектрейса.
 func parseStacktraceFrames(raw string) []templates.Frame {
 	if raw == "" {
 		return nil

@@ -6,34 +6,24 @@ import (
 	"time"
 )
 
-// defaultJanitorInterval — период тика Janitor, если Janitor.Interval не
-// задан.
 const defaultJanitorInterval = time.Hour
 
-// Janitor периодически удаляет просроченные сессии: сами по себе они не
-// исчезают из БД, DeleteExpiredSessions/SessionUser лишь отвергают их по
-// expires_at на чтении — без Janitor таблица sessions растёт бесконечно.
+// Без него sessions растёт бесконечно — expires_at сам по себе строки не удаляет.
 type Janitor struct {
 	Svc *Service
 
-	// Interval — период тика. По умолчанию defaultJanitorInterval (1 час).
 	Interval time.Duration
 
-	// Extra — дополнительные периодические очистки на том же тике (напр.
-	// просроченные org_invites — их держит org, а auth про них не знает).
-	// Держим здесь, чтобы не плодить отдельные тикеры и не связывать auth с org.
-	// Ошибка одной очистки логируется и не мешает остальным.
+	// Доп. периодические очистки на том же тике (напр. org_invites) — чтобы не плодить тикеры и не
+	// связывать auth с org. Ошибка одной очистки не останавливает остальные.
 	Extra []Cleanup
 }
 
-// Cleanup — именованная периодическая очистка для Janitor.Extra.
 type Cleanup struct {
 	Name string
 	Fn   func(context.Context) (int64, error)
 }
 
-// Run тикает с Janitor.Interval, на каждом тике удаляет просроченные сессии
-// и пишет их число debug-логом. Возвращается, когда ctx отменяется.
 func (j *Janitor) Run(ctx context.Context) {
 	interval := j.Interval
 	if interval <= 0 {
@@ -42,9 +32,7 @@ func (j *Janitor) Run(ctx context.Context) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	// Первый проход — сразу, не дожидаясь тика (как telemetry.EntityJanitor):
-	// иначе после каждого рестарта чаще Interval (час по умолчанию) просроченные
-	// сессии и Extra-очистки (org_invites) не выполняются вовсе.
+	// Первый прогон — сразу, не дожидаясь тика: иначе очистки не запустятся до первого тика.
 	j.tick(ctx)
 
 	for {

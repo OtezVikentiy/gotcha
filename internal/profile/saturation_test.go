@@ -6,9 +6,7 @@ import (
 	"testing"
 )
 
-// sample1 строит профиль с одним сэмплом на уникальном стеке (различается по
-// idx), чтобы схлопывание одинаковых стеков внутри Add не сжало несколько
-// вызовов в одну строку.
+// стек должен быть уникальным по idx, иначе Add схлопнет несколько вызовов в одну строку.
 func sample1(idx int) Profile {
 	return Profile{
 		Type: "cpu",
@@ -19,7 +17,6 @@ func sample1(idx int) Profile {
 	}
 }
 
-// TestWriterSaturationEmpty — пустой буфер не насыщен.
 func TestWriterSaturationEmpty(t *testing.T) {
 	w := NewWriter(nil)
 	if got := w.Saturation(); got != 0 {
@@ -27,8 +24,6 @@ func TestWriterSaturationEmpty(t *testing.T) {
 	}
 }
 
-// TestWriterSaturationRowCap — упор в потолок ПО СТРОКАМ при незанятом
-// байтовом плече.
 func TestWriterSaturationRowCap(t *testing.T) {
 	w := NewWriter(nil)
 	w.maxBuf = 4
@@ -41,10 +36,7 @@ func TestWriterSaturationRowCap(t *testing.T) {
 	}
 }
 
-// TestWriterSaturationByteCap — упор в потолок ПО БАЙТАМ при незанятом
-// счётном плече: одна строка тяжелее потолка сама по себе не вычищается
-// (trimLocked всегда оставляет хотя бы одну), поэтому байтовое плечо должно
-// быть видно даже при единственной строке в буфере.
+// trimLocked всегда оставляет хотя бы одну строку, даже тяжелее потолка.
 func TestWriterSaturationByteCap(t *testing.T) {
 	w := NewWriter(nil)
 	w.maxBuf = 200000
@@ -62,8 +54,6 @@ func TestWriterSaturationByteCap(t *testing.T) {
 	}
 }
 
-// TestWriterSaturationPartial — частичное заполнение даёт значение строго
-// между 0 и 1.
 func TestWriterSaturationPartial(t *testing.T) {
 	w := NewWriter(nil)
 	w.maxBuf = 10
@@ -77,9 +67,7 @@ func TestWriterSaturationPartial(t *testing.T) {
 	}
 }
 
-// TestBufSaturationZeroDenominatorIsUnbounded — потолок, выключенный нулём
-// (или отрицательным значением), означает «этим лимитом не ограничены»: вклад
-// в Saturation обязан быть 0, а не деление на ноль/панику/+Inf.
+// потолок 0 или отрицательный значит «лимитом не ограничены» — вклад 0, не деление на ноль.
 func TestBufSaturationZeroDenominatorIsUnbounded(t *testing.T) {
 	if got := bufSaturation(5, 0); got != 0 {
 		t.Fatalf("bufSaturation(5, 0) = %v, want 0", got)

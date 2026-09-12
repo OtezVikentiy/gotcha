@@ -2,19 +2,12 @@ package depsuppress
 
 import "sort"
 
-// NodeRef identifies one node (host or monitor) in the dependency graph,
-// already resolved to a human-readable name — the shape the dry-run preview
-// hands to the template, so it never needs a second name lookup.
 type NodeRef struct {
 	Kind string // "host" | "monitor"
 	ID   int64
 	Name string
 }
 
-// HostLite is the minimal host projection PreviewSuppression needs to expand
-// label-selector children (env/role match) without touching the database —
-// a subset of host.Host, kept local to this package so preview.go stays a
-// pure function with no dependency on internal/host.
 type HostLite struct {
 	ID          int64
 	Name        string
@@ -22,40 +15,8 @@ type HostLite struct {
 	Role        string
 }
 
-// PreviewSuppression computes, for each parent node that has at least one
-// dependency edge, which nodes would currently be suppressed if that
-// parent's availability incident were open right now. Pure function — no DB,
-// no time, safe to call on every render of the suppression screen.
-//
-// Explicit host/monitor children are resolved as-is. Label-selector children
-// (ChildLabelScope/ChildLabelValue) are expanded to every host in the
-// project whose env/role matches, EXCLUDING the parent host itself
-// (self-match, MAJOR-5): a host must never appear as its own suppressed
-// child, mirroring Store.checkSelfMatch which guards this at write time.
-// This is belt-and-suspenders — the preview must hold even for edges that
-// predate that guard (created before ErrSelfMatch existed) or reached the
-// table through any other path.
-//
-// Children are deduplicated per parent (several edges/labels expanding to
-// the same node collapse into one entry) and sorted by (kind, id) for a
-// stable render order. A node id that no longer resolves in hosts/monitors
-// (deleted since the edge was created) is silently dropped — the same
-// "vanished node" handling as suppressionHostLabel/suppressionMonitorLabel
-// use for the edge list itself, so the preview never names a ghost.
-//
-// NOT project-scoped: this function does not know about project_id at all —
-// it trusts edges/hosts/monitors as given and expands every label selector
-// against every host in the hosts slice. The caller MUST pass edges, hosts,
-// and monitors belonging to EXACTLY ONE project (the same project whose
-// screen renders the preview). Pass multi-project data and a label edge from
-// project A will silently expand into project B's hosts — there is no
-// project_id field on HostLite/NodeRef to catch this here. This differs from
-// the runtime Suppressor.ParentDown path, which scopes its own queries by
-// project_id at the SQL layer; PreviewSuppression has no such backstop
-// because it is deliberately DB-free. The current call site
-// (suppressionPreviewRows in internal/web/alert_suppression.go) is safe
-// because it only ever loads the single project's hosts/monitors/edges — any
-// future caller must preserve that invariant itself.
+// Не project-scoped: не знает про project_id и трогает каждый host в hosts —
+// вызывающий обязан передавать edges/hosts/monitors ровно одного проекта.
 func PreviewSuppression(edges []Edge, hosts []HostLite, monitors []NodeRef) map[NodeRef][]NodeRef {
 	hostByID := make(map[int64]HostLite, len(hosts))
 	for _, h := range hosts {
@@ -102,9 +63,6 @@ func PreviewSuppression(edges []Edge, hosts []HostLite, monitors []NodeRef) map[
 	return out
 }
 
-// previewResolveParent resolves an edge's parent to a NodeRef, or false if
-// the parent no longer exists in the supplied inventory (deleted since the
-// edge was created).
 func previewResolveParent(e Edge, hostByID map[int64]HostLite, monitorByID map[int64]NodeRef) (NodeRef, bool) {
 	if e.ParentHostID != nil {
 		h, ok := hostByID[*e.ParentHostID]
@@ -120,9 +78,6 @@ func previewResolveParent(e Edge, hostByID map[int64]HostLite, monitorByID map[i
 	return NodeRef{}, false
 }
 
-// previewResolveChildren resolves an edge's child(ren): a single NodeRef for
-// an explicit host/monitor child, or the set of hosts matching a
-// label-selector child (self-match excluded).
 func previewResolveChildren(e Edge, hostByID map[int64]HostLite, monitorByID map[int64]NodeRef, parent NodeRef) []NodeRef {
 	switch {
 	case e.ChildHostID != nil:
@@ -144,9 +99,8 @@ func previewResolveChildren(e Edge, hostByID map[int64]HostLite, monitorByID map
 	}
 }
 
-// previewExpandLabel returns every host matching scope/value, excluding the
-// parent host itself (self-match, MAJOR-5) — a label edge whose selector
-// happens to match the parent's own env/role must not suppress the parent.
+// Исключает самого parent — селектор, случайно совпавший с его env/role,
+// не должен подавлять его самого.
 func previewExpandLabel(scope, value string, hostByID map[int64]HostLite, parent NodeRef) []NodeRef {
 	var out []NodeRef
 	for _, h := range hostByID {

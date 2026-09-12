@@ -19,8 +19,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// perfIssuesStack — стенд страниц perf-проблем: только PG (страницы читают
-// trace.IssueService, CH здесь не нужен — Events не используется).
 type perfIssuesStack struct {
 	pool *pgxpool.Pool
 	srv  *httptest.Server
@@ -50,8 +48,6 @@ func newPerfIssuesStack(t *testing.T) *perfIssuesStack {
 	return &perfIssuesStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc, perf: perfSvc}
 }
 
-// insertPerfIssue кладёт строку perf_issues напрямую (детерминированно, с точно
-// заданным evidence). Возвращает id новой проблемы.
 func (s *perfIssuesStack) insertPerfIssue(t *testing.T, projectID, count int64, kind, fingerprint, title, culprit, status, sampleTrace, evidence string) int64 {
 	t.Helper()
 	var id int64
@@ -96,8 +92,6 @@ func TestWebPerfIssuesList(t *testing.T) {
 
 	listPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/perf-issues"
 
-	// Дефолт (unresolved) показывает только unresolved N+1, kind человекочитаемо,
-	// count и статус.
 	resp := getWithCookie(t, s.srv, listPath, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -118,7 +112,6 @@ func TestWebPerfIssuesList(t *testing.T) {
 		t.Fatalf("default (unresolved) filter leaked resolved issue: %s", bs)
 	}
 
-	// ?status=resolved показывает только resolved slow-query.
 	resp = getWithCookie(t, s.srv, listPath+"?status=resolved", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -133,7 +126,6 @@ func TestWebPerfIssuesList(t *testing.T) {
 		t.Fatalf("?status=resolved leaked unresolved issue: %s", bs)
 	}
 
-	// ?status=all показывает обе.
 	resp = getWithCookie(t, s.srv, listPath+"?status=all", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -142,7 +134,6 @@ func TestWebPerfIssuesList(t *testing.T) {
 		t.Fatalf("?status=all missing one of the issues: %s", bs)
 	}
 
-	// Чужой юзер (не участник) → 404.
 	_, outsiderCookie := orgSettingsRegister(t, s.auth, "perf-list-outsider@example.com")
 	resp = getWithCookie(t, s.srv, listPath, outsiderCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -188,7 +179,6 @@ func TestWebPerfIssueDetailAndEvidence(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	// total_us=24000 → 24.0ms, count=8.
 	ev := `{"count":8,"total_us":24000,"parent_op":"http.server","span_ids":["a"]}`
 	id := s.insertPerfIssue(t, project.ID, 8, trace.KindNPlusOne, "fp-detail",
 		"N+1 запросов: SELECT * FROM users WHERE id = ?", "GET /orders", "unresolved", "trace-xyz", ev)
@@ -207,20 +197,16 @@ func TestWebPerfIssueDetailAndEvidence(t *testing.T) {
 	if !strings.Contains(bs, "N+1 запросы") {
 		t.Fatalf("detail missing human-readable kind: %s", bs)
 	}
-	// Evidence: repeat count 8 и total 24.0ms.
 	if !strings.Contains(bs, "24.0ms") {
 		t.Fatalf("detail evidence missing total time in ms: %s", bs)
 	}
-	// Ссылка на пример трейса.
 	if !strings.Contains(bs, "/traces/trace-xyz") {
 		t.Fatalf("detail missing sample trace link: %s", bs)
 	}
-	// Owner видит кнопки статуса.
 	if !strings.Contains(bs, `value="resolved"`) {
 		t.Fatalf("owner detail missing resolve button: %s", bs)
 	}
 
-	// Несуществующий id → 404.
 	resp = getWithCookie(t, s.srv, "/perf-issues/999999", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -245,7 +231,6 @@ func TestWebPerfIssueSetStatus(t *testing.T) {
 		"Медленный запрос", "GET /slow", "unresolved", "", `{"count":5,"max_us":600000}`)
 	statusPath := "/perf-issues/" + strconv.FormatInt(id, 10) + "/status"
 
-	// Resolve → 303, статус в БД resolved.
 	resp := postForm(t, s.srv, statusPath, url.Values{"status": {"resolved"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -256,7 +241,6 @@ func TestWebPerfIssueSetStatus(t *testing.T) {
 		t.Fatalf("after resolve status = %q, want resolved", got)
 	}
 
-	// Ignore → 303, статус ignored.
 	resp = postForm(t, s.srv, statusPath, url.Values{"status": {"ignored"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -267,7 +251,6 @@ func TestWebPerfIssueSetStatus(t *testing.T) {
 		t.Fatalf("after ignore status = %q, want ignored", got)
 	}
 
-	// Неизвестный статус → 422.
 	resp = postForm(t, s.srv, statusPath, url.Values{"status": {"bogus"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -275,7 +258,6 @@ func TestWebPerfIssueSetStatus(t *testing.T) {
 		t.Fatalf("POST bogus status = %d, want 422", resp.StatusCode)
 	}
 
-	// Без same-origin → 403.
 	resp = postForm(t, s.srv, statusPath, url.Values{"status": {"resolved"}}, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -284,10 +266,6 @@ func TestWebPerfIssueSetStatus(t *testing.T) {
 	}
 }
 
-// TestWebPerfIssueMemberCanOperate — член команды с доступом к проекту меняет
-// статус perf-issue: та же граница, что у issueSetStatus (CanAccessProject,
-// не роль), спека 2026-08-08. Раньше требовался owner/admin — теперь любой
-// смотрящий, отсюда и кнопки статуса в разметке.
 func TestWebPerfIssueMemberCanOperate(t *testing.T) {
 	s := newPerfIssuesStack(t)
 	ownerID, _ := orgSettingsRegister(t, s.auth, "perf-member-owner@example.com")
@@ -304,7 +282,6 @@ func TestWebPerfIssueMemberCanOperate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	// Доступ к проекту у члена — через команду (member видит только проекты команд).
 	addTeamAccess(t, s.org, o.ID, project.ID, memberID, "perf-member-team")
 
 	id := s.insertPerfIssue(t, project.ID, 5, trace.KindSlowDBQuery, "fp-member",
@@ -312,7 +289,6 @@ func TestWebPerfIssueMemberCanOperate(t *testing.T) {
 	detailPath := "/perf-issues/" + strconv.FormatInt(id, 10)
 	statusPath := detailPath + "/status"
 
-	// Member видит страницу и кнопки статуса — CanOperate теперь равен доступу.
 	resp := getWithCookie(t, s.srv, detailPath, memberCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -323,7 +299,6 @@ func TestWebPerfIssueMemberCanOperate(t *testing.T) {
 		t.Fatalf("member must see status buttons: %s", body)
 	}
 
-	// Member POST статус → 303, статус в БД меняется.
 	resp = postForm(t, s.srv, statusPath, url.Values{"status": {"resolved"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -353,7 +328,6 @@ func TestWebPerfIssueForeignProject(t *testing.T) {
 	detailPath := "/perf-issues/" + strconv.FormatInt(id, 10)
 	statusPath := detailPath + "/status"
 
-	// Чужой юзер: GET страницы проблемы → 404 (не палим существование id).
 	resp := getWithCookie(t, s.srv, detailPath, outsiderCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -361,7 +335,6 @@ func TestWebPerfIssueForeignProject(t *testing.T) {
 		t.Fatalf("outsider GET detail status = %d, want 404", resp.StatusCode)
 	}
 
-	// Чужой юзер: POST статус → 404.
 	resp = postForm(t, s.srv, statusPath, url.Values{"status": {"resolved"}}, s.srv.URL, outsiderCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()

@@ -11,10 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// TestNoProjectsPageByRole — тупик «нет доступных проектов» различает роли
-// (№21): владельцу/админу — CTA «создайте проект» (ссылка на /projects, там
-// модалка), участнику — прежний «попросите администратора». Обоим доступен
-// выход: раньше застрявший без проектов не мог даже разлогиниться.
 func TestNoProjectsPageByRole(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)

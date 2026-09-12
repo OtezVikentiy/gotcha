@@ -8,12 +8,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ErrPasswordAlreadySet — SetPassword вызван для аккаунта, у которого пароль
-// уже есть (для смены пароля есть ChangePassword со старым паролем).
+// Смена существующего пароля — через ChangePassword со старым паролем.
 var ErrPasswordAlreadySet = errors.New("auth: password already set")
 
-// HasPassword сообщает, задан ли у аккаунта пароль (не NULL). Используется
-// профилем: OAuth-only юзеру показываем «задать пароль», а не «сменить».
 func (s *Service) HasPassword(ctx context.Context, userID int64) (bool, error) {
 	var hash *string
 	err := s.pool.QueryRow(ctx,
@@ -27,10 +24,7 @@ func (s *Service) HasPassword(ctx context.Context, userID int64) (bool, error) {
 	return hash != nil, nil
 }
 
-// SetPassword задаёт пароль аккаунту БЕЗ пароля (OAuth-only). Валидирует длину
-// теми же правилами, что Register. Если пароль уже есть — ErrPasswordAlreadySet
-// (менять существующий нужно через ChangePassword). Сессии не трогает: вызов
-// идёт из активной сессии, которую незачем инвалидировать.
+// Сессии не трогает — вызов идёт из уже активной сессии, инвалидировать нечего.
 func (s *Service) SetPassword(ctx context.Context, userID int64, newPassword string) error {
 	if len(newPassword) < 8 || len(newPassword) > 512 {
 		return ErrWeakPassword
@@ -39,8 +33,7 @@ func (s *Service) SetPassword(ctx context.Context, userID int64, newPassword str
 	if err != nil {
 		return err
 	}
-	// Условный апдейт: пишем хеш только если он ещё NULL. RowsAffected==0
-	// значит либо нет юзера, либо пароль уже задан — различаем добором.
+	// RowsAffected==0 значит либо юзера нет, либо пароль уже задан — различаем добором ниже.
 	tag, err := s.pool.Exec(ctx,
 		"UPDATE users SET password_hash = $2 WHERE id = $1 AND password_hash IS NULL",
 		userID, hash)

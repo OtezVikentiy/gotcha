@@ -8,26 +8,17 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// ProjectResolver — источник настроек проекта; *org.Service ему удовлетворяет.
 type ProjectResolver interface {
 	GetProject(ctx context.Context, projectID int64) (org.Project, error)
 }
 
-// ProjectSettings — то, что нужно Handler'у от проекта на горячем пути
-// (transaction_sample_rate). Интерфейс, а не *ProjectCache, чтобы хендлер
-// тестировался без БД.
+// интерфейс, а не *ProjectCache: хендлер тестируется без БД.
 type ProjectSettings interface {
 	Resolve(ctx context.Context, projectID int64) (org.Project, error)
 }
 
-// ProjectCache кеширует настройки проекта на projectTTL — ingest читает
-// transaction_sample_rate на каждую транзакцию, и ходить за ним в PG каждый
-// раз незачем. Латентность применения новой настройки = TTL кеша (как у
-// KeyCache/OrgQuota). Промахи не кешируются.
-//
-// Как у KeyCache/OrgQuota, размер карты ограничен maxKeyCacheEntries: без
-// этого на инсталляции с очень большим числом проектов за долгий аптайм
-// запись жила бы вечно и карта росла бы без границ.
+// размер карты ограничен maxKeyCacheEntries, как у KeyCache/OrgQuota — иначе на
+// инсталляции с большим числом проектов карта росла бы без границ. Промахи не кешируются.
 type ProjectCache struct {
 	resolver ProjectResolver
 	ttl      time.Duration
@@ -51,7 +42,6 @@ func NewProjectCache(r ProjectResolver) *ProjectCache {
 	}
 }
 
-// Resolve возвращает проект по id (из кеша или источника).
 func (c *ProjectCache) Resolve(ctx context.Context, projectID int64) (org.Project, error) {
 	now := c.now()
 	c.mu.Lock()
@@ -74,9 +64,8 @@ func (c *ProjectCache) Resolve(ctx context.Context, projectID int64) (org.Projec
 	return p, nil
 }
 
-// evict освобождает место в кеше: сперва истёкшие записи (их потеря
-// бесплатна — следующий Resolve просто перечитает проект), затем десятая
-// часть произвольных, если истёкших не хватило. Вызывать под c.mu.
+// сперва истёкшие записи, затем десятая часть произвольных, если не хватило.
+// Вызывать под c.mu.
 func (c *ProjectCache) evict(now time.Time) {
 	for id, e := range c.entries {
 		if !e.expires.After(now) {

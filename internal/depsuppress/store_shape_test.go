@@ -1,17 +1,12 @@
 package depsuppress
 
-// Табличный unit-тест validateShape живёт в package depsuppress (не
-// depsuppress_test): функция неэкспортируемая и чистая (не ходит в БД),
-// поэтому проверяется без testenv/контейнеров — тот же прецедент, что и
-// suppressor_cache_test.go.
+// package depsuppress, не _test: validateShape неэкспортируема, внешний пакет её не увидит.
 
 import (
 	"errors"
 	"testing"
 )
 
-// TestValidateShape перебирает все невалидные формы ребра (каждая обязана
-// вернуть ErrInvalidEdge) и обе валидные комбинации родитель/ребёнок.
 func TestValidateShape(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -87,8 +82,6 @@ func TestValidateShape(t *testing.T) {
 	}
 }
 
-// TestCheckSelfLoop — host==host и monitor==monitor отвергаются, любые
-// другие комбинации (включая разные id и разнотипные узлы) проходят.
 func TestCheckSelfLoop(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -116,7 +109,6 @@ func TestCheckSelfLoop(t *testing.T) {
 	}
 }
 
-// TestNodeFromIDs — приоритет host над monitor, nil при отсутствии обоих.
 func TestNodeFromIDs(t *testing.T) {
 	if got := nodeFromIDs(int64p(1), nil); got == nil || *got != (node{kind: "host", id: 1}) {
 		t.Fatalf("nodeFromIDs(host) = %v, want {host 1}", got)

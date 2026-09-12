@@ -36,10 +36,7 @@ func projectSettingsDeletePath(projectID int64) string {
 	return projectSettingsPath(projectID) + "/delete"
 }
 
-// PerfSettingsForm — значения формы «Performance» строками, чтобы при 422
-// перерисовке показать РОВНО то, что отправил пользователь (например «1.5»),
-// а не переигранное через float. На GET заполняется из org.Project и
-// распарсенного perf_detector_config (см. perfFormFromProject в projsettings.go).
+// поля строками — при 422 показываем ровно отправленное (например «1.5»), не переигранное через float.
 type PerfSettingsForm struct {
 	SampleRate         string
 	ApdexMS            string
@@ -49,12 +46,8 @@ type PerfSettingsForm struct {
 	HTTPFloodMin       string
 }
 
-// RegressionSettingsForm — значения формы «Регрессии» строками (тот же приём,
-// что и PerfSettingsForm: при 422 показать РОВНО отправленное). ThresholdPct и
-// RecoveryPct — В ПРОЦЕНТАХ (25 = ratio 0.25), конвертация в долю на стороне
-// обработчика. Полы — абсолютные значения метрик. Enabled — bool (чекбокс).
-// На GET заполняется из RegressionConfigFromJSON(project.PerfRegressionConfig)
-// (см. regressionFormFromProject в projsettings.go).
+// поля строками — тот же приём, что у PerfSettingsForm, при 422 показать ровно отправленное.
+// ThresholdPct/RecoveryPct — в процентах (25 = 0.25), в долю конвертирует обработчик.
 type RegressionSettingsForm struct {
 	ThresholdPct    string
 	RecoveryPct     string
@@ -71,10 +64,7 @@ type RegressionSettingsForm struct {
 	SeasonalWeeks   string
 }
 
-// keyStatusBadgeClass — цвет статуса DSN-ключа через дизайн-систему: живой
-// ключ — .badge-good (используется прямо сейчас), отозванный — .badge-danger
-// (клиенты с ним сразу получают 403 — это заметное, «опасное» состояние,
-// не просто нейтральный факт).
+// отозванный — .badge-danger: клиенты с ним сразу получают 403, это заметное «опасное» состояние.
 func keyStatusBadgeClass(k org.Key) string {
 	if k.Revoked {
 		return "badge badge-danger"
@@ -82,7 +72,6 @@ func keyStatusBadgeClass(k org.Key) string {
 	return "badge badge-good"
 }
 
-// keyStatusLabelKey — i18n-ключ подписи статуса ключа.
 func keyStatusLabelKey(k org.Key) string {
 	if k.Revoked {
 		return "project.settings.keys.status.revoked"
@@ -90,23 +79,13 @@ func keyStatusLabelKey(k org.Key) string {
 	return "project.settings.keys.status.active"
 }
 
-// ProjectKeyView — строка таблицы ключей: сам ключ и его собственный DSN.
-// DSN считается в web-слое (buildDSN знает BaseURL инстанса), шаблон его
-// только показывает.
 type ProjectKeyView struct {
 	Key org.Key
 	DSN string
 }
 
-// DeprecatedPathView — одна строка callout'а «проект ещё шлёт по устаревшим
-// адресам» (аудит перед 1.0, K7-5/K7-6): собирается в web-слое из
-// ingestsignal.Store.ForProject (renderProjectSettings), фильтр по
-// LastSeenAt — там же. Path — сам устаревший адрес (например "/logs"), Hits
-// — сумма попаданий за всё время наблюдения (не только за окно фильтра, оно
-// лишь решает, показывать ли строку вообще — отсюда формулировка «всего», а
-// не «за 7 дней» в тексте). Docs — страница документации именно этого входа
-// (ingest.DocsPath), не общий /docs/upgrade: разные адреса ведут в разные
-// разделы (logs/profiling/deployments).
+// Hits — сумма за всё время наблюдения, не за окно фильтра — отсюда «всего», не «за 7 дней» в тексте.
+// Docs — страница документации именно этого входа, не общий /docs/upgrade.
 type DeprecatedPathView struct {
 	Path       string
 	LastSeenAt time.Time
@@ -114,13 +93,8 @@ type DeprecatedPathView struct {
 	Docs       string
 }
 
-// deprecatedPathsCallout — над списком ключей (K7-5): раз отправитель ещё
-// стучится на удаляемый в 2.0 алиас, самое уместное место напомнить об этом
-// — прямо рядом с тем местом, где выпускают новые ключи и смотрят на DSN.
-// Пусто (nil/[]) → блок не рендерится вовсе — свежий проект или проект без
-// Store (h.Signals == nil) не должен видеть пустой callout. Ссылка — у
-// каждого адреса своя (p.Docs), а не одна общая: /logs и /profiles/pprof
-// документированы в разных разделах.
+// пусто (nil/[]) → блок не рендерится — свежий проект или проект без Store не должен видеть его пустым.
+// ссылка своя у каждого адреса (p.Docs) — /logs и /profiles/pprof документированы в разных разделах.
 templ deprecatedPathsCallout(paths []DeprecatedPathView) {
 	if len(paths) > 0 {
 		<div class="quota-banner">
@@ -142,9 +116,7 @@ templ deprecatedPathsCallout(paths []DeprecatedPathView) {
 	}
 }
 
-// keyKindLabelKey — i18n-ключ подписи типа ключа. legacy отображается как
-// «без типа»: с точки зрения пользователя это ключ, выпущенный до появления
-// типов, а не ещё один равноправный выбор.
+// legacy — «без типа»: с точки зрения пользователя это ключ до появления типов, не равноправный выбор.
 func keyKindLabelKey(k org.Key) string {
 	if k.Kind == org.KindLegacy || k.Kind == "" {
 		return "project.settings.keys.kind.legacy"
@@ -152,8 +124,7 @@ func keyKindLabelKey(k org.Key) string {
 	return "project.settings.keys.kind." + string(k.Kind)
 }
 
-// keyKindBadgeClass — legacy выделен как состояние, требующее внимания
-// (переход на типизированные ключи), но не как ошибка: ключ работает.
+// legacy выделен как состояние, требующее внимания (переход на типизированные ключи), но не ошибка.
 func keyKindBadgeClass(k org.Key) string {
 	if k.Kind == org.KindLegacy || k.Kind == "" {
 		return "badge badge-warn"
@@ -161,28 +132,13 @@ func keyKindBadgeClass(k org.Key) string {
 	return "badge"
 }
 
-// keyRowHasDSN — у карточки ключа есть блок с его DSN. Отозванному ключу DSN
-// не показываем (слать им нечего), пустой DSN означает ненастроенный BaseURL
-// инстанса — и то, и другое оставляет карточку без DSN-блока (см.
-// keyCard ниже и keyDisplayID, которая на этом же условии решает, сокращать
-// ли идентификатор в шапке).
+// revoked или пустой DSN — оба оставляют карточку без DSN-блока (тем же условием живёт keyDisplayID).
 func keyRowHasDSN(v ProjectKeyView) bool {
 	return !v.Key.Revoked && v.DSN != ""
 }
 
-// keyDisplayID — идентификатор ключа для шапки карточки (keyCard). Когда
-// карточка и так показывает DSN (keyRowHasDSN), полный ключ уже виден внутри
-// него (buildDSN подставляет его целиком) — печатать те же 32 hex-символа
-// ВТОРОЙ раз в шапке было бы чистым повтором, поэтому там сокращённая форма
-// «первые 6…последние 4». Отозванному ключу (и живому с пустым DSN) сокращать
-// нечего: шапка — единственное место, где виден весь ключ, а title как
-// единственный носитель полного значения не годится — его не прочесть ни с
-// клавиатуры, ни скринридером.
-//
-// Сокращаем только то, что реально длиннее результата сокращения: при длине
-// ключа ≤12 символов «сокращённая» форма (6+1+4=11) выигрывает от силы один
-// символ, а на коротких тестовых фикстурах (7-10 символов) вообще ничего не
-// экономит — возвращаем ключ как есть.
+// сокращаем в шапке только когда полный ключ виден и так, в DSN-блоке — иначе он нигде не читался бы.
+// ≤12 символов не сокращаем: «сокращённая» форма экономит от силы 1 символ.
 func keyDisplayID(v ProjectKeyView) string {
 	id := v.Key.PublicKey
 	if !keyRowHasDSN(v) {
@@ -196,11 +152,7 @@ func keyDisplayID(v ProjectKeyView) string {
 	return string(r[:headRunes]) + "…" + string(r[len(r)-tailRunes:])
 }
 
-// hasLiveKey — есть ли среди ключей проекта хотя бы один неотозванный.
-// Предупреждение «нет активного ключа» (ProjectSettings) обязано появляться
-// не только когда ключей нет вовсе, но и когда все выпущенные — отозваны:
-// приём событий в обоих случаях одинаково сломан, а старое условие
-// len(keys)==0 второй случай молча пропускало.
+// «нет ключа» — и когда их нет, и когда все отозваны; len(keys)==0 второй случай пропускал.
 func hasLiveKey(keys []ProjectKeyView) bool {
 	for _, v := range keys {
 		if !v.Key.Revoked {
@@ -210,15 +162,6 @@ func hasLiveKey(keys []ProjectKeyView) bool {
 	return false
 }
 
-// keyCard — карточка одного DSN-ключа: шапка (сокращённый/полный
-// идентификатор + бейджи типа и статуса), опциональная заметка (ссылка
-// «Что это значит» у legacy-ключа, пояснение у отозванного), DSN-блок
-// (copyBlock, показывается только при keyRowHasDSN) и кнопка отзыва (только у
-// живого ключа). Раньше запись занимала ДВЕ строки таблицы (сама запись +
-// DSN во всю ширину через colspan) — обходной приём, вызванный тем, что
-// таблица стоит в узкой средней колонке трёхколоночных настроек и пятую
-// колонку под DSN схлопывала до ~78px. Карточка этого ограничения не имеет:
-// ширина у неё одна, произвольная высота — не проблема.
 templ keyCard(projectID int64, v ProjectKeyView) {
 	<article class={ "key-card", templ.KV("key-card--revoked", v.Key.Revoked) }>
 		<div class="key-card-head">
@@ -246,24 +189,12 @@ templ keyCard(projectID int64, v ProjectKeyView) {
 	</article>
 }
 
-// ProjectSettings — GET/POST /projects/{id}/settings: имя (форма rename),
-// платформа (readonly), список карточек DSN-ключей (идентификатор, тип,
-// статус, DSN и revoke — по одной карточке на ключ, см. keyCard), форма
-// выпуска нового ключа. errMsg —
-// сообщение об ошибке последнего POST, рендерится с тем же статусом (422),
-// что и ответ — тот же принцип, что и у OrgSettings/Teams.
-// helpLabel — подпись поля с всплывающей расшифровкой (нативный title, без JS
-// и CSP-исключений). Пунктирное подчёркивание и курсор-help сигналят, что при
-// наведении будет пояснение. Для форм с «непрозрачными» техническими полями
-// (пороги детекторов производительности/регрессий), где непосвящённому имя
-// поля ничего не говорит.
+// native title, без JS и CSP-исключений — для полей, где непосвящённому имя ничего не говорит.
 templ helpLabel(labelKey, helpKey string) {
 	<span class="help-label" title={ i18n.T(ctx, helpKey) }>{ i18n.T(ctx, labelKey) }</span>
 }
 
-// perfSettingsForm — секция «Performance»: доля семплирования транзакций,
-// порог Apdex и пороги детекторов. Один POST на /settings/performance
-// (sameOrigin + owner|admin), при невалидном вводе — 422 с этой же формой.
+// POST на /settings/performance (sameOrigin + owner|admin); невалидный ввод — 422 с этой же формой.
 templ perfSettingsForm(projectID int64, f PerfSettingsForm) {
 	<section class="card">
 		<h2 class="card-header">{ i18n.T(ctx, "nav.performance") }</h2>
@@ -309,10 +240,7 @@ templ perfSettingsForm(projectID int64, f PerfSettingsForm) {
 	</section>
 }
 
-// regressionSettingsForm — секция «Регрессии»: пороги детектора регрессий
-// (рост p95/p75 над скользящей базой). threshold_pct/recovery_pct В ПРОЦЕНТАХ
-// (шаг 1). Один POST на /settings/regressions (sameOrigin + owner|admin), при
-// невалидном вводе — 422 с этой же формой.
+// POST на /settings/regressions (sameOrigin + owner|admin); невалидный ввод — 422 с этой же формой.
 templ regressionSettingsForm(projectID int64, f RegressionSettingsForm) {
 	<section class="card">
 		<h2 class="card-header">{ i18n.T(ctx, "nav.regressions") }</h2>
@@ -397,10 +325,7 @@ templ regressionSettingsForm(projectID int64, f RegressionSettingsForm) {
 	</section>
 }
 
-// retentionNotice — «События хранятся N дней» при заданном RetentionDays,
-// иначе «срок хранения не ограничен» — PROD-P6. Число подставляется через
-// i18n.Tf, а не отдельным узлом рядом с переводом: иначе порядок слов
-// «N дней» / «N days» не переживает разные языки.
+// число через i18n.Tf, не отдельным узлом — иначе порядок «N дней»/«N days» не переживает языки.
 templ retentionNotice(retentionDays int) {
 	if retentionDays > 0 {
 		<p class="retention-notice">{ i18n.Tf(ctx, "project.settings.retention.notice", "days", strconv.Itoa(retentionDays)) }</p>

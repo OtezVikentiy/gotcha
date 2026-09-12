@@ -26,13 +26,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// --- двойники с управляемой заполненностью буфера ---
-//
-// Все они реализуют saturationSource ПОВЕРХ своего обычного sink-контракта —
-// ровно то опциональное расширение, ради которого заведён saturationOf.
-// Насыщенность подставляется тестом, а не гоняется настоящим буфером до
-// потолка (T1/T2: батчер CH, писатели CH — тяжёлые и по счёту, и по времени).
-
+// реализуют saturationSource поверх обычного sink-контракта — насыщенность
+// подставляется тестом, не гоняется настоящим буфером до потолка.
 type satEventSink struct {
 	sat float64
 
@@ -128,10 +123,8 @@ func (s *satProfileSink) count() int {
 	return len(s.pros)
 }
 
-// countingQuota — QuotaChecker, считающий обращения. overloaded preflight
-// обязан отбивать запрос ДО h.grant: иначе организация платила бы квотой за
-// элемент, который дальше и так выбросит переполненный буфер, и платила бы
-// ЕЩЁ РАЗ при ретрае клиента на 503 (см. докблок Handler.overloaded).
+// overloaded preflight обязан отбивать запрос до h.grant — иначе организация
+// заплатила бы квотой дважды: за элемент из буфера и при ретрае на 503.
 type countingQuota struct {
 	mu    sync.Mutex
 	calls int
@@ -144,9 +137,7 @@ func (q *countingQuota) CheckAndCount(context.Context, int64, int64) (int64, tim
 	return 1 << 30, time.Time{}, nil
 }
 
-// Refund — эти тесты проверяют только вызовы CheckAndCount (преflight должен
-// отбить запрос ДО них), возврат в сценариях этого файла не наступает, поэтому
-// пустая реализация.
+// эти тесты проверяют только CheckAndCount — возврат в сценариях файла не наступает.
 func (q *countingQuota) Refund(context.Context, int64, int64, time.Time) error { return nil }
 
 func (q *countingQuota) count() int {
@@ -155,10 +146,7 @@ func (q *countingQuota) count() int {
 	return q.calls
 }
 
-// newSatPipeline строит Pipeline с управляемой заполненностью буферов
-// событий/транзакций и без настоящего ClickHouse. issues — рабочий фейк
-// (апсерт всегда успешен): process() зовёт p.issues.Upsert безусловно, и
-// nil-интерфейс запаниковал бы.
+// рабочий фейк: process() зовёт p.issues.Upsert безусловно, nil-интерфейс запаниковал бы.
 func newSatPipeline(eventSat, txSat float64) (p *Pipeline, ev *satEventSink, sp *satSpanSink) {
 	p = NewPipeline(nil, nil)
 	p.issues = &fakeIssueSvc{res: issue.UpsertResult{IssueID: 1}}
@@ -173,14 +161,10 @@ func overloadKeyCache() *KeyCache {
 	return NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}})
 }
 
-// --- saturationOf: контракт опциональной способности ---
-
 func TestSaturationOf(t *testing.T) {
 	if got := saturationOf(nil); got != 0 {
 		t.Errorf("saturationOf(nil) = %v, want 0", got)
 	}
-	// Существующие тестовые двойники пакета без метода Saturation() —
-	// поведение не меняется (T2, требование 8).
 	if got := saturationOf(&collectMetricSink{}); got != 0 {
 		t.Errorf("saturationOf(collectMetricSink без Saturation) = %v, want 0", got)
 	}
@@ -193,13 +177,10 @@ func TestSaturationOf(t *testing.T) {
 	if got := saturationOf(&fakeBatcher{}); got != 0 {
 		t.Errorf("saturationOf(fakeBatcher без Saturation) = %v, want 0", got)
 	}
-	// Реализация есть — значение проходит как есть.
 	if got := saturationOf(&satMetricSink{sat: 0.42}); got != 0.42 {
 		t.Errorf("saturationOf(satMetricSink{0.42}) = %v, want 0.42", got)
 	}
 }
-
-// --- Pipeline.EventSaturation/TransactionSaturation ---
 
 func TestPipelineEventTransactionSaturation(t *testing.T) {
 	p, ev, sp := newSatPipeline(0, 0)
@@ -210,7 +191,6 @@ func TestPipelineEventTransactionSaturation(t *testing.T) {
 		t.Errorf("TransactionSaturation() = %v, want 0", got)
 	}
 
-	// Батчер/SpanWriter насыщены сильнее очереди — максимум берёт их значение.
 	ev.sat = 0.8
 	sp.sat = 0.9
 	if got := p.EventSaturation(); got != 0.8 {
@@ -220,21 +200,12 @@ func TestPipelineEventTransactionSaturation(t *testing.T) {
 		t.Errorf("TransactionSaturation() = %v, want 0.9 (максимум по SpanWriter)", got)
 	}
 
-	// Spans==nil (трейсинг выключен) — не отличается от отсутствия способности
-	// Saturation(): 0, а не паника.
 	p.Spans = nil
 	if got := p.TransactionSaturation(); got != 0 {
 		t.Errorf("TransactionSaturation() с выключенным трейсингом = %v, want 0", got)
 	}
 }
 
-// TestNewPipelineNilBatcherStaysNilInterface — NewPipeline(_, nil) обязана
-// оставить p.batcher настоящим nil-интерфейсом, а не типизированным nil-
-// указателем за интерфейсом eventSink: иначе EventSaturation()/saturationOf
-// прошли бы type-assert и запаниковали бы внутри Batcher.Saturation() на
-// разыменовании нулевого приёмника (см. TestEnvelopeBrowserProfileRejected и
-// прочие тесты пакета, собирающие Pipeline через NewPipeline(_, nil) без
-// настоящего ClickHouse).
 func TestNewPipelineNilBatcherStaysNilInterface(t *testing.T) {
 	p := NewPipeline(nil, nil)
 	if p.batcher != nil {
@@ -245,12 +216,9 @@ func TestNewPipelineNilBatcherStaysNilInterface(t *testing.T) {
 	}
 }
 
-// --- Handler.overloaded: порог и форма ответа ---
-
 func TestOverloadedThreshold(t *testing.T) {
 	h := NewHandler(overloadKeyCache(), nil, nil, 1<<20)
 
-	// Строго на пороге — отказ.
 	w := httptest.NewRecorder()
 	if !h.overloaded(w, 1, 1, SignalEvent, overloadThreshold) {
 		t.Fatal("overloaded(0.95) = false, want true (порог включительно)")
@@ -268,7 +236,6 @@ func TestOverloadedThreshold(t *testing.T) {
 		t.Errorf("RejectedBy(overloaded, event) = %d, want 1", got)
 	}
 
-	// Чуть ниже порога — приём, ответ не пишется вовсе.
 	w2 := httptest.NewRecorder()
 	if h.overloaded(w2, 1, 1, SignalEvent, 0.9499) {
 		t.Fatal("overloaded(0.9499) = true, want false (ниже порога)")
@@ -281,16 +248,11 @@ func TestOverloadedThreshold(t *testing.T) {
 	}
 }
 
-// TestOverloadedLogThrottled — overloaded не должен флудить лог на каждый
-// отказ: при просевшем ClickHouse он срабатывает на КАЖДЫЙ запрос КАЖДОГО
-// клиента, и без троттлинга сам стал бы дополнительной нагрузкой ровно тогда,
-// когда система и так не справляется (см. logOverloaded/lastOverloadLog).
-// Self-метрика (RejectedBy) при этом растёт без пропусков — троттлинг
-// касается только лога, не счётчика.
+// без троттлинга overloaded сам стал бы нагрузкой, когда система не справляется —
+// RejectedBy растёт без пропусков, троттлинг касается только лога.
 func TestOverloadedLogThrottled(t *testing.T) {
 	h := NewHandler(overloadKeyCache(), nil, nil, 1<<20)
 
-	// Вызовы последовательные (одна горутина), обычного bytes.Buffer достаточно.
 	var logs bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
@@ -309,7 +271,6 @@ func TestOverloadedLogThrottled(t *testing.T) {
 		t.Errorf("строк лога = %d, want 1 (троттлинг: не чаще раза в overloadLogInterval)", got)
 	}
 
-	// Другой signal — свой независимый слот троттлинга, не подавлен соседним.
 	w := httptest.NewRecorder()
 	if !h.overloaded(w, 1, 1, SignalTransaction, 1.0) {
 		t.Fatal("overloaded(transaction) = false, want true")
@@ -331,8 +292,6 @@ func TestOverloadedLogThrottled(t *testing.T) {
 		t.Errorf("строк лога после истечения интервала = %d, want 3", got)
 	}
 }
-
-// --- store ---
 
 func TestOverloadStore(t *testing.T) {
 	newReq := func() *http.Request {
@@ -383,8 +342,6 @@ func TestOverloadStore(t *testing.T) {
 		}
 	})
 }
-
-// --- /v1/traces (OTLP) ---
 
 func postTraces(t *testing.T, h *Handler) *httptest.ResponseRecorder {
 	t.Helper()
@@ -452,8 +409,6 @@ func TestOverloadOTLPTraces(t *testing.T) {
 	})
 }
 
-// --- /v1/metrics (OTLP) ---
-
 func gaugeResourceMetrics() []*metricspb.ResourceMetrics {
 	return []*metricspb.ResourceMetrics{{
 		ScopeMetrics: []*metricspb.ScopeMetrics{{Metrics: []*metricspb.Metric{
@@ -507,8 +462,6 @@ func TestOverloadOTLPMetrics(t *testing.T) {
 		}
 	})
 
-	// Метрики выключены (h.Metrics == nil) — поведение НЕ меняется: успех без
-	// записи, никакого отказа overloaded (T2, требование 9).
 	t.Run("disabled", func(t *testing.T) {
 		h := NewHandler(overloadKeyCache(), nil, nil, 1<<20)
 		w := postOTLPMetrics(t, h, gaugeResourceMetrics())
@@ -521,8 +474,6 @@ func TestOverloadOTLPMetrics(t *testing.T) {
 		}
 	})
 }
-
-// --- /v1/logs и /api/v1/logs ---
 
 func TestOverloadOTLPLogs(t *testing.T) {
 	rl := []*logspb.ResourceLogs{{
@@ -619,11 +570,8 @@ func TestOverloadLogsNDJSON(t *testing.T) {
 	})
 }
 
-// --- /api/v1/profiles/pprof ---
-
-// validPprofGzip строит валидный gzip-pprof (google/pprof/profile.Profile.Write
-// сам жмёт gzip'ом) — pprofIngest ждёт тело именно в этом виде без
-// Content-Encoding (см. pprofRequest).
+// google/pprof/profile.Profile.Write сам жмёт gzip'ом — pprofIngest ждёт тело
+// именно в этом виде без Content-Encoding.
 func validPprofGzip(t *testing.T) []byte {
 	t.Helper()
 	p := &pp.Profile{
@@ -694,8 +642,6 @@ func TestOverloadPprof(t *testing.T) {
 	})
 }
 
-// --- envelope: несколько классов разом ---
-
 const envelopeTxItem = `{"type":"transaction"}
 {"transaction":"GET /x","contexts":{"trace":{"trace_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","span_id":"bbbbbbbbbbbbbbbb"}}}
 `
@@ -706,8 +652,6 @@ func envelopeRequest(body string) *http.Request {
 	return req
 }
 
-// TestOverloadEnvelopeMixed — события насыщены, транзакции свободны: 200,
-// транзакция записана, событие НЕ записано, дроп события учтён; и симметрично.
 func TestOverloadEnvelopeMixed(t *testing.T) {
 	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
 {"type":"event"}
@@ -763,8 +707,6 @@ func TestOverloadEnvelopeMixed(t *testing.T) {
 	})
 }
 
-// TestOverloadEnvelopeAllSaturated — насыщены буферы ВСЕХ присутствующих
-// классов (события и транзакции) → 503, ничего не постановлено.
 func TestOverloadEnvelopeAllSaturated(t *testing.T) {
 	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
 {"type":"event"}
@@ -794,9 +736,6 @@ func TestOverloadEnvelopeAllSaturated(t *testing.T) {
 	}
 }
 
-// TestOverloadEnvelopeOnlyEventSaturated — единственный присутствующий класс
-// (событие, без транзакций/профилей) насыщен: это уже «насыщены ВСЕ
-// присутствующие классы» — 503, а не тихий дроп.
 func TestOverloadEnvelopeOnlyEventSaturated(t *testing.T) {
 	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
 {"type":"event"}
@@ -817,7 +756,6 @@ func TestOverloadEnvelopeOnlyEventSaturated(t *testing.T) {
 	}
 }
 
-// denyingQuota — QuotaChecker, всегда отказывающий (квота исчерпана).
 type denyingQuota struct{}
 
 func (denyingQuota) CheckAndCount(context.Context, int64, int64) (int64, time.Time, error) {
@@ -825,12 +763,8 @@ func (denyingQuota) CheckAndCount(context.Context, int64, int64) (int64, time.Ti
 }
 func (denyingQuota) Refund(context.Context, int64, int64, time.Time) error { return nil }
 
-// TestOverloadEnvelopeOverloadBeatsQuota — стык двух причин отказа: один
-// присутствующий класс насыщен, другой честно исчерпал месячную квоту. Оба
-// отбиты, но выигрывает ПЕРЕХОДНАЯ причина: 503 (не 429), ничего не принято,
-// дроп не учтён (см. докблок в envelope) — 429 сжёг бы Retry-After до 1-го
-// числа следующего месяца и похоронил бы класс, который приёмник принял бы
-// через 5 секунд.
+// один класс насыщен, другой честно исчерпал квоту — выигрывает переходная 503,
+// не 429: тот сжёг бы Retry-After до конца месяца.
 func TestOverloadEnvelopeOverloadBeatsQuota(t *testing.T) {
 	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
 {"type":"event"}
@@ -901,10 +835,6 @@ func TestOverloadEnvelopeOverloadBeatsQuota(t *testing.T) {
 	})
 }
 
-// TestOverloadEnvelopeBothQuotaExceededStaysOldBehavior — сторож прежнего
-// поведения: оба присутствующих класса отбиты ТОЛЬКО квотой, насыщения нет
-// вовсе — ответ обязан остаться прежним 429 бит-в-бит (переходная причина
-// здесь неприменима: обе причины — честная квота).
 func TestOverloadEnvelopeBothQuotaExceededStaysOldBehavior(t *testing.T) {
 	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
 {"type":"event"}
@@ -936,8 +866,6 @@ func TestOverloadEnvelopeBothQuotaExceededStaysOldBehavior(t *testing.T) {
 	if got := h.RejectedBy(RejectOverloaded, SignalEvent); got != 0 {
 		t.Errorf("RejectedBy(overloaded, event) = %d, want 0 (насыщения не было — не overloaded)", got)
 	}
-	// Прежнее поведение: под 429 дроп ВСЁ ЖЕ учитывается (см. git-историю
-	// envelope до T2) — org_usage должен видеть честно потерянное квотой.
 	if got := dc.events[1]; got != 1 {
 		t.Errorf("IncDroppedEvents = %d, want 1 (429 по чистой квоте дроп считает, как и раньше)", got)
 	}
@@ -946,23 +874,10 @@ func TestOverloadEnvelopeBothQuotaExceededStaysOldBehavior(t *testing.T) {
 	}
 }
 
-// envelopeProfileItem — item профиля Sentry-формата для тестов ниже: те же
-// два JSON-документа (type + payload), что шлёт SDK.
 const envelopeProfileItem = `{"type":"profile"}
 {"platform":"python","transaction":{"name":"GET /x"},"profile":{"frames":[{"function":"main"},{"function":"slow"}],"stacks":[[1,0]],"samples":[{"stack_id":0},{"stack_id":0}]}}
 `
 
-// --- T4: профили — полноправный класс конверта, не приложение к нему ---
-
-// TestProfileAcceptedDespiteTransientOverloadQuotaClash — стык событий/
-// транзакций (один насыщен, другой честно выбил квоту) сам по себе отвечает
-// переходной 503 (см. TestOverloadEnvelopeOverloadBeatsQuota), но профиль в
-// том же конверте — полноправный класс СО СВОЕЙ квотой и СВОИМ буфером:
-// если у него всё в порядке (буфер свободен, квота есть), он не должен
-// гибнуть из-за чужого стыка причин отказа. Раз хоть один класс фактически
-// принят (профиль), «под 503 не принято НИЧЕГО» уже неверно — ответ 200,
-// событие и транзакция дропнуты и залогированы как обычно, профиль дошёл до
-// синка и списал свою квоту.
 func TestProfileAcceptedDespiteTransientOverloadQuotaClash(t *testing.T) {
 	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
 {"type":"event"}
@@ -1000,14 +915,6 @@ func TestProfileAcceptedDespiteTransientOverloadQuotaClash(t *testing.T) {
 	}
 }
 
-// TestProfileTransitionalClashEventOverloadedProfileQuotaExhausted —
-// сценарий (а) достройки транзитной 503 профилем: событие насыщено (буфер),
-// профиль честно выбил квоту, транзакций нет. Оба присутствующих класса
-// отбиты, причины РАЗНЫЕ (насыщение vs квота) — выигрывает переходная 503, а
-// не 429: у профиля тот же статус ретраибельного класса, что у событий и
-// транзакций. Профильная квота не списывается сверх того, что уже было (её
-// не было — grant вызывается, возвращает 0, доп. списания нет), профиль не
-// принят.
 func TestProfileTransitionalClashEventOverloadedProfileQuotaExhausted(t *testing.T) {
 	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
 {"type":"event"}
@@ -1046,13 +953,6 @@ func TestProfileTransitionalClashEventOverloadedProfileQuotaExhausted(t *testing
 	}
 }
 
-// TestProfileTransitionalClashProfileOverloadedEventQuotaExhausted —
-// сценарий (б): буфер профилей насыщен, событие честно выбило квоту,
-// транзакций нет. Единственный НАСЫЩЕННЫЙ присутствующий класс — профиль,
-// поэтому по правилу «событие, иначе транзакция, иначе профиль» (то же, что
-// уже применяет overload preflight выше) сигнал переходной 503 — профиль:
-// именно он ретраится через 5с, событие честно исчерпало месячную квоту, но
-// проигрывает профилю как менее срочная причина отказа для ЭТОГО конверта.
 func TestProfileTransitionalClashProfileOverloadedEventQuotaExhausted(t *testing.T) {
 	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
 {"type":"event"}
@@ -1085,11 +985,6 @@ func TestProfileTransitionalClashProfileOverloadedEventQuotaExhausted(t *testing
 	}
 }
 
-// TestProfilesSurviveEventAndTxQuotaExhaustion — конверт «события + транзакции
-// + профили», квоты событий и транзакций исчерпаны, квота профилей есть:
-// профиль обязан дойти до h.Profiles НЕЗАВИСИМО от судьбы событий/транзакций,
-// ответ 200, события и транзакции по-прежнему учтены в дропах и логах. До T4
-// блок профилей стоял ПОСЛЕ этой развилки и до него просто не доходил код.
 func TestProfilesSurviveEventAndTxQuotaExhaustion(t *testing.T) {
 	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
 {"type":"event"}
@@ -1125,10 +1020,6 @@ func TestProfilesSurviveEventAndTxQuotaExhaustion(t *testing.T) {
 	}
 }
 
-// TestProfilesDroppedWhenAllThreeQuotasExhausted — тот же конверт, но
-// исчерпаны ВСЕ ТРИ квоты: 429, профиль не принят, дроп профиля учтён —
-// профильное плечо участвует в правиле «429 по ВСЕМ присутствующим классам»
-// наравне с событиями и транзакциями.
 func TestProfilesDroppedWhenAllThreeQuotasExhausted(t *testing.T) {
 	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
 {"type":"event"}
@@ -1162,10 +1053,6 @@ func TestProfilesDroppedWhenAllThreeQuotasExhausted(t *testing.T) {
 	}
 }
 
-// TestProfileOnlyEnvelopeQuotaExceededNowRejects — конверт ИЗ ОДНИХ профилей,
-// квота профилей исчерпана: НОВОЕ поведение — 429 вместо прежнего тихого 200.
-// Раньше такой клиент получал успех и не узнавал, что его профили выброшены;
-// это та же честность, что уже действует для событий и транзакций.
 func TestProfileOnlyEnvelopeQuotaExceededNowRejects(t *testing.T) {
 	body := "{}\n" + envelopeProfileItem
 	p, _, _ := newSatPipeline(0, 0)
@@ -1194,8 +1081,6 @@ func TestProfileOnlyEnvelopeQuotaExceededNowRejects(t *testing.T) {
 	}
 }
 
-// TestProfileOnlyEnvelopeQuotaAvailableAccepted — сторож обычного пути:
-// конверт из одних профилей, квота есть → 200, профиль принят.
 func TestProfileOnlyEnvelopeQuotaAvailableAccepted(t *testing.T) {
 	body := "{}\n" + envelopeProfileItem
 	p, _, _ := newSatPipeline(0, 0)
@@ -1215,11 +1100,6 @@ func TestProfileOnlyEnvelopeQuotaAvailableAccepted(t *testing.T) {
 	}
 }
 
-// TestProfileOverloadedBufferIgnoresQuotaRule — сторож 1.2.0: насыщенный
-// буфер профилей при живых квотах ведёт себя РОВНО как прежде — тихий дроп
-// профиля, статус ответа решают остальные классы (T4 профильное плечо
-// 429-правила его не касается: profQuotaRelevant исключает насыщенный класс
-// тем же способом, что и eventQuotaRelevant/txQuotaRelevant).
 func TestProfileOverloadedBufferIgnoresQuotaRule(t *testing.T) {
 	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
 {"type":"event"}
@@ -1254,10 +1134,8 @@ func TestProfileOverloadedBufferIgnoresQuotaRule(t *testing.T) {
 	}
 }
 
-// fixedBudgetCountingQuota — как fixedQuotaChecker (выдаёт ровно n единиц,
-// остаток исчерпан), но вдобавок считает обращения: нужен там, где важно не
-// только СКОЛЬКО выдано, но и СКОЛЬКО РАЗ квоту вообще спрашивали — двойной
-// вызов должен быть виден, даже если оба раза квоты хватило бы.
+// как fixedQuotaChecker, но вдобавок считает обращения — важно не только
+// сколько выдано, но и сколько раз квоту вообще спрашивали.
 type fixedBudgetCountingQuota struct {
 	mu    sync.Mutex
 	n     int64
@@ -1276,10 +1154,7 @@ func (q *fixedBudgetCountingQuota) CheckAndCount(_ context.Context, _ int64, wan
 	return granted, time.Time{}, nil
 }
 
-// Refund — профильная квота (единственная, где используется этот двойник) не
-// участвует в возврате по ёмкости: профили вытесняются, а не отклоняются
-// постановкой (см. Handler.enqueueTransactions/refund), поэтому пустая
-// реализация.
+// профили вытесняются, а не отклоняются постановкой — возврат по ёмкости не участвует.
 func (q *fixedBudgetCountingQuota) Refund(context.Context, int64, int64, time.Time) error { return nil }
 
 func (q *fixedBudgetCountingQuota) count() int {
@@ -1288,11 +1163,8 @@ func (q *fixedBudgetCountingQuota) count() int {
 	return q.calls
 }
 
-// TestProfileQuotaGrantedExactlyOnce — перенос блока профилей (T4) не должен
-// приводить к повторному списанию профильной квоты: h.grant для профилей
-// обязан вызываться РОВНО один раз на запрос. Квота — биллинговый счётчик
-// организации, лишний вызов означает, что клиент платит за один и тот же
-// профиль дважды.
+// h.grant для профилей обязан вызываться ровно один раз на запрос — лишний
+// вызов значит, что клиент платит за один профиль дважды.
 func TestProfileQuotaGrantedExactlyOnce(t *testing.T) {
 	body := "{}\n" + envelopeProfileItem
 	p, _, _ := newSatPipeline(0, 0)

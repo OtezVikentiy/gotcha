@@ -10,9 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestCreateOAuthUserInvalidEmail — CreateOAuthUser отбраковывает
-// невалидный формат email до похода в БД (тот же ValidEmailFormat, что и
-// Register), а не роняет голую ошибку INSERT.
 func TestCreateOAuthUserInvalidEmail(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := auth.NewService(pool)

@@ -9,17 +9,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// exportRowLimit ограничивает выгрузку на одну таблицу: право субъекта на доступ
-// (152-ФЗ) не требует отдавать неограниченный объём — берём последние строки.
 const exportRowLimit = 10000
 
-// exportTimeout ограничивает суммарное время выгрузки: один большой экспорт не
-// должен висеть на ClickHouse бесконечно (защита от Low-DoS).
 const exportTimeout = 30 * time.Second
 
-// EventRow — строка events, относящаяся к субъекту, пригодная для JSON-выгрузки.
-// Перечислены все хранимые колонки: экспорт отдаёт ровно то, что реально лежит
-// в ClickHouse по этому субъекту.
 type EventRow struct {
 	EventID        string            `json:"event_id"`
 	ProjectID      uint64            `json:"project_id"`
@@ -43,9 +36,8 @@ type EventRow struct {
 	Request        string            `json:"request"`
 }
 
-// TransactionRow — строка transactions субъекта. Субъект хранится в колонке
-// user_id и в тегах tags (user.id/enduser.id/user.email/enduser.email — см.
-// txSubjectConds); остальные колонки отдаём для полноты выгрузки.
+// Субъект хранится в колонке user_id и в тегах user.id/enduser.id/user.email/enduser.email
+// (см. txSubjectConds).
 type TransactionRow struct {
 	ProjectID   uint64            `json:"project_id"`
 	TraceID     string            `json:"trace_id"`
@@ -63,9 +55,7 @@ type TransactionRow struct {
 	Source      string            `json:"source"`
 }
 
-// MetricPointRow — точка метрики субъекта. ПДн субъекта в metric_points лежат
-// только в attributes (OTel-конвенции user.id/enduser.id/user.email); остальные
-// колонки отдаём для полноты выгрузки. JSON-сериализуема.
+// ПДн субъекта лежат только в attributes (OTel: user.id/enduser.id/user.email).
 type MetricPointRow struct {
 	ProjectID   uint64            `json:"project_id"`
 	Name        string            `json:"name"`
@@ -77,10 +67,7 @@ type MetricPointRow struct {
 	Value       float64           `json:"value"`
 }
 
-// LogRow — строка logs субъекта. Перечислены все хранимые колонки (см.
-// ch/0020_logs.up.sql): экспорт отдаёт ровно то, что реально лежит в
-// ClickHouse по этому субъекту. body — free-form текст сообщения, программно
-// не фильтруется и отдаётся как есть (см. ExportSubject/PurgeSubject).
+// body — free-form текст сообщения, не фильтруется и отдаётся как есть.
 type LogRow struct {
 	ProjectID      uint64            `json:"project_id"`
 	Timestamp      time.Time         `json:"timestamp"`
@@ -97,8 +84,6 @@ type LogRow struct {
 	Environment    string            `json:"environment"`
 }
 
-// SubjectExport — выгрузка всех ПДн субъекта в рамках проекта. Сериализуется в
-// JSON для отдачи по праву субъекта на доступ (152-ФЗ, ст. 14).
 type SubjectExport struct {
 	Events       []EventRow       `json:"events"`
 	Transactions []TransactionRow `json:"transactions"`
@@ -106,31 +91,14 @@ type SubjectExport struct {
 	Logs         []LogRow         `json:"logs"`
 }
 
-// ExportSubject возвращает всё, что хранится о субъекте в рамках проекта: строки
-// events (по непустым user_email/user_id/user_ip), transactions (по колонке
-// user_id и тегам user.id/enduser.id/user.email/enduser.email),
-// metric_points (по attributes user.id/enduser.id/user.email) и logs (по
-// log_attributes user.id/enduser.id/user.email/enduser.email) — тот же охват,
-// что чистит PurgeSubject, чтобы право на доступ было паритетно праву на
-// удаление.
-// Имена таблиц и колонок фиксированы; значения субъекта — только bound-параметры,
-// инъекция невозможна. На таблицу отдаётся не более exportRowLimit строк,
-// отсортированных по времени DESC (сначала свежие). Вся выгрузка ограничена
-// exportTimeout.
-//
-// Каждый из четырёх циклов сканирования проверяет rows.Err() ПОСЛЕ for
-// rows.Next(), а не только ошибку rows.Close() (K4-3, аудит перед 1.0,
-// см. purge_queue.go: Reconcile): обрыв курсора ClickHouse посреди чтения
-// иначе вернулся бы как «успешно», но с усечённой (обрезанной на месте
-// обрыва) выгрузкой — субъект получил бы неполные данные по своему праву
-// на доступ, думая, что это исчерпывающий список.
+// Охват совпадает с PurgeSubject. rows.Err() проверяется ПОСЛЕ цикла, не только rows.Close() —
+// иначе обрыв курсора вернулся бы «успешно», но с усечённой выгрузкой.
 func (p *Purger) ExportSubject(ctx context.Context, projectID int64, sub Subject) (SubjectExport, error) {
 	ctx, cancel := context.WithTimeout(ctx, exportTimeout)
 	defer cancel()
 
 	var out SubjectExport
 
-	// events: OR по всем непустым идентификаторам субъекта.
 	var conds []string
 	args := []any{projectID}
 	if sub.Email != "" {
@@ -184,9 +152,7 @@ func (p *Purger) ExportSubject(ctx context.Context, projectID int64, sub Subject
 		return SubjectExport{}, fmt.Errorf("telemetry: export subject events close (project %d): %w", projectID, err)
 	}
 
-	// transactions: субъект живёт в колонке user_id и в тегах (см. txSubjectConds).
-	// Выгружаем по обоим — паритетно PurgeSubject, иначе субъект по email не увидит
-	// свои транзакции (в них email лежит только в тегах).
+	// По email — иначе субъект не увидит свои транзакции, там email лежит только в тегах.
 	if txConds, txArgs := txSubjectConds(sub); len(txConds) > 0 {
 		args := append([]any{projectID}, txArgs...)
 		args = append(args, exportRowLimit)
@@ -218,9 +184,7 @@ func (p *Purger) ExportSubject(ctx context.Context, projectID int64, sub Subject
 		}
 	}
 
-	// metric_points несут ПДн субъекта только в attributes (Map(String,String)):
-	// user.id/enduser.id ← UserID, user.email ← Email. IP в attributes не бывает,
-	// поэтому по IP-only субъекту эту выборку пропускаем (как и PurgeSubject).
+	// IP в attributes не бывает, поэтому по IP-only субъекту эту выборку пропускаем.
 	var mpConds []string
 	mpArgs := []any{projectID}
 	if sub.UserID != "" {
@@ -259,10 +223,7 @@ func (p *Purger) ExportSubject(ctx context.Context, projectID int64, sub Subject
 		}
 	}
 
-	// logs несут ПДн субъекта только в log_attributes (Map(String,String)):
-	// user.id/enduser.id ← UserID, user.email/enduser.email ← Email. IP в
-	// log_attributes не бывает, поэтому по IP-only субъекту эту выборку
-	// пропускаем (как и PurgeSubject). body — free-form, отдаётся как есть.
+	// IP в log_attributes не бывает, поэтому по IP-only субъекту эту выборку пропускаем.
 	var logConds []string
 	logArgs := []any{projectID}
 	if sub.UserID != "" {

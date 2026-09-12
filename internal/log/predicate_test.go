@@ -34,8 +34,8 @@ func TestPredicateValidate(t *testing.T) {
 func TestNormalizePredicatesDropsEmptyAndDuplicates(t *testing.T) {
 	in := []Predicate{
 		{Field: FieldBody, Op: OpNotContains, Value: "noise"},
-		{Field: FieldBody, Op: OpNotContains, Value: "noise"}, // дубль
-		{Field: FieldService, Op: OpNeq, Value: ""},           // пустое
+		{Field: FieldBody, Op: OpNotContains, Value: "noise"},
+		{Field: FieldService, Op: OpNeq, Value: ""},
 		{Field: FieldAttr, Key: "source", Op: OpNeq, Value: "nginx"},
 	}
 	got := NormalizePredicates(in)

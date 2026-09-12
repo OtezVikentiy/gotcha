@@ -14,9 +14,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// TestWebIssuesEmptyStateCTA — PROD-P4: пустой список issues показывает не
-// сухое «не найдено», а призыв подключить DSN проекта со ссылкой на страницу
-// setup конкретного проекта.
 func TestWebIssuesEmptyStateCTA(t *testing.T) {
 	s := newIssuesStack(t)
 
@@ -40,21 +37,6 @@ func TestWebIssuesEmptyStateCTA(t *testing.T) {
 	}
 }
 
-// TestWebProjectSettingsRevokeConfirm — под CSP default-src 'self' без
-// unsafe-inline инлайновый onclick="confirm()" не исполняется (см. коммит
-// «server-side confirm for destructive actions»), поэтому подтверждение
-// отзыва ключа — server-side двухшаговый POST: без confirmed=yes revoke
-// рендерит страницу подтверждения (200, hidden-полем confirmed=yes) и НЕ
-// отзывает ключ; с confirmed=yes — отзывает (303). Разметка кнопки Revoke
-// больше не содержит confirm(...).
-//
-// Текст подтверждения зависит от того, последний ли это живой ключ своего
-// типа (задача «типы ключей», матрица сообщений подробно —
-// TestProjectSettingsRevokeLastOfKindWarns в projsettings_test.go):
-// единственный живой ключ типа — предупреждение «приём из этого источника
-// остановится», второй и далее — обычное «клиенты получат 403». Здесь
-// проверяются обе ветки на том же двухшаговом POST-потоке, который ловит
-// инлайновый confirm().
 func TestWebProjectSettingsRevokeConfirm(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -74,8 +56,6 @@ func TestWebProjectSettingsRevokeConfirm(t *testing.T) {
 	keysPath := settingsPath + "/keys"
 	revokePath := keysPath + "/revoke"
 
-	// Создаём живой ключ, чтобы в таблице появилась кнопка Revoke. Форма
-	// выбора типа появится в Task 4 — здесь шлём kind напрямую.
 	resp := postForm(t, s.srv, keysPath, url.Values{"kind": {"server"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -98,10 +78,6 @@ func TestWebProjectSettingsRevokeConfirm(t *testing.T) {
 	}
 	keyID := keys[0].ID
 
-	// POST revoke БЕЗ confirmed=yes, ключ — ЕДИНСТВЕННЫЙ живой своего типа →
-	// 200, страница предупреждения «последний активный ключ» (не обычного
-	// «получат 403» — этого текста здесь по конструкции нет), ключ НЕ
-	// отозван.
 	resp = postForm(t, s.srv, revokePath, url.Values{"key_id": {strconv.FormatInt(keyID, 10)}}, s.srv.URL, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -121,7 +97,6 @@ func TestWebProjectSettingsRevokeConfirm(t *testing.T) {
 		t.Fatalf("key revoked by unconfirmed POST: %+v err=%v", keys, err)
 	}
 
-	// Второй живой ключ того же типа: теперь keyID — уже НЕ последний.
 	resp = postForm(t, s.srv, keysPath, url.Values{"kind": {"server"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -129,9 +104,6 @@ func TestWebProjectSettingsRevokeConfirm(t *testing.T) {
 		t.Fatalf("POST %s (create second key) status = %d, want 303", keysPath, resp.StatusCode)
 	}
 
-	// POST revoke БЕЗ confirmed=yes, ключ — один из ДВУХ живых своего типа →
-	// 200, страница подтверждения с обычным сообщением «получат 403» (без
-	// предупреждения о последнем ключе), ключ НЕ отозван.
 	resp = postForm(t, s.srv, revokePath, url.Values{"key_id": {strconv.FormatInt(keyID, 10)}}, s.srv.URL, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -151,7 +123,6 @@ func TestWebProjectSettingsRevokeConfirm(t *testing.T) {
 		t.Fatalf("key revoked by unconfirmed POST: %+v err=%v", keys, err)
 	}
 
-	// POST revoke с confirmed=yes → 303, ключ отозван.
 	resp = postForm(t, s.srv, revokePath, url.Values{"key_id": {strconv.FormatInt(keyID, 10)}, "confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -163,9 +134,7 @@ func TestWebProjectSettingsRevokeConfirm(t *testing.T) {
 	}
 }
 
-// keyRevoked — статус ключа keyID в срезе, вернувшемся из KeysForProject.
-// В TestWebProjectSettingsRevokeConfirm ключей становится два, и позиционный
-// keys[0].Revoked (как раньше, при одном ключе) больше не надёжен.
+// Позиционный keys[0].Revoked не надёжен, когда ключей несколько.
 func keyRevoked(keys []org.Key, keyID int64) bool {
 	for _, k := range keys {
 		if k.ID == keyID {
@@ -175,9 +144,6 @@ func keyRevoked(keys []org.Key, keyID int64) bool {
 	return false
 }
 
-// TestWebProjectSettingsRetentionNotice — PROD-P6: при заданном RetentionDays
-// страница настроек проекта показывает подпись «События хранятся N дней»; при
-// 0 подпись не рендерится.
 func TestWebProjectSettingsRetentionNotice(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -195,7 +161,6 @@ func TestWebProjectSettingsRetentionNotice(t *testing.T) {
 
 	settingsPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/settings"
 
-	// RetentionDays не задан → подписи нет.
 	resp := getWithCookie(t, s.srv, settingsPath, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -206,7 +171,6 @@ func TestWebProjectSettingsRetentionNotice(t *testing.T) {
 		t.Fatalf("GET %s shows retention notice with RetentionDays=0: %s", settingsPath, body)
 	}
 
-	// RetentionDays=30 → подпись с числом.
 	s.h.RetentionDays = 30
 	resp = getWithCookie(t, s.srv, settingsPath, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
@@ -219,8 +183,6 @@ func TestWebProjectSettingsRetentionNotice(t *testing.T) {
 	}
 }
 
-// TestWebOrgSettingsLeave — PROD-P7: обычный участник покидает организацию сам
-// (303, членства больше нет); единственный owner получает 422 (ErrLastOwner).
 func TestWebOrgSettingsLeave(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -239,7 +201,6 @@ func TestWebOrgSettingsLeave(t *testing.T) {
 
 	leavePath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings/leave"
 
-	// POST leave без Origin → 403.
 	resp := postForm(t, s.srv, leavePath, url.Values{}, "", memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -247,9 +208,6 @@ func TestWebOrgSettingsLeave(t *testing.T) {
 		t.Fatalf("POST %s (no origin) status = %d, want 403", leavePath, resp.StatusCode)
 	}
 
-	// POST leave БЕЗ confirmed=yes → 200, страница подтверждения (двухшаговый
-	// POST — CSP default-src 'self' без unsafe-inline не исполняет inline
-	// onsubmit="confirm()"), членство member НЕ тронуто.
 	resp = postForm(t, s.srv, leavePath, url.Values{}, s.srv.URL, memberCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -263,7 +221,6 @@ func TestWebOrgSettingsLeave(t *testing.T) {
 		t.Fatalf("member role after unconfirmed leave = %v, %v, want member, nil", role, err)
 	}
 
-	// Обычный member выходит сам (confirmed=yes) → 303, членства больше нет.
 	resp = postForm(t, s.srv, leavePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -274,7 +231,6 @@ func TestWebOrgSettingsLeave(t *testing.T) {
 		t.Fatalf("member role after leave: got %v, want ErrNotMember", err)
 	}
 
-	// Единственный owner пытается уйти (confirmed=yes) → 422 (ErrLastOwner), членство сохранено.
 	resp = postForm(t, s.srv, leavePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -285,7 +241,6 @@ func TestWebOrgSettingsLeave(t *testing.T) {
 		t.Fatalf("owner role after blocked leave = %v, %v, want owner, nil", role, err)
 	}
 
-	// Не участник (посторонний), confirmed=yes → 404.
 	_, strangerCookie := orgSettingsRegister(t, authSvc, "leave-stranger@example.com")
 	resp = postForm(t, s.srv, leavePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, strangerCookie)
 	io.Copy(io.Discard, resp.Body)

@@ -12,18 +12,12 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// TestWebProfilePassword — задача 4: GET /profile отдаёт форму, POST
-// /profile/password проверяет старый пароль и совпадение нового,
-// auth.ChangePassword гасит все сессии, но хендлер тут же выпускает новую
-// и переустанавливает cookie — юзер остаётся залогинен, а старая cookie
-// (и старый пароль) мертвы.
 func TestWebProfilePassword(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
 
 	_, cookie := orgSettingsRegister(t, authSvc, "profile-pw@example.com")
 
-	// GET /profile -> 200, email и форма.
 	resp := getWithCookie(t, s.srv, "/profile", cookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -41,7 +35,6 @@ func TestWebProfilePassword(t *testing.T) {
 		return url.Values{"old": {old}, "new": {new1}, "new2": {new2}}
 	}
 
-	// POST /profile/password без Origin -> 403.
 	resp = postForm(t, s.srv, "/profile/password", pwForm("correct-horse-battery", "new-correct-horse", "new-correct-horse"), "", cookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -49,7 +42,6 @@ func TestWebProfilePassword(t *testing.T) {
 		t.Fatalf("POST /profile/password (no origin) status = %d, want 403", resp.StatusCode)
 	}
 
-	// Неверный старый пароль -> 422.
 	resp = postForm(t, s.srv, "/profile/password", pwForm("wrong-password", "new-correct-horse", "new-correct-horse"), s.srv.URL, cookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -57,7 +49,6 @@ func TestWebProfilePassword(t *testing.T) {
 		t.Fatalf("POST /profile/password (wrong old) status = %d, want 422: %s", resp.StatusCode, body)
 	}
 
-	// new != new2 -> 422.
 	resp = postForm(t, s.srv, "/profile/password", pwForm("correct-horse-battery", "new-correct-horse", "different-value"), s.srv.URL, cookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -65,7 +56,6 @@ func TestWebProfilePassword(t *testing.T) {
 		t.Fatalf("POST /profile/password (mismatch) status = %d, want 422: %s", resp.StatusCode, body)
 	}
 
-	// Слабый новый пароль -> 422.
 	resp = postForm(t, s.srv, "/profile/password", pwForm("correct-horse-battery", "short", "short"), s.srv.URL, cookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -73,12 +63,10 @@ func TestWebProfilePassword(t *testing.T) {
 		t.Fatalf("POST /profile/password (weak) status = %d, want 422: %s", resp.StatusCode, body)
 	}
 
-	// Ни одна из неудачных попыток не должна была менять пароль или cookie.
 	if _, err := authSvc.Authenticate(context.Background(), "profile-pw@example.com", "correct-horse-battery"); err != nil {
 		t.Fatalf("old password should still work after failed attempts: %v", err)
 	}
 
-	// Успешная смена пароля -> 200, сообщение, новая cookie.
 	resp = postForm(t, s.srv, "/profile/password", pwForm("correct-horse-battery", "new-correct-horse", "new-correct-horse"), s.srv.URL, cookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -96,7 +84,6 @@ func TestWebProfilePassword(t *testing.T) {
 		t.Fatalf("POST /profile/password (success) reused the old session token")
 	}
 
-	// Старый пароль больше не работает, новый — работает.
 	if _, err := authSvc.Authenticate(context.Background(), "profile-pw@example.com", "correct-horse-battery"); err == nil {
 		t.Fatalf("old password still works after change")
 	}
@@ -104,7 +91,6 @@ func TestWebProfilePassword(t *testing.T) {
 		t.Fatalf("new password does not work: %v", err)
 	}
 
-	// Старая cookie мертва (ChangePassword гасит все сессии).
 	resp = getWithCookie(t, s.srv, "/profile", cookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -112,7 +98,6 @@ func TestWebProfilePassword(t *testing.T) {
 		t.Fatalf("GET /profile (old cookie) status = %d, want 303", resp.StatusCode)
 	}
 
-	// Новая cookie жива.
 	resp = getWithCookie(t, s.srv, "/profile", newCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -121,11 +106,6 @@ func TestWebProfilePassword(t *testing.T) {
 	}
 }
 
-// TestWebProfilePasswordRateLimit — security fix (задача 5/3): без лимита
-// украденная cookie позволяет перебирать текущий пароль неограниченно. Шесть
-// POST /profile/password с неверным старым паролем подряд — шестой должен
-// получить 429 (тот же лимит 5/минуту, что и у /login, но отдельное
-// ключевое пространство "pw|"+uid).
 func TestWebProfilePasswordRateLimit(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -144,16 +124,11 @@ func TestWebProfilePasswordRateLimit(t *testing.T) {
 		t.Fatalf("6th POST /profile/password (wrong old password) status = %d, want 429", last.StatusCode)
 	}
 
-	// Правильный пароль по-прежнему работает (лимит не оставил пользователя
-	// без возможности сменить пароль навсегда, только на текущее окно).
 	if _, err := authSvc.Authenticate(context.Background(), "profile-pw-ratelimit@example.com", "correct-horse-battery"); err != nil {
 		t.Fatalf("original password should still work: %v", err)
 	}
 }
 
-// TestWebProfileSessionsRevoke — задача 4: залогинившись дважды (два
-// токена/устройства), POST /profile/sessions/revoke с первого токена гасит
-// второй, но не первый, и показывает счётчик удалённых сессий.
 func TestWebProfileSessionsRevoke(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -173,7 +148,6 @@ func TestWebProfileSessionsRevoke(t *testing.T) {
 	cookieA := &http.Cookie{Name: auth.CookieName, Value: tokenA}
 	cookieB := &http.Cookie{Name: auth.CookieName, Value: tokenB}
 
-	// POST /profile/sessions/revoke без Origin -> 403.
 	resp := postForm(t, s.srv, "/profile/sessions/revoke", url.Values{}, "", cookieA)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -181,7 +155,6 @@ func TestWebProfileSessionsRevoke(t *testing.T) {
 		t.Fatalf("POST /profile/sessions/revoke (no origin) status = %d, want 403", resp.StatusCode)
 	}
 
-	// Оба токена живы до revoke.
 	resp = getWithCookie(t, s.srv, "/profile", cookieB)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -189,7 +162,6 @@ func TestWebProfileSessionsRevoke(t *testing.T) {
 		t.Fatalf("GET /profile (cookieB before revoke) status = %d, want 200", resp.StatusCode)
 	}
 
-	// Revoke с cookieA (текущий токен сохраняется).
 	resp = postForm(t, s.srv, "/profile/sessions/revoke", url.Values{}, s.srv.URL, cookieA)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -200,7 +172,6 @@ func TestWebProfileSessionsRevoke(t *testing.T) {
 		t.Fatalf("POST /profile/sessions/revoke body missing revoked count: %s", body)
 	}
 
-	// cookieB теперь мертва, cookieA жива.
 	resp = getWithCookie(t, s.srv, "/profile", cookieB)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -216,11 +187,6 @@ func TestWebProfileSessionsRevoke(t *testing.T) {
 	}
 }
 
-// TestWebIndexNoAccessibleProjects — задача 4: юзер-member организации, у
-// которой есть проекты, но сам юзер не привязан ни к одной команде, видит
-// стилизованную страницу «нет доступных проектов» (не редирект на
-// /onboarding — своей организации у него уже достаточно). Юзер вовсе без
-// организаций по-прежнему уходит на /onboarding.
 func TestWebIndexNoAccessibleProjects(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -250,7 +216,6 @@ func TestWebIndexNoAccessibleProjects(t *testing.T) {
 		t.Fatalf("GET / (member, no accessible projects) body missing message: %s", body)
 	}
 
-	// Юзер без организаций по-прежнему уходит на /onboarding.
 	_, loneCookie := orgSettingsRegister(t, authSvc, "noproj-lonely@example.com")
 	resp = getWithCookie(t, s.srv, "/", loneCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -263,14 +228,6 @@ func TestWebIndexNoAccessibleProjects(t *testing.T) {
 	}
 }
 
-// TestWebProfileDeleteBlockedForInstanceAdmin — находка K7-1: единственный
-// администратор инстанса не может удалить свой аккаунт, пока на инстансе
-// есть ДРУГИЕ пользователи (иначе инстанс остаётся без единственного, кому
-// доступна настройка SSO организаций, а передать роль некому). A
-// регистрируется первым и становится админом bootstrap'ом, B — обычный
-// второй пользователь: без него гейт не имеет смысла проверять (см.
-// TestWebProfileDeleteSoleInstanceAdminSucceeds — один пользователь на
-// инстансе удаляется свободно).
 func TestWebProfileDeleteBlockedForInstanceAdmin(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -288,7 +245,6 @@ func TestWebProfileDeleteBlockedForInstanceAdmin(t *testing.T) {
 		t.Fatalf("POST /profile/delete (instance admin) body missing explanation: %s", body)
 	}
 
-	// Оба аккаунта всё ещё существуют.
 	if _, err := authSvc.UserEmail(context.Background(), uidA); err != nil {
 		t.Fatalf("UserEmail(A) after blocked delete: %v", err)
 	}
@@ -296,10 +252,6 @@ func TestWebProfileDeleteBlockedForInstanceAdmin(t *testing.T) {
 		t.Fatalf("UserEmail(B) after blocked delete: %v", err)
 	}
 
-	// A остаётся залогинен: удаление не состоялось, рвать сессию было не за
-	// что (F4, раунд правок по ревью финревью волны 1 аудита перед 1.0) — до
-	// фикса DestroySession звался ДО DeleteSelfAccount, и заблокированный
-	// гейтом админ терял сессию при попытке, которая так и не выполнилась.
 	profResp := getWithCookie(t, s.srv, "/profile", cookieA)
 	profBody, _ := io.ReadAll(profResp.Body)
 	profResp.Body.Close()
@@ -309,14 +261,6 @@ func TestWebProfileDeleteBlockedForInstanceAdmin(t *testing.T) {
 	}
 }
 
-// TestWebProfileDeleteSoleInstanceAdminSucceeds — решение владельца по I1:
-// гейт K7-1 закрывает ловушку «единственный админ ушёл, команда осталась без
-// владельца», а не «единственный пользователь инстанса не может уйти». Когда
-// удалять некого запирать некого — единственный пользователь (он же
-// bootstrap-админ) удаляет себя свободно, а первый следующий
-// зарегистрировавшийся сам становится instance-admin (NOT EXISTS,
-// user.go:74) — это и есть инвариант bootstrap'а, который здесь проверяется
-// после удаления.
 func TestWebProfileDeleteSoleInstanceAdminSucceeds(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -340,7 +284,6 @@ func TestWebProfileDeleteSoleInstanceAdminSucceeds(t *testing.T) {
 		t.Fatalf("A still exists after self-delete as sole instance admin")
 	}
 
-	// Инвариант bootstrap'а: следующий зарегистрировавшийся — новый админ.
 	uidC, err := authSvc.Register(context.Background(), "next-after-sole-admin@example.com", "correct-horse-battery")
 	if err != nil {
 		t.Fatalf("register C: %v", err)
@@ -350,10 +293,6 @@ func TestWebProfileDeleteSoleInstanceAdminSucceeds(t *testing.T) {
 	}
 }
 
-// TestWebProfileInstanceAdminTransfer — находка K7-1: передача роли
-// администратора инстанса через /profile. A — bootstrap-админ, B — обычный
-// пользователь; секция видна только админу, форма требует подтверждения,
-// после передачи роль фактически переходит и секция у A больше не рендерится.
 func TestWebProfileInstanceAdminTransfer(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -361,7 +300,6 @@ func TestWebProfileInstanceAdminTransfer(t *testing.T) {
 	uidA, cookieA := orgSettingsRegister(t, authSvc, "instadmin-a@example.com")
 	uidB, _ := orgSettingsRegister(t, authSvc, "instadmin-b@example.com")
 
-	// Секция передачи видна только админу инстанса.
 	resp := getWithCookie(t, s.srv, "/profile", cookieA)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -377,7 +315,6 @@ func TestWebProfileInstanceAdminTransfer(t *testing.T) {
 		t.Fatalf("GET /profile (non-admin) body has transfer form, want none: %s", body)
 	}
 
-	// POST без Origin -> 403.
 	resp = postForm(t, s.srv, "/profile/instance-admin/transfer", url.Values{"email": {"instadmin-b@example.com"}}, "", cookieA)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -385,7 +322,6 @@ func TestWebProfileInstanceAdminTransfer(t *testing.T) {
 		t.Fatalf("POST /profile/instance-admin/transfer (no origin) status = %d, want 403", resp.StatusCode)
 	}
 
-	// Без confirmed=yes -> страница подтверждения (200), содержит email получателя.
 	resp = postForm(t, s.srv, "/profile/instance-admin/transfer", url.Values{"email": {"instadmin-b@example.com"}}, s.srv.URL, cookieA)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -399,12 +335,10 @@ func TestWebProfileInstanceAdminTransfer(t *testing.T) {
 		t.Fatalf("POST /profile/instance-admin/transfer (unconfirmed) body missing target email: %s", body)
 	}
 
-	// Флаг не должен был поменяться до подтверждения.
 	if admin, err := authSvc.UserIsInstanceAdmin(context.Background(), uidA); err != nil || !admin {
 		t.Fatalf("A IsInstanceAdmin before confirm = (%v,%v), want (true,nil)", admin, err)
 	}
 
-	// Собственный email + confirmed=yes -> 422, ErrSelfTransfer.
 	resp = postForm(t, s.srv, "/profile/instance-admin/transfer",
 		url.Values{"email": {"instadmin-a@example.com"}, "confirmed": {"yes"}}, s.srv.URL, cookieA)
 	body, _ = io.ReadAll(resp.Body)
@@ -416,7 +350,6 @@ func TestWebProfileInstanceAdminTransfer(t *testing.T) {
 		t.Fatalf("POST /profile/instance-admin/transfer (self) body missing err_self text: %s", body)
 	}
 
-	// Пустой email -> 422, err_email_required, до вызова TransferInstanceAdmin.
 	resp = postForm(t, s.srv, "/profile/instance-admin/transfer",
 		url.Values{"email": {""}, "confirmed": {"yes"}}, s.srv.URL, cookieA)
 	body, _ = io.ReadAll(resp.Body)
@@ -428,12 +361,10 @@ func TestWebProfileInstanceAdminTransfer(t *testing.T) {
 		t.Fatalf("POST /profile/instance-admin/transfer (empty email) body missing err_email_required text: %s", body)
 	}
 
-	// Обе попытки отклонены — A всё ещё админ.
 	if admin, err := authSvc.UserIsInstanceAdmin(context.Background(), uidA); err != nil || !admin {
 		t.Fatalf("A IsInstanceAdmin after rejected self/empty transfers = (%v,%v), want (true,nil)", admin, err)
 	}
 
-	// С confirmed=yes -> передача происходит.
 	resp = postForm(t, s.srv, "/profile/instance-admin/transfer",
 		url.Values{"email": {"instadmin-b@example.com"}, "confirmed": {"yes"}}, s.srv.URL, cookieA)
 	body, _ = io.ReadAll(resp.Body)
@@ -455,7 +386,6 @@ func TestWebProfileInstanceAdminTransfer(t *testing.T) {
 		t.Fatalf("A IsInstanceAdmin after transfer = (%v,%v), want (false,nil)", admin, err)
 	}
 
-	// A больше не админ — повторная попытка передачи отклоняется.
 	resp = postForm(t, s.srv, "/profile/instance-admin/transfer",
 		url.Values{"email": {"instadmin-b@example.com"}, "confirmed": {"yes"}}, s.srv.URL, cookieA)
 	io.Copy(io.Discard, resp.Body)
@@ -465,8 +395,6 @@ func TestWebProfileInstanceAdminTransfer(t *testing.T) {
 	}
 }
 
-// TestWebProfileInstanceAdminTransferUnknownEmail — email без аккаунта
-// отклоняется 422, флаг действующего админа не трогается.
 func TestWebProfileInstanceAdminTransferUnknownEmail(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)

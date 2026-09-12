@@ -13,7 +13,6 @@ func TestRateLimiterSweepExpiredEntries(t *testing.T) {
 
 	rl := newRateLimiter(clock, 5, 10*time.Second, 20000, "test")
 
-	// Insert 10001 distinct keys to trigger sweep
 	for i := 0; i < 10001; i++ {
 		key := key(i)
 		rl.Allow(key)
@@ -24,10 +23,8 @@ func TestRateLimiterSweepExpiredEntries(t *testing.T) {
 		t.Errorf("expected 10001 entries after insertion, got %d", initialSize)
 	}
 
-	// Advance clock past the window
 	now = now.Add(15 * time.Second)
 
-	// Trigger one more Allow() call to invoke the sweep
 	rl.Allow("trigger_sweep")
 
 	finalSize := rl.size()
@@ -35,21 +32,17 @@ func TestRateLimiterSweepExpiredEntries(t *testing.T) {
 		t.Errorf("expected map size to drop significantly after sweep, got %d (should be < 100)", finalSize)
 	}
 
-	// Verify that the newly added entry is still there
 	if finalSize == 0 {
 		t.Errorf("expected at least the newly added 'trigger_sweep' entry, got 0 entries")
 	}
 }
 
 func key(i int) string {
-	// Generate a distinct key for each iteration
 	return "192.168.1.1|test" + string(rune(i))
 }
 
-// TestSetAgentDistRateLimit — rem-A ops-H4: main.go зовёт этот метод один раз
-// при старте с порогом из GOTCHA_DIST_RATE_PER_MIN, перекрывая
-// дефолтный лимитер New() (10/мин — рассчитан на одиночный сервер, ломает
-// Ansible-раскатку/массовое обновление парка за одним IP).
+// New() лимитер (10/мин) рассчитан на одиночный сервер и ломает Ansible-раскатку/массовое
+// обновление парка за одним IP — этот метод перекрывает порог.
 func TestSetAgentDistRateLimit(t *testing.T) {
 	h := New(nil, nil, nil, nil, "http://localhost")
 	h.SetAgentDistRateLimit(2)
@@ -67,11 +60,6 @@ func TestSetAgentDistRateLimit(t *testing.T) {
 	}
 }
 
-// TestSetAgentDistRateLimitZeroMeansUnlimited — SHOULD из аудита A2: соглашение
-// продукта «0 = без границы» (как у *_RETENTION_DAYS) должно работать и здесь.
-// До фикса SetAgentDistRateLimit(0) создавал лимитер с limit=0, у которого
-// `len(fresh) >= rl.limit` истинно всегда — раздача агента 429-ила бы на любой
-// запрос. Теперь 0 (и отрицательные) должны снимать лимит полностью (nil).
 func TestSetAgentDistRateLimitZeroMeansUnlimited(t *testing.T) {
 	h := New(nil, nil, nil, nil, "http://localhost")
 	h.SetAgentDistRateLimit(0)
@@ -93,13 +81,11 @@ func TestSetAgentDistRateLimitZeroMeansUnlimited(t *testing.T) {
 		}
 	}
 
-	// Отрицательное значение — та же гарантия.
 	h.SetAgentDistRateLimit(-5)
 	if h.agentLimiter != nil {
 		t.Fatal("SetAgentDistRateLimit(-5) тоже должен обнулять agentLimiter")
 	}
 
-	// Положительное значение — лимитирует как раньше.
 	h.SetAgentDistRateLimit(2)
 	if h.agentLimiter == nil {
 		t.Fatal("SetAgentDistRateLimit(2) должен создавать лимитер")
@@ -115,11 +101,8 @@ func TestSetAgentDistRateLimitZeroMeansUnlimited(t *testing.T) {
 	}
 }
 
-// TestPublicRateLimitedGuardsUnauthRoutes фиксирует класс «нет лимита на
-// неаутентифицированных роутах»: каждый такой запрос от анонима стоит похода в
-// PostgreSQL (резолв heartbeat-токена / токена пробы / слага статус-страницы), а
-// пул общий с веб-частью — без капа аноним без единого ключа выбирает пул и
-// роняет UI, алерты и квоты.
+// Каждый такой запрос от анонима стоит похода в PostgreSQL, а пул общий с веб-частью — без
+// капа аноним без единого ключа роняет UI, алерты и квоты.
 func TestPublicRateLimitedGuardsUnauthRoutes(t *testing.T) {
 	h := &Handler{publicLimiter: newRateLimiter(time.Now, 3, time.Minute, publicLimiterMaxKeys, "publicLimiter")}
 	var served int
@@ -143,7 +126,6 @@ func TestPublicRateLimitedGuardsUnauthRoutes(t *testing.T) {
 		t.Errorf("код сверх лимита = %d, want 429", last)
 	}
 
-	// Другой IP получает собственный бакет — лимит не глобальный.
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/status/x", nil)
 	req.RemoteAddr = "198.51.100.9:5678"

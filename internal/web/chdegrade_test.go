@@ -1,15 +1,5 @@
 package web_test
 
-// Деградация страниц при отказе ClickHouse (аудит 2026-09-04, K8-1): на один
-// и тот же отказ CH логи деградировали молча, а остальные CH-страницы отдавали
-// 500 на весь экран — вместе с навигацией. Единый приём теперь один: оболочка
-// живая, на месте блока данных — «данные временно недоступны», ошибка в лог.
-//
-// Шов — testenv.BrokenCH: реальный драйвер на закрытый локальный порт, любой
-// запрос падает мгновенно. Продуктовые типы (metric.Query, trace.Query и
-// прочие) конкретные, подменять их нечем — и не нужно: отказ сети и есть
-// сценарий инцидента у пользователя.
-
 import (
 	"context"
 	"io"
@@ -36,11 +26,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// railMarker — основная навигация layout: её присутствие в теле и есть
-// «оболочка жива».
 const railMarker = `<nav class="rail"`
 
-// emptyStateMarker — единый пустой экран (templates/emptystate.templ).
 const emptyStateMarker = `class="empty-state"`
 
 type brokenCHStack struct {
@@ -53,15 +40,11 @@ type brokenCHStack struct {
 	issues *issue.Service
 }
 
-// newBrokenCHStack собирает web.Handler со ВСЕМИ CH-читателями на битом
-// соединении; PostgreSQL — настоящий (списки хостов/мониторов и доступ).
 func newBrokenCHStack(t *testing.T) *brokenCHStack {
 	t.Helper()
 	return newBrokenCHStackWith(t, testenv.BrokenCH(t))
 }
 
-// newBrokenCHStackWith — то же, но с переданным битым соединением (например,
-// считающим попытки — testenv.BrokenCHCounting).
 func newBrokenCHStackWith(t *testing.T, ch driver.Conn) *brokenCHStack {
 	t.Helper()
 	pool := testenv.MigratedPG(t)
@@ -92,7 +75,6 @@ func newBrokenCHStackWith(t *testing.T, ch driver.Conn) *brokenCHStack {
 	return &brokenCHStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc, uptime: uptimeSvc, hosts: hostsStore, issues: issueSvc}
 }
 
-// getBody — GET с cookie, тело строкой.
 func getBody(t *testing.T, srv *httptest.Server, path string, cookie *http.Cookie) (int, string) {
 	t.Helper()
 	resp := getWithCookie(t, srv, path, cookie)
@@ -101,9 +83,6 @@ func getBody(t *testing.T, srv *httptest.Server, path string, cookie *http.Cooki
 	return resp.StatusCode, string(body)
 }
 
-// TestWebCHDownPagesDegrade: каждая CH-страница при отказе хранилища —
-// 200, оболочка с навигацией на месте, в блоке данных — текст ошибки
-// (не «нет данных», не 500). Таблица — по одной строке на страницу.
 func TestWebCHDownPagesDegrade(t *testing.T) {
 	s := newBrokenCHStack(t)
 	ctx := context.Background()
@@ -134,18 +113,11 @@ func TestWebCHDownPagesDegrade(t *testing.T) {
 
 	base := "/projects/" + strconv.FormatInt(project.ID, 10)
 	cases := []struct {
-		name string
-		path string
-		// errText — заголовок/подсказка состояния «недоступно» (ru — локаль
-		// по умолчанию). Именно текст ошибки, а не пустого состояния: иначе
-		// тест не отличил бы деградацию от «данных пока нет».
-		errText string
-		// emptyState — блок данных заменён единым пустым экраном; списки
-		// PG-сущностей (хосты, мониторы) вместо него показывают подсказку
-		// над таблицей, сама таблица остаётся.
+		name       string
+		path       string
+		errText    string
 		emptyState bool
-		// keep — PG-данные, которые обязаны остаться на странице.
-		keep string
+		keep       string
 	}{
 		{name: "metrics list", path: base + "/metrics", errText: "Не удалось загрузить метрики", emptyState: true},
 		{name: "metric detail", path: base + "/metrics/cpu.usage", errText: "Не удалось загрузить метрики", emptyState: true, keep: "cpu.usage"},
@@ -187,11 +159,6 @@ func TestWebCHDownPagesDegrade(t *testing.T) {
 	}
 }
 
-// TestWebCHDownFirstFailureStopsPolling: страницы, делающие несколько
-// запросов к ClickHouse (список хостов — 5×LatestByHost, список мониторов —
-// 3 батча), после первого отказа в хранилище больше не ходят: на странице
-// ровно одна попытка подключения, а не по одной на запрос. Счётчик —
-// testenv.BrokenCHCounting (одна попытка на запрос, см. testenv-тест).
 func TestWebCHDownFirstFailureStopsPolling(t *testing.T) {
 	ch, attempts := testenv.BrokenCHCounting(t)
 	s := newBrokenCHStackWith(t, ch)
@@ -233,9 +200,6 @@ func TestWebCHDownFirstFailureStopsPolling(t *testing.T) {
 	}
 }
 
-// TestWebCHDownOverviewWithoutMonitors: без мониторов обзор к CH не ходит
-// и плитка аптайма показывает обычное «нет данных», а не «недоступно» —
-// флаг ставится только по реальному отказу запроса.
 func TestWebCHDownOverviewWithoutMonitors(t *testing.T) {
 	s := newBrokenCHStack(t)
 	ctx := context.Background()
@@ -258,9 +222,6 @@ func TestWebCHDownOverviewWithoutMonitors(t *testing.T) {
 	}
 }
 
-// TestWebTraceNotFoundStays404: «трейса нет» — по-прежнему 404 (ProjectForTrace
-// вернул found=false БЕЗ ошибки), деградация в 200 — только при отказе CH.
-// Здесь ClickHouse настоящий и пустой.
 func TestWebTraceNotFoundStays404(t *testing.T) {
 	s := newTraceStack(t)
 	ctx := context.Background()

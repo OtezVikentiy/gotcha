@@ -18,7 +18,6 @@ func TestParsePprof(t *testing.T) {
 		Function:   []*pp.Function{fnMain, fnSlow},
 		Location:   []*pp.Location{locMain, locSlow},
 		Sample: []*pp.Sample{
-			// Location лист→корень: slow (лист), main (корень).
 			{Location: []*pp.Location{locSlow, locMain}, Value: []int64{7}},
 		},
 	}

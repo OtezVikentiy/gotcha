@@ -9,15 +9,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// freeBytes на реальном каталоге: раньше вызов unix.Statfs и арифметика
-// Bavail*Bsize не исполнялись под тестом ни разу (везде подмена через
-// Worker.FreeBytes, см. worker_test.go) — самое рискованное место фичи
-// (P2-OPS-4 аудита, проверка реального свободного места на ФС).
-//
-// Сверка идёт с ЖИВЫМ независимым вызовом unix.Statfs на том же каталоге,
-// а не с диапазоном «похоже на правду»: диапазон пропускает мутацию вида
-// «потерять множитель Bsize» — на файловой системе с крупным блоком
-// Bavail сам по себе остаётся положительным и правдоподобным числом.
 func TestFreeBytesRealDir(t *testing.T) {
 	dir := t.TempDir()
 
@@ -43,10 +34,6 @@ func TestFreeBytesRealDir(t *testing.T) {
 	}
 }
 
-// freeBytes на несуществующем каталоге: Statfs обязан вернуть ошибку, а
-// вызывающий (Worker.process) — НЕ получить молчаливое «места вагон».
-// ok=true при ошибке — дыра: бюджет диска перестал бы проверяться там,
-// где сам факт проверки не осилил дойти до диска.
 func TestFreeBytesMissingDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "does-not-exist")
 	free, ok, err := freeBytes(dir)

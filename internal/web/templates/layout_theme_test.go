@@ -9,13 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/theme"
 )
 
-// TestChromelessExplicitThemeSetsDataTheme — chromeless (обвязка страниц
-// логина/ошибок/onboarding) ветвится по theme.FromContext(ctx).Code: при
-// "system" тег <html> идёт без data-theme (тема выбирается CSS через
-// prefers-color-scheme), при явном выборе — с атрибутом data-theme.
-// Существующие тесты ErrorPage рендерят только через renderTo (дефолтный
-// контекст, тема "system"), поэтому ветка с явной темой не исполнялась ни
-// разу.
 func TestChromelessExplicitThemeSetsDataTheme(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	ctx = theme.WithTheme(ctx, theme.Theme{Code: "dark"})
@@ -29,8 +22,6 @@ func TestChromelessExplicitThemeSetsDataTheme(t *testing.T) {
 	}
 }
 
-// TestChromelessSystemThemeOmitsDataTheme — обратная ветка: тема "system"
-// (дефолт контекста) не должна печатать атрибут data-theme вовсе.
 func TestChromelessSystemThemeOmitsDataTheme(t *testing.T) {
 	out := renderTo(t, ErrorPage(404, "", ""))
 	if strings.Contains(out, "data-theme") {
@@ -38,10 +29,6 @@ func TestChromelessSystemThemeOmitsDataTheme(t *testing.T) {
 	}
 }
 
-// TestStatusLayoutExplicitThemeSetsDataTheme — та же развилка theme.Code
-// у statusLayout (независимый layout публичной статус-страницы, не делит
-// код с chromeless/layout). Существующие тесты PublicStatusPage тоже все
-// шли через renderTo с темой "system".
 func TestStatusLayoutExplicitThemeSetsDataTheme(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	ctx = theme.WithTheme(ctx, theme.Theme{Code: "light"})
@@ -56,7 +43,6 @@ func TestStatusLayoutExplicitThemeSetsDataTheme(t *testing.T) {
 	}
 }
 
-// TestStatusLayoutSystemThemeOmitsDataTheme — обратная ветка statusLayout.
 func TestStatusLayoutSystemThemeOmitsDataTheme(t *testing.T) {
 	v := StatusPageView{Title: "S", Overall: "ok"}
 	out := renderTo(t, PublicStatusPage(v))

@@ -12,11 +12,8 @@ import (
 	"strings"
 )
 
-// cryptoSHA256 — алиас для rsa.VerifyPKCS1v15 (и тестового rsa.SignPKCS1v15).
 const cryptoSHA256 = crypto.SHA256
 
-// minRSAModulusBits — минимальный размер RSA-модуля ключа JWKS (SEC-L3).
-// Ключи короче 2048 бит считаются слабыми и отклоняются.
 const minRSAModulusBits = 2048
 
 var (
@@ -36,7 +33,6 @@ type jwks struct {
 	Keys []jwk `json:"keys"`
 }
 
-// parseJWK строит rsa.PublicKey из JWK (n,e — base64url big-endian).
 func parseJWK(k jwk) (*rsa.PublicKey, error) {
 	if k.Kty != "RSA" {
 		return nil, ErrUnsupportedAlg
@@ -54,17 +50,12 @@ func parseJWK(k jwk) (*rsa.PublicKey, error) {
 		return nil, ErrBadToken
 	}
 	pub := &rsa.PublicKey{N: new(big.Int).SetBytes(nb), E: int(e.Int64())}
-	// SEC-L3: отклоняем слабые RSA-ключи из JWKS. Ключ короче 2048 бит
-	// (или пустой) не даёт нужной стойкости подписи id_token — не доверяем
-	// такому ключу, даже если провайдер его отдал.
 	if pub.N.BitLen() < minRSAModulusBits {
 		return nil, ErrBadToken
 	}
 	return pub, nil
 }
 
-// verifyRS256 проверяет подпись id_token по JWKS и возвращает claims.
-// iss/aud/exp/nonce НЕ проверяются здесь — это делает вызывающий (oidc.go).
 func verifyRS256(token string, keys []jwk) (map[string]any, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
@@ -90,7 +81,6 @@ func verifyRS256(token string, keys []jwk) (map[string]any, error) {
 	}
 	sum := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
 
-	// Подбор ключа: по kid, иначе перебор всех RSA-ключей.
 	candidates := keys
 	if hdr.Kid != "" {
 		candidates = nil
@@ -100,7 +90,7 @@ func verifyRS256(token string, keys []jwk) (map[string]any, error) {
 			}
 		}
 		if len(candidates) == 0 {
-			candidates = keys // kid не нашёлся — пробуем все (ротация ключей)
+			candidates = keys
 		}
 	}
 	verified := false

@@ -12,25 +12,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// heartbeatCronSnippet живёт в двух независимых копиях, потому что
-// internal/web/templates не может импортировать internal/web (цикл:
-// web -> templates -> web) — см. докблок heartbeatPingURL/heartbeatCronSnippet
-// в monitorform.go и templates/webhelpers.go. TestHeartbeatSnippets (этот
-// пакет) и TestHeartbeatMonitorDetail (templates) проверяли КАЖДУЮ копию по
-// отдельности на вхождение одной и той же подстроки ("curl -fsS -X POST ") —
-// но копии между собой ни разу не сравнивались: правка ОДНОЙ из них
-// (например, потеря "-fsS" в шаблоне) проходила оба теста молча, раз обе
-// подстроки всё ещё "содержались" каждая в своём рендере/выхлопе.
-//
-// Этот сторож — по прецеденту internal/guards/agent_env_contract_test.go —
-// рендерит настоящий templates.MonitorDetail с фиксированными
-// baseURL/token/интервалом, вытаскивает cron-сниппет из готового HTML и
-// сравнивает его на ТОЧНОЕ РАВЕНСТВО со строкой, которую вернула
-// heartbeatCronSnippet этого пакета. Не "обе содержат подстроку" — точное
-// равенство, иначе сторож повторит нынешнюю слепоту: строка из шаблона может
-// расходиться с web-копией в любом другом месте (без "-fsS", с GET вместо
-// POST, с иным приглашением cron) и тест всё равно останется зелёным, если
-// проверять только общую подстроку.
+// дублируется в internal/web/templates: импортировать оттуда internal/web нельзя (цикл).
+// сравниваем на точное равенство, не на подстроку, чтобы копии не разошлись незаметно.
 func TestHeartbeatCronSnippetMatchesTemplateCopy(t *testing.T) {
 	const baseURL = "https://gotcha.example"
 	const token = "hbtok-guard"
@@ -64,8 +47,6 @@ func TestHeartbeatCronSnippetMatchesTemplateCopy(t *testing.T) {
 
 	templatePing, templateSnippet := extractHeartbeatSnippetsFromHTML(t, html)
 
-	// Ping URL живёт в тех же двух копиях (heartbeatPingURL) — сверяем и его,
-	// тем же точным равенством с web-копией.
 	if webPing := heartbeatPingURL(baseURL, token); templatePing != webPing {
 		t.Errorf("копии heartbeatPingURL разошлись:\n  web-пакет:      %q\n  templates-копия: %q",
 			webPing, templatePing)
@@ -76,13 +57,8 @@ func TestHeartbeatCronSnippetMatchesTemplateCopy(t *testing.T) {
 	}
 }
 
-// extractHeartbeatSnippetsFromHTML достаёт из карточки heartbeat оба
-// сниппета — ping URL и cron-строку. С задачи 10 волны 2 аудита 2026-09-04
-// (K9-9) они рендерятся не голым <code>, а через @copyBlock: видимый текст
-// блока — <pre class="copy-preview">…</pre> (copyblock.templ), первый —
-// ping URL, второй — cron. Снимает HTML-экранирование, которое templ
-// применяет к текстовому узлу (сниппет содержит ">" в "curl ... >/dev/null",
-// в HTML это "&gt;").
+// Снимает HTML-экранирование, которое templ применяет к текстовому узлу
+// (например ">" в "curl ... >/dev/null" приходит как "&gt;").
 func extractHeartbeatSnippetsFromHTML(t *testing.T, html string) (ping, cron string) {
 	t.Helper()
 	const openTag, closeTag = `<pre class="copy-preview">`, "</pre>"
@@ -117,12 +93,8 @@ func extractHeartbeatSnippetsFromHTML(t *testing.T, html string) (ping, cron str
 	return ping, cron
 }
 
-// htmlUnescapeMinimal раскрывает ровно те HTML-сущности, которые templ может
-// вставить в текстовый узел с cron-командой ("&gt;" из "curl ... >/dev/null"
-// плюс парный "&amp;" на случай будущих правок сниппета) — не общего
-// назначения html.UnescapeString, чтобы сторож ловил именно то, что реально
-// приходит из templ.EscapeString, а не маскировал расхождение через более
-// широкий раскрыватель сущностей.
+// Не html.UnescapeString: раскрывает только то, что реально может прийти от
+// templ.EscapeString, чтобы сторож ловил расхождение, а не маскировал его широким раскрывателем.
 func htmlUnescapeMinimal(s string) string {
 	s = strings.ReplaceAll(s, "&amp;", "&")
 	s = strings.ReplaceAll(s, "&gt;", ">")

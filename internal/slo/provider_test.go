@@ -14,7 +14,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// txSpec — одна засеваемая транзакция: смещение от base, длительность и статус.
 type txSpec struct {
 	offset time.Duration
 	dur    time.Duration
@@ -22,7 +21,6 @@ type txSpec struct {
 	env    string
 }
 
-// seedTransactions пишет транзакции в CH через SpanWriter (как writer_test.go):
 // MV transactions_5m наполняется автоматически при вставке в raw transactions.
 func seedTransactions(t *testing.T, conn driver.Conn, projectID int64, name string, base time.Time, specs []txSpec) {
 	t.Helper()
@@ -49,7 +47,6 @@ func seedTransactions(t *testing.T, conn driver.Conn, projectID int64, name stri
 	}
 }
 
-// seedChecks пишет проверки в check_results через ResultWriter.
 func seedChecks(t *testing.T, conn driver.Conn, projectID, monitorID int64, base time.Time, oks []bool) {
 	t.Helper()
 	w := uptime.NewResultWriter(conn)
@@ -111,9 +108,9 @@ func TestLatencyProvider(t *testing.T) {
 
 	specs := make([]txSpec, 0, 100)
 	for i := 0; i < 100; i++ {
-		dur := 100 * time.Millisecond // быстрее порога 500 мс
+		dur := 100 * time.Millisecond
 		if i < 10 {
-			dur = 1000 * time.Millisecond // медленнее порога
+			dur = 1000 * time.Millisecond
 		}
 		specs = append(specs, txSpec{offset: time.Duration(i) * time.Millisecond, dur: dur, status: "ok", env: "production"})
 	}
@@ -141,7 +138,7 @@ func TestUptimeProvider(t *testing.T) {
 
 	oks := make([]bool, 10)
 	for i := range oks {
-		oks[i] = i != 0 // 9 из 10 успешны (первая — сбой)
+		oks[i] = i != 0
 	}
 	seedChecks(t, conn, pid, mid, base, oks)
 
@@ -158,7 +155,6 @@ func TestUptimeProvider(t *testing.T) {
 	}
 }
 
-// TestUptimeProviderNoMonitor — uptime-SLO без монитора → ошибка, не паника.
 func TestUptimeProviderNoMonitor(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	p := slo.NewUptimeProvider(uptime.NewQuery(conn), nil, 90)
@@ -167,8 +163,6 @@ func TestUptimeProviderNoMonitor(t *testing.T) {
 	}
 }
 
-// TestProviderExcludesMaintenance — корзина, чей центр попал в окно
-// обслуживания, отброшена; корзина вне окна остаётся.
 func TestProviderExcludesMaintenance(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	conn := testenv.MigratedCH(t)
@@ -177,11 +171,9 @@ func TestProviderExcludesMaintenance(t *testing.T) {
 	pid := seedProject(t, pool)
 	maint := uptime.NewService(pool)
 
-	// Два соседних 5-минутных бакета: B1 (вне окна), B2 (внутри окна).
 	b1 := time.Now().UTC().Truncate(5 * time.Minute).Add(-30 * time.Minute)
 	b2 := b1.Add(5 * time.Minute)
 
-	// Окно обслуживания накрывает B2 целиком.
 	winStart := b2
 	winEnd := b2.Add(5 * time.Minute)
 	if _, err := maint.CreateWindow(ctx, uptime.Window{
@@ -203,7 +195,6 @@ func TestProviderExcludesMaintenance(t *testing.T) {
 	q := trace.NewQuery(conn)
 	from, to := b1, b2.Add(5*time.Minute)
 
-	// Без maint — оба бакета видны.
 	pNo := slo.NewAvailabilityProvider(q, nil, 90)
 	bsNo, err := pNo.Buckets(ctx, slo.SLO{ProjectID: pid, Kind: slo.SLIAvailability, Transaction: "GET /m"}, from, to, 5*time.Minute)
 	if err != nil {
@@ -213,7 +204,6 @@ func TestProviderExcludesMaintenance(t *testing.T) {
 		t.Fatalf("без обслуживания бакетов = %d, want 2", len(bsNo))
 	}
 
-	// С maint — B2 отброшен.
 	pMaint := slo.NewAvailabilityProvider(q, maint, 90)
 	bs, err := pMaint.Buckets(ctx, slo.SLO{ProjectID: pid, Kind: slo.SLIAvailability, Transaction: "GET /m"}, from, to, 5*time.Minute)
 	if err != nil {
@@ -227,13 +217,8 @@ func TestProviderExcludesMaintenance(t *testing.T) {
 	}
 }
 
-// TestProviderExcludesMaintenanceUnbounded — «бессрочное» окно обслуживания
-// (starts_at в прошлом, ends_at NULL) выбрасывает ВЕСЬ запрошенный диапазон:
-// windowIntervalsOne клампит его конец к запрошенному `to`, так что каждый
-// бакет попадает внутрь и excludeMaintenance возвращает пустой ряд. Это
-// осознанное поведение (см. бриф Task 2), не баг: оператор, оставивший
-// окно открытым навсегда, не должен ждать данных по SLO этого проекта, пока
-// не закроет окно явно.
+// бессрочное окно (ends_at NULL) клампится к запрошенному `to` и накрывает весь
+// диапазон целиком — осознанное поведение, не баг.
 func TestProviderExcludesMaintenanceUnbounded(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	conn := testenv.MigratedCH(t)
@@ -244,7 +229,6 @@ func TestProviderExcludesMaintenanceUnbounded(t *testing.T) {
 
 	base := time.Now().UTC().Truncate(5 * time.Minute).Add(-30 * time.Minute)
 
-	// Окно началось задолго до запрошенного диапазона и никогда не заканчивается.
 	winStart := base.Add(-24 * time.Hour)
 	if _, err := maint.CreateWindow(ctx, uptime.Window{
 		ProjectID: pid, Name: "unbounded", Weekly: false,
@@ -271,7 +255,6 @@ func TestProviderExcludesMaintenanceUnbounded(t *testing.T) {
 	}
 }
 
-// TestRetentionCap — cfg.RetentionDays → длительность клипа; 0 = без клипа.
 func TestRetentionCap(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	q := trace.NewQuery(conn)

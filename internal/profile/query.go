@@ -10,24 +10,12 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// Query читает агрегаты профилей из profile_samples (аналог metric.Query).
 type Query struct {
 	conn driver.Conn
 }
 
 func NewQuery(conn driver.Conn) *Query { return &Query{conn: conn} }
 
-// ServiceInfo — группа профилей (сервис/тип/транзакция).
-//
-// Weight — суммарный вес выборок (sum(value)), Unit — его единица измерения
-// из pprof SampleType.Unit ('nanoseconds', 'bytes', 'count'). Единица берётся
-// из данных, а не угадывается по имени типа профиля: для нестандартных типов
-// догадка не работает. У строк, записанных до миграции 0012, единицы нет —
-// тогда UI возвращается к прежней догадке по типу.
-//
-// Samples — число выборок. Раньше поле с этим именем несло sum(value), и
-// колонка «Замеры» показывала 284000000 там, где имелось в виду 284 мс
-// процессорного времени.
 type ServiceInfo struct {
 	Service      string
 	Type         string
@@ -38,7 +26,6 @@ type ServiceInfo struct {
 	Environments []string
 }
 
-// ListServices возвращает группы профилей проекта за период (для обзора/фильтров).
 func (q *Query) ListServices(ctx context.Context, projectID int64, environment string, from, to time.Time) ([]ServiceInfo, error) {
 	rows, err := q.conn.Query(ctx, `
 		SELECT service, profile_type, transaction,
@@ -69,39 +56,16 @@ func (q *Query) ListServices(ctx context.Context, projectID int64, environment s
 	return out, rows.Err()
 }
 
-// FlameNode — узел flamegraph-дерева.
 type FlameNode struct {
 	Name     string
 	Value    uint64
 	Children []*FlameNode
 }
 
-// maxFlameStacks — потолок числа уникальных стеков, из которых собирается
-// flamegraph (строк GROUP BY stack в Flame/FlameForTrace).
-//
-// Откуда число. Уникальных стеков в профиле не больше, чем выборок: pprof CPU
-// на 100 Гц за 30-секундный профиль даёт ≤ 3 000 выборок и обычно 500–2 000
-// разных стеков, PHP/Excimer на своих частотах — меньше. За часовое окно
-// непрерывного профилирования стеки в основном повторяются, и у нагруженного
-// сервиса с несколькими инстансами набирается порядка 5–20 тысяч уникальных.
-// 50 000 — запас в 2,5–10 раз над этим: на реальных окнах флеймграф остаётся
-// полным, усечение включается только на аномально широких.
-//
-// Зачем потолок. Без него дерево строилось в памяти хендлера на неограниченном
-// числе стеков (единственные запросы файла без LIMIT). С потолком верхняя
-// граница — 50 000 стеков × ~30 кадров = 1,5 млн узлов в худшем случае без
-// общих префиксов; реальные стеки префиксы делят, так что фактически десятки
-// мегабайт.
-//
-// Усечение идёт по убыванию веса: отрезаются самые лёгкие стеки, то есть те,
-// что на флеймграфе и так тоньше пикселя.
+// Запас в разы над типичными 5-20 тыс. уникальных стеков нагруженного сервиса;
+// усечение при превышении режет по убыванию веса — самые лёгкие стеки первыми.
 const maxFlameStacks = 50_000
 
-// Flame агрегирует стеки за период + фильтры и строит flamegraph-дерево. Корень
-// синтетический («all») с суммарным value; каждый стек прибавляется проходом
-// корень→лист. Стеков не больше maxFlameStacks, самые тяжёлые; таймаут
-// SETTINGS max_execution_time — тот же литеральный приём, что у raw-запросов
-// trace (Dependencies).
 func (q *Query) Flame(ctx context.Context, projectID int64, service, environment, profileType, transaction string, from, to time.Time) (*FlameNode, error) {
 	rows, err := q.conn.Query(ctx, `
 		SELECT stack, sum(value) AS total
@@ -121,16 +85,12 @@ func (q *Query) Flame(ctx context.Context, projectID int64, service, environment
 	return buildFlame(rows)
 }
 
-// HasProfileForTrace сообщает, есть ли профиль, привязанный к trace_id
-// (profiling-in-context, этап 8). Пустой traceID → false без запроса.
 func (q *Query) HasProfileForTrace(ctx context.Context, projectID int64, traceID string) (bool, error) {
 	if traceID == "" {
 		return false, nil
 	}
-	// LIMIT 1 вместо count(): нужен только факт наличия, а count() читает все
-	// гранулы (project_id,trace_id) — LIMIT 1 короткозамыкает на первой (запускается
-	// на каждом рендере waterfall). Индекс на trace_id — миграция 0017.
 	var one uint8
+	// LIMIT 1 вместо count(): нужен только факт наличия, count() читает все гранулы.
 	err := q.conn.QueryRow(ctx,
 		"SELECT 1 FROM profile_samples WHERE project_id = ? AND trace_id = ? LIMIT 1",
 		projectID, traceID).Scan(&one)
@@ -143,9 +103,6 @@ func (q *Query) HasProfileForTrace(ctx context.Context, projectID int64, traceID
 	return true, nil
 }
 
-// FlameForTrace строит flamegraph по всем профилям, привязанным к trace_id
-// (без окна/сервиса/типа — trace_id сам ограничивает выборку). Потолок стеков
-// и таймаут — те же, что у Flame.
 func (q *Query) FlameForTrace(ctx context.Context, projectID int64, traceID string) (*FlameNode, error) {
 	rows, err := q.conn.Query(ctx, `
 		SELECT stack, sum(value) AS total
@@ -163,14 +120,10 @@ func (q *Query) FlameForTrace(ctx context.Context, projectID int64, traceID stri
 	return buildFlame(rows)
 }
 
-// buildFlame собирает дерево из строк (stack Array(String), sum(value)). Корень
-// синтетический («all»); каждый стек прибавляется проходом корень→лист.
-//
-// Детей ищем через индекс по имени, живущий только на время сборки: линейный
-// перебор Children делал сборку квадратичной по ширине узла, и maxFlameStacks
-// стеков под одним кадром (широкий «плоский» профиль) собирались 15 секунд.
 func buildFlame(rows driver.Rows) (*FlameNode, error) {
 	root := &FlameNode{Name: "all"}
+	// Индекс детей по имени: линейный перебор Children делает сборку широкого
+	// узла квадратичной по числу его детей.
 	index := map[*FlameNode]map[string]*FlameNode{}
 	child := func(n *FlameNode, name string) *FlameNode {
 		kids := index[n]
@@ -202,13 +155,11 @@ func buildFlame(rows driver.Rows) (*FlameNode, error) {
 	return root, rows.Err()
 }
 
-// ServiceType — пара (сервис, тип профиля) с данными (для оценщика регрессий).
 type ServiceType struct {
 	Service string
 	Type    string
 }
 
-// ServicesWithProfiles — пары (service, profile_type) с профилями за окно.
 func (q *Query) ServicesWithProfiles(ctx context.Context, projectID int64, from, to time.Time) ([]ServiceType, error) {
 	rows, err := q.conn.Query(ctx, `
 		SELECT DISTINCT service, profile_type FROM profile_samples
@@ -229,20 +180,12 @@ func (q *Query) ServicesWithProfiles(ctx context.Context, projectID int64, from,
 	return out, rows.Err()
 }
 
-// ProjectService — сервис с профилями и проект, которому он принадлежит.
 type ProjectService struct {
 	ProjectID int64
 	Service   string
 	Type      string
 }
 
-// ActiveServices — все пары (проект, сервис, тип) с профилями за окно, одним
-// запросом по всем проектам.
-//
-// Раньше оценщик регрессий брал список проектов из PostgreSQL и спрашивал
-// ClickHouse про каждый: проект без единого профиля стоил ровно столько же,
-// сколько нагруженный. Здесь работа определяется данными — если профилей нет,
-// нет и запросов.
 func (q *Query) ActiveServices(ctx context.Context, from, to time.Time) ([]ProjectService, error) {
 	rows, err := q.conn.Query(ctx, `
 		SELECT DISTINCT project_id, service, profile_type FROM profile_samples
@@ -264,31 +207,13 @@ func (q *Query) ActiveServices(ctx context.Context, from, to time.Time) ([]Proje
 	return out, rows.Err()
 }
 
-// FunctionShare — доля функции в self-CPU сервиса за окно.
 type FunctionShare struct {
 	Function string
-	// Share — self-CPU функции, делённое на весь self-CPU окна.
-	Share float64
-	// Samples — число строк (сэмплов) окна; по нему проверяется MinSamples.
-	// Не вес: единица value зависит от типа профиля (для CPU — наносекунды),
-	// и сумма весов за любое непустое окно легко перескакивает и сто, и сто
-	// миллионов — гейт «мало данных» с ней не срабатывал бы никогда.
+	Share    float64
+	// Число строк окна, не сумма value: единица value зависит от типа профиля.
 	Samples uint64
 }
 
-// TopFunctionShares — топ-K функций окна сразу с их долями.
-//
-// Один запрос вместо «топ-K, а потом доля каждой по отдельности». Прежний путь
-// стоил 1 + 2K запросов на сервис, причём каждый второй — скан за весь период
-// базовой линии; при K=20 это 41 обращение к самой тяжёлой таблице продукта за
-// один тик одного сервиса.
-//
-// Итог окна считается оконной функцией по тем же группам: сумма self по всем
-// функциям равна сумме value по строкам окна, потому что arrayElement(stack, -1)
-// на пустом стеке даёт пустую строку — такая строка попадает в группу «», а не
-// исчезает. Число строк окна (total_samples) считается тем же способом, но по
-// count(), а не по sum(value): доля — по весу, гейт MinSamples — по числу
-// сэмплов, единицы разные и путать их нельзя.
 func (q *Query) TopFunctionShares(ctx context.Context, projectID int64, service, profileType string, from, to time.Time, k int) ([]FunctionShare, error) {
 	rows, err := q.conn.Query(ctx, `
 		SELECT fn, self, total, total_samples FROM (
@@ -323,24 +248,12 @@ func (q *Query) TopFunctionShares(ctx context.Context, projectID int64, service,
 	return out, rows.Err()
 }
 
-// BaselineShare — базовая линия одной функции.
 type BaselineShare struct {
-	// Share — медиана дневной self-доли функции за базовое окно.
 	Share float64
-	// Samples — число строк (сэмплов) именно этой функции за базовое окно
-	// (не сумма её веса — единица value зависит от типа профиля); по нему
-	// Decide гейтит открытие по MinSamples. Оконный итог здесь не годится:
-	// свежее окно вложено в базовое, и оконный объём базы всегда не меньше
-	// свежего — такой гейт не срабатывал бы никогда.
+	// Число строк, не сумма value: единица value зависит от типа профиля.
 	Samples uint64
 }
 
-// BaselineFunctionShares — базовые линии перечисленных функций одним запросом.
-// Функции, не встречавшейся в базовом окне, в карте нет (нулевое значение).
-//
-// Дневной итог считается по всем функциям дня (оконная функция с PARTITION BY
-// по дню), а отбор нужных функций идёт снаружи: иначе доля считалась бы от
-// самой себя.
 func (q *Query) BaselineFunctionShares(ctx context.Context, projectID int64, service, profileType string, functions []string, baselineDays int, now time.Time) (map[string]BaselineShare, error) {
 	out := make(map[string]BaselineShare, len(functions))
 	if len(functions) == 0 {
@@ -379,8 +292,6 @@ func (q *Query) BaselineFunctionShares(ctx context.Context, projectID int64, ser
 	return out, rows.Err()
 }
 
-// TopFunctionsBySelfShare — топ-K функций по свежему self-CPU (лист стека) за
-// окно; кандидаты на проверку регрессии.
 func (q *Query) TopFunctionsBySelfShare(ctx context.Context, projectID int64, service, profileType string, from, to time.Time, k int) ([]string, error) {
 	rows, err := q.conn.Query(ctx, `
 		SELECT arrayElement(stack, -1) AS fn, sum(value) AS self

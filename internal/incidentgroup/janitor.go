@@ -9,17 +9,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// defaultSweepInterval — период sweep-тика (§4.3: ~1 мин).
 const defaultSweepInterval = time.Minute
 
-// retentionEvery — как часто гонять ретеншен-часть (раз в час, §4.3).
 const retentionEvery = time.Hour
 
-// SweepOrphanGroups закрывает открытые группы, чей корневой инцидент закрыт
-// ИЛИ отсутствует (узел удалён каскадом host_incidents.host_id ON DELETE
-// CASCADE, 0066; или гонка «корень закрылся между DownRoot-снимком и
-// EnsureGroup»). Без этого члены такой группы молчали бы вечно — нарушение
-// fail-noisy (BLOCKER-2). Возвращает число закрытых групп.
+// Без этого члены такой группы молчали бы вечно — нарушение fail-noisy.
 func SweepOrphanGroups(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
 	tag, err := pool.Exec(ctx, `
 		UPDATE incident_groups g SET resolved_at = now()
@@ -39,17 +33,8 @@ func SweepOrphanGroups(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
 	return tag.RowsAffected(), nil
 }
 
-// PurgeOldGroups удаляет resolved-группы старше olderThan (MAJOR-5), но
-// НИКОГДА группу с ещё открытым членом (любого из 4 источников) — R2b/W5.
-// Пока строка группы жива, гейты уведомлений (host/metric/slo — Р9 «лесенка
-// эскалации») считают точку отсчёта как GREATEST(started_at,
-// COALESCE(g.resolved_at, started_at)); если удалить группу под открытым
-// членом, LEFT JOIN даёт NULL, COALESCE схлопывается к started_at, и elapsed
-// планировщика скачком возвращается к возрасту инцидента — ровно тот
-// анти-залповый эффект, против которого сделана лесенка. group_id инцидента
-// остаётся висячим только у УЖЕ закрытых членов — это допустимо и раньше:
-// все join'ы LEFT, «группа удалена» ≡ «группа закрыта» для всех гейтов
-// (см. OpenUnacked).
+// Никогда группу с открытым членом — эскалация считает elapsed от GREATEST(started_at, resolved_at).
+// Удали её под открытым членом — COALESCE схлопнется к started_at, и лесенка скачком обнулится.
 func PurgeOldGroups(ctx context.Context, pool *pgxpool.Pool, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-olderThan)
 	tag, err := pool.Exec(ctx, `
@@ -66,9 +51,7 @@ func PurgeOldGroups(ctx context.Context, pool *pgxpool.Pool, olderThan time.Dura
 	return tag.RowsAffected(), nil
 }
 
-// Janitor — периодическая уборка групп (образец — escalation.Janitor):
-// sweep каждый тик (fail-noisy: работает ВСЕГДА, независимо от ретеншена),
-// ретеншен — раз в retentionEvery и только при Retention > 0.
+// Sweep — каждый тик, fail-noisy; ретеншен — раз в retentionEvery и только при Retention > 0.
 type Janitor struct {
 	Pool          *pgxpool.Pool
 	Retention     time.Duration // resolved-группы старше — удаляются; <= 0 выключает ТОЛЬКО ретеншен
@@ -77,7 +60,7 @@ type Janitor struct {
 	lastPurge time.Time
 }
 
-// Run тикает до отмены ctx. Запускать как "go j.Run(ctx)".
+// Тикает до отмены ctx — запускать как "go j.Run(ctx)".
 func (j *Janitor) Run(ctx context.Context) {
 	interval := j.SweepInterval
 	if interval <= 0 {

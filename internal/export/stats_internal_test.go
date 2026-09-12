@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// fakeProbe отдаёт заданный снимок или ошибку. Симметрично
-// internal/notify/stats_internal_test.go — Stats устроена так же.
 type fakeProbe struct {
 	snap  QueueSnapshot
 	err   error
@@ -23,8 +21,6 @@ func (f *fakeProbe) QueueSnapshot(ctx context.Context) (QueueSnapshot, error) {
 	return f.snap, nil
 }
 
-// TestSnapshotBeforeFirstProbeIsZero: до первого опроса метрики отдают нули, а
-// не мусор.
 func TestSnapshotBeforeFirstProbeIsZero(t *testing.T) {
 	var s Stats
 	if got := s.Snapshot(); got != (QueueSnapshot{}) {
@@ -35,13 +31,6 @@ func TestSnapshotBeforeFirstProbeIsZero(t *testing.T) {
 	}
 }
 
-// TestRefreshKeepsLastSnapshotOnError — ключевое решение: неудачный опрос
-// оставляет прежний снимок. Обнулять его нельзя, иначе недоступная база
-// выглядела бы как здоровая очередь выгрузок: «ждёт 0 заявок, старейшей 0
-// секунд». Заодно проверяет OldestPendingAgeSeconds — единственное из трёх
-// чисел, которое отличает «очередь пуста» от «очередь стоит» (см. докблок
-// QueueSnapshot.OldestPendingAge), и до этого теста не было проверено ни
-// разу.
 func TestRefreshKeepsLastSnapshotOnError(t *testing.T) {
 	var s Stats
 	probe := &fakeProbe{snap: QueueSnapshot{Pending: 42, Failed: 7, OldestPendingAge: 3 * time.Hour}}

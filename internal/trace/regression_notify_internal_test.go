@@ -9,16 +9,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// TestRegressionNotifyDurationIsNotInflated: значение duration приходит в
-// миллисекундах, и 640 мс должны выглядеть как 640 мс. Прежняя копия
-// форматирования в этом файле (formatMetric) трактовала их как миллисекунды
-// уже переведённого duration, но не отличала duration от веб-виталов и не
-// проверяла итог против humanize.MetricValue — здесь фиксируем контракт:
-// 640/400 не должны превращаться в "640.0s"/"400.0s".
-//
-// Тест лежит в этом (внутреннем, package trace) файле, а не в
-// regression_notify_test.go, потому что regressionSubject не экспортирован, а
-// regression_notify_test.go — блэкбокс (package trace_test).
+// здесь (package trace), не в regression_notify_test.go — regressionSubject
+// не экспортирован, тот файл блэкбокс (package trace_test).
 func TestRegressionNotifyDurationIsNotInflated(t *testing.T) {
 	ctx := context.Background()
 	ev := RegressionEvent{
@@ -34,10 +26,6 @@ func TestRegressionNotifyDurationIsNotInflated(t *testing.T) {
 	}
 }
 
-// TestRegressionNotifyLocale — subject/body регрессионных уведомлений строятся
-// из каталога i18n по локали, положенной в контекст (№133–136): на ru — прежние
-// русские тексты, на en — английские и без единого кириллического символа.
-// Локаль в реальном коде подкладывает RegressionNotifier из GOTCHA_LOCALE.
 func TestRegressionNotifyLocale(t *testing.T) {
 	ru := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	en := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
@@ -76,7 +64,6 @@ func TestRegressionNotifyLocale(t *testing.T) {
 			t.Errorf("%s = %q: кириллица на en-локали", tc.name, tc.got)
 		}
 	}
-	// Подстановки различимы: проценты и значения в открытии.
 	if s := regressionSubject(en, open); !strings.Contains(s, "+60%") {
 		t.Errorf("en subject open = %q, хотим +60%%", s)
 	}

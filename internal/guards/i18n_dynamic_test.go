@@ -18,67 +18,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// Ключи, собираемые конкатенацией, страж каталога (i18n_keys_test.go) поймать
-// не может: множество их значений знает только вызывающий, и он же должен его
-// перечислить. Раньше это множество перечислялось здесь же литералом — новый
-// уровень issue, статус пробы или класс квоты доезжал бы до страницы сырым
-// ключом, а тест оставался зелёным, потому что не знал о новом значении.
-//
-// Правило вместо этого читает каждое множество из ЕГО источника истины —
-// строго в таком порядке приоритета (см. task-3-report.md, раздел «Выбор
-// источника истины по группам», для обоснования по каждой из шести групп,
-// на момент её написания; задача C9 добавила ещё три по тому же приоритету
-// №3):
-//
-//  1. CHECK-ограничение в схеме — самый авторитетный источник: он же не даёт
-//     множеству разъехаться с базой. Единственная группа, у которой такое
-//     ограничение действительно есть, — issues.status (issuesStatusValues).
-//  2. Существующие экспортированные константа/карта в коде — уровни
-//     консенсуса (uptime.Consensus*) и пресеты диапазона (web.TimeRangePresets
-//     + web.RangeAll) уже были доступны как код, нужно было только сослаться
-//     напрямую вместо копирования строк.
-//  3. Новая константа в пакете-владельце — заведена для трёх множеств,
-//     которые не описаны ни схемой, ни существующим экспортом: уровни issue
-//     (issue.Levels), статусы пробы (uptime.ProbeStatuses), классы квоты
-//     (org.QuotaKinds). Задача C9 добавила по той же схеме ещё четыре: типы
-//     монитора (uptime.Kinds — константы KindHTTP и т.д. уже существовали,
-//     не хватало только экспортированного среза), платформы онбординга
-//     (org.Platforms — раньше был только приватный литеральный whitelist
-//     internal/web/onboarding.go, allowedPlatforms, теперь он сам строится из
-//     org.Platforms), агрегации правил по метрикам (metric.Aggregations —
-//     раньше приватная validAggregations в internal/metric/rule.go) и типы
-//     метрики (metric.MetricTypes — раунд правок 1, см. ниже). Задача A1/T12
-//     добавила пятое множество по той же схеме — виды встроенных инцидентов
-//     хоста (host.Kinds: disk/memory/load/silent), источник истины для
-//     подписей в уведомлениях host.HostNotifier. Задача 2 плана C2 добавила
-//     шестое — уровни severity просмотрщика логов (log.Severities), тот же
-//     мультиселект-фильтр на /projects/{id}/logs, что и severity в самом
-//     запросе.
-//
-// Раунд правок 1 (metrics.templ): та же задача нашла ЕЩЁ два места сырого
-// значения в соседнем файле, не входившем в исходный список брифа — тип
-// метрики (metrics.templ:97, :42) и селект агрегации на странице метрики
-// (metrics.templ:112-117). Тип метрики — четвёртая группа here по приоритету
-// №3 (metric.MetricTypes, см. докблок в internal/metric/metric.go: закрытый
-// список, MapOTLP тихо пропускает всё, что не gauge/sum/histogram).
-//
-// Агрегация в metrics.templ — ОТДЕЛЬНОЙ группы не заводит, хотя выглядит
-// похоже: metricAggOptions (internal/web/templates/metrics.templ) на первый
-// взгляд собирает опции из вызова функции, а не из литерального перечисления,
-// как в metricalerts.templ, — та же форма, что у настоящих открытых множеств
-// в этом файле (rangePresetKeys, quotaKindShortKeys). Разница в том, ЧТО она
-// возвращает: обе ветки metricAggOptions — жёстко зашитые литеральные
-// подмножества metric.Aggregations, а сравниваемый vm.Agg до попадания в
-// шаблон уже нормализован через metricAggFor (internal/web/metrics.go) тем же
-// закрытым перечислением. Открытого хвоста тут в принципе нет: любое значение,
-// которое реально может оказаться в <option>, гарантированно входит в
-// metric.Aggregations — то есть уже проверено группой "metrics.aggregation."
-// ниже, надмножеством. Второй, отдельной группы это не требует — заводить её
-// значило бы дважды проверять то же самое множество разными путями.
-//
-// Проверяются ОБА языка: ключ, забытый только в одном каталоге, ловится
-// паритетом (internal/i18n/catalog_test.go), но ключ, забытый в обоих, —
-// только этим тестом.
+// Ключ, забытый только в одном каталоге, ловится паритетом
+// (internal/i18n/catalog_test.go), но забытый в обоих — только этим тестом.
 func TestDynamicKeysResolve(t *testing.T) {
 	tree := Load(t)
 
@@ -97,12 +38,8 @@ func TestDynamicKeysResolve(t *testing.T) {
 		"logs.severity.":       log.Severities,
 		"recipes.":             recipeDynamicKeys(),
 	}
-	// Пустая группа — не "нечего проверять", а сигнал, что сборка САМОЙ группы
-	// сломана (баг в quotaKindShortKeys/rangePresetKeys или опустевший
-	// issue.Levels/uptime.ProbeStatuses), а не что в каталоге всё в порядке:
-	// цикл `for _, v := range values` по пустому срезу не найдёт ни одной
-	// находки и молча оставит тест зелёным. Тот же приём, что и в соседних
-	// TestHelpPanelKeysResolve/TestMonitorErrorCodesResolve этого файла.
+	// Пустая группа — сигнал, что сборка самой группы сломана, а не что в
+	// каталоге всё в порядке: пустой срез не даст ни одной находки.
 	for prefix, values := range groups {
 		if len(values) == 0 {
 			t.Fatalf("группа %q пуста — сборка множества значений сломана, а не каталог", prefix)
@@ -121,14 +58,8 @@ func TestDynamicKeysResolve(t *testing.T) {
 	}
 }
 
-// rangePresetKeys — суффиксы группы "range.": ключи web.TimeRangePresets
-// (пресеты "1h"/"24h"/"7d"/"30d") плюс web.RangeAll ("all").
-//
-// "custom" сюда сознательно не входит: ключ "range.custom" в
-// templates/timerange.templ вызывается литералом (`i18n.T(ctx, "range.custom")`,
-// без конкатенации), поэтому его уже покрывает общий сканер каталога
-// (i18n_keys_test.go) — числить его ещё и здесь значило бы дублировать
-// проверку одного и того же ключа двумя правилами.
+// "custom" сюда сознательно не входит: ключ "range.custom" вызывается
+// литералом и уже покрыт общим сканером каталога (i18n_keys_test.go).
 func rangePresetKeys() []string {
 	out := make([]string, 0, len(web.TimeRangePresets)+1)
 	out = append(out, web.RangeAll)
@@ -138,20 +69,8 @@ func rangePresetKeys() []string {
 	return out
 }
 
-// quotaKindShortKeys — суффиксы группы "org.quota.kind.": ЕДИНСТВЕННАЯ
-// настоящая конкатенация в продукте — droppedBreakdown в
-// internal/web/orgsettings.go строит ключ как
-// `"org.quota.kind."+kind.key+".short"`, то есть каждое значение org.QuotaKinds
-// с ДОБАВЛЕННЫМ суффиксом ".short".
-//
-// Базовые ключи (`org.quota.kind.events` и т.д., без суффикса) сюда
-// сознательно НЕ входят: они собираются в orgsettings.go литералом
-// (`i18n.T(r.Context(), "org.quota.kind.events")`, без конкатенации) и уже
-// проверяются общим сканером каталога (i18n_keys_test.go). Числить их и
-// здесь значило бы дублировать чужую проверку и одновременно упускать
-// единственную реальную точку риска — забытый перевод именно ".short"-формы,
-// которая на странице (разбивка отброшенного по организации) реально
-// собирается конкатенацией и рискует остаться сырым ключом.
+// Базовые ключи (org.quota.kind.events и т.д.) сюда не входят — собираются литералом,
+// покрыты общим сканером каталога; здесь только реально конкатенируемая ".short".
 func quotaKindShortKeys() []string {
 	out := make([]string, 0, len(org.QuotaKinds))
 	for _, k := range org.QuotaKinds {
@@ -160,19 +79,8 @@ func quotaKindShortKeys() []string {
 	return out
 }
 
-// recipeDynamicKeys — суффиксы группы "recipes.": страницы рецептов (B6)
-// собирают конкатенацией четыре формы ключей на каждый рецепт реестра —
-// "recipes.<id>.title"/".desc" (карточка и заголовок), ".chart.<key>"
-// (заголовок преднастроенного графика), ".series.<suffix>" (подпись ряда в
-// легенде; пуст у одиночных рядов — тогда ключа нет) и ".rule.<notekey>"
-// (пояснение рекомендованного порога в таблице). Источник истины —
-// recipes.All() (приоритет №2: существующий экспорт пакета-владельца):
-// новый рецепт/график/порог в реестре без перевода в ОБОИХ каталогах валит
-// тест, а не доезжает до страницы сырым ключом.
-//
-// Статические ключи страниц ("recipes.list.title", "recipes.assumption",
-// "recipes.docker.no_rules" и т.д.) сюда сознательно не входят: они зовутся
-// литералами и уже покрыты общим сканером каталога (i18n_keys_test.go).
+// Статические ключи страниц ("recipes.list.title" и т.д.) сюда сознательно
+// не входят: они зовутся литералами и уже покрыты общим сканером каталога.
 func recipeDynamicKeys() []string {
 	var out []string
 	for _, r := range recipes.All() {
@@ -192,22 +100,13 @@ func recipeDynamicKeys() []string {
 	return out
 }
 
-// issuesStatusValues — источник истины для issues.status.*: CHECK-ограничение
-// в миграции 0003_issues.up.sql, а не константа в коде. В internal/issue есть
-// своя копия множества (validStatuses), но она НЕ экспортирована — заведена
-// для рантайм-валидации внутри пакета, а не как то самое множество для
-// внешних читателей — и, что важнее, она вторична: именно CHECK не даёт
-// значению в БД разъехаться со списком, а копия в Go могла бы отстать от
-// него незамеченной. Приоритет №1 (схема) в этом случае обгоняет приоритет
-// №2 (константа в коде).
+// Источник истины — CHECK-ограничение миграции, а не internal/issue.validStatuses:
+// именно CHECK не даёт значению в БД разъехаться со списком.
 func issuesStatusValues(t *testing.T, tree *Tree) []string {
 	t.Helper()
 	return checkInValues(t, migrationBody(t, tree, "0003_issues.up.sql"), "status")
 }
 
-// migrationBody возвращает тело PostgreSQL-миграции по суффиксу пути
-// (например "0003_issues.up.sql") — искать по суффиху, а не по точному пути,
-// удобнее вызывающим и не завязывает их на длину tree.Root.
 func migrationBody(t *testing.T, tree *Tree, pathSuffix string) string {
 	t.Helper()
 	for _, f := range tree.MigrationsPG {
@@ -219,17 +118,8 @@ func migrationBody(t *testing.T, tree *Tree, pathSuffix string) string {
 	return ""
 }
 
-// checkInValues разбирает `CHECK (column IN ('a','b','c'))` в тексте миграции
-// и возвращает перечисленные значения без кавычек. column подставляется
-// вызывающим внутри пакета (не пользовательский ввод), regexp.QuoteMeta
-// применён на всякий случай — дешевле, чем полагаться на то, что имя колонки
-// никогда не будет содержать спецсимволы регулярки.
-//
-// `\s` между именем колонки и IN — не косметика: в схеме объявление CHECK
-// нередко переносится на следующую строку после DEFAULT (см.
-// 0003_issues.up.sql: `DEFAULT 'unresolved'\n  CHECK (status IN (...))`), а
-// `\s` в Go (в отличие от `.`) матчит и перевод строки без флага (?s) —
-// поэтому разбор работает без дополнительных флагов регулярки.
+// `\s` между именем колонки и IN — CHECK иногда переносится на следующую
+// строку после DEFAULT, а `\s` (в отличие от `.`) матчит перевод строки.
 func checkInValues(t *testing.T, body, column string) []string {
 	t.Helper()
 	re := regexp.MustCompile(`CHECK\s*\(\s*` + regexp.QuoteMeta(column) + `\s+IN\s*\(([^)]*)\)\)`)
@@ -244,9 +134,6 @@ func checkInValues(t *testing.T, body, column string) []string {
 	return out
 }
 
-// TestHelpPanelKeysResolve — панель «Что это за раздел?» собирает два ключа на
-// область (`help.<area>.title`/`.body`). Раздел без перевода показывал бы
-// "help.teams.title" заголовком.
 func TestHelpPanelKeysResolve(t *testing.T) {
 	tree := Load(t)
 	areas := helpAreasInTemplates(t, tree)
@@ -266,9 +153,6 @@ func TestHelpPanelKeysResolve(t *testing.T) {
 	}
 }
 
-// helpAreasInTemplates собирает области, для которых шаблоны просят панель
-// помощи: список обязан приходить из кода, иначе тест проверяет вчерашний
-// набор.
 func helpAreasInTemplates(t *testing.T, tree *Tree) []string {
 	t.Helper()
 	seen := map[string]bool{}
@@ -296,9 +180,6 @@ func helpAreasInTemplates(t *testing.T, tree *Tree) []string {
 	return out
 }
 
-// TestMonitorErrorCodesResolve — коды отказа валидации монитора попадают в
-// ключ "error.monitor.<code>". Код без перевода показал бы пользователю сырой
-// ключ вместо объяснения, что чинить.
 func TestMonitorErrorCodesResolve(t *testing.T) {
 	tree := Load(t)
 	codes := monitorErrorCodes(t, tree)
@@ -316,52 +197,12 @@ func TestMonitorErrorCodesResolve(t *testing.T) {
 	}
 }
 
-// TestExportFailureReasonKeysResolve — E1 P2-UX-2: причина отказа выгрузки
-// (Job.FailureReasonKey) приходит и на страницу «Выгрузки»
-// (i18n.T(ctx, e.FailureReasonKey) в exports.templ), и в письмо автору
-// (i18n.T(ctx, reasonKey) в export/notify.go) готовой СТРОКОЙ из БД — не
-// литералом и не идентификатором, поэтому её не видит ни общий сканер
-// каталога (i18n_keys_test.go: literalKeyRe требует литеральную кавычку
-// вторым аргументом), ни группы TestDynamicKeysResolve выше (там ключ
-// СОБИРАЕТСЯ конкатенацией по известному префиксу, а здесь три готовых
-// значения целиком). export.FailureReasonKeys — тот же список, что проверяет
-// export.KnownFailureReasonKey (приоритет №3 докблока TestDynamicKeysResolve:
-// новая константа в пакете-владельце) — ключ без перевода в любом языке
-// показал бы пользователю сырой exports.mail.failed.reason.* вместо причины
-// отказа (находка волны 2 полного аудита, кластер 8/10 DEDUP-P1.md).
-//
-// Раньше единственной подстраховкой был рендер-ассерт
-// TestExportsListShowsFailureReasonHintForKnownKey
-// (internal/web/templates/exports_test.go) — он сравнивал вывод i18n.T с
-// выводом ТОЙ ЖЕ i18n.T на том же ключе и оставался зелёным даже при
-// отсутствующем переводе (i18n.T на промахе возвращает сам ключ, и обе
-// стороны сравнения совпадали на этом сыром ключе). Тест починен отдельно
-// (сравнение с пинованным ожидаемым текстом), а это правило — независимая
-// проверка каталога, не завязанная на конкретный рендер одной страницы.
-//
-// Честно о границе гарантии (тот же класс вопроса, что уже раз был найден
-// в этой самой задаче — докблок flash_test.go признавал дыру вместо того,
-// чтобы её закрыть): цикл ниже надёжно ловит ключ, ОТСУТСТВУЮЩИЙ В ОБОИХ
-// каталогах (по любому языку — got==key). Ключ, забытый ТОЛЬКО в en.json
-// (RU при этом переведён), эта проверка не поймает: i18n.lookup (catalog.go)
-// на промахе в запрошенной locale молча фолбэчит на Default ("ru") и
-// возвращает РУССКИЙ перевод, а не сам ключ — got != key, ассерт зелёный.
-// Тот же приём (и то же ограничение), что и у соседнего
-// TestMonitorErrorCodesResolve этого файла — не изолированная недоработка
-// именно этого правила, а сознательное разделение труда: односторонний
-// пропуск (ключ есть в одном каталоге, забыт в другом) надёжно и НЕ через
-// fallback ловит internal/i18n/catalog_test.go:TestCatalogsHaveIdenticalKeys
-// (обязателен, часть общего гейта) — он сравнивает множества ключей
-// каталогов напрямую, минуя i18n.T и её фолбэк. Разделение то же, что уже
-// описано докблоком TestDynamicKeysResolve выше ("Проверяются ОБА языка:
-// ключ, забытый только в одном каталоге, ловится паритетом... но ключ,
-// забытый в обоих, — только этим тестом").
+// Ловит ключ, отсутствующий в ОБОИХ каталогах; забытый только в en.json не поймает —
+// i18n.lookup фолбэчит на ru, это ловит TestCatalogsHaveIdenticalKeys.
 func TestExportFailureReasonKeysResolve(t *testing.T) {
 	keys := export.FailureReasonKeys
-	// Пустой список — не "нечего проверять", а сигнал, что сборка среза в
-	// worker.go сломана (тот же приём, что у groups в TestDynamicKeysResolve
-	// выше): KnownFailureReasonKey с пустым списком не подтверждал бы вообще
-	// ничего, такой код не мог бы существовать в проде.
+	// Пустой список — сигнал, что сборка среза в worker.go сломана, а не что
+	// причин отказа не бывает.
 	if len(keys) == 0 {
 		t.Fatal("export.FailureReasonKeys пуст — сборка списка в worker.go сломана, а не множество причин опустело по замыслу")
 	}
@@ -375,12 +216,9 @@ func TestExportFailureReasonKeysResolve(t *testing.T) {
 	}
 }
 
-// invalidCallRe — invalid("field", "code", ...): второй аргумент и есть код.
+// Второй аргумент вызова invalid("field", "code", ...) — искомый код.
 var invalidCallRe = regexp.MustCompile(`invalid\("[^"]*",\s*"([^"]+)"`)
 
-// monitorErrorCodes собирает коды из вызовов invalid(...) в авторских (не
-// сгенерированных, не тестовых) файлах пакета internal/uptime: список обязан
-// приходить из кода, иначе тест закрепляет вчерашний набор.
 func monitorErrorCodes(t *testing.T, tree *Tree) []string {
 	t.Helper()
 	seen := map[string]bool{}

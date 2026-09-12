@@ -11,9 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// entries — короткая сборка []host.TouchEntry из одних имён (без версии
-// агента), чтобы не плодить составные литералы в каждом вызове Upsert
-// тестов, которым версия не важна.
 func entries(names ...string) []host.TouchEntry {
 	out := make([]host.TouchEntry, len(names))
 	for i, n := range names {
@@ -22,8 +19,6 @@ func entries(names ...string) []host.TouchEntry {
 	return out
 }
 
-// setupProject поднимает мигрированную PG-базу и одну организацию/проект —
-// заготовка, общая для всех тестов пакета.
 func setupProject(t *testing.T) (*host.Store, int64) {
 	t.Helper()
 	pool := testenv.MigratedPG(t)
@@ -44,8 +39,6 @@ func setupProject(t *testing.T) (*host.Store, int64) {
 	return host.NewStore(pool), projectID
 }
 
-// TestStoreUpsertThenList — два новых имени в одном Upsert → List отдаёт обе,
-// отсортированные по имени, first_seen==last_seen (только что вставлены).
 func TestStoreUpsertThenList(t *testing.T) {
 	s, projectID := setupProject(t)
 	ctx := context.Background()
@@ -74,8 +67,6 @@ func TestStoreUpsertThenList(t *testing.T) {
 	}
 }
 
-// TestStoreUpsertAgainBumpsLastSeen — повторный Upsert одного и того же имени
-// двигает last_seen вперёд, first_seen остаётся прежним.
 func TestStoreUpsertAgainBumpsLastSeen(t *testing.T) {
 	s, projectID := setupProject(t)
 	ctx := context.Background()
@@ -88,9 +79,6 @@ func TestStoreUpsertAgainBumpsLastSeen(t *testing.T) {
 		t.Fatalf("Get после Upsert #1: ok=%v err=%v", ok, err)
 	}
 
-	// Гарантируем видимую разницу времени: now() у PostgreSQL имеет реальное
-	// разрешение, но без задержки два запроса могут попасть в одну и ту же
-	// точку часов на быстрой машине.
 	time.Sleep(10 * time.Millisecond)
 
 	if _, err := s.Upsert(ctx, projectID, entries("web-01")); err != nil {
@@ -112,10 +100,6 @@ func TestStoreUpsertAgainBumpsLastSeen(t *testing.T) {
 	}
 }
 
-// TestStoreUpsertDeduplicatesNamesInBatch — дубли в одном срезе не должны
-// ронять запрос: unnest+ON CONFLICT DO UPDATE падает («cannot affect row a
-// second time»), если один INSERT конфликтует сам с собой, поэтому Upsert
-// обязан дедуплицировать names внутри себя (контракт из брифа Task 4).
 func TestStoreUpsertDeduplicatesNamesInBatch(t *testing.T) {
 	s, projectID := setupProject(t)
 	ctx := context.Background()
@@ -133,8 +117,6 @@ func TestStoreUpsertDeduplicatesNamesInBatch(t *testing.T) {
 	}
 }
 
-// TestStoreDeleteIdempotent — Delete существующего хоста → ok=true, повторный
-// Delete того же имени → ok=false.
 func TestStoreDeleteIdempotent(t *testing.T) {
 	s, projectID := setupProject(t)
 	ctx := context.Background()
@@ -168,7 +150,6 @@ func TestStoreDeleteIdempotent(t *testing.T) {
 	}
 }
 
-// TestStoreGetNotFound — Get несуществующего имени → ok=false, без ошибки.
 func TestStoreGetNotFound(t *testing.T) {
 	s, projectID := setupProject(t)
 	ctx := context.Background()
@@ -182,10 +163,6 @@ func TestStoreGetNotFound(t *testing.T) {
 	}
 }
 
-// TestStoreListActiveWithProject — оценщик метрик по хосту читает все
-// проекты сразу и фильтрует по свежести last_seen; свежий хост в один
-// проект, устаревший (руками отодвинутый last_seen) в другой — попадает
-// только первый.
 func TestStoreListActiveWithProject(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -232,10 +209,6 @@ func TestStoreListActiveWithProject(t *testing.T) {
 	}
 }
 
-// TestStoreUpsertEnforcesProjectCeiling — потолок MaxHostsPerProject: новые
-// имена сверх него не регистрируются и попадают в возвращаемое число
-// отброшенных, а УЖЕ известные хосты продолжают обновлять last_seen. Иначе
-// парк, доросший до границы, целиком провалился бы в ложную тишину.
 func TestStoreUpsertEnforcesProjectCeiling(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -243,7 +216,6 @@ func TestStoreUpsertEnforcesProjectCeiling(t *testing.T) {
 	s, projectID := setupProject(t)
 	ctx := context.Background()
 
-	// Наливаем ровно потолок за один батч.
 	full := make([]host.TouchEntry, 0, host.MaxHostsPerProject)
 	for i := 0; i < host.MaxHostsPerProject; i++ {
 		full = append(full, host.TouchEntry{Name: fmt.Sprintf("host-%04d", i)})
@@ -256,8 +228,6 @@ func TestStoreUpsertEnforcesProjectCeiling(t *testing.T) {
 		t.Fatalf("rejected = %d при заполнении ровно до потолка, want 0", rejected)
 	}
 
-	// Известное имя рядом с двумя новыми: новые отбрасываются, известное
-	// обновляется.
 	before, ok, err := s.Get(ctx, projectID, "host-0000")
 	if err != nil || !ok {
 		t.Fatalf("Get: ok=%v err=%v", ok, err)
@@ -282,11 +252,6 @@ func TestStoreUpsertEnforcesProjectCeiling(t *testing.T) {
 	}
 }
 
-// TestStoreUpsertCeilingAdmitsInArrivalOrder — K3-3: при упоре в потолок
-// свободные места среди НОВЫХ имён раздаются в порядке появления в батче, а
-// не по алфавиту. Потолок минус один занят; батч из трёх новых имён, где
-// алфавитно первое ("alpha") стоит в батче последним: место получает первое
-// приехавшее ("zeta"), "alpha" и "mid" отбрасываются.
 func TestStoreUpsertCeilingAdmitsInArrivalOrder(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -319,9 +284,6 @@ func TestStoreUpsertCeilingAdmitsInArrivalOrder(t *testing.T) {
 	}
 }
 
-// TestStoreUpsertRejectsPathTraversalNames — "." и ".." не регистрируются:
-// url.PathEscape точки не экранирует, и /hosts/.. нормализуется браузером в
-// адрес проекта — открыть или удалить такой хост в интерфейсе было бы нечем.
 func TestStoreUpsertRejectsPathTraversalNames(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -341,8 +303,6 @@ func TestStoreUpsertRejectsPathTraversalNames(t *testing.T) {
 	}
 }
 
-// TestStoreListRespectsLimit — потолок применяется в SQL: страница списка
-// вычитывает свои строки, а не весь реестр проекта.
 func TestStoreListRespectsLimit(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -362,9 +322,6 @@ func TestStoreListRespectsLimit(t *testing.T) {
 	}
 }
 
-// TestStoreListActiveRespectsLimit — та же дисциплина у выборки оценщика:
-// сорвавшаяся дисциплина регистрации не должна превращаться в неограниченную
-// выборку в памяти узла оценки.
 func TestStoreListActiveRespectsLimit(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -384,9 +341,6 @@ func TestStoreListActiveRespectsLimit(t *testing.T) {
 	}
 }
 
-// TestUpsertAgentVersion — версия агента переживает Upsert без версии
-// (collector-путь): пустая AgentVersion в батче НЕ затирает уже известную
-// (спека §3.2), а непустая — обновляет.
 func TestUpsertAgentVersion(t *testing.T) {
 	s, projectID := setupProject(t)
 	ctx := context.Background()
@@ -402,8 +356,6 @@ func TestUpsertAgentVersion(t *testing.T) {
 		t.Fatalf("AgentVersion = %q, want 0.6.0", got.AgentVersion)
 	}
 
-	// Повторный Upsert без версии (собственно collector-путь: OTel-коллектор
-	// не знает о версии агента) — версия обязана остаться прежней.
 	if _, err := s.Upsert(ctx, projectID, []host.TouchEntry{{Name: "web-1"}}); err != nil {
 		t.Fatalf("Upsert без версии: %v", err)
 	}
@@ -415,7 +367,6 @@ func TestUpsertAgentVersion(t *testing.T) {
 		t.Fatalf("AgentVersion = %q после Upsert без версии, want сохранённые 0.6.0", got.AgentVersion)
 	}
 
-	// Новая версия — обновляет.
 	if _, err := s.Upsert(ctx, projectID, []host.TouchEntry{{Name: "web-1", AgentVersion: "0.6.1"}}); err != nil {
 		t.Fatalf("Upsert с новой версией: %v", err)
 	}
@@ -428,8 +379,6 @@ func TestUpsertAgentVersion(t *testing.T) {
 	}
 }
 
-// TestUpsertAgentVersionNewHost — новый хост сразу с версией: INSERT-ветка
-// (не ON CONFLICT) тоже обязана сохранить AgentVersion, не только UPDATE.
 func TestUpsertAgentVersionNewHost(t *testing.T) {
 	s, projectID := setupProject(t)
 	ctx := context.Background()
@@ -446,8 +395,6 @@ func TestUpsertAgentVersionNewHost(t *testing.T) {
 	}
 }
 
-// names — join'ит имена хостов через запятую (в порядке List/ListFiltered —
-// по имени), чтобы не писать цикл сравнения в каждом тесте фильтра.
 func names(hosts []host.Host) string {
 	out := make([]string, len(hosts))
 	for i, h := range hosts {
@@ -456,9 +403,6 @@ func names(hosts []host.Host) string {
 	return strings.Join(out, ",")
 }
 
-// TestListFiltered — фильтр стора по env/role/new, СТРОГО в SQL (WHERE, а не
-// Go-срез поверх List): env='prod' отдаёт оба хоста с этой меткой, а
-// role=hostLabelNone (сентинел «без метки») — хост без role вовсе.
 func TestListFiltered(t *testing.T) {
 	s, projectID := setupProject(t)
 	ctx := context.Background()
@@ -469,7 +413,7 @@ func TestListFiltered(t *testing.T) {
 	if _, err := s.Upsert(ctx, projectID, []host.TouchEntry{{Name: "b", Environment: "prod", Role: "db"}}); err != nil {
 		t.Fatalf("upsert b: %v", err)
 	}
-	if _, err := s.Upsert(ctx, projectID, []host.TouchEntry{{Name: "c"}}); err != nil { // без меток
+	if _, err := s.Upsert(ctx, projectID, []host.TouchEntry{{Name: "c"}}); err != nil {
 		t.Fatalf("upsert c: %v", err)
 	}
 
@@ -481,7 +425,6 @@ func TestListFiltered(t *testing.T) {
 		t.Fatalf("env=prod → %s, want a,b", names(got))
 	}
 
-	// сентинел «без метки»
 	none, err := s.ListFiltered(ctx, projectID, host.HostFilter{Role: host.HostLabelNone}, 0)
 	if err != nil {
 		t.Fatalf("filter role=none: %v", err)
@@ -499,14 +442,7 @@ func TestListFiltered(t *testing.T) {
 	}
 }
 
-// TestListFilteredNewOnly — NewOnly фильтрует по first_seen в окне
-// hostNewWindow (24ч, SQL-ветка interval '24 hours'): свежий хост входит,
-// искусственно состаренный — нет.
 func TestListFilteredNewOnly(t *testing.T) {
-	// Не setupProject: тесту нужен прямой доступ к пулу для UPDATE first_seen
-	// (age), а testenv.MigratedPG(t) при повторном вызове в том же тесте
-	// выдаёт НОВУЮ уникальную базу (см. PostgresDSN) — второй пул смотрел бы в
-	// пустую базу, не в ту, где Upsert только что создал строки.
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
 
@@ -544,20 +480,13 @@ func TestListFilteredNewOnly(t *testing.T) {
 	}
 }
 
-// TestUpsertLabelsNonEmptyWins — метки environment/role (B1) переживают
-// Upsert без меток тем же принципом, что и AgentVersion (см.
-// TestUpsertAgentVersion): пустая метка в батче НЕ затирает уже известную. И
-// в дублях ОДНОГО батча непустая метка побеждает пустую — тот же дедуп, что
-// уже есть для AgentVersion (119-124 host.go).
 func TestUpsertLabelsNonEmptyWins(t *testing.T) {
 	s, projectID := setupProject(t)
 	ctx := context.Background()
 
-	// Первый приём: метки заданы.
 	if _, err := s.Upsert(ctx, projectID, []host.TouchEntry{{Name: "h1", Environment: "prod", Role: "web"}}); err != nil {
 		t.Fatalf("upsert 1: %v", err)
 	}
-	// Второй приём того же хоста БЕЗ меток — не должен затирать.
 	if _, err := s.Upsert(ctx, projectID, []host.TouchEntry{{Name: "h1"}}); err != nil {
 		t.Fatalf("upsert 2: %v", err)
 	}
@@ -569,7 +498,6 @@ func TestUpsertLabelsNonEmptyWins(t *testing.T) {
 		t.Fatalf("labels=(%q,%q), want (prod,web) — пустой тик затёр метку", h.Environment, h.Role)
 	}
 
-	// Дубли в ОДНОМ батче: непустая метка побеждает пустую.
 	if _, err := s.Upsert(ctx, projectID, []host.TouchEntry{{Name: "h2"}, {Name: "h2", Environment: "stg", Role: "db"}}); err != nil {
 		t.Fatalf("upsert 3: %v", err)
 	}

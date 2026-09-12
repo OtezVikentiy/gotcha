@@ -9,13 +9,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestReminderCarriesFullMonitor: напоминание об открытом инциденте несёт
-// монитор целиком, включая retries.
-//
-// Запрос собирал Monitor своим списком колонок вместо monitorColumns и retries
-// пропускал: поле молча оставалось нулевым. Сегодня напоминание им не
-// пользуется, но два способа собрать один объект — это заготовка расхождения,
-// и замечает его тот, кто добавит зависимость от поля.
+// напоминание собирает Monitor отдельным списком колонок, не monitorColumns —
+// рассинхрон полей (например retries) не поймает компилятор, только тест.
 func TestReminderCarriesFullMonitor(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -32,10 +27,8 @@ func TestReminderCarriesFullMonitor(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Инцидент, открытый достаточно давно, чтобы напоминание стало нужным.
-	// notified_open=true — иначе новый гейт B5 (задача 6) сам по себе
-	// исключит инцидент из выборки, и тест проверял бы не то, что заявлен
-	// проверять.
+	// notified_open=true обязателен: иначе гейт по нему исключит инцидент из
+	// выборки, и тест проверял бы пустоту.
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO incidents (monitor_id, started_at, cause, notified_open) VALUES ($1, now() - interval '1 hour', 'down', true)`,
 		created.ID); err != nil {
@@ -64,13 +57,8 @@ func TestReminderCarriesFullMonitor(t *testing.T) {
 	}
 }
 
-// TestIncidentsDueForReminderGate: остаться в выборке недостаточно быть
-// открытым/не-в-обслуживании/просроченным по remind_every_minutes (B5,
-// задача 6) — ещё два столбца обязаны пропустить инцидент: notified_open
-// (нечего напоминать, пока «down» вообще не ушёл — подавленным и удержанным
-// грейсом инцидентам он не уходит) и suppressed_by_dep (подавленный
-// зависимостью инцидент не получает вообще никаких уведомлений, включая
-// напоминания).
+// кроме due по remind_every_minutes, инцидент обязан быть notified_open
+// (подавленным/удержанным грейсом ещё не наступил) и не suppressed_by_dep.
 func TestIncidentsDueForReminderGate(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -88,8 +76,8 @@ func TestIncidentsDueForReminderGate(t *testing.T) {
 		}
 		return created
 	}
-	// Инцидент открыт достаточно давно (10 минут при remind_every=1), чтобы
-	// напоминание было бы нужно, если бы не гейт по notified_open/suppressed.
+	// 10 минут при remind_every=1 — заведомо просрочено; единственный барьер —
+	// сам гейт по notified_open/suppressed_by_dep.
 	insertIncident := func(monitorID int64, notifiedOpen, suppressed bool) int64 {
 		var id int64
 		if err := pool.QueryRow(ctx, `

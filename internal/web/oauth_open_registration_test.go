@@ -9,12 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// №96: в open-режиме OAuth-вход заводит аккаунт БЕЗ приглашения — как обещает
-// документация и как делает парольная open-регистрация. Членств при этом не
-// появляется (симметрия: парольная open-регистрация их тоже не выдаёт).
-//
-// Живёт в пакете web (а не web_test) ради callbackStack: подделать
-// подписанную flow-cookie снаружи пакета нечем.
 func TestOAuthOpenModeProvisionsWithoutInvite(t *testing.T) {
 	s := newCallbackStack(t)
 	ctx := context.Background()
@@ -39,8 +33,6 @@ func TestOAuthOpenModeProvisionsWithoutInvite(t *testing.T) {
 	}
 }
 
-// open + действующее приглашение: аккаунт создаётся и приглашение принимается
-// сразу (адрес подтверждён провайдером — та же логика, что в invite-ветке).
 func TestOAuthOpenModeAcceptsPendingInvite(t *testing.T) {
 	s := newCallbackStack(t)
 	ctx := context.Background()
@@ -82,7 +74,3 @@ func TestOAuthOpenModeAcceptsPendingInvite(t *testing.T) {
 		t.Fatal("pending invite was not accepted on open provisioning")
 	}
 }
-
-// Регресс invite-режима (403 незнакомцу, аккаунт не создаётся) закреплён в
-// TestCallbackNoInviteRefused; closed-режим — в
-// TestOAuthCallback_ClosedModeBlocksInviteProvisioning.

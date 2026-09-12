@@ -60,7 +60,6 @@ func TestEvaluatorOpenCloseAlertOnce(t *testing.T) {
 		Interval: time.Hour, // тикер не используем — дёргаем Tick вручную
 	}
 
-	// Среднее 150 > 100 → инцидент открыт, одно уведомление.
 	seedMetricGauge(t, ch, projectID, "cpu", 140, time.Minute)
 	seedMetricGauge(t, ch, projectID, "cpu", 160, 2*time.Minute)
 	eval.Tick(ctx)
@@ -73,15 +72,12 @@ func TestEvaluatorOpenCloseAlertOnce(t *testing.T) {
 		t.Fatalf("open jobs = %d, want 1", len(jobs))
 	}
 
-	// Повторный тик при тех же данных → инцидент открыт, НОВЫХ уведомлений нет.
 	eval.Tick(ctx)
 	jobs2, _ := ob.Claim(ctx, 10)
 	if len(jobs2) != 0 {
 		t.Fatalf("re-tick produced %d new jobs, want 0 (alert once)", len(jobs2))
 	}
 
-	// Данные упали ниже порога (окно теперь содержит только низкие значения) →
-	// инцидент закрыт, одно уведомление о закрытии.
 	if err := ch.Exec(ctx, "TRUNCATE TABLE metric_points"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
@@ -97,20 +93,16 @@ func TestEvaluatorOpenCloseAlertOnce(t *testing.T) {
 	}
 }
 
-// mockMaint — metric.MaintenanceChecker для тестов: func-обёртка вместо
-// полноценного uptime.Service (интерфейс здесь в один метод — реальный
-// сервис с окнами обслуживания и своей БД тестам этого пакета не нужен).
-// Зеркало host.mockMaint (internal/host/evaluator_test.go).
+// Func-обёртка вместо полноценного uptime.Service (интерфейс здесь в один метод) — реальный сервис
+// с окнами и своей БД тестам этого пакета не нужен. Зеркало host.mockMaint.
 type mockMaint func(ctx context.Context, projectID int64, at time.Time) (bool, error)
 
 func (m mockMaint) InMaintenance(ctx context.Context, projectID int64, at time.Time) (bool, error) {
 	return m(ctx, projectID, at)
 }
 
-// TestEvaluatorMaintenanceSuppressesNotify — B3: открытие инцидента в окне
-// обслуживания пишет инцидент в БД с in_maintenance=true, но НЕ уведомляет;
-// закрытие того же инцидента (ещё внутри окна) тоже не уведомляет. Зеркало
-// host.TestEvaluatorMaintenanceSuppressesThresholdNotify.
+// Открытие инцидента в окне обслуживания пишет in_maintenance=true, но НЕ уведомляет; закрытие внутри
+// окна тоже не уведомляет. Зеркало host.TestEvaluatorMaintenanceSuppressesThresholdNotify.
 func TestEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -181,11 +173,8 @@ func TestEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 	}
 }
 
-// TestEvaluatorMaintenanceFalseStillNotifies — Maint заполнен (не nil), но
-// вне окна (InMaintenance→false): поведение обычное, уведомление уходит.
-// Отличает «MaintenanceChecker сконфигурирован и говорит false» от
-// «MaintenanceChecker==nil» (последнее уже покрыто TestEvaluatorOpenCloseAlertOnce).
-// Зеркало host.TestEvaluatorMaintenanceFalseStillNotifies.
+// Maint заполнен, но вне окна (InMaintenance→false) — уведомление уходит как обычно; отличает
+// «checker сконфигурирован и говорит false» от «checker==nil» (зеркало host-теста).
 func TestEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -242,12 +231,8 @@ func TestEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 	}
 }
 
-// TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds — дискриминирует
-// close-гейт «по сохранённому флагу инцидента» (!open.InMaintenance) от
-// ошибочного «по текущему окну» (!e.inMaintenance(now)): открываем инцидент В
-// окне, затем окно ЗАКАНЧИВАЕТСЯ (mock→false) — close всё равно должен быть
-// подавлен, т.к. читается сохранённый флаг инцидента. Зеркало
-// host.TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds.
+// Дискриминирует close-гейт «по сохранённому флагу инцидента» от ошибочного «по текущему окну»:
+// открываем В окне, окно ЗАКАНЧИВАЕТСЯ — close всё равно подавлен, читается флаг инцидента, не окно.
 func TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -304,8 +289,7 @@ func TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.T) 
 		t.Fatalf("open jobs = %d, want 0 (suppressed by maintenance)", len(jobs))
 	}
 
-	// Окно закончилось — close-гейт должен смотреть на сохранённый флаг
-	// инцидента, а не на текущее состояние окна.
+	// Окно закончилось — close-гейт должен смотреть на сохранённый флаг инцидента, не на текущее окно.
 	inWindow = false
 
 	if err := ch.Exec(ctx, "TRUNCATE TABLE metric_points"); err != nil {
@@ -323,13 +307,12 @@ func TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.T) 
 	}
 }
 
-// fakeRuleLister — минимальная реализация ruleLister для тестов, которым не
-// нужны контейнеры: Tick требует только эту зависимость до первого evalRule.
+// Минимальная реализация ruleLister для тестов без контейнеров — Tick требует только эту зависимость
+// до первого evalRule.
 type fakeRuleLister struct {
 	rules []metric.Rule
 	err   error
-	// block, если true, держит ListEnabled до отмены ctx — модель повисшего
-	// ClickHouse/PostgreSQL похода без реальной инфраструктуры.
+	// Если true, держит ListEnabled до отмены ctx — модель повисшего похода без реальной инфраструктуры.
 	block bool
 	calls atomic.Int64
 }
@@ -343,8 +326,7 @@ func (f *fakeRuleLister) ListEnabled(ctx context.Context) ([]metric.Rule, error)
 	return f.rules, f.err
 }
 
-// TestEvaluatorPublishesTickLiveness — self-метрики живости: без них умерший
-// или отставший metric.Evaluator снаружи неотличим от «правил, готовых
+// Self-метрики живости: без них умерший или отставший Evaluator снаружи неотличим от «правил, готовых
 // сработать, сейчас нет».
 func TestEvaluatorPublishesTickLiveness(t *testing.T) {
 	rules := &fakeRuleLister{}
@@ -365,9 +347,8 @@ func TestEvaluatorPublishesTickLiveness(t *testing.T) {
 	}
 }
 
-// TestEvaluatorTickBudgetAbortsHungTick — повисший ListEnabled (голый
-// ClickHouse/PostgreSQL запрос без своего таймаута) не должен блокировать тик
-// дольше бюджета: тот же контракт, что host.Evaluator.
+// Повисший ListEnabled (голый CH/PG запрос без своего таймаута) не должен блокировать тик дольше
+// бюджета — тот же контракт, что host.Evaluator.
 func TestEvaluatorTickBudgetAbortsHungTick(t *testing.T) {
 	rules := &fakeRuleLister{block: true}
 	// Interval мал — бюджет тика упирается в пол (minTickBudget), как у
@@ -388,9 +369,8 @@ func TestEvaluatorTickBudgetAbortsHungTick(t *testing.T) {
 	if rules.calls.Load() == 0 {
 		t.Error("оценщик не звал ListEnabled вовсе — тест не проверяет то, что должен")
 	}
-	// Тик вышел по дедлайну — отметку «последний завершённый проход» он
-	// публиковать не должен, иначе постоянно обрывающийся тик снаружи выглядел
-	// бы здоровым.
+	// Тик вышел по дедлайну — отметку «последний завершённый проход» публиковать не должен, иначе постоянно
+	// обрывающийся тик снаружи выглядел бы здоровым.
 	if got := eval.LastTickUnix(); got != 0 {
 		t.Errorf("LastTickUnix = %d после оборванного по дедлайну тика, want 0", got)
 	}
@@ -399,11 +379,8 @@ func TestEvaluatorTickBudgetAbortsHungTick(t *testing.T) {
 	}
 }
 
-// TestEvaluatorNoDataInWindowLeavesIncidentsAlone — K3-7: пустое окно
-// агрегата (ok=false) — не значение 0, а отсутствие решения: инцидент не
-// открывается и открытый не закрывается. Два правила по одной метрике:
-// «lt 100» ловит ложное ОТКРЫТИЕ (0 < 100 открыло бы инцидент, будь пустое
-// окно нулём), «gt 100» — ложное ЗАКРЫТИЕ (0 <= 95 закрыло бы открытый).
+// Пустое окно агрегата (ok=false) — не значение 0, а отсутствие решения: инцидент не открывается и
+// открытый не закрывается («lt 100» ловит ложное открытие, «gt 100» — ложное закрытие на нуле).
 func TestEvaluatorNoDataInWindowLeavesIncidentsAlone(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -444,7 +421,6 @@ func TestEvaluatorNoDataInWindowLeavesIncidentsAlone(t *testing.T) {
 		Interval: time.Hour,
 	}
 
-	// Ни одной точки: ни одно правило не открывает инцидент, уведомлений нет.
 	eval.Tick(ctx)
 	if _, open, _ := incidents.OpenFor(ctx, below.ID); open {
 		t.Fatalf("lt rule opened an incident on an empty window")
@@ -456,7 +432,6 @@ func TestEvaluatorNoDataInWindowLeavesIncidentsAlone(t *testing.T) {
 		t.Fatalf("empty window produced %d notify jobs, want 0", len(jobs))
 	}
 
-	// 150 > 100: gt-правило открывает инцидент, lt — нет.
 	seedMetricGauge(t, ch, projectID, "cpu", 150, time.Minute)
 	eval.Tick(ctx)
 	if _, open, _ := incidents.OpenFor(ctx, above.ID); !open {
@@ -466,8 +441,6 @@ func TestEvaluatorNoDataInWindowLeavesIncidentsAlone(t *testing.T) {
 		t.Fatalf("open produced %d notify jobs, want 1", len(jobs))
 	}
 
-	// Данные пропали: открытый инцидент остаётся открытым, закрытого не
-	// появляется, уведомлений нет.
 	if err := ch.Exec(ctx, "TRUNCATE TABLE metric_points"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}

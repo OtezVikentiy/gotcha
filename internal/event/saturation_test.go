@@ -5,7 +5,6 @@ import (
 	"testing"
 )
 
-// TestBatcherSaturationEmpty — пустой буфер не насыщен.
 func TestBatcherSaturationEmpty(t *testing.T) {
 	b := NewBatcher(nil)
 	if got := b.Saturation(); got != 0 {
@@ -13,9 +12,6 @@ func TestBatcherSaturationEmpty(t *testing.T) {
 	}
 }
 
-// TestBatcherSaturationRowCap — упор в потолок ПО СТРОКАМ при незанятом
-// байтовом плече: заполненность должна дойти до потолка независимо от
-// байтового плеча.
 func TestBatcherSaturationRowCap(t *testing.T) {
 	b := NewBatcher(nil)
 	b.maxBuf = 4
@@ -28,11 +24,6 @@ func TestBatcherSaturationRowCap(t *testing.T) {
 	}
 }
 
-// TestBatcherSaturationByteCap — упор в потолок ПО БАЙТАМ при незанятом
-// счётном плече: одна тяжёлая строка тяжелее потолка сама по себе не
-// вычищается (trimLocked всегда оставляет хотя бы одну), поэтому байтовое
-// плечо должно быть видно даже когда буфер держит одну строку из тысяч
-// разрешённых по счёту.
 func TestBatcherSaturationByteCap(t *testing.T) {
 	b := NewBatcher(nil)
 	b.maxBuf = 10000
@@ -43,8 +34,6 @@ func TestBatcherSaturationByteCap(t *testing.T) {
 	}
 }
 
-// TestBatcherSaturationPartial — частичное заполнение даёт значение строго
-// между 0 и 1, а не сразу 0 или 1.
 func TestBatcherSaturationPartial(t *testing.T) {
 	b := NewBatcher(nil)
 	b.maxBuf = 10
@@ -58,9 +47,6 @@ func TestBatcherSaturationPartial(t *testing.T) {
 	}
 }
 
-// TestBufSaturationZeroDenominatorIsUnbounded — потолок, выключенный нулём
-// (или отрицательным значением), означает «этим лимитом не ограничены»: вклад
-// в Saturation обязан быть 0, а не деление на ноль/панику/+Inf.
 func TestBufSaturationZeroDenominatorIsUnbounded(t *testing.T) {
 	if got := bufSaturation(5, 0); got != 0 {
 		t.Fatalf("bufSaturation(5, 0) = %v, want 0", got)

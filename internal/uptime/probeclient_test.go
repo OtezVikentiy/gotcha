@@ -12,9 +12,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// fakeCenter — httptest-«центр» для юнит-тестов клиента пробы: раздаёт
-// заранее подготовленные задания на /probe/lease и копит присланные пачки
-// результатов с /probe/results. Никакой БД — только сетевой протокол.
 type fakeCenter struct {
 	mu sync.Mutex
 
@@ -76,7 +73,6 @@ func (c *fakeCenter) snapshot() (leaseCalls int, batches [][]uptime.ResultDTO) {
 	return c.leaseCalls, batches
 }
 
-// waitFor polls cond until true or 5s pass — the client's loop is async.
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -89,8 +85,6 @@ func waitFor(t *testing.T, cond func() bool) {
 	t.Fatal("condition not met in 5s")
 }
 
-// runClient запускает клиента горутиной и гарантирует его остановку к концу
-// теста.
 func runClient(t *testing.T, c *uptime.ProbeClient) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -109,7 +103,6 @@ func runClient(t *testing.T, c *uptime.ProbeClient) {
 	})
 }
 
-// stubChecker — чекер-заглушка (Result без сети), как Checkers-подмена у Runner.
 type stubChecker struct {
 	res    uptime.Result
 	panics bool
@@ -150,9 +143,8 @@ func httpJob(t *testing.T, queueID, monitorID int64, url string) uptime.JobDTO {
 }
 
 func TestProbeClientRunsJobAndPostsResult(t *testing.T) {
-	// Спим несколько миллисекунд: тайминги считаются в целых мс, а ответ по
-	// loopback приходит быстрее, чем за 1 мс, — иначе Total честно был бы 0 и
-	// проверка "тайминги проехали до центра" ничего бы не проверяла.
+	// тайминги считаются в целых мс — без задержки ответ по loopback пришёл бы
+	// быстрее 1мс, и Total честно был бы 0.
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(5 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
@@ -167,8 +159,8 @@ func TestProbeClientRunsJobAndPostsResult(t *testing.T) {
 		ServerURL: srv.URL,
 		Token:     "secret-token",
 		PollEvery: 10 * time.Millisecond,
-		// Цель проверки — loopback-сервер httptest: отключаем SSRF-фильтр,
-		// иначе проверка резалась бы до соединения.
+		// цель — loopback-сервер httptest, без отключения SSRF-фильтра
+		// проверка резалась бы до соединения.
 		AllowPrivateTargets: true,
 	}
 	runClient(t, client)
@@ -207,7 +199,7 @@ func TestProbeClientRunsJobAndPostsResult(t *testing.T) {
 }
 
 func TestProbeClientPostsNothingWhenNoJobs(t *testing.T) {
-	center := &fakeCenter{} // заданий нет вообще
+	center := &fakeCenter{}
 	srv := httptest.NewServer(center.handler())
 	defer srv.Close()
 
@@ -239,7 +231,6 @@ func TestProbeClientSurvivesLeaseServerError(t *testing.T) {
 	}
 	runClient(t, client)
 
-	// Тик, упавший на lease, пропускается — но цикл живёт и стучится снова.
 	waitFor(t, func() bool {
 		calls, _ := center.snapshot()
 		return calls >= 3

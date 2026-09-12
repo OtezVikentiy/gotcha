@@ -168,11 +168,6 @@ func TestJanitorPurgesOldRows(t *testing.T) {
 	}
 }
 
-// TestJanitorSkipsWhenAnotherInstanceHoldsLock — второй экземпляр джанитора
-// не должен начинать чистку параллельно: проверка бьёт по самому механизму
-// exclusivity (advisory lock), держа его на отдельном соединении, как это
-// делала бы соседняя реплика. По образцу
-// TestWorkerSkipsWhenAnotherInstanceHoldsLock (worker_test.go).
 func TestJanitorSkipsWhenAnotherInstanceHoldsLock(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -218,10 +213,6 @@ func TestJanitorSkipsWhenAnotherInstanceHoldsLock(t *testing.T) {
 	}
 }
 
-// TestJanitorOrphanNameParsingIsStrict — разбор имени файла в removeOrphans
-// обязан быть строгим: только "<положительное целое>.<расширение>" считается
-// кандидатом в сироты. Всё остальное — чужие файлы, которые джанитор не
-// вправе трогать, даже если внешне похожи на его формат.
 func TestJanitorOrphanNameParsingIsStrict(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -293,10 +284,6 @@ func TestJanitorRunStopsOnCancel(t *testing.T) {
 	}
 }
 
-// TestJanitorRunFirstPassIsImmediate — первый проход не должен ждать
-// полного Interval: он выполняется до входа в цикл тикера (см. Run), иначе
-// после каждого рестарта чаще Interval (час по умолчанию) диск-бюджет
-// каталога выгрузок не освобождается вовсе.
 func TestJanitorRunFirstPassIsImmediate(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -333,11 +320,6 @@ func TestJanitorRunFirstPassIsImmediate(t *testing.T) {
 	}
 }
 
-// TestJanitorTickRecordsLastTick — K4-4 (аудит перед 1.0): self-метрика
-// живости джанитора (по образцу escalation.Scheduler.LastTickUnix/
-// LastTickSeconds) обязана обновляться после КАЖДОГО завершённого тика, а
-// не оставаться нулевой — иначе умерший или зависший джанитор снаружи
-// выглядит ровно как «нечего чистить».
 func TestJanitorTickRecordsLastTick(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -359,9 +341,6 @@ func TestJanitorTickRecordsLastTick(t *testing.T) {
 	}
 }
 
-// TestJanitorTickBudget — K4-4: дедлайн тика — доля Interval, но не меньше
-// пола minTickBudget (по образцу escalation.Scheduler.tickBudget), иначе
-// повисшая PG-операция держала бы тик (и self-метрику живости) бесконечно.
 func TestJanitorTickBudget(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -382,25 +361,6 @@ func TestJanitorTickBudget(t *testing.T) {
 	}
 }
 
-// TestJanitorUnlockSurvivesCancelledContext — K4-5 (аудит перед 1.0), по
-// образцу TestWorkerDoesNotWarnOnAdvisoryUnlockDuringShutdown (worker_test.go):
-// снятие advisory lock в Tick() обязано идти через detachTimeout(ctx), а не
-// ctx напрямую — ctx тика мог уже истечь (tickBudget, K4-4) или быть отменён
-// снаружи к моменту, когда отработавший тик доходит до отложенного
-// pg_advisory_unlock. Без детача это не оставляет лок висеть НАВСЕГДА (лок
-// сессионный — соединение его так или иначе освободит), но каждый такой тик
-// пишет WARN "снятие advisory lock" в лог — фоновый шум, приучающий
-// оператора игнорировать предупреждения на каждом рестарте/деплое.
-//
-// Отменить ctx РОВНО в момент, когда Tick уже взял лок (раньше — Pool.Acquire
-// с уже отменённым ctx свалится, не дойдя до лока вовсе), нужно детерминиро-
-// ванно, а не гонкой опроса (та ловит момент удержания лока ненадёжно —
-// единичный Tick на тёплом соединении укладывается в считанные микросекунды,
-// и внешний опрос может ни разу не попасть в это окно). Вместо гонки —
-// триггер на UPDATE export_jobs, который держит запрос MarkExpired (внутри
-// expireDue, вызывается ПОСЛЕ взятия лока) секундной паузой pg_sleep: лок
-// гарантированно удержан всю эту секунду, и отмена ctx в любой момент
-// внутри неё детерминированно попадает в нужное окно.
 func TestJanitorUnlockSurvivesCancelledContext(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -408,8 +368,6 @@ func TestJanitorUnlockSurvivesCancelledContext(t *testing.T) {
 	dir := t.TempDir()
 	projectID, userID := seedProjectAndUser(t, pool)
 
-	// Истёкшая заявка с файлом — сигнал, что реальная работа (expireDue)
-	// действительно происходит, а не только формально проходит Tick.
 	id := mustEnqueueKind(t, st, projectID, userID, KindIssues, FormatCSV)
 	if _, err := pool.Exec(ctx, `UPDATE export_jobs SET status='done', finished_at = now(),
 		expires_at = now() - interval '1 hour' WHERE id = $1`, id); err != nil {
@@ -420,10 +378,8 @@ func TestJanitorUnlockSurvivesCancelledContext(t *testing.T) {
 		t.Fatalf("запись файла: %v", err)
 	}
 
-	// Триггер держит ЛЮБОЙ UPDATE export_jobs секундной паузой — ровно тот
-	// момент, когда expireDue (внутри уже взятого лока) вызывает
-	// Store.MarkExpired. База уникальна для этого теста (testenv.MigratedPG),
-	// поэтому триггер никак не задевает остальные тесты пакета.
+	// Триггер держит любой UPDATE export_jobs секундной паузой — ровно тот
+	// момент, когда expireDue вызывает Store.MarkExpired.
 	if _, err := pool.Exec(ctx, `CREATE OR REPLACE FUNCTION test_delay_export_jobs_update()
 		RETURNS trigger AS $$ BEGIN PERFORM pg_sleep(1); RETURN NEW; END; $$ LANGUAGE plpgsql`); err != nil {
 		t.Fatalf("создание функции задержки: %v", err)
@@ -445,9 +401,7 @@ func TestJanitorUnlockSurvivesCancelledContext(t *testing.T) {
 	tickDone := make(chan error, 1)
 	go func() { tickDone <- jan.Tick(tctx) }()
 
-	// 200мс — далеко внутри секундной паузы триггера (Acquire+lock+
-	// DueForExpiry+os.Remove успевают пройти на порядок быстрее), с большим
-	// запасом в обе стороны.
+	// 200мс — далеко внутри секундной паузы триггера, с большим запасом в обе стороны.
 	time.Sleep(200 * time.Millisecond)
 	cancel()
 
@@ -468,10 +422,7 @@ func TestJanitorUnlockSurvivesCancelledContext(t *testing.T) {
 		t.Errorf("снятие advisory lock залогировало WARN при отменённом ctx: %s", logBuf.String())
 	}
 
-	// Следующий Tick с живым ctx обязан реально взять лок и отработать —
-	// файл истёкшей заявки обязан исчезнуть (по образцу
-	// TestJanitorRunFirstPassIsImmediate): если первый Tick лок не снял,
-	// второй тихо выйдет через ветку !locked, и файл останется.
+	// Если первый Tick лок не снял, второй тихо выйдет через ветку !locked, и файл останется.
 	if err := jan.Tick(ctx); err != nil {
 		t.Fatalf("Tick с живым ctx: %v", err)
 	}
@@ -480,15 +431,6 @@ func TestJanitorUnlockSurvivesCancelledContext(t *testing.T) {
 	}
 }
 
-// TestJanitorTickBudgetAbortsHungTick — M6 (аудит перед 1.0, по образцу
-// escalation.TestSchedulerTickBudgetAbortsHungTick): Tick оборачивает ctx в
-// context.WithTimeout(ctx, tickBudget()), а не WithCancel — без дедлайна
-// повисшая PG-операция (здесь — MarkExpired внутри expireDue) держала бы
-// тик (и self-метрику живости) вплоть до завершения самой операции, а не
-// бюджета. Триггер держит UPDATE export_jobs паузой pg_sleep(15) —
-// заведомо дольше tickBudget при Interval: time.Second (бюджет упирается в
-// minTickBudget = 10s) — и правильная реализация обязана оборвать тик
-// ошибкой контекста задолго до того, как пауза закончится сама.
 func TestJanitorTickBudgetAbortsHungTick(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)

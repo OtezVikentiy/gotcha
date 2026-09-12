@@ -81,7 +81,6 @@ CREATE TABLE incidents (
     last_reminded_at timestamptz
 );
 CREATE INDEX incidents_monitor_started_idx ON incidents (monitor_id, started_at DESC);
--- на монитор — не более одного открытого инцидента
 CREATE UNIQUE INDEX incidents_one_open_idx ON incidents (monitor_id) WHERE resolved_at IS NULL;
 
 CREATE TABLE maintenance_windows (

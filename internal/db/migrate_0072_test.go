@@ -10,10 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0072CreatesSLOs — таблицы slos и slo_incidents создаются на базе,
-// где уже есть организация и проект; принимают строки с FK на проект и SLO,
-// заполняют DEFAULT-поля (burn_threshold=14.4, окна burn, enabled) и уходят при
-// откате (DROP TABLE), не задев проект.
 func TestMigrate0072CreatesSLOs(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -39,7 +35,6 @@ func TestMigrate0072CreatesSLOs(t *testing.T) {
 		t.Fatalf("migrate to 72: %v", err)
 	}
 
-	// SLO с FK на проект; DEFAULT-поля заполняются без явных значений.
 	var sloID int64
 	if err := pool.QueryRow(ctx,
 		"INSERT INTO slos (project_id, name, sli_kind, target, window_days) VALUES ($1, 'checkout', 'availability', 0.99, 30) RETURNING id",
@@ -63,7 +58,6 @@ func TestMigrate0072CreatesSLOs(t *testing.T) {
 			burnThreshold, burnLong, burnShort, thresholdMS, enabled, transaction, environment)
 	}
 
-	// Инцидент с FK на SLO и проект; DEFAULT status='open', флаги notified false.
 	var incID int64
 	if err := pool.QueryRow(ctx,
 		"INSERT INTO slo_incidents (slo_id, project_id, burn_rate) VALUES ($1, $2, 20.0) RETURNING id",
@@ -81,7 +75,6 @@ func TestMigrate0072CreatesSLOs(t *testing.T) {
 		t.Fatalf("DEFAULT-поля slo_incidents = (%q, %v, %v), want (open, false, false)", status, notifiedOpen, notifiedClose)
 	}
 
-	// Откат — DROP TABLE обеих таблиц; проект обязан уцелеть.
 	if err := db.MigratePGTo(dsn, 71); err != nil {
 		t.Fatalf("migrate down to 71: %v", err)
 	}

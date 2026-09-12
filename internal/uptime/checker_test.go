@@ -21,8 +21,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// checkerMonitor builds a bare Monitor (no DB) suitable for a pure Checker
-// call — only Kind/TimeoutSeconds/Config matter to checkers.
+// чекеру нужны только Kind/TimeoutSeconds/Config — без БД.
 func checkerMonitor(kind uptime.Kind, timeoutSeconds int, cfg json.RawMessage) uptime.Monitor {
 	return uptime.Monitor{
 		Kind:           kind,
@@ -30,8 +29,6 @@ func checkerMonitor(kind uptime.Kind, timeoutSeconds int, cfg json.RawMessage) u
 		Config:         cfg,
 	}
 }
-
-// --- HTTP ---
 
 func TestHTTPCheckerOK(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -259,10 +256,8 @@ func TestHTTPCheckerTimeout(t *testing.T) {
 	}
 }
 
-// checkWithin runs c.Check in a goroutine and fails the test if it hasn't
-// returned within limit — a checker that lost its per-monitor timeout would
-// otherwise hang the whole package run (TCP SYN retries take minutes, the
-// Go resolver's own retries ~10s) instead of failing one assertion.
+// без своего таймаута чекер может зависнуть на минуты (TCP SYN retries,
+// резолвер ~10с) и повесить весь прогон пакета, а не один тест.
 func checkWithin(t *testing.T, c uptime.Checker, m uptime.Monitor, limit time.Duration) (uptime.Result, time.Duration) {
 	t.Helper()
 	start := time.Now()
@@ -277,8 +272,6 @@ func checkWithin(t *testing.T, c uptime.Checker, m uptime.Monitor, limit time.Du
 	}
 }
 
-// assertTimedOut — общая проверка чекеров на «зависшую» цель: ошибка
-// таймаута, возврат в пределах таймаута монитора плюс запас.
 func assertTimedOut(t *testing.T, got uptime.Result, elapsed time.Duration, m uptime.Monitor) {
 	t.Helper()
 	if got.OK {
@@ -337,8 +330,8 @@ func TestHTTPCheckerTLSFillsSSLExpiresAt(t *testing.T) {
 	if got.SSLExpiresAt == nil {
 		t.Fatalf("SSLExpiresAt is nil, want set")
 	}
-	// Ровно NotAfter сертификата сервера (с точностью до секунды — так его
-	// хранит колонка), а не «какая-то дата в будущем» (K2-8).
+	// ровно NotAfter сертификата (с точностью до секунды, как хранит колонка),
+	// не «какая-то дата в будущем».
 	if want := srv.Certificate().NotAfter; !got.SSLExpiresAt.Truncate(time.Second).Equal(want.Truncate(time.Second)) {
 		t.Errorf("SSLExpiresAt = %v, want the server certificate's NotAfter %v", got.SSLExpiresAt, want)
 	}
@@ -373,9 +366,6 @@ func TestHTTPCheckerBodyCappedAt1MB(t *testing.T) {
 	}
 }
 
-// TestHTTPCheckerBlocksLoopbackWhenPrivateDisallowed — при allowPrivate=false
-// чекер режет соединение к loopback (SSRF-фильтр по умолчанию): результат down
-// с ошибкой блокировки, до сервера запрос не доходит.
 func TestHTTPCheckerBlocksLoopbackWhenPrivateDisallowed(t *testing.T) {
 	var hit bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -402,8 +392,6 @@ func TestHTTPCheckerBlocksLoopbackWhenPrivateDisallowed(t *testing.T) {
 	}
 }
 
-// TestHTTPCheckerAllowsLoopbackWhenPrivateAllowed — при allowPrivate=true
-// фильтр отключён и запрос к loopback доходит.
 func TestHTTPCheckerAllowsLoopbackWhenPrivateAllowed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -423,10 +411,6 @@ func TestHTTPCheckerAllowsLoopbackWhenPrivateAllowed(t *testing.T) {
 	}
 }
 
-// --- TCP ---
-
-// TestTCPCheckerBlocksLoopbackWhenPrivateDisallowed — при allowPrivate=false
-// TCP-чекер режет коннект к loopback: результат down с ошибкой блокировки.
 func TestTCPCheckerBlocksLoopbackWhenPrivateDisallowed(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -480,13 +464,8 @@ func TestTCPCheckerConnectsToLiveListener(t *testing.T) {
 	}
 }
 
-// TestTCPCheckerTimeout (K2-4): цель, которая принимает SYN, но никогда не
-// завершает рукопожатие, — чекер обязан вернуться в пределах таймаута
-// монитора с ошибкой таймаута. Такую цель даёт сокет с listen(backlog=0),
-// у которого очередь accept уже занята одним соединением: следующий SYN
-// ядро молча отбрасывает, и клиент висит в повторных SYN. Без
-// context.WithTimeout в TCPChecker.Check висел бы минуты — это ловит
-// checkWithin, а не ассерт на elapsed.
+// listen(backlog=0) с уже занятой очередью accept — следующий SYN ядро молча
+// отбрасывает, клиент висит в повторных SYN, имитируя зависшее рукопожатие.
 func TestTCPCheckerTimeout(t *testing.T) {
 	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
 	if err != nil {
@@ -506,8 +485,7 @@ func TestTCPCheckerTimeout(t *testing.T) {
 	port := sa.(*syscall.SockaddrInet4).Port
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 
-	// Заполняем очередь accept: первое соединение ядро ещё принимает
-	// (backlog 0 = одно место), после него очередь полна.
+	// backlog 0 — одно место в очереди accept, после этого соединения она полна.
 	filler, err := net.DialTimeout("tcp", addr, 2*time.Second)
 	if err != nil {
 		t.Fatalf("filler dial: %v", err)
@@ -548,41 +526,12 @@ func TestTCPCheckerFailsOnClosedPort(t *testing.T) {
 	}
 }
 
-// --- DNS ---
-
-// fakeDNSHostname — заведомо несуществующее имя для fakeIPResolver.
-//
-// PreferGo=true форсирует чистый Go-резолвер, но для ЛЮБОГО имени (включая
-// "localhost", которое здесь использовалось раньше) он сперва пробует
-// путь "files", т.е. читает /etc/hosts, и только при промахе идёт в DNS.
-// Запись "127.0.0.1 localhost" есть практически везде, так что с реальным
-// "localhost" резолвер находил ответ в /etc/hosts и ни разу не обращался к
-// нашему Dial — весь протокольный разбор ниже был мёртвым кодом, а тест был
-// зелёным не по той причине (заглушка не проверяла ничего). Синтетическое
-// имя с TLD .invalid не может встретиться в /etc/hosts (там нет и не может
-// появиться такой записи), поэтому "files" гарантированно промахивается и
-// путь идёт в DNS — то есть в наш Dial. TLD .invalid к тому же зарезервирован
-// RFC 2606/6761 и никогда не делегируется в реальном DNS, так что даже если
-// тест по ошибке всё-таки попадёт на системный резолвер (а не на fakeIPResolver),
-// имя не разрешится случайно в чей-то настоящий адрес — тест просто упадёт
-// явно, а не тихо проверит не то.
+// TLD .invalid не делегируется в реальном DNS (RFC 2606/6761), поэтому
+// PreferGo гарантированно попадает в наш Dial, а не в /etc/hosts.
 const fakeDNSHostname = "gotcha-fake-dns-test.invalid"
 
-// fakeIPResolver возвращает *net.Resolver, отвечающий на A-запрос hostname
-// заданным ip без обращения к системному резолверу и сети. Приём с подставным
-// Dial уже применяется в check_dns_extra_test.go (там Dial сразу возвращает
-// ошибку, чтобы детерминированно проверить путь отказа) — здесь тот же Dial
-// отвечает по протоколу, чтобы детерминированно проверить путь успеха.
-//
-// Возвращаемый net.Pipe-конец не реализует net.PacketConn, так что резолвер
-// сам выбирает потоковый framing (2-байтовая длина + сообщение) независимо
-// от значения network — это и упрощает fake-сервер до одной ветки кадрирования
-// (см. net.(*Resolver).exchange в стандартной библиотеке: выбор framing идёт
-// по факту реализации интерфейса у Conn, а не по строке "udp"/"tcp").
-//
-// t.Cleanup проверяет, что Dial вообще был вызван: иначе резолвер мог найти
-// ответ в обход заглушки (см. fakeDNSHostname выше), и тест зелёный не по
-// той причине — тихая регрессия такого рода уже случалась с "localhost".
+// net.Pipe не реализует net.PacketConn — резолвер сам выбирает потоковый
+// framing независимо от network, упрощая fake-сервер до одной ветки.
 func fakeIPResolver(t *testing.T, hostname string, ip net.IP) *net.Resolver {
 	t.Helper()
 	var dials atomic.Int32
@@ -603,11 +552,8 @@ func fakeIPResolver(t *testing.T, hostname string, ip net.IP) *net.Resolver {
 	}
 }
 
-// serveFakeDNSAnswer обслуживает ровно один DNS-запрос на conn: резолвер
-// стандартной библиотеки закрывает соединение сразу после одного обмена
-// запрос-ответ (см. net.(*Resolver).exchange), так что цикла на incoming
-// не нужно. Ошибки чтения/записи (закрытый pipe, отменённый контекст)
-// игнорируются — это фоновая горутина, а не тест.
+// резолвер стандартной библиотеки закрывает соединение после одного обмена
+// запрос-ответ — цикл на incoming не нужен.
 func serveFakeDNSAnswer(conn net.Conn, hostname string, ip net.IP) {
 	defer conn.Close()
 
@@ -633,16 +579,8 @@ func serveFakeDNSAnswer(conn net.Conn, hostname string, ip net.IP) {
 	_, _ = conn.Write(out)
 }
 
-// parseDNSQuestion декодирует QNAME (для сверки с ожидаемым hostname), а
-// также возвращает сырые байты вопроса (QNAME+QTYPE+QCLASS) для дословного
-// эха в ответе и сам QTYPE.
-// Границы буфера проверяются на каждом шаге, а не только len(msg) < 12 у
-// вызывающего кода: этот разбор бежит в фоновой горутине сервера теста, и
-// паника там валит весь тестовый бинарник пакета стеком, не указывающим на
-// причину, — вместо неё на любой нехватке байт (обрезанная метка, метки без
-// завершающего нуля, недостаточно байт под QTYPE/QCLASS) возвращается пустой
-// результат: buildDNSAnswer тогда сам соберёт ответ с нулём записей, как на
-// обычный неопознанный запрос.
+// границы буфера проверяются на каждом шаге — паника в этой фоновой горутине
+// валит весь тестовый бинарник пакета; на нехватке байт возвращается пустой результат.
 func parseDNSQuestion(msg []byte) (name string, question []byte, qtype uint16) {
 	var labels []string
 	i := 12
@@ -665,10 +603,7 @@ func parseDNSQuestion(msg []byte) (name string, question []byte, qtype uint16) {
 	return strings.Join(labels, "."), msg[12 : i+4], qtype
 }
 
-// buildDNSAnswer собирает DNS-ответ: заголовок (QR/RD/RA, тот же ID),
-// вопрос эхом и, при совпадении имени и qtype=A(1), одну A-запись с ip.
-// Для остальных типов (в частности AAAA) отвечает NOERROR с ancount=0 —
-// это обычный ответ "нет записи такого типа", а не ошибка.
+// для типов кроме A отвечает NOERROR/ancount=0 — обычный «нет записи», не ошибка.
 func buildDNSAnswer(id uint16, question []byte, qtype uint16, gotName, wantName string, ip net.IP) []byte {
 	const qtypeA = 1
 	var ancount uint16
@@ -693,11 +628,8 @@ func buildDNSAnswer(id uint16, question []byte, qtype uint16, gotName, wantName 
 	return append(msg, answer...)
 }
 
-// TestDNSCheckerTimeout (K2-4): резолвер, который принимает запрос и никогда
-// не отвечает (UDP-сокет, из которого никто не читает), — чекер обязан
-// вернуться в пределах таймаута монитора с ошибкой таймаута. Без
-// context.WithTimeout в DNSChecker.Check ждал бы собственные повторы
-// стандартного резолвера (~10 с) — это ловят checkWithin и ассерт на elapsed.
+// UDP-сокет, из которого никто не читает — резолвер иначе ждал бы свои
+// повторы (~10с); чекер обязан вернуться по таймауту монитора.
 func TestDNSCheckerTimeout(t *testing.T) {
 	silent, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -782,8 +714,6 @@ func TestDNSCheckerNonexistentDomainFails(t *testing.T) {
 		t.Errorf("Error is empty, want a message")
 	}
 }
-
-// --- Dispatcher ---
 
 func TestCheckerForDispatchesByKind(t *testing.T) {
 	cases := []struct {

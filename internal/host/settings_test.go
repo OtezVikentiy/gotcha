@@ -10,9 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// setupSettingsProject — своя заготовка (не переиспользует setupProject из
-// host_test.go): slug должен отличаться, иначе UNIQUE(slug) организаций
-// столкнёт два теста, случайно запущенных в одном пакете.
 func setupSettingsProject(t *testing.T) (*host.SettingsService, int64) {
 	t.Helper()
 	pool := testenv.MigratedPG(t)
@@ -33,9 +30,6 @@ func setupSettingsProject(t *testing.T) (*host.SettingsService, int64) {
 	return host.NewSettingsService(pool), projectID
 }
 
-// TestSettingsServiceGetWithoutRowReturnsDefaults — строки для проекта ещё
-// нет (ленивое создание при первом Save) → Get отдаёт DefaultSettings(), а
-// не ошибку.
 func TestSettingsServiceGetWithoutRowReturnsDefaults(t *testing.T) {
 	svc, projectID := setupSettingsProject(t)
 	ctx := context.Background()
@@ -49,8 +43,6 @@ func TestSettingsServiceGetWithoutRowReturnsDefaults(t *testing.T) {
 	}
 }
 
-// TestSettingsServiceSaveThenGetRoundTrips — Save нестандартных значений →
-// Get возвращает ровно их же (не дефолты).
 func TestSettingsServiceSaveThenGetRoundTrips(t *testing.T) {
 	svc, projectID := setupSettingsProject(t)
 	ctx := context.Background()
@@ -78,9 +70,6 @@ func TestSettingsServiceSaveThenGetRoundTrips(t *testing.T) {
 	}
 }
 
-// TestSettingsServiceGetWithExists — признак наличия строки (M2): без Save
-// exists=false и DefaultSettings(), после Save — exists=true и сохранённые
-// значения (даже если они совпадают с дефолтом).
 func TestSettingsServiceGetWithExists(t *testing.T) {
 	svc, projectID := setupSettingsProject(t)
 	ctx := context.Background()
@@ -111,9 +100,6 @@ func TestSettingsServiceGetWithExists(t *testing.T) {
 	}
 }
 
-// TestSettingsServiceSaveUpsertsOnSecondCall — повторный Save того же
-// проекта обновляет строку (ON CONFLICT DO UPDATE), а не плодит вторую и не
-// падает на PK-конфликте.
 func TestSettingsServiceSaveUpsertsOnSecondCall(t *testing.T) {
 	svc, projectID := setupSettingsProject(t)
 	ctx := context.Background()
@@ -140,9 +126,6 @@ func TestSettingsServiceSaveUpsertsOnSecondCall(t *testing.T) {
 	}
 }
 
-// TestSettingsServiceSaveRejectsInvalid — Save с невалидными значениями не
-// должен долетать до БД: Validate отсекает их раньше и с различимой
-// ошибкой (нужно для FormState — какое конкретно поле подсветить).
 func TestSettingsServiceSaveRejectsInvalid(t *testing.T) {
 	svc, projectID := setupSettingsProject(t)
 	ctx := context.Background()
@@ -163,9 +146,6 @@ func TestSettingsServiceSaveRejectsInvalid(t *testing.T) {
 			wantErr: host.ErrInvalidSilentAfter,
 		},
 		{
-			// Верхняя граница: порог, сравнимый с окном активных хостов
-			// (сутки), не сработал бы никогда, а введённое в форму «много»
-			// переполняло бы колонку int4 пятисоткой вместо 422.
 			name:    "silent выше максимума 12ч",
 			mutate:  func(s *host.Settings) { s.SilentAfter = 13 * time.Hour },
 			wantErr: host.ErrInvalidSilentAfter,
@@ -176,9 +156,7 @@ func TestSettingsServiceSaveRejectsInvalid(t *testing.T) {
 			wantErr: host.ErrInvalidDiskThreshold,
 		},
 		{
-			// 100% — мёртвый порог: applyDecision сравнивает строго «>», а
-			// занятость диска не бывает больше 1.0; валидатор не пропускает
-			// значение, которое оценщик не смог бы использовать (K3-2).
+			// 100% — мёртвый порог: applyDecision сравнивает строго «>», занятость диска не бывает больше 1.0.
 			name:    "диск ровно 1.0 — мёртвый порог",
 			mutate:  func(s *host.Settings) { s.DiskThreshold = 1.0 },
 			wantErr: host.ErrInvalidDiskThreshold,
@@ -220,8 +198,6 @@ func TestSettingsServiceSaveRejectsInvalid(t *testing.T) {
 				t.Fatalf("Save(%+v) err = %v, want errors.Is(_, %v)", s, err, tc.wantErr)
 			}
 
-			// Отвергнутый Save не должен создать строку — следующий Get всё
-			// ещё обязан отдавать дефолты.
 			got, getErr := svc.Get(ctx, projectID)
 			if getErr != nil {
 				t.Fatalf("Get после отвергнутого Save: %v", getErr)
@@ -233,9 +209,6 @@ func TestSettingsServiceSaveRejectsInvalid(t *testing.T) {
 	}
 }
 
-// TestSettingsServiceValidateAcceptsBoundaries — граничные значения обязаны
-// проходить: 180с силент, диск/память=0.99 (максимум формы, 99%; 1.0 —
-// мёртвый порог, см. Validate), минимальный положительный load.
 func TestSettingsServiceValidateAcceptsBoundaries(t *testing.T) {
 	s := host.DefaultSettings()
 	s.SilentAfter = host.MinSilentAfter
@@ -248,19 +221,12 @@ func TestSettingsServiceValidateAcceptsBoundaries(t *testing.T) {
 	}
 }
 
-// TestMinSilentAfterValue — константа зафиксирована в брифе как 180с
-// (инвариант ≥3× троттлинга Toucher 60с); тест ловит случайную правку числа.
 func TestMinSilentAfterValue(t *testing.T) {
 	if host.MinSilentAfter != 180*time.Second {
 		t.Fatalf("MinSilentAfter = %v, want 180s", host.MinSilentAfter)
 	}
 }
 
-// TestKindEnabledKnowsEveryKind — сторож ревью I2: KindEnabled обязан знать
-// КАЖДЫЙ вид из Kinds. Незнакомый вид отдаёт ok=false, и вызывающий его
-// пропускает — то есть новый вид, добавленный в Kinds без строки в switch,
-// молча выпал бы из «закрыть инциденты выключенного порога», а не сломался
-// заметно.
 func TestKindEnabledKnowsEveryKind(t *testing.T) {
 	s := host.DefaultSettings()
 	for _, kind := range host.Kinds {
@@ -278,8 +244,6 @@ func TestKindEnabledKnowsEveryKind(t *testing.T) {
 	}
 }
 
-// TestKindEnabledFollowsFlags — KindEnabled читает именно свой флаг вида, а не
-// соседний (перепутанный case в switch иначе прошёл бы незамеченным).
 func TestKindEnabledFollowsFlags(t *testing.T) {
 	for _, tc := range []struct {
 		kind    string

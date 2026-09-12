@@ -12,28 +12,12 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/incidentgroup"
 )
 
-// Этот файл защищает пользовательские тексты D3 (лента инцидентов, подавление
-// шторма, история SLO) от тихого расхождения с реальным поведением кода —
-// ревью R7 нашло, что ни один тест не падал ни при подмене feed.section.closed,
-// ни при неточной формулировке alert_suppression.intro.scope. В отличие от
-// пары `strings.Contains(out, i18n.T(ctx, key))`, которая самотавтологична
-// (обе стороны читают один и тот же JSON и мутация ключа не ловится), здесь
-// ожидаемые фразы зашиты литералом — подмена значения ключа в locales/*.json
-// обязана уронить соответствующий ассерт.
+// тексты — литералом, не strings.Contains(out, i18n.T(ctx,key)): тот ассерт самотавтологичен.
+// обе стороны читают один JSON — подмена ключа таким ассертом не ловится, литералом — падает.
 
-// TestOverviewSectionHeadingsAreLiteral — заголовки трёх секций «Обзора»
-// (открытые группы / вне групп / недавно решённые) и подпись окна закрытых —
-// литералами, а не через i18n.T, иначе подмена значения ключа в JSON не
-// ловится тестом (см. регрессию feed.section.closed из ревью R7). Открытые
-// группы непустые (см. openGroups ниже) — иначе рендер ушёл бы в ветку
-// «проект совсем пуст» (задача 6 nav-ia) и заголовки секций не появились бы
-// вовсе.
+// openGroups непустые — иначе рендер ушёл бы в ветку «пусто», и заголовки секций не появились бы.
 func TestOverviewSectionHeadingsAreLiteral(t *testing.T) {
-	// Значения — те же, что реально уходят из overview.go в проде
-	// (incidentgroup.MaxOpenGroups/MaxOpenOutOfGroup, overviewClosedGroupsLimit/
-	// overviewClosedOutOfGroupLimit — все 50 сегодня, R4 W7/W8): нулевой FeedCaps{}
-	// напечатал бы "не больше 0", это не защитило бы от регрессии текста на
-	// реалистичных числах.
+	// значения как в проде — нулевой FeedCaps{} напечатал бы «не больше 0», не ловя регрессию текста.
 	caps := FeedCaps{OpenGroups: 50, OutOfGroup: 50, ClosedGroups: 50, ClosedItems: 50}
 	openGroups := []GroupCard{NewGroupCard(
 		incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "host", StartedAt: time.Now()}, RootName: "gw-1"},
@@ -73,8 +57,6 @@ func TestOverviewSectionHeadingsAreLiteral(t *testing.T) {
 		}
 	}
 
-	// Смоук на непустой состав: заголовок закрытой группы и метка "решена"
-	// рендерятся, а не только заголовки секций.
 	resolved := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
 	group := NewGroupCard(incidentgroup.GroupRow{
 		Group:    incidentgroup.Group{ID: 1, RootSource: "host", StartedAt: resolved.Add(-time.Hour), ResolvedAt: &resolved},
@@ -89,8 +71,6 @@ func TestOverviewSectionHeadingsAreLiteral(t *testing.T) {
 	}
 }
 
-// TestUptimeIncidentsSeeFeedHintIsLiteral — подсказка-ссылка на общую ленту
-// со страницы аптайм-инцидентов: обе половины (до и после ссылки) литералом.
 func TestUptimeIncidentsSeeFeedHintIsLiteral(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	var sb strings.Builder
@@ -116,13 +96,8 @@ func TestUptimeIncidentsSeeFeedHintIsLiteral(t *testing.T) {
 	}
 }
 
-// TestAlertSuppressionScopeDescribesInformingAndSilentRoots — W26: текст
-// подсказки обязан честно описывать ОБА случая гейта D3 (host/incident.go,
-// OpenUnacked): под информирующим корнем уведомление ребёнка придерживается
-// на всё время, пока группа открыта; под немым корнем ребёнок шлёт первое
-// уведомление сам, и только дальнейшая эскалация ждёт закрытия группы. Тест
-// обязан упасть, если текст снова схлопнет оба случая в один (как было до
-// фикс-раунда R7b).
+// текст обязан различать оба случая гейта (host/incident.go, OpenUnacked): под информирующим корнем
+// уведомление ребёнка ждёт закрытия группы, под немым — первое уходит сразу, ждёт только эскалация.
 func TestAlertSuppressionScopeDescribesInformingAndSilentRoots(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	var sb strings.Builder
@@ -161,11 +136,7 @@ func TestAlertSuppressionScopeDescribesInformingAndSilentRoots(t *testing.T) {
 	}
 }
 
-// TestSLOHistoryResolvedLabelsSayResolvedNotClosed — W31: терминология
-// «решён», не «закрыт» — та же метка, что uptime.incident.status_resolved,
-// feed.group.resolved и metrics.alerts.status.resolved. Регрессия закрытых
-// ru.json-ключей slo.detail.incident_resolved/col_resolved на "Закрыт" не
-// ловилась ни одним тестом.
+// терминология «решён», не «закрыт» — та же метка, что у uptime/feed/metrics-alerts статусов.
 func TestSLOHistoryResolvedLabelsSayResolvedNotClosed(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	started := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
@@ -191,15 +162,8 @@ func TestSLOHistoryResolvedLabelsSayResolvedNotClosed(t *testing.T) {
 	}
 }
 
-// TestOverviewSeeIncidentsHintIsLiteral — хинт под <h1>Обзор обязан
-// описывать содержимое (открытые группы + вне групп + недавно закрытое), а
-// не заявлять конкретный срок ("за последние сутки") — задача 6 nav-ia
-// сделала окно «недавно решённые» выбираемым (24ч/7д), и хинт, зашитый под
-// один срок, начал бы врать при выборе другого (та же болезнь, что чинил
-// исходный R7 у зеркального хинта страницы /incidents,
-// uptime.incidents.see_feed_hint). Литералом, а не
-// strings.Contains(out, i18n.T(...)), иначе подмена значения ключа в JSON не
-// ловится (см. докблок файла).
+// хинт описывает содержимое, не срок — окно «недавно решённые» теперь выбираемое (24ч/7д).
+// литералом, не через i18n.T — иначе подмена значения ключа не ловится (см. верх файла).
 func TestOverviewSeeIncidentsHintIsLiteral(t *testing.T) {
 	caps := FeedCaps{OpenGroups: 50, OutOfGroup: 50, ClosedGroups: 50, ClosedItems: 50}
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
@@ -232,24 +196,12 @@ func TestOverviewSeeIncidentsHintIsLiteral(t *testing.T) {
 	}
 }
 
-// TestOverviewClosedEmptyBodyHasNoStaleCap — R9 хвост: feed.closed.empty.body
-// раньше хардкодил "(не больше 50)" отдельно от подписи секции closed,
-// которая печатает число из FeedCaps. При потолке 17 подпись секции сказала
-// бы 17, а пустое состояние продолжило бы обещать 50 — ровно та болезнь, что
-// чинил W8 на соседнем ключе (задача 6 nav-ia решила её радикальнее: текст
-// пустого состояния больше не называет число вовсе, только «за выбранное
-// окно» — здесь фиксируем, что оно и не начнёт называть). Открытые группы
-// непустые (см. openGroups) — иначе рендер ушёл бы в ветку «проект совсем
-// пуст» и секция closed с её подписью не появилась бы вовсе. Проверяем на
-// нестандартном потолке (17, не 50), чтобы совпадение с дефолтным числом не
-// маскировало регрессию.
+// потолок нестандартный (17, не 50) — совпадение с дефолтом замаскировало бы регрессию текста.
+// openGroups непустые — иначе рендер ушёл бы в ветку «пусто», и секция closed не появилась бы.
 func TestOverviewClosedEmptyBodyHasNoStaleCap(t *testing.T) {
 	caps := FeedCaps{OpenGroups: 0, OutOfGroup: 0, ClosedGroups: 17, ClosedItems: 17}
 	openGroups := []GroupCard{NewGroupCard(
-		// Фиксированное время без "50" ни в одном поле (секунды/минуты/год —
-		// ни один не рендерится как "50"): StartedAt печатается в
-		// <time datetime="…">, и live time.Now() иногда попадал ровно на
-		// :50 секунд/минут, роняя ассерт на потолок ниже флаком, не багом.
+		// время без «50» ни в одном поле — иначе live time.Now() иногда флакует на :50 секунд/минут.
 		incidentgroup.GroupRow{Group: incidentgroup.Group{RootSource: "host", StartedAt: time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)}, RootName: "gw-1"},
 		[]incidentgroup.FeedItem{{Source: "host"}},
 	)}
@@ -262,10 +214,7 @@ func TestOverviewClosedEmptyBodyHasNoStaleCap(t *testing.T) {
 	if !strings.Contains(out, "групп не больше 17, отдельных инцидентов не больше 17") {
 		t.Errorf("Overview не отражает потолок 17 в подписи секции closed: %s", out)
 	}
-	// Сама фраза устаревшего потолка ("(не больше 50)", захардкоженного в
-	// feed.closed.empty.body до задачи 6 nav-ia), а не голое "50" — то
-	// совпадает с чем угодно на странице (id, порт, случайная цифра в любом
-	// другом числе), не только с текстом пустого состояния closed.
+	// фраза целиком, не голое «50» — то совпало бы с чем угодно на странице (id, порт, другая цифра).
 	if strings.Contains(out, "не больше 50") {
 		t.Errorf("Overview содержит устаревшую фразу потолка «не больше 50» (пустое состояние closed разъехалось с FeedCaps): %s", out)
 	}

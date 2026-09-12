@@ -12,7 +12,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// queued — стоит ли заявка на очистку телеметрии проекта.
 func queued(t *testing.T, pool *pgxpool.Pool, projectID int64) bool {
 	t.Helper()
 	var ok bool
@@ -24,9 +23,6 @@ func queued(t *testing.T, pool *pgxpool.Pool, projectID int64) bool {
 	return ok
 }
 
-// TestDeleteProjectEnqueuesPurge — заявка на очистку ClickHouse обязана
-// появиться той же транзакцией, что удаляет проект: без неё телеметрия
-// становится неадресуемой (идентификатора проекта после каскада нет нигде).
 func TestDeleteProjectEnqueuesPurge(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)
@@ -51,9 +47,6 @@ func TestDeleteProjectEnqueuesPurge(t *testing.T) {
 	}
 }
 
-// TestDeleteProjectMissingLeavesNoRequest — удаление несуществующего проекта
-// не должно оставлять заявку: откат транзакции снимает и вставку. Иначе
-// исполнитель гонял бы восемь мутаций по проекту, которого не было.
 func TestDeleteProjectMissingLeavesNoRequest(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)
@@ -69,9 +62,6 @@ func TestDeleteProjectMissingLeavesNoRequest(t *testing.T) {
 	}
 }
 
-// TestDeleteOrgEnqueuesPurgeForEveryProject — заявки ставятся ДО удаления,
-// выборкой по org_id: каскад уничтожает строки projects, и после него
-// идентификаторы узнать неоткуда.
 func TestDeleteOrgEnqueuesPurgeForEveryProject(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)
@@ -105,9 +95,6 @@ func TestDeleteOrgEnqueuesPurgeForEveryProject(t *testing.T) {
 	}
 }
 
-// TestDeleteOrgMissingLeavesNoRequest — удаление несуществующей организации
-// заявок не оставляет (проектов у неё нет, но проверка фиксирует, что откат
-// работает и на этом пути).
 func TestDeleteOrgMissingLeavesNoRequest(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)

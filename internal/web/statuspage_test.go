@@ -23,9 +23,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// statusPageStack — стенд публичной статус-страницы и её настроек: как
-// monitorsStack (PG + CH: странице нужны Bars/Uptime из ClickHouse), но с
-// собственными хелперами создания проекта и мониторов.
 type statusPageStack struct {
 	pool   *pgxpool.Pool
 	srv    *httptest.Server
@@ -78,8 +75,6 @@ func (s *statusPageStack) flush(t *testing.T) {
 	}
 }
 
-// statusPageProject — организация с owner/admin/member и проектом, к которому
-// member имеет доступ только на просмотр (через команду).
 func statusPageProject(t *testing.T, s *statusPageStack, prefix string) (org.Project, *http.Cookie, *http.Cookie) {
 	t.Helper()
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, prefix+"-owner@example.com")
@@ -100,8 +95,6 @@ func statusPageProject(t *testing.T, s *statusPageStack, prefix string) (org.Pro
 	return proj, ownerCookie, memberCookie
 }
 
-// statusPageMonitor создаёт HTTP-монитор с URL, которого НЕ должно быть в
-// публичном HTML (см. TestWebStatusPagePublicHidesInternals).
 func statusPageMonitor(t *testing.T, s *statusPageStack, projectID int64, name, target string) uptime.Monitor {
 	t.Helper()
 	m := baseMonitor(projectID, name)
@@ -121,9 +114,6 @@ func getAnon(t *testing.T, srv *httptest.Server, path string) (int, string) {
 	return resp.StatusCode, string(body)
 }
 
-// TestWebStatusPagePublicHidesInternals — аноним видит страницу (200) с
-// display_name мониторов и SVG-полоской, но НИ ОДНОГО внутреннего факта:
-// ни URL монитора, ни его настоящего имени, ни текста последней ошибки.
 func TestWebStatusPagePublicHidesInternals(t *testing.T) {
 	s := newStatusPageStack(t)
 	proj, _, _ := statusPageProject(t, s, "sppublic")
@@ -161,8 +151,6 @@ func TestWebStatusPagePublicHidesInternals(t *testing.T) {
 			t.Fatalf("public status page missing %q: %s", want, body)
 		}
 	}
-	// Утечки внутренностей: URL монитора, его настоящее имя, имя проекта и
-	// организации не должны попадать в публичный HTML.
 	for _, leak := range []string{"example.com", "checkout-api-prod", "billing-db-primary", "sppublic-proj", "sppublic Proj", "/projects/", "/monitors/"} {
 		if strings.Contains(body, leak) {
 			t.Fatalf("public status page leaks %q: %s", leak, body)
@@ -170,8 +158,6 @@ func TestWebStatusPagePublicHidesInternals(t *testing.T) {
 	}
 }
 
-// TestWebStatusPagePartialOutage — один из двух мониторов в down: общий
-// статус «Partial outage», а текст ошибки (в нём хост/IP) не рендерится.
 func TestWebStatusPagePartialOutage(t *testing.T) {
 	s := newStatusPageStack(t)
 	proj, _, _ := statusPageProject(t, s, "sppartial")
@@ -214,9 +200,6 @@ func TestWebStatusPagePartialOutage(t *testing.T) {
 	}
 }
 
-// TestWebStatusPageDisabledAndUnknown404 — выключенная страница и
-// неизвестный ключ дают одинаковую 404; отрицательный ответ не кешируется
-// (создав страницу с тем же ключом, тут же получаем 200).
 func TestWebStatusPageDisabledAndUnknown404(t *testing.T) {
 	s := newStatusPageStack(t)
 	proj, _, _ := statusPageProject(t, s, "spoff")
@@ -229,9 +212,6 @@ func TestWebStatusPageDisabledAndUnknown404(t *testing.T) {
 		t.Fatalf("create status page: %v", err)
 	}
 
-	// public_id генерируется сервером, поэтому «неизвестный ключ» этого
-	// теста — фиксированная строка того же формата, заведомо не совпадающая
-	// ни с одним настоящим public_id.
 	const missingKey = "p_0000000000000000000missing"
 
 	if status, body := getAnon(t, s.srv, "/status/"+spOff.PublicID); status != http.StatusNotFound {
@@ -241,10 +221,6 @@ func TestWebStatusPageDisabledAndUnknown404(t *testing.T) {
 		t.Fatalf("GET unknown key = %d, want 404: %s", status, body)
 	}
 
-	// 404 не кешируется: страница, созданная сразу после промаха С ТЕМ ЖЕ
-	// ключом (вставлена напрямую в БД — обычный CreateStatusPage сам выбирает
-	// public_id и не даёт задать конкретное значение, см. его докблок), тут
-	// же видна.
 	if _, err := s.pool.Exec(context.Background(), `
 		INSERT INTO status_pages (project_id, public_id, title, enabled)
 		VALUES ($1, $2, $3, true)`, proj.ID, missingKey, "Now Exists"); err != nil {
@@ -259,9 +235,6 @@ func TestWebStatusPageDisabledAndUnknown404(t *testing.T) {
 	}
 }
 
-// TestWebStatusPageCached — успешный ответ кешируется на 30 секунд: правка
-// display_name в БД сразу после первого запроса не видна во втором (тот же
-// байт-в-байт HTML), то есть повторный запрос не ходил ни в PG, ни в CH.
 func TestWebStatusPageCached(t *testing.T) {
 	s := newStatusPageStack(t)
 	proj, _, _ := statusPageProject(t, s, "spcache")
@@ -297,21 +270,8 @@ func TestWebStatusPageCached(t *testing.T) {
 	}
 }
 
-// statusPageStampedeRequests — сколько параллельных анонимных запросов бьёт в
-// холодный slug в TestWebStatusPageStampede.
 const statusPageStampedeRequests = 24
 
-// TestWebStatusPageStampede — на холодном (или только что протухшем) slug'е
-// страницу собирает РОВНО ОДИН запрос, остальные ждут его результат: публичный
-// роут без аутентификации, и без single-flight аноним с десятком параллельных
-// соединений множил бы на десять всю сборку (~5 запросов в PG/CH на каждый
-// монитор) каждые 30 секунд.
-//
-// Сборки считаются по числу обращений к пулу PG (pgxpool.Stat().AcquireCount —
-// сборка ходит в PG на каждом шаге, а на этот роут анонимом больше никто в PG
-// не ходит): сначала меряем цену ровно одной сборки на «прогревочной» странице
-// той же формы, потом стучимся statusPageStampedeRequests раз параллельно в
-// холодную. Без single-flight цена вырастет примерно в 24 раза.
 func TestWebStatusPageStampede(t *testing.T) {
 	s := newStatusPageStack(t)
 	proj, _, _ := statusPageProject(t, s, "spflight")
@@ -324,8 +284,6 @@ func TestWebStatusPageStampede(t *testing.T) {
 		})
 	}
 
-	// Две страницы одной формы: warm — эталон цены одной сборки, cold —
-	// мишень штурма.
 	publicID := make(map[string]string, 2)
 	for _, label := range []string{"spflight-warm", "spflight-cold"} {
 		sp, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
@@ -373,7 +331,6 @@ func TestWebStatusPageStampede(t *testing.T) {
 	close(start)
 	wg.Wait()
 
-	// Все запросы получили корректную страницу.
 	for i := range statusPageStampedeRequests {
 		if statuses[i] != http.StatusOK {
 			t.Fatalf("concurrent GET #%d = %d, want 200: %s", i, statuses[i], bodies[i])
@@ -383,8 +340,7 @@ func TestWebStatusPageStampede(t *testing.T) {
 		}
 	}
 
-	// ...и собрана она была один раз: запас в 2× покрывает служебный шум пула,
-	// но и близко не покрывает 24 независимых сборки.
+	// запас 2× покрывает шум пула, не 24 независимые сборки.
 	spent := s.pool.Stat().AcquireCount() - before
 	if spent > 2*oneBuild {
 		t.Fatalf("%d concurrent requests spent %d PG acquires (one build = %d): the cache is not single-flight",
@@ -392,10 +348,6 @@ func TestWebStatusPageStampede(t *testing.T) {
 	}
 }
 
-// TestWebStatusPagesForeignMonitorRejected — монитор ЧУЖОГО проекта, отправленный
-// в форму создания статус-страницы, не привязывается к ней и не появляется на
-// публичной странице (граница проекта: parseStatusPageForm принимает только
-// мониторы своего проекта).
 func TestWebStatusPagesForeignMonitorRejected(t *testing.T) {
 	s := newStatusPageStack(t)
 	proj, ownerCookie, _ := statusPageProject(t, s, "spforeign")
@@ -449,9 +401,6 @@ func TestWebStatusPagesForeignMonitorRejected(t *testing.T) {
 	}
 }
 
-// TestWebStatusPagesForeignOrigin — все три POST'а настроек статус-страниц
-// закрыты sameOrigin: запрос с чужим Origin (CSRF) отвергается 403 и ничего не
-// меняет.
 func TestWebStatusPagesForeignOrigin(t *testing.T) {
 	s := newStatusPageStack(t)
 	proj, ownerCookie, _ := statusPageProject(t, s, "sporigin")
@@ -494,9 +443,6 @@ func TestWebStatusPagesForeignOrigin(t *testing.T) {
 	}
 }
 
-// TestWebStatusPagesSettingsCRUD — admin создаёт страницу, видит публичный
-// URL, ловит 422 на пустой заголовок (с сохранением введённых значений),
-// правит display_name и удаляет страницу.
 func TestWebStatusPagesSettingsCRUD(t *testing.T) {
 	s := newStatusPageStack(t)
 	proj, ownerCookie, _ := statusPageProject(t, s, "spcrud")
@@ -504,7 +450,6 @@ func TestWebStatusPagesSettingsCRUD(t *testing.T) {
 
 	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/statuspages"
 
-	// GET: форма создания со списком мониторов проекта.
 	resp := getWithCookie(t, s.srv, path, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -533,15 +478,11 @@ func TestWebStatusPagesSettingsCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status pages of: %v", err)
 	}
-	// Форма не шлёт slug вовсе (задача 4 плана): публичный адрес —
-	// сгенерированный public_id, страница из БД возвращается с ним.
 	if len(pages) != 1 || pages[0].Title != "CRUD Status" || pages[0].PublicID == "" || !pages[0].Enabled {
 		t.Fatalf("pages = %+v, want single enabled CRUD Status with a public_id", pages)
 	}
 	pageID := pages[0].ID
 
-	// GET: ссылка на публичный URL (по public_id) и текущий display_name в
-	// форме редактирования.
 	resp = getWithCookie(t, s.srv, path, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -552,12 +493,6 @@ func TestWebStatusPagesSettingsCRUD(t *testing.T) {
 		t.Fatalf("edit form must prefill display_name: %s", body)
 	}
 
-	// Невалидная форма (пустой заголовок -> uptime.ErrInvalidStatusPage,
-	// см. validateStatusPage) -> 422, введённые значения сохранены, вторая
-	// страница не создана. Прежний повод для 422 здесь — занятый/невалидный
-	// slug — исчез вместе с полем формы (задача 4 плана) и с самим полем
-	// StatusPage.Slug (T5, миграция 0063): единственная оставшаяся проверка
-	// формы — непустой title.
 	invalid := url.Values{
 		"title":       {""},
 		"description": {"Another Status"},
@@ -581,7 +516,6 @@ func TestWebStatusPagesSettingsCRUD(t *testing.T) {
 		t.Fatalf("len(pages) = %d, want 1 (422 must not persist)", len(pages))
 	}
 
-	// Update: новый display_name виден на публичной странице.
 	updatePath := "/statuspages/" + strconv.FormatInt(pageID, 10)
 	update := url.Values{
 		"title":    {"CRUD Status"},
@@ -600,7 +534,6 @@ func TestWebStatusPagesSettingsCRUD(t *testing.T) {
 		t.Fatalf("public page after update = %d: %s", status, pub)
 	}
 
-	// Delete.
 	resp = postForm(t, s.srv, updatePath+"/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -616,13 +549,6 @@ func TestWebStatusPagesSettingsCRUD(t *testing.T) {
 	}
 }
 
-// TestWebStatusPagesSettingsStrangerBoundary — с задачи 4 (спека
-// cld/plans/2026-08-08-access-model-rework.md) участник команды проекта —
-// оператор, а не «member без доступа»: позитивный сценарий (правит контент,
-// не публикацию) закреплён TestWebStatusPageOperator. Здесь остаётся граница
-// «чужак»: пользователь без ЛЮБОГО отношения к организации получает 404 на
-// настройках, и владелец ДРУГОЙ организации не может тронуть чужую страницу
-// по прямому id.
 func TestWebStatusPagesSettingsStrangerBoundary(t *testing.T) {
 	s := newStatusPageStack(t)
 	proj, ownerCookie, _ := statusPageProject(t, s, "spforbid")
@@ -639,9 +565,7 @@ func TestWebStatusPagesSettingsStrangerBoundary(t *testing.T) {
 
 	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/statuspages"
 
-	// Пользователь без какого-либо отношения к организации: существование
-	// проекта не раскрывается, 404 (не 403, как у участника с недостаточной
-	// ролью — тот принцип не менялся).
+	// чужак получает 404, не 403 — существование проекта не раскрывается.
 	resp := getWithCookie(t, s.srv, path, strangerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -664,7 +588,6 @@ func TestWebStatusPagesSettingsStrangerBoundary(t *testing.T) {
 		t.Fatalf("POST %s (stranger) = %d, want 404", updatePath, resp.StatusCode)
 	}
 
-	// Owner другой организации не должен трогать чужую страницу по её id.
 	resp = postForm(t, s.srv, updatePath+"/delete", url.Values{}, s.srv.URL, otherOwnerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -672,7 +595,6 @@ func TestWebStatusPagesSettingsStrangerBoundary(t *testing.T) {
 		t.Fatalf("POST %s/delete (foreign owner) = %d, want 404", updatePath, resp.StatusCode)
 	}
 
-	// Sanity: owner проекта всё ещё видит настройки.
 	resp = getWithCookie(t, s.srv, path, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()

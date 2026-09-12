@@ -7,12 +7,6 @@ import (
 	"testing"
 )
 
-// TestLoadSeesEveryKindOfSource — снимок обязан видеть все виды исходников,
-// по которым работают правила.
-//
-// Существует потому, что расхождение обходов и было причиной дыры: один
-// сторож сканировал *.go в своей директории, другой — рекурсивно, а шаблоны
-// .templ не сканировал никто, хотя оба считали, что покрывают «весь код».
 func TestLoadSeesEveryKindOfSource(t *testing.T) {
 	tree := Load(t)
 
@@ -39,10 +33,8 @@ func TestLoadSeesEveryKindOfSource(t *testing.T) {
 		}
 	}
 
-	// Порог в 500 ключей сам по себе не различает «plurals разобраны» и
-	// «plurals не разобраны вовсе»: одних messages уже больше 500 в каждой
-	// локали. Прямая проверка конкретного известного плюрального ключа —
-	// единственное, что красит тест при отключении разбора plurals.
+	// порог в 500 ключей не отличит разобранные plurals от неразобранных —
+	// messages и без них больше 500, поэтому ниже прямая проверка ключа.
 	for _, loc := range []string{"ru", "en"} {
 		forms, ok := tree.Plurals[loc]["chart.bar.transactions"]
 		if !ok {
@@ -54,16 +46,12 @@ func TestLoadSeesEveryKindOfSource(t *testing.T) {
 		}
 	}
 
-	// internal/docs — реальный пакет продукта, соседствующий по имени с
-	// корневым docs (markdown-документация), который в обход не входит.
-	// Пропуск по имени каталога срезал бы оба разом — этот файл ловит именно
-	// такую регрессию.
+	// internal/docs — рабочий пакет, соседствующий по имени с корневым docs
+	// (в обход не входит); пропуск по имени каталога срезал бы оба разом.
 	if !containsPath(tree.GoFiles, "internal/docs/docs.go") {
 		t.Error("internal/docs/docs.go не найден — обход путает продуктовый internal/docs с корневым docs")
 	}
 
-	// Сгенерированные файлы помечены: правила про авторский код обязаны их
-	// отличать, иначе _templ.go утопит любую проверку шумом.
 	var gen, hand int
 	for _, f := range tree.GoFiles {
 		if f.Generated {
@@ -81,8 +69,6 @@ func TestLoadSeesEveryKindOfSource(t *testing.T) {
 		}
 	}
 
-	// Пути относительны корню — правила печатают их в сообщениях, и
-	// абсолютный путь машины разработчика в выводе бесполезен.
 	for _, f := range tree.Templates {
 		if filepath.IsAbs(f.Path) {
 			t.Errorf("путь %s абсолютный, ожидался относительный корню", f.Path)
@@ -91,7 +77,6 @@ func TestLoadSeesEveryKindOfSource(t *testing.T) {
 	}
 }
 
-// containsPath проверяет, есть ли среди файлов путь, точно равный want.
 func containsPath(files []File, want string) bool {
 	for _, f := range files {
 		if f.Path == want {
@@ -101,8 +86,6 @@ func containsPath(files []File, want string) bool {
 	return false
 }
 
-// countOf достаёт длину среза Tree по имени поля — маленький разбор вместо
-// рефлексии, чтобы тест на пороговые числа читался как таблица.
 func countOf(tree *Tree, name string) int {
 	switch name {
 	case "GoFiles":
@@ -118,12 +101,6 @@ func countOf(tree *Tree, name string) int {
 	}
 }
 
-// TestCheckExemptionsRatchet — механизм исключений обязан ловить три вещи:
-// строку без причины, превышение потолка и устаревшее исключение.
-//
-// Третье — главное. Без него список не уменьшается сам: подпроект чинит
-// нарушение, строка про него остаётся навсегда и продолжает прикрывать
-// будущие такие же.
 func TestCheckExemptionsRatchet(t *testing.T) {
 	seen := map[string]bool{"alive": true}
 
@@ -155,9 +132,6 @@ func TestCheckExemptionsRatchet(t *testing.T) {
 	})
 }
 
-// fakeT — минимальная подмена testingT: без неё пришлось бы верить на слово,
-// что CheckExemptions действительно проваливает тест в нужных случаях,
-// вместо того чтобы это проверить.
 type fakeT struct {
 	failed bool
 	msgs   []string
@@ -170,8 +144,6 @@ func (f *fakeT) Errorf(format string, args ...any) {
 	f.msgs = append(f.msgs, fmt.Sprintf(format, args...))
 }
 
-// requireFailure проверяет, что fakeT провалился и среди накопленных
-// сообщений есть хотя бы одно, содержащее substr.
 func (f *fakeT) requireFailure(t *testing.T, substr string) {
 	t.Helper()
 	if !f.failed {

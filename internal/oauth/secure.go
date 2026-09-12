@@ -16,24 +16,14 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/netguard"
 )
 
-// httpTimeout — потолок на любой вызов провайдера. Без ретраев в горячем пути.
 const httpTimeout = 5 * time.Second
 
-// sharedClient переиспользуется всеми адаптерами (пул соединений). SSRF-safe по
-// умолчанию: issuer per-org SSO задаёт человек (пусть и админ инстанса), и
-// исходящие вызовы OIDC (discovery/JWKS/token/userinfo) не должны доставать
-// внутренние сервисы по приватным адресам. GOTCHA_SSRF_ALLOW_PRIVATE (внутренний
-// IdP на приватной сети) снимает фильтр через SetAllowPrivateHosts.
 var sharedClient = netguard.SafeHTTPClient(false, httpTimeout)
 
-// SetAllowPrivateHosts переключает SSRF-фильтр исходящих OAuth/OIDC-вызовов.
-// Вызывается один раз на старте (main.go) из GOTCHA_SSRF_ALLOW_PRIVATE, до
-// обслуживания запросов, поэтому переприсваивание sharedClient безопасно.
 func SetAllowPrivateHosts(allow bool) {
 	sharedClient = netguard.SafeHTTPClient(allow, httpTimeout)
 }
 
-// RandomToken — 32 случайных байта в base64url (state, nonce).
 func RandomToken() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
@@ -42,7 +32,6 @@ func RandomToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// PKCE возвращает verifier и S256-challenge (RFC 7636).
 func PKCE() (verifier, challenge string, err error) {
 	verifier, err = RandomToken()
 	if err != nil {
@@ -53,7 +42,6 @@ func PKCE() (verifier, challenge string, err error) {
 	return verifier, challenge, nil
 }
 
-// getJSON — GET c декодом JSON-тела (лимит 1 MiB), таймаут общего клиента.
 func getJSON(ctx context.Context, rawURL string, dst any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -70,7 +58,6 @@ func getJSON(ctx context.Context, rawURL string, dst any) error {
 	return decodeJSON(resp.Body, dst)
 }
 
-// postForm — POST application/x-www-form-urlencoded с декодом JSON-ответа.
 func postForm(ctx context.Context, rawURL string, form url.Values, dst any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -89,15 +76,10 @@ func postForm(ctx context.Context, rawURL string, form url.Values, dst any) erro
 	return decodeJSON(resp.Body, dst)
 }
 
-// decodeJSON декодирует тело (лимит 1 MiB) в dst.
 func decodeJSON(r io.Reader, dst any) error {
 	return json.NewDecoder(io.LimitReader(r, 1<<20)).Decode(dst)
 }
 
-// nowUnix — текущее время в секундах (обёртка ради тестируемости exp).
 func nowUnix() int64 { return time.Now().Unix() }
 
-// clockSkewLeeway — допуск (сек) на рассинхрон часов при проверке exp/nbf
-// id_token (SEC-L3): токен, истёкший/ещё-не-действительный в пределах допуска,
-// принимается, чтобы небольшой дрейф часов IdP не ломал легитимный вход.
 const clockSkewLeeway int64 = 60

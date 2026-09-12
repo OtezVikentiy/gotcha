@@ -5,9 +5,8 @@ import (
 	"testing/fstest"
 )
 
-// TestStaticAssetVersion: хэш детерминирован и чувствителен к содержимому и
-// именам — иначе кэш-бастинг не сработал бы после деплоя (тот же URL на новый
-// CSS). Порядок обхода FS не влияет (имена сортируются), длина — 12 hex.
+// Хэш детерминирован и чувствителен к содержимому и именам — иначе кэш-бастинг не сработал
+// бы после деплоя (тот же URL на новый CSS).
 func TestStaticAssetVersion(t *testing.T) {
 	base := fstest.MapFS{
 		"app.css":       {Data: []byte("body{color:red}")},
@@ -24,7 +23,6 @@ func TestStaticAssetVersion(t *testing.T) {
 		}
 	}
 
-	// Тот же контент (другой литерал карты) → тот же хэш.
 	same := fstest.MapFS{
 		"app.css":       {Data: []byte("body{color:red}")},
 		"daterange.js":  {Data: []byte("console.log(1)")},
@@ -34,7 +32,6 @@ func TestStaticAssetVersion(t *testing.T) {
 		t.Errorf("identical content gave different hash: %q != %q", h2, h1)
 	}
 
-	// Изменённый байт содержимого → другой хэш.
 	changed := fstest.MapFS{
 		"app.css":       {Data: []byte("body{color:blue}")},
 		"daterange.js":  {Data: []byte("console.log(1)")},
@@ -44,11 +41,10 @@ func TestStaticAssetVersion(t *testing.T) {
 		t.Error("content change did not change the hash")
 	}
 
-	// Переименованный файл (тот же контент) → другой хэш (имя тоже хэшируется).
 	renamed := fstest.MapFS{
 		"app.css":       {Data: []byte("body{color:red}")},
 		"daterange.js":  {Data: []byte("console.log(1)")},
-		"icons/two.svg": {Data: []byte("<svg/>")}, // one.svg → two.svg
+		"icons/two.svg": {Data: []byte("<svg/>")},
 	}
 	if staticAssetVersion(renamed) == h1 {
 		t.Error("rename did not change the hash")

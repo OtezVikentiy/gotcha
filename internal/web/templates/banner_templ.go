@@ -10,19 +10,13 @@ import templruntime "github.com/a-h/templ/runtime"
 
 import "gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 
-// QuotaBanner — вьюмодель баннера про ограничение приёма (PROD-P1: конец
-// молчаливых потерь). Собирается в web-слое (Handler.quotaBanner) из
-// DroppedUsage/Usage/лимита орга. nil = баннер показывать не нужно.
+// nil — баннер не нужен.
 type QuotaBanner struct {
-	Text string // текст баннера (про дропы или приближение к лимиту)
-	// Detail — разбивка по видам приёма. Пусто, когда её нет (приближение к
-	// лимиту), — общее число там относится к одному виду и так.
+	Text   string
 	Detail string
-	Href   string // ссылка на настройки орга (rate-guard)
+	Href   string
 }
 
-// quotaBannerView рендерит баннер, если b != nil; иначе не выводит ничего.
-// Ссылка ведёт на настройки орга, где оператор поднимает/снимает rate-guard.
 func quotaBannerView(b *QuotaBanner) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -52,7 +46,7 @@ func quotaBannerView(b *QuotaBanner) templ.Component {
 			var templ_7745c5c3_Var2 string
 			templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(b.Text)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/banner.templ`, Line: 21, Col: 17}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/banner.templ`, Line: 15, Col: 17}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 			if templ_7745c5c3_Err != nil {
@@ -70,7 +64,7 @@ func quotaBannerView(b *QuotaBanner) templ.Component {
 				var templ_7745c5c3_Var3 string
 				templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(b.Detail)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/banner.templ`, Line: 23, Col: 48}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/banner.templ`, Line: 17, Col: 48}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 				if templ_7745c5c3_Err != nil {
@@ -89,7 +83,7 @@ func quotaBannerView(b *QuotaBanner) templ.Component {
 				var templ_7745c5c3_Var4 templ.SafeURL
 				templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(b.Href))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/banner.templ`, Line: 26, Col: 31}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/banner.templ`, Line: 20, Col: 31}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 				if templ_7745c5c3_Err != nil {
@@ -102,7 +96,7 @@ func quotaBannerView(b *QuotaBanner) templ.Component {
 				var templ_7745c5c3_Var5 string
 				templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "banner.settings_link"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/banner.templ`, Line: 26, Col: 71}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/banner.templ`, Line: 20, Col: 71}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 				if templ_7745c5c3_Err != nil {

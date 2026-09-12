@@ -2,9 +2,6 @@ package web
 
 import "testing"
 
-// TestNormalizeHostGroup — {"env","role"} проходят как есть, всё прочее
-// (включая "" и опечатки) схлопывается в "" — незнакомое значение в query
-// не должно 500-ить страницу.
 func TestNormalizeHostGroup(t *testing.T) {
 	cases := map[string]string{
 		"env": "env", "role": "role",
@@ -21,8 +18,6 @@ func TestNormalizeHostGroup(t *testing.T) {
 	}
 }
 
-// TestIsLocalBaseURL — localhost/127.0.0.1/::1 считаются локальными,
-// произвольный внешний хост — нет, невалидный URL — нет (не паника).
 func TestIsLocalBaseURL(t *testing.T) {
 	cases := map[string]bool{
 		"http://localhost:8080": true,
@@ -41,8 +36,6 @@ func TestIsLocalBaseURL(t *testing.T) {
 	}
 }
 
-// TestAgentBaseURLSecure — https:// на любом хосте ИЛИ http:// на localhost
-// безопасны; http:// на внешнем хосте — нет.
 func TestAgentBaseURLSecure(t *testing.T) {
 	cases := map[string]bool{
 		"https://gotcha.example.com": true,
@@ -57,8 +50,6 @@ func TestAgentBaseURLSecure(t *testing.T) {
 	}
 }
 
-// TestParseSemverBase — X.Y.Z разбирается, суффикс вида git-describe
-// отбрасывается, всё, что не сводится к трём числовым группам, — ok=false.
 func TestParseSemverBase(t *testing.T) {
 	cases := []struct {
 		in            string
@@ -68,16 +59,15 @@ func TestParseSemverBase(t *testing.T) {
 		{"v1.2.3", 1, 2, 3, true},
 		{"1.2.3", 1, 2, 3, true},
 		{"v0.20.0", 0, 20, 0, true},
-		{"v1.2.3-5-gabcdef-dirty", 1, 2, 3, true}, // суффикс отброшен
-		{"v1.2", 0, 0, 0, false},                  // не три группы
-		{"v1.2.3.4", 0, 0, 0, false},              // лишняя группа
-		{"vX.Y.Z", 0, 0, 0, false},                // нечисловые символы обрывают скан до split — тоже "не три группы"
-		// Скан пускает в группы только [0-9.], поэтому единственный способ
-		// дойти до самого Atoi и получить там ошибку (при сохранении «трёх
-		// частей» по split) — пустая группа между точками.
-		{"v.2.3", 0, 0, 0, false}, // пустая major-группа — Atoi major падает
-		{"v1..3", 0, 0, 0, false}, // пустая minor-группа — Atoi minor падает
-		{"v1.2.", 0, 0, 0, false}, // пустая patch-группа — Atoi patch падает
+		{"v1.2.3-5-gabcdef-dirty", 1, 2, 3, true},
+		{"v1.2", 0, 0, 0, false},
+		{"v1.2.3.4", 0, 0, 0, false},
+		{"vX.Y.Z", 0, 0, 0, false}, // нечисловые символы обрывают скан до split — тоже "не три группы"
+		// Скан пускает в группы только [0-9.]: пустая группа между точками — единственный способ
+		// дойти до Atoi и получить ошибку там, сохранив «три части» по split.
+		{"v.2.3", 0, 0, 0, false},
+		{"v1..3", 0, 0, 0, false},
+		{"v1.2.", 0, 0, 0, false},
 		{"", 0, 0, 0, false},
 		{"garbage", 0, 0, 0, false},
 	}
@@ -90,7 +80,6 @@ func TestParseSemverBase(t *testing.T) {
 	}
 }
 
-// TestBoolFormValue — кодирует чекбокс явными "1"/"0", не отсутствием ключа.
 func TestBoolFormValue(t *testing.T) {
 	if got := boolFormValue(true); got != "1" {
 		t.Errorf("boolFormValue(true) = %q, want \"1\"", got)

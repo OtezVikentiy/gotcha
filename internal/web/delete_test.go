@@ -18,17 +18,13 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/telemetry"
 )
 
-// fakePurger реализует web.ProjectPurger без ClickHouse: считает вызовы
-// PurgeProject/PurgeSubject, чтобы web-тесты проверяли, что best-effort
-// CH-очистка вызвана с нужными аргументами, не поднимая CH-контейнер.
 type fakePurger struct {
 	mu         sync.Mutex
 	projects   []int64
 	subjects   []purgeSubjectCall
 	exports    []purgeSubjectCall
-	subjectErr error // если задан — PurgeSubject возвращает его (тест error-ветки)
-	// subjectResult — сколько строк «нашлось». Ноль (значение по умолчанию) —
-	// это ровно тот исход, ради различения которого счётчик и заведён.
+	subjectErr error // если задан — PurgeSubject возвращает его
+	// нулевое значение поля — валидный результат «строк не нашлось», а не «не задано»
 	subjectResult telemetry.PurgeResult
 }
 
@@ -51,8 +47,6 @@ func (f *fakePurger) PurgeSubject(_ context.Context, projectID int64, sub teleme
 	return f.subjectResult, f.subjectErr
 }
 
-// ExportSubject фиксирует вызов и возвращает заглушку — web-тесту важен только
-// факт вызова с нужными projectID/Subject и то, что хендлер отдаёт JSON.
 func (f *fakePurger) ExportSubject(_ context.Context, projectID int64, sub telemetry.Subject) (telemetry.SubjectExport, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -60,14 +54,6 @@ func (f *fakePurger) ExportSubject(_ context.Context, projectID int64, sub telem
 	return telemetry.SubjectExport{}, nil
 }
 
-// TestWebDeleteProject — POST /projects/{id}/settings/delete: owner удаляет
-// проект (303, проекта нет в PG, заявка на очистку телеметрии в очереди);
-// member — 404 (owner-only, единый 404 как прочие owner-only действия);
-// без Origin — 403.
-//
-// Purger в web-слое БОЛЬШЕ НЕ ВЫЗЫВАЕТСЯ: восемь синхронных мутаций ClickHouse
-// в HTTP-запросе и были находкой №7. Очистку выполняет фоновый исполнитель по
-// заявке, которую ставит та же транзакция, что удаляет проект.
 func TestWebDeleteProject(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -92,7 +78,6 @@ func TestWebDeleteProject(t *testing.T) {
 
 	deletePath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/settings/delete"
 
-	// POST без Origin → 403.
 	resp := postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -100,7 +85,6 @@ func TestWebDeleteProject(t *testing.T) {
 		t.Fatalf("POST %s (no origin) status = %d, want 403", deletePath, resp.StatusCode)
 	}
 
-	// POST member (role=member, не owner) → 404, проект жив, Purger не вызван.
 	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -111,9 +95,7 @@ func TestWebDeleteProject(t *testing.T) {
 		t.Fatalf("PurgeProject called on member-denied request: %v", fp.projects)
 	}
 
-	// POST owner БЕЗ confirmed=yes → 200, страница подтверждения (двухшаговый
-	// POST — CSP default-src 'self' без unsafe-inline не исполняет inline
-	// onsubmit="confirm()"), проект НЕ удалён, Purger не вызван.
+	// Двухшаговый confirm: CSP default-src 'self' без unsafe-inline не исполнит inline onsubmit="confirm()".
 	resp = postForm(t, s.srv, deletePath, url.Values{}, s.srv.URL, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -123,8 +105,6 @@ func TestWebDeleteProject(t *testing.T) {
 	if !strings.Contains(string(body), `name="confirmed" value="yes"`) {
 		t.Fatalf("POST %s (owner, unconfirmed) missing confirm page hidden field: %s", deletePath, body)
 	}
-	// Вопрос называет проект (K7-3): без имени страница не страхует от
-	// вкладки не того проекта.
 	if !strings.Contains(string(body), "«DelProj Proj»") {
 		t.Fatalf("POST %s (owner, unconfirmed) confirm page does not name the project: %s", deletePath, body)
 	}
@@ -145,8 +125,6 @@ func TestWebDeleteProject(t *testing.T) {
 		t.Fatalf("PurgeProject called on unconfirmed request: %v", fp.projects)
 	}
 
-	// POST owner с confirmed=yes → 303, проект удалён из PG, заявка в очереди,
-	// Purger НЕ вызван (очистка ушла в фон).
 	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -179,10 +157,6 @@ func TestWebDeleteProject(t *testing.T) {
 	}
 }
 
-// TestWebDeleteOrg — POST /orgs/{id}/settings/delete: owner удаляет орг (303
-// на /, орга нет в PG); member — 404; без Origin — 403. CH-очистка орга
-// в этой задаче не выполняется (проектов у орга может не быть; телеметрию
-// чистит удаление конкретных проектов) — Purger.PurgeProject тут не ждём.
 func TestWebDeleteOrg(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -203,7 +177,6 @@ func TestWebDeleteOrg(t *testing.T) {
 
 	deletePath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings/delete"
 
-	// POST без Origin → 403.
 	resp := postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -211,7 +184,6 @@ func TestWebDeleteOrg(t *testing.T) {
 		t.Fatalf("POST %s (no origin) status = %d, want 403", deletePath, resp.StatusCode)
 	}
 
-	// POST member → 404, орг жив.
 	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -222,7 +194,6 @@ func TestWebDeleteOrg(t *testing.T) {
 		t.Fatalf("org unexpectedly gone after member-denied delete: %v", err)
 	}
 
-	// POST owner БЕЗ confirmed=yes → 200, страница подтверждения, орг НЕ удалён.
 	resp = postForm(t, s.srv, deletePath, url.Values{}, s.srv.URL, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -232,7 +203,6 @@ func TestWebDeleteOrg(t *testing.T) {
 	if !strings.Contains(string(body), `name="confirmed" value="yes"`) {
 		t.Fatalf("POST %s (owner, unconfirmed) missing confirm page hidden field: %s", deletePath, body)
 	}
-	// Вопрос называет организацию (K7-3).
 	if !strings.Contains(string(body), "«DelOrg Co»") {
 		t.Fatalf("POST %s (owner, unconfirmed) confirm page does not name the org: %s", deletePath, body)
 	}
@@ -240,8 +210,7 @@ func TestWebDeleteOrg(t *testing.T) {
 		t.Fatalf("org unexpectedly gone after unconfirmed delete: %v", err)
 	}
 
-	// POST owner с confirmed=yes → 303 на /, орг удалён (Role → ErrNotMember).
-	// Роута /orgs нет (RA-7), поэтому редирект на корень, как у leave-org.
+	// Роута /orgs нет, поэтому редирект на корень, как у leave-org.
 	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -256,10 +225,6 @@ func TestWebDeleteOrg(t *testing.T) {
 	}
 }
 
-// TestWebPurgeSubject — POST /orgs/{id}/settings/purge-subject: owner чистит
-// ПДн субъекта по проекту (303 обратно на настройки, Purger.PurgeSubject
-// вызван с project_id и заполненным Subject); member — 404; пустой субъект →
-// 422; без Origin — 403.
 func TestWebPurgeSubject(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -283,8 +248,7 @@ func TestWebPurgeSubject(t *testing.T) {
 	}
 
 	purgePath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings/purge-subject"
-	// confirmed=yes во всех вызовах: удаление ПДн теперь двухшаговое, как и
-	// прочие деструктивные действия — без него отдаётся страница подтверждения.
+	// confirmed=yes всегда: без него отдаётся страница подтверждения, как для прочих деструктивных действий.
 	form := func() url.Values {
 		return url.Values{
 			"confirmed":  {"yes"},
@@ -293,7 +257,6 @@ func TestWebPurgeSubject(t *testing.T) {
 		}
 	}
 
-	// POST без Origin → 403.
 	resp := postForm(t, s.srv, purgePath, form(), "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -301,7 +264,6 @@ func TestWebPurgeSubject(t *testing.T) {
 		t.Fatalf("POST %s (no origin) status = %d, want 403", purgePath, resp.StatusCode)
 	}
 
-	// POST member → 404, Purger не вызван.
 	resp = postForm(t, s.srv, purgePath, form(), s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -312,7 +274,6 @@ func TestWebPurgeSubject(t *testing.T) {
 		t.Fatalf("PurgeSubject called on member-denied request: %v", fp.subjects)
 	}
 
-	// POST owner с пустым субъектом → 422 (хотя бы одно поле обязательно).
 	resp = postForm(t, s.srv, purgePath, url.Values{"confirmed": {"yes"}, "project_id": {strconv.FormatInt(proj.ID, 10)}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -323,9 +284,6 @@ func TestWebPurgeSubject(t *testing.T) {
 		t.Fatalf("PurgeSubject called on empty subject: %v", fp.subjects)
 	}
 
-	// POST owner БЕЗ confirmed=yes → 200, страница подтверждения, Purger НЕ вызван.
-	// Подтверждение здесь обязательнее прочего: удаление необратимо, а проект
-	// задаётся числом — опечатка 25→26 вычистила бы телеметрию соседнего проекта.
 	unconfirmed := form()
 	unconfirmed.Del("confirmed")
 	resp = postForm(t, s.srv, purgePath, unconfirmed, s.srv.URL, ownerCookie)
@@ -341,7 +299,6 @@ func TestWebPurgeSubject(t *testing.T) {
 		t.Fatalf("PurgeSubject вызван без подтверждения: %v", fp.subjects)
 	}
 
-	// POST owner с email → 303 обратно на настройки, Purger.PurgeSubject вызван.
 	resp = postForm(t, s.srv, purgePath, form(), s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -356,7 +313,6 @@ func TestWebPurgeSubject(t *testing.T) {
 		t.Fatalf("PurgeSubject call = %+v, want projectID=%d email=subject@example.com", call, proj.ID)
 	}
 
-	// Ошибка удаления НЕ выдаётся за успех (право на удаление ПДн): → 500, а не 303.
 	fp.subjectErr = errors.New("clickhouse down")
 	resp = postForm(t, s.srv, purgePath, form(), s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -366,13 +322,7 @@ func TestWebPurgeSubject(t *testing.T) {
 	}
 }
 
-// TestWebPurgeSubjectAuditLogListsSpans (T8, находка ревью соседней задачи
-// волны 3) — аудит-лог «subject data purged» перечисляет удалённое по видам
-// (events/transactions/metric_points/logs), но ИТОГ (total) включает и
-// спаны (telemetry.PurgeResult.Spans, purge.go) — без своего поля в логе
-// сумма расходилась бы со слагаемыми, и разбирающий инцидент решил бы, что
-// лог врёт. Проверяем это, а не просто «total правильный»: до фикса total
-// уже был верным (res.Total() считает Spans), только перечисление — нет.
+// total в аудит-логе включает и спаны, которых нет в перечислении по видам.
 func TestWebPurgeSubjectAuditLogListsSpans(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -421,11 +371,6 @@ func TestWebPurgeSubjectAuditLogListsSpans(t *testing.T) {
 	}
 }
 
-// TestWebExportSubject — POST /orgs/{id}/settings/export-subject (право субъекта
-// на доступ, 152-ФЗ): owner выгружает ПДн субъекта по проекту (200
-// application/json + Content-Disposition attachment, Purger.ExportSubject вызван
-// с project_id и заполненным Subject); member — 404; project_id чужого орга —
-// 404; пустой субъект → 422; без Origin — 403.
 func TestWebExportSubject(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -449,7 +394,6 @@ func TestWebExportSubject(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	// Чужой орг с собственным проектом — для проверки cross-org project_id.
 	other, err := orgSvc.CreateOrg(context.Background(), "export-other-co", "Export Other Co", otherID)
 	if err != nil {
 		t.Fatalf("create other org: %v", err)
@@ -468,7 +412,6 @@ func TestWebExportSubject(t *testing.T) {
 		}
 	}
 
-	// POST без Origin → 403.
 	resp := postForm(t, s.srv, exportPath, form(), "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -476,7 +419,6 @@ func TestWebExportSubject(t *testing.T) {
 		t.Fatalf("POST %s (no origin) status = %d, want 403", exportPath, resp.StatusCode)
 	}
 
-	// POST member → 404, Purger не вызван.
 	resp = postForm(t, s.srv, exportPath, form(), s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -487,7 +429,6 @@ func TestWebExportSubject(t *testing.T) {
 		t.Fatalf("ExportSubject called on member-denied request: %v", fp.exports)
 	}
 
-	// POST owner с project_id чужого орга → 404, Purger не вызван.
 	resp = postForm(t, s.srv, exportPath, url.Values{
 		"project_id": {strconv.FormatInt(otherProj.ID, 10)},
 		"email":      {"subject@example.com"},
@@ -501,7 +442,6 @@ func TestWebExportSubject(t *testing.T) {
 		t.Fatalf("ExportSubject called on cross-org project: %v", fp.exports)
 	}
 
-	// POST owner с пустым субъектом → 422.
 	resp = postForm(t, s.srv, exportPath, url.Values{"project_id": {strconv.FormatInt(proj.ID, 10)}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -512,7 +452,6 @@ func TestWebExportSubject(t *testing.T) {
 		t.Fatalf("ExportSubject called on empty subject: %v", fp.exports)
 	}
 
-	// POST owner с email → 200 application/json + attachment, Purger.ExportSubject вызван.
 	resp = postForm(t, s.srv, exportPath, form(), s.srv.URL, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()

@@ -10,11 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/logfilter"
 )
 
-// renderLogSavedFilterRow рендерит одну строку панели сохранённых фильтров с
-// правом редактирования (иначе форм «Обновить»/«Удалить» вовсе нет).
-// canShare — то же право, что у panel.CanShare (заводить/менять видимость
-// общих фильтров): управляет тем, показан ли переключатель видимости в
-// форме «Обновить» (находка финального ревью C10).
 func renderLogSavedFilterRow(t *testing.T, filter LogsFilter, row LogSavedFilterRow, canShare bool) string {
 	t.Helper()
 	var buf bytes.Buffer
@@ -24,8 +19,6 @@ func renderLogSavedFilterRow(t *testing.T, filter LogsFilter, row LogSavedFilter
 	return buf.String()
 }
 
-// updateFormHTML вырезает разметку формы «Обновить» — между её action-URL
-// (кончается на "/update") и ближайшим закрывающим </form>.
 func updateFormHTML(t *testing.T, html string) string {
 	t.Helper()
 	marker := `/update"`
@@ -44,11 +37,6 @@ func updateFormHTML(t *testing.T, html string) string {
 	return html[formStart : idx+formEnd+len("</form>")]
 }
 
-// deleteFormHTML вырезает разметку формы «Удалить» из отрендеренной строки
-// панели — между её action-URL (кончается на "/delete") и ближайшим
-// закрывающим </form>. Форма «Обновить» несёт то же скрытое поле, поэтому
-// проверка по всему выводу не отличила бы починенную форму «Удалить» от
-// всё ещё сломанной.
 func deleteFormHTML(t *testing.T, html string) string {
 	t.Helper()
 	marker := `/delete"`
@@ -67,12 +55,6 @@ func deleteFormHTML(t *testing.T, html string) string {
 	return html[formStart : idx+formEnd+len("</form>")]
 }
 
-// TestLogSavedFilterRowDeleteFormCarriesViewConditions — находка финального
-// ревью C5: форма «Удалить» обязана нести условия ТЕКУЩЕГО вида (то же
-// скрытое поле, что и у формы «Обновить»), иначе web.logFilterFormParams(r)
-// на сабмите видит пустую форму, и редирект после удаления уходит на голый
-// /logs — набранные вручную исключения теряются, а на их месте молча
-// подставляется фильтр по умолчанию.
 func TestLogSavedFilterRowDeleteFormCarriesViewConditions(t *testing.T) {
 	filter := LogsFilter{
 		Not: []log.Predicate{{Field: log.FieldService, Op: log.OpNeq, Value: "worker"}},
@@ -88,10 +70,6 @@ func TestLogSavedFilterRowDeleteFormCarriesViewConditions(t *testing.T) {
 	}
 }
 
-// TestLogSavedFilterRowDefaultFormOmitsViewConditions — контрастная
-// проверка: у формы «Сделать умолчанием» скрытое поле условий НАМЕРЕННО
-// отсутствует (назначение умолчания — не действие над текущим видом),
-// чтобы правка C5 не расползлась туда, где её не просили.
 func TestLogSavedFilterRowDefaultFormOmitsViewConditions(t *testing.T) {
 	filter := LogsFilter{
 		Not: []log.Predicate{{Field: log.FieldService, Op: log.OpNeq, Value: "worker"}},
@@ -118,12 +96,6 @@ func TestLogSavedFilterRowDefaultFormOmitsViewConditions(t *testing.T) {
 	}
 }
 
-// TestLogSavedFilterRowUpdateFormHasRenameField — находка финального ревью
-// C10: §7.3 спеки объявляет переименование отдельным действием панели,
-// хендлер (logFiltersUpdate) его уже поддерживает, но форма «Обновить»
-// несла имя СКРЫТЫМ полем со старым значением — переименовать можно было,
-// только создав второй фильтр. Поле обязано быть текстовым и предзаполнено
-// текущим именем (не пустым — иначе сабмит без правки стёр бы имя).
 func TestLogSavedFilterRowUpdateFormHasRenameField(t *testing.T) {
 	row := LogSavedFilterRow{
 		Filter:  logfilter.Filter{ID: 7, Name: "рабочий", Applicable: true},
@@ -139,13 +111,6 @@ func TestLogSavedFilterRowUpdateFormHasRenameField(t *testing.T) {
 	}
 }
 
-// TestLogSavedFilterRowUpdateFormHasVisibilityToggleWhenCanShare — вторая
-// половина C10: смена видимости (личный ↔ общий) хендлером поддержана
-// (см. Store.Update и requireLogFilterOperator), но управлять ей было
-// нечем — эхо-поле "shared" меняло значение только вместе с самим полем,
-// никогда пользователем. Чекбокс обязан присутствовать, когда у смотрящего
-// есть право на общие фильтры (тот же уровень, что у создания), и отражать
-// ТЕКУЩЕЕ состояние через checked.
 func TestLogSavedFilterRowUpdateFormHasVisibilityToggleWhenCanShare(t *testing.T) {
 	ownerID := int64(42)
 	personal := LogSavedFilterRow{
@@ -172,11 +137,6 @@ func TestLogSavedFilterRowUpdateFormHasVisibilityToggleWhenCanShare(t *testing.T
 	}
 }
 
-// TestLogSavedFilterRowUpdateFormOmitsVisibilityToggleWithoutCanShare —
-// рядовому участнику (canShare=false) переключатель видимости не
-// показывается вовсе: подмена значения формы всё равно отклонится
-// requireLogFilterOperator веб-слоем, но элемент управления, ведущий к
-// гарантированному 403, вводит в заблуждение и не должен рендериться.
 func TestLogSavedFilterRowUpdateFormOmitsVisibilityToggleWithoutCanShare(t *testing.T) {
 	ownerID := int64(42)
 	row := LogSavedFilterRow{

@@ -13,14 +13,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// InviteTTL — срок жизни приглашения.
 const InviteTTL = 7 * 24 * time.Hour
 
 var (
-	ErrInvalidRole   = errors.New("org: invite role must be admin or member")
-	ErrInviteInvalid = errors.New("org: invite is invalid, expired or already used")
-	// ErrInviteEmailMismatch — принимающий вошёл под email'ом, отличным от
-	// того, на который выписан инвайт (SEC-M2). Инвайт при этом не гасится.
+	ErrInvalidRole         = errors.New("org: invite role must be admin or member")
+	ErrInviteInvalid       = errors.New("org: invite is invalid, expired or already used")
 	ErrInviteEmailMismatch = errors.New("org: invite was issued for a different email")
 )
 
@@ -29,8 +26,6 @@ func inviteTokenHash(token string) []byte {
 	return sum[:]
 }
 
-// Invite выпускает приглашение в организацию. Возвращает сырой токен
-// (для письма); в БД хранится только его sha256-хеш.
 func (s *Service) Invite(ctx context.Context, orgID int64, email string, role Role) (string, error) {
 	if role != RoleAdmin && role != RoleMember {
 		return "", ErrInvalidRole
@@ -49,11 +44,6 @@ func (s *Service) Invite(ctx context.Context, orgID int64, email string, role Ro
 	return token, nil
 }
 
-// PendingInvite — выписанное, но ещё не принятое приглашение.
-//
-// Токена здесь нет и быть не может: в базе лежит только его sha256. Список
-// нужен не чтобы переслать ссылку заново, а чтобы увидеть, кому приглашение
-// уже выписано, и отозвать ошибочное.
 type PendingInvite struct {
 	ID        int64
 	Email     string
@@ -62,15 +52,6 @@ type PendingInvite struct {
 	ExpiresAt time.Time
 }
 
-// PendingInvites — приглашения организации, которые ещё можно принять.
-//
-// Существует потому, что выписанное приглашение было невидимо: ошибся в
-// адресе — письмо со ссылкой ушло постороннему, и ни увидеть это, ни отменить
-// из интерфейса было нельзя.
-//
-// Просроченные не показываются: принять их уже нельзя, а держать в списке
-// значит требовать от администратора решения там, где решать нечего. Их
-// вычищает PurgeExpiredInvites.
 func (s *Service) PendingInvites(ctx context.Context, orgID int64) ([]PendingInvite, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, email, role, created_at, expires_at
@@ -95,12 +76,6 @@ func (s *Service) PendingInvites(ctx context.Context, orgID int64) ([]PendingInv
 	return out, nil
 }
 
-// RevokeInvite отзывает приглашение организации.
-//
-// orgID в условии обязателен: идентификатор приходит из формы, и без него
-// администратор одной организации отзывал бы приглашения чужой. Уже принятое
-// приглашение не отзывается — членство отменяется удалением участника, и
-// молчаливо подменять одно другим нельзя.
 func (s *Service) RevokeInvite(ctx context.Context, orgID, inviteID int64) error {
 	tag, err := s.pool.Exec(ctx,
 		"DELETE FROM org_invites WHERE id = $1 AND org_id = $2 AND accepted_at IS NULL",
@@ -114,13 +89,6 @@ func (s *Service) RevokeInvite(ctx context.Context, orgID, inviteID int64) error
 	return nil
 }
 
-// AcceptInvite принимает приглашение токен-носителем: приглашение
-// одноразовое, вход по токену (email — адрес доставки письма).
-// Уже участнику роль не меняем — только гасим приглашение.
-//
-// acceptingEmail — email вошедшего юзера; он обязан совпадать (без учёта
-// регистра) с адресом, на который выписан инвайт (SEC-M2). Иначе транзакция
-// откатывается (инвайт не гасится) и возвращается ErrInviteEmailMismatch.
 func (s *Service) AcceptInvite(ctx context.Context, token string, userID int64, acceptingEmail string) (int64, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -142,8 +110,6 @@ func (s *Service) AcceptInvite(ctx context.Context, token string, userID int64, 
 	if err != nil {
 		return 0, fmt.Errorf("org: accept invite: %w", err)
 	}
-	// Инвайт привязан к email: принять его может только владелец адреса.
-	// Откат (через defer) оставляет инвайт непотраченным.
 	if !strings.EqualFold(inviteEmail, acceptingEmail) {
 		return 0, ErrInviteEmailMismatch
 	}
@@ -158,10 +124,6 @@ func (s *Service) AcceptInvite(ctx context.Context, token string, userID int64, 
 	return orgID, nil
 }
 
-// InviteInfo — приглашение, показанное держателю токена ДО принятия.
-//
-// Название организации здесь раскрывается намеренно: токен и есть секрет, а
-// без названия человек подтверждает вслепую — «принять приглашение куда-то».
 type InviteInfo struct {
 	OrgID   int64
 	OrgName string
@@ -169,11 +131,6 @@ type InviteInfo struct {
 	Role    Role
 }
 
-// InviteByToken читает приглашение по сырому токену, не гася его.
-//
-// Просроченное, уже принятое и несуществующее дают одну и ту же ошибку:
-// различие между ними было бы оракулом — по нему перебором проверяют, какие
-// приглашения выписаны.
 func (s *Service) InviteByToken(ctx context.Context, token string) (InviteInfo, error) {
 	var inv InviteInfo
 	err := s.pool.QueryRow(ctx, `
@@ -191,9 +148,6 @@ func (s *Service) InviteByToken(ctx context.Context, token string) (InviteInfo, 
 	return inv, nil
 }
 
-// HasPendingInvite сообщает, есть ли действующий (не принятый, не протухший)
-// инвайт на email. Лёгкая предпроверка перед провижинингом OAuth-юзера, чтобы
-// не заводить аккаунт без приглашения.
 func (s *Service) HasPendingInvite(ctx context.Context, email string) (bool, error) {
 	var exists bool
 	err := s.pool.QueryRow(ctx, `
@@ -207,11 +161,6 @@ func (s *Service) HasPendingInvite(ctx context.Context, email string) (bool, err
 	return exists, nil
 }
 
-// AcceptPendingInviteByEmail гасит самый свежий действующий инвайт на email и
-// добавляет userID в организацию (роль из инвайта). ok=false без ошибки, если
-// pending-инвайта нет — вызывающий (OAuth-провижининг) трактует это как «нет
-// приглашения». Матч по email (провайдер вернул verified email); токен не
-// нужен — доступ уже подтверждён внешним провайдером.
 func (s *Service) AcceptPendingInviteByEmail(ctx context.Context, email string, userID int64) (int64, bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -249,12 +198,6 @@ func (s *Service) AcceptPendingInviteByEmail(ctx context.Context, email string, 
 	return orgID, true, nil
 }
 
-// PurgeExpiredInvites удаляет инвайты, которые больше не нужны: просроченные
-// (expires_at < now — приняты уже не будут) и принятые (accepted_at IS NOT NULL —
-// членство создано, а email приглашённого дальше хранить незачем). Живые
-// pending-инвайты остаются. Минимизация хранения ПДн (152-ФЗ ст.5 ч.7):
-// иначе email приглашённых копятся бессрочно, пока жива организация. Вызывается
-// периодически из auth.Janitor (см. main.go).
 func (s *Service) PurgeExpiredInvites(ctx context.Context) (int64, error) {
 	tag, err := s.pool.Exec(ctx,
 		"DELETE FROM org_invites WHERE expires_at < now() OR accepted_at IS NOT NULL")
@@ -264,10 +207,6 @@ func (s *Service) PurgeExpiredInvites(ctx context.Context) (int64, error) {
 	return tag.RowsAffected(), nil
 }
 
-// DeleteInvitesByEmail удаляет все pending-инвайты на указанный email во всех
-// организациях. Вызывается при самоудалении аккаунта: email приглашённого —
-// ПДн, а org_invites не связаны с users по FK, поэтому каскад их не удаляет
-// (минимизация, 152-ФЗ ст.5 ч.7).
 func (s *Service) DeleteInvitesByEmail(ctx context.Context, email string) (int64, error) {
 	tag, err := s.pool.Exec(ctx, "DELETE FROM org_invites WHERE email = $1", email)
 	if err != nil {

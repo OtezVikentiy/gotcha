@@ -10,10 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 )
 
-// TestParseLogFilterNegations — задача 5 («исключающие фильтры логов»):
-// q_not/severity_not/service_not/environment_not/attr_not собираются в
-// f.Not, проходя через log.NormalizePredicates (пустые/пробельные значения
-// и неизвестный уровень отбрасываются).
 func TestParseLogFilterNegations(t *testing.T) {
 	rng := TimeRange{From: time.Now().Add(-time.Hour), To: time.Now()}
 
@@ -38,7 +34,6 @@ func TestParseLogFilterNegations(t *testing.T) {
 		}
 	}
 
-	// Поле и Key восстанавливаются верно для обоих видов атрибутов.
 	var sawAttr, sawResAttr bool
 	for _, p := range f.Not {
 		if p.Field == log.FieldAttr && p.Key == "source" && p.Value == "nginx" {
@@ -56,9 +51,6 @@ func TestParseLogFilterNegations(t *testing.T) {
 	}
 }
 
-// TestParseLogFilterNegationsCapped — потолок maxNegativeConditions режет
-// избыточные условия из URL (положительные параметры такого потолка не
-// имеют, см. комментарий у константы).
 func TestParseLogFilterNegationsCapped(t *testing.T) {
 	rng := TimeRange{From: time.Now().Add(-time.Hour), To: time.Now()}
 	var many []string
@@ -71,9 +63,6 @@ func TestParseLogFilterNegationsCapped(t *testing.T) {
 	}
 }
 
-// TestApplyPredicatesRoundTrip — круговой обход filterToPredicates→
-// applyPredicates: страховка от расхождения прямого и обратного
-// преобразований (нужны задачам 9 и 10 для сохранённых/дефолтных фильтров).
 func TestApplyPredicatesRoundTrip(t *testing.T) {
 	src := log.ListFilter{
 		Severity: []string{log.SevError},
@@ -108,9 +97,6 @@ func TestApplyPredicatesRoundTrip(t *testing.T) {
 	}
 }
 
-// TestApplyPredicatesDedupes — applyPredicates не должен накапливать дубли
-// при повторном применении одного и того же положительного предиката
-// (мультивыбор severity/attrs идемпотентен).
 func TestApplyPredicatesDedupes(t *testing.T) {
 	var f log.ListFilter
 	preds := []log.Predicate{
@@ -129,9 +115,4 @@ func TestApplyPredicatesDedupes(t *testing.T) {
 	}
 }
 
-// LogFilterParamsForTest открывает закрытый список logFilterParams
-// (logfilters.go) внешнему тестовому пакету web_test: тест «фильтр по
-// умолчанию» (logfilters_test.go) обязан пройтись по КАЖДОМУ параметру
-// отбора, а не по ручному подмножеству, которое могло бы молча разойтись
-// со списком при добавлении нового параметра.
 var LogFilterParamsForTest = logFilterParams

@@ -9,10 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// TestChannelStatusBadgeSecretBroken — секрет канала не расшифровывается
-// (сменился/потерян GOTCHA_SECRET_KEY): бейдж состояния — danger с текстом
-// secret_broken, а не enabled/disabled. Существующий тест в labels_test.go
-// покрывает только Enabled true/false — ветка SecretBroken не исполнялась.
 func TestChannelStatusBadgeSecretBroken(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	wantText := i18n.T(ctx, "alerts.channels.status.secret_broken")
@@ -25,8 +21,6 @@ func TestChannelStatusBadgeSecretBroken(t *testing.T) {
 	}
 }
 
-// TestChannelStatusBadgeTrusted — канал, помеченный доверенным (получатель
-// внутри контура): второй бейдж "trusted" рядом со статусом.
 func TestChannelStatusBadgeTrusted(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	wantText := i18n.T(ctx, "alerts.channels.status.trusted")
@@ -36,8 +30,6 @@ func TestChannelStatusBadgeTrusted(t *testing.T) {
 	}
 }
 
-// TestChannelStatusBadgeNotTrusted — обратная ветка: без Trusted второй
-// бейдж не рисуется.
 func TestChannelStatusBadgeNotTrusted(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	trustedText := i18n.T(ctx, "alerts.channels.status.trusted")

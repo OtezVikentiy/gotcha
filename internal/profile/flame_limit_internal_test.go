@@ -9,13 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestFlameCapsStacksByWeight: стеков на входе больше maxFlameStacks →
-// флеймграф собран ровно из maxFlameStacks САМЫХ ТЯЖЁЛЫХ, лёгкий хвост
-// отрезан. Без LIMIT дерево росло бы с числом уникальных стеков без верхней
-// границы; без ORDER BY усечение резало бы произвольные стеки, а не лёгкие.
-//
-// Проверка и Flame (окно/сервис), и FlameForTrace (trace_id) на одном посеве:
-// оба запроса делят потолок и порядок усечения.
 func TestFlameCapsStacksByWeight(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -32,7 +25,6 @@ func TestFlameCapsStacksByWeight(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare batch: %v", err)
 	}
-	// Стек i весит i+1: самые лёгкие — f0..f4, они и должны отпасть.
 	for i := 0; i < total; i++ {
 		if err := batch.Append(uint64(31), "cpu", "api", "", "", "go", now.Add(-time.Minute),
 			[]string{"root", fmt.Sprintf("f%d", i)}, uint64(i+1), "nanoseconds", "T"); err != nil {
@@ -43,8 +35,6 @@ func TestFlameCapsStacksByWeight(t *testing.T) {
 		t.Fatalf("send: %v", err)
 	}
 
-	// Сумма весов extra+1..total — ровно то, что остаётся после отрезания
-	// extra самых лёгких стеков (весов 1..extra).
 	var wantValue uint64
 	for v := extra + 1; v <= total; v++ {
 		wantValue += uint64(v)

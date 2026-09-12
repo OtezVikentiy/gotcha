@@ -39,10 +39,6 @@ type hostsStack struct {
 	groups    *host.GroupThresholdService
 }
 
-// fakeHostForgetter реализует web.HostForgetter без реального host.Toucher —
-// web-тесту hostDelete важен только факт вызова Forget(projectID, name)
-// после удаления, не поведение троттлера (это внутренняя логика host.Toucher,
-// покрытая internal/host/touch_test.go).
 type fakeHostForgetter struct {
 	mu    sync.Mutex
 	calls []string
@@ -60,9 +56,6 @@ func (f *fakeHostForgetter) callCount() int {
 	return len(f.calls)
 }
 
-// newHostsStack поднимает мигрированные PG+CH и Handler, как newMetricsStack
-// (metrics_test.go) — но дополнительно проводит Hosts/HostIncidents/
-// HostSettings, как это делает cmd/gotcha/main.go всегда вместе с Metrics.
 func newHostsStack(t *testing.T, wireMetrics bool) *hostsStack {
 	t.Helper()
 	pool := testenv.MigratedPG(t)
@@ -98,9 +91,7 @@ func newHostsStack(t *testing.T, wireMetrics bool) *hostsStack {
 	}
 }
 
-// seedGaugeHost — точка метрики-gauge с host-атрибуцией (как seedGaugeHost в
-// internal/metric — неэкспортируемая копия для web_test, который не может её
-// импортировать).
+// Копия неэкспортируемой seedGaugeHost из internal/metric — web_test не может её импортировать.
 func (s *hostsStack) seedGaugeHost(t *testing.T, projectID int64, name, hostName string, ts time.Time, val float64, attrs map[string]string) {
 	t.Helper()
 	if attrs == nil {
@@ -114,9 +105,8 @@ func (s *hostsStack) seedGaugeHost(t *testing.T, projectID int64, name, hostName
 	}
 }
 
-// setHostLastSeen перематывает last_seen хоста напрямую в PG (Store не даёт
-// такой ручки — в проде last_seen двигает только Toucher/ingest) — нужно,
-// чтобы детерминированно смоделировать «тихий» хост в тесте.
+// Store не даёт менять last_seen напрямую (в проде это делает только Toucher/ingest) —
+// нужно для детерминированного «тихого» хоста в тесте.
 func (s *hostsStack) setHostLastSeen(t *testing.T, projectID int64, name string, ts time.Time) {
 	t.Helper()
 	if _, err := s.pool.Exec(context.Background(),
@@ -145,7 +135,6 @@ func TestWebHostsList(t *testing.T) {
 
 	now := time.Now().UTC()
 
-	// web-ok: свежий, без инцидентов — все метрики есть.
 	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: "web-ok"}}); err != nil {
 		t.Fatalf("upsert web-ok: %v", err)
 	}
@@ -155,7 +144,6 @@ func TestWebHostsList(t *testing.T) {
 	s.seedGaugeHost(t, project.ID, "system.cpu.load_average.5m", "web-ok", now.Add(-time.Minute), 1.5, nil)
 	s.seedGaugeHost(t, project.ID, "system.cpu.logical.count", "web-ok", now.Add(-time.Minute), 3, nil)
 
-	// web-disk: открытый инцидент диска — статус-бейдж вида "disk".
 	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: "web-disk"}}); err != nil {
 		t.Fatalf("upsert web-disk: %v", err)
 	}
@@ -167,7 +155,6 @@ func TestWebHostsList(t *testing.T) {
 		t.Fatalf("open disk incident: %v", err)
 	}
 
-	// web-quiet: last_seen старше порога тишины, без инцидентов.
 	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: "web-quiet"}}); err != nil {
 		t.Fatalf("upsert web-quiet: %v", err)
 	}
@@ -194,14 +181,11 @@ func TestWebHostsList(t *testing.T) {
 			t.Errorf("список не содержит хост %q: %s", name, text)
 		}
 	}
-	// Значения метрик web-ok (CPU busy = 1-0.20 = 0.80, RAM 0.55, диск 0.30,
-	// load/core = 1.5/3 = 0.50).
 	for _, want := range []string{"80%", "55%", "30%", "0.50"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("список не содержит значение %q: %s", want, text)
 		}
 	}
-	// Статус-бейджи: ok у web-ok, вид инцидента у web-disk, "тихий" у web-quiet.
 	if !strings.Contains(text, "Норма") {
 		t.Errorf("нет бейджа «Норма» (web-ok): %s", text)
 	}
@@ -211,18 +195,13 @@ func TestWebHostsList(t *testing.T) {
 	if !strings.Contains(text, "Тихий") {
 		t.Errorf("нет бейджа «Тихий» (web-quiet): %s", text)
 	}
-	// P2-11: конфиг коллектора доступен и с НЕПУСТОГО списка (подключение
-	// второго сервера), а не только из онбординга пустого состояния.
 	if !strings.Contains(text, "Bearer "+key.PublicKey) {
 		t.Errorf("непустой список без конфига коллектора (нет Bearer с ключом проекта): %s", text)
 	}
-	// P1-1: конфиг виден глазами, а не только «за кнопкой» — проверить
-	// подставленные адрес и ключ можно, ничего не копируя.
 	if !strings.Contains(text, `<pre class="copy-preview">`) {
 		t.Errorf("конфиг коллектора не отрисован видимым блоком: %s", text)
 	}
 
-	// Чужой (не член организации) → 404.
 	_, outsider := orgSettingsRegister(t, s.auth, "hosts-outsider@example.com")
 	resp = getWithCookie(t, s.srv, base, outsider)
 	io.Copy(io.Discard, resp.Body)
@@ -232,12 +211,6 @@ func TestWebHostsList(t *testing.T) {
 	}
 }
 
-// TestWebHostsListAgentDistUnavailable — rem-A sec-M1: активный ключ проекта
-// есть (коллектор заполняется), но раздача бинарей агента не сконфигурирована
-// (h.AgentDistDir пуст — как newHostsStack поднимает Handler по умолчанию,
-// та же ситуация, что на инстансе, собранном не из Docker-образа). Онбординг
-// не должен предлагать install.sh-команду: `agentDistAvailable()` лжив, и
-// эта команда гарантированно упёрлась бы в 404 на каждом хосте парка.
 func TestWebHostsListAgentDistUnavailable(t *testing.T) {
 	s := newHostsStack(t, true)
 	ctx := context.Background()
@@ -270,11 +243,7 @@ func TestWebHostsListAgentDistUnavailable(t *testing.T) {
 	}
 }
 
-// TestWebHostsListAgentInsecureBaseURL — rem-A sec-M4: BaseURL не https:// и
-// не локальный — онбординг не должен отдавать root-команду, которая тянет
-// бинарь и SHA256SUMS по каналу, уязвимому MITM. Второй Handler на отдельном
-// сервере, чтобы не трогать h.BaseURL исходного стенда (тот httptest-локален
-// и остаётся валидным фикстурой для остальных тестов файла).
+// Второй Handler на отдельном сервере, чтобы не трогать h.BaseURL исходного стенда.
 func TestWebHostsListAgentInsecureBaseURL(t *testing.T) {
 	s := newHostsStack(t, true)
 	ctx := context.Background()
@@ -282,8 +251,8 @@ func TestWebHostsListAgentInsecureBaseURL(t *testing.T) {
 	mux2 := http.NewServeMux()
 	srv2 := httptest.NewServer(mux2)
 	t.Cleanup(srv2.Close)
-	h2 := web.New(s.auth, s.org, nil, nil, "http://gotcha.example") // http://, не localhost — sec-M4
-	h2.AgentDistDir = t.TempDir()                                   // раздача доступна — изолирует именно sec-M4
+	h2 := web.New(s.auth, s.org, nil, nil, "http://gotcha.example") // http://, не localhost
+	h2.AgentDistDir = t.TempDir()                                   // раздача доступна: изолируем небезопасный BaseURL
 	h2.Metrics = metric.NewQuery(s.ch)
 	h2.Hosts = s.hosts
 	h2.HostIncidents = s.incidents
@@ -319,13 +288,8 @@ func TestWebHostsListAgentInsecureBaseURL(t *testing.T) {
 	}
 }
 
-// TestWebHostsSilentBadgeConsistentAcrossSources — регрессия ревью T14
-// (находка 2): хост, тихий по факту открытого incident kind="silent"
-// (host.Evaluator уже тикнул), и хост, тихий только по last_seen (evaluator
-// ещё не тикнул), обязаны получить ОДИН И ТОТ ЖЕ бейдж «Тихий» — не
-// «Тишина» (тот текст означает вид ОТКРЫТОГО инцидента среди «проблемных»,
-// см. hosts.kind.silent). Разные тексты для одного и того же состояния и
-// были бы мерцанием бейджа на тике оценщика без изменения сути.
+// Хост, тихий по открытому incident kind="silent", и хост, тихий только по last_seen,
+// обязаны получить один и тот же бейдж «Тихий», а не мигать в «Тишина» на тике оценщика.
 func TestWebHostsSilentBadgeConsistentAcrossSources(t *testing.T) {
 	s := newHostsStack(t, true)
 	ctx := context.Background()
@@ -340,9 +304,6 @@ func TestWebHostsSilentBadgeConsistentAcrossSources(t *testing.T) {
 	}
 	now := time.Now().UTC()
 
-	// web-silent-incident: last_seen СВЕЖИЙ, но есть открытый incident
-	// kind="silent" (как будто host.Evaluator уже успел его открыть на
-	// предыдущем тике, до того как хост снова "ожил").
 	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: "web-silent-incident"}}); err != nil {
 		t.Fatalf("upsert web-silent-incident: %v", err)
 	}
@@ -354,8 +315,6 @@ func TestWebHostsSilentBadgeConsistentAcrossSources(t *testing.T) {
 		t.Fatalf("open silent incident: %v", err)
 	}
 
-	// web-silent-lastseen: тихий ТОЛЬКО по last_seen, без единого инцидента
-	// (evaluator ещё не тикнул).
 	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: "web-silent-lastseen"}}); err != nil {
 		t.Fatalf("upsert web-silent-lastseen: %v", err)
 	}
@@ -380,10 +339,8 @@ func TestWebHostsSilentBadgeConsistentAcrossSources(t *testing.T) {
 	if got := strings.Count(text, "Тихий"); got != 2 {
 		t.Errorf("бейдж «Тихий» встречается %d раз(а), want 2 (оба хоста в одном тире): %s", got, text)
 	}
-	// "Тишина" — текст ВИДА проблемного инцидента (hosts.kind.silent),
-	// появляется, только если kind="silent" по ошибке попал в OpenKinds
-	// (тир "problem"). Его не должно быть вовсе — обе тихих строки не
-	// содержат бейджа "problem".
+	// "Тишина" — текст вида проблемного инцидента (hosts.kind.silent), появляется только
+	// если kind="silent" по ошибке попал в OpenKinds тира "problem".
 	if strings.Contains(text, "Тишина") {
 		t.Errorf("бейдж «Тишина» (тир problem) не должен появляться — silent сворачивается в один тир: %s", text)
 	}
@@ -404,12 +361,6 @@ func TestWebHostsListNilMetrics(t *testing.T) {
 	}
 }
 
-// TestWebHostsListNilHostsStore — регрессия ревью T14 (находка 1): Metrics
-// проставлен, а Hosts/HostIncidents/HostSettings — нет. Инвариант «main.go
-// всегда проставляет их вместе с Metrics» на практике уже нарушен другими
-// тестовыми стендами (shell_operate_e2e_test.go, authz_behavior_test.go
-// вооружают только h.Metrics) — без собственного nil-гейта в hostsList
-// авторизованный участник получил бы панику на h.Hosts.List(nil), а не 404.
 func TestWebHostsListNilHostsStore(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ch := testenv.MigratedCH(t)
@@ -464,11 +415,8 @@ func TestWebHostsListEmptyState(t *testing.T) {
 	}
 }
 
-// TestWebHostsSettingsBeatsHostNamedSettings — специфичность маршрута
-// ServeMux (Go 1.22): литеральный сегмент "settings" выигрывает у {name}
-// независимо от порядка регистрации, даже когда в проекте реально есть хост
-// с именем "settings" — по /hosts/settings всегда отвечает
-// hostSettingsPage, не hostDetail (см. web.go, комментарий у маршрутов).
+// ServeMux (Go 1.22): литеральный сегмент "settings" выигрывает у {name} независимо от
+// порядка регистрации, даже когда в проекте реально есть хост с именем "settings".
 func TestWebHostsSettingsBeatsHostNamedSettings(t *testing.T) {
 	s := newHostsStack(t, true)
 	ctx := context.Background()
@@ -492,11 +440,6 @@ func TestWebHostsSettingsBeatsHostNamedSettings(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s status = %d, want 200: %s", path, resp.StatusCode, body)
 	}
-	// hostSettingsPage отвечает страницей формы порогов (маркер — корневой
-	// класс "host-settings" и заголовок nav.host_thresholds, «Пороги
-	// хостов»); hostDetail отвечает карточкой хоста с графиками
-	// (data-chart="..."). Если бы {name} выиграл специфичность, тело
-	// содержало бы маркеры карточки, а не формы настроек.
 	text := string(body)
 	if !strings.Contains(text, `class="host-settings"`) || !strings.Contains(text, "Пороги хостов") {
 		t.Fatalf("тело не похоже на страницу настроек порогов (settings-хендлер): %s", text)
@@ -506,8 +449,6 @@ func TestWebHostsSettingsBeatsHostNamedSettings(t *testing.T) {
 	}
 }
 
-// TestWebHostSettingsGate — не-член организации получает 404 и на GET, и
-// на POST (requireProjectOperator — существования проекта не палит).
 func TestWebHostSettingsGate(t *testing.T) {
 	s := newHostsStack(t, true)
 	ctx := context.Background()
@@ -538,12 +479,6 @@ func TestWebHostSettingsGate(t *testing.T) {
 	}
 }
 
-// TestWebHostSettingsSaveFlow — GET отдаёт дефолты (строки настроек ещё
-// нет); POST без Origin → 403 (denyCrossOrigin), настройки не тронуты;
-// валидный POST (диск 50%, silent 4 мин) → 303 на ту же страницу, Get
-// отдаёт сохранённые 0.50/240s; POST с silent=2 (< MinSilentAfter=180s=3мин)
-// → 422 с FormState-ошибкой, введённое значение "2" возвращается в форму
-// (не потеряно), настройки в БД не изменены последним невалидным POST.
 func TestWebHostSettingsSaveFlow(t *testing.T) {
 	s := newHostsStack(t, true)
 	ctx := context.Background()
@@ -559,7 +494,6 @@ func TestWebHostSettingsSaveFlow(t *testing.T) {
 
 	path := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts/settings"
 
-	// GET — дефолты без сохранённой строки (host.DefaultSettings: 90/90/2.0/5мин).
 	resp := getWithCookie(t, s.srv, path, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -581,7 +515,6 @@ func TestWebHostSettingsSaveFlow(t *testing.T) {
 		"silent_enabled": {"1"}, "silent_after": {"4"},
 	}
 
-	// Без Origin → 403, настройки НЕ сохраняются.
 	resp = postForm(t, s.srv, path, validForm, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -592,7 +525,6 @@ func TestWebHostSettingsSaveFlow(t *testing.T) {
 		t.Fatalf("настройки изменились без Origin: %+v, err=%v", got, err)
 	}
 
-	// Валидный POST → 303 на страницу настроек, значения сохранены.
 	resp = postForm(t, s.srv, path, validForm, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -602,8 +534,6 @@ func TestWebHostSettingsSaveFlow(t *testing.T) {
 	if loc := resp.Header.Get("Location"); loc != path {
 		t.Fatalf("Location = %q, want %q", loc, path)
 	}
-	// P1-5: сохранение сообщает о себе — до правки редирект возвращал форму с
-	// теми же значениями и выглядел как «ничего не произошло».
 	if !hasFlashCookie(resp, "ok|flash.saved") {
 		t.Errorf("после сохранения порогов нет flash-cookie: %v", resp.Header.Values("Set-Cookie"))
 	}
@@ -618,8 +548,6 @@ func TestWebHostSettingsSaveFlow(t *testing.T) {
 		t.Errorf("SilentAfter = %v, want 240s", saved.SilentAfter)
 	}
 
-	// silent=2 мин (< 3 мин минимум) → 422, FormState возвращает введённое
-	// значение, сохранённые настройки не подменяются мусором.
 	invalidForm := url.Values{
 		"disk_enabled": {"1"}, "disk_threshold": {"50"},
 		"memory_enabled": {"1"}, "memory_threshold": {"90"},
@@ -647,9 +575,8 @@ func TestWebHostSettingsSaveFlow(t *testing.T) {
 		t.Errorf("невалидный POST изменил сохранённый SilentAfter: %v, want 240s (предыдущее валидное значение)", stillSaved.SilentAfter)
 	}
 
-	// Верхней границы у поля раньше не было: 10^12 минут переполняли и
-	// time.Duration, и колонку int4 — пользователь получал 500-ю на опечатке
-	// вместо 422 с подсказкой.
+	// Без верхней границы 10^12 минут переполнили бы time.Duration и колонку int4 —
+	// 500-я вместо 422 с подсказкой.
 	overflowForm := url.Values{
 		"disk_enabled": {"1"}, "disk_threshold": {"50"},
 		"memory_enabled": {"1"}, "memory_threshold": {"90"},
@@ -671,14 +598,6 @@ func TestWebHostSettingsSaveFlow(t *testing.T) {
 	}
 }
 
-// TestWebHostSettingsSaveRejectsNaNInf — ревью T16 (Important): strconv.
-// ParseFloat принимает "NaN"/"Inf" без ошибки, а host.Validate сравнивает
-// порог с границами через </<=/> — сравнение с NaN всегда false в обе
-// стороны, поэтому такой порог тихо проходил бы Validate и сохранялся в
-// БД (Postgres double precision и CHECK(load_threshold > 0) тоже принимают
-// NaN/Infinity), после чего оценщик host.Evaluator никогда бы не срабатывал.
-// disk_threshold=NaN и (отдельным POST) load_threshold=Inf обязаны получить
-// 422 с FormState, а НЕ подменить ранее сохранённое валидное значение.
 func TestWebHostSettingsSaveRejectsNaNInf(t *testing.T) {
 	s := newHostsStack(t, true)
 	ctx := context.Background()
@@ -691,7 +610,6 @@ func TestWebHostSettingsSaveRejectsNaNInf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	// Известное валидное состояние в БД — POST с NaN/Inf не должен его тронуть.
 	baseline := host.Settings{
 		DiskEnabled: true, DiskThreshold: 0.60,
 		MemoryEnabled: true, MemoryThreshold: 0.70,
@@ -757,16 +675,6 @@ func TestWebHostSettingsSaveRejectsNaNInf(t *testing.T) {
 	}
 }
 
-// TestWebHostGroupThresholdsFlow — блок «Пороги по окружению/роли» (B2, T7)
-// на /hosts/settings: без Origin/чужому оператору — 403/404, ничего не
-// меняется; валидный POST scope=role/label=web создаёт правило
-// (GroupThresholdService.Upsert), 303 на страницу настроек, flash, строка в
-// таблице; повторный POST под ТОЙ ЖЕ парой scope+label — редактирование
-// (замещает диск-override другим значением, а не создаёт вторую строку —
-// Upsert идемпотентен по (project_id,scope,label)); невалидный POST (диск
-// вне границы) → 422 с сообщением и введённым значением, сохранённое правило
-// не подменяется мусором; POST без scope/label → 422; удаление — 303,
-// правило исчезает из PG и со страницы, повторное удаление идемпотентно.
 func TestWebHostGroupThresholdsFlow(t *testing.T) {
 	s := newHostsStack(t, true)
 	ctx := context.Background()
@@ -789,8 +697,6 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 	savePath := path + "/groups"
 	deletePath := savePath + "/delete"
 
-	// GET — форма добавления показана (у проекта есть метки prod/web),
-	// групповых правил ещё нет.
 	resp := getWithCookie(t, s.srv, path, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -819,7 +725,6 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 		"silent_mode": {"inherit"},
 	}
 
-	// Без Origin → 403, правило не создано.
 	resp = postForm(t, s.srv, savePath, validForm, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -830,7 +735,6 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 		t.Fatalf("правило создано без Origin: %+v, err=%v", got, err)
 	}
 
-	// Чужой (не член организации) → 404.
 	_, outsider := orgSettingsRegister(t, s.auth, "hgt-outsider@example.com")
 	resp = postForm(t, s.srv, savePath, validForm, s.srv.URL, outsider)
 	io.Copy(io.Discard, resp.Body)
@@ -839,7 +743,6 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 		t.Fatalf("outsider POST status = %d, want 404", resp.StatusCode)
 	}
 
-	// Валидный POST → 303, flash, правило в PG.
 	resp = postForm(t, s.srv, savePath, validForm, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -863,7 +766,6 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 		t.Errorf("disk override = %+v, want enabled=true value=0.70", saved[0].DiskEnabled)
 	}
 
-	// GET после сохранения — таблица показывает строку правила.
 	resp = getWithCookie(t, s.srv, path, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -872,8 +774,6 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 		t.Errorf("таблица правил не показывает заданный порог диска: %s", text)
 	}
 
-	// Повторный POST под той же парой scope+label — редактирование: Upsert
-	// замещает диск-override другим значением, а не создаёт вторую строку.
 	editForm := url.Values{
 		"scope": {"role"}, "label_role": {"web"},
 		"disk_mode": {"override"}, "disk_value": {"55"},
@@ -895,8 +795,6 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 		t.Fatalf("edited groups = %+v, want ОДНО правило role/web с disk=0.55 (не вторая строка)", edited)
 	}
 
-	// Невалидный POST (диск вне границы 1..100%) → 422, сообщение + введённое
-	// значение, ранее сохранённое правило не подменяется мусором.
 	invalidForm := url.Values{
 		"scope": {"role"}, "label_role": {"web"},
 		"disk_mode": {"override"}, "disk_value": {"150"},
@@ -917,9 +815,6 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 	if !strings.Contains(text, "Порог диска должен быть от 1 до 99%") {
 		t.Errorf("422-ответ без сообщения о границах диска: %s", text)
 	}
-	// Пара role/web уже существует — 422 обязан переоткрыть модалку правки
-	// ИМЕННО этого правила, а не модалку создания (образец —
-	// TestWebMaintenanceUpdateInvalidReopensModal).
 	editModalID := templates.EditGroupThresholdModalID("role", "web")
 	if !strings.Contains(text, `id="`+editModalID+`" class="modal modal--open"`) {
 		t.Errorf("422 правки не переоткрыл модалку правила role/web: %s", text)
@@ -935,9 +830,6 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 		t.Errorf("невалидный POST изменил сохранённое правило: %+v, want disk=0.55", stillSaved)
 	}
 
-	// Невалидный POST с парой, которой нет среди правил (создание нового) →
-	// 422 переоткрывает модалку СОЗДАНИЯ с введённым значением, модалка
-	// правки существующего правила остаётся закрытой.
 	invalidCreateForm := url.Values{
 		"scope": {"env"}, "label_env": {"prod"},
 		"disk_mode": {"override"}, "disk_value": {"150"},
@@ -958,14 +850,10 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 	if strings.Contains(text, `id="`+editModalID+`" class="modal modal--open"`) {
 		t.Errorf("422 создания открыл модалку правки чужого правила: %s", text)
 	}
-	// Введённое при 422 попадает только в ПЕРЕОТКРЫТУЮ модалку: закрытая
-	// модалка правки role/web продолжает показывать значение своего правила
-	// (диск 55%), а не значения чужой отправки (groupThresholdFormValues).
 	if !strings.Contains(text, `value="55"`) {
 		t.Errorf("значения чужой отправки вытеснили значения правила в закрытой модалке правки: %s", text)
 	}
 
-	// POST без scope/label → 422 (нечего сохранять).
 	noScopeForm := url.Values{
 		"disk_mode": {"inherit"}, "memory_mode": {"inherit"},
 		"load_mode": {"inherit"}, "silent_mode": {"inherit"},
@@ -977,7 +865,6 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 		t.Fatalf("no-scope POST status = %d, want 422: %s", resp.StatusCode, body)
 	}
 
-	// Удаление без Origin → 403, правило не удалено.
 	delForm := url.Values{"scope": {"role"}, "label": {"web"}}
 	resp = postForm(t, s.srv, deletePath, delForm, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -989,8 +876,6 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 		t.Fatalf("правило удалено без Origin: %+v, err=%v", got, err)
 	}
 
-	// Пустая пара scope/label → 422 с ошибкой на той же странице (K7-8:
-	// раньше — голый редирект без объяснения), правило на месте.
 	for _, bad := range []url.Values{
 		{"scope": {""}, "label": {"web"}},
 		{"scope": {"role"}, "label": {""}},
@@ -1010,8 +895,6 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 		t.Fatalf("правило удалено пустой парой: %+v, err=%v", got, err)
 	}
 
-	// Без confirmed=yes → 200, страница подтверждения называет группу (K7-7),
-	// правило на месте.
 	resp = postForm(t, s.srv, deletePath, delForm, s.srv.URL, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -1031,7 +914,6 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 		t.Fatalf("правило удалено без подтверждения: %+v, err=%v", got, err)
 	}
 
-	// Валидное удаление → 303, flash, правило исчезает из PG и со страницы.
 	delForm.Set("confirmed", "yes")
 	resp = postForm(t, s.srv, deletePath, delForm, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -1056,7 +938,6 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 		t.Errorf("страница после удаления не показывает пустой список правил: %s", body)
 	}
 
-	// Повторное удаление отсутствующей строки — идемпотентно, 303, без ошибки.
 	resp = postForm(t, s.srv, deletePath, delForm, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -1065,12 +946,6 @@ func TestWebHostGroupThresholdsFlow(t *testing.T) {
 	}
 }
 
-// TestWebHostGroupThresholdEditModalsPerRow — модалок правки столько же,
-// сколько строк таблицы, каждая предзаполнена значениями СВОЕГО правила
-// (scope+метка hidden-полями, порог — числом правила), и при этом в
-// документе нет повторяющихся id: сегмент-контролы и поля повторяются в
-// каждой модалке, любой захардкоженный id давал бы дубль, а клик по label
-// одной модалки переключал бы radio в другой.
 func TestWebHostGroupThresholdEditModalsPerRow(t *testing.T) {
 	s := newHostsStack(t, true)
 	ctx := context.Background()
@@ -1126,9 +1001,6 @@ func TestWebHostGroupThresholdEditModalsPerRow(t *testing.T) {
 			t.Errorf("нет закрытой модалки правки %q: %s", id, text)
 		}
 	}
-	// Пара действий строки — как на «Подавлении шторма»: «Редактировать»
-	// вторичной кнопкой (btn-ghost), «Удалить» — btn-danger, оба в обёртке
-	// .row-actions; текстовой ссылки-редактирования больше нет.
 	for _, id := range []string{envID, roleID} {
 		if !strings.Contains(text, `<a class="btn btn-ghost" href="#`+id+`"`) {
 			t.Errorf("нет кнопки правки btn-ghost для %q: %s", id, text)
@@ -1140,8 +1012,6 @@ func TestWebHostGroupThresholdEditModalsPerRow(t *testing.T) {
 	if !strings.Contains(text, `class="row-actions"`) {
 		t.Errorf("действия строки правил без обёртки row-actions: %s", text)
 	}
-	// Пояснения для скринридера — на обеих кнопках каждой строки, с парой
-	// правила (как у suppressionEdgeRow на «Подавлении шторма»).
 	for _, want := range []string{
 		`aria-label="Редактировать правило: Окружение prod"`,
 		`aria-label="Удалить правило: Окружение prod"`,
@@ -1152,8 +1022,6 @@ func TestWebHostGroupThresholdEditModalsPerRow(t *testing.T) {
 			t.Errorf("нет aria-пояснения %q: %s", want, text)
 		}
 	}
-	// Предзаполнение: у каждой модалки пара своего правила hidden-полями и
-	// порог диска числом правила (70% у env/prod, 55% у role/web).
 	if !strings.Contains(text, `type="hidden" name="scope" value="env"`) ||
 		!strings.Contains(text, `type="hidden" name="label_env" value="prod"`) {
 		t.Errorf("модалка env/prod не несёт свою пару hidden-полями: %s", text)
@@ -1165,14 +1033,10 @@ func TestWebHostGroupThresholdEditModalsPerRow(t *testing.T) {
 	if !strings.Contains(text, `value="70"`) || !strings.Contains(text, `value="55"`) {
 		t.Errorf("модалки правки не предзаполнены значениями своих правил (70 и 55): %s", text)
 	}
-	// Все модалки порогов — широкие (wide): форма с четырьмя fieldset в
-	// узкой карточке сплющивается. Создание + по одной правке на строку.
 	if got := strings.Count(text, "modal-card--wide"); got != 3 {
 		t.Errorf("широких модалок порогов = %d, want 3 (создание + 2 правки)", got)
 	}
 
-	// Дубликаты id в документе: форм на странице несколько, повторяющийся id
-	// ломает связку label/for и якоря модалок.
 	idRe := regexp.MustCompile(` id="([^"]+)"`)
 	seen := map[string]bool{}
 	for _, m := range idRe.FindAllStringSubmatch(text, -1) {
@@ -1183,10 +1047,6 @@ func TestWebHostGroupThresholdEditModalsPerRow(t *testing.T) {
 	}
 }
 
-// TestWebHostGroupThresholdLegacyEditLink — старый формат ссылки
-// «Редактировать» (?gt_scope=&gt_label=, закладки и переходы из писем)
-// продолжает работать: сервер открывает модалку правки найденного правила;
-// несуществующая пара — обычная страница без открытых модалок, без 404.
 func TestWebHostGroupThresholdLegacyEditLink(t *testing.T) {
 	s := newHostsStack(t, true)
 	ctx := context.Background()
@@ -1218,7 +1078,6 @@ func TestWebHostGroupThresholdLegacyEditLink(t *testing.T) {
 		t.Fatalf("seed POST status = %d, want 303", resp.StatusCode)
 	}
 
-	// Пара существует → модалка правки открыта с сервера.
 	resp = getWithCookie(t, s.srv, path+"?gt_scope=role&gt_label=web", ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -1234,7 +1093,6 @@ func TestWebHostGroupThresholdLegacyEditLink(t *testing.T) {
 		t.Errorf("старая ссылка открыла модалку создания: %s", text)
 	}
 
-	// Пары нет (правило могли удалить) → 200 и ни одной открытой модалки.
 	resp = getWithCookie(t, s.srv, path+"?gt_scope=env&gt_label=ghost", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -1246,15 +1104,6 @@ func TestWebHostGroupThresholdLegacyEditLink(t *testing.T) {
 	}
 }
 
-// TestWebHostGroupThresholdScopeLabelValidation — hostGroupThresholdSave,
-// две ветки проверки scope/label, которые TestWebHostGroupThresholdsFlow не
-// бьёт (noScopeForm там — пустой scope И пустой label одновременно): валидный
-// scope с ПУСТЫМ label (ключ UNIQUE(project_id, scope, ”) собрал бы
-// несвязанные правила в одну строку, см. докблок hostGroupThresholdSave) и
-// label длиннее maxGroupThresholdLabelLen (256 рун, it-sec P2-1 ремедиации,
-// B2) — обе 422 с тем же сообщением error.hostsettings.group_scope_label,
-// правило не создаётся. Плюс: удаление чужим (не оператором) → 404, как у
-// сохранения (requireProjectOperator, тот же гейт).
 func TestWebHostGroupThresholdScopeLabelValidation(t *testing.T) {
 	s := newHostsStack(t, true)
 	ctx := context.Background()
@@ -1272,7 +1121,6 @@ func TestWebHostGroupThresholdScopeLabelValidation(t *testing.T) {
 	savePath := path + "/groups"
 	deletePath := savePath + "/delete"
 
-	// Валидный scope, пустой label → 422, правило не создано.
 	emptyLabelForm := url.Values{
 		"scope": {"env"}, "label_env": {""},
 		"disk_mode": {"inherit"}, "memory_mode": {"inherit"},
@@ -1291,9 +1139,6 @@ func TestWebHostGroupThresholdScopeLabelValidation(t *testing.T) {
 		t.Fatalf("правило создано с пустым label: %+v, err=%v", got, err)
 	}
 
-	// label длиннее 256 рун → 422, правило не создано (it-sec P2-1: без
-	// границы GroupThresholdService.List читал бы её заново на каждом тике
-	// оценщика).
 	tooLong := strings.Repeat("я", 257)
 	tooLongForm := url.Values{
 		"scope": {"env"}, "label_env": {tooLong},
@@ -1313,7 +1158,6 @@ func TestWebHostGroupThresholdScopeLabelValidation(t *testing.T) {
 		t.Fatalf("правило создано со слишком длинным label: %+v, err=%v", got, err)
 	}
 
-	// label РОВНО на границе (256 рун) — валиден, правило создаётся.
 	exactLen := strings.Repeat("я", 256)
 	exactForm := url.Values{
 		"scope": {"env"}, "label_env": {exactLen},
@@ -1330,8 +1174,6 @@ func TestWebHostGroupThresholdScopeLabelValidation(t *testing.T) {
 		t.Fatalf("правило с граничным label не создано: %+v, err=%v", got, err)
 	}
 
-	// Удаление чужим (не член организации, не оператор) → 404, правило не
-	// удалено — тот же гейт requireProjectOperator, что у save.
 	_, outsider := orgSettingsRegister(t, s.auth, "hgtval-outsider@example.com")
 	delForm := url.Values{"scope": {"env"}, "label": {exactLen}}
 	resp = postForm(t, s.srv, deletePath, delForm, s.srv.URL, outsider)
@@ -1345,11 +1187,6 @@ func TestWebHostGroupThresholdScopeLabelValidation(t *testing.T) {
 	}
 }
 
-// TestWebHostsListStatusSurvivesManyClosedIncidents — ревью I3: список хостов
-// сворачивал открытые виды из «последних N инцидентов проекта ЛЮБОГО статуса»
-// с лимитом 500. В проекте, где закрытых инцидентов накопилось больше лимита,
-// открытый в выборку не попадал вовсе — хост с живой проблемой показывался
-// спокойным. Здесь закрытых заведомо больше лимита и все они СВЕЖЕЕ открытого.
 func TestWebHostsListStatusSurvivesManyClosedIncidents(t *testing.T) {
 	s := newHostsStack(t, true)
 	ctx := context.Background()
@@ -1370,7 +1207,6 @@ func TestWebHostsListStatusSurvivesManyClosedIncidents(t *testing.T) {
 		t.Fatalf("get host: ok=%v err=%v", ok, err)
 	}
 
-	// Открытый инцидент — САМЫЙ СТАРЫЙ из всех.
 	open, _, err := s.incidents.Open(ctx, project.ID, hst.ID, "disk", 0.99, "", false)
 	if err != nil {
 		t.Fatalf("open disk incident: %v", err)
@@ -1379,7 +1215,6 @@ func TestWebHostsListStatusSurvivesManyClosedIncidents(t *testing.T) {
 		"UPDATE host_incidents SET started_at = now() - interval '1 day' WHERE id = $1", open.ID); err != nil {
 		t.Fatalf("состарить открытый инцидент: %v", err)
 	}
-	// 600 закрытых инцидентов свежее открытого — больше прежнего лимита в 500.
 	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO host_incidents (project_id, host_id, kind, status, current_value, peak_value, started_at, resolved_at)
 		SELECT $1, $2, 'load', 'resolved', 1.5, 1.5, now() - make_interval(secs => g), now()
@@ -1398,14 +1233,6 @@ func TestWebHostsListStatusSurvivesManyClosedIncidents(t *testing.T) {
 	}
 }
 
-// TestWebHostSettingsSaveResolvesDisabledKindIncidents — ревью I2: выключение
-// порога должно иметь обратную силу.
-//
-// Оценщик выключенный вид пропускает целиком, ручного закрытия инцидента хоста
-// в интерфейсе нет — до правки оператор, выключивший шумный порог, оставался с
-// вечно красным бейджем «Диск» на списке хостов и не мог его снять ничем.
-// Проверяем оба направления: инцидент выключенного вида закрыт, инцидент
-// оставшегося включённым — нет.
 func TestWebHostSettingsSaveResolvesDisabledKindIncidents(t *testing.T) {
 	s := newHostsStack(t, true)
 	ctx := context.Background()
@@ -1432,7 +1259,6 @@ func TestWebHostSettingsSaveResolvesDisabledKindIncidents(t *testing.T) {
 		t.Fatalf("open memory incident: %v", err)
 	}
 
-	// Список хостов до правки настроек — хост «проблемный».
 	listPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts"
 	resp := getWithCookie(t, s.srv, listPath, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
@@ -1441,7 +1267,6 @@ func TestWebHostSettingsSaveResolvesDisabledKindIncidents(t *testing.T) {
 		t.Fatalf("до выключения порога на списке нет проблемного бейджа: %s", body)
 	}
 
-	// Выключаем ТОЛЬКО диск, остальные пороги остаются включёнными.
 	path := listPath + "/settings"
 	form := url.Values{
 		"disk_threshold": {"90"},
@@ -1463,7 +1288,6 @@ func TestWebHostSettingsSaveResolvesDisabledKindIncidents(t *testing.T) {
 		t.Errorf("закрыт инцидент порога «Память», который остался включённым: open=%v err=%v", stillOpen, err)
 	}
 
-	// Закрытый инцидент диска действительно закрыт, с моментом закрытия.
 	all, err := s.incidents.ListByProject(ctx, project.ID, 10)
 	if err != nil {
 		t.Fatalf("list incidents: %v", err)
@@ -1481,9 +1305,6 @@ func TestWebHostSettingsSaveResolvesDisabledKindIncidents(t *testing.T) {
 	}
 }
 
-// TestWebHostsListEmptyStateOnboardingConfig — пустой список хостов с
-// активным публичным ключом проекта показывает готовый конфиг коллектора
-// (endpoint+Bearer) и кнопку копирования (copy.js контракт).
 func TestWebHostsListEmptyStateOnboardingConfig(t *testing.T) {
 	s := newHostsStack(t, true)
 	ctx := context.Background()
@@ -1513,29 +1334,19 @@ func TestWebHostsListEmptyStateOnboardingConfig(t *testing.T) {
 	if !strings.Contains(text, "endpoint: "+s.srv.URL) {
 		t.Errorf("нет endpoint в конфиге онбординга: %s", text)
 	}
-	// В HTML-выводе кавычки внутри textarea экранированы (&#34;) — это
-	// корректный текстовый узел, браузер декодирует его обратно в "Bearer
-	// <ключ>" при чтении value; сырую (неэкранированную) строку конфига
-	// проверяет TestCollectorConfig (hosts_test.go), здесь важно, что сам
-	// ключ проекта попал в блок.
+	// Кавычки внутри textarea в HTML экранированы (&#34;) — корректный текстовый узел,
+	// браузер декодирует его обратно в "Bearer <ключ>" при чтении value.
 	if !strings.Contains(text, "Bearer "+key.PublicKey) {
 		t.Errorf("нет Bearer-заголовка с публичным ключом проекта: %s", text)
 	}
 	if !strings.Contains(text, `data-copy-format="txt"`) {
 		t.Errorf("нет кнопки копирования конфига (copy.js контракт): %s", text)
 	}
-	// Видимый <pre> рядом с кнопкой (UX-аудит A1, P1-1): скрытая textarea
-	// aria-hidden, то есть до него онбординг был слеп и для скринридера, и
-	// для глаза — проверить подставленные endpoint/ключ было нечем.
 	if !strings.Contains(text, `<pre class="copy-preview">`) {
 		t.Errorf("конфиг коллектора не отрисован видимым блоком: %s", text)
 	}
 }
 
-// TestWebHostDetail — GET /projects/{id}/hosts/{name}: 200 с маркерами всех
-// семи графиков (§5.3) и блоком открытых инцидентов; имя хоста с пробелом и
-// кириллицей (URL-escaped) разбирается корректно; несуществующий хост и
-// хост чужого проекта (не член организации) → 404.
 func TestWebHostDetail(t *testing.T) {
 	s := newHostsStack(t, true)
 	ctx := context.Background()
@@ -1549,8 +1360,6 @@ func TestWebHostDetail(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	// Имя с пробелом и кириллицей — {name} должно URL-экранироваться в ссылке
-	// (hostDetailPath) и корректно разбираться r.PathValue обратно.
 	name := "веб сервер 1"
 	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: name}}); err != nil {
 		t.Fatalf("upsert host: %v", err)
@@ -1578,23 +1387,18 @@ func TestWebHostDetail(t *testing.T) {
 			t.Errorf("нет маркера графика %q: %s", marker, text)
 		}
 	}
-	// Открытый инцидент диска — виден в блоке открытых инцидентов.
 	if !strings.Contains(text, "Диск") {
 		t.Errorf("нет блока открытых инцидентов (вид «Диск»): %s", text)
 	}
-	// P1-3: значение инцидента печатается юнитом ВИДА порога (host.ValueLabel),
-	// а не сырым числом: диск 0.95 — это «95.0%», как и в списке хостов.
+	// Печатается юнитом вида порога (host.ValueLabel), не сырым числом: диск 0.95 — это «95.0%».
 	if !strings.Contains(text, "95.0%") {
 		t.Errorf("значение инцидента диска не в процентах: %s", text)
 	}
 	if strings.Contains(text, ">0.95<") {
 		t.Errorf("значение инцидента осталось сырой долей: %s", text)
 	}
-	// P2-1: у хоста БЕЗ истории инцидентов пустое состояние — подсказка
-	// строкой, как у блока открытых инцидентов, а не emptyState: его <h3>
-	// печатался тем же ключом, что <h2> секции, и заголовок «Последние
-	// инциденты» шёл дважды подряд. (У хоста выше история непуста, и второе
-	// вхождение там законно — это aria-label скролл-области таблицы.)
+	// У хоста без истории — подсказка строкой, не emptyState: тот делил бы <h3> с <h2>
+	// секции, и заголовок «Последние инциденты» шёл бы дважды подряд.
 	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: "hd-no-incidents"}}); err != nil {
 		t.Fatalf("upsert host without incidents: %v", err)
 	}
@@ -1612,7 +1416,6 @@ func TestWebHostDetail(t *testing.T) {
 		t.Errorf("нет подсказки пустой истории инцидентов: %s", quiet)
 	}
 
-	// Несуществующее имя хоста в существующем проекте → 404.
 	missing := base + "/no-such-host"
 	resp = getWithCookie(t, s.srv, missing, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -1621,7 +1424,6 @@ func TestWebHostDetail(t *testing.T) {
 		t.Fatalf("GET %s (missing host) status = %d, want 404", missing, resp.StatusCode)
 	}
 
-	// Чужой (не член организации) → 404 (существование хоста не палится).
 	_, outsider := orgSettingsRegister(t, s.auth, "hostdetail-outsider@example.com")
 	resp = getWithCookie(t, s.srv, path, outsider)
 	io.Copy(io.Discard, resp.Body)
@@ -1631,10 +1433,6 @@ func TestWebHostDetail(t *testing.T) {
 	}
 }
 
-// TestWebHostDetailLogsLink — C3 «логи в контексте»: карточка хоста несёт
-// ссылку на /logs с атрибут-фильтром res:host.name:<имя> (использует тот же
-// logsForHostPath, что и раздел трейсов, Task 3), url-экранированную (":" →
-// "%3A" через url.Values.Encode).
 func TestWebHostDetailLogsLink(t *testing.T) {
 	s := newHostsStack(t, true)
 	ctx := context.Background()
@@ -1669,10 +1467,6 @@ func TestWebHostDetailLogsLink(t *testing.T) {
 	}
 }
 
-// TestWebHostDetailNilDeps — Metrics/Hosts проставлены, а HostIncidents или
-// HostSettings — нет (тот же инвариант-нарушающий стенд, что и в
-// TestWebHostsListNilHostsStore, T14 находка 1): hostDetail тоже должен
-// звать h.notFound, а не паниковать на nil-указателе.
 func TestWebHostDetailNilDeps(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ch := testenv.MigratedCH(t)
@@ -1711,19 +1505,8 @@ func TestWebHostDetailNilDeps(t *testing.T) {
 	}
 }
 
-// TestWebHostThresholdsSaveFlow — POST /projects/{id}/hosts/{name}/thresholds
-// (B2, T6): без Origin → 403 и override не меняется; чужой (не оператор) →
-// 404 (requireProjectOperator); валидный POST по трём режимам (override/off/
-// inherit) → 303 на карточку + flash "сохранено" + override в PG совпадает с
-// формой, а GET-карточка после сохранения показывает эффективные
-// значения/источники (host для переопределённого, "выключено" для off);
-// невалидный POST (значение вне границы) → 422 с сообщением И введённым
-// значением в форме, ранее сохранённый override НЕ подменяется мусором.
-// assertThresholdGrid — сетка .threshold-grid присутствует в форме порогов и
-// оборачивает ровно четыре карточки-fieldset (Диск/Память/Нагрузка/Тишина):
-// открытие сетки стоит до первого fieldset, все четыре закрываются до кнопки
-// «Сохранить», и после последнего из них закрывается сама обёртка. Общий на
-// обе формы (host-settings-form и host-thresholds-form) — разметка одинаковая.
+// .threshold-grid оборачивает все четыре fieldset — общая разметка у host-settings-form
+// и host-thresholds-form.
 func assertThresholdGrid(t *testing.T, body, form string) {
 	t.Helper()
 	formAt := strings.Index(body, `class="`+form+`"`)
@@ -1781,9 +1564,6 @@ func TestWebHostThresholdsSaveFlow(t *testing.T) {
 	detailPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts/" + name
 	savePath := detailPath + "/thresholds"
 
-	// GET без override — форма оператора, все режимы "inherit" (нет
-	// сохранённой строки override), эффективные значения — дефолт проекта
-	// (проектных настроек тоже ещё нет — host.DefaultSettings, LevelDefault).
 	resp := getWithCookie(t, s.srv, detailPath, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -1802,7 +1582,6 @@ func TestWebHostThresholdsSaveFlow(t *testing.T) {
 		"silent_mode": {"override"}, "silent_value": {"10"},
 	}
 
-	// Без Origin → 403, override не сохраняется.
 	resp = postForm(t, s.srv, savePath, validForm, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -1813,7 +1592,6 @@ func TestWebHostThresholdsSaveFlow(t *testing.T) {
 		t.Fatalf("override изменился без Origin: %+v, err=%v", got, err)
 	}
 
-	// Чужой (не член организации, не оператор) → 404, override не меняется.
 	_, outsider := orgSettingsRegister(t, s.auth, "hthr-outsider@example.com")
 	resp = postForm(t, s.srv, savePath, validForm, s.srv.URL, outsider)
 	io.Copy(io.Discard, resp.Body)
@@ -1822,7 +1600,6 @@ func TestWebHostThresholdsSaveFlow(t *testing.T) {
 		t.Fatalf("outsider POST status = %d, want 404", resp.StatusCode)
 	}
 
-	// Валидный POST → 303 на карточку, flash "сохранено", override в PG.
 	resp = postForm(t, s.srv, savePath, validForm, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -1855,8 +1632,6 @@ func TestWebHostThresholdsSaveFlow(t *testing.T) {
 		t.Errorf("silent override = %+v, want enabled=true value=10m", saved.SilentEnabled)
 	}
 
-	// GET после сохранения — эффективные значения отражают override:
-	// disk 50% (источник — этот хост), memory «выключено».
 	resp = getWithCookie(t, s.srv, detailPath, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -1868,8 +1643,6 @@ func TestWebHostThresholdsSaveFlow(t *testing.T) {
 		t.Errorf("карточка после сохранения не показывает «выключено» для памяти: %s", text)
 	}
 
-	// Невалидный POST (диск вне границы 1..100%) → 422, сообщение + введённое
-	// значение в форме, ранее сохранённый override НЕ подменяется мусором.
 	invalidForm := url.Values{
 		"disk_mode": {"override"}, "disk_value": {"150"},
 		"memory_mode": {"off"},
@@ -1897,7 +1670,6 @@ func TestWebHostThresholdsSaveFlow(t *testing.T) {
 		t.Errorf("невалидный POST изменил сохранённый override диска: %+v, want 0.50", stillSaved.DiskThreshold)
 	}
 
-	// Несуществующее имя хоста → 404.
 	resp = postForm(t, s.srv, "/projects/"+strconv.FormatInt(project.ID, 10)+"/hosts/no-such-host/thresholds", validForm, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -1906,17 +1678,8 @@ func TestWebHostThresholdsSaveFlow(t *testing.T) {
 	}
 }
 
-// TestWebHostThresholdsSaveInvalidMemoryLoadSilent — hostThresholdsSave, три
-// ветки hostSettingsErrorMessage/errors.Is, которые
-// TestWebHostThresholdsSaveFlow не бьёт (там невалиден только disk):
-// значения вне границ памяти/нагрузки/тишины проходят parseHostThresholdsForm
-// (числа сами по себе валидны — не NaN/Inf), но отвергаются
-// HostOverrideService.Save → ValidateOverride (host/override.go) — тот же
-// сентинел-набор host.ErrInvalid*, что и у диска, но другая ветка switch в
-// hostThresholdsSave/hostSettingsErrorMessage. Silent — отдельный случай:
-// 1 минута не переполняет parseHostThresholdsForm (граница там — 0..720
-// минут, host.MaxSilentAfter), но меньше host.MinSilentAfter (3 минуты) —
-// ошибка возникает именно на Save, не на разборе формы.
+// silent: 1 минута не переполняет parseHostThresholdsForm (там граница 0..720), но меньше
+// host.MinSilentAfter (3 мин) — ошибка возникает на Save, не на разборе формы.
 func TestWebHostThresholdsSaveInvalidMemoryLoadSilent(t *testing.T) {
 	s := newHostsStack(t, true)
 	ctx := context.Background()
@@ -1980,12 +1743,6 @@ func TestWebHostThresholdsSaveInvalidMemoryLoadSilent(t *testing.T) {
 	}
 }
 
-// TestWebHostDeleteConfirmFlow — POST /projects/{id}/hosts/{name}/delete:
-// без Origin → 403 (denyCrossOrigin); чужой (не член организации) → 404
-// (requireProjectOperator); без confirmed=yes → 200 страница подтверждения,
-// хост НЕ удалён, HostForget.Forget не вызван; с confirmed=yes → 303 на
-// список, хост удалён из PG, HostForget.Forget(projectID, name) вызван ровно
-// один раз.
 func TestWebHostDeleteConfirmFlow(t *testing.T) {
 	s := newHostsStack(t, true)
 	forgetter := &fakeHostForgetter{}
@@ -2007,7 +1764,6 @@ func TestWebHostDeleteConfirmFlow(t *testing.T) {
 
 	deletePath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts/" + url.PathEscape(name) + "/delete"
 
-	// Без Origin → 403.
 	resp := postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -2018,7 +1774,6 @@ func TestWebHostDeleteConfirmFlow(t *testing.T) {
 		t.Fatalf("Forget called on no-origin request: %d", forgetter.callCount())
 	}
 
-	// Чужой (не член организации) → 404, хост жив, Forget не вызван.
 	_, outsider := orgSettingsRegister(t, s.auth, "hostdel-outsider@example.com")
 	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, outsider)
 	io.Copy(io.Discard, resp.Body)
@@ -2033,7 +1788,6 @@ func TestWebHostDeleteConfirmFlow(t *testing.T) {
 		t.Fatalf("Forget called on outsider-denied request: %d", forgetter.callCount())
 	}
 
-	// БЕЗ confirmed=yes → 200 страница подтверждения, хост жив, Forget не вызван.
 	resp = postForm(t, s.srv, deletePath, url.Values{}, s.srv.URL, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -2050,7 +1804,6 @@ func TestWebHostDeleteConfirmFlow(t *testing.T) {
 		t.Fatalf("Forget called on unconfirmed request: %d", forgetter.callCount())
 	}
 
-	// С confirmed=yes → 303 на список, хост удалён, Forget вызван один раз.
 	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -2072,10 +1825,6 @@ func TestWebHostDeleteConfirmFlow(t *testing.T) {
 	}
 }
 
-// TestWebHostDeleteNilHostForget — HostForget не проставлен (main.go не
-// всегда его проводит — режимы без ingest, см. комментарий у
-// web.HostForgetter): удаление обязано пройти без паники, просто не
-// реактивируя троттлер.
 func TestWebHostDeleteNilHostForget(t *testing.T) {
 	s := newHostsStack(t, true) // s.h.HostForget остаётся nil
 	ctx := context.Background()
@@ -2105,9 +1854,8 @@ func TestWebHostDeleteNilHostForget(t *testing.T) {
 	}
 }
 
-// hasFlashCookie — стоит ли в ответе flash-cookie с ожидаемым «вид|ключ».
-// Значение уходит url.QueryEscape'нутым (см. setFlash, flash.go), поэтому
-// сравнивать надо после разэкранирования, а не по сырой строке заголовка.
+// Значение уходит url.QueryEscape'нутым — сравнивать надо после разэкранирования,
+// а не по сырой строке заголовка.
 func hasFlashCookie(resp *http.Response, want string) bool {
 	for _, c := range resp.Cookies() {
 		if c.Name != "flash" {

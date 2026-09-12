@@ -15,9 +15,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// seedNotifyChannel заводит один включённый webhook-канал проекта — этого
-// достаточно, чтобы проверить постановку задачи в Outbox (сам webhook.go
-// здесь не участвует).
 func seedNotifyChannel(t *testing.T, asvc *alert.Service, projectID int64) {
 	t.Helper()
 	if _, err := asvc.CreateChannel(context.Background(), alert.Channel{
@@ -27,14 +24,6 @@ func seedNotifyChannel(t *testing.T, asvc *alert.Service, projectID int64) {
 	}
 }
 
-// TestHostNotifyRussianTextsQuoteEveryKind — регрессия UX-аудита A1 (P1-2).
-// Русские шаблоны уведомлений подставляют вид порога внутрь кавычек-ёлочек и
-// НЕ делают его подлежащим фразы: у видов из host.Kinds род разный («Память»,
-// «Диск», «Нагрузка», «Тишина»), и любое сказуемое рядом с {kind} обязано
-// разъехаться хотя бы с половиной из них — так и было («Память — вернулся»,
-// «Тишина — вернулся»). Проверка идёт по КАТАЛОГУ на всех видах сразу, а не
-// на одном виде через Outbox: postgres тут не нужен, а дефект по построению
-// виден только на полном множестве Kinds.
 func TestHostNotifyRussianTextsQuoteEveryKind(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	keys := []string{
@@ -201,8 +190,6 @@ func TestHostNotifierEnglishLocale(t *testing.T) {
 	}
 }
 
-// Трансграничный гейт: при политике без доверия получателю во внешние каналы
-// не должно уезжать имя хоста/значения (тело/subject); при true — уезжает.
 func TestHostNotifierExternalDetailsGate(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -237,10 +224,7 @@ func TestHostNotifierExternalDetailsGate(t *testing.T) {
 		if subj, _ := p["subject"].(string); strings.Contains(subj, "gate-host") {
 			t.Errorf("subject leaks host name: %q", subj)
 		}
-		// Решение владельца на приёмке A1: имя хоста не уходит наружу и внутри
-		// ссылки. Карточка адресуется именем (id-адресации у хоста нет),
-		// поэтому обезличенный payload несёт ссылку на СПИСОК хостов — она
-		// ведёт куда надо и имени не содержит.
+		// Обезличенный payload несёт ссылку на список хостов, не на карточку — она не содержит имени.
 		wantURL := fmt.Sprintf("https://gotcha.example/projects/%d/hosts", projectID)
 		if p["url"] != wantURL {
 			t.Errorf("url = %v, want список хостов %v", p["url"], wantURL)
@@ -248,8 +232,7 @@ func TestHostNotifierExternalDetailsGate(t *testing.T) {
 		if body, _ := p["body"].(string); strings.Contains(body, "gate-host") {
 			t.Errorf("body leaks host name (внутри ссылки): %q", body)
 		}
-		// Директива редакции не должна доезжать до получателя отдельным полем:
-		// webhook сериализует payload целиком.
+		// Директива редакции не должна долетать до получателя отдельным полем — webhook шлёт payload целиком.
 		if _, ok := p["url_redacted"]; ok {
 			t.Errorf("url_redacted утёк в доставляемый payload: %+v", p)
 		}
@@ -273,7 +256,6 @@ func TestHostNotifierExternalDetailsGate(t *testing.T) {
 		if jobs[0].Payload["host_name"] != "gate-host-2" {
 			t.Errorf("host_name missing with an allowing policy: %+v", jobs[0].Payload)
 		}
-		// Внутри контура ссылка — полная, на карточку хоста.
 		wantURL := fmt.Sprintf("https://gotcha.example/projects/%d/hosts/%s", projectID, url.PathEscape("gate-host-2"))
 		if jobs[0].Payload["url"] != wantURL {
 			t.Errorf("url = %v, want карточку %v", jobs[0].Payload["url"], wantURL)
@@ -284,10 +266,6 @@ func TestHostNotifierExternalDetailsGate(t *testing.T) {
 	})
 }
 
-// TestHostNotifierRetiredEnqueuesOwnKind — снятие с наблюдения приходит своим
-// видом и своим текстом: «вернулся в норму» про окончательно ушедшую машину
-// сказать нельзя, оператор прочитал бы это как «сервер ожил». Ссылка ведёт на
-// список хостов — карточки этого хоста сразу после прохода уже не будет.
 func TestHostNotifierRetiredEnqueuesOwnKind(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -334,8 +312,6 @@ func TestHostNotifierRetiredEnqueuesOwnKind(t *testing.T) {
 	}
 }
 
-// TestHostNotifierRetiredWithheldExternally — снятие подчиняется тому же
-// гейту трансграничной передачи, что и остальные уведомления хоста.
 func TestHostNotifierRetiredWithheldExternally(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -406,15 +382,7 @@ func TestHostNotifierResolvedEnqueuesKind(t *testing.T) {
 	}
 }
 
-// TestHostNotifierReturnsEnqueueError — провал постановки в Outbox всплывает
-// вызывающему, а не остаётся строкой в журнале. По этой ошибке Evaluator и
-// решает не ставить notified_open (см.
-// TestEvaluatorKeepsNotifiedFalseWhenNotifierFails): без неё «уведомлён»
-// означало бы «нотификатора позвали», а не «в очередь встало».
-//
-// Отказ моделируется закрытым пулом ИМЕННО у Outbox: у Alerts пул живой,
-// поэтому список каналов читается успешно и падает ровно Enqueue — то есть
-// проверяется нужная ветка, а не ранний выход по ошибке чтения каналов.
+// Пул убит только у Outbox: у Alerts живой, иначе видно чтение каналов, а не сам провал Enqueue.
 func TestHostNotifierReturnsEnqueueError(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

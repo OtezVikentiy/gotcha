@@ -10,14 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0080IncidentGroupsResolvedIdx — R2b/W10: PurgeOldGroups
-// (internal/incidentgroup/janitor.go) фильтрует по resolved_at IS NOT NULL
-// AND resolved_at < cutoff; несовместимый партиал incident_groups_open_idx
-// (0079, WHERE resolved_at IS NULL) под этот запрос не годится. На непустой
-// базе (TestLatestMigrationHasDataTest): заводим resolved- и открытую группу
-// ДО миграции 80, проверяем появление индекса и то, что он действительно
-// избирательно покрывает фильтр janitor'а, откатываем и убеждаемся, что
-// данные соседних строк не пострадали.
+// PurgeOldGroups фильтрует по resolved_at IS NOT NULL AND resolved_at < cutoff — несовместимо с
+// партиалом incident_groups_open_idx (0079, WHERE resolved_at IS NULL), нужен отдельный индекс.
 func TestMigrate0080IncidentGroupsResolvedIdx(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -73,9 +67,8 @@ func TestMigrate0080IncidentGroupsResolvedIdx(t *testing.T) {
 		t.Fatal("индекс incident_groups_resolved_idx не найден после миграции до 80")
 	}
 
-	// Индекс избирательно покрывает именно фильтр PurgeOldGroups: старая
-	// resolved-группа под условием находится, открытая — не подходит под
-	// предикат резолвнутости вовсе (частичный индекс её не индексирует).
+	// Резолвнутая группа проходит фильтр PurgeOldGroups, открытая — не подходит под предикат
+	// резолвнутости вовсе (частичный индекс её не индексирует).
 	var found bool
 	if err := pool.QueryRow(ctx, `
 		SELECT EXISTS (SELECT 1 FROM incident_groups

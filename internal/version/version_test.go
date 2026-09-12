@@ -7,9 +7,8 @@ import (
 	"testing"
 )
 
-// Сборки без git-версии (version="" при go build, "dev" при docker compose
-// build, base+"-dev" — старый дефолт) резолвятся в чистый base, а не «dev»:
-// именно из-за «dev» релизная сборка показывала неверную версию.
+// version="" (go build), "dev" (docker compose build), base+"-dev" (старый
+// дефолт) — все резолвятся в base, не в «dev».
 func TestVersionDefaultResolvesToBase(t *testing.T) {
 	if got := Version(); got != base {
 		t.Fatalf("дефолтная версия = %q, ждали base %q", got, base)
@@ -25,16 +24,12 @@ func TestVersionDefaultResolvesToBase(t *testing.T) {
 }
 
 func TestStringWithoutBuildMetadata(t *testing.T) {
-	// commit/date пусты в дефолте — вместо них честная пометка о том, что
-	// git-метаданные в сборку не вшиты (находка №102: сборка мимо make
-	// выдавала неотличимую от релиза строку).
+	// без пометки сборка мимо make неотличима от настоящего релиза.
 	if got, want := String(), base+" (no build metadata)"; got != want {
 		t.Fatalf("String() = %q, ждали %q", got, want)
 	}
 }
 
-// TestStamped — Stamped() отличает вшитую git-версию от сентинелов сборки без
-// метаданных; Get().Stamped согласован, String() помечает несштампованную.
 func TestStamped(t *testing.T) {
 	oldV := version
 	t.Cleanup(func() { version = oldV })

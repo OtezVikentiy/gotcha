@@ -61,7 +61,6 @@ func TestWebProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	// Засеять пару стеков.
 	seedTS := time.Now().UTC().Add(-time.Minute)
 	for _, st := range [][]string{{"root", "a"}, {"root", "b"}} {
 		if err := s.ch.Exec(ctx, `INSERT INTO profile_samples
@@ -72,7 +71,6 @@ func TestWebProfiles(t *testing.T) {
 	}
 	base := "/projects/" + strconv.FormatInt(project.ID, 10) + "/profiles"
 
-	// Список групп.
 	resp := getWithCookie(t, s.srv, base, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -80,7 +78,6 @@ func TestWebProfiles(t *testing.T) {
 		t.Fatalf("list status=%d body=%s", resp.StatusCode, body)
 	}
 
-	// Flamegraph.
 	flame := base + "/flame?service=api&type=cpu&period=24h"
 	resp = getWithCookie(t, s.srv, flame, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
@@ -92,8 +89,6 @@ func TestWebProfiles(t *testing.T) {
 		t.Fatalf("flame without focus must render the root without ancestors and with the hint: %s", body)
 	}
 
-	// Зум: ?focus=root&focus=a — предки «all» и «root» строками-предками,
-	// ссылки детей сохраняют фильтры и несут путь.
 	resp = getWithCookie(t, s.srv, flame+"&focus=root&focus=a", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -106,7 +101,6 @@ func TestWebProfiles(t *testing.T) {
 	if !strings.Contains(string(body), `href="`+base+`/flame?period=24h&amp;service=api&amp;type=cpu"`) {
 		t.Fatalf("root link must reset focus and keep filters: %s", body)
 	}
-	// Пустой профиль (нет такого сервиса) — плейсхолдер без подсказки про зум.
 	resp = getWithCookie(t, s.srv, base+"/flame?service=nope&type=cpu&period=24h", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -114,7 +108,6 @@ func TestWebProfiles(t *testing.T) {
 		t.Fatalf("empty flame status=%d, want placeholder without the zoom hint: %s", resp.StatusCode, body)
 	}
 
-	// Оборванный путь (нет такого кадра) — полный профиль, не ошибка.
 	resp = getWithCookie(t, s.srv, flame+"&focus=nope", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -122,8 +115,6 @@ func TestWebProfiles(t *testing.T) {
 		t.Fatalf("broken focus status=%d, want 200 without ancestors: %s", resp.StatusCode, body)
 	}
 
-	// Произвольный диапазон на списке и flamegraph — селектор в режиме custom
-	// (parseTimeRange custom, ссылки flame несут period=custom).
 	custList := base + "?period=custom&start=2026-07-01T00:00&end=2026-07-10T00:00"
 	resp = getWithCookie(t, s.srv, custList, ownerCookie)
 	cbody, _ := io.ReadAll(resp.Body)
@@ -139,7 +130,6 @@ func TestWebProfiles(t *testing.T) {
 		t.Fatalf("custom flame status=%d body=%s", resp.StatusCode, cbody)
 	}
 
-	// Чужой → 404.
 	_, outsider := orgSettingsRegister(t, s.auth, "prof-outsider@example.com")
 	resp = getWithCookie(t, s.srv, base, outsider)
 	io.Copy(io.Discard, resp.Body)

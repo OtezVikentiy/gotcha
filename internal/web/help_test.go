@@ -12,11 +12,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// TestHelpPanel — задача 4 (docs-onboarding): страницы-хабы (issues, alerts,
-// ...) показывают свёрнутую по умолчанию контекстную справку helpPanel сразу
-// под <h1> — нативный <details class="help-panel"> без JS (CSP без
-// unsafe-inline). Проверяем разметку и RU-текст заголовка панели хотя бы для
-// двух областей.
 func TestHelpPanel(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -33,8 +28,6 @@ func TestHelpPanel(t *testing.T) {
 	}
 	projPath := "/projects/" + strconv.FormatInt(proj.ID, 10)
 
-	// Issues: панель под <h1>, свёрнута (нативный <details>), ссылка на
-	// /docs/issues.
 	resp := getWithCookie(t, s.srv, projPath+"/issues", ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -51,7 +44,6 @@ func TestHelpPanel(t *testing.T) {
 		t.Fatalf("GET %s/issues body missing link to /docs/issues: %s", projPath, body)
 	}
 
-	// Alerts: та же панель, другая область.
 	resp = getWithCookie(t, s.srv, projPath+"/alerts", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()

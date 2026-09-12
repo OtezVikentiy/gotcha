@@ -20,7 +20,7 @@ func TestMatchAcceptLanguage(t *testing.T) {
 	cases := map[string]string{
 		"en-US,en;q=0.9": "en",
 		"ru-RU,ru;q=0.9": "ru",
-		"fr-FR,fr;q=0.9": "ru", // не поддержан → дефолт
+		"fr-FR,fr;q=0.9": "ru",
 		"":               "ru",
 	}
 	for header, want := range cases {

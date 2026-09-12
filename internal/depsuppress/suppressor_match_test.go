@@ -1,14 +1,9 @@
 package depsuppress
 
-// Табличные unit-тесты чистых функций матчинга рёбер по снимку
-// (edgeMatchesChild / isSelfMatchParent) — без БД, тот же same-package
-// прецедент, что и suppressor_cache_test.go: функции неэкспортируемые.
+// package depsuppress, не _test: edgeMatchesChild/isSelfMatchParent неэкспортируемы.
 
 import "testing"
 
-// TestEdgeMatchesChild перебирает ветки матчинга ребра на ребёнка (kind,
-// nodeID) по снимку: явные host/monitor-дети, label-селекторы с изоляцией
-// проекта и отсутствующими метками, неизвестный kind.
 func TestEdgeMatchesChild(t *testing.T) {
 	snap := &snapshot{
 		hostLabels: map[int64]hostLabels{
@@ -88,8 +83,6 @@ func TestEdgeMatchesChild(t *testing.T) {
 	}
 }
 
-// TestIsSelfMatchParent перебирает ветки исключения self-match: узел не
-// должен считаться ребёнком ребра, чей родитель — он сам.
 func TestIsSelfMatchParent(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -137,9 +130,6 @@ func TestIsSelfMatchParent(t *testing.T) {
 	}
 }
 
-// TestParentIsDown — состояние «родитель упал» читается из соответствующей
-// карты снимка (downHosts для host-родителя, downMonitors для monitor-
-// родителя); ребро без родителя всегда false.
 func TestParentIsDown(t *testing.T) {
 	snap := &snapshot{
 		downHosts:    map[int64]bool{10: true},

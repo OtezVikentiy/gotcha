@@ -1,10 +1,6 @@
 -- backward-compatible: no  (password_hash становится nullable: строки, заведённые новым кодом (OAuth-аккаунты без пароля), старый бинарь прочитать не сможет)
--- Этап 5 (social login): OAuth-only аккаунты не имеют пароля, поэтому
--- password_hash становится nullable. Внешние личности (провайдер+субъект)
--- живут в user_identities: один внешний субъект → ровно один аккаунт
--- (PK provider+subject), у аккаунта не более одной привязки на провайдера
--- (UNIQUE user_id+provider). Провижининг link-only/invite-gated: заводить
--- строки в users с NULL-паролем разрешено только по инвайту (см. web-слой).
+-- Внешние личности живут в user_identities: один субъект — один аккаунт (PK provider+subject),
+-- не более одной привязки на провайдера (UNIQUE user_id+provider); провижининг только по инвайту.
 ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
 
 CREATE TABLE user_identities (

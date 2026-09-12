@@ -9,9 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestCreateSessionUnknownUser — sessions.user_id ссылается на users(id) с
-// FK-констрейнтом; CreateSession для несуществующего userID обязан вернуть
-// обёрнутую ошибку INSERT (нарушение внешнего ключа), а не запись-сироту.
 func TestCreateSessionUnknownUser(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := auth.NewService(pool)

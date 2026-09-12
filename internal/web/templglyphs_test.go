@@ -8,14 +8,6 @@ import (
 	"testing"
 )
 
-// TestNoTextGlyphsInsteadOfIcons — стрелка «назад» в брейдкрамбах должна быть
-// иконкой из спрайта, а не текстовым глифом «←». Глиф зависит от шрифта,
-// не наследует толщину обводки остальных иконок и выпадает из общей
-// иконографики, поэтому в разметке его быть не должно.
-//
-// Стрелка «→» внутри текста (диапазоны вида «base → peak») сюда осознанно не
-// входит: это типографский знак внутри строки, он должен переноситься вместе
-// с текстом, иконкой его заменять неверно.
 func TestNoTextGlyphsInsteadOfIcons(t *testing.T) {
 	files, err := filepath.Glob("templates/*.templ")
 	if err != nil {
@@ -48,8 +40,6 @@ func TestNoTextGlyphsInsteadOfIcons(t *testing.T) {
 	}
 }
 
-// TestSpriteHasIconsUsedInMarkup — <use href="#i-…"> на отсутствующий символ
-// не даёт ни ошибки сборки, ни ошибки рендера: иконка просто не рисуется.
 func TestSpriteHasIconsUsedInMarkup(t *testing.T) {
 	sprite, err := os.ReadFile("templates/icons.templ")
 	if err != nil {
@@ -73,10 +63,6 @@ func TestSpriteHasIconsUsedInMarkup(t *testing.T) {
 	}
 }
 
-// TestNoArrowGlyphsInCSSContent — тот же запрет, что и для разметки, но для
-// content:"" в таблице стилей: треугольник disclosure жил именно там и
-// пережил чистку шаблонов. Скобки вокруг кода ошибки (.error-code) — это
-// оформление, а не иконка, поэтому проверяем только стрелки и галочки.
 func TestNoArrowGlyphsInCSSContent(t *testing.T) {
 	css, err := os.ReadFile("static/app.css")
 	if err != nil {

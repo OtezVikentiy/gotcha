@@ -10,10 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestApplyResultInvalidMonitor: для неизвестного monitorID CTE thresholds
-// пуста → INSERT ... SELECT не даёт строк → RETURNING ничего не возвращает →
-// ErrInvalidMonitor (а не сырое нарушение FK). Отменённый ctx покрывает общую
-// ветку ошибки запроса.
 func TestApplyResultInvalidMonitor(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -32,8 +28,6 @@ func TestApplyResultInvalidMonitor(t *testing.T) {
 	}
 }
 
-// TestStatusPageByID покрывает StatusPageByID (0%): успешное чтение по id,
-// ErrNotFound на неизвестном id и ошибку запроса на отменённом ctx.
 func TestStatusPageByID(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -51,8 +45,7 @@ func TestStatusPageByID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StatusPageByID: %v", err)
 	}
-	// slug больше не пишется Create (nullable, не годится как источник
-	// проверки) — сверяем PublicID, который Create заполнил и вернул.
+	// slug nullable, не годится как источник проверки — сверяем PublicID.
 	if got.ID != sp.ID || got.PublicID != sp.PublicID || got.ProjectID != pid || got.Title != "By ID" {
 		t.Fatalf("StatusPageByID = %+v, want id=%d public_id=%s", got, sp.ID, sp.PublicID)
 	}
@@ -70,10 +63,6 @@ func TestStatusPageByID(t *testing.T) {
 	}
 }
 
-// TestCreateStatusPageBogusMonitorFKError: несуществующий monitor_id нарушает
-// FK status_page_monitors→monitors, поэтому вставка в replaceStatusPageMonitors
-// падает — покрывает ветку ошибки INSERT внутри цикла. Страница при этом не
-// должна остаться (транзакция откатилась).
 func TestCreateStatusPageBogusMonitorFKError(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -87,8 +76,7 @@ func TestCreateStatusPageBogusMonitorFKError(t *testing.T) {
 		t.Fatal("CreateStatusPage with bogus monitor_id: got nil error, want FK error")
 	}
 
-	// Откат: страница не создана. По PublicID её взять нечем (Create упал до
-	// присвоения ID/коммита), поэтому проверяем по проекту — список пуст.
+	// PublicID взять нечем — Create упал до коммита; проверяем список проекта, он пуст.
 	list, err := svc.StatusPagesOf(ctx, pid)
 	if err != nil {
 		t.Fatalf("StatusPagesOf: %v", err)
@@ -98,8 +86,6 @@ func TestCreateStatusPageBogusMonitorFKError(t *testing.T) {
 	}
 }
 
-// TestTouchHeartbeat покрывает TouchHeartbeat (0%): успешный UPDATE ставит
-// last_beat_at, неизвестный monitorID → ErrNotFound, отменённый ctx → ошибка.
 func TestTouchHeartbeat(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)

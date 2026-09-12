@@ -9,26 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestRegisterVsDeleteSelfAccountRace (хвост волны 1, T8) — единственный
-// пользователь инстанса (админ) самоудаляется, а конкурентно кто-то
-// регистрируется тем же email. Без instanceAdminBootstrapLockClass
-// (identity.go/user.go) это оставляло инстанс вовсе без администратора:
-// Register вычисляет is_instance_admin как `NOT EXISTS (SELECT 1 FROM
-// users)` ОДНИМ оператором — если снапшот для этого вычисления берётся ДО
-// того, как DeleteSelfAccount успевает закоммитить DELETE своей строки (но
-// сама вставка блокируется на UNIQUE(email) до его коммита, потому что email
-// совпадает), INSERT дожидается коммита и проходит уже по опустевшей
-// таблице — но с уже вычисленным (устаревшим) is_instance_admin=false.
-// Итог без лока: ровно один пользователь в базе, и ни один не админ.
-//
-// Тест не полагается на угадывание тайминга: «удаляющую» сторону гонки
-// ведём вручную той же SQL-последовательностью, что и DeleteSelfAccount
-// (identity.go), и держим её транзакцию открытой явным сигналом (канал), а
-// не паузой — эквивалент шага DeleteSelfAccount «между SELECT и COMMIT» из
-// её собственного докблока. «Регистрирующую» сторону — настоящий
-// svc.Register. Блокировку конкурентного Register на этом шаге проверяем
-// тем же приёмом, что TestDeleteSelfAccountLocksInstanceAdminFlag
-// (instance_admin_test.go): select с таймаутом, а не сон вслепую.
 func TestRegisterVsDeleteSelfAccountRace(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -46,19 +26,12 @@ func TestRegisterVsDeleteSelfAccountRace(t *testing.T) {
 		t.Fatalf("единственный пользователь не админ = (%v,%v), want (true,nil)", admin, err)
 	}
 
-	// "Удаляющая" сторона гонки — вручную, той же последовательностью
-	// операторов, что DeleteSelfAccount: лок → FOR UPDATE → othersExist →
-	// DELETE. Транзакция держится открытой до сигнала commitDelete —
-	// ровно та точка «между SELECT и COMMIT», из-за которой существует эта
-	// гонка.
 	delTx, err := pool.Begin(bg)
 	if err != nil {
 		t.Fatalf("begin delTx: %v", err)
 	}
 	defer delTx.Rollback(bg)
-	// classID=3 — instanceAdminBootstrapLockClass (identity.go), неэкспортирован
-	// из пакета auth: дублируем числом с той же оговоркой, что и там (отдельно
-	// от enqueueLockClassProject/enqueueLockClassUser в export/store.go).
+	// Дублируем неэкспортированный instanceAdminBootstrapLockClass (identity.go) прямым числом.
 	const instanceAdminBootstrapLockClass = 3
 	if _, err := delTx.Exec(bg, "SELECT pg_advisory_xact_lock($1, 0)", instanceAdminBootstrapLockClass); err != nil {
 		t.Fatalf("delTx: bootstrap lock: %v", err)
@@ -83,7 +56,6 @@ func TestRegisterVsDeleteSelfAccountRace(t *testing.T) {
 		t.Fatalf("delTx: delete: %v", err)
 	}
 
-	// Конкурентная регистрация ТЕМ ЖЕ email — реальный Register.
 	registerDone := make(chan struct {
 		id  int64
 		err error
@@ -96,10 +68,7 @@ func TestRegisterVsDeleteSelfAccountRace(t *testing.T) {
 		}{id, err}
 	}()
 
-	// Register обязан застрять — либо на instanceAdminBootstrapLockClass
-	// (с фиксом: delTx держит тот же лок), либо на UNIQUE(email) с
-	// незакоммиченным DELETE (без фикса) — в обоих случаях раньше коммита
-	// delTx он вернуться не должен.
+	// До коммита delTx вызов Register возвращаться не должен — иначе блокировка не работает.
 	select {
 	case res := <-registerDone:
 		t.Fatalf("Register вернулся до коммита delTx (id=%d, err=%v) — не заблокирован на конкурентном удалении", res.id, res.err)
@@ -136,20 +105,6 @@ func TestRegisterVsDeleteSelfAccountRace(t *testing.T) {
 	}
 }
 
-// TestDeleteSelfAccountRespectsBootstrapLock (T8, фикс-раунд 1) — критическая
-// находка ревью TestRegisterVsDeleteSelfAccountRace выше: там «удаляющая»
-// сторона ведётся вручную (свой delTx сам берёт лок), поэтому настоящий
-// identity.go никогда не вызывается — снятие лока в реальном
-// DeleteSelfAccount тот тест не ловит вовсе.
-//
-// Этот тест дёргает НАСТОЯЩИЙ svc.DeleteSelfAccount напрямую и проверяет
-// именно его отношение к общему локу: тест сам держит
-// instanceAdminBootstrapLockClass на отдельной транзакции, запускает
-// DeleteSelfAccount в горутине и убеждается, что тот не возвращается, пока
-// лок удерживается, — а после его отпускания успешно завершается и
-// действительно удаляет строку. Тот же приём (select с таймаутом вместо сна
-// вслепую), что и TestDeleteSelfAccountLocksInstanceAdminFlag
-// (instance_admin_test.go) для FOR UPDATE — здесь для advisory-лока.
 func TestDeleteSelfAccountRespectsBootstrapLock(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -168,8 +123,6 @@ func TestDeleteSelfAccountRespectsBootstrapLock(t *testing.T) {
 		t.Fatalf("begin lockTx: %v", err)
 	}
 	defer lockTx.Rollback(bg)
-	// classID=3 — instanceAdminBootstrapLockClass (identity.go), см. ту же
-	// оговорку в TestRegisterVsDeleteSelfAccountRace выше.
 	const instanceAdminBootstrapLockClass = 3
 	if _, err := lockTx.Exec(bg, "SELECT pg_advisory_xact_lock($1, 0)", instanceAdminBootstrapLockClass); err != nil {
 		t.Fatalf("lockTx: bootstrap lock: %v", err)
@@ -180,10 +133,7 @@ func TestDeleteSelfAccountRespectsBootstrapLock(t *testing.T) {
 		deleteDone <- svc.DeleteSelfAccount(bg, uid)
 	}()
 
-	// DeleteSelfAccount обязана застрять на том же локе, пока lockTx его
-	// держит, — иначе идентичный лок в Register не сериализовал бы её с
-	// конкурентной регистрацией (ровно то, что закрывает
-	// TestRegisterVsDeleteSelfAccountRace).
+	// Ждём ту же блокировку, что держит lockTx — иначе лок не сериализовал бы конкурентные вызовы.
 	select {
 	case err := <-deleteDone:
 		t.Fatalf("DeleteSelfAccount вернулась до отпускания lockTx (err=%v) — не сериализована общим локом", err)

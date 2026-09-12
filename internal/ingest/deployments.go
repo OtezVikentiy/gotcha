@@ -11,20 +11,13 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
 )
 
-// deploymentsIngest принимает событие выкладки из CI: POST
-// /api/v1/{project}/deployments с sentry_key-авторизацией и телом-JSON одного
-// деплоя. Записывает в реестр деплоев (h.Deploy) и отвечает {id}. Аутентификация
-// та же, что у envelope/store (project id из пути + public key), но вход
-// server-to-server, поэтому без CORS.
 func (h *Handler) deploymentsIngest(w http.ResponseWriter, r *http.Request) {
 	key, ok := h.authenticate(w, r, SignalDeploy)
 	if !ok {
 		return
 	}
-	// Тот же per-DSN троттлинг, что у envelope/store: ключ — публичный sentry_key,
-	// поэтому без rate-limit любой владелец DSN мог бы лить неограниченный поток
-	// INSERT'ов в общую таблицу деплоев. Квоту деплои не расходуют (не биллинговая
-	// телеметрия), достаточно rate-limit.
+	// Тот же rate-limit, что у envelope/store: без него владелец DSN мог бы лить
+	// неограниченный поток INSERT'ов. Квоту деплои не расходуют, это не биллинговая телеметрия.
 	if h.rateLimited(w, key.OrgID, key.ProjectID, SignalDeploy) {
 		return
 	}
@@ -48,12 +41,8 @@ func (h *Handler) deploymentsIngest(w http.ResponseWriter, r *http.Request) {
 		Changelog   string          `json:"changelog"`
 	}
 	if err := json.NewDecoder(body).Decode(&in); err != nil {
-		// Тело в этой ветке приходит из того же http.MaxBytesReader, что у
-		// остальных пяти входов (h.body), но раньше decode-ошибка отсюда всегда
-		// отвечала 400 "malformed json" — даже когда тело превысило лимит и
-		// декодер упёрся в *http.MaxBytesError. Клиент получал "битый JSON" за
-		// собственный слишком большой пейлоад, а метрика не могла отличить одно
-		// от другого. Проверка та же, что у остальных ReadAll/Parse-веток.
+		// Отличаем MaxBytesError от битого JSON: иначе большой пейлоад тоже
+		// считался бы malformed json.
 		var maxErr *http.MaxBytesError
 		if errors.Is(err, ErrTooLarge) || errors.As(err, &maxErr) {
 			h.countRejected(RejectTooLarge, SignalDeploy)
@@ -84,17 +73,13 @@ func (h *Handler) deploymentsIngest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int64{"id": saved.ID})
 }
 
-// parseDeployTime разбирает поле deployed_at тела деплоя, допуская три формы от
-// разных CI: RFC3339-строку ("2026-01-02T03:04:05Z"), Unix-секунды числом и
-// отсутствие/null. При пустом или неразобранном значении возвращает нулевое
-// время — Record подставит now(). Формально не звать parseNDJSONTimestampNs: он
-// приватный и живёт в другом пакете (package log).
+// Допускает RFC3339, Unix-секунды или пусто/null; иначе — нулевое время,
+// Record тогда подставит now().
 func parseDeployTime(raw json.RawMessage) time.Time {
 	s := strings.TrimSpace(string(raw))
 	if s == "" || s == "null" {
 		return time.Time{}
 	}
-	// JSON-строка: снять кавычки честным декодом и разобрать как RFC3339.
 	if s[0] == '"' {
 		var str string
 		if err := json.Unmarshal(raw, &str); err != nil {
@@ -106,7 +91,6 @@ func parseDeployTime(raw json.RawMessage) time.Time {
 		}
 		return t.UTC()
 	}
-	// JSON-число: Unix-секунды.
 	if sec, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return time.Unix(sec, 0).UTC()
 	}

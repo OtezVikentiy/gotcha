@@ -53,7 +53,7 @@ func TestYandexExchangeNoEmail(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "at"})
 	})
 	mux.HandleFunc("/info", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": "7"}) // без default_email
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "7"})
 	})
 	p := NewYandex(YandexConfig{ClientID: "cid", ClientSecret: "sec"})
 	p.tokenURL = srv.URL + "/token"

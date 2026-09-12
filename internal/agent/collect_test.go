@@ -8,8 +8,7 @@ import (
 	"time"
 )
 
-// fakeProbes — детерминированные пробы для тестов Collector; DefaultProbes
-// (gopsutil) тестами не вызывается — сборка недетерминирована на CI-машинах.
+// DefaultProbes (gopsutil) тестами не вызывается — вывод недетерминирован на CI.
 func fakeProbes() Probes {
 	return Probes{
 		CPUTimes: func() (CPUTimes, error) { return CPUTimes{User: 10, System: 5, Idle: 85}, nil },
@@ -162,9 +161,6 @@ func TestCollectAllProbesFailReturnsError(t *testing.T) {
 	}
 }
 
-// TestDefaultProbesSmoke — единственный тест, трогающий реальный gopsutil:
-// каждая проба должна отработать без ошибки на текущей машине. Значения не
-// проверяем (недетерминированы), только факт успеха.
 func TestDefaultProbesSmoke(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("DefaultProbes рассчитан на linux (прод-хосты агента)")

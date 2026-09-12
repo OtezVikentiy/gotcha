@@ -1,9 +1,6 @@
 -- backward-compatible: yes (новая таблица)
--- Этап 10 (enterprise-SSO): организация привязывает свой OIDC-IdP (конфиг в БД,
--- не env). domain — email-домен организации (identifier-first вход + принуждение);
--- один домен за одной организацией. enforced=true → юзеры домена обязаны входить
--- через SSO (пароль не принимается). default_role — роль JIT-провижинингованного
--- участника.
+-- domain — email-домен организации (один на организацию), enforced=true запрещает
+-- вход по паролю для его юзеров. default_role — роль JIT-провижининга.
 CREATE TABLE org_sso (
     org_id        bigint PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
     issuer        text NOT NULL,

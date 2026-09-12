@@ -47,10 +47,6 @@ func projectSettingsDeletePath(projectID int64) string {
 	return projectSettingsPath(projectID) + "/delete"
 }
 
-// perfFormFromProject строит значения формы «Performance» из сохранённого
-// проекта: sample_rate/apdex — как есть, пороги детекторов — через
-// trace.ConfigFromJSON (та же функция, что читает детектор; пустой/битый JSON
-// даёт дефолты, а не нули). Значения строками — так же их ждёт перерисовка 422.
 func perfFormFromProject(p org.Project) templates.PerfSettingsForm {
 	cfg, _ := trace.ConfigFromJSON([]byte(p.PerfDetectorConfig))
 	return templates.PerfSettingsForm{
@@ -63,12 +59,7 @@ func perfFormFromProject(p org.Project) templates.PerfSettingsForm {
 	}
 }
 
-// regressionFormFromProject строит значения формы «Регрессии» из сохранённого
-// проекта через trace.RegressionConfigFromJSON (та же функция, что читает
-// детектор регрессий; пустой/битый JSON даёт дефолты, а не нули). ThresholdPct
-// и RecoveryPct хранятся долей (0.25), а в форме показываются процентами (25),
-// поэтому домножаем на 100. Полы — как есть. Значения строками — так же их ждёт
-// перерисовка 422.
+// ThresholdPct/RecoveryPct хранятся долей (0.25), форма показывает процентами (25).
 func regressionFormFromProject(p org.Project) templates.RegressionSettingsForm {
 	cfg, _ := trace.RegressionConfigFromJSON([]byte(p.PerfRegressionConfig))
 	return templates.RegressionSettingsForm{
@@ -88,21 +79,15 @@ func regressionFormFromProject(p org.Project) templates.RegressionSettingsForm {
 	}
 }
 
-// formatRegressionPercent показывает долю (0.25) процентом (25). Точность 'g'/6
-// значащих цифр гасит артефакты float (0.10×100 = 10.000000000000002 → «10»),
-// сохраняя дробные проценты (12.5) для тех, кто их задал напрямую.
+// 'g'/6 значащих цифр гасит артефакты float (0.10×100 = 10.000000000000002 → «10»).
 func formatRegressionPercent(ratio float64) string {
 	return strconv.FormatFloat(ratio*100, 'g', 6, 64)
 }
 
-// formatRegressionFloor показывает абсолютный пол метрики как есть (0.05 → «0.05»,
-// 200 → «200»).
 func formatRegressionFloor(v float64) string {
 	return strconv.FormatFloat(v, 'g', -1, 64)
 }
 
-// parsePathProjectID достаёт projectID из {id} пути /projects/{id}/settings*;
-// на невалидный id — 404 (тот же принцип, что и у parsePathOrgID).
 func (h *Handler) parsePathProjectID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	projectID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -112,12 +97,6 @@ func (h *Handler) parsePathProjectID(w http.ResponseWriter, r *http.Request) (in
 	return projectID, true
 }
 
-// projectOrgOr404 — общий пролог "projectID -> orgID" (org.ProjectOrg):
-// несуществующий проект (org.ErrNotFound) — стилизованная 404, любая другая
-// ошибка — 500. Вынесен из requireProjectRole/requireProjectOwner/
-// requireProjectOperator (находка B4, спека
-// cld/plans/2026-08-08-access-model-rework.md) — раньше один и тот же
-// existence-oracle был скопирован в трёх местах.
 func (h *Handler) projectOrgOr404(w http.ResponseWriter, r *http.Request, projectID int64) (int64, bool) {
 	orgID, err := h.Org.ProjectOrg(r.Context(), projectID)
 	if err != nil {
@@ -131,10 +110,6 @@ func (h *Handler) projectOrgOr404(w http.ResponseWriter, r *http.Request, projec
 	return orgID, true
 }
 
-// requireProjectRole резолвит projectID -> orgID (projectOrgOr404) и
-// проверяет роль вызывающего в этой организации (requireOrgRole):
-// несуществующий проект и не-член — стилизованная 404, член с недостаточной
-// ролью — честный 403 (№72).
 func (h *Handler) requireProjectRole(w http.ResponseWriter, r *http.Request, projectID, userID int64) (int64, bool) {
 	orgID, ok := h.projectOrgOr404(w, r, projectID)
 	if !ok {
@@ -146,10 +121,6 @@ func (h *Handler) requireProjectRole(w http.ResponseWriter, r *http.Request, pro
 	return orgID, true
 }
 
-// requireProjectOwner — как requireProjectRole, но owner-only (удаление
-// проекта — деструктивное действие, доступное только владельцу организации,
-// та же граница, что requireOrgOwner у SSO/удаления орга). Несуществующий
-// проект и недостаточная роль дают одну и ту же стилизованную 404.
 func (h *Handler) requireProjectOwner(w http.ResponseWriter, r *http.Request, projectID, userID int64) bool {
 	orgID, ok := h.projectOrgOr404(w, r, projectID)
 	if !ok {
@@ -167,9 +138,6 @@ func projectSettingsErrorMessage(ctx context.Context, err error) string {
 	}
 }
 
-// keyBelongsToProject проверяет принадлежность ключа проекту по уже
-// загруженному списку KeysForProject — тот же приём, что и findProject: не
-// даём отозвать чужой ключ по id (см. projectSettingsKeyRevoke).
 func keyBelongsToProject(keys []org.Key, keyID int64) bool {
 	for _, k := range keys {
 		if k.ID == keyID {
@@ -179,9 +147,6 @@ func keyBelongsToProject(keys []org.Key, keyID int64) bool {
 	return false
 }
 
-// lastLiveKeyOfKind — отзываемый ключ единственный живой своего типа?
-// Возвращает тип и признак. Отозванные ключи не считаются: они уже ничего не
-// принимают.
 func lastLiveKeyOfKind(keys []org.Key, keyID int64) (org.KeyKind, bool) {
 	var kind org.KeyKind
 	found := false
@@ -204,9 +169,6 @@ func lastLiveKeyOfKind(keys []org.Key, keyID int64) (org.KeyKind, bool) {
 	return kind, true
 }
 
-// projectSettingsPage — GET /projects/{id}/settings: имя, платформа
-// (readonly), таблица ключей, DSN текущего живого ключа. Доступ только
-// owner/admin организации проекта (requireProjectRole).
 func (h *Handler) projectSettingsPage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -224,19 +186,10 @@ func (h *Handler) projectSettingsPage(w http.ResponseWriter, r *http.Request) {
 	h.renderProjectSettings(w, r, http.StatusOK, orgID, projectID, "", nil, nil)
 }
 
-// renderProjectSettings — общий рендер: GET-обработчик и все POST в этом
-// файле на 422 (то же сообщение на месте, без редиректа — тот же принцип,
-// что и renderOrgSettings/renderTeamsPage). orgID уже известен вызывающему
-// (requireProjectRole его вернул) — не запрашиваем его заново.
-// perfOverride/regOverride != nil означают перерисовку соответствующей формы
-// («Performance»/«Регрессии») с уже отправленными (невалидными) значениями, а
-// не значениями из БД — так 422 сохраняет ввод пользователя. Остальные POST в
-// файле передают nil: их формы (rename/keys) перерисовки этих значений не
-// касаются, берём их из проекта.
+// perfOverride/regOverride != nil — форма отрисовывается с уже отправленными значениями
+// (сохранение ввода при 422), а не значениями из БД.
 func (h *Handler) renderProjectSettings(w http.ResponseWriter, r *http.Request, status int, orgID, projectID int64, errMsg string, perfOverride *templates.PerfSettingsForm, regOverride *templates.RegressionSettingsForm) {
-	// Отдельного Get-по-id для проекта в org.Service нет — как и в
-	// projectSetup, находим проект в списке всех проектов организации
-	// (findProject определён в onboarding.go, тот же пакет).
+	// Отдельного метода get-по-id у org.Service нет — ищем проект в списке всех проектов организации.
 	projects, err := h.Org.ProjectsOf(r.Context(), orgID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -252,9 +205,6 @@ func (h *Handler) renderProjectSettings(w http.ResponseWriter, r *http.Request, 
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	// «Главного» ключа у проекта больше нет: их несколько, по одному на класс
-	// источника, и произвольно выбранный дефолт прятал бы вопрос «какой из
-	// них брать» вместо ответа на него. DSN даётся в КАЖДОЙ строке таблицы.
 	views := make([]templates.ProjectKeyView, len(keys))
 	for i, k := range keys {
 		views[i] = templates.ProjectKeyView{Key: k, DSN: buildDSN(h.BaseURL, k.PublicKey, projectID)}
@@ -272,31 +222,18 @@ func (h *Handler) renderProjectSettings(w http.ResponseWriter, r *http.Request, 
 		h.deprecatedPathsView(r.Context(), projectID)).Render(r.Context(), w)
 }
 
-// deprecatedIngestPathWindow — сигнал деприкейтед-пути показывается на
-// странице настроек, только пока отправитель ещё реально им пользуется:
-// 7 дней тем же порядком величины, что окно квоты/дропов (droppedBreakdown),
-// а не сутки — деплой конкретного отправителя, который стучится на устаревший
-// адрес раз в несколько дней (например, батч-джоб по расписанию), не должен
-// пропасть из виду только потому, что заглянули на следующий день.
+// 7 дней — порядок величины окна квоты/дропов: реже стучащийся отправитель не должен
+// пропасть из виду, если заглянули на следующий день.
 const deprecatedIngestPathWindow = 7 * 24 * time.Hour
 
-// deprecatedPathByKind — устаревший адрес приёма, которым бьёт сигнал (K7-5).
-// Соответствие обратное к ingest.deprecatedKinds: web уже импортирует ingest
-// (см. cardinality.go), обратная зависимость (ingest → web) недопустима —
-// так что держим здесь ту же тройку путей текстом ingest.DeprecatedPath, а
-// не заводим в ingest экспортируемую обратную мапу ради одного потребителя.
+// Обратное соответствие ingest.deprecatedKinds: держим его здесь, а не в ingest, чтобы не
+// заводить обратную зависимость ingest → web ради одного потребителя.
 var deprecatedPathByKind = map[ingestsignal.Kind]ingest.DeprecatedPath{
 	ingestsignal.KindDeprecatedLogs:        ingest.DeprecatedLogs,
 	ingestsignal.KindDeprecatedPprof:       ingest.DeprecatedProfilePprof,
 	ingestsignal.KindDeprecatedDeployments: ingest.DeprecatedDeployments,
 }
 
-// deprecatedPathsView — callout «проект ещё шлёт по устаревшим адресам»
-// (K7-5): пусто, если h.Signals не настроен (nil-safe, как Deploy/Trace) или
-// сигналов, свежих не старше deprecatedIngestPathWindow, для проекта нет.
-// Ошибка ForProject не роняет страницу настроек — тем же приёмом, что и
-// quotaBanner/gettingStarted: сигнал вспомогательный, а не часть контракта
-// страницы.
 func (h *Handler) deprecatedPathsView(ctx context.Context, projectID int64) []templates.DeprecatedPathView {
 	if h.Signals == nil {
 		return nil
@@ -313,17 +250,13 @@ func (h *Handler) deprecatedPathsView(ctx context.Context, projectID int64) []te
 		if !ok || sig.LastSeenAt.Before(cutoff) {
 			continue
 		}
-		// docs всегда найдётся: deprecatedPathByKind отдаёт только пути из
-		// закрытой тройки, для которой ingest.DocsPath гарантированно знает
-		// страницу документации (см. ingest.deprecatedTargets).
+		// docs всегда найдётся: путь из deprecatedPathByKind всегда покрыт ingest.DocsPath.
 		docs, _ := ingest.DocsPath(path)
 		out = append(out, templates.DeprecatedPathView{Path: string(path), LastSeenAt: sig.LastSeenAt, Hits: sig.Hits, Docs: docs})
 	}
 	return out
 }
 
-// projectSettingsRename — POST /projects/{id}/settings/rename: name.
-// ErrInvalidName (пустое имя) → 422.
 func (h *Handler) projectSettingsRename(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -353,8 +286,6 @@ func (h *Handler) projectSettingsRename(w http.ResponseWriter, r *http.Request) 
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
 }
 
-// projectSettingsKeyCreate — POST /projects/{id}/settings/keys: выпускает
-// новый DSN-ключ проекта.
 func (h *Handler) projectSettingsKeyCreate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -377,8 +308,7 @@ func (h *Handler) projectSettingsKeyCreate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	kind := org.KeyKind(r.FormValue("kind"))
-	// legacy через UI не выпускается: это тип ключей, выпущенных ДО появления
-	// типов, и его полный допуск — совместимость, а не предлагаемый выбор.
+	// legacy не выпускается через UI: это старый тип ключей, сохранённый только для совместимости.
 	if kind == org.KindLegacy || !kind.Valid() {
 		h.renderProjectSettings(w, r, http.StatusUnprocessableEntity, orgID, projectID,
 			i18n.T(r.Context(), "error.key_kind.invalid"), nil, nil)
@@ -391,9 +321,7 @@ func (h *Handler) projectSettingsKeyCreate(w http.ResponseWriter, r *http.Reques
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
 }
 
-// projectSettingsKeyRevoke — POST /projects/{id}/settings/keys/revoke:
-// key_id. Ключ должен принадлежать проекту из пути (проверка через
-// KeysForProject), иначе 404 — иначе можно было бы по id отозвать чужой ключ.
+// Ключ должен принадлежать проекту из пути — иначе можно было бы отозвать чужой по id.
 func (h *Handler) projectSettingsKeyRevoke(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -428,13 +356,11 @@ func (h *Handler) projectSettingsKeyRevoke(w http.ResponseWriter, r *http.Reques
 		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 		return
 	}
-	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
-	// исполняет inline onclick="confirm()" — see renderConfirm): без
-	// confirmed=yes показываем страницу подтверждения вместо отзыва ключа.
+	// Двухшаговое подтверждение: CSP (default-src 'self', без unsafe-inline) не исполняет
+	// inline onclick="confirm()", поэтому вместо него отдельная страница подтверждения.
 	if r.FormValue("confirmed") != "yes" {
-		// Отзыв последнего ЖИВОГО ключа своего типа останавливает приём
-		// целого класса телеметрии — вопрос без этой детали защищал бы
-		// только от промаха мышью, а не от реального последствия.
+		// Отзыв последнего живого ключа своего типа останавливает приём целого класса
+		// телеметрии — предупреждение должно называть это, а не просто спрашивать подтверждение.
 		msgKey := "confirm.key_revoke.message"
 		var kv []string
 		if kind, last := lastLiveKeyOfKind(keys, keyID); last {
@@ -453,13 +379,8 @@ func (h *Handler) projectSettingsKeyRevoke(w http.ResponseWriter, r *http.Reques
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
 }
 
-// projectSettingsPerformance — POST /projects/{id}/settings/performance:
-// доля семплирования, порог Apdex и пороги детекторов. Валидация на стороне
-// сервера (sample_rate ∈ [0,1], apdex > 0, каждый порог ≥ 1); при ошибке —
-// 422 с перерисовкой формы и сохранением отправленных значений. JSON
-// детекторов собирается marshal'ом trace.DetectorConfig — его json-теги РОВНО
-// те ключи, что читает trace.ConfigFromJSON, поэтому опечатка в ключе
-// невозможна (иначе дефолт молча перекрыл бы ввод).
+// json-теги DetectorConfig и ключи, которые читает trace.ConfigFromJSON, — одни и те же:
+// опечатка в поле невозможна, дефолт не подменит её молча.
 func (h *Handler) projectSettingsPerformance(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -482,8 +403,6 @@ func (h *Handler) projectSettingsPerformance(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Сырые значения формы — их же возвращаем в форму при 422, чтобы не терять
-	// ввод пользователя (в т.ч. невалидный, например «1.5»).
 	submitted := templates.PerfSettingsForm{
 		SampleRate:         r.FormValue("sample_rate"),
 		ApdexMS:            r.FormValue("apdex_threshold_ms"),
@@ -497,8 +416,8 @@ func (h *Handler) projectSettingsPerformance(w http.ResponseWriter, r *http.Requ
 	}
 
 	sampleRate, err := strconv.ParseFloat(submitted.SampleRate, 64)
-	// math.IsNaN отдельно: NaN проходит любое сравнение <0/>1 (все сравнения с
-	// NaN ложны), так что без явной проверки «NaN» сохранился бы в колонку.
+	// math.IsNaN отдельно: сравнения с NaN всегда ложны, поэтому без явной проверки «NaN»
+	// прошло бы в колонку как валидное значение.
 	if err != nil || math.IsNaN(sampleRate) || sampleRate < 0 || sampleRate > 1 {
 		reject(i18n.T(r.Context(), "err.proj.sample_rate"))
 		return
@@ -534,9 +453,8 @@ func (h *Handler) projectSettingsPerformance(w http.ResponseWriter, r *http.Requ
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
 }
 
-// parsePerfThreshold парсит порог детектора: целое ≥ 1. Ноль/отрицательное
-// отвергается на входе — иначе withDefaults молча заменил бы его дефолтом, и
-// «0» в форме превратился бы в 500 без объяснений.
+// Ноль/отрицательное отвергается на входе — иначе дефолт молча заменил бы его, а «0» в форме
+// обернулся бы 500 без объяснений.
 func parsePerfThreshold(raw string) (int, bool) {
 	v, err := strconv.Atoi(raw)
 	if err != nil || v < 1 {
@@ -545,14 +463,8 @@ func parsePerfThreshold(raw string) (int, bool) {
 	return v, true
 }
 
-// projectSettingsRegressions — POST /projects/{id}/settings/regressions:
-// пороги детектора регрессий. Валидация на стороне сервера: threshold_pct и
-// recovery_pct — проценты в (0,100], причём recovery < threshold (гистерезис);
-// window_minutes ≥ 1; min_samples ≥ 1; каждый пол ≥ 0. При ошибке — 422 с
-// перерисовкой формы и сохранением отправленных значений. JSON собирается
-// marshal'ом trace.RegressionConfig — его json-теги РОВНО те ключи, что читает
-// trace.RegressionConfigFromJSON, поэтому опечатка в ключе невозможна (иначе
-// дефолт молча перекрыл бы ввод). Проценты хранятся долей (25 → 0.25).
+// json-теги RegressionConfig совпадают с ключами, которые читает RegressionConfigFromJSON —
+// опечатка в поле невозможна, дефолт не подменит её молча.
 func (h *Handler) projectSettingsRegressions(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -575,9 +487,7 @@ func (h *Handler) projectSettingsRegressions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Сырые значения формы — их же возвращаем в форму при 422, чтобы не терять
-	// ввод пользователя (в т.ч. невалидный). enabled — чекбокс: присутствие
-	// поля = включено.
+	// enabled — чекбокс: присутствие поля в форме уже означает «включено».
 	submitted := templates.RegressionSettingsForm{
 		ThresholdPct:    r.FormValue("threshold_pct"),
 		RecoveryPct:     r.FormValue("recovery_pct"),
@@ -597,7 +507,6 @@ func (h *Handler) projectSettingsRegressions(w http.ResponseWriter, r *http.Requ
 		h.renderProjectSettings(w, r, http.StatusUnprocessableEntity, orgID, projectID, msg, nil, &submitted)
 	}
 
-	// Проценты: parseRegressionPercent даёт долю (25 → 0.25) и ловит NaN/диапазон.
 	thresholdRatio, ok1 := parseRegressionPercent(submitted.ThresholdPct)
 	recoveryRatio, ok2 := parseRegressionPercent(submitted.RecoveryPct)
 	if !ok1 || !ok2 {
@@ -624,9 +533,8 @@ func (h *Handler) projectSettingsRegressions(w http.ResponseWriter, r *http.Requ
 		reject(i18n.T(r.Context(), "err.proj.metric_floors"))
 		return
 	}
-	// Число недель сезонной истории: целое в [2,12] (границы minSeasonalWeeks..
-	// maxSeasonalWeeks). Форма всегда рендерит число (дефолт 4), поэтому валидируем
-	// всегда, а не только при seasonal_enabled — пустое/вне диапазона это ошибка ввода.
+	// Валидируем seasonalWeeks всегда, а не только при seasonal_enabled: форма всегда рендерит
+	// число (дефолт 4), так что вне диапазона — ошибка ввода в любом случае.
 	seasonalWeeks, err := strconv.Atoi(submitted.SeasonalWeeks)
 	if err != nil || seasonalWeeks < 2 || seasonalWeeks > 12 {
 		reject(i18n.T(r.Context(), "err.proj.seasonal_weeks"))
@@ -661,16 +569,8 @@ func (h *Handler) projectSettingsRegressions(w http.ResponseWriter, r *http.Requ
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
 }
 
-// projectSettingsDelete — POST /projects/{id}/settings/delete: owner-only
-// удаление проекта. PG-удаление (org.DeleteProject, FK ON DELETE CASCADE
-// снимает ключи/мониторы/issues и т.д.) той же транзакцией ставит заявку на
-// очистку телеметрии в ClickHouse; выполняет её фоновый исполнитель
-// (telemetry.PurgeWorker). Поэтому запрос отвечает сразу, а сообщение говорит
-// про очередь, а не про выполненное удаление.
-//
-// Раньше очистка шла здесь же, синхронно: восемь мутаций ClickHouse с
-// mutations_sync = 2 и снятым потолком времени в HTTP-запросе. Успех → 303 на
-// /projects (страница проекта больше не существует).
+// PG-удаление ставит заявку на очистку ClickHouse той же транзакцией; чистит фоновый
+// telemetry.PurgeWorker — поэтому ответ про очередь, а не про завершённое удаление.
 func (h *Handler) projectSettingsDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -691,11 +591,8 @@ func (h *Handler) projectSettingsDelete(w http.ResponseWriter, r *http.Request) 
 	if !h.parseForm(w, r) {
 		return
 	}
-	// Двухшаговое подтверждение (см. projectSettingsKeyRevoke/renderConfirm):
-	// без confirmed=yes показываем страницу подтверждения вместо удаления
-	// проекта. Имя проекта — в тексте вопроса (K7-3, как у hostDelete): без
-	// него страница защищает только от случайного клика, но не от вкладки не
-	// того проекта.
+	// Имя проекта в тексте подтверждения — иначе страница защищает только от случайного клика,
+	// а не от удаления не той вкладки/проекта.
 	if r.FormValue("confirmed") != "yes" {
 		p, err := h.Org.GetProject(r.Context(), projectID)
 		if err != nil {
@@ -723,10 +620,7 @@ func (h *Handler) projectSettingsDelete(w http.ResponseWriter, r *http.Request) 
 	http.Redirect(w, r, "/projects", http.StatusSeeOther)
 }
 
-// parseRegressionPercent парсит процент (шаг 1) и возвращает долю: «25» → 0.25.
-// Диапазон (0,100] на входе (доля в (0,1]); math.IsNaN отдельно — NaN проходит
-// любое сравнение (все сравнения с NaN ложны), так что «NaN» иначе сохранился
-// бы в колонку.
+// math.IsNaN отдельно: сравнения с NaN всегда ложны, «NaN» иначе прошло бы в колонку.
 func parseRegressionPercent(raw string) (float64, bool) {
 	pct, err := strconv.ParseFloat(raw, 64)
 	if err != nil || math.IsNaN(pct) || pct <= 0 || pct > 100 {
@@ -735,8 +629,7 @@ func parseRegressionPercent(raw string) (float64, bool) {
 	return pct / 100, true
 }
 
-// parseRegressionFloor парсит абсолютный пол метрики: число ≥ 0. math.IsNaN
-// отдельно — по той же причине, что и в parseRegressionPercent.
+// math.IsNaN отдельно — по той же причине, что и в parseRegressionPercent.
 func parseRegressionFloor(raw string) (float64, bool) {
 	v, err := strconv.ParseFloat(raw, 64)
 	if err != nil || math.IsNaN(v) || v < 0 {

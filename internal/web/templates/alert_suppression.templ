@@ -9,9 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// AlertSuppressionPath — адрес редактора рёбер зависимостей проекта (B5,
-// задача 9). Экспортирован для nav (nav.go добавляет пункт меню рядом с
-// escalations).
 func AlertSuppressionPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/alert-suppression"
 }
@@ -20,33 +17,16 @@ func alertSuppressionDeletePath(projectID, depID int64) string {
 	return AlertSuppressionPath(projectID) + "/" + strconv.FormatInt(depID, 10) + "/delete"
 }
 
-// alertSuppressionUpdatePath — POST правки одного ребра, по образцу delete
-// (тот же сегмент {depID}, без суффикса).
 func alertSuppressionUpdatePath(projectID, depID int64) string {
 	return AlertSuppressionPath(projectID) + "/" + strconv.FormatInt(depID, 10)
 }
 
-// SuppressionCreateModalID — якорь модалки добавления ребра: на него ведёт
-// createTrigger в шапке секции зависимостей, его же открывает заново
-// обработчик после 422 создания (alertSuppressionSave → FormState.Open).
 const SuppressionCreateModalID = "new-suppression-edge"
 
-// EditSuppressionEdgeModalID — якорь модалки правки одного ребра. Модалка на
-// строку таблицы: они построены на CSS :target, якорь обязан быть уникальным,
-// а id ребра стабилен между рендерами (Store.Update сохраняет id).
-// Экспортирована, чтобы обработчик мог сказать, какую именно открыть заново
-// после ошибки валидации (тот же приём, что EditWindowModalID).
 func EditSuppressionEdgeModalID(depID int64) string {
 	return "edit-suppression-edge-" + strconv.FormatInt(depID, 10)
 }
 
-// SuppressionEdgeView — одна строка списка: родитель/ребёнок уже сведены в
-// человекочитаемую подпись (host.name/monitor.name резолвлены в web-слое,
-// см. alert_suppression.go:suppressionParentLabel/suppressionChildLabel).
-// Defaults — значения полей модалки правки из самого ребра
-// (suppressionEdgeFormDefaults): плоская карта тех же имён, что у FormState,
-// чтобы общий фрагмент полей не знал, создание он или правка (тот же приём,
-// что windowFieldDefaults у окон обслуживания).
 type SuppressionEdgeView struct {
 	ID          int64
 	ParentLabel string
@@ -54,36 +34,22 @@ type SuppressionEdgeView struct {
 	Defaults    FormState
 }
 
-// SuppressionNodeOption — один <option> селектора хоста/монитора формы.
 type SuppressionNodeOption struct {
 	ID   int64
 	Name string
 }
 
-// SuppressionPreviewView — одна строка dry-run предпросмотра (Task 9b): «Если
-// бы ParentLabel сейчас упал, подавились бы: Children». Родитель/дети уже
-// сведены в человекочитаемые подписи в web-слое (см.
-// alert_suppression.go:suppressionPreviewRows), тем же приёмом, что и
-// SuppressionEdgeView.
 type SuppressionPreviewView struct {
 	ParentLabel string
 	Children    []string
 }
 
-// suppressionNodeOptions — опции селектора узла; selected — строковый id
-// выбранного (из FormState/Defaults), пустая строка не выбирает никого.
 templ suppressionNodeOptions(opts []SuppressionNodeOption, selected string) {
 	for _, o := range opts {
 		<option value={ strconv.FormatInt(o.ID, 10) } selected?={ strconv.FormatInt(o.ID, 10) == selected }>{ o.Name }</option>
 	}
 }
 
-// suppressionFormValues — введённые человеком значения, если 422 вернулась
-// именно из этой модалки, иначе fallback (у создания — nil, поля пустые с
-// radio по умолчанию; у правки — Defaults самого ребра). Модалок на странице
-// N+1, а состояние формы одно — без этой развилки введённое при ошибке
-// попало бы во все модалки сразу (тот же приём, что groupThresholdFormValues
-// у групповых порогов).
 func suppressionFormValues(form FormState, open bool, fallback FormState) FormState {
 	if open {
 		return form
@@ -91,14 +57,8 @@ func suppressionFormValues(form FormState, open bool, fallback FormState) FormSt
 	return fallback
 }
 
-// suppressionEdgeFields — общие поля модалок создания и правки: radio
-// parent_kind/child_kind выбирают, какое из параллельных полей читает
-// хендлер (alertSuppressionEdgeFromForm), а CSS :has() по тем же radio
-// (.alert-suppression-form + .as-* в app.css) показывает ТОЛЬКО релевантные
-// поля — серверная логика игнорирования лишнего остаётся страховкой для
-// браузеров без :has(), не заменой. id у полей нет намеренно: фрагмент
-// рендерится в N+1 модалках одной страницы, любой id давал бы дубли в
-// документе (тот же принцип, что groupThresholdKindFields).
+// id у полей нет: фрагмент рендерится в N+1 модалках одной страницы,
+// одинаковый id дал бы дубли в документе.
 templ suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOption) {
 	<fieldset class="field">
 		<legend class="field-label">{ i18n.T(ctx, "alert_suppression.field.parent_kind") }</legend>
@@ -191,11 +151,6 @@ templ suppressionEdgeFields(form FormState, hosts, monitors []SuppressionNodeOpt
 	<p class="hint">{ i18n.T(ctx, "alert_suppression.form.hint") }</p>
 }
 
-// suppressionCreateModal — модалка добавления ребра (раньше форма жила
-// постоянной простынёй внизу страницы). open — 422 именно из формы создания
-// (FormState.Opens), тогда же внутри показывается ошибка и введённые
-// значения; фокус в модалку переносит modal.js (№80), как у остальных
-// модалок с формами.
 templ suppressionCreateModal(projectID int64, hosts, monitors []SuppressionNodeOption, form FormState, errMsg string) {
 	{{ open := form.Opens(SuppressionCreateModalID) }}
 	@createModalOpen(SuppressionCreateModalID, "alert_suppression.form.title", true, open) {
@@ -209,12 +164,8 @@ templ suppressionCreateModal(projectID int64, hosts, monitors []SuppressionNodeO
 	}
 }
 
-// suppressionEditModal — модалка правки одного ребра теми же полями, что и
-// создание; предзаполнена значениями самого ребра (e.Defaults), после 422 —
-// введёнными человеком (suppressionFormValues). Подсказка edit.hint — про
-// семантику пересчёта: флаг suppressed_by_dep на открытых инцидентах
-// одноразовый (обратного писателя нет, см. depsuppress.Store.Update), правка
-// действует только на новые решения о подавлении.
+// правка действует только на новые решения о подавлении: флаг suppressed_by_dep
+// на уже открытых инцидентах одноразовый, обратного писателя нет.
 templ suppressionEditModal(projectID int64, e SuppressionEdgeView, hosts, monitors []SuppressionNodeOption, form FormState, errMsg string) {
 	{{ modalID := EditSuppressionEdgeModalID(e.ID) }}
 	{{ open := form.Opens(modalID) }}
@@ -258,22 +209,15 @@ templ suppressionEdgeRow(projectID int64, e SuppressionEdgeView, hosts, monitors
 	</tr>
 }
 
-// suppressionPreviewRow — одна строка dry-run: «Если бы <родитель> сейчас
-// упал, подавились бы: <дети>». aria-label дублирует видимый текст явно (как
-// у suppressionEdgeRow:delete_aria) — список не интерактивен, но повтор в
-// aria-label ничего не стоит и держит и голос, и текст в одном ключе.
+// aria-label дублирует видимый текст: список не интерактивен, но повтор ничего не стоит.
 templ suppressionPreviewRow(p SuppressionPreviewView) {
 	<li aria-label={ i18n.Tf(ctx, "alert_suppression.preview.row", "parent", p.ParentLabel, "children", strings.Join(p.Children, ", ")) }>
 		{ i18n.Tf(ctx, "alert_suppression.preview.row", "parent", p.ParentLabel, "children", strings.Join(p.Children, ", ")) }
 	</li>
 }
 
-// suppressionPreview — карточка dry-run предпросмотра (Task 9b): для каждого
-// родителя с рёбрами показывает, что подавилось бы прямо сейчас, если бы он
-// упал (без БД — чистая depsuppress.PreviewSuppression, посчитанная заранее
-// в web-слое). Секция всегда показана, если у проекта есть хоть одно ребро —
-// пустой preview (все дети — label-селекторы без совпадений) отдельным
-// текстом, не молчаливым исчезновением карточки.
+// секция видна, если у проекта есть хоть одно ребро; пустой результат — текст,
+// а не исчезновение карточки (дети могут быть label-селекторами без совпадений).
 templ suppressionPreview(preview []SuppressionPreviewView) {
 	<section class="card suppression-section">
 		<h2 class="card-header">{ i18n.T(ctx, "alert_suppression.preview.title") }</h2>
@@ -290,18 +234,8 @@ templ suppressionPreview(preview []SuppressionPreviewView) {
 	</section>
 }
 
-// AlertSuppression — GET/POST /projects/{id}/alert-suppression: список рёбер
-// зависимостей проекта, модалка добавления и модалка правки на строку.
-// Доступ — оператор проекта (requireProjectOperator, как Escalations/
-// SLOsScreen). Вводная теория убрана со страницы в свёрнутый helpPanelWith
-// (те же абзацы, что раньше стояли стеной хинтов под <h1>). grace —
-// h.SuppressionGrace (задержка первого уведомления,
-// GOTCHA_DEPENDENCY_SETTLE_SECONDS): значение и предупреждение про
-// silent_after показываются, только когда оно положительное (P2-1 устранения
-// аудита B5) — нулевое означает, что грейс выключен либо экран собран на
-// узком тестовом стенде без main.go, где показывать конкретную цифру нечего.
-// form/errMsg — введённые значения и сообщение 422 (FormState помнит, какую
-// модалку переоткрыть: создания или правки конкретного ребра).
+// grace показывается только при значении > 0: ноль означает выключенный грейс
+// либо стенд без main.go, где конкретную цифру показывать нечего.
 templ AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, monitors []SuppressionNodeOption, preview []SuppressionPreviewView, grace time.Duration, form FormState, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "alert_suppression.title"), userEmail) {
 		<h1>{ i18n.T(ctx, "alert_suppression.title") }</h1>
@@ -314,9 +248,8 @@ templ AlertSuppression(projectID int64, edges []SuppressionEdgeView, hosts, moni
 			}
 			<p>{ i18n.T(ctx, "alert_suppression.intro.scope") }</p>
 		}
-		// Ошибка модальной формы показывается внутри переоткрытой модалки;
-		// здесь остаются 422 без состояния формы (прямой POST без полей) —
-		// тот же приём, что на alerts/maintenance.
+		// ошибка модальной формы показывается внутри переоткрытой модалки; здесь
+		// остаются только 422 без состояния формы (прямой POST без полей).
 		if errMsg != "" && !form.Has() {
 			<p class="error">{ errMsg }</p>
 		}

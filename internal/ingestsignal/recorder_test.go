@@ -9,9 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestRecorderTouchFlushWritesOnce — 5 Touch одной пары + 1 Touch другой →
-// Flush пишет ДВЕ строки с hits 5 и 1; повторный Flush без новых Touch ничего
-// не меняет (pending уже пуст после первого Flush).
 func TestRecorderTouchFlushWritesOnce(t *testing.T) {
 	st, pid := setupProject(t)
 	r := ingestsignal.NewRecorder(st)
@@ -43,8 +40,6 @@ func TestRecorderTouchFlushWritesOnce(t *testing.T) {
 	}
 }
 
-// TestRecorderMaxPendingDrops — MaxPending=2, три РАЗНЫЕ пары Touch: третья
-// (сверх потолка) не должна дойти до Flush.
 func TestRecorderMaxPendingDrops(t *testing.T) {
 	st, pid := setupProject(t)
 	r := ingestsignal.NewRecorder(st)
@@ -53,7 +48,7 @@ func TestRecorderMaxPendingDrops(t *testing.T) {
 
 	r.Touch(pid, ingestsignal.KindKeyInvalid)
 	r.Touch(pid, ingestsignal.KindKeyScope)
-	r.Touch(pid, ingestsignal.KindKeyProjectMismatch) // сверх потолка — отброшена
+	r.Touch(pid, ingestsignal.KindKeyProjectMismatch)
 
 	if err := r.Flush(ctx); err != nil {
 		t.Fatalf("flush: %v", err)
@@ -68,12 +63,10 @@ func TestRecorderMaxPendingDrops(t *testing.T) {
 	}
 }
 
-// TestRecorderRunFlushesOnCancel — Touch, затем отмена ctx: Run обязан
-// сделать финальный Flush ПЕРЕД возвратом, а не бросить накопленное.
 func TestRecorderRunFlushesOnCancel(t *testing.T) {
 	st, pid := setupProject(t)
 	r := ingestsignal.NewRecorder(st)
-	r.FlushEvery = time.Hour // тик не должен успеть сработать сам за время теста
+	r.FlushEvery = time.Hour
 	ctx, cancel := context.WithCancel(context.Background())
 
 	r.Touch(pid, ingestsignal.KindKeyInvalid)
@@ -96,9 +89,6 @@ func TestRecorderRunFlushesOnCancel(t *testing.T) {
 	}
 }
 
-// TestRecorderRunFlushesOnTick — Touch, затем НЕ отменяя ctx: Run обязан сам
-// флашить по тику FlushEvery, а не только на остановке (мутация M10: тик без
-// флаша выживал, потому что ни один тест не ждал именно тика).
 func TestRecorderRunFlushesOnTick(t *testing.T) {
 	st, pid := setupProject(t)
 	r := ingestsignal.NewRecorder(st)
@@ -123,10 +113,6 @@ func TestRecorderRunFlushesOnTick(t *testing.T) {
 	}
 }
 
-// TestRecorderFlushJoinsErrorsForAllPairs — minor m1: Flush не должен
-// останавливаться на первой же ошибке Bump — errors.Join обязан собрать ВСЕ
-// ошибки, иначе одна упавшая пара молча съедала бы остальные (мутация «return
-// err на первой ошибке» вместо накопления).
 func TestRecorderFlushJoinsErrorsForAllPairs(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	st := ingestsignal.NewStore(pool)
@@ -148,9 +134,6 @@ func TestRecorderFlushJoinsErrorsForAllPairs(t *testing.T) {
 	}
 }
 
-// TestRecorderRunDefaultsZeroFlushEvery — minor m1: FlushEvery<=0 (обнулён
-// после NewRecorder) не должен уйти в NewTicker(0) (паника) — Run обязан
-// подставить defaultFlushEvery.
 func TestRecorderRunDefaultsZeroFlushEvery(t *testing.T) {
 	st, pid := setupProject(t)
 	r := ingestsignal.NewRecorder(st)
@@ -177,8 +160,6 @@ func TestRecorderRunDefaultsZeroFlushEvery(t *testing.T) {
 	}
 }
 
-// signalHits — сигналы проекта как map kind→hits, для удобства сравнения в
-// тестах Recorder.
 func signalHits(t *testing.T, st *ingestsignal.Store, projectID int64) map[ingestsignal.Kind]int64 {
 	t.Helper()
 	got, err := st.ForProject(context.Background(), projectID)

@@ -6,7 +6,6 @@ import (
 	"testing"
 )
 
-// TestErrString — nil-ошибка даёт пустую строку.
 func TestErrString(t *testing.T) {
 	if errString(nil) != "" {
 		t.Error("nil → пусто")
@@ -16,7 +15,6 @@ func TestErrString(t *testing.T) {
 	}
 }
 
-// TestTelegramBaseURL — дефолтный хост API, если BaseURL не задан.
 func TestTelegramBaseURL(t *testing.T) {
 	if (&TelegramSender{}).baseURL() != defaultTelegramBaseURL {
 		t.Error("пустой BaseURL → дефолт")
@@ -26,10 +24,6 @@ func TestTelegramBaseURL(t *testing.T) {
 	}
 }
 
-// TestRedactToken — токен вырезается из строки; пустой токен не меняет строку.
-// RedactToken живёт в redact.go (промотирован из telegram.go — общий
-// хелпер для email.go/webhook.go/web.alertDeliveriesPage, см. A1), но тест
-// остаётся здесь вместе с остальными тестами чистых функций пакета.
 func TestRedactToken(t *testing.T) {
 	if got := RedactToken("url/bot123:secret/x", ""); got != "url/bot123:secret/x" {
 		t.Errorf("пустой токен не должен ничего менять: %q", got)

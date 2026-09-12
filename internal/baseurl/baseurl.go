@@ -1,17 +1,3 @@
-// Package baseurl — единственная нормализация «базового адреса» для всех
-// переменных окружения, что задают адрес удалённой стороны строкой, а не DSN:
-// GOTCHA_BASE_URL, GOTCHA_TELEGRAM_API_BASE, GOTCHA_PROBE_SERVER_URL
-// (cmd/gotcha/config.go) и GOTCHA_AGENT_ENDPOINT (internal/agent/config.go).
-//
-// До задачи 6 (E3, заморозка контракта) у этой четвёрки было четыре разных
-// политики: проба не срезала хвостовой слэш («https://host/» давало
-// «//probe/lease» в каждом запросе) и не отвергала query/fragment, агент
-// срезал слэш, но не проверял query. Normalize — общий код для всех
-// четырёх, а не четыре копии с расходящимся поведением.
-//
-// cmd/gotcha (package main) и internal/agent оба могут импортировать этот
-// пакет — в отличие от parseBool (internal/agent/config.go), который
-// продублирован вручную именно потому, что package main агенту недоступен.
 package baseurl
 
 import (
@@ -20,14 +6,7 @@ import (
 	"strings"
 )
 
-// Normalize проверяет raw как абсолютный http(s)-адрес без query/fragment и
-// возвращает его с обрезанными хвостовыми слэшами. name — имя переменной
-// окружения, для текста ошибки.
-//
-// Пустой raw возвращается как есть, без ошибки: обязателен ли адрес —
-// решает вызывающий код (GOTCHA_BASE_URL и GOTCHA_TELEGRAM_API_BASE
-// опциональны, GOTCHA_AGENT_ENDPOINT и GOTCHA_PROBE_SERVER_URL в
-// --mode=probe обязательны — это уже проверка вне Normalize).
+// Пустая raw возвращается как есть без ошибки — обязательность адреса решает вызывающий код.
 func Normalize(name, raw string) (string, error) {
 	if raw == "" {
 		return "", nil

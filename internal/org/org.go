@@ -1,5 +1,3 @@
-// Package org — тенантность: организации, команды, проекты, роли,
-// DSN-ключи и приглашения. Всё внутри принадлежит организации.
 package org
 
 import (
@@ -23,26 +21,16 @@ var (
 	ErrInvalidQuota = errors.New("org: invalid quota")
 )
 
-// reSlug — lower-case буквенно-цифровой slug с дефисами, без дефисов по краям,
-// 1..64 символа.
 var reSlug = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$`)
 
 func validSlug(slug string) bool {
 	return reSlug.MatchString(slug)
 }
 
-// ValidSlug — экспортированная проверка синтаксиса slug'а (та же, что
-// используют CreateOrg/CreateProject). Нужна вызывающему коду (например,
-// онбордингу), чтобы провалидировать оба slug'а до похода в БД и не
-// заводить частично созданные записи при ошибке на втором шаге.
 func ValidSlug(slug string) bool {
 	return validSlug(slug)
 }
 
-// Классы квоты организации. Не заданы CHECK-ограничением: событий,
-// транзакций, метрик и профилей — четыре ОТДЕЛЬНЫХ столбца (event_quota,
-// transaction_quota, ...), а не одна колонка с enum, так что CHECK тут нет по
-// построению — эти константы и есть источник истины для множества классов.
 const (
 	QuotaKindEvents       = "events"
 	QuotaKindTransactions = "transactions"
@@ -51,66 +39,34 @@ const (
 	QuotaKindLogs         = "logs"
 )
 
-// QuotaKinds — все классы квоты, в порядке, в котором организация их видит
-// (события — самый базовый и старый класс, дальше в порядке появления).
-//
-// Источник истины для i18n-ключей разбивки дропов (org.quota.kind.<kind>.short
-// в orgsettings.droppedBreakdown). Форма настроек квот (см. orgsettings.go,
-// renderOrgSettings) строится отдельным литеральным списком QuotaVM, а не из
-// этого среза, но с тем же составом и порядком: log_quota оператор-настраиваем
-// наравне с остальными — все пять сохраняются одним атомарным SetQuotas.
 var QuotaKinds = []string{QuotaKindEvents, QuotaKindTransactions, QuotaKindMetrics, QuotaKindProfiles, QuotaKindLogs}
 
 type Org struct {
-	ID         int64
-	Slug       string
-	Name       string
-	EventQuota int64
-	// TransactionQuota — месячная квота транзакций, счётчик у неё свой
-	// (org_usage.transactions_count): транзакции не тратят бюджет ошибок.
+	ID               int64
+	Slug             string
+	Name             string
+	EventQuota       int64
 	TransactionQuota int64
-	// MetricQuota — месячная квота метрик (этап 6), счётчик свой
-	// (org_usage.metrics_count): метрики не тратят бюджет ошибок/транзакций.
-	MetricQuota int64
-	// ProfileQuota — месячная квота профилей (этап 7), счётчик свой
-	// (org_usage.profiles_count).
-	ProfileQuota int64
-	// LogQuota — месячная квота логов (C1), счётчик свой
-	// (org_usage.logs_count): логи не тратят бюджет ошибок/транзакций/метрик/профилей.
-	LogQuota int64
+	MetricQuota      int64
+	ProfileQuota     int64
+	LogQuota         int64
 }
 
-// Service — доменная логика тенантности поверх PostgreSQL.
 type Service struct {
-	pool *pgxpool.Pool
-	// defaultQuota — дефолтная квота событий для новых орг (event_quota).
-	defaultQuota int64
-	// defaultTxQuota/defaultMetricQuota/defaultProfileQuota/defaultLogQuota —
-	// дефолтные квоты транзакций/метрик/профилей/логов для новых орг. По
-	// умолчанию 0 (безлимит); задаются через SetQuotaDefaults из конфига
-	// (см. cmd/gotcha/main.go).
+	pool                *pgxpool.Pool
+	defaultQuota        int64
 	defaultTxQuota      int64
 	defaultMetricQuota  int64
 	defaultProfileQuota int64
 	defaultLogQuota     int64
-	// ring — кольцо ключей at-rest шифрования чувствительных полей
-	// (org_sso.client_secret). secretKeySet=false (кольцо не задано, dev) →
-	// шифрование выключено, пишем plaintext.
-	ring         secretbox.Keyring
-	secretKeySet bool
+	ring                secretbox.Keyring
+	secretKeySet        bool
 }
 
-// NewService создаёт сервис с дефолтной квотой событий. Прочие квоты
-// (транзакции/метрики/профили) по умолчанию 0 (безлимит); их дефолты
-// задаются отдельно через SetQuotaDefaults, чтобы не ломать вызывающих,
-// которые знают только про event-квоту.
 func NewService(pool *pgxpool.Pool, defaultQuota int64) *Service {
 	return &Service{pool: pool, defaultQuota: defaultQuota}
 }
 
-// SetQuotaDefaults задаёт дефолтные квоты транзакций/метрик/профилей/логов
-// для новых орг (проставляются в CreateOrg). Вызывается из bootstrap'а с
-// конфиг-значениями; в OSS все они = 0 (безлимит).
 func (s *Service) SetQuotaDefaults(transaction, metric, profile, log int64) {
 	s.defaultTxQuota = transaction
 	s.defaultMetricQuota = metric
@@ -118,16 +74,11 @@ func (s *Service) SetQuotaDefaults(transaction, metric, profile, log int64) {
 	s.defaultLogQuota = log
 }
 
-// SetKeyring задаёт кольцо ключей шифрования чувствительных полей at-rest
-// (org_sso.client_secret). Вызывается из bootstrap'а рядом с NewService (см.
-// cmd/gotcha/main.go) — не вызывается вовсе для dev-стендов, которые пишут
-// plaintext.
 func (s *Service) SetKeyring(ring secretbox.Keyring) {
 	s.ring = ring
 	s.secretKeySet = true
 }
 
-// CreateOrg создаёт организацию и делает ownerID её owner'ом (одна транзакция).
 func (s *Service) CreateOrg(ctx context.Context, slug, name string, ownerID int64) (Org, error) {
 	if !validSlug(slug) {
 		return Org{}, ErrInvalidSlug
@@ -169,16 +120,6 @@ func (s *Service) CreateOrg(ctx context.Context, slug, name string, ownerID int6
 	return o, nil
 }
 
-// DeleteOrg удаляет организацию (FK-и на неё — org_members, projects и т.д. —
-// каскадные). Используется онбордингом для компенсации, когда организация
-// успела создаться, а последующий шаг (проект, ключ) провалился, и настройками
-// организации (ручное удаление).
-//
-// Заявки на очистку телеметрии ставятся выборкой по проектам организации ДО
-// удаления: каскад снимает строки projects, и после него идентификаторы
-// проектов недоступны. Раньше их перечислял web-слой отдельным запросом вне
-// всякой транзакции, а комментарий там признавал, что осиротевшую телеметрию
-// «можно будет добить позже» — механизма для этого не существовало.
 func (s *Service) DeleteOrg(ctx context.Context, orgID int64) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -205,11 +146,6 @@ func (s *Service) DeleteOrg(ctx context.Context, orgID int64) error {
 	return nil
 }
 
-// OrgsOf возвращает все организации, в которых состоит userID (в любой
-// роли), отсортированные по name. Используется страницей "/" (задача 5,
-// задача 4): различить юзера без единой организации (нужен /onboarding) от
-// юзера-члена организации(й), которому просто не назначен ни один проект
-// (нужна страница «нет доступных проектов»).
 func (s *Service) OrgsOf(ctx context.Context, userID int64) ([]Org, error) {
 	rows, err := s.pool.Query(ctx,
 		"SELECT o.id, o.slug, o.name, o.event_quota, o.transaction_quota, o.metric_quota, o.profile_quota, o.log_quota FROM organizations o "+
@@ -230,7 +166,6 @@ func (s *Service) OrgsOf(ctx context.Context, userID int64) ([]Org, error) {
 	return out, rows.Err()
 }
 
-// Get возвращает организацию по id.
 func (s *Service) Get(ctx context.Context, orgID int64) (Org, error) {
 	o := Org{ID: orgID}
 	err := s.pool.QueryRow(ctx,

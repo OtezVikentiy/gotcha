@@ -6,33 +6,24 @@ import (
 	"testing"
 	"time"
 
-	// Часовые пояса вкомпилированы в тест: пакет читает time.LoadLocation, но
-	// не подключает internal/testenv, где обычно живёт этот импорт — так что
-	// подключаем сами, иначе в slim-контейнере без /usr/share/zoneinfo тест
-	// падает не по вине проверяемого кода.
+	// Пакет не подключает internal/testenv (обычный источник zoneinfo) — тянем tzdata сами, иначе тест
+	// падает в slim-контейнере без /usr/share/zoneinfo не по вине проверяемого кода.
 	_ "time/tzdata"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// testCtx — контекст с локалью по умолчанию (ru), как кладёт web-миддлвара в
-// проде. Приём взят из internal/web/templates (см. helpers_test.go: ruCtx).
 func testCtx(t *testing.T) context.Context {
 	t.Helper()
 	return i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 }
 
-// ctxWithLocale — контекст с указанной локалью, для тестов, сравнивающих
-// перевод между языками.
 func ctxWithLocale(t *testing.T, code string) context.Context {
 	t.Helper()
 	return i18n.WithLocale(context.Background(), i18n.Locale{Code: code})
 }
 
-// TestMetricValueDurationIsMilliseconds: после сведения единиц duration
-// приходит в миллисекундах. Раньше та же величина приезжала микросекундной, и
-// 640 мс показывались как «640.0s» — завышение ровно в тысячу раз.
 func TestMetricValueDurationIsMilliseconds(t *testing.T) {
 	ctx := testCtx(t)
 	if got := humanize.MetricValue(ctx, "duration", 640); !strings.Contains(got, "640") {
@@ -43,7 +34,6 @@ func TestMetricValueDurationIsMilliseconds(t *testing.T) {
 	}
 }
 
-// TestMetricValueCLSIsDimensionless: CLS — отношение, единицы у него нет.
 func TestMetricValueCLSIsDimensionless(t *testing.T) {
 	ctx := testCtx(t)
 	got := humanize.MetricValue(ctx, "cls", 0.25)
@@ -52,8 +42,6 @@ func TestMetricValueCLSIsDimensionless(t *testing.T) {
 	}
 }
 
-// TestDurationLocalises: длительность — единственная величина пакета, которая
-// переводится; формат времени и дат числовой в обеих локалях намеренно.
 func TestDurationLocalises(t *testing.T) {
 	ru, en := ctxWithLocale(t, "ru"), ctxWithLocale(t, "en")
 	if humanize.Duration(ru, 2*time.Hour) == humanize.Duration(en, 2*time.Hour) {
@@ -61,9 +49,6 @@ func TestDurationLocalises(t *testing.T) {
 	}
 }
 
-// TestMetricValueDurationSecondsThreshold — на границе секунды и выше duration
-// переходит на секунды с одним знаком после запятой (formatMetric-формула,
-// верная теперь, когда вход уже в мс).
 func TestMetricValueDurationSecondsThreshold(t *testing.T) {
 	ctx := testCtx(t)
 	cases := map[float64]string{
@@ -78,10 +63,6 @@ func TestMetricValueDurationSecondsThreshold(t *testing.T) {
 	}
 }
 
-// TestMetricValueDurationNegativeClampedToZero — отрицательное значение (сбой
-// сбора метрик) не должно превращаться в отрицательную длительность на
-// экране. После клэмпа v=0 попадает в под-миллисекундную ветку (0 < 1мс), как
-// и любой настоящий ноль — см. TestMetricValueDurationZero.
 func TestMetricValueDurationNegativeClampedToZero(t *testing.T) {
 	ctx := testCtx(t)
 	if got := humanize.MetricValue(ctx, "duration", -50); got != "0µs" {
@@ -89,10 +70,6 @@ func TestMetricValueDurationNegativeClampedToZero(t *testing.T) {
 	}
 }
 
-// TestMetricValueDurationSubMillisecond — p95 эндпойнта в 900 микросекунд
-// приезжает как MetricValue(ctx, "duration", 0.9) (вход уже в мс, задача 1).
-// Округление до целых миллисекунд дало бы «0ms» — неправду о работающем
-// быстро эндпойнте; вместо этого ветка показывает микросекунды.
 func TestMetricValueDurationSubMillisecond(t *testing.T) {
 	ctx := testCtx(t)
 	if got := humanize.MetricValue(ctx, "duration", 0.9); got != "900µs" {
@@ -100,10 +77,6 @@ func TestMetricValueDurationSubMillisecond(t *testing.T) {
 	}
 }
 
-// TestMetricValueDurationOneMillisecondBoundary — ровно на границе 1мс ветка
-// переходит на целые миллисекунды, а не на микросекунды (иначе получили бы
-// «1000µs» вместо «1ms» — тот же смысл, но не та форма, которую ждёт брифом
-// заданный формат «целым числом с суффиксом до секунды»).
 func TestMetricValueDurationOneMillisecondBoundary(t *testing.T) {
 	ctx := testCtx(t)
 	if got := humanize.MetricValue(ctx, "duration", 1); got != "1ms" {
@@ -111,9 +84,6 @@ func TestMetricValueDurationOneMillisecondBoundary(t *testing.T) {
 	}
 }
 
-// TestMetricValueDurationZero — настоящий (не клэмпнутый) ноль: никакая
-// информация не теряется ни в одной из единиц, но ветка сама по себе не
-// должна давать деление на ноль или отрицательный ноль на экране.
 func TestMetricValueDurationZero(t *testing.T) {
 	ctx := testCtx(t)
 	if got := humanize.MetricValue(ctx, "duration", 0); got != "0µs" {
@@ -121,9 +91,6 @@ func TestMetricValueDurationZero(t *testing.T) {
 	}
 }
 
-// TestMetricValueVitalsUseTwoDecimalSeconds — веб-виталы (и любая неизвестная
-// метрика) форматируются как formatVitalMS в остальном интерфейсе: секунды с
-// двумя знаками после запятой, в отличие от duration с одним.
 func TestMetricValueVitalsUseTwoDecimalSeconds(t *testing.T) {
 	ctx := testCtx(t)
 	cases := map[string]struct {
@@ -145,8 +112,6 @@ func TestMetricValueVitalsUseTwoDecimalSeconds(t *testing.T) {
 	}
 }
 
-// TestAgo — все пороги относительного времени плюс отрицательный перекос
-// часов, приравниваемый к нулю.
 func TestAgo(t *testing.T) {
 	ctx := testCtx(t)
 	cases := map[string]time.Time{
@@ -170,8 +135,6 @@ func TestAgo(t *testing.T) {
 	}
 }
 
-// TestTime — базовое форматирование, zero-time, nil-пояс и что подпись пояса
-// присутствует (см. докблок про «время без указания часового пояса»).
 func TestTime(t *testing.T) {
 	ctx := testCtx(t)
 	if got := humanize.Time(ctx, time.Time{}, time.UTC); got != "" {
@@ -197,8 +160,6 @@ func TestTime(t *testing.T) {
 	}
 }
 
-// TestTimeSameAcrossLocales — формат времени числовой и одинаковый в обеих
-// локалях намеренно (докблок Time); проверяем, что это действительно так.
 func TestTimeSameAcrossLocales(t *testing.T) {
 	moment := time.Date(2026, 7, 31, 3, 0, 0, 0, time.UTC)
 	ru, en := ctxWithLocale(t, "ru"), ctxWithLocale(t, "en")
@@ -207,8 +168,6 @@ func TestTimeSameAcrossLocales(t *testing.T) {
 	}
 }
 
-// TestDurationAllThresholds — все пороги (дни/часы/минуты/секунды/«меньше
-// минуты») плюс отрицательная длительность, приводимая к модулю.
 func TestDurationAllThresholds(t *testing.T) {
 	ctx := testCtx(t)
 	cases := map[string]time.Duration{
@@ -230,7 +189,6 @@ func TestDurationAllThresholds(t *testing.T) {
 	}
 }
 
-// TestLocationOrUTC — пустое имя, некорректное имя и валидный пояс.
 func TestLocationOrUTC(t *testing.T) {
 	if got := humanize.LocationOrUTC(""); got != time.UTC {
 		t.Errorf("LocationOrUTC(\"\") = %v, want UTC", got)
@@ -246,9 +204,6 @@ func TestLocationOrUTC(t *testing.T) {
 	}
 }
 
-// TestCompactNumber — компактная запись чисел метрик: суффиксы k/M/G/T,
-// три значащие цифры, никакой научной нотации для крупных значений
-// (QA-находка «avg > 8e+08» на странице правил метрик).
 func TestCompactNumber(t *testing.T) {
 	cases := []struct {
 		v    float64

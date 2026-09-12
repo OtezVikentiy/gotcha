@@ -10,91 +10,62 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// tickBudgetShare/minTickBudget — та же пара, что host.Evaluator: дедлайн
-// тика — доля Interval, но не меньше пола, иначе повисшая проверка окна
-// обслуживания/резолв лесенки/постановка в outbox по одному инциденту
-// держали бы тик (и self-метрику живости) бесконечно, а следующий тик так и
-// не начался бы.
+// Дедлайн тика — доля Interval, но не меньше пола: иначе повисшая проверка
+// держала бы тик бесконечно.
 const (
 	tickBudgetShare = 0.8
 	minTickBudget   = 10 * time.Second
 )
 
-// MaintenanceChecker сообщает, идёт ли сейчас окно обслуживания проекта —
-// живая проверка на каждый инцидент каждого тика (BLOCKER-3): решение
-// «эскалировать/подавить» принимается в момент отправки ступени, а не
-// заморожено на момент открытия инцидента, потому что окно могло начаться
-// (или закончиться) уже после того, как инцидент открылся.
+// Проверяется на каждый инцидент каждого тика: окно могло начаться или
+// закончиться уже после открытия инцидента.
 type MaintenanceChecker interface {
 	InMaintenance(ctx context.Context, projectID int64, at time.Time) (bool, error)
 }
 
-// DepChecker — гейт зависимостей (B5/T3, depsuppress.Suppressor): узнаёт,
-// есть ли у инцидента родитель в графе зависимостей и упал ли он, и умеет
-// пометить инцидент подавленным зависимостью. Локальный duck-typing
-// интерфейс — escalation НЕ импортирует пакет depsuppress, как и
-// MaintenanceChecker не импортирует пакет maintenance.
+// Локальный duck-typing интерфейс: escalation не импортирует пакет depsuppress.
 type DepChecker interface {
 	CheckIncident(ctx context.Context, source string, incidentID int64) (hasParent, parentDown bool, err error)
 	MarkSuppressed(ctx context.Context, source string, incidentID int64) error
 }
 
-// StepNotifier — общий интерфейс пяти product-нотифаеров (T6): шлёт ступень
-// эскалации [step] инцидента incidentID в channelIDs и возвращает КАНАЛЫ,
-// реально поставленные в очередь (см. SendStepIfDue) — не факт намерения.
+// Возвращает каналы, реально поставленные в очередь, а не намерение отправить.
 type StepNotifier interface {
 	NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) ([]int64, error)
 }
 
-// Binding — один из пяти источников инцидентов (host/metric/trace/profile/
-// slo), спаренный со своим нотифаером. Src и Notifier — те же объекты, что
-// уже сконструированы для эволюаторов в main.go (T4/T6), переиспользуются
-// как есть.
 type Binding struct {
 	Src      Source
 	Notifier StepNotifier
 }
 
-// Scheduler — централизованный планировщик эскалаций (T8): один тикер на
-// процесс вместо того, чтобы каждый из пяти эволюаторов сам гонял свою
-// лесенку — эскалация ортогональна открытию инцидента (открывает эволюатор
-// один раз, а лесенка идёт своим шагом, пока инцидент не закрыт/не
-// подтверждён), поэтому и живёт отдельным циклом.
 type Scheduler struct {
 	Bindings []Binding
 	Policy   *PolicyStore
 	Maint    MaintenanceChecker
-	// Dep — гейт зависимостей (B5): опционален (nil в тестах/сборках, не
-	// подключивших depsuppress) — тогда гейт полностью пропускается, как
-	// будто у всех инцидентов нет родителя.
+	// Опционален: nil в тестах/сборках без depsuppress — гейт пропускается,
+	// как будто родителя нет ни у кого.
 	Dep DepChecker
-	// SettleGrace — сколько держать ступень 0, пока у инцидента есть живой
-	// (не упавший) родитель: даёт родителю время либо упасть следом (тогда
-	// подавление сработает раньше, чем уйдёт первое уведомление), либо
-	// остаться живым — тогда после грейса ступень 0 всё равно уходит.
+	// Сколько держать ступень 0 при живом родителе: время ему либо упасть
+	// следом, либо остаться живым — после грейса ступень 0 уходит штатно.
 	SettleGrace time.Duration
 	Pool        *pgxpool.Pool
 	Interval    time.Duration
-	// Now — источник текущего времени; в проде time.Now, в тестах
-	// фиксируется, чтобы детерминированно управлять elapsed.
+	// В проде time.Now, в тестах фиксируется для детерминированного elapsed.
 	Now func() time.Time
 
 	lastTickUnix    atomic.Int64  // unix-время последнего завершённого тика
 	lastTickSeconds atomic.Uint64 // длительность последнего тика, math.Float64bits
 }
 
-// LastTickUnix — unix-время последнего завершённого тика (0, если ни одного
-// ещё не было). Self-метрика живости, как у host.Evaluator/slo.Evaluator:
-// умерший или отставший планировщик снаружи выглядит ровно как «эскалировать
-// нечего».
+// Self-метрика живости: мёртвый или отставший планировщик снаружи выглядит
+// как «эскалировать нечего».
 func (s *Scheduler) LastTickUnix() int64 { return s.lastTickUnix.Load() }
 
-// LastTickSeconds — длительность последнего завершённого тика в секундах.
 func (s *Scheduler) LastTickSeconds() float64 {
 	return math.Float64frombits(s.lastTickSeconds.Load())
 }
 
-// tickBudget — дедлайн одного тика (см. tickBudgetShare/minTickBudget).
 func (s *Scheduler) tickBudget() time.Duration {
 	budget := time.Duration(float64(s.Interval) * tickBudgetShare)
 	if budget < minTickBudget {
@@ -103,14 +74,7 @@ func (s *Scheduler) tickBudget() time.Duration {
 	return budget
 }
 
-// Tick — один проход по всем источникам: для каждого открытого неподтверж-
-// дённого инцидента проверяет живое окно обслуживания, резолвит лесенку и
-// шлёт очередную ступень, если её задержка от открытия инцидента настала.
-// Ошибка на одном инциденте логируется и не прерывает обработку остальных —
-// один плохой инцидент не должен глушить эскалацию по всем прочим.
-// Tick ограничен дедлайном (tickBudget): без внешнего дедлайна повисший
-// источник (b.Src.OpenUnacked) или повисшая постановка ступени по одному
-// инциденту держали бы весь тик (и self-метрику живости) бесконечно.
+// Ошибка на одном инциденте логируется и не прерывает обработку остальных.
 func (s *Scheduler) Tick(ctx context.Context) {
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, s.tickBudget())
@@ -142,27 +106,8 @@ func (s *Scheduler) Tick(ctx context.Context) {
 	s.lastTickUnix.Store(time.Now().Unix())
 }
 
-// releaseSuppressed снимает подавление зависимостью для инцидентов
-// биндинга b, чей родитель восстановился (K1-4, аудит перед 1.0) — стоит
-// ПЕРЕД OpenUnacked ТОГО ЖЕ биндинга и в бюджете ЭТОГО ЖЕ тика (общий ctx с
-// дедлайном), чтобы снятый инцидент попал в OpenUnacked этого же тика, а не
-// ждал следующего ради одной только видимости освобождения (часы лесенки
-// перезапускаются от dep_released_at — см. докблок SuppressedSource и
-// GREATEST в host.OpenUnacked). Это НЕ значит, что ступень 0 гарантированно
-// уходит В ЭТОМ ЖЕ тике:
-//   - now в tickOne захвачен ДО ClearSuppressed, а dep_released_at = now()
-//     ставится часами PG, которые почти всегда чуть впереди — elapsed для
-//     свежеосвобождённого инцидента отрицательный или около нуля, и ступень
-//     0 станет due только со следующего тика;
-//   - для EscalationLevel==0 tickOne (см. ниже) держит ступень, пока
-//     now.Sub(StartedAt) < SettleGrace — а StartedAt теперь равен моменту
-//     освобождения, так что host-ребёнок, вышедший из-под подавления,
-//     переотстаивает грейс заново, как и любой свежий инцидент уровня 0.
-//
-// b.Src, не реализующий SuppressedSource (4 из 5 источников — снятие
-// подавления для uptime идёт через Detector, не через Scheduler, см.
-// докблок SuppressedSource), — no-op, как и s.Dep == nil (тесты/сборки без
-// depsuppress): нечем проверить, упал ли родитель.
+// dep_released_at ставится часами PG (чуть впереди Go) — ступень может не
+// успеть в тот же тик; StartedAt после снятия равен моменту освобождения.
 func (s *Scheduler) releaseSuppressed(ctx context.Context, b Binding) {
 	ss, ok := b.Src.(SuppressedSource)
 	if !ok || s.Dep == nil {
@@ -181,10 +126,10 @@ func (s *Scheduler) releaseSuppressed(ctx context.Context, b Binding) {
 			continue
 		}
 		if hasParent && parentDown {
-			continue // родитель всё ещё лежит — держим
+			continue
 		}
 		// !hasParent — зависимость удалена, пока инцидент был подавлен:
-		// подавлять больше нечем, снимаем так же, как восстановление родителя.
+		// снимаем так же, как восстановление родителя.
 		if err := ss.ClearSuppressed(ctx, p.ID); err != nil {
 			slog.Warn("escalation scheduler: clear suppressed failed",
 				"source", b.Src.Name(), "incident_id", p.ID, "error", err)
@@ -196,9 +141,8 @@ func (s *Scheduler) releaseSuppressed(ctx context.Context, b Binding) {
 }
 
 func (s *Scheduler) tickOne(ctx context.Context, b Binding, p PendingIncident, now time.Time) {
-	// Fail-safe: ошибка проверки окна обслуживания — НЕ эскалируем. Окно
-	// важнее: ложная эскалация во время обслуживания хуже пропущенной
-	// ступени, которую следующий тик всё равно отправит.
+	// Fail-safe: ошибка проверки окна — не эскалируем, ложная эскалация хуже
+	// пропущенной ступени (её отправит следующий тик).
 	inMaint, err := s.Maint.InMaintenance(ctx, p.ProjectID, now)
 	if err != nil {
 		slog.Error("escalation scheduler: maintenance check failed", "source", b.Src.Name(), "incident_id", p.ID, "error", err)
@@ -208,41 +152,29 @@ func (s *Scheduler) tickOne(ctx context.Context, b Binding, p PendingIncident, n
 		return
 	}
 
-	// Гейт зависимостей (B5) стоит ПОСЛЕ maintenance и ПЕРЕД резолвом лесенки:
-	// maintenance — более сильная и явная причина молчать (владелец сам
-	// объявил окно), проверяется первой и без исключений; зависимость —
-	// пользовательски задекларированная связь узлов (таблица
-	// alert_dependencies: оператор руками объявляет «хост B за шлюзом A»),
-	// поэтому не должна маскировать окно обслуживания, но должна отсечь
-	// эскалацию раньше, чем тратится время на резолв лесенки, которая всё
-	// равно не понадобится.
+	// Гейт зависимостей — после maintenance и до резолва лесенки, чтобы не
+	// тратить время впустую.
 	if s.Dep != nil {
 		hasParent, parentDown, err := s.Dep.CheckIncident(ctx, b.Src.Name(), p.ID)
 		if err != nil {
 			slog.Error("escalation scheduler: dep check failed", "source", b.Src.Name(), "incident_id", p.ID, "error", err)
-			// fail-safe: ошибка проверки зависимости — не подавляем, идём
-			// дальше как обычно (ложная эскалация лучше молчания о реальном
-			// инциденте, чей родитель на самом деле жив).
+			// Fail-safe: ошибка проверки зависимости — не подавляем, идём как
+			// обычно.
 		} else {
 			if parentDown {
-				// Родитель упал: подавляем инцидент навсегда, на ЛЮБОЙ
-				// ступени эскалации (не только step0) — если родитель упал
-				// уже после того, как ребёнок начал эскалировать, дальнейшие
-				// ступени всё равно шумят тем же самым сбоем зависимости.
+				// Подавляем на любой ступени, не только step0 — иначе
+				// дальнейшие ступени шумят тем же сбоем зависимости.
 				if err := s.Dep.MarkSuppressed(ctx, b.Src.Name(), p.ID); err != nil {
 					slog.Error("escalation scheduler: mark suppressed failed", "incident_id", p.ID, "error", err)
 				} else {
 					slog.Info("escalation scheduler: incident suppressed by dependency", "source", b.Src.Name(), "incident_id", p.ID)
 				}
-				return // подавлено навсегда; со следующего тика инцидент выпадет из OpenUnacked
+				return
 			}
-			// Родитель жив: держим ТОЛЬКО ступень 0 и ТОЛЬКО в течение
-			// SettleGrace — даём родителю время либо упасть следом (тогда
-			// ветка выше подавит раньше первого уведомления), либо
-			// стабилизироваться. Ступени выше 0 уже сигнализировали и не
-			// откладываются повторно; после грейса ступень 0 уходит штатно.
+			// Родитель жив: держим только ступень 0 и только в течение
+			// SettleGrace. Ступени выше 0 уже сигнализировали и не откладываются.
 			if hasParent && p.EscalationLevel == 0 && now.Sub(p.StartedAt) < s.SettleGrace {
-				return // держим step0 до конца грейса
+				return
 			}
 		}
 	}
@@ -266,7 +198,6 @@ func (s *Scheduler) tickOne(ctx context.Context, b Binding, p PendingIncident, n
 	}
 }
 
-// Run тикает с Interval до отмены ctx. Запускать как "go sched.Run(ctx)".
 func (s *Scheduler) Run(ctx context.Context) {
 	ticker := time.NewTicker(s.Interval)
 	defer ticker.Stop()

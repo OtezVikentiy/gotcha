@@ -31,8 +31,6 @@ hello
 	}
 }
 
-// TestParseEnvelopeMixedItems: event и transaction в одном envelope'е
-// раскладываются по разным спискам, прочие типы по-прежнему пропускаются.
 func TestParseEnvelopeMixedItems(t *testing.T) {
 	raw := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
 {"type":"event"}
@@ -109,14 +107,11 @@ func TestParseEnvelopeUnboundedLineCapped(t *testing.T) {
 }
 
 func TestParseEnvelopeGarbageWithNewline(t *testing.T) {
-	// Мусор с \n: ошибка должна прийти из JSON-валидации, не из EOF.
 	if _, err := ParseEnvelope(strings.NewReader("not json at all\n"), 1<<20, nil); err == nil {
 		t.Fatal("want error for garbage header")
 	}
 }
 
-// TestParseEnvelopeItemLimit: сверх maxEnvelopeItems item'ы отбрасываются
-// (защита от амплификации), принятые — сохраняются, лишние учтены в Dropped.
 func TestParseEnvelopeItemLimit(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("{}\n")
@@ -136,13 +131,11 @@ func TestParseEnvelopeItemLimit(t *testing.T) {
 	}
 }
 
-// TestParseEnvelopeUnknownTypesNotCounted: неизвестные типы не считаются в лимит
-// (амплификацию не создают — они и так игнорируются).
 func TestParseEnvelopeUnknownTypesNotCounted(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("{}\n")
 	for i := 0; i < maxEnvelopeItems; i++ {
-		b.WriteString("{\"type\":\"session\"}\n{\"x\":1}\n") // игнорируемый тип
+		b.WriteString("{\"type\":\"session\"}\n{\"x\":1}\n")
 	}
 	b.WriteString("{\"type\":\"event\"}\n{\"message\":\"kept\"}\n")
 	env, err := ParseEnvelope(strings.NewReader(b.String()), 1<<20, nil)
@@ -154,9 +147,6 @@ func TestParseEnvelopeUnknownTypesNotCounted(t *testing.T) {
 	}
 }
 
-// TestParseEnvelopeScopeFilter — item, чей сигнал ключу не разрешён,
-// отбрасывается ПОШТУЧНО, остальные принимаются: браузерный envelope не
-// должен терять события из-за одного лишнего profile-item'а.
 func TestParseEnvelopeScopeFilter(t *testing.T) {
 	raw := strings.Join([]string{
 		`{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}`,
@@ -184,8 +174,6 @@ func TestParseEnvelopeScopeFilter(t *testing.T) {
 	}
 }
 
-// TestParseEnvelopeNilAllow — nil-предикат означает «всё разрешено»:
-// существующие вызовы разбора без скоупа поведения не меняют.
 func TestParseEnvelopeNilAllow(t *testing.T) {
 	raw := strings.Join([]string{
 		`{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}`,

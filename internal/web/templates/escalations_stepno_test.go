@@ -10,10 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// TestEscalationStepDisplayedOneBased — K9-16: в данных ступени 0-based
-// (StepNo, имена полей формы), человеку показывается 1-based: первая
-// ступень — «Ступень 1», и в легенде редактора, и в строке dry-run. Имена
-// полей формы при этом остаются по StepNo — обработчик их парсит как есть.
 func TestEscalationStepDisplayedOneBased(t *testing.T) {
 	ch := []alert.Channel{{ID: 1, Kind: "email", Enabled: true, Target: "a@b.c"}}
 	form := renderTo(t, escalationStepFields(EscalationStepForm{StepNo: 0, DelayMinutes: "0", Selected: map[int64]bool{1: true}}, ch))
@@ -38,9 +34,6 @@ func TestEscalationStepDisplayedOneBased(t *testing.T) {
 	}
 }
 
-// TestEscalationsPageExplainsIssueAlerts — K1-3: страница обещает лесенку
-// «инциденту», а алерты по проблемам (alert/evaluator.go → escalation.Dispatch
-// напрямую) её не проходят — справка обязана это оговаривать.
 func TestEscalationsPageExplainsIssueAlerts(t *testing.T) {
 	out := renderTo(t, Escalations(7, nil, EscalationLadderForm{Severity: "critical"}, EscalationLadderForm{Severity: "warning"}, map[string]escalation.Ladder{}, "", "", "u@e.com"))
 	if !strings.Contains(out, "Алерты по проблемам") || !strings.Contains(out, "лесенку не проходят") {

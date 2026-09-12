@@ -18,65 +18,43 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// StatusPageView — модель публичной статус-страницы (собирается в
-// web/statuspage.go и кешируется там же на 30 секунд). Здесь только то, что
-// можно показать миру: заголовок/описание страницы, display_name мониторов,
-// их статус, uptime% и полоска за 90 дней, инциденты без причины и регионов,
-// ближайшие окна обслуживания. Ни URL/хоста/порта монитора, ни текста ошибки,
-// ни имён проекта и организации в модели нет — их неоткуда взять в шаблоне.
+// модель публичной страницы — только то, что можно показать миру.
+// URL/хоста/порта монитора, текста ошибки, имён проекта/организации здесь нет и не должно быть.
 type StatusPageView struct {
 	Title       string
 	Description string
 	Overall     string // operational | partial | major
-	// Days — фактическая глубина страницы в сутках. Раньше «90» стояло в
-	// текстах подписей, а глубина уже ограничивалась сроком хранения: при
-	// GOTCHA_EVENT_RETENTION_DAYS=30 страница рисовала 30 корзин и подписывала их
-	// «за 90 дней».
+	// фактическая глубина страницы — берётся из срока хранения событий, не захардкожена.
 	Days        int
 	Monitors    []StatusMonitorView
 	Incidents   []StatusIncidentView
 	Maintenance []StatusWindowView
 }
 
-// StatusMonitorView — плитка сервиса: публичное имя (display_name) и его
-// состояние.
 type StatusMonitorView struct {
 	Name      string
 	Status    string // up | down | unknown | paused | maintenance
 	Uptime90d uptime.UptimeStat
-	// BarStats — сырые корзины полоски за 90 дней. Готовый SVG (Bars)
-	// строится не здесь, а на рендере конкретного запроса (см.
-	// renderStatusPage в web/statuspage.go): подписи внутри полоски
-	// локализованы, а вьюха кешируется одна на всех посетителей.
+	// сырые корзины — готовый SVG с локализованными подписями строится на рендере запроса.
 	BarStats []uptime.UptimeStat
 	Bars     templ.Component
 }
 
-// StatusIncidentView — строка ленты инцидентов: сервис, начало (UTC) и
-// длительность либо "ongoing".
 type StatusIncidentView struct {
 	Name      string
 	StartedAt string
-	// Duration — длительность закрытого инцидента (нулевая для незакрытого:
-	// шаблон подставляет локализованное «идёт» по Ongoing, само слово в
-	// модель не кладётся). Это time.Duration, а не готовая строка: вьюха
-	// кешируется одна на всех посетителей независимо от языка, а перевод
-	// числа в «2ч 30м»/«2h 30m» — дело рендера конкретного запроса, где
-	// локаль уже известна из контекста (humanize.Duration в шаблоне). Так
-	// кеш и локализация перестают быть размытыми — они просто про разные
-	// стадии: число собирается один раз, слова — при каждом показе.
+	// time.Duration, не готовая строка — вьюха кешируется одна на всех, перевод числа зависит от языка.
+	// Ongoing=true — нулевая длительность, шаблон подставляет «идёт» сам.
 	Duration time.Duration
 	Ongoing  bool
 }
 
-// StatusWindowView — ближайшее окно обслуживания (на 7 дней вперёд).
 type StatusWindowView struct {
 	Name string
 	From string
 	To   string
 }
 
-// overallStatusText/Class — человекочитаемый общий статус страницы.
 func overallStatusText(ctx context.Context, overall string) string {
 	switch overall {
 	case "major":
@@ -88,10 +66,7 @@ func overallStatusText(ctx context.Context, overall string) string {
 	}
 }
 
-// statusMonitorText — человекочитаемый статус сервиса для публичной
-// страницы: сырой enum up/down/… наружу не показываем. Формулировки свои
-// (status.monitor.*), а не общие uptime.status.*: внутри кабинета уместно
-// сухое «Up», посетителю статус-страницы — «Работает».
+// свои формулировки (status.monitor.*), не uptime.status.* — посетителю «Работает», не сухое «Up».
 func statusMonitorText(ctx context.Context, status string) string {
 	switch status {
 	case "up":
@@ -107,10 +82,7 @@ func statusMonitorText(ctx context.Context, status string) string {
 	}
 }
 
-// hasPausedMonitor сообщает, есть ли среди мониторов страницы хотя бы один
-// на паузе: подсказка status.monitor.paused_hint осмысленна только тогда,
-// когда посетитель реально видит бейдж «Пауза» — иначе это шум на
-// единственной публичной поверхности продукта.
+// подсказка paused_hint осмысленна только когда посетитель видит бейдж «Пауза».
 func hasPausedMonitor(monitors []StatusMonitorView) bool {
 	for _, m := range monitors {
 		if m.Status == "paused" {
@@ -131,9 +103,7 @@ func overallStatusClass(overall string) string {
 	}
 }
 
-// statusLayout — СВОЙ layout публичной страницы: ни навигации приложения, ни
-// ссылок в кабинет, ни формы logout, ни JS (страница целиком статична).
-// Стили берутся из той же публичной статики /static/app.css.
+// свой layout публичной страницы — ни навигации приложения, ни JS, ни ссылок в кабинет.
 func statusLayout(title string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -167,7 +137,7 @@ func statusLayout(title string) templ.Component {
 			var templ_7745c5c3_Var2 string
 			templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.FromContext(ctx).Code)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 132, Col: 41}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 102, Col: 41}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var2)
 			if templ_7745c5c3_Err != nil {
@@ -180,7 +150,7 @@ func statusLayout(title string) templ.Component {
 			var templ_7745c5c3_Var3 string
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.ResolveAttributeValue(theme.FromContext(ctx).Code)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 132, Col: 84}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 102, Col: 84}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var3)
 			if templ_7745c5c3_Err != nil {
@@ -224,7 +194,7 @@ func statusLayout(title string) templ.Component {
 			var templ_7745c5c3_Var5 string
 			templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.FromContext(ctx).Code)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 138, Col: 41}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 108, Col: 41}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var5)
 			if templ_7745c5c3_Err != nil {
@@ -265,9 +235,7 @@ func statusLayout(title string) templ.Component {
 	})
 }
 
-// statusLayoutBody — общее тело для обеих веток statusLayout (с data-theme и
-// без). Вынесено, потому что templ не позволяет условно открыть тег без
-// закрывающего — тот же приём, что и в layout/chromeless.
+// вынесено — templ не даёт условно открыть тег без закрывающего, как в layout/chromeless.
 func statusLayoutBody(title string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -296,7 +264,7 @@ func statusLayoutBody(title string) templ.Component {
 		var templ_7745c5c3_Var8 string
 		templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 153, Col: 17}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 121, Col: 17}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 		if templ_7745c5c3_Err != nil {
@@ -309,7 +277,7 @@ func statusLayoutBody(title string) templ.Component {
 		var templ_7745c5c3_Var9 templ.SafeURL
 		templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinURLErrs(assetURL("/static/favicon.svg"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 154, Col: 58}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 122, Col: 58}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 		if templ_7745c5c3_Err != nil {
@@ -322,7 +290,7 @@ func statusLayoutBody(title string) templ.Component {
 		var templ_7745c5c3_Var10 templ.SafeURL
 		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinURLErrs(assetURL("/static/app.css"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 155, Col: 59}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 123, Col: 59}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 		if templ_7745c5c3_Err != nil {
@@ -372,7 +340,7 @@ func statusMonitorTile(m StatusMonitorView, days int) templ.Component {
 		var templ_7745c5c3_Var12 string
 		templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.ResolveAttributeValue(m.Name)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 167, Col: 48}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 135, Col: 48}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var12)
 		if templ_7745c5c3_Err != nil {
@@ -385,7 +353,7 @@ func statusMonitorTile(m StatusMonitorView, days int) templ.Component {
 		var templ_7745c5c3_Var13 string
 		templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(m.Name)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 167, Col: 59}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 135, Col: 59}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 		if templ_7745c5c3_Err != nil {
@@ -420,7 +388,7 @@ func statusMonitorTile(m StatusMonitorView, days int) templ.Component {
 		var templ_7745c5c3_Var16 string
 		templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(statusMonitorText(ctx, m.Status))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 168, Col: 87}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 136, Col: 87}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 		if templ_7745c5c3_Err != nil {
@@ -443,7 +411,7 @@ func statusMonitorTile(m StatusMonitorView, days int) templ.Component {
 			"period", i18n.Tn(ctx, "unit.days", days),
 			"value", uptimeStatText(m.Uptime90d)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 174, Col: 41}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 142, Col: 41}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 		if templ_7745c5c3_Err != nil {
@@ -457,7 +425,6 @@ func statusMonitorTile(m StatusMonitorView, days int) templ.Component {
 	})
 }
 
-// PublicStatusPage — GET /status/{key}: страница для анонимного посетителя.
 func PublicStatusPage(v StatusPageView) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -498,7 +465,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 			var templ_7745c5c3_Var20 string
 			templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinStringErrs(v.Title)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 182, Col: 15}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 149, Col: 15}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 			if templ_7745c5c3_Err != nil {
@@ -516,7 +483,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 				var templ_7745c5c3_Var21 string
 				templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(v.Description)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 184, Col: 48}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 151, Col: 48}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 				if templ_7745c5c3_Err != nil {
@@ -556,7 +523,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 			var templ_7745c5c3_Var24 string
 			templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinStringErrs(overallStatusText(ctx, v.Overall))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 186, Col: 80}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 153, Col: 80}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 			if templ_7745c5c3_Err != nil {
@@ -569,7 +536,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 			var templ_7745c5c3_Var25 string
 			templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "status.timezone_note"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 187, Col: 83}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 154, Col: 83}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 			if templ_7745c5c3_Err != nil {
@@ -587,7 +554,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 				var templ_7745c5c3_Var26 string
 				templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "status.monitor.paused_hint"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 189, Col: 88}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 156, Col: 88}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 				if templ_7745c5c3_Err != nil {
@@ -610,7 +577,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 				var templ_7745c5c3_Var27 string
 				templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "status.monitors.empty"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 193, Col: 44}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 160, Col: 44}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 				if templ_7745c5c3_Err != nil {
@@ -644,7 +611,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 			templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "status.incidents.title_period",
 				"period", i18n.Tn(ctx, "unit.days", v.Days)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 204, Col: 48}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 171, Col: 48}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 			if templ_7745c5c3_Err != nil {
@@ -662,7 +629,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 				var templ_7745c5c3_Var29 string
 				templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "status.incidents.empty"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 207, Col: 45}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 174, Col: 45}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 				if templ_7745c5c3_Err != nil {
@@ -692,7 +659,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 					var templ_7745c5c3_Var31 string
 					templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "status.col.service"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 213, Col: 58}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 180, Col: 58}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 					if templ_7745c5c3_Err != nil {
@@ -705,7 +672,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 					var templ_7745c5c3_Var32 string
 					templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "status.col.started"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 214, Col: 58}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 181, Col: 58}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
 					if templ_7745c5c3_Err != nil {
@@ -718,7 +685,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 					var templ_7745c5c3_Var33 string
 					templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "status.col.duration"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 215, Col: 59}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 182, Col: 59}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var33))
 					if templ_7745c5c3_Err != nil {
@@ -736,7 +703,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 						var templ_7745c5c3_Var34 string
 						templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.JoinStringErrs(inc.Name)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 221, Col: 22}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 188, Col: 22}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var34))
 						if templ_7745c5c3_Err != nil {
@@ -749,7 +716,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 						var templ_7745c5c3_Var35 string
 						templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinStringErrs(inc.StartedAt)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 222, Col: 27}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 189, Col: 27}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
 						if templ_7745c5c3_Err != nil {
@@ -767,7 +734,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 							var templ_7745c5c3_Var36 string
 							templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "status.incident.ongoing"))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 224, Col: 53}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 191, Col: 53}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
 							if templ_7745c5c3_Err != nil {
@@ -785,7 +752,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 							var templ_7745c5c3_Var37 string
 							templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinStringErrs(humanize.Duration(ctx, inc.Duration))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 226, Col: 51}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 193, Col: 51}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
 							if templ_7745c5c3_Err != nil {
@@ -819,7 +786,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 			var templ_7745c5c3_Var38 string
 			templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "status.maintenance.title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 235, Col: 47}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 202, Col: 47}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 			if templ_7745c5c3_Err != nil {
@@ -837,7 +804,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 				var templ_7745c5c3_Var39 string
 				templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "status.maintenance.empty"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 237, Col: 47}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 204, Col: 47}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
 				if templ_7745c5c3_Err != nil {
@@ -867,7 +834,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 					var templ_7745c5c3_Var41 string
 					templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "status.col.window"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 243, Col: 57}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 210, Col: 57}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var41))
 					if templ_7745c5c3_Err != nil {
@@ -880,7 +847,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 					var templ_7745c5c3_Var42 string
 					templ_7745c5c3_Var42, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "status.col.started"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 244, Col: 58}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 211, Col: 58}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var42))
 					if templ_7745c5c3_Err != nil {
@@ -893,7 +860,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 					var templ_7745c5c3_Var43 string
 					templ_7745c5c3_Var43, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "status.col.ends"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 245, Col: 55}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 212, Col: 55}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var43))
 					if templ_7745c5c3_Err != nil {
@@ -911,7 +878,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 						var templ_7745c5c3_Var44 string
 						templ_7745c5c3_Var44, templ_7745c5c3_Err = templ.JoinStringErrs(wnd.Name)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 251, Col: 22}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 218, Col: 22}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var44))
 						if templ_7745c5c3_Err != nil {
@@ -924,7 +891,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 						var templ_7745c5c3_Var45 string
 						templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.JoinStringErrs(wnd.From)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 252, Col: 22}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 219, Col: 22}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var45))
 						if templ_7745c5c3_Err != nil {
@@ -937,7 +904,7 @@ func PublicStatusPage(v StatusPageView) templ.Component {
 						var templ_7745c5c3_Var46 string
 						templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.JoinStringErrs(wnd.To)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 253, Col: 20}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspage.templ`, Line: 220, Col: 20}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var46))
 						if templ_7745c5c3_Err != nil {

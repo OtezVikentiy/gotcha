@@ -10,12 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0079IncidentGroups — таблица incident_groups (группы
-// коррелированных алертов с корнем host/uptime) и колонка group_id на четырёх
-// таблицах инцидентов. Проверяет: NULL-дефолт group_id на существующем
-// инциденте, валидную группу, CHECK root_source, UNIQUE (root_source,
-// root_incident_id), намеренное отсутствие FK на group_id, каскад удаления
-// проекта, откат down-миграции.
 func TestMigrate0079IncidentGroups(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -46,7 +40,6 @@ func TestMigrate0079IncidentGroups(t *testing.T) {
 		t.Fatalf("migrate to 79: %v", err)
 	}
 
-	// 1) group_id на существующем инциденте = NULL.
 	var groupID *int64
 	if err := pool.QueryRow(ctx,
 		"SELECT group_id FROM host_incidents WHERE id=$1", incidentID).Scan(&groupID); err != nil {
@@ -56,29 +49,24 @@ func TestMigrate0079IncidentGroups(t *testing.T) {
 		t.Fatalf("group_id after migration = %v, want NULL", *groupID)
 	}
 
-	// 2) Валидная группа вставляется.
 	var gid int64
 	mustScan(t, pool, &gid,
 		`INSERT INTO incident_groups (project_id, root_source, root_incident_id, root_node_kind, root_node_id)
 		 VALUES ($1,'host',$2,'host',$3) RETURNING id`, projectID, incidentID, hostID)
 
-	// 3) CHECK root_source отвергает неизвестный источник.
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO incident_groups (project_id, root_source, root_incident_id, root_node_kind, root_node_id)
 		 VALUES ($1,'metric',$2,'host',$3)`, projectID, incidentID, hostID); err == nil {
 		t.Fatal("insert root_source='metric': want CHECK violation, got nil")
 	}
 
-	// 4) UNIQUE (root_source, root_incident_id) отвергает дубль корня.
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO incident_groups (project_id, root_source, root_incident_id, root_node_kind, root_node_id)
 		 VALUES ($1,'host',$2,'host',$3)`, projectID, incidentID, hostID); err == nil {
 		t.Fatal("insert duplicate (root_source, root_incident_id): want UNIQUE violation, got nil")
 	}
 
-	// 5) group_id проставляется, и FK на него намеренно нет: несуществующая
-	// группа тоже принимается (лог историчен, группа переживает ретеншен —
-	// прецедент incident_escalations, 0077).
+	// FK на group_id намеренно нет — лог историчен, группа переживает ретеншен (принцип из 0077).
 	if _, err := pool.Exec(ctx,
 		"UPDATE host_incidents SET group_id=$1 WHERE id=$2", gid, incidentID); err != nil {
 		t.Fatalf("set group_id: %v", err)
@@ -88,7 +76,6 @@ func TestMigrate0079IncidentGroups(t *testing.T) {
 		t.Fatalf("set dangling group_id (FK намеренно отсутствует): %v", err)
 	}
 
-	// 6) Каскад: удаление проекта удаляет его группы.
 	if _, err := pool.Exec(ctx, "DELETE FROM projects WHERE id=$1", projectID); err != nil {
 		t.Fatalf("delete project: %v", err)
 	}
@@ -101,10 +88,8 @@ func TestMigrate0079IncidentGroups(t *testing.T) {
 		t.Fatalf("incident_groups after project delete = %d, want 0", left)
 	}
 
-	// Соседние данные для проверки шага 7: исходный проект уже удалён
-	// каскадом в шаге 6, поэтому заводим второй проект/хост/инцидент —
-	// они должны пережить откат down-миграции нетронутыми (DROP COLUMN /
-	// DROP TABLE не должны задеть ничего, кроме своих объектов).
+	// Исходный проект уже удалён каскадом выше — заводим второй проект/хост/инцидент, чтобы проверить,
+	// что откат (DROP COLUMN/TABLE) не заденет ничего, кроме своих объектов.
 	var org2, projectID2, hostID2, incidentID2 int64
 	mustScan(t, pool, &org2,
 		"INSERT INTO organizations (slug,name,event_quota) VALUES ('m79b','M79b',0) RETURNING id")
@@ -116,8 +101,7 @@ func TestMigrate0079IncidentGroups(t *testing.T) {
 		`INSERT INTO host_incidents (project_id, host_id, kind, status)
 		 VALUES ($1,$2,'silent','open') RETURNING id`, projectID2, hostID2)
 
-	// 7) Down откатывается — и не просто «без ошибки»: проверяем состояние
-	// схемы после отката (W36) и сохранность соседних данных.
+	// Проверяем не только «down без ошибки», но и состояние схемы и сохранность соседних данных.
 	if err := db.MigratePGTo(dsn, 78); err != nil {
 		t.Fatalf("migrate down to 78: %v", err)
 	}
@@ -138,8 +122,6 @@ func TestMigrate0079IncidentGroups(t *testing.T) {
 		}
 	}
 
-	// Соседние данные (проект/хост/инцидент, заведённые непосредственно
-	// перед откатом) на месте и не пострадали.
 	var hostName string
 	if err := pool.QueryRow(ctx, "SELECT name FROM hosts WHERE id=$1", hostID2).Scan(&hostName); err != nil {
 		t.Fatalf("host не пережил откат: %v", err)

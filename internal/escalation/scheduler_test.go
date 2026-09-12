@@ -15,12 +15,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// captureInfoLog — подменяет slog.Default на текстовый handler уровня INFO
-// (тот же приём, что internal/host/group_hook_error_test.go
-// captureErrorLog, но порог ниже — releaseSuppressed логирует и success-путь
-// через slog.Info, его тоже нужно ловить) и возвращает буфер + восстановление
-// через t.Cleanup. Не вызывать из тестов с t.Parallel() — slog.Default
-// глобален для процесса.
+// Не вызывать из тестов с t.Parallel(): slog.Default глобален для процесса.
 func captureInfoLog(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var buf bytes.Buffer
@@ -30,29 +25,14 @@ func captureInfoLog(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
-// fakeSource — Source (T4) в памяти: планировщик (T8) работает с ЛЮБЫМ из
-// пяти product-сторов через один и тот же интерфейс, поэтому тесты
-// планировщика не обязаны тянуть реальные host/metric/trace/profile/slo
-// таблицы — только форму интерфейса.
 type fakeSource struct {
-	mu   sync.Mutex
-	name string
-	incs []*fakeIncident
-	// suppressed — id инцидентов, подавленных зависимостью (K1-4): fakeSource
-	// реализует SuppressedSource через эту карту, OpenUnacked её тоже
-	// фильтрует (как реальный host.IncidentService).
+	mu         sync.Mutex
+	name       string
+	incs       []*fakeIncident
 	suppressed map[int64]bool
-	// clock — источник времени для ClearSuppressed (K1-4): по умолчанию
-	// time.Now, но тесты, желающие детерминированного elapsed сразу после
-	// освобождения (ступень с DelayMinutes=0 обязана уйти в ТОМ ЖЕ тике),
-	// подставляют ТОТ ЖЕ clock, что и Scheduler.Now — иначе StartedAt,
-	// проставленный реальным time.Now(), почти всегда чуть ПОЗЖЕ уже
-	// захваченного планировщиком now, и elapsed уходит в отрицательные
-	// значения.
-	clock func() time.Time
-	// openSuppressedErr/clearSuppressedErr — инъекция ошибки в
-	// OpenSuppressed/ClearSuppressed (F3, аудит перед 1.0): проверяют
-	// fail-safe ветки releaseSuppressed, где реальная PG недоступна.
+	// Тесты с ожиданием мгновенного elapsed после освобождения подставляют тот
+	// же clock, что и Scheduler.Now — иначе StartedAt даст отрицательный elapsed.
+	clock              func() time.Time
 	openSuppressedErr  error
 	clearSuppressedErr error
 }
@@ -107,8 +87,6 @@ func (s *fakeSource) OpenUnacked(ctx context.Context) ([]escalation.PendingIncid
 	return out, nil
 }
 
-// markSuppressed отмечает инцидент id как подавленный зависимостью (K1-4):
-// исключён из OpenUnacked, появляется в OpenSuppressed.
 func (s *fakeSource) markSuppressed(id int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -118,8 +96,6 @@ func (s *fakeSource) markSuppressed(id int64) {
 	s.suppressed[id] = true
 }
 
-// OpenSuppressed и ClearSuppressed реализуют escalation.SuppressedSource
-// (K1-4) поверх той же карты suppressed/списка incs.
 func (s *fakeSource) OpenSuppressed(ctx context.Context) ([]escalation.PendingIncident, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -130,12 +106,8 @@ func (s *fakeSource) OpenSuppressed(ctx context.Context) ([]escalation.PendingIn
 		}
 	}
 	if s.openSuppressedErr != nil {
-		// Возвращаем и ошибку, И непустой (частичный) список — так тест
-		// ловит удаление ранней проверки `if err != nil { return }` в
-		// releaseSuppressed: без неё код бы всё равно обошёл этот список и
-		// дёрнул CheckIncident/ClearSuppressed, хотя источник сигнализировал
-		// сбой. Реальный pgx.Query может отдать частично прочитанные строки
-		// до ошибки — тот же случай, что этот guard обязан отсекать.
+		// Ошибка и частичный список вместе: pgx.Query может отдать частично
+		// прочитанные строки до ошибки — тест ловит потерю guard'а `if err != nil { return }`.
 		return out, s.openSuppressedErr
 	}
 	return out, nil
@@ -175,7 +147,6 @@ func (s *fakeSource) BumpEscalation(ctx context.Context, id int64, from int) (bo
 	return false, nil
 }
 
-// fakeMaint — MaintenanceChecker с фиксированным ответом/ошибкой.
 type fakeMaint struct {
 	inMaint bool
 	err     error
@@ -185,8 +156,6 @@ func (m *fakeMaint) InMaintenance(ctx context.Context, projectID int64, at time.
 	return m.inMaint, m.err
 }
 
-// fakeDep — DepChecker (B5) с настраиваемым ответом CheckIncident и
-// фиксацией вызовов MarkSuppressed.
 type fakeDep struct {
 	mu         sync.Mutex
 	hasParent  bool
@@ -218,8 +187,6 @@ func (d *fakeDep) markCallCount() int {
 	return len(d.markCalls)
 }
 
-// fakeNotifier — StepNotifier, фиксирующий вызовы и возвращающий переданные
-// каналы как «реально заенкенные» (симулирует успешную отправку).
 type fakeNotifier struct {
 	mu    sync.Mutex
 	calls []fakeNotifyCall
@@ -250,8 +217,6 @@ func (n *fakeNotifier) last() fakeNotifyCall {
 	return n.calls[len(n.calls)-1]
 }
 
-// setLadder — хелпер: настраивает лесенку эскалации (project, severity)
-// через реальный PolicyStore.
 func setLadder(t *testing.T, policy *escalation.PolicyStore, projectID int64, severity string, steps []escalation.Step) {
 	t.Helper()
 	if err := policy.SetLadder(context.Background(), projectID, severity, steps); err != nil {
@@ -259,12 +224,6 @@ func setLadder(t *testing.T, policy *escalation.PolicyStore, projectID int64, se
 	}
 }
 
-// TestSchedulerTickEscalatesWhenStepDelayDue дискриминирует «шлёт очередную
-// ступень лесенки, когда её задержка от открытия инцидента настала»: инцидент
-// уже прошёл ступень 0 (escalation_level=1), лесенка [{0,0,c1},{1,5,c2}]
-// (ступень 1 — delay 5 мин), StartedAt=now-6мин → задержка ступени 1 настала.
-// Tick шлёт NotifyStep(incident, [c2], step=1), продвигает level 1→2 и
-// логирует (step=1, c2) в incident_escalations.
 func TestSchedulerTickEscalatesWhenStepDelayDue(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -318,8 +277,6 @@ func TestSchedulerTickEscalatesWhenStepDelayDue(t *testing.T) {
 	}
 }
 
-// TestSchedulerTickSkipsWhenStepDelayNotDue: задержка ступени ещё не настала
-// (elapsed 1мин < delay 5мин) — Tick ничего не шлёт, уровень не двигается.
 func TestSchedulerTickSkipsWhenStepDelayNotDue(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -357,9 +314,6 @@ func TestSchedulerTickSkipsWhenStepDelayNotDue(t *testing.T) {
 	}
 }
 
-// TestSchedulerTickSkipsInMaintenance: живая проверка окна обслуживания
-// (BLOCKER-3) — даже если задержка ступени настала, Tick пропускает инцидент,
-// пока проект в окне.
 func TestSchedulerTickSkipsInMaintenance(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -397,9 +351,6 @@ func TestSchedulerTickSkipsInMaintenance(t *testing.T) {
 	}
 }
 
-// TestSchedulerTickEscalatesAfterMaintenanceEnds: инцидент открылся в окне
-// обслуживания (лога ещё нет), окно закончилось (Maint→false) — Tick шлёт
-// ступень 0, как только видит окно закрытым.
 func TestSchedulerTickEscalatesAfterMaintenanceEnds(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -437,8 +388,6 @@ func TestSchedulerTickEscalatesAfterMaintenanceEnds(t *testing.T) {
 	}
 }
 
-// TestSchedulerTickIgnoresAckedIncidents: подтверждённый инцидент не
-// возвращается OpenUnacked (T4) — планировщик его вовсе не видит и не трогает.
 func TestSchedulerTickIgnoresAckedIncidents(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -477,9 +426,6 @@ func TestSchedulerTickIgnoresAckedIncidents(t *testing.T) {
 	}
 }
 
-// TestSchedulerTickIdempotentOnRepeatedTick: два Tick подряд без смены Now —
-// второй не дублирует отправку: лесенка из одной ступени исчерпана после
-// первого бампа (level=1 >= len(ladder)=1), второй Tick — no-op.
 func TestSchedulerTickIdempotentOnRepeatedTick(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -527,8 +473,6 @@ func TestSchedulerTickIdempotentOnRepeatedTick(t *testing.T) {
 	}
 }
 
-// TestSchedulerRunStopsOnContextCancel: Run тикает и корректно завершается по
-// отмене ctx, не утекая горутиной — образец notify.OutboxJanitor (janitor_test.go).
 func TestSchedulerRunStopsOnContextCancel(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	pid := newProject(t, pool)
@@ -581,7 +525,6 @@ func TestSchedulerRunStopsOnContextCancel(t *testing.T) {
 	}
 }
 
-// TestPurgeOldEscalations: старая строка лога чистится, свежая остаётся.
 func TestPurgeOldEscalations(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -622,11 +565,6 @@ func TestPurgeOldEscalations(t *testing.T) {
 	}
 }
 
-// TestTickSuppressesWhenParentDown (B5/T5, §7.4/MINOR-6): DepChecker сообщает
-// parentDown=true — Tick подавляет инцидент навсегда (MarkSuppressed для
-// ("host", id)) и НЕ шлёт ступень, причём на ЛЮБОМ уровне эскалации, а не
-// только на step0 — гейт душит продолжение эскалации, даже если ребёнок уже
-// эскалировал до того, как родитель упал.
 func TestTickSuppressesWhenParentDown(t *testing.T) {
 	for _, level := range []int{0, 2} {
 		t.Run(map[int]string{0: "level0", 2: "level2"}[level], func(t *testing.T) {
@@ -676,12 +614,6 @@ func TestTickSuppressesWhenParentDown(t *testing.T) {
 	}
 }
 
-// TestTickCheckErrorEscalatesFailSafe — fail-safe (аудит корректности):
-// CheckIncident вернул ошибку (dep-БД недоступна) — гейт зависимостей
-// пропускается целиком, эскалация продолжается штатно (ступень уходит,
-// MarkSuppressed не вызывается). parentDown=true в фейке доказывает, что при
-// ошибке ответ резолвера НЕ читается: будь fail-safe сломан и прочитай он
-// parentDown, инцидент бы подавился (0 отправок, 1 пометка).
 func TestTickCheckErrorEscalatesFailSafe(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -724,11 +656,6 @@ func TestTickCheckErrorEscalatesFailSafe(t *testing.T) {
 	}
 }
 
-// TestTickMarkSuppressedErrorStillSuppressesThisTick — fail-safe (аудит
-// корректности): родитель упал (parentDown=true), но MarkSuppressed падает.
-// tickOne всё равно возвращается, НЕ отправив ступень (ступень при упавшем
-// родителе — шум тем же сбоем). Инцидент остаётся в OpenUnacked, и следующий
-// тик повторяет попытку пометки.
 func TestTickMarkSuppressedErrorStillSuppressesThisTick(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -767,7 +694,6 @@ func TestTickMarkSuppressedErrorStillSuppressesThisTick(t *testing.T) {
 		t.Fatalf("MarkSuppressed calls = %d, want 1", dep.markCallCount())
 	}
 
-	// Инцидент не помечен (ошибка) → ещё в OpenUnacked → следующий тик повторит.
 	sched.Tick(ctx)
 	if notifier.callCount() != 0 {
 		t.Fatalf("NotifyStep calls = %d, want 0 (повтор тика по-прежнему подавляет)", notifier.callCount())
@@ -777,10 +703,6 @@ func TestTickMarkSuppressedErrorStillSuppressesThisTick(t *testing.T) {
 	}
 }
 
-// TestTickHoldsStep0DuringGrace: родитель жив (parentDown=false), но у
-// инцидента есть родитель — ступень 0 придерживается в течение SettleGrace:
-// ни NotifyStep, ни MarkSuppressed не вызываются, инцидент просто ждёт
-// следующих тиков.
 func TestTickHoldsStep0DuringGrace(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -821,9 +743,6 @@ func TestTickHoldsStep0DuringGrace(t *testing.T) {
 	}
 }
 
-// TestTickSendsAfterGrace: тот же сценарий, что и грейс, но elapsed уже
-// превысил SettleGrace — ступень 0 уходит штатно, несмотря на живого
-// родителя (грейс — не бесконечное молчание).
 func TestTickSendsAfterGrace(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -868,9 +787,6 @@ func TestTickSendsAfterGrace(t *testing.T) {
 	}
 }
 
-// blockingSource — Source, чей OpenUnacked держит вызов до отмены ctx:
-// модель повисшего PostgreSQL-запроса без реальной инфраструктуры (см.
-// TestSchedulerTickBudgetAbortsHungTick).
 type blockingSource struct {
 	calls atomic.Int64
 }
@@ -887,9 +803,6 @@ func (b *blockingSource) BumpEscalation(context.Context, int64, int) (bool, erro
 	return false, nil
 }
 
-// TestSchedulerPublishesTickLiveness — self-метрики живости: без них
-// умерший или отставший Scheduler снаружи неотличим от «эскалировать
-// нечего». Bindings пуст — Tick завершается, не трогая PostgreSQL вовсе.
 func TestSchedulerPublishesTickLiveness(t *testing.T) {
 	sched := &escalation.Scheduler{Interval: time.Hour, Now: time.Now}
 	if got := sched.LastTickUnix(); got != 0 {
@@ -907,9 +820,6 @@ func TestSchedulerPublishesTickLiveness(t *testing.T) {
 	}
 }
 
-// TestSchedulerTickBudgetAbortsHungTick — повисший источник (голый
-// PostgreSQL-запрос без своего таймаута) не должен блокировать тик дольше
-// бюджета: тот же контракт, что host.Evaluator/metric.Evaluator.
 func TestSchedulerTickBudgetAbortsHungTick(t *testing.T) {
 	src := &blockingSource{}
 	sched := &escalation.Scheduler{
@@ -940,13 +850,8 @@ func TestSchedulerTickBudgetAbortsHungTick(t *testing.T) {
 	}
 }
 
-// barrierSource — обёртка над fakeSource, синхронизирующая OpenUnacked
-// барьером на две реплики (K1-1, TestSchedulerTwoReplicasDeliverStepOnce):
-// каждый вызов OpenUnacked сначала сигналит о своём приходе (gate.Done()),
-// потом ждёт партнёра (gate.Wait()) — обе реплики гарантированно читают
-// escalation_level=0 ДО того, как любая из них дойдёт до ClaimStepChannels,
-// иначе гонка вырождается в "кто первый вызвался" и не проверяет то, ради
-// чего заведена (реальную конкуренцию за claim в БД, а не за OpenUnacked).
+// OpenUnacked сигналит о своём приходе, потом ждёт партнёра — обе реплики
+// читают escalation_level=0 до входа в ClaimStepChannels.
 type barrierSource struct {
 	*fakeSource
 	gate *sync.WaitGroup
@@ -958,16 +863,6 @@ func (b barrierSource) OpenUnacked(ctx context.Context) ([]escalation.PendingInc
 	return b.fakeSource.OpenUnacked(ctx)
 }
 
-// TestSchedulerTwoReplicasDeliverStepOnce — K1-1, дискриминирующий тест
-// claim-before-notify на настоящей гонке двух реплик планировщика поверх
-// одного и того же pool/PolicyStore: без барьера обе реплики почти всегда
-// успевали бы одна за другой и не пересеклись бы на ClaimStepChannels;
-// barrierSource гарантирует, что обе войдут в тик, прочитав ОДИН И ТОТ ЖЕ
-// уровень эскалации, и одновременно бросятся занимать одну и ту же ступень.
-// Правильная реализация (claim ДО notifyStep) отдаёт ступень ровно одной из
-// них — сумма вызовов их нотифаеров равна 1, а не 2. Повторяется на 10
-// свежих инцидентах (каждый со своим барьером), чтобы не полагаться на
-// удачу одного прогона.
 func TestSchedulerTwoReplicasDeliverStepOnce(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -1038,18 +933,6 @@ func TestSchedulerTwoReplicasDeliverStepOnce(t *testing.T) {
 	}
 }
 
-// TestSchedulerReleasesSuppressedIncidentWhenParentRecovers — K1-4 (аудит
-// перед 1.0): инцидент, подавленный зависимостью, чей родитель
-// восстановился (fakeDep.parentDown=false), обязан быть снят ЭТИМ ЖЕ тиком
-// (releaseSuppressed стоит перед OpenUnacked того же биндинга, в бюджете
-// того же тика) — видимость освобождения не ждёт следующего тика. Ступень 0
-// в этом тесте тоже уходит в ЭТОМ ЖЕ тике, но только благодаря двум
-// условиям теста, не гарантированным в проде (см. докблок releaseSuppressed):
-// SettleGrace здесь не задан (=0), и src.clock — ТОТ ЖЕ clock, что и
-// Scheduler.Now, так что elapsed не уходит в отрицательные значения из-за
-// разницы часов. В проде (SettleGrace>0, dep_released_at от PG-часов)
-// освобождённый инцидент уровня 0, как правило, отстаивает грейс заново и
-// получает ступень 0 позже, не в тике освобождения.
 func TestSchedulerReleasesSuppressedIncidentWhenParentRecovers(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -1098,9 +981,6 @@ func TestSchedulerReleasesSuppressedIncidentWhenParentRecovers(t *testing.T) {
 	}
 }
 
-// TestSchedulerKeepsSuppressedWhileParentDown — родитель ещё лежит
-// (fakeDep.parentDown=true): подавление не снимается, ступени не уходят,
-// нотифаер не звался ни разу.
 func TestSchedulerKeepsSuppressedWhileParentDown(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -1152,9 +1032,6 @@ func TestSchedulerKeepsSuppressedWhileParentDown(t *testing.T) {
 	}
 }
 
-// TestSchedulerReleasesWhenDependencyRemoved — hasParent=false (зависимость
-// удалена, пока инцидент был подавлен): подавлять больше нечем, снимается
-// так же, как и восстановление родителя.
 func TestSchedulerReleasesWhenDependencyRemoved(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -1199,11 +1076,6 @@ func TestSchedulerReleasesWhenDependencyRemoved(t *testing.T) {
 	}
 }
 
-// TestSchedulerReleaseSuppressedOpenSuppressedError — F3 (аудит перед 1.0):
-// OpenSuppressed самого биндинга падает (PG недоступна) — releaseSuppressed
-// fail-safe: инцидент остаётся подавленным, тик не падает, нотифаер не
-// звался, а остальные биндинги (не проверяются тут напрямую, но тик
-// продолжается — Tick не паникует и не блокируется).
 func TestSchedulerReleaseSuppressedOpenSuppressedError(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -1254,10 +1126,6 @@ func TestSchedulerReleaseSuppressedOpenSuppressedError(t *testing.T) {
 	}
 }
 
-// TestSchedulerReleaseSuppressedCheckIncidentError — F3: CheckIncident
-// (проверка родителя) падает для подавленного инцидента — releaseSuppressed
-// пропускает его (не снимает, не роняет тик), тот же fail-safe, что и у
-// OpenSuppressed выше.
 func TestSchedulerReleaseSuppressedCheckIncidentError(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -1306,9 +1174,6 @@ func TestSchedulerReleaseSuppressedCheckIncidentError(t *testing.T) {
 	}
 }
 
-// TestSchedulerReleaseSuppressedClearSuppressedError — F3: родитель
-// восстановился, но ClearSuppressed падает (PG недоступна на записи) —
-// инцидент остаётся подавленным (флаг не снят), тик продолжает работу.
 func TestSchedulerReleaseSuppressedClearSuppressedError(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -1350,13 +1215,6 @@ func TestSchedulerReleaseSuppressedClearSuppressedError(t *testing.T) {
 	if notifier.callCount() != 0 {
 		t.Fatalf("NotifyStep calls = %d, want 0 (ClearSuppressed упал — снятие подавления не произошло)", notifier.callCount())
 	}
-	// Провал ClearSuppressed не мутирует состояние fakeSource (тот же приём,
-	// что реальный UPDATE ... AND suppressed_by_dep, откатившийся целиком),
-	// так что notifier.callCount()/OpenSuppressed уже доказывают, что
-	// releaseSuppressed не продолжил как после успеха. Единственное
-	// наблюдаемое отличие удаления guard'а (`if err != nil { ...; continue
-	// }`) — код всё равно доходит до "dependency recovered" INFO, хотя
-	// снятие провалилось: ловим это через лог.
 	if !strings.Contains(logs.String(), "clear suppressed failed") {
 		t.Fatalf("log = %q, want содержит warn \"clear suppressed failed\"", logs.String())
 	}

@@ -11,17 +11,14 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/chbatch"
 )
 
-// poisonThreshold — сколько подряд-фейлов вставки одного и того же головного
-// батча терпим (транзиентные сбои CH), прежде чем перейти к изоляции ядовитых
-// рядов бинарным дроблением (chbatch.IsolatePoison).
+// столько подряд-фейлов вставки одного батча терпим, прежде чем перейти
+// к изоляции ядовитых рядов бинарным дроблением (chbatch.IsolatePoison).
 const poisonThreshold = 3
 
-// CHConn — минимум интерфейса ClickHouse, нужный ResultWriter.
 type CHConn interface {
 	PrepareBatch(ctx context.Context, query string, opts ...driver.PrepareBatchOption) (driver.Batch, error)
 }
 
-// resultRow — одна строка на запись в CH-таблицу check_results.
 type resultRow struct {
 	ProjectID int64
 	MonitorID int64
@@ -30,11 +27,6 @@ type resultRow struct {
 	Result    Result
 }
 
-// ResultWriter копит результаты проверок и пишет их в ClickHouse пачками:
-// по batchSize или по тику interval. Повторяет паттерн event.Batcher (см.
-// internal/event/batcher.go): Add никогда не блокирует и не возвращает
-// ошибку, ошибка вставки возвращает пачку в буфер (ретрай следующим тиком),
-// буфер ограничен maxBuf, при переполнении дропается самое старое.
 type ResultWriter struct {
 	conn CHConn
 
@@ -67,14 +59,13 @@ func NewResultWriter(conn CHConn) *ResultWriter {
 	}
 }
 
-// Add кладёт результат проверки в буфер. Никогда не блокирует и не
-// возвращает ошибку: приём результатов не должен зависеть от здоровья
-// ClickHouse.
+// никогда не блокирует и не возвращает ошибку: приём результатов не должен
+// зависеть от здоровья ClickHouse.
 func (w *ResultWriter) Add(projectID, monitorID int64, region string, at time.Time, r Result) {
 	w.mu.Lock()
 	logDrop := false
-	// Bulk-drop: считаем избыток над maxBuf с учётом добавляемого ряда и
-	// сдвигаем разом (O(1) сдвигов на Add вместо O(n) поштучных).
+	// считаем избыток над maxBuf разом и сдвигаем один раз — O(1) вместо
+	// O(n) поштучных дропов.
 	if drop := len(w.buf) + 1 - w.maxBuf; drop > 0 {
 		w.buf = append(w.buf[:0], w.buf[drop:]...)
 		w.dropped += int64(drop)
@@ -100,14 +91,12 @@ func (w *ResultWriter) Add(projectID, monitorID int64, region string, at time.Ti
 	}
 }
 
-// Dropped — сколько результатов выброшено из-за переполнения буфера.
 func (w *ResultWriter) Dropped() int64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.dropped
 }
 
-// Buffered — сколько строк ждёт записи прямо сейчас. Для самотелеметрии:
 // растущая глубина буфера — первый признак, что хранилище не принимает.
 func (w *ResultWriter) Buffered() int64 {
 	w.mu.Lock()
@@ -115,8 +104,7 @@ func (w *ResultWriter) Buffered() int64 {
 	return int64(len(w.buf))
 }
 
-// InsertFailures — сколько флашей провалилось за время жизни процесса.
-// Отличается от Dropped: неудачная вставка возвращает пачку в буфер и
+// отличается от Dropped: неудачная вставка возвращает пачку в буфер и
 // повторяется, потеря наступает только при переполнении буфера.
 func (w *ResultWriter) InsertFailures() int64 {
 	w.mu.Lock()
@@ -124,8 +112,6 @@ func (w *ResultWriter) InsertFailures() int64 {
 	return w.insertFails
 }
 
-// flushWithTimeout ограничивает одну попытку флаша, даже если у parent ctx
-// нет собственного дедлайна (context.Background()) или его бюджет большой:
 // сетевой чёрный дыр в PrepareBatch/Send не должен вешать Run/Close навсегда.
 func (w *ResultWriter) flushWithTimeout(parent context.Context) {
 	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
@@ -133,7 +119,6 @@ func (w *ResultWriter) flushWithTimeout(parent context.Context) {
 	w.flush(ctx)
 }
 
-// Run — цикл флаша; запускать горутиной. Завершается через Close.
 func (w *ResultWriter) Run() {
 	defer close(w.done)
 	ticker := time.NewTicker(w.interval)
@@ -150,10 +135,7 @@ func (w *ResultWriter) Run() {
 	}
 }
 
-// Close останавливает цикл и доливает остаток буфера. При неудачных
-// вставках ретраит с паузой, пока жив ctx; сдаётся только по ctx. Каждая
-// попытка флаша ограничена внутренним таймаутом (см. flushWithTimeout), так
-// что бюджет ctx остаётся исполнимым даже при зависшей сети. Идемпотентен —
+// ретраит слив остатка буфера с паузой, пока жив ctx; идемпотентен —
 // повторный вызов безопасен и не паникует.
 func (w *ResultWriter) Close(ctx context.Context) error {
 	w.stopOnce.Do(func() { close(w.stop) })
@@ -253,7 +235,6 @@ func (w *ResultWriter) flush(ctx context.Context) {
 			"rows", len(batch), "error", err, "dropped", over)
 		return
 	}
-	// Успех — сбрасываем счётчик подряд-фейлов.
 	w.mu.Lock()
 	w.failStreak = 0
 	w.mu.Unlock()
@@ -267,11 +248,8 @@ func boolToUint8(b bool) uint8 {
 }
 
 func (w *ResultWriter) insert(ctx context.Context, rows []resultRow) error {
-	// ВНИМАНИЕ: INSERT без списка колонок требует значение для КАЖДОЙ колонки
-	// check_results в порядке объявления. Добавляете колонку в миграции —
-	// обязаны поправить и этот Append (или перейти на явный список колонок,
-	// как сделано в internal/event/batcher.go), иначе вставка результатов
-	// проверок сломается в рантайме.
+	// INSERT без списка колонок требует аргумент для каждой колонки check_results
+	// по порядку; новая колонка в миграции без правки здесь ломается в рантайме.
 	batch, err := w.conn.PrepareBatch(ctx, "INSERT INTO check_results")
 	if err != nil {
 		return err

@@ -11,7 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
 )
 
-// renderFlame — рендер флеймграфа в строку; link по умолчанию — путь через «/».
 func renderFlame(t *testing.T, root *profile.FlameNode, focus []string, width int) string {
 	t.Helper()
 	link := func(path []string) string {
@@ -278,7 +277,6 @@ func TestFlameLink(t *testing.T) {
 		t.Fatalf("escaped path link = %q", got)
 	}
 
-	// Без query — просто путь.
 	bare := flameLink(httptest.NewRequest("GET", "/traces/t1/flame", nil))
 	if got := bare(nil); got != "/traces/t1/flame" {
 		t.Fatalf("bare reset link = %q", got)
@@ -288,10 +286,8 @@ func TestFlameLink(t *testing.T) {
 	}
 }
 
-// TestFlamegraphSVGZeroValueFocusNoNaN — K9-22: фокус на узле без сэмплов
-// (Value == 0, ширину ему даёт зум) делил ширину детей на ноль: NaN/Inf
-// проходил guard `w < 0.5` и уезжал в разметку как width="NaN". Теперь такой
-// узел не рисуется вовсе: ни NaN, ни Inf, ни его кадра.
+// Фокус на узле без сэмплов (Value==0) делил ширину детей на ноль — NaN/Inf проходили
+// guard w<0.5 и уезжали в разметку; такой узел теперь не рисуется вовсе.
 func TestFlamegraphSVGZeroValueFocusNoNaN(t *testing.T) {
 	root := &profile.FlameNode{Name: "all", Value: 10, Children: []*profile.FlameNode{
 		{Name: "busy", Value: 10},
@@ -306,7 +302,6 @@ func TestFlamegraphSVGZeroValueFocusNoNaN(t *testing.T) {
 	if strings.Contains(out, "idlechild") || strings.Contains(out, `<title>idle `) {
 		t.Errorf("node without samples must not be drawn: %s", out)
 	}
-	// Предок (корень) при зуме остаётся полупрозрачной строкой.
 	if !strings.Contains(out, "all") {
 		t.Errorf("ancestor row missing: %s", out)
 	}

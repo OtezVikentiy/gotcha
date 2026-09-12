@@ -11,17 +11,9 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// depsLimit — сколько зависимостей показывать в таблице (после сортировки по
-// числу вызовов, ORDER BY в Query.Dependencies). Тот же приём усечения, что и
-// perfEndpointLimit/perfSlowestLimit: запрашиваем на одну строку больше, чтобы
-// узнать, было ли усечение, не пересчитывая total отдельным запросом.
+// +1 к depsLimit в запросе — чтобы узнать об усечении, не считая total отдельно.
 const depsLimit = 50
 
-// dependencies — GET /projects/{id}/dependencies: таблица внешних зависимостей
-// сервиса (БД/кеш/HTTP), агрегированных из client-op спанов трейсов проекта.
-// Доступ — CanAccessProject, иначе 404 (тот же принцип, что у performanceList).
-// SVG hub-and-spoke карта строится из строк зависимостей (dependencyMapSVG) и
-// передаётся в шаблон компонентом; при пустом/ошибочном результате — NopComponent.
 func (h *Handler) dependencies(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -32,8 +24,7 @@ func (h *Handler) dependencies(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// h.Trace может быть nil в стендах без трейсинга — тогда 404, как у
-	// performanceList.
+	// nil в стендах без трейсинга — тогда 404, как у performanceList.
 	if h.Trace == nil {
 		h.notFound(w, r)
 		return
@@ -68,10 +59,7 @@ func (h *Handler) dependencies(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	filter := templates.DepsFilter{Range: timeRangeVM(tr), Active: tr.Key != perfDefaultPeriod}
-	// SVG строится в package web и передаётся в шаблон компонентом (шаблон не
-	// может вызвать web-функцию). Пусто при ошибке загрузки или отсутствии
-	// зависимостей — рисовать пустую карту незачем, экран уже показывает
-	// error/empty-состояние по loadFailed/len(rows).
+	// Шаблон не может вызвать web-функцию, поэтому SVG строится тут и передаётся компонентом.
 	var mapSVG templ.Component = templ.NopComponent
 	if !loadFailed && len(rows) > 0 {
 		mapSVG = dependencyMapSVG(r.Context(), rows, depsMapWidth)

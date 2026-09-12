@@ -12,30 +12,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// migration0030Path — путь к файлу миграции относительно каталога пакета, по
-// той же причине, что и migration0029Path в migrate_0029_test.go: go test
-// запускает тесты с рабочей директорией внутри internal/db, а go:embed
-// пакует те же самые файлы без преобразований.
 const migration0030Path = "migrations/pg/0030_regression_values_ms.up.sql"
 
-// TestMigration0030IsMarkedBreaking: 0030 меняет смысл уже записанных значений
-// (микросекунды → миллисекунды). Откат восстанавливает прежние числа (с
-// точностью двоичной арифметики, см. TestMigrate0030RecomputesDurationValues),
-// но прежний код на новых числах покажет длительности заниженными в тысячу
-// раз, поэтому миграция несовместима в обе стороны и обязана нести пометку.
-//
-// Проверка нужна отдельно, потому что destructiveSQL распознаёт формы
-// разрушения схемы, а не изменения данных: UPDATE он не считает разрушительным,
-// и без этого теста пометка держалась бы только вниманием автора.
-//
-// Маркер разбирает parseCompatMarker (internal/db/compat.go) — он читает
-// ТОЛЬКО первую строку файла (закреплено TestParseCompatMarker в
-// compat_internal_test.go, кейс «маркер не в первой строке» даёт ok=false).
-// Поэтому здесь, как и в migrate_0029_test.go, сравнивается именно первая
-// строка целиком, а не поиск подстроки где угодно в файле: поиск подстроки
-// остался бы зелёным, если бы кто-то дописал пояснение перед маркером, а
-// embeddedCompat в проде в этом случае вернул бы «миграция без маркера» и
-// уронил старт схемы — ровно то, что этот тест обязан ловить.
+// 0030 меняет смысл данных (мкс → мс) без изменения схемы — destructiveSQL не считает UPDATE
+// разрушительным, поэтому маркер здесь проверяется точечно, по точному совпадению первой строки.
 func TestMigration0030IsMarkedBreaking(t *testing.T) {
 	b, err := os.ReadFile(migration0030Path)
 	if err != nil {
@@ -48,29 +28,16 @@ func TestMigration0030IsMarkedBreaking(t *testing.T) {
 	}
 }
 
-// durationRoundTripTolerance — допуск при сравнении длительности до и после
-// пары up/down. duration приходит из quantilesMerge ClickHouse и почти
-// никогда не кратен 1000 (см. пример ниже, 643271.4 — правдоподобное сырое
-// значение квантиля). Деление на 1000 и обратное умножение в double
-// precision не обязаны быть побитово взаимно обратны: расхождение порядка
-// 1e-10 на величинах ~1e6 — свойство двоичной арифметики с плавающей
-// точкой, а не небрежность миграции или теста. Поэтому раунд-трип
-// проверяется с допуском, а не на точное равенство; округлые значения (кратные
-// 1000, как исходные duration ниже) им не подвержены и раньше проверялись
-// точным сравнением — это не была проверка общего случая.
+// Раунд-трип умножения/деления на 1000 в double не обязан быть побитово точным (~1e-10 на ~1e6) —
+// это свойство арифметики с плавающей точкой, а не небрежность; кратные 1000 сравниваются точно.
 const durationRoundTripTolerance = 1e-6
 
 func approxEqual(a, b, tolerance float64) bool {
 	return math.Abs(a-b) <= tolerance
 }
 
-// TestMigrate0030RecomputesDurationValues — самая опасная точка задачи: правка
-// обязана задеть только metric = 'duration' (записан в микросекундах из-за
-// дефекта конвертации в пакетных p95-запросах), а web-vital'ы lcp/fcp/ttfb/inp
-// (уже в миллисекундах) и безразмерный cls трогать не должна — деление
-// испортило бы верные данные. Проверяем и пересчёт, и то, что он не затрагивает
-// посторонние строки, а также откат — для кратных 1000 значений точно, для
-// нецелых (реалистичных) — с допуском durationRoundTripTolerance.
+// Правка обязана задеть только metric='duration' (записан в мкс из-за дефекта p95-запросов) — web-
+// vital'ы (уже в мс) и безразмерный cls трогать не должна.
 func TestMigrate0030RecomputesDurationValues(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -88,13 +55,10 @@ func TestMigrate0030RecomputesDurationValues(t *testing.T) {
 
 	_, projID := seedProject(t, ctx, pool)
 
-	// duration: записан в микросекундах дефектом пакетных p95-запросов.
 	mustExec(t, pool, `INSERT INTO perf_regressions
 		(project_id, target_kind, target, metric, baseline_value, peak_value, current_value)
 		VALUES ($1, 'endpoint_p95', 'GET /orders', 'duration', 150000, 300000, 200000)`, projID)
-	// duration некратный 1000 — реалистичное сырое значение квантиля
-	// ClickHouse (quantilesMerge), проверяет раунд-трип с допуском, а не
-	// только удобный случай, где деление/умножение точны.
+	// Некратный duration — реалистичное сырое значение ClickHouse-квантиля, не только простой случай.
 	mustExec(t, pool, `INSERT INTO perf_regressions
 		(project_id, target_kind, target, metric, baseline_value, peak_value, current_value)
 		VALUES ($1, 'endpoint_p95', 'GET /search', 'duration', 643271.4, 910000.7, 712345.6)`, projID)
@@ -157,8 +121,6 @@ func TestMigrate0030RecomputesDurationValues(t *testing.T) {
 			clsBase, clsPeak, clsCur)
 	}
 
-	// Откат: кратные 1000 значения восстанавливаются точно, некратные — с
-	// допуском durationRoundTripTolerance (см. комментарий у константы).
 	if err := db.MigratePGTo(dsn, 29); err != nil {
 		t.Fatalf("migrate down to 29: %v", err)
 	}
@@ -184,13 +146,8 @@ func TestMigrate0030RecomputesDurationValues(t *testing.T) {
 			rawBase, rawPeak, rawCur)
 	}
 
-	// lcp/cls после отката должны остаться теми же, какими были записаны — они
-	// единственный верный источник, второго нет. Сейчас down-миграция несёт то
-	// же WHERE metric = 'duration', что и up, поэтому это ожидаемо проходит;
-	// но проверка нужна отдельно, а не «по построению», чтобы будущая правка
-	// down-миграции, потерявшая условие по метрике, была поймана здесь, а не
-	// молча умножила web-vital'ы и cls на тысячу без возможности отличить
-	// испорченные значения от настоящих.
+	// lcp/cls после отката должны остаться исходными — down-миграция делит только metric='duration',
+	// но проверяем отдельно, чтобы будущая правка условия не осталась незамеченной.
 	if err := pool.QueryRow(ctx,
 		"SELECT baseline_value, peak_value, current_value FROM perf_regressions WHERE metric = 'lcp' AND project_id = $1",
 		projID).Scan(&lcpBase, &lcpPeak, &lcpCur); err != nil {

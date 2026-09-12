@@ -11,13 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestRequireProjectOperatorReturnsAuthz — B4: гейт теперь возвращает
-// projectAuthz{OrgID, CanManage} вместо голого orgID, чтобы рендеры не
-// резолвили CanManage заново отдельным canManageProject. Проверяем оба
-// значения CanManage на одном и том же проекте: участник команды (оператор,
-// доступ через team, не owner/admin) получает CanManage=false, admin
-// организации — CanManage=true; OrgID совпадает с созданной организацией в
-// обоих случаях.
 func TestRequireProjectOperatorReturnsAuthz(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	authSvc := auth.NewService(pool)
@@ -45,10 +38,7 @@ func TestRequireProjectOperatorReturnsAuthz(t *testing.T) {
 	if err := orgSvc.AddMember(ctx, o.ID, adminID, org.RoleAdmin); err != nil {
 		t.Fatalf("add admin: %v", err)
 	}
-	// operatorID — доступ к проекту только через команду, не owner/admin
-	// (тот же приём, что addTeamAccess в monitors_test.go): AddTeamMember
-	// требует предварительного org_members-членства (FK), поэтому сперва
-	// обычный RoleMember.
+	// AddTeamMember требует предварительного org_members-членства (FK) — сперва обычный RoleMember.
 	if err := orgSvc.AddMember(ctx, o.ID, operatorID, org.RoleMember); err != nil {
 		t.Fatalf("add operator as member: %v", err)
 	}
@@ -92,19 +82,6 @@ func TestRequireProjectOperatorReturnsAuthz(t *testing.T) {
 	}
 }
 
-// TestRequireProjectOperatorCanOperateQueryError (T8, хвост волны 2) — сбой
-// самого запроса canOperateProject (не «оператора нет», а поломка БД) обязан
-// отдать 500 и ok=false, а НЕ отрендерить 403/404: иначе пользователь решил
-// бы, что ему не хватает прав, хотя проверку прав просто не удалось выполнить
-// (та же путаница, которую TestOverviewCanAccessProjectQueryError закрывает
-// для CanAccessProject).
-//
-// canOperateProject буквально зовёт CanAccessProject (operate.go), поэтому
-// ломаем то же самое — org_members.role, которую трогает первая половина
-// accessCondition (owner/admin). projectOrgOr404 (первый запрос
-// requireProjectOperator, до canOperateProject) эту колонку не читает вовсе
-// — ALTER бьёт ровно по второй проверке, что и позволяет отличить эту находку
-// от «проект не резолвится».
 func TestRequireProjectOperatorCanOperateQueryError(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	authSvc := auth.NewService(pool)
@@ -129,10 +106,8 @@ func TestRequireProjectOperatorCanOperateQueryError(t *testing.T) {
 		t.Fatalf("break org_members.role: %v", err)
 	}
 
-	// Прямой вызов canOperateProject: ошибка должна дойти как error, а не
-	// молча схлопнуться в (false, nil) — иначе requireProjectOperator (и
-	// issues.go, у которого свой такой же inline-вызов) не отличили бы её от
-	// честного «не оператор».
+	// Ошибка БД обязана дойти как error, а не схлопнуться в (false, nil) —
+	// иначе не отличить от честного «не оператор».
 	if _, err := h.canOperateProject(ctx, proj.ID, ownerID); err == nil {
 		t.Fatal("canOperateProject проглотил ошибку БД, вернул nil error")
 	}

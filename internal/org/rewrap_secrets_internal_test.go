@@ -7,12 +7,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestRewrapSSOSecretCAS — whitebox, зеркало
-// internal/alert.TestRewrapChannelSecretCAS: rewrapSSOSecret переписывает
-// client_secret ТОЛЬКО если он всё ещё равен значению, прочитанному
-// RewrapSecrets в начале партии. Устаревший old (конкурентный UpsertSSO или
-// бэкфилл другой реплики между чтением партии и этим UPDATE) — ноль
-// затронутых строк, а не затирание чужой записи.
 func TestRewrapSSOSecretCAS(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -34,8 +28,6 @@ func TestRewrapSSOSecretCAS(t *testing.T) {
 		t.Fatalf("org_sso: %v", err)
 	}
 
-	// Устаревший old не совпадает с фактическим значением в БД — CAS не
-	// затрагивает строку.
 	ok, err := svc.rewrapSSOSecret(ctx, orgID, "stale-old-value", "would-be-new")
 	if err != nil {
 		t.Fatalf("rewrapSSOSecret(stale): %v", err)
@@ -51,7 +43,6 @@ func TestRewrapSSOSecretCAS(t *testing.T) {
 		t.Fatalf("client_secret затёрт при несовпавшем old: %q, want unchanged current-value", stored)
 	}
 
-	// Актуальный old — обновление проходит.
 	ok, err = svc.rewrapSSOSecret(ctx, orgID, "current-value", "new-value")
 	if err != nil {
 		t.Fatalf("rewrapSSOSecret(current): %v", err)
@@ -67,11 +58,6 @@ func TestRewrapSSOSecretCAS(t *testing.T) {
 	}
 }
 
-// TestRewrapSSOSecretExecError — обрыв соединения на самом UPDATE, зеркало
-// internal/alert.TestRewrapChannelSecretExecError: rewrapSSOSecret обязан
-// вернуть ошибку вызывающему, а не (false,nil) — иначе RewrapSecrets молча
-// спишет реальный сбой записи на «кто-то опередил» (CAS miss) и не
-// залогирует его через slog.Warn.
 func TestRewrapSSOSecretExecError(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

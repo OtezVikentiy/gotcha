@@ -15,11 +15,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// helpPanel — свёрнутая по умолчанию контекстная справка под <h1> страниц-хабов
-// (issues/performance/metrics/uptime/alerts). Нативный <details>/<summary> —
-// без JS, т.к. CSP (default-src 'self', без unsafe-inline) не допускает
-// инлайновых обработчиков. area — i18n-ключ (help.<area>.title/body),
-// guideSlug — соответствующая страница документации /docs/{guideSlug}.
+// нативный <details>/<summary>, не JS: CSP (default-src 'self') не
+// допускает инлайновых обработчиков.
 func helpPanel(area, guideSlug string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -60,7 +57,7 @@ func helpPanel(area, guideSlug string) templ.Component {
 			var templ_7745c5c3_Var3 string
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "help."+area+".body"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 17, Col: 40}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 14, Col: 40}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 			if templ_7745c5c3_Err != nil {
@@ -80,16 +77,8 @@ func helpPanel(area, guideSlug string) templ.Component {
 	})
 }
 
-// helpPanelWith — тот же свёрнутый help-panel, но тело приходит children, а
-// не единственным ключом help.<area>.body: страницам с многоабзацной или
-// условной справкой (alert-suppression показывает величину грейса только при
-// положительном h.SuppressionGrace) один плоский ключ не вмещает. helpPanel
-// выше остаётся тонкой обёрткой с каноничным телом — его ~15 вызовов и
-// сторож TestHelpPanelKeysResolve (guards/i18n_dynamic_test.go; его сканер
-// ищет в исходниках шаблонов вызовы helpPanel с литеральной областью и
-// НЕ матчит helpPanelWith) продолжают работать как раньше; для областей,
-// заходящих через helpPanelWith, ключ .body не обязателен, а .title обязан
-// существовать в обеих локалях (паритет локалей держит internal/i18n).
+// TestHelpPanelKeysResolve сканирует исходники на вызовы helpPanel с
+// литеральной областью и не матчит helpPanelWith — здесь .body не обязателен.
 func helpPanelWith(area, guideSlug string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -122,7 +111,7 @@ func helpPanelWith(area, guideSlug string) templ.Component {
 		var templ_7745c5c3_Var5 string
 		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "help."+area+".title"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 35, Col: 39}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 24, Col: 39}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
@@ -143,7 +132,7 @@ func helpPanelWith(area, guideSlug string) templ.Component {
 		var templ_7745c5c3_Var6 templ.SafeURL
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/docs/" + guideSlug))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 39, Col: 48}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 28, Col: 48}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {
@@ -156,7 +145,7 @@ func helpPanelWith(area, guideSlug string) templ.Component {
 		var templ_7745c5c3_Var7 string
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "help.more_link"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 39, Col: 82}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 28, Col: 82}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 		if templ_7745c5c3_Err != nil {
@@ -170,68 +159,34 @@ func helpPanelWith(area, guideSlug string) templ.Component {
 	})
 }
 
-// GettingStartedVM — прогресс чек-листа «Первые шаги» на странице Issues
-// (задача 5, docs-onboarding). Собирается в web/issues.go по реальным
-// данным проекта/организации: Step1 (создать проект) всегда true — раз
-// страница открылась, проект уже есть, поэтому отдельного поля под него
-// нет. Total шагов всегда 5; Done = 1 (шаг 1) + число закрытых из
-// Step2/3/4a/4bDone. Шаги 4a (позвать команду) и 4b (добавить монитор) —
-// две отдельные строки с раздельными ссылками (№71): раньше они были
-// склеены в один шаг с одной ссылкой на настройки организации, и путь к
-// мониторам приходилось угадывать.
 type GettingStartedVM struct {
 	ProjectID, OrgID                             int64
 	Step2Done, Step3Done, Step4aDone, Step4bDone bool
 	Done                                         int
-	// CanOperate — виден ли чек-лист вообще (C5: раньше карточка целиком
-	// гейтилась на CanManage, и оператор — участник команды проекта без
-	// owner/admin — никогда её не видел, хотя 2 из 5 шагов (алерт, монитор)
-	// ему доступны). Шаги 2/3/4b ведут на страницы с гейтом CanAccessProject/
-	// requireProjectOperator — оператору они открыты.
+	// шаги 2/3/4b доступны любому оператору проекта (CanAccessProject/
+	// requireProjectOperator) — CanOperate гейтит весь чек-лист, не CanManage.
 	CanOperate bool
-	// CanManage — owner/admin ли смотрящий. Только шаг 4a (позвать команду)
-	// ведёт на страницу настроек организации, которая требует именно этой
-	// роли: оператору без неё показывать рабочую ссылку нельзя — он
-	// упрётся в 403 (см. requireOrgRole), поэтому шаг рендерится
-	// неактивным текстом (gsStepReadOnly), а не мёртвой ссылкой.
+	// только шаг 4a требует эту роль (настройки организации, requireOrgRole);
+	// без неё шаг рендерится неактивным текстом, а не ссылкой на 403.
 	CanManage bool
-	// Hidden — чек-лист скрыт пользователем (№71, POST /profile/getting-
-	// started/hide). Гасит checklistVisible() независимо от Done/CanOperate
-	// — карточка не возвращается сама, даже если появился новый незакрытый
-	// шаг (например, отозвали единственный alert-канал). Отдельно от Done<5,
-	// потому что KeyRejects ниже собирается и при Hidden=true: аудит перед
-	// 1.0 (находка G1) — иначе команда, скрывшая чек-лист, не увидела бы
-	// отказы по ключу нигде (ни в чек-листе, ни в пустом состоянии issues,
-	// который показывает эту же врезку только пока чек-лист не виден).
+	// скрыт пользователем; гасит checklistVisible() независимо от Done —
+	// карточка не возвращается сама при появлении нового незакрытого шага.
 	Hidden bool
-	// KeyRejects — отказы по ключу этого проекта за последний час (аудит
-	// перед 1.0, K7-5/K7-6): собирается в web/issues.go из
-	// ingestsignal.Store.ForProject, отфильтровано до kind'ов key_* с
-	// LastSeenAt не старше часа. Пусто — либо отказов не было, либо
-	// h.Signals не настроен (nil-safe). Рендерится под шагом 2 (SDK ещё не
-	// прислал ни одного события — самое частое объяснение — неверный DSN) и
-	// на пустом списке issues, когда чек-лист там не виден (checklistVisible()).
+	// пусто — либо отказов не было, либо h.Signals не настроен (nil-safe).
+	// Рендерится и под шагом 2, и на пустом issues, когда чек-лист не виден.
 	KeyRejects []KeyRejectView
 }
 
-// KeyRejectView — один вид отказа по ключу с суммарным счётчиком за всё
-// время наблюдения (не только за окно фильтра часа, отобравшее строку —
-// LastSeenAt рендерится отдельно, относительным временем). Kind — значение
-// ingestsignal.Kind как строка (сам пакет templates ingestsignal не
-// импортирует — VM здесь не должна тянуть за собой зависимость от БД-слоя).
+// Hits — счётчик за всё время наблюдения, не за окно фильтра часа, отобравшее
+// строку; Kind — ingestsignal.Kind как строка, чтобы не тянуть зависимость от БД-слоя.
 type KeyRejectView struct {
 	Kind       string
 	Hits       int64
 	LastSeenAt time.Time
 }
 
-// keyRejectItem — одна строка причины отказа по ключу: {hits} + человеческое
-// объяснение, специфичное для kind'а (K7-5/K7-6), + когда отказ случился в
-// последний раз (relativeTime): {hits} — счётчик за всё время, а не за окно
-// фильтра, поэтому без LastSeenAt рядом число вводило бы в заблуждение о
-// свежести проблемы. Кейсы — закрытый список
-// ingestsignal.Kind{Invalid,ProjectMismatch,Scope}; kind вне списка (не
-// должен встречаться — VM фильтрует уже в web-слое) не рендерит строку.
+// kind вне закрытого списка (не должен встречаться — VM фильтрует в web-слое)
+// не рендерит строку вовсе.
 func keyRejectItem(kr KeyRejectView) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -262,7 +217,7 @@ func keyRejectItem(kr KeyRejectView) templ.Component {
 			var templ_7745c5c3_Var9 string
 			templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "ingest_signals.rejects.key_invalid", "hits", strconv.FormatInt(kr.Hits, 10)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 110, Col: 96}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 65, Col: 96}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 			if templ_7745c5c3_Err != nil {
@@ -284,7 +239,7 @@ func keyRejectItem(kr KeyRejectView) templ.Component {
 			var templ_7745c5c3_Var10 string
 			templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "ingest_signals.rejects.key_project_mismatch", "hits", strconv.FormatInt(kr.Hits, 10)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 115, Col: 105}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 70, Col: 105}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 			if templ_7745c5c3_Err != nil {
@@ -306,7 +261,7 @@ func keyRejectItem(kr KeyRejectView) templ.Component {
 			var templ_7745c5c3_Var11 string
 			templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "ingest_signals.rejects.key_scope", "hits", strconv.FormatInt(kr.Hits, 10)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 120, Col: 94}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 75, Col: 94}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 			if templ_7745c5c3_Err != nil {
@@ -325,10 +280,6 @@ func keyRejectItem(kr KeyRejectView) templ.Component {
 	})
 }
 
-// keyRejectsBody — общее тело уведомления об отказах по ключу, используемое
-// и в чек-листе «Первые шаги» (внутри <li>), и на пустом списке issues
-// (внутри отдельного блока) — обёртку выбирает вызывающий шаблон, здесь
-// только содержимое (K7-5/K7-6).
 func keyRejectsBody(rejects []KeyRejectView, settingsHref string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -358,7 +309,7 @@ func keyRejectsBody(rejects []KeyRejectView, settingsHref string) templ.Componen
 			var templ_7745c5c3_Var13 string
 			templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "ingest_signals.rejects.title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 132, Col: 50}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 83, Col: 50}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 			if templ_7745c5c3_Err != nil {
@@ -381,7 +332,7 @@ func keyRejectsBody(rejects []KeyRejectView, settingsHref string) templ.Componen
 			var templ_7745c5c3_Var14 templ.SafeURL
 			templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(settingsHref))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 138, Col: 39}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 89, Col: 39}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 			if templ_7745c5c3_Err != nil {
@@ -394,7 +345,7 @@ func keyRejectsBody(rejects []KeyRejectView, settingsHref string) templ.Componen
 			var templ_7745c5c3_Var15 string
 			templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "ingest_signals.rejects.link"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 138, Col: 86}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 89, Col: 86}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 			if templ_7745c5c3_Err != nil {
@@ -409,25 +360,14 @@ func keyRejectsBody(rejects []KeyRejectView, settingsHref string) templ.Componen
 	})
 }
 
-// checklistVisible — тот же predicate, что решает, рисуется ли карточка
-// «Первые шаги» (gettingStartedChecklist ниже). Общий метод — чтобы
-// зависимая логика в IssuesList (F5 аудита: врезка об отказах по ключу не
-// должна дублироваться в пустом состоянии списка issues, когда чек-лист на
-// той же странице уже её показывает) не разошлась с условием самой карточки.
+// общий метод — чтобы IssuesList (прячет свою врезку об отказах, пока эта
+// карточка её уже показывает) не разошёлся условием с самой карточкой.
 func (gs GettingStartedVM) checklistVisible() bool {
 	return !gs.Hidden && gs.Done < 5 && gs.CanOperate
 }
 
-// gettingStartedChecklist — карточка над списком issues, пока не закрыты
-// все 5 шагов онбординга (Done < 5). Пропадает сама, когда пользователь
-// подключил SDK, настроил оповещение, позвал команду и добавил монитор —
-// либо по кнопке «Скрыть» (№71): у действующей команды чек-лист может жить
-// месяцами только из-за незакрытого шага, и это его законный конец.
-//
-// Гейт карточки — CanOperate, не CanManage (C5): все её шаги, кроме 4a,
-// доступны любому оператору проекта, и прятать её от него целиком было
-// решением ровно того класса «мёртвых контролов», который правит этот
-// аудит, только наоборот — не мёртвая ссылка, а спрятанная рабочая.
+// гейт карточки — CanOperate, не CanManage: все её шаги, кроме 4a,
+// доступны любому оператору проекта.
 func gettingStartedChecklist(gs GettingStartedVM) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -457,7 +397,7 @@ func gettingStartedChecklist(gs GettingStartedVM) templ.Component {
 			var templ_7745c5c3_Var17 string
 			templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "getting_started.title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 165, Col: 42}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 105, Col: 42}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 			if templ_7745c5c3_Err != nil {
@@ -470,7 +410,7 @@ func gettingStartedChecklist(gs GettingStartedVM) templ.Component {
 			var templ_7745c5c3_Var18 string
 			templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "getting_started.progress", "done", strconv.Itoa(gs.Done), "total", "5"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 165, Col: 135}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 105, Col: 135}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 			if templ_7745c5c3_Err != nil {
@@ -483,7 +423,7 @@ func gettingStartedChecklist(gs GettingStartedVM) templ.Component {
 			var templ_7745c5c3_Var19 string
 			templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "getting_started.hide"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 167, Col: 86}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 107, Col: 86}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 			if templ_7745c5c3_Err != nil {
@@ -585,7 +525,7 @@ func gsStep(done bool, labelKey, href, ctaKey string) templ.Component {
 			var templ_7745c5c3_Var21 string
 			templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "getting_started.state.todo"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 196, Col: 76}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 136, Col: 76}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 			if templ_7745c5c3_Err != nil {
@@ -598,7 +538,7 @@ func gsStep(done bool, labelKey, href, ctaKey string) templ.Component {
 			var templ_7745c5c3_Var22 string
 			templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, labelKey))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 197, Col: 26}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 137, Col: 26}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 			if templ_7745c5c3_Err != nil {
@@ -611,7 +551,7 @@ func gsStep(done bool, labelKey, href, ctaKey string) templ.Component {
 			var templ_7745c5c3_Var23 templ.SafeURL
 			templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(href))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 197, Col: 62}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 137, Col: 62}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 			if templ_7745c5c3_Err != nil {
@@ -624,7 +564,7 @@ func gsStep(done bool, labelKey, href, ctaKey string) templ.Component {
 			var templ_7745c5c3_Var24 string
 			templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, ctaKey))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 197, Col: 86}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 137, Col: 86}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 			if templ_7745c5c3_Err != nil {
@@ -639,12 +579,8 @@ func gsStep(done bool, labelKey, href, ctaKey string) templ.Component {
 	})
 }
 
-// gsStepReadOnly — тот же шаг, но без CTA-ссылки: для оператора без
-// CanManage на шаге 4a (позвать команду), чья цель — /orgs/{id}/settings,
-// требующая requireOrgRole (owner/admin). Ссылка увела бы его на честный
-// 403 — тот самый класс «мёртвого контрола», которого этот аудит и
-// добивается избежать, поэтому шаг остаётся видимым (прогресс не врёт), но
-// не кликабельным.
+// без CTA-ссылки: цель шага 4a требует requireOrgRole, ссылка увела бы
+// оператора без CanManage на честный 403.
 func gsStepReadOnly(done bool, labelKey string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -687,7 +623,7 @@ func gsStepReadOnly(done bool, labelKey string) templ.Component {
 			var templ_7745c5c3_Var26 string
 			templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "getting_started.state.todo"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 214, Col: 76}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 150, Col: 76}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 			if templ_7745c5c3_Err != nil {
@@ -700,7 +636,7 @@ func gsStepReadOnly(done bool, labelKey string) templ.Component {
 			var templ_7745c5c3_Var27 string
 			templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, labelKey))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 215, Col: 26}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 151, Col: 26}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 			if templ_7745c5c3_Err != nil {
@@ -715,9 +651,8 @@ func gsStepReadOnly(done bool, labelKey string) templ.Component {
 	})
 }
 
-// gsStepDone — выполненный шаг. Иконка помечена aria-hidden (см. @icon),
-// поэтому состояние дублируется скрытым текстом: галочка — единственный
-// сигнал «сделано», и без него скринридер прочитал бы обе строки одинаково.
+// иконка aria-hidden, поэтому состояние дублируется скрытым текстом —
+// иначе скринридер читал бы готовый и незакрытый шаг одинаково.
 func gsStepDone(labelKey string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -754,7 +689,7 @@ func gsStepDone(labelKey string) templ.Component {
 		var templ_7745c5c3_Var29 string
 		templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "getting_started.state.done"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 226, Col: 75}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 161, Col: 75}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 		if templ_7745c5c3_Err != nil {
@@ -767,7 +702,7 @@ func gsStepDone(labelKey string) templ.Component {
 		var templ_7745c5c3_Var30 string
 		templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, labelKey))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 227, Col: 25}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 162, Col: 25}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
 		if templ_7745c5c3_Err != nil {

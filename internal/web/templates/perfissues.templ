@@ -16,8 +16,6 @@ func perfIssueDetailPath(id int64) string {
 	return "/perf-issues/" + strconv.FormatInt(id, 10)
 }
 
-// perfKindLabel — человекочитаемое имя вида проблемы (в БД лежат коды
-// n_plus_one/slow_db_query/http_flood, см. trace.Kind*).
 func perfKindLabel(ctx context.Context, kind string) string {
 	switch kind {
 	case trace.KindNPlusOne:
@@ -31,12 +29,8 @@ func perfKindLabel(ctx context.Context, kind string) string {
 	}
 }
 
-// perfIssueTitle — заголовок perf-находки по локали смотрящего (№132):
-// перевод вида + параметр (description; у http_flood параметром служит
-// culprit). Пустой параметр при непустом сохранённом title — строка,
-// созданная до миграции 0058 и не подошедшая под префиксы backfill: для неё
-// честнее показать сохранённый текст, чем «Медленный запрос: » без
-// параметра. Та же логика в уведомлениях — trace.perfIssueNotifyTitle.
+// пустой параметр при непустом сохранённом title — старая запись без backfill-параметра;
+// показываем сохранённый текст, а не «вид: » без параметра.
 func perfIssueTitle(ctx context.Context, iss trace.PerfIssue) string {
 	param := iss.Description
 	if iss.Kind == trace.KindHTTPFlood {
@@ -51,9 +45,6 @@ func perfIssueTitle(ctx context.Context, iss trace.PerfIssue) string {
 	return i18n.T(ctx, "perf.title."+iss.Kind) + ": " + param
 }
 
-// perfKindBadgeClass — цвет бейджа вида проблемы: N+1 (много повторов) — warn,
-// медленный запрос — info, HTTP flood — neutral (не хуже/лучше остальных, просто
-// другой характер проблемы).
 func perfKindBadgeClass(kind string) string {
 	switch kind {
 	case trace.KindNPlusOne:
@@ -65,7 +56,6 @@ func perfKindBadgeClass(kind string) string {
 	}
 }
 
-// perfStatusFilterURL — ссылка на список с выбранным фильтром статуса.
 func perfStatusFilterURL(projectID int64, status string) string {
 	if status == "" {
 		return perfIssuesPath(projectID)
@@ -84,9 +74,6 @@ templ perfStatusTab(projectID int64, value, label, active string) {
 	<a class={ perfStatusFilterClass(value == active) } href={ templ.URL(perfStatusFilterURL(projectID, value)) } if value == active { aria-current="page" }>{ label }</a>
 }
 
-// PerfIssuesList — GET /projects/{id}/perf-issues: таблица perf-проблем проекта
-// с вкладками фильтра по статусу. Обычные ссылки/формы — работает без JS,
-// визуально повторяет список issues этапа 1.
 templ PerfIssuesList(projectID int64, issues []trace.PerfIssue, filter string, userEmail string) {
 	@layout(i18n.T(ctx, "nav.perf_issues"), userEmail) {
 		<div class="perf-issues">
@@ -134,10 +121,8 @@ templ PerfIssuesList(projectID int64, issues []trace.PerfIssue, filter string, u
 	}
 }
 
-// perfStatusBadgeClass — бейдж статуса perf-проблемы: unresolved подсвечивается
-// как "требует внимания" (warn), resolved — good, ignored — нейтральный — тот
-// же приём и те же классы, что у statusBadgeClass в issues.templ
-// (TestPerfStatusBadgeClassMatchesIssues держит их в паре).
+// тот же приём и классы, что statusBadgeClass в issues.templ.
+// держит их в паре TestPerfStatusBadgeClassMatchesIssues.
 func perfStatusBadgeClass(status string) string {
 	switch status {
 	case "resolved":

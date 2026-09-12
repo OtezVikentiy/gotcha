@@ -6,10 +6,6 @@ import (
 	"testing"
 )
 
-// TestDocsTablesWrappedInScrollRegion: таблицы документации рендерятся в ту же
-// скролл-обёртку, что scrollRegion в шаблонах (№31/№75): role=table
-// возвращается скринридеру (display:block с таблицы снят в app.css), а
-// прокрутка и клавиатурный доступ живут на обёртке.
 func TestDocsTablesWrappedInScrollRegion(t *testing.T) {
 	src := []byte("| a | b |\n|---|---|\n| 1 | 2 |\n")
 	for _, loc := range []string{"ru", "en"} {

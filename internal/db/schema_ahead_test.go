@@ -11,27 +11,15 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// Репетиция отката бинаря нашла дыру: при включённой автомиграции (дефолт)
-// первым шагом идёт db.MigratePG, и golang-migrate падает на схеме впереди
-// встроенной раньше, чем управление доходит до пост-миграционного
-// CheckSchemaCurrent — сообщением библиотеки, а не подготовленным текстом
-// гейта. CheckSchemaAhead/CheckSchemaAheadCH — узкая проверка «только
-// опережение», вызываемая ДО миграции, чтобы ловить именно этот случай.
-
-// TestCheckSchemaAheadAllowsLaggingOrEqual — отставание и точное совпадение не
-// её работа: это чинит миграция, а не гейт. Вмешательство здесь сломало бы
-// обычный сценарий обновления (схема ещё не мигрирована, got < want).
 func TestCheckSchemaAheadAllowsLaggingOrEqual(t *testing.T) {
 	pool, dsn := migratedWithDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// got == want: сразу после полной миграции.
 	if err := db.CheckSchemaAhead(ctx, pool, dsn); err != nil {
 		t.Errorf("CheckSchemaAhead на точно применённой схеме: %v", err)
 	}
 
-	// got < want: схема ещё не мигрирована на последнюю версию.
 	applied := currentSchemaVersion(t, dsn)
 	forceSchemaVersion(t, pool, applied-1)
 	if err := db.CheckSchemaAhead(ctx, pool, dsn); err != nil {
@@ -39,9 +27,6 @@ func TestCheckSchemaAheadAllowsLaggingOrEqual(t *testing.T) {
 	}
 }
 
-// TestCheckSchemaAheadAllowsCompatibleAdditive — база на две версии впереди
-// бинаря, обе аддитивны: старт разрешён (то же послабление, что и в
-// CheckSchemaCurrent).
 func TestCheckSchemaAheadAllowsCompatibleAdditive(t *testing.T) {
 	pool, dsn := migratedWithDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -61,9 +46,6 @@ func TestCheckSchemaAheadAllowsCompatibleAdditive(t *testing.T) {
 	}
 }
 
-// TestCheckSchemaAheadRejectsBreakingMigration — среди версий впереди есть
-// обратно-несовместимая: гейт отказывает, и ошибка называет её номер (иначе
-// оператор не поймёт, что именно откатывать/чинить).
 func TestCheckSchemaAheadRejectsBreakingMigration(t *testing.T) {
 	pool, dsn := migratedWithDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -90,8 +72,6 @@ func TestCheckSchemaAheadRejectsBreakingMigration(t *testing.T) {
 	}
 }
 
-// TestCheckSchemaAheadRejectsUnknownVersion — версия впереди, признака в
-// schema_compat нет: fail-closed, старт запрещён.
 func TestCheckSchemaAheadRejectsUnknownVersion(t *testing.T) {
 	pool, dsn := migratedWithDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -115,9 +95,8 @@ func TestCheckSchemaAheadRejectsUnknownVersion(t *testing.T) {
 	}
 }
 
-// chSchemaVersion читает текущую версию CH-схемы и флаг dirty напрямую из
-// журнала schema_migrations (последняя запись по sequence — см. TestForceCH
-// в migrate_force_test.go, тот же приём).
+// golang-migrate у CH хранит schema_migrations как append-only журнал —
+// текущая версия и dirty — последняя запись по sequence, не единственная строка.
 func chSchemaVersion(t *testing.T, ctx context.Context, dsn string) (version uint, dirty bool) {
 	t.Helper()
 	conn, err := db.NewClickHouse(ctx, dsn)
@@ -135,10 +114,6 @@ func chSchemaVersion(t *testing.T, ctx context.Context, dsn string) (version uin
 	return uint(v), d != 0
 }
 
-// forceSchemaVersionCH дописывает в CH-журнал schema_migrations строку с
-// заданной версией (не dirty) — изображает базу, к которой применили
-// миграции, которых в этом бинаре нет. Таблица CH-драйвера golang-migrate —
-// журнал: читается последняя запись по sequence (см. TestForceCH).
 func forceSchemaVersionCH(t *testing.T, ctx context.Context, dsn string, version uint) {
 	t.Helper()
 	conn, err := db.NewClickHouse(ctx, dsn)
@@ -153,7 +128,6 @@ func forceSchemaVersionCH(t *testing.T, ctx context.Context, dsn string, version
 	}
 }
 
-// currentSchemaVersionCH — версия CH-схемы сразу после MigrateCH, dirty=false.
 func currentSchemaVersionCH(t *testing.T, ctx context.Context, dsn string) uint {
 	t.Helper()
 	v, dirty := chSchemaVersion(t, ctx, dsn)
@@ -163,9 +137,6 @@ func currentSchemaVersionCH(t *testing.T, ctx context.Context, dsn string) uint 
 	return v
 }
 
-// TestCheckSchemaAheadCHAllowsCompatibleAdditive — CH-аналог
-// TestCheckSchemaAheadAllowsCompatibleAdditive: база впереди бинаря на
-// аддитивную CH-миграцию — старт разрешён.
 func TestCheckSchemaAheadCHAllowsCompatibleAdditive(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -191,8 +162,6 @@ func TestCheckSchemaAheadCHAllowsCompatibleAdditive(t *testing.T) {
 	}
 }
 
-// TestCheckSchemaAheadCHRejectsUnknownVersion — CH-аналог fail-closed: версия
-// впереди, признака нет.
 func TestCheckSchemaAheadCHRejectsUnknownVersion(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")

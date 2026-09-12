@@ -21,18 +21,14 @@ func profileRegStatusURL(projectID int64, status string) string {
 	return profileRegressionsBasePath(projectID) + "?status=" + status
 }
 
-// profileRegShare — доля в процентах (0.2 → "20.0%").
 func profileRegShare(share float64) string {
 	return strconv.FormatFloat(share*100, 'f', 1, 64) + "%"
 }
 
-// profileRegRange — «база → пик» долей.
 func profileRegRange(r profile.Regression) string {
 	return profileRegShare(r.BaselineShare) + " → " + profileRegShare(r.PeakShare)
 }
 
-// profileRegIncreasePct — рост от ПИКА над базой в процентах (как этап 4). База
-// <= 0 → «—».
 func profileRegIncreasePct(r profile.Regression) string {
 	if r.BaselineShare <= 0 {
 		return "—"
@@ -46,11 +42,6 @@ func profileRegIncreasePct(r profile.Regression) string {
 	return sign + strconv.FormatInt(rounded, 10) + "%"
 }
 
-// profileRegDuration — «ongoing» для открытой регрессии, иначе
-// человекочитаемая длительность между started_at и resolved_at.
-//
-// Раньше здесь стоял time.Duration.String() — та же находка №62, что и в
-// regressionDurationText (regressions.templ): «23m0s» вместо «23 минуты».
 func profileRegDuration(ctx context.Context, r profile.Regression) string {
 	if r.ResolvedAt == nil {
 		return i18n.T(ctx, "perf.regressions.ongoing")
@@ -66,8 +57,6 @@ templ profileRegStatusTab(projectID int64, value, label, active string) {
 	<a class={ perfStatusFilterClass(value == active) } href={ templ.URL(profileRegStatusURL(projectID, value)) } if value == active { aria-current="page" }>{ label }</a>
 }
 
-// ProfileRegressionsList — GET /projects/{id}/profile-regressions: таблица
-// регрессий self-CPU функций с фильтром по статусу. Только чтение, без JS.
 templ ProfileRegressionsList(projectID int64, regressions []profile.Regression, filter, userEmail string, canOperate bool, ackedByOpt ...map[int64]string) {
 	{{ ackedBy := firstAckedByMap(ackedByOpt) }}
 	@layout(i18n.T(ctx, "profiles.regressions.title"), userEmail) {

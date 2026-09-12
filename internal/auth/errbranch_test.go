@@ -10,9 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestAuthErrorBranches — ветки обработки ошибок БД. Отменённый контекст
-// заставляет pool.Exec/QueryRow вернуть ошибку, не выполняя запрос, — так
-// покрываются `if err != nil { return ... }`, недостижимые на живой БД.
 func TestAuthErrorBranches(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := auth.NewService(pool)
@@ -62,7 +59,6 @@ func TestAuthErrorBranches(t *testing.T) {
 	}
 }
 
-// TestRegisterValidation — ранние отбраковки Register без похода в БД.
 func TestRegisterValidation(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := auth.NewService(pool)

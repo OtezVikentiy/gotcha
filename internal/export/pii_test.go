@@ -8,8 +8,6 @@ import (
 	"testing"
 )
 
-// MaskUser: непустые ip/email прячутся за маску, пустые остаются пустыми —
-// иначе выгрузка честно не отличает «данные скрыты» от «данных не было».
 func TestMaskUserHidesEmailAndIP(t *testing.T) {
 	ip, email := MaskUser("203.0.113.7", "user@example.com")
 	if ip != maskedValue || email != maskedValue {
@@ -20,7 +18,6 @@ func TestMaskUserHidesEmailAndIP(t *testing.T) {
 	}
 }
 
-// MaskUser: краевые формы значений — маска не должна зависеть от их вида.
 func TestMaskUserEdgeCases(t *testing.T) {
 	cases := []struct {
 		name, ip, email string
@@ -51,8 +48,6 @@ func TestMaskUserEdgeCases(t *testing.T) {
 	}
 }
 
-// MaskUser идемпотентен: повторное маскирование уже замаскированного
-// значения не портит и не меняет его.
 func TestMaskUserIdempotent(t *testing.T) {
 	ip, email := MaskUser("203.0.113.7", "user@example.com")
 	ip2, email2 := MaskUser(ip, email)
@@ -88,8 +83,6 @@ func TestMaskJSONPassesThroughBrokenInput(t *testing.T) {
 	}
 }
 
-// MaskJSON идемпотентен: второй проход по уже замаскированному значению
-// не превращает [scrubbed] в мусор и не разваливает JSON.
 func TestMaskJSONIdempotent(t *testing.T) {
 	raw := `{"headers":{"Authorization":"Bearer abc"},"url":"https://app/x"}`
 	once := MaskJSON(raw)
@@ -103,9 +96,6 @@ func TestMaskJSONIdempotent(t *testing.T) {
 	}
 }
 
-// MaskJSON применяется одинаково к contexts и к request — оба поля упомянуты
-// в спеке как обязательные к маскированию, и оба идут через один и тот же
-// денилист без отдельной ветки на "это contexts" / "это request".
 func TestMaskJSONCoversRequestAndContexts(t *testing.T) {
 	raw := `{"request":{"headers":{"Cookie":"sid=1"}},"contexts":{"trace":{"token":"secret"}}}`
 	got := MaskJSON(raw)
@@ -116,9 +106,6 @@ func TestMaskJSONCoversRequestAndContexts(t *testing.T) {
 	}
 }
 
-// TestMaskTagsHidesDenylistedTags — денилист тегов совпадает с request/
-// contexts: секрет и email/IP пользователя, пришедший ТЕГОМ (не отдельным
-// полем), маскируются наравне с прочими поверхностями PII (P2-SEC-2 аудита).
 func TestMaskTagsHidesDenylistedTags(t *testing.T) {
 	tags := map[string]string{
 		"user.email": "victim@example.com",
@@ -137,10 +124,6 @@ func TestMaskTagsHidesDenylistedTags(t *testing.T) {
 	}
 }
 
-// TestMaskTagsDoesNotMutateInput — ScrubTags мутирует карту НА МЕСТЕ, а
-// MaskTags обязана работать на копии: вызывающий (eventSource.toRecord)
-// продолжает владеть картой event.Stored.Tags, и маскирование выгрузки не
-// должно быть видно никому, кто читает те же теги после возврата.
 func TestMaskTagsDoesNotMutateInput(t *testing.T) {
 	original := map[string]string{"user.email": "victim@example.com", "env": "prod"}
 	snapshot := map[string]string{"user.email": "victim@example.com", "env": "prod"}
@@ -162,9 +145,6 @@ func TestMaskTagsDoesNotMutateInput(t *testing.T) {
 	}
 }
 
-// TestMaskTagsEmptyAndNil — пустая/nil карта не должна падать и не должна
-// превращаться в ненужную аллокацию новой пустой карты (нечего копировать —
-// нечего маскировать).
 func TestMaskTagsEmptyAndNil(t *testing.T) {
 	if got := MaskTags(nil); got != nil {
 		t.Errorf("MaskTags(nil) = %#v, want nil", got)
@@ -175,13 +155,6 @@ func TestMaskTagsEmptyAndNil(t *testing.T) {
 	}
 }
 
-// TestMaskJSONConcurrentUseIsRace-free — jsonScrubber теперь один общий
-// *ingest.Scrubber на весь пакет (см. её докблок в pii.go), а не новый на
-// каждый вызов MaskJSON: eventSource.toRecord зовёт её из воркера, который в
-// проде обрабатывает заявки одну за другой, но тест не должен опираться на
-// это — сама смена «новый Scrubber на вызов» → «общий на пакет» обязана быть
-// безопасной при параллельном вызове из нескольких горутин НЕЗАВИСИМО от
-// того, использует ли её в проде сейчас больше одной. Гоняется с -race.
 func TestMaskJSONConcurrentUseIsRaceFree(t *testing.T) {
 	const goroutines = 50
 	var wg sync.WaitGroup

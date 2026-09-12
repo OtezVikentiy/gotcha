@@ -16,10 +16,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// TraceWaterfallData — всё, что нужно странице waterfall: имя транзакции,
-// trace_id, общая длительность и время трейса, уже собранный в web/trace.go
-// SVG-waterfall (тот же приём, что и MonitorRow/EndpointDetailData), а также
-// сколько спанов показано из общего числа (для пометки об усечении).
 type TraceWaterfallData struct {
 	ProjectID   int64
 	TraceID     string
@@ -30,12 +26,9 @@ type TraceWaterfallData struct {
 	Waterfall templ.Component
 	ShownRows int
 	TotalRows int
-	// HasProfile — есть ли профиль для этого трейса (этап 8): при true рисуем
-	// ссылку на flamegraph.
+	// true — есть профиль для этого трейса, рисуем ссылку на flamegraph.
 	HasProfile bool
-	// From/FromID/FromTransaction — откуда открыли трейс, чтобы вернуть
-	// пользователя туда же. Пусто — прямой заход, возвращаем в список
-	// транзакций.
+	// пусто — прямой заход, возвращаем в список транзакций.
 	From            string
 	FromID          int64
 	FromTransaction string
@@ -45,13 +38,8 @@ func traceFlamePath(traceID string) string {
 	return "/traces/" + traceID + "/flame"
 }
 
-// tracePathFrom — ссылка на трейс с пометкой, откуда его открыли. Трейс
-// доступен из трёх мест (проблема производительности, эндпойнт, событие
-// issue), и без пометки крошка на нём всегда вела в «Транзакции» — то есть
-// не туда, откуда пришёл пользователь.
-//
-// origin/originID проверяются на стороне сервера (см. traceOrigin в
-// web/trace.go): значения приходят из адреса.
+// трейс открывают из трёх мест — без пометки крошка всегда вела бы в «Транзакции», не туда, откуда пришли.
+// origin/originID проверяются на сервере (traceOrigin, web/trace.go).
 func tracePathFrom(traceID, origin, originID string) string {
 	u := "/traces/" + url.PathEscape(traceID) + "?from=" + url.QueryEscape(origin)
 	if originID != "" {
@@ -60,9 +48,6 @@ func tracePathFrom(traceID, origin, originID string) string {
 	return u
 }
 
-// TraceWaterfall — GET /traces/{trace_id}: заголовок трейса (имя транзакции,
-// длительность, время) и server-side SVG-waterfall дерева спанов с красными
-// маркерами спанов, на которых были ошибки.
 func TraceWaterfall(d TraceWaterfallData, userEmail string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -117,7 +102,7 @@ func TraceWaterfall(d TraceWaterfallData, userEmail string) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			default:
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "   ")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, " ")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -133,7 +118,7 @@ func TraceWaterfall(d TraceWaterfallData, userEmail string) templ.Component {
 			var templ_7745c5c3_Var3 string
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(d.Transaction)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 74, Col: 22}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 57, Col: 22}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 			if templ_7745c5c3_Err != nil {
@@ -146,7 +131,7 @@ func TraceWaterfall(d TraceWaterfallData, userEmail string) templ.Component {
 			var templ_7745c5c3_Var4 string
 			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "trace.field.trace_id"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 77, Col: 66}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 60, Col: 66}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 			if templ_7745c5c3_Err != nil {
@@ -159,7 +144,7 @@ func TraceWaterfall(d TraceWaterfallData, userEmail string) templ.Component {
 			var templ_7745c5c3_Var5 string
 			templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(d.TraceID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 78, Col: 40}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 61, Col: 40}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 			if templ_7745c5c3_Err != nil {
@@ -172,7 +157,7 @@ func TraceWaterfall(d TraceWaterfallData, userEmail string) templ.Component {
 			var templ_7745c5c3_Var6 string
 			templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "trace.field.duration"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 81, Col: 66}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 64, Col: 66}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 			if templ_7745c5c3_Err != nil {
@@ -185,7 +170,7 @@ func TraceWaterfall(d TraceWaterfallData, userEmail string) templ.Component {
 			var templ_7745c5c3_Var7 string
 			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(formatDurationUS(d.TotalUS))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 82, Col: 58}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 65, Col: 58}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 			if templ_7745c5c3_Err != nil {
@@ -198,7 +183,7 @@ func TraceWaterfall(d TraceWaterfallData, userEmail string) templ.Component {
 			var templ_7745c5c3_Var8 string
 			templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "trace.field.when"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 85, Col: 62}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 68, Col: 62}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 			if templ_7745c5c3_Err != nil {
@@ -224,7 +209,7 @@ func TraceWaterfall(d TraceWaterfallData, userEmail string) templ.Component {
 				var templ_7745c5c3_Var9 templ.SafeURL
 				templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(traceFlamePath(d.TraceID)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 90, Col: 97}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 73, Col: 97}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 				if templ_7745c5c3_Err != nil {
@@ -237,7 +222,7 @@ func TraceWaterfall(d TraceWaterfallData, userEmail string) templ.Component {
 				var templ_7745c5c3_Var10 string
 				templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "trace.view_flamegraph"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 90, Col: 138}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 73, Col: 138}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 				if templ_7745c5c3_Err != nil {
@@ -255,7 +240,7 @@ func TraceWaterfall(d TraceWaterfallData, userEmail string) templ.Component {
 			var templ_7745c5c3_Var11 templ.SafeURL
 			templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(logsForTracePath(d.ProjectID, d.TraceID, d.Timestamp, d.TotalUS)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 92, Col: 135}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 75, Col: 135}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 			if templ_7745c5c3_Err != nil {
@@ -268,7 +253,7 @@ func TraceWaterfall(d TraceWaterfallData, userEmail string) templ.Component {
 			var templ_7745c5c3_Var12 string
 			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "trace.view_logs"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 92, Col: 170}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 75, Col: 170}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 			if templ_7745c5c3_Err != nil {
@@ -286,7 +271,7 @@ func TraceWaterfall(d TraceWaterfallData, userEmail string) templ.Component {
 				var templ_7745c5c3_Var13 string
 				templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "trace.truncated", "shown", strconv.Itoa(d.ShownRows), "total", strconv.Itoa(d.TotalRows)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 94, Col: 135}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 77, Col: 135}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 				if templ_7745c5c3_Err != nil {
@@ -333,39 +318,23 @@ func TraceWaterfall(d TraceWaterfallData, userEmail string) templ.Component {
 	})
 }
 
-// TraceExpiredData — состояние «трейс есть, но спанов для него уже нет»: у
-// трейса есть транзакция в transactions (90 дней, ProjectForTrace нашёл,
-// доступ подтверждён CanAccessProject), но в spans для него уже ничего нет —
-// waterfall рисовать нечем. Это НЕ «страницы не существует» (обычный notFound
-// остаётся для трейсов, которых нет вовсе), а отдельное, осмысленное
-// состояние, показанное с кодом 404: заголовок с trace_id и куда вернуться,
-// вместо голой заглушки.
+// трейс существует, но spans пусты — waterfall рисовать нечем.
+// не «страницы нет» (обычный notFound) — отдельное осмысленное состояние с кодом 404.
 type TraceExpiredData struct {
 	ProjectID int64
 	TraceID   string
 
-	// RetentionDays — настроенный TTL spans (h.SpanRetentionDays,
-	// GOTCHA_SPAN_RETENTION_DAYS), а НЕ trace.SpanRetentionDays: TTL
-	// настраивается в проде и может отличаться от дефолта миграции. >0 →
-	// текст объясняет истечение срока хранения («хранятся N дней»); <=0 (TTL
-	// не задан, спаны хранятся вечно) → спаны пропали не по TTL (ручная
-	// очистка/запрос на удаление), и текст про число дней был бы враньём —
-	// используется нейтральная формулировка без чисел.
+	// h.SpanRetentionDays (настраивается в проде), не trace.SpanRetentionDays — дефолт может отличаться.
+	// <=0 — TTL не задан (хранится вечно): текст про число дней был бы враньём.
 	RetentionDays int
 
-	// From/FromID/FromTransaction — откуда открыли трейс, та же семантика, что
-	// в TraceWaterfallData (см. tracePathFrom/traceOrigin): страница показывает
-	// то же самое состояние независимо от источника ссылки (список медленных
-	// трейсов, issue-detail, perf-issue).
+	// та же семантика, что в TraceWaterfallData — состояние одно и то же независимо от источника ссылки.
 	From            string
 	FromID          int64
 	FromTransaction string
 }
 
-// TraceExpired — GET /traces/{trace_id}, когда спанов трейса больше нет:
-// breadcrumb туда же, куда вела бы обычная страница трейса, заголовок с
-// trace_id и пояснение вместо waterfall. Handler отдаёт эту страницу с
-// HTTP-статусом 404.
+// handler отдаёт эту страницу с HTTP-статусом 404, не 200.
 func TraceExpired(d TraceExpiredData, userEmail string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -432,7 +401,7 @@ func TraceExpired(d TraceExpiredData, userEmail string) templ.Component {
 			var templ_7745c5c3_Var17 string
 			templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(d.TraceID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 149, Col: 18}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 116, Col: 18}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 			if templ_7745c5c3_Err != nil {
@@ -453,7 +422,7 @@ func TraceExpired(d TraceExpiredData, userEmail string) templ.Component {
 			var templ_7745c5c3_Var18 string
 			templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "trace.expired.title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 152, Col: 64}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 119, Col: 64}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 			if templ_7745c5c3_Err != nil {
@@ -471,7 +440,7 @@ func TraceExpired(d TraceExpiredData, userEmail string) templ.Component {
 				var templ_7745c5c3_Var19 string
 				templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "trace.expired.body", "period", i18n.Tn(ctx, "unit.days", d.RetentionDays)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 154, Col: 98}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 121, Col: 98}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 				if templ_7745c5c3_Err != nil {
@@ -489,7 +458,7 @@ func TraceExpired(d TraceExpiredData, userEmail string) templ.Component {
 				var templ_7745c5c3_Var20 string
 				templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "trace.expired.body_purged"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 156, Col: 50}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 123, Col: 50}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 				if templ_7745c5c3_Err != nil {
@@ -514,12 +483,8 @@ func TraceExpired(d TraceExpiredData, userEmail string) templ.Component {
 	})
 }
 
-// TraceUnavailable — GET /traces/{trace_id} при отказе ClickHouse: та же
-// оболочка и крошки, что у TraceExpired, вместо waterfall — «данные временно
-// недоступны». Ответ 200: это отказ источника данных, а не отсутствие
-// страницы. Проект может быть неизвестен (ProjectID==0 — не ответил уже
-// ProjectForTrace): тогда крошка к списку транзакций не рисуется, ссылка
-// на несуществующий проект хуже её отсутствия.
+// ответ 200, не 404 — отказ источника данных, не отсутствие страницы (в отличие от TraceExpired).
+// ProjectID==0 — крошка не рисуется: ссылка на несуществующий проект хуже её отсутствия.
 func TraceUnavailable(d TraceExpiredData, userEmail string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -590,7 +555,7 @@ func TraceUnavailable(d TraceExpiredData, userEmail string) templ.Component {
 			var templ_7745c5c3_Var23 string
 			templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(d.TraceID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 186, Col: 18}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 149, Col: 18}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 			if templ_7745c5c3_Err != nil {
@@ -618,19 +583,15 @@ func TraceUnavailable(d TraceExpiredData, userEmail string) templ.Component {
 	})
 }
 
-// TraceFlameData — страница flamegraph трейса (profiling-in-context, этап 8).
 type TraceFlameData struct {
 	TraceID string
 	Chart   templ.Component
-	// HasData — см. ProfileFlameVM.HasData.
+	// см. ProfileFlameVM.HasData.
 	HasData bool
-	// LoadFailed — ClickHouse не ответил: вместо флеймграфа — «данные
-	// временно недоступны», ссылка на waterfall остаётся.
+	// ClickHouse не ответил — вместо флеймграфа «данные временно недоступны», ссылка на waterfall остаётся.
 	LoadFailed bool
 }
 
-// TraceFlame — GET /traces/{trace_id}/flame: flamegraph профиля, снятого во
-// время трейса, со ссылкой назад на waterfall.
 func TraceFlame(d TraceFlameData, userEmail string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -687,7 +648,7 @@ func TraceFlame(d TraceFlameData, userEmail string) templ.Component {
 				var templ_7745c5c3_Var27 string
 				templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "trace.flame.title"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 209, Col: 41}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 168, Col: 41}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 				if templ_7745c5c3_Err != nil {
@@ -700,7 +661,7 @@ func TraceFlame(d TraceFlameData, userEmail string) templ.Component {
 				var templ_7745c5c3_Var28 string
 				templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "trace.field.trace_id"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 212, Col: 66}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 171, Col: 66}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 				if templ_7745c5c3_Err != nil {
@@ -713,7 +674,7 @@ func TraceFlame(d TraceFlameData, userEmail string) templ.Component {
 				var templ_7745c5c3_Var29 string
 				templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs(d.TraceID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 213, Col: 40}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 172, Col: 40}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 				if templ_7745c5c3_Err != nil {
@@ -763,7 +724,7 @@ func TraceFlame(d TraceFlameData, userEmail string) templ.Component {
 						var templ_7745c5c3_Var31 string
 						templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "profile.flame.hint"))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 223, Col: 56}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/trace.templ`, Line: 182, Col: 56}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 						if templ_7745c5c3_Err != nil {

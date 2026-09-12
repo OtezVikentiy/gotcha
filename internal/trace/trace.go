@@ -1,6 +1,3 @@
-// Package trace — домен распределённого трейсинга: модель транзакции и её
-// спанов, запись в ClickHouse (см. writer.go) и детерминированное
-// семплирование трейсов (см. sample.go).
 package trace
 
 import (
@@ -10,8 +7,6 @@ import (
 	"time"
 )
 
-// Span — дочерний спан транзакции: одна операция внутри трейса (запрос в БД,
-// исходящий HTTP и т.п.). Пишется в CH-таблицу spans.
 type Span struct {
 	SpanID       string
 	ParentSpanID string
@@ -23,14 +18,13 @@ type Span struct {
 	Data         map[string]any // сериализуется в CH-колонку data (JSON)
 }
 
-// Transaction — корневой спан трейса вместе с дочерними. Корневой спан
-// пишется В ОБЕ таблицы: в transactions (для перцентилей) и в spans (иначе
-// waterfall останется без корня).
+// корневой спан пишется В ОБЕ таблицы: в transactions (для перцентилей) и в
+// spans (иначе waterfall останется без корня).
 type Transaction struct {
 	TraceID string
 	SpanID  string
 
-	Name   string // имя транзакции (эндпойнт)
+	Name   string
 	Op     string
 	Status string
 
@@ -46,20 +40,15 @@ type Transaction struct {
 	Spans  []Span // дочерние спаны (без корневого)
 	Source string // "sentry" | "otlp"
 
-	// Measurements — web vitals (lcp/inp/cls/fcp/ttfb) и кастомные measurements
-	// транзакции; ms-vitals хранятся в миллисекундах. nil допустим — тогда в CH
-	// уезжает пустой Map (см. SpanWriter.Add).
+	// ms-vitals в миллисекундах; nil допустим — в CH уезжает пустой Map (см. SpanWriter.Add).
 	Measurements map[string]float64
 }
 
-// DurationUS — длительность транзакции в микросекундах; 0, если End <= Start
-// (SDK присылает и такое), с насыщением на MaxUint32 — колонка UInt32.
+// 0, если End <= Start (SDK присылает и такое); насыщение на MaxUint32 — колонка UInt32.
 func (t Transaction) DurationUS() uint32 {
 	return durationUS(t.Start, t.End)
 }
 
-// DurationUS — длительность спана в микросекундах; правила те же, что у
-// Transaction.DurationUS.
 func (s Span) DurationUS() uint32 {
 	return durationUS(s.Start, s.End)
 }
@@ -76,9 +65,8 @@ func durationUS(start, end time.Time) uint32 {
 	return uint32(us)
 }
 
-// DescriptionHash — стабильный хеш пары (op, description) для группировки
-// одинаковых операций. Нормализация описания (SQL/URL) сюда НЕ входит: она
-// живёт в детекторах, здесь хешируется уже готовое описание.
+// нормализация description (SQL/URL) сюда не входит — это делают детекторы,
+// здесь хешируется уже готовое описание.
 func DescriptionHash(op, description string) uint64 {
 	h := sha256.New()
 	h.Write([]byte(op))

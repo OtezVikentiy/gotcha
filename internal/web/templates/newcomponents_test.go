@@ -11,7 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/flashctx"
 )
 
-// renderWithFlash — renderTo с сообщением о результате действия в контексте.
 func renderWithFlash(t *testing.T, c templ.Component, f *flashctx.Flash) string {
 	t.Helper()
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
@@ -25,8 +24,6 @@ func renderWithFlash(t *testing.T, c templ.Component, f *flashctx.Flash) string 
 	return sb.String()
 }
 
-// TestFlashView — сообщение о результате действия: обычное, предупреждающее, с
-// числом и его отсутствие.
 func TestFlashView(t *testing.T) {
 	ok := renderWithFlash(t, flashView(), &flashctx.Flash{Kind: "ok", Key: "flash.saved"})
 	if !strings.Contains(ok, "Сохранено") {
@@ -50,22 +47,17 @@ func TestFlashView(t *testing.T) {
 		t.Error("предупреждение должно отличаться оформлением")
 	}
 
-	// Число доезжает до формы множественного числа.
 	plural := renderWithFlash(t, flashView(), &flashctx.Flash{Kind: "ok", Key: "flash.issues_resolved", N: 5})
 	if !strings.Contains(plural, "5") {
 		t.Errorf("число не попало в сообщение: %s", plural)
 	}
 
-	// Без сообщения — пусто, а не пустая плашка.
 	none := renderWithFlash(t, flashView(), nil)
 	if strings.Contains(none, "flash") {
 		t.Errorf("без сообщения ничего рисовать не нужно: %s", none)
 	}
 }
 
-// TestCardinalityNoticeView — предупреждение о схлопнутой кардинальности.
-// Проверяем главное: ПРИМЕРЫ схлопнутых значений и ссылку на документацию —
-// без них человек видит констатацию и не знает, что делать.
 func TestCardinalityNoticeView(t *testing.T) {
 	out := renderTo(t, cardinalityNoticeView([]CardinalityNotice{{
 		Field:     "transaction name",
@@ -96,21 +88,17 @@ func TestCardinalityNoticeView(t *testing.T) {
 		t.Error("пустой список примеров рисовать не нужно")
 	}
 
-	// Нет предупреждений — нет блока.
 	if out := renderTo(t, cardinalityNoticeView(nil)); strings.Contains(out, "cardinality-notice") {
 		t.Errorf("без предупреждений блок не нужен: %s", out)
 	}
 }
 
-// TestModalServerOpen — модалка, открытая с сервера, обязана иметь рабочее
-// закрытие. Она держится классом, а не :target, поэтому переход на "#" её не
-// закрывал: крестик и клик по фону переставали работать вовсе.
+// модалка держится классом, а не :target — переход на «#» её не закрывал вовсе.
 func TestModalServerOpen(t *testing.T) {
 	open := renderTo(t, createModalOpen("new-rule", "modal.close", false, true))
 	if !strings.Contains(open, "modal--open") {
 		t.Error("серверно открытая модалка не помечена классом")
 	}
-	// Якорь закрытия и ссылки на него — механика закрытия без JS.
 	if !strings.Contains(open, `id="new-rule-close"`) {
 		t.Error("нет якоря закрытия — модалку нельзя будет закрыть")
 	}
@@ -122,7 +110,6 @@ func TestModalServerOpen(t *testing.T) {
 	if strings.Contains(closed, "modal--open") {
 		t.Error("обычная модалка не должна открываться сама")
 	}
-	// Якорь закрытия нужен и здесь: механика одна на оба случая.
 	if !strings.Contains(closed, `id="new-rule-close"`) {
 		t.Error("якорь закрытия должен быть всегда")
 	}

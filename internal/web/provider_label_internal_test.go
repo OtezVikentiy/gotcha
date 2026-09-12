@@ -19,10 +19,6 @@ func (p labelProvider) Exchange(_ context.Context, _, _, _, _ string) (oauth.Ide
 	return oauth.Identity{}, nil
 }
 
-// TestProviderLabelLocale — подпись OAuth-провайдера локализуется по ключу
-// oauth.provider.<name> (№137): на en Яндекс подписан "Yandex" и кириллицы на
-// кнопке нет; generic OIDC с произвольным именем (ключа в каталоге нет)
-// показывает DisplayName как есть на любой локали.
 func TestProviderLabelLocale(t *testing.T) {
 	ru := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	en := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})

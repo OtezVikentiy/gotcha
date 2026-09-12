@@ -21,11 +21,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/hostmetric"
 )
 
-// newTestRunner — runner собранный напрямую из внутренностей пакета (не через
-// Run): тесты подставляют свои collector/sender/buffer и вызывают tick сами,
-// с любыми значениями now — интервал Config (границы 10s..5m) тут ни при чём.
-// rng — фиксированный seed: тесты воспроизводимы, но джиттер бэкоффа реально
-// участвует (в отличие от nil-rng, который jitterBackoff тихо занулил бы).
+// rng — фиксированный seed: джиттер бэкоффа реально участвует, в отличие
+// от nil-rng, который jitterBackoff тихо занулил бы.
 func newTestRunner(t *testing.T, endpoint string) *runner {
 	t.Helper()
 	sender, err := NewSender(Config{Endpoint: endpoint, Key: "test-key"})
@@ -42,9 +39,6 @@ func newTestRunner(t *testing.T, endpoint string) *runner {
 	}
 }
 
-// newTestRunnerWithLog — как newTestRunner, но лог пишется в буфер, который
-// тест может проверить (число строк, наличие маркеров) — для тестов
-// логирования переходов состояния (задача 2 волны R-C).
 func newTestRunnerWithLog(t *testing.T, endpoint string) (*runner, *bytes.Buffer) {
 	t.Helper()
 	sender, err := NewSender(Config{Endpoint: endpoint, Key: "test-key"})
@@ -63,8 +57,7 @@ func newTestRunnerWithLog(t *testing.T, endpoint string) (*runner, *bytes.Buffer
 	return r, &logBuf
 }
 
-// decodeExport распаковывает gzip-protobuf тело запроса (Sender.Send всегда
-// шлёт Content-Encoding: gzip, см. sender.go).
+// Sender.Send всегда шлёт Content-Encoding: gzip (см. sender.go).
 func decodeExport(t *testing.T, r *http.Request) *metricspb.MetricsData {
 	t.Helper()
 	zr, err := gzip.NewReader(r.Body)
@@ -94,10 +87,8 @@ func resourceAttr(md *metricspb.MetricsData, key string) string {
 	return ""
 }
 
-// dataPointTime достаёт TimeUnixNano первой точки system.cpu.logical.count —
-// эта метрика эмитится безусловно на любом тике (в отличие от CPU-gauge,
-// которого нет на первом тике коллектора), удобный якорь для сверки таймстемпа
-// экспорта с исходным тиком.
+// system.cpu.logical.count эмитится безусловно на любом тике — надёжный
+// якорь, в отличие от CPU-gauge, которого нет на первом тике.
 func dataPointTime(t *testing.T, md *metricspb.MetricsData) time.Time {
 	t.Helper()
 	for _, rm := range md.GetResourceMetrics() {
@@ -118,8 +109,6 @@ func dataPointTime(t *testing.T, md *metricspb.MetricsData) time.Time {
 	return time.Time{}
 }
 
-// TestRunnerTickSendsBatch: тик собирает Sample, шлёт его на сервер одним
-// экспортом с host.name из cfg.Hostname (здесь — прямо из runner.hostname).
 func TestRunnerTickSendsBatch(t *testing.T) {
 	var mu sync.Mutex
 	var got *metricspb.MetricsData
@@ -145,11 +134,6 @@ func TestRunnerTickSendsBatch(t *testing.T) {
 	}
 }
 
-// TestRunFirstTickImmediate: Run отправляет первый батч сразу при старте, не
-// дожидаясь истечения cfg.Interval (задача 14) — иначе свежеустановленный
-// агент молчит на карточке хоста вплоть до максимального интервала (5 минут).
-// Interval взят максимальным (maxInterval), чтобы тест провалился, если
-// правку когда-нибудь откатят к «ждём первого тика ticker'а».
 func TestRunFirstTickImmediate(t *testing.T) {
 	reqCh := make(chan struct{}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -185,11 +169,6 @@ func TestRunFirstTickImmediate(t *testing.T) {
 	}
 }
 
-// TestRunnerBuffersOnOutage: сервер отвечает 500 три тика подряд — все три
-// батча копятся в буфере (buffer.Len()==3). Когда сервер оживает, следующий
-// тик доставляет ТЕКУЩИЙ батч и следом дренирует буфер oldest-first — итого
-// 4 экспорта за этот тик, и буферные экспорты несут исходные таймстемпы своих
-// тиков (не таймстемп момента дренажа).
 func TestRunnerBuffersOnOutage(t *testing.T) {
 	var mu sync.Mutex
 	var reqs []*metricspb.MetricsData
@@ -246,10 +225,6 @@ func TestRunnerBuffersOnOutage(t *testing.T) {
 	}
 }
 
-// TestRunnerDrainFailureBacksOff: текущий батч уходит успешно (200), но
-// дренаж предзаполненного буфера ловит 500 — батч дренажа ОСТАЁТСЯ в буфере
-// (Oldest без DropOldest), fails/notBefore обновляются. Следующий тик внутри
-// пола не должен снова долбить сервер дренажом.
 func TestRunnerDrainFailureBacksOff(t *testing.T) {
 	var reqN int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -291,8 +266,6 @@ func TestRunnerDrainFailureBacksOff(t *testing.T) {
 	}
 }
 
-// TestRunnerDropsOn401: отозванный ключ — повтор не поможет, батч не
-// буферизуется вовсе.
 func TestRunnerDropsOn401(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -309,9 +282,6 @@ func TestRunnerDropsOn401(t *testing.T) {
 	}
 }
 
-// TestRunnerBackoffFloor: 429 с Retry-After: 3600 задаёт часовой пол — до его
-// истечения ни один следующий тик не должен доходить до сервера вообще (сразу
-// буферизуется без попытки Send).
 func TestRunnerBackoffFloor(t *testing.T) {
 	var reqN int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -341,10 +311,6 @@ func TestRunnerBackoffFloor(t *testing.T) {
 	}
 }
 
-// TestRunnerDrainCapsPerTick: буфер с 20 батчами и здоровым сервером —
-// дренаж за один тик выгружает не больше maxDrainPerTick, остаток уходит
-// следующими тиками (ops-MED, thundering herd — см. комментарий у
-// maxDrainPerTick в run.go). Текущий батч тика при этом отправляется всегда.
 func TestRunnerDrainCapsPerTick(t *testing.T) {
 	var reqN int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -376,9 +342,6 @@ func TestRunnerDrainCapsPerTick(t *testing.T) {
 	}
 }
 
-// TestRunnerFirstDeliveryLoggedOnce: строка "first batch delivered" должна
-// появиться в журнале ровно один раз за жизнь runner'а, а не на каждом
-// здоровом тике (ops-MED, немота).
 func TestRunnerFirstDeliveryLoggedOnce(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -396,9 +359,6 @@ func TestRunnerFirstDeliveryLoggedOnce(t *testing.T) {
 	}
 }
 
-// TestRunnerBufferingAndRecoveryLoggedOnTransition: переход в буферизацию и
-// восстановление логируются один раз на смену состояния, а не на каждой
-// неудаче/каждом здоровом тике (ops-MED, немота).
 func TestRunnerBufferingAndRecoveryLoggedOnTransition(t *testing.T) {
 	var healthy int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -435,10 +395,6 @@ func TestRunnerBufferingAndRecoveryLoggedOnTransition(t *testing.T) {
 	}
 }
 
-// TestRunnerBackoffAfterFailureNotBeforeBase: джиттер только добавляет
-// ожидание — notBefore после backoffAfterFailure не может оказаться раньше
-// базового бэкоффа (без джиттера) и не превышает базовый бэкофф больше, чем
-// на потолок джиттера (min(wait/4, backoffCap)).
 func TestRunnerBackoffAfterFailureNotBeforeBase(t *testing.T) {
 	r := newTestRunner(t, "http://unused.invalid")
 	base := time.Unix(1000, 0)
@@ -458,9 +414,6 @@ func TestRunnerBackoffAfterFailureNotBeforeBase(t *testing.T) {
 	}
 }
 
-// TestJitterBackoffBounds: джиттер всегда в [0, min(wait/4, backoffCap)] —
-// проверено по множеству вызовов одного rng, чтобы не зависеть от конкретного
-// исхода одного семпла.
 func TestJitterBackoffBounds(t *testing.T) {
 	rng := rand.New(rand.NewSource(7))
 	wait := 100 * time.Second
@@ -476,8 +429,6 @@ func TestJitterBackoffBounds(t *testing.T) {
 	}
 }
 
-// TestJitterBackoffCappedAtBackoffCap: даже при часовом wait (имитация floor
-// из Retry-After) джиттер не превышает backoffCap.
 func TestJitterBackoffCappedAtBackoffCap(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	wait := time.Hour
@@ -488,9 +439,6 @@ func TestJitterBackoffCappedAtBackoffCap(t *testing.T) {
 	}
 }
 
-// TestJitterBackoffDeterministicWithSeed: одинаковый seed даёт одинаковую
-// последовательность джиттера — воспроизводимость для тестов и для
-// расхождения фаз по хостам (seedFromHost).
 func TestJitterBackoffDeterministicWithSeed(t *testing.T) {
 	wait := 5 * time.Minute
 	rng1 := rand.New(rand.NewSource(123))
@@ -504,9 +452,6 @@ func TestJitterBackoffDeterministicWithSeed(t *testing.T) {
 	}
 }
 
-// TestJitterBackoffZeroWait: нулевой/nil-rng вход не паникует и не даёт
-// джиттера — nil.rng бывает у runner'ов, собранных напрямую без seed (edge
-// case конструктора).
 func TestJitterBackoffZeroWait(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	if j := jitterBackoff(rng, 0); j != 0 {
@@ -517,9 +462,6 @@ func TestJitterBackoffZeroWait(t *testing.T) {
 	}
 }
 
-// TestSeedFromHostVariesByHostAndPID: разные хосты/PID дают разные seed —
-// иначе весь парк с одинаковым PID (типично для контейнеров, PID 1) сходился
-// бы по фазе джиттера обратно к thundering herd.
 func TestSeedFromHostVariesByHostAndPID(t *testing.T) {
 	a := seedFromHost("host-a", 1)
 	b := seedFromHost("host-b", 1)

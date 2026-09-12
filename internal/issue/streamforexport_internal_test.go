@@ -11,12 +11,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// newSnapshotTestProject — вставка проекта напрямую SQL, тот же приём, что
-// у newProject в query_test.go (package issue_test). Тот helper отсюда
-// недоступен: этот файл — package issue (белый ящик, нужен доступ к
-// неэкспортированному streamForExport), а неэкспортированные символы не
-// шарятся между файлами package issue и package issue_test в одной
-// директории.
+// Отдельный от newProject (query_test.go) helper: тот в package issue_test, а этот файл — package issue
+// (белый ящик), неэкспортированные символы между ними не шарятся.
 func newSnapshotTestProject(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -36,17 +32,8 @@ func newSnapshotTestProject(t *testing.T, pool *pgxpool.Pool) int64 {
 	return projectID
 }
 
-// TestStreamForExportSnapshotOverflowFails — упор в потолок снимка обязан
-// дать отказ (ErrExportSnapshotTooLarge), а не тихо обрезанный по НЕПРАВИЛЬНОЙ
-// границе снимок (см. докблок ErrExportSnapshotTooLarge в query.go): молча
-// неполная выгрузка хуже отказа, тот же принцип, что и у ErrTooManyIssues в
-// internal/export.
-//
-// Тест бьёт в неэкспортированный streamForExport с потолком-параметром
-// (streamForExport(..., snapshotLimit, ...)), а не в публичный
-// StreamForExport (issueExportSnapshotSafetyLimit = 1_000_000 захардкожен) —
-// иначе для срабатывания пришлось бы вставить больше миллиона строк на
-// каждый прогон теста.
+// Упор в потолок снимка обязан дать отказ, а не тихую усечённую выборку — неполная выгрузка хуже отказа.
+// Тест бьёт в неэкспортированный streamForExport, минуя захардкоженный потолок 1_000_000 у StreamForExport.
 func TestStreamForExportSnapshotOverflowFails(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -68,11 +55,7 @@ func TestStreamForExportSnapshotOverflowFails(t *testing.T) {
 	}
 }
 
-// TestStreamForExportSnapshotWithinLimitSucceeds — регресс-гарантия рядом с
-// overflow-тестом: РОВНО snapshotLimit подходящих групп — не overflow (снимок
-// запрашивает snapshotLimit+1, переполнение — это len(ids) > snapshotLimit,
-// СТРОГО больше). Мутация "> заменить на >=" на соседней строке иначе прошла
-// бы этот файл незамеченной.
+// Ровно snapshotLimit групп — не overflow: переполнение это len(ids) > snapshotLimit, строго больше.
 func TestStreamForExportSnapshotWithinLimitSucceeds(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)

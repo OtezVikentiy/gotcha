@@ -1,20 +1,7 @@
 package web_test
 
-// TestStatusPageQueriesDoNotGrowWithMonitors: сборка страницы шла циклом по
-// мониторам с тремя запросами на каждый (h.Uptime.Get, тяжёлый 90-дневный
-// агрегат h.UptimeQuery.Uptime, h.Uptime.IncidentsForMonitor). Сорок
-// мониторов и пять еженедельных окон обслуживания упирались в таймаут сборки,
-// и посетитель неаутентифицированной страницы получал ошибку — а прогрев
-// кеша после каждого истечения TTL достаётся случайному первому посетителю.
-//
-// Считаем РЕАЛЬНЫЕ обращения к PostgreSQL и ClickHouse, а не вызовы методов
-// сервиса: h.Uptime/h.UptimeQuery в Handler — конкретные *uptime.Service/
-// *uptime.Query, не интерфейсы (в отличие, например, от Evaluator.Regressions
-// в internal/trace, который ради этого же измерения задачи 5 подпроекта
-// стал интерфейсом) — подменять их поле в Handler не входит в задачу и
-// затронуло бы весь web-пакет. pgx.QueryTracer и обёртка над
-// driver.Conn (ClickHouse) считают запросы на уровне драйвера, не меняя ни
-// одной сигнатуры продуктового кода.
+// считаем реальные запросы к PG/CH через драйверный tracer, не вызовы методов сервиса:
+// h.Uptime/h.UptimeQuery в Handler — конкретные типы, интерфейсы для подмены нет.
 
 import (
 	"context"
@@ -38,8 +25,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// countingTracer — pgx.QueryTracer, считающий Query/QueryRow/Exec (все три
-// проходят через TraceQueryStart, см. её докстринг в pgx v5).
+// Query/QueryRow/Exec в pgx v5 все проходят через TraceQueryStart.
 type countingTracer struct {
 	mu sync.Mutex
 	n  int
@@ -60,10 +46,7 @@ func (c *countingTracer) count() int {
 	return c.n
 }
 
-// countingCHConn считает Query/QueryRow к ClickHouse. driver.Conn встроен
-// как поле: Go делегирует все методы интерфейса, не переопределённые ниже,
-// самому embedded-значению — не нужно реализовывать вручную все 11 методов
-// driver.Conn ради двух, которые использует internal/uptime.Query.
+// driver.Conn встроен как поле — Go делегирует ему методы, не переопределённые ниже.
 type countingCHConn struct {
 	driver.Conn
 	mu sync.Mutex
@@ -90,11 +73,8 @@ func (c *countingCHConn) count() int {
 	return c.n
 }
 
-// countingStack — тот же набор сервисов, что и statusPageStack
-// (statuspage_test.go), но PG-пул и CH-соединение инструментированы для
-// подсчёта запросов. Собирается вручную (не через testenv.MigratedPG/
-// MigratedCH), потому что тем функциям некуда передать наш tracer/обёртку —
-// им для этого нужен голый DSN, который они и дают отдельным экспортом.
+// собран вручную, не через testenv.MigratedPG/MigratedCH — тем функциям
+// некуда передать наш tracer/обёртку, нужен голый DSN отдельным экспортом.
 type countingStack struct {
 	srv    *httptest.Server
 	org    *org.Service
@@ -168,13 +148,8 @@ func (s *countingStack) totalQueries() int {
 	return s.pg.count() + s.ch.count()
 }
 
-// buildCountingStatusPage заводит организацию, проект, n мониторов и
-// публичную статус-страницу со всеми ними, затем один раз запрашивает
-// страницу анонимно и возвращает число запросов к PG+CH, потраченных на
-// сборку (запросы регистрации/создания сущностей в счёт не идут — счётчики
-// обнуляются после сеттапа и до самого запроса страницы). Данные проверок
-// намеренно не сеются: числу запросов, которое проверяет этот тест, важен
-// сам факт сборки страницы, а не объём данных в ней.
+// данные проверок намеренно не сеются — тест меряет факт сборки страницы,
+// а не объём данных в ней.
 func buildCountingStatusPage(t *testing.T, n int) (status int, queries int) {
 	t.Helper()
 	s := newCountingStatusPageStack(t)
@@ -209,9 +184,7 @@ func buildCountingStatusPage(t *testing.T, n int) (status int, queries int) {
 		t.Fatalf("create status page: %v", err)
 	}
 
-	// Счётчик обнуляем ПОСЛЕ сеттапа (регистрация/создание орг/проекта/
-	// мониторов/страницы — не то, что измеряет тест) и до единственного
-	// анонимного запроса страницы.
+	// обнуляем после сеттапа (не то, что измеряет тест) и до запроса страницы.
 	s.pg.mu.Lock()
 	s.pg.n = 0
 	s.pg.mu.Unlock()
@@ -237,12 +210,8 @@ func TestStatusPageQueriesDoNotGrowWithMonitors(t *testing.T) {
 
 	t.Logf("queries: n=%d -> %d, n=%d -> %d", n, queriesN, 2*n, queriesDouble)
 
-	// Не привязываемся к точному числу запросов (изменится от любой невинной
-	// правки) — проверяем, что удвоение числа мониторов не даёт
-	// пропорционального роста. Цикл по мониторам с тремя запросами на монитор
-	// давал бы queriesDouble примерно вдвое больше queriesN (плюс те же
-	// накладные); допуск +3 покрывает любые мелкие фиксированные различия
-	// пакетных запросов, но не позволяет росту, кратному числу мониторов.
+	// допуск +3 не про точное число запросов, а про отсутствие роста,
+	// пропорционального числу мониторов.
 	if queriesDouble > queriesN+3 {
 		t.Fatalf("запросов при n=%d: %d; при n=%d: %d — рост пропорционален числу мониторов, "+
 			"сборка страницы всё ещё делает запрос на монитор вместо пакетного",

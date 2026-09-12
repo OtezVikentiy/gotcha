@@ -13,16 +13,11 @@ import (
 
 var ErrInvalidRule = errors.New("metric: invalid alert rule")
 
-// ErrRuleNotFound — правило не найдено в скоупе проекта (Update): чужой или
-// несуществующий id. Отличим от ErrInvalidRule, чтобы web-слой отвечал 404,
-// а не 422 с сообщением про поля формы.
+// Отличаем от ErrInvalidRule, чтобы web-слой отвечал 404, а не 422 с полями формы.
 var ErrRuleNotFound = errors.New("metric: alert rule not found")
 
-// Aggregations — все агрегации, допустимые для правила алерта на метрику, в
-// порядке показа в форме. Источник истины для сторожа динамических ключей
-// (группа i18n "metrics.aggregation.", internal/guards/i18n_dynamic_test.go);
-// validAggregations строится из него же, а не независимым литералом, чтобы
-// два набора не могли разъехаться.
+// Источник для сторожа динамических ключей i18n; validAggregations строится
+// из него же, чтобы наборы не разъехались.
 var Aggregations = []string{"avg", "max", "min", "sum", "p50", "p95", "p99"}
 
 var validAggregations = func() map[string]bool {
@@ -33,7 +28,6 @@ var validAggregations = func() map[string]bool {
 	return m
 }()
 
-// Rule — правило порогового алерта на метрику.
 type Rule struct {
 	ID            int64
 	ProjectID     int64
@@ -61,7 +55,6 @@ func scanRule(row pgx.Row) (Rule, error) {
 	return r, err
 }
 
-// RuleService — CRUD правил (metric_alert_rules).
 type RuleService struct {
 	pool *pgxpool.Pool
 }
@@ -70,8 +63,7 @@ func NewRuleService(pool *pgxpool.Pool) *RuleService {
 	return &RuleService{pool: pool}
 }
 
-// validateRule — общая проверка полей правила для Create и Update: одна
-// функция, чтобы наборы условий не могли разъехаться между двумя путями.
+// Общая для Create и Update: наборы условий не должны разъехаться между путями.
 func validateRule(r Rule) error {
 	if r.MetricName == "" || !validAggregations[r.Aggregation] ||
 		(r.Comparator != "gt" && r.Comparator != "lt") || r.WindowSeconds <= 0 ||
@@ -81,7 +73,6 @@ func validateRule(r Rule) error {
 	return nil
 }
 
-// Create валидирует и создаёт правило.
 func (s *RuleService) Create(ctx context.Context, r Rule) (Rule, error) {
 	if err := validateRule(r); err != nil {
 		return Rule{}, err
@@ -100,23 +91,8 @@ func (s *RuleService) Create(ctx context.Context, r Rule) (Rule, error) {
 	return out, nil
 }
 
-// Update валидирует и правит правило (scoped по r.ProjectID, как Delete —
-// чужое правило не поправить). Несуществующий или чужой id → ErrRuleNotFound.
-// id и created_at не меняются: якоря модалок и порядок списка стабильны.
-//
-// Сохранение выключенного правила (Enabled=false в результате) закрывает его
-// открытый инцидент в той же транзакции (resolveOpenIncidentForRule):
-// ListEnabled перестаёт отдавать правило, evalRule его больше не обходит, и
-// без закрытия инцидент зависал бы открытым навсегда, а планировщик эскалаций
-// (escalation/scheduler.Tick) продолжал бы слать по нему ступени — при том
-// что правило выключили именно чтобы оповещения прекратились. Закрытие — при
-// ЛЮБОМ сохранении выключенного правила, не только на переходе true→false:
-// открытый инцидент выключенного правила недостижим для оценщика по
-// определению (застрявший), закрытые не трогаются вовсе (resolveIncidentSQL
-// фильтрует status='open'), а повторное сохранение — единственный способ
-// подмести инцидент, открытый гонкой с тиком (ListEnabled прочитан до
-// коммита выключения). Строка правила блокируется FOR UPDATE: конкурентные
-// сохранения сериализуются, «не найдено» отсекается до UPDATE.
+// Сохранение с Enabled=false закрывает открытый инцидент правила в той же
+// транзакции — иначе он завис бы навсегда, а эскалация слала бы по нему ступени.
 func (s *RuleService) Update(ctx context.Context, r Rule) (Rule, error) {
 	if err := validateRule(r); err != nil {
 		return Rule{}, err
@@ -163,7 +139,6 @@ func (s *RuleService) Update(ctx context.Context, r Rule) (Rule, error) {
 	return out, nil
 }
 
-// List возвращает правила проекта, свежайшие первыми.
 func (s *RuleService) List(ctx context.Context, projectID int64) ([]Rule, error) {
 	rows, err := s.pool.Query(ctx,
 		"SELECT "+ruleColumns+" FROM metric_alert_rules WHERE project_id = $1 ORDER BY created_at DESC", projectID)
@@ -182,7 +157,7 @@ func (s *RuleService) List(ctx context.Context, projectID int64) ([]Rule, error)
 	return out, rows.Err()
 }
 
-// ListEnabled возвращает все включённые правила (по всем проектам) — для оценщика.
+// Без скоупинга по проекту — по всем проектам сразу, для оценщика.
 func (s *RuleService) ListEnabled(ctx context.Context) ([]Rule, error) {
 	rows, err := s.pool.Query(ctx,
 		"SELECT "+ruleColumns+" FROM metric_alert_rules WHERE enabled ORDER BY id")
@@ -201,10 +176,8 @@ func (s *RuleService) ListEnabled(ctx context.Context) ([]Rule, error) {
 	return out, rows.Err()
 }
 
-// Get возвращает правило по id (без скоупинга по проекту — вызывающий, B4
-// T6 StepNotifier, уже держит projectID из перезагруженного инцидента, и
-// правило, на которое тот ссылается, по построению принадлежит тому же
-// проекту).
+// Без скоупинга по проекту: вызывающий уже знает projectID через инцидент,
+// на который ссылается правило.
 func (s *RuleService) Get(ctx context.Context, id int64) (Rule, bool, error) {
 	row := s.pool.QueryRow(ctx, "SELECT "+ruleColumns+" FROM metric_alert_rules WHERE id = $1", id)
 	r, err := scanRule(row)
@@ -217,7 +190,7 @@ func (s *RuleService) Get(ctx context.Context, id int64) (Rule, bool, error) {
 	return r, true, nil
 }
 
-// Delete удаляет правило проекта (scoped по projectID — чужое правило не удалить).
+// Scoped по projectID — чужое правило не удалить.
 func (s *RuleService) Delete(ctx context.Context, id, projectID int64) error {
 	_, err := s.pool.Exec(ctx,
 		"DELETE FROM metric_alert_rules WHERE id = $1 AND project_id = $2", id, projectID)

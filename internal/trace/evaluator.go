@@ -12,37 +12,26 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 )
 
-// evaluatorDefaultInterval/TopK/BaselineDays — дефолты пустых полей Evaluator
-// (см. поля). Interval 5 минут — компромисс между свежестью алерта и нагрузкой
-// на CH: свежее окно детектора всё равно измеряется десятками минут
-// (cfg.WindowMinutes), чаще тикать смысла нет.
+// Interval 5 минут: окно детектора и так измеряется десятками минут, чаще тикать смысла нет.
 const (
 	evaluatorDefaultInterval     = 5 * time.Minute
 	evaluatorDefaultTopK         = 50
 	evaluatorDefaultBaselineDays = 7
 )
 
-// tickBudgetShare/minTickBudget — та же пара, что host.Evaluator: дедлайн
-// тика — доля Interval, но не меньше пола, иначе повисший ClickHouse-запрос
-// (Query здесь без собственного таймаута) держал бы тик бесконечно.
+// Query бьёт по ClickHouse без собственного таймаута — без пола повисший запрос
+// держал бы тик бесконечно.
 const (
 	tickBudgetShare = 0.8
 	minTickBudget   = 10 * time.Second
 )
 
-// evaluatorVitalMetrics — web-vital'ы, которые оценщик отслеживает на регрессию.
-// Сознательно только Core Web Vitals (lcp/inp/cls): fcp/ttfb собираются и
-// хранятся, но НЕ оцениваются на этом этапе — у них нет такого же ясного порога
-// «плохо пользователю», и они добавили бы шумных целей без ценности алерта.
+// Сознательно только Core Web Vitals: fcp/ttfb собираются, но не оцениваются — нет
+// такого же ясного порога «плохо пользователю».
 var evaluatorVitalMetrics = []string{"lcp", "inp", "cls"}
 
-// RegressionStore — минимум интерфейса RegressionService, нужный Evaluator.
-// Не *RegressionService напрямую (как раньше): находка №43 потребовала теста,
-// считающего запросы к PostgreSQL за тик — то же, зачем SpanWriter зависит от
-// CHConn, а не от конкретного клиента ClickHouse (см. writer.go). Тест
-// подставляет считающую обёртку (countingRegressions, evaluator_test.go) —
-// поднимать ради подсчёта настоящую PostgreSQL с трассировкой запросов было
-// бы тяжелее и хрупче.
+// Не *RegressionService напрямую: тест подставляет считающую обёртку (countingRegressions),
+// как SpanWriter зависит от CHConn, а не от конкретного клиента ClickHouse.
 type RegressionStore interface {
 	OpenForProject(ctx context.Context, projectID int64) (map[RegressionKey]Regression, error)
 	Open(ctx context.Context, projectID int64, targetKind, target, metric string, base, current float64, inMaintenance bool) (Regression, bool, error)
@@ -50,40 +39,23 @@ type RegressionStore interface {
 	Resolve(ctx context.Context, id int64, current float64) (bool, error)
 	MarkNotified(ctx context.Context, id int64, open bool) error
 
-	// BumpEscalation (B4, T7) — продвигает уровень эскалации после успешной
-	// отправки ступени лесенки (см. evalTarget/notifyOpen). Реализован
-	// RegressionService (T4); имя отличается от Bump — тот уже занят
-	// обновлением current/peak_value на тике, не связанным с эскалацией
-	// (см. escalation.Source).
+	// Имя отличается от Bump — тот занят обновлением current/peak_value на тике,
+	// не связанным с эскалацией.
 	BumpEscalation(ctx context.Context, id int64, from int) (bool, error)
 }
 
-// Evaluator — периодический оценщик регрессий производительности (план 4, §8).
-// Каждый тик обходит топ-K нагруженных целей каждого проекта, сравнивает свежее
-// окно со скользящей базой через чистую Decide и открывает/закрывает инциденты
-// в perf_regressions, шля алерт ровно один раз на открытие и один на закрытие
-// (защита — флаги notified_open/notified_close). Собирается в cmd/gotcha при
-// Mode == uptime|all рядом с uptime.Watchdog.
-//
-// Оценщик работает в реальном времени (окно привязано к time.Now при тике) и НЕ
-// возобновляем: пропущенные из-за простоя процесса окна не досчитываются — как
-// и uptime.Watchdog, он опирается на «сейчас», а не на курсор. Для алертов о
-// росте p95 этого достаточно: регрессия, продержавшаяся дольше окна, будет
-// поймана следующим живым тиком.
+// Работает в реальном времени (окно привязано к time.Now) и НЕ возобновляем: окна,
+// пропущенные из-за простоя процесса, не досчитываются — регрессию поймает следующий тик.
 type Evaluator struct {
 	Pool        *pgxpool.Pool       // конфиг и список проектов
 	Query       *Query              // агрегаты производительности из CH
 	Regressions RegressionStore     // инциденты в perf_regressions (PG); *RegressionService в проде
 	Notifier    *RegressionNotifier // nil → только инциденты, без алертов
 
-	// Maint — окна обслуживания проекта (B3): подавляет open/close-уведомления,
-	// не подавляет сбор данных/открытие инцидента. nil (дефолт) — окна не
-	// подавляют ничего, обратная совместимость со сборками без maintenance.
+	// Подавляет только open/close-уведомления, не сбор данных или открытие инцидента.
 	Maint MaintenanceChecker
 
-	// Policy — политика эскалации (B4, T7): резолвит лесенку (project,
-	// severity) на открытии регрессии. Nil-совместим — деградированная сборка
-	// без него просто не уведомляет об открытии.
+	// Nil-совместим: деградированная сборка без него просто не уведомляет об открытии.
 	Policy *escalation.PolicyStore
 
 	Interval     time.Duration // период тика, дефолт 5 минут
@@ -94,17 +66,13 @@ type Evaluator struct {
 	lastTickSeconds atomic.Uint64 // длительность последнего тика, math.Float64bits
 }
 
-// LastTickUnix — unix-время последнего завершённого тика (0, если ни одного
-// ещё не было). Self-метрика живости, как у host.Evaluator/slo.Evaluator:
-// умерший или отставший оценщик снаружи выглядит ровно как «регрессий нет».
+// Self-метрика живости: умерший или отставший оценщик снаружи выглядит как «регрессий нет».
 func (e *Evaluator) LastTickUnix() int64 { return e.lastTickUnix.Load() }
 
-// LastTickSeconds — длительность последнего завершённого тика в секундах.
 func (e *Evaluator) LastTickSeconds() float64 {
 	return math.Float64frombits(e.lastTickSeconds.Load())
 }
 
-// tickBudget — дедлайн одного тика (см. tickBudgetShare/minTickBudget).
 func (e *Evaluator) tickBudget() time.Duration {
 	interval := e.Interval
 	if interval <= 0 {
@@ -117,12 +85,8 @@ func (e *Evaluator) tickBudget() time.Duration {
 	return budget
 }
 
-// inMaintenance — проект сейчас в окне обслуживания (B3), для гейта open/close-
-// notify в evalTarget. Ошибка проверки НЕ отменяет открытие/закрытие инцидента:
-// она лишь означает, что не удалось выяснить, плановые ли это работы, и
-// трактуется как «не в окне» — молчать о реальной регрессии дороже, чем
-// уведомить лишний раз (то же решение, что host.Evaluator.inMaintenance).
-// Maint==nil (деградированная сборка) — тот же результат.
+// Ошибка проверки трактуется как «не в окне»: молчать о реальной регрессии дороже,
+// чем уведомить лишний раз.
 func (e *Evaluator) inMaintenance(ctx context.Context, projectID int64, now time.Time) bool {
 	if e.Maint == nil {
 		return false
@@ -136,9 +100,6 @@ func (e *Evaluator) inMaintenance(ctx context.Context, projectID int64, now time
 	return v
 }
 
-// Run тикает каждый Interval, пока не отменят ctx. Запускается как
-// "go e.Run(ctx)"; отдельного Close нет — буферов, которые надо сливать, у
-// оценщика нет, достаточно зависеть от ctx (как uptime.Watchdog).
 func (e *Evaluator) Run(ctx context.Context) {
 	interval := e.Interval
 	if interval <= 0 {
@@ -156,19 +117,12 @@ func (e *Evaluator) Run(ctx context.Context) {
 	}
 }
 
-// projectConfig — строка списка проектов: id и сырой perf_regression_config.
 type projectConfig struct {
 	id  int64
 	raw []byte
 }
 
-// tick — один проход оценщика по всем проектам. Ошибка по одному
-// проекту/цели/метрике логируется и не прерывает остальные (§9). Публичная
-// видимость в пакете — чтобы интеграционный тест звал его напрямую вместо
-// ожидания тикера.
-// tick ограничен дедлайном (tickBudget): listProjects/evalProject бьют по CH
-// голыми запросами без собственного таймаута, и без внешнего дедлайна
-// повисший запрос держал бы тик (и self-метрику живости) бесконечно.
+// Ошибка по одному проекту/цели/метрике логируется и не прерывает остальные.
 func (e *Evaluator) tick(ctx context.Context) {
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, e.tickBudget())
@@ -183,9 +137,6 @@ func (e *Evaluator) tick(ctx context.Context) {
 		baselineDays = evaluatorDefaultBaselineDays
 	}
 
-	// Дешёвый список кандидатов: все проекты с их конфигом. Отсев по трафику —
-	// уже на уровне целей (TopEndpointsByTraffic/TopVitalPages за окно), поэтому
-	// distinct по CH тут не нужен; проект без данных просто не даст целей.
 	projects, err := e.listProjects(ctx)
 	if err != nil {
 		slog.Error("trace: evaluator: list projects failed", "error", err)
@@ -197,8 +148,6 @@ func (e *Evaluator) tick(ctx context.Context) {
 	for _, p := range projects {
 		cfg, err := RegressionConfigFromJSON(p.raw)
 		if err != nil {
-			// RegressionConfigFromJSON вернул дефолты вместе с ошибкой —
-			// логируем и продолжаем оценивать проект на дефолтах.
 			slog.Error("trace: evaluator: parse config failed, using defaults", "project_id", p.id, "error", err)
 		}
 		if !cfg.Enabled {
@@ -216,9 +165,8 @@ func (e *Evaluator) tick(ctx context.Context) {
 	e.lastTickUnix.Store(time.Now().Unix())
 }
 
-// listProjects читает id и конфиг всех проектов. Строки вычитываются целиком до
-// возврата, чтобы не держать соединение пула открытым, пока evalProject бьёт по
-// нему своими запросами.
+// Строки вычитываются целиком до возврата, чтобы не держать соединение пула открытым,
+// пока evalProject бьёт по нему своими запросами.
 func (e *Evaluator) listProjects(ctx context.Context) ([]projectConfig, error) {
 	rows, err := e.Pool.Query(ctx, `SELECT id, perf_regression_config FROM projects`)
 	if err != nil {
@@ -236,28 +184,18 @@ func (e *Evaluator) listProjects(ctx context.Context) ([]projectConfig, error) {
 	return out, rows.Err()
 }
 
-// evalProject оценивает топ-K эндпойнтов (p95 длительности) и топ-K
-// vital-страниц (p75 lcp/inp/cls) проекта за свежее окно [now-window, now).
 func (e *Evaluator) evalProject(ctx context.Context, projectID int64, cfg RegressionConfig, topK, baselineDays int, now time.Time) {
 	recentFrom := now.Add(-time.Duration(cfg.WindowMinutes) * time.Minute)
 
-	// Снимок открытых регрессий проекта — один запрос в PG на весь проход по
-	// проекту вместо одного на каждую цель (находка №43, см. докблок
-	// RegressionStore.OpenForProject). Идемпотентность снимка в пределах
-	// этого тика объяснена в докблоке evalTarget — коротко: цели этого прохода
-	// не пересекаются, поэтому ничто из обработанного НИЖЕ по этому же снимку
-	// не может сделать его устаревшим ДО того, как до этой же цели дойдёт
-	// очередь (а до неё дойдёт ровно один раз).
+	// Один запрос в PG на весь проход по проекту вместо одного на каждую цель;
+	// безопасность несмотря на возможную устарелость снимка объяснена в evalTarget.
 	openRegs, err := e.Regressions.OpenForProject(ctx, projectID)
 	if err != nil {
 		slog.Error("trace: evaluator: open regressions for project failed", "project_id", projectID, "error", err)
 		return
 	}
 
-	// По два запроса на вид целей вместо двух на КАЖДУЮ цель. При топ-20
-	// эндпойнтов и трёх web-vital'ах прежний тик стоил больше двух сотен
-	// последовательных обращений к ClickHouse на один проект — и так по всем
-	// проектам подряд.
+	// По два запроса на вид целей вместо двух на КАЖДУЮ цель.
 	endpoints, err := e.Query.TopEndpointsByTraffic(ctx, projectID, recentFrom, now, topK)
 	if err != nil {
 		slog.Error("trace: evaluator: top endpoints failed", "project_id", projectID, "error", err)
@@ -273,9 +211,8 @@ func (e *Evaluator) evalProject(ctx context.Context, projectID int64, cfg Regres
 			// Сезонный base: то же окно того же дня недели за прошлые недели.
 			bases, err = e.Query.SeasonalBaselineEndpointP95s(ctx, projectID, endpoints, cfg.WindowMinutes, cfg.SeasonalWeeks, now)
 			if err == nil {
-				// Fallback: цели с недобором сезонной истории (< min_samples в
-				// слоте) добираем скользящим base одним запросом и подменяем
-				// только их — иначе новая цель без прошлых недель молчала бы.
+				// Цели с недобором сезонной истории добираем скользящим base — иначе новая
+				// цель без прошлых недель молчала бы.
 				var undershoot []string
 				for _, tx := range endpoints {
 					if bases[tx].Samples < cfg.MinSamples {
@@ -304,9 +241,6 @@ func (e *Evaluator) evalProject(ctx context.Context, projectID int64, cfg Regres
 		}
 		if recents != nil && bases != nil {
 			for _, target := range endpoints {
-				// Цель без свежих данных пропускается: так же вело себя и
-				// поштучное чтение, только там пустой результат приезжал
-				// отдельным запросом.
 				recent, ok := recents[target]
 				if !ok {
 					continue
@@ -333,10 +267,8 @@ func (e *Evaluator) evalProject(ctx context.Context, projectID int64, cfg Regres
 	if cfg.SeasonalEnabled {
 		vitalBases, err = e.Query.SeasonalBaselineVitalP75s(ctx, projectID, pages, evaluatorVitalMetrics, cfg.WindowMinutes, cfg.SeasonalWeeks, now)
 		if err == nil {
-			// Fallback по СТРАНИЦАМ: BaselineVitalP75s декартова (страница×метрика),
-			// подмножество пар одним запросом не добрать. Собираем уникальные
-			// страницы, у которых хоть один ключ (страница,метрика) недобрал слот,
-			// и добираем их скользящим — переопределяя лишь недобравшие ключи.
+			// BaselineVitalP75s декартова (страница×метрика), подмножество пар одним запросом
+			// не добрать — собираем страницы целиком и переопределяем лишь недобравшие ключи.
 			var undershootPages []string
 			seen := make(map[string]bool)
 			for _, page := range pages {
@@ -386,30 +318,8 @@ func (e *Evaluator) evalProject(ctx context.Context, projectID int64, cfg Regres
 	}
 }
 
-// evalTarget применяет решение Decide к одной цели-метрике: открывает, закрывает
-// или обновляет инцидент, шля алерт ровно один раз на открытие и один на
-// закрытие. Идемпотентность открытия держится на частичном уникальном индексе
-// perf_regressions (created=true отдаёт ровно один процесс — он один и шлёт
-// алерт), закрытия — на атомарном Resolve (closed=true отдаёт ровно один).
-//
-// open/hasOpen приходят СНАРУЖИ (evalProject читает их одним пакетным
-// OpenForProject до цикла по целям, находка №43), а не запрашиваются здесь.
-// Снимок берётся один раз на проект и не устаревает в пределах одного тика:
-// evalProject вызывает evalTarget не больше одного раза на каждую пару
-// (target, metric) за проход (endpoints и pages — списки без повторов,
-// evaluatorVitalMetrics обходится один раз на страницу), а пишет каждый вызов
-// только в СВОЮ строку (Bump/Resolve всегда по open.ID именно ЭТОЙ пары) —
-// поэтому ни один вызов evalTarget в рамках одного evalProject не может
-// сделать снимок ДРУГОЙ, ещё не обработанной пары устаревшим. Событие,
-// которое сделало бы снимок устаревшим по-настоящему (конкурентная реплика
-// оценщика или ручное действие в UI между чтением снимка и записью решения),
-// не опаснее, чем было при поштучном чтении: Open по-прежнему бьётся в
-// ON CONFLICT DO NOTHING (проигравший просто не создаёт дубль и не шлёт
-// второй алерт), а Resolve — в WHERE status='open' (закрыть уже закрытое
-// само по себе безопасный no-op, closed=false). Расширение окна гонки с
-// «непосредственно перед решением» до «на весь проход по проекту» не меняет
-// того, что в итоге пишется в базу — обе операции сами проверяют актуальность
-// при записи, а не полагаются на свежесть прочитанного.
+// open/hasOpen приходят из снимка, прочитанного один раз на проект — безопасно даже при
+// устаревании: Open бьётся в ON CONFLICT DO NOTHING, Resolve — в WHERE status='open'.
 func (e *Evaluator) evalTarget(ctx context.Context, projectID int64, targetKind, target, metric string, base, recent RegressionSample, cfg RegressionConfig, now time.Time, open Regression, hasOpen bool) {
 	switch Decide(base, recent, cfg, metric, hasOpen).Kind {
 	case DecisionOpen:
@@ -442,9 +352,7 @@ func (e *Evaluator) evalTarget(ctx context.Context, projectID int64, targetKind,
 		}
 
 	case DecisionNone:
-		// В норме, но инцидент ещё открыт (порог пробит, но не восстановился до
-		// recovery) — освежаем current/peak, чтобы UI и алерт-текст показывали
-		// актуальное значение.
+		// Порог пробит, но не восстановился до recovery — освежаем current/peak.
 		if hasOpen {
 			if err := e.Regressions.Bump(ctx, open.ID, recent.Value); err != nil {
 				slog.Error("trace: evaluator: bump failed", "id", open.ID, "error", err)
@@ -453,12 +361,7 @@ func (e *Evaluator) evalTarget(ctx context.Context, projectID int64, targetKind,
 	}
 }
 
-// notifyOpen — реролл (B4, T7): открытие регрессии резолвит лесенку
-// эскалации (project, severity — регрессии производительности не имеют
-// per-цель override, всегда table-DEFAULT perf_regressions.severity,
-// 'warning', 0077) и шлёт РОВНО СТУПЕНЬ 0, если её задержка (обычно 0) уже
-// настала; остальные ступени досылает планировщик (T8). Ошибка политики/
-// уведомления не должна ронять оценку.
+// Шлёт РОВНО ступень 0, если её задержка уже настала; остальные ступени досылает планировщик.
 func (e *Evaluator) notifyOpen(ctx context.Context, projectID int64, rec Regression) {
 	if e.Policy == nil || e.Notifier == nil || e.Pool == nil {
 		return
@@ -482,10 +385,7 @@ func (e *Evaluator) notifyOpen(ctx context.Context, projectID int64, rec Regress
 	}
 }
 
-// notifyClose — реролл (B4, T7): закрытие регрессии шлёт recovery адресно, в
-// каналы из лога эскалации (escalation.RecoveryChannels); пустой набор —
-// молчание (M-7 брифа Task 6, ничего не отправлялось — отправлять «закрыт»
-// нечего).
+// Пустой набор каналов — молчание: если открытие никому не ушло, отправлять «закрыт» нечего.
 func (e *Evaluator) notifyClose(ctx context.Context, open Regression) {
 	if e.Pool == nil || e.Notifier == nil {
 		return
@@ -507,9 +407,7 @@ func (e *Evaluator) notifyClose(ctx context.Context, open Regression) {
 	}
 }
 
-// pctIncrease — доля роста (current-base)/base, как ждёт RegressionEvent
-// (форматтер домножит на 100). base здесь всегда > 0: Decide не пускает сюда
-// нулевую базу.
+// base здесь всегда > 0: Decide не пускает сюда нулевую базу.
 func pctIncrease(base, current float64) float64 {
 	return (current - base) / base
 }

@@ -6,9 +6,6 @@ import (
 	"testing"
 )
 
-// TestIconRendersUseRef — icon(name) должен рендерить <use href="#i-<name>">,
-// ссылающийся на символ из iconSprite() (см. layoutBody, где спрайт
-// рендерится первым потомком <body>).
 func TestIconRendersUseRef(t *testing.T) {
 	var sb strings.Builder
 	if err := icon("bug").Render(context.Background(), &sb); err != nil {
@@ -23,8 +20,6 @@ func TestIconRendersUseRef(t *testing.T) {
 	}
 }
 
-// TestIconSpriteContainsSymbols — базовая проверка, что спрайт содержит
-// символы для навигационного набора иконок.
 func TestIconSpriteContainsSymbols(t *testing.T) {
 	var sb strings.Builder
 	if err := iconSprite().Render(context.Background(), &sb); err != nil {

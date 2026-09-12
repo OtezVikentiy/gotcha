@@ -26,21 +26,13 @@ func statusPageDeletePath(statusPageID int64) string {
 	return statusPageIDPath(statusPageID) + "/delete"
 }
 
-// statusPagePublicURL — адрес публичной страницы для показа админу
-// (BaseURL + /status/{public_id}). До T3 показывал slug — публичный адрес
-// теперь непрозрачный ключ (public_id), slug для него больше не резолвится
-// напрямую (только через 301, см. web/statuspage.go).
+// публичный адрес — непрозрачный public_id, не slug (slug резолвится только через 301).
 func statusPagePublicURL(baseURL, publicID string) string {
 	return baseURL + "/status/" + publicID
 }
 
-// StatusPageForm — значения одной формы статус-страницы: либо создания
-// (ID == 0), либо редактирования существующей. Заполняется из БД, а на 422 —
-// из тела запроса, чтобы введённое пользователем не пропадало
-// (web/statuspage.go: renderStatusPages + statusPageFormView). PublicID на
-// 422 пуст (страница ещё не создана/не перечитана) — не беда: ссылка на
-// публичный адрес рендерится только при f.ID != 0, а 422 всегда
-// перерисовывает форму с ID существующей страницы или ID==0 у создания.
+// на 422 заполняется из тела запроса, чтобы ввод не пропадал; PublicID тогда пуст — это нормально.
+// ссылка на публичный адрес рендерится только при f.ID != 0.
 type StatusPageForm struct {
 	ID          int64
 	PublicID    string
@@ -48,17 +40,11 @@ type StatusPageForm struct {
 	Description string
 	Enabled     bool
 	Monitors    []StatusPageFormMonitor
-	// Submitted — форму только что отправляли и она не прошла валидацию.
-	// Модалка строится на CSS :target: при перерисовке страницы фрагмента #id в
-	// адресе уже нет, и без этого флага она закрывалась вместе с заполненными
-	// полями, хотя сами значения сюда возвращались.
+	// модалка на CSS :target — без флага она закрывалась бы при перерисовке, хотя значения сохранялись.
 	Submitted bool
 }
 
-// StatusPageFormMonitor — чекбокс монитора проекта в форме: Selected — стоит
-// ли он на странице, DisplayName — публичное имя (по умолчанию совпадает с
-// именем монитора), MonitorName — настоящее имя монитора (показывается только
-// админу, на публичную страницу не попадает).
+// MonitorName — настоящее имя монитора, только для админа; на публичную страницу не попадает.
 type StatusPageFormMonitor struct {
 	ID          int64
 	MonitorName string
@@ -66,9 +52,7 @@ type StatusPageFormMonitor struct {
 	DisplayName string
 }
 
-// statusPageFormID — id формы: кнопка «Сохранить» лежит в соседней карточке
-// («Публикация»), а не внутри формы, поэтому связывается с ней атрибутом
-// form=. Это штатный HTML, без JS.
+// кнопка «Сохранить» лежит в соседней карточке — связывается с формой через form=, без JS.
 func statusPageFormID(f StatusPageForm) string {
 	if f.ID == 0 {
 		return "status-page-new"
@@ -83,11 +67,6 @@ func statusPageFormAction(projectID int64, f StatusPageForm) string {
 	return statusPageIDPath(f.ID)
 }
 
-// statusPageMonitorRow — строка выбора сервиса: чекбокс, имя монитора и его
-// публичное имя. Раньше это был список <li> с вложенным полем: подписи
-// «Публичное имя» повторялись у каждой строки, а поля начинались с разного
-// отступа, потому что ширина имени монитора у всех разная. Таблица выравнивает
-// колонки и позволяет подписать их один раз в шапке.
 func statusPageMonitorRow(formID string, f StatusPageFormMonitor) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -121,7 +100,7 @@ func statusPageMonitorRow(formID string, f StatusPageFormMonitor) templ.Componen
 			var templ_7745c5c3_Var2 string
 			templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.ResolveAttributeValue(formID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 92, Col: 40}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 68, Col: 40}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var2)
 			if templ_7745c5c3_Err != nil {
@@ -134,7 +113,7 @@ func statusPageMonitorRow(formID string, f StatusPageFormMonitor) templ.Componen
 			var templ_7745c5c3_Var3 string
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.ResolveAttributeValue(strconv.FormatInt(f.ID, 10))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 92, Col: 94}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 68, Col: 94}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var3)
 			if templ_7745c5c3_Err != nil {
@@ -147,7 +126,7 @@ func statusPageMonitorRow(formID string, f StatusPageFormMonitor) templ.Componen
 			var templ_7745c5c3_Var4 string
 			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.MonitorName)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 92, Col: 123}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 68, Col: 123}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var4)
 			if templ_7745c5c3_Err != nil {
@@ -165,7 +144,7 @@ func statusPageMonitorRow(formID string, f StatusPageFormMonitor) templ.Componen
 			var templ_7745c5c3_Var5 string
 			templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.ResolveAttributeValue(formID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 94, Col: 40}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 70, Col: 40}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var5)
 			if templ_7745c5c3_Err != nil {
@@ -178,7 +157,7 @@ func statusPageMonitorRow(formID string, f StatusPageFormMonitor) templ.Componen
 			var templ_7745c5c3_Var6 string
 			templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.ResolveAttributeValue(strconv.FormatInt(f.ID, 10))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 94, Col: 94}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 70, Col: 94}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var6)
 			if templ_7745c5c3_Err != nil {
@@ -191,7 +170,7 @@ func statusPageMonitorRow(formID string, f StatusPageFormMonitor) templ.Componen
 			var templ_7745c5c3_Var7 string
 			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.MonitorName)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 94, Col: 123}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 70, Col: 123}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var7)
 			if templ_7745c5c3_Err != nil {
@@ -209,7 +188,7 @@ func statusPageMonitorRow(formID string, f StatusPageFormMonitor) templ.Componen
 		var templ_7745c5c3_Var8 string
 		templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(f.MonitorName)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 97, Col: 21}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 73, Col: 21}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 		if templ_7745c5c3_Err != nil {
@@ -222,7 +201,7 @@ func statusPageMonitorRow(formID string, f StatusPageFormMonitor) templ.Componen
 		var templ_7745c5c3_Var9 string
 		templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.ResolveAttributeValue(formID)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 101, Col: 17}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 77, Col: 17}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var9)
 		if templ_7745c5c3_Err != nil {
@@ -235,7 +214,7 @@ func statusPageMonitorRow(formID string, f StatusPageFormMonitor) templ.Componen
 		var templ_7745c5c3_Var10 string
 		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.ResolveAttributeValue("display_name_" + strconv.FormatInt(f.ID, 10))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 102, Col: 56}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 78, Col: 56}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var10)
 		if templ_7745c5c3_Err != nil {
@@ -248,7 +227,7 @@ func statusPageMonitorRow(formID string, f StatusPageFormMonitor) templ.Componen
 		var templ_7745c5c3_Var11 string
 		templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.DisplayName)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 103, Col: 25}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 79, Col: 25}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var11)
 		if templ_7745c5c3_Err != nil {
@@ -261,7 +240,7 @@ func statusPageMonitorRow(formID string, f StatusPageFormMonitor) templ.Componen
 		var templ_7745c5c3_Var12 string
 		templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "uptime.statuspages.field.display_name"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 105, Col: 69}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 81, Col: 69}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var12)
 		if templ_7745c5c3_Err != nil {
@@ -275,17 +254,7 @@ func statusPageMonitorRow(formID string, f StatusPageFormMonitor) templ.Componen
 	})
 }
 
-// statusPageFormBlock — одна форма (создания или редактирования): три блока в
-// ряд — настройки страницы, выбор сервисов и публикация с удалением. Саму
-// карточку рисует вызывающий: в списке это карточка статус-страницы, в
-// модалке создания — контейнер модалки, и вкладывать карточку в карточку
-// незачем. Порядок строк = порядок мониторов на странице (position 0,1,2…).
-// canManage — owner/admin организации проекта: публикация (enabled) — их
-// зона, у оператора без этих прав поле скрыто (сервер его и так не примет —
-// statuspage.go: statusPagesCreate/Update, но скрытое поле, которое молча не
-// сработает, хуже, чем его отсутствие). Slug'а в форме больше нет вовсе
-// (задача 4 плана): публичный адрес — сгенерированный public_id, он не
-// вводится, а показывается (ниже, в блоке «Публикация»).
+// canManage — owner/admin; скрытое, но нерабочее поле для оператора хуже, чем его отсутствие.
 func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canManage bool) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -314,7 +283,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 		var templ_7745c5c3_Var14 string
 		templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.statuspages.card.general"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 125, Col: 55}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 91, Col: 55}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 		if templ_7745c5c3_Err != nil {
@@ -327,7 +296,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 		var templ_7745c5c3_Var15 string
 		templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.ResolveAttributeValue(statusPageFormID(f))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 127, Col: 28}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 93, Col: 28}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var15)
 		if templ_7745c5c3_Err != nil {
@@ -340,7 +309,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 		var templ_7745c5c3_Var16 templ.SafeURL
 		templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(statusPageFormAction(projectID, f)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 129, Col: 58}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 95, Col: 58}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 		if templ_7745c5c3_Err != nil {
@@ -353,7 +322,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 		var templ_7745c5c3_Var17 string
 		templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.statuspages.field.title"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 134, Col: 53}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 100, Col: 53}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 		if templ_7745c5c3_Err != nil {
@@ -366,7 +335,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 		var templ_7745c5c3_Var18 string
 		templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.Title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 135, Col: 53}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 101, Col: 53}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var18)
 		if templ_7745c5c3_Err != nil {
@@ -379,7 +348,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 		var templ_7745c5c3_Var19 string
 		templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.statuspages.field.description"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 140, Col: 59}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 106, Col: 59}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 		if templ_7745c5c3_Err != nil {
@@ -392,7 +361,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 		var templ_7745c5c3_Var20 string
 		templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.ResolveAttributeValue(f.Description)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 141, Col: 65}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 107, Col: 65}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var20)
 		if templ_7745c5c3_Err != nil {
@@ -421,7 +390,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 			var templ_7745c5c3_Var21 string
 			templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.statuspages.field.enabled"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 151, Col: 55}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 117, Col: 55}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 			if templ_7745c5c3_Err != nil {
@@ -439,7 +408,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 		var templ_7745c5c3_Var22 string
 		templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.statuspages.card.services"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 158, Col: 56}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 124, Col: 56}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 		if templ_7745c5c3_Err != nil {
@@ -457,7 +426,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 			var templ_7745c5c3_Var23 string
 			templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.statuspages.monitors_empty"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 160, Col: 70}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 126, Col: 70}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 			if templ_7745c5c3_Err != nil {
@@ -487,7 +456,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 				var templ_7745c5c3_Var25 string
 				templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.statuspages.table.monitor"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 167, Col: 73}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 133, Col: 73}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 				if templ_7745c5c3_Err != nil {
@@ -500,7 +469,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 				var templ_7745c5c3_Var26 string
 				templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.statuspages.field.display_name"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 168, Col: 78}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 134, Col: 78}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 				if templ_7745c5c3_Err != nil {
@@ -534,7 +503,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 		var templ_7745c5c3_Var27 string
 		templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.statuspages.card.publish"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 182, Col: 55}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 148, Col: 55}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 		if templ_7745c5c3_Err != nil {
@@ -552,7 +521,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 			var templ_7745c5c3_Var28 string
 			templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.statuspages.public_url"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 185, Col: 51}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 151, Col: 51}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 			if templ_7745c5c3_Err != nil {
@@ -565,7 +534,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 			var templ_7745c5c3_Var29 templ.SafeURL
 			templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(statusPagePublicURL(baseURL, f.PublicID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 187, Col: 66}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 153, Col: 66}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 			if templ_7745c5c3_Err != nil {
@@ -578,7 +547,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 			var templ_7745c5c3_Var30 string
 			templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(statusPagePublicURL(baseURL, f.PublicID))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 187, Col: 111}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 153, Col: 111}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
 			if templ_7745c5c3_Err != nil {
@@ -601,7 +570,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 			var templ_7745c5c3_Var31 string
 			templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.ResolveAttributeValue(statusPageFormID(f))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 192, Col: 53}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 158, Col: 53}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var31)
 			if templ_7745c5c3_Err != nil {
@@ -614,7 +583,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 			var templ_7745c5c3_Var32 string
 			templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.statuspages.submit_create"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 193, Col: 55}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 159, Col: 55}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
 			if templ_7745c5c3_Err != nil {
@@ -632,7 +601,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 			var templ_7745c5c3_Var33 string
 			templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.ResolveAttributeValue(statusPageFormID(f))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 196, Col: 53}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 162, Col: 53}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var33)
 			if templ_7745c5c3_Err != nil {
@@ -645,13 +614,13 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 			var templ_7745c5c3_Var34 string
 			templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.statuspages.submit_save"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 197, Col: 53}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 163, Col: 53}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var34))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 48, "</button>     ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 48, "</button>  ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -663,7 +632,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 				var templ_7745c5c3_Var35 templ.SafeURL
 				templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(statusPageDeletePath(f.ID)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 205, Col: 72}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 168, Col: 72}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
 				if templ_7745c5c3_Err != nil {
@@ -676,7 +645,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 				var templ_7745c5c3_Var36 string
 				templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.action_delete"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 206, Col: 102}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 169, Col: 102}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
 				if templ_7745c5c3_Err != nil {
@@ -696,12 +665,7 @@ func statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canM
 	})
 }
 
-// StatusPagesSettings — GET/POST /projects/{id}/statuspages: существующие
-// статус-страницы проекта (каждая — формой редактирования + публичной ссылкой
-// + кнопкой удаления) и форма создания новой. Доступ — оператор проекта
-// (requireProjectOperator): контент — оператору, публикация (slug/enabled) —
-// только owner/admin (canManage), спека
-// cld/plans/2026-08-08-access-model-rework.md.
+// контент — оператору проекта, публикация (slug/enabled) — только owner/admin (canManage).
 func StatusPagesSettings(projectID int64, baseURL string, forms []StatusPageForm, newForm StatusPageForm, canManage bool, errMsg, userEmail string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -750,7 +714,7 @@ func StatusPagesSettings(projectID int64, baseURL string, forms []StatusPageForm
 			var templ_7745c5c3_Var39 string
 			templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "nav.status_pages"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 225, Col: 40}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 183, Col: 40}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
 			if templ_7745c5c3_Err != nil {
@@ -772,7 +736,7 @@ func StatusPagesSettings(projectID int64, baseURL string, forms []StatusPageForm
 				var templ_7745c5c3_Var40 string
 				templ_7745c5c3_Var40, templ_7745c5c3_Err = templ.JoinStringErrs(errMsg)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 228, Col: 29}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 186, Col: 29}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var40))
 				if templ_7745c5c3_Err != nil {
@@ -805,7 +769,7 @@ func StatusPagesSettings(projectID int64, baseURL string, forms []StatusPageForm
 					var templ_7745c5c3_Var41 string
 					templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.JoinStringErrs(f.Title)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 237, Col: 40}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/statuspagesettings.templ`, Line: 195, Col: 40}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var41))
 					if templ_7745c5c3_Err != nil {

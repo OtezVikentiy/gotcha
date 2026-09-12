@@ -11,9 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// TestOrgProjectsListsOnlyThatOrg — /orgs/{id}/projects показывает проекты
-// только этой организации: тенант-изоляция закрывается тестом, а не только
-// комментарием (ProjectsForUserInOrg уже проверена отдельно, internal/org).
 func TestOrgProjectsListsOnlyThatOrg(t *testing.T) {
 	s := newIssuesStack(t)
 	uid, cookie := registerAndLogin(t, s, "orgproj@example.com")
@@ -31,13 +28,10 @@ func TestOrgProjectsListsOnlyThatOrg(t *testing.T) {
 	}
 }
 
-// TestOrgProjectsForeignOrgIs404 — чужая организация отдаёт 404, а не пустой
-// список: адрес не должен подтверждать её существование.
 func TestOrgProjectsForeignOrgIs404(t *testing.T) {
 	s := newIssuesStack(t)
 	uid, cookie := registerAndLogin(t, s, "member@example.com")
 	_ = createProject(t, s, uid, "own-org", "own-proj")
-	// организация, в которой пользователь не состоит
 	other, _ := registerAndLogin(t, s, "stranger@example.com")
 	foreign := createProject(t, s, other, "foreign-org", "foreign-proj")
 
@@ -48,13 +42,6 @@ func TestOrgProjectsForeignOrgIs404(t *testing.T) {
 	}
 }
 
-// TestOrgProjectsScopedToMemberTeams — фикс-раунд 1, п.1: внутри ОДНОЙ
-// организации member видит только проекты своих команд, а не все проекты
-// организации (ProjectsForUserInOrg сохраняет тот же командный скоуп, что и
-// ProjectsForUser — accessCondition). Мутация «подменить
-// ProjectsForUserInOrg на ProjectsOf» ни один из прежних фикстур не ловила:
-// везде вызывал либо owner (обходит скоуп), либо у организации был ровно
-// один проект.
 func TestOrgProjectsScopedToMemberTeams(t *testing.T) {
 	s := newIssuesStack(t)
 	ownerID, _ := registerAndLogin(t, s, "teamscope-owner@example.com")
@@ -101,10 +88,6 @@ func TestOrgProjectsScopedToMemberTeams(t *testing.T) {
 	}
 }
 
-// TestProjectsRedirectNoOrgGoesToOnboarding — GET /projects у юзера без
-// единой организации (раньше рендерил пустой плоский список, редиректить
-// теперь некуда) уводит на /onboarding — тот же тупик, что и у index() для
-// свежезарегистрированного юзера без проектов.
 func TestProjectsRedirectNoOrgGoesToOnboarding(t *testing.T) {
 	s := newIssuesStack(t)
 	_, cookie := registerAndLogin(t, s, "noorg-redirect@example.com")
@@ -119,8 +102,6 @@ func TestProjectsRedirectNoOrgGoesToOnboarding(t *testing.T) {
 	}
 }
 
-// TestProjectsRedirectFallsBackToFirstOrgByName — без запомненного проекта
-// GET /projects ведёт на первую организацию по порядку OrgsOf (по имени).
 func TestProjectsRedirectFallsBackToFirstOrgByName(t *testing.T) {
 	s := newIssuesStack(t)
 	uid, cookie := registerAndLogin(t, s, "fallback-redirect@example.com")
@@ -138,11 +119,6 @@ func TestProjectsRedirectFallsBackToFirstOrgByName(t *testing.T) {
 	}
 }
 
-// TestProjectsRedirectFallsBackWhenCookieOrgInaccessible — фикс-раунд 1,
-// п.3: протухшая cookie "proj" (проект существует, но в ЧУЖОЙ организации,
-// где у юзера нет роли) не должна повесить редирект — h.Org.ProjectOrg
-// резолвит организацию, но h.Org.Role по ней падает, и код обязан
-// откатиться на OrgsOf, а не остаться с orgID чужой организации.
 func TestProjectsRedirectFallsBackWhenCookieOrgInaccessible(t *testing.T) {
 	s := newIssuesStack(t)
 	uid, cookie := registerAndLogin(t, s, "stale-cookie-redirect@example.com")
@@ -156,7 +132,6 @@ func TestProjectsRedirectFallsBackWhenCookieOrgInaccessible(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 	req.AddCookie(cookie)
-	// Кука указывает на реальный проект — но чужой организации.
 	req.AddCookie(&http.Cookie{Name: "proj", Value: strconv.FormatInt(foreign.ID, 10)})
 	resp, err := noRedirectClient().Do(req)
 	if err != nil {
@@ -172,18 +147,13 @@ func TestProjectsRedirectFallsBackWhenCookieOrgInaccessible(t *testing.T) {
 	}
 }
 
-// TestProjectsRedirectRemembersCookieOrgOverFirst — с несколькими
-// организациями запомненный проект (cookie "proj", см. projcookie.go)
-// перевешивает алфавитный порядок OrgsOf: GET /projects ведёт на
-// организацию запомненного проекта, а не на первую по имени.
 func TestProjectsRedirectRemembersCookieOrgOverFirst(t *testing.T) {
 	s := newIssuesStack(t)
 	uid, cookie := registerAndLogin(t, s, "remember-redirect@example.com")
 	_ = createProject(t, s, uid, "aaa-rem-org", "aaa-rem-proj") // первая по имени
 	pb := createProject(t, s, uid, "bbb-rem-org", "bbb-rem-proj")
 
-	// Заходим в проект B — withShell запоминает его в cookie "proj"
-	// (см. shell.go, projcookie.go).
+	// Заход в проект B: withShell попутно запоминает его в cookie "proj".
 	visit := getWithCookie(t, s.srv, "/projects/"+strconv.FormatInt(pb.ID, 10)+"/issues", cookie)
 	io.Copy(io.Discard, visit.Body)
 	visit.Body.Close()

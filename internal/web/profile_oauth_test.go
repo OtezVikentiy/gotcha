@@ -18,7 +18,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// oauthProfileStack — стенд профиля с включёнными провайдерами (h.OAuth).
 type oauthProfileStack struct {
 	pool *pgxpool.Pool
 	srv  *httptest.Server
@@ -45,7 +44,6 @@ func newOAuthProfileStack(t *testing.T, providers ...oauth.Provider) *oauthProfi
 	return &oauthProfileStack{pool: pool, srv: srv, auth: authSvc}
 }
 
-// loginCookie выпускает сессию для uid и возвращает cookie.
 func loginCookie(t *testing.T, authSvc *auth.Service, uid int64) *http.Cookie {
 	t.Helper()
 	token, err := authSvc.CreateSession(context.Background(), uid)
@@ -77,11 +75,9 @@ func TestProfileShowsLinkedAndLinkable(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	bs := string(body)
-	// Привязанный oidc виден, есть кнопка «Отвязать» (пароль есть → CanUnlink).
 	if !strings.Contains(bs, "Отвязать") {
 		t.Fatalf("profile missing unlink button: %s", bs)
 	}
-	// yandex ещё не привязан → предлагается «Привязать».
 	if !strings.Contains(bs, "/auth/oauth/yandex/start?link=1") {
 		t.Fatalf("profile missing linkable yandex: %s", bs)
 	}
@@ -102,7 +98,6 @@ func TestProfileUnlinkLastMethodBlocked(t *testing.T) {
 	}
 	cookie := loginCookie(t, s.auth, uid)
 
-	// Единственный способ входа → 409, привязка на месте.
 	resp := postForm(t, s.srv, "/profile/identities/unlink", url.Values{"provider": {"oidc"}}, s.srv.URL, cookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -113,7 +108,6 @@ func TestProfileUnlinkLastMethodBlocked(t *testing.T) {
 		t.Fatalf("identity must remain after blocked unlink: %v", err)
 	}
 
-	// Задать пароль → теперь отвязка разрешена.
 	if err := s.auth.SetPassword(ctx, uid, "newpassword12"); err != nil {
 		t.Fatalf("set password: %v", err)
 	}
@@ -140,7 +134,6 @@ func TestProfilePasswordSet(t *testing.T) {
 	}
 	cookie := loginCookie(t, s.auth, uid)
 
-	// Несовпадение → 422, пароль не задан.
 	resp := postForm(t, s.srv, "/profile/password/set", url.Values{"new": {"password12"}, "new2": {"different12"}}, s.srv.URL, cookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -150,7 +143,6 @@ func TestProfilePasswordSet(t *testing.T) {
 	if has, _ := s.auth.HasPassword(ctx, uid); has {
 		t.Fatal("password must not be set on mismatch")
 	}
-	// Совпадение → пароль задан, логин паролем проходит.
 	resp = postForm(t, s.srv, "/profile/password/set", url.Values{"new": {"password12"}, "new2": {"password12"}}, s.srv.URL, cookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()

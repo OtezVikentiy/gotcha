@@ -11,17 +11,15 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/chbatch"
 )
 
-// CHConn — минимум интерфейса ClickHouse, нужный Writer (как trace.CHConn).
 type CHConn interface {
 	PrepareBatch(ctx context.Context, query string, opts ...driver.PrepareBatchOption) (driver.Batch, error)
 }
 
-// poisonThreshold — сколько подряд-фейлов вставки одного и того же головного
-// батча терпим (транзиентные сбои CH), прежде чем перейти к изоляции ядовитых
-// рядов бинарным дроблением (chbatch.IsolatePoison).
+// Сколько подряд фейлов вставки одного головного батча терпим, прежде чем
+// перейти к изоляции ядовитых рядов (chbatch.IsolatePoison).
 const poisonThreshold = 3
 
-// metricRow — одна строка metric_points (порядок колонок соответствует INSERT в insert()).
+// Порядок полей соответствует INSERT в insert().
 type metricRow struct {
 	ProjectID      uint64
 	Name           string
@@ -40,10 +38,8 @@ type metricRow struct {
 	Temporality    string
 }
 
-// Writer копит metric-точки и пишет их в ClickHouse пачками (по batchSize или
-// тику interval). Тот же паттерн, что trace.SpanWriter: Add никогда не
-// блокирует и не возвращает ошибку; неудача вставки возвращает пачку в буфер
-// (ретрай); буфер ограничен, при переполнении дропается самое старое.
+// Add никогда не блокирует и не возвращает ошибку; неудачная вставка
+// возвращает пачку в буфер (ретрай), переполнение дропает самое старое.
 type Writer struct {
 	conn CHConn
 
@@ -79,8 +75,7 @@ func NewWriter(conn CHConn) *Writer {
 	}
 }
 
-// Add кладёт точку в буфер. Никогда не блокирует и не возвращает ошибку: приём
-// метрик не должен зависеть от здоровья ClickHouse.
+// Приём метрик не должен зависеть от здоровья ClickHouse.
 func (w *Writer) Add(projectID int64, p MetricPoint) {
 	row := metricRow{
 		ProjectID:      uint64(projectID),
@@ -137,17 +132,12 @@ func (w *Writer) Add(projectID int64, p MetricPoint) {
 	}
 }
 
-// defaultMaxBufBytes — потолок буфера по БАЙТАМ, в дополнение к потолку по
-// строкам. Одного потолка по строкам не хватает: размер строки задаёт клиент,
-// поэтому «сто тысяч строк» могут оказаться десятками гигабайт. На обычном
-// трафике первым срабатывает потолок по строкам и поведение не меняется.
+// Доп. потолок к потолку по строкам: размер строки задаёт клиент, «сто тысяч
+// строк» может оказаться десятками гигабайт.
 const defaultMaxBufBytes = 256 << 20
 
-// rowOverheadBytes — постоянная цена ОДНОЙ строки в буфере помимо длины строк:
-// заголовки string (16 байт каждый), элемент среза, служебные поля. Без неё
-// учёт был обходим тем же приёмом, что и бюджет профилей: строка из пустых или
-// однобуквенных значений весила бы почти ноль, и байтовый потолок не срабатывал
-// бы никогда — работал бы только счётный.
+// Постоянная цена строки сверх длины полей — без неё строка из пустых значений
+// весила бы почти ноль, и байтовый потолок никогда бы не срабатывал.
 const rowOverheadBytes = 64
 
 func metricRowBytes(r metricRow) int64 {
@@ -160,9 +150,7 @@ func metricRowBytes(r metricRow) int64 {
 	return int64(n) + rowOverheadBytes
 }
 
-// trimLocked приводит буфер к обоим потолкам, выбрасывая самое старое.
-// Стоимость — O(числа выброшенных): вес ведётся инкрементально в Add.
-// Вызывается под mu.
+// O(числа выброшенных) — вес ведётся инкрементально. Вызывается под mu.
 func (w *Writer) trimLocked() bool {
 	drop := 0
 	if over := len(w.buf) - w.maxBuf; over > 0 {
@@ -185,8 +173,7 @@ func (w *Writer) trimLocked() bool {
 	return true
 }
 
-// recountLocked пересчитывает вес с нуля — нужен там, где буфер
-// перестраивается целиком (возврат пачки после неудачной вставки).
+// Нужен там, где буфер перестраивается целиком (возврат пачки после неудачной вставки).
 func (w *Writer) recountLocked() {
 	w.bufBytes = 0
 	for i := range w.buf {
@@ -194,37 +181,29 @@ func (w *Writer) recountLocked() {
 	}
 }
 
-// Dropped — сколько строк выброшено из-за переполнения буфера.
 func (w *Writer) Dropped() int64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.dropped
 }
 
-// Buffered — сколько строк ждёт записи прямо сейчас. Для самотелеметрии:
-// растущая глубина буфера — первый признак, что хранилище не принимает.
+// Для самотелеметрии: растущая глубина — первый признак, что хранилище не принимает.
 func (w *Writer) Buffered() int64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return int64(len(w.buf))
 }
 
-// InsertFailures — сколько флашей провалилось за время жизни процесса.
 // Отличается от Dropped: неудачная вставка возвращает пачку в буфер и
-// повторяется, потеря наступает только при переполнении буфера.
+// повторяется — потеря только при переполнении.
 func (w *Writer) InsertFailures() int64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.insertFails
 }
 
-// Saturation — заполненность буфера в долях единицы: 0 — пусто, 1 — потолок,
-// дальше начинается drop-oldest (см. trimLocked). Считается как максимум по
-// обоим действующим потолкам буфера (строки и байты) — упереться достаточно в
-// один, поэтому в самотелеметрию и в решение хендлера о честном 503 должен
-// попасть худший из двух. Значение НЕ обрезается единицей: между append и
-// trimLocked буфер физически перебирает потолок, и это должно быть видно —
-// иначе backpressure узнаёт о переполнении на тик позже, чем оно случилось.
+// Максимум по обоим потолкам (строки/байты) — упереться достаточно в один.
+// Не обрезается единицей: буфер физически может ненадолго превысить потолок.
 func (w *Writer) Saturation() float64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -236,9 +215,8 @@ func (w *Writer) Saturation() float64 {
 	return rows
 }
 
-// bufSaturation считает долю num/den. den<=0 — потолок выключен нулём и
-// значит «этим лимитом не ограничены», а не «делить не на что»: такой
-// потолок не должен ни паниковать, ни искусственно показывать насыщение.
+// den<=0 — лимит выключен («не ограничены»), не «делить не на что»: не
+// паникует и не показывает насыщение.
 func bufSaturation(num, den int64) float64 {
 	if den <= 0 {
 		return 0
@@ -258,7 +236,7 @@ func (w *Writer) flushWithTimeout(parent context.Context) {
 	w.flush(ctx)
 }
 
-// Run — цикл флаша; запускать горутиной. Завершается через Close.
+// Запускать горутиной; завершается через Close.
 func (w *Writer) Run() {
 	defer close(w.done)
 	ticker := time.NewTicker(w.interval)
@@ -275,7 +253,7 @@ func (w *Writer) Run() {
 	}
 }
 
-// Close останавливает цикл и доливает остаток буфера. Идемпотентен.
+// Доливает остаток буфера при остановке. Идемпотентен.
 func (w *Writer) Close(ctx context.Context) error {
 	w.stopOnce.Do(func() { close(w.stop) })
 	<-w.done
@@ -327,10 +305,8 @@ func (w *Writer) flush(ctx context.Context) {
 			w.mu.Lock()
 			w.dropped += int64(dropped)
 			w.insertFails++
-			// Сбрасываем счётчик подряд-фейлов ТОЛЬКО если изоляция что-то
-			// разрешила. Безусловный сброс означал, что при лежащем
-			// ClickHouse писатель заново запускает дробление каждые ~15 с,
-			// хотя предыдущая попытка не дала ничего.
+			// Сбрасываем ТОЛЬКО если изоляция что-то разрешила — иначе при лежащем CH
+			// писатель заново запускал бы дробление каждые ~15с впустую.
 			if dropped > 0 || len(unresolved) < len(batch) {
 				w.failStreak = 0
 			}
@@ -361,7 +337,6 @@ func (w *Writer) flush(ctx context.Context) {
 		slog.Warn("metric batch insert failed, will retry", "rows", len(batch), "error", err, "dropped", over)
 		return
 	}
-	// Успех — сбрасываем счётчик подряд-фейлов.
 	w.mu.Lock()
 	w.failStreak = 0
 	w.mu.Unlock()
@@ -387,12 +362,8 @@ func (w *Writer) insert(ctx context.Context, rows []metricRow) error {
 	return batch.Send()
 }
 
-// SetMaxBufferBytes задаёт байтовый потолок буфера. Значение по умолчанию
-// (defaultMaxBufBytes) рассчитано на инстанс без ограничения памяти; на
-// стеснённом профиле (docker-compose.small.yml: mem_limit 256m) буферы по
-// 256 МиБ физически не могут сработать раньше OOM-killer'а, то есть защита
-// инертна ровно там, где нужнее всего. Ставится из main по
-// GOTCHA_MAX_WRITER_BUFFER_BYTES. Нулевое и отрицательное значение игнорируется.
+// На стеснённом профиле (mem_limit 256m) 256 МиБ по умолчанию не сработает
+// раньше OOM — ставится из main по GOTCHA_MAX_WRITER_BUFFER_BYTES.
 func (w *Writer) SetMaxBufferBytes(n int64) {
 	if n <= 0 {
 		return

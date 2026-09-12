@@ -7,9 +7,6 @@ import (
 	"time"
 )
 
-// TestHeartbeatTokenHash — токен в БД хранится как sha256: хеш детерминирован,
-// имеет длину 32 байта, не равен сырому токену, различает разные токены и
-// совпадает с probeTokenHash (единый алгоритм sha256 на весь пакет).
 func TestHeartbeatTokenHash(t *testing.T) {
 	const tok = "0123456789abcdef0123456789abcdef"
 	h1 := heartbeatTokenHash(tok)
@@ -30,7 +27,6 @@ func TestHeartbeatTokenHash(t *testing.T) {
 	}
 }
 
-// TestMsToUint32 — миллисекунды в uint32 с насыщением по краям.
 func TestMsToUint32(t *testing.T) {
 	if msToUint32(-time.Second) != 0 {
 		t.Error("отрицательное → 0")
@@ -43,8 +39,6 @@ func TestMsToUint32(t *testing.T) {
 	}
 }
 
-// TestCauseFrom — причина инцидента: сначала ошибка своего состояния, затем
-// первая ошибка среди down-регионов, иначе пусто.
 func TestCauseFrom(t *testing.T) {
 	if got := causeFrom(State{LastError: "timeout"}, nil); got != "timeout" {
 		t.Errorf("своя ошибка: %q", got)
@@ -58,7 +52,6 @@ func TestCauseFrom(t *testing.T) {
 	}
 }
 
-// TestValidateDNSConfig — пустой hostname и неизвестный тип записи отклоняются.
 func TestValidateDNSConfig(t *testing.T) {
 	if validateDNSConfig(DNSConfig{Hostname: "", RecordType: "A"}) == nil {
 		t.Error("пустой hostname должен быть ошибкой")
@@ -73,7 +66,6 @@ func TestValidateDNSConfig(t *testing.T) {
 	}
 }
 
-// TestProbeClientDefaults — concurrency/pollEvery подставляют дефолты при <=0.
 func TestProbeClientDefaults(t *testing.T) {
 	c := &ProbeClient{}
 	if c.concurrency() != defaultConcurrency {

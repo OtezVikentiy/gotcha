@@ -7,15 +7,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// RedactToken replaces every occurrence of token in s with a placeholder.
-// No-op when token is empty (never redact against an empty needle, which
-// would otherwise match everywhere).
-//
-// Родилась в telegram.go как приём против эха bot-токена в non-2xx теле
-// ответа Telegram API; здесь вынесена в общий хелпер и экспортирована, чтобы
-// её же приёмом пользовались email.go/webhook.go (санация last_error у
-// источника) и web.alertDeliveriesPage (второй эшелон — санация уже
-// сохранённого last_error перед рендером не-admin'у).
+// No-op when token is empty — an empty needle would otherwise match everywhere.
+// Shared by email.go/webhook.go and web.alertDeliveriesPage (second redaction pass).
 func RedactToken(s, token string) string {
 	if token == "" {
 		return s
@@ -23,47 +16,19 @@ func RedactToken(s, token string) string {
 	return strings.ReplaceAll(s, token, "<redacted>")
 }
 
-// externalSafeKeys — «белый список» полей payload, которые разрешено
-// раскрывать во внешние каналы (Telegram/webhook) при выключенном
-// GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED. Только маршрут доставки, числовые
-// идентификаторы/счётчики, вид алерта и ссылка на карточку — всё, что не
-// несёт текста ошибки, имён транзакций/функций и потенциальных ПДн.
-//
-// Список — «default deny»: любое НЕ перечисленное здесь поле (title,
-// culprit, body, subject, monitor_name, target_name, metric, function,
-// service, cause, значения метрик и т.п.) вырезается. Так новое поле в
-// payload любого нотифаера по умолчанию НЕ утечёт за пределы РФ, пока его
-// осознанно не признают безопасным здесь.
+// Default-deny whitelist for external channels when details are disabled:
+// только маршрут/id/kind/url — не перечисленное (title, body, имена и т.п.) вырезается.
 var externalSafeKeys = map[string]struct{}{
-	// Маршрут доставки — читает notify.Worker, чтобы собрать notify.Target
-	// (channel_kind/target). Без них воркер не доставит сообщение. Секрета
-	// здесь нет намеренно: воркер достаёт его по channel_id в момент отправки
-	// (см. notify.SecretResolver), а в payload он не попадает вовсе.
+	// Секрета здесь нет намеренно — воркер достаёт его по channel_id в момент
+	// отправки (см. SecretResolver), в payload он не попадает.
 	"channel_kind": {},
 	"target":       {},
-	// Вид алерта и ссылка на карточку — безопасный обезличенный минимум.
-	// Если у нотифаера сам АДРЕС карточки несёт деталь (у хостов это имя
-	// машины), он кладёт в payload "url_redacted" — укороченную ссылку, которой
-	// RedactExternalPayload заменяет "url"; в белый список она не входит (см.
-	// RedactExternalPayload).
+	// Если адрес карточки сам несёт деталь (напр. имя хоста), нотифаер кладёт
+	// "url_redacted" — им RedactExternalPayload заменяет "url" (не в этом списке).
 	"kind": {},
 	"url":  {},
-	// Имя проекта (W3-E) — ПРИНЯТЫЙ РИСК, не "не несёт ПДн": оператор задаёт
-	// его свободным текстом при создании проекта и теоретически МОЖЕТ вписать
-	// туда то же чувствительное, что и в monitor_name/target_name/host_name
-	// (те как раз НЕ в этом списке ровно по этой причине — см. предупреждение
-	// выше про title/culprit/... /monitor_name/target_name). Отличие, из-за
-	// которого решение здесь другое: (а) project_name — граница
-	// аренды/маршрута, того же уровня, что уже белый числовой project_id
-	// (эта запись делает его человекочитаемым, не заводит новую категорию
-	// данных, которой не было в списке); (б) DetailPolicy держит Telegram
-	// внешним ВСЕГДА (chat_id не разобрать как получателя), то есть это
-	// самый частый потребитель обезличенного payload — и без project_name он
-	// не отличил бы канал на несколько проектов иначе как по голому числу.
-	// Риск того, что оператор всё же впишет чувствительное в имя проекта,
-	// остаётся МЕНЬШЕ, чем цена его полного сокрытия (проект неопознаваем
-	// именно там, где отличить его нужнее всего) — решение сознательное, не
-	// заявление о безопасности поля.
+	// ПРИНЯТЫЙ РИСК, не «не несёт ПДн»: оператор мог вписать чувствительное в имя
+	// проекта, но без него канал на несколько проектов неотличим — риск меньше цены сокрытия.
 	"project_name": {},
 	// Числовые идентификаторы и счётчики: маршрутные, не несут текста ошибки.
 	"project_id":       {},
@@ -78,11 +43,8 @@ var externalSafeKeys = map[string]struct{}{
 	"days_left":        {},
 }
 
-// redactedKindKeys — ключ каталога i18n с человекочитаемой подписью вида
-// алерта для обезличенного сообщения. Enum закрыт: сюда обязан попасть
-// каждый kind каждого нотифаера (см. TestRedactedKindLabelsCoverAllKinds).
-// Где каноничная подпись уже есть у самого нотифаера — переиспользуется его
-// ключ, а не заводится дубль.
+// Enum закрыт — сюда обязан попасть каждый kind каждого нотифаера
+// (см. TestRedactedKindLabelsCoverAllKinds).
 var redactedKindKeys = map[string]string{
 	// issue-алерты (alert.Evaluator)
 	"new_issue":  "notify.issue.kind.new_issue",
@@ -118,9 +80,7 @@ var redactedKindKeys = map[string]string{
 	"host_retired": "notify.redacted.kind.host_retired",
 }
 
-// redactedKindLabel — подпись вида алерта для обезличенной темы/тела.
-// Незнакомый вид уходит сырым enum'ом — это честнее, чем прятать его за
-// пустой строкой (тот же принцип, что issueAlertKindLabel в internal/alert).
+// Незнакомый вид уходит сырым enum'ом — честнее, чем прятать за пустой строкой.
 func redactedKindLabel(ctx context.Context, kind string) string {
 	if key, ok := redactedKindKeys[kind]; ok {
 		return i18n.T(ctx, key)
@@ -128,29 +88,8 @@ func redactedKindLabel(ctx context.Context, kind string) string {
 	return kind
 }
 
-// RedactExternalPayload возвращает обезличенную копию payload для доставки во
-// внешние каналы (Telegram/webhook), когда оператор выключил раскрытие
-// деталей (GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=false). Текст ошибки, имена
-// транзакций/функций и тело уведомления могут нести ПДн, а Telegram/webhook
-// уводят их за пределы РФ (152-ФЗ), поэтому наружу отдаётся только маршрут
-// доставки, ссылка на карточку и вид алерта.
-//
-// Оставляются лишь поля из externalSafeKeys; subject/body перезаписываются
-// маршрутным минимумом («[Gotcha] {вид алерта}» и «{вид алерта}\n\n{url}»),
-// чтобы у Telegram (берёт текст из body) и webhook (сериализует весь payload)
-// не осталось исходных деталей. Подпись вида — человекочитаемая, на языке
-// инстанса: ctx обязан нести локаль уведомлений (i18n.WithLocale с
-// GOTCHA_LOCALE — тот же ctx, которым нотифаер строил исходные тексты).
-// Исходный payload не мутируется — возвращается новая map.
-//
-// Необязательное поле payload "url_redacted" — сокращённая ссылка на случай,
-// когда деталь несёт сам АДРЕС карточки. Есть — уходит наружу и в out["url"],
-// и в тело вместо полной; нет — поведение прежнее. Так решается случай хостов:
-// карточка адресуется именем машины (/projects/{id}/hosts/{имя}), id-адресации
-// у хоста нет, и при выключенных деталях имя уезжало бы в Telegram внутри
-// разрешённого "url" — теперь нотифаер кладёт рядом ссылку на список хостов.
-// В externalSafeKeys "url_redacted" не входит намеренно: это директива для
-// редакции, а не поле вывода, и отдельной строкой наружу оно не идёт.
+// Оставляются только externalSafeKeys; subject/body переписываются маршрутным
+// минимумом. payload["url_redacted"], если есть, подменяет "url" (для хостов).
 func RedactExternalPayload(ctx context.Context, payload map[string]any) map[string]any {
 	out := make(map[string]any, len(externalSafeKeys))
 	for k, v := range payload {
@@ -167,10 +106,7 @@ func RedactExternalPayload(ctx context.Context, payload map[string]any) map[stri
 	label := redactedKindLabel(ctx, kind)
 	subject := i18n.Tf(ctx, "notify.redacted.subject", "kind", label)
 	body := i18n.Tf(ctx, "notify.redacted.body", "kind", label, "url", url)
-	// Имя проекта переживает редакцию (project_name — в externalSafeKeys
-	// выше): обезличенный путь — как раз тот случай, где оно нужнее всего
-	// (см. WithProjectSubject/WithProjectBody) — один и тот же внешний канал
-	// на несколько проектов иначе неотличим по голому "[Gotcha] {kind}".
+	// Переживает редакцию — иначе один канал на несколько проектов неотличим.
 	if name, _ := out["project_name"].(string); name != "" {
 		subject = WithProjectSubject(ctx, subject, name)
 		body = WithProjectBody(ctx, body, name)

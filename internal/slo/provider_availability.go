@@ -8,16 +8,13 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// AvailabilityProvider — SLI доли успешных транзакций (good/total) из MV
-// transactions_5m. Фильтруется по Transaction/Environment SLO (пустые → любой).
 type AvailabilityProvider struct {
 	q             *trace.Query
 	maint         *uptime.Service
 	retentionDays int
 }
 
-// NewAvailabilityProvider собирает провайдер availability. maint == nil
-// отключает исключение окон обслуживания (для тестов/безмейнтенанс-инсталляций).
+// maint == nil отключает исключение окон обслуживания.
 func NewAvailabilityProvider(q *trace.Query, maint *uptime.Service, retentionDays int) *AvailabilityProvider {
 	return &AvailabilityProvider{q: q, maint: maint, retentionDays: retentionDays}
 }
@@ -38,7 +35,6 @@ func (p *AvailabilityProvider) BucketsExcluding(ctx context.Context, s SLO, from
 	return excludeWindows(windows, bs, from, to, step), nil
 }
 
-// rawBuckets — корзины из ClickHouse до вырезания окон обслуживания.
 func (p *AvailabilityProvider) rawBuckets(ctx context.Context, s SLO, from, to time.Time, step time.Duration) ([]Bucket, error) {
 	cbs, err := p.q.GoodTotalBuckets(ctx, s.ProjectID, s.Transaction, s.Environment, from, to, step)
 	if err != nil {

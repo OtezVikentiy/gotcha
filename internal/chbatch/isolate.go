@@ -1,5 +1,3 @@
-// Package chbatch — общие примитивы записи батчей в ClickHouse для писателей
-// событий/трасс/метрик/профилей/uptime.
 package chbatch
 
 import (
@@ -9,33 +7,13 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 )
 
-// IsolatePoison пытается вставить rows одним батчем; при неудаче рекурсивно делит
-// батч пополам, чтобы изолировать ряды, которые ClickHouse отвергает на data-level
-// (битый enum, out-of-range значение, несовпадение типа и т.п.). Предикат isPoison
-// классифицирует ошибку вставки: только «ядовитые» (серверные data/schema) ряды
-// дропаются, транзиентные отказы (сеть/ctx/connection) НЕ теряются, а возвращаются
-// в unresolved для обычного ретрая.
-//
-// Возвращает число дропнутых ядовитых рядов и unresolved — ряды, которые не
-// удалось ни вставить, ни признать ядом (транзиент). Успешные под-батчи
-// вставляются в процессе.
-//
-// Вызывать ТОЛЬКО как escalation после нескольких подряд-фейлов обычной вставки
-// либо сразу при явно data-level ошибке: на чисто транзиентном отказе CH здесь
-// батч раздробится на одиночные ряды (много лишних INSERT), но ничего не
-// потеряется — все ряды вернутся через unresolved.
+// Вызывать только escalation после нескольких фейлов обычной вставки: при простое CH без яда
+// батч раздробится в ~2N бесполезных INSERT (но ничего не потеряется — вернётся в unresolved).
 func IsolatePoison[T any](ctx context.Context, rows []T, insert func(context.Context, []T) error, isPoison func(error) bool) (dropped int, unresolved []T) {
 	if len(rows) == 0 {
 		return 0, nil
 	}
 	// Контекст уже исчерпан — дробить бессмысленно и вредно.
-	//
-	// Изоляция рекурсивно делит батч пополам, то есть на 10 000 рядах делает до
-	// ~20 000 вставок. Если ClickHouse просто ЛЕЖИТ (connection refused), яда в
-	// батче нет, все вставки провалятся, бюджет флаша (10 с) истечёт на
-	// середине, и оставшиеся ряды всё равно вернутся через unresolved — но
-	// лежащее хранилище и пул соединений успеют получить двадцать тысяч
-	// бесполезных попыток. И так каждые ~15 секунд, пока CH не поднимется.
 	if ctx.Err() != nil {
 		return 0, rows
 	}
@@ -57,14 +35,8 @@ func IsolatePoison[T any](ctx context.Context, rows []T, insert func(context.Con
 	return dl + dr, unresolved
 }
 
-// poisonCHCodes — коды серверных ошибок ClickHouse, означающих, что РЯД
-// невставляем по своей природе (данные/тип/значение), и ретрай бесполезен —
-// такой ряд изолируется и дропается. КРИТИЧНО не включать сюда транзиентные
-// коды: перегрузка (MEMORY_LIMIT_EXCEEDED=241, TIMEOUT_EXCEEDED=159,
-// TOO_MANY_SIMULTANEOUS_QUERIES=202, SOCKET_TIMEOUT=209, TOO_MANY_PARTS=252),
-// сеть (NETWORK_ERROR=210) и схемные при rolling-миграции
-// (NO_SUCH_COLUMN_IN_TABLE=16, UNKNOWN_TABLE=60, TABLE_IS_READ_ONLY=242) —
-// они лечатся ретраем/восстановлением, и ряды НЕЛЬЗЯ терять как яд.
+// Коды, где ряд невставляем по своей природе. НЕ добавлять транзиентные (перегрузка, сеть, схема
+// при rolling-миграции) — их лечит ретрай, а не дроп ряда как яда.
 var poisonCHCodes = map[int32]bool{
 	6:   true, // CANNOT_PARSE_TEXT
 	26:  true, // CANNOT_PARSE_QUOTED_STRING
@@ -83,16 +55,8 @@ var poisonCHCodes = map[int32]bool{
 	407: true, // DECIMAL_OVERFLOW
 }
 
-// IsServerDataError сообщает, является ли ошибка вставки НЕВСТАВЛЯЕМОЙ на
-// data-level ClickHouse («яд»), которую бессмысленно ретраить (несовпадение
-// типа, parse, out-of-range и т.п. — см. poisonCHCodes). Всё остальное —
-// транзиент (false): ряды возвращаются в буфер под обычный ретрай, а не
-// дропаются.
-//
-// Важно (RA-1): серверное исключение ClickHouse НЕ равно «яд» — перегрузочные
-// и схемные коды транзиентны. Классифицируем строго по chErr.Code. Всё, что не
-// распознано как data-level, считаем транзиентом (безопаснее не терять данные;
-// клиентский Append-яд ограничивается overflow-trim буфера, как до RA-1).
+// Серверное исключение ClickHouse — не то же, что «яд»: перегрузочные и схемные коды транзиентны;
+// нераспознанное считаем транзиентом, чтобы не терять данные по ошибке.
 func IsServerDataError(err error) bool {
 	if err == nil {
 		return false
@@ -101,12 +65,9 @@ func IsServerDataError(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return false
 	}
-	// Сервер ответил протокольным исключением: яд ТОЛЬКО для data-level кодов;
-	// перегрузка/сеть/схема (не в whitelist) — транзиент.
 	var chErr *clickhouse.Exception
 	if errors.As(err, &chErr) {
 		return poisonCHCodes[chErr.Code]
 	}
-	// Сеть/ctx/EOF/драйверные и всё прочее нераспознанное — транзиент.
 	return false
 }

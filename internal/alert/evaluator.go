@@ -15,9 +15,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
-// Event — сигнал об изменении состояния issue, который может породить
-// алерт: новая группа (new_issue), переоткрытие resolved-группы
-// (regression) или всплеск частоты событий (spike, из Spike-воркера).
+// Может породить алерт: новая группа (new_issue), переоткрытие
+// (regression), всплеск частоты (spike, из Spike-воркера).
 type Event struct {
 	ProjectID int64
 	IssueID   int64
@@ -30,46 +29,36 @@ type Event struct {
 	TimesSeen int64
 }
 
-// Evaluator решает, нужно ли по Event поставить уведомления в очередь:
-// находит включённое правило нужного kind для проекта, проверяет троттлинг
-// (alert_throttle, ключ issue_id+rule_id) и, если можно слать, ставит по
-// одной задаче в Outbox на каждый включённый канал проекта.
 type Evaluator struct {
 	Svc    *Service
 	Outbox *notify.Outbox
 
-	// BaseURL — префикс для ссылки на issue в уведомлении: {BaseURL}/issues/{id}.
+	// Префикс для ссылки на issue в уведомлении: {BaseURL}/issues/{id}.
 	BaseURL string
 
-	// EmailEnabled сообщает, настроен ли SMTP (cfg.SMTPHost != ""). Пока
-	// false, email-каналы пропускаются (с warn-логом), чтобы не ставить в
-	// очередь задачи, которые notify.Worker всё равно не сможет доставить.
+	// Настроен ли SMTP; пока false, email-каналы пропускаются, чтобы не
+	// ставить в очередь недоставимые задачи.
 	EmailEnabled bool
 
-	// Details — политика раскрытия деталей события получателю уведомления
-	// (см. DetailPolicy). Нулевое значение не доверяет никому: детали уходят
-	// только тем, кого оператор подтвердил как свой контур.
+	// Нулевое значение не доверяет никому — детали уходят только тем, кого
+	// оператор подтвердил как свой контур.
 	Details DetailPolicy
 
-	// Locale — локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка
-	// получателя, поэтому язык уведомления выбирает оператор (класс №133–136).
+	// GOTCHA_LOCALE инстанса — внешний канал не знает языка получателя, язык
+	// уведомления выбирает оператор.
 	Locale i18n.Locale
 
-	// Maint — окна обслуживания проекта (B3): подавляет issue-алерты. nil —
-	// окна не подавляют (обратная совместимость). У issue-алертов нет
-	// таблицы инцидентов и флага (они throttle+budget-based), поэтому гейт
-	// стоит ДО claimThrottle/claimBudget в OnIssue, а не флагом на записи.
+	// nil — окна не подавляют. У issue-алертов нет флага записи, поэтому гейт
+	// стоит ДО claimThrottle/claimBudget, а не флагом на записи.
 	Maint MaintenanceChecker
 
-	// Projects — источник имени проекта для темы/тела/webhook-payload
-	// уведомления (W3-E). nil-совместим (escalation.ProjectNamer) — тогда
-	// уведомления идут без имени проекта, как до этой правки.
+	// nil-совместим (escalation.ProjectNamer) — тогда уведомления идут без
+	// имени проекта.
 	Projects escalation.ProjectNamer
 }
 
-// issueAlertKindLabel — человекочитаемое имя вида алерта для темы письма.
-// Enum закрыт (см. Event.Kind); незнакомый вид уходит как есть — это
-// честнее, чем прятать его за пустой строкой.
+// Enum закрыт (см. Event.Kind); незнакомый вид уходит как есть — честнее,
+// чем прятать его за пустой строкой.
 func issueAlertKindLabel(ctx context.Context, kind string) string {
 	switch kind {
 	case "new_issue", "regression", "spike":
@@ -79,10 +68,8 @@ func issueAlertKindLabel(ctx context.Context, kind string) string {
 	}
 }
 
-// OnIssue — точка входа для ingest.Pipeline (new_issue/regression) и
-// alert.Spike (spike). Ошибки логируются и не возвращаются: алертинг не
-// должен ронять или блокировать вызывающую сторону (приём событий,
-// spike-тик).
+// Ошибки логируются и не возвращаются — алертинг не должен ронять или
+// блокировать вызывающую сторону.
 func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 	rule, ok, err := e.Svc.ruleByKind(ctx, ev.ProjectID, ev.Kind)
 	if err != nil {
@@ -110,11 +97,8 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 		return
 	}
 
-	// Пер-проектный потолок. Троттлинг выше ключуется парой (issue_id, rule_id),
-	// и у НОВОГО issue строки там нет по определению — он проходит всегда.
-	// Отправитель с уникальным fingerprint на каждое событие получал issue на
-	// событие и уведомление на событие, а ключ DSN публичен. Подавленное не
-	// теряется: счётчик копится, и Digester рассылает сводку «подавлено ещё N».
+	// Троттлинг ключуется (issue_id, rule_id) — у НОВОГО issue строки там нет,
+	// он проходит всегда; подавленное не теряется, Digester шлёт сводку.
 	budget, err := e.Svc.claimBudget(ctx, ev.ProjectID)
 	if err != nil {
 		slog.Error("alert: budget claim failed", "project_id", ev.ProjectID, "error", err)
@@ -133,8 +117,8 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 		return
 	}
 
-	// Тексты — на языке инстанса (GOTCHA_LOCALE), а не запроса: уведомление
-	// читает внешний получатель, у которого нет своей локали (№133–136).
+	// Язык инстанса (GOTCHA_LOCALE), не запроса — у внешнего получателя нет
+	// своей локали.
 	lctx := i18n.WithLocale(ctx, e.Locale)
 	url := fmt.Sprintf("%s/issues/%d", e.BaseURL, ev.IssueID)
 	subject := i18n.Tf(lctx, "notify.issue.subject",
@@ -143,12 +127,8 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 		"title", ev.Title, "culprit", ev.Culprit, "level", ev.Level,
 		"count", strconv.FormatInt(ev.TimesSeen, 10), "url", url)
 
-	// deliverableCount — сколько каналов ВООБЩЕ стоило слать (Deliverable +
-	// email-fallback), независимо от исхода доставки: нужен только для
-	// решения об откате claim'ов ниже (deliverableCount>0 && enqueued==0 —
-	// полный провал). Сама доставка — общий контур (escalation.Dispatch,
-	// W3-E): гейт доставляемости, email-fallback, имя проекта, редакция ПДн —
-	// раньше был переписан здесь же (седьмая копия из семи, см. отчёт W3-E).
+	// Сколько каналов стоило слать (Deliverable + email-fallback) — нужно
+	// только чтобы решить об откате claim'ов ниже при полном провале.
 	deliverableCount := 0
 	for _, ch := range channels {
 		if !ch.Deliverable() {
@@ -170,12 +150,8 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 		})
 	}
 
-	// lctx, не ctx: Dispatch зовёт notify.WithProjectSubject/WithProjectBody и
-	// (на обезличенном пути) notify.RedactExternalPayload, оба берут локаль
-	// уведомления из ctx — тем же lctx уже построены subject/body выше
-	// (класс №133–136, см. её комментарий). База ctx дала бы им дефолтную
-	// локаль i18n, расходящуюся с уже локализованным текстом, если
-	// GOTCHA_LOCALE отличается от дефолта.
+	// lctx, не ctx: Dispatch берёт локаль уведомления из ctx для
+	// WithProjectSubject/WithProjectBody и RedactExternalPayload.
 	enqueuedIDs, err := escalation.Dispatch(lctx,
 		escalation.DispatchDeps{Outbox: e.Outbox, EmailEnabled: e.EmailEnabled, Projects: e.Projects, LogTag: "alert"},
 		escalation.DispatchInput{
@@ -191,23 +167,13 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 			Channels: dchans,
 		})
 	if err != nil {
-		// OnIssue контрактом не возвращает ошибку (алертинг не должен ронять
-		// приём событий/spike-тик) — Dispatch уже залогировал каждый
-		// провалившийся канал по отдельности, здесь достаточно отбросить.
+		// Dispatch уже залогировал каждый канал отдельно — здесь просто отбрасываем.
 		slog.Error("alert: dispatch failed", "project_id", ev.ProjectID, "issue_id", ev.IssueID, "error", err)
 	}
 	enqueued := len(enqueuedIDs)
 
-	// claimThrottle/claimBudget заняты ДО этого цикла ради дедупа (см. их
-	// комментарии): два конкурентных OnIssue для одного issue+rule не должны
-	// оба разослать. Но если каналов, куда стоило слать, было НЕСКОЛЬКО и НИ
-	// ОДИН Enqueue не прошёл (транзиентный сбой БД/outbox) — тот claim
-	// молча хоронит алерт первого обнаружения до истечения ThrottleMinutes,
-	// а следующее событие того же issue снова упрётся в занятый троттл.
-	// Откатываем claim ТОЛЬКО при полном провале: частичный успех (хоть
-	// один канал принят) значит, что доставка состоялась, и откатывать
-	// нечего; ноль deliverable-каналов значит, что слать было некуда —
-	// это не потеря из-за сбоя, а обычная тишина.
+	// Откат — только при полном провале: частичный успех уже доставлен, а
+	// ноль deliverable-каналов — не сбой, а обычная тишина.
 	if deliverableCount > 0 && enqueued == 0 {
 		if err := e.releaseThrottle(ctx, ev.IssueID, rule.ID); err != nil {
 			slog.Error("alert: release throttle after full enqueue failure",
@@ -220,16 +186,8 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 	}
 }
 
-// releaseThrottle отменяет claimThrottle: удаляет только что занятую строку
-// окна, чтобы следующее событие того же issue+rule могло переотправить
-// алерт, а не молча упереться в занятый троттл до истечения
-// ThrottleMinutes. Вызывается ТОЛЬКО непосредственно после своего же
-// claimThrottle в этом же OnIssue, пока последующий claim того же ключа не
-// мог пройти (наш last_sent_at=now() блокирует его до истечения окна) — так
-// что гонка с "чужим" claim'ом здесь исключена, кроме вырожденного случая
-// throttleMinutes=0 (нет троттлинга), где откат best-effort и может задеть
-// более свежий claim: ошибка отката логируется вызывающей стороной и не
-// ронянет обработку.
+// Вызывается сразу после своего claimThrottle — гонка с чужим claim
+// исключена, кроме throttleMinutes=0, где откат best-effort.
 func (e *Evaluator) releaseThrottle(ctx context.Context, issueID, ruleID int64) error {
 	if _, err := e.Svc.pool.Exec(ctx,
 		`DELETE FROM alert_throttle WHERE issue_id = $1 AND rule_id = $2`,
@@ -239,7 +197,6 @@ func (e *Evaluator) releaseThrottle(ctx context.Context, issueID, ruleID int64) 
 	return nil
 }
 
-// ruleByKind возвращает единственное правило (project_id, kind) —
 // UNIQUE(project_id, kind) гарантирует не более одной строки.
 func (s *Service) ruleByKind(ctx context.Context, projectID int64, kind string) (Rule, bool, error) {
 	var r Rule
@@ -256,28 +213,11 @@ func (s *Service) ruleByKind(ctx context.Context, projectID int64, kind string) 
 	return r, true, nil
 }
 
-// claimThrottle atomically checks the troттлинг-окно and, if we're allowed to
-// send, records last_sent_at = now() in the same statement. Doing the
-// check-and-mark as a single INSERT ... ON CONFLICT ... DO UPDATE ... WHERE
-// closes the race between "read: are we outside the throttle window" and
-// "write: record that we sent": without it, two concurrent OnIssue calls for
-// the same (issueID, ruleID) — e.g. the documented Upsert race on the very
-// first event of a fingerprint, where two pipeline workers can both observe
-// New=true for the same issue — could both read "not throttled" before
-// either commits, and both enqueue a full round of channel jobs.
-//
-// No row yet -> INSERT succeeds unconditionally -> claimed. Row exists and
-// last_sent_at <= cutoff (throttle window elapsed) -> ON CONFLICT DO UPDATE
-// fires -> claimed. Row exists and last_sent_at > cutoff (still throttled)
-// -> the WHERE condition excludes the update -> RETURNING yields no row ->
-// not claimed. throttleMinutes=0 means cutoff=now(), and last_sent_at is
-// always <= the moment it was written, so a prior send never blocks the next
-// one (no throttling), matching the documented "0 means no throttle" rule.
+// Атомарный INSERT ON CONFLICT ... WHERE — закрывает гонку «проверить
+// окно»/«записать last_sent_at» между конкурентными OnIssue для одной пары.
 func (e *Evaluator) claimThrottle(ctx context.Context, issueID, ruleID int64, throttleMinutes int) (bool, error) {
-	// Отсечка считается часами БАЗЫ: last_sent_at пишется её now(), и сравнивать
-	// его с моментом, посчитанным часами процесса, значит зависеть от их
-	// расхождения. Отстающие часы растягивали окно троттлинга, опережающие —
-	// сокращали, и то и другое молча.
+	// Часы БАЗЫ, не процесса — иначе расхождение часов растягивало бы или
+	// сокращало окно троттлинга.
 	var claimed int
 	err := e.Svc.pool.QueryRow(ctx, `
 		INSERT INTO alert_throttle (issue_id, rule_id, last_sent_at)

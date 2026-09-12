@@ -12,37 +12,17 @@ import (
 	"testing"
 )
 
-// Сторож на autoBufferCapUnits: константа в cmd/gotcha/main.go делит долю
-// потолка кучи между буферами писателей, и её расхождение с реальным числом
-// буферов тихо ломает авто-дефолт GOTCHA_MAX_WRITER_BUFFER_BYTES — каждый буфер
-// получает больше, чем ему причитается, и сумма перерастает потолок ровно в
-// том сценарии, ради которого потолок и заводился (долгий простой ClickHouse).
-//
-// Расхождение уже случалось и жило незамеченным: writer логов приехал с C1, а
-// комментарии в docker-compose.small.yml и в шапке internal/memlimit
-// продолжали перечислять пять буферов. Ни один гейт этого не ловил —
-// поведение оставалось валидным Go и валидным YAML.
-//
-// Единица потолка — НЕ писатель, а независимый буфер: SpanWriter применяет
-// один потолок к двум буферам (txBuf и spanBuf), которые в худшем случае
-// заполнены одновременно, и потому считается за две единицы. Поэтому сторож
-// считает не писателей, а места, где вес буфера сравнивается с maxBufBytes.
+// Единица потолка — независимый буфер, а не писатель: SpanWriter применяет
+// один потолок к двум буферам (txBuf и spanBuf), заполняемым одновременно.
 
 const (
-	// setterName — метод, которым main проставляет потолок писателю.
-	setterName = "SetMaxBufferBytes"
-	// capFieldName — поле писателя, хранящее потолок.
-	capFieldName = "maxBufBytes"
-	// unitsConstName — проверяемая константа.
+	setterName     = "SetMaxBufferBytes"
+	capFieldName   = "maxBufBytes"
 	unitsConstName = "autoBufferCapUnits"
-	// wiringFile — файл, где писатели создаются и получают потолок.
-	wiringFile = "cmd/gotcha/main.go"
-	// shareConstName — доля потолка кучи, отдаваемая сумме буферов.
+	wiringFile     = "cmd/gotcha/main.go"
 	shareConstName = "autoBufferSafeShare"
-	// ratioConstName — доля лимита контейнера, отдаваемая куче.
 	ratioConstName = "defaultRatio"
-	// ratioFile — файл, где живёт ratioConstName.
-	ratioFile = "internal/memlimit/memlimit.go"
+	ratioFile      = "internal/memlimit/memlimit.go"
 )
 
 func TestAutoBufferCapUnitsMatchesWriters(t *testing.T) {
@@ -66,11 +46,6 @@ func TestAutoBufferCapUnitsMatchesWriters(t *testing.T) {
 	wired := countSetterCalls(wiring)
 	writers, units := scanWriters(t, root, fset)
 
-	// Нижняя граница — только на то, что даёт обход дерева: скан, нашедший
-	// меньше, сломан сам, и без этой проверки пустой результат совпал бы с
-	// пустым ожиданием. wired сюда НЕ входит: снятый вызов в вайринге — это
-	// регресс, а не слепота сторожа, и он обязан доехать до своего ассерта
-	// ниже с внятным сообщением, а не утонуть здесь в «обход ослеп».
 	if writers < 5 || units < 6 {
 		t.Fatalf("обход ослеп: писателей с методом %s найдено %d, единиц потолка %d "+
 			"(ожидалось не меньше 5 и 6) — сломан сам сторож, а не проверяемый код",
@@ -94,8 +69,7 @@ func TestAutoBufferCapUnitsMatchesWriters(t *testing.T) {
 	}
 }
 
-// intConst достаёт значение целочисленной константы верхнего уровня. 0 —
-// «не найдена»: у осмысленных констант этого сторожа нулевого значения нет.
+// 0 значит «не найдена»: у констант этого сторожа нулевого значения нет.
 func intConst(f *ast.File, name string) int {
 	var out int
 	for _, d := range f.Decls {
@@ -125,9 +99,6 @@ func intConst(f *ast.File, name string) int {
 	return out
 }
 
-// countSetterCalls считает вызовы x.SetMaxBufferBytes(...) — по одному на
-// подключённого писателя. Комментарии и строки сюда не попадают: обход идёт
-// по дереву, а не по строкам.
 func countSetterCalls(f *ast.File) int {
 	var n int
 	ast.Inspect(f, func(node ast.Node) bool {
@@ -143,10 +114,6 @@ func countSetterCalls(f *ast.File) int {
 	return n
 }
 
-// scanWriters обходит internal/ и возвращает (число типов с методом
-// SetMaxBufferBytes, число сравнений веса буфера с maxBufBytes). Второе и есть
-// число единиц потолка: на каждый независимый буфер приходится своя проверка
-// в цикле подрезки.
 func scanWriters(t *testing.T, root string, fset *token.FileSet) (writers, units int) {
 	t.Helper()
 	internal := filepath.Join(root, "internal")
@@ -155,8 +122,7 @@ func scanWriters(t *testing.T, root string, fset *token.FileSet) (writers, units
 			return err
 		}
 		if d.IsDir() {
-			// Сам пакет guards исключается: его фикстуры и примеры в
-			// комментариях иначе обманут правило (см. шапку tree.go).
+			// пакет guards исключён: свои фикстуры обманут подсчёт
 			if path == filepath.Join(internal, "guards") {
 				return fs.SkipDir
 			}
@@ -188,8 +154,7 @@ func scanWriters(t *testing.T, root string, fset *token.FileSet) (writers, units
 	return writers, units
 }
 
-// countCapComparisons считает сравнения вида <вес> > w.maxBufBytes. Присвоение
-// в сеттере и инициализация в конструкторе — не сравнения и не считаются.
+// Присвоение в сеттере и инициализация в конструкторе не считаются.
 func countCapComparisons(f *ast.File) int {
 	var n int
 	ast.Inspect(f, func(node ast.Node) bool {
@@ -205,18 +170,6 @@ func countCapComparisons(f *ast.File) int {
 	return n
 }
 
-// Пин на доли, из которых выводится авто-дефолт. В отличие от
-// autoBufferCapUnits их расхождение с описанием ничего не ломает в рантайме —
-// но делает неверными сразу четыре предложения справочника на двух языках:
-// потолок кучи (80% от mem_limit ≈ 819 МиБ на 1g), доля под буферы (60%),
-// объём на буфер (≈82 МиБ) и сравнение с flat-константой (256 МиБ × 6 = 1.5
-// ГиБ). Все четыре — следствия этих двух чисел, и правка любого из них
-// оставляет прозу утверждать арифметику, которой больше нет.
-//
-// Сторож намеренно ничего не разбирает в самих доках: сверять прозу дороже,
-// чем она того стоит, а число внутри вывода («шесть единиц → 60% → 82 МиБ»)
-// нельзя оставить нетронутым, не сломав читаемость абзаца. Задача пина —
-// не проверить доки, а не дать поменять долю молча.
 func TestBufferShareConstantsPinned(t *testing.T) {
 	root, err := findRoot()
 	if err != nil {
@@ -255,9 +208,7 @@ func TestBufferShareConstantsPinned(t *testing.T) {
 	}
 }
 
-// floatConst достаёт значение константы верхнего уровня с плавающей точкой.
-// Второе значение — «нашлась ли»: ноль здесь осмысленное значение, отличать
-// его от отсутствия обязательно.
+// Второй результат отличает «нашлась» от «не нашлась»: ноль — валидное значение.
 func floatConst(f *ast.File, name string) (float64, bool) {
 	var (
 		out   float64

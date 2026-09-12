@@ -12,8 +12,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// TestCoverOrgSettingsMemberPostsAndSameOrigin — member (не owner/admin) POST'ы
-// role/remove/invite → 404 (requireOrgRole); remove/invite-accept без Origin → 403.
 func TestCoverOrgSettingsMemberPostsAndSameOrigin(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -31,7 +29,6 @@ func TestCoverOrgSettingsMemberPostsAndSameOrigin(t *testing.T) {
 	}
 	base := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings"
 
-	// member POST role/remove/invite → 404 (requireOrgRole).
 	for _, tc := range []struct {
 		path string
 		form url.Values
@@ -48,7 +45,6 @@ func TestCoverOrgSettingsMemberPostsAndSameOrigin(t *testing.T) {
 		}
 	}
 
-	// remove без Origin → 403.
 	resp := postForm(t, s.srv, base+"/remove", url.Values{"user_id": {"1"}}, "", memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -56,7 +52,6 @@ func TestCoverOrgSettingsMemberPostsAndSameOrigin(t *testing.T) {
 		t.Fatalf("POST remove (no origin) = %d, want 403", resp.StatusCode)
 	}
 
-	// invite-accept без Origin → 403.
 	token, err := orgSvc.Invite(ctx, o.ID, "edge-invited@example.com", org.RoleMember)
 	if err != nil {
 		t.Fatalf("invite: %v", err)
@@ -69,9 +64,6 @@ func TestCoverOrgSettingsMemberPostsAndSameOrigin(t *testing.T) {
 	}
 }
 
-// TestCoverOrgPurgeExportPurgerBranches — purge/export без Purger (nil-ветки:
-// purge → 303 best-effort, export → 503), удаление орга С проектом (цикл CH-очистки
-// проектов), export с user_id+ip (subjectCriteria).
 func TestCoverOrgPurgeExportPurgerBranches(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -89,9 +81,6 @@ func TestCoverOrgPurgeExportPurgerBranches(t *testing.T) {
 	}
 	base := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings"
 
-	// Purger не задан (nil) на этом стенде.
-	// purge-subject без Purger → 503 (право на удаление ПДн: удаление НЕ
-	// выполнено, не выдаём успех — симметрично export-subject).
 	resp := postForm(t, s.srv, base+"/purge-subject", url.Values{
 		"project_id": {strconv.FormatInt(proj.ID, 10)}, "email": {"subj@example.com"},
 	}, s.srv.URL, ownerCookie)
@@ -101,7 +90,6 @@ func TestCoverOrgPurgeExportPurgerBranches(t *testing.T) {
 		t.Fatalf("POST purge-subject (nil purger) = %d, want 503", resp.StatusCode)
 	}
 
-	// export-subject без Purger → 503.
 	resp = postForm(t, s.srv, base+"/export-subject", url.Values{
 		"project_id": {strconv.FormatInt(proj.ID, 10)}, "email": {"subj@example.com"},
 	}, s.srv.URL, ownerCookie)
@@ -111,11 +99,9 @@ func TestCoverOrgPurgeExportPurgerBranches(t *testing.T) {
 		t.Fatalf("POST export-subject (nil purger) = %d, want 503", resp.StatusCode)
 	}
 
-	// Теперь с fakePurger.
 	fp := &fakePurger{}
 	s.h.Purger = fp
 
-	// purge-subject cross-org (проект чужого орга) → 404.
 	otherOwner, _ := orgSettingsRegister(t, authSvc, "purger-other@example.com")
 	other, err := orgSvc.CreateOrg(ctx, "purger-other-co", "Other", otherOwner)
 	if err != nil {
@@ -134,7 +120,6 @@ func TestCoverOrgPurgeExportPurgerBranches(t *testing.T) {
 		t.Fatalf("POST purge-subject (cross-org) = %d, want 404", resp.StatusCode)
 	}
 
-	// export с user_id+ip (без email) → 200, subjectCriteria покрывает обе ветки.
 	resp = postForm(t, s.srv, base+"/export-subject", url.Values{
 		"project_id": {strconv.FormatInt(proj.ID, 10)}, "user_id": {"user-42"}, "ip": {"10.0.0.1"},
 	}, s.srv.URL, ownerCookie)
@@ -144,8 +129,6 @@ func TestCoverOrgPurgeExportPurgerBranches(t *testing.T) {
 		t.Fatalf("POST export-subject (user_id+ip) = %d, want 200", resp.StatusCode)
 	}
 
-	// Удаление орга С проектом → 303, заявка на очистку телеметрии проекта
-	// поставлена той же транзакцией; синхронного вызова Purger больше нет.
 	resp = postForm(t, s.srv, base+"/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()

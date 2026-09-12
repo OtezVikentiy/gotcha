@@ -23,13 +23,9 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	go w.Run()
 
 	now := time.Now().UTC()
-	// Window well in the past so it never collides with "now" queries.
 	windowFrom := now.Truncate(10 * time.Minute).Add(-3 * time.Hour)
 	windowTo := windowFrom.Add(time.Hour)
 
-	// 10 checks 5 minutes apart, spanning the first 50 minutes of the
-	// window (last 10 minutes stay empty on purpose, to exercise
-	// zero-filling). First two fail, remaining eight succeed.
 	for i := 0; i < 10; i++ {
 		at := windowFrom.Add(time.Duration(i) * 5 * time.Minute)
 		ok := i >= 2
@@ -49,7 +45,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		w.Add(projectID, monitorID, "local", at, res)
 	}
 
-	// A second monitor, used for UptimeBatch: 1 ok + 1 fail.
 	w.Add(projectID, otherMonitorID, "local", windowFrom.Add(time.Minute), uptime.Result{
 		OK: true, StatusCode: 200, TotalMs: 42,
 	})
@@ -75,8 +70,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			t.Fatalf("Ratio() = %v, want 0.8", got)
 		}
 
-		// Exclude a maintenance window covering exactly the two failed
-		// checks (windowFrom and windowFrom+5m): remaining 8/8.
 		excl := []uptime.Interval{{From: windowFrom, To: windowFrom.Add(10 * time.Minute)}}
 		stat2, err := q.Uptime(ctx, monitorID, windowFrom, windowTo, excl)
 		if err != nil {
@@ -102,8 +95,8 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Latency: %v", err)
 		}
-		// Окно час, шаг 10м, выровнено → 6 корзин; корзина, начинающаяся в to,
-		// данных содержать не может (запрос фильтрует timestamp < to).
+		// корзина, начинающаяся в to, данных содержать не может (запрос
+		// фильтрует timestamp < to) — час/10м даёт 6, не 7.
 		if len(points) != 6 {
 			t.Fatalf("len(points) = %d, want 6", len(points))
 		}
@@ -116,8 +109,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			t.Fatalf("points[0].T = %v, want %v", points[0].T, windowFrom)
 		}
 
-		// First bucket [windowFrom, +10m) holds checks i=0 (100ms) and
-		// i=1 (110ms): avg total_ms = 105.
 		if points[0].AvgTotalMs != 105 {
 			t.Fatalf("points[0].AvgTotalMs = %d, want 105", points[0].AvgTotalMs)
 		}
@@ -125,7 +116,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			t.Fatalf("points[0] has zero averages: %+v", points[0])
 		}
 
-		// Last 10 minutes of the window have no checks: zero-filled.
 		last := points[len(points)-1]
 		if last.AvgTotalMs != 0 || last.AvgDNSMs != 0 {
 			t.Fatalf("last bucket not zero-filled: %+v", last)
@@ -145,7 +135,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 				t.Fatalf("rows not in DESC order: %v", rows)
 			}
 		}
-		// Most recent check is i=9: ok=true, status=200, total_ms=190.
 		first := rows[0]
 		if !first.OK || first.StatusCode != 200 || first.TotalMs != 190 {
 			t.Fatalf("unexpected most recent row: %+v", first)
@@ -161,7 +150,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if len(all) != 10 {
 			t.Fatalf("len(all) = %d, want 10", len(all))
 		}
-		// First two (oldest) failed.
 		last := all[len(all)-1]
 		if last.OK || last.StatusCode != 500 || last.Error != "boom" {
 			t.Fatalf("unexpected oldest row: %+v", last)
@@ -184,8 +172,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if total != 10 || ok != 8 {
 			t.Fatalf("sum(bars) = total=%d ok=%d, want total=10 ok=8", total, ok)
 		}
-		// The window's last 10 minutes have no checks, so at least one
-		// trailing bucket must be structurally zero.
 		var zeros int
 		for _, b := range bars {
 			if b.Total == 0 {
@@ -197,10 +183,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		}
 	})
 
-	// BatchParity: LatencyBatch/BarsBatch должны давать ПОБАЙТНО тот же результат,
-	// что одиночные Latency/Bars, для КАЖДОГО монитора. Два монитора засеяны
-	// разными данными, поэтому мис-ключевание (данные одного приписаны другому)
-	// провалит DeepEqual — обычный smoke-тест списка его бы не поймал.
 	t.Run("BatchParity", func(t *testing.T) {
 		ids := []int64{monitorID, otherMonitorID}
 		latBatch, err := q.LatencyBatch(ctx, ids, windowFrom, windowTo, 10*time.Minute)
@@ -255,10 +237,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		}
 	})
 
-	// UptimeExcludingBatch должен побайтно совпадать с одиночным Uptime (тем
-	// же exclude-интервалом) для каждого монитора набора — иначе это была бы
-	// не проверка, что перевод статус-страницы на батч ничего не изменил, а
-	// проверка, что батч-метод вообще что-то возвращает.
 	t.Run("UptimeExcludingBatch", func(t *testing.T) {
 		excl := []uptime.Interval{{From: windowFrom, To: windowFrom.Add(10 * time.Minute)}}
 		ids := []int64{monitorID, otherMonitorID}
@@ -278,8 +256,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 				t.Errorf("UptimeExcludingBatch[%d] = %+v, Uptime(%d) = %+v", id, got[id], id, single)
 			}
 		}
-		// Тот же exclude покрывает оба failed-чека monitorID целиком (см.
-		// подтест "Uptime" выше) — 8/8, а не 10/8.
 		if got[monitorID].Total != 8 || got[monitorID].OK != 8 {
 			t.Fatalf("got[monitorID] = %+v, want Total=8 OK=8 (exclude покрывает оба failed-чека)", got[monitorID])
 		}
@@ -295,9 +271,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		}
 	})
 
-	// Монитор без единой проверки в окне присутствует в карте с нулевым
-	// UptimeStat, а не отсутствует — тот же приём, что у UptimeBatch/
-	// StatesBatch: вызывающий не обязан отдельно проверять comma-ok.
 	t.Run("UptimeExcludingBatchZeroForUnknownMonitor", func(t *testing.T) {
 		const noSuchMonitor = int64(999999)
 		got, err := q.UptimeExcludingBatch(ctx, []int64{noSuchMonitor}, windowFrom, windowTo, nil)

@@ -11,26 +11,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// migration0029Path — путь к файлу миграции относительно каталога пакета:
-// go test запускает тесты с рабочей директорией внутри internal/db, а
-// go:embed пакует те же самые файлы без преобразований — поэтому чтение
-// исходника напрямую даёт ровно то содержимое, которое увидит embed.FS.
-// Пакет db_test (внешний) не видит неэкспортированную pgMigrations, поэтому
-// путь через os.ReadFile, а не через саму embed.FS.
+// go:embed пакует те же файлы без преобразований, поэтому os.ReadFile даёт то же содержимое, что
+// увидит embed.FS; db_test (внешний пакет) не видит неэкспортированную pgMigrations.
 const migration0029Path = "migrations/pg/0029_team_membership_invariant.up.sql"
 
-// TestMigration0029IsMarkedBreaking — маркер обратной совместимости 0029
-// закреплён отдельно от общего стража destructiveSQL
-// (internal/db/compat_internal_test.go, TestBreakingMigrationsAreMarkedBreaking).
-//
-// Тот страж не видит эту миграцию разрушительной: он ищет только DROP COLUMN,
-// DROP TABLE, RENAME COLUMN, RENAME TO, а 0029 разрушительна через DROP
-// CONSTRAINT и ALTER COLUMN ... SET NOT NULL — форм, которых страж не знает.
-// Расширение списка форм — работа другого подпроекта; до тех пор для этой
-// конкретной миграции, ломающей совместимость, маркер закрепляется точечно
-// здесь. Без этого теста смена маркера на «yes» осталась бы незамеченной, и
-// гейт схемы (internal/db/compat.go) разрешил бы откат релиза через
-// необратимую миграцию.
+// Общий страж destructiveSQL не видит эту миграцию разрушительной — распознаёт только DROP COLUMN/
+// TABLE/RENAME, а тут DROP CONSTRAINT и SET NOT NULL; маркер закрепляется точечно здесь.
 func TestMigration0029IsMarkedBreaking(t *testing.T) {
 	content, err := os.ReadFile(migration0029Path)
 	if err != nil {
@@ -43,10 +29,7 @@ func TestMigration0029IsMarkedBreaking(t *testing.T) {
 	}
 }
 
-// TestMigrate0029CleansOrphanedTeamMembers — миграция лечит следы дефекта на
-// работающих установках: строки team_members участников, которых уже
-// исключили из организации. Без чистки ограничение просто не установится, но
-// проверяем именно результат — что легитимное членство осталось, а висячее нет.
+// Миграция чистит висячие team_members, оставленные старым RemoveMember без записи в org_members.
 func TestMigrate0029CleansOrphanedTeamMembers(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -102,7 +85,6 @@ func TestMigrate0029CleansOrphanedTeamMembers(t *testing.T) {
 		t.Fatalf("team_members = %v, want [%d]: висячее членство не вычищено", users, goodUser)
 	}
 
-	// org_id заполнен и совпадает с организацией команды.
 	var gotOrg int64
 	if err := pool.QueryRow(ctx,
 		"SELECT org_id FROM team_members WHERE team_id = $1", teamID).Scan(&gotOrg); err != nil {
@@ -113,9 +95,7 @@ func TestMigrate0029CleansOrphanedTeamMembers(t *testing.T) {
 	}
 }
 
-// TestMigrate0029ReplacesTeamFK — старый одиночный внешний ключ снимается,
-// два составных появляются. Проверяем имена: down-миграция восстанавливает
-// именно team_members_team_id_fkey, и если имя разойдётся, откат сломается.
+// Проверяем имена ограничений — down-миграция восстанавливает team_members_team_id_fkey именно по имени.
 func TestMigrate0029ReplacesTeamFK(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

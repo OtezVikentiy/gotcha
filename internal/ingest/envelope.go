@@ -1,5 +1,3 @@
-// Package ingest принимает события по Sentry-протоколу: envelope/store
-// эндпойнты, DSN-аутентификация, парсинг и конвейер обработки.
 package ingest
 
 import (
@@ -10,47 +8,26 @@ import (
 	"io"
 )
 
-// ErrTooLarge — item в envelope превышает лимит размера.
 var ErrTooLarge = errors.New("ingest: envelope item too large")
 
-// maxEnvelopeItems — верхняя граница числа обрабатываемых item'ов (event+
-// transaction+profile) в ОДНОМ envelope'е. Квота списывается раз на HTTP-запрос,
-// а не на item (см. QuotaChecker), поэтому без этого предела один envelope с
-// сотнями тысяч крошечных item'ов даёт неограниченную амплификацию: одна
-// единица квоты → сотни тысяч enqueue/upsert'ов в PG/CH. Тело уже ограничено по
-// БАЙТАМ (Handler.body), это — ограничение по ШТУКАМ. Согласован с maxSpans=1000.
-// Лишние item'ы отбрасываются (учитываются в Envelope.Dropped), уже разобранные
-// принимаются — как maxSpans роняет лишние спаны, но оставляет транзакцию.
+// Квота списывается на HTTP-запрос, а не на item — без предела envelope с
+// тысячами item'ов давал бы неограниченную амплификацию. Согласован с maxSpans=1000.
 const maxEnvelopeItems = 1000
 
-// Envelope — распакованный envelope: заголовок и payload'ы item'ов, которые мы
-// умеем обрабатывать: события (type=event) и транзакции (type=transaction).
 type Envelope struct {
 	EventID string
 	Events  [][]byte
-	// Transactions — payload'ы item'ов type=transaction; идут отдельным путём
-	// (свой парсер, своя квота, своё семплирование), см. Handler.envelope.
+	// Свой парсер, своя квота, своё семплирование — см. Handler.envelope.
 	Transactions [][]byte
-	// Profiles — payload'ы item'ов type=profile (этап 7); свой парсер
-	// (profile.ParseSentry) и своя квота, см. Handler.envelope.
+	// Свой парсер (profile.ParseSentry) и своя квота — см. Handler.envelope.
 	Profiles [][]byte
-	// Dropped — число известных item'ов (event/transaction/profile),
-	// отброшенных по лимиту maxEnvelopeItems. Handler считает их дропом
-	// (best-effort) и логирует; 0 — предел не достигнут.
-	Dropped int
-	// ScopeRejected — сколько item'ов КАЖДОГО сигнала отброшено потому, что тип
-	// ключа к нему не допущен (§4.2 спеки). Отбор поштучный, а не «весь envelope
-	// в отказ»: item'ы независимы, и браузерное событие не должно теряться из-за
-	// соседнего profile-item'а. nil/пустая карта — ничего не отброшено.
+	Dropped  int
+	// Поштучный отбор, не «весь envelope в отказ»: item'ы независимы, событие не
+	// должно теряться из-за соседнего profile-item'а. nil/пустая карта — ничего не отброшено.
 	ScopeRejected map[IngestSignal]int
 }
 
-// ParseEnvelope разбирает envelope-формат Sentry: JSON-заголовок, затем
-// пары (JSON-заголовок item'а, payload). Item'ы прочих типов (session,
-// attachment, client_report...) пропускаются.
-//
-// allow — допущен ли тип ключа к сигналу item'а; nil означает «всё
-// разрешено» (разбор без скоупа, как в тестах формата).
+// allow=nil — всё разрешено (разбор без скоупа, как в тестах формата).
 func ParseEnvelope(r io.Reader, maxItem int64, allow func(IngestSignal) bool) (*Envelope, error) {
 	br := bufio.NewReader(r)
 
@@ -112,10 +89,8 @@ func ParseEnvelope(r io.Reader, maxItem int64, allow func(IngestSignal) bool) (*
 			}
 		}
 
-		// Считаем и каппим только ИЗВЕСТНЫЕ типы: прочие (session/attachment/
-		// client_report) и так игнорируются и амплификацию не создают. Сверх
-		// предела payload уже прочитан из потока (иначе не сдвинуть reader), но
-		// НЕ сохраняется — downstream-работа (enqueue/upsert) ограничена.
+		// Считаем только известные типы — прочие не создают амплификацию. Сверх предела
+		// payload уже прочитан из потока (иначе не сдвинуть reader), но не сохраняется.
 		switch ih.Type {
 		case "event", "transaction", "profile":
 			known++
@@ -143,9 +118,8 @@ func ParseEnvelope(r io.Reader, maxItem int64, allow func(IngestSignal) bool) (*
 	}
 }
 
-// envelopeItemSignal — сигнал приёма, которому соответствует тип item'а
-// envelope'а. Соответствие однозначно: других известных типов в switch выше
-// нет, а неизвестные до сюда не доходят.
+// Соответствие однозначно: других известных типов в switch выше нет, а
+// неизвестные до сюда не доходят.
 func envelopeItemSignal(itemType string) IngestSignal {
 	switch itemType {
 	case "transaction":
@@ -157,8 +131,7 @@ func envelopeItemSignal(itemType string) IngestSignal {
 	}
 }
 
-// readLine читает строку без завершающего \n, не давая ей вырасти
-// больше limit байт (защита от memory exhaustion на untrusted входе).
+// Без завершающего \n; лимит — защита от memory exhaustion на untrusted входе.
 func readLine(br *bufio.Reader, limit int64) ([]byte, error) {
 	var buf []byte
 	for {

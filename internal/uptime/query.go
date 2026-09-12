@@ -10,7 +10,6 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// Query — чтение агрегатов check_results из ClickHouse.
 type Query struct {
 	conn driver.Conn
 }
@@ -19,8 +18,6 @@ func NewQuery(conn driver.Conn) *Query {
 	return &Query{conn: conn}
 }
 
-// CheckRow — одна проверка, прочитанная как есть (для ленты "последние
-// проверки").
 type CheckRow struct {
 	Timestamp  time.Time
 	Region     string
@@ -31,22 +28,18 @@ type CheckRow struct {
 	TotalMs, DNSMs, ConnectMs, TLSMs, TTFBMs uint32
 }
 
-// LatencyPoint — точка временного ряда средней латентности: T — начало
-// интервала (UTC), Avg* — средние по проверкам, попавшим в интервал (0, если
-// проверок не было).
+// Avg* — среднее по проверкам, попавшим в интервал; 0, если проверок не было.
 type LatencyPoint struct {
 	T time.Time
 
 	AvgTotalMs, AvgDNSMs, AvgConnectMs, AvgTLSMs, AvgTTFBMs uint32
 }
 
-// UptimeStat — доля успешных проверок за период.
 type UptimeStat struct {
 	Total, OK uint64
 }
 
-// Ratio возвращает долю успешных проверок (OK/Total); 0, если проверок не
-// было (Total == 0), а не деление на ноль.
+// 0, если проверок не было (Total == 0), а не деление на ноль.
 func (s UptimeStat) Ratio() float64 {
 	if s.Total == 0 {
 		return 0
@@ -54,25 +47,20 @@ func (s UptimeStat) Ratio() float64 {
 	return float64(s.OK) / float64(s.Total)
 }
 
-// Interval — полуоткрытый промежуток времени [From, To), обычно окно
-// обслуживания, которое нужно исключить из расчёта аптайма.
+// [From, To) — полуоткрытый промежуток, обычно окно обслуживания.
 type Interval struct {
 	From, To time.Time
 }
 
-// CountBucket — корзина ряда good/total проверок за интервал, отдаваемая
-// SLI-провайдерам (internal/slo). Отдельный тип (не общий с trace и не slo.Bucket)
-// специально: uptime не должен импортировать ни slo, ни trace — конвертацию в
-// slo.Bucket делает провайдер. T — начало корзины (UTC).
+// отдельный тип, не общий с trace или slo.Bucket: uptime не должен
+// импортировать ни slo, ни trace — конвертацию делает провайдер.
 type CountBucket struct {
 	T           time.Time
 	Good, Total uint64
 }
 
-// UpBuckets строит ряд good/total проверок монитора за [from, to) с шагом step
-// из check_results — источник uptime-SLI. good = sum(ok), total = count().
-// Окна обслуживания здесь НЕ исключаются: это делает провайдер (по центру
-// корзины), единообразно со всеми SLI. Пустые корзины в ряд не попадают.
+// окна обслуживания здесь НЕ исключаются — это делает провайдер (по центру
+// корзины), единообразно со всеми SLI.
 func (q *Query) UpBuckets(ctx context.Context, monitorID int64, from, to time.Time, step time.Duration) ([]CountBucket, error) {
 	stepSec := int64(step / time.Second)
 	if stepSec <= 0 {
@@ -107,8 +95,6 @@ func (q *Query) UpBuckets(ctx context.Context, monitorID int64, from, to time.Ti
 	return out, nil
 }
 
-// Recent возвращает до limit последних проверок монитора, отсортированных по
-// timestamp DESC (сначала самая новая).
 func (q *Query) Recent(ctx context.Context, monitorID int64, limit int) ([]CheckRow, error) {
 	if limit <= 0 {
 		return nil, nil
@@ -145,13 +131,8 @@ func (q *Query) Recent(ctx context.Context, monitorID int64, limit int) ([]Check
 	return out, nil
 }
 
-// Latency строит временной ряд средней латентности монитора на окне
-// [from, to) с шагом step: точки идут по шагу от from до to включительно
-// (хронологически), пропуски (интервалы без проверок) заполняются нулями.
-// Группировка выровнена по абсолютной сетке (toStartOfInterval),
-// выровненной по Unix epoch — как в event.Query.Series (см.
-// internal/event/query.go): time.Truncate здесь не годится, сетка должна
-// совпадать с той, что строит ClickHouse.
+// сетка выровнена по Unix epoch (toStartOfInterval) — time.Truncate здесь не
+// годится, она должна совпадать с той, что строит ClickHouse.
 func (q *Query) Latency(ctx context.Context, monitorID int64, from, to time.Time, step time.Duration) ([]LatencyPoint, error) {
 	stepSec := int64(step / time.Second)
 	if stepSec <= 0 {
@@ -189,12 +170,8 @@ func (q *Query) Latency(ctx context.Context, monitorID int64, from, to time.Time
 	fromUnix := from.UTC().Unix()
 	toUnix := to.UTC().Unix()
 	startUnix := (fromUnix / stepSec) * stepSec
-	// Последняя корзина — та, что СОДЕРЖИТ момент to, а не следующая за ним.
-	// Раньше граница округлялась ВВЕРХ за to, а цикл шёл по `<=`, поэтому в ряд
-	// добавлялась корзина, начинающаяся в to или позже: запрос фильтрует ts < to,
-	// так что данных в ней не могло быть ни при каких условиях. Спарклайны в
-	// списках (мониторы, эндпойнты) не проходят через fillSeries и потому
-	// заканчивались принудительным падением в ноль.
+	// последняя корзина — та, что СОДЕРЖИТ момент to, не следующая за ним:
+	// запрос фильтрует ts < to, так что в следующей не может быть данных.
 	endUnix := ((toUnix - 1) / stepSec) * stepSec
 	if endUnix < startUnix {
 		endUnix = startUnix
@@ -210,12 +187,8 @@ func (q *Query) Latency(ctx context.Context, monitorID int64, from, to time.Time
 	return out, nil
 }
 
-// Uptime считает долю успешных проверок монитора на окне [from, to),
-// исключая проверки, попадающие в любой из intervals exclude (обычно окна
-// обслуживания). Условие исключения собирается из параметров запроса
-// (WHERE ... AND NOT (timestamp >= ? AND timestamp < ?) на каждый interval),
-// значения никогда не конкатенируются в текст запроса. Пустой exclude — без
-// дополнительного условия.
+// условие исключения собирается из параметров запроса — значения никогда не
+// конкатенируются в текст запроса.
 func (q *Query) Uptime(ctx context.Context, monitorID int64, from, to time.Time, exclude []Interval) (UptimeStat, error) {
 	query := `SELECT count(), sum(ok) FROM check_results WHERE monitor_id = ? AND timestamp >= ? AND timestamp < ?`
 	args := []any{uint64(monitorID), from, to}
@@ -227,9 +200,8 @@ func (q *Query) Uptime(ctx context.Context, monitorID int64, from, to time.Time,
 	row := q.conn.QueryRow(ctx, query, args...)
 	var total, ok uint64
 	if err := row.Scan(&total, &ok); err != nil {
-		// Пустое окно: агрегат без GROUP BY обычно отдаёт строку с нулями, но при
-		// empty_result_for_aggregation_by_empty_set=1 вернёт ErrNoRows — трактуем
-		// как «проверок не было» (Total=0), а не как жёсткую ошибку.
+		// агрегат без GROUP BY обычно отдаёт строку нулей, но при
+		// empty_result_for_aggregation_by_empty_set=1 вернёт ErrNoRows.
 		if errors.Is(err, sql.ErrNoRows) {
 			return UptimeStat{}, nil
 		}
@@ -238,12 +210,8 @@ func (q *Query) Uptime(ctx context.Context, monitorID int64, from, to time.Time,
 	return UptimeStat{Total: total, OK: ok}, nil
 }
 
-// UptimeBatch считает долю успешных проверок на окне [from, to) для каждого
-// из monitorIDs за один запрос — для списочного представления мониторов.
-// В отличие от Uptime, окна обслуживания не учитываются: это «сырой» аптайм
-// за период (например, за последние 24 часа), намеренно не скорректированный
-// по exclude-интервалам — список показывает как есть. Мониторы без единой
-// проверки в окне присутствуют в результате с UptimeStat{0, 0}.
+// в отличие от Uptime, окна обслуживания не учитываются — это «сырой» аптайм,
+// список показывает как есть. Мониторы без проверок — UptimeStat{0, 0}.
 func (q *Query) UptimeBatch(ctx context.Context, monitorIDs []int64, from, to time.Time) (map[int64]UptimeStat, error) {
 	out := make(map[int64]UptimeStat, len(monitorIDs))
 	if len(monitorIDs) == 0 {
@@ -283,24 +251,8 @@ func (q *Query) UptimeBatch(ctx context.Context, monitorIDs []int64, from, to ti
 	return out, nil
 }
 
-// UptimeExcludingBatch — то же, что Uptime, но для набора monitorIDs одним
-// запросом, с теми же исключающими интервалами exclude для ВСЕХ мониторов
-// набора сразу (публичная статус-страница строит exclude один раз из окон
-// обслуживания проекта страницы — оно общее для всех её мониторов, в
-// отличие от per-монитора разных окон). Это самый тяжёлый из трёх поштучных
-// запросов, которые страница ещё делала в цикле по мониторам (агрегат по
-// всем проверкам за окно, а не по корзинам, как в BarsBatch) — на сорока
-// мониторах и девяностодневном окне он один упирался в таймаут сборки
-// страницы чаще остальных.
-//
-// В отличие от UptimeBatch (см. её комментарий) — та НЕ учитывает окна
-// обслуживания намеренно, для «сырого» аптайма списка мониторов за короткое
-// окно. Здесь ровно наоборот: без exclude 90-дневный аптайм на публичной
-// странице занижался бы плановым обслуживанием, которое не должно считаться
-// downtime.
-//
-// Мониторы без единой проверки в окне присутствуют в результате с
-// UptimeStat{0, 0}, как и в UptimeBatch.
+// в отличие от UptimeBatch, здесь exclude учитывается — без него 90-дневный
+// аптайм на публичной странице занижался бы плановым обслуживанием.
 func (q *Query) UptimeExcludingBatch(ctx context.Context, monitorIDs []int64, from, to time.Time, exclude []Interval) (map[int64]UptimeStat, error) {
 	out := make(map[int64]UptimeStat, len(monitorIDs))
 	if len(monitorIDs) == 0 {
@@ -341,10 +293,6 @@ func (q *Query) UptimeExcludingBatch(ctx context.Context, monitorIDs []int64, fr
 	return out, nil
 }
 
-// LatencyBatch — то же, что Latency, но сразу для набора мониторов одним
-// запросом (GROUP BY monitor_id, bucket), с той же сеткой заливки на монитор.
-// Списочная страница мониторов иначе звала Latency() в цикле. Каждый монитор в
-// карте получает полный, выровненный по epoch ряд (пустые бакеты — нулевые).
 func (q *Query) LatencyBatch(ctx context.Context, monitorIDs []int64, from, to time.Time, step time.Duration) (map[int64][]LatencyPoint, error) {
 	out := make(map[int64][]LatencyPoint, len(monitorIDs))
 	if len(monitorIDs) == 0 {
@@ -391,16 +339,11 @@ func (q *Query) LatencyBatch(ctx context.Context, monitorIDs []int64, from, to t
 		return nil, fmt.Errorf("uptime: latency batch: %w", err)
 	}
 
-	// Сетка, выровненная по epoch, как в Latency — одинаковая для всех мониторов.
 	fromUnix := from.UTC().Unix()
 	toUnix := to.UTC().Unix()
 	startUnix := (fromUnix / stepSec) * stepSec
-	// Последняя корзина — та, что СОДЕРЖИТ момент to, а не следующая за ним.
-	// Раньше граница округлялась ВВЕРХ за to, а цикл шёл по `<=`, поэтому в ряд
-	// добавлялась корзина, начинающаяся в to или позже: запрос фильтрует ts < to,
-	// так что данных в ней не могло быть ни при каких условиях. Спарклайны в
-	// списках (мониторы, эндпойнты) не проходят через fillSeries и потому
-	// заканчивались принудительным падением в ноль.
+	// последняя корзина — та, что СОДЕРЖИТ момент to, не следующая за ним:
+	// запрос фильтрует ts < to, так что в следующей не может быть данных.
 	endUnix := ((toUnix - 1) / stepSec) * stepSec
 	if endUnix < startUnix {
 		endUnix = startUnix
@@ -418,15 +361,10 @@ func (q *Query) LatencyBatch(ctx context.Context, monitorIDs []int64, from, to t
 	return out, nil
 }
 
-// BarsBatch — то же, что Bars, но для набора мониторов одним запросом (GROUP BY
-// monitor_id, bucket). Каждый монитор в карте получает срез длины buckets
-// (пустые корзины структурно нулевые).
 func (q *Query) BarsBatch(ctx context.Context, monitorIDs []int64, from, to time.Time, buckets int) (map[int64][]UptimeStat, error) {
 	out := make(map[int64][]UptimeStat, len(monitorIDs))
-	// Вырожденный вход отсекаем ДО make([]UptimeStat, buckets): отрицательный
-	// buckets иначе паникует в makeslice (тот же guard, что у одиночного Bars —
-	// см. TestBarsGuardBeforeAllocate). Для вырожденного входа отдаём nil-срезы,
-	// как Bars, а не нулевой длины.
+	// отсекаем вырожденный вход ДО make([]UptimeStat, buckets) — отрицательный
+	// buckets иначе паникует в makeslice.
 	if len(monitorIDs) == 0 || buckets <= 0 || !to.After(from) {
 		for _, id := range monitorIDs {
 			out[id] = nil
@@ -482,16 +420,8 @@ func (q *Query) BarsBatch(ctx context.Context, monitorIDs []int64, from, to time
 	return out, nil
 }
 
-// Bars разбивает [from, to) на buckets равных корзин и считает в каждой
-// UptimeStat — для полоски доступности (например, 24 корзины за последние
-// 24 часа, 90 — за 90 дней). Корзины без проверок остаются структурно
-// нулевыми (UptimeStat{0, 0}), а не отсутствуют в слайсе: длина результата
-// всегда равна buckets.
-//
-// Продовые вызовы вытеснены BarsBatch (списки/статус-страница делают один запрос
-// на N мониторов); Bars остаётся как эталонная реализация арифметики корзин для
-// теста паритета BarsBatch (см. query_test.go). Удалять до появления новых
-// одиночных потребителей не нужно — на нём держится проверка батч-версии.
+// продовые вызовы вытеснены BarsBatch — Bars остаётся эталонной реализацией
+// арифметики корзин для теста паритета, не удалять.
 func (q *Query) Bars(ctx context.Context, monitorID int64, from, to time.Time, buckets int) ([]UptimeStat, error) {
 	if buckets <= 0 || !to.After(from) {
 		return nil, nil

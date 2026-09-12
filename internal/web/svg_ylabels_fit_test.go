@@ -17,12 +17,9 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// yAxisLabelRe — подписи оси Y: якорь end + dominant-baseline=middle, этим
-// они отличаются от подписей оси X и версий деплоя.
+// якорь end + dominant-baseline=middle отличает подписи оси Y от оси X и версий деплоя.
 var yAxisLabelRe = regexp.MustCompile(`<text x="([-\d.]+)" y="[-\d.]+" text-anchor="end" dominant-baseline="middle" fill="currentColor">([^<]*)</text>`)
 
-// logSeriesFixture — ряды объёма логов по всем severity (как отдаёт
-// log.Query.Histogram: добиты нулями), info с пиком peak в первой корзине.
 func logSeriesFixture(n int, peak int64) map[string][]int64 {
 	series := map[string][]int64{}
 	for _, sev := range log.Severities {
@@ -37,21 +34,12 @@ func logSeriesFixture(n int, peak int64) map[string][]int64 {
 	return series
 }
 
-// yAxisLabelSites — сколько мест в svg*.go рисуют подписи оси Y (якорь end +
-// dominant-baseline=middle): writeYGrid (svgaxis.go), chartBars ×2 (пустой и
-// обычный), metricSeriesMarkup (svg.go), sloBudgetBurndownMarkup (svg_slo.go).
-// Новое место обязано попасть и сюда, и в таблицу теста ниже — сторож
-// TestYAxisLabelSitesCovered считает их по исходникам.
+// новое место с подписью оси Y — сюда и в таблицу теста ниже, иначе
+// просядет TestYAxisLabelSitesCovered.
 const yAxisLabelSites = 5
 
-// TestChartsYLabelsFitAtTierWidth — каждый генератор графика с осью Y
-// раздвигает левое поле под свои подписи (fitYLabels/yAxisPadL) ДО
-// рисования: ни одна подпись не выходит за левый край вьюбокса на
-// калиброванном тире. Фикстуры подобраны так, чтобы подписи были шире поля
-// вызывающего (48-64): «200ms»/«400ms» на chart-vb1200 ≈75 единиц, «500ms»
-// на chart-vb720 ≈45+6 > 48, «10000» на логах, «1000»+ на счётчиках. Тест
-// на сгенерированный SVG, а не на fitYLabels напрямую: именно вызов в
-// каждом генераторе — то, что легко потерять.
+// проверяем сгенерированный SVG, не fitYLabels напрямую — забыть вызвать
+// его в конкретном генераторе легко.
 func TestChartsYLabelsFitAtTierWidth(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
@@ -117,12 +105,6 @@ func TestChartsYLabelsFitAtTierWidth(t *testing.T) {
 	}
 }
 
-// TestYAxisLabelSitesCovered — сторож исчерпывающести таблицы выше: число
-// мест в svg*.go, печатающих подпись оси Y (якорь end + dominant-baseline=
-// middle), обязано совпадать с yAxisLabelSites. Новый генератор с осью Y
-// краснит тест, пока не будет добавлен в TestChartsYLabelsFitAtTierWidth
-// (и не получит yAxisPadL/fitYLabels), — ревью задачи 9 нашло седьмой
-// генератор (SLO) именно потому, что список велся по памяти.
 func TestYAxisLabelSitesCovered(t *testing.T) {
 	files, err := filepath.Glob("svg*.go")
 	if err != nil {

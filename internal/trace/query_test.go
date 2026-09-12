@@ -12,33 +12,26 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// TestQueryReadsFromClickHouse поднимает один CH-контейнер, наполняет его через
-// SpanWriter и прогоняет все методы trace.Query подтестами (как
-// event/uptime query_test): контейнер дорогой, поэтому один на всё.
 func TestQueryReadsFromClickHouse(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
 	const projectID = int64(55)
-	const projectID2 = int64(56) // отдельный проект для тестов LIMIT/индексов
-	const projectID3 = int64(57) // отдельный проект для Web Vitals
-	const projectID4 = int64(58) // отдельный проект для запросов регрессий (данные по дням)
-	const projectID5 = int64(59) // отдельный проект для OffendingSpans (не влияет на Endpoints)
-	const projectID6 = int64(60) // отдельный проект для Dependencies
-	const projectID7 = int64(61) // «чужой» проект для Dependencies (проверка изоляции)
+	const projectID2 = int64(56)
+	const projectID3 = int64(57)
+	const projectID4 = int64(58)
+	const projectID5 = int64(59)
+	const projectID6 = int64(60)
+	const projectID7 = int64(61)
 
 	w := trace.NewSpanWriter(conn)
 	go w.Run()
 
-	// Окно [base, base+1h) в прошлом, base выровнен по часу (кратен 5 минутам).
 	base := time.Now().UTC().Truncate(time.Hour).Add(-2 * time.Hour)
 	from := base
 	to := base.Add(time.Hour)
 
-	// «GET /api/users», production: 100 транзакций, длительности 1000..100000 µs
-	// (i+1)·1000, разнесённые по часу (по одной каждые 36 c). Первые 10 —
-	// со статусом internal_error (failure rate = 0.10).
 	for i := 0; i < 100; i++ {
 		status := "ok"
 		if i < 10 {
@@ -58,9 +51,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		})
 	}
 
-	// «GET /api/users», staging: 5 транзакций (короткие, 1000 µs) — для
-	// проверки фильтра по окружению. Длительность мелкая нарочно, чтобы они не
-	// вклинивались в SlowestTraces (у которого фильтра по окружению нет).
 	for i := 0; i < 5; i++ {
 		at := base.Add(time.Duration(i) * time.Minute)
 		w.Add(projectID, projectID, trace.Transaction{
@@ -75,8 +65,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		})
 	}
 
-	// «GET /api/orders», production: 20 транзакций (2000 µs) — второй эндпойнт
-	// в списке.
 	for i := 0; i < 20; i++ {
 		at := base.Add(time.Duration(i) * time.Minute)
 		w.Add(projectID, projectID, trace.Transaction{
@@ -91,7 +79,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		})
 	}
 
-	// Отдельный трейс с дочерними спанами — для Trace/ProjectForTrace.
 	const wfTrace = "waterfall-trace-id"
 	wfStart := base.Add(10 * time.Minute)
 	w.Add(projectID, projectID, trace.Transaction{
@@ -111,8 +98,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		},
 	})
 
-	// «off-trace» — трейс с виновным db-спаном, несущим ПОЛНЫЙ текст запроса и
-	// data с привязкой к коду (как реальный SDK). Питает подтест OffendingSpans.
 	w.Add(projectID5, projectID5, trace.Transaction{
 		TraceID: "off-trace", SpanID: "off-root", Name: "POST /pay", Op: "http.server",
 		Status: "ok", Start: wfStart, End: wfStart.Add(950 * time.Millisecond), Environment: "production",
@@ -124,13 +109,8 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		},
 	})
 
-	// projectID2 «GET /lat»: 100 транзакций, все в первой 5-минутной корзине
-	// [base, base+5m), длительности (i+1)·1000 µs (1000..100000). База выровнена
-	// по часу, значит и по 5м, поэтому вся сотня попадает в одну корзину — тогда
-	// её p50/p95 совпадают с общими и можно проверить точный ИНДЕКС перцентиля
-	// в EndpointLatency (перепутанный qs[1]/qs[2] дал бы p75 вместо p95).
 	for i := 0; i < 100; i++ {
-		at := base.Add(time.Duration(i) * 3 * time.Second) // 0..297 c → корзина 0
+		at := base.Add(time.Duration(i) * 3 * time.Second)
 		dur := time.Duration(i+1) * 1000 * time.Microsecond
 		w.Add(projectID2, projectID2, trace.Transaction{
 			TraceID:     fmt.Sprintf("lat-%03d", i),
@@ -144,10 +124,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		})
 	}
 
-	// projectID2 «GET /apdex»: длительности ровно на границе 4T (при T=50мс это
-	// 200000 µs). Две транзакции ровно 200000 µs (== 4T) должны попасть в
-	// tolerating (граница `<=` включительна), две по 200001 µs (> 4T) — нет.
-	// Ни одна не satisfied (все > T·1000 = 50000). Apdex = (0 + 2)/(2·4) = 0.25.
 	for i := 0; i < 2; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
 		w.Add(projectID2, projectID2, trace.Transaction{
@@ -157,7 +133,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			Op:          "http.server",
 			Status:      "ok",
 			Start:       at,
-			End:         at.Add(200 * time.Millisecond), // ровно 200000 µs == 4T
+			End:         at.Add(200 * time.Millisecond),
 			Environment: "production",
 		})
 	}
@@ -170,13 +146,11 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			Op:          "http.server",
 			Status:      "ok",
 			Start:       at,
-			End:         at.Add(200*time.Millisecond + time.Microsecond), // 200001 µs > 4T
+			End:         at.Add(200*time.Millisecond + time.Microsecond),
 			Environment: "production",
 		})
 	}
 
-	// projectID2 «GET /big»: трейс с 5100 дочерними спанами (> лимита Trace),
-	// чтобы проверить, что Trace ограничивает число прочитанных строк.
 	const bigTrace = "big-trace-id"
 	bigStart := base.Add(15 * time.Minute)
 	bigSpans := make([]trace.Span, 5100)
@@ -204,9 +178,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		Spans:       bigSpans,
 	})
 
-	// projectID3: Web Vitals. «GET /home» production — 3 pageload-транзакции с
-	// lcp 2000/2400/2600 (p75≈2500, граница good) и cls 0.05, без inp; все в
-	// первой 5м-корзине [base, base+5m).
 	for i, lcp := range []float64{2000, 2400, 2600} {
 		at := base.Add(time.Duration(i) * time.Second)
 		w.Add(projectID3, projectID3, trace.Transaction{
@@ -221,8 +192,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			Measurements: map[string]float64{"lcp": lcp, "cls": 0.05},
 		})
 	}
-	// «GET /slow» production — 5 транзакций lcp 5000 (p75=5000 → poor). Замеров
-	// больше, чем у /home, поэтому идёт первой при сортировке по lcp_count DESC.
 	for i := 0; i < 5; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
 		w.Add(projectID3, projectID3, trace.Transaction{
@@ -237,8 +206,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			Measurements: map[string]float64{"lcp": 5000},
 		})
 	}
-	// «GET /home» staging — 2 транзакции lcp 9000, для проверки фильтра по
-	// окружению (production lcp_count=3, без фильтра — 5).
 	for i := 0; i < 2; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
 		w.Add(projectID3, projectID3, trace.Transaction{
@@ -254,9 +221,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		})
 	}
 
-	// «GET /api/noop» production — 4 http.server-транзакции БЕЗ measurements:
-	// MV web_vitals_5m их всё равно агрегирует (все *_count = 0), и без HAVING
-	// они бы засоряли список WebVitalsPages пустыми строками.
 	for i := 0; i < 4; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
 		w.Add(projectID3, projectID3, trace.Transaction{
@@ -271,18 +235,11 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		})
 	}
 
-	// projectID4: данные для запросов детектора регрессий, разнесённые по дням.
-	// Якорь regNow — полдень вчерашнего дня (UTC): заведомо в прошлом и вдали от
-	// полуночи, поэтому toStartOfDay кладёт свежее окно и прошлые дни в разные
-	// календарные сутки без риска пограничного дребезга.
 	regNow := time.Now().UTC().Truncate(24 * time.Hour).Add(-12 * time.Hour)
 	regRecentFrom := regNow.Add(-time.Hour)
 	regRecentTo := regNow
-	regRecentAt := regNow.Add(-30 * time.Minute) // внутри свежего окна [from,to)
+	regRecentAt := regNow.Add(-30 * time.Minute)
 
-	// Эндпойнт «GET /reg»: сегодня (свежее окно) 50 транзакций по 1000 мс →
-	// recent p95 = 1000 мс; день-1 40 по 200 мс; день-2 40 по 300 мс. Дневные
-	// p95 = [1000, 200, 300], медиана = 300 мс; всего замеров 130.
 	regDays := []struct {
 		at    time.Time
 		durMs int
@@ -307,9 +264,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		}
 	}
 
-	// Страница «GET /vpage» с lcp: сегодня 30 замеров lcp 2000 → recent p75 =
-	// 2000; день-1 20 по 500; день-2 20 по 800. Дневные p75 = [2000, 500, 800],
-	// медиана = 800; всего замеров 70.
 	vDays := []struct {
 		at  time.Time
 		lcp float64
@@ -335,8 +289,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		}
 	}
 
-	// Страница «GET /vpage2» с 5 замерами lcp сегодня — низкотрафичная, для
-	// проверки ранжирования TopVitalPages (её меньше, чем у /vpage).
 	for i := 0; i < 5; i++ {
 		w.Add(projectID4, projectID4, trace.Transaction{
 			TraceID:      fmt.Sprintf("vp2-%03d", i),
@@ -351,16 +303,11 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		})
 	}
 
-	// projectID6: трейс с client-op спанами разных видов — данные для
-	// Dependencies. Корень — обычная http.server-транзакция (сама зависимостью
-	// не является), дочерние спаны несут db/cache/http-операции.
 	depsAt := base.Add(30 * time.Minute)
 	w.Add(projectID6, projectID6, trace.Transaction{
 		TraceID: "deps-trace", SpanID: "deps-root", Name: "GET /api/checkout", Op: "http.server",
 		Status: "ok", Start: depsAt, End: depsAt.Add(200 * time.Millisecond), Environment: "production",
 		Spans: []trace.Span{
-			// SQL БД (db.system.name) — 2 вызова, 1 ошибка; чтение + запись по
-			// глаголу из description → направление Both.
 			{SpanID: "deps-db1", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
 				Description: "SELECT id FROM orders WHERE id = $1",
 				Start:       depsAt, End: depsAt.Add(3000 * time.Microsecond),
@@ -369,8 +316,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 				Description: "INSERT INTO orders (id) VALUES ($1)",
 				Start:       depsAt, End: depsAt.Add(9000 * time.Microsecond),
 				Data: map[string]any{"db.system.name": "postgresql"}},
-			// БД только на чтение: SELECT, CTE (WITH … SELECT) и глагол в нижнем
-			// регистре — все три должны классифицироваться как чтение → In.
 			{SpanID: "deps-ro1", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
 				Description: "SELECT 1",
 				Start:       depsAt, End: depsAt.Add(1000 * time.Microsecond),
@@ -383,14 +328,10 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 				Description: "select * from t",
 				Start:       depsAt, End: depsAt.Add(1000 * time.Microsecond),
 				Data: map[string]any{"db.system.name": "readonly-db"}},
-			// ведущие пробелы перед глаголом — регэксп обязан их пропускать (\s*).
 			{SpanID: "deps-ro4", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
 				Description: "   SELECT 1",
 				Start:       depsAt, End: depsAt.Add(1000 * time.Microsecond),
 				Data: map[string]any{"db.system.name": "readonly-db"}},
-			// SQL-спаны без глагола: BEGIN (не в списках) и «1 SELECT» (первое слово —
-			// не буквенное; без анкера ^ регэксп вытянул бы SELECT из середины) →
-			// у цели ни чтения, ни записи → направление None.
 			{SpanID: "deps-txn", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
 				Description: "BEGIN",
 				Start:       depsAt, End: depsAt.Add(100 * time.Microsecond),
@@ -399,85 +340,61 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 				Description: "1 SELECT",
 				Start:       depsAt, End: depsAt.Add(100 * time.Microsecond),
 				Data: map[string]any{"db.system.name": "sqlite"}},
-			// старый ключ атрибута db.operation (fallback после db.operation.name):
-			// UPDATE побеждает description «SELECT 1» → Out.
 			{SpanID: "deps-oldop", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
 				Description: "SELECT 1",
 				Start:       depsAt, End: depsAt.Add(1000 * time.Microsecond),
 				Data: map[string]any{"db.system.name": "oldop-db", "db.operation": "UPDATE"}},
-			// пустой атрибут db.operation — не глагол, берём description → чтение.
 			{SpanID: "deps-emptyop", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
 				Description: "SELECT 1",
 				Start:       depsAt, End: depsAt.Add(1000 * time.Microsecond),
 				Data: map[string]any{"db.system.name": "emptyop-db", "db.operation": ""}},
-			// http-атрибут у db-спана игнорируется: глагол берётся из description → In.
 			{SpanID: "deps-crossattr-db", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
 				Description: "SELECT 1",
 				Start:       depsAt, End: depsAt.Add(1000 * time.Microsecond),
 				Data: map[string]any{"db.system.name": "crossattr-db", "http.request.method": "POST"}},
-			// кеш redis: чтение (HGET) + запись (SET) → Both.
 			{SpanID: "deps-redis", ParentSpanID: "deps-root", Op: "db.redis", Status: "ok",
 				Description: "HGET k",
 				Start:       depsAt, End: depsAt.Add(500 * time.Microsecond)},
 			{SpanID: "deps-redis2", ParentSpanID: "deps-root", Op: "db.redis", Status: "ok",
 				Description: "SET k v",
 				Start:       depsAt, End: depsAt.Add(500 * time.Microsecond)},
-			// кеш memcached: только чтение, команда в нижнем регистре → In.
 			{SpanID: "deps-memcached", ParentSpanID: "deps-root", Op: "db.memcached", Status: "ok",
 				Description: "get k",
 				Start:       depsAt, End: depsAt.Add(300 * time.Microsecond)},
-			// memcached flush_all — глагол с подчёркиванием, запись.
 			{SpanID: "deps-memcached2", ParentSpanID: "deps-root", Op: "db.memcached", Status: "ok",
 				Description: "flush_all",
 				Start:       depsAt, End: depsAt.Add(300 * time.Microsecond)},
-			// старый ключ db.system (coalesce-ветка) — mysql. Атрибут
-			// db.operation.name важнее description: INSERT побеждает SELECT → Out.
 			{SpanID: "deps-mysql", ParentSpanID: "deps-root", Op: "db.sql.query", Status: "ok",
 				Description: "SELECT 1",
 				Start:       depsAt, End: depsAt.Add(2000 * time.Microsecond),
 				Data: map[string]any{"db.system": "mysql", "db.operation.name": "INSERT"}},
-			// внешний http (server.address); глагол из description → POST → Out.
 			{SpanID: "deps-stripe", ParentSpanID: "deps-root", Op: "http.client", Status: "ok",
 				Description: "POST https://api.stripe.com/v1/charges",
 				Start:       depsAt, End: depsAt.Add(60000 * time.Microsecond),
 				Data: map[string]any{"server.address": "api.stripe.com"}},
-			// внешний http через url.full (coalesce-ветка) — host извлекается domain();
-			// GET → In.
 			{SpanID: "deps-cdn", ParentSpanID: "deps-root", Op: "http.client", Status: "ok",
 				Description: "GET https://cdn.example.com/asset.js",
 				Start:       depsAt, End: depsAt.Add(30000 * time.Microsecond),
 				Data: map[string]any{"url.full": "https://cdn.example.com/asset.js"}},
-			// http без description, глагол только в старом атрибуте http.method
-			// (fallback после http.request.method) → POST → Out.
 			{SpanID: "deps-legacy", ParentSpanID: "deps-root", Op: "http.client", Status: "ok",
 				Start: depsAt, End: depsAt.Add(10000 * time.Microsecond),
 				Data: map[string]any{"http.method": "POST", "server.address": "legacy.example.com"}},
-			// db-атрибут у http-спана игнорируется: глагол из description → GET → In.
 			{SpanID: "deps-crossattr-http", ParentSpanID: "deps-root", Op: "http.client", Status: "ok",
 				Description: "GET https://x.example.com/",
 				Start:       depsAt, End: depsAt.Add(10000 * time.Microsecond),
 				Data: map[string]any{"db.operation.name": "INSERT", "server.address": "x.example.com"}},
-			// один и тот же хост db.internal через server.address С ПОРТОМ и через
-			// url.full С ПОРТОМ — должны схлопнуться в ОДИН узел «db.internal» (аудит
-			// QA P1: без снятия :port у server.address получалось два узла). Хост с
-			// точкой намеренно: ClickHouse domain() отвергает односоставные хосты
-			// без точки (это и есть путь url.full).
 			{SpanID: "deps-dbhost-a", ParentSpanID: "deps-root", Op: "http.client", Status: "ok",
 				Start: depsAt, End: depsAt.Add(5000 * time.Microsecond),
 				Data: map[string]any{"server.address": "db.internal:5432"}},
 			{SpanID: "deps-dbhost-b", ParentSpanID: "deps-root", Op: "http.client", Status: "ok",
 				Start: depsAt, End: depsAt.Add(5000 * time.Microsecond),
 				Data: map[string]any{"url.full": "https://db.internal:5432/probe"}},
-			// http.server (второй, дочерний) — НЕ зависимость.
 			{SpanID: "deps-httpserver", ParentSpanID: "deps-root", Op: "http.server", Status: "ok",
 				Start: depsAt, End: depsAt.Add(120000 * time.Microsecond)},
-			// internal — НЕ зависимость.
 			{SpanID: "deps-render", ParentSpanID: "deps-root", Op: "view.render", Status: "ok",
 				Start: depsAt, End: depsAt.Add(1000 * time.Microsecond)},
 		},
 	})
-	// projectID7: чужой проект — не должен течь в Dependencies(projectID6, ...)
-	// (уникальный db.system.name 'oracle', его в projectID6 нет).
 	w.Add(projectID7, projectID7, trace.Transaction{
 		TraceID: "deps-other-trace", SpanID: "deps-other-root", Name: "GET /x", Op: "http.server",
 		Status: "ok", Start: depsAt, End: depsAt.Add(100 * time.Millisecond), Environment: "production",
@@ -502,11 +419,9 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Endpoints: %v", err)
 		}
-		// production: users(100), orders(20), checkout(1 — из waterfall-трейса).
 		if len(got) != 3 {
 			t.Fatalf("len(got) = %d, want 3 (%+v)", len(got), got)
 		}
-		// ORDER BY count DESC.
 		if got[0].Transaction != "GET /api/users" || got[1].Transaction != "GET /api/orders" ||
 			got[2].Transaction != "GET /api/checkout" {
 			t.Fatalf("order: %q, %q, %q", got[0].Transaction, got[1].Transaction, got[2].Transaction)
@@ -515,22 +430,16 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if users.Count != 100 {
 			t.Fatalf("users.Count = %d, want 100", users.Count)
 		}
-		// Throughput = 100 / 60 мин ≈ 1.667.
 		if users.Throughput < 1.66 || users.Throughput > 1.67 {
 			t.Fatalf("users.Throughput = %v, want ~1.667", users.Throughput)
 		}
-		// FailureRate = 10/100 = 0.10.
 		if users.FailureRate < 0.099 || users.FailureRate > 0.101 {
 			t.Fatalf("users.FailureRate = %v, want 0.10", users.FailureRate)
 		}
-		// Перцентили: линейная интерполяция ClickHouse по 1000..100000.
-		// p50=50500, p75=75250, p95=95050, p99=99010.
 		assertNear(t, "p50", users.P50, 50500, 2)
 		assertNear(t, "p75", users.P75, 75250, 2)
 		assertNear(t, "p95", users.P95, 95050, 2)
 		assertNear(t, "p99", users.P99, 99010, 2)
-		// Apdex T=50мс: satisfied=50 (dur≤50000), within4T=100 (dur≤200000).
-		// (50+100)/(2·100) = 0.75.
 		if users.ApdexScore < 0.749 || users.ApdexScore > 0.751 {
 			t.Fatalf("users.ApdexScore = %v, want 0.75", users.ApdexScore)
 		}
@@ -555,7 +464,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 				usersAll = e.Count
 			}
 		}
-		if usersAll != 105 { // 100 production + 5 staging
+		if usersAll != 105 {
 			t.Fatalf("users count without env filter = %d, want 105", usersAll)
 		}
 	})
@@ -579,7 +488,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		for _, d := range deps {
 			byTarget[d.Target] = d
 		}
-		// postgres: 2 вызова (db.system.name), error-rate 0.5, kind database.
 		pg := byTarget["postgresql"]
 		if pg.Kind != "database" {
 			t.Fatalf("postgresql.Kind = %q, want database", pg.Kind)
@@ -590,54 +498,40 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if pg.ErrorRate < 0.499 || pg.ErrorRate > 0.501 {
 			t.Fatalf("postgresql.ErrorRate = %v, want 0.5", pg.ErrorRate)
 		}
-		// mysql: старый ключ db.system, kind database.
 		if byTarget["mysql"].Kind != "database" {
 			t.Fatalf("mysql.Kind = %q, want database", byTarget["mysql"].Kind)
 		}
-		// redis: kind cache.
 		if byTarget["redis"].Kind != "cache" {
 			t.Fatalf("redis.Kind = %q, want cache", byTarget["redis"].Kind)
 		}
-		// stripe (server.address) + cdn (url.full→domain): kind http.
 		if byTarget["api.stripe.com"].Kind != "http" {
 			t.Fatalf("api.stripe.com.Kind = %q, want http", byTarget["api.stripe.com"].Kind)
 		}
 		if byTarget["cdn.example.com"].Kind != "http" {
 			t.Fatalf("cdn.example.com.Kind = %q, want http", byTarget["cdn.example.com"].Kind)
 		}
-		// db-host: server.address:port И url.full:port схлопнулись в ОДИН узел
-		// (2 вызова), :port снят с обеих сторон — узла «db.internal:5432» быть не должно.
 		if _, ok := byTarget["db.internal:5432"]; ok {
 			t.Fatalf("byTarget содержит db.internal:5432 — порт не снят у server.address (сплит хоста)")
 		}
 		if dh := byTarget["db.internal"]; dh.Kind != "http" || dh.Calls != 2 {
 			t.Fatalf("db.internal = {Kind:%q Calls:%d}, want {http 2} (server.address:port + url.full:port должны схлопнуться)", dh.Kind, dh.Calls)
 		}
-		// http.server / view.render / чужой oracle НЕ попали; нет вырожденного
-		// 'http'-таргета.
 		if _, ok := byTarget["oracle"]; ok {
 			t.Fatalf("byTarget contains oracle (leaked from projectID7)")
 		}
 		if _, ok := byTarget["http"]; ok {
 			t.Fatalf("byTarget contains degenerate 'http' target")
 		}
-		// 14 таргетов: postgresql, readonly-db, sqlite, oldop-db, emptyop-db,
-		// crossattr-db, mysql, redis, memcached, api.stripe.com, cdn.example.com,
-		// legacy.example.com, x.example.com, db-host.
 		if len(deps) != 14 {
 			t.Fatalf("len(deps) = %d, want 14 (%+v)", len(deps), deps)
 		}
 
-		// Направление данных: reads/writes по глаголу операции.
-		// postgres: SELECT + INSERT → 1/1, Both.
 		if pg.Reads != 1 || pg.Writes != 1 {
 			t.Fatalf("postgresql = {Reads:%d Writes:%d}, want {1 1}", pg.Reads, pg.Writes)
 		}
 		if got := pg.Direction(); got != trace.DirectionBoth {
 			t.Fatalf("postgresql.Direction() = %q, want %q", got, trace.DirectionBoth)
 		}
-		// readonly-db: SELECT, WITH … SELECT, select (нижний регистр), «   SELECT»
-		// (ведущие пробелы) → 4/0, In.
 		ro := byTarget["readonly-db"]
 		if ro.Kind != "database" || ro.Calls != 4 {
 			t.Fatalf("readonly-db = {Kind:%q Calls:%d}, want {database 4}", ro.Kind, ro.Calls)
@@ -648,7 +542,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if got := ro.Direction(); got != trace.DirectionIn {
 			t.Fatalf("readonly-db.Direction() = %q, want %q", got, trace.DirectionIn)
 		}
-		// sqlite: BEGIN + «1 SELECT» → 0/0, None.
 		sq := byTarget["sqlite"]
 		if sq.Calls != 2 || sq.Reads != 0 || sq.Writes != 0 {
 			t.Fatalf("sqlite = {Calls:%d Reads:%d Writes:%d}, want {2 0 0} (BEGIN и «1 SELECT» — ни чтение, ни запись)", sq.Calls, sq.Reads, sq.Writes)
@@ -656,7 +549,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if got := sq.Direction(); got != trace.DirectionNone {
 			t.Fatalf("sqlite.Direction() = %q, want %q", got, trace.DirectionNone)
 		}
-		// mysql: атрибут db.operation.name=INSERT важнее description «SELECT 1» → 0/1, Out.
 		my := byTarget["mysql"]
 		if my.Reads != 0 || my.Writes != 1 {
 			t.Fatalf("mysql = {Reads:%d Writes:%d}, want {0 1} (db.operation.name=INSERT важнее description)", my.Reads, my.Writes)
@@ -664,22 +556,18 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if got := my.Direction(); got != trace.DirectionOut {
 			t.Fatalf("mysql.Direction() = %q, want %q", got, trace.DirectionOut)
 		}
-		// oldop-db: старый ключ db.operation=UPDATE важнее description → 0/1, Out.
 		oo := byTarget["oldop-db"]
 		if oo.Reads != 0 || oo.Writes != 1 || oo.Direction() != trace.DirectionOut {
 			t.Fatalf("oldop-db = {Reads:%d Writes:%d Direction:%q}, want {0 1 out} (fallback на db.operation)", oo.Reads, oo.Writes, oo.Direction())
 		}
-		// emptyop-db: пустой db.operation → глагол из description → 1/0.
 		eo := byTarget["emptyop-db"]
 		if eo.Reads != 1 || eo.Writes != 0 {
 			t.Fatalf("emptyop-db = {Reads:%d Writes:%d}, want {1 0} (пустой атрибут → description)", eo.Reads, eo.Writes)
 		}
-		// crossattr-db: http.request.method=POST у db-спана игнорируется → 1/0, In.
 		cd := byTarget["crossattr-db"]
 		if cd.Reads != 1 || cd.Writes != 0 || cd.Direction() != trace.DirectionIn {
 			t.Fatalf("crossattr-db = {Reads:%d Writes:%d Direction:%q}, want {1 0 in} (http-атрибут у db-спана не учитывается)", cd.Reads, cd.Writes, cd.Direction())
 		}
-		// redis: HGET + SET → 1/1, Both.
 		rd := byTarget["redis"]
 		if rd.Calls != 2 || rd.Reads != 1 || rd.Writes != 1 {
 			t.Fatalf("redis = {Calls:%d Reads:%d Writes:%d}, want {2 1 1}", rd.Calls, rd.Reads, rd.Writes)
@@ -687,7 +575,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if got := rd.Direction(); got != trace.DirectionBoth {
 			t.Fatalf("redis.Direction() = %q, want %q", got, trace.DirectionBoth)
 		}
-		// memcached: «get k» + «flush_all» (глагол с подчёркиванием) → 1/1, Both.
 		mc := byTarget["memcached"]
 		if mc.Kind != "cache" || mc.Calls != 2 || mc.Reads != 1 || mc.Writes != 1 {
 			t.Fatalf("memcached = {Kind:%q Calls:%d Reads:%d Writes:%d}, want {cache 2 1 1} (get + flush_all)", mc.Kind, mc.Calls, mc.Reads, mc.Writes)
@@ -695,7 +582,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if got := mc.Direction(); got != trace.DirectionBoth {
 			t.Fatalf("memcached.Direction() = %q, want %q", got, trace.DirectionBoth)
 		}
-		// stripe: POST → 0/1, Out; cdn: GET → 1/0, In.
 		st := byTarget["api.stripe.com"]
 		if st.Reads != 0 || st.Writes != 1 {
 			t.Fatalf("api.stripe.com = {Reads:%d Writes:%d}, want {0 1}", st.Reads, st.Writes)
@@ -710,17 +596,14 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if got := cdn.Direction(); got != trace.DirectionIn {
 			t.Fatalf("cdn.example.com.Direction() = %q, want %q", got, trace.DirectionIn)
 		}
-		// legacy: без description, глагол только в старом http.method=POST → 0/1, Out.
 		lg := byTarget["legacy.example.com"]
 		if lg.Calls != 1 || lg.Reads != 0 || lg.Writes != 1 || lg.Direction() != trace.DirectionOut {
 			t.Fatalf("legacy.example.com = {Calls:%d Reads:%d Writes:%d Direction:%q}, want {1 0 1 out} (fallback на http.method)", lg.Calls, lg.Reads, lg.Writes, lg.Direction())
 		}
-		// x.example.com: db.operation.name=INSERT у http-спана игнорируется, GET из description → 1/0, In.
 		xh := byTarget["x.example.com"]
 		if xh.Reads != 1 || xh.Writes != 0 || xh.Direction() != trace.DirectionIn {
 			t.Fatalf("x.example.com = {Reads:%d Writes:%d Direction:%q}, want {1 0 in} (db-атрибут у http-спана не учитывается)", xh.Reads, xh.Writes, xh.Direction())
 		}
-		// db.internal: http-спаны без глагола (ни description, ни атрибута) → 0/0, None.
 		dh := byTarget["db.internal"]
 		if dh.Reads != 0 || dh.Writes != 0 || dh.Direction() != trace.DirectionNone {
 			t.Fatalf("db.internal = {Reads:%d Writes:%d Direction:%q}, want {0 0 %q}", dh.Reads, dh.Writes, dh.Direction(), trace.DirectionNone)
@@ -732,9 +615,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EndpointLatency: %v", err)
 		}
-		// Окно час, шаг 5м, выровнено по epoch → ровно 12 интервалов. «Граничной»
-		// 13-й точки быть не должно: она начиналась бы в to, а запрос берёт ts < to,
-		// поэтому она всегда пустая и роняла хвост графика в ноль.
 		if len(pts) != 12 {
 			t.Fatalf("len(pts) = %d, want 12", len(pts))
 		}
@@ -753,7 +633,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if sum != 100 {
 			t.Fatalf("sum(Count) = %d, want 100", sum)
 		}
-		// Хотя бы в одной непустой корзине перцентили заполнены.
 		var seenP50 bool
 		for _, p := range pts {
 			if p.Count > 0 && p.P50 > 0 {
@@ -766,7 +645,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("EndpointLatencyRaw7m", func(t *testing.T) {
-		// 7м не кратно 5м → чтение из сырых transactions, epoch-выравнивание.
 		pts, err := q.EndpointLatency(ctx, projectID, "GET /api/users", from, to, 7*time.Minute, "production")
 		if err != nil {
 			t.Fatalf("EndpointLatency 7m: %v", err)
@@ -784,9 +662,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("EndpointLatencyBatch5m", func(t *testing.T) {
-		// Батч на паре transactions должен дать те же точки, что и по одному
-		// EndpointLatency на каждый — это единственное, что оправдывает замену N
-		// запросов на один в performanceList.
 		names := []string{"GET /api/users", "GET /api/orders"}
 		batch, err := q.EndpointLatencyBatch(ctx, projectID, names, from, to, 5*time.Minute, "production")
 		if err != nil {
@@ -817,8 +692,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("EndpointLatencyBatchRaw7m", func(t *testing.T) {
-		// 7м не кратно 5м → raw-путь (сырые transactions), как и в
-		// EndpointLatencyRaw7m — батч обязан выбирать ту же таблицу.
 		const name = "GET /api/users"
 		batch, err := q.EndpointLatencyBatch(ctx, projectID, []string{name}, from, to, 7*time.Minute, "production")
 		if err != nil {
@@ -923,7 +796,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if s.Data["code.lineno"] != "42" {
 			t.Errorf("numeric data value not decoded to text: %q", s.Data["code.lineno"])
 		}
-		// пустой список id и несуществующий трейс → nil без ошибки.
 		if got, err := q.OffendingSpans(ctx, projectID5, "off-trace", nil); err != nil || got != nil {
 			t.Errorf("empty ids → want nil,nil; got %v %v", got, err)
 		}
@@ -937,7 +809,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Trace: %v", err)
 		}
-		if len(spans) != 3 { // корень + 2 дочерних
+		if len(spans) != 3 {
 			t.Fatalf("len(spans) = %d, want 3", len(spans))
 		}
 		if root.TraceID != wfTrace || root.DurationUS != 300000 || root.Status != "ok" {
@@ -953,11 +825,9 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if r, ok := byID["wf-root"]; !ok || r.StartUS != 0 || r.ParentSpanID != "" {
 			t.Fatalf("root span = %+v (ok=%v)", r, ok)
 		}
-		// wf-db стартует на 20мс позже корня → 20000 µs.
 		if db, ok := byID["wf-db"]; !ok || db.StartUS != 20000 || db.DurationUS != 60000 {
 			t.Fatalf("wf-db span = %+v (ok=%v)", db, ok)
 		}
-		// wf-http стартует на 90мс позже корня → 90000 µs.
 		if h, ok := byID["wf-http"]; !ok || h.StartUS != 90000 || h.Description != "GET https://x/y" {
 			t.Fatalf("wf-http span = %+v (ok=%v)", h, ok)
 		}
@@ -992,10 +862,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("EndpointLatencyP95Index", func(t *testing.T) {
-		// Вся сотня «GET /lat» — в первой 5м-корзине, поэтому её p50/p95 равны
-		// общим по эндпойнту (см. Endpoints: p50=50500, p95=95050). Проверяем
-		// именно p95, чтобы поймать перепутанный индекс перцентиля (qs[1] дал бы
-		// p75≈75250).
 		pts, err := q.EndpointLatency(ctx, projectID2, "GET /lat", from, to, 5*time.Minute, "production")
 		if err != nil {
 			t.Fatalf("EndpointLatency lat: %v", err)
@@ -1015,8 +881,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("ApdexBoundary", func(t *testing.T) {
-		// Граница 4T включительна: две транзакции ровно на 200000 µs (== 4T)
-		// tolerating, две по 200001 µs — frustrated. Apdex = (0+2)/(2·4) = 0.25.
 		got, err := q.Endpoints(ctx, projectID2, from, to, "production", 50)
 		if err != nil {
 			t.Fatalf("Endpoints apdex: %v", err)
@@ -1038,7 +902,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("TraceLimit", func(t *testing.T) {
-		// Трейс с 5100 спанами; Trace ограничивает выборку traceSpanLimit=5000.
 		_, spans, err := q.Trace(ctx, projectID2, bigTrace)
 		if err != nil {
 			t.Fatalf("Trace big: %v", err)
@@ -1056,14 +919,11 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if len(pages) != 2 {
 			t.Fatalf("len(pages) = %d, want 2 (%+v)", len(pages), pages)
 		}
-		// HAVING (lcp+inp+cls > 0) отсекает «GET /api/noop» без замеров: в списке
-		// только страницы, у которых реально есть хоть один LCP/INP/CLS.
 		for _, p := range pages {
 			if p.Transaction == "GET /api/noop" {
 				t.Fatalf("WebVitalsPages returned empty page %q (want filtered out): %+v", p.Transaction, p)
 			}
 		}
-		// ORDER BY lcp_count DESC → /slow (5 замеров) перед /home (3).
 		if pages[0].Transaction != "GET /slow" || pages[1].Transaction != "GET /home" {
 			t.Fatalf("order: %q, %q", pages[0].Transaction, pages[1].Transaction)
 		}
@@ -1084,18 +944,14 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if home.Count != 3 {
 			t.Fatalf("home.Count = %d, want 3", home.Count)
 		}
-		// p75([2000,2400,2600]) = 2500 (линейная интерполяция).
 		assertNearF(t, "home lcp p75", home.LCP.P75, 2500, 60)
-		// Рейтинг должен быть согласован с чистой Rating() на фактическом p75.
 		if home.LCP.Rating != trace.Rating("lcp", home.LCP.P75) {
 			t.Fatalf("home.LCP.Rating = %q inconsistent with Rating(%v)", home.LCP.Rating, home.LCP.P75)
 		}
-		// cls 0.05 → good.
 		if home.CLS.Count != 3 || home.CLS.Rating != "good" {
 			t.Fatalf("home.CLS = %+v, want count 3 rating good", home.CLS)
 		}
 		assertNearF(t, "home cls p75", home.CLS.P75, 0.05, 0.001)
-		// Без inp → Count 0 и Rating "" (нет данных, не «good»).
 		if home.INP.Count != 0 || home.INP.Rating != "" {
 			t.Fatalf("home.INP = %+v, want count 0 rating \"\"", home.INP)
 		}
@@ -1112,7 +968,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 				homeAll = p.LCP.Count
 			}
 		}
-		if homeAll != 5 { // 3 production + 2 staging
+		if homeAll != 5 {
 			t.Fatalf("home lcp count without env filter = %d, want 5", homeAll)
 		}
 	})
@@ -1132,7 +988,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("VitalSeries: %v", err)
 		}
-		// Все три замера в одной 5м-корзине → одна точка ряда с p75≈2500.
 		if len(pts) != 1 {
 			t.Fatalf("len(pts) = %d, want 1 (%+v)", len(pts), pts)
 		}
@@ -1149,8 +1004,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("PageVitalsOne", func(t *testing.T) {
-		// GET /home production: lcp count 3 (p75≈2500), cls count 3 (good), без
-		// inp/fcp/ttfb → Count 0 и Rating "".
 		lcp, inp, cls, fcp, ttfb, err := q.PageVitalsOne(ctx, projectID3, "GET /home", from, to, "production")
 		if err != nil {
 			t.Fatalf("PageVitalsOne home: %v", err)
@@ -1166,7 +1019,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			t.Fatalf("home cls = %+v, want count 3 rating good", cls)
 		}
 		assertNearF(t, "home cls p75", cls.P75, 0.05, 0.001)
-		// Отсутствующие vitals — Count 0, Rating "" (нет данных, не «good»).
 		for _, v := range []trace.Vital{inp, fcp, ttfb} {
 			if v.Count != 0 || v.Rating != "" {
 				t.Fatalf("%s = %+v, want count 0 rating \"\"", v.Name, v)
@@ -1175,7 +1027,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("PageVitalsOneEnvironmentFilter", func(t *testing.T) {
-		// staging: только 2 транзакции lcp 9000 (poor). production сюда не входит.
 		lcp, _, _, _, _, err := q.PageVitalsOne(ctx, projectID3, "GET /home", from, to, "staging")
 		if err != nil {
 			t.Fatalf("PageVitalsOne staging: %v", err)
@@ -1187,7 +1038,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		if lcp.Rating != "poor" {
 			t.Fatalf("home lcp rating (staging) = %q, want poor", lcp.Rating)
 		}
-		// Без фильтра окружения — 5 замеров (3 production + 2 staging).
 		lcpAll, _, _, _, _, err := q.PageVitalsOne(ctx, projectID3, "GET /home", from, to, "")
 		if err != nil {
 			t.Fatalf("PageVitalsOne all env: %v", err)
@@ -1198,8 +1048,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("PageVitalsOneNoVitals", func(t *testing.T) {
-		// Транзакция без measurements → все пять Count 0 и Rating "" (панель на
-		// вебе по этому и не рендерится).
 		vs, err := func() ([]trace.Vital, error) {
 			lcp, inp, cls, fcp, ttfb, err := q.PageVitalsOne(ctx, projectID, "GET /api/users", from, to, "production")
 			return []trace.Vital{lcp, inp, cls, fcp, ttfb}, err
@@ -1215,7 +1063,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("RecentVitalP75", func(t *testing.T) {
-		// Свежее окно: 30 замеров lcp 2000 → p75 = 2000 (уже в мс).
 		s, err := q.RecentVitalP75(ctx, projectID4, "GET /vpage", "lcp", regRecentFrom, regRecentTo)
 		if err != nil {
 			t.Fatalf("RecentVitalP75: %v", err)
@@ -1227,7 +1074,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("BaselineVitalP75", func(t *testing.T) {
-		// Дневные p75 = [2000, 500, 800] → медиана 800; всего замеров 70.
 		s, err := q.BaselineVitalP75(ctx, projectID4, "GET /vpage", "lcp", 7, regNow)
 		if err != nil {
 			t.Fatalf("BaselineVitalP75: %v", err)
@@ -1248,10 +1094,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("RecentEndpointP95sConvertsToMs", func(t *testing.T) {
-		// Та же сеянная «GET /reg» партия, что и выше: 50 транзакций по 1000 мс
-		// в свежем окне (dur хранится в MV в µs = 1000·1000). Если
-		// RecentEndpointP95s подменят на valueSample (без /1000), Value придёт
-		// 1_000_000 вместо 1000 — assertNearF с tol=1 это отловит.
 		out, err := q.RecentEndpointP95s(ctx, projectID4, []string{"GET /reg"}, regRecentFrom, regRecentTo)
 		if err != nil {
 			t.Fatalf("RecentEndpointP95s: %v", err)
@@ -1267,8 +1109,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("BaselineEndpointP95sConvertsToMs", func(t *testing.T) {
-		// Дневные p95 «GET /reg» = [1000, 200, 300] мс → медиана 300 мс. Как и
-		// выше: microsecond-регрессия дала бы 300_000, а не 300.
 		out, err := q.BaselineEndpointP95s(ctx, projectID4, []string{"GET /reg"}, 7, regNow)
 		if err != nil {
 			t.Fatalf("BaselineEndpointP95s: %v", err)
@@ -1284,7 +1124,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("TopEndpointsByTraffic", func(t *testing.T) {
-		// За 7 дней «GET /reg» (130) — самый нагруженный эндпойнт проекта.
 		top, err := q.TopEndpointsByTraffic(ctx, projectID4, regNow.Add(-7*24*time.Hour), regNow, 2)
 		if err != nil {
 			t.Fatalf("TopEndpointsByTraffic: %v", err)
@@ -1301,8 +1140,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("TopVitalPages", func(t *testing.T) {
-		// Только страницы с замерами vital'ов: /vpage (70) перед /vpage2 (5);
-		// «GET /reg» без measurements отфильтрован HAVING.
 		top, err := q.TopVitalPages(ctx, projectID4, regNow.Add(-7*24*time.Hour), regNow, 10)
 		if err != nil {
 			t.Fatalf("TopVitalPages: %v", err)
@@ -1316,10 +1153,6 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 }
 
-// TestRating проверяет пороги Google для рейтинга Web Vitals по p75, включая
-// границы (good включительна) и неизвестное имя (→ ""). Docker не нужен.
-// TestDependencyDirection — таблица четырёх веток Direction(): по счётчикам
-// reads/writes без ClickHouse.
 func TestDependencyDirection(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -1347,8 +1180,6 @@ func TestDependencyDirection(t *testing.T) {
 	}
 }
 
-// TestVerbClasses — списки глаголов: внутри одного вида чтение и запись не
-// пересекаются, ключевые глаголы на месте.
 func TestVerbClasses(t *testing.T) {
 	classes := []struct {
 		kind        string
@@ -1431,7 +1262,6 @@ func TestRating(t *testing.T) {
 	}
 }
 
-// assertNearF — как assertNear, но для float-величин (p75 web vitals).
 func assertNearF(t *testing.T, name string, got, want, tol float64) {
 	t.Helper()
 	d := got - want

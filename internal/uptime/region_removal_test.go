@@ -9,15 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestRemovedRegionStopsHoldingMonitorDown — снятый регион не должен держать
-// монитор в down навсегда.
-//
-// Update перезаписывал список регионов, но строку состояния снятого региона не
-// трогал, а перезаписать её больше некому: задание для этого региона не
-// ставится. Регион, зафиксированный в «down», делал монитор красным навсегда —
-// при consensus=any хватает одного down. Ветка «всё поднялось» становилась
-// недостижимой: инцидент не закрывался, напоминания шли бесконечно, и то же
-// самое видел посетитель публичной статус-страницы.
 func TestRemovedRegionStopsHoldingMonitorDown(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -31,7 +22,6 @@ func TestRemovedRegionStopsHoldingMonitorDown(t *testing.T) {
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
 	created := mustCreateMonitor(t, pool, svc, ctx, m, []string{"eu", "us"})
 
-	// us лёг, eu поднялся.
 	now := time.Now().UTC()
 	if _, err := svc.ApplyResult(ctx, created.ID, "us", false, "boom", now); err != nil {
 		t.Fatalf("ApplyResult us: %v", err)
@@ -44,7 +34,6 @@ func TestRemovedRegionStopsHoldingMonitorDown(t *testing.T) {
 		t.Fatalf("States = %+v err=%v, want two", states, err)
 	}
 
-	// Оператор убирает us из монитора.
 	updated := created
 	updated.Config = m.Config
 	if err := svc.Update(ctx, updated, []string{"eu"}, nil); err != nil {
@@ -62,8 +51,7 @@ func TestRemovedRegionStopsHoldingMonitorDown(t *testing.T) {
 		t.Fatalf("оставшийся регион = %q, want up", states[0].Status)
 	}
 
-	// Батч-версия видит то же самое: список мониторов и публичная
-	// статус-страница ходят через неё.
+	// StatesBatch тоже проверяем: список мониторов и статус-страница ходят через неё.
 	batch, err := svc.StatesBatch(ctx, []int64{created.ID})
 	if err != nil {
 		t.Fatalf("StatesBatch: %v", err)
@@ -72,8 +60,8 @@ func TestRemovedRegionStopsHoldingMonitorDown(t *testing.T) {
 		t.Fatalf("StatesBatch = %+v, want only eu", got)
 	}
 
-	// Задание снятого региона тоже не остаётся: иначе его один раз возьмут в
-	// лизу и выполнят уже после того, как регион убрали.
+	// иначе задание снятого региона возьмут в лизу и выполнят после того,
+	// как регион уже убрали.
 	var queued int
 	if err := pool.QueryRow(ctx,
 		"SELECT count(*) FROM check_queue WHERE monitor_id = $1 AND region = 'us'", created.ID).Scan(&queued); err != nil {

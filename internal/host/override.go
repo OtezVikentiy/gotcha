@@ -10,11 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// ThresholdOverride — частичное переопределение порогов host-инцидентов:
-// nil-поле = наследовать со следующего уровня каскада (группа/проект/дефолт),
-// non-nil = пришпилено на этом уровне. Общий тип для двух хранилищ —
-// per-host (host_threshold_overrides) и группового по метке
-// (host_group_thresholds), их колонки идентичны по смыслу и границам.
+// nil — наследовать со следующего уровня каскада; non-nil — пришпилено на этом уровне.
 type ThresholdOverride struct {
 	DiskEnabled     *bool
 	DiskThreshold   *float64
@@ -26,19 +22,7 @@ type ThresholdOverride struct {
 	SilentAfter     *time.Duration
 }
 
-// ValidateOverride проверяет ТОЛЬКО заданные (non-nil) поля. Для каждого
-// вида:
-//   - value без enabled (enabled==nil && value!=nil) — ошибка (M-3):
-//     резолвер каскада не смог бы решить, откуда брать включённость для
-//     пришпиленного значения — «наследовать вкл/выкл, но взять чужое число»
-//     не имеет разумного смысла;
-//   - enabled=true без value — тоже ошибка: нечего сравнивать с метрикой;
-//   - value (заданное, при любом enabled, в т.ч. отсутствующем) обязано быть
-//     в тех же границах, что и Validate для полных Settings — сохранённое,
-//     но временно выключенное значение не должно быть мусором. Диск и
-//     память — строго (0, 1) по той же причине, что в Validate: каскад
-//     подставляет переопределение в тот же applyDecision со строгим «>»,
-//     и 1.0 на уровне хоста или группы было бы таким же мёртвым порогом.
+// value без enabled — ошибка: резолвер каскада не может понять, что наследовать, а что пришпилить.
 func ValidateOverride(ov ThresholdOverride) error {
 	if err := validateKindOverride(ov.DiskEnabled, ov.DiskThreshold,
 		func(v float64) bool { return v > 0 && v < 1 }, ErrInvalidDiskThreshold); err != nil {
@@ -84,10 +68,7 @@ func validateSilentOverride(enabled *bool, after *time.Duration) error {
 	return nil
 }
 
-// durationPtrFromSeconds конвертирует nullable-колонку silent_after_seconds
-// (INTEGER) в *time.Duration. pgx не умеет сканить INTEGER NULL напрямую в
-// *time.Duration — колонка всегда сканится в промежуточный *int, а
-// конвертация выполняется здесь.
+// pgx сканит nullable INTEGER только в *int — *time.Duration конвертируем вручную.
 func durationPtrFromSeconds(secs *int) *time.Duration {
 	if secs == nil {
 		return nil
@@ -96,7 +77,6 @@ func durationPtrFromSeconds(secs *int) *time.Duration {
 	return &d
 }
 
-// secondsPtrFromDuration — обратная конвертация для записи в БД.
 func secondsPtrFromDuration(d *time.Duration) *int {
 	if d == nil {
 		return nil
@@ -105,8 +85,6 @@ func secondsPtrFromDuration(d *time.Duration) *int {
 	return &s
 }
 
-// HostOverrideService — Get/Save/GetForHosts переопределений порогов
-// конкретного хоста поверх host_threshold_overrides.
 type HostOverrideService struct {
 	pool *pgxpool.Pool
 }
@@ -115,9 +93,7 @@ func NewHostOverrideService(pool *pgxpool.Pool) *HostOverrideService {
 	return &HostOverrideService{pool: pool}
 }
 
-// Get возвращает override хоста. Строки нет (переопределений ещё не
-// сохраняли) — не ошибка, а пустой ThresholdOverride (все поля nil, то есть
-// «наследовать всё»).
+// Строки нет — не ошибка: пустой ThresholdOverride (все поля nil) значит «наследовать всё».
 func (s *HostOverrideService) Get(ctx context.Context, hostID int64) (ThresholdOverride, error) {
 	row := s.pool.QueryRow(ctx, `
 		SELECT disk_enabled, disk_threshold, memory_enabled, memory_threshold,
@@ -143,8 +119,6 @@ func (s *HostOverrideService) Get(ctx context.Context, hostID int64) (ThresholdO
 	return ov, nil
 }
 
-// Save валидирует и сохраняет override хоста (upsert — первый Save хоста
-// создаёт строку, последующие обновляют её и updated_at).
 func (s *HostOverrideService) Save(ctx context.Context, hostID int64, ov ThresholdOverride) error {
 	if err := ValidateOverride(ov); err != nil {
 		return err
@@ -172,9 +146,7 @@ func (s *HostOverrideService) Save(ctx context.Context, hostID int64, ov Thresho
 	return nil
 }
 
-// GetForHosts — батч-версия Get для оценщика (evaluator.go): один запрос на
-// все хосты тика вместо N+1. Хосты без строки просто отсутствуют в карте —
-// вызывающий трактует это как пустой override (см. Get).
+// Хосты без строки просто отсутствуют в карте — вызывающий трактует это как пустой override.
 func (s *HostOverrideService) GetForHosts(ctx context.Context, hostIDs []int64) (map[int64]ThresholdOverride, error) {
 	out := make(map[int64]ThresholdOverride, len(hostIDs))
 	if len(hostIDs) == 0 {
@@ -211,15 +183,12 @@ func (s *HostOverrideService) GetForHosts(ctx context.Context, hostIDs []int64) 
 	return out, nil
 }
 
-// GroupThreshold — override, привязанный к группе хостов проекта по метке
-// (scope "env"/"role" из B1, точное совпадение значения телеметрии).
+// Группа хостов по метке — точное совпадение значения телеметрии, не паттерн.
 type GroupThreshold struct {
 	Scope, Label string
 	ThresholdOverride
 }
 
-// GroupThresholdService — List/Upsert/Delete групповых порогов поверх
-// host_group_thresholds.
 type GroupThresholdService struct {
 	pool *pgxpool.Pool
 }
@@ -228,8 +197,6 @@ func NewGroupThresholdService(pool *pgxpool.Pool) *GroupThresholdService {
 	return &GroupThresholdService{pool: pool}
 }
 
-// List возвращает все групповые пороги проекта, отсортированные по
-// scope/label (стабильный порядок для UI и тестов).
 func (s *GroupThresholdService) List(ctx context.Context, projectID int64) ([]GroupThreshold, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT scope, label, disk_enabled, disk_threshold, memory_enabled, memory_threshold,
@@ -264,8 +231,6 @@ func (s *GroupThresholdService) List(ctx context.Context, projectID int64) ([]Gr
 	return out, nil
 }
 
-// Upsert валидирует и сохраняет override группы (project_id, scope, label) —
-// первый Upsert группы создаёт строку, последующие обновляют её и updated_at.
 func (s *GroupThresholdService) Upsert(ctx context.Context, projectID int64, scope, label string, ov ThresholdOverride) error {
 	if err := ValidateOverride(ov); err != nil {
 		return err
@@ -293,8 +258,7 @@ func (s *GroupThresholdService) Upsert(ctx context.Context, projectID int64, sco
 	return nil
 }
 
-// Delete удаляет override группы. Отсутствие строки — не ошибка (Delete
-// идемпотентен, как принято в остальных стораджах продукта).
+// Отсутствие строки — не ошибка, вызов идемпотентен.
 func (s *GroupThresholdService) Delete(ctx context.Context, projectID int64, scope, label string) error {
 	_, err := s.pool.Exec(ctx,
 		`DELETE FROM host_group_thresholds WHERE project_id = $1 AND scope = $2 AND label = $3`,

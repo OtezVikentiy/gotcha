@@ -13,8 +13,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 )
 
-// TestMetricSeriesMarkupAxes — график метрики рисует оси (подписи значений +
-// времени) и пороговую линию алерта в пределах области.
 func TestMetricSeriesMarkupAxes(t *testing.T) {
 	base := time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC)
 	points := []metric.Point{
@@ -26,14 +24,14 @@ func TestMetricSeriesMarkupAxes(t *testing.T) {
 	out := metricSeriesMarkup(context.Background(), points, "ms", thresholds, nil, 720, 200)
 
 	for _, want := range []string{
-		`class="metric-chart chart-vb720"`, // + класс ширины viewBox: от неё зависит кегль подписей
+		`class="metric-chart chart-vb720"`,
 		`class="chart-axis"`,
 		`class="chart-threshold"`,
-		`stroke-dasharray`, // пунктир пороговой линии
-		`<polyline`,        // линия данных
-		"10:00",            // подпись времени первой точки
-		"ms",               // юнит в подписи оси Y
-		"&gt; 30 ms",       // подпись порога с направлением сравнения (html-экранирован)
+		`stroke-dasharray`,
+		`<polyline`,
+		"10:00",
+		"ms",
+		"&gt; 30 ms",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("metric chart markup missing %q\n%s", want, out)
@@ -41,8 +39,6 @@ func TestMetricSeriesMarkupAxes(t *testing.T) {
 	}
 }
 
-// TestMetricSeriesMarkupEmpty — пустой ряд рисует оси и заметку «нет данных»,
-// а не падает и не оставляет голый холст.
 func TestMetricSeriesMarkupEmpty(t *testing.T) {
 	out := metricSeriesMarkup(context.Background(), nil, "", nil, nil, 720, 200)
 	if !strings.Contains(out, "chart-axis") {
@@ -53,12 +49,9 @@ func TestMetricSeriesMarkupEmpty(t *testing.T) {
 	}
 }
 
-// TestMetricSeriesMarkupThresholdOutOfRange — порог далеко за пределами домена
-// значений (после паддинга) не рисует линию, но и не ломает график.
 func TestMetricSeriesMarkupThresholdInDomain(t *testing.T) {
 	base := time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC)
 	points := []metric.Point{{T: base, V: 10}, {T: base.Add(time.Hour), V: 20}}
-	// Порог включён в домен, поэтому линия обязана присутствовать.
 	out := metricSeriesMarkup(context.Background(), points, "", []metricThreshold{{Value: 15, Comparator: "lt"}}, nil, 720, 200)
 	if !strings.Contains(out, "chart-threshold") {
 		t.Errorf("threshold within data range must be drawn: %s", out)
@@ -68,10 +61,8 @@ func TestMetricSeriesMarkupThresholdInDomain(t *testing.T) {
 	}
 }
 
-// TestMetricSeriesMarkupIgnoresInf — P2-14: домен Y фильтрует NaN, но должен
-// так же фильтровать ±Inf. Одна Inf-точка иначе сделала бы domMax-domMin
-// бесконечным и NaN-координаты получили бы ВСЕ точки, а не только сбойная —
-// весь график сломался бы, а не одна точка на нём.
+// ±Inf, не только NaN, обязаны фильтроваться из домена — иначе domMax-domMin
+// становится бесконечным и NaN-координаты получают все точки, не только сбойная.
 func TestMetricSeriesMarkupIgnoresInf(t *testing.T) {
 	base := time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC)
 	points := []metric.Point{
@@ -83,34 +74,26 @@ func TestMetricSeriesMarkupIgnoresInf(t *testing.T) {
 	if strings.Contains(out, "NaN") || strings.Contains(out, "Inf") {
 		t.Errorf("Inf point must not leak into coordinates: %s", out)
 	}
-	// Домен должен остаться ограниченным конечными точками (10..25), не
-	// растянутым в бесконечность.
 	if !strings.Contains(out, "10 ms") || !strings.Contains(out, "25 ms") {
 		t.Errorf("finite domain from non-Inf points expected: %s", out)
 	}
 }
 
-// TestMetricSeriesMarkupFlatSeriesSingleYLabel — P2-15: плоский ряд
-// (dataMin == dataMax) с alert-threshold, отличным от значения ряда, рисовал
-// три Y-подписи (max/середина/min), совпадающие по значению и координате —
-// три наложенных друг на друга подписи и линии. Для плоского ряда должна
-// остаться одна подпись.
+// плоский ряд (dataMin==dataMax) должен рисовать одну Y-подпись, не три
+// наложенных (max/середина/min с одинаковым значением).
 func TestMetricSeriesMarkupFlatSeriesSingleYLabel(t *testing.T) {
 	base := time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC)
 	points := []metric.Point{{T: base, V: 5}, {T: base.Add(time.Hour), V: 5}}
 	thresholds := []metricThreshold{{Value: 20, Comparator: "gt"}}
 	out := metricSeriesMarkup(context.Background(), points, "ms", thresholds, nil, 720, 200)
 
-	// Только подписи оси Y используют этот атрибутный набор — в отличие от
-	// hover-band тултипов (<title>…) и порога, которые тоже могут содержать
-	// "5 ms"/"20 ms" в тексте.
+	// этот атрибутный набор — только у подписей оси Y, не у hover-band/порога
+	// с тем же текстом.
 	if got := strings.Count(out, `dominant-baseline="middle" fill="currentColor">5 ms</text>`); got != 1 {
 		t.Errorf("flat series must draw a single Y-axis label, got %d: %s", got, out)
 	}
 }
 
-// TestChartBarsAxes — график частоты событий рисует оси и подписи максимума и
-// времени, столбики попадают в область графика.
 func TestChartBarsAxes(t *testing.T) {
 	base := time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)
 	points := []event.Point{
@@ -122,13 +105,13 @@ func TestChartBarsAxes(t *testing.T) {
 	for _, want := range []string{
 		`class="chart-freq chart-vb1200"`,
 		`class="chart-axis"`,
-		`<rect`,   // столбики
-		">0<",     // нижняя линия сетки
-		">10<",    // верх шкалы: на шаг выше максимума (max=7, шаг 5)
-		">5<",     // промежуточная линия сетки
-		"18.07",   // подпись дня
-		"21.07",   // подпись следующего дня — метки ставятся на каждой границе суток
-		"<title>", // подсказка при наведении
+		`<rect`,
+		">0<",
+		">10<", // верх шкалы: на шаг выше максимума (max=7, шаг 5)
+		">5<",
+		"18.07",
+		"21.07", // метки дней ставятся на каждой границе суток
+		"<title>",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("frequency chart markup missing %q\n%s", want, out)
@@ -136,9 +119,6 @@ func TestChartBarsAxes(t *testing.T) {
 	}
 }
 
-// TestChartBarsTooltip — у каждого столбика своя подсказка со временем корзины
-// и количеством: без неё значение столбика ниоткуда не прочитать, а
-// оформленной подсказки в проекте нет (она требовала бы JS).
 func TestChartBarsTooltip(t *testing.T) {
 	base := time.Date(2026, 7, 18, 15, 0, 0, 0, time.UTC)
 	out := chartBars(context.Background(), []event.Point{{T: base, N: 5}}, chartWidth, chartHeight)
@@ -146,7 +126,7 @@ func TestChartBarsTooltip(t *testing.T) {
 	if strings.Count(out, "<title>") != 1 {
 		t.Errorf("ожидалась одна подсказка на один столбик: %s", out)
 	}
-	// K9-15: время подсказки — через humanize.Time (дата, время, пояс).
+	// время — через humanize.Time (дата, время, пояс).
 	for _, want := range []string{"2026-07-18 15:00 UTC", "5 событий"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("подсказка без %q: %s", want, out)
@@ -154,8 +134,8 @@ func TestChartBarsTooltip(t *testing.T) {
 	}
 }
 
-// TestNiceStep — шаг сетки берётся из ряда 1/2/5×10ⁿ, иначе подписи оси
-// получаются вида 37/74/111 и прикинуть по ним значение нельзя.
+// шаг сетки — из ряда 1/2/5×10ⁿ, иначе подписи вида 37/74/111 не дают
+// прикинуть значение.
 func TestNiceStep(t *testing.T) {
 	cases := []struct {
 		max  uint64
@@ -182,9 +162,8 @@ func TestChartBarsEmpty(t *testing.T) {
 	}
 }
 
-// TestChartBarsHeadroom — верх шкалы всегда строго выше максимума: когда они
-// совпадают, самый высокий столбик упирается в рамку и график выглядит
-// сплошным забором.
+// верх шкалы строго выше максимума — иначе столбик упирается в рамку и
+// график выглядит сплошным забором.
 func TestChartBarsHeadroom(t *testing.T) {
 	base := time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)
 	cases := []struct {
@@ -203,10 +182,8 @@ func TestChartBarsHeadroom(t *testing.T) {
 	}
 }
 
-// TestMetricSeriesSparseSeriesIsOneLine — ряд, который приходит реже сетки
-// корзин (метрика раз в час при 12-минутном шаге), обязан рисоваться ОДНОЙ
-// линией, а не рассыпаться на изолированные отметки: до правки каждая непустая
-// корзина оказывалась одиночным сегментом и график превращался в «лес спичек».
+// ряд реже сетки корзин (раз в час при 12-минутном шаге) должен остаться
+// одной линией, не рассыпаться на изолированные сегменты.
 func TestMetricSeriesSparseSeriesIsOneLine(t *testing.T) {
 	base := time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)
 	// 24 часа по 12-минутным корзинам; данные — раз в час (каждая 5-я корзина).
@@ -224,9 +201,8 @@ func TestMetricSeriesSparseSeriesIsOneLine(t *testing.T) {
 	}
 }
 
-// TestMetricSeriesRealGapBreaksLine — пропуск, заметно больший обычного
-// интервала ряда (простой приложения), обязан остаться РАЗРЫВОМ: мост через
-// короткие пропуски не должен маскировать отсутствие данных.
+// пропуск заметно больше обычного интервала (простой приложения) должен
+// остаться разрывом, мост через короткие пропуски его не маскирует.
 func TestMetricSeriesRealGapBreaksLine(t *testing.T) {
 	base := time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)
 	var points []metric.Point
@@ -244,9 +220,8 @@ func TestMetricSeriesRealGapBreaksLine(t *testing.T) {
 	}
 }
 
-// TestBridgeSparseGapsKeepsDenseSeries — плотный ряд (данные в каждой корзине)
-// правка не трогает: одиночная пустая корзина в нём — настоящий провал и
-// обязана остаться разрывом.
+// плотный ряд (данные в каждой корзине) не переписывается — одиночная
+// пустая корзина в нём остаётся разрывом.
 func TestBridgeSparseGapsKeepsDenseSeries(t *testing.T) {
 	pts := make([]seriesPoint, 10)
 	for i := range pts {
@@ -261,15 +236,8 @@ func TestBridgeSparseGapsKeepsDenseSeries(t *testing.T) {
 	}
 }
 
-// TestChartBarsDayLabelsShareXLabelPlacement — подписи дней chartBars должны
-// звать ту же xLabelPlacement, что и writeXTicks (svgaxis.go), а не
-// собственную копию порога у края холста (P1-7): на узком холсте первая
-// подпись дня стоит ровно на x0 и переключается на якорь "start", что
-// сдвигает её видимый центр на полширины вправо; вторая подпись (день
-// спустя, рядом с первой) должна это учесть, иначе наезжает на первую — как
-// у TestWriteXTicksAccountsForAnchorShift для writeXTicks. Собственная копия
-// порога (было: фиксированные 24 у обоих генераторов) этот сдвиг не
-// учитывала.
+// подписи дней должны звать тот же xLabelPlacement, что и writeXTicks —
+// своя копия порога не учитывала сдвиг видимого центра при якоре start.
 func TestChartBarsDayLabelsShareXLabelPlacement(t *testing.T) {
 	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	points := []event.Point{
@@ -277,17 +245,12 @@ func TestChartBarsDayLabelsShareXLabelPlacement(t *testing.T) {
 		{T: base.AddDate(0, 0, 1), N: 5},
 		{T: base.AddDate(0, 0, 2), N: 4},
 	}
-	// x0=chartPadL=40, x1=narrowW-chartPadR=56 — дни ложатся вплотную. Ширина
-	// руны пропорциональна холсту (svgCharWidthPerVB), поэтому «близко»
-	// достигается только очень узким холстом: подпись дня (5 рун) с якорем
-	// middle наезжает на первую при w < ~70, а починить это сменой якоря на
-	// start ещё можно при w ≥ ~62 (x второй ≥ правого края первой) — окно
-	// 62..69, иначе вторая подпись подавляется вовсе.
+	// narrowW в окне ~62-69: только на таком узком холсте вторая подпись
+	// обязана переключиться на anchor start, не наехав на первую.
 	const narrowW = 66
 	out := chartBars(context.Background(), points, narrowW, chartHeight)
 
-	// Подписи дней рисуются на одной и той же y = chartHeight-7 = 173.0 —
-	// этим отличаются от подписей оси Y (другой y) и подсказок <title>.
+	// подписи дней на одной y=173.0 — этим отличаются от подписей оси Y и <title>.
 	dayLabelRe := regexp.MustCompile(`<text x="([-\d.]+)" y="173\.0" text-anchor="(\w+)" fill="currentColor">`)
 	matches := dayLabelRe.FindAllStringSubmatch(out, -1)
 	if len(matches) < 2 {

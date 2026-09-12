@@ -8,9 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// TestLangSwitcherAriaPressed: выбранный язык отличает только цвет — без
-// aria-pressed скринридер не знает, какая кнопка активна (№84, тот же
-// принцип, что у themePressed).
 func TestLangSwitcherAriaPressed(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	var sb strings.Builder

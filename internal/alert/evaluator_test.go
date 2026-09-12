@@ -17,10 +17,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// newEvalProject создаёт изолированный org+project с заданным slug (в
-// отличие от newProject из alert_test.go, который хардкодит slug и годится
-// только для одного вызова на пул). Подтесты Evaluator делят один пул, так
-// что каждому нужен свой slug.
+// В отличие от newProject (alert_test.go), не хардкодит slug — подтесты
+// Evaluator делят один пул, и каждому нужен свой slug.
 func newEvalProject(t *testing.T, pool *pgxpool.Pool, slug string) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -38,7 +36,7 @@ func newEvalProject(t *testing.T, pool *pgxpool.Pool, slug string) int64 {
 	return projectID
 }
 
-// newEvalIssue вставляет issue напрямую — alert-пакет не зависит от issue.
+// Вставляет issue напрямую — alert-пакет не зависит от issue.
 func newEvalIssue(t *testing.T, pool *pgxpool.Pool, projectID int64, fingerprint string) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -130,9 +128,8 @@ func TestEvaluatorOnIssue(t *testing.T) {
 			j2.Payload["target"] != "123" {
 			t.Errorf("telegram job payload = %+v", j2.Payload)
 		}
-		// Секрета в очереди быть не должно: notification_outbox.payload —
-		// обычный jsonb, и bot-токен в нём обесценивал бы шифрование
-		// alert_channels.secret. Воркер достаёт его по channel_id при отправке.
+		// Секрета в очереди быть не должно — payload обычный jsonb, воркер
+		// достаёт секрет по channel_id при отправке.
 		if _, ok := j2.Payload["secret"]; ok {
 			t.Errorf("секрет попал в payload очереди: %+v", j2.Payload)
 		}
@@ -166,14 +163,12 @@ func TestEvaluatorOnIssue(t *testing.T) {
 			}
 		}
 
-		// Within throttle window: no new job.
 		e.OnIssue(ctx, ev)
 		jobs2, err := ob.Claim(ctx, 10)
 		if err != nil || len(jobs2) != 0 {
 			t.Fatalf("throttled call: jobs=%d err=%v, want 0", len(jobs2), err)
 		}
 
-		// Push last_sent_at into the past -> throttle window elapsed -> fires again.
 		if _, err := pool.Exec(ctx,
 			"UPDATE alert_throttle SET last_sent_at = now() - interval '1 hour' WHERE issue_id = $1",
 			issueID); err != nil {
@@ -211,7 +206,6 @@ func TestEvaluatorOnIssue(t *testing.T) {
 	t.Run("missing rule sends nothing", func(t *testing.T) {
 		pid := newEvalProject(t, pool, "eval3b")
 		issueID := newEvalIssue(t, pool, pid, "fp-1")
-		// No rule upserted at all for KindRegression.
 		if _, err := svc.CreateChannel(ctx, alert.Channel{
 			ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
 		}); err != nil {
@@ -281,7 +275,6 @@ func TestEvaluatorOnIssue(t *testing.T) {
 			t.Fatalf("jobs = %+v err=%v, want exactly 1 job for webhook channel %d", jobs, err, webhookCh)
 		}
 
-		// With EmailEnabled=true on a fresh issue (avoids throttle interference), both channels fire.
 		issueID2 := newEvalIssue(t, pool, pid, "fp-2")
 		e2 := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", EmailEnabled: true}
 		e2.OnIssue(ctx, alert.Event{ProjectID: pid, IssueID: issueID2, Kind: alert.KindNewIssue})
@@ -291,9 +284,6 @@ func TestEvaluatorOnIssue(t *testing.T) {
 		}
 	})
 
-	// политике без доверия получателю: во внешние каналы (Telegram/webhook) не должны
-	// уезжать текст ошибки/детали (title/culprit/level/тело) — только ссылка
-	// на issue и вид алерта. Защита от трансграничной передачи ПДн (152-ФЗ).
 	t.Run("external details withheld from telegram/webhook when the recipient is not trusted", func(t *testing.T) {
 		pid := newEvalProject(t, pool, "eval7")
 		issueID := newEvalIssue(t, pool, pid, "fp-1")
@@ -331,7 +321,6 @@ func TestEvaluatorOnIssue(t *testing.T) {
 
 		wantURL := "https://gotcha.example/issues/" + strconv.FormatInt(issueID, 10)
 		for _, j := range jobs {
-			// Детали ошибки не должны попадать во внешний payload.
 			if _, ok := j.Payload["title"]; ok {
 				t.Errorf("channel %d: payload leaks title: %+v", j.ChannelID, j.Payload)
 			}
@@ -341,14 +330,12 @@ func TestEvaluatorOnIssue(t *testing.T) {
 			if _, ok := j.Payload["level"]; ok {
 				t.Errorf("channel %d: payload leaks level: %+v", j.ChannelID, j.Payload)
 			}
-			// Тело/subject не должны содержать текст ошибки.
 			if body, _ := j.Payload["body"].(string); strings.Contains(body, "boom") || strings.Contains(body, "app.x") {
 				t.Errorf("channel %d: body leaks error text: %q", j.ChannelID, body)
 			}
 			if subj, _ := j.Payload["subject"].(string); strings.Contains(subj, "boom") || strings.Contains(subj, "app.x") {
 				t.Errorf("channel %d: subject leaks error text: %q", j.ChannelID, subj)
 			}
-			// Обезличенный минимум остаётся: ссылка и вид алерта.
 			if j.Payload["url"] != wantURL {
 				t.Errorf("channel %d: url = %v, want %s", j.ChannelID, j.Payload["url"], wantURL)
 			}
@@ -357,7 +344,6 @@ func TestEvaluatorOnIssue(t *testing.T) {
 			}
 		}
 
-		// Sanity: маршрутные поля на месте, чтобы worker собрал Target.
 		byChannel := map[int64]notify.Job{}
 		for _, j := range jobs {
 			byChannel[j.ChannelID] = j
@@ -370,8 +356,6 @@ func TestEvaluatorOnIssue(t *testing.T) {
 		}
 	})
 
-	// разрешающей политике: поведение прежнее — детали доставляются во внешние
-	// каналы без изменений (обратная совместимость).
 	t.Run("external details delivered to telegram/webhook when the policy allows it", func(t *testing.T) {
 		pid := newEvalProject(t, pool, "eval8")
 		issueID := newEvalIssue(t, pool, pid, "fp-1")
@@ -401,11 +385,6 @@ func TestEvaluatorOnIssue(t *testing.T) {
 		}
 	})
 
-	// TestEvaluatorConcurrentOnIssueClaimsThrottleOnce covers the race
-	// documented in issue.Upsert: two pipeline workers can both observe
-	// New=true for the very first event of a fingerprint and both call
-	// OnIssue concurrently for the same (issue, rule). The throttle claim
-	// must serialize them so only one actually enqueues jobs, not N.
 	t.Run("concurrent OnIssue for the same issue+rule claims the throttle exactly once", func(t *testing.T) {
 		pid := newEvalProject(t, pool, "eval6")
 		issueID := newEvalIssue(t, pool, pid, "fp-1")
@@ -444,16 +423,6 @@ func TestEvaluatorOnIssue(t *testing.T) {
 	})
 }
 
-// TestEvaluatorFullEnqueueFailureReleasesThrottleAndBudget covers the P1
-// finding: claimThrottle/claimBudget occupy the throttle window and budget
-// slot BEFORE the Outbox.Enqueue loop, to serialize concurrent OnIssue calls
-// for the same issue+rule (see claimThrottle's comment). If every Enqueue
-// call in that loop fails (transient DB/outbox outage), the claim used to
-// stay occupied regardless — the very first alert for an issue was lost
-// silently until ThrottleMinutes elapsed, and the next event for the same
-// issue ran straight into the still-occupied throttle. Now a full failure
-// (deliverable channels existed, but zero Enqueue succeeded) rolls back both
-// claims so the next event can retry.
 func TestEvaluatorFullEnqueueFailureReleasesThrottleAndBudget(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := alert.NewService(pool)
@@ -467,8 +436,6 @@ func TestEvaluatorFullEnqueueFailureReleasesThrottleAndBudget(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertRule: %v", err)
 	}
-	// Two deliverable channels: a full failure must roll back the claims
-	// exactly once, no matter how many channels were attempted.
 	if _, err := svc.CreateChannel(ctx, alert.Channel{
 		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
 	}); err != nil {
@@ -481,10 +448,8 @@ func TestEvaluatorFullEnqueueFailureReleasesThrottleAndBudget(t *testing.T) {
 	}
 	issueID := newEvalIssue(t, pool, pid, "fp-1")
 
-	// Outbox on a CLOSED pool: Enqueue is guaranteed to fail for every
-	// channel, while claimThrottle/claimBudget (through svc's own pool)
-	// still work normally. Same trick as
-	// trace.TestOutboxNotifierReleasesSlotWhenEnqueueFails.
+	// Outbox на закрытом пуле — Enqueue гарантированно падает, а claimThrottle/
+	// claimBudget (через свой пул) работают нормально.
 	broken, err := pgxpool.New(ctx, pool.Config().ConnString())
 	if err != nil {
 		t.Fatalf("broken pool: %v", err)
@@ -495,8 +460,6 @@ func TestEvaluatorFullEnqueueFailureReleasesThrottleAndBudget(t *testing.T) {
 	ev := alert.Event{ProjectID: pid, IssueID: issueID, Kind: alert.KindNewIssue, Title: "boom", Level: "error"}
 	e.OnIssue(ctx, ev)
 
-	// Budget refunded: a full failure must not spend a slot of the hourly
-	// project limit on an alert that was never actually delivered.
 	var sent int
 	err = pool.QueryRow(ctx,
 		"SELECT sent FROM alert_project_budget WHERE project_id = $1", pid).Scan(&sent)
@@ -507,9 +470,6 @@ func TestEvaluatorFullEnqueueFailureReleasesThrottleAndBudget(t *testing.T) {
 		t.Fatalf("alert_project_budget.sent = %d, want 0 (claim should have been refunded)", sent)
 	}
 
-	// Throttle window freed: the same issue, retried with a WORKING outbox,
-	// must be able to enqueue again immediately instead of running into a
-	// still-occupied throttle window.
 	ob := notify.NewOutbox(pool)
 	e2 := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example"}
 	e2.OnIssue(ctx, ev)
@@ -522,11 +482,6 @@ func TestEvaluatorFullEnqueueFailureReleasesThrottleAndBudget(t *testing.T) {
 	}
 }
 
-// TestEvaluatorPartialEnqueueFailureKeepsThrottleAndBudget covers the other
-// half of the same fix: when at least one channel's Enqueue succeeds, the
-// alert WAS delivered, so the throttle/budget claim must NOT be rolled back
-// — otherwise the next event for the same issue would bypass the throttle
-// window entirely and re-send a duplicate.
 func TestEvaluatorPartialEnqueueFailureKeepsThrottleAndBudget(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := alert.NewService(pool)
@@ -557,8 +512,6 @@ func TestEvaluatorPartialEnqueueFailureKeepsThrottleAndBudget(t *testing.T) {
 		t.Fatalf("jobs = %+v err=%v, want exactly 1 job for channel %d", jobs, err, ch)
 	}
 
-	// The claim must still be occupied: a second event for the same issue
-	// within the throttle window must NOT enqueue again.
 	e.OnIssue(ctx, ev)
 	jobs2, err := ob.Claim(ctx, 10)
 	if err != nil || len(jobs2) != 0 {
@@ -566,21 +519,14 @@ func TestEvaluatorPartialEnqueueFailureKeepsThrottleAndBudget(t *testing.T) {
 	}
 }
 
-// mockMaint — alert.MaintenanceChecker для тестов: func-обёртка вместо
-// полноценного uptime.Service, тем же приёмом, что host.mockMaint/
-// trace.mockMaint (Task 3/5).
+// Func-обёртка вместо полноценного uptime.Service — тот же приём, что
+// host.mockMaint/trace.mockMaint.
 type mockMaint func(ctx context.Context, projectID int64, at time.Time) (bool, error)
 
 func (m mockMaint) InMaintenance(ctx context.Context, projectID int64, at time.Time) (bool, error) {
 	return m(ctx, projectID, at)
 }
 
-// TestEvaluatorMaintenanceSuppressesIssueAlert — Task 7 брифа B3:
-// issue-алерты (new_issue/regression/spike) не имеют таблицы инцидентов и
-// флага (throttle+budget-based), поэтому гейт стоит ДО claimThrottle/
-// claimBudget. Подавленный алерт не должен занять троттл-окно, не должен
-// списать бюджетный слот и не должен попасть в suppressed-digest — иначе он
-// уехал бы в сводку «подавлено N», хотя это не бюджетное подавление.
 func TestEvaluatorMaintenanceSuppressesIssueAlert(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := alert.NewService(pool)
@@ -623,9 +569,8 @@ func TestEvaluatorMaintenanceSuppressesIssueAlert(t *testing.T) {
 		t.Errorf("alert_throttle rows for issue = %d, want 0 (maintenance gate must precede claimThrottle)", throttleRows)
 	}
 
-	// Гейт ДО claimBudget: подавленный алерт не должен списать бюджетный
-	// слот и не должен растить suppressed (иначе он уехал бы в digest как
-	// «подавлено бюджетом», хотя причина другая).
+	// Гейт ДО claimBudget: подавленный алерт не должен списать слот или расти
+	// suppressed — иначе уехал бы в digest как «подавлено бюджетом».
 	var sent, suppressed int
 	err = pool.QueryRow(ctx,
 		"SELECT sent, suppressed FROM alert_project_budget WHERE project_id = $1", pid).Scan(&sent, &suppressed)

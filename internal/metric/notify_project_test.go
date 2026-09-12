@@ -11,18 +11,10 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// stubProjectNamer — фиксированное имя проекта, без обращения к БД. Общий
-// контур (escalation.Dispatch) принимает его через escalation.ProjectNamer
-// duck-typing — metric не знает и не должен знать про этот конкретный тип.
 type stubProjectNamer struct{ name string }
 
 func (s stubProjectNamer) ProjectName(context.Context, int64) (string, error) { return s.name, nil }
 
-// TestMetricNotifierIncludesProjectNameWhenWired — W3-E требование 4: имя
-// проекта в теме/теле/webhook-payload, когда Projects задан. Второй из
-// (минимум) двух источников доказывающих реальный вызов общего контура — см.
-// TestHostNotifierIncludesProjectNameWhenWired для первого: если сломать
-// сборку темы/тела в escalation.Dispatch, падают ОБА теста в РАЗНЫХ пакетах.
 func TestMetricNotifierIncludesProjectNameWhenWired(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

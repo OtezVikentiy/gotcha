@@ -10,14 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMetricOpenUnackedPurgedGroupTreatedAsClosed — зеркало
-// host/group_purged_gate_test.go на metric_incidents (R2a/W3, регресс
-// мутации, убравшей `g.id IS NULL` из предиката OpenUnacked — прогон
-// полного тестового набора её не ловил). Группа, чья строка физически
-// удалена из incident_groups (janitor purge/ретеншен), должна трактоваться
-// как закрытая: висячий group_id не блокирует бывшего члена в OpenUnacked
-// навсегда. StartedAt — собственный started_at инцидента (группы уже нет,
-// GREATEST не должен подмешивать время резолва).
+// Зеркало host/group_purged_gate_test.go — группа, чья строка физически удалена (janitor purge),
+// должна трактоваться как закрытая: висячий group_id не блокирует бывшего члена в OpenUnacked навсегда.
 func TestMetricOpenUnackedPurgedGroupTreatedAsClosed(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()

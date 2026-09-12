@@ -56,9 +56,6 @@ func TestProjectKeys(t *testing.T) {
 	}
 }
 
-// TestCreateKeysBatchKinds — CreateKeys выпускает несколько ключей ОДНИМ
-// запросом (атомарность онбординга: три последовательных вставки утроили бы
-// шанс наполовину созданного проекта) и проставляет каждому свой тип.
 func TestCreateKeysBatchKinds(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	s := org.NewService(pool, 1_000_000)
@@ -94,10 +91,6 @@ func TestCreateKeysBatchKinds(t *testing.T) {
 		seen[k.PublicKey] = true
 	}
 
-	// Сопоставление id↔ключ не перепутано: RETURNING id мог бы прийти в
-	// порядке VALUES, а Scan — записать его не туда (например, в реверсе).
-	// Сверяем НАПРЯМУЮ с БД по каждому id, а не полагаемся на то, что
-	// PublicKey/Kind в keys[i] и так были выставлены до похода в БД.
 	for i, k := range keys {
 		var dbPublicKey, dbKind string
 		if err := pool.QueryRow(ctx,
@@ -115,7 +108,6 @@ func TestCreateKeysBatchKinds(t *testing.T) {
 		}
 	}
 
-	// Тип доезжает до горячего пути приёма: KeyByPublic его читает.
 	got, err := s.KeyByPublic(ctx, keys[2].PublicKey)
 	if err != nil {
 		t.Fatalf("key by public: %v", err)
@@ -124,7 +116,6 @@ func TestCreateKeysBatchKinds(t *testing.T) {
 		t.Fatalf("KeyByPublic вернул kind=%q, ожидался agent", got.Kind)
 	}
 
-	// И до страницы настроек: KeysForProject тоже.
 	all, err := s.KeysForProject(ctx, p.ID)
 	if err != nil {
 		t.Fatalf("keys for project: %v", err)
@@ -136,9 +127,6 @@ func TestCreateKeysBatchKinds(t *testing.T) {
 	}
 }
 
-// TestCreateKeysTwoKinds — CreateKeys ровно с ДВУМЯ типами: нумерация
-// плейсхолдеров ($N) строится по факту накопленных args, и при числе ключей,
-// отличном от края (1 или 3), легко промахнуться на единицу.
 func TestCreateKeysTwoKinds(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	s := org.NewService(pool, 1_000_000)
@@ -180,8 +168,6 @@ func TestCreateKeysTwoKinds(t *testing.T) {
 	}
 }
 
-// TestCreateKeysRejectsInvalidKind — недопустимый тип отбивается ДО похода в
-// БД: сообщение об ошибке должно быть про тип ключа, а не про нарушение CHECK.
 func TestCreateKeysRejectsInvalidKind(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	s := org.NewService(pool, 1_000_000)
@@ -201,7 +187,6 @@ func TestCreateKeysRejectsInvalidKind(t *testing.T) {
 	if _, err := s.CreateKeys(ctx, p.ID, org.KeyKind("root")); !errors.Is(err, org.ErrInvalidKeyKind) {
 		t.Fatalf("ожидалась ErrInvalidKeyKind, получено %v", err)
 	}
-	// Пустой список тоже ошибка: вызов без типов — это забытый аргумент.
 	if _, err := s.CreateKeys(ctx, p.ID); !errors.Is(err, org.ErrInvalidKeyKind) {
 		t.Fatalf("CreateKeys без типов: ожидалась ErrInvalidKeyKind, получено %v", err)
 	}

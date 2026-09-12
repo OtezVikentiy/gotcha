@@ -7,15 +7,11 @@ import (
 	"net/url"
 )
 
-// YandexConfig — параметры Яндекс ID (из env).
 type YandexConfig struct {
 	ClientID     string
 	ClientSecret string
 }
 
-// Yandex — провайдер Яндекс ID (OAuth2, свой профиль login.yandex.ru/info).
-// Не чистый OIDC: id_token не используется, email считаем verified (Яндекс
-// отдаёт лишь собственный подтверждённый адрес аккаунта).
 type Yandex struct {
 	cfg YandexConfig
 
@@ -35,12 +31,8 @@ func NewYandex(cfg YandexConfig) *Yandex {
 
 func (y *Yandex) Name() string { return "yandex" }
 
-// DisplayName — латинский fallback (№137): его видят generic-путь резолва и
-// операторские логи; локализованную подпись («Яндекс»/"Yandex") даёт каталог
-// i18n по ключу oauth.provider.yandex (см. web.providerLabel).
 func (y *Yandex) DisplayName() string { return "Yandex" }
 
-// AuthURL — Яндекс не требует PKCE; challenge игнорируем. nonce не применим.
 func (y *Yandex) AuthURL(state, _, _, redirectURI string) string {
 	q := url.Values{
 		"response_type": {"code"},

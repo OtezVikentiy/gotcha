@@ -12,20 +12,15 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// mailCall — один зафиксированный вызов fakeMailer.Send.
 type mailCall struct {
 	target  notify.Target
 	payload map[string]any
 }
 
-// fakeMailer подменяет реальный SMTP: тестам notify.go нужен факт и
-// содержимое письма, а не его доставка.
 type fakeMailer struct {
 	calls []mailCall
 	err   error
-	// lastCtx — ctx, с которым пришёл ПОСЛЕДНИЙ вызов Send: нужен только
-	// TestMailNotifierSendHasOwnTimeout (P2-OPS-3 аудита), проверяющей, что
-	// NewMailNotifier не пробрасывает родительский ctx как есть.
+	// Нужен только тесту таймаута — проверить, что не переиспользуется родительский ctx.
 	lastCtx context.Context
 }
 
@@ -35,10 +30,7 @@ func (m *fakeMailer) Send(ctx context.Context, t notify.Target, payload map[stri
 	return m.err
 }
 
-// mailBody достаёт тело письма из payload — payload собирается через
-// map[string]any (см. образец в orgsettings.go), поэтому значение — string,
-// но приводим через fmt.Sprint, чтобы неверный тип провалил ассерт текстом,
-// а не паникой на приведении типа.
+// Приводим через fmt.Sprint, чтобы неверный тип провалил ассерт текстом, а не паникой.
 func mailBody(c mailCall) string { return fmt.Sprint(c.payload["body"]) }
 
 func TestMailNotifierReportsSuccessWithLink(t *testing.T) {
@@ -65,8 +57,6 @@ func TestMailNotifierReportsSuccessWithLink(t *testing.T) {
 	if !strings.Contains(body, wantLink) {
 		t.Errorf("в письме нет ссылки на страницу выгрузок: %q", body)
 	}
-	// §9 спеки: письмо об успехе несёт число строк и размер файла, не
-	// только ссылку — RowsWritten=10, Bytes=1000 в снимке заявки выше.
 	if !strings.Contains(body, "10 строк") {
 		t.Errorf("в письме нет числа строк выгрузки: %q", body)
 	}
@@ -84,12 +74,6 @@ func TestMailNotifierReportsSuccessWithLink(t *testing.T) {
 	}
 }
 
-// TestMailNotifierSendHasOwnTimeout — P2-OPS-3 аудита: раньше m.Send
-// получал jobCtx воркера как есть (живёт до Config.JobTimeout, по
-// умолчанию 15 минут, без собственного дедлайна у DialContext) — зависший
-// SMTP держал бы advisory lock воркера все эти 15 минут. ctx, дошедший до
-// Mailer.Send, обязан нести СВОЙ, более короткий дедлайн независимо от
-// родительского ctx (здесь — вовсе без дедлайна, context.Background()).
 func TestMailNotifierSendHasOwnTimeout(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -155,14 +139,6 @@ func TestMailNotifierDoesNotMentionTruncationWhenNotTruncated(t *testing.T) {
 	}
 }
 
-// TestMailNotifierReportsFailureCause — письмо о неудаче показывает
-// ПЕРЕВЕДЁННУЮ причину (FailureReasonKey), а не техническую строку
-// LastError дословно: до задачи 14 «долг гейтов E1» тело письма собиралось
-// прямо из job.LastError — русский текст попадал в письмо даже на
-// английской локали (находка TestNoCyrillicUserFacingLiterals). LastError
-// здесь намеренно НЕ входит в переведённую причину (реалистичная
-// диагностика: путь на диске, код ошибки ОС), чтобы мутация "тело
-// собирается из LastError, а не из FailureReasonKey" ловилась явно.
 func TestMailNotifierReportsFailureCause(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -189,10 +165,6 @@ func TestMailNotifierReportsFailureCause(t *testing.T) {
 	}
 }
 
-// TestMailNotifierFallsBackToInternalReasonWhenKeyMissing — снимок Job без
-// FailureReasonKey (в проде такого не бывает: notifyFailed в worker.go
-// всегда его проставляет, см. её докблок) не должен собрать пустую причину
-// в письме — mailPayload обязана подставить reasonInternal защитно.
 func TestMailNotifierFallsBackToInternalReasonWhenKeyMissing(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -218,8 +190,6 @@ func TestMailNotifierSilentWhenMailerNil(t *testing.T) {
 	st := NewStore(pool)
 	projectID, userID := seedProjectAndUser(t, pool)
 
-	// Почта не настроена — заявка всё равно считается успешной: файл уже
-	// на диске. NewMailNotifier(nil, ...) не должен паниковать.
 	notifyFn := NewMailNotifier(nil, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
 	notifyFn(ctx, Job{ID: 5, ProjectID: projectID, CreatedBy: userID, Status: StatusDone})
 }
@@ -232,9 +202,6 @@ func TestMailNotifierSkipsUnknownAuthor(t *testing.T) {
 
 	sent := &fakeMailer{}
 	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
-	// CreatedBy указывает на несуществующего пользователя (аккаунт мог быть
-	// удалён между постановкой заявки и её завершением): AuthorEmail не
-	// находит адрес, письмо тихо не уходит, паники нет.
 	notifyFn(ctx, Job{ID: 6, ProjectID: projectID, CreatedBy: 9_999_999, Status: StatusDone})
 
 	if len(sent.calls) != 0 {
@@ -250,9 +217,6 @@ func TestMailNotifierIgnoresNonTerminalStatus(t *testing.T) {
 
 	sent := &fakeMailer{}
 	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
-	// Воркер зовёт Notify только при завершении заявки; queued/running сюда
-	// в проде не долетают, но notify.go не должен упасть или отправить
-	// письмо не по адресу, если снимок заявки всё же не терминальный.
 	notifyFn(ctx, Job{ID: 7, ProjectID: projectID, CreatedBy: userID, Status: StatusQueued})
 
 	if len(sent.calls) != 0 {
@@ -268,24 +232,14 @@ func TestMailNotifierSendErrorDoesNotPanic(t *testing.T) {
 
 	sent := &fakeMailer{err: fmt.Errorf("smtp: connection refused")}
 	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
-	// Ошибка отправки — best-effort: файл уже собран, письмо вторично, и
-	// её сбой не должен всплыть наружу как паника или "перезаявка".
 	notifyFn(ctx, Job{ID: 8, ProjectID: projectID, CreatedBy: userID, Status: StatusDone})
 }
 
-// TestMailNotifierUsesConfiguredLocale — язык письма берётся из locale,
-// переданной в NewMailNotifier (локаль ИНСТАНСА, как у Digester.Locale в
-// internal/alert/digest.go), а не из того, что случайно лежит в ctx
-// вызова: у Worker.Run в проде locale в ctx нет вовсе (см. комментарий
-// NewMailNotifier). Здесь же нарочно кладём в ctx ДРУГУЮ локаль, чтобы
-// доказать, что notify.go её игнорирует и переопределяет своей.
 func TestMailNotifierUsesConfiguredLocale(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
 	projectID, userID := seedProjectAndUser(t, pool)
 
-	// ctx несёт "en" — locale, переданная в NewMailNotifier, несёт "ru".
-	// Победить обязана configured-локаль.
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
 
 	sent := &fakeMailer{}
@@ -301,11 +255,6 @@ func TestMailNotifierUsesConfiguredLocale(t *testing.T) {
 	}
 }
 
-// TestMailNotifierUsesConfiguredLocaleEmptyContext — тот же контракт, но
-// с "пустым" ctx (как реально приходит в проде из Worker.Run): без явной
-// locale i18n.FromContext молча откатился бы на i18n.Default ("ru"),
-// поэтому этот тест дублирует смысл предыдущего только частично — берём EN,
-// чтобы отличить "сработала configured-локаль" от "совпало с дефолтом".
 func TestMailNotifierUsesConfiguredLocaleEmptyContext(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	st := NewStore(pool)
@@ -324,11 +273,6 @@ func TestMailNotifierUsesConfiguredLocaleEmptyContext(t *testing.T) {
 	}
 }
 
-// TestMailNotifierIncludesMachineReadableMeta — F5 контрактной уборки
-// 2026-08-28 (CONTRACT-DECISIONS.md): письмо о готовности обязано нести
-// job_id/scope_issue_id/filter_code машиночитаемо, рядом с локализованной
-// фразой, а не только внутри неё — получателю не приходится парсить текст
-// вида «issue #77» на языке инстанса, чтобы достать число 77.
 func TestMailNotifierIncludesMachineReadableMeta(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -352,11 +296,6 @@ func TestMailNotifierIncludesMachineReadableMeta(t *testing.T) {
 	}
 }
 
-// TestMailNotifierIncludesPseudonymNoteForMaskedEvents — F1′: письмо о
-// готовности обязано нести пометку о невозможности сопоставить псевдонимы
-// user_id между выгрузками РОВНО там, где BuildMeta её ставит (Kind=events,
-// IncludePII=false) — тот же контракт, что и у Meta.PseudonymNote (meta.go,
-// см. TestBuildMetaPseudonymNoteOnlyForMaskedEvents).
 func TestMailNotifierIncludesPseudonymNoteForMaskedEvents(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -379,10 +318,6 @@ func TestMailNotifierIncludesPseudonymNoteForMaskedEvents(t *testing.T) {
 	}
 }
 
-// TestMailNotifierOmitsPseudonymNoteWhenNotMasked — зеркало предыдущего
-// теста: пометка не появляется там, где псевдонимизации нет вовсе (issues —
-// колонки user_id нет) или PII отдан сырым (IncludePII=true) — предупреждать
-// о свойстве, которого нет, было бы ложью получателю письма.
 func TestMailNotifierOmitsPseudonymNoteWhenNotMasked(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)

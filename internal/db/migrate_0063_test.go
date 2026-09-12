@@ -1,10 +1,5 @@
 package db_test
 
-// TestLatestMigrationHasDataTest (internal/guards) требует, чтобы НОВЕЙШАЯ
-// миграция PostgreSQL приезжала с тестом на непустой базе — db.MigratePGTo на
-// схему, уже содержащую строки. На момент этой правки новейшая —
-// 0063_status_page_drop_slug.up.sql.
-
 import (
 	"context"
 	"testing"
@@ -14,16 +9,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestMigrate0063StatusPageDropSlugThenRestoreBack — T5, контракт перехода
-// публичного адреса статус-страницы со slug на public_id (0062 — expand,
-// 0063 — contract: удаляет колонку, которую код больше не читает и не
-// пишет, T2-T4). Заводим ДВЕ строки на схеме после 0062: одну с записью в
-// status_page_redirects (легаси-адрес заморожен там миграцией 0062), другую
-// без неё (страница уже новой модели). Проверяем: (а) up удаляет колонку
-// slug целиком — SELECT по ней должен быть невозможен, sql-запрос через
-// information_schema; (б) down возвращает колонку, nullable, заполненную —
-// из redirects для первой строки, из public_id для второй (см. брифа §2 —
-// down.sql воспроизводит только 0062-состояние, НЕ ставит NOT NULL/UNIQUE).
+// Контракт перехода slug → public_id: 0062 expand, 0063 contract (удаляет slug, которую код больше
+// не читает). down восстанавливает колонку nullable/заполненную, без NOT NULL/UNIQUE (это зона 0062).
 func TestMigrate0063StatusPageDropSlugThenRestoreBack(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -45,10 +32,8 @@ func TestMigrate0063StatusPageDropSlugThenRestoreBack(t *testing.T) {
 	mustScan(t, pool, &projectID,
 		"INSERT INTO projects (org_id, slug, name) VALUES ($1, 'm63', 'M63') RETURNING id", orgID)
 
-	// Строка с замороженным легаси-адресом: slug + public_id + запись в
-	// status_page_redirects — так выглядит страница, пережившая апгрейд 0062
-	// (слуг был у неё до миграции, 0062.up сама заполняет redirects, здесь
-	// эмулируем это вручную под явным public_id).
+	// Так выглядит страница, пережившая апгрейд 0062 (redirects заполняет 0062.up) — здесь эмулируем
+	// вручную под явным public_id.
 	mustScan(t, pool, &redirectedPageID,
 		`INSERT INTO status_pages (project_id, public_id, slug, title, description, enabled)
 		 VALUES ($1, 'p_redirected000000000000', 'legacy-x', 'Redirected', '', true)
@@ -59,19 +44,14 @@ func TestMigrate0063StatusPageDropSlugThenRestoreBack(t *testing.T) {
 		t.Fatalf("insert status_page_redirects: %v", err)
 	}
 
-	// Строка без легаси-адреса: создана уже в новой модели (public_id есть,
-	// slug NULL, редиректа нет) — так выглядит страница, созданная кодом
-	// после T2/T3.
+	// Так выглядит страница, созданная в новой модели (public_id есть, slug NULL, редиректа нет).
 	mustScan(t, pool, &plainPageID,
 		`INSERT INTO status_pages (project_id, public_id, title, description, enabled)
 		 VALUES ($1, 'p_plain0000000000000000', 'Plain', '', true)
 		 RETURNING id`, projectID)
 
-	// Строка, эмулирующая старый бинарь на переходном окне rolling-deploy:
-	// создана ПОСЛЕ 0062 (значит, её slug никогда не проходил через backfill
-	// 0062.up — тот отработал один раз, до этой вставки) и без ручной записи
-	// в status_page_redirects. 0063.up обязан заморозить такой slug сам,
-	// иначе после DROP COLUMN её публичный 301-адрес потеряется навсегда.
+	// Эмулирует старый бинарь на rolling-deploy: создана ПОСЛЕ 0062, backfill её не задел, redirects нет
+	// вручную. 0063.up обязан заморозить slug сам — иначе после DROP COLUMN 301-адрес потеряется навсегда.
 	var postUpgradePageID int64
 	mustScan(t, pool, &postUpgradePageID,
 		`INSERT INTO status_pages (project_id, public_id, slug, title, description, enabled)

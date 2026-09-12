@@ -16,66 +16,32 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
-// Троттлинг алертов о производительности. У алертов об ошибках гейтов два
-// (alert_rules и throttle_minutes через alert.Evaluator.claimThrottle), у
-// алертов uptime — переходы состояния инцидента. У perf-алертов не было
-// НИЧЕГО: каждая новая пара (project_id, fingerprint) ставила задачу в outbox на
-// каждый канал. Библиотека фич-флагов, читающая Redis в цикле на двух сотнях
-// эндпойнтов, дала бы две сотни сообщений дежурному за первые минуты после
-// включения детекции.
-//
-// Окно «прыгающее» (tumbling), а не скользящее: одна строка на проект вместо
-// строки на каждый алерт, и клейм — один атомарный INSERT ... ON CONFLICT (как
-// в claimThrottle). Строки perf_issues при этом создаются ВСЕГДА — ограничивается
-// только рассылка, и всё, что не поместилось, попадает в лог (молчаливый дроп
-// читался бы как «проблем больше нет»).
 const (
-	// MaxPerfAlertsPerHour экспортирован: на него смотрят тесты пакета и по нему
-	// же считается «сколько осталось» в логе.
 	MaxPerfAlertsPerHour = 10
 
 	perfAlertWindow = time.Hour
 )
 
-// OutboxNotifier — алерты о проблемах производительности поверх того же
-// notify.Outbox и тех же каналов проекта, что и алерты об ошибках
-// (alert.Evaluator) и об инцидентах uptime (uptime.OutboxNotifier): формат
-// payload намеренно совпадает с ними — его читает notify.Worker
-// (channel_kind/target), а доставляют те же Sender'ы.
 type OutboxNotifier struct {
-	Alerts *alert.Service // каналы проекта: Alerts.Channels(projectID)
+	Alerts *alert.Service
 	Outbox *notify.Outbox
 
-	// Pool — та же PG, что под Alerts и Outbox: в ней живёт perf_alert_throttle
-	// (см. claimAlert). Обязателен: без него рассылка ничем не ограничена, и
-	// notify возвращает ошибку, а не тихо шлёт всё подряд.
+	// обязателен: без него троттлинг недоступен, notify вернёт ошибку, а не разошлёт без ограничений.
 	Pool *pgxpool.Pool
 
-	// BaseURL — префикс ссылки на проблему в уведомлении:
-	// {BaseURL}/perf-issues/{id}.
+	// ссылка в уведомлении собирается как значение + /perf-issues/{id}.
 	BaseURL string
 
-	// EmailEnabled — см. alert.Evaluator.EmailEnabled: пока false,
-	// email-каналы пропускаются (с warn-логом), чтобы не ставить в очередь
-	// задачи, которые notify.Worker всё равно не сможет доставить.
 	EmailEnabled bool
 
-	// Details — политика раскрытия деталей события получателю уведомления
-	// (см. alert.DetailPolicy). Нулевое значение не доверяет никому.
+	// нулевое значение не раскрывает деталей никому.
 	Details alert.DetailPolicy
 
-	// Locale — локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка
-	// получателя, поэтому язык уведомления выбирает оператор (№133–136).
+	// локаль инстанса (GOTCHA_LOCALE), не запроса: у внешнего получателя своей локали нет.
 	Locale i18n.Locale
 }
 
-// perfIssueNotifyTitle — заголовок perf-находки для уведомления: перевод вида
-// + параметр (description; у http_flood параметром служит culprit). Пустой
-// параметр при непустом сохранённом title — строка, созданная до миграции
-// 0058 и не подошедшая под префиксы backfill: для неё честнее сохранённый
-// текст. Та же логика на рендере страниц — perfIssueTitle в
-// internal/web/templates/perfissues.templ (web не импортируем: зависимость
-// шла бы в обратную сторону).
+// логика повторена в internal/web/templates/perfissues.templ — общего кода нет, чтобы не тянуть импорт web.
 func perfIssueNotifyTitle(ctx context.Context, iss PerfIssue) string {
 	param := iss.Description
 	if iss.Kind == KindHTTPFlood {
@@ -90,25 +56,17 @@ func perfIssueNotifyTitle(ctx context.Context, iss PerfIssue) string {
 	return i18n.T(ctx, "perf.title."+iss.Kind) + ": " + param
 }
 
-// NotifyNew ставит по одной задаче в Outbox на каждый включённый канал проекта.
-// Зовётся ТОЛЬКО при первом обнаружении проблемы (RecordResult.Created):
-// проблема производительности воспроизводится на каждом запросе к эндпойнту, и
-// алерт на каждое повторение был бы лавиной, которая хуже молчания.
+// вызывается только при первом обнаружении — иначе алерт шёл бы на каждый повтор.
 func (n *OutboxNotifier) NotifyNew(ctx context.Context, projectID int64, iss PerfIssue) error {
 	return n.notify(ctx, projectID, iss, false)
 }
 
-// NotifyRegression — проблема была помечена resolved и обнаружена снова
-// (RecordResult.Regression). Молча переоткрывать её нельзя: для дежурного
-// «починили и сломалось опять» — такое же событие, как новая проблема (так же
-// устроены алерты об ошибках, alert.KindRegression).
+// вызывается при повторном обнаружении после resolved — тихое переоткрытие обманет дежурного.
 func (n *OutboxNotifier) NotifyRegression(ctx context.Context, projectID int64, iss PerfIssue) error {
 	return n.notify(ctx, projectID, iss, true)
 }
 
-// notify — общая постановка задач в Outbox. Ошибка Enqueue по одному каналу не
-// прерывает постановку остальных: все такие ошибки логируются и собираются через
-// errors.Join (как в uptime.OutboxNotifier).
+// ошибка Enqueue по одному каналу не прерывает остальные — все они собираются через errors.Join.
 func (n *OutboxNotifier) notify(ctx context.Context, projectID int64, iss PerfIssue, regression bool) error {
 	if n.Pool == nil {
 		return errors.New("trace: notify: nil pool, perf alert throttle unavailable")
@@ -118,8 +76,7 @@ func (n *OutboxNotifier) notify(ctx context.Context, projectID int64, iss PerfIs
 	if err != nil {
 		return fmt.Errorf("trace: notify: project channels: %w", err)
 	}
-	// Каналы читаются ДО клейма слота: проект без включённых каналов не должен
-	// выжигать часовой лимит алертами, которые всё равно некуда доставлять.
+	// каналы читаются до клейма слота: проект без включённых каналов не должен жечь часовой лимит.
 	deliverable := false
 	for _, ch := range channels {
 		if ch.Enabled && (ch.Kind != alert.ChannelEmail || n.EmailEnabled) {
@@ -136,17 +93,13 @@ func (n *OutboxNotifier) notify(ctx context.Context, projectID int64, iss PerfIs
 		return fmt.Errorf("trace: notify: claim throttle: %w", err)
 	}
 	if !claimed {
-		// Не молчим: проблема ЗАПИСАНА (perf_issues), просто не разослана — иначе
-		// дежурный, увидев тишину, решил бы, что новых проблем нет.
+		// throttled ≠ потеряно: проблема уже записана в perf_issues, только не разослана.
 		slog.Warn("perf alert throttled, issue recorded but not delivered",
 			"project_id", projectID, "perf_issue_id", iss.ID, "kind", iss.Kind,
 			"culprit", iss.Culprit, "regression", regression, "limit_per_hour", MaxPerfAlertsPerHour)
 		return nil
 	}
 
-	// Тексты — на языке инстанса (GOTCHA_LOCALE), а не запроса: уведомление
-	// читает внешний получатель, у которого нет своей локали (№138–139: раньше
-	// здесь склеивался английский каркас с русским title детектора).
 	lctx := i18n.WithLocale(ctx, n.Locale)
 	title := perfIssueNotifyTitle(lctx, iss)
 	url := fmt.Sprintf("%s/perf-issues/%d", n.BaseURL, iss.ID)
@@ -182,13 +135,8 @@ func (n *OutboxNotifier) notify(ctx context.Context, projectID int64, iss PerfIs
 			"body":          body,
 			"channel_kind":  ch.Kind,
 			"target":        ch.Target,
-			// Секрета в payload нет намеренно: notification_outbox.payload —
-			// обычный jsonb, и bot-токен в нём обесценил бы шифрование
-			// alert_channels.secret. notify.Worker достаёт секрет по
-			// channel_id в момент отправки (см. notify.SecretResolver).
+			// секрета в payload нет намеренно — plain jsonb обесценил бы шифрование alert_channels.secret.
 		}
-		// Гейт трансграничной передачи: получателю вне контура оператора
-		// уходит обезличенный payload (см. notify.RedactExternalPayload).
 		if !n.Details.AllowsDetails(ch) {
 			payload = notify.RedactExternalPayload(lctx, payload)
 		}
@@ -199,10 +147,8 @@ func (n *OutboxNotifier) notify(ctx context.Context, projectID int64, iss PerfIs
 		}
 		enqueued++
 	}
-	// Слот занимается ДО Enqueue — иначе четыре воркера обошли бы лимит гонкой. Но
-	// если не встало НИ ОДНО сообщение (PG моргнула на всех каналах), рассылки не
-	// было, и часовой бюджет проекта не должен быть потрачен на неё: возвращаем
-	// слот. Частичный успех слот удерживает — что-то ушло.
+	// слот занимается до Enqueue, чтобы воркеры не обошли лимит гонкой; если не встало
+	// ни одного сообщения — слот освобождается.
 	if enqueued == 0 && errs != nil {
 		if err := n.releaseAlert(ctx, projectID); err != nil {
 			slog.Error("trace: notify: release throttle slot", "project_id", projectID, "error", err)
@@ -211,10 +157,7 @@ func (n *OutboxNotifier) notify(ctx context.Context, projectID int64, iss PerfIs
 	return errs
 }
 
-// releaseAlert возвращает один занятый claimAlert-ом слот: sent - 1, но не ниже
-// нуля и только в пределах текущего окна (истёкшее окно перезапишет claimAlert
-// сам, коррекция там ни к чему). Best-effort: провал release оставляет слот
-// занятым — это потеря одного алерта из часового лимита, не некорректность.
+// best-effort: неудачный release просто теряет один слот из часового лимита, не ломает корректность.
 func (n *OutboxNotifier) releaseAlert(ctx context.Context, projectID int64) error {
 	cutoff := time.Now().Add(-perfAlertWindow)
 	_, err := n.Pool.Exec(ctx, `
@@ -227,17 +170,8 @@ func (n *OutboxNotifier) releaseAlert(ctx context.Context, projectID int64) erro
 	return nil
 }
 
-// claimAlert атомарно занимает один слот из MaxPerfAlertsPerHour для проекта:
-// проверка «влезаем ли в окно» и отметка «занято» — один statement, как в
-// alert.Evaluator.claimThrottle. Раздельные SELECT и UPDATE здесь дали бы гонку
-// четырёх воркеров пайплайна ровно там, где лавину и надо остановить.
-//
-// Строки нет → INSERT проходит → слот занят (sent=1). Окно истекло
-// (window_start <= cutoff) → ON CONFLICT DO UPDATE открывает новое окно
-// (window_start=now(), sent=1). Окно живо и sent < лимита → sent+1, слот занят.
-// Окно живо и лимит выбран → WHERE отсекает UPDATE → RETURNING пуст → слота нет.
-// ON CONFLICT берёт блокировку строки, поэтому лимит соблюдается ТОЧНО, а не
-// «примерно» — параллельные клеймы одного проекта сериализуются на ней.
+// ON CONFLICT берёт блокировку строки — параллельные клеймы одного проекта сериализуются,
+// лимит соблюдается точно, не приблизительно.
 func (n *OutboxNotifier) claimAlert(ctx context.Context, projectID int64) (bool, error) {
 	cutoff := time.Now().Add(-perfAlertWindow)
 	var sent int

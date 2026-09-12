@@ -9,38 +9,23 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 )
 
-// issuesPerPage дублирует значение по умолчанию из issue.Service.List
-// (issue.defaultPerPage не экспортирован): нужно то же число, чтобы верно
-// посчитать totalPages для ссылок пагинации.
+// Дублирует несэкспортированный issue.defaultPerPage — числа обязаны совпадать для totalPages.
 const issuesPerPage = 25
 
-// IssueRow — issue вместе с уже построенным SVG-спарклайном. Спарклайн
-// собирается в web/issues.go одним запросом event.Query.Sparklines на все
-// issues страницы и передаётся сюда готовым templ.Component, чтобы этот
-// пакет не зависел от web (иначе цикл импорта: web -> templates -> web).
+// Sparkline строится в web/issues.go и передаётся готовым — иначе цикл импорта web->templates->web.
 type IssueRow struct {
 	Issue     issue.Issue
 	Sparkline templ.Component
 }
 
-// IssuesFilter — значения фильтров, которые нужно сохранить в форме и
-// пробросить в ссылки пагинации.
 type IssuesFilter struct {
 	Status      string
 	Level       string
 	Query       string
 	Sort        string
 	Environment string
-	// Range — то же окно времени, что и на остальных страницах.
-	//
-	// Раньше здесь была строка периода и свой селект на четыре пункта: ни часа,
-	// ни произвольного диапазона. Окно, выбранное на «Производительности», при
-	// переходе в «Проблемы» молча сбрасывалось — на главной поверхности разбора.
 	Range TimeRangeVM
-	// Active — хоть один фильтр сужен относительно умолчаний (вычисляет
-	// хендлер): пустой список при этом значит «ничего не подошло», а не
-	// «событий ещё не было» (№23) — и лечится сбросом фильтров, а не
-	// подключением SDK.
+	// Active: пустой список отфильтрованных issues значит «ничего не подошло», не «событий не было».
 	Active bool
 }
 
@@ -52,8 +37,6 @@ func issuesBulkPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/issues/bulk"
 }
 
-// issueDetailPath — страница отдельного issue появится в другой задаче;
-// путь уже фиксирован спекой.
 func issueDetailPath(issueID int64) string {
 	return "/issues/" + strconv.FormatInt(issueID, 10)
 }
@@ -71,13 +54,8 @@ func levelBadgeClass(level string) string {
 	}
 }
 
-// statusBadgeClass — бейдж статуса issue: unresolved подсвечивается как
-// "требует внимания" (warn), resolved — good, ignored — нейтральный.
-// default (в т.ч. неизвестный статус) деградирует в тот же warn, что и
-// unresolved, — сознательно: "требует внимания" безопаснее, чем молчаливое
-// "всё хорошо" для статуса, которого шаблон не узнал. Полнота набора,
-// закрывающая case-ветками issue.Statuses, проверяется
-// TestIssueStatusBadgeAndLabelComplete (helpers_test.go).
+// default (в т.ч. неизвестный статус) деградирует в warn: "требует внимания" безопаснее тихого
+// "всё хорошо" для статуса, которого шаблон не узнал.
 func statusBadgeClass(status string) string {
 	switch status {
 	case issue.StatusResolved:
@@ -89,10 +67,7 @@ func statusBadgeClass(status string) string {
 	}
 }
 
-// issueLevelLabel — локализованное имя уровня issue (в БД коды debug/info/
-// warning/error/fatal). Неизвестный код возвращается как есть. Один и тот же
-// набор ключей используется в фильтре-дропдауне выше — иначе в таблице ячейка
-// показывала бы "warning", а фильтр рядом — «Предупреждение».
+// Тот же набор ключей, что и в дропдауне фильтра — иначе подписи в таблице и фильтре разъедутся.
 func issueLevelLabel(ctx context.Context, level string) string {
 	switch level {
 	case issue.LevelDebug, issue.LevelInfo, issue.LevelWarning, issue.LevelError, issue.LevelFatal:
@@ -101,10 +76,7 @@ func issueLevelLabel(ctx context.Context, level string) string {
 	return level
 }
 
-// issueTitle — заголовок issue для списка и детали. Приём оставляет title
-// пустым, когда у события нет ни exception, ни message, ни transaction, ни
-// logger (данные не подделываются); пустая ссылка и пустой aria-label — это
-// невидимый элемент, поэтому заглушку рисует интерфейс.
+// Пустой title — у события нет ни exception, ни message, ни transaction, ни logger.
 func issueTitle(ctx context.Context, title string) string {
 	if title == "" {
 		return i18n.T(ctx, "issues.untitled")
@@ -112,8 +84,6 @@ func issueTitle(ctx context.Context, title string) string {
 	return title
 }
 
-// issueStatusLabel — локализованное имя статуса issue/perf-issue (unresolved/
-// resolved/ignored). Неизвестный статус возвращается как есть.
 func issueStatusLabel(ctx context.Context, status string) string {
 	switch status {
 	case issue.StatusUnresolved, issue.StatusResolved, issue.StatusIgnored:
@@ -122,8 +92,6 @@ func issueStatusLabel(ctx context.Context, status string) string {
 	return status
 }
 
-// assigneeDisplay — email назначенного пользователя или «—», если issue
-// никому не назначен.
 func assigneeDisplay(email string) string {
 	if email == "" {
 		return "—"
@@ -138,10 +106,7 @@ func totalPages(total int64) int64 {
 	return (total + issuesPerPage - 1) / issuesPerPage
 }
 
-// pagerPrev — номер страницы для ссылки «назад» в пагинаторе. На пустой
-// (out-of-range) странице total=0 — count() OVER() не с чего взять, — поэтому
-// ведём сразу на первую страницу: иначе пользователь застревает на пустом
-// экране без счётчика и без пути назад к данным (S1).
+// total=0 на out-of-range странице: считать «назад» не от чего, ведём сразу на первую страницу.
 func pagerPrev(page int, total int64) int {
 	if total <= 0 {
 		return 1
@@ -149,8 +114,6 @@ func pagerPrev(page int, total int64) int {
 	return page - 1
 }
 
-// issuesPageURL строит ссылку на список issues с сохранением текущих
-// фильтров и заменой page.
 func issuesPageURL(projectID int64, f IssuesFilter, page int) string {
 	q := url.Values{}
 	if f.Status != "" {
@@ -211,22 +174,8 @@ templ environmentOption(value, label string, selected string) {
 	}
 }
 
-// IssuesList — GET /projects/{id}/issues: таблица issues проекта с панелью
-// фильтров (обычная GET-форма — работает без JS) и пагинацией по ссылкам.
-// Фильтры — обычная GET-форма без клиентского JS: подмена только списка
-// оставила бы счётчики/пагинацию рассинхронизированными с выборкой, а полная
-// перерисовка страницы браузером и проще, и всегда согласована. htmx из
-// продукта удалён (не использовался ни на одной странице).
-// canOperate гейтит кнопки экспорта (E1, задача 11): ставит заявку тот же
-// requireProjectOperator, что и остальные lvlOperator-хендлеры проекта —
-// показывать форму, которая поведёт на 404, хуже, чем не показывать её
-// вовсе (тот же принцип, что ExportView.CanDownload/CanDelete в exports.templ).
-// canManagePII — сверх canOperate: видна ли галка «выгрузить как есть» на
-// раскрытых формах экспорта (спека §7/§8; находка аудита P2-UX-3 — раньше
-// эта галка не показывалась на точках входа вовсе, только на генерической
-// форме страницы «Выгрузки», которая не несёт scope_issue_id/фильтров).
-// sparklinesFailed — ClickHouse не ответил: список (PostgreSQL) на месте,
-// колонка спарклайнов пустая, над таблицей — подсказка.
+// canOperate/canManagePII гейтят кнопки и галку PII экспорта — рисовать форму, ведущую на 404,
+// хуже, чем скрыть; sparklinesFailed — ClickHouse недоступен, колонка спарклайнов пустая.
 templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int, total int64, userEmail string, environments []string, banner *QuotaBanner, gs GettingStartedVM, canOperate bool, canManagePII bool, sparklinesFailed bool) {
 	@layout(i18n.T(ctx, "nav.errors"), userEmail) {
 		<div class="issues">
@@ -272,14 +221,8 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 					@emptyState("filter", "issues.empty.filtered.title", "issues.empty.filtered.body", "issues.empty.filtered.cta", issuesPath(projectID), 2)
 				} else if len(rows) == 0 {
 					@emptyState("bug", "issues.empty.title", "issues.empty.body", "issues.empty.cta", projectSetupPath(projectID), 2)
-					// F5 (аудит перед 1.0): чек-лист «Первые шаги» рисуется
-					// выше на этой же странице (@gettingStartedChecklist) и
-					// уже несёт эту же врезку под шагом 2, когда он виден —
-					// повторять её здесь означало бы показать один и тот же
-					// текст дважды на пустом свежем проекте. Врезка в пустом
-					// состоянии — только запасной путь на случай, когда
-					// чек-лист на странице не рендерится (скрыт пользователем
-					// или все 5 шагов уже закрыты).
+					// Чек-лист «Первые шаги» уже несёт эту врезку под шагом 2 — не повторяем на пустом проекте.
+					// Рисуем только если чек-лист не виден (скрыт пользователем или все шаги закрыты).
 					if len(gs.KeyRejects) > 0 && !gs.checklistVisible() {
 						<div class="notice notice--warn">
 							@keyRejectsBody(gs.KeyRejects, projectSettingsPath(projectID))
@@ -287,13 +230,8 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 					}
 				} else {
 					<div class="card">
-						// Тулбар над таблицей: слева массовые действия, справа точки
-						// входа экспорта. Кнопки массовых действий стоят ВНЕ POST-формы
-						// #issues-bulk и привязаны к ней атрибутом form=: в том же
-						// тулбаре лежат формы экспорта, а вложенные <form> HTML не
-						// допускает — парсер молча закрыл бы внешнюю форму, и чекбоксы
-						// ids перестали бы отправляться. На пустом списке тулбар не
-						// рендерится вовсе (ветки выше): нечего ни отмечать, ни выгружать.
+						// Кнопки массовых действий — вне #issues-bulk, привязаны атрибутом form=: вложенный <form>
+						// (формы экспорта) HTML не допускает, парсер закрыл бы внешнюю форму молча.
 						<div class="card-toolbar">
 							<div class="card-toolbar-group">
 								<button type="submit" form="issues-bulk" name="action" value="resolve" class="btn btn-primary">{ i18n.T(ctx, "issues.action.resolve_bulk") }</button>
@@ -301,22 +239,8 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 								<button type="submit" form="issues-bulk" name="action" value="unresolve" class="btn btn-ghost">{ i18n.T(ctx, "issues.action.unresolve") }</button>
 							</div>
 							if canOperate {
-								// Две отдельные раскрывающиеся формы (группы/события), не один
-								// селект и не мгновенный POST по клику: раньше кнопка сразу
-								// ставила заявку с форматом, зашитым в hidden-поле, — «Экспорт
-								// событий» отсюда всегда давал ndjson, тот же по названию со
-								// страницы issue всегда давал csv, а выбрать формат или галку
-								// PII было негде (находка аудита P2-UX-3). Теперь клик по
-								// кнопке раскрывает <details> с форматом и (для CanManage)
-								// галкой PII — тот же приём, что и у @assignControl рядом
-								// (issuedetail.templ) — а контекст точки входа (текущие
-								// фильтры списка) по-прежнему летит hidden-полями. Период —
-								// тем же окном, что сейчас видит пользователь на списке
-								// (filter.Range), переносится в action query-параметром
-								// (exportsPathWithRange): hidden-поле для него не годится,
-								// POST-тело не долетает до resolveTimeRange (она читает только
-								// r.URL.Query()) — молча усечённая выгрузка (ревью веб-части
-								// E1, п.1).
+								// Раскрывает <details> с форматом и (для CanManage) галкой PII, как у issuedetail.templ.
+								// Период — query-параметром action: resolveTimeRange POST-тело не читает.
 								<div class="card-toolbar-group">
 									<details class="dropdown-control">
 										<summary>{ i18n.T(ctx, "issues.export.groups") }</summary>
@@ -354,7 +278,6 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 									<table class="data-table">
 										<thead>
 											<tr>
-												// №125: колонка чекбоксов не безымянная для скринридера.
 												<th scope="col"><span class="visually-hidden">{ i18n.T(ctx, "issues.table.select") }</span></th>
 												<th scope="col">{ i18n.T(ctx, "issues.table.level") }</th>
 												<th scope="col">{ i18n.T(ctx, "issues.table.issue") }</th>
@@ -369,9 +292,7 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 											for _, row := range rows {
 												<tr>
 													<td>
-														// aria-label обязателен: без него скринридер объявляет
-														// «флажок, не отмечен», не сказав, о какой проблеме речь,
-														// и массовые действия становятся выбором вслепую.
+											// aria-label обязателен: без него скринридер скажет только «флажок, не отмечен».
 														<input type="checkbox" name="ids" value={ strconv.FormatInt(row.Issue.ID, 10) } aria-label={ issueTitle(ctx, row.Issue.Title) }/>
 													</td>
 													<td><span class={ levelBadgeClass(row.Issue.Level) }>{ issueLevelLabel(ctx, row.Issue.Level) }</span></td>

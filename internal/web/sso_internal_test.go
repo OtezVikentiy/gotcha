@@ -52,16 +52,13 @@ func TestResolveProvider(t *testing.T) {
 	orgID := mkSSOOrg(t, pool, orgSvc, "rp", "corp.com", false)
 	ctx := context.Background()
 
-	// sso-{id} строит OIDC с метаданными.
 	p, meta, ok := h.resolveProvider(ctx, "sso-"+itoa(orgID))
 	if !ok || meta == nil || meta.OrgID != orgID || meta.Domain != "corp.com" || p.Name() != "oidc" {
 		t.Fatalf("resolve sso = (%v, %+v, %v)", p, meta, ok)
 	}
-	// Несуществующий орг → false.
 	if _, _, ok := h.resolveProvider(ctx, "sso-999999"); ok {
 		t.Fatal("resolve sso-999999 must be false")
 	}
-	// Обычное имя без Registry → false.
 	if _, _, ok := h.resolveProvider(ctx, "oidc"); ok {
 		t.Fatal("resolve oidc without registry must be false")
 	}
@@ -69,9 +66,7 @@ func TestResolveProvider(t *testing.T) {
 
 func itoa(v int64) string { return strconv.FormatInt(v, 10) }
 
-// TestEmailDomain — emailDomain нормализует регистр/пробелы И обрезает конечную
-// точку FQDN (RA-L2): "user@enforced.com." эквивалентен "enforced.com", иначе
-// trailing-dot обходил бы enforced-SSO гейт/domain guard.
+// trailing-dot эквивалентен домену без точки, иначе он обходил бы enforced-SSO гейт/domain guard.
 func TestEmailDomain(t *testing.T) {
 	cases := map[string]string{
 		"user@x.com":      "x.com",
@@ -107,7 +102,6 @@ func TestSSOCallbackJIT(t *testing.T) {
 		return w
 	}
 
-	// Новый юзер из домена → создан, член орга, identity, сессия, 303 /.
 	w := call(oauth.Identity{Subject: "sub-1", Email: "alice@corp.com", EmailVerified: true})
 	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" {
 		t.Fatalf("new user code/loc = %d/%s", w.Code, w.Header().Get("Location"))
@@ -132,13 +126,11 @@ func TestSSOCallbackJIT(t *testing.T) {
 		t.Fatal("no session cookie for new SSO user")
 	}
 
-	// Повторный вход по субъекту → сессия, без дублей.
 	w = call(oauth.Identity{Subject: "sub-1", Email: "alice@corp.com", EmailVerified: true})
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("subject re-login code = %d", w.Code)
 	}
 
-	// Чужой домен → 403, юзер не создан.
 	w = call(oauth.Identity{Subject: "sub-2", Email: "bob@evil.com", EmailVerified: true})
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("foreign domain code = %d, want 403", w.Code)
@@ -147,13 +139,11 @@ func TestSSOCallbackJIT(t *testing.T) {
 		t.Fatal("foreign-domain user must not be created")
 	}
 
-	// Не-verified → 403.
 	w = call(oauth.Identity{Subject: "sub-3", Email: "carol@corp.com", EmailVerified: false})
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("unverified code = %d, want 403", w.Code)
 	}
 
-	// Существующий (password) юзер того же домена → линкуется + член орга.
 	existing, _ := authSvc.Register(ctx, "dave@corp.com", "password12")
 	w = call(oauth.Identity{Subject: "sub-4", Email: "dave@corp.com", EmailVerified: true})
 	if w.Code != http.StatusSeeOther {

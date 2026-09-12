@@ -1,4 +1,3 @@
-// Package auth отвечает на вопрос «кто ты»: пароли, сессии, middleware.
 package auth
 
 import (
@@ -23,7 +22,6 @@ const (
 
 var ErrMalformedHash = errors.New("auth: malformed password hash")
 
-// HashPassword возвращает PHC-строку argon2id со случайной солью.
 func HashPassword(password string) (string, error) {
 	salt := make([]byte, argonSaltLen)
 	if _, err := rand.Read(salt); err != nil {
@@ -36,7 +34,7 @@ func HashPassword(password string) (string, error) {
 		base64.RawStdEncoding.EncodeToString(key)), nil
 }
 
-// VerifyPassword сверяет пароль с PHC-строкой за константное время.
+// За константное время — subtle.ConstantTimeCompare, а не обычное сравнение строк.
 func VerifyPassword(password, encoded string) (bool, error) {
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 6 || parts[1] != "argon2id" {
@@ -54,12 +52,8 @@ func VerifyPassword(password, encoded string) (bool, error) {
 	if version != argon2.Version {
 		return false, ErrMalformedHash
 	}
-	// Границы против паник и гигантских аллокаций/CPU в argon2.IDKey:
-	// библиотека паникует при t<1 или p<1; m ограничиваем 2 GiB. t тоже
-	// каппим сверху: стоимость argon2 линейна по t, а t приходит из PHC-строки
-	// в БД — при её порче/подмене гигантский t (до 2^32) при m=2 GiB превратил
-	// бы одну проверку пароля в неограниченный CPU-DoS. HashPassword всегда
-	// пишет t=argonTime (маленькое), так что реальные хеши потолок не задевают.
+	// Границы против паники argon2.IDKey (t<1/p<1) и CPU-DoS: t/m приходят из PHC-строки в БД,
+	// без потолка порченная запись превратила бы проверку пароля в неограниченный CPU.
 	if t < 1 || t > 16 || p < 1 || m < 8*uint32(p) || m > 1<<21 {
 		return false, ErrMalformedHash
 	}
@@ -71,8 +65,8 @@ func VerifyPassword(password, encoded string) (bool, error) {
 	if err != nil {
 		return false, ErrMalformedHash
 	}
-	// Пустые/короткие сегменты валидную PHC-строку не образуют: keyLen=0
-	// роняет blake2b внутри argon2, а сравнение пустых ключей вырождается.
+	// Пустые/короткие сегменты не валидны: keyLen=0 роняет blake2b внутри argon2,
+	// а сравнение пустых ключей вырождается.
 	if len(salt) == 0 || len(want) < 16 {
 		return false, ErrMalformedHash
 	}

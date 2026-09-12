@@ -6,10 +6,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// TestHSTSHeaderValue — сборка значения Strict-Transport-Security из четырёх
-// настроек. Функция ТОТАЛЬНА и ничего не валидирует: отрицательный max-age
-// (валидация которого — дело конфига и отказ старта) даёт пустую строку, а не
-// битый заголовок, — у функции есть и другие вызывающие, кроме main.go.
 func TestHSTSHeaderValue(t *testing.T) {
 	for _, tc := range []struct {
 		name              string

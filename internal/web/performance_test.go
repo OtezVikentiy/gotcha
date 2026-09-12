@@ -23,18 +23,13 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// perfStack — свой стенд, как monitorsStack, но подключает h.Trace
-// (trace.Query, чтение агрегатов из ClickHouse) и h.PerfIssues
-// (trace.IssueService, связанные проблемы эндпойнта из PG); наполнение CH — через
-// trace.SpanWriter.
 type perfStack struct {
 	pool   *pgxpool.Pool
 	srv    *httptest.Server
 	org    *org.Service
 	auth   *auth.Service
 	writer *trace.SpanWriter
-	// h — сам хендлер, нужен тестам, настраивающим h.SpanRetentionDays (TTL
-	// spans, GOTCHA_SPAN_RETENTION_DAYS) явно вместо дефолта.
+	// h — нужен тестам, настраивающим h.SpanRetentionDays явно вместо дефолта.
 	h *web.Handler
 }
 
@@ -46,7 +41,7 @@ func newPerfStack(t *testing.T) *perfStack {
 	authSvc := auth.NewService(pool)
 	orgSvc := org.NewService(pool, 1_000_000)
 	issueSvc := issue.NewService(pool)
-	var events *event.Query // страницы производительности его не используют
+	var events *event.Query
 
 	writer := trace.NewSpanWriter(ch)
 	go writer.Run()
@@ -70,9 +65,8 @@ func newPerfStack(t *testing.T) *perfStack {
 	return &perfStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc, writer: writer, h: h}
 }
 
-// flush синхронно выгружает буфер SpanWriter в ClickHouse (как flush в
-// monitors_test.go): дальнейшие Add после этого зависли бы до второго Close из
-// Cleanup, поэтому тесты вызывают его один раз после засева всех строк.
+// Дальнейшие Add после Close зависли бы до второго Close из Cleanup — вызывать
+// один раз, после засева всех строк.
 func (s *perfStack) flush(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -82,9 +76,6 @@ func (s *perfStack) flush(t *testing.T) {
 	}
 }
 
-// TestWebPerformanceList — owner видит эндпойнты с перцентилями и <svg,
-// «no data» пустой проект не роняет, environment фильтрует список, чужой проект
-// → 404.
 func TestWebPerformanceList(t *testing.T) {
 	s := newPerfStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "perflist-owner@example.com")
@@ -103,9 +94,7 @@ func TestWebPerformanceList(t *testing.T) {
 		t.Fatalf("create empty project: %v", err)
 	}
 
-	// «GET /api/users», production: 20 транзакций, длительности растут, первые
-	// две — internal_error (failure rate 0.10). Имя с пробелом и слэшем — заодно
-	// проверка URL-кодирования в ссылке на детальную страницу.
+	// Имя с пробелом и слэшем — заодно проверка URL-кодирования в ссылке на детальную страницу.
 	base := time.Now().UTC().Add(-30 * time.Minute)
 	for i := 0; i < 20; i++ {
 		status := "ok"
@@ -125,7 +114,6 @@ func TestWebPerformanceList(t *testing.T) {
 			Environment: "production",
 		})
 	}
-	// «GET /api/health», staging: 5 транзакций — для проверки фильтра окружения.
 	for i := 0; i < 5; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
 		s.writer.Add(proj.ID, proj.ID, trace.Transaction{
@@ -143,8 +131,6 @@ func TestWebPerformanceList(t *testing.T) {
 
 	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/performance"
 
-	// Owner: обе транзакции, <svg-спарклайн, apdex/failure — страница
-	// отрендерилась.
 	resp := getWithCookie(t, s.srv, path, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -157,8 +143,6 @@ func TestWebPerformanceList(t *testing.T) {
 		}
 	}
 
-	// Произвольный диапазон: селектор в режиме custom, ссылки сортировки
-	// колонок несут period=custom (parseTimeRange custom + apply).
 	cq := "?period=custom&start=2026-07-01T00:00&end=2026-07-10T00:00"
 	resp = getWithCookie(t, s.srv, path+cq, ownerCookie)
 	cbody, _ := io.ReadAll(resp.Body)
@@ -167,7 +151,6 @@ func TestWebPerformanceList(t *testing.T) {
 		t.Fatalf("GET %s custom range status=%d: %s", path, resp.StatusCode, cbody)
 	}
 
-	// Environment=staging: только staging-эндпойнт, users не показывается.
 	resp = getWithCookie(t, s.srv, path+"?environment=staging", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -181,7 +164,6 @@ func TestWebPerformanceList(t *testing.T) {
 		t.Fatalf("GET %s?environment=staging must not show production users endpoint: %s", path, body)
 	}
 
-	// Пустой проект: «no transaction data yet», не падает.
 	emptyPath := "/projects/" + strconv.FormatInt(empty.ID, 10) + "/performance"
 	resp = getWithCookie(t, s.srv, emptyPath, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
@@ -189,9 +171,8 @@ func TestWebPerformanceList(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s (empty) status = %d, want 200: %s", emptyPath, resp.StatusCode, body)
 	}
-	// Пустое состояние ведёт с ОКНА ВРЕМЕНИ, а не с настройки SDK: дефолт периода
-	// 24 часа, и «нет данных» чаще означает «не в этом окне». Прежний текст
-	// отправлял перепроверять конфиг, которого проблема не касается.
+	// Пустое состояние ведёт с ОКНА ВРЕМЕНИ, а не с настройкой SDK: «нет данных» чаще
+	// означает «не в этом окне», а не поломку конфига.
 	if !strings.Contains(string(body), "Нет транзакций за период") {
 		t.Fatalf("GET %s (empty) missing period-first empty state: %s", emptyPath, body)
 	}
@@ -199,7 +180,6 @@ func TestWebPerformanceList(t *testing.T) {
 		t.Fatalf("GET %s (empty) не предлагает расширить период: %s", emptyPath, body)
 	}
 
-	// Чужой проект → 404.
 	resp = getWithCookie(t, s.srv, path, outsiderCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -208,9 +188,6 @@ func TestWebPerformanceList(t *testing.T) {
 	}
 }
 
-// TestWebEndpointDetail — страница эндпойнта показывает самые медленные трейсы со
-// ссылками на /traces/{trace_id} и графики (<svg); несуществующий эндпойнт → 200
-// с пустыми графиками, без паники; чужой проект → 404.
 func TestWebEndpointDetail(t *testing.T) {
 	s := newPerfStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "perfdetail-owner@example.com")
@@ -241,11 +218,8 @@ func TestWebEndpointDetail(t *testing.T) {
 		})
 	}
 
-	// Эндпойнт, чьё имя содержит литеральный «%» (высококардинальный класс
-	// имён — непараметризованный роут). ServeMux декодирует {transaction...}
-	// один раз, поэтому обработчик НЕ должен декодировать повторно: иначе «%20»
-	// превратится в пробел и запрос уйдёт за данными другого (несуществующего)
-	// эндпойнта.
+	// Имя с литеральным «%»: обработчик не должен декодировать его повторно после
+	// ServeMux, иначе «%20» превратится в пробел и уйдёт за данными другого эндпойнта.
 	const pctName = "GET /api/orders%20special"
 	for i := 0; i < 4; i++ {
 		at := base.Add(time.Duration(i) * time.Second)
@@ -276,12 +250,8 @@ func TestWebEndpointDetail(t *testing.T) {
 		}
 	}
 
-	// Баг C: подсказка на «Пороге Apdex» (значение в мс) должна объяснять
-	// именно порог, а не индекс 0..1 — раньше туда была прицеплена подсказка
-	// для колонки Apdex-индекса (perf.help.apdex), и пользователь видел
-	// «Порог Apdex: Nms» с тултипом про «от 0 до 1». Страница эндпойнта
-	// вообще не показывает индекс, поэтому текста про 0..1 на ней быть не
-	// должно.
+	// Подсказка на «Пороге Apdex» (значение в мс) должна объяснять порог, не индекс
+	// 0..1 — страница эндпойнта индекс вообще не показывает.
 	if !strings.Contains(string(body), "Порог Apdex T — целевое время ответа") {
 		t.Fatalf("GET %s (owner) missing the apdex threshold tooltip: %s", txPath, body)
 	}
@@ -289,8 +259,6 @@ func TestWebEndpointDetail(t *testing.T) {
 		t.Fatalf("GET %s (owner) apdex threshold tooltip still describes the 0..1 index: %s", txPath, body)
 	}
 
-	// Эндпойнт с «%» в имени: детальная страница должна показать ЕГО данные
-	// (ссылку на его трейс), а не 404/чужой эндпойнт из-за двойного декодирования.
 	pctPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/performance/" + url.PathEscape(pctName)
 	resp = getWithCookie(t, s.srv, pctPath, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
@@ -304,7 +272,6 @@ func TestWebEndpointDetail(t *testing.T) {
 		}
 	}
 
-	// Несуществующий эндпойнт: 200, пустые графики, без паники.
 	missingPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/performance/" + url.PathEscape("GET /api/nope")
 	resp = getWithCookie(t, s.srv, missingPath, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
@@ -316,7 +283,6 @@ func TestWebEndpointDetail(t *testing.T) {
 		t.Fatalf("GET %s (missing endpoint) missing title: %s", missingPath, body)
 	}
 
-	// Чужой проект → 404.
 	resp = getWithCookie(t, s.srv, txPath, outsiderCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -325,10 +291,6 @@ func TestWebEndpointDetail(t *testing.T) {
 	}
 }
 
-// TestWebPerformanceListTruncates — при большом числе эндпойнтов (непараметри-
-// зованные роуты) список усекается до top-N: рендерится не больше N строк и
-// показывается пометка об усечении. Иначе на каждую строку идёт отдельный
-// CH-запрос спарклайна — тысячи последовательных round-trip'ов на загрузку.
 func TestWebPerformanceListTruncates(t *testing.T) {
 	s := newPerfStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "perftrunc-owner@example.com")
@@ -341,7 +303,7 @@ func TestWebPerformanceListTruncates(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	const total = 120 // > лимита списка (100)
+	const total = 120
 	base := time.Now().UTC().Add(-10 * time.Minute)
 	for i := 0; i < total; i++ {
 		at := base.Add(time.Duration(i) * time.Millisecond)
@@ -365,7 +327,6 @@ func TestWebPerformanceListTruncates(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s status = %d, want 200: %s", path, resp.StatusCode, body)
 	}
-	// Каждая строка таблицы даёт одну ссылку вида /projects/N/performance/{tx}.
 	rows := strings.Count(string(body), "/performance/")
 	if rows > 100 {
 		t.Fatalf("rendered %d endpoint rows, want at most 100 (list not truncated)", rows)
@@ -375,13 +336,8 @@ func TestWebPerformanceListTruncates(t *testing.T) {
 	}
 }
 
-// TestWebEndpointDetailSlowestExpiryConfigurable — «истёкшая» ссылка в
-// таблице «самые медленные трейсы» зависит от h.SpanRetentionDays
-// (GOTCHA_SPAN_RETENTION_DAYS), настраиваемого TTL spans, а НЕ от
-// захардкоженной константы: с retention=90 трейс возрастом 40 дней остаётся
-// кликабельным (моложе порога); с retention=7 трейс возрастом 10 дней теряет
-// ссылку (старше порога); с retention=0 (TTL не задан, спаны хранятся вечно)
-// ссылка не пропадает никогда, сколько бы трейсу ни было лет.
+// «Истёкшая» ссылка зависит от h.SpanRetentionDays (настраиваемого TTL spans), а
+// не от захардкоженной константы.
 func TestWebEndpointDetailSlowestExpiryConfigurable(t *testing.T) {
 	s := newPerfStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "perfexp-owner@example.com")
@@ -410,8 +366,7 @@ func TestWebEndpointDetailSlowestExpiryConfigurable(t *testing.T) {
 	})
 	s.flush(t)
 
-	// Custom-диапазон на 45 дней назад — дефолтные 24ч (perfDefaultPeriod) не
-	// захватили бы эти трейсы.
+	// Дефолтные 24ч (perfDefaultPeriod) не захватили бы эти трейсы.
 	start := now.Add(-45 * 24 * time.Hour).Format("2006-01-02T15:04")
 	txPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/performance/" +
 		url.PathEscape(transaction) + "?period=custom&start=" + start
@@ -419,7 +374,6 @@ func TestWebEndpointDetailSlowestExpiryConfigurable(t *testing.T) {
 	link40 := `<a href="/traces/` + trace40
 	link10 := `<a href="/traces/` + trace10
 
-	// retention=90: трейс 40д моложе порога — ссылка живая.
 	s.h.SpanRetentionDays = 90
 	resp := getWithCookie(t, s.srv, txPath, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
@@ -431,8 +385,6 @@ func TestWebEndpointDetailSlowestExpiryConfigurable(t *testing.T) {
 		t.Fatalf("GET %s (retention=90): трейс 40д должен остаться кликабельным: %s", txPath, body)
 	}
 
-	// retention=7: трейс 10д старше порога — ссылка снята, trace_id остаётся
-	// текстом.
 	s.h.SpanRetentionDays = 7
 	resp = getWithCookie(t, s.srv, txPath, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
@@ -447,7 +399,6 @@ func TestWebEndpointDetailSlowestExpiryConfigurable(t *testing.T) {
 		t.Fatalf("GET %s (retention=7): trace_id 10д должен остаться текстом: %s", txPath, body)
 	}
 
-	// retention=0 (TTL не задан): ни один трейс не помечается истёкшим.
 	s.h.SpanRetentionDays = 0
 	resp = getWithCookie(t, s.srv, txPath, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
@@ -460,8 +411,6 @@ func TestWebEndpointDetailSlowestExpiryConfigurable(t *testing.T) {
 	}
 }
 
-// TestWebIssuesPageHasPerformanceLink — страница issues проекта ссылается на его
-// список эндпойнтов (навигация «Performance» рядом с «Monitors»).
 func TestWebIssuesPageHasPerformanceLink(t *testing.T) {
 	s := newPerfStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "perflink-owner@example.com")

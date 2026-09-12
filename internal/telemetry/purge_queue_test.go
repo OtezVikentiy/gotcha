@@ -11,10 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestPurgeQueueClaimIsExclusive — заявку забирает ровно один claim: после
-// снятия заявки очередь пуста. FOR UPDATE SKIP LOCKED виден только внутри
-// чужой транзакции, поэтому проверяем то, что действительно гарантировано:
-// заявка отдаётся один раз, а после Done не отдаётся вовсе.
 func TestPurgeQueueClaimIsExclusive(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -40,9 +36,6 @@ func TestPurgeQueueClaimIsExclusive(t *testing.T) {
 	}
 }
 
-// TestPurgeQueueEnqueueIsIdempotent — повторная заявка на тот же проект не
-// заводит вторую строку: очистка проекта нужна один раз, сколько бы раз о ней
-// ни попросили (штатное удаление плюс сверка сирот).
 func TestPurgeQueueEnqueueIsIdempotent(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -65,9 +58,6 @@ func TestPurgeQueueEnqueueIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestPurgeQueueFailKeepsRequest — невыполненное удаление персональных данных
-// не списывается в потери: заявка остаётся, попытка засчитана, причина
-// записана.
 func TestPurgeQueueFailKeepsRequest(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -103,9 +93,6 @@ func TestPurgeQueueFailKeepsRequest(t *testing.T) {
 	}
 }
 
-// TestPurgeQueueFailTruncatesLongCause — ошибка драйвера может нести весь
-// текст запроса; заявка не журнал, и обрезка не должна ломать кириллицу
-// пополам.
 func TestPurgeQueueFailTruncatesLongCause(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -134,8 +121,6 @@ func TestPurgeQueueFailTruncatesLongCause(t *testing.T) {
 	}
 }
 
-// TestPurgeQueueStats — наблюдаемость: оператор, обязанный удалить данные,
-// должен видеть, что обязанность не исполнена.
 func TestPurgeQueueStats(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -163,8 +148,6 @@ func TestPurgeQueueStats(t *testing.T) {
 	}
 }
 
-// TestPurgeWorkerRemovesTelemetryAndRequest — заявка снимается только после
-// того, как данные действительно удалены.
 func TestPurgeWorkerRemovesTelemetryAndRequest(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	conn := testenv.MigratedCH(t)
@@ -206,9 +189,6 @@ func TestPurgeWorkerRemovesTelemetryAndRequest(t *testing.T) {
 	}
 }
 
-// TestPurgeWorkerDrainsQueue — проход разгребает очередь целиком, а не одну
-// заявку за тик: иначе удаление организации с двадцатью проектами
-// растягивалось бы на двадцать периодов.
 func TestPurgeWorkerDrainsQueue(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	conn := testenv.MigratedCH(t)
@@ -230,10 +210,6 @@ func TestPurgeWorkerDrainsQueue(t *testing.T) {
 	}
 }
 
-// TestPurgeWorkerKeepsRequestOnFailure — отказ мутации оставляет заявку,
-// записав причину: невыполненное удаление персональных данных не списывается
-// в потери. Ошибка настоящая — соединение с ClickHouse закрыто (у каждого
-// теста оно своё, см. testenv.MigratedCH), а не подставлена моком.
 func TestPurgeWorkerKeepsRequestOnFailure(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	conn := testenv.MigratedCH(t)
@@ -272,8 +248,6 @@ func TestPurgeWorkerKeepsRequestOnFailure(t *testing.T) {
 	}
 }
 
-// TestPurgeWorkerNilPurgerIsNoop — стенд без ClickHouse не должен ронять
-// проход: заявки просто ждут.
 func TestPurgeWorkerNilPurgerIsNoop(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -298,9 +272,6 @@ func TestPurgeWorkerNilPurgerIsNoop(t *testing.T) {
 	}
 }
 
-// TestPurgeWorkerReconcileEnqueuesOrphans — сверка ставит заявку на проект,
-// которого в PostgreSQL уже нет, и не трогает живой. Ошибка в другую сторону
-// стоила бы данных работающего проекта, поэтому проверяются оба исхода.
 func TestPurgeWorkerReconcileEnqueuesOrphans(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	conn := testenv.MigratedCH(t)
@@ -340,9 +311,6 @@ func TestPurgeWorkerReconcileEnqueuesOrphans(t *testing.T) {
 	}
 }
 
-// TestPurgeWorkerReconcileDeletesNothing — сверка только ставит заявки.
-// Удаление идёт единственным путём, который уже проверен, поэтому ошибка
-// сверки обязана давать лишнюю заявку, а не потерянные данные.
 func TestPurgeWorkerReconcileDeletesNothing(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	conn := testenv.MigratedCH(t)
@@ -362,8 +330,6 @@ func TestPurgeWorkerReconcileDeletesNothing(t *testing.T) {
 	}
 }
 
-// TestPurgeWorkerReconcileWithoutConnIsNoop — стенд без ClickHouse: сверка
-// молча пропускается, а не роняет проход.
 func TestPurgeWorkerReconcileWithoutConnIsNoop(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

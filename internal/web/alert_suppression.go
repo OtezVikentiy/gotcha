@@ -15,14 +15,10 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// alertSuppressionPath — адрес редактора рёбер зависимостей (B5, задача 9).
 func alertSuppressionPath(projectID int64) string {
 	return templates.AlertSuppressionPath(projectID)
 }
 
-// alertSuppressionErrorMessage переводит доменные ошибки depsuppress.Store.Create
-// в человекочитаемое сообщение для 422-страницы — тот же приём, что и
-// escalationsErrorMessage/alertsErrorMessage.
 func alertSuppressionErrorMessage(ctx context.Context, err error) string {
 	switch {
 	case errors.Is(err, depsuppress.ErrForeignNode):
@@ -42,9 +38,7 @@ func alertSuppressionErrorMessage(ctx context.Context, err error) string {
 	}
 }
 
-// alertSuppressionPage — GET /projects/{id}/alert-suppression: список рёбер
-// зависимостей проекта + форма добавления. Доступ — оператор проекта
-// (requireProjectOperator), как escalations/slos/metric-alerts.
+// доступ — оператор проекта, как у escalations/slos/metric-alerts.
 func (h *Handler) alertSuppressionPage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -55,8 +49,7 @@ func (h *Handler) alertSuppressionPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// h.AlertDeps может быть nil в узких тестовых стендах — тот же nil-guard,
-	// что у escalationsPage/slosPage, а не паника при разыменовании.
+	// AlertDeps может быть nil в узких тестовых стендах — guard вместо паники.
 	if h.AlertDeps == nil {
 		h.notFound(w, r)
 		return
@@ -67,12 +60,8 @@ func (h *Handler) alertSuppressionPage(w http.ResponseWriter, r *http.Request) {
 	h.renderAlertSuppression(w, r, http.StatusOK, projectID, nil, "")
 }
 
-// renderAlertSuppression — общий рендер: GET и POST-обработчики на 422 (тот
-// же принцип, что renderEscalations/renderAlerts). form — введённые
-// человеком значения при ошибке валидации, с пометкой, какую модалку
-// переоткрыть (FormState.Open: создания либо правки конкретного ребра);
-// nil на GET — модалки закрыты, поля с fallback'ами (у правки — значения
-// самого ребра).
+// form — введённые значения при ошибке валидации с пометкой, какую модалку
+// переоткрыть; nil на GET — модалки закрыты, поля со своими fallback'ами.
 func (h *Handler) renderAlertSuppression(w http.ResponseWriter, r *http.Request, status int, projectID int64, form templates.FormState, errMsg string) {
 	edges, err := h.AlertDeps.List(r.Context(), projectID)
 	if err != nil {
@@ -115,12 +104,8 @@ func (h *Handler) renderAlertSuppression(w http.ResponseWriter, r *http.Request,
 	_ = templates.AlertSuppression(projectID, rows, hostOptions, monitorOptions, preview, h.SuppressionGrace, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
 }
 
-// suppressionEdgeFormDefaults — значения полей модалки правки из самого
-// ребра: та же плоская карта имён, что читает alertSuppressionEdgeFromForm,
-// чтобы общий фрагмент полей (suppressionEdgeFields) не различал создание и
-// правку (тот же приём, что windowFieldDefaults у окон обслуживания).
-// Незадействованные ветки (селект монитора у host-родителя и т.п.) остаются
-// без ключа — их поля возьмут собственные пустые fallback'и и скрыты CSS.
+// та же плоская карта имён, что читает alertSuppressionEdgeFromForm — иначе
+// общий фрагмент полей не подставит значения при правке.
 func suppressionEdgeFormDefaults(e depsuppress.Edge) templates.FormState {
 	f := templates.FormState{}
 	switch {
@@ -146,10 +131,8 @@ func suppressionEdgeFormDefaults(e depsuppress.Edge) templates.FormState {
 	return f
 }
 
-// suppressionFormState — введённые значения формы ребра для повторной
-// отрисовки после 422 (та же плоская карта, что groupThresholdFormState):
-// карта собирается поимённо из известных полей, а не копированием r.Form
-// целиком (инвариант formModalKey).
+// собирается поимённо из известных полей, не копированием r.Form целиком —
+// см. инвариант formModalKey.
 func suppressionFormState(r *http.Request) templates.FormState {
 	form := templates.FormState{}
 	for _, name := range []string{
@@ -162,12 +145,8 @@ func suppressionFormState(r *http.Request) templates.FormState {
 	return form
 }
 
-// suppressionPreviewRows — dry-run: для каждого родителя, встречающегося в
-// edges (в порядке Store.List, первое вхождение занимает позицию строки),
-// какие узлы подавились бы, если бы этот родитель сейчас упал.
-// depsuppress.PreviewSuppression — чистая функция без БД (Task 9b); здесь
-// только сборка входа (hosts/monitors проекта → HostLite/NodeRef) и вывода
-// (map → стабильно упорядоченные строки шаблона).
+// первое вхождение родителя в edges занимает позицию строки;
+// PreviewSuppression — чистая функция без БД, здесь только сборка входа/вывода.
 func suppressionPreviewRows(ctx context.Context, edges []depsuppress.Edge, hostNames, monitorNames map[int64]string, hosts []host.Host, monitors []uptime.Monitor) []templates.SuppressionPreviewView {
 	hostLites := make([]depsuppress.HostLite, len(hosts))
 	for i, hh := range hosts {
@@ -204,12 +183,7 @@ func suppressionPreviewRows(ctx context.Context, edges []depsuppress.Edge, hostN
 	return rows
 }
 
-// suppressionParentRef резолвит родителя ребра в тот же depsuppress.NodeRef,
-// что строит depsuppress.PreviewSuppression внутри себя (Kind/ID из
-// ParentHostID/ParentMonitorID ребра, Name — из уже собранных hostNames/
-// monitorNames). false — родитель с тех пор удалён из проекта, строка
-// dry-run для него не строится (тот же принцип, что и "ghost"-фильтрация
-// внутри PreviewSuppression).
+// false — родитель с тех пор удалён из проекта, строка dry-run для него не строится.
 func suppressionParentRef(e depsuppress.Edge, hostNames, monitorNames map[int64]string) (depsuppress.NodeRef, bool) {
 	if e.ParentHostID != nil {
 		name, ok := hostNames[*e.ParentHostID]
@@ -228,10 +202,7 @@ func suppressionParentRef(e depsuppress.Edge, hostNames, monitorNames map[int64]
 	return depsuppress.NodeRef{}, false
 }
 
-// suppressionNodeRefLabel — «Host: web1» / «Monitor: ping-google» для узла
-// dry-run превью, теми же i18n-ключами, что и у списка рёбер
-// (suppressionHostLabel/suppressionMonitorLabel): узел из PreviewSuppression
-// уже резолвлен в NodeRef.Name, повторного разрешения имени не требуется.
+// имя уже резолвлено в NodeRef.Name — используем те же i18n-ключи, что список рёбер.
 func suppressionNodeRefLabel(ctx context.Context, n depsuppress.NodeRef) string {
 	switch n.Kind {
 	case "monitor":
@@ -241,10 +212,8 @@ func suppressionNodeRefLabel(ctx context.Context, n depsuppress.NodeRef) string 
 	}
 }
 
-// suppressionNodes читает хосты и мониторы проекта для селектов формы и
-// резолва имён в списке. nil-safe: h.Hosts/h.Uptime могут не быть проведены
-// в узких тестовых стендах (main.go в режимах "web"/"all" заводит их всегда
-// вместе) — тогда соответствующий список остаётся пустым, а не паникует.
+// nil-safe: h.Hosts/h.Uptime могут быть не заведены в узких тестовых стендах —
+// тогда список остаётся пустым, а не паникует.
 func (h *Handler) suppressionNodes(ctx context.Context, projectID int64) ([]host.Host, []uptime.Monitor, error) {
 	var hosts []host.Host
 	if h.Hosts != nil {
@@ -265,14 +234,8 @@ func (h *Handler) suppressionNodes(ctx context.Context, projectID int64) ([]host
 	return hosts, monitors, nil
 }
 
-// suppressionHostLabel/suppressionMonitorLabel — «Host: web1» / «Monitor:
-// ping-google», либо, если узел с тех пор удалён из проекта, метка "unknown"
-// с его числовым id — то же поведение, что у escalationChannelLabels для
-// удалённого канала: id ребра остаётся валидным, а имя молча выпадает из
-// отображения. Два явных ключа (а не один, собранный конкатенацией "node."+
-// kind) — тем же приёмом, что у остального дерева: сканер i18n_keys_test.go
-// видит только литеральные ключи, конкатенация требовала бы отдельной записи
-// в TestDynamicKeysResolve ради двух вариантов, что дороже двух функций.
+// удалённый узел — метка "unknown" с id (как у escalationChannelLabels).
+// два явных ключа, не конкатенация — сканер i18n_keys_test.go видит только литеральные.
 func suppressionHostLabel(ctx context.Context, id int64, names map[int64]string) string {
 	if name, ok := names[id]; ok {
 		return i18n.Tf(ctx, "alert_suppression.node.host", "name", name)
@@ -287,8 +250,8 @@ func suppressionMonitorLabel(ctx context.Context, id int64, names map[int64]stri
 	return i18n.Tf(ctx, "alert_suppression.node.unknown", "kind", i18n.T(ctx, "alert_suppression.kind.monitor"), "id", strconv.FormatInt(id, 10))
 }
 
-// suppressionParentLabel — родитель ребра: всегда явный узел (host или
-// monitor), Store.validateShape требует ровно один из двух.
+// родитель ребра — всегда явный узел (host или monitor):
+// Store.validateShape требует ровно один из двух.
 func suppressionParentLabel(ctx context.Context, e depsuppress.Edge, hostNames, monitorNames map[int64]string) string {
 	if e.ParentHostID != nil {
 		return suppressionHostLabel(ctx, *e.ParentHostID, hostNames)
@@ -299,8 +262,8 @@ func suppressionParentLabel(ctx context.Context, e depsuppress.Edge, hostNames, 
 	return ""
 }
 
-// suppressionChildLabel — ребёнок ребра: явный узел ЛИБО label-селектор
-// (env/role), Store.validateShape требует ровно один из трёх способов.
+// ребёнок ребра — явный узел ЛИБО label-селектор (env/role):
+// Store.validateShape требует ровно один из трёх способов.
 func suppressionChildLabel(ctx context.Context, e depsuppress.Edge, hostNames, monitorNames map[int64]string) string {
 	switch {
 	case e.ChildHostID != nil:
@@ -314,18 +277,8 @@ func suppressionChildLabel(ctx context.Context, e depsuppress.Edge, hostNames, m
 	}
 }
 
-// suppressionScopeLabel — локализованное имя label-скоупа ("env"/"role") для
-// подстановки в alert_suppression.node.label, теми же ключами
-// alert_suppression.scope.env/.role, что уже использует форма (P2-3
-// устранения аудита B5: раньше сырой e.ChildLabelScope "env"/"role" уходил в
-// подпись как есть — латиницей и рассинхронизированный с формой в RU-локали).
-// Явный switch на литеральные ключи, а не конкатенация "alert_suppression.
-// scope."+scope — сканер literalKeyRe (i18n_keys_test.go) видит только
-// буквальные вызовы i18n.T, динамический ключ потребовал бы отдельной записи
-// в TestDynamicKeysResolve ради двух значений, что дороже двух case.
-// Неизвестный scope (данных не бывает — Store.validateShape пускает только
-// "env"/"role" — но defensive default на случай будущего расширения набора)
-// возвращает исходную строку как есть, а не пустую подпись.
+// явный switch, не конкатенация: сканер i18n_keys_test.go видит только буквальные вызовы i18n.T.
+// неизвестный scope невозможен (Store.validateShape), default — просто подстраховка.
 func suppressionScopeLabel(ctx context.Context, scope string) string {
 	switch scope {
 	case "env":
@@ -337,11 +290,7 @@ func suppressionScopeLabel(ctx context.Context, scope string) string {
 	}
 }
 
-// alertSuppressionEdgeFromForm собирает depsuppress.Edge из уже
-// распарсенной формы (r.ParseForm должен быть вызван вызывающей стороной).
-// parent_kind/child_kind — radio, выбирающие, какое из параллельных полей
-// формы читать (та же форма, что и у полей depsuppress.Edge: ровно один
-// родитель, ровно один способ задать ребёнка).
+// parent_kind/child_kind — radio: ровно один родитель, ровно один способ задать ребёнка.
 func alertSuppressionEdgeFromForm(r *http.Request, projectID int64) depsuppress.Edge {
 	e := depsuppress.Edge{ProjectID: projectID}
 	switch r.FormValue("parent_kind") {
@@ -374,9 +323,8 @@ func alertSuppressionEdgeFromForm(r *http.Request, projectID int64) depsuppress.
 	return e
 }
 
-// formInt64 разбирает form-поле как int64; отсутствующее/битое значение —
-// (0, false), а не паника или молчаливый 0, который прошёл бы дальше как
-// валидный id.
+// отсутствующее/битое значение — (0, false), не паника и не молчаливый 0,
+// который прошёл бы дальше как валидный id.
 func formInt64(r *http.Request, name string) (int64, bool) {
 	v := strings.TrimSpace(r.FormValue(name))
 	if v == "" {
@@ -389,15 +337,8 @@ func formInt64(r *http.Request, name string) (int64, bool) {
 	return id, true
 }
 
-// alertSuppressionSave — POST /projects/{id}/alert-suppression: создаёт одно
-// ребро зависимости. Cross-tenant защита (concern T2, как у escalations
-// channel_id) — здесь не отдельным предфильтром, а через собственную
-// транзакционную проверку depsuppress.Store.Create (checkNodesBelongToProject,
-// ErrForeignNode): узел, не принадлежащий ЭТОМУ проекту, отвергается ДО
-// вставки, тем же порядком, что и self-loop/self-match/duplicate/cycle —
-// пре-фильтр отдельным запросом здесь дублировал бы уже существующую в
-// сторе проверку без выигрыша в защите (в отличие от escalations, где
-// PolicyStore.SetLadder сам ownership каналов не проверяет).
+// cross-tenant защита — не отдельным предфильтром, а транзакционной проверкой
+// внутри Store.Create (ErrForeignNode); отдельный запрос здесь дублировал бы её без пользы.
 func (h *Handler) alertSuppressionSave(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -433,17 +374,8 @@ func (h *Handler) alertSuppressionSave(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, alertSuppressionPath(projectID), http.StatusSeeOther)
 }
 
-// alertSuppressionUpdate — POST /projects/{id}/alert-suppression/{depID}:
-// правка одного ребра из модалки строки (Store.Update сохраняет id — якоря
-// и адреса стабильны). Тенант-проверки две: requireProjectOperator гейтит
-// сам проект из пути (чужой проект/организация — 404 existence-oracle), а
-// depID чужого проекта Store.Update не находит в скоупе project_id и
-// возвращает ErrNotFound → единообразный 404, без утечки существования
-// чужой строки (в отличие от идемпотентного delete здесь есть тело формы,
-// и молчаливый «успех» с редиректом врал бы, что правка применилась).
-// На уже подавленные ОТКРЫТЫЕ инциденты правка не действует — флаг
-// suppressed_by_dep одноразовый (см. докблок Store.Update); об этом же
-// говорит подсказка alert_suppression.edit.hint в модалке.
+// чужой depID не в скоупе Store.Update (ErrNotFound) — 404 без утечки существования.
+// suppressed_by_dep одноразовый: на уже открытые инциденты правка не действует.
 func (h *Handler) alertSuppressionUpdate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -489,9 +421,8 @@ func (h *Handler) alertSuppressionUpdate(w http.ResponseWriter, r *http.Request)
 	http.Redirect(w, r, alertSuppressionPath(projectID), http.StatusSeeOther)
 }
 
-// alertSuppressionDelete — POST /projects/{id}/alert-suppression/{depID}/delete.
-// Delete идемпотентно скоупит удаление на project_id (см. depsuppress.Store.Delete)
-// — чужой depID молча ничего не удаляет, а не 403/404 с утечкой существования.
+// Delete идемпотентно скоупит по project_id — чужой depID молча ничего не
+// удаляет, без утечки существования.
 func (h *Handler) alertSuppressionDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -521,12 +452,8 @@ func (h *Handler) alertSuppressionDelete(w http.ResponseWriter, r *http.Request)
 	if !h.parseForm(w, r) {
 		return
 	}
-	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
-	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
-	// показываем страницу подтверждения с именами узлов ребра (K7-7), а не
-	// удаляем по одному клику. Ребро ищется в списке проекта: чужой или
-	// несуществующий depID здесь — 404, как у alertsChannelDelete; сам
-	// второй POST остаётся идемпотентным (Store.Delete скоупит по project_id).
+	// двухшаговое подтверждение — CSP (default-src 'self', без unsafe-inline) не
+	// исполняет inline confirm(); чужой/несуществующий depID здесь тоже 404.
 	if r.FormValue("confirmed") != "yes" {
 		parent, child, ok, err := h.suppressionEdgeLabels(r.Context(), projectID, depID)
 		if err != nil {
@@ -550,10 +477,8 @@ func (h *Handler) alertSuppressionDelete(w http.ResponseWriter, r *http.Request)
 	http.Redirect(w, r, alertSuppressionPath(projectID), http.StatusSeeOther)
 }
 
-// suppressionEdgeLabels — подписи родителя и ребёнка ОДНОГО ребра проекта
-// (те же suppressionParentLabel/suppressionChildLabel, что у строк таблицы) —
-// для страницы подтверждения удаления. ok=false — ребра с таким id в проекте
-// нет.
+// те же suppressionParentLabel/suppressionChildLabel, что у строк таблицы;
+// ok=false — ребра с таким id в проекте нет.
 func (h *Handler) suppressionEdgeLabels(ctx context.Context, projectID, depID int64) (parent, child string, ok bool, err error) {
 	edges, err := h.AlertDeps.List(ctx, projectID)
 	if err != nil {

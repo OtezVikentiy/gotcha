@@ -1,11 +1,5 @@
 package db_test
 
-// TestLatestMigrationHasDataTest (internal/guards) требует, чтобы НОВЕЙШАЯ
-// миграция PostgreSQL приезжала с тестом на непустой базе — db.MigratePGTo на
-// схему, уже содержащую строки. На момент этой правки новейшая —
-// 0065_host_threshold_settings.up.sql (внутри internal/host — T4 завёл
-// 0064-тест 0064, его трогать не нужно, он остаётся за 0064 и после).
-
 import (
 	"context"
 	"testing"
@@ -16,13 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0065HostThresholdSettingsCreateThenDrop — 0065 добавляет
-// host_threshold_settings (пороги встроенных инцидентов хоста, §4.2
-// дизайна). Проверяем: FK на projects(id) принимает существующий проект,
-// PK(project_id) отклоняет вторую строку того же проекта (реальный
-// upsert-сценарий SettingsService.Save — INSERT ... ON CONFLICT (project_id)
-// DO UPDATE), CHECK'и на диапазоны реально работают на непустой базе, а down
-// убирает таблицу целиком.
 func TestMigrate0065HostThresholdSettingsCreateThenDrop(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -68,8 +55,7 @@ func TestMigrate0065HostThresholdSettingsCreateThenDrop(t *testing.T) {
 		t.Fatalf("silent_after_seconds по умолчанию = %d, want 300", silentSeconds)
 	}
 
-	// PK(project_id) — тот же upsert-сценарий, каким его использует
-	// host.SettingsService.Save (см. internal/host/settings.go).
+	// Тот же upsert-сценарий, что host.SettingsService.Save (internal/host/settings.go).
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO host_threshold_settings (project_id, disk_threshold) VALUES ($1, 0.5)
 		 ON CONFLICT (project_id) DO UPDATE SET disk_threshold = 0.5`, projectID); err != nil {
@@ -84,9 +70,7 @@ func TestMigrate0065HostThresholdSettingsCreateThenDrop(t *testing.T) {
 		t.Fatalf("disk_threshold после upsert = %v, want 0.5 (PK должен апдейтить ту же строку)", diskThreshold)
 	}
 
-	// CHECK-границы проверяем на ОТДЕЛЬНЫХ проектах (не переиспользуем
-	// projectID: там уже есть строка, и без ON CONFLICT это дало бы PK-
-	// нарушение, а не именно CHECK, который здесь и нужен проверить).
+	// Отдельный проект для CHECK — иначе сработал бы PK, а не CHECK, который здесь и нужен.
 	var checkProjectID int64
 	mustScan(t, pool, &checkProjectID,
 		"INSERT INTO projects (org_id, slug, name) VALUES ($1, 'm65-check', 'M65 Check') RETURNING id", orgID)

@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-// fakeChecker — чекер с заданной последовательностью результатов; считает вызовы.
 type fakeChecker struct {
 	results []Result
 	calls   int
@@ -54,8 +53,7 @@ func TestCheckWithRetries(t *testing.T) {
 	}
 }
 
-// Отмена контекста между повторами прекращает попытки и возвращает последний
-// (неуспешный) результат — не висим на паузе при шатдауне.
+// не висим на паузе при шатдауне: отмена ctx между повторами прерывает сразу.
 func TestCheckWithRetriesContextCancel(t *testing.T) {
 	old := retryDelay
 	retryDelay = time.Hour // пауза заведомо длиннее — выходим только по ctx

@@ -1,10 +1,7 @@
 package uptime
 
-// В package uptime (не uptime_test), потому что тест зовёт
-// casUpdateMonitorConfig напрямую — неэкспортируемый метод, до которого
-// внешнему тестовому пакету не дотянуться (см. пояснение в
-// watchdog_concurrency_test.go). Помощники того файла (newConcurrencyTestProject,
-// concurrencyTestHTTPMonitor) переиспользуются — тот же пакет.
+// в package uptime, а не uptime_test: тест зовёт неэкспортируемый
+// casUpdateMonitorConfig напрямую; хелперы watchdog_concurrency_test.go общие.
 
 import (
 	"bytes"
@@ -17,17 +14,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestCASUpdateMonitorConfigRejectsStaleOldValue — фундамент race-safety
-// RewrapSecrets: casUpdateMonitorConfig обязан отказать (0 затронутых
-// строк, БЕЗ ошибки), если config в таблице уже не совпадает со значением,
-// которое вызывающий читал ранее — иначе бэкфилл затирал бы правку,
-// приехавшую в параллели (см. RewrapSecrets, service.go).
-//
-// Реальная гонка по времени между SELECT и UPDATE внутри одного вызова
-// RewrapSecrets недетерминированна и не годится для теста; вместо неё здесь
-// напрямую воспроизводится момент «между чтением и записью значение
-// сменилось» — прямым SQL UPDATE между двумя вызовами casUpdateMonitorConfig,
-// который этот же метод и обязан поймать.
+// обязан отказать без ошибки, если config уже разошёлся со старым значением —
+// иначе бэкфилл затёр бы правку; гонка воспроизведена прямым SQL UPDATE.
 func TestCASUpdateMonitorConfigRejectsStaleOldValue(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -41,8 +29,6 @@ func TestCASUpdateMonitorConfigRejectsStaleOldValue(t *testing.T) {
 
 	staleCfg := rawConfigBytes(t, pool, created.ID)
 
-	// «Конкурентный редактор» меняет config между чтением (staleCfg) и нашей
-	// попыткой записи — прямым SQL, в обход сервиса.
 	if _, err := pool.Exec(ctx, "UPDATE monitors SET config = $2 WHERE id = $1", created.ID,
 		json.RawMessage(`{"method":"GET","url":"https://example.com/health","headers":{"X-Edited":"by-someone-else"}}`)); err != nil {
 		t.Fatalf("simulate concurrent edit: %v", err)
@@ -62,7 +48,6 @@ func TestCASUpdateMonitorConfigRejectsStaleOldValue(t *testing.T) {
 		t.Fatalf("row overwritten despite stale CAS: got %s, want unchanged %s", got, concurrentCfg)
 	}
 
-	// С правильным (актуальным) старым значением обновление проходит.
 	ok2, err := svc.casUpdateMonitorConfig(ctx, created.ID, attemptedCfg, concurrentCfg)
 	if err != nil {
 		t.Fatalf("cas update (correct old value): %v", err)
@@ -79,11 +64,8 @@ func TestCASUpdateMonitorConfigRejectsStaleOldValue(t *testing.T) {
 	}
 }
 
-// TestCASUpdateMonitorConfigExecError — обрыв соединения на самом UPDATE:
-// casUpdateMonitorConfig обязан вернуть ошибку вызывающему, а не (false,nil)
-// — иначе RewrapSecrets молча спишет реальный сбой записи на «конфиг
-// изменили между чтением и записью» (CAS miss, 0 затронутых строк) и не
-// залогирует его. Зеркало internal/alert.TestRewrapChannelSecretExecError.
+// обрыв соединения обязан вернуть ошибку, не (false,nil) — иначе RewrapSecrets
+// спишет реальный сбой записи на CAS-miss (конфиг просто «изменили»).
 func TestCASUpdateMonitorConfigExecError(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := NewService(pool)
@@ -101,8 +83,7 @@ func TestCASUpdateMonitorConfigExecError(t *testing.T) {
 	}
 }
 
-// rawConfigBytes читает config монитора напрямую из БД — канонический вид
-// jsonb, как его реально сравнивает CAS-предикат casUpdateMonitorConfig.
+// возвращает канонический jsonb, как его сравнивает CAS-предикат casUpdateMonitorConfig.
 func rawConfigBytes(t *testing.T, pool *pgxpool.Pool, id int64) json.RawMessage {
 	t.Helper()
 	var raw json.RawMessage

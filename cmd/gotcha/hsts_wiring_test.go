@@ -8,37 +8,14 @@ import (
 	"testing"
 )
 
-// wantHSTSHeaderValueArgs — порядок параметров web.HSTSHeaderValue(enabled
-// bool, maxAgeSeconds int, includeSubDomains, preload bool) — см. её
-// сигнатуру в internal/web/hsts.go. Перестановка двух последних
-// (includeSubDomains ↔ preload) компилируется молча: оба bool, оба cfg-поля
-// существуют — но инстанс с INCLUDE_SUBDOMAINS=true, PRELOAD=false отдал бы
-// заголовок с токеном preload, ровно ту комбинацию, ради запрета которой
-// написан блок валидации в config.go. Матчить сам факт вызова
-// web.HSTSHeaderValue(...), не заглядывая внутрь, эту перестановку не ловит.
+// порядок аргументов web.HSTSHeaderValue следует её сигнатуре; перестановка последних двух
+// компилируется молча, но отправит preload без includeSubDomains
 var wantHSTSHeaderValueArgs = []string{
 	"HSTSEnabled", "HSTSMaxAgeSeconds", "HSTSIncludeSubDomains", "HSTSPreload",
 }
 
-// TestHSTSHeaderWiredFromConfig — main.go обязан проставлять
-// webHandler.HSTSHeader вызовом web.HSTSHeaderValue(cfg.HSTS...) с полями В
-// ПРАВИЛЬНОМ ПОРЯДКЕ (wantHSTSHeaderValueArgs), а не оставлять его на
-// историческом дефолте "max-age=31536000", зашитом в web.New(...)
-// (internal/web/web.go:507, тот же приём, что у RegistrationMode).
-//
-// internal/guards/handlerassembly_test.go эту проводку не ловит: его методика
-// (докблок TestHandlerAssemblyComplete) считает поле покрытым, если оно
-// установлено ХОТЯ БЫ в одном из двух мест — New ИЛИ main.go, — а не то, что
-// main.go реально ПЕРЕЗАПИСЫВАЕТ дефолт значением из конфига. HSTSHeader уже
-// "покрыт" дефолтом в New, поэтому удаление строки проводки не роняет тот
-// сторож — четыре переменные GOTCHA_HSTS_* молча перестают на что-либо
-// влиять, инстанс навсегда остаётся на историческом дефолте, и ни один
-// существующий тест (ни guards, ни cmd/gotcha) этого не замечает без этого
-// теста.
-//
-// Разбирает main.go напрямую через go/ast (без типизации, без БД, без
-// запуска run()) — тот же приём, что TestRewrapAllSecretsCallSiteOrder
-// (rewrap_bootstrap_test.go).
+// guards/handlerassembly_test.go не ловит эту проводку: он считает поле покрытым, если оно
+// установлено хоть в New, хоть в main.go — не то, что main.go ПЕРЕЗАПИСЫВАЕТ дефолт из конфига
 func TestHSTSHeaderWiredFromConfig(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "main.go", nil, 0)

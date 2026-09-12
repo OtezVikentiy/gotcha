@@ -16,13 +16,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// blackholePool opens a pgxpool.Pool pointed at a local TCP listener that
-// accepts connections but never writes a byte back — the PG startup
-// handshake blocks on read until the caller's ctx is cancelled. Models an
-// unreachable/hung PostgreSQL without needing to fake pgxpool.Pool itself
-// (a concrete type, not an interface — see leaseBudget's docblock).
-// pgxpool.New is lazy (MinConns defaults to 0), so this doesn't dial until
-// the first real query.
+// pgxpool.Pool — конкретный тип, не интерфейс; вместо фейка тут слушатель,
+// который принимает соединение и никогда не отвечает на handshake.
 func blackholePool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -30,17 +25,8 @@ func blackholePool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("listen: %v", err)
 	}
 	t.Cleanup(func() { ln.Close() })
-	// Принятые соединения ОБЯЗАНЫ храниться, а не выбрасываться: net.conn
-	// вешает на свой netFD рантайм-финализатор (net/fd_posix.go, setAddr),
-	// и сборщик мусора закрывает брошенный сокет сам. Закрытие сокета с
-	// непрочитанным стартовым пакетом в приёмном буфере отправляет клиенту
-	// RST, pgx немедленно возвращает "read: connection reset by peer" — и
-	// «недоступный PostgreSQL» превращается в «мгновенно отвечающий
-	// ошибкой», то есть заглушка перестаёт быть заглушкой. Тесты бюджета
-	// (TestWatchdogTickBudgetAbortsHungTick и соседи) от этого флейкали:
-	// проход укладывался в бюджет и штатно проставлял LastTickUnix.
-	// Проверено: с принудительным runtime.GC() в цикле опроса ДО этой
-	// правки RST приходил на каждом тике, после — ни одного.
+	// соединения хранить обязательно: брошенный сокет закрывает GC-финализатор,
+	// и RST на непрочитанный стартовый пакет превращает заглушку в мгновенный отказ.
 	var (
 		mu    sync.Mutex
 		conns []net.Conn
@@ -54,11 +40,6 @@ func blackholePool(t *testing.T) *pgxpool.Pool {
 	})
 	go func() {
 		for {
-			// Accepted connections are deliberately never read from or
-			// written to: the startup packet the client sends sits
-			// unacknowledged until the caller's ctx is done. Closing ln in
-			// Cleanup unblocks Accept and ends this goroutine; the sockets
-			// themselves закрываются там же, списком выше.
 			c, err := ln.Accept()
 			if err != nil {
 				return
@@ -77,9 +58,6 @@ func blackholePool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// waitForRunner polls cond until it's true or 5s pass, failing the test on
-// timeout — the runner's tickers are fast in these tests (tens of ms) but
-// still async, so a hard assertion right after starting it would flake.
 func waitForRunner(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -92,8 +70,6 @@ func waitForRunner(t *testing.T, cond func() bool) {
 	t.Fatal("condition not met in 5s")
 }
 
-// newFastRunner builds a Runner with tickers fast enough for tests, backed
-// by real PG+CH.
 func newFastRunner(svc *uptime.Service, writer *uptime.ResultWriter) *uptime.Runner {
 	return &uptime.Runner{
 		Svc:         svc,
@@ -143,10 +119,8 @@ func TestRunnerChecksSchedulesLeasesAndCompletesJob(t *testing.T) {
 		runner.Close()
 	})
 
-	// Poll on the state landing as "up" — polling PendingCount alone would
-	// race: it reads 0 both before anything has been scheduled yet and
-	// after the job has been fully processed, so it can spuriously look
-	// "done" on the very first poll.
+	// PendingCount один не годится: оно 0 и до постановки, и после обработки —
+	// первый же опрос может ошибочно решить, что всё готово.
 	waitForRunner(t, func() bool {
 		states, err := svc.States(context.Background(), created.ID)
 		return err == nil && len(states) == 1 && states[0].Status == "up"
@@ -174,9 +148,7 @@ func TestRunnerChecksSchedulesLeasesAndCompletesJob(t *testing.T) {
 	cancel()
 	runner.Close()
 
-	// Flush the writer's buffer synchronously before reading it back — it
-	// only ever ticks every 5s (interval default) or at 1000 buffered rows
-	// (see ResultWriter.NewResultWriter), neither of which this test hits.
+	// естественный тик (5с) или 1000 строк тест не набирает — флашим синхронно.
 	chCtx, chCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer chCancel()
 	if err := writer.Close(chCtx); err != nil {
@@ -314,30 +286,16 @@ func TestRunnerInvokesOnResultCallback(t *testing.T) {
 		t.Fatal("OnResult was not called within 5s")
 	}
 
-	// OnResult fires before CompleteJob (see runOne) — give the same
-	// goroutine a moment to reach CompleteJob before t.Cleanup cancels ctx,
-	// so the cleanup doesn't race a legitimate in-flight DB call.
+	// OnResult срабатывает раньше CompleteJob — ждём, чтобы cleanup не оборвал
+	// ещё идущий DB-вызов гонкой отмены ctx.
 	waitForRunner(t, func() bool {
 		n, err := svc.PendingCount(context.Background())
 		return err == nil && n == 0
 	})
 }
 
-// TestRunnerCloseWaitsForInFlightCheck verifies that Close() blocks until a
-// check already in flight when it's called has finished — not just until the
-// ticker loop stops — and that the check aborted by that shutdown is NOT
-// recorded as an outage. This mirrors the REAL production ordering
-// (cmd/gotcha/main.go's drain()): the run ctx is cancelled first
-// (signal.NotifyContext firing / shutdown), and only THEN is Close() called.
-//
-// Cancelling ctx aborts the in-flight HTTP round-trip immediately (the checker
-// uses ctx via http.NewRequestWithContext) — intentional, a shutdown should
-// abort a slow check rather than wait it out. The failure it produces belongs
-// to us, not to the monitored service: this test used to assert the opposite,
-// that the Result{OK:false} gets persisted, and that is exactly what made every
-// deploy shave the uptime figure and, at fail_threshold=1, send "service
-// unavailable". The job stays queued instead and is redone once the lease
-// expires.
+// повторяет прод-порядок shutdown: сначала отменяется ctx (main.go drain()),
+// потом Close — и оборванная этим проверка не должна выглядеть как авария.
 func TestRunnerCloseWaitsForInFlightCheck(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ch := testenv.MigratedCH(t)
@@ -382,18 +340,11 @@ func TestRunnerCloseWaitsForInFlightCheck(t *testing.T) {
 		t.Fatal("check did not start within 5s")
 	}
 
-	// Real shutdown ordering: cancel the run ctx FIRST (as main.go's
-	// signal.NotifyContext does), THEN call Close(). The check is already
-	// in flight when ctx is cancelled, so it aborts fast (context canceled)
-	// instead of waiting out the server's 200ms sleep — what's under test is
-	// whether the POST-check DB writes for that aborted check still survive
-	// the cancellation.
 	cancel()
 	runner.Close() // must block until the in-flight check finishes
 
-	// Задание остаётся в очереди: результат отброшен, значит проверку надо
-	// перевыполнить — это делает следующая реплика или этот же процесс после
-	// рестарта, когда истечёт лиза.
+	// результат отброшен — проверку перевыполнит другая реплика или этот же
+	// процесс после рестарта, когда истечёт лиза.
 	pending, err := svc.PendingCount(context.Background())
 	if err != nil {
 		t.Fatalf("PendingCount: %v", err)
@@ -402,7 +353,6 @@ func TestRunnerCloseWaitsForInFlightCheck(t *testing.T) {
 		t.Fatalf("PendingCount() = %d after Close, want 1 (aborted check must be redone, not lost)", pending)
 	}
 
-	// И никакого «сервис лежит» из-за нашей же остановки.
 	states, err := svc.States(context.Background(), created.ID)
 	if err != nil {
 		t.Fatalf("States: %v", err)
@@ -412,18 +362,12 @@ func TestRunnerCloseWaitsForInFlightCheck(t *testing.T) {
 	}
 }
 
-// panicChecker always panics — used to verify runOne recovers from a
-// checker panic instead of taking the whole process down with it.
 type panicChecker struct{}
 
 func (panicChecker) Check(ctx context.Context, m uptime.Monitor) uptime.Result {
 	panic("boom: checker bug")
 }
 
-// TestRunnerRecoversFromCheckerPanic verifies that a panicking Checker
-// doesn't take down the runner (and, in --mode=all, the whole process): the
-// panic must be recovered and turned into a failed Result, with the job
-// still completed and the failure visible in monitor_state.
 func TestRunnerRecoversFromCheckerPanic(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ch := testenv.MigratedCH(t)
@@ -456,12 +400,8 @@ func TestRunnerRecoversFromCheckerPanic(t *testing.T) {
 	// иначе очередь останется пустой и лизить будет нечего.
 	go (&uptime.Scheduler{Svc: svc, Every: 20 * time.Millisecond}).Run(ctx)
 
-	// The runner (this goroutine, in particular) must survive the panic:
-	// polling PendingCount / States below would just hang/timeout if the
-	// panic had propagated and killed the runner's worker goroutine pool
-	// (it wouldn't take the test process down since recover() only stops
-	// unwinding in the panicking goroutine, but the job would never
-	// complete).
+	// если паника всё же убьёт воркер, тест не упадёт от паники (recover не
+	// распространяется), а зависнет на поллинге — так и опознаётся регресс.
 	waitForRunner(t, func() bool {
 		states, err := svc.States(context.Background(), created.ID)
 		return err == nil && len(states) == 1 && states[0].Status == "down"
@@ -484,9 +424,7 @@ func TestRunnerRecoversFromCheckerPanic(t *testing.T) {
 	})
 }
 
-// TestRunnerPublishesTickLiveness — self-метрики живости: без них умерший
-// или отставший Runner снаружи неотличим от «мониторов к проверке сейчас
-// нет». Мониторов не заводим — лизинг пуст, но обязан УСПЕШНО завершаться.
+// мониторов не заводим — лизинг пуст, но обязан УСПЕШНО завершаться.
 func TestRunnerPublishesTickLiveness(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -513,11 +451,7 @@ func TestRunnerPublishesTickLiveness(t *testing.T) {
 	}
 }
 
-// TestRunnerLeaseBudgetAbortsHungLease — повисший Svc.LeaseLocal (недоступный
-// PostgreSQL) не должен блокировать лизинг дольше leaseBudget: тот же
-// контракт, что host.Evaluator/metric.Evaluator, применённый к единственному
-// PG-вызову leaseAndDispatch (раздача по семафору исполнителям в бюджет не
-// входит — см. leaseBudget).
+// раздача по семафору исполнителям в бюджет не входит, лизинг PG — входит.
 func TestRunnerLeaseBudgetAbortsHungLease(t *testing.T) {
 	svc := uptime.NewService(blackholePool(t))
 	runner := &uptime.Runner{Svc: svc, Region: "local", LeaseEvery: 20 * time.Millisecond}

@@ -6,11 +6,6 @@ import (
 	"testing"
 )
 
-// TestCatalogsHaveIdenticalKeys — страж парности каталогов. Ключ, добавленный
-// только в один язык, не ломает ни сборку, ни существующие тесты: lookup
-// молча падает в Default, а оттуда в сам ключ. То есть английская страница
-// показывает русский текст (или сырой "nav.issues"), и заметить это можно
-// только глазами на визуальной приёмке. Ловим тестом.
 func TestCatalogsHaveIdenticalKeys(t *testing.T) {
 	ru, en := catalogs["ru"], catalogs["en"]
 
@@ -36,9 +31,6 @@ func TestCatalogsHaveIdenticalKeys(t *testing.T) {
 	}
 }
 
-// TestPluralFormsComplete — недостающая форма множественного числа не даёт
-// ошибки: pluralForm выбирает категорию, её нет в JSON, и текст схлопывается
-// в other. По-русски это выглядит как «5 проблема».
 func TestPluralFormsComplete(t *testing.T) {
 	required := map[string][]string{
 		"ru": {"one", "few", "many"},
@@ -55,8 +47,6 @@ func TestPluralFormsComplete(t *testing.T) {
 	}
 }
 
-// TestNoEmptyMessages — пустое значение ключа выглядит как «строка пропала»
-// и неотличимо от бага вёрстки.
 func TestNoEmptyMessages(t *testing.T) {
 	for code, c := range catalogs {
 		for k, v := range c.Messages {
@@ -67,12 +57,8 @@ func TestNoEmptyMessages(t *testing.T) {
 	}
 }
 
-// TestCatalogsUsePlaceholderSyntax — страж синтаксиса подстановок. Tf
-// подставляет только {name}, а привычка писать %s ничего не ломает: строка
-// собирается, тесты проходят, и на странице остаётся буквальное «Тип канала:
-// %s.». Поймано ровно так — глазами на приёмке; ловим тестом.
 func TestCatalogsUsePlaceholderSyntax(t *testing.T) {
-	// %% — экранированный процент, он к подстановкам отношения не имеет.
+	// %% экранированный — не подстановка, вырезаем перед матчем.
 	printfVerb := regexp.MustCompile(`%[sdvqft]`)
 	for loc, cat := range catalogs {
 		for k, v := range cat.Messages {
@@ -90,10 +76,6 @@ func TestCatalogsUsePlaceholderSyntax(t *testing.T) {
 	}
 }
 
-// TestCatalogPlaceholdersMatchAcrossLocales — набор подстановок в переводе
-// должен совпадать с оригиналом. Пропущенный {slug} в одном языке — это
-// предложение, где на месте значения ничего нет; лишний — буквальные фигурные
-// скобки на странице.
 func TestCatalogPlaceholdersMatchAcrossLocales(t *testing.T) {
 	placeholder := regexp.MustCompile(`\{[a-z_]+\}`)
 	names := func(s string) map[string]bool {
@@ -107,7 +89,7 @@ func TestCatalogPlaceholdersMatchAcrossLocales(t *testing.T) {
 	for k, ruText := range ru.Messages {
 		enText, ok := en.Messages[k]
 		if !ok {
-			continue // парность ключей проверяет соседний тест
+			continue
 		}
 		want, got := names(ruText), names(enText)
 		if len(want) != len(got) {

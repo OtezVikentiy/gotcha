@@ -1,9 +1,6 @@
 package depsuppress
 
-// Тест K1-5 живёт в package depsuppress (не depsuppress_test) по той же
-// причине, что и suppressor_cache_test.go: поле pool у Suppressor
-// неэкспортируемое, а именно его подмену на инструментированную обёртку
-// требует тест ниже.
+// package depsuppress, не _test: поле pool у Suppressor неэкспортируемо.
 
 import (
 	"context"
@@ -17,11 +14,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// countingSlowPool оборачивает реальный пул и вставляет фиксированную
-// задержку перед каждым Query, считая при этом, сколько вызовов Query
-// одновременно "в полёте". Задержка исполняется ДО обращения к реальному
-// пулу — соединение из пула не удерживается на время сна, так что тест не
-// упирается в лимит соединений пула, только в число горутин.
 type countingSlowPool struct {
 	real  pgxPool
 	delay time.Duration
@@ -56,16 +48,6 @@ func (p *countingSlowPool) Exec(ctx context.Context, sql string, args ...any) (p
 	return p.real.Exec(ctx, sql, args...)
 }
 
-// TestGetSnapshotDoesNotSerializeOnQuery — K1-5: конкурентные вызовы
-// getSnapshot при протухшем кеше не должны сериализоваться на время похода
-// в PG. До сужения критической секции мьютекс удерживался на все четыре
-// запроса loadSnapshot: тогда единственный запрос "в полёте" в любой момент
-// времени был бы ровно один (остальные горутины ждали бы mu.Lock, даже не
-// дойдя до Query), и maxInFlight countingSlowPool никогда не поднялся бы
-// выше 1. После сужения запросы вынесены из-под мьютекса, и несколько
-// горутин с одновременно протухшим кешом идут в PG параллельно — мутация,
-// возвращающая lock на весь getSnapshot, валит этот тест обратно на
-// maxInFlight <= 1.
 func TestGetSnapshotDoesNotSerializeOnQuery(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -102,36 +84,15 @@ func TestGetSnapshotDoesNotSerializeOnQuery(t *testing.T) {
 	}
 }
 
-// TestGetSnapshotGuardKeepsNewerSnapshot — фикс-раунд ревью на K1-5: guard в
-// getSnapshot не должен давать снимку со СТАРШИМ loadedAt затереть уже
-// сохранённый в кеше более свежий (TOCTOU-откат кеша назад во времени).
-//
-// Живой сценарий — конкурентный: горутина A начинает загрузку раньше, но
-// вытесняется планировщиком (GC-пауза, нагрузка) между возвратом из
-// loadSnapshot и повторным Lock; горутина B стартует позже, успевает
-// загрузить и записать более свежий снимок; A просыпается и пытается
-// перетереть его своим более старым. Guard проверяет ровно одно значимое
-// сравнение — snap.loadedAt против уже сохранённого s.cache.loadedAt — под
-// мьютексом, атомарно; какая именно горутина и в каком порядке РЕАЛЬНО
-// стартовала, для этого сравнения не имеет значения, важна только пара
-// значений loadedAt в момент попытки записи. Это делает воспроизведение
-// детерминированным без имитации самого вытеснения: два последовательных
-// вызова getSnapshot на одной горутине с управляемым s.now() дают ТУ ЖЕ
-// пару значений (сохранённый tNew, затем попытка записи с tOld < tNew) и
-// исполняют ровно ту же ветку guard'а, что и живая гонка — без
-// синтетических хуков планировщика и без риска гоняющегося по времени
-// (flaky) теста.
-//
-// s.now() дергается дважды за второй вызов: сначала в проверке свежести
-// кеша (управляем tFuture, чтобы кеш признали протухшим и пошли за
-// перезагрузкой), затем в конце loadSnapshot — там подставляется tOld.
+// Гонку воспроизводим без горутин: два вызова getSnapshot с управляемым s.now()
+// дают ту же пару loadedAt, что и живое вытеснение планировщиком.
 func TestGetSnapshotGuardKeepsNewerSnapshot(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
 
 	tNew := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	tFuture := tNew.Add(2 * cacheTTL) // > cacheTTL после tNew — кеш признаётся протухшим
-	tOld := tNew.Add(-time.Hour)      // старше уже сохранённого снимка
+	tFuture := tNew.Add(2 * cacheTTL)
+	tOld := tNew.Add(-time.Hour)
 
 	calls := []time.Time{tNew, tFuture, tOld}
 	idx := 0
@@ -147,8 +108,6 @@ func TestGetSnapshotGuardKeepsNewerSnapshot(t *testing.T) {
 		},
 	}
 
-	// Вызов #1: кеш пуст → guard пишет безусловно (нечего защищать), снимок
-	// получает loadedAt=tNew.
 	if _, err := sup.getSnapshot(ctx); err != nil {
 		t.Fatalf("getSnapshot #1: %v", err)
 	}
@@ -156,10 +115,6 @@ func TestGetSnapshotGuardKeepsNewerSnapshot(t *testing.T) {
 		t.Fatalf("после #1 cache.loadedAt = %v, want %v", sup.cache, tNew)
 	}
 
-	// Вызов #2: свежесть кеша меряется по tFuture → кеш протух → идёт
-	// перезагрузка, но сам загруженный снимок получает loadedAt=tOld —
-	// СТАРШЕ уже сохранённого tNew. Без guard'а (безусловная запись
-	// s.cache = snap) это перетёрло бы cache.loadedAt на tOld.
 	if _, err := sup.getSnapshot(ctx); err != nil {
 		t.Fatalf("getSnapshot #2: %v", err)
 	}

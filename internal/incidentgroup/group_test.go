@@ -35,7 +35,6 @@ func mustExec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
 	}
 }
 
-// seedProject — организация + проект.
 func seedProject(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	var orgID, projectID int64
@@ -56,8 +55,7 @@ func seedHost(t *testing.T, pool *pgxpool.Pool, projectID int64, name string) in
 	return hostID
 }
 
-// seedSilent — открытый silent-инцидент хоста; notified управляет гейтом
-// «информирующего корня».
+// notified управляет гейтом «информирующего корня».
 func seedSilent(t *testing.T, pool *pgxpool.Pool, projectID, hostID int64, notified bool) int64 {
 	t.Helper()
 	var id int64
@@ -116,7 +114,6 @@ func TestSetGroupFirstWriteWins(t *testing.T) {
 	if _, err := store.SetGroup(ctx, projectID, "host", memberInc, g1.ID); err != nil {
 		t.Fatalf("SetGroup: %v", err)
 	}
-	// Повторный attach к другой группе — no-op (первый выигрывает).
 	if _, err := store.SetGroup(ctx, projectID, "host", memberInc, g1.ID+1000); err != nil {
 		t.Fatalf("SetGroup 2nd: %v", err)
 	}
@@ -130,12 +127,6 @@ func TestSetGroupFirstWriteWins(t *testing.T) {
 	}
 }
 
-// TestSetGroupDoesNotOverwriteOpenMembership — W2: инцидент уже член
-// ОТКРЫТОЙ группы g1; SetGroup к РЕАЛЬНОЙ (не рандомной) открытой группе g2
-// другого корня — no-op (ok=false), членство в g1 не меняется. Отличие от
-// TestSetGroupFirstWriteWins: там g1.ID+1000 — заведомо несуществующая
-// группа; здесь g2 реальна и открыта, проверяет именно ветку «старая группа
-// ещё открыта — не перезаписывать».
 func TestSetGroupDoesNotOverwriteOpenMembership(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -178,16 +169,6 @@ func TestSetGroupDoesNotOverwriteOpenMembership(t *testing.T) {
 	}
 }
 
-// TestSetGroupCompositionCrossProjectNoop — W6: SetGroup с project_id
-// чужого проекта не присоединяет чужой инцидент (WHERE не матчит строку);
-// Composition с project_id чужого проекта отдаёт пустой список, хотя группа
-// реальна и с членом — обе функции проверяют tenant-изоляцию прямо в
-// запросе, не полагаясь только на инварианты вызывающих. Группа собрана из
-// членов ВСЕХ ЧЕТЫРЁХ источников (фикс-раунд R1b, MAJOR-2): ревьюер снял
-// фильтр project_id разом в ветках uptime/metric/slo у feedMemberSelect, а
-// прежняя версия теста держала в группе только host-члена — мутация осталась
-// незамеченной. Одного host-члена мало: он единственный источник, чья
-// project_id-ветка и так была покрыта.
 func TestSetGroupCompositionCrossProjectNoop(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -226,7 +207,6 @@ func TestSetGroupCompositionCrossProjectNoop(t *testing.T) {
 		t.Fatalf("SetGroup own project: ok=%v err=%v", ok, err)
 	}
 
-	// uptime-член.
 	var monitorID, uptimeMemberInc int64
 	mustScan(t, pool, &monitorID, `
 		INSERT INTO monitors (project_id, name, kind, interval_seconds)
@@ -237,7 +217,6 @@ func TestSetGroupCompositionCrossProjectNoop(t *testing.T) {
 		t.Fatalf("SetGroup uptime own project: ok=%v err=%v", ok, err)
 	}
 
-	// metric-член.
 	var ruleID, metricMemberInc int64
 	mustScan(t, pool, &ruleID, `
 		INSERT INTO metric_alert_rules (project_id, metric_name, aggregation, comparator, threshold)
@@ -249,7 +228,6 @@ func TestSetGroupCompositionCrossProjectNoop(t *testing.T) {
 		t.Fatalf("SetGroup metric own project: ok=%v err=%v", ok, err)
 	}
 
-	// slo-член.
 	var sloID, sloMemberInc int64
 	mustScan(t, pool, &sloID, `
 		INSERT INTO slos (project_id, name, sli_kind, target, window_days)
@@ -278,10 +256,6 @@ func TestSetGroupCompositionCrossProjectNoop(t *testing.T) {
 	}
 }
 
-// TestSetGroupCrossProjectUptime — W6: `incidents` (uptime) не имеет своей
-// колонки project_id — sourceMeta.projectCond идёт через monitors (EXISTS); та же
-// проверка, что TestSetGroupCompositionCrossProjectNoop, но для ветки,
-// которую легко сломать по-другому (забыть JOIN на monitors).
 func TestSetGroupCrossProjectUptime(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()

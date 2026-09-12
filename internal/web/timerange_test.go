@@ -31,24 +31,12 @@ func TestParseTimeRangePresets(t *testing.T) {
 	}
 }
 
-// TestParseTimeRangeAllHonoredOnlyWhenOffered (P1-6): период "all" даёт
-// TimeRange{Key: RangeAll} (нулевые From/To — «без временного фильтра») ТОЛЬКО
-// когда сама страница его предлагает, то есть def == RangeAll (issues.go —
-// единственный вызывающий с AllowAll=true в селекторе). На любой другой
-// странице (def — пресет, "24h" и т.п.) графику нужно окно всегда: autoStep
-// делит на него, ось X строится по нему, а запрос с from==to==год-1 не
-// находит в БД ни строки. Раньше period=all отдавал Key=RangeAll ВЕЗДЕ,
-// невзирая на def, — страница без данных о нём молча превращалась в пустую.
 func TestParseTimeRangeAllHonoredOnlyWhenOffered(t *testing.T) {
-	// Страница, которая предлагает "all" (issues.go): период уважается,
-	// границы пустые.
 	tr := parseTimeRange(vals(map[string]string{"period": "all"}), RangeAll)
 	if tr.Key != RangeAll || !tr.From.IsZero() || !tr.To.IsZero() {
 		t.Errorf("def=RangeAll, period=all → %+v, want Key=all с нулевыми границами", tr)
 	}
 
-	// Страница, которая его НЕ предлагает (график с пресетом по умолчанию):
-	// откат на дефолт страницы, как для любого нераспознанного period.
 	for _, def := range []string{"24h", "7d", "30d"} {
 		tr := parseTimeRange(vals(map[string]string{"period": "all"}), def)
 		if tr.Key != def || tr.Custom {
@@ -62,7 +50,6 @@ func TestParseTimeRangeAllHonoredOnlyWhenOffered(t *testing.T) {
 }
 
 func TestParseTimeRangeDefaults(t *testing.T) {
-	// пустой и неизвестный period → пресет по умолчанию.
 	for _, p := range []string{"", "bogus", "99y"} {
 		tr := parseTimeRange(vals(map[string]string{"period": p}), "7d")
 		if tr.Key != "7d" || tr.Custom {
@@ -87,9 +74,6 @@ func TestParseTimeRangeCustom(t *testing.T) {
 }
 
 func TestParseTimeRangeVisibleDatesWin(t *testing.T) {
-	// Введённые видимые поля start+end включают произвольный диапазон САМИ,
-	// даже если в списке стоит пресет — отдельно выбирать «свой диапазон» не
-	// нужно (устранение лишнего действия).
 	q := vals(map[string]string{
 		"period": "7d",
 		"start":  "2026-07-01T00:00",
@@ -102,8 +86,6 @@ func TestParseTimeRangeVisibleDatesWin(t *testing.T) {
 }
 
 func TestParseTimeRangeCarryOver(t *testing.T) {
-	// period=custom + скрытые cstart/cend (видимые пусты) → перенесённый
-	// активный произвольный диапазон сохраняется при смене прочих фильтров.
 	q := vals(map[string]string{
 		"period": "custom",
 		"cstart": "2026-07-01T00:00",
@@ -114,7 +96,6 @@ func TestParseTimeRangeCarryOver(t *testing.T) {
 		t.Errorf("carry-over cstart/cend should keep custom: %+v", tr)
 	}
 
-	// Выбор пресета в списке перебивает перенос custom (переключение обратно).
 	q.Set("period", "7d")
 	tr = parseTimeRange(q, "24h")
 	if tr.Custom || tr.Key != "7d" {
@@ -123,7 +104,6 @@ func TestParseTimeRangeCarryOver(t *testing.T) {
 }
 
 func TestParseTimeRangeCustomFallsBackWhenInvalid(t *testing.T) {
-	// start позже end — вырожденный диапазон, падаем на дефолт.
 	q := vals(map[string]string{
 		"start": "2026-07-10T00:00",
 		"end":   "2026-07-01T00:00",
@@ -133,16 +113,12 @@ func TestParseTimeRangeCustomFallsBackWhenInvalid(t *testing.T) {
 		t.Errorf("degenerate range should fall back to default: %+v", tr)
 	}
 
-	// нераспарсенный start — тоже дефолт.
 	tr = parseTimeRange(vals(map[string]string{"start": "not-a-date"}), "24h")
 	if tr.Custom || tr.Key != "24h" {
 		t.Errorf("unparseable start should fall back: %+v", tr)
 	}
 }
 
-// TestParseTimeRangeStartOnly (S4a): заполнено только «начало» — «с X и до сих
-// пор» включает произвольный диапазон, конец = «сейчас». Раньше пустой end
-// молча ронял ввод на пресет.
 func TestParseTimeRangeStartOnly(t *testing.T) {
 	now := time.Now().UTC()
 	start := now.Add(-48 * time.Hour).Format("2006-01-02T15:04")
@@ -173,7 +149,6 @@ func TestParseTimeRangeCustomClampsToRetention(t *testing.T) {
 }
 
 func TestParseCustomRangeClampsFutureEnd(t *testing.T) {
-	// end в будущем подтягивается к «сейчас» (ветка to.After(now)).
 	now := time.Now().UTC()
 	future := now.Add(48 * time.Hour).Format("2006-01-02T15:04")
 	start := now.Add(-2 * time.Hour).Format("2006-01-02T15:04")
@@ -187,7 +162,6 @@ func TestParseCustomRangeClampsFutureEnd(t *testing.T) {
 }
 
 func TestParseTimeRangeCustomEndDefaultsToNow(t *testing.T) {
-	// end присутствует, но не парсится → parseCustomRange подставляет «сейчас».
 	now := time.Now().UTC()
 	start := now.Add(-2 * time.Hour).Format("2006-01-02T15:04")
 	tr := parseTimeRange(vals(map[string]string{"start": start, "end": "garbage"}), "24h")
@@ -227,7 +201,7 @@ func TestAutoStep(t *testing.T) {
 		window     time.Duration
 		min, align time.Duration
 		buckets    int
-		want       time.Duration // точное ожидаемое значение
+		want       time.Duration
 	}{
 		{"perf 1h floors to min", time.Hour, 5 * time.Minute, 5 * time.Minute, 48, 5 * time.Minute},
 		{"perf 24h", 24 * time.Hour, 5 * time.Minute, 5 * time.Minute, 48, 30 * time.Minute},
@@ -236,8 +210,6 @@ func TestAutoStep(t *testing.T) {
 		{"buckets<1 normalizes to 1", time.Hour, time.Minute, 0, 0, time.Hour},
 		// align round-up: 2h/7 = 17m8.57s → ближайшее кратное 5m вверх = 20m.
 		{"align round-up branch", 2 * time.Hour, time.Minute, 5 * time.Minute, 7, 20 * time.Minute},
-		// custom-окно, не делящееся на bucket-count: раньше давало нецелый шаг
-		// (10801.07s) и расхождение с CH-сеткой — теперь ровно 10801s (B4).
 		{"custom 7d+1m whole seconds", 7*24*time.Hour + time.Minute, 5 * time.Minute, 0, 56, 10801 * time.Second},
 	}
 	for _, c := range cases {
@@ -246,11 +218,10 @@ func TestAutoStep(t *testing.T) {
 			if step != c.want {
 				t.Errorf("autoStep(%s,%s,%s,%d) = %s, want %s", c.window, c.min, c.align, c.buckets, step, c.want)
 			}
-			// B4-инвариант: шаг всегда кратен целой секунде (совпадает с CH-сеткой).
+			// шаг должен быть кратен целой секунде, иначе разъедется с сеткой CH.
 			if step%time.Second != 0 {
 				t.Errorf("autoStep(%s) = %s — не кратно секунде, CH-сетка разъедется", c.name, step)
 			}
-			// Назначение функции: шаг покрывает окно не более чем bucket-count слотами.
 			b := c.buckets
 			if b < 1 {
 				b = 1
@@ -263,12 +234,10 @@ func TestAutoStep(t *testing.T) {
 }
 
 func TestTimeRangeVM(t *testing.T) {
-	// пресет: поля произвольного диапазона пусты (иначе форма ушла бы в custom).
 	vm := timeRangeVM(TimeRange{Key: "24h"})
 	if vm.Key != "24h" || vm.Custom || vm.Start != "" || vm.End != "" {
 		t.Errorf("preset vm = %+v", vm)
 	}
-	// произвольный диапазон: границы отформатированы для datetime-local.
 	tr := TimeRange{
 		Key:    "custom",
 		Custom: true,

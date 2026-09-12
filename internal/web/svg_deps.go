@@ -13,12 +13,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// Геометрия карты зависимостей — фиксированные константы в единицах viewBox
-// (тесты опираются на них). Хаб «Этот сервис» в центре, хранилища (БД/кеш)
-// колонкой слева, HTTP-зависимости колонкой справа. Радиальная раскладка
-// прежней версии не масштабировалась: подписи рёбер уезжали под узлы, а на
-// десятке узлов окружность становилась нечитаемой — колонки растут вниз
-// сколько нужно, высота карты считается от самой длинной стороны.
+// константы фиксированы в единицах viewBox — тесты опираются на них напрямую.
 const (
 	depsMapWidth  = 760
 	depsMapPitch  = 60  // шаг строки в колонке
@@ -32,31 +27,17 @@ const (
 	depsMapMinH   = 120 // минимальная высота: одна строка и хаб
 	depsMapPadH   = 32  // воздух сверху и снизу колонок
 	depsMapMoreH  = 24  // строка «+N ещё» под колонками
-	// depsMapCharW — оценка ширины символа имени узла (кегль 13px) в единицах
-	// viewBox; как fitFlameLabel, только шрифт пропорциональный, поэтому
-	// коэффициент чуть больше. Имя длиннее рамки усекается по этой оценке.
+	// оценка ширины символа (13px) для усечения длинных имён — как
+	// fitFlameLabel, но шрифт пропорциональный, коэффициент больше.
 	depsMapCharW = 7.2
 )
 
-// depsMapNodeCap — карта показывает только топ-N зависимостей (deps уже
-// отсортированы по числу вызовов); лишние остаются только в таблице ниже —
-// под картой рисуется пометка «+N ещё». Кап берётся ДО раскладки по сторонам,
-// поэтому одна колонка может оказаться длиннее другой (16 БД и 0 HTTP — все
-// шестнадцать слева). Полный список (до depsLimit=50) всегда в таблице.
+// лишние зависимости — в пометку «+N ещё» и в таблицу; кап применяется до
+// раскладки по сторонам, поэтому колонки могут выйти разной длины.
 const depsMapNodeCap = 16
 
-// dependencyMapSVG рисует карту зависимостей: хаб в центре, две колонки
-// узлов, кривые рёбра от хаба к узлам со стрелками направления данных.
-// Высота считается внутри по числу строк самой длинной стороны. Раскладка
-// детерминирована: порядок узлов = порядок deps (уже по убыванию вызовов),
-// сторона — по виду зависимости, без учёта времени или итерации map,
-// поэтому два рендера одних данных дают идентичный вывод.
-//
-// Ребро всегда рисуется от хаба к узлу, стрелка направления — маркером на
-// нужном конце: «читаем» (in) — у хаба (marker-start, маркер развёрнут через
-// auto-start-reverse), «пишем» (out) — у узла (marker-end), both — оба, без
-// распознанных операций — без стрелок. Цвет ребра и маркера — по доле
-// ошибок (нейтральный / warn / danger).
+// раскладка детерминирована: порядок узлов и сторона не зависят от времени
+// или итерации map — два рендера одних данных дают идентичный вывод.
 func dependencyMapSVG(ctx context.Context, deps []templates.DependencyRow, w int) templ.Component {
 	return templ.ComponentFunc(func(ctx context.Context, wr io.Writer) error {
 		shown := deps
@@ -99,19 +80,13 @@ func dependencyMapSVG(ctx context.Context, deps []templates.DependencyRow, w int
 	})
 }
 
-// depsColumnSVG рисует одну колонку узлов с рёбрами от хаба. nodeX — левый
-// край узлов колонки, hubEdgeX — край хаба, обращённый к колонке. Колонка
-// центрирована по вертикали: y_i = (h - n·pitch)/2 + i·pitch. Порт ребра на
-// хабе — своя доля высоты хаба на каждое ребро стороны, чтобы кривые не
-// выходили из одной точки; контрольные точки Безье лежат на середине
-// расстояния по x с горизонтальными касательными — кривая входит в узел и
-// выходит из хаба горизонтально.
+// колонка центрирована по вертикали (y_i = (h-n·pitch)/2 + i·pitch); порт на
+// хабе — своя доля высоты на ребро, чтобы кривые не сходились в одной точке.
 func depsColumnSVG(sb *strings.Builder, nodes []templates.DependencyRow, nodeX, hubEdgeX, cx, cy, h int) {
 	n := len(nodes)
 	if n == 0 {
 		return
 	}
-	// Край узла, обращённый к хабу.
 	nodeEdgeX := nodeX + depsMapNodeW
 	if nodeX > cx {
 		nodeEdgeX = nodeX
@@ -142,8 +117,6 @@ func depsColumnSVG(sb *strings.Builder, nodes []templates.DependencyRow, nodeX, 
 	}
 }
 
-// depNodeSVG рисует узел зависимости: рамка, имя (усечённое по ширине, полное
-// — в <title> узла) и строка метрик «вызовы · p95 · доля ошибок».
 func depNodeSVG(x, top int, d templates.DependencyRow) string {
 	name, truncated := depFitName(d.Target)
 	var sb strings.Builder
@@ -157,11 +130,9 @@ func depNodeSVG(x, top int, d templates.DependencyRow) string {
 	return sb.String()
 }
 
-// depFitName усекает имя узла под ширину рамки (за вычетом отступов) по
-// оценке depsMapCharW единиц на символ, с «…» в конце; второй результат —
-// было ли усечение (тогда полное имя уходит в <title>).
+// второй результат — было ли усечение (тогда полное имя уходит в <title>).
 func depFitName(name string) (string, bool) {
-	// Ширина текста в рамке — за вычетом отступов по 10 с каждой стороны.
+	// минус 20: отступы по 10 с каждой стороны.
 	textW := float64(depsMapNodeW - 20)
 	fit := int(textW / depsMapCharW)
 	if len([]rune(name)) <= fit {
@@ -170,8 +141,6 @@ func depFitName(name string) (string, bool) {
 	return truncateRunes(name, fit-1) + "…", true
 }
 
-// depsTone — тон ребра и стрелки по доле ошибок: те же пороги, что были у
-// радиальной карты (≥5% — danger, любой ненулевой — warn).
 func depsTone(errorRate float64) string {
 	switch {
 	case errorRate >= 0.05:
@@ -183,11 +152,8 @@ func depsTone(errorRate float64) string {
 	}
 }
 
-// depsMarkerDefs — три стрелки (по тону) для концов рёбер. refX равен
-// ширине маркера, чтобы остриё стояло ровно на конце пути;
-// markerUnits=userSpaceOnUse — размер не зависит от толщины штриха;
-// orient=auto-start-reverse разворачивает маркер на marker-start, иначе
-// стрелка у хаба смотрела бы от него. Цвет задаётся классом в CSS.
+// refX = ширине маркера — остриё встаёт ровно на конце пути; auto-start-reverse
+// разворачивает маркер на marker-start, иначе стрелка у хаба смотрела бы от него.
 func depsMarkerDefs() string {
 	var sb strings.Builder
 	sb.WriteString(`<defs>`)
@@ -198,11 +164,8 @@ func depsMarkerDefs() string {
 	return sb.String()
 }
 
-// depMicros форматирует микросекунды для подписей карты: локальный форматтер
-// (не formatDurationUS из package templates — та недостижима отсюда, package
-// web не может звать package templates вспомогательные функции экрана).
-// Пороги как в остальных местах продукта: <1мс — микросекунды, <1с —
-// миллисекунды, иначе секунды с одним знаком после запятой.
+// локальный дубль formatDurationUS — package web не достаёт до вспомогательных
+// функций package templates.
 func depMicros(us uint32) string {
 	switch {
 	case us < 1000:
@@ -214,9 +177,7 @@ func depMicros(us uint32) string {
 	}
 }
 
-// depCount — компактное число вызовов для строки метрик узла: до тысячи как
-// есть, дальше «12.3k» / «1.5M». Округление вверх через порог (999 950 →
-// «1.0M», а не «1000.0k») — чтобы строка не выросла на разряд.
+// порог 999_950, не 999_999 — иначе строка отображалась бы как «1000.0k».
 func depCount(n int64) string {
 	switch {
 	case n < 1000:
@@ -228,8 +189,7 @@ func depCount(n int64) string {
 	}
 }
 
-// depPercent форматирует долю ошибок для подписей карты ("N.N%") — локальный
-// аналог formatFailureRate (package templates, недостижим из package web).
+// локальный аналог formatFailureRate — недостижим из package web.
 func depPercent(rate float64) string {
 	return fmt.Sprintf("%.1f%%", rate*100)
 }

@@ -15,8 +15,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// newOtherProject — второй, независимый проект в отдельной организации
-// (newProject хардкодит email/slug и не годится для повторного вызова).
+// newProject хардкодит email/slug и не годится для повторного вызова.
 func newOtherProject(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -60,7 +59,6 @@ func TestListFilterAndStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upsert fp-4: %v", err)
 	}
-	// Повторные upsert поднимают times_seen и last_seen у fp-4 — самый частый и самый свежий.
 	if _, err := svc.Upsert(ctx, pid, "fp-4", "fatal crash", "app.main", "fatal", "", t0.Add(4*time.Second)); err != nil {
 		t.Fatalf("upsert fp-4 again: %v", err)
 	}
@@ -68,7 +66,6 @@ func TestListFilterAndStatus(t *testing.T) {
 		t.Fatalf("upsert fp-4 thrice: %v", err)
 	}
 
-	// List без фильтра: 4 issue, total 4, порядок по last_seen DESC (fp-4 первый).
 	items, total, err := svc.List(ctx, pid, issue.Filter{})
 	if err != nil {
 		t.Fatalf("list: %v", err)
@@ -80,7 +77,6 @@ func TestListFilterAndStatus(t *testing.T) {
 		t.Fatalf("list default order: first=%d want=%d", items[0].ID, r4.IssueID)
 	}
 
-	// Filter{Status:"resolved"} после SetStatus(fp-1) → 1.
 	if err := svc.SetStatus(ctx, r1.IssueID, "resolved"); err != nil {
 		t.Fatalf("set status resolved: %v", err)
 	}
@@ -92,7 +88,6 @@ func TestListFilterAndStatus(t *testing.T) {
 		t.Fatalf("list resolved: total=%d len=%d items=%+v", total, len(items), items)
 	}
 
-	// Filter{Level:"warning"} → только fp-2.
 	items, total, err = svc.List(ctx, pid, issue.Filter{Level: "warning"})
 	if err != nil {
 		t.Fatalf("list level warning: %v", err)
@@ -101,7 +96,6 @@ func TestListFilterAndStatus(t *testing.T) {
 		t.Fatalf("list level warning: total=%d len=%d items=%+v", total, len(items), items)
 	}
 
-	// Filter{Query:"boom"} — ILIKE регистронезависимо: fp-1 и fp-3.
 	items, total, err = svc.List(ctx, pid, issue.Filter{Query: "boom"})
 	if err != nil {
 		t.Fatalf("list query boom: %v", err)
@@ -110,7 +104,6 @@ func TestListFilterAndStatus(t *testing.T) {
 		t.Fatalf("list query boom: total=%d len=%d items=%+v", total, len(items), items)
 	}
 
-	// Sort:"times_seen" — самый частый (fp-4) первым.
 	items, total, err = svc.List(ctx, pid, issue.Filter{Sort: "times_seen"})
 	if err != nil {
 		t.Fatalf("list sort times_seen: %v", err)
@@ -122,7 +115,6 @@ func TestListFilterAndStatus(t *testing.T) {
 		t.Fatalf("fp-4 times_seen = %d want 3", items[0].TimesSeen)
 	}
 
-	// Пагинация PerPage=2 → 2 страницы по 2, total стабилен.
 	page1, total1, err := svc.List(ctx, pid, issue.Filter{PerPage: 2, Page: 1})
 	if err != nil {
 		t.Fatalf("list page1: %v", err)
@@ -142,17 +134,14 @@ func TestListFilterAndStatus(t *testing.T) {
 		t.Fatalf("pagination: expected 4 distinct issues across pages, got %d", len(seen))
 	}
 
-	// SetStatus: невалидный статус.
 	if err := svc.SetStatus(ctx, r2.IssueID, "bogus"); !errors.Is(err, issue.ErrInvalidStatus) {
 		t.Fatalf("set status invalid: err=%v want ErrInvalidStatus", err)
 	}
 
-	// SetStatus: несуществующий id.
 	if err := svc.SetStatus(ctx, 999999999, "resolved"); !errors.Is(err, issue.ErrNotFound) {
 		t.Fatalf("set status missing: err=%v want ErrNotFound", err)
 	}
 
-	// SetStatusBulk: только issues этого проекта.
 	otherPID := newOtherProject(t, pool)
 	otherR, err := svc.Upsert(ctx, otherPID, "fp-other", "other project issue", "", "error", "", t0)
 	if err != nil {
@@ -178,17 +167,14 @@ func TestListFilterAndStatus(t *testing.T) {
 		t.Fatalf("other project issue must stay untouched: status=%s err=%v", gotOther.Status, err)
 	}
 
-	// SetStatusBulk: невалидный статус.
 	if _, err := svc.SetStatusBulk(ctx, pid, []int64{r4.IssueID}, "bogus"); !errors.Is(err, issue.ErrInvalidStatus) {
 		t.Fatalf("set status bulk invalid: err=%v want ErrInvalidStatus", err)
 	}
 
-	// Get: несуществующий id.
 	if _, err := svc.Get(ctx, 999999999); !errors.Is(err, issue.ErrNotFound) {
 		t.Fatalf("get missing: err=%v want ErrNotFound", err)
 	}
 
-	// Assign: назначить пользователя и снять.
 	var userID int64
 	if err := pool.QueryRow(ctx,
 		"INSERT INTO users (email, password_hash) VALUES ('assignee@example.com','x') RETURNING id").Scan(&userID); err != nil {
@@ -209,13 +195,10 @@ func TestListFilterAndStatus(t *testing.T) {
 		t.Fatalf("unassign result: assignee=%v err=%v", got4.AssigneeID, err)
 	}
 
-	// Assign: несуществующий id.
 	if err := svc.Assign(ctx, 999999999, nil); !errors.Is(err, issue.ErrNotFound) {
 		t.Fatalf("assign missing: err=%v want ErrNotFound", err)
 	}
 
-	// ActiveSince: fp-4 was last touched at t0+5s, everything else at or
-	// before t0+3s. A cutoff of t0+4s should return only fp-4.
 	active, err := svc.ActiveSince(ctx, pid, t0.Add(4*time.Second))
 	if err != nil {
 		t.Fatalf("ActiveSince: %v", err)
@@ -224,8 +207,6 @@ func TestListFilterAndStatus(t *testing.T) {
 		t.Fatalf("ActiveSince(t0+4s) = %+v, want only fp-4 (id=%d)", active, r4.IssueID)
 	}
 
-	// A cutoff before everything returns all 4, and other projects' issues
-	// are excluded.
 	activeAll, err := svc.ActiveSince(ctx, pid, t0.Add(-time.Minute))
 	if err != nil {
 		t.Fatalf("ActiveSince (all): %v", err)
@@ -239,7 +220,6 @@ func TestListFilterAndStatus(t *testing.T) {
 		}
 	}
 
-	// A cutoff in the future returns nothing.
 	activeNone, err := svc.ActiveSince(ctx, pid, t0.Add(time.Hour))
 	if err != nil {
 		t.Fatalf("ActiveSince (future): %v", err)
@@ -248,7 +228,7 @@ func TestListFilterAndStatus(t *testing.T) {
 		t.Fatalf("ActiveSince(future) = %d issues, want 0", len(activeNone))
 	}
 
-	// Test ILIKE wildcard escaping: "_" should not match any character when escaped.
+	// "_" в ILIKE — маска на один символ; экранируем, иначе fp-6 совпал бы тоже.
 	r5, err := svc.Upsert(ctx, pid, "fp-5", "worker_id crash", "", "error", "", t0.Add(6*time.Second))
 	if err != nil {
 		t.Fatalf("upsert fp-5: %v", err)
@@ -258,7 +238,6 @@ func TestListFilterAndStatus(t *testing.T) {
 		t.Fatalf("upsert fp-6: %v", err)
 	}
 
-	// Filter{Query:"worker_id"} should return ONLY fp-5, not fp-6 (where _ was acting as wildcard).
 	items, total, err = svc.List(ctx, pid, issue.Filter{Query: "worker_id"})
 	if err != nil {
 		t.Fatalf("list query worker_id: %v", err)
@@ -271,11 +250,6 @@ func TestListFilterAndStatus(t *testing.T) {
 	}
 }
 
-// TestCountNewSince — в отличие от ActiveSince (фильтр по last_seen —
-// «недавно шумевшие»), CountNewSince фильтрует по first_seen: повторный
-// Upsert старого issue с недавним seenAt (last_seen подвинулся, first_seen —
-// нет) не должен считаться «новым» (используется строкой состояния Обзора,
-// задача 7 nav-ia).
 func TestCountNewSince(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := issue.NewService(pool)
@@ -285,26 +259,19 @@ func TestCountNewSince(t *testing.T) {
 	otherPID := newOtherProject(t, pool)
 	t0 := time.Now().UTC().Truncate(time.Millisecond)
 
-	// fp-old: first_seen at t0, then re-upserted at t0+10s (only last_seen
-	// moves).
 	if _, err := svc.Upsert(ctx, pid, "fp-old", "old issue", "", "error", "", t0); err != nil {
 		t.Fatalf("upsert fp-old: %v", err)
 	}
 	if _, err := svc.Upsert(ctx, pid, "fp-old", "old issue", "", "error", "", t0.Add(10*time.Second)); err != nil {
 		t.Fatalf("re-upsert fp-old: %v", err)
 	}
-	// fp-new: first (and only) seen at t0+5s.
 	if _, err := svc.Upsert(ctx, pid, "fp-new", "new issue", "", "error", "", t0.Add(5*time.Second)); err != nil {
 		t.Fatalf("upsert fp-new: %v", err)
 	}
-	// Other project's issue must not leak into pid's count.
 	if _, err := svc.Upsert(ctx, otherPID, "fp-other", "other project issue", "", "error", "", t0.Add(5*time.Second)); err != nil {
 		t.Fatalf("upsert fp-other: %v", err)
 	}
 
-	// Cutoff at t0+1s: only fp-new (first_seen=t0+5s) qualifies; fp-old's
-	// first_seen (t0) is before the cutoff even though it was touched again
-	// at t0+10s.
 	n, err := svc.CountNewSince(ctx, pid, t0.Add(time.Second))
 	if err != nil {
 		t.Fatalf("CountNewSince: %v", err)
@@ -313,7 +280,6 @@ func TestCountNewSince(t *testing.T) {
 		t.Fatalf("CountNewSince(t0+1s) = %d, want 1 (only fp-new)", n)
 	}
 
-	// Cutoff before everything: both of pid's issues, none from otherPID.
 	all, err := svc.CountNewSince(ctx, pid, t0.Add(-time.Minute))
 	if err != nil {
 		t.Fatalf("CountNewSince (all): %v", err)
@@ -322,7 +288,6 @@ func TestCountNewSince(t *testing.T) {
 		t.Fatalf("CountNewSince(all) = %d, want 2", all)
 	}
 
-	// Cutoff in the future: nothing qualifies.
 	none, err := svc.CountNewSince(ctx, pid, t0.Add(time.Hour))
 	if err != nil {
 		t.Fatalf("CountNewSince (future): %v", err)
@@ -332,8 +297,6 @@ func TestCountNewSince(t *testing.T) {
 	}
 }
 
-// TestUpsertWritesIssueEnvironments проверяет, что Upsert денормализует
-// environment в issue_environments (без дублей и без пустых строк).
 func TestUpsertWritesIssueEnvironments(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := issue.NewService(pool)
@@ -346,7 +309,6 @@ func TestUpsertWritesIssueEnvironments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upsert prod: %v", err)
 	}
-	// Повторный upsert того же fingerprint/environment не плодит дубликат.
 	if _, err := svc.Upsert(ctx, pid, "fp-env-prod", "prod issue", "app.prod", "error", "prod", t0.Add(time.Second)); err != nil {
 		t.Fatalf("upsert prod again: %v", err)
 	}
@@ -371,9 +333,6 @@ func TestUpsertWritesIssueEnvironments(t *testing.T) {
 	}
 }
 
-// TestFilterEnvironmentAndPeriod проверяет Filter.Environment (EXISTS по
-// issue_environments) и Filter.Period (last_seen >= now() - whitelisted
-// interval), включая игнорирование невалидного значения периода.
 func TestFilterEnvironmentAndPeriod(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := issue.NewService(pool)
@@ -395,7 +354,6 @@ func TestFilterEnvironmentAndPeriod(t *testing.T) {
 		t.Fatalf("upsert no env: %v", err)
 	}
 
-	// Filter{Environment:"prod"} -> только prod issue.
 	items, total, err := svc.List(ctx, pid, issue.Filter{Environment: "prod"})
 	if err != nil {
 		t.Fatalf("list environment prod: %v", err)
@@ -404,7 +362,6 @@ func TestFilterEnvironmentAndPeriod(t *testing.T) {
 		t.Fatalf("list environment prod: total=%d len=%d items=%+v", total, len(items), items)
 	}
 
-	// Filter{Environment:"staging"} -> только staging issue.
 	items, total, err = svc.List(ctx, pid, issue.Filter{Environment: "staging"})
 	if err != nil {
 		t.Fatalf("list environment staging: %v", err)
@@ -413,12 +370,10 @@ func TestFilterEnvironmentAndPeriod(t *testing.T) {
 		t.Fatalf("list environment staging: total=%d len=%d items=%+v", total, len(items), items)
 	}
 
-	// Подкручиваем last_seen staging issue на 2 суток назад напрямую.
 	if _, err := pool.Exec(ctx, "UPDATE issues SET last_seen = $1 WHERE id = $2", t0.Add(-48*time.Hour), rStaging.IssueID); err != nil {
 		t.Fatalf("backdate staging last_seen: %v", err)
 	}
 
-	// Граница Since отсекает staging (last_seen 48h назад), оставляет prod и no-env.
 	items, total, err = svc.List(ctx, pid, issue.Filter{Since: t0.Add(-24 * time.Hour)})
 	if err != nil {
 		t.Fatalf("list since 24h: %v", err)
@@ -432,9 +387,6 @@ func TestFilterEnvironmentAndPeriod(t *testing.T) {
 		}
 	}
 
-	// Произвольное окно: только то, что попало между границами. Раньше такой
-	// фильтр в списке проблем был недоступен вовсе — период задавался строкой
-	// из белого списка (24h|7d|30d).
 	items, total, err = svc.List(ctx, pid, issue.Filter{
 		Since: t0.Add(-72 * time.Hour),
 		Until: t0.Add(-36 * time.Hour),
@@ -446,7 +398,6 @@ func TestFilterEnvironmentAndPeriod(t *testing.T) {
 		t.Fatalf("list custom window: total=%d items=%+v, want только backdated staging", total, items)
 	}
 
-	// Без границ — все три.
 	items, total, err = svc.List(ctx, pid, issue.Filter{})
 	if err != nil {
 		t.Fatalf("list unbounded: %v", err)
@@ -457,9 +408,6 @@ func TestFilterEnvironmentAndPeriod(t *testing.T) {
 	_ = rNoEnv
 }
 
-// TestEnvironmentsListAndAssigneeEmail проверяет Service.Environments
-// (отсортированный уникальный список) и Issue.AssigneeEmail (заполняется
-// List/Get, пуст без назначения, содержит email после Assign).
 func TestEnvironmentsListAndAssigneeEmail(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := issue.NewService(pool)
@@ -488,7 +436,6 @@ func TestEnvironmentsListAndAssigneeEmail(t *testing.T) {
 		t.Fatalf("environments = %v, want %v", envs, want)
 	}
 
-	// AssigneeEmail пуст до назначения (проверяем и через Get, и через List).
 	got, err := svc.Get(ctx, rProd.IssueID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -532,16 +479,8 @@ func TestEnvironmentsListAndAssigneeEmail(t *testing.T) {
 	}
 }
 
-// TestIssueListSameResultWithoutWindowCount: total ушёл из основного запроса
-// (count(*) OVER() → отдельный count(*) без JOIN/ORDER BY, см. List), поэтому
-// нужно доказать, что список, его порядок и total не изменились — оптимизация,
-// поменявшая выдачу, это дефект, а не оптимизация.
-//
-// n кратно perPage (30 issue при perPage=10 → ровно три полные страницы) —
-// специально, а не 25: так следующая, четвёртая страница даёт offset,
-// РОВНО совпадающий с total (30 == 30), а не просто больший — граница
-// `offset >= total` в List иначе проверялась бы только строгим неравенством,
-// а именно на равенстве такие правки чаще всего и ломаются при переработке.
+// n=30 кратно perPage=10: offset страницы lastPage+1 равен total ровно — проверяет
+// границу `offset >= total` на равенстве, не только строгим неравенством.
 func TestIssueListSameResultWithoutWindowCount(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := issue.NewService(pool)
@@ -560,14 +499,13 @@ func TestIssueListSameResultWithoutWindowCount(t *testing.T) {
 		}
 		ids[i] = r.IssueID
 	}
-	// last_seen DESC: последний засеянный (i=n-1, самый поздний t0+29s) первый.
 	wantOrder := make([]int64, n)
 	for i := 0; i < n; i++ {
 		wantOrder[i] = ids[n-1-i]
 	}
 
 	const perPage = 10
-	const lastPage = n / perPage // 3 полные страницы, без остатка
+	const lastPage = n / perPage
 	var gotOrder []int64
 	var totals []int64
 	for page := 1; page <= lastPage; page++ {
@@ -593,10 +531,6 @@ func TestIssueListSameResultWithoutWindowCount(t *testing.T) {
 		}
 	}
 
-	// Точная граница: страница lastPage+1 даёт offset = lastPage*perPage = n —
-	// РОВНО равно total, не больше. Ожидаем тот же total=0/items=nil, что и
-	// строго за пределами данных: сравнение в List — `offset >= total`, и
-	// именно случай равенства здесь и проверяется, а не только «больше».
 	exactBoundary, total, err := svc.List(ctx, pid, issue.Filter{PerPage: perPage, Page: lastPage + 1})
 	if err != nil {
 		t.Fatalf("list exact boundary: %v", err)
@@ -605,13 +539,7 @@ func TestIssueListSameResultWithoutWindowCount(t *testing.T) {
 		t.Fatalf("страница на точной границе (offset==total==%d): total=%d len=%d, want 0 и 0", n, total, len(exactBoundary))
 	}
 
-	// Страница за пределами данных: total=0, items=nil — тот же результат, что
-	// раньше давал count(*) OVER() в одном запросе с LIMIT/OFFSET (если
-	// смещение выходит за пределы набора, строк не возвращается вовсе, а
-	// значит total, который заполнялся сканированием строки, оставался нулём).
-	// Шаблон пагинации (issues.templ, pagerPrev) читает total<=0 как «страницы
-	// нет — веди на первую», поэтому это поведение обязано быть сохранено
-	// буквально, а не только «в целом эквивалентно».
+	// items=nil/total=0 — issues.templ (pagerPrev) трактует total<=0 как «страниц нет».
 	outOfRange, total, err := svc.List(ctx, pid, issue.Filter{PerPage: perPage, Page: 100})
 	if err != nil {
 		t.Fatalf("list out of range: %v", err)
@@ -621,8 +549,6 @@ func TestIssueListSameResultWithoutWindowCount(t *testing.T) {
 	}
 }
 
-// mustUpsert — обёртка Upsert для тестов StreamForExport, где сам факт
-// создания группы важен, а результат upsert (New/Regression) — нет.
 func mustUpsert(t *testing.T, svc *issue.Service, projectID int64, fingerprint string, seenAt time.Time) int64 {
 	t.Helper()
 	r, err := svc.Upsert(context.Background(), projectID, fingerprint, "t", "c", "error", "", seenAt)
@@ -632,16 +558,8 @@ func mustUpsert(t *testing.T, svc *issue.Service, projectID int64, fingerprint s
 	return r.IssueID
 }
 
-// TestStreamForExportNoGapsOnEqualLastSeen — регресс на границу страницы:
-// все группы с ОДИНАКОВЫМ last_seen (частый случай — пачка событий, пришедшая
-// разом). Обход теперь идёт по снимку id, зафиксированному ОДНИМ запросом
-// ORDER BY last_seen DESC, id DESC (см. докблок StreamForExport) — id
-// тай-брейкает совпадающий last_seen уже в самом снимке, а страницы — это
-// просто срезы уже готового списка в памяти, так что совпадающий last_seen
-// сам по себе не может дать пропуск/дубль — тест фиксирует это как
-// регресс-гарантию.
-// n больше exportPageSize (500 в internal/issue/query.go), иначе весь набор
-// читается одной страницей и граница вообще не проверяется.
+// last_seen одинаков у всех строк — тай-брейк по id снимка страхует от пропуска/дубля на стыке страниц.
+// n больше exportPageSize (500), иначе граница страниц не проверяется.
 func TestStreamForExportNoGapsOnEqualLastSeen(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -672,10 +590,6 @@ func TestStreamForExportNoGapsOnEqualLastSeen(t *testing.T) {
 	}
 }
 
-// TestStreamForExportStopsOnCallbackError — потолок строк реализуется
-// остановкой обхода снаружи (в источнике выгрузки): StreamForExport обязан
-// прекратить читать страницы, как только колбэк вернул ошибку, а не
-// дочитать текущую выборку до конца.
 func TestStreamForExportStopsOnCallbackError(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -701,9 +615,7 @@ func TestStreamForExportStopsOnCallbackError(t *testing.T) {
 	}
 }
 
-// TestStreamForExportIgnoresOtherProject — фильтр снимка id обязан содержать
-// project_id, как и обычный List: без него снимок свободно резолвился бы в
-// id чужих групп, попавших в тот же диапазон last_seen/id.
+// project_id обязателен в фильтре снимка — иначе id чужих групп из того же диапазона last_seen/id утекут в выгрузку.
 func TestStreamForExportIgnoresOtherProject(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -727,25 +639,8 @@ func TestStreamForExportIgnoresOtherProject(t *testing.T) {
 	}
 }
 
-// TestStreamForExportSurvivesLastSeenMutationBetweenPages — волна 2, аудит
-// W2-A, DEDUP-P1 кластер 5: обход идёт по снимку id, зафиксированному ОДНИМ
-// запросом (ORDER BY last_seen DESC, id DESC) ДО начала постраничного чтения
-// (см. докблок StreamForExport), а не постранично ПО last_seen. Раньше
-// группа, ещё не дошедшая до курсора, получавшая новый last_seen между
-// страницами, уезжала выше курсора (ORDER BY last_seen DESC на каждой
-// странице заново) и в выгрузку не попадала — молча, без Truncated=true.
-// Активные группы — ровно те, ради которых выгрузку и делают.
-//
-// n больше exportPageSize (500), группы заведены с last_seen по возрастанию
-// i (last_seen = base + i секунд), снимок (last_seen DESC) отдаёт страницу 1
-// = i599..i100, страницу 2 = i99..i0. Прямо на границе (после 500-й отданной
-// строки, ещё не прочитанные — i99..i0) тест ОБНОВЛЯЕТ last_seen ещё не
-// прочитанной группы через тот же Upsert, что зовёт приём событий (ON
-// CONFLICT (project_id, fingerprint) — тот же id, id и место в уже
-// зафиксированном снимке не меняются, last_seen в БД мутирует). Группа
-// обязана попасть в выдачу РОВНО ОДИН раз — со снимком id это гарантировано
-// по построению (её место в списке уже зафиксировано до мутации), со старым
-// last_seen-курсором строка терялась бы.
+// Снимок id фиксируется одним запросом до начала обхода — last_seen ещё не прочитанной группы
+// может измениться мид-обхода, но место в снимке не сдвигается, дубля/потери быть не должно.
 func TestStreamForExportSurvivesLastSeenMutationBetweenPages(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -760,13 +655,8 @@ func TestStreamForExportSurvivesLastSeenMutationBetweenPages(t *testing.T) {
 		fps[i] = fmt.Sprintf("fp-%04d", i)
 		ids[i] = mustUpsert(t, svc, pid, fps[i], base.Add(time.Duration(i)*time.Second))
 	}
-	// Ещё не прочитанная на границе 500-й строки (снимок — last_seen DESC,
-	// эта группа в хвосте набора по last_seen) — её last_seen обновится
-	// мид-обхода.
 	mutatedID := ids[50]
 	mutatedFP := fps[50]
-	// Ещё не прочитанная, которую вместо этого удалят между страницами —
-	// не должна попасть в выдачу, обход не должен упасть/зациклиться.
 	deletedID := ids[10]
 
 	count := 0
@@ -775,8 +665,6 @@ func TestStreamForExportSurvivesLastSeenMutationBetweenPages(t *testing.T) {
 		seen[it.ID]++
 		count++
 		if count == 500 {
-			// Тот же Upsert, что и приём события: last_seen группы, которую
-			// обход ещё не дочитал, обновляется ПРЯМО СЕЙЧАС, между страницами.
 			if _, err := svc.Upsert(ctx, pid, mutatedFP, "t", "c", "error", "", base.Add(24*time.Hour)); err != nil {
 				t.Fatalf("upsert между страницами (мутация last_seen): %v", err)
 			}
@@ -800,41 +688,14 @@ func TestStreamForExportSurvivesLastSeenMutationBetweenPages(t *testing.T) {
 			t.Errorf("группа %d выдана %d раз", id, c)
 		}
 	}
-	wantTotal := n - 1 // минус удалённая; мутация last_seen количество не меняет
+	wantTotal := n - 1
 	if len(seen) != wantTotal {
 		t.Fatalf("выгружено %d групп, want %d", len(seen), wantTotal)
 	}
 }
 
-// TestStreamForExportMultiPageOrderMatchesLastSeenDesc — волна 2, второй
-// круг ревью доработки: центральный механизм снимка — восстановление
-// порядка отдачи ИЗ СНИМКА (см. комментарий в streamForExport «Порядок
-// отдачи — порядок СНИМКА (page), не порядок, в котором Postgres вернул
-// строки по id = ANY($1)») — до этого теста мутационно не был защищён.
-// Ревьюер снял это восстановление (эмиссия пошла в физическом порядке
-// возврата id = ANY($1)), и ни один существующий тест не упал
-// ДЕТЕРМИНИРОВАННО: в конкретном прогоне план вернул нужные две строки в
-// обратном порядке и TestStreamForExportTruncationKeepsMostActiveNotMostRecentlyCreated
-// поймал не ту группу, но id = ANY($1) без ORDER BY не даёт вообще никакого
-// контракта на порядок возврата — на другом плане/версии PG/фикстуре та же
-// поломка прошла бы зелёной.
-//
-// n=700 (2 страницы: 500 + 200) — тест обязан пройти границу exportPageSize,
-// иначе восстановление порядка внутри многостраничного обхода не
-// проверяется вовсе. last_seen КАЖДОЙ группы — по перестановке индекса
-// создания ((i*131) % n; 131 и 700 взаимно просты, значит это перестановка
-// БЕЗ совпадений и без монотонной связи с i), а НЕ по возрастанию/убыванию i:
-// id растёт вместе с i (группы создаются по порядку), поэтому без перетасовки
-// last_seen DESC совпал бы с id DESC (и, скорее всего, с физическим порядком
-// возврата id = ANY($1) — тот на PK-based плане часто идёт по id) — и тест
-// на восстановление порядка проходил бы «по совпадению», а не потому что
-// реализация действительно сортирует по last_seen. Ожидание строится
-// НЕЗАВИСИМО от кода реализации — сортировкой локальной копии по
-// (last_seen DESC, id DESC), а не вызовом какой-либо функции пакета issue.
-//
-// Мутация: убрать восстановление порядка из снимка (эмитировать byID в
-// порядке возврата pageRows.Next(), как сделал ревьюер) — тест обязан упасть
-// детерминированно на reflect.DeepEqual(gotOrder, wantOrder) ниже.
+// last_seen через перестановку (i*131)%n, не монотонно с i — иначе last_seen DESC совпал бы с id DESC
+// и тест прошёл бы даже без сортировки по last_seen в реализации.
 func TestStreamForExportMultiPageOrderMatchesLastSeenDesc(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -882,18 +743,8 @@ func TestStreamForExportMultiPageOrderMatchesLastSeenDesc(t *testing.T) {
 	}
 }
 
-// TestStreamForExportExcludesGroupCreatedDuringScan — волна 2, ревью
-// доработки: снимок id фиксируется ОДНИМ запросом ДО начала обхода (см.
-// докблок StreamForExport), поэтому группа, СОЗДАННАЯ уже после снимка —
-// прямо во время активного экспорта, что происходит регулярно на реальном
-// инстансе, — в выгрузку заведомо не попадёт. Это документированная граница
-// снимка (как у любого моментального среза растущей выборки), а не
-// случайность, и тест фиксирует её как гарантию, а не как баг.
-//
-// last_seen новой группы поставлен ЗАВЕДОМО позже всех существующих — если
-// бы обход всё-таки увидел её, она сортировалась бы самой первой строкой
-// файла (last_seen DESC). Тест проверяет, что она отсутствует ВООБЩЕ, не
-// «стоит не на первом месте».
+// Снимок фиксируется до начала обхода — группа, созданная уже во время экспорта, в выгрузку не попадает:
+// документированная граница снимка, а не баг.
 func TestStreamForExportExcludesGroupCreatedDuringScan(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -928,20 +779,8 @@ func TestStreamForExportExcludesGroupCreatedDuringScan(t *testing.T) {
 	}
 }
 
-// TestStreamForExportTruncationKeepsMostActiveNotMostRecentlyCreated —
-// волна 2, ревью доработки: усечение выгрузки по потолку строк заявки
-// (GOTCHA_EXPORT_MAX_ROWS, worker.go останавливает обход возвратом ошибки из
-// fn — см. докблок StreamForExport «Обход останавливается на первой ошибке
-// fn») обязано оставлять в файле самые НЕДАВНО АКТИВНЫЕ группы, а не самые
-// недавно СОЗДАННЫЕ: ранняя версия этой правки пробовала курсор по
-// issues.id, у которого прямо противоположная семантика (id растёт с
-// first_seen), и на усечённой выгрузке в файл уезжали новые группы вместо
-// активных.
-//
-// oldID создана ПЕРВОЙ (меньший id), но получает новое событие ПОЗЖЕ и
-// становится самой активной по last_seen; newID создана ПОСЛЕ oldID (больший
-// id), но с этого момента больше не оживает — активность старше. Усечение
-// до 1 строки обязано вернуть oldID: последняя активность важнее возраста id.
+// Усечение по потолку строк обязано оставлять самые АКТИВНЫЕ по last_seen группы, а не самые недавно
+// СОЗДАННЫЕ по id — ранняя версия ошибочно курсорила по issues.id.
 func TestStreamForExportTruncationKeepsMostActiveNotMostRecentlyCreated(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -949,11 +788,9 @@ func TestStreamForExportTruncationKeepsMostActiveNotMostRecentlyCreated(t *testi
 	pid := newProject(t, pool)
 
 	t0 := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
-	oldID := mustUpsert(t, svc, pid, "long-lived-active", t0)                      // создана первой — id меньше
-	newID := mustUpsert(t, svc, pid, "recently-created-idle", t0.Add(time.Minute)) // создана позже — id больше
+	oldID := mustUpsert(t, svc, pid, "long-lived-active", t0)
+	newID := mustUpsert(t, svc, pid, "recently-created-idle", t0.Add(time.Minute))
 
-	// oldID «оживает» позже: получает новое событие и обгоняет newID по
-	// last_seen, id при этом (Upsert по тому же fingerprint) не меняется.
 	recent := t0.Add(24 * time.Hour)
 	if _, err := svc.Upsert(ctx, pid, "long-lived-active", "t", "c", "error", "", recent); err != nil {
 		t.Fatalf("upsert (обновление last_seen): %v", err)
@@ -974,11 +811,8 @@ func TestStreamForExportTruncationKeepsMostActiveNotMostRecentlyCreated(t *testi
 	}
 }
 
-// TestIDsForFilterReportsOverflow — упор в потолок id групп обязан дать
-// отказ (overflow=true), а не тихую обрезку: источник выгрузки событий
-// (kind=events, область «проект с фильтрами») не может сказать пользователю,
-// какие именно группы выпали бы из списка, поэтому решение — отказать и
-// попросить сузить фильтр (§8 спеки экспорта), а не отдать неполный список.
+// Упор в потолок id обязан вернуть отказ (overflow=true), не тихую обрезку — источник выгрузки не может
+// сказать, какие группы выпали бы, поэтому отказывает и просит сузить фильтр.
 func TestIDsForFilterReportsOverflow(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -1000,8 +834,6 @@ func TestIDsForFilterReportsOverflow(t *testing.T) {
 	}
 }
 
-// TestIDsForFilterNoOverflowReturnsExactMatch — без упора в потолок
-// возвращается ровно то, что подходит под фильтр (не хвост списка).
 func TestIDsForFilterNoOverflowReturnsExactMatch(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -1012,7 +844,7 @@ func TestIDsForFilterNoOverflowReturnsExactMatch(t *testing.T) {
 	if err := svc.SetStatus(ctx, want, "resolved"); err != nil {
 		t.Fatalf("SetStatus: %v", err)
 	}
-	mustUpsert(t, svc, pid, "fp-nomatch", now.Add(time.Second)) // остаётся unresolved
+	mustUpsert(t, svc, pid, "fp-nomatch", now.Add(time.Second))
 
 	ids, overflow, err := svc.IDsForFilter(ctx, pid, issue.Filter{Status: "resolved"}, 100)
 	if err != nil {
@@ -1026,9 +858,7 @@ func TestIDsForFilterNoOverflowReturnsExactMatch(t *testing.T) {
 	}
 }
 
-// TestIDsForFilterIsolatedByProject — чужой project_id не должен утекать в
-// список ни при каких параметрах фильтра: id групп уходят прямо в
-// ClickHouse-фильтр IN (…), и утечка здесь означала бы утечку чужих событий.
+// id групп идут прямо в ClickHouse-фильтр IN(...) — утечка чужого id здесь означает утечку чужих событий.
 func TestIDsForFilterIsolatedByProject(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)

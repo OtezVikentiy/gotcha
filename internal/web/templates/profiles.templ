@@ -13,7 +13,6 @@ func profilesBasePath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/profiles"
 }
 
-// profileFlameLink — ссылка на flamegraph группы профилей, сохраняя окно.
 func profileFlameLink(projectID int64, s profile.ServiceInfo, rng TimeRangeVM, environment string) string {
 	q := url.Values{}
 	q.Set("service", s.Service)
@@ -28,9 +27,7 @@ func profileFlameLink(projectID int64, s profile.ServiceInfo, rng TimeRangeVM, e
 	return profilesBasePath(projectID) + "/flame?" + q.Encode()
 }
 
-// ProfilesList — GET /projects/{id}/profiles: группы профилей за период.
-// loadFailed — ClickHouse не ответил: фильтры на месте, вместо списка —
-// «данные временно недоступны».
+// loadFailed — ClickHouse не ответил: фильтры на месте, вместо списка «данные временно недоступны».
 templ ProfilesList(projectID int64, services []profile.ServiceInfo, rng TimeRangeVM, environment, userEmail string, loadFailed bool) {
 	@layout(i18n.T(ctx, "nav.profiles"), userEmail) {
 		<div class="profiles">
@@ -85,14 +82,8 @@ templ ProfilesList(projectID int64, services []profile.ServiceInfo, rng TimeRang
 	}
 }
 
-// profileWeightText — суммарный вес выборок в его единице измерения.
-// Единица приходит из данных (pprof SampleType.Unit, колонка unit): голое
-// число вводило в заблуждение — «284000000» в колонке читалось как 284
-// миллиона замеров, хотя это 284 мс процессорного времени.
-//
-// Пустая единица — строки, записанные до миграции 0012. Для них возвращаемся
-// к догадке по имени типа профиля: это лучше, чем показать сырое число, но
-// работает только для известных типов, ради чего единица и сохраняется.
+// единица приходит из данных (pprof SampleType.Unit) — без неё число похоже на другую величину.
+// пустая единица — старые строки без неё; догадываемся по типу профиля (не для всех типов).
 func profileWeightText(profileType, unit string, weight uint64) string {
 	switch unit {
 	case "nanoseconds":
@@ -106,21 +97,15 @@ func profileWeightText(profileType, unit string, weight uint64) string {
 	case "bytes":
 		return humanize.Bytes(int64(weight))
 	case "count":
-		// Величина без единицы: число сэмплов, объектов, вызовов.
 		return strconv.FormatUint(weight, 10)
 	case "":
 		return profileWeightByType(profileType, weight)
 	default:
-		// Единица известна источнику, но не нам: показываем как есть, а не
-		// приводим к чему-то наугад.
+		// единица известна источнику, но не нам — показываем как есть, не гадаем с конвертацией.
 		return strconv.FormatUint(weight, 10) + " " + unit
 	}
 }
 
-// profileWeightByType — запасная догадка по имени типа профиля для строк,
-// записанных до миграции 0012 (единицы у них нет). Работает только для
-// известных типов — ровно то ограничение, ради снятия которого единица теперь
-// и сохраняется рядом со значением.
 func profileWeightByType(profileType string, weight uint64) string {
 	switch profileType {
 	case "cpu", "wall", "block", "mutex":
@@ -152,7 +137,6 @@ func profileDisplayService(service string) string {
 	return service
 }
 
-// ProfileFlameVM — данные страницы flamegraph.
 type ProfileFlameVM struct {
 	ProjectID   int64
 	Service     string
@@ -161,15 +145,12 @@ type ProfileFlameVM struct {
 	Environment string
 	Range       TimeRangeVM
 	Chart       templ.Component
-	// LoadFailed — ClickHouse не ответил: вместо флеймграфа — «данные
-	// временно недоступны», фильтры и крошка остаются.
+	// ClickHouse не ответил — вместо флеймграфа «данные временно недоступны», фильтры и крошка остаются.
 	LoadFailed bool
-	// HasData — в дереве есть сэмплы; без них график — плейсхолдер, и
-	// подсказка про клик по кадру была бы не к месту.
+	// без сэмплов график — плейсхолдер, подсказка про клик по кадру была бы не к месту.
 	HasData bool
 }
 
-// ProfileFlame — GET /projects/{id}/profiles/flame: flamegraph.
 templ ProfileFlame(vm ProfileFlameVM, userEmail string) {
 	@layout(i18n.T(ctx, "profiles.flame.title"), userEmail) {
 		<div class="profile-flame">

@@ -15,26 +15,15 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// logFilterParams — закрытый список параметров отбора логов, которые
-// хендлеры сохранённых фильтров читают из POST-формы. Тот же набор полей,
-// что разбирает parseLogFilter из query (без before/tskip — курсор
-// пагинации не переносится в сохранённый фильтр и не должен переживать
-// сохранение/применение). Список закрытый и используется ОБЕИМИ операциями
-// — сборкой предикатов для Store.Create/Update и адресом возврата после
-// успеха: произвольное поле формы (вроде "back") в адрес редиректа не
-// попадает никогда, что и закрывает открытый редирект (по нему у проекта
-// уже был алерт безопасности).
+// Список закрытый и общий для обеих операций (предикаты и адрес возврата) — произвольное
+// поле формы (вроде "back") в редирект никогда не попадает, что закрывает открытый редирект.
 var logFilterParams = []string{
 	"severity", "service", "environment", "q", "attr", "trace_id",
 	"q_not", "severity_not", "service_not", "environment_not", "attr_not",
 }
 
-// logFilterFormParams извлекает параметры отбора из уже разобранной
-// POST-формы (h.parseForm должен быть вызван раньше) по закрытому списку
-// logFilterParams. Тем же значением строятся и предикаты для сохранения
-// (см. logFilterPredicatesFromForm), и адрес возврата после успеха —
-// расхождение между «что сохранили» и «куда вернулись» невозможно по
-// построению: оба читают одну и ту же форму одним и тем же списком имён.
+// Тем же списком строятся и предикаты для сохранения, и адрес возврата — расхождение между
+// «что сохранили» и «куда вернулись» невозможно по построению.
 func logFilterFormParams(r *http.Request) url.Values {
 	q := url.Values{}
 	for _, name := range logFilterParams {
@@ -45,24 +34,14 @@ func logFilterFormParams(r *http.Request) url.Values {
 	return q
 }
 
-// logFilterPredicatesFromForm собирает предикаты из параметров отбора формы
-// (logFilterFormParams), переиспользуя разбор query-параметров списка логов
-// (parseLogFilter) и обратное свёртывание в предикаты (filterToPredicates,
-// задача 5/9) — та же пара функций, что применяет сохранённый фильтр
-// (applyPredicates) в обратную сторону. TimeRange{} и retentionDays=0 здесь
-// не участвуют в результате: filterToPredicates не читает From/To вовсе,
-// сохранённый фильтр не несёт временное окно (logfilter.Filter.Predicates).
+// TimeRange{} и retentionDays=0 не участвуют в результате: filterToPredicates не читает
+// From/To, сохранённый фильтр не несёт временное окно.
 func logFilterPredicatesFromForm(r *http.Request) []log.Predicate {
 	f, _ := parseLogFilter(logFilterFormParams(r), TimeRange{}, 0)
 	return filterToPredicates(f)
 }
 
-// logFiltersGate — общая часть входа во все четыре хендлера управления
-// сохранёнными фильтрами: чужой Origin, отсутствие сессии, {id} вне проекта,
-// стенд без проводки стора, отсутствие доступа к проекту (lvlAccess — та же
-// граница, что у самого списка логов) и разбор тела формы. Возвращает
-// ok=false, если сама проверка уже отправила ответ — вызывающему остаётся
-// просто вернуться.
+// ok=false — проверка уже отправила ответ, вызывающему остаётся просто вернуться.
 func (h *Handler) logFiltersGate(w http.ResponseWriter, r *http.Request) (projectID, uid int64, ok bool) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -96,8 +75,6 @@ func (h *Handler) logFiltersGate(w http.ResponseWriter, r *http.Request) (projec
 	return projectID, uid, true
 }
 
-// parseLogFilterID разбирает {filterID} из пути — общий кусок трёх
-// хендлеров, работающих с конкретным фильтром (update/delete/default).
 func (h *Handler) parseLogFilterID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue("filterID"), 10, 64)
 	if err != nil || id <= 0 {
@@ -107,34 +84,15 @@ func (h *Handler) parseLogFilterID(w http.ResponseWriter, r *http.Request) (int6
 	return id, true
 }
 
-// requireLogFilterOperator — вторичный гейт: карта авторизации фиксирует
-// минимальный уровень МАРШРУТА (lvlAccess), но право на действие зависит от
-// ВИДА фильтра, а не от URL. Создание, изменение и удаление общего фильтра
-// (в том числе превращение личного в общий и обратно) требует владельца или
-// админа организации — рядовому участнику (в т.ч. присоединённому к команде
-// проекта) отвечаем честным 403.
-//
-// Здесь НАМЕРЕННО не используется canOperateProject/requireProjectOperator
-// (team-based, тот же гейт, что у монитора/статус-страниц): его докблок сам
-// объясняет, что сегодня это условие СОВПАДАЕТ с CanAccessProject (любой,
-// кто прошёл team-attachment, уже «оператор») — секондарный гейт на его
-// основе был бы декоративным для маршрута, объявленного lvlAccess. Права на
-// общий ресурс проекта здесь берутся строже — requireProjectRole
-// (owner/admin организации, projsettings.go), тот же приём, что у admin-
-// only настроек проекта.
+// Не canOperateProject: та сегодня совпадает с CanAccessProject (уже пройдено гейтом маршрута) —
+// секондарный гейт на её основе был бы декоративным. Здесь требуется requireProjectRole (owner/admin).
 func (h *Handler) requireLogFilterOperator(w http.ResponseWriter, r *http.Request, projectID, uid int64) bool {
 	_, ok := h.requireProjectRole(w, r, projectID, uid)
 	return ok
 }
 
-// loadOwnedLogFilter читает фильтр по id и проверяет, что он вообще
-// принадлежит projectID и виден вызывающему: чужой ЛИЧНЫЙ фильтр отдаёт
-// ErrNotFound — существование чужого личного фильтра не подтверждаем (тот
-// же приём, что у чужой заявки на выгрузку, exports.go:309). Общий фильтр
-// виден всем с доступом к проекту — тут отказа по владению нет, дальнейший
-// гейт на оператора делает вызывающий хендлер отдельно (см.
-// requireLogFilterOperator), потому что личный, «поднимаемый» до общего,
-// тоже обязан пройти этот гейт, хотя ownership-проверка тут его бы пропустила.
+// Чужой личный фильтр — ErrNotFound, не 403: не подтверждаем его существование. Общий виден
+// всем с доступом к проекту — гейт на оператора делает вызывающий хендлер отдельно.
 func (h *Handler) loadOwnedLogFilter(ctx context.Context, projectID, uid, filterID int64) (logfilter.Filter, error) {
 	f, err := h.LogFilters.Get(ctx, filterID)
 	if err != nil {
@@ -149,7 +107,6 @@ func (h *Handler) loadOwnedLogFilter(ctx context.Context, projectID, uid, filter
 	return f, nil
 }
 
-// logFiltersCreate — POST /projects/{id}/logs/filters.
 func (h *Handler) logFiltersCreate(w http.ResponseWriter, r *http.Request) {
 	projectID, uid, ok := h.logFiltersGate(w, r)
 	if !ok {
@@ -176,7 +133,6 @@ func (h *Handler) logFiltersCreate(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, templates.LogsURLFromValues(projectID, logFilterFormParams(r)), http.StatusSeeOther)
 }
 
-// logFiltersUpdate — POST /projects/{id}/logs/filters/{filterID}/update.
 func (h *Handler) logFiltersUpdate(w http.ResponseWriter, r *http.Request) {
 	projectID, uid, ok := h.logFiltersGate(w, r)
 	if !ok {
@@ -197,19 +153,16 @@ func (h *Handler) logFiltersUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	shared := r.PostFormValue("shared") != ""
-	// Оператор нужен, если фильтр общий ДО правки, ИЛИ становится общим
-	// ПОСЛЕ неё (превращение личного в общий и обратно — тот же гейт, что
-	// у самого общего фильтра, брифом задачи это явно оговорено).
+	// Оператор нужен, если фильтр общий ДО правки, ИЛИ становится общим ПОСЛЕ — тот же гейт
+	// в обе стороны превращения личный/общий.
 	if (existing.Shared() || shared) && !h.requireLogFilterOperator(w, r, projectID, uid) {
 		return
 	}
 
 	var ownerUserID *int64
 	if !shared {
-		// Понижение общего до личного делает владельцем того, кто выполняет
-		// действие — не прежнего владельца (у общего фильтра его и нет).
-		// Личный фильтр, остающийся личным, и так принадлежит uid — иначе
-		// loadOwnedLogFilter выше уже отдал бы ErrNotFound.
+		// Понижение общего до личного делает владельцем того, кто выполняет действие, не прежнего
+		// (у общего фильтра владельца и нет).
 		ownerUserID = &uid
 	}
 	preds := logFilterPredicatesFromForm(r)
@@ -223,7 +176,6 @@ func (h *Handler) logFiltersUpdate(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, templates.LogsURLFromValues(projectID, logFilterFormParams(r)), http.StatusSeeOther)
 }
 
-// logFiltersDelete — POST /projects/{id}/logs/filters/{filterID}/delete.
 func (h *Handler) logFiltersDelete(w http.ResponseWriter, r *http.Request) {
 	projectID, uid, ok := h.logFiltersGate(w, r)
 	if !ok {
@@ -246,9 +198,7 @@ func (h *Handler) logFiltersDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Умолчания на фильтр у всех пользователей уходят каскадом
-	// (log_default_filters.filter_id ON DELETE CASCADE, docblock Store.Delete)
-	// — веб-слою ничего досоставлять не нужно.
+	// Умолчания на фильтр каскадом (ON DELETE CASCADE) — веб-слою ничего досоставлять не нужно.
 	if err := h.LogFilters.Delete(r.Context(), filterID); err != nil {
 		if errors.Is(err, logfilter.ErrNotFound) {
 			h.notFound(w, r)
@@ -261,13 +211,8 @@ func (h *Handler) logFiltersDelete(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, templates.LogsURLFromValues(projectID, logFilterFormParams(r)), http.StatusSeeOther)
 }
 
-// logFiltersSetDefault — POST /projects/{id}/logs/filters/{filterID}/default.
-//
-// Store.SetDefault — единственный метод стора со встроенным гардом
-// владения/видимости (его докблок, logfilter/store.go): чужой личный
-// фильтр отдаёт ErrNotFound сам, без похода через loadOwnedLogFilter.
-// Оператор для общего фильтра тут не нужен: назначение умолчания —
-// персональная настройка вызывающего, а не правка самого фильтра.
+// Store.SetDefault сам гардит владение/видимость — чужой личный фильтр отдаёт ErrNotFound без
+// loadOwnedLogFilter. Оператор для общего фильтра не нужен: это личная настройка вызывающего.
 func (h *Handler) logFiltersSetDefault(w http.ResponseWriter, r *http.Request) {
 	projectID, uid, ok := h.logFiltersGate(w, r)
 	if !ok {
@@ -289,17 +234,8 @@ func (h *Handler) logFiltersSetDefault(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, templates.LogsURLFromValues(projectID, logFilterFormParams(r)), http.StatusSeeOther)
 }
 
-// logFiltersHandleSaveError — общий разбор отказа Store.Create/Update:
-// ValidationError и сентинелы ErrNameTaken/ErrLimitReached перерисовывают
-// страницу логов со статусом 422 и понятным сообщением (тот же приём, что
-// renderExportsPage у выгрузок, exports.go:290) — редиректа тут нет, чтобы
-// не терять введённые условия. ErrNotFound — фильтр успели удалить в
-// параллельном запросе между loadOwnedLogFilter и Update; остальное — 500.
-//
-// renderLogsPage получает условия ИМЕННО из формы (logFilterFormParams(r)),
-// а не из r.URL.Query() (у POST-запроса он пуст, action ведёт на
-// /projects/{id}/logs/filters) — иначе введённые условия исчезали бы со
-// страницы отказа, а пустой query включал бы фильтр по умолчанию поверх.
+// params — из формы (logFilterFormParams), не r.URL.Query() (пуст у POST): иначе введённые
+// условия исчезли бы со страницы отказа, а пустой query включил бы фильтр по умолчанию.
 func (h *Handler) logFiltersHandleSaveError(w http.ResponseWriter, r *http.Request, projectID, uid int64, err error) {
 	params := logFilterFormParams(r)
 	var ve *logfilter.ValidationError
@@ -322,11 +258,7 @@ func (h *Handler) logFiltersHandleSaveError(w http.ResponseWriter, r *http.Reque
 	h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 }
 
-// logFiltersPanel строит вью-модель панели «Мои»/«Общие» для рендера
-// страницы логов (renderLogsPage). h.LogFilters == nil (стенд без проводки
-// сохранённых фильтров) — пустая панель без похода в БД, тот же принцип
-// nil-safety, что у остальных необязательных полей Handler (LogQuery/
-// Trace/Profiles).
+// nil-safe: без проводки сохранённых фильтров — пустая панель без похода в БД.
 func (h *Handler) logFiltersPanel(ctx context.Context, projectID, uid int64) templates.LogSavedFiltersPanel {
 	if h.LogFilters == nil {
 		return templates.LogSavedFiltersPanel{}

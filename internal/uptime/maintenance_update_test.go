@@ -10,10 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestUpdateWindowShiftsSchedule — самая частая правка окна: сдвинуть его на
-// час. Проверяем не только запись полей, но и то, что детектор после правки
-// считает даунтаймом ровно новый интервал: окна существуют затем, чтобы
-// InMaintenance отвечал по ним, а не ради строки в таблице.
 func TestUpdateWindowShiftsSchedule(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -39,7 +35,6 @@ func TestUpdateWindowShiftsSchedule(t *testing.T) {
 		t.Fatalf("UpdateWindow: %v", err)
 	}
 
-	// Начало прежнего окна больше не обслуживание, начало нового — да.
 	if active, err := svc.InMaintenance(ctx, pid, start.Add(30*time.Minute)); err != nil || active {
 		t.Fatalf("InMaintenance at old start = %v err=%v, want false", active, err)
 	}
@@ -53,9 +48,6 @@ func TestUpdateWindowShiftsSchedule(t *testing.T) {
 	}
 }
 
-// TestUpdateWindowSwitchesKind — переключение разового окна в еженедельное.
-// Колонки другого вида расписания обнуляются: окно со свежим weekday и старым
-// starts_at не прошло бы ни validateWindow, ни windowActive.
 func TestUpdateWindowSwitchesKind(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -63,7 +55,7 @@ func TestUpdateWindowSwitchesKind(t *testing.T) {
 	defer cancel()
 	pid := newProject(t, pool)
 
-	start := time.Date(2026, 7, 13, 10, 0, 0, 0, time.UTC) // понедельник
+	start := time.Date(2026, 7, 13, 10, 0, 0, 0, time.UTC)
 	end := start.Add(2 * time.Hour)
 	w, err := svc.CreateWindow(ctx, uptime.Window{
 		ProjectID: pid, Name: "Deploy", StartsAt: &start, EndsAt: &end, Timezone: "UTC",
@@ -91,7 +83,6 @@ func TestUpdateWindowSwitchesKind(t *testing.T) {
 		t.Fatalf("one-off columns not cleared: starts=%v ends=%v", got.StartsAt, got.EndsAt)
 	}
 
-	// Прежний разовый интервал больше не обслуживание, новый еженедельный — да.
 	if active, err := svc.InMaintenance(ctx, pid, start.Add(time.Hour)); err != nil || active {
 		t.Fatalf("InMaintenance in old one-off = %v err=%v, want false", active, err)
 	}
@@ -101,9 +92,6 @@ func TestUpdateWindowSwitchesKind(t *testing.T) {
 	}
 }
 
-// TestUpdateWindowScopedToProject — id окна приходит из формы, поэтому
-// project_id стоит в условии UPDATE: иначе владелец одного проекта переписал бы
-// окно соседнего, подобрав id.
 func TestUpdateWindowScopedToProject(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -137,8 +125,6 @@ func TestUpdateWindowScopedToProject(t *testing.T) {
 	}
 }
 
-// TestUpdateWindowValidates — правка проходит ту же валидацию, что и создание,
-// иначе окно можно было бы испортить в обход проверок.
 func TestUpdateWindowValidates(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -155,7 +141,6 @@ func TestUpdateWindowValidates(t *testing.T) {
 		t.Fatalf("CreateWindow: %v", err)
 	}
 
-	// Конец раньше начала — то же, что отклоняет CreateWindow.
 	badEnd := start.Add(-time.Hour)
 	err = svc.UpdateWindow(ctx, uptime.Window{
 		ID: w.ID, ProjectID: pid, Name: "Deploy", StartsAt: &start, EndsAt: &badEnd, Timezone: "UTC",

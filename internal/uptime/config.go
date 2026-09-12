@@ -9,7 +9,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/secretbox"
 )
 
-// Kind — тип монитора; совпадает с CHECK-ограничением monitors.kind.
+// должно совпадать с CHECK-ограничением monitors.kind.
 type Kind string
 
 const (
@@ -19,13 +19,11 @@ const (
 	KindHeartbeat Kind = "heartbeat"
 )
 
-// Kinds — все типы монитора. Набор нужен не коду, а сторожу динамических
-// ключей: он проверяет, что для каждого значения есть подпись в каталоге, и
-// потому обязан читать значения из кода, а не из литерального списка в тесте.
+// нужен не коду, а сторожу динамических ключей i18n — читает значения из
+// кода, а не литеральный список в тесте.
 var Kinds = []string{string(KindHTTP), string(KindTCP), string(KindDNS), string(KindHeartbeat)}
 
-// Consensus — правило согласования результатов проверки по регионам;
-// совпадает с CHECK-ограничением monitors.consensus.
+// должно совпадать с CHECK-ограничением monitors.consensus.
 type Consensus string
 
 const (
@@ -34,7 +32,6 @@ const (
 	ConsensusAll      Consensus = "all"
 )
 
-// HTTPConfig — конфиг монитора kind=http, сериализуется в monitors.config.
 type HTTPConfig struct {
 	Method          string            `json:"method"` // GET|POST|HEAD
 	URL             string            `json:"url"`
@@ -46,44 +43,30 @@ type HTTPConfig struct {
 	FollowRedirects bool              `json:"follow_redirects"`
 }
 
-// TCPConfig — конфиг монитора kind=tcp.
 type TCPConfig struct {
 	Host string `json:"host"`
 	Port int    `json:"port"`
 }
 
-// DNSConfig — конфиг монитора kind=dns.
 type DNSConfig struct {
 	Hostname      string `json:"hostname"`
 	RecordType    string `json:"record_type"` // A|AAAA|CNAME|MX|TXT
 	ExpectedValue string `json:"expected_value,omitempty"`
 }
 
-// HeartbeatConfig — конфиг монитора kind=heartbeat.
 type HeartbeatConfig struct {
 	GraceSeconds int `json:"grace_seconds"` // >= 60
 }
 
-// sealHTTPHeaders шифрует ЗНАЧЕНИЯ заголовков http-конфига secretbox'ом с
-// префиксом enc: — имена остаются видимыми (секрет именно в значении: bearer-
-// токен в Authorization, ключ в X-Api-Key). Тот же приём, что alert.Service для
-// секретов каналов. Пустые заголовки и невалидный (не наш) config возвращаются
-// без изменений; валидность самого config проверяет validateConfig отдельно.
+// шифрует ЗНАЧЕНИЯ заголовков (не имена) secretbox'ом с префиксом enc: — тот
+// же приём, что alert.Service для секретов каналов.
 func sealHTTPHeaders(ring secretbox.Keyring, raw json.RawMessage) (json.RawMessage, error) {
 	return transformHTTPHeaders(raw, func(v string) (string, error) {
-		// Уже зашифрованное значение не шифруем заново голым Seal — вместо
-		// этого зовём Rewrap: конфиг, пришедший в запись нерасшифрованным
-		// (bulk-edit, импорт, фид из List/GetBatch), поднимается до текущего
-		// ключа кольца, а не остаётся навсегда на предыдущем. Идемпотентность
-		// сохраняется — значение уже на текущем ключе Rewrap не трогает.
-		// Нерасшифруемое значение Rewrap оставляет как есть: потерять его
-		// хуже, чем сохранить нечитаемым.
+		// уже зашифрованное значение поднимаем Rewrap'ом до текущего ключа, не
+		// шифруем заново Seal'ом — идемпотентно и не остаётся навсегда на старом ключе.
 		if secretbox.IsEncrypted(v) {
-			// Rewrap возвращает нетронутое значение и ErrOpen, если ключа для
-			// расшифровки в кольце нет (запись пришла с чужим/потерянным
-			// ключом). Ошибку сюда не пробрасываем: одно нечитаемое значение
-			// не должно рушить сохранение всего конфига монитора — оно
-			// просто остаётся на прежнем ключе, как и раньше при passthrough.
+			// ErrOpen (чужой/потерянный ключ) не пробрасываем — одно
+			// нечитаемое значение не должно рушить сохранение всего конфига.
 			out, _, _ := ring.Rewrap(v)
 			return out, nil
 		}
@@ -91,20 +74,8 @@ func sealHTTPHeaders(ring secretbox.Keyring, raw json.RawMessage) (json.RawMessa
 	})
 }
 
-// rewrapHTTPHeaders поднимает ЧИТАЕМЫЕ значения заголовков http-конфига до
-// конверта v2 текущего ключа кольца (Keyring.Rewrap) — рабочая лошадка
-// RewrapSecrets (service.go). Деградация ПО ЗНАЧЕНИЮ, а не по строке: у
-// монитора может быть один читаемый и один нечитаемый (запечатан потерянным
-// ключом) заголовок разом. Нечитаемое значение остаётся как есть, его ошибка
-// попадает в failures, но не прерывает обработку остальных заголовков этой
-// же строки — иначе один потерянный ключ навсегда законсервировал бы
-// соседний plaintext.
-//
-// changed=true, только если поднялось хотя бы одно значение — только тогда
-// строку имеет смысл перезаписывать (и только тогда RewrapSecrets вообще
-// шлёт UPDATE). При changed=false возвращается тот же raw БЕЗ ремаршалинга:
-// не только последствий для заголовков нет, но и повода разойтись байт-в-
-// байт со значением, которое RewrapSecrets использует в CAS-предикате.
+// деградация по значению, не по строке — нечитаемый заголовок (запечатан
+// потерянным ключом) не прерывает обработку соседних в той же строке.
 func rewrapHTTPHeaders(ring secretbox.Keyring, raw json.RawMessage) (out json.RawMessage, changed bool, failures []error) {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return raw, false, nil
@@ -127,37 +98,31 @@ func rewrapHTTPHeaders(ring secretbox.Keyring, raw json.RawMessage) (out json.Ra
 		}
 		next[name] = rewrapped
 	}
+	// changed=false возвращает raw БЕЗ ремаршалинга — RewrapSecrets сверяет
+	// его байт-в-байт в CAS-предикате.
 	if !changed {
 		return raw, false, failures
 	}
 	cfg.Headers = next
 	remarshaled, err := json.Marshal(cfg)
 	if err != nil {
-		// cfg только что разобран из валидного JSON — маршалинг обратно не
-		// должен падать; если всё же случилось, не теряем raw, просто не
-		// поднимаем строку в этом проходе (следующий рестарт попробует снова).
+		// не должно падать (cfg только что разобран из валидного JSON); если
+		// всё же случилось — не теряем raw, следующий рестарт попробует снова.
 		return raw, false, failures
 	}
 	return remarshaled, true, failures
 }
 
-// openHTTPHeaders — обратная операция: расшифровывает значения заголовков.
-// Legacy plaintext без префикса enc: Keyring.Open вернёт как есть
-// (совместимость со старыми записями, сделанными до включения шифрования).
+// legacy plaintext без enc: Keyring.Open возвращает как есть — совместимость
+// со старыми записями.
 func openHTTPHeaders(ring secretbox.Keyring, raw json.RawMessage) (json.RawMessage, error) {
 	return transformHTTPHeaders(raw, func(v string) (string, error) {
 		return ring.Open(v)
 	})
 }
 
-// scrubEncryptedHeaders обнуляет ЗНАЧЕНИЯ заголовков, которые являются
-// настоящим enc:-ciphertext (secretbox.IsEncrypted) — вызывается, когда
-// мастер-ключа нет (dev-дефолт или откат GOTCHA_SECRET_KEY) и расшифровать их
-// нечем. Без этого openHTTPHeaders никогда бы не вызывался (no-op-ветка при
-// !secretKeySet) и сырой ciphertext уходил бы дальше как значение заголовка —
-// в исходящий HTTP-запрос чекера. Legacy plaintext (в т.ч. случайно
-// начавшийся с "enc:") не трогает. scrubbed=true, если хотя бы одно значение
-// обнулено — вызывающий логирует.
+// без этого при отсутствующем мастер-ключе сырой ciphertext уходил бы в
+// исходящий HTTP-запрос чекера как значение заголовка; legacy plaintext не трогает.
 func scrubEncryptedHeaders(raw json.RawMessage) (out json.RawMessage, scrubbed bool, err error) {
 	out, err = transformHTTPHeaders(raw, func(v string) (string, error) {
 		if secretbox.IsEncrypted(v) {
@@ -169,11 +134,8 @@ func scrubEncryptedHeaders(raw json.RawMessage) (out json.RawMessage, scrubbed b
 	return out, scrubbed, err
 }
 
-// transformHTTPHeaders применяет fn к каждому значению заголовков http-конфига и
-// пересобирает config. Config — непрозрачный json.RawMessage, поэтому имена
-// заголовков и прочие поля сохраняются, меняются только значения. Раскодируется
-// нестрого (в отличие от validateConfig): здесь мы обрабатываем УЖЕ прошедший
-// валидацию config, а не проверяем его.
+// config непрозрачен (json.RawMessage) — сохраняются все поля, меняются
+// только значения заголовков; декодируется нестрого, т.к. config уже прошёл validateConfig.
 func transformHTTPHeaders(raw json.RawMessage, fn func(string) (string, error)) (json.RawMessage, error) {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return raw, nil
@@ -201,9 +163,7 @@ func transformHTTPHeaders(raw json.RawMessage, fn func(string) (string, error)) 
 	return remarshaled, nil
 }
 
-// strictUnmarshal декодирует raw в v, отклоняя незнакомые поля. Это ловит
-// конфиг чужого типа (например, HTTPConfig для kind=tcp): поля одного
-// типа конфига почти никогда не являются подмножеством другого.
+// ловит конфиг чужого kind — поля одного типа почти никогда не подмножество другого.
 func strictUnmarshal(raw json.RawMessage, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -213,8 +173,6 @@ func strictUnmarshal(raw json.RawMessage, v any) error {
 	return nil
 }
 
-// validateConfig проверяет, что raw — валидный конфиг для kind, и что он
-// не содержит полей чужого типа конфига.
 func validateConfig(kind Kind, raw json.RawMessage) error {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return invalid("", "config_required")
@@ -267,10 +225,8 @@ func validateHTTPConfig(c HTTPConfig) error {
 			return invalid("expected_status", "http_status_range")
 		}
 	}
-	// HEAD-ответ по определению без тела: проверка BodyContains/
-	// BodyNotContains у него всегда либо false (Contains — монитор вечно
-	// «упал»), либо всегда true (NotContains — проверка бессмысленна).
-	// Отклоняем на входе, а не даём монитору молча никогда не проходить.
+	// HEAD без тела: BodyContains был бы всегда false (монитор вечно «упал»),
+	// BodyNotContains всегда true (бессмысленно) — отклоняем на входе.
 	if c.Method == "HEAD" && (c.BodyContains != "" || c.BodyNotContains != "") {
 		return invalid("body_contains", "http_head_body")
 	}

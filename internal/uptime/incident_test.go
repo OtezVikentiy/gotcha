@@ -135,8 +135,6 @@ func TestResolveIncidentIdempotent(t *testing.T) {
 		t.Fatalf("ResolveIncident 2: ok = true, want false (nothing open)")
 	}
 
-	// Opening again after resolve must create a brand new incident (the
-	// partial unique index only blocks a second concurrently-open one).
 	inc3, created3, err := svc.OpenIncident(ctx, mon.ID, "new cause", nil, false)
 	if err != nil {
 		t.Fatalf("OpenIncident after resolve: %v", err)
@@ -216,12 +214,6 @@ func TestOpenIncidentForAndListings(t *testing.T) {
 	}
 }
 
-// TestIncidentsForMonitorsBatchRespectsPerMonitorLimitAndIsolation:
-// IncidentsForMonitorsBatch обязан отдавать limit инцидентов НА КАЖДЫЙ
-// монитор набора, а не limit суммарно на весь набор (см. докблок метода про
-// row_number() PARTITION BY monitor_id вместо общего LIMIT), и не путать
-// инциденты разных мониторов — тот же риск мис-ключевания, ради которого в
-// query_test.go завёден BatchParity с разными данными на двух мониторах.
 func TestIncidentsForMonitorsBatchRespectsPerMonitorLimitAndIsolation(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -233,8 +225,6 @@ func TestIncidentsForMonitorsBatchRespectsPerMonitorLimitAndIsolation(t *testing
 	monFew := createMonitor(t, svc, pid, 3, 2)
 	monNone := createMonitor(t, svc, pid, 3, 2)
 
-	// monMany получает три инцидента подряд (открыт-закрыт трижды) —
-	// больше, чем limit=2 в самом запросе ниже.
 	var manyIDs []int64
 	for i := 0; i < 3; i++ {
 		inc, _, err := svc.OpenIncident(ctx, monMany.ID, "boom", nil, false)
@@ -245,10 +235,8 @@ func TestIncidentsForMonitorsBatchRespectsPerMonitorLimitAndIsolation(t *testing
 		if _, _, err := svc.ResolveIncident(ctx, monMany.ID, time.Now()); err != nil {
 			t.Fatalf("ResolveIncident monMany #%d: %v", i, err)
 		}
-		time.Sleep(5 * time.Millisecond) // разводим started_at по времени
+		time.Sleep(5 * time.Millisecond)
 	}
-	// monFew получает ровно один — меньше limit, не должен дотягиваться до
-	// чужих (monMany) инцидентов.
 	incFew, _, err := svc.OpenIncident(ctx, monFew.ID, "boom", nil, false)
 	if err != nil {
 		t.Fatalf("OpenIncident monFew: %v", err)
@@ -263,8 +251,6 @@ func TestIncidentsForMonitorsBatchRespectsPerMonitorLimitAndIsolation(t *testing
 		t.Fatalf("len(got) = %d, want 3 (карта заполнена для всех запрошенных id)", len(got))
 	}
 
-	// monMany: limit=2 из трёх, freshest first — два последних по времени
-	// открытия (последний свежее, чем первый).
 	if len(got[monMany.ID]) != limit {
 		t.Fatalf("got[monMany] = %d incidents, want %d (свой лимит, не общий на набор)", len(got[monMany.ID]), limit)
 	}
@@ -277,19 +263,14 @@ func TestIncidentsForMonitorsBatchRespectsPerMonitorLimitAndIsolation(t *testing
 		}
 	}
 
-	// monFew: один инцидент, свой лимит его не срезал и соседний monMany не
-	// вытеснил его из выдачи (что случилось бы с общим LIMIT после ORDER BY
-	// без PARTITION BY).
 	if len(got[monFew.ID]) != 1 || got[monFew.ID][0].ID != incFew.ID {
 		t.Fatalf("got[monFew] = %+v, want [%d]", got[monFew.ID], incFew.ID)
 	}
 
-	// monNone: запрошен, инцидентов нет — присутствует в карте с nil-слайсом.
 	if got[monNone.ID] != nil {
 		t.Fatalf("got[monNone] = %v, want nil", got[monNone.ID])
 	}
 
-	// Паритет с IncidentsForMonitor по каждому монитору отдельно.
 	single, err := svc.IncidentsForMonitor(ctx, monMany.ID, limit)
 	if err != nil {
 		t.Fatalf("IncidentsForMonitor(monMany): %v", err)
@@ -304,15 +285,6 @@ func TestIncidentsForMonitorsBatchRespectsPerMonitorLimitAndIsolation(t *testing
 	}
 }
 
-// TestClearSuppressedByDepIsIdempotent (M3, финревью волны 1 аудита перед
-// 1.0): докблок ClearSuppressedByDep называет повторный вызов идемпотентным
-// — второй Clear на уже снятом подавлении обязан вернуть nil, а не
-// ErrNotFound (раньше отдавал его при RowsAffected()==0), симметрично
-// host.IncidentService.ClearSuppressed, который RowsAffected не смотрит
-// вовсе. На гонке двух реплик Detector.settleHeldIncident проигравшая
-// раньше получала ErrNotFound → Warn → return и пропускала settle этого
-// тика; мутация — вернуть проверку RowsAffected()==0/ErrNotFound — обязана
-// уронить второй вызов ниже.
 func TestClearSuppressedByDepIsIdempotent(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -331,18 +303,11 @@ func TestClearSuppressedByDepIsIdempotent(t *testing.T) {
 	if err := svc.ClearSuppressedByDep(ctx, inc.ID); err != nil {
 		t.Fatalf("первый ClearSuppressedByDep: %v", err)
 	}
-	// Повторный вызов на уже снятом подавлении — идемпотентный no-op.
 	if err := svc.ClearSuppressedByDep(ctx, inc.ID); err != nil {
 		t.Fatalf("повторный ClearSuppressedByDep = %v, want nil (идемпотентно)", err)
 	}
 }
 
-// TestResolveIncidentConcurrentOnlyOneWins (K2-5) — зеркало
-// TestOpenIncidentConcurrentOnlyOneWins: из n конкурентных ResolveIncident
-// по одному открытому инциденту ровно один получает ok=true (UPDATE ... WHERE
-// resolved_at IS NULL — атомарный check-and-set, остальные видят уже
-// закрытую строку), ошибок нет, и resolved_at выставлен единожды — временем
-// победителя.
 func TestResolveIncidentConcurrentOnlyOneWins(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -365,7 +330,6 @@ func TestResolveIncidentConcurrentOnlyOneWins(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			// У каждого вызова своё время — чтобы отличить, чьё осталось в базе.
 			at := base.Add(time.Duration(i+1) * time.Second)
 			inc, ok, err := svc.ResolveIncident(ctx, mon.ID, at)
 			if err != nil {

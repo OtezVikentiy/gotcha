@@ -16,9 +16,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// probeTokenRe вытаскивает сырой токен пробы из одноразового блока «скопируйте
-// сейчас» (уникальный класс probe-token) — тот же приём, что и
-// extractInviteLink в orgsettings_test.go.
 var probeTokenRe = regexp.MustCompile(`<code class="probe-token">([0-9a-f]{64})</code>`)
 
 func extractProbeToken(t *testing.T, body string) string {
@@ -30,10 +27,6 @@ func extractProbeToken(t *testing.T, body string) string {
 	return m[1]
 }
 
-// TestWebProbes — сквозной сценарий задачи 3 (план 5): admin создаёт пробу,
-// сырой токен показан ровно один раз (в теле POST-ответа) и больше нигде,
-// проба без last_seen_at показана как offline, revoke отзывает пробу и её
-// токен перестаёт аутентифицировать (ProbeByToken → ErrNotFound).
 func TestWebProbes(t *testing.T) {
 	s := newUptimeStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -54,7 +47,6 @@ func TestWebProbes(t *testing.T) {
 	probesPath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/probes"
 	revokePath := probesPath + "/revoke"
 
-	// GET пустой страницы admin'ом → 200.
 	resp := getWithCookie(t, s.srv, probesPath, adminCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -62,7 +54,6 @@ func TestWebProbes(t *testing.T) {
 		t.Fatalf("GET %s (admin) status = %d, want 200: %s", probesPath, resp.StatusCode, body)
 	}
 
-	// POST без Origin → 403.
 	resp = postForm(t, s.srv, probesPath, url.Values{"name": {"p1"}, "region": {"ru-msk"}}, "", adminCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -70,7 +61,6 @@ func TestWebProbes(t *testing.T) {
 		t.Fatalf("POST %s (no origin) status = %d, want 403", probesPath, resp.StatusCode)
 	}
 
-	// POST с пустым регионом → 422, проба не создана.
 	resp = postForm(t, s.srv, probesPath, url.Values{"name": {"p1"}, "region": {"  "}}, s.srv.URL, adminCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -78,7 +68,6 @@ func TestWebProbes(t *testing.T) {
 		t.Fatalf("POST %s (empty region) status = %d, want 422: %s", probesPath, resp.StatusCode, body)
 	}
 
-	// POST со слишком длинным именем (>40 символов) → 422.
 	resp = postForm(t, s.srv, probesPath, url.Values{"name": {strings.Repeat("x", 41)}, "region": {"ru-msk"}}, s.srv.URL, adminCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -86,9 +75,7 @@ func TestWebProbes(t *testing.T) {
 		t.Fatalf("POST %s (long name) status = %d, want 422: %s", probesPath, resp.StatusCode, body)
 	}
 
-	// POST с зарезервированным регионом «local» (uptime.DefaultRegion — регион
-	// встроенной пробы центра) → 422 с внятным сообщением, проба не создана:
-	// иначе выносная проба лизила бы задания встроенной.
+	// Иначе выносная проба лизила бы задания встроенной.
 	resp = postForm(t, s.srv, probesPath, url.Values{"name": {"p1"}, "region": {uptime.DefaultRegion}}, s.srv.URL, adminCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -103,7 +90,6 @@ func TestWebProbes(t *testing.T) {
 		t.Fatalf("probes after rejected POSTs = %d, err=%v, want 0", len(probes), err)
 	}
 
-	// POST валидный → 200 с сырым токеном и готовой строкой запуска.
 	resp = postForm(t, s.srv, probesPath, url.Values{"name": {"Moscow probe"}, "region": {"ru-msk"}}, s.srv.URL, adminCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -117,14 +103,11 @@ func TestWebProbes(t *testing.T) {
 	if !strings.Contains(string(body), "GOTCHA_PROBE_SERVER_URL="+s.srv.URL) {
 		t.Fatalf("POST %s missing docker run line with server url: %s", probesPath, body)
 	}
-	// Проба без last_seen_at — offline. Статус локализован (B5), поэтому
-	// проверяем семантический класс бейджа offline (badge-danger), а не сырой
-	// код "offline": в единственной строке пробы это однозначно offline.
+	// Статус локализован — проверяем класс бейджа (badge-danger), а не сырой текст "offline".
 	if !strings.Contains(string(body), "badge-danger") {
 		t.Fatalf("POST %s: fresh probe must render as offline (badge-danger): %s", probesPath, body)
 	}
 
-	// Токен есть в БД (в виде хеша): ProbeByToken его находит.
 	p, err := s.uptime.ProbeByToken(ctx, token)
 	if err != nil {
 		t.Fatalf("ProbeByToken after create: %v", err)
@@ -133,7 +116,6 @@ func TestWebProbes(t *testing.T) {
 		t.Fatalf("created probe = %+v, want org=%d region=ru-msk name=Moscow probe", p, o.ID)
 	}
 
-	// Повторный GET страницы токен НЕ содержит (показывается ровно один раз).
 	resp = getWithCookie(t, s.srv, probesPath, adminCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -147,8 +129,7 @@ func TestWebProbes(t *testing.T) {
 		t.Fatalf("GET %s missing probe row: %s", probesPath, body)
 	}
 
-	// Revoke: проба помечена отозванной и перестаёт аутентифицироваться
-	// (ProbeByToken фильтрует revoked_at IS NULL — лизить она больше не может).
+	// ProbeByToken фильтрует revoked_at IS NULL — отозванная лизить больше не может.
 	resp = postForm(t, s.srv, revokePath, url.Values{"confirmed": {"yes"}, "probe_id": {strconv.FormatInt(p.ID, 10)}}, s.srv.URL, adminCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -166,9 +147,6 @@ func TestWebProbes(t *testing.T) {
 		t.Fatalf("probes after revoke = %+v, err=%v, want one revoked", probes, err)
 	}
 
-	// Отозванная проба показана как revoked, кнопки Revoke у неё больше нет.
-	// Статус локализован (B5): revoked → бейдж badge-neutral (единственный
-	// бейдж в строке), и форма отзыва у отозванной пробы отсутствует.
 	resp = getWithCookie(t, s.srv, probesPath, adminCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -179,7 +157,6 @@ func TestWebProbes(t *testing.T) {
 		t.Fatalf("GET %s: revoked probe must not show a revoke form: %s", probesPath, body)
 	}
 
-	// Повторный revoke той же пробы → 422 (ErrNotFound из RevokeProbe).
 	resp = postForm(t, s.srv, revokePath, url.Values{"confirmed": {"yes"}, "probe_id": {strconv.FormatInt(p.ID, 10)}}, s.srv.URL, adminCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -188,9 +165,6 @@ func TestWebProbes(t *testing.T) {
 	}
 }
 
-// TestWebProbesAccess — member организации не видит страницу проб и не может
-// ничего на ней сделать (404, не 403 — не палим существование организации), а
-// пробу чужой организации нельзя отозвать по id (404).
 func TestWebProbesAccess(t *testing.T) {
 	s := newUptimeStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -208,7 +182,6 @@ func TestWebProbesAccess(t *testing.T) {
 		t.Fatalf("add member: %v", err)
 	}
 
-	// Чужая организация со своей пробой.
 	otherID, _ := orgSettingsRegister(t, authSvc, "probes-access-other@example.com")
 	other, err := orgSvc.CreateOrg(ctx, "probes-other-co", "Probes Other Co", otherID)
 	if err != nil {
@@ -222,7 +195,6 @@ func TestWebProbesAccess(t *testing.T) {
 	probesPath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/probes"
 	revokePath := probesPath + "/revoke"
 
-	// member: GET → 403 (№72: член с малой ролью).
 	resp := getWithCookie(t, s.srv, probesPath, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -230,7 +202,6 @@ func TestWebProbesAccess(t *testing.T) {
 		t.Fatalf("GET %s (member) status = %d, want 403", probesPath, resp.StatusCode)
 	}
 
-	// member: POST создания → 403 (№72).
 	resp = postForm(t, s.srv, probesPath, url.Values{"name": {"p"}, "region": {"ru-msk"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -238,7 +209,6 @@ func TestWebProbesAccess(t *testing.T) {
 		t.Fatalf("POST %s (member) status = %d, want 403", probesPath, resp.StatusCode)
 	}
 
-	// member: POST revoke → 403 (№72).
 	resp = postForm(t, s.srv, revokePath, url.Values{"confirmed": {"yes"}, "probe_id": {strconv.FormatInt(foreign.ID, 10)}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -246,8 +216,6 @@ func TestWebProbesAccess(t *testing.T) {
 		t.Fatalf("POST %s (member) status = %d, want 403", revokePath, resp.StatusCode)
 	}
 
-	// owner своей организации пытается отозвать пробу ЧУЖОЙ организации → 404,
-	// проба не отозвана.
 	resp = postForm(t, s.srv, revokePath, url.Values{"confirmed": {"yes"}, "probe_id": {strconv.FormatInt(foreign.ID, 10)}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -260,16 +228,8 @@ func TestWebProbesAccess(t *testing.T) {
 	}
 }
 
-// TestWebProbesReservedRegionFollowsLocalRegion — зарезервирован тот регион,
-// который встроенная проба РЕАЛЬНО лизит (GOTCHA_UPTIME_LOCAL_REGION), а не литерал
-// "local". При GOTCHA_UPTIME_LOCAL_REGION=eu-central:
-//   - выносную пробу в регионе eu-central завести нельзя (иначе её задания
-//     забирал бы org-agnostic LeaseLocal центра, и монитор проверялся бы из
-//     центра, молча выдавая себя за eu-central);
-//   - форма монитора предлагает регион eu-central, а НЕ "local" — монитор в
-//     регионе, который никто не лизит, не проверялся бы никогда;
-//   - сам "local" при этом становится обычным именем региона, и пробу в нём
-//     завести можно.
+// Зарезервирован тот регион, который встроенная проба РЕАЛЬНО лизит
+// (GOTCHA_UPTIME_LOCAL_REGION), а не литерал "local".
 func TestWebProbesReservedRegionFollowsLocalRegion(t *testing.T) {
 	const localRegion = "eu-central"
 
@@ -285,7 +245,6 @@ func TestWebProbesReservedRegionFollowsLocalRegion(t *testing.T) {
 	}
 	probesPath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/probes"
 
-	// Форма монитора предлагает встроенный регион под его настоящим именем.
 	regions, err := s.uptime.Regions(ctx, o.ID)
 	if err != nil {
 		t.Fatalf("Regions: %v", err)
@@ -294,7 +253,6 @@ func TestWebProbesReservedRegionFollowsLocalRegion(t *testing.T) {
 		t.Fatalf("Regions() = %v, want [%s] — the built-in region must be the one the runner leases", regions, localRegion)
 	}
 
-	// Проба в регионе встроенной пробы → 422, проба не создана.
 	resp := postForm(t, s.srv, probesPath, url.Values{"name": {"p1"}, "region": {localRegion}}, s.srv.URL, adminCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()

@@ -13,55 +13,26 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// heartbeatMaxBodyBytes — тело heartbeat-пинга нам не нужно (успех = сам
-// факт запроса), но лимит всё равно нужен: без него клиент мог бы залить
-// сколько угодно байт в POST-тело незалогиненного публичного эндпойнта.
+// Тело не используется (успех = сам факт запроса), но лимит нужен: без него анонимный
+// клиент мог бы залить произвольный объём в POST этого публичного эндпойнта.
 const heartbeatMaxBodyBytes = 1 << 10 // 1 KB
 
-// HeartbeatIgnoreReason — почему heartbeat-пинг отклонён БЕЗ учёта монитора
-// как живого. URL пинга — простая ссылка вида /uptime/hb/{token}, а такие
-// ссылки регулярно дёргают не люди: unfurl-бот мессенджера разворачивает
-// превью пересланной ссылки, антивирусный прокси сканирует URL из письма,
-// браузер префетчит ссылку под курсором — и каждый такой запрос выглядит для
-// наивного приёмника как «сервис жив», гася настоящую тревогу watchdog'а.
-//
-// Значения — закрытый контракт self-метрики
-// gotcha_uptime_heartbeat_ignored_total{reason}: после 1.0 менять набор
-// дорого (сторож internal/guards требует, чтобы каждое имя метрики было
-// задокументировано в self-monitoring.md обеих локалей). Ровно две причины,
-// сознательно не детальнее:
-//   - HeartbeatIgnorePrefetchHeader — жёсткий протокольный сигнал: сам
-//     запрос НЕСЁТ заголовок, которым клиент явно помечает себя как
-//     предварительную/неинтерактивную выборку (Sec-Purpose, Purpose,
-//     X-Purpose, X-Moz). Спецификация это гарантирует — ложных срабатываний
-//     на обычном curl/wget/cron here не бывает.
-//   - HeartbeatIgnoreBotUserAgent — эвристика: User-Agent совпадает с
-//     известным ботом построения превью ссылок в мессенджере/соцсети, у
-//     которого протокольного заголовка нет. Список это открытый, может расти
-//     со временем — но REASON остаётся один, чтобы не плодить кардинальность
-//     метрики под каждый добавленный бот.
+// Ровно два значения — закрытый контракт self-метрики (после 1.0 менять дорого): не
+// плодить кардинальность под каждый способ распознавания префетч-бота.
 type HeartbeatIgnoreReason string
 
 const (
-	// HeartbeatIgnorePrefetchHeader — см. HeartbeatIgnoreReason.
 	HeartbeatIgnorePrefetchHeader HeartbeatIgnoreReason = "prefetch_header"
-	// HeartbeatIgnoreBotUserAgent — см. HeartbeatIgnoreReason.
-	HeartbeatIgnoreBotUserAgent HeartbeatIgnoreReason = "bot_user_agent"
+	HeartbeatIgnoreBotUserAgent   HeartbeatIgnoreReason = "bot_user_agent"
 )
 
-// heartbeatIgnoreReasons — полный набор причин отклонения, в стабильном
-// порядке. Существует по той же причине, что и keyRejectReasons в
-// internal/ingest: счётчики создаются один раз при инициализации, поэтому
-// подсчёт на горячем пути — атомарный инкремент без блокировки и без записи
-// в map.
+// Причины перечислены заранее — счётчики создаются один раз, подсчёт на горячем пути
+// атомарный, без блокировки и без записи в map.
 var heartbeatIgnoreReasons = []HeartbeatIgnoreReason{
 	HeartbeatIgnorePrefetchHeader,
 	HeartbeatIgnoreBotUserAgent,
 }
 
-// HeartbeatIgnoreReasons — все причины, по которым heartbeat умеет отклонять
-// пинг без учёта монитора живым. main регистрирует self-метрику по каждой
-// причине (см. ingest.KeyRejectReasons).
 func HeartbeatIgnoreReasons() []HeartbeatIgnoreReason {
 	return append([]HeartbeatIgnoreReason(nil), heartbeatIgnoreReasons...)
 }
@@ -74,18 +45,13 @@ func newHeartbeatIgnoreCounters() map[HeartbeatIgnoreReason]*atomic.Int64 {
 	return m
 }
 
-// heartbeatIgnoredCounts — счётчики отклонённых пингов по причине,
-// процесс-локальные (как keyRejected у ingest.Handler): heartbeat — публичный
-// эндпойнт без сессии, это просто self-телеметрия процесса, не per-org учёт.
+// Процесс-локальные счётчики: публичный эндпойнт без сессии, self-телеметрия, не per-org учёт.
 var heartbeatIgnoredCounts = newHeartbeatIgnoreCounters()
 
 func countHeartbeatIgnored(reason HeartbeatIgnoreReason) {
 	heartbeatIgnoredCounts[reason].Add(1)
 }
 
-// HeartbeatIgnoredBy — снимок счётчика отклонённых пингов по конкретной
-// причине с начала процесса. Потокобезопасно и дёшево — self-метрики main
-// читают его как func() int64 при каждом снятии показаний.
 func HeartbeatIgnoredBy(reason HeartbeatIgnoreReason) int64 {
 	c, ok := heartbeatIgnoredCounts[reason]
 	if !ok {
@@ -94,14 +60,8 @@ func HeartbeatIgnoredBy(reason HeartbeatIgnoreReason) int64 {
 	return c.Load()
 }
 
-// heartbeatUnfurlBotUserAgents — известные боты построения превью ссылок в
-// мессенджерах/соцсетях, сверяемые как case-insensitive подстрока
-// User-Agent. Источник — публично документированные строки User-Agent
-// каждой площадки (Slack link unfurling, Telegram Bot API webhook preview,
-// WhatsApp/Facebook sharing debugger, Twitter Card validator, Discord embeds,
-// LinkedIn Post Inspector, Viber/VK/Skype/Mattermost/Reddit превью ссылок).
-// Список сознательно короткий и специфичный: каждый токен — уникальное имя
-// бота, ни один не пересекается с User-Agent настоящего curl/wget/systemd.
+// Публично документированные User-Agent подстроки известных ботов превью ссылок — короткий
+// список, ни один токен не пересекается с UA настоящего curl/wget/systemd.
 var heartbeatUnfurlBotUserAgents = []string{
 	"slackbot-linkexpanding",
 	"telegrambot",
@@ -117,13 +77,8 @@ var heartbeatUnfurlBotUserAgents = []string{
 	"mattermost",
 }
 
-// heartbeatIgnoreReason решает, обязан ли этот запрос быть отклонён без учёта
-// монитора живым, и почему. Заголовки — сильный сигнал первыми (нулевой шанс
-// ложного срабатывания на реальном клиенте): значение Sec-Purpose
-// сравнивается ПРЕФИКСОМ ("prefetch;prerender" и т.п. — тоже prefetch), Purpose
-// и X-Moz — точным значением "prefetch", X-Purpose — точным значением
-// "preview" (см. спека). User-Agent проверяется, только если ни один
-// заголовок не сработал.
+// Sec-Purpose сравнивается ПРЕФИКСОМ ("prefetch;prerender" тоже считается), Purpose/X-Moz —
+// точным "prefetch", X-Purpose — точным "preview". User-Agent — только если заголовки не сработали.
 func heartbeatIgnoreReason(r *http.Request) (HeartbeatIgnoreReason, bool) {
 	if v := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Purpose"))); strings.HasPrefix(v, "prefetch") {
 		return HeartbeatIgnorePrefetchHeader, true
@@ -147,33 +102,16 @@ func heartbeatIgnoreReason(r *http.Request) (HeartbeatIgnoreReason, bool) {
 	return "", false
 }
 
-// heartbeat — GET|POST /uptime/hb/{token}: приём внешнего пинга от
-// сервиса клиента (см. спека §3 «Heartbeat не планируется»). Без
-// авторизации и без sameOrigin — это не браузерная форма, а произвольный
-// внешний вызов (cron, systemd timer и т.п.), для которого токен в самом
-// URL — единственный и достаточный секрет. Неизвестный токен отдаёт
-// голый JSON 404, а не стилизованную страницу ошибок — это машинный
-// эндпойнт, у которого нет человеческого зрителя.
+// Без авторизации и sameOrigin: внешний вызов (cron/systemd), токен в URL — единственный
+// секрет. 404 — голый JSON, не стилизованная страница: эндпойнт машинный, зрителя нет.
 func (h *Handler) heartbeat(w http.ResponseWriter, r *http.Request) {
-	// Кап и дренаж тела — ПЕРЕД отсевом префетча/превью, а не после: заголовки
-	// Sec-Purpose/Purpose/X-Purpose/X-Moz и User-Agent — это то, что клиент
-	// сам о себе заявляет, подделать их тривиально (echo -H 'Sec-Purpose:
-	// prefetch'). Если бы кап стоял после ветвления на игнор, любой аноним
-	// добавлял бы один заголовок и заливал неограниченное тело в этот
-	// публичный неаутентифицированный POST без единого похода в БД — сам
-	// отсев от этого не пострадал бы (ответ отклонённого запроса как был,
-	// так и остаётся не завязан на БД), а вот кап переставал бы работать
-	// именно для тех запросов, что легче всего подделать. Кап — до похода в
-	// БД, поэтому его перестановка выше отсева не противоречит цели
-	// «отклонённый запрос не трогает БД»: он её не трогает и здесь.
+	// Кап и дренаж — ДО отсева по заголовкам: те подделываются тривиально, и если бы кап
+	// стоял после, подделка заголовка сняла бы ограничение размера тела.
 	r.Body = http.MaxBytesReader(w, r.Body, heartbeatMaxBodyBytes)
 	defer r.Body.Close()
 
-	// MaxBytesReader only enforces its cap on read — nothing reads the body
-	// otherwise (the stdlib server doesn't drain unread bodies against a
-	// MaxBytesReader's limit on its own), so without this the 1 KB cap above
-	// is dead code and a client can upload an arbitrarily large body to this
-	// public, unauthenticated endpoint.
+	// MaxBytesReader ограничивает только чтение — сервер не дренирует тело сам; без явного
+	// чтения здесь кап выше мёртв, и клиент зальёт неограниченное тело.
 	if _, err := io.Copy(io.Discard, r.Body); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
@@ -184,10 +122,8 @@ func (h *Handler) heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Отсев префетча/превью — раньше токена и БД: отклонённый запрос не
-	// должен трогать вообще ничего в БД (ни счётчики приёма, ни состояние
-	// монитора) — только лог и self-метрику. 204 (не 404/200) — чтобы бот,
-	// развернувший ссылку, не счёл её мёртвой и не начал ретраить.
+	// Отсев — раньше токена и БД: отклонённый запрос не должен коснуться ничего в БД, только
+	// лог и self-метрику. 204, не 404/200 — чтобы бот не счёл ссылку мёртвой и не ретраил.
 	if reason, ignored := heartbeatIgnoreReason(r); ignored {
 		countHeartbeatIgnored(reason)
 		slog.Info("heartbeat: ignored prefetch/preview request", "reason", string(reason), "method", r.Method)
@@ -228,12 +164,8 @@ func (h *Handler) heartbeat(w http.ResponseWriter, r *http.Request) {
 		h.UptimeWriter.Add(m.ProjectID, m.ID, region, at, result)
 	}
 
-	// Детектор обязателен именно здесь. Инцидент по heartbeat открывает
-	// watchdog (пропущенный удар), а закрыть его больше некому: у heartbeat
-	// нет ни очереди заданий, ни пробы — единственный сигнал «жив» приходит
-	// сюда. Без этого вызова ApplyResult вернёт статус в up, монитор в UI
-	// позеленеет, а инцидент останется открытым навсегда: ни уведомления о
-	// восстановлении, ни конца напоминаниям «всё ещё DOWN».
+	// Без вызова OnResult монитор позеленеет, но открытый watchdog-инцидент останется висеть
+	// навсегда: у heartbeat нет других сигналов, которые могли бы его закрыть.
 	if h.UptimeIngestor != nil && h.UptimeIngestor.OnResult != nil {
 		h.UptimeIngestor.OnResult(ctx, m, region, result, st)
 	}

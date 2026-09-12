@@ -13,13 +13,10 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// ruCtx — контекст с русской локалью для хелперов, зовущих i18n.T.
 func ruCtx() context.Context {
 	return i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 }
 
-// TestLevelBadgeClass — каждый уровень issue красится своим бейджем; error и
-// fatal делят «опасный», всё неизвестное падает в нейтральный.
 func TestLevelBadgeClass(t *testing.T) {
 	cases := map[string]string{
 		"error":   "badge badge-danger",
@@ -36,8 +33,6 @@ func TestLevelBadgeClass(t *testing.T) {
 	}
 }
 
-// TestStatusBadgeClass — статус issue: resolved «хорошо», ignored нейтральный,
-// всё прочее (в т.ч. unresolved) требует внимания (warn).
 func TestStatusBadgeClass(t *testing.T) {
 	cases := map[string]string{
 		"resolved":   "badge badge-good",
@@ -52,21 +47,6 @@ func TestStatusBadgeClass(t *testing.T) {
 	}
 }
 
-// TestIssueStatusBadgeAndLabelComplete — полнота обработки канона:
-// statusBadgeClass/issueStatusLabel обязаны явно знать каждое значение
-// issue.Statuses. wantClass — не копия канона (сторож
-// TestNoIssueEnumLiteralCopies за копиями Go-литералов и так следит), а
-// ОЖИДАЕМЫЙ РЕЗУЛЬТАТ: если issue.Statuses вырастет, длина сравнится first
-// и тест упадёт с понятным сообщением ДО того, как дело дойдёт до
-// покласса/подписи конкретного нового значения — тот, кто добавляет статус
-// в канон, обязан прийти сюда и в statusBadgeClass/issueStatusLabel руками,
-// а не полагаться на то, что default-ветка "сойдёт".
-//
-// Для statusBadgeClass отдельно: unresolved легитимно попадает в default
-// (badge-warn) — то же самое, во что попал бы и неизвестный статус. Просто
-// "got != default" эту находку не поймало бы, поэтому здесь сверка идёт с
-// заранее прописанным ожидаемым классом на каждый статус, а не с фактом
-// "не default".
 func TestIssueStatusBadgeAndLabelComplete(t *testing.T) {
 	wantClass := map[string]string{
 		issue.StatusUnresolved: "badge badge-warn",
@@ -92,8 +72,6 @@ func TestIssueStatusBadgeAndLabelComplete(t *testing.T) {
 	}
 }
 
-// TestMonitorStatusBadgeClass — все статусы монитора имеют свой бейдж, а
-// неизвестный статус деградирует в warn, а не в панику.
 func TestMonitorStatusBadgeClass(t *testing.T) {
 	cases := map[string]string{
 		"up":          "badge badge-good",
@@ -109,8 +87,6 @@ func TestMonitorStatusBadgeClass(t *testing.T) {
 	}
 }
 
-// TestVitalBadgeClass — рейтинг web-vital → класс бейджа; неизвестный рейтинг
-// не даёт класса вовсе (пустая строка).
 func TestVitalBadgeClass(t *testing.T) {
 	cases := map[string]string{
 		"good":              "badge badge-good",
@@ -125,8 +101,6 @@ func TestVitalBadgeClass(t *testing.T) {
 	}
 }
 
-// TestPerfKindBadgeClass — вид perf-проблемы: N+1 предупреждает, медленный
-// запрос информирует, неизвестный вид нейтрален.
 func TestPerfKindBadgeClass(t *testing.T) {
 	cases := map[string]string{
 		trace.KindNPlusOne:    "badge badge-warn",
@@ -140,8 +114,6 @@ func TestPerfKindBadgeClass(t *testing.T) {
 	}
 }
 
-// TestPerfStatusBadgeClass — статус perf-issue: resolved хорошо, ignored
-// нейтрально, открытый — требует внимания (warn, как у issue; K9-11).
 func TestPerfStatusBadgeClass(t *testing.T) {
 	cases := map[string]string{
 		"resolved":   "badge badge-good",
@@ -155,7 +127,6 @@ func TestPerfStatusBadgeClass(t *testing.T) {
 	}
 }
 
-// TestCheckStatusBadgeClass — булев статус проверки: ok зелёный, fail красный.
 func TestCheckStatusBadgeClass(t *testing.T) {
 	if got := checkStatusBadgeClass(true); got != "badge badge-good" {
 		t.Errorf("checkStatusBadgeClass(true) = %q", got)
@@ -165,8 +136,6 @@ func TestCheckStatusBadgeClass(t *testing.T) {
 	}
 }
 
-// TestIncidentStatusBadgeClass — незакрытый инцидент (ResolvedAt=nil) опасен,
-// закрытый — «хорошо».
 func TestIncidentStatusBadgeClass(t *testing.T) {
 	open := uptime.Incident{}
 	if got := incidentStatusBadgeClass(open); got != "badge badge-danger" {
@@ -179,7 +148,6 @@ func TestIncidentStatusBadgeClass(t *testing.T) {
 	}
 }
 
-// TestIncidentBadgeClass — метричный инцидент: open красный, всё прочее хорошо.
 func TestIncidentBadgeClass(t *testing.T) {
 	if got := incidentBadgeClass("open"); got != "badge badge-danger" {
 		t.Errorf("incidentBadgeClass(open) = %q", got)
@@ -189,7 +157,6 @@ func TestIncidentBadgeClass(t *testing.T) {
 	}
 }
 
-// TestProbeStatusBadgeClass — статус пробы online/offline/иное.
 func TestProbeStatusBadgeClass(t *testing.T) {
 	cases := map[string]string{
 		"online":  "badge badge-good",
@@ -203,7 +170,6 @@ func TestProbeStatusBadgeClass(t *testing.T) {
 	}
 }
 
-// TestRegressionStatusBadgeClass — открытая регрессия опасна, решённая хороша.
 func TestRegressionStatusBadgeClass(t *testing.T) {
 	if got := regressionStatusBadgeClass("open"); got != "badge badge-danger" {
 		t.Errorf("open = %q", got)
@@ -213,8 +179,6 @@ func TestRegressionStatusBadgeClass(t *testing.T) {
 	}
 }
 
-// TestMemberRoleBadgeClass — роли: owner выделяется warn, admin info, member
-// нейтрально.
 func TestMemberRoleBadgeClass(t *testing.T) {
 	cases := map[org.Role]string{
 		org.RoleOwner:  "badge badge-warn",
@@ -228,7 +192,6 @@ func TestMemberRoleBadgeClass(t *testing.T) {
 	}
 }
 
-// TestKeyStatusBadgeClass — отозванный ключ красный, активный зелёный.
 func TestKeyStatusBadgeClass(t *testing.T) {
 	if got := keyStatusBadgeClass(org.Key{Revoked: true}); got != "badge badge-danger" {
 		t.Errorf("revoked = %q", got)
@@ -238,7 +201,6 @@ func TestKeyStatusBadgeClass(t *testing.T) {
 	}
 }
 
-// TestOverallStatusClass — сводный статус страницы: major/partial/ok.
 func TestOverallStatusClass(t *testing.T) {
 	cases := map[string]string{
 		"major":       "status-overall status-overall-major",
@@ -252,8 +214,6 @@ func TestOverallStatusClass(t *testing.T) {
 	}
 }
 
-// TestFormatDurationUS — единица длительности подбирается по величине:
-// микро/милли/секунды, а ноль показывается голым «0».
 func TestFormatDurationUS(t *testing.T) {
 	cases := []struct {
 		us   uint32
@@ -271,8 +231,6 @@ func TestFormatDurationUS(t *testing.T) {
 	}
 }
 
-// TestFormatApdexAndFailureRate — apdex это два знака после запятой, а failure
-// rate — процент с одним знаком и суффиксом «%».
 func TestFormatApdexAndFailureRate(t *testing.T) {
 	if got := formatApdex(0.937); got != "0.94" {
 		t.Errorf("formatApdex = %q", got)
@@ -282,8 +240,6 @@ func TestFormatApdexAndFailureRate(t *testing.T) {
 	}
 }
 
-// TestFormatVitalMSAndValue — vital в мс до секунды показывается целыми мс,
-// свыше — секундами; CLS особый (безразмерный, 2 знака); пустой рейтинг → «—».
 func TestFormatVitalMSAndValue(t *testing.T) {
 	if got := formatVitalMS(250); got != "250ms" {
 		t.Errorf("formatVitalMS(250) = %q", got)
@@ -304,8 +260,6 @@ func TestFormatVitalMSAndValue(t *testing.T) {
 	}
 }
 
-// TestVitalLabel — сырые имена приводятся к аббревиатурам верхним регистром,
-// неизвестное имя возвращается как есть.
 func TestVitalLabel(t *testing.T) {
 	cases := map[string]string{
 		"lcp": "LCP", "inp": "INP", "cls": "CLS",
@@ -318,14 +272,12 @@ func TestVitalLabel(t *testing.T) {
 	}
 }
 
-// TestComparatorSymbol — lt это «<», всё остальное «>».
 func TestComparatorSymbol(t *testing.T) {
 	if comparatorSymbol("lt") != "<" || comparatorSymbol("gt") != ">" {
 		t.Fatal("comparatorSymbol сломан")
 	}
 }
 
-// TestMetricUnitText — пустая единица и безразмерная «1» показываются как «—».
 func TestMetricUnitText(t *testing.T) {
 	if metricUnitText("") != "—" || metricUnitText("1") != "—" {
 		t.Fatal("пустая/безразмерная единица должна быть —")
@@ -335,8 +287,6 @@ func TestMetricUnitText(t *testing.T) {
 	}
 }
 
-// TestInitialsAndEmailLocal — инициалы берут до двух букв локальной части,
-// emailLocal отрезает домен, а без «@» возвращает вход как есть.
 func TestInitialsAndEmailLocal(t *testing.T) {
 	if got := initials("demo@gotcha.local"); got != "DE" {
 		t.Errorf("initials = %q", got)
@@ -352,7 +302,6 @@ func TestInitialsAndEmailLocal(t *testing.T) {
 	}
 }
 
-// TestAssigneeDisplay — пустой назначенный показывается как «—».
 func TestAssigneeDisplay(t *testing.T) {
 	if assigneeDisplay("") != "—" {
 		t.Fatal("пустой assignee должен быть —")
@@ -362,7 +311,6 @@ func TestAssigneeDisplay(t *testing.T) {
 	}
 }
 
-// TestFrameLocation — кадр без файла не даёт локации; с файлом — «файл:строка».
 func TestFrameLocation(t *testing.T) {
 	if got := frameLocation(Frame{}); got != "" {
 		t.Errorf("empty frame location = %q", got)
@@ -372,8 +320,6 @@ func TestFrameLocation(t *testing.T) {
 	}
 }
 
-// TestTruncateFailedError — длинная ошибка обрезается многоточием, короткая —
-// нет.
 func TestTruncateFailedError(t *testing.T) {
 	short := "boom"
 	if truncateFailedError(short) != short {
@@ -386,7 +332,6 @@ func TestTruncateFailedError(t *testing.T) {
 	}
 }
 
-// TestUptimeStatText — без проверок «no data», иначе процент с двумя знаками.
 func TestUptimeStatText(t *testing.T) {
 	if got := uptimeStatText(uptime.UptimeStat{}); got != "no data" {
 		t.Errorf("empty = %q", got)
@@ -396,7 +341,6 @@ func TestUptimeStatText(t *testing.T) {
 	}
 }
 
-// TestAvgLatencyText — без проверок «-», иначе «<ms>ms».
 func TestAvgLatencyText(t *testing.T) {
 	if got := avgLatencyText(uptime.UptimeStat{}, 120); got != "-" {
 		t.Errorf("empty = %q", got)
@@ -406,8 +350,6 @@ func TestAvgLatencyText(t *testing.T) {
 	}
 }
 
-// TestProfileWeightByType — nanos-типы форматируются временем, bytes-типы
-// весом, неизвестный тип — голым числом.
 func TestProfileWeightByType(t *testing.T) {
 	cases := []struct {
 		typ    string
@@ -425,14 +367,12 @@ func TestProfileWeightByType(t *testing.T) {
 	}
 }
 
-// TestFormatProfileNanosNs — суб-микросекундная ветка (голые ns).
 func TestFormatProfileNanosNs(t *testing.T) {
 	if got := formatProfileNanos(500); got != "500ns" {
 		t.Errorf("formatProfileNanos ns = %q", got)
 	}
 }
 
-// TestTotalPages — total<=0 всегда одна страница, иначе округление вверх.
 func TestTotalPages(t *testing.T) {
 	if totalPages(0) != 1 {
 		t.Fatal("пустой список = 1 страница")
@@ -440,7 +380,6 @@ func TestTotalPages(t *testing.T) {
 	if totalPages(1) != 1 {
 		t.Fatal("одна запись = 1 страница")
 	}
-	// issuesPerPage записей должны уложиться ровно в одну страницу, +1 — во вторую.
 	one := totalPages(int64(issuesPerPage))
 	two := totalPages(int64(issuesPerPage) + 1)
 	if two != one+1 {
@@ -448,8 +387,6 @@ func TestTotalPages(t *testing.T) {
 	}
 }
 
-// TestIssuesPageURL — фильтры кладутся в query; пустой фильтр даёт голый путь;
-// первая страница не пишет page, вторая — пишет.
 func TestIssuesPageURL(t *testing.T) {
 	if got := issuesPageURL(7, IssuesFilter{}, 1); strings.Contains(got, "?") {
 		t.Errorf("пустой фильтр не должен давать query: %q", got)
@@ -463,7 +400,6 @@ func TestIssuesPageURL(t *testing.T) {
 	}
 }
 
-// TestRegressionIncreasePct — рост от базы в процентах; нулевая база → «—».
 func TestRegressionIncreasePct(t *testing.T) {
 	if got := regressionIncreasePct(trace.Regression{}); got != "—" {
 		t.Errorf("нулевая база = %q", got)
@@ -474,29 +410,18 @@ func TestRegressionIncreasePct(t *testing.T) {
 	}
 }
 
-// TestRegressionValueRange — диапазон «база → пик» с учётом метрики (cls
-// особый). Форматирование самих значений делегировано humanize.MetricValue
-// (покрыт отдельно, на 100%, в internal/humanize) — здесь проверяется только
-// то, что regressionValueRange верно его вызывает и собирает диапазон.
 func TestRegressionValueRange(t *testing.T) {
 	ctx := context.Background()
 	r := trace.Regression{Metric: "cls", BaselineValue: 0.05, PeakValue: 0.30}
 	if got := regressionValueRange(ctx, r); got != "0.05 → 0.30" {
 		t.Errorf("cls range = %q", got)
 	}
-	// Значения длительности — уже в МИЛЛИСЕКУНДАХ: единственная точка
-	// конвертации из микросекунд, transactions_5m.msSample, отработала раньше
-	// (см. internal/trace, "задача 1" подпроекта единиц). Прежнее ожидание
-	// здесь трактовало baseline/peak как микросекунды и делило их ещё раз —
-	// такая двойная конвертация после задачи 1 занижала бы значения в тысячу
-	// раз.
 	rd := trace.Regression{Metric: "duration", BaselineValue: 100, PeakValue: 2500}
 	if got := regressionValueRange(ctx, rd); got != "100ms → 2.5s" {
 		t.Errorf("duration range = %q", got)
 	}
 }
 
-// TestMembershipHelpers — фильтры видимости для команд/проектов.
 func TestMembershipHelpers(t *testing.T) {
 	members := []org.Member{{UserID: 1, Role: org.RoleOwner}, {UserID: 2, Role: org.RoleMember}}
 	if !memberInTeam(members, 1) || memberInTeam(members, 9) {
@@ -509,7 +434,6 @@ func TestMembershipHelpers(t *testing.T) {
 	if !projectAttached(projects, 10) || projectAttached(projects, 99) {
 		t.Fatal("projectAttached сломан")
 	}
-	// В команде уже есть участник 1 → доступен ещё участник 2.
 	if !hasAvailableMembers(members, []org.Member{{UserID: 1}}) {
 		t.Fatal("должен найтись свободный участник")
 	}
@@ -518,7 +442,6 @@ func TestMembershipHelpers(t *testing.T) {
 	}
 }
 
-// TestYesNoLocalized — булев ответ локализуется (ru), да ≠ нет.
 func TestYesNoLocalized(t *testing.T) {
 	ctx := ruCtx()
 	yes, no := yesNo(ctx, true), yesNo(ctx, false)
@@ -527,8 +450,6 @@ func TestYesNoLocalized(t *testing.T) {
 	}
 }
 
-// TestErrorKeys — ключи заголовка/тела ошибки заданы для 403/404/500 и пусты
-// для прочих статусов.
 func TestErrorKeys(t *testing.T) {
 	for _, s := range []int{403, 404, 500} {
 		if errorTitleKey(s) == "" || errorBodyKey(s) == "" {
@@ -540,10 +461,6 @@ func TestErrorKeys(t *testing.T) {
 	}
 }
 
-// TestPerfStatusBadgeClassMatchesIssues — K9-11: perf-проблемы и issue
-// раскрашивают один и тот же статус одинаково (докблок perfStatusBadgeClass
-// обещает «тот же приём»); раньше unresolved у perf был danger против warn у
-// issue. Сверяем по каждому статусу канона, а не по одному default.
 func TestPerfStatusBadgeClassMatchesIssues(t *testing.T) {
 	for _, st := range append(append([]string{}, issue.Statuses...), "") {
 		if got, want := perfStatusBadgeClass(st), statusBadgeClass(st); got != want {

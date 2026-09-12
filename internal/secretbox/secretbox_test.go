@@ -5,22 +5,16 @@ import (
 	"testing"
 )
 
-// v1FixedVector — конверт версии 1 (простой "enc:" + base64(nonce‖ciphertext),
-// без тега версии и id), запечатанный ДЕТЕРМИНИРОВАННЫМ nonce фиксированным
-// ключом. Значение вписано константой, а не получено вызовом Seal/Keyring —
-// это то, что реально лежит в чужих БД со времён до задачи ротации, и тест
-// обязан проверять разбор именно такой байтовой строки, а не только то, что
-// пакет умеет читать собственный вывод.
+// вписано константой, не получено вызовом Seal: это то, что реально лежит в чужих БД,
+// тест обязан разбирать именно такую байтовую строку, а не только свой собственный вывод.
 const (
 	v1FixedMaster   = "vector-master-v1-legacy-old-code"
 	v1FixedPlain    = "legacy-v1-secret-value"
 	v1FixedEnvelope = "enc:AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYudf0xP3/sKnysGe0CDB7Uzw42DGYRgM/gl3FF8KMFQgpVnZw4I4="
 )
 
-// TestEnvelopeClassification — падающая таблица разбора конверта, §3 спеки
-// ротации: шесть классов входа, для каждого проверяются и IsEncrypted (не
-// требует ключей), и поведение Keyring.Open. Разошедшаяся классификация между
-// этими двумя точками — ровно тот баг, которого таблица не пропускает мимо.
+// шесть классов входа, для каждого — и IsEncrypted, и Keyring.Open: расхождение
+// классификации между этими двумя точками не должно проходить мимо.
 func TestEnvelopeClassification(t *testing.T) {
 	ring, err := NewKeyring(v1FixedMaster, "")
 	if err != nil {
@@ -35,8 +29,7 @@ func TestEnvelopeClassification(t *testing.T) {
 		name          string
 		stored        string
 		wantEncrypted bool
-		// wantOpen задаётся для plaintext/v1/v2, успешно открывающихся этим
-		// кольцом; wantErrOpen — для случаев, где Open обязан отказать.
+		// wantErrOpen — для случаев, где Open обязан отказать.
 		wantOpen    string
 		wantErrOpen bool
 	}{
@@ -103,8 +96,6 @@ func TestEnvelopeClassification(t *testing.T) {
 	}
 }
 
-// TestIsEncryptedEmpty — пустая строка не считается зашифрованным значением
-// (нет секрета вовсе, см. Rewrap("")).
 func TestIsEncryptedEmpty(t *testing.T) {
 	if IsEncrypted("") {
 		t.Fatalf("IsEncrypted(\"\") = true, want false")

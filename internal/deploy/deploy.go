@@ -1,7 +1,3 @@
-// Package deploy — реестр деплоев проекта (таблица deployments): CI пушит
-// событие выкладки (версия, окружение, время), а UI рисует по ним вертикальные
-// маркеры на графиках и список деплоев, плюс привязывает регрессии к ближайшему
-// предшествующему деплою. Зеркало internal/host по форме стора.
 package deploy
 
 import (
@@ -14,9 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Deployment — строка таблицы deployments: одна выкладка проекта. DeployedAt —
-// момент самой выкладки (его шлёт CI, по нему строится маркер), CreatedAt —
-// момент приёма записи стором.
+// DeployedAt — момент выкладки по версии CI, CreatedAt — момент приёма записи.
 type Deployment struct {
 	ID          int64
 	ProjectID   int64
@@ -28,9 +22,8 @@ type Deployment struct {
 	CreatedAt   time.Time
 }
 
-// Капы длины на входе Record — защита горячего пути приёма от разросшихся полей
-// (CI вполне способен прислать многокилобайтный changelog). Обрезка по рунам,
-// чтобы не рвать UTF-8 посередине символа.
+// Защита горячего пути приёма от разросшихся полей (CI может прислать
+// многокилобайтный changelog).
 const (
 	maxVersion     = 512
 	maxEnvironment = 128
@@ -38,7 +31,7 @@ const (
 	maxChangelog   = 16384
 )
 
-// capStr — обрезка строки до n рун. Имя НЕ `cap`: тот шадовит builtin.
+// Не `cap`: имя шадовило бы builtin.
 func capStr(s string, n int) string {
 	r := []rune(s)
 	if len(r) > n {
@@ -47,7 +40,6 @@ func capStr(s string, n int) string {
 	return s
 }
 
-// deployColumns — порядок колонок для scanDeployment (аналог hostColumns).
 const deployColumns = `id, project_id, version, environment, url, changelog, deployed_at, created_at`
 
 func scanDeployment(row pgx.Row) (Deployment, error) {
@@ -56,7 +48,6 @@ func scanDeployment(row pgx.Row) (Deployment, error) {
 	return d, err
 }
 
-// Store — CRUD поверх таблицы deployments.
 type Store struct {
 	pool *pgxpool.Pool
 }
@@ -65,9 +56,6 @@ func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
-// Record вставляет одну выкладку и возвращает её с заполненными ID/CreatedAt.
-// Пустой DeployedAt подставляется как now() (CI мог не прислать время). Поля
-// капаются по длине защитно.
 func (s *Store) Record(ctx context.Context, projectID int64, d Deployment) (Deployment, error) {
 	if d.DeployedAt.IsZero() {
 		d.DeployedAt = time.Now().UTC()
@@ -87,8 +75,6 @@ func (s *Store) Record(ctx context.Context, projectID int64, d Deployment) (Depl
 	return d, nil
 }
 
-// List возвращает деплои проекта в окне [from, to), newest-first, не больше
-// limit строк (limit <= 0 → без лишнего добора, берём 1000 защитно).
 func (s *Store) List(ctx context.Context, projectID int64, from, to time.Time, limit int) ([]Deployment, error) {
 	if limit <= 0 {
 		limit = 1000
@@ -103,8 +89,6 @@ func (s *Store) List(ctx context.Context, projectID int64, from, to time.Time, l
 	return scanDeployments(rows)
 }
 
-// Recent возвращает последние limit деплоев проекта, newest-first (limit <= 0 →
-// 100 защитно).
 func (s *Store) Recent(ctx context.Context, projectID int64, limit int) ([]Deployment, error) {
 	if limit <= 0 {
 		limit = 100
@@ -119,9 +103,6 @@ func (s *Store) Recent(ctx context.Context, projectID int64, limit int) ([]Deplo
 	return scanDeployments(rows)
 }
 
-// Nearest возвращает ближайший к before деплой ПРЕДШЕСТВУЮЩИЙ ему (deployed_at
-// <= before), то есть тот, после которого начался интересующий момент. ok=false,
-// если раньше before деплоев не было (привязка регрессии просто не рисуется).
 func (s *Store) Nearest(ctx context.Context, projectID int64, before time.Time) (Deployment, bool, error) {
 	row := s.pool.QueryRow(ctx,
 		"SELECT "+deployColumns+" FROM deployments WHERE project_id = $1 AND deployed_at <= $2 ORDER BY deployed_at DESC LIMIT 1",

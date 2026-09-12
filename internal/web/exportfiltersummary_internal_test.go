@@ -7,10 +7,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/export"
 )
 
-// TestExportFilterSummaryNoFilters — пустые Params и ScopeIssueID=0 (Since и
-// Until нулевые — RangeAll, см. докблок exportFilterSummary) дают «за всё
-// время», а не пустую строку и не «без фильтров»: период — не «фильтр»,
-// который можно пропустить молча, пользователь обязан видеть его всегда.
 func TestExportFilterSummaryNoFilters(t *testing.T) {
 	ctx := ruTestCtx()
 	got := exportFilterSummary(ctx, export.Job{})
@@ -19,9 +15,6 @@ func TestExportFilterSummaryNoFilters(t *testing.T) {
 	}
 }
 
-// TestExportFilterSummaryIssueScope — заявка, ограниченная одной группой
-// (ScopeIssueID != 0), показывает «issue #N», а период (Since/Until
-// нулевые — RangeAll) добавляется следом тем же приёмом, что и везде.
 func TestExportFilterSummaryIssueScope(t *testing.T) {
 	ctx := ruTestCtx()
 	got := exportFilterSummary(ctx, export.Job{ScopeIssueID: 42})
@@ -30,8 +23,6 @@ func TestExportFilterSummaryIssueScope(t *testing.T) {
 	}
 }
 
-// TestExportFilterSummaryStatusLevel — фильтры по статусу и уровню переводят
-// значение через issues.status.*/issues.level.*, а не показывают сырой код.
 func TestExportFilterSummaryStatusLevel(t *testing.T) {
 	ctx := ruTestCtx()
 	j := export.Job{Params: export.Params{Status: "resolved", Level: "error"}}
@@ -41,8 +32,6 @@ func TestExportFilterSummaryStatusLevel(t *testing.T) {
 	}
 }
 
-// TestExportFilterSummaryEnvironmentQuery — окружение и поисковый запрос
-// подставляются в свои плейсхолдеры ({env}/{query}), а не теряются.
 func TestExportFilterSummaryEnvironmentQuery(t *testing.T) {
 	ctx := ruTestCtx()
 	j := export.Job{Params: export.Params{Environment: "production", Query: "timeout"}}
@@ -52,10 +41,6 @@ func TestExportFilterSummaryEnvironmentQuery(t *testing.T) {
 	}
 }
 
-// TestExportFilterSummaryPeriod — период форматируется через humanize.Time с
-// time.UTC (числовой формат + подпись пояса), а не сырым t.Format: сводка
-// строится в exportViewRow без параметра пояса зрителя, так что подмена на
-// голый Format молча вернула бы время без метки часового пояса.
 func TestExportFilterSummaryPeriod(t *testing.T) {
 	ctx := ruTestCtx()
 	since := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
@@ -67,10 +52,6 @@ func TestExportFilterSummaryPeriod(t *testing.T) {
 	}
 }
 
-// TestExportFilterSummaryAllPartsJoined — все ветки разом идут через запятую
-// в порядке issue → status → level → environment → query → период, как в
-// exportFilterSummary; отдельный тест на то, что strings.Join не теряет и не
-// переставляет части.
 func TestExportFilterSummaryAllPartsJoined(t *testing.T) {
 	ctx := ruTestCtx()
 	since := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -94,12 +75,6 @@ func TestExportFilterSummaryAllPartsJoined(t *testing.T) {
 	}
 }
 
-// TestExportFilterSummaryPeriodRequiresBothBounds — если развёрнут только
-// один конец периода (второй остался нулевым — заявка ещё не прошла
-// exportsCreate или это баг постановки), период в сводке не появляется:
-// показывать половину диапазона хуже, чем не показывать его вовсе, а
-// показать её как «за всё время» было бы прямой ложью — период не пуст,
-// просто одна из границ ещё не развёрнута.
 func TestExportFilterSummaryPeriodRequiresBothBounds(t *testing.T) {
 	ctx := ruTestCtx()
 	onlySince := export.Job{Params: export.Params{Since: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}}

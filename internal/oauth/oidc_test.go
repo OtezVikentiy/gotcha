@@ -11,7 +11,6 @@ import (
 	"testing"
 )
 
-// fakeOIDC поднимает минимальный OIDC-провайдер: discovery, jwks, token.
 func fakeOIDC(t *testing.T, key *rsa.PrivateKey, claims map[string]any) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -29,7 +28,7 @@ func fakeOIDC(t *testing.T, key *rsa.PrivateKey, claims map[string]any) *httptes
 		_ = json.NewEncoder(w).Encode(jwks{Keys: []jwk{jwkFromKey(key, "k1")}})
 	})
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
-		c := map[string]any{"iss": srv.URL, "aud": "client-1", "exp": float64(4102444800)} // 2100 год
+		c := map[string]any{"iss": srv.URL, "aud": "client-1", "exp": float64(4102444800)}
 		for k, v := range claims {
 			c[k] = v
 		}
@@ -65,13 +64,11 @@ func TestOIDCExchangeVerifiedEmail(t *testing.T) {
 }
 
 func TestOIDCExchangeExpiryLeeway(t *testing.T) {
-	// SEC-L3: токен, истёкший в пределах clockSkewLeeway, принимается (дрейф часов IdP);
-	// истёкший за пределами допуска — отклоняется.
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
 
 	withinLeeway := fakeOIDC(t, key, map[string]any{
 		"sub": "s", "email": "e@e.com", "email_verified": true, "nonce": "N1",
-		"exp": float64(nowUnix() - 30), // истёк 30с назад, допуск 60с → ок
+		"exp": float64(nowUnix() - 30),
 	})
 	p := NewOIDC(OIDCConfig{Issuer: withinLeeway.URL, ClientID: "client-1", ClientSecret: "secret"})
 	if _, err := p.Exchange(context.Background(), "c", "v", "https://gotcha/cb", "N1"); err != nil {
@@ -80,7 +77,7 @@ func TestOIDCExchangeExpiryLeeway(t *testing.T) {
 
 	beyondLeeway := fakeOIDC(t, key, map[string]any{
 		"sub": "s", "email": "e@e.com", "email_verified": true, "nonce": "N1",
-		"exp": float64(nowUnix() - 120), // истёк 120с назад → за пределами допуска
+		"exp": float64(nowUnix() - 120),
 	})
 	p2 := NewOIDC(OIDCConfig{Issuer: beyondLeeway.URL, ClientID: "client-1", ClientSecret: "secret"})
 	if _, err := p2.Exchange(context.Background(), "c", "v", "https://gotcha/cb", "N1"); err == nil {
@@ -89,7 +86,6 @@ func TestOIDCExchangeExpiryLeeway(t *testing.T) {
 }
 
 func TestOIDCExchangeNotYetValid(t *testing.T) {
-	// SEC-L3: nbf в будущем за пределами допуска → отклонение.
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
 	srv := fakeOIDC(t, key, map[string]any{
 		"sub": "s", "email": "e@e.com", "nonce": "N1",
@@ -112,7 +108,6 @@ func TestOIDCExchangeNonceMismatch(t *testing.T) {
 
 func TestOIDCExchangeNoEmail(t *testing.T) {
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
-	// Ни в claims, ни в userinfo (не зарегистрирован → 404) email нет.
 	srv := fakeOIDC(t, key, map[string]any{"sub": "s", "nonce": "N1"})
 	p := NewOIDC(OIDCConfig{Issuer: srv.URL, ClientID: "client-1", ClientSecret: "secret"})
 	if _, err := p.Exchange(context.Background(), "c", "v", "https://gotcha/cb", "N1"); err == nil {

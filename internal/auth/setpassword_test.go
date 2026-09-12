@@ -27,15 +27,12 @@ func TestSetPasswordOnOAuthOnlyUser(t *testing.T) {
 	if err != nil || has {
 		t.Fatalf("HasPassword before = (%v,%v), want (false,nil)", has, err)
 	}
-	// Паролем войти нельзя, пока не задан.
 	if _, err := svc.Authenticate(ctx, "sp@example.com", "whatever12"); !errors.Is(err, auth.ErrInvalidCredentials) {
 		t.Fatalf("Authenticate NULL hash = %v, want ErrInvalidCredentials", err)
 	}
-	// Слишком короткий пароль — ErrWeakPassword.
 	if err := svc.SetPassword(ctx, uid, "short"); !errors.Is(err, auth.ErrWeakPassword) {
 		t.Fatalf("SetPassword weak = %v, want ErrWeakPassword", err)
 	}
-	// Валидный пароль устанавливается, после чего логин проходит.
 	if err := svc.SetPassword(ctx, uid, "goodpassword12"); err != nil {
 		t.Fatalf("SetPassword: %v", err)
 	}
@@ -46,7 +43,6 @@ func TestSetPasswordOnOAuthOnlyUser(t *testing.T) {
 	if _, err := svc.Authenticate(ctx, "sp@example.com", "goodpassword12"); err != nil {
 		t.Fatalf("Authenticate after SetPassword: %v", err)
 	}
-	// Повторный SetPassword запрещён.
 	if err := svc.SetPassword(ctx, uid, "anotherpass12"); !errors.Is(err, auth.ErrPasswordAlreadySet) {
 		t.Fatalf("SetPassword twice = %v, want ErrPasswordAlreadySet", err)
 	}

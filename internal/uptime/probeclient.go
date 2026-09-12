@@ -17,21 +17,11 @@ import (
 const (
 	defaultPollEvery        = time.Second
 	defaultProbeHTTPTimeout = 30 * time.Second
-	// maxResultsPerBatch — потолок пачки /probe/results на стороне центра
-	// (спека §4): больше он не примет, поэтому клиент режет сам.
+	// потолок пачки /probe/results на стороне центра — больше он не примет,
+	// клиент режет сам.
 	maxResultsPerBatch = 100
 )
 
-// ProbeClient — выносная проба: тот же бинарник в --mode=probe, запущенный в
-// другом регионе. Из инфраструктуры ей нужен только исходящий HTTPS до центра
-// — ни БД, ни ClickHouse, ни входящих портов. Проба «тупая»: она забирает
-// задания (POST /probe/lease), гоняет обычные чекеры (те же, что и локальный
-// Runner) и отдаёт сырые результаты (POST /probe/results). Ни детекции, ни
-// состояния, ни локального накопления: всё это делает центр.
-//
-// Zero-value полей (Concurrency/PollEvery/HTTPClient/Checkers) означает
-// "используй дефолт" — ProbeClient, как Runner, собирается литералом без
-// конструктора.
 type ProbeClient struct {
 	ServerURL string // база центра, например https://gotcha.example.com
 	Token     string // GOTCHA_PROBE_KEY; в логи не попадает никогда
@@ -39,18 +29,11 @@ type ProbeClient struct {
 	Concurrency int           // одновременных проверок; 0 = defaultConcurrency
 	PollEvery   time.Duration // период опроса центра; 0 = defaultPollEvery
 
-	// AllowPrivateTargets отключает SSRF-фильтр приватных целей в HTTP/TCP
-	// чекерах (прокидывается в CheckerFor). false (по умолчанию) — фильтр
-	// включён.
-	AllowPrivateTargets bool
+	AllowPrivateTargets bool // false (по умолчанию) — SSRF-фильтр приватных целей включён
 
-	// HTTPClient — клиент для походов В ЦЕНТР (не для самих проверок, у
-	// чекеров свои). nil — клиент с таймаутом 30s.
-	HTTPClient *http.Client
+	HTTPClient *http.Client // клиент для походов В ЦЕНТР, не для самих проверок; nil — таймаут 30s
 
-	// Checkers — опциональное переопределение CheckerFor по Kind, для тестов
-	// (как у Runner). nil — используется пакетный CheckerFor.
-	Checkers map[Kind]Checker
+	Checkers map[Kind]Checker // переопределение CheckerFor по Kind для тестов; nil — пакетный
 
 	defaultClientOnce sync.Once    // ленивая сборка дефолтного клиента (см. httpClient)
 	defaultClient     *http.Client // используется, только когда HTTPClient == nil
@@ -70,11 +53,8 @@ func (c *ProbeClient) pollEvery() time.Duration {
 	return c.PollEvery
 }
 
-// httpClient возвращает клиент для походов в центр, собирая дефолтный ровно
-// один раз: tick ходит в центр дважды в секунду, и новый http.Client на
-// каждый поход — лишняя аллокация на горячем пути (соединения бы пулились и
-// так, через общий http.DefaultTransport, но идиома пакета — собрать в init,
-// как делает Runner).
+// дефолтный клиент собирается ровно один раз — новый http.Client на каждый
+// тик был бы лишней аллокацией на горячем пути.
 func (c *ProbeClient) httpClient() *http.Client {
 	if c.HTTPClient != nil {
 		return c.HTTPClient
@@ -85,8 +65,6 @@ func (c *ProbeClient) httpClient() *http.Client {
 	return c.defaultClient
 }
 
-// checkerFor resolves the Checker for kind — c.Checkers[kind] if the test
-// injected one, otherwise the package-level CheckerFor.
 func (c *ProbeClient) checkerFor(kind Kind) (Checker, error) {
 	if ch, ok := c.Checkers[kind]; ok {
 		return ch, nil
@@ -94,11 +72,8 @@ func (c *ProbeClient) checkerFor(kind Kind) (Checker, error) {
 	return CheckerFor(kind, c.AllowPrivateTargets)
 }
 
-// Run — цикл пробы до отмены ctx: каждые PollEvery один тик (lease → проверки
-// → results). Любая ошибка сети/5xx на lease или на results — лог и пропуск
-// тика целиком: локального состояния проба не держит и результаты не копит,
-// а центр вернёт незавершённые задания в очередь по истечении lease, и они
-// приедут снова. Запускать горутиной.
+// ошибка сети/5xx на lease или results — лог и пропуск тика целиком: проба не
+// копит состояние, центр вернёт незавершённые задания в очередь по lease.
 func (c *ProbeClient) Run(ctx context.Context) {
 	tick := time.NewTicker(c.pollEvery())
 	defer tick.Stop()
@@ -115,7 +90,6 @@ func (c *ProbeClient) Run(ctx context.Context) {
 	}
 }
 
-// tick — один цикл: забрать задания, выполнить их пулом, отдать результаты.
 func (c *ProbeClient) tick(ctx context.Context) {
 	jobs, err := c.lease(ctx)
 	if err != nil {
@@ -140,16 +114,15 @@ func (c *ProbeClient) tick(ctx context.Context) {
 				return
 			}
 			slog.Error("uptime: probe: post results failed", "count", len(chunk), "error", err)
-			// Дальше пробовать нет смысла: если центр недоступен, недоступен и
-			// для следующей пачки. Оставшиеся задания вернутся по lease.
+			// дальше пробовать нет смысла — если центр недоступен, недоступен и
+			// для следующей пачки; оставшиеся задания вернутся по lease.
 			return
 		}
 	}
 }
 
-// runJobs выполняет задания пулом, ограниченным Concurrency, и собирает
-// результаты. Возвращается, только когда отработали все запущенные проверки —
-// иначе результат мог бы приехать после отправки пачки.
+// возвращается, только когда отработали все запущенные проверки — иначе
+// результат мог бы приехать после отправки пачки.
 func (c *ProbeClient) runJobs(ctx context.Context, jobs []JobDTO) []ResultDTO {
 	sem := make(chan struct{}, c.concurrency())
 
@@ -163,8 +136,7 @@ func (c *ProbeClient) runJobs(ctx context.Context, jobs []JobDTO) []ResultDTO {
 		select {
 		case sem <- struct{}{}:
 		case <-ctx.Done():
-			// Shutdown посреди раздачи заданий: не запускаем новые проверки.
-			// Нераспределённые задания останутся за пробой до истечения lease
+			// нераспределённые задания останутся за пробой до истечения lease
 			// и приедут снова — как и любой другой пропущенный тик.
 			wg.Wait()
 			return results
@@ -189,12 +161,8 @@ func (c *ProbeClient) runJobs(ctx context.Context, jobs []JobDTO) []ResultDTO {
 	return results
 }
 
-// runOne выполняет одно задание. Ошибка самой проверки (сайт лежит, DNS не
-// резолвится) — не ошибка, а нормальный Result{OK:false}, который поедет в
-// центр как есть. Паника внутри чекера (баг в коде проверки) перехватывается
-// и превращается в Result{OK:false, Error:"internal checker panic"} — как в
-// Runner.runOne. ok=false означает «результата нет» (нет чекера под этот
-// kind) — центру слать нечего, задание вернётся по истечении lease.
+// паника чекера превращается в Result{OK:false, Error:"internal checker
+// panic"}; ok=false — чекера под этот kind нет, задание вернётся по lease.
 func (c *ProbeClient) runOne(ctx context.Context, j JobDTO) (ResultDTO, bool) {
 	checker, err := c.checkerFor(j.Kind)
 	if err != nil {
@@ -216,7 +184,6 @@ func (c *ProbeClient) runOne(ctx context.Context, j JobDTO) (ResultDTO, bool) {
 	return NewResultDTO(j.QueueID, result), true
 }
 
-// lease забирает у центра порцию заданий своего региона.
 func (c *ProbeClient) lease(ctx context.Context) ([]JobDTO, error) {
 	var resp LeaseResponse
 	if err := c.post(ctx, "/probe/lease", LeaseRequest{Limit: c.concurrency()}, &resp); err != nil {
@@ -225,24 +192,18 @@ func (c *ProbeClient) lease(ctx context.Context) ([]JobDTO, error) {
 	return resp.Jobs, nil
 }
 
-// postResults отдаёт центру пачку результатов (не больше maxResultsPerBatch —
-// режет вызывающий).
 func (c *ProbeClient) postResults(ctx context.Context, results []ResultDTO) error {
 	var resp ResultsResponse
 	if err := c.post(ctx, "/probe/results", ResultsRequest{Results: results}, &resp); err != nil {
 		return err
 	}
 	if resp.Rejected > 0 {
-		// Норма, а не сбой: lease истёк, пока проба чекала, или задание уже
-		// выполнено другой пробой. Центр в таком случае вернёт его в очередь.
+		// норма, не сбой — lease истёк или задание уже выполнено другой пробой.
 		slog.Warn("uptime: probe: results rejected by server", "accepted", resp.Accepted, "rejected", resp.Rejected)
 	}
 	return nil
 }
 
-// post — один POST в центр с Bearer-токеном и JSON-телом; ответ разбирается в
-// out. Любой не-2xx — ошибка (тик пропускается вызывающим). Токен в тексте
-// ошибки не появляется.
 func (c *ProbeClient) post(ctx context.Context, path string, in, out any) error {
 	body, err := json.Marshal(in)
 	if err != nil {
@@ -264,8 +225,7 @@ func (c *ProbeClient) post(ctx context.Context, path string, in, out any) error 
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		// Тело ответа не логируем целиком — только код: центр отвечает
-		// коротким JSON, но доверять его размеру незачем.
+		// тело не логируем целиком — доверять его размеру незачем.
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 		return fmt.Errorf("uptime: probe: %s: unexpected status %d", path, resp.StatusCode)
 	}

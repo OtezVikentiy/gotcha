@@ -39,9 +39,6 @@ func TestMetricUsage(t *testing.T) {
 	}
 }
 
-// TestLogUsage — CheckAndCountLogs/SetLogQuota по образцу TestMetricUsage.
-// logs_count читается через LogUsage (org_usage.logs_count), как и у
-// остальных классов (Usage/TransactionUsage/MetricUsage/ProfileUsage).
 func TestLogUsage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -68,7 +65,6 @@ func TestLogUsage(t *testing.T) {
 	if n, err := svc.LogUsage(ctx, o.ID, now); err != nil || n != 2 {
 		t.Fatalf("LogUsage after 2 accepted = (%d,%v), want (2,nil)", n, err)
 	}
-	// Квота исчерпана: третья попытка отклоняется, счётчик не растёт.
 	if granted, err := svc.CheckAndCountLogs(ctx, o.ID, now, 2, 1); err != nil || granted != 0 {
 		t.Fatalf("3rd (over quota): granted=%v err=%v, want (0,nil)", granted, err)
 	}
@@ -84,7 +80,6 @@ func TestLogUsage(t *testing.T) {
 		t.Fatalf("LogQuota = %d, want 500", got.LogQuota)
 	}
 
-	// Независимость классов: events_count логами не задет.
 	if n, _ := svc.Usage(ctx, o.ID, now); n != 0 {
 		t.Fatalf("events_count = %d, want 0 (untouched by logs)", n)
 	}
@@ -104,12 +99,10 @@ func TestDroppedUsage(t *testing.T) {
 	}
 	now := time.Now()
 
-	// Пустая строка org_usage — все счётчики дропов нулевые.
 	if d, err := svc.DroppedUsage(ctx, o.ID, now); err != nil || d != (org.Dropped{}) {
 		t.Fatalf("initial dropped = (%+v,%v), want ({},nil)", d, err)
 	}
 
-	// Каждый счётчик инкрементируется независимо и на произвольное n.
 	if err := svc.IncDroppedEvents(ctx, o.ID, now, 5); err != nil {
 		t.Fatalf("inc dropped events: %v", err)
 	}
@@ -122,13 +115,9 @@ func TestDroppedUsage(t *testing.T) {
 	if err := svc.IncDroppedProfiles(ctx, o.ID, now, 1); err != nil {
 		t.Fatalf("inc dropped profiles: %v", err)
 	}
-	// IncDroppedLogs — та же схема; dropped_logs теперь тоже входит в
-	// Dropped/DroppedUsage (Fix B волны устранения аудита C1: дропы логов
-	// обязаны быть видны оператору, как и у прочих видов).
 	if err := svc.IncDroppedLogs(ctx, o.ID, now, 4); err != nil {
 		t.Fatalf("inc dropped logs: %v", err)
 	}
-	// Повторный инкремент событий — суммируется (+7 → 12).
 	if err := svc.IncDroppedEvents(ctx, o.ID, now, 7); err != nil {
 		t.Fatalf("inc dropped events 2: %v", err)
 	}
@@ -142,7 +131,6 @@ func TestDroppedUsage(t *testing.T) {
 		t.Fatalf("dropped = %+v, want %+v", d, want)
 	}
 
-	// Принятые счётчики (events_count и др.) счётчиком дропов не задеты.
 	if n, _ := svc.Usage(ctx, o.ID, now); n != 0 {
 		t.Fatalf("events_count = %d, want 0 (drops must not touch accepted usage)", n)
 	}
@@ -175,9 +163,6 @@ func TestProfileUsage(t *testing.T) {
 	}
 }
 
-// TestCheckAndCountEvents проверяет условный атомарный инкремент:
-// при usage==quota следующая попытка отклоняется И счётчик НЕ растёт;
-// безлимит (quota=0) всегда разрешает и растит счётчик.
 func TestCheckAndCountEvents(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -192,7 +177,6 @@ func TestCheckAndCountEvents(t *testing.T) {
 	}
 	now := time.Now()
 
-	// Квота 2: две попытки принимаются (счётчик 1, затем 2).
 	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 2, 1); err != nil || granted != 1 {
 		t.Fatalf("1st: granted=%v err=%v, want (1,nil)", granted, err)
 	}
@@ -203,7 +187,6 @@ func TestCheckAndCountEvents(t *testing.T) {
 		t.Fatalf("usage after 2 accepted = %d, want 2", n)
 	}
 
-	// usage==quota: третья попытка отклоняется, счётчик НЕ растёт.
 	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 2, 1); err != nil || granted != 0 {
 		t.Fatalf("3rd (over quota): granted=%v err=%v, want (0,nil)", granted, err)
 	}
@@ -211,7 +194,6 @@ func TestCheckAndCountEvents(t *testing.T) {
 		t.Fatalf("usage after rejected = %d, want 2 (rejected must not count)", n)
 	}
 
-	// Безлимит (quota=0): всегда разрешает, счётчик продолжает расти.
 	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 0, 1); err != nil || granted != 1 {
 		t.Fatalf("unlimited: granted=%v err=%v, want (1,nil)", granted, err)
 	}
@@ -220,8 +202,6 @@ func TestCheckAndCountEvents(t *testing.T) {
 	}
 }
 
-// TestCheckAndCountTransactions/Metrics/Profiles: тот же условный инкремент по
-// своим колонкам, независимо от events_count.
 func TestCheckAndCountOtherClasses(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -246,7 +226,6 @@ func TestCheckAndCountOtherClasses(t *testing.T) {
 		{"profiles", svc.CheckAndCountProfiles, svc.ProfileUsage},
 	}
 	for _, c := range cases {
-		// Квота 1: первая принята, вторая отклонена без инкремента.
 		if granted, err := c.check(ctx, o.ID, now, 1, 1); err != nil || granted != 1 {
 			t.Fatalf("%s 1st: granted=%v err=%v, want (1,nil)", c.name, granted, err)
 		}
@@ -258,22 +237,11 @@ func TestCheckAndCountOtherClasses(t *testing.T) {
 		}
 	}
 
-	// Классы независимы: events_count не задет.
 	if n, _ := svc.Usage(ctx, o.ID, now); n != 0 {
 		t.Fatalf("events_count = %d, want 0 (untouched by other classes)", n)
 	}
 }
 
-// TestCheckAndCountPartialGrant — квота списывается ЗА ЭЛЕМЕНТ, и списание
-// частичное.
-//
-// Раньше списывалась единица за HTTP-ЗАПРОС: конверт с тысячей событий или
-// экспорт с десятью тысячами OTLP-спанов стоил ровно столько же, сколько одно
-// событие. Квоту можно было обойти на четыре порядка, а org_usage — то, по чему
-// оператор судит о потреблении, — врал на столько же.
-//
-// Частичность важна не меньше: если до квоты осталось меньше, чем в пачке,
-// организация должна получить остаток, а не «последняя пачка целиком мимо».
 func TestCheckAndCountPartialGrant(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -288,7 +256,6 @@ func TestCheckAndCountPartialGrant(t *testing.T) {
 	}
 	now := time.Now()
 
-	// Квота 10, просим 4 — влезает всё.
 	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 10, 4); err != nil || granted != 4 {
 		t.Fatalf("пачка из 4 при квоте 10: granted=%d err=%v, want 4", granted, err)
 	}
@@ -296,7 +263,6 @@ func TestCheckAndCountPartialGrant(t *testing.T) {
 		t.Fatalf("usage = %d, want 4 — списано не за элемент", n)
 	}
 
-	// Просим 100, осталось 6 — влезает ровно остаток.
 	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 10, 100); err != nil || granted != 6 {
 		t.Fatalf("пачка из 100 при остатке 6: granted=%d err=%v, want 6", granted, err)
 	}
@@ -304,7 +270,6 @@ func TestCheckAndCountPartialGrant(t *testing.T) {
 		t.Fatalf("usage = %d, want ровно квоту 10", n)
 	}
 
-	// Квота выбрана — следующая пачка не даёт ничего и счётчик не растёт.
 	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 10, 50); err != nil || granted != 0 {
 		t.Fatalf("пачка при исчерпанной квоте: granted=%d err=%v, want 0", granted, err)
 	}
@@ -312,7 +277,6 @@ func TestCheckAndCountPartialGrant(t *testing.T) {
 		t.Fatalf("usage = %d, want 10 — отвергнутое не должно считаться", n)
 	}
 
-	// Безлимит: списывается вся пачка целиком.
 	if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 0, 1000); err != nil || granted != 1000 {
 		t.Fatalf("безлимит: granted=%d err=%v, want 1000", granted, err)
 	}
@@ -320,7 +284,6 @@ func TestCheckAndCountPartialGrant(t *testing.T) {
 		t.Fatalf("usage = %d, want 1010", n)
 	}
 
-	// Нулевая и отрицательная пачка не трогают счётчик.
 	for _, want := range []int64{0, -5} {
 		if granted, err := svc.CheckAndCountEvents(ctx, o.ID, now, 0, want); err != nil || granted != 0 {
 			t.Fatalf("пачка %d: granted=%d err=%v, want 0", want, granted, err)
@@ -331,9 +294,6 @@ func TestCheckAndCountPartialGrant(t *testing.T) {
 	}
 }
 
-// TestRefundEvents — возврат (T8) уменьшает счётчик месяца ровно на n: та же
-// строка org_usage, что писал CheckAndCountEvents, тот же счётчик
-// (events_count), тот же способ вычисления месяца (см. monthStart).
 func TestRefundEvents(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -359,10 +319,6 @@ func TestRefundEvents(t *testing.T) {
 	}
 }
 
-// TestRefundClampsAtZero — возврат больше списанного не уводит счётчик ниже
-// нуля (GREATEST(...,0) в SQL — защита от рассинхрона, не украшение): гонка
-// параллельных запросов или ошибка вызывающего не обязаны портить usage,
-// который для оператора — источник правды по потреблению.
 func TestRefundClampsAtZero(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -388,9 +344,6 @@ func TestRefundClampsAtZero(t *testing.T) {
 	}
 }
 
-// TestRefundNonPositiveNoop — возврат нулевого/отрицательного n не трогает
-// счётчик: вызывающий (Handler.refund) и так фильтрует n<=0 до вызова, но
-// сам метод обязан быть безопасен и при прямом вызове с таким n.
 func TestRefundNonPositiveNoop(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -418,18 +371,10 @@ func TestRefundNonPositiveNoop(t *testing.T) {
 	}
 }
 
-// refundCounters — снимок всех пяти независимых счётчиков org_usage одной
-// организации за месяц: события, транзакции, метрики, профили, логи.
 type refundCounters struct {
 	events, transactions, metrics, profiles, logs int64
 }
 
-// readRefundCounters читает все пять счётчиков разом — нужно, чтобы после
-// возврата ОДНОГО из них убедиться, что остальные ЧЕТЫРЕ не тронуты. Это
-// главная проверка против опечатки в имени колонки внутри RefundTransactions/
-// RefundMetrics/RefundProfiles/RefundLogs: каждый из них — тонкая обёртка над
-// общим refund(col=...), и подмена col на соседний вернёт квоту НЕ ТОМУ
-// счётчику молча (все запросы отработают без ошибки).
 func readRefundCounters(t *testing.T, svc *org.Service, ctx context.Context, orgID int64, month time.Time) refundCounters {
 	t.Helper()
 	var c refundCounters
@@ -452,10 +397,6 @@ func readRefundCounters(t *testing.T, svc *org.Service, ctx context.Context, org
 	return c
 }
 
-// chargeAllRefundCounters списывает n единиц в КАЖДЫЙ из пяти счётчиков одной
-// строки org_usage — база для тестов RefundTransactions/RefundMetrics/
-// RefundProfiles/RefundLogs: если возврат одного счётчика заденет соседний,
-// это будет видно по readRefundCounters сразу после.
 func chargeAllRefundCounters(t *testing.T, svc *org.Service, ctx context.Context, orgID int64, month time.Time, n int64) {
 	t.Helper()
 	if granted, err := svc.CheckAndCountEvents(ctx, orgID, month, 0, n); err != nil || granted != n {
@@ -475,9 +416,6 @@ func chargeAllRefundCounters(t *testing.T, svc *org.Service, ctx context.Context
 	}
 }
 
-// TestRefundTransactions — RefundTransactions обязан уменьшить ИМЕННО
-// transactions_count и не тронуть остальные четыре счётчика той же строки
-// org_usage (сторож против опечатки в имени колонки — см. readRefundCounters).
 func TestRefundTransactions(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -503,7 +441,6 @@ func TestRefundTransactions(t *testing.T) {
 	}
 }
 
-// TestRefundMetrics — зеркало TestRefundTransactions для metrics_count.
 func TestRefundMetrics(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -529,7 +466,6 @@ func TestRefundMetrics(t *testing.T) {
 	}
 }
 
-// TestRefundProfiles — зеркало TestRefundTransactions для profiles_count.
 func TestRefundProfiles(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -555,7 +491,6 @@ func TestRefundProfiles(t *testing.T) {
 	}
 }
 
-// TestRefundLogs — зеркало TestRefundTransactions для logs_count.
 func TestRefundLogs(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -581,11 +516,6 @@ func TestRefundLogs(t *testing.T) {
 	}
 }
 
-// TestRefundQueryError — ветка ошибки общего refund: пул недоступен (пул уже
-// закрыт), UPDATE обязан вернуть обёрнутую ошибку, а не проглотить её. Без
-// этого теста единственная ошибочная ветка refund оставалась непокрытой, хотя
-// это тот же путь, что делает возврат best-effort у Handler.refund заметным
-// (см. ingest.Handler.refund — он обязан залогировать именно эту ошибку).
 func TestRefundQueryError(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -608,7 +538,6 @@ func TestRefundQueryError(t *testing.T) {
 	if err := svc.RefundEvents(cancelledCtx, o.ID, now, 1); err == nil {
 		t.Fatal("refund с отменённым контекстом = nil error, want ошибку")
 	}
-	// Счётчик не должен был измениться — запрос не выполнился вовсе.
 	if n, _ := svc.Usage(ctx, o.ID, now); n != 5 {
 		t.Fatalf("usage после ошибочного refund = %d, want 5 (без изменений)", n)
 	}

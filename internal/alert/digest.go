@@ -13,58 +13,42 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
-// Enqueuer — интерфейс постановки задачи в очередь, которого Digester
-// требует от своего Outbox. *notify.Outbox реализует его штатно (Enqueue
-// пишет в notification_outbox через pgx). Интерфейс, а не конкретный тип —
-// тот же локальный duck-typing приём, что у escalation.Enqueuer (не
-// импортируем escalation ради одного метода): позволяет тесту подставить
-// фейк, фиксирующий вызовы по каналам, без похода в Postgres.
+// Интерфейс, не конкретный тип — тот же приём, что у escalation.Enqueuer:
+// тест может подставить фейк без похода в Postgres.
 type Enqueuer interface {
 	Enqueue(ctx context.Context, channelID int64, payload map[string]any) error
 }
 
-// digestInterval — как часто проверять, не пора ли разослать сводки.
-// Заметно чаще окна бюджета: сводка должна уйти вскоре после того, как окно
-// закрылось, а не ждать следующего всплеска.
+// Заметно чаще окна бюджета — сводка должна уйти вскоре после его закрытия,
+// не ждать следующего всплеска.
 const digestInterval = 5 * time.Minute
 
-// digestBatch — сколько проектов обрабатывать за тик.
 const digestBatch = 50
 
-// Digester рассылает сводки о подавленных уведомлениях: «подавлено ещё N».
-//
-// Существует потому, что потолок без сводки — это молчаливая потеря. Оператор,
-// у которого сработал бюджет, обязан узнать, что часть алертов не доехала, и
-// сколько именно: иначе «тишина в Telegram» неотличима от «всё спокойно», а это
-// ровно тот исход, ради недопущения которого продукт и существует.
-//
-// Живёт рядом с доставкой (гейт по наличию Outbox, а не по режиму процесса) —
-// тот же урок, что и с воркером доставки: контур, привязанный к режиму, молча
-// не работает в половине конфигураций.
+// Живёт рядом с доставкой (гейт по Outbox, не по режиму процесса) — контур,
+// привязанный к режиму, молча не работает в части конфигураций.
 type Digester struct {
 	Svc    *Service
 	Outbox Enqueuer
 
-	// BaseURL — префикс ссылки на проект в сводке.
+	// Префикс ссылки на проект в сводке.
 	BaseURL string
 
-	// EmailEnabled — см. Evaluator.EmailEnabled.
+	// См. Evaluator.EmailEnabled.
 	EmailEnabled bool
 
-	// Details — политика раскрытия деталей события получателю уведомления
-	// (см. DetailPolicy). Нулевое значение не доверяет никому: детали уходят
-	// только тем, кого оператор подтвердил как свой контур.
+	// Нулевое значение не доверяет никому — детали уходят только тем, кого
+	// оператор подтвердил как свой контур.
 	Details DetailPolicy
 
-	// Locale — локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка
-	// получателя, поэтому язык сводки выбирает оператор (класс №133–136).
+	// GOTCHA_LOCALE инстанса — внешний канал не знает языка получателя, язык
+	// сводки выбирает оператор.
 	Locale i18n.Locale
 
-	// Interval — период тика; 0 → digestInterval.
+	// Период тика; 0 → digestInterval.
 	Interval time.Duration
 }
 
-// Run крутит рассылку сводок до отмены контекста.
 func (d *Digester) Run(ctx context.Context) {
 	interval := d.Interval
 	if interval <= 0 {
@@ -82,8 +66,7 @@ func (d *Digester) Run(ctx context.Context) {
 	}
 }
 
-// Tick — один проход: забрать накопленное и разослать сводки. Экспортирован
-// ради теста: цикл Run проверять неудобно, а сам проход — суть работы.
+// Экспортирован ради теста — цикл Run проверять неудобно.
 func (d *Digester) Tick(ctx context.Context) {
 	batches, err := d.Svc.ClaimSuppressed(ctx, digestBatch)
 	if err != nil {
@@ -98,32 +81,21 @@ func (d *Digester) Tick(ctx context.Context) {
 	}
 }
 
-// send рассылает одну сводку по каналам проекта. K1-2 (аудит перед 1.0):
-// раньше первая же провалившаяся Enqueue обрывала цикл через return —
-// канал, идущий по списку ПОСЛЕ битого (истёкший секрет, недоступный
-// вебхук — то, что реально случается с ОДНИМ конкретным каналом, не со
-// всем Outbox), не получал сводку вовсе, хотя сам был совершенно здоров.
-// Эталон — escalation.Dispatch (notifydispatch.go): ошибка одного канала не
-// должна глушить остальные — здесь тот же приём (slog.Error + errors.Join +
-// continue), не return.
+// Ошибка одного канала не должна глушить остальные — тот же приём, что у
+// escalation.Dispatch (errors.Join + continue, не return).
 func (d *Digester) send(ctx context.Context, b SuppressedBatch) error {
 	channels, err := d.Svc.Channels(ctx, b.ProjectID)
 	if err != nil {
 		return fmt.Errorf("alert: digest channels: %w", err)
 	}
 
-	// Тексты — на языке инстанса (GOTCHA_LOCALE), а не запроса: сводку
-	// читает внешний получатель, у которого нет своей локали (№133–136).
+	// Язык инстанса (GOTCHA_LOCALE), не запроса — у внешнего получателя нет
+	// своей локали.
 	ctx = i18n.WithLocale(ctx, d.Locale)
 	url := fmt.Sprintf("%s/projects/%d/issues", d.BaseURL, b.ProjectID)
 	count := strconv.Itoa(b.Suppressed)
 	subject := i18n.Tf(ctx, "notify.digest.subject", "count", count)
-	// humanize.Time вместо голого .Format(time.RFC3339): получателю письма
-	// нужен человекочитаемый момент ("2026-07-31 18:00 UTC"), а не машинный
-	// "2026-07-31T18:00:00Z" — та же природа находки, что и остальной долг
-	// подпроекта единиц, просто в теле письма, а не на веб-странице. ctx уже
-	// доступен параметром send (используется ниже для Channels/Outbox), новый
-	// прокидывать не пришлось.
+	// Человекочитаемый момент для письма, не машинный RFC3339 формат.
 	body := i18n.Tf(ctx, "notify.digest.body",
 		"count", count, "since", humanize.Time(ctx, b.Since, time.UTC), "url", url)
 

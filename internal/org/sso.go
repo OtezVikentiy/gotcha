@@ -14,36 +14,27 @@ import (
 )
 
 var (
-	// ErrDomainTaken — домен уже привязан к другой организации (UNIQUE domain).
 	ErrDomainTaken = errors.New("org: sso domain already used by another organization")
-	// ErrInvalidSSO — обязательные поля SSO-конфига пусты.
-	ErrInvalidSSO = errors.New("org: sso config requires issuer, client_id, client_secret and domain")
+	ErrInvalidSSO  = errors.New("org: sso config requires issuer, client_id, client_secret and domain")
 )
 
-// SSOConfig — per-org OIDC-конфиг (этап 10). Хранится в org_sso.
 type SSOConfig struct {
 	OrgID        int64
 	Issuer       string
 	ClientID     string
 	ClientSecret string
 	Domain       string
-	DefaultRole  string // 'admin' | 'member'
+	DefaultRole  string
 	Enforced     bool
 }
 
 func normalizeDomain(d string) string { return strings.ToLower(strings.TrimSpace(d)) }
 
-// UpsertSSO создаёт/обновляет SSO-конфиг организации. Валидирует непустые
-// issuer/client_id/client_secret/domain и default_role. Домен, занятый другой
-// организацией → ErrDomainTaken.
 func (s *Service) UpsertSSO(ctx context.Context, cfg SSOConfig) error {
 	cfg.Domain = normalizeDomain(cfg.Domain)
 	if cfg.Issuer == "" || cfg.ClientID == "" || cfg.ClientSecret == "" || cfg.Domain == "" {
 		return ErrInvalidSSO
 	}
-	// Issuer обязан быть https с непустым хостом: по нему идут исходящие вызовы
-	// discovery/JWKS/token (SSRF-поверхность), а http/относительный/битый URL —
-	// либо ошибка, либо попытка увести обмен на подставной эндпойнт.
 	if u, err := url.Parse(cfg.Issuer); err != nil || u.Scheme != "https" || u.Host == "" {
 		return ErrInvalidSSO
 	}
@@ -53,8 +44,6 @@ func (s *Service) UpsertSSO(ctx context.Context, cfg SSOConfig) error {
 	if cfg.DefaultRole != string(RoleAdmin) && cfg.DefaultRole != string(RoleMember) {
 		return ErrInvalidRole
 	}
-	// Шифруем client_secret at-rest, если задан мастер-ключ. Без ключа (dev)
-	// пишем plaintext — читатель это распознаёт по отсутствию префикса "enc:".
 	storedSecret := cfg.ClientSecret
 	if s.secretKeySet {
 		sealed, err := s.ring.Seal(cfg.ClientSecret)
@@ -87,16 +76,9 @@ func scanSSO(row pgx.Row) (SSOConfig, error) {
 	return c, err
 }
 
-// decryptSSO расшифровывает client_secret прочитанного конфига, если задано
-// кольцо ключей. Keyring.Open на legacy-plaintext (без префикса "enc:")
-// вернёт значение как есть, поэтому вызов безопасен и для старых записей.
 func (s *Service) decryptSSO(c SSOConfig) (SSOConfig, error) {
 	if !s.secretKeySet {
 		if secretbox.IsEncrypted(c.ClientSecret) {
-			// Настоящий ciphertext, а ключа нет (сброшен/откачен
-			// GOTCHA_SECRET_KEY): отдать его как есть значило бы уйти в OIDC
-			// token-обмен с client_secret=enc:base64... — тихий отказ логина
-			// вместо явного.
 			return SSOConfig{}, fmt.Errorf("org: sso client_secret is encrypted but no master key is set")
 		}
 		return c, nil
@@ -109,7 +91,6 @@ func (s *Service) decryptSSO(c SSOConfig) (SSOConfig, error) {
 	return c, nil
 }
 
-// SSOByOrg возвращает SSO-конфиг организации, если он есть.
 func (s *Service) SSOByOrg(ctx context.Context, orgID int64) (SSOConfig, bool, error) {
 	row := s.pool.QueryRow(ctx, "SELECT "+ssoColumns+" FROM org_sso WHERE org_id = $1", orgID)
 	c, err := scanSSO(row)
@@ -126,8 +107,6 @@ func (s *Service) SSOByOrg(ctx context.Context, orgID int64) (SSOConfig, bool, e
 	return c, true, nil
 }
 
-// SSOByDomain возвращает SSO-конфиг по email-домену (identifier-first вход и
-// принуждение). Пустой домен → не найдено.
 func (s *Service) SSOByDomain(ctx context.Context, domain string) (SSOConfig, bool, error) {
 	domain = normalizeDomain(domain)
 	if domain == "" {
@@ -148,7 +127,6 @@ func (s *Service) SSOByDomain(ctx context.Context, domain string) (SSOConfig, bo
 	return c, true, nil
 }
 
-// DeleteSSO удаляет SSO-конфиг организации (идемпотентно).
 func (s *Service) DeleteSSO(ctx context.Context, orgID int64) error {
 	if _, err := s.pool.Exec(ctx, "DELETE FROM org_sso WHERE org_id = $1", orgID); err != nil {
 		return fmt.Errorf("org: delete sso: %w", err)

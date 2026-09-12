@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// entries — короткая сборка []TouchEntry из одних имён (без версии агента)
-// для тестов, которым версия не важна.
 func entries(names ...string) []TouchEntry {
 	out := make([]TouchEntry, len(names))
 	for i, n := range names {
@@ -18,12 +16,10 @@ func entries(names ...string) []TouchEntry {
 	return out
 }
 
-// TestToucherThrottles — второй Touch того же имени в пределах every
-// подавляется, upsert вызывается один раз.
 func TestToucherThrottles(t *testing.T) {
 	var mu sync.Mutex
 	calls := map[string]int{}
-	tc := NewToucher(nil, time.Hour, 10) // store=nil: подменяем upsert
+	tc := NewToucher(nil, time.Hour, 10)
 	tc.upsert = func(ctx context.Context, projectID int64, entries []TouchEntry) error {
 		mu.Lock()
 		for _, e := range entries {
@@ -33,8 +29,8 @@ func TestToucherThrottles(t *testing.T) {
 		return nil
 	}
 	tc.Touch(context.Background(), 1, entries("a"))
-	tc.Touch(context.Background(), 1, entries("a")) // в пределах every — подавлен
-	tc.wait()                                       // дождаться горутин
+	tc.Touch(context.Background(), 1, entries("a"))
+	tc.wait()
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -43,9 +39,6 @@ func TestToucherThrottles(t *testing.T) {
 	}
 }
 
-// TestToucherForgetAllowsImmediateRetouch — Forget снимает троттлинг для
-// конкретного (project, host): следующий Touch проходит немедленно, будто
-// его ещё не было.
 func TestToucherForgetAllowsImmediateRetouch(t *testing.T) {
 	var mu sync.Mutex
 	calls := map[string]int{}
@@ -72,11 +65,6 @@ func TestToucherForgetAllowsImmediateRetouch(t *testing.T) {
 	}
 }
 
-// TestToucherRetriesAfterFailedUpsert — провалившийся upsert снимает пометку
-// троттлинга: следующий батч пробует то же имя снова, не дожидаясь every.
-// Иначе недоступность PostgreSQL «съедала» бы регистрацию — last_seen хоста не
-// обновлялся бы ещё минуту после КАЖДОЙ неудачной попытки, и оценщик открыл бы
-// silent-инцидент по живой машине.
 func TestToucherRetriesAfterFailedUpsert(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0
@@ -90,7 +78,7 @@ func TestToucherRetriesAfterFailedUpsert(t *testing.T) {
 
 	tc.Touch(context.Background(), 1, entries("a"))
 	tc.wait()
-	tc.Touch(context.Background(), 1, entries("a")) // every=час, но прошлый upsert провалился
+	tc.Touch(context.Background(), 1, entries("a"))
 	tc.wait()
 
 	mu.Lock()
@@ -108,8 +96,6 @@ func TestToucherRetriesAfterFailedUpsert(t *testing.T) {
 	}
 }
 
-// TestToucherSkipsPathTraversalNames — "." и ".." не регистрируются: имя хоста
-// едет в путь карточки, и такие имена невозможно ни открыть, ни удалить.
 func TestToucherSkipsPathTraversalNames(t *testing.T) {
 	var mu sync.Mutex
 	var got []string
@@ -133,11 +119,6 @@ func TestToucherSkipsPathTraversalNames(t *testing.T) {
 	}
 }
 
-// TestToucherThrottleIgnoresVersionChange — троттлинг ключуется только по
-// имени (touchKey), не по (имя, версия): второй Touch того же имени с ДРУГОЙ
-// версией агента в пределах every всё равно подавляется — упавшая версия
-// долетит со следующим тиком не позже every, форсировать внеочередной upsert
-// ради неё не оправдано (осознанно, спека §3.2).
 func TestToucherThrottleIgnoresVersionChange(t *testing.T) {
 	var mu sync.Mutex
 	var got []TouchEntry
@@ -150,7 +131,7 @@ func TestToucherThrottleIgnoresVersionChange(t *testing.T) {
 	}
 
 	tc.Touch(context.Background(), 1, []TouchEntry{{Name: "a", AgentVersion: "0.6.0"}})
-	tc.Touch(context.Background(), 1, []TouchEntry{{Name: "a", AgentVersion: "0.6.1"}}) // в пределах every — подавлен, версия не долетит
+	tc.Touch(context.Background(), 1, []TouchEntry{{Name: "a", AgentVersion: "0.6.1"}})
 	tc.wait()
 
 	mu.Lock()
@@ -160,8 +141,6 @@ func TestToucherThrottleIgnoresVersionChange(t *testing.T) {
 	}
 }
 
-// TestToucherEvictsOldest — при maxEntries=2 третий уникальный ключ
-// вытесняет самую старую запись, карта не растёт без границы.
 func TestToucherEvictsOldest(t *testing.T) {
 	var mu sync.Mutex
 	calls := map[string]int{}
@@ -188,7 +167,7 @@ func TestToucherEvictsOldest(t *testing.T) {
 	}
 
 	time.Sleep(2 * time.Millisecond)
-	tc.Touch(context.Background(), 1, entries("c")) // должен вытеснить "a" — самую старую запись
+	tc.Touch(context.Background(), 1, entries("c"))
 	tc.wait()
 
 	tc.mu.Lock()
@@ -206,8 +185,6 @@ func TestToucherEvictsOldest(t *testing.T) {
 		t.Fatal("новая запись \"c\" должна попасть в карту")
 	}
 
-	// Раз "a" вытеснена — троттлинг для неё снят, повторный Touch снова
-	// проходит и увеличивает счётчик upsert'ов.
 	tc.Touch(context.Background(), 1, entries("a"))
 	tc.wait()
 

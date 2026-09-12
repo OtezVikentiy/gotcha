@@ -1,10 +1,5 @@
 package db_test
 
-// TestLatestMigrationHasDataTest (internal/guards) требует, чтобы НОВЕЙШАЯ
-// миграция PostgreSQL приезжала с тестом на непустой базе — db.MigratePGTo на
-// схему, уже содержащую строки. На момент этой правки новейшая —
-// 0062_status_page_public_id.up.sql.
-
 import (
 	"context"
 	"strings"
@@ -15,15 +10,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestMigrate0062PublicIDExpandThenContractBack — T1 перехода публичного
-// адреса статус-страницы со slug на непрозрачный ключ (0062 — только expand,
-// slug ослабляется, но остаётся; удалит его 0063). Проверка содержательная:
-// заводим ОДНУ существующую status_page со slug='acme' и убеждаемся, что
-// апгрейд (а) выдал ей public_id вида p_<hex>, (б) заморозил её старый slug
-// в status_page_redirects для будущего 301, (в) освободил slug от NOT
-// NULL/UNIQUE — новые страницы после апгрейда его не задают. Затем откатываем
-// и проверяем, что slug и его constraint вернулись, а новая схема исчезла —
-// иначе down не годится для отладки миграций и up/down/up.
+// Переход публичного адреса slug → public_id: 0062 только expand (slug ослабляется, но остаётся,
+// contract — 0063). Проверяем public_id, freeze в status_page_redirects, снятие NOT NULL/UNIQUE, и up/down/up.
 func TestMigrate0062PublicIDExpandThenContractBack(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -78,11 +66,8 @@ func TestMigrate0062PublicIDExpandThenContractBack(t *testing.T) {
 		 VALUES ($1, 'p_test', 'New', '', true)
 		 RETURNING id`, projectID)
 
-	// Регрессия: INSERT точно в форме старого бинаря (internal/uptime/statuspage.go:74-77)
-	// — явный список из пяти колонок, без public_id. До добавления DEFAULT на
-	// public_id это падало NOT NULL violation при живой миграции на проде: старый
-	// бинарь между выкаткой схемы и выкаткой кода не смог бы создать ни одной
-	// статус-страницы. DEFAULT обязан подставить public_id сам.
+	// Регрессия: INSERT в форме старого бинаря (пять колонок, без public_id) падал NOT NULL до DEFAULT —
+	// между выкаткой схемы и кода бинарь не мог бы создать ни одной статус-страницы.
 	var oldBinaryPageID int64
 	mustScan(t, pool, &oldBinaryPageID,
 		`INSERT INTO status_pages (project_id, slug, title, description, enabled)
@@ -110,10 +95,8 @@ func TestMigrate0062PublicIDExpandThenContractBack(t *testing.T) {
 		t.Fatalf("slug = %q после отката, want 'acme'", slugBack)
 	}
 
-	// Регрессия на CRITICAL из ревью: down.sql безусловно затирал уже
-	// непустой slug на public_id, теряя реальный slug у строк, созданных
-	// старым бинарём ПОСЛЕ up (есть настоящий slug, нет записи в
-	// status_page_redirects, public_id — из DEFAULT). Проверяем обе стороны.
+	// down безусловно затирал непустой slug на public_id, теряя реальный slug у строк старого бинаря
+	// (есть slug, нет записи в status_page_redirects, public_id из DEFAULT). Проверяем обе стороны.
 	var oldBinarySlugBack string
 	if err := pool.QueryRow(ctx,
 		"SELECT slug FROM status_pages WHERE id = $1", oldBinaryPageID).Scan(&oldBinarySlugBack); err != nil {
@@ -124,9 +107,7 @@ func TestMigrate0062PublicIDExpandThenContractBack(t *testing.T) {
 			oldBinarySlugBack, oldBinaryPublicID)
 	}
 
-	// Строка без исходного slug (создана уже в новой модели, публичный ключ
-	// задан явно, редиректа для неё нет) — единственно верный fallback это
-	// её собственный public_id.
+	// Строка без исходного slug и без редиректа — единственный верный fallback это её public_id.
 	var newSlugBack string
 	if err := pool.QueryRow(ctx,
 		"SELECT slug FROM status_pages WHERE id = $1", newPageID).Scan(&newSlugBack); err != nil {

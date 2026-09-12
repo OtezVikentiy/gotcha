@@ -24,7 +24,6 @@ func TestFeedComposition(t *testing.T) {
 		t.Fatalf("EnsureGroup: %v", err)
 	}
 
-	// host-член.
 	memberHostName := "hostmember-" + randSlug(t)
 	memberHost := seedHost(t, pool, projectID, memberHostName)
 	var hostMemberInc int64
@@ -35,7 +34,6 @@ func TestFeedComposition(t *testing.T) {
 		t.Fatalf("SetGroup host: %v", err)
 	}
 
-	// uptime-член, подавлен зависимостью.
 	var monitorID, uptimeMemberInc int64
 	mustScan(t, pool, &monitorID, `
 		INSERT INTO monitors (project_id, name, kind, interval_seconds)
@@ -47,7 +45,6 @@ func TestFeedComposition(t *testing.T) {
 		t.Fatalf("SetGroup uptime: %v", err)
 	}
 
-	// metric-член.
 	var ruleID, metricMemberInc int64
 	mustScan(t, pool, &ruleID, `
 		INSERT INTO metric_alert_rules (project_id, metric_name, aggregation, comparator, threshold)
@@ -59,7 +56,6 @@ func TestFeedComposition(t *testing.T) {
 		t.Fatalf("SetGroup metric: %v", err)
 	}
 
-	// slo-член.
 	var sloID, sloMemberInc int64
 	mustScan(t, pool, &sloID, `
 		INSERT INTO slos (project_id, name, sli_kind, target, window_days)
@@ -90,11 +86,6 @@ func TestFeedComposition(t *testing.T) {
 		t.Fatalf("host member: IncidentID=%d Title=%q SuppressedByDep=%v, want %d/%q/false",
 			h.IncidentID, h.Title, h.SuppressedByDep, hostMemberInc, memberHostName)
 	}
-	// Корень (seedSilent ... true) информирующий, группа и сам член
-	// открыты — все 4 источника обязаны нести HeldByGroup=true (W15): это
-	// не то же самое, что SuppressedByDep (B5, независимый механизм) — тут
-	// корень как раз НЕ suppressed_by_dep, но host-член всё равно молчит,
-	// потому что уведомил корень.
 	if !h.HeldByGroup {
 		t.Fatalf("host member HeldByGroup = false, want true (informing root, open group, open member)")
 	}
@@ -106,9 +97,6 @@ func TestFeedComposition(t *testing.T) {
 	if u.IncidentID != uptimeMemberInc || !u.SuppressedByDep {
 		t.Fatalf("uptime member: IncidentID=%d SuppressedByDep=%v, want %d/true", u.IncidentID, u.SuppressedByDep, uptimeMemberInc)
 	}
-	// SuppressedByDep и HeldByGroup — независимые механизмы (B5 vs D3
-	// groupGate): у uptime-члена здесь оба true одновременно, каждый по
-	// своей причине, ни один не подменяет другой.
 	if !u.HeldByGroup {
 		t.Fatalf("uptime member HeldByGroup = false, want true (independent of SuppressedByDep=true)")
 	}
@@ -120,9 +108,6 @@ func TestFeedComposition(t *testing.T) {
 	if mm.IncidentID != metricMemberInc || mm.Title != "cpu.load" {
 		t.Fatalf("metric member: IncidentID=%d Title=%q, want %d/cpu.load", mm.IncidentID, mm.Title, metricMemberInc)
 	}
-	// metric_incidents не несёт своей колонки suppressed_by_dep (B5
-	// неприменим), но HeldByGroup обязан считаться так же, как для host —
-	// это и есть W15: до фикса он был захардкожен в false для metric/slo.
 	if !mm.HeldByGroup {
 		t.Fatalf("metric member HeldByGroup = false, want true (informing root, open group, open member)")
 	}
@@ -139,12 +124,6 @@ func TestFeedComposition(t *testing.T) {
 	}
 }
 
-// TestFeedCompositionHeldByGroupGates — W15, три независимых гейта,
-// каждый способен в одиночку выключить HeldByGroup, несмотря на то, что
-// остальные условия выполнены: немой корень (notified_open=false), сам член
-// уже закрылся, группа уже закрыта (корень резолвнут). Каждый подтест валит
-// РОВНО одно условие — так мутация, вырезавшая одно `AND` в CTE grp
-// (feedMemberSelect), ловится конкретным подтестом, а не тонет в остальных.
 func TestFeedCompositionHeldByGroupGates(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -153,7 +132,7 @@ func TestFeedCompositionHeldByGroupGates(t *testing.T) {
 	t.Run("silent root", func(t *testing.T) {
 		projectID := seedProject(t, pool)
 		rootHost := seedHost(t, pool, projectID, "root-"+randSlug(t))
-		rootInc := seedSilent(t, pool, projectID, rootHost, false) // notified_open=false — немой корень
+		rootInc := seedSilent(t, pool, projectID, rootHost, false) // немой корень
 		g, err := store.EnsureGroup(ctx, projectID, "host", rootInc, "host", rootHost)
 		if err != nil {
 			t.Fatalf("EnsureGroup: %v", err)
@@ -241,7 +220,6 @@ func TestFeedOpenOutOfGroup(t *testing.T) {
 	projectID := seedProject(t, pool)
 	store := incidentgroup.NewStore(pool)
 
-	// Группа с членом — не должна попасть в OpenOutOfGroup.
 	rootHost := seedHost(t, pool, projectID, "root-"+randSlug(t))
 	rootInc := seedSilent(t, pool, projectID, rootHost, true)
 	g, err := store.EnsureGroup(ctx, projectID, "host", rootInc, "host", rootHost)
@@ -257,14 +235,12 @@ func TestFeedOpenOutOfGroup(t *testing.T) {
 		t.Fatalf("SetGroup: %v", err)
 	}
 
-	// Внегрупповой открытый host-инцидент.
 	loneHost := seedHost(t, pool, projectID, "lone-"+randSlug(t))
 	var loneInc int64
 	mustScan(t, pool, &loneInc, `
 		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail)
 		VALUES ($1,$2,'memory','open',0,0,'') RETURNING id`, projectID, loneHost)
 
-	// Открытая trace-регрессия — всегда вне групп.
 	var traceInc int64
 	mustScan(t, pool, &traceInc, `
 		INSERT INTO perf_regressions (project_id, target_kind, target, metric, baseline_value, peak_value, current_value)
@@ -296,15 +272,10 @@ func TestFeedOpenOutOfGroup(t *testing.T) {
 	if haveGrouped {
 		t.Fatalf("OpenOutOfGroup must NOT contain grouped member %d", groupedInc)
 	}
-	// Корень группы сам никогда не SetGroup'ится (только члены — см.
-	// Grouper.Attach), но во «Вне групп» его быть не должно: он уже показан
-	// в шапке карточки своей группы, иначе один инцидент виден дважды.
 	if haveRoot {
 		t.Fatalf("OpenOutOfGroup must NOT contain the group's own root incident %d (shown in the group card header)", rootInc)
 	}
 
-	// Осиротевшая группа удалена janitor'ом — карточки больше нет, и корень
-	// обязан вернуться во «Вне групп» обычной строкой.
 	if _, err := pool.Exec(ctx, `DELETE FROM incident_groups WHERE id = $1`, g.ID); err != nil {
 		t.Fatalf("delete group: %v", err)
 	}
@@ -323,12 +294,6 @@ func TestFeedOpenOutOfGroup(t *testing.T) {
 	}
 }
 
-// TestFeedRootNotDuplicatedUptime — тот же запрет дубля для uptime-корня
-// (вторая ветка условия): пока группа открыта, корень во «Вне групп» не
-// показывается (он в шапке карточки открытой группы). Как только группа
-// закрывается, корень должен появиться в ClosedSince (R4, W7-warning) — это
-// уже не дубль с (возможно не отрисованной) карточкой закрытой группы, а
-// защита от исчезновения с ленты целиком.
 func TestFeedRootNotDuplicatedUptime(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -355,15 +320,6 @@ func TestFeedRootNotDuplicatedUptime(t *testing.T) {
 		}
 	}
 
-	// Закрываем корень и группу — теперь корень ОБЯЗАН всплыть в ClosedSince
-	// (R4, W7-warning): раньше uptimeNotRoot исключал корень безусловно,
-	// пока хоть какая-то (даже давно закрытая) группа на него ссылалась —
-	// резолвнутый корень резолвнутой группы был виден только в шапке
-	// свёрнутой карточки ClosedGroupsSince и пропадал с ленты целиком, если
-	// сама карточка не отрисовывалась (окно/потолок). uptimeNotRoot теперь
-	// исключает корень только пока его группа ЕЩЁ открыта (см. докблок
-	// hostNotRoot/uptimeNotRoot) — симметрично тому, как notOpenGroupMember
-	// уже трактует обычных членов.
 	if _, err := pool.Exec(ctx, `UPDATE incidents SET resolved_at = now() WHERE id = $1`, rootInc); err != nil {
 		t.Fatalf("resolve root: %v", err)
 	}
@@ -391,8 +347,6 @@ func TestFeedClosedSince(t *testing.T) {
 	projectID := seedProject(t, pool)
 	store := incidentgroup.NewStore(pool)
 
-	// Группа с закрытым членом — член не должен попасть в ClosedSince
-	// (показан внутри свёрнутой карточки группы, не дублируется).
 	rootHost := seedHost(t, pool, projectID, "root-"+randSlug(t))
 	rootInc := seedSilent(t, pool, projectID, rootHost, true)
 	g, err := store.EnsureGroup(ctx, projectID, "host", rootInc, "host", rootHost)
@@ -408,7 +362,6 @@ func TestFeedClosedSince(t *testing.T) {
 		t.Fatalf("SetGroup: %v", err)
 	}
 
-	// Внегрупповой закрытый host-инцидент — должен попасть.
 	loneHost := seedHost(t, pool, projectID, "lone-"+randSlug(t))
 	var loneInc int64
 	mustScan(t, pool, &loneInc, `
@@ -436,13 +389,6 @@ func TestFeedClosedSince(t *testing.T) {
 		t.Fatalf("ClosedSince must NOT contain grouped closed member %d", groupedInc)
 	}
 
-	// Закрытый корень группы (R4, W7-warning): раньше hostNotRoot исключал
-	// его из ClosedSince безусловно, пока хоть какая-то (даже давно
-	// закрытая) группа на него ссылалась — он был виден ТОЛЬКО в шапке
-	// свёрнутой карточки ClosedGroupsSince и пропадал с ленты целиком, если
-	// сама карточка не отрисовывалась. Теперь исключение снято, как только
-	// группа закрывается — root ведёт себя как обычный резолвнутый
-	// инцидент источника, симметрично членам (haveGrouped/haveLone выше).
 	if _, err := pool.Exec(ctx, `UPDATE host_incidents SET status='resolved', resolved_at=now() WHERE id=$1`, rootInc); err != nil {
 		t.Fatalf("resolve root: %v", err)
 	}
@@ -464,16 +410,6 @@ func TestFeedClosedSince(t *testing.T) {
 	}
 }
 
-// TestFeedClosedRootSurvivesCardLimitEviction — сценарий, явно
-// потребованный ревью R4 (W7-warning): ClosedGroupsSince и ClosedSince
-// теперь получают РАЗНЫЕ потолки (W8, incidentfeed.go), и если бы
-// hostNotRoot по-прежнему исключал резолвнутый корень безусловно, у группы,
-// чья карточка не поместилась в потолок ClosedGroupsSince, корень пропадал
-// бы с ленты насовсем — ни в (неотрисованной) карточке, ни в списке
-// закрытых. Заводим 2 закрытые группы, ClosedGroupsSince(..., limit=1)
-// отдаёт только САМУЮ свежую (карточка второй не отрисуется на странице) —
-// и всё равно требуем, чтобы корень ОБЕИХ групп присутствовал в
-// ClosedSince: лимит карточек не должен решать судьбу видимости корня.
 func TestFeedClosedRootSurvivesCardLimitEviction(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -497,7 +433,6 @@ func TestFeedClosedRootSurvivesCardLimitEviction(t *testing.T) {
 	olderRoot := closeRootGroup("evicted")
 	newerRoot := closeRootGroup("kept")
 
-	// Потолок карточек = 1: отрисуется только самая свежая группа (newerRoot).
 	cardGroups, err := store.ClosedGroupsSince(ctx, projectID, since, 1)
 	if err != nil {
 		t.Fatalf("ClosedGroupsSince: %v", err)
@@ -506,8 +441,6 @@ func TestFeedClosedRootSurvivesCardLimitEviction(t *testing.T) {
 		t.Fatalf("ClosedGroupsSince(limit=1) = %+v, want exactly the newer group (root %d)", cardGroups, newerRoot)
 	}
 
-	// Лента (потолок отдельный, W8) обязана показать ОБА корня — включая
-	// тот, чья карточка только что была отрезана лимитом ClosedGroupsSince.
 	feedItems, err := store.ClosedSince(ctx, projectID, since, 50)
 	if err != nil {
 		t.Fatalf("ClosedSince: %v", err)
@@ -581,12 +514,6 @@ func TestFeedGroupsRootNameAndResolvedFilter(t *testing.T) {
 	}
 }
 
-// TestFeedGroupRowRootSeverity — W24: GroupRow несёт RootSeverity корневого
-// инцидента (карточка ленты рисует по нему severity-бейдж, §6.1/1). Host-
-// корень несёт severity host_incidents (проверяем явный 'warning', чтобы не
-// спутать с молчаливым совпадением через DEFAULT 'critical'); uptime-корень
-// — всегда ” (таблица `incidents` вовсе не несёт колонки severity, сама
-// категория неприменима к даунтайму монитора).
 func TestFeedGroupRowRootSeverity(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -639,10 +566,6 @@ func TestFeedGroupRowRootSeverity(t *testing.T) {
 	}
 }
 
-// assertNoFeedLeak — ни один FeedItem из items не должен совпадать по
-// Source+IncidentID со значением из leaks (индексировано по Source):
-// сторож против того, что project_id-фильтр одной из веток feedProjectQuery
-// снят (см. TestFeedTenantIsolationSources).
 func assertNoFeedLeak(t *testing.T, label string, items []incidentgroup.FeedItem, leaks map[string]int64) {
 	t.Helper()
 	for _, it := range items {
@@ -652,16 +575,6 @@ func assertNoFeedLeak(t *testing.T, label string, items []incidentgroup.FeedItem
 	}
 }
 
-// TestFeedTenantIsolationSources — OpenOutOfGroup/ClosedSince объединяют 6
-// источников через общую feedProjectQuery (host/uptime/metric/slo/trace/
-// profile), каждый со своей веткой WHERE ...project_id = $1 AND <cond>.
-// Тест сидирует по одному ОТКРЫТОМУ и одному ЗАКРЫТОМУ инциденту КАЖДОГО из
-// 6 источников в ЧУЖОМ проекте и проверяет, что ни один не просачивается в
-// выдачу для другого (своего) projectID — снятие тенант-фильтра в любой из
-// 6 веток (например trace/profile, у которых project_id хранится прямо на
-// таблице, а не через JOIN, как у host/metric/slo/uptime) должно быть
-// поймано именно здесь, а не только на host-ветке, которую уже покрывали
-// TestFeedOpenOutOfGroup/TestFeedClosedSince.
 func TestFeedTenantIsolationSources(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -669,7 +582,6 @@ func TestFeedTenantIsolationSources(t *testing.T) {
 	otherProjectID := seedProject(t, pool)
 	store := incidentgroup.NewStore(pool)
 
-	// host: чужой открытый + закрытый инцидент.
 	fHost := seedHost(t, pool, otherProjectID, "f-host-"+randSlug(t))
 	var fHostOpen, fHostClosed int64
 	mustScan(t, pool, &fHostOpen, `
@@ -679,7 +591,6 @@ func TestFeedTenantIsolationSources(t *testing.T) {
 		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail, resolved_at)
 		VALUES ($1,$2,'memory','resolved',0,0,'', now()) RETURNING id`, otherProjectID, fHost)
 
-	// uptime: чужой монитор, открытый + закрытый инцидент.
 	var fMonitorID, fUptimeOpen, fUptimeClosed int64
 	mustScan(t, pool, &fMonitorID, `
 		INSERT INTO monitors (project_id, name, kind, interval_seconds)
@@ -691,7 +602,6 @@ func TestFeedTenantIsolationSources(t *testing.T) {
 		INSERT INTO incidents (monitor_id, notified_open, resolved_at)
 		VALUES ($1,true,now()) RETURNING id`, fMonitorID)
 
-	// metric: чужое правило, открытый + закрытый инцидент.
 	var fRuleID, fMetricOpen, fMetricClosed int64
 	mustScan(t, pool, &fRuleID, `
 		INSERT INTO metric_alert_rules (project_id, metric_name, aggregation, comparator, threshold)
@@ -703,7 +613,6 @@ func TestFeedTenantIsolationSources(t *testing.T) {
 		INSERT INTO metric_incidents (rule_id, project_id, status, peak_value, current_value, resolved_at)
 		VALUES ($1,$2,'resolved',1,1,now()) RETURNING id`, fRuleID, otherProjectID)
 
-	// slo: чужой SLO, открытый + закрытый инцидент.
 	var fSloID, fSloOpen, fSloClosed int64
 	mustScan(t, pool, &fSloID, `
 		INSERT INTO slos (project_id, name, sli_kind, target, window_days)
@@ -715,7 +624,6 @@ func TestFeedTenantIsolationSources(t *testing.T) {
 		INSERT INTO slo_incidents (slo_id, project_id, status, burn_rate, resolved_at)
 		VALUES ($1,$2,'resolved',20,now()) RETURNING id`, fSloID, otherProjectID)
 
-	// trace (perf_regressions): открытый + закрытый, project_id прямо на таблице.
 	var fTraceOpen, fTraceClosed int64
 	mustScan(t, pool, &fTraceOpen, `
 		INSERT INTO perf_regressions (project_id, target_kind, target, metric, baseline_value, peak_value, current_value)
@@ -724,7 +632,6 @@ func TestFeedTenantIsolationSources(t *testing.T) {
 		INSERT INTO perf_regressions (project_id, target_kind, target, metric, status, baseline_value, peak_value, current_value, resolved_at)
 		VALUES ($1,'endpoint_p95','/api/f-closed','duration','resolved',100,500,500,now()) RETURNING id`, otherProjectID)
 
-	// profile (profile_regressions): открытый + закрытый, project_id прямо на таблице.
 	var fProfileOpen, fProfileClosed int64
 	mustScan(t, pool, &fProfileOpen, `
 		INSERT INTO profile_regressions (project_id, service, profile_type, function, baseline_share, peak_share, current_share)
@@ -756,11 +663,6 @@ func TestFeedTenantIsolationSources(t *testing.T) {
 	assertNoFeedLeak(t, "ClosedSince", closed, closedLeaks)
 }
 
-// TestFeedTenantIsolationGroups — OpenGroups/ClosedGroupsSince фильтруют
-// incident_groups по одной колонке (g.project_id = $1), но покрытия на
-// два проекта не было ни у одного теста групп — закрываем тем же приёмом,
-// что и TestFeedTenantIsolationSources: чужая открытая и чужая закрытая
-// группа не должны попасть в выдачу для другого projectID.
 func TestFeedTenantIsolationGroups(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -807,12 +709,6 @@ func TestFeedTenantIsolationGroups(t *testing.T) {
 	}
 }
 
-// TestFeedOpenMemberOfResolvedGroupVisible — W1: открытый член группы, чей
-// корень уже закрылся (группа резолвнута), обязан появиться во «Вне групп»
-// СРАЗУ, одновременно оставаясь в составе свёрнутой карточки закрытой
-// группы (Composition) — два разных смысла («открытая работа» vs «упало
-// вместе с этим»), не тот дубль, что чинили для корня. FormerGroup* несёт
-// данные для бейджа feed.badge.was_grouped (бейдж рисует R5).
 func TestFeedOpenMemberOfResolvedGroupVisible(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -875,10 +771,6 @@ func TestFeedOpenMemberOfResolvedGroupVisible(t *testing.T) {
 	}
 }
 
-// TestFeedMemberOfPurgedGroupVisible — W1: то же самое, но группа не
-// резолвнута, а УДАЛЕНА (janitor purge) — group_id члена висит на
-// несуществующую строку. Трактовка та же: член вне группы. FormerGroupID=0
-// — сведений о бывшей группе нигде не осталось (строка удалена).
 func TestFeedMemberOfPurgedGroupVisible(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -922,10 +814,6 @@ func TestFeedMemberOfPurgedGroupVisible(t *testing.T) {
 	}
 }
 
-// TestFeedClosedMemberOfResolvedGroupVisible — W1, симметрия с
-// OpenOutOfGroup: закрывшийся член ЗАКРЫТОЙ группы попадает в ClosedSince —
-// «член резолвнутой группы = вне группы» применяется одинаково к открытым
-// и закрытым членам, не только к открытым.
 func TestFeedClosedMemberOfResolvedGroupVisible(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -966,11 +854,6 @@ func TestFeedClosedMemberOfResolvedGroupVisible(t *testing.T) {
 	}
 }
 
-// TestFeedOpenGroupsLimit — W7: OpenGroups больше не идёт без LIMIT. Заводим
-// MaxOpenGroups+1 открытых групп в одном проекте и проверяем, что стор
-// отдаёт ровно MaxOpenGroups — на доступной ЛЮБОМУ участнику странице
-// (incident-feed, lvlAccess) неограниченная выборка была бы поводом для
-// шторма на большом проекте.
 func TestFeedOpenGroupsLimit(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -995,10 +878,6 @@ func TestFeedOpenGroupsLimit(t *testing.T) {
 	}
 }
 
-// TestFeedOpenOutOfGroupLimit — W7: тот же потолок у OpenOutOfGroup.
-// MaxOpenOutOfGroup+1 внегрупповых открытых perf-регрессий (самый дешёвый
-// источник для сидирования — не требует host/monitor), стор обязан отдать
-// не больше MaxOpenOutOfGroup строк.
 func TestFeedOpenOutOfGroupLimit(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -1021,21 +900,12 @@ func TestFeedOpenOutOfGroupLimit(t *testing.T) {
 	}
 }
 
-// TestFeedCompositionsBatch — W7: Compositions (group_id = ANY($2)) обязана
-// вернуть РОВНО тот же состав, что и Composition в цикле (старый путь
-// incidentfeed.go, N+1) — по группе на группу, без утечки строк между
-// группами через общий CTE grp (главный риск батч-версии: JOIN grp ON true
-// в одиночном запросе годился только потому что там была одна строка на
-// весь запрос; в батче тот же промах молча подмешал бы root_notified_open
-// чужой группы всем остальным).
 func TestFeedCompositionsBatch(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
 	projectID := seedProject(t, pool)
 	store := incidentgroup.NewStore(pool)
 
-	// Группа A: host-корень НЕ информирующий (notified_open=false) — член
-	// не должен получить HeldByGroup=true.
 	hostA := seedHost(t, pool, projectID, "a-"+randSlug(t))
 	rootA := seedSilent(t, pool, projectID, hostA, false)
 	gA, err := store.EnsureGroup(ctx, projectID, "host", rootA, "host", hostA)
@@ -1048,10 +918,6 @@ func TestFeedCompositionsBatch(t *testing.T) {
 		t.Fatalf("SetGroup A: %v", err)
 	}
 
-	// Группа B: host-корень информирующий (notified_open=true) — член
-	// должен получить HeldByGroup=true. Если grp CTE в батче перепутает
-	// группы, HeldByGroup у члена A и B тут же совпадут (оба true либо оба
-	// false) — тест это ловит сравнением обеих групп в одном ответе.
 	hostB := seedHost(t, pool, projectID, "b-"+randSlug(t))
 	rootB := seedSilent(t, pool, projectID, hostB, true)
 	gB, err := store.EnsureGroup(ctx, projectID, "host", rootB, "host", hostB)
@@ -1084,7 +950,6 @@ func TestFeedCompositionsBatch(t *testing.T) {
 		t.Fatalf("member of B (informing root) must have HeldByGroup=true, got false")
 	}
 
-	// Сверка с одиночным Composition — тот же состав по каждой группе.
 	wantA, err := store.Composition(ctx, projectID, gA.ID)
 	if err != nil {
 		t.Fatalf("Composition gA: %v", err)
@@ -1094,9 +959,6 @@ func TestFeedCompositionsBatch(t *testing.T) {
 	}
 }
 
-// TestFeedCompositionsEmptyGroupIDs — пустой список групп не должен ходить в
-// БД вовсе (частый случай: свежий проект без единой группы) и не должен
-// падать — просто пустая карта.
 func TestFeedCompositionsEmptyGroupIDs(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -1112,8 +974,6 @@ func TestFeedCompositionsEmptyGroupIDs(t *testing.T) {
 	}
 }
 
-// TestFeedCompositionsTenantIsolation — W6: группа чужого проекта не должна
-// протечь в батче, той же гарантией, что и у Composition.
 func TestFeedCompositionsTenantIsolation(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -1142,9 +1002,6 @@ func TestFeedCompositionsTenantIsolation(t *testing.T) {
 	}
 }
 
-// seedFeedHostIncidentOpen — открытый host_incidents минимального вида, для
-// тестов Compositions выше (свой хелпер feedIncidentFeedStack недоступен
-// отсюда — internal/web, другой пакет).
 func seedFeedHostIncidentOpen(t *testing.T, pool *pgxpool.Pool, projectID, hostID int64, kind string) int64 {
 	t.Helper()
 	var id int64

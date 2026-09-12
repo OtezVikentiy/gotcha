@@ -67,13 +67,6 @@ func TestWebhookSenderSignsAndPosts(t *testing.T) {
 	}
 }
 
-// TestWebhookSenderDoesNotLeakTransportFields guards against the outbound
-// body echoing channel_kind/target/secret: alert.Evaluator stuffs those
-// transport fields into the outbox payload so the worker can rebuild a
-// notify.Target (see worker.go's process), but WebhookSender must never
-// forward them in the POST body — "secret" in particular is the very key
-// used to sign the request, so leaking it lets anyone reading the
-// receiver's logs forge signed alerts.
 func TestWebhookSenderDoesNotLeakTransportFields(t *testing.T) {
 	var gotBody []byte
 	var gotSig string
@@ -119,8 +112,7 @@ func TestWebhookSenderDoesNotLeakTransportFields(t *testing.T) {
 		t.Errorf("body issue_id = %v, want 42", decoded["issue_id"])
 	}
 
-	// The signature must verify against the bytes actually received (i.e.
-	// signing happens on the filtered body, not the original payload).
+	// Signed over the bytes actually received (filtered body), not the original payload.
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(gotBody)
 	wantSig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
@@ -161,9 +153,6 @@ func TestWebhookSenderNon2xxErrors(t *testing.T) {
 	}
 }
 
-// TestWebhookSenderSSRFBlocksLoopback — без явного Client отправитель берёт
-// SSRF-safe клиент из netguard: при AllowPrivate=false доставка на loopback
-// режется до соединения (защита от мультитенантного SSRF).
 func TestWebhookSenderSSRFBlocksLoopback(t *testing.T) {
 	var hit bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -182,8 +171,6 @@ func TestWebhookSenderSSRFBlocksLoopback(t *testing.T) {
 	}
 }
 
-// TestWebhookSenderSSRFAllowsWhenConfigured — при AllowPrivate=true фильтр
-// отключён и доставка на loopback доходит.
 func TestWebhookSenderSSRFAllowsWhenConfigured(t *testing.T) {
 	var hit bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -202,13 +189,6 @@ func TestWebhookSenderSSRFAllowsWhenConfigured(t *testing.T) {
 	}
 }
 
-// TestTelegramSenderSSRFBlocksLoopback — it-sec P2-1 (2026-08-12):
-// TelegramSender теперь проведён через тот же netguard-транспорт, что
-// WebhookSender — без явного Client и с AllowPrivate=false доставка на
-// loopback режется до соединения, симметрично webhook.go (см.
-// TestWebhookSenderSSRFBlocksLoopback выше). BaseURL сегодня всегда
-// операторский (не арендаторский), так что это defense-in-depth, а не
-// закрытие активной дыры.
 func TestTelegramSenderSSRFBlocksLoopback(t *testing.T) {
 	var hit bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -227,9 +207,6 @@ func TestTelegramSenderSSRFBlocksLoopback(t *testing.T) {
 	}
 }
 
-// TestTelegramSenderSSRFAllowsWhenConfigured — при AllowPrivate=true (нужно
-// операторам со своим telegram-bot-api/прокси на приватном адресе) фильтр
-// отключён и доставка на loopback доходит.
 func TestTelegramSenderSSRFAllowsWhenConfigured(t *testing.T) {
 	var hit bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -298,14 +275,6 @@ func TestTelegramSenderNon2xxErrors(t *testing.T) {
 	}
 }
 
-// TestEmailSenderHonoursContextDeadline guards against EmailSender.Send
-// hanging forever against a blackholed SMTP server: net/smtp.SendMail (the
-// pre-fix implementation) sets no deadlines of its own, so a peer that
-// accepts the TCP connection and then never speaks would stall the
-// sequential Worker.tick loop indefinitely — no alerts would be delivered
-// on ANY channel, not just the broken one. With a ctx carrying a short
-// deadline, Send must return (with an error) close to that deadline
-// instead of hanging.
 func TestEmailSenderHonoursContextDeadline(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -401,16 +370,11 @@ func TestBuildEmailContainsHeadersAndBody(t *testing.T) {
 	}
 }
 
-// TestTelegramSenderTransportErrorDoesNotLeakToken guards against the bot
-// token leaking through *url.Error, which embeds the full request URL
-// (including {secret} from the /bot{secret}/sendMessage path) in its
-// Error() string. A transport-level failure (here: connection refused,
-// standing in for ctx-cancel-during-shutdown / DNS / TLS / timeout) must
-// not surface the token to callers who log or persist Send's error.
+// *url.Error embeds the full request URL (incl. bot token in the path) in
+// Error() — a transport failure must not leak it to callers who log Send's error.
 func TestTelegramSenderTransportErrorDoesNotLeakToken(t *testing.T) {
-	// Bind and immediately close a listener: the port is guaranteed free of
-	// any listener, so a connection attempt is refused at the transport
-	// level (never reaches HTTP), reliably reproducing *url.Error.
+	// Bind+close guarantees a refused connection at the transport level (never
+	// reaches HTTP) — reliably reproduces *url.Error.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -431,15 +395,8 @@ func TestTelegramSenderTransportErrorDoesNotLeakToken(t *testing.T) {
 	}
 }
 
-// TestWebhookSenderTransportErrorDoesNotLeakURL guards against the same
-// *url.Error leak that TestTelegramSenderTransportErrorDoesNotLeakToken
-// covers for the telegram sender: on a transport-level failure, Go's
-// net/http wraps the error in *url.Error, whose Error() string embeds the
-// full request URL. For a webhook that URL routinely carries a bearer
-// token/secret path (Slack-style /T000/B000/secret, or a query-string
-// token), and that error text lands in notification_outbox.last_error,
-// which the deliveries page renders — so the URL must not survive into the
-// error Send returns.
+// Same *url.Error leak as the telegram case: a transport failure embeds the
+// full request URL (with a bearer token path) into notification_outbox.last_error.
 func TestWebhookSenderTransportErrorDoesNotLeakURL(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -461,21 +418,12 @@ func TestWebhookSenderTransportErrorDoesNotLeakURL(t *testing.T) {
 	}
 }
 
-// TestWebhookSenderRequestCreationErrorDoesNotLeakURL is the twin of
-// TestWebhookSenderTransportErrorDoesNotLeakURL: that test covers the
-// *url.Error unwrap on client.Do()'s failure (webhook.go's second errors.As
-// site); this one covers the FIRST site, at http.NewRequestWithContext
-// itself. url.Parse (which NewRequestWithContext calls internally) rejects a
-// raw control character in the URL and returns a *url.Error whose Error()
-// string quotes the full URL verbatim — same leak shape, different call
-// site, so it needs the same errors.As unwrap to keep the secret path out of
-// Send's returned error.
+// Twin of the transport-error test, but for the earlier failure site:
+// http.NewRequestWithContext's own *url.Error (url.Parse rejecting a raw control char).
 func TestWebhookSenderRequestCreationErrorDoesNotLeakURL(t *testing.T) {
 	const secretPath = "/T000/B000/SECRET-PATH-CREATE-321"
-	// \x7f (DEL) is an ASCII control character: net/url rejects it during
-	// parsing, which is exactly where http.NewRequestWithContext's own
-	// *url.Error originates (as opposed to a transport-level failure from
-	// client.Do()).
+	// \x7f (DEL): net/url rejects it during parsing — reproduces
+	// NewRequestWithContext's own *url.Error, not a transport-level failure.
 	target := "http://hooks.example.com" + secretPath + "\x7f"
 
 	sender := &notify.WebhookSender{Client: http.DefaultClient}
@@ -490,11 +438,8 @@ func TestWebhookSenderRequestCreationErrorDoesNotLeakURL(t *testing.T) {
 	}
 }
 
-// fakeRejectingSMTP speaks just enough SMTP to reach the RCPT stage and then
-// rejects the recipient with rcptReply, echoing it back to the test as the
-// error string net/smtp.Client.Rcpt returns. No EHLO extensions are
-// advertised (no STARTTLS/AUTH), so EmailSender.Send never tries TLS/auth
-// against it.
+// Reaches only RCPT, then rejects with rcptReply. No EHLO extensions
+// advertised — Send never tries STARTTLS/AUTH against it.
 func fakeRejectingSMTP(t *testing.T, rcptReply string) (host string, port int) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -542,14 +487,8 @@ func fakeRejectingSMTP(t *testing.T, rcptReply string) (host string, port int) {
 	return host, port
 }
 
-// TestEmailSenderRCPTErrorDoesNotLeakAddress guards against A1 (audit
-// P1-1): a real SMTP server's RCPT rejection routinely echoes the
-// recipient address verbatim in its reply text (e.g. "550 5.1.1
-// <addr>: Recipient address rejected"). That reply becomes err.Error() from
-// net/smtp.Client.Rcpt, and Send used to wrap it as-is with %w — landing the
-// recipient's address straight in notification_outbox.last_error, which the
-// deliveries page renders. The address must not survive into the error Send
-// returns.
+// A real server's RCPT rejection often echoes the address verbatim (e.g.
+// "550 5.1.1 <addr>: ...") — it must not survive into notification_outbox.last_error.
 func TestEmailSenderRCPTErrorDoesNotLeakAddress(t *testing.T) {
 	const addr = "victim@corp.example"
 	host, port := fakeRejectingSMTP(t, fmt.Sprintf("550 5.1.1 <%s>: Recipient address rejected: User unknown", addr))
@@ -567,12 +506,6 @@ func TestEmailSenderRCPTErrorDoesNotLeakAddress(t *testing.T) {
 	}
 }
 
-// TestWebhookSenderNon2xxBodyDoesNotLeakEchoedSecret guards against A1
-// (audit P2-1/ops P0): a broken or malicious receiver can echo the request
-// back in its error body — including the target URL's path, which routinely
-// carries a bearer token (Slack-style /T000/B000/secret). The non-2xx
-// respBody snippet used to be inserted into the error raw; it must not
-// carry the secret path through to notification_outbox.last_error.
 func TestWebhookSenderNon2xxBodyDoesNotLeakEchoedSecret(t *testing.T) {
 	const secretPath = "/T000/B000/SECRET-PATH-456"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -594,10 +527,8 @@ func TestWebhookSenderNon2xxBodyDoesNotLeakEchoedSecret(t *testing.T) {
 	}
 }
 
-// TestWebhookSenderNon2xxBodyDoesNotLeakFullTargetEcho covers the case where
-// the receiver echoes the whole request URL (not just the path) back into
-// the body — the primary case RedactToken(respBody, t.Target) is meant to
-// catch.
+// Receiver echoes the WHOLE URL, not just the path — the case
+// RedactToken(respBody, t.Target) targets.
 func TestWebhookSenderNon2xxBodyDoesNotLeakFullTargetEcho(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
@@ -617,23 +548,15 @@ func TestWebhookSenderNon2xxBodyDoesNotLeakFullTargetEcho(t *testing.T) {
 	}
 }
 
-// TestBuildEmailRejectsHeaderInjection guards against CRLF injection via a
-// user-controlled subject (derived from issue titles). Without
-// sanitization, "\r\n" in the subject terminates the Subject header early
-// and lets an attacker inject arbitrary headers (e.g. Bcc) or spoof the
-// body.
 func TestBuildEmailRejectsHeaderInjection(t *testing.T) {
 	msg := notify.BuildEmail("alerts@gotcha.dev", "ops@example.com", "Hi\r\nBcc: evil@example.com", "body")
 	s := string(msg)
 
-	// "Bcc:" must not start its own header line (i.e. be reachable by
-	// injecting a line break) — the literal text is allowed to survive as
-	// inert subject content, it just must not function as a header.
+	// Bcc: text may survive as inert subject content — it just must not start
+	// its own header line via an injected break.
 	if strings.Contains(s, "\r\nBcc:") || strings.HasPrefix(s, "Bcc:") {
 		t.Errorf("BuildEmail allowed header injection: %q", s)
 	}
-	// The Subject header itself must be confined to a single line: find it
-	// and check there's no embedded CR/LF before the following \r\n.
 	idx := strings.Index(s, "Subject: ")
 	if idx == -1 {
 		t.Fatalf("missing Subject header: %q", s)

@@ -16,10 +16,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// newSLOGrouper — РЕАЛЬНЫЙ incidentgroup.Grouper поверх реального
-// depsuppress.Suppressor (образец host/group_test.go, T4): интеграция
-// slo↔группы тестируется без фейков резолвера корней. Присваивается в поле
-// Evaluator.IncidentGroups структурно (duck-typing sloGroupHook).
+// реальный Grouper поверх реального Suppressor — без фейков резолвера корней.
 func newSLOGrouper(pool *pgxpool.Pool) *incidentgroup.Grouper {
 	return &incidentgroup.Grouper{
 		Pool:  pool,
@@ -28,7 +25,6 @@ func newSLOGrouper(pool *pgxpool.Pool) *incidentgroup.Grouper {
 	}
 }
 
-// seedGroupMonitor — uptime-монитор проекта.
 func seedGroupMonitor(t *testing.T, pool *pgxpool.Pool, projectID int64) int64 {
 	t.Helper()
 	var id int64
@@ -40,9 +36,7 @@ func seedGroupMonitor(t *testing.T, pool *pgxpool.Pool, projectID int64) int64 {
 	return id
 }
 
-// seedOpenUptimeIncident — открытый uptime-инцидент монитора (resolved_at
-// NULL → монитор «упал» для depsuppress); notified управляет гейтом
-// «информирующего корня» (Р4).
+// resolved_at NULL — монитор «упал» для depsuppress; notified — гейт «информирующего корня».
 func seedOpenUptimeIncident(t *testing.T, pool *pgxpool.Pool, monitorID int64, notified bool) int64 {
 	t.Helper()
 	var id int64
@@ -54,7 +48,6 @@ func seedOpenUptimeIncident(t *testing.T, pool *pgxpool.Pool, monitorID int64, n
 	return id
 }
 
-// readSLOGroupID — group_id slo-инцидента (nil — вне групп).
 func readSLOGroupID(t *testing.T, pool *pgxpool.Pool, incidentID int64) *int64 {
 	t.Helper()
 	var gid *int64
@@ -65,10 +58,7 @@ func readSLOGroupID(t *testing.T, pool *pgxpool.Pool, incidentID int64) *int64 {
 	return gid
 }
 
-// burningProvider — фейковый Provider с постоянным прожогом: каждая корзина
-// 80/100 → badRate 0.2, при target 0.99 burn = 20 > порога 14.4 в обоих
-// окнах (OpenSignal). Тестам групп важен переход open, а не математика
-// корзин — она покрыта budget_test.go.
+// каждая корзина 80/100 даёт burn 20 при target 0.99 — выше порога 14.4 в обоих окнах.
 type burningProvider struct{}
 
 func (burningProvider) Buckets(_ context.Context, _ slo.SLO, from, to time.Time, step time.Duration) ([]slo.Bucket, error) {
@@ -85,11 +75,6 @@ func (p burningProvider) BucketsExcluding(ctx context.Context, s slo.SLO, from, 
 	return p.Buckets(ctx, s, from, to, step)
 }
 
-// TestSLOUptimeMemberSilenced — «uptime down → slo-uptime молчит» (сценарий
-// брифа): монитор с открытым УВЕДОМЛЁННЫМ uptime-инцидентом, uptime-SLO на
-// этот монитор прожигает бюджет → SLO-инцидент открыт и в составе группы
-// uptime-корня (same-node membership: DownRoot(monitor) = сам монитор — он
-// упал, упавших предков нет), notifyOpen подавлен (NotifyStep не зовётся).
 func TestSLOUptimeMemberSilenced(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -117,9 +102,8 @@ func TestSLOUptimeMemberSilenced(t *testing.T) {
 
 	notifier := &capturingNotifier{store: st}
 	e := &slo.Evaluator{
-		// Interval задан явно: тикер не используем (Tick дёргается вручную), но от
-		// него считается бюджет тика — с дефолтом бюджет упирается в пол 10s, и на
-		// нагруженной машине (полный прогон, контейнеры) запрос в CH не укладывается.
+		// от Interval считается бюджет тика — с дефолтом он упирается в пол 10s,
+		// и на нагруженной машине запрос в CH может не уложиться.
 		Interval:       time.Hour,
 		Pool:           pool,
 		Store:          st,
@@ -162,9 +146,6 @@ func TestSLOUptimeMemberSilenced(t *testing.T) {
 	}
 }
 
-// TestSLONonUptimeOutsideGroups — SLO без узла дерева зависимостей
-// (availability, monitor_id NULL) → groupGate=false: инцидент открывается
-// вне групп, уведомление штатно.
 func TestSLONonUptimeOutsideGroups(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -191,9 +172,8 @@ func TestSLONonUptimeOutsideGroups(t *testing.T) {
 
 	notifier := &capturingNotifier{store: st}
 	e := &slo.Evaluator{
-		// Interval задан явно: тикер не используем (Tick дёргается вручную), но от
-		// него считается бюджет тика — с дефолтом бюджет упирается в пол 10s, и на
-		// нагруженной машине (полный прогон, контейнеры) запрос в CH не укладывается.
+		// от Interval считается бюджет тика — с дефолтом он упирается в пол 10s,
+		// и на нагруженной машине запрос в CH может не уложиться.
 		Interval:       time.Hour,
 		Pool:           pool,
 		Store:          st,
@@ -219,11 +199,8 @@ func TestSLONonUptimeOutsideGroups(t *testing.T) {
 	}
 }
 
-// TestSLOOpenUnackedGroupGating — анти-залповый OpenUnacked (зеркало host
-// T4/3-4 на slo_incidents): член ОТКРЫТОЙ группы исключён из выборки
-// планировщика (Р5); после Resolve группы — вернулся, и его StartedAt =
-// GREATEST(started_at, resolved_at) — лесенка бывшего члена стартует от
-// момента освобождения, а не от started_at трёхчасовой давности (BLOCKER-1).
+// член открытой группы исключён из OpenUnacked; после Resolve группы возвращается
+// с StartedAt = GREATEST(started_at, resolved_at), а не старым started_at.
 func TestSLOOpenUnackedGroupGating(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()

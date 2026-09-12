@@ -16,96 +16,56 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
-// Kinds оутбокса встроенных инцидентов хоста — калька
-// metric_alert_open/metric_alert_resolved (см. internal/notify/redact.go,
-// redactedKindKeys).
 const (
 	hostAlertOpenKind     = "host_alert_open"
 	hostAlertResolvedKind = "host_alert_resolved"
-	// hostRetiredKind — хост снят с наблюдения по ретенции (см.
-	// HostNotifier.HostRetired и Retirer).
-	hostRetiredKind = "host_retired"
+	hostRetiredKind       = "host_retired"
 )
 
-// depCounter — счётчик задекларированных детей узла (D3 Р9,
-// depsuppress.Suppressor.DeclaredChildrenCount). Duck-typed, как Notifier у
-// Evaluator: пакету host не нужен весь Suppressor, а nil-значение законно —
-// уведомления не зависят от D3.
 type depCounter interface {
 	DeclaredChildrenCount(ctx context.Context, kind string, nodeID int64) (int, error)
 }
 
-// HostNotifier рассылает уведомления об открытии/закрытии встроенных
-// инцидентов хоста (диск/память/нагрузка/тишина) через общий outbox по
-// каналам проекта — калька metric.MetricNotifier. Реализует host.Notifier.
 type HostNotifier struct {
 	Alerts       *alert.Service
 	Outbox       *notify.Outbox
 	BaseURL      string
 	EmailEnabled bool
 
-	// Details — политика раскрытия деталей события получателю уведомления
-	// (см. alert.DetailPolicy). Нулевое значение не доверяет никому.
+	// Нулевое значение не раскрывает детали никому.
 	Details alert.DetailPolicy
 
-	// Locale — локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка
-	// получателя, поэтому язык уведомления выбирает оператор (класс №133–136).
+	// Локаль инстанса (GOTCHA_LOCALE), не запроса — внешний канал не знает языка получателя.
 	Locale i18n.Locale
 
-	// Incidents/Hosts/Settings — источники перезагрузки инцидента по ID (B4,
-	// T6): планировщик эскалации (T8) хранит только incidentID, у NotifyStep/
-	// NotifyRecovery нет готового Incident/Host/Settings на входе, как у
-	// HostIncidentOpened/Resolved.
+	// Источники повторной загрузки инцидента по ID — эскалация хранит только incidentID.
 	Incidents *IncidentService
 	Hosts     *Store
 	Settings  *SettingsService
 
-	// Pool — та же PG, что под Incidents/Hosts/Alerts/Outbox: пишет лог
-	// эскалации incident_escalations (B4, T6, миграция 0077) после каждого
-	// успешного Enqueue в NotifyStep.
 	Pool *pgxpool.Pool
 
-	// DepCounts — источник числа задекларированных детей хоста для строки
-	// «Зависимых узлов: N» в open-уведомлении инцидента недоступности (D3
-	// Р9, см. depsLine). nil — строки нет; Retirer-экземпляр в main.go
-	// оставляет поле пустым намеренно (он шлёт только retire/close).
+	// nil — строки нет; Retirer оставляет пустым нарочно, шлёт только retire/close.
 	DepCounts depCounter
 
-	// Projects — источник имени проекта для темы/тела/webhook-payload
-	// уведомления (W3-E). nil-совместим (escalation.ProjectNamer) — тогда
-	// уведомления идут без имени проекта, как до этой правки.
+	// nil-совместим — тогда уведомления идут без имени проекта.
 	Projects escalation.ProjectNamer
 }
 
-// HostIncidentOpened реализует host.Notifier: инцидент открыт, ставит задачу
-// в Outbox на каждый deliverable-канал проекта. Ошибка постановки всплывает
-// вызывающему — по ней Evaluator решает, честно ли ставить notified_open.
+// Ошибка возврата всплывает вызывающему — по ней Evaluator решает, ставить ли notified_open.
 func (n *HostNotifier) HostIncidentOpened(ctx context.Context, in Incident, h Host, s Settings) error {
 	threshold, hasThreshold := thresholdFor(in.Kind, s)
 	return n.send(ctx, in, h, true, threshold, hasThreshold)
 }
 
-// HostIncidentResolved реализует host.Notifier: инцидент закрыт. Порог
-// контрактом интерфейса сюда не передаётся (Settings могли смениться между
-// открытием и закрытием инцидента) — сообщение показывает только фактическое
-// значение на момент закрытия.
+// Порог не передаётся: Settings могли смениться между открытием и закрытием —
+// тело показывает только фактическое значение на момент закрытия.
 func (n *HostNotifier) HostIncidentResolved(ctx context.Context, in Incident, h Host) error {
 	return n.send(ctx, in, h, false, 0, false)
 }
 
-// HostRetired реализует RetireNotifier: хост не присылал данные дольше срока
-// хранения метрик, его открытые инциденты закрываются и сам он удаляется (см.
-// Retirer). Одно сообщение на хост, а не на инцидент: у мёртвого сервера
-// открытыми висят все пороги разом (оценщик считает только живые хосты, см.
-// Evaluator.Tick), и письмо на каждый было бы четырёхкратным шумом об одном
-// событии.
-//
-// Отдельный вид, а не host_alert_resolved: текст закрытия говорит «порог
-// вернулся в норму», что про снимаемый с наблюдения сервер прямо неверно —
-// оператор прочитал бы «машина ожила» ровно там, где она окончательно ушла.
-//
-// Ссылка ведёт на список хостов: карточки этого хоста через мгновение не
-// станет, и звать по ней некуда.
+// Отдельный вид, а не host_alert_resolved: «вернулось в норму» было бы неверно для снятого с наблюдения.
+// Ссылка — на список хостов: карточка этого хоста тут же исчезнет.
 func (n *HostNotifier) HostRetired(ctx context.Context, h Host, open []Incident) error {
 	ctx = i18n.WithLocale(ctx, n.Locale)
 	link := n.listLink(h.ProjectID)
@@ -113,11 +73,8 @@ func (n *HostNotifier) HostRetired(ctx context.Context, h Host, open []Incident)
 	subject := i18n.Tf(ctx, "notify.host_retired.subject", "host", h.Name)
 	body := i18n.Tf(ctx, "notify.host_retired.body",
 		"host", h.Name, "kinds", kinds, "url", link)
-	// host_kinds — сырые виды закрытых порогов, а не подпись из kinds:
-	// «host_kind» у остальных уведомлений хоста несёт enum, и класть в
-	// соседнее поле локализованное перечисление значило бы отдать webhook-
-	// получателю два разных типа под похожими именами. Подпись для человека
-	// уже есть в subject/body.
+	// Здесь сырые kind'ы, не подпись: у прочих уведомлений «host_kind» несёт enum, а
+	// локализованная строка в соседнем поле дала бы webhook два разных типа под похожими именами.
 	rawKinds := make([]string, 0, len(open))
 	for _, in := range open {
 		rawKinds = append(rawKinds, in.Kind)
@@ -130,9 +87,7 @@ func (n *HostNotifier) HostRetired(ctx context.Context, h Host, open []Incident)
 	return err
 }
 
-// kindLabels — виды закрываемых инцидентов человекочитаемым перечислением
-// («Диск, Тишина»). Без кавычек-ёлочек вокруг каждого: перечисление подставляется
-// в шаблон целиком, и пунктуация списка — дело шаблона локали, а не Go.
+// Без кавычек-ёлочек вокруг каждого вида: пунктуация списка — дело шаблона локали, не Go.
 func kindLabels(ctx context.Context, open []Incident) string {
 	labels := make([]string, 0, len(open))
 	for _, in := range open {
@@ -141,9 +96,7 @@ func kindLabels(ctx context.Context, open []Incident) string {
 	return strings.Join(labels, ", ")
 }
 
-// thresholdFor возвращает порог вида инцидента из Settings проекта.
-// ok=false для незнакомого kind (не должно случаться — Kind приходит из
-// Kinds, но явная сигнатура честнее, чем молчаливый 0).
+// ok=false для незнакомого kind — не должно случаться, но явный сигнал честнее тихого 0.
 func thresholdFor(kind string, s Settings) (float64, bool) {
 	switch kind {
 	case "disk":
@@ -159,11 +112,8 @@ func thresholdFor(kind string, s Settings) (float64, bool) {
 	}
 }
 
-// send — общая постановка задачи в Outbox для открытия и закрытия: строит
-// тексты по локали инстанса и рассылает по всем deliverable-каналам проекта.
 func (n *HostNotifier) send(ctx context.Context, in Incident, h Host, opened bool, threshold float64, hasThreshold bool) error {
-	// Тексты — на языке инстанса, а не запроса: уведомление читает внешний
-	// получатель, у которого нет своей локали.
+	// Тексты на языке инстанса, не запроса: у внешнего получателя своей локали нет.
 	ctx = i18n.WithLocale(ctx, n.Locale)
 
 	kind := hostAlertOpenKind
@@ -191,10 +141,7 @@ func (n *HostNotifier) send(ctx context.Context, in Incident, h Host, opened boo
 	return err
 }
 
-// depsLine — строка «Зависимых узлов: N» для open-уведомления инцидента
-// НЕДОСТУПНОСТИ (kind='silent', Р9): N — число задекларированных детей
-// одного уровня (нейтральная формулировка MINOR-7). Пусто при N=0, ошибке
-// или отсутствии счётчика — уведомление не должно зависеть от D3.
+// Пусто при N=0, ошибке или отсутствии счётчика — не должно зависеть от deps-подсистемы.
 func (n *HostNotifier) depsLine(ctx context.Context, in Incident, h Host) string {
 	if n.DepCounts == nil || in.Kind != "silent" {
 		return ""
@@ -210,17 +157,8 @@ func (n *HostNotifier) depsLine(ctx context.Context, in Incident, h Host) string
 	return i18n.Tf(ctx, "notify.host.deps_affected", "count", strconv.Itoa(cnt))
 }
 
-// NotifyStep — эскалационное уведомление открытого инцидента хоста (B4, T6):
-// повтор OPEN-текста (эскалация — это повтор открывающего алерта, не новый
-// вид события) в ЗАДАННЫЕ channelIDs. Возвращает каналы, в которые РЕАЛЬНО
-// поставлена задача (deliverable-подмножество channelIDs, прошедшее фильтры
-// dispatch) — лог incident_escalations пишет ОРКЕСТРАЦИЯ (escalation.
-// SendStepIfDue), а не сам нотифаер (реролл B4, T7-fix): логирование внутри
-// NotifyStep работало только с реальным нотифаером и молчало с мок-
-// нотифаерами тестов, из-за чего RecoveryChannels (лог) не находил ничего и
-// recovery немо. Инцидент/хост/настройки грузятся заново по ID — планировщик
-// эскалации (T8) хранит только incidentID, не сам объект. channelIDs
-// nil/пусто — все deliverable-каналы проекта (как у HostIncidentOpened).
+// Лог incident_escalations пишет оркестрация (SendStepIfDue), не этот метод.
+// channelIDs nil/пусто — все deliverable-каналы проекта.
 func (n *HostNotifier) NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) ([]int64, error) {
 	in, ok, err := n.Incidents.GetByID(ctx, incidentID)
 	if err != nil {
@@ -264,9 +202,7 @@ func (n *HostNotifier) NotifyStep(ctx context.Context, incidentID int64, channel
 		link, extra, channelIDs)
 }
 
-// NotifyRecovery — CLOSE-уведомление инцидента хоста (B4, T6) в ЗАДАННЫЕ
-// channelIDs (recovery не эскалирует — не логируется вообще, ни здесь, ни в
-// оркестрации). Инцидент/хост грузятся заново по ID, как в NotifyStep.
+// В отличие от NotifyStep, recovery не логируется нигде — ни здесь, ни в оркестрации.
 // channelIDs nil/пусто — все deliverable-каналы проекта.
 func (n *HostNotifier) NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error {
 	in, ok, err := n.Incidents.GetByID(ctx, incidentID)
@@ -304,9 +240,7 @@ func (n *HostNotifier) NotifyRecovery(ctx context.Context, incidentID int64, cha
 	return err
 }
 
-// cardLink / listLink — адреса карточки хоста и списка хостов проекта.
-// Карточка адресуется ИМЕНЕМ машины (id-адресации у хоста нет), поэтому
-// вторая нужна везде, где имя показывать нельзя или показывать уже нечего.
+// Карточка адресуется именем хоста (id-адресации нет) — listLink нужен, если имя не показать.
 func (n *HostNotifier) cardLink(projectID int64, name string) string {
 	return fmt.Sprintf("%s/projects/%d/hosts/%s", n.BaseURL, projectID, url.PathEscape(name))
 }
@@ -315,29 +249,8 @@ func (n *HostNotifier) listLink(projectID int64) string {
 	return fmt.Sprintf("%s/projects/%d/hosts", n.BaseURL, projectID)
 }
 
-// dispatch — сборка списка каналов проекта и передача готового уведомления в
-// общий контур доставки (escalation.Dispatch, W3-E): гейт доставляемости,
-// фильтр channelIDs, email-fallback, имя проекта, редакция ПДн — всё это
-// раньше было переписано здесь же (седьмая копия из семи, см. отчёт W3-E) и
-// уже успело разойтись с остальными шестью (ContainsID, адресность
-// recovery). Возвращает ID каналов, в которые задача РЕАЛЬНО поставлена —
-// логировать их в incident_escalations или нет, решает вызывающая
-// оркестрация (escalation.SendStepIfDue), не dispatch: тот же enqueued-
-// список нужен и NotifyStep (лог), и никому больше.
-//
-// extra — поля payload сверх маршрутного минимума (имя хоста, значения,
-// порог): доменная специфика host, контур сам их не строит, только
-// подмешивает и вырезает гейтом трансграничной передачи при обезличивании.
-//
-// channelIDs (B4, T6) — набор каналов, в которые слать: nil/пусто — все
-// deliverable-каналы проекта (старое поведение open/close/retired, см. send/
-// HostRetired), непустой — фильтр по членству ПОСЛЕ Deliverable/email-гейта
-// (эскалация в конкретную ступень лесенки, NotifyStep/NotifyRecovery).
-//
-// listLink как RedactedURL — карточка хоста адресуется именем машины
-// (/projects/{id}/hosts/{name}, id-адресации у хоста нет), и полная ссылка
-// унесла бы имя в Telegram даже при выключенных деталях; список хостов
-// проекта такой детали не несёт.
+// Возвращает каналы, куда реально поставлено — логировать их решает вызывающая оркестрация.
+// channelIDs непустой — фильтр по членству ПОСЛЕ Deliverable/email-гейта, не вместо него.
 func (n *HostNotifier) dispatch(ctx context.Context, projectID int64, kind, subject, body, link string, extra map[string]any, channelIDs []int64) ([]int64, error) {
 	channels, err := n.Alerts.Channels(ctx, projectID)
 	if err != nil {
@@ -358,24 +271,14 @@ func (n *HostNotifier) dispatch(ctx context.Context, projectID int64, kind, subj
 		escalation.DispatchDeps{Outbox: n.Outbox, EmailEnabled: n.EmailEnabled, Projects: n.Projects, LogTag: "host"},
 		escalation.DispatchInput{
 			ProjectID: projectID, Kind: kind, Subject: subject, Body: body,
+			// RedactedURL — listLink, не card: полная ссылка унесла бы имя хоста в Telegram даже без деталей.
 			URL: link, RedactedURL: n.listLink(projectID), Extra: extra,
 			ChannelIDs: channelIDs, Channels: dchans,
 		})
 }
 
-// hostSubject / hostBody строят тексты из каталога i18n — по локали, положенной
-// в ctx (класс №133–136: язык внешнего канала задаёт GOTCHA_LOCALE, см.
-// HostNotifier.Locale). Вид порога — динамическая группа "hosts.kind." от
-// Kinds (см. internal/guards/i18n_dynamic_test.go).
-//
-// Русские шаблоны подставляют {kind} ВНУТРЬ кавычек-ёлочек («превышен порог
-// «Память»»), а не делают его подлежащим фразы (UX-аудит A1, P1-2). Раньше
-// было «{kind} — вернулся в норму», и подстановка давала «Память — вернулся»,
-// «Тишина — вернулся»: род сказуемого нельзя согласовать со списком видов,
-// у которых он разный. Второй дефект того же текста — «превышена тишина»:
-// молчание хоста порогом «превышается» только формально, поэтому оба
-// сообщения говорят о ПОРОГЕ, а не о величине. Английские шаблоны
-// ("{kind} threshold breached") согласования не требуют и оставлены как есть.
+// Русские шаблоны ставят {kind} внутри кавычек-ёлочек, не подлежащим фразы: род сказуемого
+// не согласовать со всеми видами разом («Тишина — вернулся» звучит криво, «превышен порог «Тишина»» — нет).
 func hostSubject(ctx context.Context, in Incident, h Host, opened bool) string {
 	key := "notify.host_alert_resolved.subject"
 	if opened {
@@ -388,9 +291,7 @@ func hostBody(ctx context.Context, in Incident, h Host, opened bool, threshold f
 	kindLabel := i18n.T(ctx, "hosts.kind."+in.Kind)
 	value := ValueLabel(ctx, in.Kind, in.CurrentValue)
 
-	// detailLine/thresholdLine — необязательные вставки: пустая строка не
-	// оставляет в теле сообщения ни висящего плейсхолдера, ни пустой строки
-	// там, где для disk/memory/load и т.п. взять нечего.
+	// Пустая строка вместо плейсхолдера — не оставляет висящих меток там, где брать нечего.
 	detailLine := ""
 	if in.Detail != "" {
 		detailLine = i18n.Tf(ctx, "notify.host_alert.detail_line", "detail", in.Detail)

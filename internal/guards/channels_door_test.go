@@ -6,20 +6,10 @@ import (
 	"testing"
 )
 
-// channelsDoorFuncHeaderRe — заголовок метода Handler вида
-// "func (h *Handler) Name(" в начале строки: используется, чтобы знать, В
-// КАКОЙ функции найден вызов h.Alerts.Channels(...) — allowlist сторожа
-// ниже разрешает конкретные ИМЕНА функций, а не строки текста (в отличие от
-// большинства сторожей пакета, которые сверяются построчно).
+// Разрешает по имени функции, где найден вызов, а не по строке текста —
+// в отличие от большинства сторожей пакета.
 var channelsDoorFuncHeaderRe = regexp.MustCompile(`^func \(h \*Handler\) (\w+)\(`)
 
-// channelsDoorAllowlist — единственные функции internal/web, которым
-// разрешено звать h.Alerts.Channels(...) напрямую, в обход
-// channelsForView (internal/web/operate.go, находка B1). До находки B1
-// маскировка Target/Secret для не-admin была продублирована по каждому
-// сайту рендера отдельно — новый сайт, забывший про маску, тихо показал бы
-// оператору сырой адрес или секрет канала. Теперь дверь одна, и этот
-// список — единственные легитимные исключения:
 var channelsDoorAllowlist = []Exemption{
 	{Value: "channelsForView", Why: "сама дверь — читает сырые каналы из БД и маскирует Target/зануляет Secret для !canManage, прежде чем отдать их дальше", Finding: "B1"},
 	{Value: "alertsChannelUpdate", Why: "admin channel-CRUD: ищет канал по channel_id из формы, чтобы взять его текущий Kind (тип каналом не редактируется) — requireProjectRole выше уже требует owner/admin, санировать для оператора нечего", Finding: "B1"},
@@ -28,17 +18,9 @@ var channelsDoorAllowlist = []Exemption{
 	{Value: "gettingStarted", Why: "issues.go:182 — результат используется только как len(channels) > 0 для чек-листа онбординга; ни Target, ни Secret не покидают эту функцию, санировать нечего (count-only)", Finding: "B1"},
 }
 
-// maxChannelsDoorAllowlist — потолок списка: пять записей на момент
-// закрытия находки B1 (дверь сама + три admin-CRUD хендлера, которым нужен
-// сырой канал по ID, + один count-only вызов). Расти должен только вместе с
-// осознанным добавлением новой легитимной причины читать каналы напрямую.
+// Расти должен только вместе с осознанным добавлением новой легитимной причины.
 const maxChannelsDoorAllowlist = 5
 
-// TestChannelsGoThroughOneDoor — сорс-guard находки B1: любой вызов
-// h.Alerts.Channels(...) в internal/web вне channelsDoorAllowlist —
-// нарушение. Раньше "следующая страница, которая отрендерит канал" могла
-// незаметно забыть про маскировку — теперь это красный тест, а не находка
-// аудита постфактум.
 func TestChannelsGoThroughOneDoor(t *testing.T) {
 	tree := Load(t)
 	allowed := ExemptedValues(channelsDoorAllowlist)

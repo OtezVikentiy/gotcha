@@ -1,7 +1,6 @@
 -- backward-compatible: yes (аддитивно — новая таблица и её индексы)
--- Заявки на фоновую выгрузку ошибок и событий. Таблица работает как очередь:
--- воркер берёт заявку через FOR UPDATE SKIP LOCKED и держит лизу в claimed_at,
--- поэтому падение инстанса не оставляет заявку висеть навсегда.
+-- Очередь: воркер берёт заявку FOR UPDATE SKIP LOCKED, держит лизу в claimed_at —
+-- падение инстанса не оставляет её висеть навсегда.
 CREATE TABLE export_jobs (
     id             bigserial PRIMARY KEY,
     project_id     bigint NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

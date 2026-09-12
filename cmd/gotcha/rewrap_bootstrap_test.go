@@ -19,10 +19,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// capturingLogHandler — slog.Handler, копящий Record'ы в срез вместо вывода.
-// Тот же приём, что internal/alert.capturingLogHandler (rewrap_secrets_test.go):
-// не годится под t.Parallel(), потому что slog.SetDefault меняет глобальный
-// логгер процесса.
+// Не годится под t.Parallel(): slog.SetDefault меняет глобальный логгер процесса.
 type capturingLogHandler struct {
 	records *[]slog.Record
 }
@@ -35,13 +32,6 @@ func (h capturingLogHandler) Handle(_ context.Context, r slog.Record) error {
 func (h capturingLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h capturingLogHandler) WithGroup(string) slog.Handler      { return h }
 
-// TestRewrapAllSecretsCallSiteOrder — структурная проверка контракта
-// «бэкфилл до слушателя», который не поднять юнит-тестом целиком (run()
-// блокируется на сигнале и требует полного окружения — см. методику в
-// internal/guards/handlerassembly_test.go: go/ast разбирает исходник, а не
-// компилирует, и не привязан к номерам строк, которые смещаются от правки к
-// правке). Мутация «перенести вызов rewrapAllSecrets после ListenAndServe»
-// обязана уронить именно этот тест.
 func TestRewrapAllSecretsCallSiteOrder(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "main.go", nil, 0)
@@ -85,10 +75,6 @@ func TestRewrapAllSecretsCallSiteOrder(t *testing.T) {
 			"ротации в том же рестарте", fset.Position(rewrapPos), fset.Position(listenPos))
 	}
 
-	// Сигнатура без возврата ошибки — часть контракта «отказ прохода не
-	// роняет старт»: run() физически не может получить err от rewrapAllSecrets
-	// и вернуть его наверх. Мутация «добавить error и уронить старт» обязана
-	// уронить эту проверку тоже, не только TestRewrapAllSecretsErrorDoesNotStopStart.
 	var decl *ast.FuncDecl
 	ast.Inspect(file, func(n ast.Node) bool {
 		if fn, ok := n.(*ast.FuncDecl); ok && fn.Name.Name == "rewrapAllSecrets" {
@@ -106,19 +92,6 @@ func TestRewrapAllSecretsCallSiteOrder(t *testing.T) {
 	}
 }
 
-// TestWireSecretRingBuildsKeyringFromCurrentAndPrevious — прямая проверка
-// половины «проводки кольца» (находка ревью T5), которую run() раньше делал
-// инлайном необёрнутым вызовом secretbox.NewKeyring(cfg.SecretKey,
-// cfg.SecretKeyPrev): мутация «previous заменён на пустую строку» (кольцо
-// теряет предыдущий ключ, ротация молча перестаёт работать — старые значения
-// станут нечитаемыми, а бэкфилл их пропустит) проходила мимо CI, потому что
-// ни один тест не звал сборку кольца ЧЕРЕЗ bootstrap-код — только
-// собранными вручную кольцами (secretbox.NewKeyring напрямую в
-// TestRewrapAllSecretsRotationRoundTrip). Здесь наоборот: current и previous
-// заведомо разные строки, и обе ветки (current и previous) сверяются
-// раздельно с эталонными кольцами, собранными secretbox.NewKeyring напрямую
-// — так перепутанные местами аргументы тоже ловятся (CurrentID() совпал бы
-// с previous-эталоном, а не с current).
 func TestWireSecretRingBuildsKeyringFromCurrentAndPrevious(t *testing.T) {
 	const (
 		current  = "wire-secret-ring-master-current"
@@ -152,20 +125,6 @@ func TestWireSecretRingBuildsKeyringFromCurrentAndPrevious(t *testing.T) {
 	}
 }
 
-// TestWireSecretRingDistributesSameRingToAllThree — структурная проверка
-// второй половины «проводки кольца»: ровно три вызова SetKeyring внутри
-// wireSecretRing, и ВСЕ — с одним и тем же идентификатором (тем самым, в
-// который присвоен результат secretbox.NewKeyring выше по функции). Юнит-
-// тестом этот факт не накрыть: org.Service/alert.Service/uptime.Service не
-// отдают своё внутреннее кольцо наружу (unexported-поле — см. их SetKeyring),
-// а поднимать ради этого реальную БД, чтобы косвенно доказывать через
-// сквозное шифрование/расшифровку «раздано ли ОДНО и ТО ЖЕ кольцо трём
-// сервисам» — избыточно: это чисто структурный факт исходника, тем же
-// приёмом, что и TestRewrapAllSecretsCallSiteOrder выше (go/ast, а не
-// компиляция — не привязан к номерам строк). Мутация «убрать один из трёх
-// SetKeyring» (сервис остаётся без кольца на время ротации) или «подсунуть
-// одному из сервисов другое кольцо» (тот же эффект, но незаметнее) обязана
-// уронить именно этот тест.
 func TestWireSecretRingDistributesSameRingToAllThree(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "main.go", nil, 0)
@@ -184,9 +143,6 @@ func TestWireSecretRingDistributesSameRingToAllThree(t *testing.T) {
 		t.Fatalf("объявление func wireSecretRing не найдено в main.go")
 	}
 
-	// ringIdent — идентификатор, в который присвоен результат
-	// secretbox.NewKeyring(...) внутри тела функции: это и есть «то самое»
-	// кольцо, которое обязано попасть во все три SetKeyring ниже.
 	var ringIdent string
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		assign, ok := n.(*ast.AssignStmt)
@@ -261,11 +217,8 @@ func TestWireSecretRingDistributesSameRingToAllThree(t *testing.T) {
 	}
 }
 
-// newBootstrapOrgAndProject заводит организацию и проект напрямую SQL — тем
-// же приёмом, что newEvalProject (internal/alert) и newOrgWithSSO
-// (internal/org). Секреты (org_sso/alert_channels/monitors) заводятся ниже
-// через сами сервисы, а не так же напрямую: там важен боевой Seal, здесь —
-// только окружение (org_id/project_id), к которому секрет привязан.
+// Секреты ниже заводятся через сами сервисы, не так же напрямую SQL: там
+// важен боевой Seal, здесь — только окружение (org_id/project_id).
 
 func newBootstrapOrgAndProject(t *testing.T, pool *pgxpool.Pool, slug string) (orgID, projectID int64) {
 	t.Helper()
@@ -283,9 +236,8 @@ func newBootstrapOrgAndProject(t *testing.T, pool *pgxpool.Pool, slug string) (o
 	return orgID, projectID
 }
 
-// rawSecretColumn читает секретный столбец по значению столбца-фильтра
-// whereCol — org_sso ключуется по org_id, а не по id (см. миграцию 0016),
-// alert_channels и monitors — обычным id.
+// org_sso ключуется по org_id, не id (миграция 0016); alert_channels и
+// monitors — обычным id.
 func rawSecretColumn(t *testing.T, pool *pgxpool.Pool, table, column, whereCol string, id int64) string {
 	t.Helper()
 	var v string
@@ -296,12 +248,6 @@ func rawSecretColumn(t *testing.T, pool *pgxpool.Pool, table, column, whereCol s
 	return v
 }
 
-// TestRewrapAllSecretsRotationRoundTrip — сквозной сценарий ротации на уровне
-// врезки в bootstrap: секреты трёх хранилищ записаны ключом A → инстанс
-// "перезапускается" с кольцом (current=B, prev=A) → rewrapAllSecrets →
-// читаемо кольцом ТОЛЬКО из B (старый ключ A инстансу больше не нужен).
-// Обратимость — отдельным подтестом (design §7): тот же проход с
-// переставленными местами ключами откатывает инстанс назад.
 func TestRewrapAllSecretsRotationRoundTrip(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -325,13 +271,10 @@ func TestRewrapAllSecretsRotationRoundTrip(t *testing.T) {
 	uptimeSvc := uptime.NewService(pool)
 	uptimeSvc.SetKeyring(ringA)
 
-	// Организация и проект — сырым SQL (как newEvalProject/newOrgWithSSO в
-	// internal/alert и internal/org): сервисам для этого теста нужен только
-	// боевой путь записи СЕКРЕТА, не полный флоу регистрации организации.
 	orgID, pid := newBootstrapOrgAndProject(t, pool, "bootrot")
 
-	// SSO организации и канал алертов — через сервис (боевой Seal), а не
-	// напрямую SQL: именно на этом пути секрет реально шифруется кольцом A.
+	// SSO и канал алертов — через сервис (боевой Seal): именно на этом пути
+	// секрет реально шифруется кольцом A.
 	if err := orgSvc.UpsertSSO(ctx, org.SSOConfig{
 		OrgID: orgID, Issuer: "https://idp.example", ClientID: "client-id",
 		ClientSecret: "sso-client-secret-plaintext", Domain: "bootrot.example.com",
@@ -365,11 +308,8 @@ func TestRewrapAllSecretsRotationRoundTrip(t *testing.T) {
 		t.Fatalf("uptime Create: %v", err)
 	}
 
-	// "Рестарт" с кольцом ротации: current=B, prev=A — тем же приёмом, что
-	// bootstrap собирает secretRing из GOTCHA_SECRET_KEY/_PREV. Раздача — через
-	// сам bootstrap-код wireSecretRing (находка ревью T5/P3), а не вручную
-	// тремя SetKeyring: так тест исполняет все три тела раздачи, а не только
-	// доказывает их структурно (TestWireSecretRingDistributesSameRingToAllThree).
+	// Раздача — через сам wireSecretRing, не вручную тремя SetKeyring: тест
+	// исполняет реальный код раздачи, а не только его структуру.
 	if _, err := wireSecretRing(keyB, keyA, orgSvc, alertSvc, uptimeSvc); err != nil {
 		t.Fatalf("wireSecretRing(restart): %v", err)
 	}
@@ -406,8 +346,7 @@ func TestRewrapAllSecretsRotationRoundTrip(t *testing.T) {
 	}
 
 	// Мониторы читаются через сервис (заголовки лежат внутри jsonb конфига),
-	// но проверяем и сырой текст на префикс ключа — тем же приёмом, что
-	// проверочный SELECT из privacy.md §7.
+	// но проверяем и сырой текст на префикс ключа.
 	rawCfg := rawSecretColumn(t, pool, "monitors", "config::text", "id", mon.ID)
 	if !strings.Contains(rawCfg, "enc:v2:"+ringBOnly.CurrentID()+":") {
 		t.Fatalf("monitors.config после бэкфилла не содержит enc:v2:<B-id>: %s", rawCfg)
@@ -444,8 +383,7 @@ func TestRewrapAllSecretsRotationRoundTrip(t *testing.T) {
 
 	t.Run("обратимость", func(t *testing.T) {
 		// Тот же проход с переставленными местами ключами: current=A, prev=B —
-		// откатывает инстанс назад (design §7, «страх необратимости»). Раздача —
-		// снова через wireSecretRing, тем же приёмом, что и выше.
+		// откатывает инстанс назад.
 		if _, err := wireSecretRing(keyA, keyB, orgSvc, alertSvc, uptimeSvc); err != nil {
 			t.Fatalf("wireSecretRing(reverse): %v", err)
 		}
@@ -471,15 +409,6 @@ func TestRewrapAllSecretsRotationRoundTrip(t *testing.T) {
 	})
 }
 
-// TestRewrapAllSecretsErrorDoesNotStopStart — ошибка любого из трёх проходов
-// (отказал сам SQL, а не построчная нечитаемость — та обрабатывается внутри
-// сервисов и не долетает досюда как err) не паникует и не имеет способа
-// прервать bootstrap: rewrapAllSecrets ничего не возвращает (см. также
-// структурную проверку сигнатуры в TestRewrapAllSecretsCallSiteOrder), а сама
-// функция обязана залогировать по Warn на каждый из трёх отказов и вернуться
-// штатно. Мутация «уронить старт при ошибке прохода» ловится либо здесь
-// (если бы rewrapAllSecrets начала паниковать/os.Exit), либо структурным
-// тестом выше (если бы у неё появился возврат ошибки).
 func TestRewrapAllSecretsErrorDoesNotStopStart(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -496,9 +425,8 @@ func TestRewrapAllSecretsErrorDoesNotStopStart(t *testing.T) {
 	uptimeSvc := uptime.NewService(pool)
 	uptimeSvc.SetKeyring(ring)
 
-	// Закрытый пул — тот же приём, что internal/org.TestSSORewrapSecretsClosedPool
-	// и его зеркала в internal/alert и internal/uptime: RewrapSecrets возвращает
-	// (0, err) детерминированно, без сетевой гонки.
+	// Закрытый пул: RewrapSecrets возвращает (0, err) детерминированно, без
+	// сетевой гонки.
 	pool.Close()
 
 	var records []slog.Record

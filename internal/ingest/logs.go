@@ -16,10 +16,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 )
 
-// otlpLogs — приём OTLP-логов (C1). Каркас копирует otlpMetrics (Bearer-DSN
-// auth, квота, лимит тела, proto+JSON): логи, как и метрики, не семплируются и
-// не зависят от флага трейсинга. Логи выключены (h.Logs == nil) → отвечаем
-// успехом без записи (коллектор не ретраит вечно).
+// h.Logs == nil → отвечаем успехом без записи (коллектор не ретраит вечно).
 func (h *Handler) otlpLogs(w http.ResponseWriter, r *http.Request) {
 	key, ok := h.otlpAuthenticate(w, r, SignalLog)
 	if !ok {
@@ -74,11 +71,8 @@ func (h *Handler) otlpLogs(w http.ResponseWriter, r *http.Request) {
 	writeOTLPResponse(w, enc)
 }
 
-// logsNDJSON — приём логов построчным newline-delimited JSON: вход для
-// источников без OTLP-экспортёра (произвольный скрипт/агент, слог через curl).
-// Поток тот же, что у otlpLogs (auth → квота → лимит тела → санитизация), но
-// без согласования кодировки (NDJSON — единственный формат тела) и с
-// собственным JSON-ответом ({"accepted":N}), а не пустым OTLP-конвертом.
+// Вход для источников без OTLP-экспортёра; тот же поток, что у otlpLogs, но
+// свой JSON-ответ вместо пустого OTLP-конверта.
 func (h *Handler) logsNDJSON(w http.ResponseWriter, r *http.Request) {
 	key, ok := h.otlpAuthenticate(w, r, SignalLog)
 	if !ok {
@@ -101,10 +95,8 @@ func (h *Handler) logsNDJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer closeBody()
-	// Контракт ParseNDJSON: err != nil означает, что чтение тела оборвалось
-	// (I/O-ошибка, не битая строка), и records в этом случае — ЧАСТИЧНЫЙ
-	// результат, который обязан быть отброшен целиком (см. её докблок) —
-	// батч из оборванного тела недопринят, а не принят частично.
+	// err != nil — чтение оборвалось; records в этом случае частичный
+	// результат, отбрасывается целиком.
 	records, err := log.ParseNDJSON(body, time.Now())
 	if err != nil {
 		var maxErr *http.MaxBytesError
@@ -125,10 +117,6 @@ func (h *Handler) logsNDJSON(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int{"accepted": granted})
 }
 
-// grantAndSanitizeLogs списывает квоту логов за records (по элементу, как у
-// метрик — см. h.grant), отброшенное по квоте считает в дропы, а оставшееся
-// санитизирует и кладёт в LogSink. Общий хвост otlpLogs и logsNDJSON — разбор
-// тела и формат ответа у них разный, а дальше поток идентичен otlpMetrics.
 func (h *Handler) grantAndSanitizeLogs(ctx context.Context, orgID, projectID int64, records []log.LogRecord) int {
 	granted, _ := h.grant(ctx, h.LogQuota, orgID, "log", len(records))
 	if dropped := len(records) - granted; dropped > 0 {
@@ -143,24 +131,14 @@ func (h *Handler) grantAndSanitizeLogs(ctx context.Context, orgID, projectID int
 	return granted
 }
 
-// sanitizeLog чистит запись лога перед записью — та же граница, что у
-// otlpMetrics (otlp.go): капы длины и число атрибутов УЖЕ наложены в парсерах
-// (log.MapOTLPLogs/log.ParseNDJSON), здесь их не дублируем.
-//
-// stripNUL — на TraceID/SpanID/Body как defense-in-depth: у OTLP-пути это уже
-// чистые значения (hex/capBytes в парсере), у NDJSON trace_id/span_id парсер
-// капает их capRunes(...,64) (capRunes сам вырезает NUL), а Body капается
-// capBytes. Повторный stripNUL здесь дёшев и гарантирует отсутствие NUL
-// независимо от пути — NUL в text-колонках роняет PostgreSQL при дальнейшей
-// склейке с трейсами (тот же класс дефекта, что у capRunes в sentry.go).
+// stripNUL — defense-in-depth: NUL в text-колонках роняет PostgreSQL,
+// повторный вызов дёшев и гарантирует отсутствие NUL независимо от пути.
 func sanitizeLog(h *Handler, projectID int64, r *log.LogRecord) {
 	h.Scrub.ScrubTags(r.LogAttributes)
 	h.Scrub.ScrubTags(r.ResourceAttrs)
 	r.Body = stripNUL(r.Body)
-	// Тело лога — единственное свободнотекстовое поле пайплайна логов, и без
-	// ScrubMessage оно обходило бы безусловный скраб query-токенов/basic-auth
-	// из URL, который уже применяется к message событий, имени транзакции и
-	// описанию спанов (pipeline.go, handler.go) — паритет приватности.
+	// Без ScrubMessage тело обходило бы скраб query-токенов/basic-auth,
+	// применяемый к message событий и другим свободнотекстовым полям.
 	r.Body = h.Scrub.ScrubMessage(r.Body)
 	r.TraceID = stripNUL(r.TraceID)
 	r.SpanID = stripNUL(r.SpanID)
@@ -168,9 +146,7 @@ func sanitizeLog(h *Handler, projectID int64, r *log.LogRecord) {
 	r.Environment = h.Cardinality.Value(projectID, FieldEnvironment, r.Environment)
 }
 
-// stripNUL вырезает байты NUL (0x00) из s. Отдельная функция от capRunes
-// (sentry.go): та ещё и обрезает по длине, а капы длины здесь уже наложены
-// парсером — повторное применение сдвинуло бы границу капа не туда.
+// Отдельно от capRunes: та ещё и обрезает по длине, а капы здесь уже наложены парсером.
 func stripNUL(s string) string {
 	if strings.IndexByte(s, 0) < 0 {
 		return s
@@ -178,12 +154,8 @@ func stripNUL(s string) string {
 	return strings.ReplaceAll(s, "\x00", "")
 }
 
-// otlpUnmarshalLogs — разбор тела /v1/logs, калька otlpUnmarshal (трейсы): у
-// логов, как и у трейсов, есть верхнеуровневые байтовые идентификаторы
-// (trace_id/span_id LogRecord), закодированные в OTLP/JSON как HEX, а не
-// base64 — без otlpJSONHexIDs protojson молча декодирует hex как base64 и
-// портит id (см. её докблок в otlp.go). Раньше здесь ошибочно считалось, что
-// у логов таких идентификаторов нет.
+// trace_id/span_id LogRecord закодированы в OTLP/JSON как HEX, не base64 —
+// без otlpJSONHexIDs protojson декодирует hex как base64 и портит id.
 func otlpUnmarshalLogs(enc otlpEncoding, raw []byte) (*logspb.LogsData, error) {
 	var data logspb.LogsData
 	var err error

@@ -23,9 +23,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// uptimeStack — свой стенд (не newStack/issuesStack): нужен и h.Uptime, и
-// h.UptimeWriter (heartbeat пишет и в PG monitor_state/last_beat_at, и в CH
-// check_results), которых нет в общих стендах остальных web-тестов.
 type uptimeStack struct {
 	pool   *pgxpool.Pool
 	srv    *httptest.Server
@@ -39,9 +36,6 @@ func newUptimeStack(t *testing.T) *uptimeStack {
 	return newUptimeStackInRegion(t, "")
 }
 
-// newUptimeStackInRegion — стенд с явно заданным именем встроенного региона
-// (GOTCHA_UPTIME_LOCAL_REGION в проде): его получают и Handler, и uptime.Service, ровно
-// как в cmd/gotcha/main.go. Пустая строка — дефолт (uptime.DefaultRegion).
 func newUptimeStackInRegion(t *testing.T, localRegion string) *uptimeStack {
 	t.Helper()
 	pool := testenv.MigratedPG(t)
@@ -79,10 +73,6 @@ func newUptimeStackInRegion(t *testing.T, localRegion string) *uptimeStack {
 
 var heartbeatProjectSeq atomic.Int64
 
-// newProject — прямые вставки в обход org.Service, зеркалит одноимённый
-// хелпер internal/uptime/monitor_test.go: heartbeat-тестам не нужен
-// зарегистрированный юзер/сессия (эндпойнт публичный), только project_id для
-// монитора.
 func newProject(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -166,7 +156,6 @@ func TestHeartbeatValidTokenTouchesAndAppliesUp(t *testing.T) {
 		t.Fatalf("states = %+v, want single up state", states)
 	}
 
-	// GET also works, not just POST.
 	resp2, err := http.Get(s.srv.URL + "/uptime/hb/" + created.HeartbeatToken)
 	if err != nil {
 		t.Fatalf("GET heartbeat: %v", err)
@@ -178,11 +167,6 @@ func TestHeartbeatValidTokenTouchesAndAppliesUp(t *testing.T) {
 	}
 }
 
-// TestHeartbeatOversizedBodyReturns413 verifies that the heartbeat
-// endpoint's 1 KB body cap (heartbeatMaxBodyBytes) is actually enforced. The
-// handler wraps r.Body in http.MaxBytesReader but must also READ the body
-// for that cap to trigger — the stdlib server does not itself drain the
-// unread body against a MaxBytesReader's limit.
 func TestHeartbeatOversizedBodyReturns413(t *testing.T) {
 	s := newUptimeStack(t)
 	pid := newProject(t, s.pool)
@@ -218,17 +202,6 @@ func TestHeartbeatOversizedBodyReturns413(t *testing.T) {
 	}
 }
 
-// TestHeartbeatPrefetchHeaderStillCapsOversizedBody — регресс на находку
-// ревью T9: отсев префетча/превью раньше стоял ПЕРЕД капом тела
-// (http.MaxBytesReader), а заголовки Sec-Purpose/Purpose/X-Purpose/X-Moz и
-// User-Agent — то, что клиент заявляет о себе сам, подделать их тривиально.
-// Итог был: любой аноним, добавив один такой заголовок, заливал
-// неограниченное тело в публичный неаутентифицированный
-// POST /uptime/hb/{token} — до БД запрос всё равно не доходил, но кап,
-// объявленный десятью строками выше как обязательный для ВСЕХ запросов,
-// переставал действовать именно для помеченных как «отсев». Тело больше
-// heartbeatMaxBodyBytes с Sec-Purpose: prefetch обязано быть отвергнуто по
-// размеру (413), а не прочитано целиком с последующим 204.
 func TestHeartbeatPrefetchHeaderStillCapsOversizedBody(t *testing.T) {
 	s := newUptimeStack(t)
 	pid := newProject(t, s.pool)
@@ -259,9 +232,7 @@ func TestHeartbeatPrefetchHeaderStillCapsOversizedBody(t *testing.T) {
 		t.Fatalf("монитор не отмечен живым: LastBeatAt = %v, want nil", got.LastBeatAt)
 	}
 
-	// Запрос отвергнут капом раньше ветвления на игнор — счётчик отсева расти
-	// не должен: это не «мы распознали и вежливо проигнорировали префетч», а
-	// «мы вообще не добрались до этой классификации».
+	// Запрос отвергнут капом раньше классификации — счётчик отсева расти не должен.
 	if got := web.HeartbeatIgnoredBy(web.HeartbeatIgnorePrefetchHeader); got != before {
 		t.Errorf("HeartbeatIgnoredBy(prefetch_header) = %d, want %d — счётчик игнора расти не должен, запрос отвергнут раньше классификации", got, before)
 	}
@@ -281,12 +252,6 @@ func TestHeartbeatUnknownTokenReturns404(t *testing.T) {
 	}
 }
 
-// TestHeartbeatFeedsDetector фиксирует P0: успешный пинг применял результат к
-// состоянию, но НЕ звал детектор. Инцидент по heartbeat открывает watchdog
-// (пропущенный удар), а закрыть его больше некому — у heartbeat нет ни очереди
-// заданий, ни пробы, этот эндпойнт и есть единственный сигнал «жив». Без
-// вызова монитор в UI зеленел, а инцидент оставался открытым навсегда: ни
-// уведомления о восстановлении, ни конца напоминаниям «всё ещё DOWN».
 func TestHeartbeatFeedsDetector(t *testing.T) {
 	s := newUptimeStack(t)
 	pid := newProject(t, s.pool)
@@ -331,9 +296,6 @@ func TestHeartbeatFeedsDetector(t *testing.T) {
 	}
 }
 
-// newHeartbeatMonitor создаёт heartbeat-монитор с настройками, идентичными
-// остальным тестам этого файла — общий хелпер для тестов отсева
-// префетча/предпросмотра ниже.
 func newHeartbeatMonitor(t *testing.T, s *uptimeStack, pid int64) uptime.Monitor {
 	t.Helper()
 	created, err := s.uptime.Create(context.Background(), uptime.Monitor{
@@ -348,12 +310,6 @@ func newHeartbeatMonitor(t *testing.T, s *uptimeStack, pid int64) uptime.Monitor
 	return created
 }
 
-// TestHeartbeatPrefetchAndPreviewIgnored — P0 (C3/T9): ссылка heartbeat
-// регулярно дёргается не человеком — unfurl-бот мессенджера, антивирусный
-// прокси, префетч браузера, — и такой запрос НЕ обязан засчитываться как
-// «сервис жив», иначе он гасит настоящую тревогу watchdog'а. Каждый признак
-// (протокольный заголовок или известный User-Agent) обязан отдавать 204 без
-// тела и не трогать вообще ничего: ни last_seen монитора, ни состояние.
 func TestHeartbeatPrefetchAndPreviewIgnored(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -361,8 +317,6 @@ func TestHeartbeatPrefetchAndPreviewIgnored(t *testing.T) {
 		reason     web.HeartbeatIgnoreReason
 	}{
 		{"sec-purpose-prefetch", func(r *http.Request) { r.Header.Set("Sec-Purpose", "prefetch") }, web.HeartbeatIgnorePrefetchHeader},
-		// Значение составное ("prefetch;prerender" и подобное) — сверка идёт
-		// префиксом, не равенством (см. heartbeatIgnoreReason).
 		{"sec-purpose-prefetch-prerender", func(r *http.Request) { r.Header.Set("Sec-Purpose", "prefetch;prerender") }, web.HeartbeatIgnorePrefetchHeader},
 		{"purpose-prefetch", func(r *http.Request) { r.Header.Set("Purpose", "prefetch") }, web.HeartbeatIgnorePrefetchHeader},
 		{"x-purpose-preview", func(r *http.Request) { r.Header.Set("X-Purpose", "preview") }, web.HeartbeatIgnorePrefetchHeader},
@@ -423,10 +377,6 @@ func TestHeartbeatPrefetchAndPreviewIgnored(t *testing.T) {
 	}
 }
 
-// TestHeartbeatCurlLikeClientsNotIgnored — регресс: обычный curl/wget-подобный
-// клиент (без протокольных заголовков префетча, с типичным User-Agent) обязан
-// засчитываться как раньше, и GET, и POST. Отсев не должен быть шире, чем
-// нужно.
 func TestHeartbeatCurlLikeClientsNotIgnored(t *testing.T) {
 	cases := []struct {
 		name   string

@@ -1,6 +1,5 @@
 -- backward-compatible: yes (новая таблица)
--- Групповые пороги хост-инцидентов по метке (окружение/роль) из B1. Nullable-поля
--- как в 0074. Матч по метке — точная строка (значения из телеметрии).
+-- Nullable-поля, как в 0074. Матч по метке — точная строка (значения из телеметрии).
 CREATE TABLE host_group_thresholds (
     project_id           BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     scope                TEXT NOT NULL CHECK (scope IN ('env','role')),

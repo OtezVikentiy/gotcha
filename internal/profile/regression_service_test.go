@@ -49,7 +49,6 @@ func TestRegressionServiceOpenClose(t *testing.T) {
 	if _, c3, _ := svc.Open(ctx, pid, "api", "cpu", "slow", 0.1, 0.5, false); !c3 {
 		t.Fatal("open after resolve must be created=true")
 	}
-	// List фильтры: 1 open + 1 resolved = 2 all.
 	if all, _ := svc.List(ctx, pid, "all", 10); len(all) != 2 {
 		t.Fatalf("all = %d, want 2", len(all))
 	}
@@ -61,10 +60,6 @@ func TestRegressionServiceOpenClose(t *testing.T) {
 	}
 }
 
-// TestRegressionServiceAcknowledge — B4: Acknowledge на открытом инциденте
-// ставит acknowledged_at/acknowledged_by и возвращает ok=true; повторный
-// вызов и вызов на закрытом инциденте — идемпотентно ok=false. scan (List)
-// после ack отдаёт заполненные поля, до ack — nil.
 func TestRegressionServiceAcknowledge(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -104,12 +99,10 @@ func TestRegressionServiceAcknowledge(t *testing.T) {
 		t.Fatalf("после Acknowledge: AcknowledgedBy = %v, want %d", list[0].AcknowledgedBy, userID)
 	}
 
-	// Повторный ack — идемпотентно ok=false.
 	if ok2, err := svc.Acknowledge(ctx, r.ID, pid, userID); err != nil || ok2 {
 		t.Fatalf("повторный Acknowledge = (%v,%v), want (false,nil)", ok2, err)
 	}
 
-	// Acknowledge закрытого инцидента — ok=false.
 	if _, err := svc.Resolve(ctx, r.ID, 0.11); err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -118,8 +111,6 @@ func TestRegressionServiceAcknowledge(t *testing.T) {
 	}
 }
 
-// TestRegressionServiceAcknowledgeForeignProject — project_id — часть WHERE
-// Acknowledge (defense-in-depth, зеркало uptime.DeleteWindow, B3).
 func TestRegressionServiceAcknowledgeForeignProject(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -128,10 +119,8 @@ func TestRegressionServiceAcknowledgeForeignProject(t *testing.T) {
 	svc := profile.NewRegressionService(pool)
 	ctx := context.Background()
 	pid := seedProject(t, pool)
-	// Второй проект — руками, а не вторым seedProject(t, pool): seedProject
-	// ключует email/org/project по t.Name(), одинаковому оба раза — второй
-	// вызов упёрся бы в users_email_key. Тот же org_id вполне подходит: нужен
-	// просто ДРУГОЙ project_id.
+	// вторым seedProject(t, pool) нельзя: он ключует email/org/project по t.Name(),
+	// повтор упёрся бы в users_email_key.
 	var otherPID int64
 	if err := pool.QueryRow(ctx,
 		"INSERT INTO projects (org_id, slug, name, platform) SELECT org_id, $2, $2, 'go' FROM projects WHERE id = $1 RETURNING id",
@@ -196,9 +185,6 @@ func TestRegressionOpenConcurrentOnlyOneWins(t *testing.T) {
 	}
 }
 
-// TestRegressionServiceOpenForFunctions: батчевый OpenForFunctions отдаёт
-// открытые инциденты ровно по (проект, сервис, тип) и только по перечисленным
-// функциям; закрытые и чужие сервисы не просачиваются.
 func TestRegressionServiceOpenForFunctions(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -216,14 +202,12 @@ func TestRegressionServiceOpenForFunctions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open f3: %v", err)
 	}
-	// Тот же ключ функции, но другой сервис и другой тип профиля — не наши.
 	if _, _, err := svc.Open(ctx, pid, "web", "cpu", "f2", 0.1, 0.3, false); err != nil {
 		t.Fatalf("open f2/web: %v", err)
 	}
 	if _, _, err := svc.Open(ctx, pid, "api", "alloc", "f2", 0.1, 0.3, false); err != nil {
 		t.Fatalf("open f2/alloc: %v", err)
 	}
-	// Закрытый инцидент по своей функции — не открытый.
 	f4, _, err := svc.Open(ctx, pid, "api", "cpu", "f4", 0.1, 0.3, false)
 	if err != nil {
 		t.Fatalf("open f4: %v", err)
@@ -249,13 +233,11 @@ func TestRegressionServiceOpenForFunctions(t *testing.T) {
 		t.Fatal("regression of another service/type returned under our key")
 	}
 
-	// Функция вне списка не возвращается, даже если открыта.
 	got, err = svc.OpenForFunctions(ctx, pid, "api", "cpu", []string{"f3"})
 	if err != nil || len(got) != 1 || got["f3"].ID != f3.ID {
 		t.Fatalf("OpenForFunctions([f3]) = %v err=%v, want only f3", keysOf(got), err)
 	}
 
-	// Пустой список — пустая карта без запроса и без ошибки.
 	got, err = svc.OpenForFunctions(ctx, pid, "api", "cpu", nil)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("OpenForFunctions(nil) = %v err=%v, want empty", got, err)

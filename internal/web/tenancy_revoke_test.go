@@ -13,14 +13,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// Сквозная проверка задачи 4 (группа «тенантность»): тот же инвариант, что
-// tenancy_invariant_test.go проверяет на уровне org.Service, здесь проверяется
-// на границе HTTP, с ЖИВОЙ сессией исключённого участника — она намеренно не
-// инвалидируется (см. докблок RemoveMember), поэтому доступ обязан пропасть
-// без повторного входа: на каждый запрос CanAccessProject ходит в базу.
-
-// tenancyRevokeEnv — состояние, которое TestRemovedMemberLosesProjectAccessOverHTTP
-// собирает и проверяет до/после удаления участника.
+// живая сессия исключённого участника намеренно не инвалидируется — доступ проверяется в БД на каждый запрос.
 type tenancyRevokeEnv struct {
 	orgID        int64
 	projectID    string
@@ -33,17 +26,7 @@ type tenancyRevokeEnv struct {
 	dsnKey       string
 }
 
-// setupOrgWithTeamMember строит организацию с owner'ом, участником в команде,
-// проектом, привязанным к этой команде, живым DSN-ключом проекта и одной
-// проблемой (issue) — минимальный набор, на котором member получает доступ
-// ко всем четырём проверяемым поверхностям (issues, setup, мутация статуса,
-// /projects) только через членство в команде.
-//
-// Стенд — issuesStack (issues_test.go), а не newStack (auth_test.go): страница
-// /issues читает event.Query.Sparklines для каждой непустой выдачи (issues.go,
-// sparklinesFor), и h.Events == nil, как в newStack, ронял бы её паникой, как
-// только в проекте появляется хотя бы одна проблема (см. предупреждение в
-// issuesStack — issues_test.go:27-29).
+// issuesStack, не newStack — /issues читает event.Query.Sparklines, и h.Events==nil там уронит панику.
 func setupOrgWithTeamMember(t *testing.T, s *issuesStack) tenancyRevokeEnv {
 	t.Helper()
 	ctx := context.Background()
@@ -81,9 +64,6 @@ func setupOrgWithTeamMember(t *testing.T, s *issuesStack) tenancyRevokeEnv {
 	}
 	key := keys[0]
 
-	// Проблема нужна для проверки поверхности «мутация статуса»
-	// (POST /issues/{id}/status) — заводится тем же приёмом, что и в
-	// issuedetail_test.go: через issue.Service.Upsert, а не прямым INSERT.
 	up, err := s.issues.Upsert(ctx, proj.ID, "tenancy-revoke-fp", "Tenancy Revoke Issue", "pkg/a.go:1", "error", "", time.Now().UTC())
 	if err != nil {
 		t.Fatalf("upsert issue: %v", err)
@@ -102,10 +82,7 @@ func setupOrgWithTeamMember(t *testing.T, s *issuesStack) tenancyRevokeEnv {
 	}
 }
 
-// removeMember выполняет POST /orgs/{id}/settings/remove от имени actorCookie
-// — то же двухшаговое подтверждение, что и остальные тесты пакета
-// (orgsettings_test.go): confirmed=yes сразу, страница подтверждения здесь не
-// нужна.
+// confirmed=yes — тот же приём, что у остальных тестов пакета: страница подтверждения не нужна.
 func removeMember(t *testing.T, s *issuesStack, orgID, userID int64, actorCookie *http.Cookie) {
 	t.Helper()
 	path := "/orgs/" + strconv.FormatInt(orgID, 10) + "/settings/remove"
@@ -117,9 +94,6 @@ func removeMember(t *testing.T, s *issuesStack, orgID, userID int64, actorCookie
 	}
 }
 
-// readAll читает и закрывает тело ответа — общий приём тестов пакета, здесь
-// оформлен как переиспользуемый хелпер, потому что вызывается на нескольких
-// шагах одного теста.
 func readAll(t *testing.T, resp *http.Response) string {
 	t.Helper()
 	body, err := io.ReadAll(resp.Body)
@@ -130,14 +104,6 @@ func readAll(t *testing.T, resp *http.Response) string {
 	return string(body)
 }
 
-// TestRemovedMemberLosesProjectAccessOverHTTP — проверка того же инварианта на
-// уровне запросов, с ЖИВОЙ сессией: она намеренно не инвалидируется, и доступ
-// обязан пропасть без повторного входа.
-//
-// Проверяются именно те поверхности, которые перечислены в находке: список и
-// детали проблем (GET issues), страница подключения с DSN-ключами (GET setup),
-// мутация статуса проблемы (POST /issues/{id}/status), а также общий список
-// проектов.
 func TestRemovedMemberLosesProjectAccessOverHTTP(t *testing.T) {
 	s := newIssuesStack(t)
 	env := setupOrgWithTeamMember(t, s)
@@ -154,8 +120,7 @@ func TestRemovedMemberLosesProjectAccessOverHTTP(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	// До удаления смена статуса проходит — иначе 404 после удаления ничего не
-	// доказывает: он мог бы возвращаться и на заведомо неверный идентификатор.
+	// смена статуса до удаления обязана пройти — иначе 404 после не доказывает ничего.
 	resp := postForm(t, s.srv, statusPath, url.Values{"status": {"resolved"}}, s.srv.URL, env.memberCookie)
 	if code := statusOf(t, resp); code != http.StatusSeeOther {
 		t.Fatalf("до удаления POST %s = %d, want 303", statusPath, code)
@@ -184,8 +149,7 @@ func TestRemovedMemberLosesProjectAccessOverHTTP(t *testing.T) {
 		}
 	}
 
-	// После удаления мутация статуса той же живой cookie — 404, и статус в базе
-	// не меняется (код ответа сам по себе мутацию не опровергает).
+	// проверяем и статус в БД — код ответа сам по себе не доказывает, что мутация не прошла.
 	resp = postForm(t, s.srv, statusPath, url.Values{"status": {"ignored"}}, s.srv.URL, env.memberCookie)
 	if code := statusOf(t, resp); code != http.StatusNotFound {
 		t.Errorf("после удаления POST %s = %d, want 404", statusPath, code)
@@ -198,7 +162,6 @@ func TestRemovedMemberLosesProjectAccessOverHTTP(t *testing.T) {
 		t.Errorf("исключённый участник сменил статус проблемы: %q, want resolved (не изменился)", it.Status)
 	}
 
-	// Список проектов больше не показывает проект.
 	resp = getWithCookie(t, s.srv, "/projects", env.memberCookie)
 	if body := readAll(t, resp); strings.Contains(body, env.projectSlug) {
 		t.Error("исключённый участник видит проект в списке")

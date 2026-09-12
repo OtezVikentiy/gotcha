@@ -5,18 +5,14 @@ import (
 	"testing"
 	"time"
 
-	// Часовые пояса вкомпилированы в тест: пакет читает time.LoadLocation, но
-	// (в отличие от internal/web) не подключает internal/testenv, где обычно
-	// живёт этот импорт — так что подключаем сами, иначе в slim-контейнере без
-	// /usr/share/zoneinfo тест падает не по вине проверяемого кода.
+	// пакет не подключает internal/testenv, где обычно живёт этот импорт —
+	// без него тест падает в slim-контейнере без /usr/share/zoneinfo.
 	_ "time/tzdata"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestFormStateGet — nil-состояние (первое открытие формы) отдаёт значения по
-// умолчанию, заполненное перекрывает их.
 func TestFormStateGet(t *testing.T) {
 	var empty FormState
 	if got := empty.Get("window_seconds", "300"); got != "300" {
@@ -44,15 +40,6 @@ func TestFormStateGet(t *testing.T) {
 	}
 }
 
-// TestMetricAlertsKeepsSubmittedValues фиксирует потерю ввода: при ошибке
-// валидации страница отрисовывается заново, фрагмента #id в адресе уже нет,
-// модалка закрывалась вместе с заполненными полями. Человек заполнял семь
-// полей, ошибался в одном и начинал сначала.
-//
-// Состояние помечено Open: с появлением модалки правки на каждое правило
-// признаком открытия служит явный ключ, а не сам факт непустого состояния
-// (см. metricRuleCreateModal). Так же 422 собирает обработчик — иначе тест
-// проверял бы состояние, которого сервер не отдаёт.
 func TestMetricAlertsKeepsSubmittedValues(t *testing.T) {
 	form := FormState{
 		"metric_name":    "process.memory.usage",
@@ -67,11 +54,9 @@ func TestMetricAlertsKeepsSubmittedValues(t *testing.T) {
 	out := renderTo(t, MetricAlerts(7, nil, nil, []string{"http.rps"}, form,
 		"порог должен быть числом", "u@e.com"))
 
-	// Модалка открыта с сервера — иначе введённое было бы недостижимо.
 	if !strings.Contains(out, "modal--open") {
 		t.Error("модалка должна открыться с сервера при ошибке валидации")
 	}
-	// Каждое введённое значение вернулось в форму.
 	for name, want := range map[string]string{
 		"metric_name":    "process.memory.usage",
 		"threshold":      "abc",
@@ -84,7 +69,6 @@ func TestMetricAlertsKeepsSubmittedValues(t *testing.T) {
 			t.Errorf("поле %s потеряло введённое значение %q", name, want)
 		}
 	}
-	// Селекты сохранили выбор.
 	if !strings.Contains(out, `<option value="p95" selected>`) {
 		t.Error("селект агрегации потерял выбор")
 	}
@@ -92,7 +76,6 @@ func TestMetricAlertsKeepsSubmittedValues(t *testing.T) {
 		t.Error("селект сравнения потерял выбор")
 	}
 
-	// Первое открытие: состояния нет, модалка закрыта, значения дефолтные.
 	fresh := renderTo(t, MetricAlerts(7, []metric.Rule{}, nil, nil, nil, "", "u@e.com"))
 	if strings.Contains(fresh, "modal--open") {
 		t.Error("без ошибки валидации модалка не должна открываться сама")
@@ -101,8 +84,6 @@ func TestMetricAlertsKeepsSubmittedValues(t *testing.T) {
 		t.Error("окно по умолчанию должно быть 300 секунд")
 	}
 
-	// 422 из модалки ПРАВКИ не должна открывать модалку создания и тащить в
-	// неё чужой ввод: состояние формы на странице одно, а модалок N+1.
 	foreign := renderTo(t, MetricAlerts(7, nil, nil, nil,
 		FormState{"metric_name": "process.memory.usage"}.Open(EditMetricRuleModalID(42)),
 		"порог должен быть числом", "u@e.com"))
@@ -114,10 +95,6 @@ func TestMetricAlertsKeepsSubmittedValues(t *testing.T) {
 	}
 }
 
-// TestFormStateOpensPicksOneModal — с появлением правки каналов, команд и окон
-// модалок на странице стало по одной на строку таблицы, а состояние формы
-// по-прежнему одно. Признаком «открыть» служит явный ключ, а не сам факт
-// непустого состояния: иначе ошибка формы правки открывала бы форму создания.
 func TestFormStateOpensPicksOneModal(t *testing.T) {
 	f := FormState{"target": "not-a-url"}.Open("edit-channel-7")
 	if !f.Opens("edit-channel-7") {
@@ -133,8 +110,6 @@ func TestFormStateOpensPicksOneModal(t *testing.T) {
 		t.Errorf("введённое значение = %q, want not-a-url", got)
 	}
 
-	// Служебный ключ сам по себе не считается введённым значением: иначе
-	// пустая помеченная форма выглядела бы заполненной.
 	if (FormState{}).Open("new-team").Has() {
 		t.Error("одна лишь пометка модалки не должна считаться вводом")
 	}
@@ -147,10 +122,6 @@ func TestFormStateOpensPicksOneModal(t *testing.T) {
 	}
 }
 
-// TestWindowFieldDefaults — значения полей формы для уже сохранённого окна.
-// Разовое окно уезжает в datetime-local В ЕГО ПОЯСЕ: поле принимает только
-// местное время, и подстановка UTC сдвинула бы показанное окно на смещение
-// пояса, а сохранение формы закрепило бы этот сдвиг.
 func TestWindowFieldDefaults(t *testing.T) {
 	msk, err := time.LoadLocation("Europe/Moscow")
 	if err != nil {
@@ -171,8 +142,6 @@ func TestWindowFieldDefaults(t *testing.T) {
 		t.Errorf("timezone = %q, want Europe/Moscow (есть в списке)", got)
 	}
 
-	// Еженедельное окно в поясе, которого нет в фиксированном списке: select
-	// переключается на «Другой» (пустое значение), пояс уезжает в своё поле.
 	f = windowFieldDefaults(uptime.Window{
 		ID: 2, Name: "Nightly", Weekly: true, Weekday: 3,
 		StartTime: "01:00", EndTime: "02:00", Timezone: "Asia/Tokyo",
@@ -194,9 +163,6 @@ func TestWindowFieldDefaults(t *testing.T) {
 	}
 }
 
-// TestMaintenanceEditModalPrefilled — модалка правки отрисовывает поля окна, а
-// не пустую форму, и остаётся закрытой, пока состояние формы указывает на
-// другую модалку.
 func TestMaintenanceEditModalPrefilled(t *testing.T) {
 	start := time.Date(2026, 8, 1, 2, 0, 0, 0, time.UTC)
 	end := start.Add(2 * time.Hour)
@@ -213,7 +179,6 @@ func TestMaintenanceEditModalPrefilled(t *testing.T) {
 		t.Fatal("модалка правки не должна открываться сама по себе")
 	}
 
-	// Ошибка формы СОЗДАНИЯ не открывает модалку правки и не подменяет её поля.
 	html = renderTo(t, Maintenance(7, []uptime.Window{w},
 		FormState{"name": "Черновик"}.Open("new-maintenance-window"), "Неверное окно", "u@example.com"))
 	if !strings.Contains(html, `id="new-maintenance-window" class="modal modal--open"`) {

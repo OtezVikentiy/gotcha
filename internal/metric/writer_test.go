@@ -33,7 +33,6 @@ func TestWriterFlushesToCH(t *testing.T) {
 	if err := conn.QueryRow(ctx, "SELECT count() FROM metric_points WHERE project_id=7").Scan(&n); err != nil || n != 3 {
 		t.Fatalf("count = %d err=%v, want 3", n, err)
 	}
-	// Array-поля гистограммы доехали.
 	var bounds []float64
 	if err := conn.QueryRow(ctx,
 		"SELECT explicit_bounds FROM metric_points WHERE project_id=7 AND name='dur'").Scan(&bounds); err != nil {
@@ -42,7 +41,6 @@ func TestWriterFlushesToCH(t *testing.T) {
 	if len(bounds) != 2 || bounds[0] != 100 || bounds[1] != 500 {
 		t.Fatalf("bounds = %v", bounds)
 	}
-	// Map-поле лейблов доехало.
 	var host string
 	if err := conn.QueryRow(ctx,
 		"SELECT attributes['host'] FROM metric_points WHERE project_id=7 AND name='cpu'").Scan(&host); err != nil || host != "h1" {
@@ -50,7 +48,6 @@ func TestWriterFlushesToCH(t *testing.T) {
 	}
 }
 
-// TestWriterFlushesHostColumn проверяет, что колонка host пишется в ClickHouse и читается обратно.
 func TestWriterFlushesHostColumn(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -60,7 +57,6 @@ func TestWriterFlushesHostColumn(t *testing.T) {
 	go w.Run()
 
 	now := time.Now().UTC()
-	// Пишем точку с заполненным Host
 	w.Add(99, metric.MetricPoint{
 		Name:        "cpu",
 		Type:        "gauge",
@@ -77,7 +73,6 @@ func TestWriterFlushesHostColumn(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	// Проверяем, что host значение доехало в ClickHouse
 	var hostValue string
 	if err := conn.QueryRow(ctx,
 		"SELECT host FROM metric_points WHERE project_id=99 AND name='cpu'").Scan(&hostValue); err != nil {

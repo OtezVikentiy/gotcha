@@ -19,12 +19,6 @@ func sortedRenamedOldNames() []string {
 	return names
 }
 
-// TestAgentOwnedSubsetOfRenamed — AgentOwned не должен разойтись с Renamed:
-// каждое имя обязано быть реальным ключом карты (иначе checkRenamed молча
-// не находит для него новое имя — Renamed[k] на отсутствующем ключе вернёт
-// "", и текст ошибки соврёт про "renamed to") и нести префикс
-// GOTCHA_AGENT_ (иначе список перестаёт быть агентским по смыслу и
-// internal/agent начнёт отказывать на переменной, которую не читает).
 func TestAgentOwnedSubsetOfRenamed(t *testing.T) {
 	if len(AgentOwned) == 0 {
 		t.Fatal("AgentOwned пуст")
@@ -39,13 +33,6 @@ func TestAgentOwnedSubsetOfRenamed(t *testing.T) {
 	}
 }
 
-// TestInfraOwnedSubsetOfRenamed — InfraOwned не должен разойтись с Renamed:
-// каждое имя обязано быть реальным ключом карты (та же причина, что и у
-// TestAgentOwnedSubsetOfRenamed — иначе Renamed[old] на отсутствующем ключе
-// вернёт "", и текст ошибки соврёт про "renamed to"), а НОВОЕ имя (значение
-// в Renamed) обязано нести префикс GOTCHA_COMPOSE_ или GOTCHA_BUILD_ —
-// у самих старых имён общего префикса нет (см. докблок InfraOwned), поэтому
-// проверяется не старое имя, как у AgentOwned, а новое.
 func TestInfraOwnedSubsetOfRenamed(t *testing.T) {
 	if len(InfraOwned) == 0 {
 		t.Fatal("InfraOwned пуст")
@@ -62,16 +49,9 @@ func TestInfraOwnedSubsetOfRenamed(t *testing.T) {
 	}
 }
 
-// TestCheckRenamedAllChecksWholeRegistry — CheckRenamedAll проверяет ВЕСЬ
-// реестр (режим cmd/gotcha), а не только AgentOwned. Подтест на КАЖДУЮ
-// запись реестра — не таблица, по которой не итерируют.
 func TestCheckRenamedAllChecksWholeRegistry(t *testing.T) {
-	// Сторож против вырождения перебора (задача 11): та же
-	// проверка, что и в cmd/gotcha/config_test.go у
-	// TestLoadConfigRenamedEnvVarFailsStart — sortedRenamedOldNames(),
-	// урезанная до names[:1], осталась бы валидным []string, и цикл t.Run
-	// ниже прогнал бы один подтест вместо всех, оставшись зелёным. Длина
-	// сверяется напрямую с len(Renamed), а не через саму функцию.
+	// Длина сверяется напрямую с len(Renamed), а не через саму функцию —
+	// иначе урезанный обход остался бы валидным []string и тест не заметил бы.
 	if got, want := len(sortedRenamedOldNames()), len(Renamed); got != want {
 		t.Fatalf("sortedRenamedOldNames() вернула %d имён, Renamed содержит %d — обход урезан, ниже проверится не весь реестр", got, want)
 	}
@@ -89,12 +69,6 @@ func TestCheckRenamedAllChecksWholeRegistry(t *testing.T) {
 	}
 }
 
-// TestCheckRenamedScopedIgnoresOutOfScopeKeys — CheckRenamedScoped проверяет
-// ТОЛЬКО перечисленные ключи: старое серверное имя, стоящее в общем .env,
-// не должно ронять агента, которому оно не принадлежит —
-// CheckRenamedScoped(getenv, AgentOwned) обязан вернуть nil, даже
-// если getenv видит непустое значение постороннего (не входящего в
-// AgentOwned) старого имени.
 func TestCheckRenamedScopedIgnoresOutOfScopeKeys(t *testing.T) {
 	outOfScope := ""
 	for _, old := range sortedRenamedOldNames() {
@@ -119,8 +93,6 @@ func TestCheckRenamedScopedIgnoresOutOfScopeKeys(t *testing.T) {
 	}
 }
 
-// TestCheckRenamedScopedCatchesInScopeKeys — при этом СВОИ ключи из `old`
-// по-прежнему ловятся — сужение не глушит проверку целиком.
 func TestCheckRenamedScopedCatchesInScopeKeys(t *testing.T) {
 	for _, old := range AgentOwned {
 		t.Run(old, func(t *testing.T) {
@@ -135,17 +107,6 @@ func TestCheckRenamedScopedCatchesInScopeKeys(t *testing.T) {
 	}
 }
 
-// TestCheckRenamedScopedEmptySetChecksNothingDeliberately — пустой (но не
-// nil, и не отсутствующий) `old` для CheckRenamedScoped — легитимный
-// вызов «в этой области проверять нечего», а не случайно выродившийся
-// сентинел «весь реестр» (это раньше было поведением старой единой
-// CheckRenamed(getenv, nil)). Раздельные функции
-// делают это осознанным выбором вызывающего кода: пустой список НИКОГДА не
-// проверяет весь реестр — для этого есть отдельная CheckRenamedAll. Тест
-// прогоняет пустой срез (и явный nil — то же самое для CheckRenamedScoped,
-// в отличие от старой сигнатуры) на непустом env, где ЕСТЬ устаревшее имя,
-// и требует nil-результат — то есть проверяет реальное «ничего не поймал»,
-// а не «нечего было ловить».
 func TestCheckRenamedScopedEmptySetChecksNothingDeliberately(t *testing.T) {
 	old := sortedRenamedOldNames()[0]
 	getenv := env(map[string]string{old: "x"})
@@ -157,9 +118,6 @@ func TestCheckRenamedScopedEmptySetChecksNothingDeliberately(t *testing.T) {
 	}
 }
 
-// TestCheckRenamedEmptyValueLegit — пустое значение старого имени не роняет
-// старт (docker-compose штатно прокидывает объявленные, но не заданные
-// переменные пустой строкой).
 func TestCheckRenamedEmptyValueLegit(t *testing.T) {
 	old := sortedRenamedOldNames()[0]
 	if err := CheckRenamedAll(env(map[string]string{old: ""})); err != nil {
@@ -167,8 +125,6 @@ func TestCheckRenamedEmptyValueLegit(t *testing.T) {
 	}
 }
 
-// TestCheckRenamedListsAllFindings — несколько устаревших переменных сразу
-// обязаны попасть в сообщение все, а не только первая встреченная.
 func TestCheckRenamedListsAllFindings(t *testing.T) {
 	names := sortedRenamedOldNames()
 	old1, old2 := names[0], names[1]
@@ -183,15 +139,8 @@ func TestCheckRenamedListsAllFindings(t *testing.T) {
 	}
 }
 
-// TestRenamedTargetsAreKnown — транзитивность реестра (E3 T10): цель
-// (новое имя) каждой записи Renamed, которую реально читает Go-код —
-// то есть КРОМЕ InfraOwned, чьи новые имена намеренно compose/build-
-// namespaced и в Known не входят, см. докблоки InfraOwned и Known — обязана
-// быть именем из Known. Ловит переименование уже переименованного: если
-// будущая волна переименует B (уже бывшее целью старой записи A→B) в C,
-// запись A→B молча останется указывать на B, которого Known больше не
-// содержит, — оператор со старым именем A получит подсказку «renamed to
-// B», применит её и тут же наткнётся на отказ по неизвестному B.
+// Ловит переименование уже переименованного: если будущая волна переименует
+// B (цель старой записи A→B) в C, запись A→B молча указывает на B, которого уже нет в Known.
 func TestRenamedTargetsAreKnown(t *testing.T) {
 	infra := map[string]bool{}
 	for _, old := range InfraOwned {

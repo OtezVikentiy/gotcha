@@ -11,7 +11,6 @@ func TestPerfEvidenceSpanIDs(t *testing.T) {
 	if got := perfEvidenceSpanIDs([]byte(`{"count":9,"span_ids":["a","b"]}`)); len(got) != 2 || got[0] != "a" {
 		t.Errorf("span_ids = %v", got)
 	}
-	// нет ключа / битый / пустой → nil
 	for _, in := range []string{`{"count":9}`, `not-json`, ``} {
 		if got := perfEvidenceSpanIDs([]byte(in)); got != nil {
 			t.Errorf("perfEvidenceSpanIDs(%q) = %v, want nil", in, got)
@@ -26,11 +25,9 @@ func TestCodeLocFromData(t *testing.T) {
 	if code == nil || code.File != "app/pay.py" || code.Line != "42" || code.Function != "reconcile" {
 		t.Fatalf("code = %+v", code)
 	}
-	// только функция (без файла) — тоже показываем
 	if c := codeLocFromData(map[string]string{"code.function": "f"}); c == nil || c.Function != "f" {
 		t.Errorf("function-only should yield a loc: %+v", c)
 	}
-	// ни файла, ни функции, и пустая мапа → nil (показывать нечего)
 	if c := codeLocFromData(map[string]string{"db.system": "postgresql"}); c != nil {
 		t.Errorf("no file/function → want nil, got %+v", c)
 	}
@@ -40,7 +37,6 @@ func TestCodeLocFromData(t *testing.T) {
 }
 
 func TestEnrichPerfDetail(t *testing.T) {
-	// Берём первый спан с непустым описанием (спаны уже по длительности убыв.).
 	var d templates.PerfIssueDetailData
 	enrichPerfDetail(&d, []trace.SpanDetail{
 		{SpanID: "s1", Op: "view", Description: "", DurationUS: 8000},
@@ -54,7 +50,6 @@ func TestEnrichPerfDetail(t *testing.T) {
 		t.Errorf("code/db = %q %+v", d.DBSystem, d.Code)
 	}
 
-	// Нет спанов — ничего не проставляется.
 	var empty templates.PerfIssueDetailData
 	enrichPerfDetail(&empty, nil)
 	if empty.Query != "" || empty.Code != nil {

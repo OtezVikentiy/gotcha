@@ -6,15 +6,10 @@ import (
 	"testing"
 )
 
-// Скролл-контейнер, свёрстанный литеральным <div class="table-scroll">,
-// минует scrollRegion и теряет tabindex/role/aria-label — клавиатура не может
-// прокрутить содержимое (WCAG 2.1.1, №31). Единственная точка входа —
-// компонент scrollRegion (scroll.templ).
+// литеральный скролл-класс мимо @scrollRegion теряет tabindex/role/aria-label —
+// клавиатура не прокрутит содержимое.
 var scrollClassRe = regexp.MustCompile(`class="[^"]*\b(table-scroll|scroll-list|endpoint-chart|metric-chart-wrap|flamegraph-wrap|trace-waterfall|trace-flame|issue-chart)\b[^"]*"`)
 
-// minScrollRegionUses — нижняя граница числа употреблений компонента:
-// фактически 40 на момент введения; порог с запасом вниз (приём
-// minBlocksInsideMedia) ловит слепоту обхода, а не колебания вёрстки.
 const minScrollRegionUses = 25
 
 func TestScrollContainersUseScrollRegion(t *testing.T) {

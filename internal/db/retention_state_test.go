@@ -9,10 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestRecordRetentionReportsDisagreement: расхождение сроков хранения между
-// репликами обязано быть видимым. TTL — свойство инсталляции, а задаётся
-// окружением каждой реплики: две реплики с разными значениями перекидывают TTL
-// туда-обратно, и каждый переброс переписывает все куски таблицы.
 func TestRecordRetentionReportsDisagreement(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

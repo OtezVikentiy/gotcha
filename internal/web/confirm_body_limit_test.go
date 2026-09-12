@@ -24,29 +24,14 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// confirmLimitStack — фикс-раунд 2/5 T4, находка «дыра покрытия»: один общий
-// стенд со ВСЕМИ сущностями, нужными четырнадцати маршрутам, которые в
-// фикс-раунде 1 получили h.parseForm(w, r). testenv.MigratedPG/MigratedCH
-// поднимают контейнеры один раз на весь прогон пакета (sync.Once), так что
-// один такой стенд не дороже одного из соседних *_test.go, а не в 14 раз
-// дороже.
 type confirmLimitStack struct {
 	pool *pgxpool.Pool
 	srv  *httptest.Server
 	h    *web.Handler
 
-	// adminUID — первый и единственный зарегистрированный на этом стенде
-	// пользователь: PROD-B1 делает первого зарегистрированного
-	// инстанс-админом, что и нужно profileInstanceAdminTransfer/
-	// orgSettingsSSODelete. Он же владелец org/project/team ниже —
-	// requireProjectOwner/requireProjectOperator/requireOrgOwner/
-	// requireTeamRole все проходят по одной и той же роли owner.
 	adminUID    int64
 	adminCookie *http.Cookie
 
-	// otherUID — НЕ инстанс-админ и не владелец никакого орга: нужен
-	// profileDelete отдельно от adminUID, у которого SoleOwnedOrgNames
-	// вернул бы non-empty (409 раньше, чем дело дойдёт до parseForm).
 	otherUID    int64
 	otherCookie *http.Cookie
 
@@ -161,9 +146,6 @@ func newConfirmLimitStack(t *testing.T) *confirmLimitStack {
 	if err != nil {
 		t.Fatalf("enqueue export job: %v", err)
 	}
-	// Терминальный статус — тем же приёмом, что exportsStack.markDone
-	// (exports_test.go): exportsDelete требует job.Status.Terminal() ДО
-	// h.parseForm, значит для теста этого маршрута заявка обязана быть done.
 	if _, err := pool.Exec(ctx,
 		`UPDATE export_jobs SET status='done', finished_at=now(), expires_at=now()+interval '7 days' WHERE id=$1`,
 		jobID); err != nil {
@@ -173,7 +155,7 @@ func newConfirmLimitStack(t *testing.T) *confirmLimitStack {
 	sp, err := uptimeSvc.CreateStatusPage(ctx, uptime.StatusPage{
 		ProjectID: proj.ID,
 		Title:     "Confirm Limit Status",
-		Enabled:   false, // Enabled=false — оператора достаточно, не нужен CanManage
+		Enabled:   false,
 	}, nil)
 	if err != nil {
 		t.Fatalf("create status page: %v", err)
@@ -191,28 +173,21 @@ func newConfirmLimitStack(t *testing.T) *confirmLimitStack {
 	}
 }
 
-// TestConfirmAndSwitchHandlersOversizedBodyReturns413 — фикс-раунд 2/5 T4:
-// таблица по ВСЕМ четырнадцати маршрутам фикс-раунда 1 (12 confirm-хендлеров
-// + themeSwitch/localeSwitch), а не по одному profileDelete-представителю —
-// тест реально ХОДИТ по каждой строке своим HTTP-запросом на свой маршрут
-// со своим предзаведённым в БД объектом, а не просто перечисляет имена.
-// Проверка одна и та же для каждой строки: тело сверх formBodyMaxBytes
-// (поле pad) отвечает 413, а не 200 (confirm-страница)/303 (редирект)/500.
 func TestConfirmAndSwitchHandlersOversizedBodyReturns413(t *testing.T) {
 	s := newConfirmLimitStack(t)
-	huge := strings.Repeat("x", 70_000) // > formBodyMaxBytes (64 КиБ)
+	huge := strings.Repeat("x", 70_000)
 
 	cases := []struct {
 		name   string
 		path   string
-		cookie *http.Cookie // nil — без сессии (публичный маршрут)
+		cookie *http.Cookie
 	}{
 		{"monitorDelete", fmt.Sprintf("/monitors/%d/delete", s.httpMonitorID), s.adminCookie},
 		{"monitorHeartbeatRegenerate", fmt.Sprintf("/monitors/%d/heartbeat/regenerate", s.heartbeatMonitorID), s.adminCookie},
 		{"exportsDelete", fmt.Sprintf("/projects/%d/exports/%d/delete", s.projectID, s.exportJobID), s.adminCookie},
 		{"projectSettingsDelete", fmt.Sprintf("/projects/%d/settings/delete", s.projectID), s.adminCookie},
 		{"teamDelete", fmt.Sprintf("/teams/%d/delete", s.teamID), s.adminCookie},
-		{"profileDelete", "/profile/delete", s.otherCookie}, // otherUID: не sole owner, иначе 409 раньше parseForm
+		{"profileDelete", "/profile/delete", s.otherCookie},
 		{"profileInstanceAdminTransfer", "/profile/instance-admin/transfer", s.adminCookie},
 		{"orgSettingsDelete", fmt.Sprintf("/orgs/%d/settings/delete", s.orgID), s.adminCookie},
 		{"orgSettingsLeave", fmt.Sprintf("/orgs/%d/settings/leave", s.orgID), s.adminCookie},

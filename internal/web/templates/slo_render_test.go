@@ -11,9 +11,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
-// TestSLOsScreenRendersDataRows покрывает ветку HasData=true списка SLO (индикатор
-// достижения, бейдж статуса, проценты) — на веб-стенде без ClickHouse провайдеры
-// nil, поэтому эти строки в web-тесте не рендерятся; здесь рендерим VM напрямую.
+// без ClickHouse на стенде провайдеры nil — HasData=true через хендлер не получить,
+// поэтому VM здесь собран и отрендерен напрямую.
 func TestSLOsScreenRendersDataRows(t *testing.T) {
 	ctx := context.Background()
 	rows := []SLORow{
@@ -33,18 +32,14 @@ func TestSLOsScreenRendersDataRows(t *testing.T) {
 			t.Errorf("SLOsScreen не содержит %q", want)
 		}
 	}
-	// P2-4: у прочерка «нет данных» есть title-подсказка (нет трафика vs сломалось).
 	if !strings.Contains(out, i18n.T(ctx, "slo.list.no_data_hint")) {
 		t.Errorf("SLOsScreen не содержит подсказку slo.list.no_data_hint для строки без данных")
 	}
-	// P2-3: под полем порога сжигания в форме есть подсказка про 14.4.
 	if !strings.Contains(out, i18n.T(ctx, "slo.form.burn_hint")) {
 		t.Errorf("SLOsScreen не содержит подсказку slo.form.burn_hint в форме")
 	}
 }
 
-// TestSLODetailScreenRendersFullState покрывает ветки экрана деталей: HasData
-// (карточки+график), HasBurn (short/long), открытый инцидент и историю.
 func TestSLODetailScreenRendersFullState(t *testing.T) {
 	ctx := context.Background()
 	started := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
@@ -73,25 +68,20 @@ func TestSLODetailScreenRendersFullState(t *testing.T) {
 			t.Errorf("SLODetailScreen не содержит %q", want)
 		}
 	}
-	// Регрессия приёмки (прод 0.12.0): в блоке открытого инцидента @relativeTime стоял
-	// инлайн после текста и уезжал в разметку СЫРЫМ литералом, а не рендерился. Открытое
-	// время должно быть настоящим <time>, а литерала "@relativeTime" быть не должно.
+	// @relativeTime сразу после текста в templ уходит в разметку сырым литералом, не рендерясь.
 	if strings.Contains(out, "@relativeTime") {
 		t.Errorf("сырой templ-литерал @relativeTime в разметке: %s", out)
 	}
 	if !strings.Contains(out, "<time") {
 		t.Errorf("открытый инцидент не отрендерил относительное время (<time>): %s", out)
 	}
-	// P2-5: статус бюджета продублирован текстом (WCAG 1.4.1 — не только цветом точки).
 	if !strings.Contains(out, sloStatusLabel(ctx, "exhausted")) {
 		t.Errorf("SLODetailScreen не содержит текстовый лейбл статуса %q", sloStatusLabel(ctx, "exhausted"))
 	}
-	// P2-2: под burn-карточками есть подсказка про смысл ×N.
 	if !strings.Contains(out, i18n.T(ctx, "slo.detail.burn_hint")) {
 		t.Errorf("SLODetailScreen не содержит подсказку slo.detail.burn_hint")
 	}
 
-	// HasData=false — график и проценты не рендерятся, экран не падает.
 	var sb2 strings.Builder
 	empty := SLODetailVM{ProjectID: 1, ID: 6, Name: "empty slo", Kind: "uptime", TargetPct: 99.9, WindowDays: 30, HasData: false, Chart: templ.NopComponent}
 	if err := SLODetailScreen(empty, "u@example.com").Render(ctx, &sb2); err != nil {

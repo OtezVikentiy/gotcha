@@ -1,7 +1,6 @@
 -- backward-compatible: yes (новые таблицы и ADD COLUMN с дефолтами)
--- Этап 6 (метрики): квота метрик (per-request счётчик, как транзакции) и
--- пороговые алерты на метрики (модель регрессий этапа 4: правило + инцидент
--- open/close, один открытый инцидент на правило).
+-- Квота метрик (per-request счётчик, как у транзакций) и пороговые алерты — правило +
+-- инцидент open/close, один открытый на правило.
 ALTER TABLE organizations ADD COLUMN metric_quota bigint NOT NULL DEFAULT 1000000;
 ALTER TABLE org_usage ADD COLUMN metrics_count bigint NOT NULL DEFAULT 0;
 

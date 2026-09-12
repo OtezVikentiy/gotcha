@@ -10,31 +10,8 @@ import templruntime "github.com/a-h/templ/runtime"
 
 import "gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 
-// copyBlock — переиспользуемый блок «скопировать в буфер»: кнопка,
-// запускающая copy.js (тот же контракт, что у copyToolbar, issuedetail.templ:
-// корень .copy-llm, [data-copy-format]/[data-copy-target], скрытая textarea
-// [data-copy-blob], тост [data-copy-done]) и единственный источник обычного
-// текста — в отличие от copyToolbar (два формата, Markdown/текст, под одно
-// событие копирования), здесь вызывающий сам решает, когда рендерить блок, и
-// передаёт уже готовое содержимое (конфиг коллектора хостовых метрик, T16).
-// JS не меняется — copy.js уже делегирует через data-атрибуты (m15 плана).
-//
-// id обязан быть уникален на странице — copy.js ищет textarea по
-// data-copy-target именно внутри БЛИЖАЙШЕГО .copy-llm, но два блока с
-// одинаковым id в одном документе всё равно нарушают уникальность id (HTML/
-// querySelector). labelKey — i18n-ключ подписи кнопки, он же аргумент
-// aria-label. Textarea — visually-hidden, НЕ hidden/display:none: фолбэк
-// copy.js на execCommand делает textarea.focus()/select(), а скрытый через
-// display элемент не фокусируется и не выделяется.
-//
-// Видимый <pre> рядом с кнопкой — не дубль скрытой textarea, а само
-// содержимое блока (UX-аудит A1, P1-1): до него единственным следом конфига
-// коллектора была кнопка «Скопировать», то есть проверить глазами
-// подставленные адрес инстанса и ключ было негде, а <summary>«Показать
-// конфиг коллектора»</summary> раскрывался в кнопку вместо текста. Скрытой
-// textarea эту роль не отдать: она aria-hidden (её не читает скринридер) и
-// visually-hidden (её не видит зрячий) — она существует только ради
-// execCommand-фолбэка copy.js.
+// textarea visually-hidden, не display:none — execCommand-фолбэк copy.js делает focus()/select().
+// <pre> ниже — не дубль скрытой textarea, а сам видимый контент блока.
 func copyBlock(id, labelKey, content string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -63,7 +40,7 @@ func copyBlock(id, labelKey, content string) templ.Component {
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.ResolveAttributeValue(id)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/copyblock.templ`, Line: 33, Col: 24}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/copyblock.templ`, Line: 10, Col: 24}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var2)
 		if templ_7745c5c3_Err != nil {
@@ -76,7 +53,7 @@ func copyBlock(id, labelKey, content string) templ.Component {
 		var templ_7745c5c3_Var3 string
 		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, labelKey))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/copyblock.templ`, Line: 33, Col: 61}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/copyblock.templ`, Line: 10, Col: 61}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var3)
 		if templ_7745c5c3_Err != nil {
@@ -89,7 +66,7 @@ func copyBlock(id, labelKey, content string) templ.Component {
 		var templ_7745c5c3_Var4 string
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, labelKey))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/copyblock.templ`, Line: 34, Col: 26}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/copyblock.templ`, Line: 11, Col: 26}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
@@ -102,7 +79,7 @@ func copyBlock(id, labelKey, content string) templ.Component {
 		var templ_7745c5c3_Var5 string
 		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "copy.done"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/copyblock.templ`, Line: 36, Col: 74}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/copyblock.templ`, Line: 13, Col: 74}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
@@ -115,7 +92,7 @@ func copyBlock(id, labelKey, content string) templ.Component {
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.ResolveAttributeValue(id)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/copyblock.templ`, Line: 37, Col: 43}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/copyblock.templ`, Line: 14, Col: 43}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var6)
 		if templ_7745c5c3_Err != nil {
@@ -128,7 +105,7 @@ func copyBlock(id, labelKey, content string) templ.Component {
 		var templ_7745c5c3_Var7 string
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(content)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/copyblock.templ`, Line: 37, Col: 112}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/copyblock.templ`, Line: 14, Col: 112}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 		if templ_7745c5c3_Err != nil {
@@ -141,7 +118,7 @@ func copyBlock(id, labelKey, content string) templ.Component {
 		var templ_7745c5c3_Var8 string
 		templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(content)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/copyblock.templ`, Line: 38, Col: 37}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/copyblock.templ`, Line: 15, Col: 37}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 		if templ_7745c5c3_Err != nil {

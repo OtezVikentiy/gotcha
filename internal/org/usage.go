@@ -9,24 +9,13 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// monthStart нормализует month к первому дню месяца в UTC — org_usage
-// ключуется по (org_id, period_month), где period_month всегда 1-е число.
-//
-// Момент сначала переводится в UTC, и только потом из него берутся год и
-// месяц. Без этого Date() читал год и месяц В ЗОНЕ АРГУМЕНТА, а результат
-// штамповался как UTC — то есть строка выбиралась по локальному календарю
-// вызывающего. Вызывающие при этом разные: приём считает квоту от локальных
-// часов (ingest.OrgQuota.now = time.Now), счётчик отброшенного — от
-// time.Now().UTC(), страница организации — снова от локальных. На инстансе с
-// выставленной TZ в окне шириной со смещение зоны на стыке месяцев это
-// расходилось: принятое из запроса писалось в один месяц, отброшенное из ТОГО
-// ЖЕ запроса — в другой, а квота организации обнулялась раньше срока.
+// Сначала UTC, потом год/месяц: обратный порядок берёт календарь из зоны
+// аргумента и штампует его как UTC — период сдвигается на стыке месяцев.
 func monthStart(month time.Time) time.Time {
 	y, m, _ := month.UTC().Date()
 	return time.Date(y, m, 1, 0, 0, 0, 0, time.UTC)
 }
 
-// Usage возвращает счётчик событий организации за месяц (0, если записи нет).
 func (s *Service) Usage(ctx context.Context, orgID int64, month time.Time) (int64, error) {
 	var n int64
 	err := s.pool.QueryRow(ctx,
@@ -41,9 +30,6 @@ func (s *Service) Usage(ctx context.Context, orgID int64, month time.Time) (int6
 	return n, nil
 }
 
-// IncUsage увеличивает счётчик событий организации за месяц на 1 и
-// возвращает новое значение. Разные месяцы независимы (первый инкремент
-// месяца заводит строку с events_count=1).
 func (s *Service) IncUsage(ctx context.Context, orgID int64, month time.Time) (int64, error) {
 	var n int64
 	err := s.pool.QueryRow(ctx, `
@@ -59,9 +45,6 @@ func (s *Service) IncUsage(ctx context.Context, orgID int64, month time.Time) (i
 	return n, nil
 }
 
-// TransactionUsage возвращает счётчик транзакций организации за месяц
-// (0, если записи нет). Счётчик отдельный от событий: транзакции и ошибки
-// живут в разных колонках одной строки org_usage и не мешают друг другу.
 func (s *Service) TransactionUsage(ctx context.Context, orgID int64, month time.Time) (int64, error) {
 	var n int64
 	err := s.pool.QueryRow(ctx,
@@ -76,9 +59,6 @@ func (s *Service) TransactionUsage(ctx context.Context, orgID int64, month time.
 	return n, nil
 }
 
-// IncTransactionUsage увеличивает счётчик транзакций организации за месяц на 1
-// и возвращает новое значение. events_count при этом не трогается (и наоборот,
-// см. IncUsage) — квоты ошибок и транзакций независимы.
 func (s *Service) IncTransactionUsage(ctx context.Context, orgID int64, month time.Time) (int64, error) {
 	var n int64
 	err := s.pool.QueryRow(ctx, `
@@ -94,8 +74,6 @@ func (s *Service) IncTransactionUsage(ctx context.Context, orgID int64, month ti
 	return n, nil
 }
 
-// MetricUsage возвращает счётчик метрик организации за месяц (0, если нет
-// записи). Отдельный счётчик от событий/транзакций (org_usage.metrics_count).
 func (s *Service) MetricUsage(ctx context.Context, orgID int64, month time.Time) (int64, error) {
 	var n int64
 	err := s.pool.QueryRow(ctx,
@@ -110,9 +88,6 @@ func (s *Service) MetricUsage(ctx context.Context, orgID int64, month time.Time)
 	return n, nil
 }
 
-// IncMetricUsage увеличивает счётчик метрик организации за месяц на 1 и
-// возвращает новое значение. events_count/transactions_count не трогаются —
-// квоты независимы.
 func (s *Service) IncMetricUsage(ctx context.Context, orgID int64, month time.Time) (int64, error) {
 	var n int64
 	err := s.pool.QueryRow(ctx, `
@@ -128,8 +103,6 @@ func (s *Service) IncMetricUsage(ctx context.Context, orgID int64, month time.Ti
 	return n, nil
 }
 
-// ProfileUsage возвращает счётчик профилей организации за месяц (0, если нет
-// записи). Отдельный счётчик (org_usage.profiles_count).
 func (s *Service) ProfileUsage(ctx context.Context, orgID int64, month time.Time) (int64, error) {
 	var n int64
 	err := s.pool.QueryRow(ctx,
@@ -144,7 +117,6 @@ func (s *Service) ProfileUsage(ctx context.Context, orgID int64, month time.Time
 	return n, nil
 }
 
-// IncProfileUsage увеличивает счётчик профилей организации за месяц на 1.
 func (s *Service) IncProfileUsage(ctx context.Context, orgID int64, month time.Time) (int64, error) {
 	var n int64
 	err := s.pool.QueryRow(ctx, `
@@ -160,10 +132,6 @@ func (s *Service) IncProfileUsage(ctx context.Context, orgID int64, month time.T
 	return n, nil
 }
 
-// LogUsage возвращает счётчик логов организации за месяц (0, если нет
-// записи). Отдельный счётчик (org_usage.logs_count) — используется формой
-// настроек организации (см. web.orgSettingsQuota) наравне с
-// Usage/TransactionUsage/MetricUsage/ProfileUsage.
 func (s *Service) LogUsage(ctx context.Context, orgID int64, month time.Time) (int64, error) {
 	var n int64
 	err := s.pool.QueryRow(ctx,
@@ -178,10 +146,6 @@ func (s *Service) LogUsage(ctx context.Context, orgID int64, month time.Time) (i
 	return n, nil
 }
 
-// Dropped — счётчики ОТКЛОНЁННЫХ (drop) единиц организации за месяц: сколько
-// событий/транзакций/метрик/профилей приём отбросил (исчерпана квота и т.п.).
-// Отдельны от принятых счётчиков (events_count и др.) — это реальные потери,
-// которые оператор обязан видеть (PROD-P1: конец молчаливых потерь).
 type Dropped struct {
 	Events       int64
 	Transactions int64
@@ -190,8 +154,6 @@ type Dropped struct {
 	Logs         int64
 }
 
-// DroppedUsage возвращает счётчики дропов организации за месяц (нули, если
-// записи нет).
 func (s *Service) DroppedUsage(ctx context.Context, orgID int64, month time.Time) (Dropped, error) {
 	var d Dropped
 	err := s.pool.QueryRow(ctx, `
@@ -207,12 +169,9 @@ func (s *Service) DroppedUsage(ctx context.Context, orgID int64, month time.Time
 	return d, nil
 }
 
-// incDropped — общий UPSERT для счётчиков дропов: заводит строку месяца с
-// нужным счётчиком = n либо прибавляет n к существующему. col — доверенное имя
-// колонки из фиксированного набора (не из пользовательского ввода).
 func (s *Service) incDropped(ctx context.Context, col string, orgID int64, month time.Time, n int64) error {
 	if n <= 0 {
-		return nil // отрицательный/нулевой инкремент — no-op, счётчик потерь только растёт
+		return nil
 	}
 	sql := `
 		INSERT INTO org_usage (org_id, period_month, ` + col + `)
@@ -225,72 +184,32 @@ func (s *Service) incDropped(ctx context.Context, col string, orgID int64, month
 	return nil
 }
 
-// IncDroppedEvents увеличивает счётчик отклонённых событий организации за месяц
-// на n. Принятые счётчики не трогаются.
 func (s *Service) IncDroppedEvents(ctx context.Context, orgID int64, month time.Time, n int64) error {
 	return s.incDropped(ctx, "dropped_events", orgID, month, n)
 }
 
-// IncDroppedTransactions увеличивает счётчик отклонённых транзакций за месяц на n.
 func (s *Service) IncDroppedTransactions(ctx context.Context, orgID int64, month time.Time, n int64) error {
 	return s.incDropped(ctx, "dropped_transactions", orgID, month, n)
 }
 
-// IncDroppedMetrics увеличивает счётчик отклонённых метрик за месяц на n.
 func (s *Service) IncDroppedMetrics(ctx context.Context, orgID int64, month time.Time, n int64) error {
 	return s.incDropped(ctx, "dropped_metrics", orgID, month, n)
 }
 
-// IncDroppedProfiles увеличивает счётчик отклонённых профилей за месяц на n.
 func (s *Service) IncDroppedProfiles(ctx context.Context, orgID int64, month time.Time, n int64) error {
 	return s.incDropped(ctx, "dropped_profiles", orgID, month, n)
 }
 
-// IncDroppedLogs увеличивает счётчик отклонённых логов за месяц на n.
 func (s *Service) IncDroppedLogs(ctx context.Context, orgID int64, month time.Time, n int64) error {
 	return s.incDropped(ctx, "dropped_logs", orgID, month, n)
 }
 
-// checkAndCount условно списывает want единиц из месячной квоты и возвращает,
-// СКОЛЬКО удалось списать. Отклонённое НЕ инкрементит счётчик (usage не считает
-// то, что не приняли).
-//
-// Списание ЧАСТИЧНОЕ: если до квоты осталось меньше, чем просят, засчитывается
-// остаток, а вызывающий выбрасывает разницу и считает её в дропы. Так
-// организация получает ровно свою квоту, а не «последний конверт целиком мимо»,
-// и org_usage остаётся точным. Раньше списывалась единица за HTTP-ЗАПРОС: один
-// конверт с тысячей событий или десятью тысячами OTLP-спанов стоил ровно
-// столько же, сколько одно событие, то есть квоту можно было обойти на четыре
-// порядка, а usage — источник правды по потреблению — врал на столько же.
-//
-// ОДНО ОБРАЩЕНИЕ, А НЕ ПЯТЬ. Раньше здесь была короткая транзакция: BEGIN,
-// INSERT … DO NOTHING, SELECT … FOR UPDATE, UPDATE, COMMIT — то есть три
-// обращения под исключительной блокировкой строки, через которую идёт весь
-// приём организации, плюс две сетевые паузы на границах транзакции.
-// Блокировка нужна и осталась (без неё два конкурентных приёма разойдутся в
-// счётчике), но теперь она берётся и снимается внутри одного оператора, а не
-// поперёк трёх сетевых пауз.
-//
-// Препятствием было то, что для ответа «сколько списано» нужно значение ДО
-// инкремента, а RETURNING в PostgreSQL 17 отдаёт только новую строку.
-// Обходится колонкой предобраза: тем же SET, где счётчик растёт, прежнее его
-// значение кладётся в <колонка>_before, и списанное считается вычитанием. Все
-// правые части SET вычисляются по СТАРОЙ строке одновременно, поэтому
-// org_usage.<col> справа — значение до обновления, а не после. На ветке
-// вставки (первый приём месяца) предобраз равен нулю и задаётся в VALUES явно,
-// так что разность даёт ровно вставленное.
-//
-// СРОК ЖИЗНИ РЕШЕНИЯ ОГРАНИЧЕН: с переходом на PostgreSQL 18 всё это
-// схлопывается в RETURNING OLD, и колонки предобраза уходят миграцией
-// (см. 0057_org_usage_preimage). Через год это не должно приниматься за
-// архитектуру.
-//
-// quota==0 — безлимит: списывается всё запрошенное. col — доверенное имя
-// колонки из фиксированного набора (не из пользовательского ввода).
 func (s *Service) checkAndCount(ctx context.Context, col string, orgID int64, month time.Time, quota, want int64) (int64, error) {
 	if want <= 0 {
 		return 0, nil
 	}
+	// PG RETURNING отдаёт только новую строку: колонка *_before хранит значение
+	// ДО этого UPDATE, чтобы списанное считалось разностью after-before.
 	before := col + "_before"
 	sql := `
 		INSERT INTO org_usage (org_id, period_month, ` + col + `, ` + before + `)
@@ -305,13 +224,6 @@ func (s *Service) checkAndCount(ctx context.Context, col string, orgID int64, mo
 		RETURNING ` + col + `, ` + before
 	var after, pre int64
 	err := s.pool.QueryRow(ctx, sql, orgID, monthStart(month), want, quota).Scan(&after, &pre)
-	// Строк не вернулось — сработало условие WHERE, то есть квота уже выбрана.
-	// Условие стоит здесь не для корректности (без него выдача и так вышла бы
-	// нулевой), а чтобы исчерпавшая квоту организация не порождала запись в
-	// строку на каждый отклонённый запрос: приём при исчерпанной квоте — это
-	// поток, и писать в одну и ту же строку на каждый его запрос значит греть
-	// журнал предзаписи ради нулевого результата. Прежняя транзакция в этом
-	// случае тоже завершалась без UPDATE.
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil
 	}
@@ -321,28 +233,10 @@ func (s *Service) checkAndCount(ctx context.Context, col string, orgID int64, mo
 	return after - pre, nil
 }
 
-// CheckAndCountEvents условно инкрементит счётчик событий за месяц (квота 0 —
-// безлимит) и сообщает, разрешён ли приём. Отклонённые не считаются.
 func (s *Service) CheckAndCountEvents(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error) {
 	return s.checkAndCount(ctx, "events_count", orgID, month, quota, want)
 }
 
-// refund — общий UPSERT «вернуть n единиц счётчика месяца, не уходя ниже
-// нуля». Закрывает обратную сторону checkAndCount (T8): приём списывает квоту
-// ДО постановки в очередь, а по ёмкости отказывает ПОСЛЕ, и без возврата
-// организация платит за то, что мы попытались принять, а не за то, что
-// реально встало в очередь. col — доверенное имя колонки из фиксированного
-// набора (не из пользовательского ввода), n<=0 — no-op без похода в БД.
-//
-// GREATEST(col - n, 0) — защита от рассинхрона (двойной возврат, гонка с
-// параллельным списанием того же месяца), а не украшение: без неё возврат
-// мог бы увести счётчик в отрицательные значения и тем самым завысить
-// оставшуюся квоту организации сверх факта.
-//
-// В отличие от incDropped/checkAndCount, здесь нет ветки INSERT: возврат не
-// бывает раньше первого списания того же месяца, поэтому строка org_usage к
-// моменту возврата уже существует, а UPDATE без совпавшей строки — это
-// no-op, а не потерянный возврат (нечего заводить).
 func (s *Service) refund(ctx context.Context, col string, orgID int64, month time.Time, n int64) error {
 	if n <= 0 {
 		return nil
@@ -356,55 +250,42 @@ func (s *Service) refund(ctx context.Context, col string, orgID int64, month tim
 	return nil
 }
 
-// RefundEvents возвращает n ранее списанных checkAndCount единиц счётчика
-// событий за месяц (не ниже нуля). Вызывается приёмником, когда списанное по
-// квоте не удалось поставить в очередь по ёмкости — см. ingest.QuotaChecker.
 func (s *Service) RefundEvents(ctx context.Context, orgID int64, month time.Time, n int64) error {
 	return s.refund(ctx, "events_count", orgID, month, n)
 }
 
-// CheckAndCountTransactions — то же для счётчика транзакций (независимая квота).
 func (s *Service) CheckAndCountTransactions(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error) {
 	return s.checkAndCount(ctx, "transactions_count", orgID, month, quota, want)
 }
 
-// RefundTransactions — возврат для счётчика транзакций, см. RefundEvents.
 func (s *Service) RefundTransactions(ctx context.Context, orgID int64, month time.Time, n int64) error {
 	return s.refund(ctx, "transactions_count", orgID, month, n)
 }
 
-// CheckAndCountMetrics — то же для счётчика метрик (независимая квота).
 func (s *Service) CheckAndCountMetrics(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error) {
 	return s.checkAndCount(ctx, "metrics_count", orgID, month, quota, want)
 }
 
-// RefundMetrics — возврат для счётчика метрик, см. RefundEvents.
 func (s *Service) RefundMetrics(ctx context.Context, orgID int64, month time.Time, n int64) error {
 	return s.refund(ctx, "metrics_count", orgID, month, n)
 }
 
-// CheckAndCountProfiles — то же для счётчика профилей (независимая квота).
 func (s *Service) CheckAndCountProfiles(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error) {
 	return s.checkAndCount(ctx, "profiles_count", orgID, month, quota, want)
 }
 
-// RefundProfiles — возврат для счётчика профилей, см. RefundEvents.
 func (s *Service) RefundProfiles(ctx context.Context, orgID int64, month time.Time, n int64) error {
 	return s.refund(ctx, "profiles_count", orgID, month, n)
 }
 
-// CheckAndCountLogs — то же для счётчика логов (независимая квота).
 func (s *Service) CheckAndCountLogs(ctx context.Context, orgID int64, month time.Time, quota, want int64) (int64, error) {
 	return s.checkAndCount(ctx, "logs_count", orgID, month, quota, want)
 }
 
-// RefundLogs — возврат для счётчика логов, см. RefundEvents.
 func (s *Service) RefundLogs(ctx context.Context, orgID int64, month time.Time, n int64) error {
 	return s.refund(ctx, "logs_count", orgID, month, n)
 }
 
-// SetProfileQuota меняет месячную квоту профилей организации. Quota >= 0 required
-// (0 means unlimited).
 func (s *Service) SetProfileQuota(ctx context.Context, orgID, quota int64) error {
 	if quota < 0 {
 		return ErrInvalidQuota
@@ -420,8 +301,6 @@ func (s *Service) SetProfileQuota(ctx context.Context, orgID, quota int64) error
 	return nil
 }
 
-// SetMetricQuota меняет месячную квоту метрик организации. Quota >= 0 required
-// (0 means unlimited).
 func (s *Service) SetMetricQuota(ctx context.Context, orgID, quota int64) error {
 	if quota < 0 {
 		return ErrInvalidQuota
@@ -437,11 +316,6 @@ func (s *Service) SetMetricQuota(ctx context.Context, orgID, quota int64) error 
 	return nil
 }
 
-// SetLogQuota меняет месячную квоту логов организации. Quota >= 0 required
-// (0 means unlimited). Точечный сеттер для тестов (дефолт для новых
-// организаций задаёт bootstrap через SetQuotaDefaults+CreateOrg, этот метод
-// он не вызывает); форма настроек организации сохраняет квоту логов вместе
-// с остальными четырьмя одним атомарным вызовом SetQuotas (см. ниже).
 func (s *Service) SetLogQuota(ctx context.Context, orgID, quota int64) error {
 	if quota < 0 {
 		return ErrInvalidQuota
@@ -457,8 +331,6 @@ func (s *Service) SetLogQuota(ctx context.Context, orgID, quota int64) error {
 	return nil
 }
 
-// SetTransactionQuota меняет месячную квоту транзакций организации.
-// Quota >= 0 required (0 means unlimited).
 func (s *Service) SetTransactionQuota(ctx context.Context, orgID, quota int64) error {
 	if quota < 0 {
 		return ErrInvalidQuota
@@ -474,18 +346,6 @@ func (s *Service) SetTransactionQuota(ctx context.Context, orgID, quota int64) e
 	return nil
 }
 
-// SetQuotas атомарно применяет любое подмножество из пяти квот организации
-// (события/транзакции/метрики/профили/логи) одним UPDATE (COALESCE оставляет
-// непереданные поля нетронутыми): nil-поле — эту квоту не трогаем, как и у
-// отдельных Set*Quota ниже. В отличие от последовательных вызовов Set*Quota
-// в цикле, здесь либо применяются все переданные поля, либо ни одно — сбой
-// БД посреди применения не оставит квоты частично изменёнными (важно и для
-// log_quota: до этой правки форма сохраняла её отдельным вызовом
-// SetLogQuota ПОСЛЕ SetQuotas, и обрыв между двумя вызовами коммитил бы
-// четыре квоты, оставив пятую несохранённой при показанном пользователю
-// 422). Используется формой настроек организации, где за один POST может
-// поменяться несколько квот сразу; сами Set*Quota (включая SetLogQuota)
-// остаются для точечных мест (bootstrap, тесты), где хватает одной квоты.
 func (s *Service) SetQuotas(ctx context.Context, orgID int64, event, transaction, metric, profile, log *int64) error {
 	for _, v := range []*int64{event, transaction, metric, profile, log} {
 		if v != nil && *v < 0 {
@@ -510,8 +370,6 @@ func (s *Service) SetQuotas(ctx context.Context, orgID int64, event, transaction
 	return nil
 }
 
-// SetQuota меняет месячную квоту событий организации. Quota >= 0 required
-// (0 means unlimited).
 func (s *Service) SetQuota(ctx context.Context, orgID, quota int64) error {
 	if quota < 0 {
 		return ErrInvalidQuota

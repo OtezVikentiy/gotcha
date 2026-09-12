@@ -7,7 +7,6 @@ import (
 	"time"
 )
 
-// alwaysFailMarkSent — заглушка outboxStore, у которой MarkSent всегда падает.
 // Нужна, чтобы прогнать markSent по веткам, недоступным флаки-заглушке из
 // worker_test.go (та отдаёт успех со второй попытки).
 type alwaysFailMarkSent struct {
@@ -31,13 +30,8 @@ func (a *alwaysFailMarkSent) MarkFailed(ctx context.Context, jobID int64, sendEr
 	return nil
 }
 
-// TestMarkSentFinishesDespiteCancel: сообщение уже отправлено получателю, и
-// подтвердить это в очереди нужно независимо от того, что процесс выключают.
-//
-// Прежнее поведение — прервать попытки на отменённом контексте — экономило доли
-// секунды на остановке ценой того, что задача оставалась pending и уходила
-// получателю повторно после рестарта. Идемпотентности у Telegram и вебхуков
-// нет, поэтому дубль виден человеку; задержка выключения на 200 мс — нет.
+// Идемпотентности у Telegram и вебхуков нет — дубль от повторной отправки
+// после рестарта виден человеку, задержка выключения на 200мс — нет.
 func TestMarkSentFinishesDespiteCancel(t *testing.T) {
 	store := &alwaysFailMarkSent{}
 	w := &Worker{Outbox: store}
@@ -53,10 +47,6 @@ func TestMarkSentFinishesDespiteCancel(t *testing.T) {
 	}
 }
 
-// TestRetryOrFailWritesDespiteCancel: то же для неудачной отправки. Раньше при
-// остановке процесса MarkRetry падал по отменённому контексту, и задача
-// оставалась со сдвинутым next_retry_at — выключение задерживало доставку на
-// длину claim-лизы.
 func TestRetryOrFailWritesDespiteCancel(t *testing.T) {
 	store := &recordingStore{}
 	w := &Worker{Outbox: store}
@@ -74,8 +64,6 @@ func TestRetryOrFailWritesDespiteCancel(t *testing.T) {
 	}
 }
 
-// recordingStore записывает, что дошло до хранилища, и проверяет, что контекст
-// живой.
 type recordingStore struct {
 	retryCalls   int
 	lastRetryErr error
@@ -92,9 +80,6 @@ func (r *recordingStore) MarkFailed(ctx context.Context, jobID int64, sendErr er
 	return nil
 }
 
-// TestMarkSentExhaustsRetries: с живым ctx и всегда падающим MarkSent воркер
-// обязан исчерпать все markSentRetries попытки и сдаться (оставив job pending),
-// покрывая финальную ветку "mark sent failed after retries".
 func TestMarkSentExhaustsRetries(t *testing.T) {
 	store := &alwaysFailMarkSent{}
 	w := &Worker{Outbox: store}
@@ -106,24 +91,8 @@ func TestMarkSentExhaustsRetries(t *testing.T) {
 	}
 }
 
-// TestMarkSentWaitStopsWithContext: комментарий над markSent обещал паузу
-// между попытками, прерываемую по ctx; в коде стоял безусловный time.Sleep,
-// который ничем не прерывался. Проверяется сама вынесенная функция
-// markSentWait, а не markSent целиком — markSentBackoff продуктовая
-// константа, подменять её ради теста не хотим, а прерывание попыток markSent
-// при отмене уже закрыто TestMarkSentFinishesDespiteCancel и здесь не
-// дублируется.
-//
-// Ассерт не завязан на настенное время — ни в одном из двух случаев не
-// сравниваются миллисекунды, только "вернулась / зависла":
-//   - отменённый ctx + заведомо огромная длительность (час) — функция обязана
-//     вернуться за разумные секунды, а не досидеть до конца;
-//   - живой ctx + микроскопическая длительность — функция обязана вернуться
-//     (не зависнуть навсегда), подтверждая, что ветка time.After рабочая, а не
-//     что select всегда мгновенно возвращается независимо от происходящего.
-//
-// Запас между "секунды" и "час" — три порядка, ложных падений на загруженном
-// раннере не даёт.
+// Час vs миллисекунда — три порядка запаса, без риска ложных падений на
+// загруженном раннере; ассерт проверяет только «вернулась/зависла».
 func TestMarkSentWaitStopsWithContext(t *testing.T) {
 	t.Run("отменённый ctx прерывает огромную паузу", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())

@@ -13,7 +13,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// count возвращает число строк в таблице по project_id.
 func count(t *testing.T, ctx context.Context, conn driver.Conn, table string, projectID int64) uint64 {
 	t.Helper()
 	var n uint64
@@ -24,7 +23,6 @@ func count(t *testing.T, ctx context.Context, conn driver.Conn, table string, pr
 	return n
 }
 
-// countEventsByEmail возвращает число событий проекта с указанным user_email.
 func countEventsByEmail(t *testing.T, ctx context.Context, conn driver.Conn, projectID int64, email string) uint64 {
 	t.Helper()
 	var n uint64
@@ -44,7 +42,6 @@ func TestPurgeProject(t *testing.T) {
 	const p2 = int64(2)
 	ts := time.Now().UTC()
 
-	// Наполняем все таблицы, которые чистит PurgeProject, для двух проектов.
 	seedEvents(t, ctx, conn, p1, "u1", "10.0.0.1", "a@b.com", ts)
 	seedEvents(t, ctx, conn, p2, "u2", "10.0.0.2", "c@d.com", ts)
 	seedTransactions(t, ctx, conn, p1, "u1", ts)
@@ -88,7 +85,6 @@ func TestPurgeSubject(t *testing.T) {
 	const p2 = int64(20)
 	ts := time.Now().UTC()
 
-	// В проекте p2 два субъекта: удаляемый (a@b.com) и посторонний (keep@x.com).
 	seedEvents(t, ctx, conn, p1, "u1", "10.0.0.1", "a@b.com", ts) // другой проект — не трогаем
 	seedEvents(t, ctx, conn, p2, "victim", "192.168.0.1", "a@b.com", ts)
 	seedEvents(t, ctx, conn, p2, "other", "192.168.0.2", "keep@x.com", ts)
@@ -100,19 +96,16 @@ func TestPurgeSubject(t *testing.T) {
 		t.Fatalf("PurgeSubject: %v", err)
 	}
 
-	// В p2 события с a@b.com удалены, keep@x.com целы.
 	if got := countEventsByEmail(t, ctx, conn, p2, "a@b.com"); got != 0 {
 		t.Errorf("p2 events a@b.com: осталось %d, ждали 0", got)
 	}
 	if got := countEventsByEmail(t, ctx, conn, p2, "keep@x.com"); got == 0 {
 		t.Errorf("p2 events keep@x.com удалены, а не должны были")
 	}
-	// Другой проект с тем же email не затронут.
 	if got := countEventsByEmail(t, ctx, conn, p1, "a@b.com"); got == 0 {
 		t.Errorf("p1 events a@b.com удалены, а не должны были (субъект чистится в рамках проекта)")
 	}
 
-	// Теперь чистим субъекта по user_id — уходят и события, и транзакции.
 	if _, err := p.PurgeSubject(ctx, p2, telemetry.Subject{UserID: "other"}); err != nil {
 		t.Fatalf("PurgeSubject by user_id: %v", err)
 	}
@@ -139,9 +132,6 @@ func TestPurgeSubject(t *testing.T) {
 	}
 }
 
-// TestPurgeSubjectMetricPoints проверяет, что PurgeSubject чистит и ПДн субъекта
-// из metric_points.attributes (user.id / enduser.id / user.email), не задевая
-// метрики постороннего субъекта и чужого проекта.
 func TestPurgeSubjectMetricPoints(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -151,8 +141,6 @@ func TestPurgeSubjectMetricPoints(t *testing.T) {
 	const p2 = int64(40)
 	ts := time.Now().UTC()
 
-	// p2: метрика субъекта (user.id=victim), метрика по enduser.id, метрика по
-	// user.email и метрика постороннего. p1 — чужой проект с тем же user.id.
 	seedMetricPointAttr(t, ctx, conn, p2, map[string]string{"user.id": "victim"}, ts)
 	seedMetricPointAttr(t, ctx, conn, p2, map[string]string{"enduser.id": "victim"}, ts)
 	seedMetricPointAttr(t, ctx, conn, p2, map[string]string{"user.email": "a@b.com"}, ts)
@@ -164,7 +152,6 @@ func TestPurgeSubjectMetricPoints(t *testing.T) {
 		t.Fatalf("PurgeSubject: %v", err)
 	}
 
-	// В p2 остались только метрики постороннего субъекта (user.id=other): 1 строка.
 	if got := count(t, ctx, conn, "metric_points", p2); got != 1 {
 		t.Errorf("p2 metric_points: осталось %d, ждали 1 (только other)", got)
 	}
@@ -176,16 +163,11 @@ func TestPurgeSubjectMetricPoints(t *testing.T) {
 	if otherLeft != 1 {
 		t.Errorf("p2 metric_points other: осталось %d, ждали 1", otherLeft)
 	}
-	// Чужой проект не затронут.
 	if got := count(t, ctx, conn, "metric_points", p1); got != 1 {
 		t.Errorf("p1 metric_points: осталось %d, ждали 1 (субъект чистится в рамках проекта)", got)
 	}
 }
 
-// TestPurgeSubjectLogs проверяет, что PurgeSubject чистит ПДн субъекта из
-// logs.log_attributes по всем четырём ключам (user.id/enduser.id ← UserID,
-// user.email/enduser.email ← Email), не задевая логи постороннего субъекта и
-// чужого проекта.
 func TestPurgeSubjectLogs(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -195,8 +177,6 @@ func TestPurgeSubjectLogs(t *testing.T) {
 	const p2 = int64(70)
 	ts := time.Now().UTC()
 
-	// p2: логи субъекта по всем четырём ключам и лог постороннего. p1 — чужой
-	// проект с тем же user.id.
 	seedLogAttr(t, ctx, conn, p2, map[string]string{"user.id": "victim"}, ts)
 	seedLogAttr(t, ctx, conn, p2, map[string]string{"enduser.id": "victim"}, ts)
 	seedLogAttr(t, ctx, conn, p2, map[string]string{"user.email": "a@b.com"}, ts)
@@ -213,7 +193,6 @@ func TestPurgeSubjectLogs(t *testing.T) {
 		t.Errorf("res.Logs = %d, ждали 4 (совпадения по всем четырём ключам)", res.Logs)
 	}
 
-	// В p2 остался только лог постороннего (user.id=other): 1 строка.
 	if got := count(t, ctx, conn, "logs", p2); got != 1 {
 		t.Errorf("p2 logs: осталось %d, ждали 1 (только other)", got)
 	}
@@ -225,15 +204,11 @@ func TestPurgeSubjectLogs(t *testing.T) {
 	if otherLeft != 1 {
 		t.Errorf("p2 logs other: осталось %d, ждали 1", otherLeft)
 	}
-	// Чужой проект не затронут.
 	if got := count(t, ctx, conn, "logs", p1); got != 1 {
 		t.Errorf("p1 logs: осталось %d, ждали 1 (субъект чистится в рамках проекта)", got)
 	}
 }
 
-// TestPurgeSubjectTransactionTags проверяет, что PurgeSubject чистит транзакции,
-// где субъект выделяется не колонкой user_id, а тегами (OTLP-приём: user.id/
-// enduser.id ← UserID, user.email/enduser.email ← Email), не задевая посторонних.
 func TestPurgeSubjectTransactionTags(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -242,7 +217,6 @@ func TestPurgeSubjectTransactionTags(t *testing.T) {
 	const p = int64(50)
 	ts := time.Now().UTC()
 
-	// Транзакции субъекта victim / a@b.com — по разным конвенциям тегов.
 	seedTransactionTags(t, ctx, conn, p, map[string]string{"user.id": "victim"}, ts)
 	seedTransactionTags(t, ctx, conn, p, map[string]string{"enduser.id": "victim"}, ts)
 	seedTransactionTags(t, ctx, conn, p, map[string]string{"user.email": "a@b.com"}, ts)
@@ -258,17 +232,11 @@ func TestPurgeSubjectTransactionTags(t *testing.T) {
 		t.Fatalf("PurgeSubject: %v", err)
 	}
 
-	// Должны остаться только 2 транзакции постороннего (тег + колонка).
 	if got := count(t, ctx, conn, "transactions", p); got != 2 {
 		t.Errorf("transactions p: осталось %d, ждали 2 (только other)", got)
 	}
 }
 
-// TestPurgeSubjectSpans проверяет косвенное удаление spans субъекта через
-// trace_id его транзакций (у spans нет собственной колонки субъекта — см.
-// docblock PurgeSubject). Спан постороннего трейса и чужого проекта остаются
-// на месте, а "осиротевший" спан без строки в transactions переживает вызов —
-// это задокументированная граница механизма, а не брак.
 func TestPurgeSubjectSpans(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -283,14 +251,12 @@ func TestPurgeSubjectSpans(t *testing.T) {
 	seedTransactionTrace(t, ctx, conn, p1, "victim", "tr-victim", ts)
 	seedSpanTrace(t, ctx, conn, p1, "tr-victim", ts)
 
-	// p2: транзакция и спан субъекта.
 	seedTransactionTrace(t, ctx, conn, p2, "victim", "tr-victim", ts)
 	seedSpanTrace(t, ctx, conn, p2, "tr-victim", ts)
-	// p2: транзакция и спан постороннего — должны остаться.
 	seedTransactionTrace(t, ctx, conn, p2, "other", "tr-other", ts)
 	seedSpanTrace(t, ctx, conn, p2, "tr-other", ts)
-	// p2: "осиротевший" спан без строки в transactions — граница механизма:
-	// доживает до собственного TTL, а не удаляется вместе с субъектом.
+	// "Осиротевший" спан без строки в transactions доживает до своего TTL, а не
+	// удаляется вместе с субъектом — граница механизма, не брак.
 	seedSpanTrace(t, ctx, conn, p2, "tr-orphan", ts)
 
 	p := telemetry.NewPurger(conn)
@@ -319,10 +285,7 @@ func TestPurgeSubjectSpans(t *testing.T) {
 	}
 }
 
-// failOnceConn оборачивает driver.Conn и возвращает ошибку на первый Exec,
-// чей текст запроса содержит match, а дальше форвардит все вызовы как есть.
-// Нужен, чтобы воспроизвести сбой ровно в удалении spans, не трогая остальную
-// логику PurgeSubject — остальные методы наследуются встраиванием.
+// Возвращает ошибку на первый Exec, чей текст запроса содержит match, дальше форвардит как есть.
 type failOnceConn struct {
 	driver.Conn
 	match  string
@@ -337,12 +300,6 @@ func (f *failOnceConn) Exec(ctx context.Context, query string, args ...any) erro
 	return f.Conn.Exec(ctx, query, args...)
 }
 
-// TestPurgeSubjectSpansRetryAfterFailure фиксирует правку по ретраю: spans
-// удаляются РАНЬШЕ transactions ровно затем, чтобы сбой на spans не забирал у
-// повторного вызова возможность найти trace_id субъекта заново. Если порядок
-// когда-нибудь перевернут обратно (transactions раньше spans), тот же сбой на
-// spans застанет transactions уже удалёнными — и этот тест поймает это на
-// втором ассерте ("transactions удалены несмотря на сбой").
 func TestPurgeSubjectSpansRetryAfterFailure(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -368,8 +325,6 @@ func TestPurgeSubjectSpansRetryAfterFailure(t *testing.T) {
 		t.Fatal("spans tr-retry удалены несмотря на инъекцию сбоя")
 	}
 
-	// Повтор без инъекции сбоя обязан довести дело до конца: найти те же
-	// trace_id заново (транзакция ещё жива) и удалить и spans, и transactions.
 	res, err := telemetry.NewPurger(conn).PurgeSubject(ctx, p, telemetry.Subject{UserID: "victim"})
 	if err != nil {
 		t.Fatalf("PurgeSubject retry: %v", err)
@@ -384,8 +339,6 @@ func TestPurgeSubjectSpansRetryAfterFailure(t *testing.T) {
 		t.Errorf("spans tr-retry: осталось %d после retry, ждали 0", got)
 	}
 }
-
-// --- helpers наполнения таблиц (только нужные колонки, остальные по умолчанию) ---
 
 func seedEvents(t *testing.T, ctx context.Context, conn driver.Conn, projectID int64, userID, ip, email string, ts time.Time) {
 	t.Helper()
@@ -405,9 +358,6 @@ func seedTransactions(t *testing.T, ctx context.Context, conn driver.Conn, proje
 	}
 }
 
-// seedTransactionTags вставляет транзакцию с заданными tags (без user_id):
-// так OTLP-приём кладёт идентификаторы субъекта — user.id/enduser.id/user.email/
-// enduser.email попадают в tags, а не в колонку user_id.
 func seedTransactionTags(t *testing.T, ctx context.Context, conn driver.Conn, projectID int64, tags map[string]string, ts time.Time) {
 	t.Helper()
 	if err := conn.Exec(ctx,
@@ -425,9 +375,6 @@ func seedSpans(t *testing.T, ctx context.Context, conn driver.Conn, projectID in
 	}
 }
 
-// seedTransactionTrace вставляет транзакцию с заданными user_id и trace_id —
-// нужна там, где важна конкретная связка trace_id (проверка PurgeSubject по
-// spans, у которых нет собственной колонки субъекта).
 func seedTransactionTrace(t *testing.T, ctx context.Context, conn driver.Conn, projectID int64, userID, traceID string, ts time.Time) {
 	t.Helper()
 	if err := conn.Exec(ctx,
@@ -437,7 +384,6 @@ func seedTransactionTrace(t *testing.T, ctx context.Context, conn driver.Conn, p
 	}
 }
 
-// seedSpanTrace вставляет спан с заданным trace_id.
 func seedSpanTrace(t *testing.T, ctx context.Context, conn driver.Conn, projectID int64, traceID string, ts time.Time) {
 	t.Helper()
 	if err := conn.Exec(ctx,
@@ -446,7 +392,6 @@ func seedSpanTrace(t *testing.T, ctx context.Context, conn driver.Conn, projectI
 	}
 }
 
-// countSpansByTrace возвращает число spans проекта с заданным trace_id.
 func countSpansByTrace(t *testing.T, ctx context.Context, conn driver.Conn, projectID int64, traceID string) uint64 {
 	t.Helper()
 	var n uint64
@@ -465,7 +410,6 @@ func seedMetricPoints(t *testing.T, ctx context.Context, conn driver.Conn, proje
 	}
 }
 
-// seedMetricPointAttr вставляет точку метрики с заданными attributes.
 func seedMetricPointAttr(t *testing.T, ctx context.Context, conn driver.Conn, projectID int64, attrs map[string]string, ts time.Time) {
 	t.Helper()
 	if err := conn.Exec(ctx,
@@ -500,7 +444,6 @@ func seedLogs(t *testing.T, ctx context.Context, conn driver.Conn, projectID int
 	}
 }
 
-// seedLogAttr вставляет строку лога с заданными log_attributes.
 func seedLogAttr(t *testing.T, ctx context.Context, conn driver.Conn, projectID int64, attrs map[string]string, ts time.Time) {
 	t.Helper()
 	if err := conn.Exec(ctx,
@@ -510,8 +453,7 @@ func seedLogAttr(t *testing.T, ctx context.Context, conn driver.Conn, projectID 
 	}
 }
 
-// seedWebVitals наполняет MV web_vitals_5m: она агрегирует вставки в transactions
-// с непустым measurements, поэтому вставляем транзакцию с lcp.
+// MV web_vitals_5m агрегирует вставки в transactions с непустым measurements.
 func seedWebVitals(t *testing.T, ctx context.Context, conn driver.Conn, projectID int64, ts time.Time) {
 	t.Helper()
 	if err := conn.Exec(ctx,
@@ -522,15 +464,6 @@ func seedWebVitals(t *testing.T, ctx context.Context, conn driver.Conn, projectI
 	}
 }
 
-// TestPurgeSubjectReportsMatchedRows фиксирует правку 152-ФЗ: удаление обязано
-// сообщать, сколько строк оно затронуло.
-//
-// Раньше PurgeSubject возвращал только error, и «успех» без единой удалённой
-// строки был неотличим от настоящего удаления. Случай не гипотетический, а
-// поведение по умолчанию: GOTCHA_SCRUB_IP и GOTCHA_SCRUB_EMAIL включены, значит
-// events.user_email и events.user_ip зануляются на приёме и поиск по ним не
-// совпадает ни с чем никогда. Владелец орга, исполняющий требование по ст. 14,
-// обязан видеть разницу между «удалено N записей» и «не найдено ничего».
 func TestPurgeSubjectReportsMatchedRows(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -543,7 +476,6 @@ func TestPurgeSubjectReportsMatchedRows(t *testing.T) {
 
 	p := telemetry.NewPurger(conn)
 
-	// Совпадение есть — счётчик обязан его показать.
 	res, err := p.PurgeSubject(ctx, pid, telemetry.Subject{Email: "victim@example.com"})
 	if err != nil {
 		t.Fatalf("PurgeSubject: %v", err)
@@ -555,8 +487,7 @@ func TestPurgeSubjectReportsMatchedRows(t *testing.T) {
 		t.Fatalf("res.Total() = %d меньше res.Events = %d", res.Total(), res.Events)
 	}
 
-	// Совпадений нет — ноль, и это НЕ ошибка. Ровно этот исход раньше выглядел
-	// как успешное удаление.
+	// Совпадений нет — ноль, и это НЕ ошибка.
 	res, err = p.PurgeSubject(ctx, pid, telemetry.Subject{Email: "nobody@example.com"})
 	if err != nil {
 		t.Fatalf("PurgeSubject (нет совпадений): %v", err)

@@ -11,9 +11,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// Stored — событие, прочитанное из CH; JSON-поля (Stacktrace, Contexts)
-// возвращаются как есть, без разбора. Stacktrace хранит весь JSON исключения
-// вида {"values":[...]}.
+// JSON-поля (Stacktrace, Contexts) возвращаются как есть, без разбора.
+// Stacktrace хранит весь JSON исключения вида {"values":[...]}.
 type Stored struct {
 	ID        string
 	IssueID   int64 // группа события; нужна выгрузке событий (kind=events) для колонки issue_id
@@ -39,20 +38,16 @@ type Stored struct {
 	Breadcrumbs string
 	Request     string // JSON: Sentry request-интерфейс (method/url/query_string/data/headers)
 
-	// TraceID — trace_id события (пустой, если SDK трейсинг не включил):
-	// страница issue показывает по нему ссылку «Смотреть трейс» на waterfall
-	// (этап 3, план 4, задача 3).
+	// Пустой, если SDK трейсинг не включил — по нему строится ссылка «Смотреть трейс».
 	TraceID string
 }
 
-// Point — точка временного ряда: T — начало интервала (UTC), N — число
-// событий, попавших в этот интервал.
+// T — начало интервала в UTC, N — число событий в нём.
 type Point struct {
 	T time.Time
 	N uint64
 }
 
-// Query — чтение событий из ClickHouse.
 type Query struct {
 	conn driver.Conn
 }
@@ -64,7 +59,6 @@ func NewQuery(conn driver.Conn) *Query {
 const storedColumns = `event_id, issue_id, timestamp, level, message, exception_type, exception_value, stacktrace,
 	environment, release, server_name, sdk, user_id, user_ip, user_email, tags, contexts, trace_id, breadcrumbs, request`
 
-// scanner — общая часть driver.Row и driver.Rows, достаточная для Scan.
 type scanner interface {
 	Scan(dest ...any) error
 }
@@ -87,8 +81,6 @@ func scanStored(s scanner) (Stored, error) {
 	return out, nil
 }
 
-// EventsForIssue возвращает до limit последних событий issue, отсортированных
-// по timestamp DESC (сначала самые новые).
 func (q *Query) EventsForIssue(ctx context.Context, projectID, issueID int64, limit int) ([]Stored, error) {
 	rows, err := q.conn.Query(ctx, `
 		SELECT `+storedColumns+`
@@ -116,8 +108,6 @@ func (q *Query) EventsForIssue(ctx context.Context, projectID, issueID int64, li
 	return out, nil
 }
 
-// CountSince возвращает число событий issue с timestamp >= since. Используется
-// spike-воркером алертинга для сравнения с порогом правила.
 func (q *Query) CountSince(ctx context.Context, projectID, issueID int64, since time.Time) (uint64, error) {
 	row := q.conn.QueryRow(ctx, `
 		SELECT count() FROM events
@@ -130,24 +120,12 @@ func (q *Query) CountSince(ctx context.Context, projectID, issueID int64, since 
 	return n, nil
 }
 
-// spikeCandidateLimit — потолок числа групп, возвращаемых CountsSince.
-//
-// Групп столько же, сколько issue превысили порог; в норме это единицы. Потолок
-// нужен на случай общего отказа приложения, когда порог перешагнули тысячи
-// групп: тогда лучше оповестить о самых громких, чем тащить в память список,
-// длина которого управляется отправителем событий.
+// Потолок нужен на случай общего отказа приложения, когда порог перешагнули
+// тысячи групп: лучше оповестить о самых громких, чем разбухать памятью.
 const spikeCandidateLimit = 500
 
-// CountsSince возвращает число событий с момента since по всем группам проекта,
-// у которых оно не меньше minCount.
-//
-// Один запрос вместо запроса на группу. Раньше spike-детектор звал CountSince в
-// цикле по всем активным группам: 10 тысяч активных групп давали 10 тысяч
-// round-trip'ов в ClickHouse каждую минуту с одной реплики — а число групп
-// задаёт отправитель событий, через уникальный fingerprint.
-//
-// Порог применяется в HAVING, а не в Go: не превысившие его группы не нужны
-// вовсе, и тащить их через сеть незачем.
+// Один запрос вместо запроса на группу — иначе N round-trip'ов в CH на N активных групп.
+// Порог — в HAVING, не в Go: не превысившие его группы через сеть не тащим.
 func (q *Query) CountsSince(ctx context.Context, projectID int64, since time.Time, minCount uint64) (map[int64]uint64, error) {
 	rows, err := q.conn.Query(ctx, `
 		SELECT issue_id, count() AS c FROM events
@@ -176,9 +154,7 @@ func (q *Query) CountsSince(ctx context.Context, projectID int64, since time.Tim
 	return out, nil
 }
 
-// EventByID ищет одно событие по project_id и event_id (UUID). Возвращает
-// found=false, если события с таким id нет в проекте (включая случай, когда
-// id существует, но принадлежит другому project_id).
+// found=false — событий с таким id нет в проекте, в т.ч. если id принадлежит другому project_id.
 func (q *Query) EventByID(ctx context.Context, projectID int64, eventID string) (Stored, bool, error) {
 	id, err := uuid.Parse(eventID)
 	if err != nil {
@@ -202,18 +178,13 @@ func (q *Query) EventByID(ctx context.Context, projectID int64, eventID string) 
 	return s, true, nil
 }
 
-// TraceError — событие-ошибка, привязанное к трейсу: issue_id, в котором оно
-// сгруппировано, и span_id, на котором произошло (пустой — событие без привязки
-// к конкретному спану). Для красных маркеров ошибок на waterfall трейса.
+// SpanID пустой — событие без привязки к конкретному спану.
 type TraceError struct {
 	IssueID int64
 	SpanID  string
 }
 
-// ByTraceID возвращает ошибки (события) проекта с данным trace_id — issue_id и
-// span_id каждой, чтобы waterfall трейса пометил соответствующие спаны красным
-// со ссылкой на issue. Параметризованный запрос: значения только через ?.
-// Дубли (несколько событий одного issue на одном спане) схлопываются DISTINCT.
+// DISTINCT схлопывает дубли — несколько событий одного issue на одном спане.
 func (q *Query) ByTraceID(ctx context.Context, projectID int64, traceID string) ([]TraceError, error) {
 	rows, err := q.conn.Query(ctx, `
 		SELECT DISTINCT issue_id, span_id
@@ -240,13 +211,8 @@ func (q *Query) ByTraceID(ctx context.Context, projectID int64, traceID string) 
 	return out, nil
 }
 
-// Series строит временной ряд числа событий issue на окне [from, to) с шагом
-// step: точки идут по шагу от from до to включительно (хронологически),
-// пропуски (интервалы без событий) заполняются нулями. Группировка на
-// стороне CH выровнена по абсолютной сетке (toStartOfInterval), выравненной
-// по Unix epoch. Сетка на клиентской стороне строится с тем же выравниванием,
-// чтобы гарантировать совпадение интервалов. Итоговая точка может быть
-// структурно нулевой, так как граница запроса — < to.
+// Сетка выровнена по Unix epoch — как toStartOfInterval в CH — чтобы совпадать с группировкой.
+// Итоговая точка может быть структурно нулевой: граница запроса — < to.
 func (q *Query) Series(ctx context.Context, projectID, issueID int64, from, to time.Time, step time.Duration) ([]Point, error) {
 	stepSec := int64(step / time.Second)
 	if stepSec <= 0 {
@@ -282,12 +248,8 @@ func (q *Query) Series(ctx context.Context, projectID, issueID int64, from, to t
 	fromUnix := from.UTC().Unix()
 	toUnix := to.UTC().Unix()
 	startUnix := (fromUnix / stepSec) * stepSec
-	// Последняя корзина — та, что СОДЕРЖИТ момент to, а не следующая за ним.
-	// Раньше граница округлялась ВВЕРХ за to, а цикл шёл по `<=`, поэтому в ряд
-	// добавлялась корзина, начинающаяся в to или позже: запрос фильтрует ts < to,
-	// так что данных в ней не могло быть ни при каких условиях. Спарклайны в
-	// списках (мониторы, эндпойнты) не проходят через fillSeries и потому
-	// заканчивались принудительным падением в ноль.
+	// Последняя корзина — та, что содержит to, а не следующая: запрос фильтрует
+	// ts < to, следующая корзина гарантированно пуста.
 	endUnix := ((toUnix - 1) / stepSec) * stepSec
 	if endUnix < startUnix {
 		endUnix = startUnix
@@ -301,11 +263,7 @@ func (q *Query) Series(ctx context.Context, projectID, issueID int64, from, to t
 	return out, nil
 }
 
-// Sparklines строит по каждому issueID равномерную гистограмму числа событий
-// от since до текущего момента, разбитую на buckets равных интервалов.
-// Отсутствующие в issueIDs корзины/issue не встречаются в out — для каждого
-// запрошенного issueID гарантируется слайс длины buckets, недостающие
-// значения — нули.
+// Для каждого issueID в out — слайс длины buckets, отсутствующие значения — нули.
 func (q *Query) Sparklines(ctx context.Context, projectID int64, issueIDs []int64, since time.Time, buckets int) (map[int64][]uint64, error) {
 	out := make(map[int64][]uint64, len(issueIDs))
 	if len(issueIDs) == 0 || buckets <= 0 {
@@ -364,66 +322,8 @@ func (q *Query) Sparklines(ctx context.Context, projectID int64, issueIDs []int6
 	return out, nil
 }
 
-// StreamForExport читает события выгрузки (internal/export, kind=events)
-// ГРУППАМИ в ПОРЯДКЕ СПИСКА issueIDs, внутри группы — timestamp DESC (K4-2,
-// аудит перед 1.0): вызывающий передаёт issueIDs уже отсортированным
-// (source_events.go: last_seen DESC — самые активные группы первыми).
-// Про limit — ниже отдельным абзацем: на большой выгрузке он реально
-// отсекает часть групп, и важно, КАКИЕ именно.
-//
-// Группа обходится ОДНИМ запросом НА issue_id, а не общим IN(...) с общим
-// ORDER BY: issue_id в этом запросе — равенство, а не список, поэтому
-// ORDER BY timestamp DESC — суффикс первичного ключа events
-// (project_id, issue_id, timestamp) для ФИКСИРОВАННОГО issue_id, и
-// ClickHouse читает страницы в порядке PK (в т.ч. в обратном для DESC),
-// без материализации и сортировки набора целиком — ровно то свойство,
-// ради которого раньше сортировка шла по issue_id, timestamp DESC (I2,
-// финревью волны 1 аудита перед 1.0).
-//
-// Раньше (до K4-2) общий запрос сортировал по issue_id ASC — по НОМЕРУ, не
-// связанному с активностью группы: усечение LIMIT отбрасывало произвольные
-// группы (какие именно — от порядка автоинкремента id, а не от того, что
-// важнее пользователю) вместо наименее активных. K4-2 заменил ключ на transform(issue_id, ids, ranks, len(ids))
-// — вычисляемое выражение, которое исключает read-in-order при ЛЮБОЙ
-// версии ClickHouse: сервер обязан прочитать и отсортировать весь
-// отфильтрованный набор целиком, держа top-N буфер размером до limit
-// (eventStreamSafetyLimit = 1_000_000 в source_events.go) ШИРОКИХ строк —
-// storedColumns включает stacktrace/breadcrumbs/contexts/request. На
-// крупном проекте без max_bytes_before_external_sort/max_memory_usage
-// (в проекте не заданы нигде) это MEMORY_LIMIT_EXCEEDED вместо файла
-// выгрузки. Обход по одной группе за раз даёт тот же порядок строк за счёт
-// того, что группы уже идут в порядке списка issueIDs (вызывающий
-// сортирует их сам — last_seen DESC, самые активные первыми), просто
-// последовательными запросами вместо одного вычисляемого ключа сортировки:
-// каждый запрос — точечный поиск по PK, дешёвый даже на огромной таблице
-// (индекс отсекает гранулы всех остальных issue_id), а remaining ниже
-// прекращает обход, как только исчерпан limit, — без похода за оставшимися
-// (наименее активными) группами вовсе.
-//
-// since/until нулевые — граница не задаётся: источник выгрузки строит их из
-// Params, где нулевое значение уже значит «без границы» (issue.Filter следует
-// тому же соглашению).
-//
-// limit — защитный потолок строк ВСЕГО обхода (eventStreamSafetyLimit в
-// source_events.go), не одного запроса на группу: remaining уменьшается по
-// факту отданных строк и передаётся следующему запросу как ЕГО собственный
-// LIMIT, так что сумма строк по всем группам не превышает limit. Обрезку
-// по бюджету заявки (GOTCHA_EXPORT_MAX_ROWS/MAX_BYTES) делает вызывающий
-// раннер, останавливая обход возвратом ошибки из fn, а не эта функция.
-//
-// Цена пустых групп реальна и измерена (раунд правок по ревью финревью
-// волны 1 аудита перед 1.0, F5): на testenv.MigratedCH 1000 групп (999
-// пустых) — 4.866с всего, 4.87мс на пустой round-trip; при потолке
-// defaultMaxIssueIDsForEventExport = 20 000 — ≈97с чистых round-trip'ов на
-// пустые группы даже на простаивающем локальном сервере. Отсечка «не
-// запрашивать группу с last_seen < since» здесь БЫЛА добавлена и ОТКАЧЕНА:
-// каждая issueID, доехавшая сюда из source_events.go.resolveIssueIDs, уже
-// прошла через issue.Service.buildIssueFilter, который САМ добавляет
-// `issues.last_seen >= $n` из ТОГО ЖЕ since, когда он задан — то есть
-// last_seen < since для доехавшей сюда группы уже невозможен (а при since
-// нулевом граница вовсе не задана ни на одном уровне). Цена остаётся
-// некомпенсированной на этом уровне — годного источника last_seen СТРОЖЕ
-// уже применённого PG-фильтра здесь нет (см. докблок resolveIssueIDs).
+// Группа обходится одним запросом на issue_id, не общим IN(...)+ORDER BY — тот план
+// читает и сортирует всё в памяти (MEMORY_LIMIT_EXCEEDED на большой таблице).
 func (q *Query) StreamForExport(ctx context.Context, projectID int64, issueIDs []int64,
 	since, until time.Time, limit int, fn func(Stored) error) error {
 	remaining := limit
@@ -456,10 +356,8 @@ func (q *Query) StreamForExport(ctx context.Context, projectID int64, issueIDs [
 	return nil
 }
 
-// streamOneIssue выполняет один запрос StreamForExport (одна группа) и
-// возвращает число строк, реально отданных fn — им StreamForExport уменьшает
-// remaining. Вынесено отдельно, чтобы rows.Close() отрабатывал на каждой
-// группе сразу (defer в цикле копил бы все rows до возврата функции).
+// Вынесено отдельно, чтобы rows.Close() отрабатывал на каждой группе сразу —
+// defer в цикле копил бы rows до возврата функции.
 func (q *Query) streamOneIssue(ctx context.Context, query string, args []any, fn func(Stored) error) (int, error) {
 	rows, err := q.conn.Query(ctx, query, args...)
 	if err != nil {

@@ -15,21 +15,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestIssueColumnsContractPin — заголовок CSV выгрузки issues это ПУБЛИЧНЫЙ
-// контракт: после 1.0 переименование колонки ломает чужие парсеры (аудит
-// 2026-08-27, DEDUP-P1 кластер 5). Список ниже — ЛИТЕРАЛ, набранный руками,
-// а НЕ вызов IssueColumns() — раньше единственная проверка контракта
-// (TestIssueSourceRecordHasAbsoluteURL ниже) сверяла Record с тем же самым
-// IssueColumns(), из которого код и берёт колонки: переименование колонки
-// в IssueColumns() проходило тест зелёным, потому что «ожидание» менялось
-// вместе с «реализацией» одним и тем же изменением одной строки.
-//
-// Порядок ТОЖЕ часть контракта: CSV-писатель кладёт значения по порядку
-// этого среза (см. docblock IssueColumns), поэтому сравнение — поэлементное,
-// не через множество.
-//
-// Менять этот литерал можно только осознанно, вместе с записью в CHANGELOG —
-// это предупреждение потребителям файла, а не деталь реализации.
 func TestIssueColumnsContractPin(t *testing.T) {
 	want := []string{"id", "title", "culprit", "level", "status", "times_seen",
 		"first_seen", "last_seen", "environments", "assignee_email", "url"}
@@ -44,10 +29,6 @@ func TestIssueColumnsContractPin(t *testing.T) {
 	}
 }
 
-// TestIssueSourceRecordHasAbsoluteURL проверяет, что Stream отдаёт Record
-// с ровно набором колонок §6 спеки и что url — абсолютная ссылка на группу,
-// а не относительный путь: файл открывают в почте и в таблице, где
-// относительная ссылка ведёт в никуда.
 func TestIssueSourceRecordHasAbsoluteURL(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -73,12 +54,6 @@ func TestIssueSourceRecordHasAbsoluteURL(t *testing.T) {
 	}
 	rec := records[0]
 
-	// Ожидание собирается ЛИТЕРАЛЬНО, а не тем же выражением, что и
-	// реализация: пока здесь стоял fmt.Sprintf с тем же шаблоном, тест был
-	// тавтологией и пропустил в прод ссылку на несуществующий
-	// /projects/{id}/issues/{id} (v0.22.0). Что путь реально обслуживается
-	// роутером, проверяет TestExportIssueURLHitsRegisteredRoute в
-	// internal/web — здесь роутера нет.
 	wantURL := "https://gotcha.example.com/issues/" + strconv.FormatInt(res.IssueID, 10)
 	url, _ := rec["url"].(string)
 	if url != wantURL {
@@ -93,7 +68,6 @@ func TestIssueSourceRecordHasAbsoluteURL(t *testing.T) {
 		t.Errorf("url = %q не содержит id группы %s", url, idStr)
 	}
 
-	// Ровно колонки §6, без лишних и без пропущенных.
 	wantCols := IssueColumns()
 	if len(rec) != len(wantCols) {
 		t.Fatalf("Record содержит %d полей, IssueColumns() — %d: %v vs %v", len(rec), len(wantCols), rec, wantCols)
@@ -108,9 +82,6 @@ func TestIssueSourceRecordHasAbsoluteURL(t *testing.T) {
 	}
 }
 
-// TestIssueSourceEmptyEnvironmentsIsEmptyString — группа без окружения не
-// должна получать плейсхолдер вроде "—" (это дело UI, не выгрузки): пустая
-// строка в файле честнее и не путается со значением реального окружения.
 func TestIssueSourceEmptyEnvironmentsIsEmptyString(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -134,10 +105,6 @@ func TestIssueSourceEmptyEnvironmentsIsEmptyString(t *testing.T) {
 	}
 }
 
-// TestIssueSourceIsolatedByProject — чужой project_id не должен утекать в
-// выдачу ни при каких параметрах фильтра: изоляция по проекту проверяется
-// не только в issue.StreamForExport, но и на уровне источника выгрузки,
-// который передаёт projectID дальше без потерь.
 func TestIssueSourceIsolatedByProject(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -154,7 +121,6 @@ func TestIssueSourceIsolatedByProject(t *testing.T) {
 
 	src := NewIssueSource(svc, "https://gotcha.example.com")
 	var titles []string
-	// Пустой Params — самый широкий фильтр, наибольший риск утечки.
 	if err := src.Stream(ctx, projectA, true, Params{}, func(r Record) error {
 		titles = append(titles, r["title"].(string))
 		return nil
@@ -166,10 +132,6 @@ func TestIssueSourceIsolatedByProject(t *testing.T) {
 	}
 }
 
-// TestIssueSourcePipelineThroughWriter — сценарный тест полного пайплайна
-// источник → Record → Writer: изолированные юниты источника и писателя могли
-// бы поодиночке быть исправны и разойтись на стыке (например, в имени или
-// типе колонки), а полный прогон через NDJSON это ловит.
 func TestIssueSourcePipelineThroughWriter(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -232,14 +194,6 @@ func TestIssueSourcePipelineThroughWriter(t *testing.T) {
 	}
 }
 
-// TestIssueSourceOrderDescendingByIDOnEqualLastSeen — F2 контрактной уборки
-// 2026-08-28 (CONTRACT-DECISIONS.md): порядок ORDER BY last_seen DESC,
-// id DESC (issue.Service.StreamForExport, internal/issue/query.go) —
-// публичный контракт выгрузки, до этого державшийся только докблоком.
-// Несколько групп с ОДИНАКОВЫМ last_seen обязаны прийти через IssueSource
-// строго убывающим по id — тай-брейк, без которого порядок строк выгрузки
-// переставал бы быть детерминированным на границе одинаковых значений
-// last_seen (частый случай: пачка событий, пришедшая разом).
 func TestIssueSourceOrderDescendingByIDOnEqualLastSeen(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -256,10 +210,6 @@ func TestIssueSourceOrderDescendingByIDOnEqualLastSeen(t *testing.T) {
 		}
 		wantIDs = append(wantIDs, res.IssueID)
 	}
-	// Убывающий порядок по id — ожидание собирается сортировкой уже
-	// известных id, НЕ повторением запроса реализации: тавтология здесь
-	// пропустила бы потерю тай-брейка так же тихо, как раньше пропускала
-	// потерю ссылки TestIssueSourceRecordHasAbsoluteURL (см. её докблок).
 	sort.Slice(wantIDs, func(i, j int) bool { return wantIDs[i] > wantIDs[j] })
 
 	src := NewIssueSource(svc, "https://gotcha.example.com")
@@ -282,10 +232,6 @@ func TestIssueSourceOrderDescendingByIDOnEqualLastSeen(t *testing.T) {
 	}
 }
 
-// TestIssueSourceMasksAssigneeEmailByDefault — K4-1 (аудит перед 1.0):
-// assignee_email — прямой идентификатор пользователя (email назначенного),
-// как user_email в выгрузке событий, и обязан маскироваться MaskUser при
-// includePII == false, а не уезжать как есть независимо от галки заявки.
 func TestIssueSourceMasksAssigneeEmailByDefault(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -340,10 +286,6 @@ func TestIssueSourceMasksAssigneeEmailByDefault(t *testing.T) {
 	}
 }
 
-// TestIssueSourceEmptyAssigneeEmailNotMasked — пустая колонка (группа без
-// назначенного) не должна подменяться маской ни в одном из режимов: иначе
-// по выгрузке нельзя было бы отличить «не назначено» от «email скрыт»
-// (симметрично докблоку MaskUser в pii.go).
 func TestIssueSourceEmptyAssigneeEmailNotMasked(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)

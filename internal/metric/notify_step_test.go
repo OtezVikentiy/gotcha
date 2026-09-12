@@ -10,12 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMetricNotifierStepDispatchesOnlyToChannelSet — NotifyStep(channelIDs)
-// шлёт ТОЛЬКО в перечисленные каналы, даже если остальные deliverable, и
-// возвращает их ID (реально заенкенные — то, что логирует ОРКЕСТРАЦИЯ,
-// escalation.SendStepIfDue, см. TestSendStepIfDueLogsEnqueuedChannels в
-// пакете escalation, T7-fix); disabled-канал не получает ничего независимо
-// от channelIDs.
 func TestMetricNotifierStepDispatchesOnlyToChannelSet(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -77,9 +71,6 @@ func TestMetricNotifierStepDispatchesOnlyToChannelSet(t *testing.T) {
 	}
 }
 
-// TestMetricNotifierStepNilChannelIDsSendsToAllDeliverable — NotifyStep(nil)
-// шлёт во ВСЕ deliverable-каналы проекта (старое поведение) и возвращает их
-// все как реально заенкенные.
 func TestMetricNotifierStepNilChannelIDsSendsToAllDeliverable(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -131,9 +122,6 @@ func TestMetricNotifierStepNilChannelIDsSendsToAllDeliverable(t *testing.T) {
 	}
 }
 
-// TestMetricNotifierRecoveryDispatchesWithoutLog — NotifyRecovery шлёт
-// CLOSE-уведомление в ЗАДАННЫЙ канал и НЕ пишет incident_escalations
-// (recovery не эскалирует).
 func TestMetricNotifierRecoveryDispatchesWithoutLog(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

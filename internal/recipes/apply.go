@@ -7,24 +7,13 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 )
 
-// RuleStatus — статус одного RuleSpec рецепта против существующих правил
-// проекта: Exists=true, если правило с тем же полным ключом уже есть.
 type RuleStatus struct {
 	Spec   RuleSpec
 	Exists bool
 }
 
-// matches — ключ идемпотентности рецепта: (MetricName, Aggregation,
-// Comparator, LabelKey, LabelValue) при existing.Environment == "".
-// Threshold и WindowSeconds в ключ НЕ входят: пользователь мог подстроить
-// порог под себя — такое правило считается «тем же», его не перетираем и не
-// дублируем. Env-скоупленное пользовательское правило (Environment != "")
-// ключом не является и НЕ блокирует создание all-env дефолта рецепта.
-// Enabled в ключ не входит ОСОЗНАННО: у правил сегодня нет toggle-UI
-// (выключенное правило — только рукотворное состояние в БД), и выключенный
-// дубль ключа честно считается «тем же» правилом — пересоздавать его поверх
-// воли пользователя было бы хуже. Появится выключение правил в UI —
-// пересмотреть.
+// вне ключа — Threshold, WindowSeconds, Enabled: иначе подстроенный порог или
+// отключённое правило задваивались бы; Environment != "" не в счёт и не блокирует all-env дефолт.
 func matches(r metric.Rule, s RuleSpec) bool {
 	return r.Environment == "" &&
 		r.MetricName == s.Metric &&
@@ -34,8 +23,6 @@ func matches(r metric.Rule, s RuleSpec) bool {
 		r.LabelValue == s.LabelValue
 }
 
-// RuleStatuses возвращает статусы всех RuleSpec'ов рецепта в порядке
-// r.Rules — по одному RuleStatus на спек.
 func RuleStatuses(existing []metric.Rule, r Recipe) []RuleStatus {
 	out := make([]RuleStatus, 0, len(r.Rules))
 	for _, spec := range r.Rules {
@@ -51,15 +38,8 @@ func RuleStatuses(existing []metric.Rule, r Recipe) []RuleStatus {
 	return out
 }
 
-// ApplyRules идемпотентно создаёт недостающие рекомендованные пороги рецепта
-// как обычные metric alert rules (Environment="", Enabled=true). Возвращает
-// (created, skipped). Идемпотентность — check-then-create поверх List: у
-// metric_alert_rules НЕТ unique-констрейнта по ключу, так что гонка двойного
-// клика теоретически даёт дубль правила — это benign (спека §4.4): дубль
-// виден в списке правил и удаляется вручную, а повторный ApplyRules дублей
-// уже не плодит. При частичном сбое (часть правил создана, затем Create
-// упал) повторный вызов дозаполнит недостающие: уже созданные попадут в
-// skipped, ошибка не оставляет проект в невосстановимом состоянии.
+// check-then-create поверх List: unique-констрейнта на ключ нет, гонка двойного
+// клика может дать дубль правила — терпимо, дубль виден в списке и удаляется вручную.
 func ApplyRules(ctx context.Context, svc *metric.RuleService, projectID int64, r Recipe) (int, int, error) {
 	existing, err := svc.List(ctx, projectID)
 	if err != nil {

@@ -5,9 +5,6 @@ import (
 	"testing"
 )
 
-// TestTxSubjectConds проверяет построение условий отбора субъекта в transactions
-// без ClickHouse: важно, что conds и args идут строго параллельно (N-е условие ↔
-// N-й параметр), а IP-only субъект не даёт условий (в transactions IP не хранят).
 func TestTxSubjectConds(t *testing.T) {
 	tests := []struct {
 		name      string

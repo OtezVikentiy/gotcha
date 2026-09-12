@@ -21,29 +21,19 @@ var (
 	ErrSelfTransfer       = errors.New("auth: cannot transfer the instance admin role to yourself")
 )
 
-// reEmail — намеренно простая проверка формата (не полная RFC 5322): один @,
-// непустые локальная часть и домен, в домене есть точка. Локальная часть и
-// домен также не пускают control-байты (\x00-\x1F, \x7F) — без этого NUL в
-// email проходит формат-валидацию и падает уже на INSERT в Postgres как
-// голый 500 вместо аккуратного 422 (ErrInvalidEmail).
+// Простой формат-чек (не RFC 5322): один @, непустые части, точка в домене, без control-байт —
+// иначе NUL проходит валидацию и падает на INSERT в Postgres как голый 500 вместо 422.
 var reEmail = regexp.MustCompile(`^[^@\s\x00-\x1F\x7F]+@[^@\s\x00-\x1F\x7F]+\.[^@\s\x00-\x1F\x7F]+$`)
 
-// ValidEmailFormat — тот же формат-чек, что используют Register/CreateOAuthUser
-// ниже, экспортирован для переиспользования в web-слое (email в форме
-// приглашения, смена email в настройках организации), чтобы не заводить там
-// собственную копию regex, рискующую разойтись с этой.
+// Экспортирован для переиспользования в web-слое — чтобы не заводить там свою копию regex.
 func ValidEmailFormat(email string) bool {
 	return len(email) <= 254 && reEmail.MatchString(email)
 }
 
-// Service — аутентификация: пользователи и сессии.
 type Service struct {
 	pool *pgxpool.Pool
 
-	// Secure — работает ли инстанс под HTTPS (BaseURL начинается с https://).
-	// RA-L1: на secure=true RequireUser читает сессию ТОЛЬКО из префиксной
-	// __Host--cookie. Проставляется из main.go после NewService; дефолт false
-	// (читать оба имени) сохраняет обратную совместимость.
+	// Проставляется в main.go после NewService; дефолт false читает оба имени cookie для совместимости.
 	Secure bool
 }
 
@@ -51,7 +41,6 @@ func NewService(pool *pgxpool.Pool) *Service {
 	return &Service{pool: pool}
 }
 
-// Register создаёт пользователя и возвращает его id.
 func (s *Service) Register(ctx context.Context, email, password string) (int64, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if !ValidEmailFormat(email) {
@@ -71,48 +60,22 @@ func (s *Service) Register(ctx context.Context, email, password string) (int64, 
 	}
 	defer tx.Rollback(ctx)
 
-	// instanceAdminBootstrapLockClass (identity.go, см. докблок там же) —
-	// сериализация с DeleteSelfAccount: без общего лока NOT EXISTS ниже мог
-	// увидеть ещё не удалённую (в чужой незакоммиченной транзакции) строку
-	// админа, которого в этот же момент удаляет DeleteSelfAccount, и не
-	// поставить себе флаг — хотя после чужого COMMIT инстанс оказывался
-	// вовсе без администратора (хвост волны 1, T8).
+	// Тот же лок, что у DeleteSelfAccount — без него NOT EXISTS мог пропустить параллельное удаление
+	// админа, и инстанс остался бы без администратора.
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1, 0)", instanceAdminBootstrapLockClass); err != nil {
 		return 0, fmt.Errorf("auth: register: bootstrap lock: %w", err)
 	}
 
-	// PROD-B1: первый пользователь инстанса становится инстанс-админом.
-	// Флаг вычисляется атомарно в том же операторе через NOT EXISTS. Лок
-	// выше сериализует ВСЕ регистрации между собой (все метят один objID) —
-	// вторая дожидается COMMIT первой и уже видит её строку, так что
-	// NOT EXISTS для неё честно возвращает false.
-	//
-	// Раньше здесь был SAVEPOINT и ретрай на случай проигранной гонки за
-	// право быть первым админом (частичный уникальный индекс
-	// one_instance_admin ловил ДВЕ параллельные первые регистрации, обе
-	// увидевшие пустую таблицу разом). Лок выше делает эту гонку
-	// НЕДОСТИЖИМОЙ: ни другой Register (сериализован тем же локом), ни
-	// TransferInstanceAdmin (user.go: работает только на СУЩЕСТВУЮЩЕМ
-	// пользователе-вызывающем — fromUID обязан существовать ДО вызова,
-	// значит таблица никогда не пуста на всём протяжении передачи, а
-	// NOT EXISTS выше в принципе не может вернуть true параллельно с ней)
-	// не может вставить/выставить второй is_instance_admin=true, пока эта
-	// транзакция ждёт своей очереди на лок. T8 фикс-раунд 1: ретрай убран
-	// как мёртвый код (0 попаданий на TestRegister_ConcurrentFirstAdminRace
-	// после лока — см. её докблок); если конфликт всё же случится, это
-	// сигнал сломанного инварианта (лок снят выше по стеку, либо появился
-	// новый путь вставки в обход него), а не штатная гонка — падаем громко,
-	// а не втихую становимся вторым не-админом.
+	// Первый пользователь становится админом атомарно через NOT EXISTS; лок выше сериализует все
+	// регистрации между собой, так что вторая честно видит уже закоммиченную первую.
 	var id int64
 	err = tx.QueryRow(ctx,
 		`INSERT INTO users (email, password_hash, is_instance_admin)
 		 VALUES ($1, $2, NOT EXISTS (SELECT 1 FROM users))
 		 RETURNING id`,
 		email, hash).Scan(&id)
-	// RA-L6: 23505 приходит от двух разных индексов. Различаем по имени
-	// констрейнта: unique(email) → email действительно занят.
-	// one_instance_admin — см. комментарий выше: при исправной блокировке
-	// недостижимо, а не штатный путь.
+	// 23505 из двух разных индексов: email занят → ErrEmailTaken. Конфликт unique-индекса admin-флага
+	// недостижим при исправной блокировке — это сигнал сломанного инварианта, а не штатная гонка.
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		if pgErr.ConstraintName == "one_instance_admin" {
@@ -129,8 +92,6 @@ func (s *Service) Register(ctx context.Context, email, password string) (int64, 
 	return id, nil
 }
 
-// UserCount возвращает число пользователей инстанса. Используется гейтингом
-// регистрации (PROD-B1) для bootstrap первого админа.
 func (s *Service) UserCount(ctx context.Context) (int64, error) {
 	var n int64
 	if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM users").Scan(&n); err != nil {
@@ -139,7 +100,6 @@ func (s *Service) UserCount(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
-// UserIsInstanceAdmin сообщает, является ли пользователь админом инстанса.
 func (s *Service) UserIsInstanceAdmin(ctx context.Context, userID int64) (bool, error) {
 	var admin bool
 	err := s.pool.QueryRow(ctx,
@@ -150,14 +110,8 @@ func (s *Service) UserIsInstanceAdmin(ctx context.Context, userID int64) (bool, 
 	return admin, nil
 }
 
-// TransferInstanceAdmin передаёт роль администратора инстанса от fromUID
-// пользователю с email toEmail (K7-1: единственный админ инстанса без этого
-// метода не мог передать роль — назначить второго было негде ни в Store, ни
-// в CLI, ни в UI). Одна транзакция: снять флаг у текущего (RowsAffected 0 —
-// он не админ, ErrNotInstanceAdmin), поставить получателю; частичный UNIQUE
-// one_instance_admin (0017_instance_admin) — страховка от гонки двух
-// одновременных передач: второй commit упадёт на этом индексе, транзакция
-// откатится, ошибка вернётся как есть.
+// Одна транзакция: снимает флаг у текущего (иначе ErrNotInstanceAdmin), ставит получателю;
+// UNIQUE one_instance_admin — страховка от гонки двух одновременных передач.
 func (s *Service) TransferInstanceAdmin(ctx context.Context, fromUID int64, toEmail string) (int64, error) {
 	toUID, err := s.UserByEmail(ctx, toEmail)
 	if err != nil {
@@ -188,12 +142,8 @@ func (s *Service) TransferInstanceAdmin(ctx context.Context, fromUID int64, toEm
 	return toUID, nil
 }
 
-// grantInstanceAdmin ставит флаг получателю внутри транзакции передачи.
-// RowsAffected 0 — пользователя с таким id уже нет (удалил аккаунт между
-// UserByEmail и этим UPDATE): раньше это выглядело успехом, а инстанс
-// оставался вовсе без администратора — commit проходил, флаг снят с
-// прежнего и никому не поставлен. Ошибка откатывает транзакцию (defer
-// Rollback у вызывающего), прежний админ остаётся админом.
+// RowsAffected 0 — получатель удалил аккаунт между UserByEmail и этим UPDATE: ошибка откатывает
+// транзакцию (defer у вызывающего), прежний админ остаётся админом.
 func grantInstanceAdmin(ctx context.Context, tx pgx.Tx, toUID int64) error {
 	tag, err := tx.Exec(ctx, "UPDATE users SET is_instance_admin = true WHERE id = $1", toUID)
 	if err != nil {
@@ -205,7 +155,6 @@ func grantInstanceAdmin(ctx context.Context, tx pgx.Tx, toUID int64) error {
 	return nil
 }
 
-// Authenticate возвращает id пользователя по email+паролю.
 // Неизвестный email и неверный пароль неразличимы для вызывающего.
 func (s *Service) Authenticate(ctx context.Context, email, password string) (int64, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
@@ -237,8 +186,6 @@ func (s *Service) Authenticate(ctx context.Context, email, password string) (int
 	return id, nil
 }
 
-// UserEmail возвращает email пользователя по id — используется шапкой
-// SSR-страниц (web.Handler.currentEmail) для отрисовки формы logout.
 func (s *Service) UserEmail(ctx context.Context, userID int64) (string, error) {
 	var email string
 	err := s.pool.QueryRow(ctx,
@@ -249,14 +196,8 @@ func (s *Service) UserEmail(ctx context.Context, userID int64) (string, error) {
 	return email, nil
 }
 
-// UserEmails — то же, что UserEmail, но батчем по нескольким id одним
-// запросом (WHERE id = ANY($1)): для страниц-списков, где email нужен на
-// каждую строку (напр. автор заявки на странице выгрузок), — иначе N строк
-// дают N запросов в PG на один рендер (ревью веб-части E1, п.5). Не
-// найденные id в возвращаемой карте просто отсутствуют — вызывающий решает
-// сам, как показывать «неизвестного» автора (тот же принцип, что и
-// UserEmail: ошибка/отсутствие строки не паникует и не роняет страницу).
-// Пустой ids возвращает пустую карту без похода в БД.
+// Батчем по нескольким id (WHERE id = ANY($1)) — иначе N строк дают N отдельных запросов в PG.
+// Не найденные id в карте просто отсутствуют — ошибка/пропуск не паникует и не роняет страницу.
 func (s *Service) UserEmails(ctx context.Context, ids []int64) (map[int64]string, error) {
 	out := make(map[int64]string, len(ids))
 	if len(ids) == 0 {
@@ -282,10 +223,8 @@ func (s *Service) UserEmails(ctx context.Context, ids []int64) (map[int64]string
 	return out, nil
 }
 
-// ChangePassword проверяет старый пароль, валидирует новый по тем же
-// правилам, что и Register, и обновляет хеш. Удаляет ВСЕ сессии
-// пользователя (включая ту, из которой пришёл запрос) — вызывающий хендлер
-// обязан выпустить новую сессию и переустановить cookie.
+// Удаляет ВСЕ сессии пользователя, включая текущую — вызывающий хендлер обязан выпустить новую
+// сессию и переустановить cookie.
 func (s *Service) ChangePassword(ctx context.Context, userID int64, oldPassword, newPassword string) error {
 	var hash *string
 	err := s.pool.QueryRow(ctx,
@@ -333,8 +272,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID int64, oldPassword,
 	return nil
 }
 
-// dummyHash — валидная PHC-строка для выравнивания времени ответа
-// при несуществующем email (защита от user enumeration по таймингу).
+// Выравнивает время ответа при несуществующем email — защита от user enumeration по таймингу.
 var dummyHash = func() string {
 	h, err := HashPassword("dummy-timing-equalizer")
 	if err != nil {

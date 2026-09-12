@@ -13,7 +13,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
-// MetricEvent — открытие или закрытие инцидента порогового алерта на метрику.
 type MetricEvent struct {
 	ProjectID   int64
 	RuleID      int64
@@ -26,60 +25,43 @@ type MetricEvent struct {
 	Environment string
 	LabelKey    string
 	LabelValue  string
-	Opened      bool // true — открытие, false — закрытие
+	Opened      bool
 }
 
-// MetricNotifier ставит уведомления об инцидентах метрик в общий Outbox по
-// каналам проекта (калька trace.RegressionNotifier).
 type MetricNotifier struct {
 	Alerts       *alert.Service
 	Outbox       *notify.Outbox
 	BaseURL      string
 	EmailEnabled bool
 
-	// Details — политика раскрытия деталей события получателю уведомления
-	// (см. alert.DetailPolicy). Нулевое значение не доверяет никому.
+	// Нулевое значение не доверяет никому.
 	Details alert.DetailPolicy
 
-	// Locale — локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка
-	// получателя, поэтому язык уведомления выбирает оператор (класс №133–136).
+	// Локаль ИНСТАНСА (GOTCHA_LOCALE): внешний канал не знает языка получателя,
+	// поэтому язык уведомления выбирает оператор.
 	Locale i18n.Locale
 
-	// Incidents/Rules — источники перезагрузки инцидента по ID (B4, T6):
-	// планировщик эскалации (T8) хранит только incidentID, у NotifyStep/
-	// NotifyRecovery нет готового MetricEvent на входе, как у Notify.
+	// Источники перезагрузки инцидента по ID: планировщику эскалации известен
+	// только incidentID, готового MetricEvent, как у Notify, нет.
 	Incidents *IncidentService
 	Rules     *RuleService
 
-	// Pool — та же PG, что под Incidents/Rules/Alerts/Outbox: пишет лог
-	// эскалации incident_escalations (B4, T6, миграция 0077) после каждого
-	// успешного Enqueue в NotifyStep.
+	// Та же PG, что у Incidents/Rules/Alerts/Outbox: пишет incident_escalations
+	// (миграция 0077) после каждого Enqueue в NotifyStep.
 	Pool *pgxpool.Pool
 
-	// Projects — источник имени проекта для темы/тела/webhook-payload
-	// уведомления (W3-E). nil-совместим (escalation.ProjectNamer) — тогда
-	// уведомления идут без имени проекта, как до этой правки.
+	// nil-совместим: без Projects уведомления идут без имени проекта.
 	Projects escalation.ProjectNamer
 }
 
-// Notify ставит по одной задаче в Outbox на каждый включённый канал проекта.
-// Ошибка Enqueue по одному каналу не прерывает остальные (errors.Join). Проект
-// без каналов — не ошибка.
+// Ошибка одного канала не прерывает остальные; проект без каналов — не ошибка.
 func (n *MetricNotifier) Notify(ctx context.Context, ev MetricEvent) error {
 	_, err := n.dispatch(ctx, ev, nil)
 	return err
 }
 
-// NotifyStep — эскалационное уведомление открытого инцидента метрики (B4,
-// T6): повтор OPEN-текста в ЗАДАННЫЕ channelIDs. Возвращает каналы, в которые
-// РЕАЛЬНО поставлена задача (deliverable-подмножество channelIDs, прошедшее
-// фильтры dispatch) — лог incident_escalations пишет ОРКЕСТРАЦИЯ
-// (escalation.SendStepIfDue), не сам нотифаер (реролл B4, T7-fix): лог внутри
-// NotifyStep работал только с реальным нотифаером и молчал с мок-нотифаерами
-// тестов, из-за чего RecoveryChannels не находил ничего и recovery немел.
-// Инцидент/правило грузятся заново по ID — планировщик эскалации (T8) хранит
-// только incidentID. channelIDs nil/пусто — все deliverable-каналы проекта
-// (как у Notify).
+// channelIDs nil/пусто — все deliverable-каналы проекта. Лог incident_escalations
+// пишет вызывающий (SendStepIfDue), не этот метод.
 func (n *MetricNotifier) NotifyStep(ctx context.Context, incidentID int64, channelIDs []int64, step int) ([]int64, error) {
 	ev, err := n.reloadEvent(ctx, incidentID, true)
 	if err != nil {
@@ -88,10 +70,8 @@ func (n *MetricNotifier) NotifyStep(ctx context.Context, incidentID int64, chann
 	return n.dispatch(ctx, ev, channelIDs)
 }
 
-// NotifyRecovery — CLOSE-уведомление инцидента метрики (B4, T6) в ЗАДАННЫЕ
-// channelIDs (recovery не эскалирует — не логируется вообще). Инцидент/
-// правило грузятся заново по ID, как в NotifyStep. channelIDs nil/пусто —
-// все deliverable-каналы проекта.
+// Не логируется — recovery не эскалирует. channelIDs nil/пусто — все
+// deliverable-каналы проекта.
 func (n *MetricNotifier) NotifyRecovery(ctx context.Context, incidentID int64, channelIDs []int64) error {
 	ev, err := n.reloadEvent(ctx, incidentID, false)
 	if err != nil {
@@ -101,8 +81,6 @@ func (n *MetricNotifier) NotifyRecovery(ctx context.Context, incidentID int64, c
 	return err
 }
 
-// reloadEvent перегружает инцидент+правило по ID и собирает из них
-// MetricEvent — общая часть NotifyStep/NotifyRecovery (B4, T6).
 func (n *MetricNotifier) reloadEvent(ctx context.Context, incidentID int64, opened bool) (MetricEvent, error) {
 	in, ok, err := n.Incidents.GetByID(ctx, incidentID)
 	if err != nil {
@@ -134,15 +112,8 @@ func (n *MetricNotifier) reloadEvent(ctx context.Context, incidentID int64, open
 	}, nil
 }
 
-// dispatch — сборка списка каналов проекта и передача готового уведомления в
-// общий контур доставки (escalation.Dispatch, W3-E): гейт доставляемости,
-// фильтр channelIDs, email-fallback, имя проекта, редакция ПДн. channelIDs
-// (B4, T6) — набор каналов, в которые слать: nil/пусто — все
-// deliverable-каналы проекта (старое поведение Notify), непустой — фильтр по
-// членству ПОСЛЕ Deliverable/email-гейта (эскалация в конкретную ступень
-// лесенки). Возвращает ID каналов, в которые задача РЕАЛЬНО поставлена —
-// логировать их в incident_escalations или нет, решает вызывающий (эволюатор
-// через escalation.SendStepIfDue), не dispatch.
+// channelIDs nil/пусто — все deliverable-каналы; иначе фильтр по членству после
+// email-гейта. Возвращает ID реально поставленных каналов — логирует вызывающий.
 func (n *MetricNotifier) dispatch(ctx context.Context, ev MetricEvent, channelIDs []int64) ([]int64, error) {
 	channels, err := n.Alerts.Channels(ctx, ev.ProjectID)
 	if err != nil {
@@ -189,9 +160,6 @@ func metricEventKind(ev MetricEvent) string {
 	return "metric_alert_resolved"
 }
 
-// metricSubject / metricBody строят тексты из каталога i18n — по локали,
-// положенной в ctx (класс №133–136: язык внешнего канала задаёт
-// GOTCHA_LOCALE, см. MetricNotifier.Locale).
 func metricSubject(ctx context.Context, ev MetricEvent) string {
 	state := i18n.T(ctx, "notify.metric.state.resolved")
 	if ev.Opened {

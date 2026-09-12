@@ -5,11 +5,8 @@ import (
 	"testing"
 )
 
-// TestValidationCarriesCodeAndField: причина отказа обязана доезжать до
-// вызывающего машинным кодом, а не только текстом.
-//
-// Без кода веб-слою нечего переводить, и он показывал err.Error() как есть:
-// «монитор: uptime: invalid monitor: http url must be a valid http(s) URL».
+// причина отказа обязана доезжать машинным кодом, не только текстом —
+// иначе веб-слою нечего переводить.
 func TestValidationCarriesCodeAndField(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -49,8 +46,7 @@ func TestValidationCarriesCodeAndField(t *testing.T) {
 			wantField: "regions",
 		},
 		{
-			// HEAD-ответ без тела: BodyContains у него всегда false — монитор
-			// вечно «упал» бы, если бы прошёл валидацию (находка P1-2).
+			// HEAD-ответ без тела: BodyContains у него всегда false — монитор вечно «упал» бы.
 			name:      "HEAD с BodyContains",
 			monitor:   httpMonitor(`{"method":"HEAD","url":"https://example.com","body_contains":"ok"}`),
 			wantCode:  "http_head_body",

@@ -22,14 +22,11 @@ func maintenanceDeletePath(projectID int64) string {
 	return maintenancePath(projectID) + "/delete"
 }
 
-// maintenanceDateTimeLayouts — форматы, которые отдаёт нативный
-// <input type="datetime-local">: обычно без секунд, но некоторые браузеры
-// добавляют ":00" — принимаем оба.
+// некоторые браузеры добавляют ":00" к datetime-local — принимаем оба формата.
 var maintenanceDateTimeLayouts = []string{"2006-01-02T15:04", "2006-01-02T15:04:05"}
 
-// parseLocalDateTime разбирает значение datetime-local как настенное время в
-// loc (не UTC) — так «начало 10:00» в форме с выбранным Europe/Moscow
-// действительно означает 10:00 по Москве, а не 10:00 UTC.
+// время трактуется как настенное в loc, не UTC — иначе «начало 10:00» с выбранным
+// Europe/Moscow стало бы 10:00 UTC.
 func parseLocalDateTime(raw string, loc *time.Location) (time.Time, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -43,9 +40,6 @@ func parseLocalDateTime(raw string, loc *time.Location) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// maintenanceTimezone — выбранный TZ из фиксированного select'а либо (если
-// выбран пункт "другой", отправляющий пустое значение) — свободный текст
-// IANA-имени из соседнего поля.
 func maintenanceTimezone(r *http.Request) string {
 	tz := r.FormValue("timezone")
 	if tz != "" {
@@ -54,19 +48,9 @@ func maintenanceTimezone(r *http.Request) string {
 	return strings.TrimSpace(r.FormValue("timezone_custom"))
 }
 
-// parseMaintenanceForm собирает uptime.Window из уже распарсенной формы
-// (r.ParseForm должен быть вызван вызывающей стороной). Невалидный
-// datetime-local (или его отсутствие) оставляет StartsAt/EndsAt = nil —
-// validateWindow на стороне uptime.Service отклонит такое окно как
-// ErrInvalidWindow, а не запаникует.
-//
-// Второе возвращаемое значение — отмечен ли чекбокс «без даты окончания»:
-// вызывающая сторона (maintenanceCreate/maintenanceUpdate) гонит по нему
-// гард end_required ПЕРЕД тем, как отдать окно в CreateWindow/UpdateWindow —
-// см. их комментарии.
+// второй результат — отмечен ли чекбокс «без даты окончания»: вызывающий обязан
+// проверить end_required им до CreateWindow/UpdateWindow.
 func parseMaintenanceForm(r *http.Request, projectID int64) (uptime.Window, bool) {
-	// «kind» — radio: oneoff|weekly. Тип окна взаимоисключающий, поэтому это
-	// выбор одного из двух, а не флаг (раньше был чекбокс «weekly»).
 	weekly := r.FormValue("kind") == "weekly"
 	tz := maintenanceTimezone(r)
 	indefinite := r.FormValue("indefinite") != ""
@@ -86,9 +70,8 @@ func parseMaintenanceForm(r *http.Request, projectID int64) (uptime.Window, bool
 
 	loc, err := time.LoadLocation(tz)
 	if err != nil {
-		// Заведомо невалидный TZ всё равно приведёт к ErrInvalidWindow
-		// (validateWindow сам зовёт time.LoadLocation) — здесь UTC нужен
-		// только чтобы распарсить сами даты, не уронив обработчик.
+		// невалидный TZ всё равно даст ErrInvalidWindow дальше — UTC нужен только
+		// распарсить сами даты, не уронив обработчик.
 		loc = time.UTC
 	}
 	if starts, ok := parseLocalDateTime(r.FormValue("starts_at"), loc); ok {
@@ -102,14 +85,6 @@ func parseMaintenanceForm(r *http.Request, projectID int64) (uptime.Window, bool
 	return w, indefinite
 }
 
-// maintenanceErrorMessage — P2-1 usability-аудита 2026-08-12: раньше
-// подставляла err.Error() (сырой текст из time.LoadLocation/time.Parse,
-// всегда на английском) в {detail} переведённой строки — RU-пользователь
-// получал «Недопустимое окно обслуживания: unknown time zone Foo/Bar»
-// без объяснения, что имелось в виду. uptime.validateWindow раскладывает
-// ErrInvalidWindow на отдельные сентинели (см. internal/uptime/maintenance.go)
-// — матчим их через errors.Is и переводим каждую причину своим ключом с
-// понятным объяснением формата, вместо показа Go-ошибки как есть.
 func maintenanceErrorMessage(ctx context.Context, err error) string {
 	switch {
 	case errors.Is(err, uptime.ErrInvalidWindowName):
@@ -127,25 +102,17 @@ func maintenanceErrorMessage(ctx context.Context, err error) string {
 	case errors.Is(err, uptime.ErrInvalidWindowRange):
 		return i18n.T(ctx, "error.maintenance.invalid_range")
 	case errors.Is(err, uptime.ErrInvalidWindow):
-		// Разложенных сентинелей нет (не должно происходить при актуальном
-		// validateWindow, но future-proof на случай новой невыделенной
-		// ветки) — общее сообщение без утечки Go-текста ошибки.
 		return i18n.T(ctx, "error.maintenance.invalid_window_generic")
 	}
 	return i18n.T(ctx, "error.action_failed")
 }
 
-// oneOffEndRequired — пред-B3 гард, восстановленный в web-слое: validateWindow
-// теперь намеренно принимает nil EndsAt как «бессрочно» (см. его комментарий
-// в internal/uptime/maintenance.go), а этот смысл обязан быть явным выбором
-// человека (чекбокс «indefinite»), а не тем, что он забыл дату конца.
-// Еженедельные окна сюда не попадают — у них нет EndsAt вовсе.
+// nil EndsAt значит «бессрочно» для validateWindow — этот смысл обязан быть явным
+// выбором (чекбокс indefinite), а не тем, что дату конца забыли ввести.
 func oneOffEndRequired(win uptime.Window, indefinite bool) bool {
 	return !win.Weekly && !indefinite && win.EndsAt == nil
 }
 
-// windowBelongsToProject — тот же приём, что и keyBelongsToProject/
-// findChannel: не даём удалить окно чужого проекта по подобранному id.
 func windowBelongsToProject(windows []uptime.Window, windowID int64) bool {
 	for _, w := range windows {
 		if w.ID == windowID {
@@ -155,13 +122,6 @@ func windowBelongsToProject(windows []uptime.Window, windowID int64) bool {
 	return false
 }
 
-// maintenancePage — GET /projects/{id}/maintenance: список окон + форма
-// создания. Доступ — оператор проекта (requireProjectOperator): владелец/
-// админ организации ИЛИ участник команды, прикреплённой к проекту (спека
-// cld/plans/2026-08-08-access-model-rework.md) — управление окнами
-// обслуживания меняет то, что детектор считает даунтаймом, но это операционная
-// настройка мониторинга, та же граница, что у мутаций монитора, не
-// организационные настройки (requireProjectRole).
 func (h *Handler) maintenancePage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -172,9 +132,7 @@ func (h *Handler) maintenancePage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// renderMaintenance дереференсит h.Uptime (окна обслуживания) — в стендах
-	// без подсистемы мониторинга 404, а не паника (тот же guard, что и в
-	// metricsList).
+	// h.Uptime == nil в стендах без подсистемы мониторинга — 404, а не паника.
 	if h.Uptime == nil {
 		h.notFound(w, r)
 		return
@@ -185,9 +143,6 @@ func (h *Handler) maintenancePage(w http.ResponseWriter, r *http.Request) {
 	h.renderMaintenance(w, r, http.StatusOK, projectID, nil, "")
 }
 
-// maintenanceFormState — введённые значения формы окна обслуживания, чтобы
-// вернуть их при ошибке валидации: форма из восьми полей, и терять её целиком
-// из-за перепутанных дат было дорого.
 func maintenanceFormState(r *http.Request) templates.FormState {
 	f := templates.FormState{}
 	for _, name := range []string{
@@ -198,16 +153,12 @@ func maintenanceFormState(r *http.Request) templates.FormState {
 			f[name] = v
 		}
 	}
-	// Пояс сохраняем всегда, даже пустой: пустое значение select'а — это выбор
-	// «Другой», и пропустив его, форма после ошибки возвращалась бы на UTC,
-	// пряча заодно поле со введённым вручную поясом.
+	// пустое значение select'а — это выбор «Другой»; пропустив его, форма после
+	// ошибки вернулась бы на UTC, спрятав введённый вручную пояс.
 	f["timezone"] = r.FormValue("timezone")
 	return f
 }
 
-// renderMaintenance — общий рендер: GET-обработчик и оба POST в этом файле
-// на 422 (то же сообщение на месте, без редиректа — тот же принцип, что и у
-// renderAlerts/renderProjectSettings).
 func (h *Handler) renderMaintenance(w http.ResponseWriter, r *http.Request, status int, projectID int64, form templates.FormState, errMsg string) {
 	windows, err := h.Uptime.Windows(r.Context(), projectID)
 	if err != nil {
@@ -218,11 +169,6 @@ func (h *Handler) renderMaintenance(w http.ResponseWriter, r *http.Request, stat
 	_ = templates.Maintenance(projectID, windows, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
 }
 
-// maintenanceCreate — POST /projects/{id}/maintenance: sameOrigin +
-// requireProjectOperator, разовое либо еженедельное окно, ErrInvalidWindow ->
-// 422 с сообщением (список уже сохранённых окон + форма создания
-// перерисовываются, как у renderAlerts — конкретные введённые значения формы
-// не переносятся, это не требуется спекой задачи).
 func (h *Handler) maintenanceCreate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -268,12 +214,6 @@ func (h *Handler) maintenanceCreate(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, maintenancePath(projectID), http.StatusSeeOther)
 }
 
-// maintenanceUpdate — POST /projects/{id}/maintenance/update: window_id и те
-// же поля, что и у создания.
-//
-// У окон был только жизненный цикл «создать/удалить»: сдвинуть еженедельное
-// окно на час — самая частая правка — стоило перенабора всех восьми полей, а
-// разовое окно, которое затянулось, нельзя было продлить вовсе.
 func (h *Handler) maintenanceUpdate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -308,7 +248,6 @@ func (h *Handler) maintenanceUpdate(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	// Тот же скоуп, что и у удаления: id окна приходит из формы.
 	if !windowBelongsToProject(windows, windowID) {
 		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 		return
@@ -340,9 +279,6 @@ func (h *Handler) maintenanceUpdate(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, maintenancePath(projectID), http.StatusSeeOther)
 }
 
-// maintenanceDelete — POST /projects/{id}/maintenance/delete: window_id.
-// Окно должно принадлежать проекту из пути, иначе 404 — тот же принцип, что
-// и у alertsChannelDelete/projectSettingsKeyRevoke.
 func (h *Handler) maintenanceDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -382,9 +318,7 @@ func (h *Handler) maintenanceDelete(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
 		return
 	}
-	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
-	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
-	// показываем страницу подтверждения вместо необратимого действия.
+	// CSP без unsafe-inline не исполняет inline confirm() — подтверждение отдельной страницей.
 	if r.FormValue("confirmed") != "yes" {
 		h.renderConfirm(w, r, "confirm.title", "confirm.maintenance_delete.message", "confirm.delete",
 			maintenancePath(projectID), maintenanceDeletePath(projectID),

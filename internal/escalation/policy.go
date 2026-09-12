@@ -1,6 +1,3 @@
-// Package escalation — политика эскалации инцидентов: лесенка шагов
-// (задержка от открытия → набор каналов) на (проект, severity), и
-// дефолт-fallback для проектов, где лесенка ещё не настраивалась.
 package escalation
 
 import (
@@ -13,33 +10,28 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Severity инцидента — совпадает с CHECK-ограничением escalation_steps.severity
-// и severity-колонками пяти инцидент-таблиц (0077).
+// Совпадает с CHECK-ограничением escalation_steps.severity и severity-колонками
+// пяти инцидент-таблиц.
 const (
 	SeverityCritical = "critical"
 	SeverityWarning  = "warning"
 )
 
-// ErrInvalidPolicy — лесенка или её параметры не прошли валидацию до похода в БД.
 var ErrInvalidPolicy = errors.New("escalation: invalid policy")
 
-// Step — одна ступень лесенки: через DelayMinutes от открытия инцидента
-// уведомление уходит в каналы ChannelIDs (порядок не важен).
 type Step struct {
 	StepNo       int
 	DelayMinutes int
 	ChannelIDs   []int64
 }
 
-// Ladder — лесенка эскалации, отсортированная по StepNo возрастанию.
+// Отсортирована по StepNo возрастанию.
 type Ladder []Step
 
-// PolicyStore — CRUD над политикой эскалации проекта.
 type PolicyStore struct {
 	pool *pgxpool.Pool
 }
 
-// NewPolicyStore создаёт стор политики эскалации поверх пула PostgreSQL.
 func NewPolicyStore(pool *pgxpool.Pool) *PolicyStore {
 	return &PolicyStore{pool: pool}
 }
@@ -53,16 +45,8 @@ func validSeverity(severity string) bool {
 	}
 }
 
-// ValidateSteps проверяет лесенку до похода в БД: severity задаётся отдельным
-// аргументом SetLadder и здесь не проверяется. Пустая лесенка допустима — она
-// означает «политика не настроена, использовать дефолт-fallback» и валидна
-// сама по себе.
-//
-// Непустая лесенка обязана иметь step_no 0..N без дыр и дублей (значит и
-// ступень 0 обязательна), delay_minutes >= 0, и хотя бы один канал на
-// ступень — ступень без каналов бессмысленна при явной настройке. Пустой
-// ChannelIDs — это только про дефолт-fallback, когда у проекта вообще нет
-// каналов, а не про настроенную ступень (см. Ladder).
+// Пустая лесенка валидна сама по себе — значит «использовать дефолт-fallback».
+// Непустая обязана иметь step_no 0..N без дыр и дублей и ≥1 канал на ступень.
 func ValidateSteps(steps []Step) error {
 	if len(steps) == 0 {
 		return nil
@@ -86,13 +70,8 @@ func ValidateSteps(steps []Step) error {
 	return nil
 }
 
-// Ladder возвращает лесенку эскалации проекта для данной severity.
-//
-// Если для (project_id, severity) нет настроенных шагов — БЛОКЕР-1:
-// возвращает дефолт-лесенку из ОДНОЙ ступени (step0, delay0) со всеми
-// enabled-каналами проекта. Это ровно старое поведение до появления
-// эскалаций: уведомление уходит сразу и во все включённые каналы.
-// Deliverable/SecretBroken-фильтр остаётся на отправке, не здесь.
+// Без настроенных шагов возвращает дефолт-лесенку из одной ступени со всеми
+// enabled-каналами проекта — старое поведение до появления эскалаций.
 func (s *PolicyStore) Ladder(ctx context.Context, projectID int64, severity string) (Ladder, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT es.step_no, es.delay_minutes, esc.channel_id
@@ -132,9 +111,7 @@ func (s *PolicyStore) Ladder(ctx context.Context, projectID int64, severity stri
 	return ladder, nil
 }
 
-// defaultLadder — старое поведение (до эскалаций): одна ступень delay0=0 со
-// всеми enabled-каналами проекта. Каналов может не быть вовсе — тогда
-// ChannelIDs пуст, и Enqueue просто ничего не отправит, как и сегодня.
+// Каналов может не быть вовсе — тогда ChannelIDs пуст, и Enqueue ничего не отправит.
 func (s *PolicyStore) defaultLadder(ctx context.Context, projectID int64) (Ladder, error) {
 	rows, err := s.pool.Query(ctx,
 		"SELECT id FROM alert_channels WHERE project_id = $1 AND enabled ORDER BY id", projectID)
@@ -156,10 +133,6 @@ func (s *PolicyStore) defaultLadder(ctx context.Context, projectID int64) (Ladde
 	return Ladder{{StepNo: 0, DelayMinutes: 0, ChannelIDs: channelIDs}}, nil
 }
 
-// Ladders возвращает лесенки обеих severity проекта — для редактора политики
-// (UI T8), чтобы показать текущее эффективное поведение сразу для critical и
-// warning. Severity без настроенных шагов приходит как дефолт-fallback, а не
-// пустая лесенка.
 func (s *PolicyStore) Ladders(ctx context.Context, projectID int64) (map[string]Ladder, error) {
 	out := make(map[string]Ladder, 2)
 	for _, severity := range []string{SeverityCritical, SeverityWarning} {
@@ -172,10 +145,6 @@ func (s *PolicyStore) Ladders(ctx context.Context, projectID int64) (map[string]
 	return out, nil
 }
 
-// verifyChannelsBelongToProject проверяет, что каждый channel_id, упомянутый
-// в steps, принадлежит projectID — а не другому проекту той же (или чужой)
-// организации. Дедуплицирует id перед запросом: одна и та же ступень нередко
-// ссылается на канал, уже встретившийся в другой ступени.
 func verifyChannelsBelongToProject(ctx context.Context, tx pgx.Tx, projectID int64, steps []Step) error {
 	seen := map[int64]bool{}
 	var ids []int64
@@ -215,10 +184,6 @@ func verifyChannelsBelongToProject(ctx context.Context, tx pgx.Tx, projectID int
 	return nil
 }
 
-// SetLadder транзакционно заменяет лесенку эскалации проекта для данной
-// severity: старые шаги (и их каналы, каскадом FK) удаляются, новые
-// вставляются целиком. Пустой steps допустим — снимает настроенную лесенку,
-// возвращая проект к дефолт-fallback.
 func (s *PolicyStore) SetLadder(ctx context.Context, projectID int64, severity string, steps []Step) error {
 	if !validSeverity(severity) {
 		return fmt.Errorf("%w: invalid severity %q", ErrInvalidPolicy, severity)
@@ -233,13 +198,8 @@ func (s *PolicyStore) SetLadder(ctx context.Context, projectID int64, severity s
 	}
 	defer tx.Rollback(ctx)
 
-	// Defense-in-depth (T9, concern T2): хендлер веб-слоя уже фильтрует
-	// channel_id формы по каналам ПРОЕКТА до вызова SetLadder, но эта
-	// проверка — единственная, которую нельзя обойти ни забытым фильтром на
-	// новом вызывающем, ни прямым вызовом стора в обход веб-слоя. Без неё
-	// оператор проекта A мог бы подобрать channel_id чужого проекта B и
-	// прицепить его к своей лесенке — уведомления инцидентов проекта A
-	// улетели бы в канал, которым владеет и управляет B.
+	// Без этой проверки оператор проекта A мог бы подобрать channel_id чужого
+	// проекта B и прицепить его к своей лесенке — уведомления утекли бы в чужой канал.
 	if err := verifyChannelsBelongToProject(ctx, tx, projectID, steps); err != nil {
 		return err
 	}

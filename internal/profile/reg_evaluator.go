@@ -14,24 +14,12 @@ import (
 
 const evaluatorDefaultInterval = 5 * time.Minute
 
-// tickBudgetShare/minTickBudget — та же пара, что host.Evaluator: дедлайн
-// тика — доля Interval, но не меньше пола, иначе повисший ClickHouse-запрос
-// (Query здесь без собственного таймаута) держал бы тик бесконечно.
+// без пола тик может зависнуть навсегда: Query бьёт по ClickHouse без своего таймаута.
 const (
 	tickBudgetShare = 0.8
 	minTickBudget   = 10 * time.Second
 )
 
-// RegressionEvaluator периодически детектит рост self-CPU доли функций над
-// скользящей базой и открывает/закрывает инциденты (калька trace.Evaluator).
-// Тикер живёт в режимах uptime|all.
-// profileQuery — то, что оценщику нужно от ClickHouse. Интерфейс, а не *Query,
-// по той же причине, что ruleLister в пакете metric: без него у цикла Run нет
-// наблюдаемого следа, и тест «поспал и убедился, что горутина вышла» оставался
-// бы зелёным с вырезанным телом тика.
-//
-// Списка проектов из PostgreSQL здесь больше нет намеренно: обходить надо то,
-// по чему есть данные, а не всё, что заведено в инсталляции.
 type profileQuery interface {
 	ActiveServices(ctx context.Context, from, to time.Time) ([]ProjectService, error)
 	TopFunctionShares(ctx context.Context, projectID int64, service, profileType string, from, to time.Time, k int) ([]FunctionShare, error)
@@ -46,18 +34,14 @@ type RegressionEvaluator struct {
 	Config      RegressionConfig
 	Maint       MaintenanceChecker
 
-	// Policy — политика эскалации (B4, T7): резолвит лесенку (project,
-	// severity) на открытии регрессии. Nil-совместим — деградированная сборка
-	// без него просто не уведомляет об открытии.
+	// nil-совместим: без него открытие просто не уведомляет об эскалации.
 	Policy *escalation.PolicyStore
 
-	// Pool — та же PG, что под Regressions: читает лог эскалации
-	// incident_escalations для адресного recovery при закрытии (B4, T7, см.
-	// notifyClose, escalation.RecoveryChannels). Nil-совместим.
+	// nil-совместим: без него закрытие не шлёт recovery по логу эскалации.
 	Pool *pgxpool.Pool
 
-	lastTickUnix    atomic.Int64  // unix-время последнего завершённого тика
-	lastTickSeconds atomic.Uint64 // длительность последнего тика, math.Float64bits
+	lastTickUnix    atomic.Int64
+	lastTickSeconds atomic.Uint64 // math.Float64bits: atomic.Uint64 не хранит float64
 }
 
 func (e *RegressionEvaluator) Run(ctx context.Context) {
@@ -81,16 +65,12 @@ func (e *RegressionEvaluator) interval() time.Duration {
 	return e.Interval
 }
 
-// LastTickUnix — unix-время последнего завершённого тика (0, если ни одного
-// ещё не было). Self-метрика живости, как у host.Evaluator/slo.Evaluator.
 func (e *RegressionEvaluator) LastTickUnix() int64 { return e.lastTickUnix.Load() }
 
-// LastTickSeconds — длительность последнего завершённого тика в секундах.
 func (e *RegressionEvaluator) LastTickSeconds() float64 {
 	return math.Float64frombits(e.lastTickSeconds.Load())
 }
 
-// tickBudget — дедлайн одного тика (см. tickBudgetShare/minTickBudget).
 func (e *RegressionEvaluator) tickBudget() time.Duration {
 	budget := time.Duration(float64(e.interval()) * tickBudgetShare)
 	if budget < minTickBudget {
@@ -99,10 +79,6 @@ func (e *RegressionEvaluator) tickBudget() time.Duration {
 	return budget
 }
 
-// Tick — один проход по всем проектам. Ошибка по проекту не роняет остальные.
-// Ограничен дедлайном (tickBudget): Query бьёт по CH голыми запросами без
-// собственного таймаута, и без внешнего дедлайна повисший запрос держал бы
-// тик (и self-метрику живости) бесконечно.
 func (e *RegressionEvaluator) Tick(ctx context.Context) {
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, e.tickBudget())
@@ -111,10 +87,6 @@ func (e *RegressionEvaluator) Tick(ctx context.Context) {
 	now := time.Now().UTC()
 	recentFrom := now.Add(-time.Duration(e.Config.WindowMinutes) * time.Minute)
 
-	// Работу определяют данные, а не список проектов. Раньше тик читал все
-	// проекты из PostgreSQL и спрашивал ClickHouse про каждый: проект без
-	// единого профиля стоил столько же, сколько нагруженный, и обход шёл по
-	// всей инсталляции независимо от трафика.
 	services, err := e.Query.ActiveServices(ctx, recentFrom, now)
 	if err != nil {
 		slog.Error("profile evaluator: active services failed", "error", err)
@@ -134,8 +106,6 @@ func (e *RegressionEvaluator) Tick(ctx context.Context) {
 	e.lastTickUnix.Store(time.Now().Unix())
 }
 
-// evalService проверяет один сервис одного проекта: два запроса к
-// profile_samples вместо 1 + 2K и один запрос к profile_regressions вместо K.
 func (e *RegressionEvaluator) evalService(ctx context.Context, ps ProjectService, recentFrom, now time.Time) {
 	cfg := e.Config
 	shares, err := e.Query.TopFunctionShares(ctx, ps.ProjectID, ps.Service, ps.Type, recentFrom, now, cfg.TopK)
@@ -167,8 +137,6 @@ func (e *RegressionEvaluator) evalService(ctx context.Context, ps ProjectService
 	}
 
 	for _, sh := range shares {
-		// Функции без базовой линии сравниваются с нулём (нулевое значение
-		// карты) — так же, как раньше при пустом результате поштучного запроса.
 		base := baselines[sh.Function]
 		open, hasOpen := opens[sh.Function]
 		e.evalFunction(ctx, ps, sh, base.Share, base.Samples, open, hasOpen, now)
@@ -213,12 +181,8 @@ func (e *RegressionEvaluator) evalFunction(ctx context.Context, ps ProjectServic
 	}
 }
 
-// inMaintenance — проект сейчас в окне обслуживания (B3), для гейта open/close-
-// notify в evalFunction. Ошибка проверки НЕ отменяет открытие регрессии: она
-// лишь означает, что не удалось выяснить, плановые ли это работы, и трактуется
-// как «не в окне» — молчать о реальной регрессии дороже, чем уведомить лишний
-// раз (то же решение, что host.Evaluator.inMaintenance). Maint==nil
-// (деградированная сборка) — тот же результат.
+// ошибка проверки трактуется как «не в окне»: молчать о регрессии дороже,
+// чем лишнее уведомление.
 func (e *RegressionEvaluator) inMaintenance(ctx context.Context, projectID int64, now time.Time) bool {
 	if e.Maint == nil {
 		return false
@@ -232,12 +196,8 @@ func (e *RegressionEvaluator) inMaintenance(ctx context.Context, projectID int64
 	return v
 }
 
-// notifyOpen — реролл (B4, T7): открытие регрессии резолвит лесенку
-// эскалации (project, severity — регрессии профиля не имеют per-функцию
-// override, всегда table-DEFAULT profile_regressions.severity, 'warning',
-// 0077) и шлёт РОВНО СТУПЕНЬ 0, если её задержка (обычно 0) уже настала;
-// остальные ступени досылает планировщик (T8). Ошибка политики/уведомления
-// не должна ронять оценку.
+// шлёт сразу только ступень 0, если её задержка уже настала; остальные
+// ступени досылает планировщик.
 func (e *RegressionEvaluator) notifyOpen(ctx context.Context, projectID int64, rec Regression) {
 	if e.Policy == nil || e.Notifier == nil || e.Pool == nil {
 		return
@@ -261,10 +221,8 @@ func (e *RegressionEvaluator) notifyOpen(ctx context.Context, projectID int64, r
 	}
 }
 
-// notifyClose — реролл (B4, T7): закрытие регрессии шлёт recovery адресно, в
-// каналы из лога эскалации (escalation.RecoveryChannels); пустой набор —
-// молчание (M-7 брифа Task 6, ничего не отправлялось — отправлять «закрыт»
-// нечего).
+// закрытие шлёт recovery только в каналы из лога эскалации; пустой набор —
+// намеренное молчание.
 func (e *RegressionEvaluator) notifyClose(ctx context.Context, open Regression) {
 	if e.Pool == nil || e.Notifier == nil {
 		return
@@ -286,7 +244,6 @@ func (e *RegressionEvaluator) notifyClose(ctx context.Context, open Regression) 
 	}
 }
 
-// pctIncrease — доля роста recent над base (0 если base<=0).
 func pctIncrease(base, recent float64) float64 {
 	if base <= 0 {
 		return 0

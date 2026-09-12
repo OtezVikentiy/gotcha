@@ -13,7 +13,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// fakeIssueSvc — issueUpserter без PG: возвращает фиксированный результат апсерта.
 type fakeIssueSvc struct{ res issue.UpsertResult }
 
 func (f *fakeIssueSvc) Upsert(_ context.Context, _ int64, _, _, _, _, _ string, _ time.Time) (issue.UpsertResult, error) {
@@ -24,14 +23,10 @@ func (f *fakeIssueSvc) Get(_ context.Context, id int64) (issue.Issue, error) {
 	return issue.Issue{ID: id, TimesSeen: 1}, nil
 }
 
-// fakeBatcher — eventSink без ClickHouse: копит дошедшие до записи события.
 type fakeBatcher struct{ evs []event.Event }
 
 func (f *fakeBatcher) Add(e event.Event) { f.evs = append(f.evs, e) }
 
-// TestPipelineScrubEvent: событие с ПДн проходит через process и доходит до
-// батчера уже зачищенным — ip обнулён, denylist-поля в tags/contexts заменены
-// на маску; email цел (ScrubEmail=false), не-denylist поля не тронуты.
 func TestPipelineScrubEvent(t *testing.T) {
 	fb := &fakeBatcher{}
 	p := &Pipeline{
@@ -48,10 +43,6 @@ func TestPipelineScrubEvent(t *testing.T) {
 		Tags:           map[string]string{"password": "hunter2", "user": "bob"},
 		ContextsJSON:   `{"trace":{"token":"secret","ok":1}}`,
 		StacktraceJSON: `{"frames":[]}`,
-		// Request-интерфейс: секреты сидят ВНУТРИ строковых значений url/
-		// query_string/data (не как отдельные ключи) и в дефисном заголовке
-		// X-Api-Key — всё это должно быть зачищено на приёме (иначе reset-токены
-		// и пароли осели бы в CH и на детали issue).
 		RequestJSON: `{"method":"POST",` +
 			`"url":"https://app/reset?token=SECRET&next=/home",` +
 			`"query_string":"api_key=AKIA&q=ok",` +
@@ -92,10 +83,6 @@ func TestPipelineScrubEvent(t *testing.T) {
 		t.Errorf("contexts.trace.ok пропал — не-denylist поле не должно тереться")
 	}
 
-	// Request-интерфейс зачищен (guard на wiring pipeline.go: удаление строки
-	// ScrubJSON(ev.RequestJSON) должно валить этот тест). Секреты сидят внутри
-	// строковых значений и в дефисном заголовке — их ловит param-scrubbing и
-	// нормализация ключей.
 	var req map[string]any
 	if err := json.Unmarshal([]byte(got.Request), &req); err != nil {
 		t.Fatalf("request не JSON: %v", err)
@@ -124,8 +111,6 @@ func TestPipelineScrubEvent(t *testing.T) {
 	}
 }
 
-// TestPipelineScrubTransaction: span.Data транзакции зачищается перед записью в
-// SpanSink — denylist-ключ заменён маской, прочие данные целы.
 func TestPipelineScrubTransaction(t *testing.T) {
 	spans := &fakeSpanSink{}
 	p := &Pipeline{
@@ -158,8 +143,6 @@ func TestPipelineScrubTransaction(t *testing.T) {
 	}
 }
 
-// RA-L10: при включённом ScrubFreeText email в Message и ExceptionValue события
-// маскируется на [email] перед записью в батчер; при выключенном — текст цел.
 func TestPipelineScrubFreeTextEvent(t *testing.T) {
 	makePipeline := func(freeText bool) (*Pipeline, *fakeBatcher) {
 		fb := &fakeBatcher{}
@@ -182,7 +165,6 @@ func TestPipelineScrubFreeTextEvent(t *testing.T) {
 		}
 	}
 
-	// Включено: и Message, и ExceptionValue замаскированы.
 	p, fb := makePipeline(true)
 	p.process(task{projectID: 1, ev: newEvent()})
 	if len(fb.evs) != 1 {
@@ -195,7 +177,6 @@ func TestPipelineScrubFreeTextEvent(t *testing.T) {
 		t.Errorf("ExceptionValue = %q, want %q", got, "bad addr [email] in payload")
 	}
 
-	// Выключено: текст не тронут.
 	p, fb = makePipeline(false)
 	p.process(task{projectID: 1, ev: newEvent()})
 	if got := fb.evs[0].Message; got != "error for user@example.com" {
@@ -206,9 +187,6 @@ func TestPipelineScrubFreeTextEvent(t *testing.T) {
 	}
 }
 
-// SEC-L2: URL-образное имя транзакции прогоняется через тот же free-text скраб,
-// что и message/span.description — email из query string маскируется на [email]
-// перед записью в SpanSink (при ScrubFreeText=true); при выключенном — цело.
 func TestPipelineScrubTransactionName(t *testing.T) {
 	makePipeline := func(freeText bool) (*Pipeline, *fakeSpanSink) {
 		spans := &fakeSpanSink{}
@@ -226,14 +204,12 @@ func TestPipelineScrubTransactionName(t *testing.T) {
 		}
 	}
 
-	// Включено: email в имени замаскирован тем же способом, что и в прочих полях.
 	p, spans := makePipeline(true)
 	p.processTransaction(1, 1, newTx())
 	if got := spans.added[0].Name; got != "GET /u?token=secret&email=[email]" {
 		t.Errorf("tx.Name = %q, want email замаскированным на [email]", got)
 	}
 
-	// Выключено: имя не тронуто (текущее поведение).
 	p, spans = makePipeline(false)
 	p.processTransaction(1, 1, newTx())
 	if got := spans.added[0].Name; got != "GET /u?token=secret&email=a@b.com" {
@@ -241,9 +217,6 @@ func TestPipelineScrubTransactionName(t *testing.T) {
 	}
 }
 
-// capturingIssueSvc — issueUpserter, который запоминает title/culprit, дошедшие
-// до Upsert. Нужен, чтобы проверить: свободный текст в title маскируется ДО
-// апсерта (issues.title в PG иначе хранил бы email открытым).
 type capturingIssueSvc struct {
 	res         issue.UpsertResult
 	title       string
@@ -262,8 +235,6 @@ func (f *capturingIssueSvc) Get(_ context.Context, id int64) (issue.Issue, error
 	return issue.Issue{ID: id, TimesSeen: 1}, nil
 }
 
-// capturingAlertSink — AlertSink, запоминающий payload OnIssue (в частности
-// Title), чтобы проверить: в алерте свободный текст тоже замаскирован.
 type capturingAlertSink struct {
 	called bool
 	ev     alert.Event
@@ -274,12 +245,7 @@ func (f *capturingAlertSink) OnIssue(_ context.Context, ev alert.Event) {
 	f.ev = ev
 }
 
-// RA-L10 (проход 4): email в ev.Title маскируется ДО Upsert и OnIssue, а не
-// только в Message/ExceptionValue перед записью в CH. Иначе issues.title (PG) и
-// payload алерта уносили бы email в открытую.
 func TestPipelineScrubFreeTextTitleBeforeUpsert(t *testing.T) {
-	// Title строится в titleAndCulprit как "тип: значение" — тот же email, что
-	// и в ExceptionValue. res.New=true, чтобы сработал путь OnIssue.
 	newEvent := func() *ParsedEvent {
 		return &ParsedEvent{
 			EventID:   "e1",
@@ -292,7 +258,6 @@ func TestPipelineScrubFreeTextTitleBeforeUpsert(t *testing.T) {
 		}
 	}
 
-	// Включено: title в Upsert и в OnIssue замаскирован.
 	t.Run("on", func(t *testing.T) {
 		sc := NewScrubber(false, false, nil)
 		sc.ScrubFreeText = true
@@ -314,7 +279,6 @@ func TestPipelineScrubFreeTextTitleBeforeUpsert(t *testing.T) {
 		}
 	})
 
-	// Выключено: title не тронут.
 	t.Run("off", func(t *testing.T) {
 		sc := NewScrubber(false, false, nil)
 		sc.ScrubFreeText = false
@@ -334,23 +298,17 @@ func TestPipelineScrubFreeTextTitleBeforeUpsert(t *testing.T) {
 	})
 }
 
-// RA-L10 (проход 4): scrubbing title после fingerprint.Compute не меняет
-// группировку — fingerprint считается на Message/Exceptions, не на Title.
-// Один и тот же email-содержащий ввод с вкл./выкл. ScrubFreeText должен давать
-// одинаковый fingerprint (иначе события расползлись бы по разным группам).
 func TestScrubFreeTextDoesNotChangeFingerprint(t *testing.T) {
 	in := fingerprint.Input{
 		Exceptions: []fingerprint.Exception{
 			{Type: "ValueError", Value: "bad addr admin@corp.io in payload"},
 		},
 	}
-	// Compute отрабатывает на исходном тексте до любого scrubbing в process().
 	if got, want := fingerprint.Compute(in), fingerprint.Compute(in); got != want {
 		t.Fatalf("fingerprint нестабилен: %q != %q", got, want)
 	}
 }
 
-// RA-L10: span.Description транзакции маскируется при ScrubFreeText=true.
 func TestPipelineScrubFreeTextTransaction(t *testing.T) {
 	spans := &fakeSpanSink{}
 	sc := NewScrubber(false, false, nil)
@@ -377,8 +335,6 @@ func TestPipelineScrubFreeTextTransaction(t *testing.T) {
 	}
 }
 
-// TestPipelineScrubTransactionTags: tags транзакции зачищаются перед записью в
-// SpanSink так же, как у событий — denylist-тег заменён маской, прочие теги целы.
 func TestPipelineScrubTransactionTags(t *testing.T) {
 	spans := &fakeSpanSink{}
 	p := &Pipeline{

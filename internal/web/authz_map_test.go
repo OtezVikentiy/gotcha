@@ -5,53 +5,28 @@ import (
 	"testing"
 )
 
-// authzLevel — задекларированный уровень прав маршрута (и мутирующего POST,
-// и рендерящего GET). Сторож не проверяет реализацию гейта (это делают
-// поведенческие тесты соответствующих ручек) — он не даёт ДОБАВИТЬ маршрут,
-// не решив явно, кто имеет право его дёргать (урок живого кейса из спеки
-// 2026-08-08: права раздавались по памяти, потому что карты не существовало).
-//
-// GET-маршруты добавлены в карту находкой B2 (arch P1-3): весь класс утечек,
-// который правил этот аудит, живёт именно в GET-рендере страниц (не в POST),
-// а карта до этой находки видела только мутации — новая GET-страница проекта
-// без гейта добавлялась бы незамеченной.
 const (
-	lvlPublic   = "public"   // машинные/анонимные ручки (heartbeat, probe, login)
-	lvlUser     = "user"     // любой залогиненный (профиль, logout, онбординг)
-	lvlAccess   = "access"   // любой с доступом к проекту (статусы issue/perf-issue)
-	lvlOperator = "operator" // оператор мониторинга (спека 2026-08-08)
-	lvlAdmin    = "admin"    // org owner/admin
-	lvlOwner    = "owner"    // только owner (удаления)
-	// lvlInstanceAdmin — принципиально ДРУГОЙ механизм, чем lvlOwner: не роль
-	// в организации, а глобальный флаг users.is_instance_admin (один на весь
-	// инстанс, миграция 0017, bootstrap первому зарегистрированному,
-	// auth.Service.UserIsInstanceAdmin). Гейт requireInstanceAdminForSSO
-	// (orgsettings.go) закрывает per-org SSO именно им, а не owner-ролью —
-	// смешивать эти два уровня под одной константой значило бы утверждать,
-	// что владелец организации может настраивать федерацию для своего орга
-	// самостоятельно, что и есть закрываемая этим гейтом дыра (захват
-	// аккаунта через непроверенный домен, см. комментарий у гейта).
+	lvlPublic        = "public"
+	lvlUser          = "user"
+	lvlAccess        = "access"
+	lvlOperator      = "operator"
+	lvlAdmin         = "admin"
+	lvlOwner         = "owner"
 	lvlInstanceAdmin = "instance_admin"
 )
 
 var routeAuthz = map[string]string{
-	// --- Аутентификация и публичные ручки: без сессии, гейта нет по
-	// построению (регистрируются в web.go ДО requireUser). ---
 	"POST /login":           lvlPublic,
 	"POST /register":        lvlPublic,
 	"POST /logout":          lvlPublic,
 	"POST /sso":             lvlPublic,
-	"POST /settings/locale": lvlPublic, // доступен и анониму (например, на /login) — web.go
-	"POST /settings/theme":  lvlPublic, // тот же принцип, что у locale
+	"POST /settings/locale": lvlPublic,
+	"POST /settings/theme":  lvlPublic,
 
-	// --- Машинные ручки: не браузер, аутентификация не сессией (токен
-	// heartbeat в пути / Bearer пробы), только на стенде h.Uptime. ---
 	"POST /uptime/hb/{token}": lvlPublic,
 	"POST /probe/lease":       lvlPublic,
 	"POST /probe/results":     lvlPublic,
 
-	// --- Любой залогиненный: self-service над собственным аккаунтом, гейт —
-	// только auth.UserID (нет дальнейшей проверки роли/доступа). ---
 	"POST /profile/password":             lvlUser,
 	"POST /profile/password/set":         lvlUser,
 	"POST /profile/delete":               lvlUser,
@@ -59,51 +34,38 @@ var routeAuthz = map[string]string{
 	"POST /profile/identities/unlink":    lvlUser,
 	"POST /profile/getting-started/hide": lvlUser,
 	"POST /onboarding":                   lvlUser,
-	"POST /issues/{id}/assign":           lvlAccess, // loadAccessibleIssue → CanAccessProject
-	"POST /invite/{token}":               lvlUser,   // принять приглашение — адресат ещё не член
-	// orgSettingsLeave: самостоятельный выход из организации — гейта роли
-	// нет, RemoveMember(orgID, uid) сам проверяет членство (ErrNotMember →
-	// 404); действие над собой, как остальные profile/* — lvlUser.
-	"POST /orgs/{id}/settings/leave": lvlUser,
+	"POST /issues/{id}/assign":           lvlAccess,
+	"POST /invite/{token}":               lvlUser,
+	"POST /orgs/{id}/settings/leave":     lvlUser,
 
-	// --- Доступ к проекту (CanAccessProject): issue/perf-issue статусы и
-	// массовые операции — любой участник организации проекта. ---
 	"POST /issues/{id}/status":        lvlAccess,
 	"POST /projects/{id}/issues/bulk": lvlAccess,
 	"POST /perf-issues/{id}/status":   lvlAccess,
 
-	// --- Оператор мониторинга (requireProjectOperator, спека 2026-08-08):
-	// мутации монитора, окон обслуживания, статус-страниц, alert rules и
-	// metric alerts. ---
-	"POST /monitors/{id}/pause":                            lvlOperator,
-	"POST /monitors/{id}/resume":                           lvlOperator,
-	"POST /monitors/{id}/delete":                           lvlOperator,
-	"POST /monitors/{id}/heartbeat/regenerate":             lvlOperator,
-	"POST /monitors/{id}":                                  lvlOperator,
-	"POST /projects/{id}/monitors":                         lvlOperator,
-	"POST /projects/{id}/maintenance":                      lvlOperator,
-	"POST /projects/{id}/maintenance/update":               lvlOperator,
-	"POST /projects/{id}/maintenance/delete":               lvlOperator,
-	"POST /projects/{id}/statuspages":                      lvlOperator,
-	"POST /statuspages/{id}":                               lvlOperator,
-	"POST /statuspages/{id}/delete":                        lvlOperator,
-	"POST /projects/{id}/alerts/rules":                     lvlOperator,
-	"POST /projects/{id}/escalations":                      lvlOperator,
-	"POST /projects/{id}/alert-suppression":                lvlOperator,
-	"POST /projects/{id}/alert-suppression/{depID}":        lvlOperator,
-	"POST /projects/{id}/alert-suppression/{depID}/delete": lvlOperator,
-	// exports: create/delete гейтятся requireProjectOperator, как соседи
-	// выше; download/delete/список ДОПОЛНИТЕЛЬНО проверяют авторство/
-	// CanManage внутри хендлера (exports.go) — карта отслеживает базовый
-	// уровень, не поведенческую доп.проверку, тот же принцип, что у
-	// channel_id/edge ownership на escalations/alert-suppression.
+	"POST /monitors/{id}/pause":                                lvlOperator,
+	"POST /monitors/{id}/resume":                               lvlOperator,
+	"POST /monitors/{id}/delete":                               lvlOperator,
+	"POST /monitors/{id}/heartbeat/regenerate":                 lvlOperator,
+	"POST /monitors/{id}":                                      lvlOperator,
+	"POST /projects/{id}/monitors":                             lvlOperator,
+	"POST /projects/{id}/maintenance":                          lvlOperator,
+	"POST /projects/{id}/maintenance/update":                   lvlOperator,
+	"POST /projects/{id}/maintenance/delete":                   lvlOperator,
+	"POST /projects/{id}/statuspages":                          lvlOperator,
+	"POST /statuspages/{id}":                                   lvlOperator,
+	"POST /statuspages/{id}/delete":                            lvlOperator,
+	"POST /projects/{id}/alerts/rules":                         lvlOperator,
+	"POST /projects/{id}/escalations":                          lvlOperator,
+	"POST /projects/{id}/alert-suppression":                    lvlOperator,
+	"POST /projects/{id}/alert-suppression/{depID}":            lvlOperator,
+	"POST /projects/{id}/alert-suppression/{depID}/delete":     lvlOperator,
 	"POST /projects/{id}/exports":                              lvlOperator,
 	"POST /projects/{id}/exports/{jobID}/delete":               lvlOperator,
 	"POST /projects/{id}/incidents/{source}/{incident_id}/ack": lvlOperator,
 	"POST /projects/{id}/metrics/alerts":                       lvlOperator,
 	"POST /projects/{id}/metrics/alerts/delete":                lvlOperator,
 	"POST /projects/{id}/metrics/alerts/{ruleID}":              lvlOperator,
-	"POST /projects/{id}/recipes/{slug}/thresholds":            lvlOperator, // рецепты B6: создание порогов — как metric alerts
+	"POST /projects/{id}/recipes/{slug}/thresholds":            lvlOperator,
 	"POST /projects/{id}/slos":                                 lvlOperator,
 	"POST /projects/{id}/slos/{sloID}/delete":                  lvlOperator,
 	"POST /projects/{id}/hosts/settings":                       lvlOperator,
@@ -112,9 +74,7 @@ var routeAuthz = map[string]string{
 	"POST /projects/{id}/hosts/{name}/thresholds":              lvlOperator,
 	"POST /projects/{id}/hosts/{name}/delete":                  lvlOperator,
 
-	// --- Org admin/owner (requireOrgRole/requireProjectRole/requireTeamRole:
-	// роль owner или admin в организации). ---
-	"POST /projects/new":                         lvlAdmin, // projectCreate → requireOrgRole
+	"POST /projects/new":                         lvlAdmin,
 	"POST /orgs/{id}/settings/role":              lvlAdmin,
 	"POST /orgs/{id}/settings/remove":            lvlAdmin,
 	"POST /orgs/{id}/settings/invite":            lvlAdmin,
@@ -139,26 +99,15 @@ var routeAuthz = map[string]string{
 	"POST /projects/{id}/alerts/channels/delete": lvlAdmin,
 	"POST /projects/{id}/alerts/channels/test":   lvlAdmin,
 
-	// --- Только owner (requireOrgOwner/requireProjectOwner): удаления. ---
 	"POST /orgs/{id}/settings/delete":         lvlOwner,
 	"POST /orgs/{id}/settings/purge-subject":  lvlOwner,
 	"POST /orgs/{id}/settings/export-subject": lvlOwner,
 	"POST /projects/{id}/settings/delete":     lvlOwner,
 
-	// --- Только админ инстанса (requireInstanceAdminForSSO): per-org SSO.
-	// Не owner-роль организации — глобальный флаг users.is_instance_admin,
-	// см. комментарий у lvlInstanceAdmin выше. ---
 	"POST /orgs/{id}/settings/sso":          lvlInstanceAdmin,
 	"POST /orgs/{id}/settings/sso/delete":   lvlInstanceAdmin,
 	"POST /profile/instance-admin/transfer": lvlInstanceAdmin,
 
-	// ============================= GET =============================
-	// (находка B2: тот же принцип, что у POST выше, но для рендера).
-
-	// --- Публичные GET: без сессии по построению — регистрируются в web.go
-	// вне requireUser (статика, вход/регистрация/SSO, OAuth-старт/колбэк,
-	// приглашение по токену — адресат ещё не член, heartbeat/status-страница —
-	// машинные/анонимные ручки, см. блок h.Uptime != nil). ---
 	"GET /login":                          lvlPublic,
 	"GET /register":                       lvlPublic,
 	"GET /sso":                            lvlPublic,
@@ -168,41 +117,30 @@ var routeAuthz = map[string]string{
 	"GET /static/":                        lvlPublic,
 	"GET /uptime/hb/{token}":              lvlPublic,
 	"GET /status/{key}":                   lvlPublic,
-	"GET /install.sh":                     lvlPublic, // раздача агента (план A2) — машинная ручка, curl без сессии
+	"GET /install.sh":                     lvlPublic,
 	"GET /agent/{file}":                   lvlPublic,
 
-	// --- Любой залогиненный (requireUser), дальше по коду гейта нет —
-	// общие страницы аккаунта/продукта, не привязанные к конкретному
-	// проекту/организации. ---
-	"GET /{$}":         lvlUser,
-	"GET /profile":     lvlUser,
-	"GET /onboarding":  lvlUser,
-	"GET /docs":        lvlUser,
-	"GET /docs/{slug}": lvlUser,
-	"GET /about":       lvlUser,
-	"GET /projects":    lvlUser,
-	// GET /orgs/{id}/projects (задача 5 nav-ia) — тот же принцип, что и у
-	// GET /projects: фильтрация до проектов пользователя не в самом гейте, а
-	// в хендлере (orgProjectsPage сверяет членство через h.Org.Role, чужая
-	// организация — 404).
+	"GET /{$}":                lvlUser,
+	"GET /profile":            lvlUser,
+	"GET /onboarding":         lvlUser,
+	"GET /docs":               lvlUser,
+	"GET /docs/{slug}":        lvlUser,
+	"GET /about":              lvlUser,
+	"GET /projects":           lvlUser,
 	"GET /orgs/{id}/projects": lvlUser,
 
-	// --- Доступ к проекту (CanAccessProject — напрямую или через
-	// loadAccessibleIssue/loadAccessibleMonitor/loadAccessiblePerfIssue/
-	// ProjectForTrace): просмотр открыт любому участнику организации
-	// проекта, та же граница, что у issue/perf-issue статусов выше. ---
 	"GET /projects/{id}/setup":                            lvlAccess,
 	"GET /projects/{id}/issues":                           lvlAccess,
 	"GET /issues/{id}":                                    lvlAccess,
 	"GET /projects/{id}/metrics":                          lvlAccess,
 	"GET /projects/{id}/metrics/{name}":                   lvlAccess,
-	"GET /projects/{id}/recipes":                          lvlAccess, // рецепты B6: просмотр — как /metrics
+	"GET /projects/{id}/recipes":                          lvlAccess,
 	"GET /projects/{id}/recipes/{slug}":                   lvlAccess,
 	"GET /projects/{id}/hosts":                            lvlAccess,
 	"GET /projects/{id}/hosts/{name}":                     lvlAccess,
 	"GET /projects/{id}/logs":                             lvlAccess,
-	"GET /projects/{id}/logs/attr-keys":                   lvlAccess, // задача 6 (автокомплит): тот же гейт, что у самого списка логов
-	"POST /projects/{id}/logs/filters":                    lvlAccess, // задача 9: право зависит от вида фильтра, не от маршрута — см. requireLogFilterOperator
+	"GET /projects/{id}/logs/attr-keys":                   lvlAccess,
+	"POST /projects/{id}/logs/filters":                    lvlAccess,
 	"POST /projects/{id}/logs/filters/{filterID}/update":  lvlAccess,
 	"POST /projects/{id}/logs/filters/{filterID}/delete":  lvlAccess,
 	"POST /projects/{id}/logs/filters/{filterID}/default": lvlAccess,
@@ -212,8 +150,8 @@ var routeAuthz = map[string]string{
 	"GET /projects/{id}/monitors":                         lvlAccess,
 	"GET /monitors/{id}":                                  lvlAccess,
 	"GET /projects/{id}/incidents":                        lvlAccess,
-	"GET /projects/{id}/overview":                         lvlAccess, // «Обзор», задача 6 nav-ia — та же граница, что у incident-feed ниже (заменяет её)
-	"GET /projects/{id}/incident-feed":                    lvlAccess, // редирект на overview, но CanAccessProject проверяется ДО него (ревью фикс-раунда 2: раньше редиректил вообще без проверки — TestAuthzBehaviorStrangerRejectedOnScopedRoutes)
+	"GET /projects/{id}/overview":                         lvlAccess,
+	"GET /projects/{id}/incident-feed":                    lvlAccess,
 	"GET /projects/{id}/performance":                      lvlAccess,
 	"GET /projects/{id}/performance/{transaction...}":     lvlAccess,
 	"GET /projects/{id}/dependencies":                     lvlAccess,
@@ -225,42 +163,14 @@ var routeAuthz = map[string]string{
 	"GET /traces/{trace_id}":                              lvlAccess,
 	"GET /traces/{trace_id}/flame":                        lvlAccess,
 
-	// --- Оператор мониторинга (requireProjectOperator): страницы алертов,
-	// метрик-алертов, форм монитора, статус-страниц и окон обслуживания —
-	// тот же гейт, что у их мутирующих POST в разделе operator выше.
-	// ВНИМАНИЕ (потенциальная находка для контроллера): комментарий в web.go
-	// у /projects/{id}/statuspages и /projects/{id}/maintenance называет их
-	// уровнем requireProjectRole (owner/admin) — это устарело, фактический
-	// гейт в коде обеих GET-ручек (statusPagesPage, maintenancePage) и всех
-	// их POST — requireProjectOperator; карта отражает код, а не комментарий.
-	// W9 (R4, incident-feed): /projects/{id}/incident-feed сама на lvlAccess
-	// и показывает metric/slo-инциденты (имя, severity, время) любому
-	// участнику проекта — сознательно, иначе лента D3 перестала бы быть
-	// единой картиной по всем 6 источникам ровно там, где это нужнее всего
-	// (шторм чаще всего смешивает источники). Но ССЫЛКУ на эти две
-	// lvlOperator-страницы лента рисует только оператору (canOperate,
-	// incidentfeed.go/incidentfeed.templ:feedItemLinkable) — рядовому
-	// участнику вместо неё показан только текст, без href на страницу,
-	// которая закроется 404. Сегодня canOperateProject предикатно совпадает
-	// с CanAccessProject (operate.go) — условие не меняет поведение прямо
-	// сейчас, но не потребует правки ленты, когда роли разъедутся (спека
-	// access-model-rework).
-	"GET /projects/{id}/metrics/alerts":    lvlOperator,
-	"GET /projects/{id}/slos":              lvlOperator,
-	"GET /projects/{id}/slos/{sloID}":      lvlOperator,
-	"GET /projects/{id}/hosts/settings":    lvlOperator,
-	"GET /projects/{id}/alerts":            lvlOperator,
-	"GET /projects/{id}/alerts/deliveries": lvlOperator,
-	"GET /projects/{id}/escalations":       lvlOperator,
-	"GET /projects/{id}/alert-suppression": lvlOperator,
-	// GET /projects/{id}/exports (страница списка, задача 11) — тот же
-	// оператор-гейт, что и у download/delete ниже; саму страницу видит любой
-	// оператор, но НЕ все её строки (спека §3): без CanManage exportsPage
-	// зовёт Store.ByProjectForUser, а не ByProject — оператор без CanManage
-	// вообще не получает чужие заявки в выборке (не только скрытые кнопки
-	// download/delete, ExportView.CanDownload/CanDelete, exports.go:
-	// exportViewRow, — сама строка с email автора и колонкой PII не
-	// рендерится, ревью веб-части E1, п.2).
+	"GET /projects/{id}/metrics/alerts":           lvlOperator,
+	"GET /projects/{id}/slos":                     lvlOperator,
+	"GET /projects/{id}/slos/{sloID}":             lvlOperator,
+	"GET /projects/{id}/hosts/settings":           lvlOperator,
+	"GET /projects/{id}/alerts":                   lvlOperator,
+	"GET /projects/{id}/alerts/deliveries":        lvlOperator,
+	"GET /projects/{id}/escalations":              lvlOperator,
+	"GET /projects/{id}/alert-suppression":        lvlOperator,
 	"GET /projects/{id}/exports":                  lvlOperator,
 	"GET /projects/{id}/exports/{jobID}/download": lvlOperator,
 	"GET /projects/{id}/monitors/new":             lvlOperator,
@@ -268,9 +178,6 @@ var routeAuthz = map[string]string{
 	"GET /projects/{id}/statuspages":              lvlOperator,
 	"GET /projects/{id}/maintenance":              lvlOperator,
 
-	// --- Org admin/owner (requireOrgRole/requireProjectRole): настройки
-	// организации/проекта и производные разделы (пробы, команды) — та же
-	// граница, что у мутирующих POST в соответствующем разделе выше. ---
 	"GET /orgs/{id}/settings":     lvlAdmin,
 	"GET /orgs/{id}/probes":       lvlAdmin,
 	"GET /orgs/{id}/teams":        lvlAdmin,

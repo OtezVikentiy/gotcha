@@ -5,7 +5,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/version"
 )
 
-// About — GET /about: сведения о сборке (версия, коммит, дата, Go) + ссылки.
 templ About(info version.Info, userEmail string) {
 	@layout(i18n.T(ctx, "about.title"), userEmail) {
 		<div class="about">

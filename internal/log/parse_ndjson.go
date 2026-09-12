@@ -10,16 +10,8 @@ import (
 	"time"
 )
 
-// ndjsonLine — минимальная схема одной строки NDJSON-лога. Источник вдвойне
-// недоверенный по сравнению с OTLP: сам формат необязательно валиден
-// построчно, поэтому распознаём только то, что нужно, остального не
-// заявляем — лишние поля json.Unmarshal молча игнорирует.
-//
-// Attributes — map[string]any, не map[string]string: реальные JSON-логеры
-// сплошь и рядом кладут в атрибуты числа/bool ({"retry_count":3}), а
-// map[string]string на таком значении роняет json.Unmarshal ошибкой типа —
-// строка целиком трактовалась бы как битый JSON и терялась вместе с валидным
-// message. С any разбор всегда успешен, коэрсия в строку — в capNDJSONAttrs.
+// map[string]any: типизированные значения ({"retry_count":3}) на map[string]string роняют json.Unmarshal
+// целиком и теряют валидный message; коэрсия в строку — в capNDJSONAttrs.
 type ndjsonLine struct {
 	Message    string          `json:"message"`
 	Level      string          `json:"level"`
@@ -29,35 +21,12 @@ type ndjsonLine struct {
 	SpanID     string          `json:"span_id"`
 }
 
-// maxNDJSONLineBytes — потолок сырой строки, после которого она отбрасывается
-// БЕЗ попытки json.Unmarshal. Это отдельная величина от maxBodyBytes: JSON
-// не может декодироваться в строку длиннее самого себя (экранирование и
-// служебные символы только увеличивают байтовый размер), поэтому строка
-// ровно на maxBodyBytes уже физически не может нести message длиннее
-// maxBodyBytes — приравняй порог отбрасывания к maxBodyBytes, и capBytes
-// (усечение тела с маркером) стало бы недостижимым кодом. Порог здесь —
-// щедрый запас на JSON-обвязку (level/timestamp/attributes/trace_id/span_id)
-// вокруг тела около границы капа, а не сам кап; отсечение по-настоящему
-// патологических строк (на порядки больше тела) остаётся его задачей —
-// экономит json.Unmarshal на заведомо мусорном/атакующем вводе.
+// Отдельно от maxBodyBytes: сравняй их, и усечение тела (capBytes) станет недостижимым — JSON не может
+// декодироваться в message длиннее самой строки. Здесь — запас на обвязку (level/timestamp/trace_id/...).
 const maxNDJSONLineBytes = maxBodyBytes * 4
 
-// ParseNDJSON разбирает тело запроса построчно (newline-delimited JSON) в
-// LogRecord. Битая строка (не-JSON, пустой message) пропускается и не роняет
-// весь батч — калька семантики MapOTLPLogs, где один кривой LogRecord не
-// портит остальные.
-//
-// Намеренно НЕ bufio.Scanner: на строке длиннее внутреннего буфера Scanner
-// возвращает bufio.ErrTooLong и после этого больше не сканирует — теряется
-// весь хвост батча. bufio.Reader.ReadString сам растит буфер до \n
-// независимо от длины строки, так что после отбрасывания одной гигантской
-// строки чтение следующих продолжается штатно.
-//
-// Контракт ошибки: err != nil означает, что чтение тела оборвалось (реальная
-// I/O-ошибка, не битая строка) — возвращаемый out в этом случае содержит
-// только то, что успело разобраться ДО обрыва, и вызывающий код ОБЯЗАН его
-// игнорировать: батч из оборванного тела недопринят и не должен считаться
-// успешно записанным частично.
+// НЕ bufio.Scanner: на строке длиннее буфера тот теряет весь хвост батча (ErrTooLong). При I/O-ошибке
+// (err != nil) частично собранный out ОБЯЗАН быть отброшен вызывающим — батч недопринят.
 func ParseNDJSON(r io.Reader, now time.Time) ([]LogRecord, error) {
 	br := bufio.NewReader(r)
 	var out []LogRecord
@@ -82,8 +51,6 @@ func ParseNDJSON(r io.Reader, now time.Time) ([]LogRecord, error) {
 	return out, nil
 }
 
-// parseNDJSONLine разбирает одну непустую строку. ok=false — строка не
-// распознана (не JSON или пустой message), вызывающий код её пропускает.
 func parseNDJSONLine(line string, now time.Time) (LogRecord, bool) {
 	var raw ndjsonLine
 	if err := json.Unmarshal([]byte(line), &raw); err != nil {
@@ -94,9 +61,8 @@ func parseNDJSONLine(line string, now time.Time) (LogRecord, bool) {
 	}
 
 	return LogRecord{
-		// ns==0 (нет метки, битый формат, дата до эпохи) — тот же сигнал
-		// «нет времени», что и в OTLP-пути, logTime сама даёт fallback и
-		// клампит окном ретенции [now-90d, now+24h].
+		// ns==0 (нет метки/битый формат/дата до эпохи) — тот же сигнал «нет времени», что в OTLP; logTime
+		// сама подставляет fallback и клампит окном ретенции [now-90d, now+24h].
 		Timestamp:  logTime(parseNDJSONTimestampNs(raw.Timestamp), now),
 		ObservedTS: now,
 
@@ -106,10 +72,8 @@ func parseNDJSONLine(line string, now time.Time) (LogRecord, bool) {
 
 		Body: capBytes(raw.Message, maxBodyBytes),
 
-		// Валидный trace_id — 32 hex, span_id — 16 hex; 64 — щедрый запас, чтобы
-		// легитимные ID проходили не тронутыми, а патологически длинная строка от
-		// недоверенного клиента резалась (в отличие от OTLP, где trace_id/span_id
-		// уже ограничены байтами самого протокола).
+		// 64 — щедрый запас: валидные trace_id(32 hex)/span_id(16 hex) проходят нетронутыми, патологически
+		// длинные от недоверенного клиента — режутся (в OTLP их размер уже ограничен байтами протокола).
 		TraceID: capRunes(raw.TraceID, 64),
 		SpanID:  capRunes(raw.SpanID, 64),
 
@@ -117,11 +81,8 @@ func parseNDJSONLine(line string, now time.Time) (LogRecord, bool) {
 	}, true
 }
 
-// parseNDJSONTimestampNs переводит поле timestamp (RFC3339-строка либо
-// unix-время в секундах, возможно дробное) в наносекунды с эпохи — тот же
-// формат, что ожидает logTime. Отсутствие поля, null, пустая строка,
-// нераспознанный формат или дата не позже эпохи — 0, что для logTime
-// эквивалентно «нет надёжного времени».
+// timestamp — RFC3339-строка либо unix-секунды (возможно дробные) в наносекунды с эпохи, формат logTime.
+// Отсутствие/null/пустая строка/нераспознанный формат/дата не позже эпохи — 0 («нет надёжного времени»).
 func parseNDJSONTimestampNs(raw json.RawMessage) uint64 {
 	if len(raw) == 0 {
 		return 0
@@ -149,9 +110,8 @@ func parseNDJSONTimestampNs(raw json.RawMessage) uint64 {
 	return 0
 }
 
-// nsSinceEpoch — t.UnixNano(), но с явным «не позже эпохи → 0», чтобы не
-// уйти в отрицательные значения при приведении к uint64 (logTime трактует
-// такой знак как отсутствие метки).
+// t.UnixNano() с явным «не позже эпохи → 0» — иначе уйдёт в отрицательные при приведении к uint64
+// (logTime трактует такой знак как отсутствие метки).
 func nsSinceEpoch(t time.Time) uint64 {
 	ns := t.UnixNano()
 	if ns <= 0 {
@@ -160,13 +120,8 @@ func nsSinceEpoch(t time.Time) uint64 {
 	return uint64(ns)
 }
 
-// capNDJSONAttrs — те же капы, что attrsToMap в sanitize.go (ключ 64/значение
-// 200/maxAttrKeys, детерминированно по отсортированным ключам при
-// переполнении), но для уже готовой map[string]any: NDJSON присылает
-// attributes сразу объектом, а не OTLP-шным []*commonpb.KeyValue, под который
-// заточена attrsToMap, — переиспользовать её сигнатуру не выйдет, capRunes и
-// maxAttrKeys переиспользуются как есть. Значение nil (JSON null) — ключ
-// пропускается целиком, а не превращается в строку "null".
+// Те же капы, что attrsToMap (ключ 64/значение 200/maxAttrKeys, по отсортированным ключам при переполнении),
+// но для map[string]any: nil-значение (JSON null) — ключ пропускается, а не становится строкой "null".
 func capNDJSONAttrs(attrs map[string]any) map[string]string {
 	if len(attrs) == 0 {
 		return nil
@@ -196,14 +151,8 @@ func capNDJSONAttrs(attrs map[string]any) map[string]string {
 	return capped
 }
 
-// ndjsonAttrString переводит значение атрибута после json.Unmarshal в
-// map[string]any (string/float64/bool/map[string]any/[]any — nil сюда не
-// доходит, его отсеивает capNDJSONAttrs) в строку. Скаляры — калька attrString
-// из sanitize.go (JSON различает только один числовой тип, float64, поэтому
-// int и float здесь неразличимы — форматируем как есть, "3", не "3.0", тем же
-// приёмом -1-точности, что и attrString для DoubleValue). Структурные
-// значения (объект/массив) — JSON-строкой, как anyValueToString делает для
-// тела OTLP-лога с kvlist/array.
+// Скаляры — как attrString (float64 без разделения int/float, формат "3", не "3.0"); объект/массив —
+// JSON-строкой, как anyValueToString для тела OTLP-лога с kvlist/array.
 func ndjsonAttrString(v any) string {
 	switch x := v.(type) {
 	case string:

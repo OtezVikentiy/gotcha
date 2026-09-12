@@ -10,11 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestRecipeConfigUsesServerKey — рецепты сервисов берут ключ типа SERVER, а
-// не agent: их сниппеты сознательно НЕ ставят resourcedetection
-// (recipes/registry.go), рецепт хост не регистрирует и никогда не
-// регистрировал. Выдать ему agent-ключ значило бы дать право регистрации
-// источнику, которому оно не нужно, — против самой цели фичи (§7 дизайна).
+// Рецепты сервисов не регистрируют хост, поэтому берут ключ SERVER, а не agent — выдать им
+// agent-ключ значило бы дать право регистрации источнику, которому оно не нужно.
 func TestRecipeConfigUsesServerKey(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	orgSvc := org.NewService(pool, 1_000_000)

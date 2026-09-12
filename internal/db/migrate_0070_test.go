@@ -1,10 +1,5 @@
 package db_test
 
-// TestLatestMigrationHasDataTest (internal/guards) требует, чтобы НОВЕЙШАЯ
-// миграция PostgreSQL приезжала с тестом на непустой базе — db.MigratePGTo на
-// схему, уже содержащую строки. На момент этой правки новейшая —
-// 0070_org_usage_logs.up.sql (C1, задача 2).
-
 import (
 	"context"
 	"testing"
@@ -15,17 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0070AddsLogQuotaAndUsageColumns — колонки квоты логов
-// добавляются к таблицам, в которых уже есть организация и потребление, и не
-// трогают ни то, ни другое.
-//
-// Проверка содержательная по той же причине, что и у 0057
-// (org_usage_preimage): checkAndCount списывает разность (счётчик −
-// предобраз), поэтому ненулевой мусор в logs_count_before у существующей
-// строки означал бы, что первое же списание квоты логов месяца вернёт
-// неверное «сколько списано». log_quota обязана быть NOT NULL DEFAULT 0
-// (безлимит) — nullable сломала бы Scan в org.Get/OrgsOf/CreateOrg на любом
-// запросе организации, включая созданные до этой миграции.
+// checkAndCount списывает разность (счётчик − предобраз) — ненулевой мусор в logs_count_before
+// дал бы неверное списание; log_quota NOT NULL DEFAULT 0 — nullable сломала бы Scan в org.Get/OrgsOf.
 func TestMigrate0070AddsLogQuotaAndUsageColumns(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

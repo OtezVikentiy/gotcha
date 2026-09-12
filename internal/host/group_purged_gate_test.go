@@ -10,14 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestOpenUnackedPurgedGroupTreatedAsClosed — группа, чья строка физически
-// удалена из incident_groups (janitor purge/ретеншен), должна трактоваться
-// как закрытая: висячий group_id не блокирует бывшего члена в OpenUnacked
-// навсегда (R2a/W3, регресс мутации, убравшей `g.id IS NULL` из предиката —
-// прогон полного тестового набора её не ловил). Дополнительно: StartedAt —
-// собственный started_at инцидента, а не время резолва группы (группы уже
-// нет — COALESCE(g.resolved_at, ...) не с чем сравнивать, GREATEST должен
-// схлопнуться в i.started_at).
 func TestOpenUnackedPurgedGroupTreatedAsClosed(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -42,9 +34,6 @@ func TestOpenUnackedPurgedGroupTreatedAsClosed(t *testing.T) {
 		t.Fatalf("SetGroup: %v", err)
 	}
 
-	// Симуляция purge: строка группы удалена, но group_id члена (висячий)
-	// остаётся — ровно та ситуация, из-за которой W3 в аудите не всплыла ни
-	// на одном прогоне пакета (мутация убрала g.id IS NULL из предиката).
 	if _, err := pool.Exec(ctx, "DELETE FROM incident_groups WHERE id = $1", grp.ID); err != nil {
 		t.Fatalf("delete group (purge): %v", err)
 	}

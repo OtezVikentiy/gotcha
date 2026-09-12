@@ -9,8 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
-// TestRedactExternalPayloadStripsDetails проверяет, что обезличивание
-// выкидывает текст ошибки/детали и оставляет только маршрутный минимум.
 func TestRedactExternalPayloadStripsDetails(t *testing.T) {
 	full := map[string]any{
 		"kind":          "new_issue",
@@ -37,20 +35,17 @@ func TestRedactExternalPayloadStripsDetails(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
 	out := notify.RedactExternalPayload(ctx, full)
 
-	// Чувствительные поля должны исчезнуть.
 	for _, k := range []string{"title", "culprit", "level", "target_name", "monitor_name", "function", "cause"} {
 		if _, ok := out[k]; ok {
 			t.Errorf("redacted payload leaks %q: %+v", k, out)
 		}
 	}
-	// subject/body не должны нести текст ошибки.
 	if subj, _ := out["subject"].(string); strings.Contains(subj, "boom") || strings.Contains(subj, "SELECT") {
 		t.Errorf("subject leaks details: %q", subj)
 	}
 	if body, _ := out["body"].(string); strings.Contains(body, "boom") || strings.Contains(body, "SELECT") {
 		t.Errorf("body leaks details: %q", body)
 	}
-	// Маршрутный минимум остаётся.
 	if out["url"] != "https://gotcha.example/issues/42" {
 		t.Errorf("url lost: %+v", out)
 	}
@@ -60,13 +55,11 @@ func TestRedactExternalPayloadStripsDetails(t *testing.T) {
 	if out["channel_kind"] != "telegram" || out["target"] != "123" {
 		t.Errorf("transport fields lost: %+v", out)
 	}
-	// Секрет вырезается наравне с прочим: воркеру он из payload больше не
-	// нужен (резолвит по channel_id), а в белом списке был только ради него.
+	// Секрет вырезается наравне с прочим — воркер резолвит его по channel_id,
+	// из payload он не нужен.
 	if _, ok := out["secret"]; ok {
 		t.Errorf("secret не должен переживать редакцию: %+v", out)
 	}
-	// Тема/тело — человекочитаемая подпись вида на языке инстанса и ссылка,
-	// в стиле остальных тем («[Gotcha] …»), а не сырой enum (QA MINOR-4).
 	if out["subject"] != "[Gotcha] New issue" {
 		t.Errorf("subject = %v, want humanized route-only", out["subject"])
 	}
@@ -75,8 +68,6 @@ func TestRedactExternalPayloadStripsDetails(t *testing.T) {
 	}
 }
 
-// TestRedactExternalPayloadLocalizedLabel: подпись вида берётся из каталога
-// локали инстанса (GOTCHA_LOCALE), как и остальные тексты уведомлений.
 func TestRedactExternalPayloadLocalizedLabel(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	out := notify.RedactExternalPayload(ctx, map[string]any{
@@ -87,8 +78,6 @@ func TestRedactExternalPayloadLocalizedLabel(t *testing.T) {
 	}
 }
 
-// TestRedactExternalPayloadUnknownKind: незнакомый вид уходит сырым enum'ом,
-// а не пустой строкой — та же честность, что у issueAlertKindLabel.
 func TestRedactExternalPayloadUnknownKind(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
 	out := notify.RedactExternalPayload(ctx, map[string]any{
@@ -99,10 +88,6 @@ func TestRedactExternalPayloadUnknownKind(t *testing.T) {
 	}
 }
 
-// TestRedactExternalPayloadShortensURLWhenAsked: нотифаер, у которого деталь
-// несёт сам адрес карточки (хосты — /projects/{id}/hosts/{имя}), кладёт в
-// payload "url_redacted"; редакция подставляет его и в url, и в тело. Само
-// поле — директива, а не вывод: наружу отдельной строкой оно не идёт.
 func TestRedactExternalPayloadShortensURLWhenAsked(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
 	out := notify.RedactExternalPayload(ctx, map[string]any{
@@ -121,8 +106,6 @@ func TestRedactExternalPayloadShortensURLWhenAsked(t *testing.T) {
 	}
 }
 
-// TestRedactExternalPayloadKeepsURLWithoutDirective: без url_redacted ссылка
-// остаётся прежней — поведение остальных нотифаеров не меняется.
 func TestRedactExternalPayloadKeepsURLWithoutDirective(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
 	out := notify.RedactExternalPayload(ctx, map[string]any{
@@ -136,8 +119,6 @@ func TestRedactExternalPayloadKeepsURLWithoutDirective(t *testing.T) {
 	}
 }
 
-// TestRedactExternalPayloadDoesNotMutateInput гарантирует, что исходный
-// payload (уходящий в email/внутренние каналы) не портится.
 func TestRedactExternalPayloadDoesNotMutateInput(t *testing.T) {
 	full := map[string]any{
 		"kind": "down", "title": "boom", "url": "u",

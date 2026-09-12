@@ -10,11 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0076MaintenanceAllSources — in_maintenance добавляется на существующую
-// (непустую) таблицу host_incidents с default false, а CHECK maintenance_windows
-// после смягчения пропускает бессрочное разовое окно (ends_at NULL). Откат должен
-// пройти без ошибки — down сначала удаляет бессрочные окна, потом возвращает строгий
-// CHECK (иначе ADD CONSTRAINT валидирует существующие строки и падает).
+// down должен пройти без ошибки: сначала удаляет бессрочные окна, потом возвращает строгий CHECK —
+// иначе ADD CONSTRAINT провалидирует существующие строки и упадёт.
 func TestMigrate0076MaintenanceAllSources(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -64,7 +61,7 @@ func TestMigrate0076MaintenanceAllSources(t *testing.T) {
 		t.Fatalf("indefinite window insert rejected: %v", err)
 	}
 
-	// Откат — BLOCKER-2: не должен упасть на бессрочном окне, оставшемся в таблице.
+	// Откат не должен упасть на бессрочном окне, оставшемся в таблице.
 	if err := db.MigratePGTo(dsn, 75); err != nil {
 		t.Fatalf("down to 75: %v", err)
 	}

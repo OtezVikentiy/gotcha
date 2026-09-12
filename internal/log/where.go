@@ -1,20 +1,7 @@
 package log
 
-// buildWhere собирает условия WHERE и аргументы к ним для всех запросов
-// логов. Единственное место сборки: до него блок был скопирован в List,
-// Histogram, Facet и AttrValues, и правка фильтров требовала синхронной
-// правки четырёх копий — расхождение проявлялось как гистограмма, не
-// совпадающая со списком.
-//
-// Возвращает условия БЕЗ ключевого слова WHERE и без хвостов, специфичных
-// для вызывающего (курсор списка, условие «col != пустая строка» фасета,
-// LIMIT): их вызывающий дописывает сам, добавляя свои аргументы после
-// возвращённых.
-//
-// opts.OmitPositive / OmitNegative — имена полей, условия по которым не
-// включать. Нужны фасетам: фасет по полю не должен применять фильтр по себе
-// же, иначе значение исчезает из собственного списка счётчиков вместе
-// с возможностью его выбрать или снять.
+// Единственное место сборки WHERE для List/Histogram/Facet/AttrValues: иначе гистограмма
+// разойдётся со списком. Возвращает условия без WHERE и хвостов вызывающего (курсор/LIMIT).
 func buildWhere(projectID int64, f ListFilter, opts whereOpts) (string, []any) {
 	where := "project_id = ? AND timestamp >= toDateTime64(?, 3) AND timestamp < toDateTime64(?, 3)"
 	args := []any{uint64(projectID), chTimeArg(f.From), chTimeArg(f.To)}
@@ -51,9 +38,8 @@ func buildWhere(projectID int64, f ListFilter, opts whereOpts) (string, []any) {
 		args = append(args, f.TraceID)
 	}
 
-	// Уровни собираются в одно NOT IN — симметрично положительному IN (?)
-	// и на один аргумент вместо N. Остальные отрицания идут по порядку среза,
-	// чтобы текст запроса был детерминирован (от него зависят голден-тесты).
+	// Severity собирается в одно NOT IN — симметрично IN(?), один аргумент вместо N. Остальные отрицания идут
+	// по порядку среза — детерминированный текст запроса важен для голден-тестов.
 	var sevNot []string
 	for _, p := range f.Not {
 		if p.Field == FieldSeverity && !opts.OmitNegative[FieldSeverity] {
@@ -85,10 +71,8 @@ func buildWhere(projectID int64, f ListFilter, opts whereOpts) (string, []any) {
 			if opts.OmitNegative[p.Field+":"+p.Key] {
 				continue
 			}
-			// NOT (col[?] = ?), а не col[?] != ?: строки, где ключа нет вовсе,
-			// обязаны ОСТАТЬСЯ. В ClickHouse map['нет'] — пустая строка, поэтому
-			// равенство для них ложно, а его отрицание истинно. Это и есть
-			// смысл «исключить те, у кого source=nginx».
+			// NOT (col[?] = ?), не col[?] != ?: отсутствующий ключ в ClickHouse читается как map[...]="",
+			// и его отрицание должно быть истинным — строки без ключа обязаны остаться.
 			where += " AND NOT (" + attrColumn(p.Field == FieldResourceAttr) + "[?] = ?)"
 			args = append(args, p.Key, p.Value)
 		}
@@ -97,7 +81,6 @@ func buildWhere(projectID int64, f ListFilter, opts whereOpts) (string, []any) {
 	return where, args
 }
 
-// attrColumn — какая из двух карт атрибутов адресуется.
 func attrColumn(resource bool) string {
 	if resource {
 		return "resource_attrs"
@@ -105,13 +88,12 @@ func attrColumn(resource bool) string {
 	return "log_attributes"
 }
 
-// whereOpts — настройки buildWhere для конкретного вызывающего.
+// OmitPositive/OmitNegative — поля, условия по которым не включать: фасет по полю не фильтрует по себе же.
 type whereOpts struct {
 	OmitPositive map[string]bool
 	OmitNegative map[string]bool
-	// BaseExtra — условие без аргументов, дописываемое сразу после окна.
-	// Нужно фасету: "col != ''" стоит в базовой части, до условий фильтров,
-	// и порядок обязан сохраниться — его проверяет голден-тест задачи 1.
+	// Условие без аргументов, дописываемое сразу после окна (фасет: "col != ''") — порядок обязан
+	// сохраниться, его проверяет голден-тест.
 	BaseExtra string
 }
 
@@ -126,8 +108,6 @@ const (
 	FieldResourceAttr = "resource_attr"
 )
 
-// attrOmitKey — ключ пропуска для условия по конкретному атрибуту:
-// фасет значений одного ключа не применяет условия по этому же ключу.
 func attrOmitKey(a AttrFilter) string {
 	if a.Resource {
 		return FieldResourceAttr + ":" + a.Key

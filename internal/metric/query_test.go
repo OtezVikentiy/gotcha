@@ -23,17 +23,11 @@ func TestHistogramQuantile(t *testing.T) {
 	if p99 < p95 {
 		t.Fatalf("p99 %v < p95 %v", p99, p95)
 	}
-	// Пустая гистограмма → 0.
 	if v := histogramQuantile(nil, nil, 0.5); v != 0 {
 		t.Fatalf("empty = %v, want 0", v)
 	}
 }
 
-// TestHistogramQuantileNegativeBounds — K3-5: нижняя граница первого бакета
-// не зашита нулём. При границах [-10, 0, 10] все наблюдения первой корзины не
-// больше -10; квантиль внутри неё обязан быть ровно её верхней границей, а
-// не «нулём, интерполированным к -10» (раньше получалось -5 — выше границы,
-// которую ни одно наблюдение не превысило).
 func TestHistogramQuantileNegativeBounds(t *testing.T) {
 	counts := []uint64{4, 2, 2, 2}
 	bounds := []float64{-10, 0, 10}
@@ -43,17 +37,16 @@ func TestHistogramQuantileNegativeBounds(t *testing.T) {
 	if got := histogramQuantile(counts, bounds, 0.4); got != -10 {
 		t.Fatalf("p40 at the top of the first bucket = %v, want -10", got)
 	}
-	// Второй бакет (-10, 0]: интерполяция от bounds[0], как и раньше.
+	// Второй бакет (-10, 0]: интерполяция от bounds[0].
 	if got := histogramQuantile(counts, bounds, 0.5); got <= -10 || got > 0 {
 		t.Fatalf("p50 = %v, want inside (-10, 0]", got)
 	}
-	// Неотрицательные границы: первый бакет по-прежнему интерполируется от нуля.
+	// Неотрицательные границы: первый бакет интерполируется от нуля.
 	if got := histogramQuantile([]uint64{2, 8, 2}, []float64{100, 500}, 0.1); got <= 0 || got > 100 {
 		t.Fatalf("p10 with positive bounds = %v, want inside (0, 100]", got)
 	}
 }
 
-// seedPoints вставляет точки напрямую (без writer) для query-тестов.
 func seedGauge(t *testing.T, conn interface {
 	Exec(ctx context.Context, query string, args ...any) error
 }, projectID int64, name, env string, ts time.Time, val float64, attrs map[string]string) {
@@ -94,7 +87,6 @@ func TestQueryHistogramSeries(t *testing.T) {
 	if len(pts) == 0 {
 		t.Fatalf("no histogram points")
 	}
-	// p95 должен попасть в последний бакет (>= 500 суррогат) или его окрестность.
 	if pts[len(pts)-1].V < 100 {
 		t.Fatalf("p95 = %v, want >= 100", pts[len(pts)-1].V)
 	}
@@ -109,13 +101,11 @@ func TestQueryListAndSeries(t *testing.T) {
 	ctx := context.Background()
 
 	now := time.Now().UTC().Truncate(time.Minute)
-	// Две метрики, разные env и лейблы.
 	seedGauge(t, conn, 9, "cpu", "prod", now.Add(-3*time.Minute), 0.2, map[string]string{"host": "h1"})
 	seedGauge(t, conn, 9, "cpu", "prod", now.Add(-1*time.Minute), 0.6, map[string]string{"host": "h1"})
 	seedGauge(t, conn, 9, "cpu", "stage", now.Add(-1*time.Minute), 0.9, map[string]string{"host": "h2"})
 	seedGauge(t, conn, 9, "mem", "prod", now.Add(-1*time.Minute), 100, nil)
 
-	// ListMetrics.
 	metrics, err := q.ListMetrics(ctx, 9, "")
 	if err != nil {
 		t.Fatalf("ListMetrics: %v", err)
@@ -123,13 +113,12 @@ func TestQueryListAndSeries(t *testing.T) {
 	if len(metrics) != 2 {
 		t.Fatalf("metrics = %+v, want 2", metrics)
 	}
-	// Фильтр по env=stage → только cpu.
 	stageMetrics, _ := q.ListMetrics(ctx, 9, "stage")
 	if len(stageMetrics) != 1 || stageMetrics[0].Name != "cpu" {
 		t.Fatalf("stage metrics = %+v", stageMetrics)
 	}
 
-	// Labels cpu → host: h1,h2. Окно заведомо покрывает засеянные точки.
+	// Окно 2000–2100 заведомо покрывает все засеянные точки.
 	wideFrom := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	wideTo := time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
 	labels, err := q.Labels(ctx, 9, "cpu", wideFrom, wideTo)
@@ -140,13 +129,11 @@ func TestQueryListAndSeries(t *testing.T) {
 		t.Fatalf("host labels = %v", labels["host"])
 	}
 
-	// Environments cpu → prod,stage.
 	envs, _ := q.Environments(ctx, 9, "cpu", wideFrom, wideTo)
 	if len(envs) != 2 {
 		t.Fatalf("envs = %v", envs)
 	}
 
-	// Series cpu avg по prod за окно, шаг 1m → есть точки.
 	pts, err := q.Series(ctx, 9, "cpu", "prod", "", nil, "avg", now.Add(-10*time.Minute), now.Add(time.Minute), time.Minute)
 	if err != nil {
 		t.Fatalf("Series: %v", err)
@@ -154,7 +141,6 @@ func TestQueryListAndSeries(t *testing.T) {
 	if len(pts) == 0 {
 		t.Fatalf("Series returned no points")
 	}
-	// Матчер по host=h2 (только stage-точка) + env stage.
 	pts2, err := q.Series(ctx, 9, "cpu", "stage", "", []LabelMatcher{{Key: "host", Value: "h2"}}, "max", now.Add(-10*time.Minute), now.Add(time.Minute), time.Minute)
 	if err != nil {
 		t.Fatalf("Series matcher: %v", err)
@@ -164,8 +150,7 @@ func TestQueryListAndSeries(t *testing.T) {
 	}
 }
 
-// seedGaugeHost — как seedGauge, но с колонкой host (для проверки host-фильтра
-// отдельно от атрибутов).
+// В отличие от seedGauge — пишет в колонку host, а не в attributes.
 func seedGaugeHost(t *testing.T, conn interface {
 	Exec(ctx context.Context, query string, args ...any) error
 }, projectID int64, name, env, host string, ts time.Time, val float64, attrs map[string]string) {
@@ -181,9 +166,6 @@ func seedGaugeHost(t *testing.T, conn interface {
 	}
 }
 
-// TestSeriesMultiMatcherAndHost: два AND-матчера сужают серию до одной, host
-// отсекает чужой хост; пустой host и пустой срез матчеров — прежнее поведение
-// (все точки метрики).
 func TestSeriesMultiMatcherAndHost(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -202,7 +184,6 @@ func TestSeriesMultiMatcherAndHost(t *testing.T) {
 
 	from, to := now.Add(-10*time.Minute), now.Add(time.Minute)
 
-	// Два матчера AND + host=web-1 → только первая точка (V=1).
 	pts, err := q.Series(ctx, pid, "m", "", "web-1",
 		[]LabelMatcher{{Key: "state", Value: "used"}, {Key: "cpu", Value: "0"}},
 		"avg", from, to, time.Minute)

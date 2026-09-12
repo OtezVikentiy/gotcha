@@ -34,25 +34,18 @@ func TestRequireUser(t *testing.T) {
 	})
 	h := svc.RequireUser(inner)
 
-	// Без cookie → редирект на /login, СОХРАНЯЯ адресата: иначе глубокая
-	// ссылка (приглашение, ссылка на проблему из письма) теряется, и человек
-	// после входа оказывается на главной.
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/issues", nil))
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/login?next=%2Fissues" {
 		t.Fatalf("anonymous: code=%d location=%q", rec.Code, rec.Header().Get("Location"))
 	}
 
-	// POST адресата не сохраняет: тело запроса после входа не восстановить, а
-	// повторять его молча означало бы выполнить действие, которого человек в
-	// этот раз не просил.
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/issues/bulk", nil))
 	if got := rec.Header().Get("Location"); got != "/login" {
 		t.Fatalf("anonymous POST: location=%q, want голый /login", got)
 	}
 
-	// С валидной cookie → внутренний хендлер видит userID.
 	rec = httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/issues", nil)
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
@@ -61,7 +54,6 @@ func TestRequireUser(t *testing.T) {
 		t.Fatalf("authenticated: code=%d uid=%d ok=%v", rec.Code, gotUID, gotOK)
 	}
 
-	// С поддельной cookie → редирект.
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest("GET", "/issues", nil)
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: "forged"})
@@ -74,7 +66,7 @@ func TestRequireUser(t *testing.T) {
 func TestRequireUserDBOutage(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := auth.NewService(pool)
-	pool.Close() // имитируем недоступность БД
+	pool.Close()
 
 	h := svc.RequireUser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("inner handler must not be called")
@@ -111,8 +103,6 @@ func TestSessionCookieFlags(t *testing.T) {
 	}
 }
 
-// На HTTPS cookie должна писаться под префиксным именем __Host-, соблюдающим
-// требования браузера (Path=/, Secure, без Domain).
 func TestSessionCookieHostPrefixOnHTTPS(t *testing.T) {
 	rec := httptest.NewRecorder()
 	auth.SetSessionCookie(rec, "tok", true)
@@ -124,7 +114,6 @@ func TestSessionCookieHostPrefixOnHTTPS(t *testing.T) {
 		t.Fatalf("__Host- prefix requires Secure+Path=/+no Domain: %+v", c)
 	}
 
-	// На plain-http — обычное имя (иначе логин на self-hosted http сломается).
 	rec = httptest.NewRecorder()
 	auth.SetSessionCookie(rec, "tok", false)
 	if c := rec.Result().Cookies()[0]; c.Name != auth.CookieName {
@@ -132,8 +121,6 @@ func TestSessionCookieHostPrefixOnHTTPS(t *testing.T) {
 	}
 }
 
-// ClearSessionCookie должна стирать оба имени (и http-, и https-вариант),
-// чтобы logout работал после смены схемы.
 func TestClearSessionCookieBothNames(t *testing.T) {
 	rec := httptest.NewRecorder()
 	auth.ClearSessionCookie(rec)
@@ -150,24 +137,19 @@ func TestClearSessionCookieBothNames(t *testing.T) {
 	}
 }
 
-// ReadSessionToken на plain-http (secure=false) понимает оба имени —
-// и префиксное (https), и обычное — ради смены схемы без разлогина.
 func TestReadSessionToken(t *testing.T) {
-	// Под префиксным именем.
 	req := httptest.NewRequest("GET", "/", nil)
 	req.AddCookie(&http.Cookie{Name: "__Host-gotcha_session", Value: "hosttok"})
 	if tok, ok := auth.ReadSessionToken(req, false); !ok || tok != "hosttok" {
 		t.Fatalf("read __Host- cookie: tok=%q ok=%v", tok, ok)
 	}
 
-	// Под обычным именем.
 	req = httptest.NewRequest("GET", "/", nil)
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: "plaintok"})
 	if tok, ok := auth.ReadSessionToken(req, false); !ok || tok != "plaintok" {
 		t.Fatalf("read plain cookie: tok=%q ok=%v", tok, ok)
 	}
 
-	// Оба присутствуют → приоритет у префиксного.
 	req = httptest.NewRequest("GET", "/", nil)
 	req.AddCookie(&http.Cookie{Name: "__Host-gotcha_session", Value: "hosttok"})
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: "plaintok"})
@@ -175,32 +157,25 @@ func TestReadSessionToken(t *testing.T) {
 		t.Fatalf("both cookies: tok=%q ok=%v, want hosttok", tok, ok)
 	}
 
-	// Ни одного → ok=false.
 	req = httptest.NewRequest("GET", "/", nil)
 	if _, ok := auth.ReadSessionToken(req, false); ok {
 		t.Fatalf("no cookie must return ok=false")
 	}
 }
 
-// RA-L1: на HTTPS (secure=true) ReadSessionToken читает ТОЛЬКО префиксный
-// __Host-; непрефиксный gotcha_session игнорируется — иначе поддомен/MITM на
-// plain-http мог бы навязать pre-login session-fixation через непрефиксную cookie.
 func TestReadSessionTokenSecureOnlyHostPrefix(t *testing.T) {
-	// Только непрефиксная cookie на HTTPS → не читаем.
 	req := httptest.NewRequest("GET", "/", nil)
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: "plaintok"})
 	if tok, ok := auth.ReadSessionToken(req, true); ok {
 		t.Fatalf("secure=true must ignore non-__Host- cookie: tok=%q ok=%v", tok, ok)
 	}
 
-	// Префиксная cookie на HTTPS → читаем.
 	req = httptest.NewRequest("GET", "/", nil)
 	req.AddCookie(&http.Cookie{Name: "__Host-gotcha_session", Value: "hosttok"})
 	if tok, ok := auth.ReadSessionToken(req, true); !ok || tok != "hosttok" {
 		t.Fatalf("secure=true must read __Host- cookie: tok=%q ok=%v", tok, ok)
 	}
 
-	// Обе на HTTPS → берём префиксную, непрефиксную не подхватываем.
 	req = httptest.NewRequest("GET", "/", nil)
 	req.AddCookie(&http.Cookie{Name: "__Host-gotcha_session", Value: "hosttok"})
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: "plaintok"})
@@ -209,8 +184,6 @@ func TestReadSessionTokenSecureOnlyHostPrefix(t *testing.T) {
 	}
 }
 
-// RA-L1: RequireUser на secure-инстансе (Service.Secure=true) не должен
-// принимать непрефиксную cookie.
 func TestRequireUserSecureIgnoresPlainCookie(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := auth.NewService(pool)
@@ -232,7 +205,6 @@ func TestRequireUserSecureIgnoresPlainCookie(t *testing.T) {
 	})
 	h := svc.RequireUser(inner)
 
-	// Валидный токен, но под непрефиксным именем → на secure отвергаем.
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/issues", nil)
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
@@ -241,7 +213,6 @@ func TestRequireUserSecureIgnoresPlainCookie(t *testing.T) {
 		t.Fatalf("secure + plain cookie: code=%d, want 303 redirect", rec.Code)
 	}
 
-	// Тот же токен под префиксным именем → пропускаем.
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest("GET", "/issues", nil)
 	req.AddCookie(&http.Cookie{Name: "__Host-gotcha_session", Value: token})

@@ -11,12 +11,10 @@ func orgTeamsPath(orgID int64) string {
 	return "/orgs/" + strconv.FormatInt(orgID, 10) + "/teams"
 }
 
-// teamRenamePath — POST-приёмник формы переименования команды.
 func teamRenamePath(teamID int64) string {
 	return "/teams/" + strconv.FormatInt(teamID, 10) + "/rename"
 }
 
-// teamDeletePath — POST-приёмник удаления команды (№26).
 func teamDeletePath(teamID int64) string {
 	return "/teams/" + strconv.FormatInt(teamID, 10) + "/delete"
 }
@@ -37,19 +35,14 @@ func teamProjectsDetachPath(teamID int64) string {
 	return teamProjectsPath(teamID) + "/detach"
 }
 
-// TeamView — команда вместе с уже загруженными участниками и привязанными
-// проектами: страница /orgs/{id}/teams рендерит сразу несколько команд,
-// поэтому обходы TeamMembers/TeamProjects по каждой команде web-хендлер
-// делает один раз при сборке страницы, а не в шаблоне.
+// участники/проекты загружены один раз хендлером — страница рендерит сразу несколько команд.
 type TeamView struct {
 	Team     org.Team
 	Members  []org.Member
 	Projects []org.Project
 }
 
-// memberInTeam — участник организации уже состоит в команде? Нужно, чтобы не
-// предлагать в select тех, кто и так уже участник (AddTeamMember и так
-// идемпотентен, но лишний пункт в select только путает).
+// не предлагаем в select тех, кто уже участник — идемпотентно, но лишний пункт путает.
 func memberInTeam(members []org.Member, userID int64) bool {
 	for _, m := range members {
 		if m.UserID == userID {
@@ -59,7 +52,6 @@ func memberInTeam(members []org.Member, userID int64) bool {
 	return false
 }
 
-// projectAttached — тот же принцип для select привязки проекта.
 func projectAttached(projects []org.Project, projectID int64) bool {
 	for _, p := range projects {
 		if p.ID == projectID {
@@ -69,8 +61,6 @@ func projectAttached(projects []org.Project, projectID int64) bool {
 	return false
 }
 
-// hasAvailableMembers — есть ли хоть один участник организации, ещё не
-// состоящий в команде (кандидат для select добавления участника).
 func hasAvailableMembers(members []org.Member, teamMembers []org.Member) bool {
 	for _, m := range members {
 		if !memberInTeam(teamMembers, m.UserID) {
@@ -80,8 +70,6 @@ func hasAvailableMembers(members []org.Member, teamMembers []org.Member) bool {
 	return false
 }
 
-// hasAvailableProjects — тот же принцип для select привязки проекта: есть ли
-// хоть один проект организации, ещё не привязанный к команде.
 func hasAvailableProjects(projects []org.Project, teamProjects []org.Project) bool {
 	for _, p := range projects {
 		if !projectAttached(teamProjects, p.ID) {
@@ -115,30 +103,20 @@ templ teamProjectRow(teamID int64, p org.Project) {
 	</tr>
 }
 
-// teamSection — карточка одной команды: участники (email + убрать), форма
-// добавления участника (select из участников организации, ещё не в команде),
-// привязанные проекты (+ отвязать), форма привязки проекта (select из всех
-// проектов организации, ещё не привязанных). Когда добавлять/привязывать
-// нечего (все участники/проекты организации уже в команде, либо их вовсе
-// нет), select не рендерится — вместо пустого <select></select> короткая
-// заметка (см. hasAvailableMembers/hasAvailableProjects).
-// EditTeamModalID — якорь модалки переименования команды. Одна модалка на
-// команду: они построены на CSS :target, а якорь обязан быть уникальным.
-// Экспортирована, чтобы обработчик мог сказать, какую именно открыть заново
-// после ошибки валидации.
+// когда добавлять/привязывать нечего, select не рендерится — вместо пустого <select> заметка.
+
+// одна модалка на команду — построены на CSS :target, якорь обязан быть уникальным.
+// экспортирована — обработчик должен знать, какую именно открыть заново после ошибки.
 func EditTeamModalID(teamID int64) string {
 	return "edit-team-" + strconv.FormatInt(teamID, 10)
 }
 
-// teamRenameModal — переименование команды. Slug показан подписью и не
-// редактируется: он участвует в адресах и в выдаче прав, а его смена ломала бы
-// уже сохранённые ссылки.
+// slug не редактируется — участвует в адресах и выдаче прав, смена сломала бы сохранённые ссылки.
 templ teamRenameModal(tm TeamView, form FormState, errMsg string) {
 	{{ open := form.Opens(EditTeamModalID(tm.Team.ID)) }}
 	@createModalOpen(EditTeamModalID(tm.Team.ID), "teams.rename.title", false, open) {
 		<form method="post" action={ templ.URL(teamRenamePath(tm.Team.ID)) } class="team-rename-form">
-			// Без role="alert": фокус в модалку переносит modal.js (№80),
-			// ошибка привязана к полю имени через aria-describedby.
+			// без role=alert: фокус в модалку переносит modal.js, ошибка привязана через aria-describedby.
 			if errMsg != "" && open {
 				<p class="error" id={ EditTeamModalID(tm.Team.ID) + "-error" }>{ errMsg }</p>
 			}
@@ -168,10 +146,7 @@ templ teamSection(tm TeamView, orgMembers []org.Member, orgProjects []org.Projec
 	<section class="team card">
 		<h2 class="card-header">
 			{ tm.Team.Name } <span class="chip">{ tm.Team.Slug }</span>
-			// Оба действия — одним flex-контейнером, прижатым вправо
-			// (card-header-action): порознь block-форма уезжала на вторую
-			// строку. №26: удаление двухшаговое (страница подтверждения на
-			// POST без confirmed=yes), поэтому обычная форма.
+			// удаление двухшаговое (страница подтверждения на POST без confirmed=yes), поэтому обычная форма.
 			<span class="card-header-action row-actions">
 				<a class="btn btn-ghost" href={ templ.SafeURL("#" + EditTeamModalID(tm.Team.ID)) }>{ i18n.T(ctx, "teams.rename.action") }</a>
 				<form method="post" action={ templ.URL(teamDeletePath(tm.Team.ID)) } class="team-delete-form">
@@ -265,21 +240,14 @@ templ teamSection(tm TeamView, orgMembers []org.Member, orgProjects []org.Projec
 	</section>
 }
 
-// Teams — GET/POST /orgs/{id}/teams: список команд организации (участники,
-// привязанные проекты, формы управления) и форма создания новой команды.
-// errMsg — сообщение об ошибке последнего POST, рендерится с тем же статусом
-// (422), что и ответ — тот же принцип, что и у OrgSettings. Ссылка «назад» на
-// Members (breadcrumb) — тот же принцип, что и у Probes.
+// errMsg рендерится с тем же статусом (422), что и ответ — тот же приём, что у OrgSettings.
 templ Teams(o org.Org, teams []TeamView, orgMembers []org.Member, orgProjects []org.Project, form FormState, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "teams.title")+" "+o.Name, userEmail) {
 		<div class="teams">
 			@breadcrumbBackTo(templ.URL(orgSettingsPath(o.ID)), i18n.T(ctx, "nav.members"))
 			<h1>{ i18n.T(ctx, "teams.title") } { o.Name }</h1>
 			@helpPanel("teams", "teams")
-			// Ошибка показывается ЗДЕСЬ только если она не от формы создания
-			// команды: на странице есть ещё формы (добавить участника, привязать
-			// проект), и их ошибки относятся к самой странице. Ошибка формы
-			// создания уезжает внутрь модалки, рядом с полями.
+			// ошибка показывается здесь, только если не от формы создания команды — та уезжает в модалку.
 			if errMsg != "" && !form.Has() {
 				<p class="error">{ errMsg }</p>
 			}
@@ -295,8 +263,7 @@ templ Teams(o org.Org, teams []TeamView, orgMembers []org.Member, orgProjects []
 			</div>
 			@createModalOpen("new-team", "teams.create.title", false, form.Opens("new-team")) {
 				<form method="post" action={ templ.URL(orgTeamsPath(o.ID)) } class="team-create-form">
-					// Без role="alert": фокус в модалку переносит modal.js (№80),
-					// ошибка привязана к полю slug через aria-describedby.
+					// без role=alert: фокус в модалку переносит modal.js, ошибка привязана через aria-describedby.
 					if errMsg != "" && form.Opens("new-team") {
 						<p class="error" id="new-team-error">{ errMsg }</p>
 					}

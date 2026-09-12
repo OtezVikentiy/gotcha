@@ -37,11 +37,8 @@ func TestWindowIntervalsOneOffOutsideRangeExcluded(t *testing.T) {
 	}
 }
 
-// TestWindowIntervalsOneOffUnboundedClampsToRequestedEnd: a «бессрочно»
-// window (EndsAt == nil) contributes an interval up to the requested range's
-// end, not a literal +∞ — WindowIntervals is always called with a bounded
-// [from,to), and an unbounded Interval would make every caller (uptime %,
-// slo.excludeMaintenance) reason about infinity for no benefit.
+// «бессрочно» (EndsAt=nil) даёт интервал до конца запрошенного диапазона,
+// не +∞ — иначе каждый вызывающий (uptime%, slo.excludeMaintenance) думал бы про бесконечность.
 func TestWindowIntervalsOneOffUnboundedClampsToRequestedEnd(t *testing.T) {
 	from := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	to := from.Add(30 * 24 * time.Hour)
@@ -69,10 +66,8 @@ func TestWindowIntervalsOneOffMissingFieldsSkipped(t *testing.T) {
 	}
 }
 
-// TestWindowIntervalsWeeklyProducesOneIntervalPerOccurrence: a 14-day range
-// starting exactly on the window's weekday touches two occurrences (day 0
-// and day 7); a third, exactly on the range's exclusive upper bound, is not
-// included.
+// 14-дневный диапазон с началом ровно на будний день окна захватывает два
+// вхождения (день 0 и 7); третье, на границе диапазона, исключается (upper bound exclusive).
 func TestWindowIntervalsWeeklyProducesOneIntervalPerOccurrence(t *testing.T) {
 	from := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // Monday
 	to := from.AddDate(0, 0, 14)
@@ -114,11 +109,8 @@ func TestWindowIntervalsWeeklyCrossesMidnight(t *testing.T) {
 	}
 }
 
-// TestWindowIntervalsWeeklyMoscowTimezoneConvertsToUTC: Monday 02:00-04:00
-// Europe/Moscow (UTC+3, no DST) is Sunday 23:00 - Monday 01:00 UTC — the
-// returned Interval must be expressed in UTC-equivalent instants regardless
-// of the window's own timezone, since Query.Uptime compares against
-// ClickHouse timestamps (always UTC).
+// возвращается в UTC-эквивалентных моментах независимо от таймзоны окна —
+// Query.Uptime сравнивает с таймстампами ClickHouse (всегда UTC).
 func TestWindowIntervalsWeeklyMoscowTimezoneConvertsToUTC(t *testing.T) {
 	from := time.Date(2023, 12, 30, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC)

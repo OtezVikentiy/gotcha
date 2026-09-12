@@ -23,12 +23,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// maintenanceStack — own stand, PG-only: maintenance-window routes never
-// touch ClickHouse (no UptimeQuery involved), so unlike monitorFormStack this
-// one skips the CH container entirely for a faster test run. h.MetricRules/
-// h.MetricIncidents тоже подняты (задача 3, спека 2026-08-08): совместный
-// тест на операторскую границу окон И metric-алертов живёт в этом файле, ему
-// нужны оба.
 type maintenanceStack struct {
 	pool   *pgxpool.Pool
 	srv    *httptest.Server
@@ -84,11 +78,6 @@ func maintenanceOwnerAndMember(t *testing.T, s *maintenanceStack, namePrefix str
 	return proj, ownerCookie, memberCookie
 }
 
-// TestWebOperatorMaintenanceAndMetricAlerts — участник команды, привязанной к
-// проекту (не owner/admin организации), создаёт окно обслуживания и правило
-// алерта по метрике: та же операторская граница, что и у мутаций монитора
-// (requireProjectOperator, спека cld/plans/2026-08-08-access-model-rework.md),
-// не owner/admin (requireProjectRole).
 func TestWebOperatorMaintenanceAndMetricAlerts(t *testing.T) {
 	s := newMaintenanceStack(t)
 	proj, _, memberCookie := maintenanceOwnerAndMember(t, s, "opmaintma")
@@ -129,8 +118,6 @@ func TestWebOperatorMaintenanceAndMetricAlerts(t *testing.T) {
 	}
 }
 
-// TestWebMaintenanceCreateOneOff — форма разового окна: datetime-local +
-// выбранный из фиксированного списка TZ дают верный Window в БД.
 func TestWebMaintenanceCreateOneOff(t *testing.T) {
 	s := newMaintenanceStack(t)
 	proj, ownerCookie, _ := maintenanceOwnerAndMember(t, s, "maintoneoff")
@@ -167,7 +154,6 @@ func TestWebMaintenanceCreateOneOff(t *testing.T) {
 	if w.StartsAt == nil || w.EndsAt == nil {
 		t.Fatalf("StartsAt/EndsAt = %v/%v, want both set", w.StartsAt, w.EndsAt)
 	}
-	// 2026-08-01 02:00 MSK (UTC+3) == 2026-07-31 23:00 UTC.
 	loc, err := time.LoadLocation("Europe/Moscow")
 	if err != nil {
 		t.Fatalf("load location: %v", err)
@@ -177,7 +163,6 @@ func TestWebMaintenanceCreateOneOff(t *testing.T) {
 		t.Fatalf("StartsAt = %v, want %v", w.StartsAt, want)
 	}
 
-	// GET the page back -> shows the created window.
 	resp = getWithCookie(t, s.srv, path, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -189,8 +174,6 @@ func TestWebMaintenanceCreateOneOff(t *testing.T) {
 	}
 }
 
-// TestWebMaintenanceCreateWeekly — форма еженедельного окна: день недели +
-// HH:MM + TZ.
 func TestWebMaintenanceCreateWeekly(t *testing.T) {
 	s := newMaintenanceStack(t)
 	proj, ownerCookie, _ := maintenanceOwnerAndMember(t, s, "maintweekly")
@@ -199,7 +182,7 @@ func TestWebMaintenanceCreateWeekly(t *testing.T) {
 	form := url.Values{
 		"name":       {"Weekly backup window"},
 		"kind":       {"weekly"},
-		"weekday":    {"2"}, // вторник
+		"weekday":    {"2"},
 		"start_time": {"01:30"},
 		"end_time":   {"02:30"},
 		"timezone":   {"UTC"},
@@ -224,8 +207,6 @@ func TestWebMaintenanceCreateWeekly(t *testing.T) {
 	}
 }
 
-// TestWebMaintenanceCreateCustomTimezone — выбор "Другой" (пустое значение
-// select) переключает на свободный IANA-текст.
 func TestWebMaintenanceCreateCustomTimezone(t *testing.T) {
 	s := newMaintenanceStack(t)
 	proj, ownerCookie, _ := maintenanceOwnerAndMember(t, s, "mainttz")
@@ -256,15 +237,13 @@ func TestWebMaintenanceCreateCustomTimezone(t *testing.T) {
 	}
 }
 
-// TestWebMaintenanceInvalidWindowShows422 — пустое имя -> ErrInvalidWindow ->
-// 422, ничего не создаётся.
 func TestWebMaintenanceInvalidWindowShows422(t *testing.T) {
 	s := newMaintenanceStack(t)
 	proj, ownerCookie, _ := maintenanceOwnerAndMember(t, s, "maintinvalid")
 
 	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/maintenance"
 	form := url.Values{
-		"name":      {""}, // window.Name required by validateWindow
+		"name":      {""},
 		"starts_at": {"2026-08-01T02:00"},
 		"ends_at":   {"2026-08-01T04:00"},
 		"timezone":  {"UTC"},
@@ -288,11 +267,6 @@ func TestWebMaintenanceInvalidWindowShows422(t *testing.T) {
 	}
 }
 
-// TestWebMaintenanceInvalidTimezoneMessageIsLocalized — P2-1 usability-аудита
-// 2026-08-12: некорректный часовой пояс раньше показывал сырой английский
-// текст time.LoadLocation ("unknown time zone Foo/Bar") посреди переведённой
-// RU-строки. Теперь причина матчится через errors.Is на конкретный сентинель
-// (uptime.ErrInvalidWindowTimezone) и переводится отдельным ключом.
 func TestWebMaintenanceInvalidTimezoneMessageIsLocalized(t *testing.T) {
 	s := newMaintenanceStack(t)
 	proj, ownerCookie, _ := maintenanceOwnerAndMember(t, s, "maintinvalidtz")
@@ -318,12 +292,6 @@ func TestWebMaintenanceInvalidTimezoneMessageIsLocalized(t *testing.T) {
 	}
 }
 
-// TestWebMaintenanceOneOffWithoutIndefiniteRequiresEndDate — P1 устранения
-// аудита B3: до T2 пустой ends_at у разового окна был ErrInvalidWindowRange;
-// после T2 (validateWindow смягчён под «бессрочно») тот же пустой ends_at без
-// явного чекбокса indefinite не должен молча создавать бессрочное окно, а
-// обязан вернуть end_required и ничего не сохранить — забытая дата не должна
-// глушить проект навсегда.
 func TestWebMaintenanceOneOffWithoutIndefiniteRequiresEndDate(t *testing.T) {
 	s := newMaintenanceStack(t)
 	proj, ownerCookie, _ := maintenanceOwnerAndMember(t, s, "maintendreq")
@@ -333,8 +301,7 @@ func TestWebMaintenanceOneOffWithoutIndefiniteRequiresEndDate(t *testing.T) {
 		"name":      {"Forgot the end date"},
 		"kind":      {"oneoff"},
 		"starts_at": {"2026-08-01T02:00"},
-		// ends_at пуст и indefinite не отмечен.
-		"timezone": {"UTC"},
+		"timezone":  {"UTC"},
 	}
 	resp := postForm(t, s.srv, path, form, s.srv.URL, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
@@ -355,8 +322,6 @@ func TestWebMaintenanceOneOffWithoutIndefiniteRequiresEndDate(t *testing.T) {
 	}
 }
 
-// TestWebMaintenanceOneOffIndefiniteChecked — с отмеченным чекбоксом
-// indefinite пустой ends_at — законный выбор: окно создаётся с EndsAt == nil.
 func TestWebMaintenanceOneOffIndefiniteChecked(t *testing.T) {
 	s := newMaintenanceStack(t)
 	proj, ownerCookie, _ := maintenanceOwnerAndMember(t, s, "maintindef")
@@ -392,8 +357,6 @@ func TestWebMaintenanceOneOffIndefiniteChecked(t *testing.T) {
 	}
 }
 
-// TestWebMaintenanceDelete — creates then deletes a window; it's gone from
-// Windows afterwards.
 func TestWebMaintenanceDelete(t *testing.T) {
 	s := newMaintenanceStack(t)
 	proj, ownerCookie, _ := maintenanceOwnerAndMember(t, s, "maintdelete")
@@ -423,8 +386,6 @@ func TestWebMaintenanceDelete(t *testing.T) {
 	}
 }
 
-// TestWebMaintenanceDeleteForeignProject404 — a window_id belonging to
-// another project must 404, not silently delete it.
 func TestWebMaintenanceDeleteForeignProject404(t *testing.T) {
 	s := newMaintenanceStack(t)
 	projA, ownerCookieA, _ := maintenanceOwnerAndMember(t, s, "maintforeigna")
@@ -439,7 +400,6 @@ func TestWebMaintenanceDeleteForeignProject404(t *testing.T) {
 		t.Fatalf("create window: %v", err)
 	}
 
-	// Try to delete A's window through B's maintenance/delete path.
 	deletePathB := "/projects/" + strconv.FormatInt(projB.ID, 10) + "/maintenance/delete"
 	resp := postForm(t, s.srv, deletePathB, url.Values{"confirmed": {"yes"}, "window_id": {strconv.FormatInt(winA.ID, 10)}}, s.srv.URL, ownerCookieB)
 	io.Copy(io.Discard, resp.Body)
@@ -458,12 +418,6 @@ func TestWebMaintenanceDeleteForeignProject404(t *testing.T) {
 	_ = ownerCookieA
 }
 
-// TestWebMaintenanceOperatorAccess — участник команды проекта (НЕ org
-// owner/admin) читает и правит окна обслуживания: GET/create/delete —
-// requireProjectOperator (задача 3, спека 2026-08-08-access-model-rework.md),
-// та же граница, что у мутаций монитора. Раньше это требовало owner/admin
-// (requireProjectRole) и участник получал 403 — граница сдвинулась.
-// Участник ЧУЖОЙ организации по-прежнему получает 404 — она не сдвинулась.
 func TestWebMaintenanceOperatorAccess(t *testing.T) {
 	s := newMaintenanceStack(t)
 	proj, ownerCookie, memberCookie := maintenanceOwnerAndMember(t, s, "maintopaccess")
@@ -488,7 +442,6 @@ func TestWebMaintenanceOperatorAccess(t *testing.T) {
 	updatePath := path + "/update"
 	deletePath := path + "/delete"
 
-	// Участник команды: GET -> 200.
 	resp := getWithCookie(t, s.srv, path, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -496,7 +449,6 @@ func TestWebMaintenanceOperatorAccess(t *testing.T) {
 		t.Fatalf("GET %s (member) status = %d, want 200", path, resp.StatusCode)
 	}
 
-	// Участник команды: POST create -> 303.
 	resp = postForm(t, s.srv, path, url.Values{"name": {"x"}, "starts_at": {"2026-08-01T02:00"}, "ends_at": {"2026-08-01T03:00"}, "timezone": {"UTC"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -504,7 +456,6 @@ func TestWebMaintenanceOperatorAccess(t *testing.T) {
 		t.Fatalf("POST %s (member) status = %d, want 303", path, resp.StatusCode)
 	}
 
-	// Участник команды: POST update -> 303.
 	resp = postForm(t, s.srv, updatePath, url.Values{
 		"window_id": {strconv.FormatInt(winForUpdate.ID, 10)}, "name": {"Renamed by member"},
 		"kind": {"weekly"}, "weekday": {"2"}, "start_time": {"00:00"}, "end_time": {"01:30"}, "timezone": {"UTC"},
@@ -531,7 +482,6 @@ func TestWebMaintenanceOperatorAccess(t *testing.T) {
 		t.Fatalf("window %d not found after member update", winForUpdate.ID)
 	}
 
-	// Участник команды: POST delete -> 303.
 	resp = postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}, "window_id": {strconv.FormatInt(win.ID, 10)}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -539,8 +489,6 @@ func TestWebMaintenanceOperatorAccess(t *testing.T) {
 		t.Fatalf("POST %s (member) status = %d, want 303", deletePath, resp.StatusCode)
 	}
 
-	// Участник ЧУЖОЙ организации: 404 на всех четырёх маршрутах — existence-oracle
-	// не сдвинулся.
 	resp = getWithCookie(t, s.srv, path, outsiderCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -572,7 +520,6 @@ func TestWebMaintenanceOperatorAccess(t *testing.T) {
 		t.Fatalf("POST %s (outsider) status = %d, want 404", deletePath, resp.StatusCode)
 	}
 
-	// Sanity: owner still works.
 	resp = getWithCookie(t, s.srv, path, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -581,23 +528,17 @@ func TestWebMaintenanceOperatorAccess(t *testing.T) {
 	}
 }
 
-// TestWebMaintenanceKindIsExclusive — тип окна взаимоисключающий: при
-// kind=oneoff еженедельные поля в запросе игнорируются (форма их и не
-// показывает, но скрытые поля всё равно уходят в POST). Без этого
-// заполненные «на всякий случай» день недели и время могли бы просочиться в
-// разовое окно.
 func TestWebMaintenanceKindIsExclusive(t *testing.T) {
 	s := newMaintenanceStack(t)
 	proj, ownerCookie, _ := maintenanceOwnerAndMember(t, s, "maintexcl")
 
 	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/maintenance"
 	form := url.Values{
-		"name":      {"One-off with stray weekly fields"},
-		"kind":      {"oneoff"},
-		"starts_at": {"2026-08-01T02:00"},
-		"ends_at":   {"2026-08-01T04:00"},
-		"timezone":  {"UTC"},
-		// поля еженедельной ветки, оставшиеся от переключения режима:
+		"name":       {"One-off with stray weekly fields"},
+		"kind":       {"oneoff"},
+		"starts_at":  {"2026-08-01T02:00"},
+		"ends_at":    {"2026-08-01T04:00"},
+		"timezone":   {"UTC"},
 		"weekday":    {"3"},
 		"start_time": {"05:00"},
 		"end_time":   {"06:00"},

@@ -8,9 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// TestPerfIssueTitle — заголовок perf-находки строится по локали смотрящего
-// из kind+description (№132): у http_flood параметром служит culprit, старые
-// строки без извлечённого параметра показывают сохранённый title как есть.
 func TestPerfIssueTitle(t *testing.T) {
 	ru := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	en := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})

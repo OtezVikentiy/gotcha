@@ -21,8 +21,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// shellOperateStack — как monitorsStack (monitors_test.go), плюс h.Metrics:
-// нужен для /projects/{id}/metrics в TestWebShellCanOperateSidebar ниже.
 type shellOperateStack struct {
 	pool *pgxpool.Pool
 	srv  *httptest.Server
@@ -64,35 +62,8 @@ func newShellOperateStack(t *testing.T) *shellOperateStack {
 	return &shellOperateStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc}
 }
 
-// TestWebShellCanOperateSidebar — сквозной тест на связку withShell →
-// nav.Shell.CanOperate → сайдбар (задача C2, cld/sdd-audit-remediation/
-// task-C2-brief.md): участник команды проекта (addTeamAccess) на живом
-// HTTP-запросе через реальный h.Register(mux) видит операторские пункты
-// сайдбара (окна обслуживания, статус-страницы, оповещения по метрикам,
-// оповещения) — то, что ни nav_test.go (голый nav.Shell, без HTTP), ни
-// nav_role_test.go (стенд с nil-сервисами) не проверяют. Регрессия в
-// withShell (shell.go) — например, забытое присваивание CanOperate в
-// nav.Shell{} — молча спрятала бы эти пункты меню; здесь она уронит тест.
-//
-// Ревью фикс-раунда 2: страницы-источники операторских пунктов сверены с
-// §4 спеки nav-ia — «Обслуживание» и остальная конфигурация алертинга
-// переехали в область «Оповещения» (/alerts), «Статус-страницы» — в группу
-// «Проект» области «Настройки» (/statuspages); «Аптайм» (/monitors) и
-// «Метрики» (/metrics) сегодня без единого CanOperate-гейта в Subsections.
-//
-
-// Второй сценарий («безкомандный» участник организации, role=member без
-// команды) в текущем коде НЕ даёт «200 с урезанным сайдбаром»: доступ к
-// странице проекта (org.CanAccessProject) и операторский статус
-// (canOperateProject, internal/web/operate.go) сегодня проверяют один и тот
-// же accessCondition (см. комментарий в operate.go — предикаты совпадают
-// намеренно), так что тот, кто вообще может открыть страницу проекта, уже
-// оператор. Поэтому единственный наблюдаемый эффект для безкомандного
-// участника — 404 (renderError → ErrorPage → chromeless-layout, БЕЗ
-// nav.Subsections вовсе, см. templates/error.templ и templates/
-// layout.templ): сайдбар не рендерится, операторские hrefs в теле ответа
-// отсутствуют по построению. Тест фиксирует именно это, а не гипотетический
-// «200 без операторских ссылок», которого сегодня не существует.
+// только здесь регрессия в withShell (забытое присваивание CanOperate) уронит тест через HTTP.
+// безкомандный участник получает 404, не 200 без операторских ссылок: условия сегодня совпадают.
 func TestWebShellCanOperateSidebar(t *testing.T) {
 	s := newShellOperateStack(t)
 	operatorID, operatorCookie := orgSettingsRegister(t, s.auth, "shellop-operator@example.com")
@@ -113,14 +84,8 @@ func TestWebShellCanOperateSidebar(t *testing.T) {
 
 	projID := strconv.FormatInt(proj.ID, 10)
 
-	// Пункты сайдбара, гейтящиеся CanOperate (nav.Subsections, internal/
-	// nav/nav.go), по разделу-источнику (Area определяется по пути запроса).
-	// nav-ia §4 спеки развела прежнюю область мониторинга: «Обслуживание»
-	// (maintenance) и остальная конфигурация алертинга живут в области
-	// «Оповещения» (не «Аптайм» — там остались только monitors/incidents,
-	// без гейта), «Статус-страницы» — в группе «Проект» области
-	// «Настройки». Ключи карты — страница-источник САМОГО набора пунктов
-	// (ctxNav рендерит подразделы ТЕКУЩЕЙ области, не общий рейл).
+	// Ключи карты — страница-источник набора пунктов: ctxNav рендерит подразделы ТЕКУЩЕЙ
+	// области, не общий рейл.
 	operatorHrefs := map[string][]string{
 		"/projects/" + projID + "/alerts": {
 			"/projects/" + projID + "/alerts",

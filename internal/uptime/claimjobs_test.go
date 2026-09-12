@@ -10,12 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestClaimJobsConcurrentOverlapExactlyOnce: пакетный claim (один DELETE …
-// RETURNING на пачку) под конкуренцией даёт то же, что построчный ClaimJob —
-// каждое задание изымается ровно один раз. Две «пробы» одновременно клеймят
-// пересекающиеся наборы: объединение изъятых — все задания, пересечение —
-// пусто; повторный claim — пусто. Несколько раундов, чтобы поймать гонку, а
-// не одно удачное чередование.
 func TestClaimJobsConcurrentOverlapExactlyOnce(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -33,8 +27,6 @@ func TestClaimJobsConcurrentOverlapExactlyOnce(t *testing.T) {
 	const rounds = 5
 	for round := 0; round < rounds; round++ {
 		if round > 0 {
-			// Вернуть задания в очередь: планировщик ставит монитор снова
-			// только по сроку, так что срок сбрасываем; аренда будет новой.
 			if _, err := pool.Exec(ctx, "UPDATE monitors SET last_scheduled_at = NULL"); err != nil {
 				t.Fatalf("reset schedule: %v", err)
 			}
@@ -50,7 +42,6 @@ func TestClaimJobsConcurrentOverlapExactlyOnce(t *testing.T) {
 		for i, j := range jobs {
 			claims[i] = uptime.JobClaim{QueueID: j.QueueID, LeaseUntil: j.LeaseUntil}
 		}
-		// Наборы A = [0..4), B = [2..6): пересечение — задания 2 и 3.
 		sets := [][]uptime.JobClaim{claims[:4], claims[2:]}
 
 		results := make([]map[int64]bool, len(sets))
@@ -107,9 +98,6 @@ func TestClaimJobsConcurrentOverlapExactlyOnce(t *testing.T) {
 	}
 }
 
-// TestClaimJobsStaleLeaseNotClaimed: как ClaimJob — lease_until, не совпавший
-// с текущим (задание перевыдано), не даёт изъять задание; остальные строки
-// пачки при этом клеймятся.
 func TestClaimJobsStaleLeaseNotClaimed(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)

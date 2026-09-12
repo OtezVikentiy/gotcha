@@ -10,9 +10,6 @@ import (
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
-// TestMapOTLPCapsSpans — потолок числа спанов на один OTLP /v1/traces запрос:
-// свыше maxOTLPSpans разбор прекращается (защита от амплификации памяти/CPU
-// недоверенным экспортом с сотнями тысяч спанов).
 func TestMapOTLPCapsSpans(t *testing.T) {
 	now := time.Now().UTC()
 	start := uint64(now.Add(-time.Minute).UnixNano())
@@ -41,10 +38,6 @@ func TestMapOTLPCapsSpans(t *testing.T) {
 	}
 }
 
-// TestOTLPAttrDepthBounded фиксирует P0 амплификации: глубину вложенного AnyValue
-// выбирает клиент (protobuf допускает тысячи уровней), а каждый уровень безусловно
-// склеивал всех детей — 518 КБ тела давали ~1 ГБ и полсекунды CPU на HTTP-горутине.
-// Обход обязан ограничиваться ВО ВРЕМЯ рекурсии, а не после неё.
 func TestOTLPAttrDepthBounded(t *testing.T) {
 	leaf := strings.Repeat("A", 4096)
 	// Строим глубоко вложенный kvlist: {k={k={k=…{k=leaf}}}}

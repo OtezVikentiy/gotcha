@@ -10,12 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestSLOBurnNotifierStepDispatchesOnlyToChannelSet — NotifyStep(channelIDs)
-// шлёт ТОЛЬКО в перечисленные каналы, даже если остальные deliverable, и
-// возвращает их ID (реально заенкенные — то, что логирует ОРКЕСТРАЦИЯ,
-// escalation.SendStepIfDue, см. TestSendStepIfDueLogsEnqueuedChannels в
-// пакете escalation, T7-fix); disabled-канал не получает ничего независимо
-// от channelIDs.
 func TestSLOBurnNotifierStepDispatchesOnlyToChannelSet(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -74,9 +68,6 @@ func TestSLOBurnNotifierStepDispatchesOnlyToChannelSet(t *testing.T) {
 	}
 }
 
-// TestSLOBurnNotifierStepNilChannelIDsSendsToAllDeliverable —
-// NotifyStep(nil) шлёт во ВСЕ deliverable-каналы проекта (старое поведение)
-// и возвращает их все как реально заенкенные.
 func TestSLOBurnNotifierStepNilChannelIDsSendsToAllDeliverable(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -125,9 +116,6 @@ func TestSLOBurnNotifierStepNilChannelIDsSendsToAllDeliverable(t *testing.T) {
 	}
 }
 
-// TestSLOBurnNotifierRecoveryDispatchesWithoutLog — NotifyRecovery шлёт
-// CLOSE-уведомление в ЗАДАННЫЙ канал и НЕ пишет incident_escalations
-// (recovery не эскалирует).
 func TestSLOBurnNotifierRecoveryDispatchesWithoutLog(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

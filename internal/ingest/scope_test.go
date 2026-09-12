@@ -11,11 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// TestKeyScopeMatrix перебирает матрицу §3.1 спеки ЦЕЛИКОМ: пять строк
-// (четыре типа плюс незаданный) на шесть сигналов плюс предикат hosts.
-// Таблица выписана здесь ВРУЧНУЮ и намеренно не переиспользует
-// keyScopeMatrix: тест, читающий ту же переменную, что и код, подтверждал бы
-// лишь её саму себя.
 func TestKeyScopeMatrix(t *testing.T) {
 	type row struct {
 		kind  org.KeyKind
@@ -39,8 +34,6 @@ func TestKeyScopeMatrix(t *testing.T) {
 			SignalEvent: true, SignalTransaction: true, SignalMetric: true,
 			SignalLog: true, SignalProfile: true, SignalDeploy: true,
 		}, true},
-		// Незаданный тип — ОТКАЗ по всему, а не полный допуск: забытое
-		// значение в будущем коде не должно выдавать права (§3.1 спеки).
 		{org.KeyKind(""), map[IngestSignal]bool{
 			SignalEvent: false, SignalTransaction: false, SignalMetric: false,
 			SignalLog: false, SignalProfile: false, SignalDeploy: false,
@@ -56,36 +49,23 @@ func TestKeyScopeMatrix(t *testing.T) {
 			t.Errorf("scopeAllowsHosts(%q) = %v, ожидалось %v", r.kind, got, r.hosts)
 		}
 	}
-	// Неизвестный тип (значение, которого нет ни в CHECK, ни в константах)
-	// тоже отказ: матрица закрыта, а не «всё, кроме перечисленного».
 	if scopeAllows(org.KeyKind("root"), SignalEvent) || scopeAllowsHosts(org.KeyKind("root")) {
 		t.Error("неизвестный тип ключа получил допуск")
 	}
 }
 
-// TestScopeAllowsRoute — мультисигнальный маршрут (envelope) открыт, если
-// разрешён ХОТЯ БЫ ОДИН из сигналов, которые он может нести.
 func TestScopeAllowsRoute(t *testing.T) {
-	// browser не допущен к профилям, но envelope ему открыт: внутри он несёт
-	// события, а профили отбираются поштучно вторичным гейтом.
 	if !scopeAllowsRoute(org.KindBrowser, SignalEvent, envelopeAlsoSignals) {
 		t.Error("browser не пустили в envelope")
 	}
-	// agent не допущен ни к одному из сигналов envelope'а.
 	if scopeAllowsRoute(org.KindAgent, SignalEvent, envelopeAlsoSignals) {
 		t.Error("agent пустили в envelope")
 	}
-	// Незаданный тип не открывает ничего.
 	if scopeAllowsRoute(org.KeyKind(""), SignalEvent, envelopeAlsoSignals) {
 		t.Error("незаданный тип пустили в envelope")
 	}
 }
 
-// TestKeyScopeRejectionPairsCoverMatrix — пары (key_scope, signal)
-// ВЫЧИСЛЯЮТСЯ из матрицы, а не выписаны руками. Пара, которой нет в наборе,
-// молча не инкрементируется (countRejected), то есть отсутствие пары даёт
-// fail-silent — поэтому проверяется, что покрыт КАЖДЫЙ сигнал, который хоть
-// одна строка матрицы (включая незаданный тип) запрещает.
 func TestKeyScopeRejectionPairsCoverMatrix(t *testing.T) {
 	got := map[IngestSignal]bool{}
 	for _, p := range keyScopeRejectionPairs() {
@@ -104,9 +84,6 @@ func TestKeyScopeRejectionPairsCoverMatrix(t *testing.T) {
 	}
 }
 
-// TestAuthenticateScopeGate — Sentry-вход: ключ агента в envelope получает
-// 403 и инкрементирует ОБА счётчика (gotcha_ingest_rejected_total{key_scope}
-// и gotcha_ingest_key_rejections_total{scope}).
 func TestAuthenticateScopeGate(t *testing.T) {
 	fr := &fakeResolver{keys: map[string]org.Key{
 		"agentkey": {ID: 1, ProjectID: 7, OrgID: 3, PublicKey: "agentkey", Kind: org.KindAgent},
@@ -130,8 +107,6 @@ func TestAuthenticateScopeGate(t *testing.T) {
 	}
 }
 
-// TestAuthenticateScopeGateAllows — тот же вход, но ключ браузера: проходит,
-// хотя профили ему запрещены (envelope мультисигнален).
 func TestAuthenticateScopeGateAllows(t *testing.T) {
 	fr := &fakeResolver{keys: map[string]org.Key{
 		"browserkey": {ID: 2, ProjectID: 7, OrgID: 3, PublicKey: "browserkey", Kind: org.KindBrowser},
@@ -155,9 +130,6 @@ func TestAuthenticateScopeGateAllows(t *testing.T) {
 	}
 }
 
-// TestOTLPAuthenticateScopeGate — OTLP-вход: браузерный ключ в /v1/traces
-// проходит, а ключ агента получает 403 (а НЕ 401: ключ резолвился успешно,
-// это «сюда нельзя», а не «ты не представился»).
 func TestOTLPAuthenticateScopeGate(t *testing.T) {
 	fr := &fakeResolver{keys: map[string]org.Key{
 		"agentkey": {ID: 1, ProjectID: 7, OrgID: 3, PublicKey: "agentkey", Kind: org.KindAgent},
@@ -178,8 +150,6 @@ func TestOTLPAuthenticateScopeGate(t *testing.T) {
 	}
 }
 
-// TestAuthenticateEmptyKindDenied — ключ с незаданным типом не проходит
-// НИКУДА, включая метрики, разрешённые всем известным типам.
 func TestAuthenticateEmptyKindDenied(t *testing.T) {
 	fr := &fakeResolver{keys: map[string]org.Key{
 		"nokind": {ID: 1, ProjectID: 7, OrgID: 3, PublicKey: "nokind"},
@@ -200,9 +170,6 @@ func TestAuthenticateEmptyKindDenied(t *testing.T) {
 	}
 }
 
-// TestEnvelopeBrowserProfileRejected — E2E по §9 спеки: envelope от
-// браузерного ключа с profile-item'ом. Событие принято (200), профиль
-// отброшен, счётчик (key_scope, profile) вырос на единицу.
 func TestEnvelopeBrowserProfileRejected(t *testing.T) {
 	fr := &fakeResolver{keys: map[string]org.Key{
 		"browserkey": {ID: 2, ProjectID: 7, OrgID: 3, PublicKey: "browserkey", Kind: org.KindBrowser},
@@ -234,13 +201,6 @@ func TestEnvelopeBrowserProfileRejected(t *testing.T) {
 	}
 }
 
-// TestOTLPMetricsHostScope — §4.3: экспорт метрик с host.name серверным
-// ключом. Метрики записаны (запрос принят), хост НЕ зарегистрирован,
-// gotcha_host_registrations_scope_skipped_total вырос, лога нет.
-//
-// Логировать эту ветку нельзя: серверные OTel SDK ставят host.name
-// resource-детектором по умолчанию, и каждый обычный экспорт давал бы строку
-// в лог.
 func TestOTLPMetricsHostScope(t *testing.T) {
 	t.Run("server", func(t *testing.T) {
 		sink := &collectMetricSink{}
@@ -287,10 +247,6 @@ func TestOTLPMetricsHostScope(t *testing.T) {
 		}
 	})
 
-	// server/без host.* — штатный случай, ради которого server вообще
-	// допущен к metric: приложение шлёт метрики без резурсного host.name.
-	// Счётчик обязан остаться на нуле — иначе он растёт на каждый обычный
-	// экспорт и диагностика «неверный тип ключа» тонет в фоновом шуме.
 	t.Run("server без host.*", func(t *testing.T) {
 		sink := &collectMetricSink{}
 		hosts := newFakeHostRegistry()
@@ -315,10 +271,6 @@ func TestOTLPMetricsHostScope(t *testing.T) {
 		}
 	})
 
-	// server/несколько точек одного хоста — счётчик считает ЭКСПОРТЫ, а не
-	// точки: реальный экспорт коллектора несёт сотни точек одного хоста, и
-	// без break по первой найденной счётчик прыгал бы на сотни за один
-	// экспорт, тогда как имя, докблок и доки обещают «экспорты».
 	t.Run("server несколько точек одного хоста", func(t *testing.T) {
 		sink := &collectMetricSink{}
 		hosts := newFakeHostRegistry()

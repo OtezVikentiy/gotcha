@@ -11,7 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
 )
 
-// secret — ключ подписи oauth-cookie. Пустой SecretKey (стенды) → дефолт.
 func (h *Handler) secret() string {
 	if h.SecretKey != "" {
 		return h.SecretKey
@@ -19,13 +18,10 @@ func (h *Handler) secret() string {
 	return "insecure-dev-secret"
 }
 
-// oauthRedirectURI — фиксированный callback данного провайдера (не
-// конфигурируется, чтобы не разъезжался с тем, что зарегистрировано в IdP).
 func (h *Handler) oauthRedirectURI(provider string) string {
 	return h.BaseURL + "/auth/oauth/" + provider + "/callback"
 }
 
-// sessionUID достаёт uid из сессионной cookie (для роутов без requireUser).
 func (h *Handler) sessionUID(r *http.Request) (int64, bool) {
 	token, ok := auth.ReadSessionToken(r, h.Secure)
 	if !ok {
@@ -38,10 +34,6 @@ func (h *Handler) sessionUID(r *http.Request) (int64, bool) {
 	return uid, true
 }
 
-// oauthStart — GET /auth/oauth/{provider}/start: генерит state/nonce/PKCE,
-// кладёт их в подписанную короткоживущую cookie и редиректит на страницу
-// согласия провайдера. ?link=1 (для потока привязки из профиля) требует
-// активной сессии; иначе поток обычного входа.
 func (h *Handler) oauthStart(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("provider")
 	p, _, ok := h.resolveProvider(r.Context(), name)
@@ -101,8 +93,6 @@ func (h *Handler) oauthStart(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, authURL, http.StatusSeeOther)
 }
 
-// oauthCallback — GET /auth/oauth/{provider}/callback: проверяет state,
-// меняет код на Identity и решает провижининг (link-only/invite-gated).
 func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("provider")
 	p, sso, ok := h.resolveProvider(r.Context(), name)
@@ -138,24 +128,16 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Per-org SSO (этап 10): своя ветка — domain guard + JIT-провижининг.
 	if sso != nil {
 		h.ssoCallback(w, r, name, id, sso)
 		return
 	}
 
-	// SEC-H2 / RA-L2: если домен email принадлежит организации с enforced-SSO,
-	// env-провайдер (личный/инстансовый Яндекс/VK/OIDC) не может выдать сессию —
-	// только собственный IdP организации. /sso — identifier-first, направит на нужный
-	// SSO-start. Guard стоит до link-ветки: привязка identity к enforced-домену через
-	// env-провайдера тоже блокируется, что корректно (централизованный provisioning).
-	// Гейт НЕ зависит от id.EmailVerified: generic-OIDC без email_verified иначе
-	// проскакивал бы мимо гейта в ветку «login by subject» (RA-L2). Домен нормализован
-	// в emailDomain (регистр + trailing-dot), чтобы "user@enforced.com." не обходил гейт.
+	// Гейт до входа/линковки: иначе env-провайдер обошёл бы enforced-SSO при привязке или входе.
+	// Не зависит от EmailVerified; домен нормализован (регистр, trailing dot) против обхода точкой.
 	enforced, err := h.enforcedSSO(r.Context(), emailDomain(id.Email))
 	if err != nil {
-		// Fail closed: гейт не смог ответить — уводим на SSO, а не пропускаем
-		// мимо централизованного provisioning.
+		// Fail closed: гейт недоступен — уводим на /sso, не пропуская мимо централизованного provisioning.
 		slog.Error("oauth: enforced SSO lookup failed", "error", err)
 		http.Redirect(w, r, "/sso", http.StatusSeeOther)
 		return
@@ -165,7 +147,6 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1) Вход по стабильному субъекту.
 	if uid, err := h.Auth.IdentityUser(r.Context(), name, id.Subject); err == nil {
 		_ = h.Auth.UpdateIdentityEmail(r.Context(), name, id.Subject, id.Email)
 		h.oauthLogin(w, r, uid, "/")
@@ -175,16 +156,8 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2) Поток привязки из профиля. Требуем СОВПАДЕНИЯ двух независимых источников:
-	// UID в подписанной cookie (кто начинал поток) и UID текущей сессии (кто
-	// завершает). Каждый по отдельности недостаточен:
-	//   - только сессия (как было) — захват аккаунта подменой cookie: атакующий
-	//     начинает свой link-поток, проходит IdP, подсовывает жертве свою cookie
-	//     потока, и на её callback ЕГО identity привязывается к ЕЁ аккаунту, после
-	//     чего он входит под жертвой;
-	//   - только cookie — при утёкшем ключе подписи UID подделывается (SEC-C1).
-	// Совпадение закрывает оба: чужая cookie несёт чужой UID, а подделанный UID не
-	// совпадёт с сессией атакующего.
+	// UID из cookie должен совпасть с UID сессии: одна лишь сессия допускает захват чужим link-потоком,
+	// одна лишь cookie — подделку при утёкшем ключе подписи.
 	if flow.Link {
 		uid, ok := h.sessionUID(r)
 		if !ok {
@@ -208,15 +181,11 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3) Неявная привязка по verified email к существующему аккаунту.
 	uid, err := h.Auth.UserByEmail(r.Context(), id.Email)
 	switch {
 	case err == nil:
-		// Неявная привязка к УЖЕ существующему аккаунту допустима только когда
-		// провайдер сам доверенный источник верификации email (VK/Яндекс). Для
-		// generic-OIDC email_verified контролирует произвольный IdP — доверять
-		// ему для auto-link нельзя (иначе IdP, заявивший чужой адрес, угнал бы
-		// парольный аккаунт). Тогда — вход паролем и ручная привязка в /profile.
+		// Автопривязка по email разрешена только доверенным провайдерам (VK/Яндекс): для generic-OIDC
+		// email_verified подделывается произвольным IdP — иначе угон парольного аккаунта чужим адресом.
 		if !id.EmailVerified || !id.TrustedIssuer {
 			h.renderError(w, r, http.StatusForbidden,
 				i18n.T(r.Context(), "error.oauth.email_not_verified_link_profile"))
@@ -235,18 +204,7 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// oauthProvision заводит аккаунт по OAuth-входу согласно режиму регистрации и
-// логинит (№96). closed — отказ всегда; invite — только по действующему
-// приглашению на verified email; open — аккаунт создаётся без приглашения
-// (симметрично парольной open-регистрации), действующее приглашение
-// принимается best-effort.
 func (h *Handler) oauthProvision(w http.ResponseWriter, r *http.Request, provider string, id oauth.Identity) {
-	// closed — «регистрация выключена полностью»: новых аккаунтов не появляется
-	// ВООБЩЕ, даже по действующему приглашению. Именно этим closed отличается от
-	// invite: раньше оба режима проверялись как `!= "open"`, приглашения работали
-	// в обоих, и различия между ними на деле не существовало — документация
-	// обещала то, чего код не делал. Приглашение УЖЕ существующего пользователя в
-	// организацию closed не трогает: это членство, а не регистрация.
 	if h.RegistrationMode == "closed" {
 		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.oauth.no_invite"))
 		return
@@ -255,25 +213,14 @@ func (h *Handler) oauthProvision(w http.ResponseWriter, r *http.Request, provide
 		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.oauth.provider_no_email"))
 		return
 	}
-	// open — регистрация открыта всем: аккаунт заводится без проверки
-	// приглашения, как и в парольном флоу (auth.go: open пропускает без
-	// токена). Действующее приглашение при этом принимается сразу — адрес
-	// подтверждён провайдером, как и в invite-ветке ниже. Неудача принятия
-	// (приглашения нет, гонка, ошибка БД) аккаунт НЕ откатывает: парольная
-	// open-регистрация членство тоже не выдаёт, вход важнее членства.
 	if h.RegistrationMode == "open" {
 		uid, err := h.Auth.CreateOAuthUser(r.Context(), id.Email)
 		if err != nil {
 			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 			return
 		}
-		// LinkIdentity ДО принятия инвайта (как и invite-ветка ниже): uid создан
-		// ЭТИМ вызовом (CreateOAuthUser выше) — без привязки он никому не
-		// принадлежит, занимает email, войти под ним нельзя ни паролем (OAuth-юзер
-		// его не получает), ни этим же провайдером (identity не привязана).
-		// Откатываем. Инвайт принимаем ПОСЛЕ успешной привязки, чтобы сбой
-		// LinkIdentity не гасил действующее приглашение (accepted_at), которое
-		// откат юзера не вернул бы в pending.
+		// Привязка identity обязана идти до принятия инвайта: сбой откатывает юзера,
+		// а accepted_at откат уже не вернёт — иначе приглашение сгорает.
 		if err := h.Auth.LinkIdentity(r.Context(), uid, provider, id.Subject, id.Email); err != nil {
 			_ = h.Auth.DeleteUser(r.Context(), uid)
 			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -300,20 +247,15 @@ func (h *Handler) oauthProvision(w http.ResponseWriter, r *http.Request, provide
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	// LinkIdentity ДО принятия инвайта. uid создан этим самым вызовом
-	// (CreateOAuthUser выше); без привязки он занимает email и недоступен ни
-	// одним способом входа, поэтому при сбое откатываем. Инвайт принимаем ТОЛЬКО
-	// после успешной привязки: иначе сбой LinkIdentity выставлял бы accepted_at
-	// и гасил приглашение, а откат юзера (DeleteUser) его в pending не возвращает
-	// — приглашённый терял приглашение навсегда (админ переприглашает).
+	// Привязка identity обязана идти до принятия инвайта: сбой откатывает юзера,
+	// а accepted_at откат уже не вернёт — иначе приглашение сгорает.
 	if err := h.Auth.LinkIdentity(r.Context(), uid, provider, id.Subject, id.Email); err != nil {
 		_ = h.Auth.DeleteUser(r.Context(), uid)
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	if _, ok, err := h.Org.AcceptPendingInviteByEmail(r.Context(), id.Email, uid); err != nil || !ok {
-		// Гонка: инвайт исчез между проверкой (HasPendingInvite) и принятием —
-		// откатываем юзера. DeleteUser каскадит уже привязанную identity.
+		// Гонка между проверкой и принятием инвайта — откатываем юзера, DeleteUser каскадит identity.
 		_ = h.Auth.DeleteUser(r.Context(), uid)
 		h.renderError(w, r, http.StatusForbidden,
 			i18n.T(r.Context(), "error.oauth.no_invite"))
@@ -322,7 +264,6 @@ func (h *Handler) oauthProvision(w http.ResponseWriter, r *http.Request, provide
 	h.oauthLogin(w, r, uid, "/")
 }
 
-// oauthLogin выпускает сессию и редиректит.
 func (h *Handler) oauthLogin(w http.ResponseWriter, r *http.Request, uid int64, dest string) {
 	token, err := h.Auth.CreateSession(r.Context(), uid)
 	if err != nil {
@@ -333,12 +274,6 @@ func (h *Handler) oauthLogin(w http.ResponseWriter, r *http.Request, uid int64, 
 	http.Redirect(w, r, dest, http.StatusSeeOther)
 }
 
-// oauthFail — нейтральная страница ошибки провайдера (без утечки деталей).
-// p — уже резолвленный resolveProvider провайдер (см. вызовы в oauthCallback):
-// для обычных (env) провайдеров это то же, что вернул бы h.OAuth.Get, но для
-// per-org SSO ("sso-{id}") h.OAuth.Get не найдёт ничего — раньше это оставляло
-// пользователю сырое внутреннее имя провайдера ("sso-42") вместо названия
-// организации (DisplayName у per-org OIDC — cfg.Domain, см. resolveProvider).
 func (h *Handler) oauthFail(w http.ResponseWriter, r *http.Request, provider string, p oauth.Provider) {
 	name := provider
 	if p != nil {

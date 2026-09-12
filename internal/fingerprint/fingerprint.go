@@ -1,6 +1,3 @@
-// Package fingerprint превращает событие в отпечаток группы.
-// Приоритет: кастомный fingerprint из SDK → нормализованный stacktrace →
-// exception type + нормализованное сообщение → нормализованное сообщение.
 package fingerprint
 
 import (
@@ -27,7 +24,6 @@ type Input struct {
 	Message    string
 }
 
-// Compute возвращает hex sha1 отпечатка группы.
 func Compute(in Input) string {
 	base := defaultComponent(in)
 	if len(in.Custom) > 0 {
@@ -58,9 +54,7 @@ func defaultComponent(in Input) string {
 	return "msg\x00" + NormalizeMessage(in.Message)
 }
 
-// stackComponent: для каждого exception — тип и in-app фреймы
-// (module|function, без номеров строк); если in-app нет — все фреймы.
-// Пусто, если ни в одном exception нет ни одного пригодного фрейма.
+// Предпочитает in-app фреймы; если их нет — берёт все. Пусто, если пригодных фреймов нет вовсе.
 func stackComponent(excs []Exception) string {
 	var b strings.Builder
 	hasFrames := false

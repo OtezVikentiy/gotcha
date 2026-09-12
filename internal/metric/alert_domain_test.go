@@ -48,7 +48,6 @@ func TestRuleServiceCRUD(t *testing.T) {
 	if err != nil || created.ID == 0 {
 		t.Fatalf("create = (%+v,%v)", created, err)
 	}
-	// Невалидные.
 	for _, bad := range []metric.Rule{
 		{ProjectID: projectID, MetricName: "", Aggregation: "avg", Comparator: "gt", WindowSeconds: 300},
 		{ProjectID: projectID, MetricName: "m", Aggregation: "bogus", Comparator: "gt", WindowSeconds: 300},
@@ -59,14 +58,12 @@ func TestRuleServiceCRUD(t *testing.T) {
 			t.Fatalf("Create(%+v) = %v, want ErrInvalidRule", bad, err)
 		}
 	}
-	// List + ListEnabled.
 	if rules, _ := svc.List(ctx, projectID); len(rules) != 1 {
 		t.Fatalf("List = %d, want 1", len(rules))
 	}
 	if enabled, _ := svc.ListEnabled(ctx); len(enabled) != 1 {
 		t.Fatalf("ListEnabled = %d, want 1", len(enabled))
 	}
-	// Delete scoped: чужой projectID не удаляет.
 	if err := svc.Delete(ctx, created.ID, projectID+999); err != nil {
 		t.Fatalf("delete scoped: %v", err)
 	}
@@ -99,7 +96,6 @@ func TestRuleServiceUpdate(t *testing.T) {
 		t.Fatalf("create witness: %v", err)
 	}
 
-	// Успешная правка меняет все поля, включая enabled=false, и сохраняет id.
 	upd := metric.Rule{
 		ID: target.ID, ProjectID: projectID, MetricName: "cpu.load", Aggregation: "p95",
 		Comparator: "lt", Threshold: 42.5, WindowSeconds: 600,
@@ -116,12 +112,10 @@ func TestRuleServiceUpdate(t *testing.T) {
 		got.Enabled || got.Severity != "critical" {
 		t.Fatalf("update result = %+v", got)
 	}
-	// Выключенное правило пропадает из ListEnabled.
 	if enabled, _ := svc.ListEnabled(ctx); len(enabled) != 1 || enabled[0].ID != witness.ID {
 		t.Fatalf("ListEnabled after disable = %+v, want only witness %d", enabled, witness.ID)
 	}
-	// Правило-свидетель не тронуто. CreatedAt сравнивается через Equal:
-	// прямое == у time.Time чувствительно к представлению, не к моменту.
+	// CreatedAt сравнивается через Equal — прямое == чувствительно к представлению, не к моменту.
 	w2, found, err := svc.Get(ctx, witness.ID)
 	if err != nil || !found {
 		t.Fatalf("get witness: (%v,%v)", found, err)
@@ -134,7 +128,6 @@ func TestRuleServiceUpdate(t *testing.T) {
 		t.Fatalf("witness changed: %+v, want %+v", w2, witness)
 	}
 
-	// Чужой projectID → ErrRuleNotFound, правило не меняется.
 	foreign := upd
 	foreign.ProjectID = projectID + 999
 	foreign.MetricName = "hacked"
@@ -144,14 +137,11 @@ func TestRuleServiceUpdate(t *testing.T) {
 	if after, _, _ := svc.Get(ctx, target.ID); after.MetricName != "cpu.load" {
 		t.Fatalf("cross-project update leaked: %+v", after)
 	}
-	// Несуществующий id → ErrRuleNotFound.
 	missing := upd
 	missing.ID = target.ID + 12345
 	if _, err := svc.Update(ctx, missing); !errors.Is(err, metric.ErrRuleNotFound) {
 		t.Fatalf("missing id update = %v, want ErrRuleNotFound", err)
 	}
-	// Невалидные поля → ErrInvalidRule (та же валидация, что у Create),
-	// отличимый от «не найдено».
 	bad := upd
 	bad.Aggregation = "bogus"
 	if _, err := svc.Update(ctx, bad); !errors.Is(err, metric.ErrInvalidRule) {
@@ -159,11 +149,8 @@ func TestRuleServiceUpdate(t *testing.T) {
 	}
 }
 
-// TestRuleServiceUpdateDisableClosesIncident — выключение правила закрывает
-// его открытый инцидент в той же транзакции (иначе он завис бы навсегда:
-// ListEnabled перестаёт отдавать правило, а планировщик эскалаций продолжал
-// бы слать ступени). Свидетель заведён ПЕРВЫМ: мутация, теряющая скоуп
-// rule_id в выборке открытого инцидента, детерминированно зацепит его.
+// Выключение правила закрывает открытый инцидент в той же транзакции — иначе он завис бы навсегда:
+// ListEnabled перестаёт отдавать правило, эскалации продолжали бы слать ступени.
 func TestRuleServiceUpdateDisableClosesIncident(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -191,7 +178,6 @@ func TestRuleServiceUpdateDisableClosesIncident(t *testing.T) {
 		t.Fatalf("open target incident: %v", err)
 	}
 
-	// Правка БЕЗ выключения открытый инцидент не трогает.
 	upd := target
 	upd.Threshold = 95
 	if _, err := rules.Update(ctx, upd); err != nil {
@@ -201,9 +187,8 @@ func TestRuleServiceUpdateDisableClosesIncident(t *testing.T) {
 		t.Fatalf("enabled update must not touch incident: %+v", got)
 	}
 
-	// Выключение закрывает инцидент штатными полями закрытия: resolved +
-	// resolved_at, current_value сохранён, notified_close=false (recovery не
-	// отправлялось — закрытие молчаливое, восстановления не было).
+	// Выключение закрывает инцидент штатными полями: resolved+resolved_at, current_value сохранён,
+	// notified_close=false — восстановления не было, закрытие молчаливое.
 	upd.Enabled = false
 	if _, err := rules.Update(ctx, upd); err != nil {
 		t.Fatalf("disable: %v", err)
@@ -224,17 +209,12 @@ func TestRuleServiceUpdateDisableClosesIncident(t *testing.T) {
 	if got.NotifiedClose {
 		t.Fatalf("disable-close must be silent (notified_close=false): %+v", got)
 	}
-	// Свидетель: инцидент другого правила остался открытым.
 	if gotW, _, _ := inc.GetByID(ctx, inW.ID); gotW.Status != "open" || gotW.ResolvedAt != nil {
 		t.Fatalf("witness incident touched by disable-close: %+v", gotW)
 	}
 
-	// Повторное сохранение УЖЕ выключенного правила подметает его открытый
-	// инцидент: такой инцидент недостижим для оценщика по определению
-	// (застрявший — например, открыт гонкой с тиком: ListEnabled прочитан до
-	// коммита выключения; здесь заводится руками), и повторное сохранение —
-	// единственный способ его закрыть. Поля закрытия — штатные, как в
-	// основном сценарии.
+	// Повторное сохранение УЖЕ выключенного правила подметает его открытый инцидент — единственный способ
+	// закрыть застрявший (например, открытый гонкой с тиком) инцидент недостижимого правила.
 	inR, _, err := inc.Open(ctx, target.ID, projectID, 170, false, "")
 	if err != nil {
 		t.Fatalf("open raced incident: %v", err)
@@ -252,14 +232,12 @@ func TestRuleServiceUpdateDisableClosesIncident(t *testing.T) {
 	if gotR.CurrentValue != 170 || gotR.NotifiedClose {
 		t.Fatalf("sweep must close with regular fields (current preserved, silent): %+v", gotR)
 	}
-	// Свидетель пережил и подметание.
 	if gotW, _, _ := inc.GetByID(ctx, inW.ID); gotW.Status != "open" {
 		t.Fatalf("witness incident touched by sweep: %+v", gotW)
 	}
 
-	// Обратное включение ничего не воскрешает: оба инцидента остаются
-	// закрытыми, новый (если условие всё ещё нарушено) откроет оценщик
-	// следующим тиком.
+	// Обратное включение ничего не воскрешает — оба инцидента остаются закрытыми, новый (если условие
+	// всё ещё нарушено) откроет оценщик следующим тиком.
 	upd.Enabled = true
 	if _, err := rules.Update(ctx, upd); err != nil {
 		t.Fatalf("re-enable: %v", err)
@@ -287,35 +265,28 @@ func TestIncidentServiceOpenClose(t *testing.T) {
 	if err != nil || !created {
 		t.Fatalf("open = (%+v,%v,%v)", in, created, err)
 	}
-	// Повторный Open → created=false.
 	if _, created2, _ := inc.Open(ctx, rule.ID, projectID, 160, false, ""); created2 {
 		t.Fatalf("second open must be created=false")
 	}
-	// Bump.
 	if err := inc.Bump(ctx, in.ID, 160, 160); err != nil {
 		t.Fatalf("bump: %v", err)
 	}
-	// Resolve, повторный → ok=false.
 	if ok, _ := inc.Resolve(ctx, in.ID, 50); !ok {
 		t.Fatalf("resolve must be ok=true")
 	}
 	if ok, _ := inc.Resolve(ctx, in.ID, 50); ok {
 		t.Fatalf("second resolve must be ok=false")
 	}
-	// После закрытия новый Open создаёт (created=true).
 	if _, created3, _ := inc.Open(ctx, rule.ID, projectID, 200, false, ""); !created3 {
 		t.Fatalf("open after resolve must be created=true")
 	}
-	// List.
 	if list, _ := inc.List(ctx, projectID, 10); len(list) != 2 {
 		t.Fatalf("list = %d, want 2", len(list))
 	}
 }
 
-// TestIncidentServiceAcknowledge — B4: Acknowledge на открытом инциденте
-// ставит acknowledged_at/acknowledged_by и возвращает ok=true; повторный
-// вызов и вызов на закрытом инциденте — идемпотентно ok=false. scan (List)
-// после ack отдаёт заполненные поля, до ack — nil.
+// Acknowledge на открытом инциденте ставит acknowledged_at/acknowledged_by, ok=true; повторный вызов и
+// вызов на закрытом — идемпотентно ok=false. Список (scan) отдаёт заполненные поля после ack, nil — до.
 func TestIncidentServiceAcknowledge(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -359,12 +330,10 @@ func TestIncidentServiceAcknowledge(t *testing.T) {
 		t.Fatalf("после Acknowledge: AcknowledgedBy = %v, want %d", list[0].AcknowledgedBy, userID)
 	}
 
-	// Повторный ack — идемпотентно ok=false.
 	if ok2, err := inc.Acknowledge(ctx, in.ID, projectID, userID); err != nil || ok2 {
 		t.Fatalf("повторный Acknowledge = (%v,%v), want (false,nil)", ok2, err)
 	}
 
-	// Acknowledge закрытого инцидента — ok=false.
 	if _, err := inc.Resolve(ctx, in.ID, 50); err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -384,8 +353,7 @@ func TestIncidentServiceAcknowledge(t *testing.T) {
 	}
 }
 
-// TestIncidentServiceAcknowledgeForeignProject — project_id — часть WHERE
-// Acknowledge (defense-in-depth, зеркало uptime.DeleteWindow, B3).
+// project_id — часть WHERE Acknowledge (defense-in-depth), зеркало uptime.DeleteWindow.
 func TestIncidentServiceAcknowledgeForeignProject(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -395,10 +363,8 @@ func TestIncidentServiceAcknowledgeForeignProject(t *testing.T) {
 	inc := metric.NewIncidentService(pool)
 	ctx := context.Background()
 	projectID := seedProject(t, pool)
-	// Второй проект — руками, а не вторым seedProject(t, pool): seedProject
-	// ключует email/org/project по t.Name(), одинаковому оба раза — второй
-	// вызов упёрся бы в users_email_key. Тот же org_id вполне подходит: нужен
-	// просто ДРУГОЙ project_id.
+	// Второй проект — руками, не seedProject(t, pool): тот ключует email/org/project по t.Name(), второй
+	// вызов упёрся бы в users_email_key. Тот же org_id подходит — нужен просто ДРУГОЙ project_id.
 	var otherProjectID int64
 	if err := pool.QueryRow(ctx,
 		"INSERT INTO projects (org_id, slug, name, platform) SELECT org_id, $2, $2, 'go' FROM projects WHERE id = $1 RETURNING id",

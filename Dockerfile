@@ -3,11 +3,8 @@
 #   docker buildx imagetools inspect golang:1.26-alpine   (copy the Digest)
 FROM golang:1.26-alpine@sha256:70b46548e42db77e0966aaf3619fd068734dc6c77584d526b91126504fd95816 AS build
 WORKDIR /src
-# Зависимости завендорены (vendor/), поэтому сборка НЕ ходит в сеть за модулями
-# (нет `go mod download` и обращения к proxy.golang.org) — образ собирается в
-# закрытых сетях без выхода в интернет. Синхронность vendor/ ↔ go.mod проверяет
-# CI (go mod verify + go mod vendor без диффа). -mod=vendor задан явно: при
-# рассинхроне сборка падает, а не тихо уходит в сеть.
+# Зависимости завендорены — сборка не ходит в сеть за модулями, образ собирается в
+# закрытых сетях. -mod=vendor явно: при рассинхроне с go.mod сборка падает, не уходит в сеть.
 COPY . .
 ARG VERSION=dev
 ARG COMMIT=
@@ -18,8 +15,8 @@ RUN CGO_ENABLED=0 go build -mod=vendor \
                 -X gitflic.ru/otezvikentiy/gotcha/internal/version.date=${DATE}" \
       -o /out/gotcha ./cmd/gotcha
 
-# Кросс-бинарники агента раздаются самим инстансом (/agent/*, спека A2 §3.1):
-# CGO_ENABLED=0 — обычный go build с GOOS/GOARCH, multi-platform buildx не нужен.
+# Кросс-бинарники агента раздаются самим инстансом (/agent/*): CGO_ENABLED=0 —
+# обычный go build с GOOS/GOARCH, multi-platform buildx не нужен.
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=vendor \
       -ldflags "-s -w -X gitflic.ru/otezvikentiy/gotcha/internal/version.version=${VERSION} \
                 -X gitflic.ru/otezvikentiy/gotcha/internal/version.commit=${COMMIT} \
@@ -34,18 +31,11 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=vendor \
 
 # Refresh with: docker buildx imagetools inspect alpine:3.21   (copy the Digest)
 FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
-# Каталог выгрузок (E1, GOTCHA_EXPORT_DIR) обязан существовать и принадлежать
-# gotcha ДО USER ниже: docker-compose.yml монтирует сюда именованный том, и
-# если точки монтирования в образе нет, Docker создаёт её сам — root:root
-# 0755 — а свежий том наследует владельца ИЗ ОБРАЗА только когда каталог уже
-# существует и chown'нут на этом слое (P0-OPS-1). Без этого MkdirAll в
-# main.go молча проходит (каталог уже есть), фича включается, и каждая заявка
-# на выгрузку падает на записи файла с permission denied.
-# chmod 0700 здесь, а не только в main.go: MkdirAll сужает права ТОЛЬКО у
-# каталога, который создаёт сам, а этот каталог к моменту старта уже создан
-# строкой выше — то есть в Docker-поставке документированные 0700 не наступали
-# бы никогда и том оставался бы 0755 (имена файлов выгрузок видны любому
-# процессу в контейнере).
+# Каталог выгрузок (GOTCHA_EXPORT_DIR) обязан существовать и быть chown'нут ДО USER:
+# именованный том docker-compose.yml иначе монтируется как root:root 0755 — Docker
+# наследует владельца из образа только если каталог уже существует на этом слое.
+# chmod 0700 тоже здесь: MkdirAll в main.go сужает права только каталогу, который
+# создаёт сам, а этот уже существует к тому моменту.
 RUN adduser -D -u 10001 gotcha \
  && mkdir -p /var/lib/gotcha/exports \
  && chown gotcha:gotcha /var/lib/gotcha/exports \

@@ -15,9 +15,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// seedRecipePoint вставляет точку метрики рецепта напрямую в metric_points —
-// с ПУСТЫМ host: метрики рецептов приходят без resourcedetection (реестр B6),
-// и билдер обязан находить их через пустой-байпас host в query-слое (T2).
+// host — пустой: метрики рецептов приходят без resourcedetection.
 func seedRecipePoint(t *testing.T, ch driver.Conn, projectID int64, name, typ string, monotonic uint8, temporality string, ts time.Time, val float64, attrs map[string]string) {
 	t.Helper()
 	if attrs == nil {
@@ -31,8 +29,6 @@ func seedRecipePoint(t *testing.T, ch driver.Conn, projectID int64, name, typ st
 	}
 }
 
-// chartByKey достаёт VM графика по ключу реестра — тесты не должны зависеть от
-// порядка Charts в рецепте.
 func chartByKey(t *testing.T, vms []templates.RecipeChartVM, key string) templates.RecipeChartVM {
 	t.Helper()
 	for _, vm := range vms {
@@ -44,9 +40,6 @@ func chartByKey(t *testing.T, vms []templates.RecipeChartVM, key string) templat
 	panic("unreachable")
 }
 
-// TestRecipeChartsRedis — билдер по рецепту redis: VM на КАЖДЫЙ Chart реестра,
-// скалярные и парные rate-ряды с данными не Empty (Legend пары — из i18n),
-// незасеянные метрики — Empty; TitleKey/ExplorerURL собраны по контракту T4.
 func TestRecipeChartsRedis(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -59,11 +52,10 @@ func TestRecipeChartsRedis(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Minute)
 	from, to := now.Add(-10*time.Minute), now.Add(time.Minute)
 
-	// Скалярные: gauge память + не-monotonic sum клиентов.
 	seedRecipePoint(t, ch, pid, "redis.memory.used", "gauge", 0, "", now.Add(-2*time.Minute), 1024, nil)
 	seedRecipePoint(t, ch, pid, "redis.memory.used", "gauge", 0, "", now.Add(-time.Minute), 2048, nil)
 	seedRecipePoint(t, ch, pid, "redis.clients.connected", "sum", 0, "cumulative", now.Add(-time.Minute), 5, nil)
-	// Парный rate-график keyspace: monotonic cumulative, >=2 корзины на rate.
+	// rate требует ≥2 точек, потому их 3.
 	for i, v := range []float64{100, 160, 220} {
 		ts := now.Add(-time.Duration(3-i) * time.Minute)
 		seedRecipePoint(t, ch, pid, "redis.keyspace.hits", "sum", 1, "cumulative", ts, v, nil)
@@ -102,7 +94,6 @@ func TestRecipeChartsRedis(t *testing.T) {
 		t.Fatalf("keyspace legend len = %d, want 2 (hits+misses)", len(keyspace.Legend))
 	}
 
-	// Незасеянные метрики рецепта — честный Empty, не паника и не мусор.
 	for _, key := range []string{"commands", "fragmentation"} {
 		if vm := chartByKey(t, vms, key); !vm.Empty {
 			t.Errorf("%s chart not Empty без данных", key)
@@ -110,12 +101,8 @@ func TestRecipeChartsRedis(t *testing.T) {
 	}
 }
 
-// TestRecipeChartsGrouped — обе групповые ветки билдера: SeriesGrouped
-// (postgres backends по postgresql.database.name, скаляр) и SeriesGroupedRate
-// (синтетический Chart c GroupKey+Rate; в реестре так устроены deadlocks/
-// blocks_read postgres и network_rx/tx docker — синтетика оставлена, чтобы
-// тест ветки не зависел от состава реестра). Легенда групповых рядов — сырые
-// ключи групп.
+// SeriesGroupedRate тестируем на синтетическом Chart, а не рецепте реестра — не зависим от
+// того, какие метрики в нём group+rate сегодня.
 func TestRecipeChartsGrouped(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -150,7 +137,6 @@ func TestRecipeChartsGrouped(t *testing.T) {
 		t.Errorf("backends legend = %q, want raw group keys app+auth", joined)
 	}
 
-	// Групповой rate: monotonic счётчик двух контейнеров.
 	for i, v := range []float64{100, 200, 300} {
 		ts := now.Add(-time.Duration(3-i) * time.Minute)
 		seedRecipePoint(t, ch, pid, "test.recipe.net", "sum", 1, "cumulative", ts, v, map[string]string{"container.name": "c1"})
@@ -174,7 +160,6 @@ func TestRecipeChartsGrouped(t *testing.T) {
 	}
 }
 
-// TestRecipeChartsNoData — рецепт без единой точки: столько же VM, все Empty.
 func TestRecipeChartsNoData(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -198,8 +183,6 @@ func TestRecipeChartsNoData(t *testing.T) {
 	}
 }
 
-// TestRecipeChartsQueryError — ошибка query (отменённый контекст) роняет
-// ТОЛЬКО график в Empty, не страницу: билдер возвращает полный набор VM.
 func TestRecipeChartsQueryError(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")
@@ -225,9 +208,7 @@ func TestRecipeChartsQueryError(t *testing.T) {
 	}
 }
 
-// TestRecipeChartVMEmptySeriesGuard — гвард синтетического Chart без Series:
-// честный Empty до первого обращения к h.Metrics (без него Series[0] в
-// recipeExplorerURL паниковала бы). Чистый unit — контейнер не нужен.
+// Не требует ClickHouse: пустой Series не доходит до h.Metrics.
 func TestRecipeChartVMEmptySeriesGuard(t *testing.T) {
 	rec := recipes.Recipe{ID: "synth"}
 	now := time.Now()
@@ -244,9 +225,6 @@ func TestRecipeChartVMEmptySeriesGuard(t *testing.T) {
 	}
 }
 
-// TestRecipeExplorerURL — ссылка «открыть в метриках»: с агрегацией — хвост
-// ?agg=, без неё (в реестре таких сегодня нет — ветка для синтетики) — чистый
-// адрес метрики.
 func TestRecipeExplorerURL(t *testing.T) {
 	chart := recipes.Chart{Series: []recipes.ChartSeries{{Metric: "redis.memory.used"}}, Agg: "avg"}
 	if got, want := recipeExplorerURL(7, chart), "/projects/7/metrics/redis.memory.used?agg=avg"; got != want {
@@ -258,8 +236,6 @@ func TestRecipeExplorerURL(t *testing.T) {
 	}
 }
 
-// TestRecipeChartsDataArrives — детекция «данные приходят» (§7.3): true при
-// свежей сигнатурной метрике, false без неё и false вовсе без h.Metrics.
 func TestRecipeChartsDataArrives(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")

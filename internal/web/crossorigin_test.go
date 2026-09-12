@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// captureLog подменяет default-логгер slog на буферный текстовый handler —
-// тот же приём, что в TestMigrationStagesAreLogged (cmd/gotcha).
 func captureLog(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var buf bytes.Buffer
@@ -29,11 +27,6 @@ func crossOriginPost(h *Handler) *httptest.ResponseRecorder {
 	return w
 }
 
-// TestDenyCrossOriginVisible — отказ same-origin обязан быть видимым: страница
-// с объяснением (не голый text/plain "forbidden"), строка в логе и счётчик.
-// До этой починки 58 из 60 веток отвечали http.Error без единого следа —
-// оператор видел 403 на регистрации при зелёном /readyz и пустом журнале
-// (находка №37).
 func TestDenyCrossOriginVisible(t *testing.T) {
 	buf := captureLog(t)
 	h := &Handler{BaseURL: "http://localhost"}
@@ -68,9 +61,6 @@ func TestDenyCrossOriginVisible(t *testing.T) {
 	}
 }
 
-// TestDenyCrossOriginThrottlesLog — внутри окна троттлинга новые строки не
-// пишутся, но и не теряются: их число уходит полем suppressed следующей
-// строки, а счётчик растёт на каждый отказ.
 func TestDenyCrossOriginThrottlesLog(t *testing.T) {
 	buf := captureLog(t)
 	h := &Handler{BaseURL: "http://localhost"}
@@ -85,8 +75,6 @@ func TestDenyCrossOriginThrottlesLog(t *testing.T) {
 		t.Errorf("CrossOriginRejected() = %d, want 3", got)
 	}
 
-	// Сдвиг «последней строки» за окно: следующий отказ пишет строку и
-	// отчитывается за два подавленных.
 	h.coThrottle.mu.Lock()
 	h.coThrottle.last = time.Now().Add(-coThrottleWindow - time.Second)
 	h.coThrottle.mu.Unlock()

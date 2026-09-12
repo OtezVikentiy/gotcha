@@ -13,15 +13,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// profileDelete — POST /profile/delete: самоудаление аккаунта (право субъекта на
-// удаление своих ПДн, 152-ФЗ ст.14 / GDPR art.17). Двухшаговое подтверждение,
-// как у delete-org (под CSP без inline-JS confirm() невозможен). auth.DeleteSelfAccount
-// каскадно (FK) удаляет личности/членства/сессии. Блокируется, если юзер —
-// единственный владелец каких-то организаций (иначе они остались бы без владельца),
-// либо если юзер — единственный администратор инстанса, А НА ИНСТАНСЕ ЕСТЬ ДРУГИЕ
-// ПОЛЬЗОВАТЕЛИ (K7-1: передать роль некому, SSO организаций осталась бы недоступна
-// никому). Если пользователь на инстансе один — гейт не срабатывает: запирать
-// некого, а первый следующий зарегистрировавшийся сам станет администратором.
+// Гейт единственного админа инстанса не срабатывает, если пользователь на инстансе
+// один: запирать некого, следующий зарегистрировавшийся сам станет администратором.
 func (h *Handler) profileDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -53,22 +46,14 @@ func (h *Handler) profileDelete(w http.ResponseWriter, r *http.Request) {
 			"profile.danger.delete_account.button", "/profile", "/profile/delete", nil)
 		return
 	}
-	// Адрес читаем ДО удаления пользователя, а не после: currentEmail делает
-	// SELECT email FROM users WHERE id=$1, и после DeleteSelfAccount строки уже
-	// нет — запрос вернул бы пустую строку, а очистка приглашений ниже молча не
-	// выполнялась бы вовсе (баг был именно таким: строку переставили под
-	// удаление, и ветка не срабатывала ни разу). Если следующий читатель
-	// снова передвинет чтение вниз «для симметрии» — тест
-	// TestProfileDeletePurgesPendingInvites это поймает.
+	// Адрес читаем ДО удаления: после DeleteSelfAccount строки users уже нет, и очистка
+	// приглашений ниже молча не выполнилась бы (TestProfileDeletePurgesPendingInvites ловит регресс).
 	var email string
 	if h.Org != nil {
 		email = h.currentEmail(r)
 	}
-	// Гейт «единственный админ инстанса при наличии других пользователей»
-	// (K7-1) проверяется атомарно ВНУТРИ DeleteSelfAccount, в одной транзакции
-	// с самим удалением — поэтому сессию рвём только после успеха: иначе
-	// заблокированный гейтом админ терял бы сессию при попытке удаления,
-	// которая так и не состоялась.
+	// Гейт проверяется атомарно внутри DeleteSelfAccount — сессию рвём только после
+	// успеха, иначе заблокированный гейтом админ терял бы сессию без удаления.
 	if err := h.Auth.DeleteSelfAccount(r.Context(), uid); err != nil {
 		if errors.Is(err, auth.ErrInstanceAdminBlocked) {
 			h.renderError(w, r, http.StatusConflict, i18n.T(r.Context(), "profile.danger.delete_account.instance_admin"))
@@ -80,25 +65,14 @@ func (h *Handler) profileDelete(w http.ResponseWriter, r *http.Request) {
 	if token, ok := auth.ReadSessionToken(r, h.Secure); ok {
 		_ = h.Auth.DestroySession(r.Context(), token)
 	}
-	// Pending-инвайты на email пользователя не связаны с users по FK, поэтому
-	// каскад их не трогает — чистим отдельно (ПДн, минимизация). Best-effort:
-	// аккаунт уже удалён, ошибку логируем, но пользователю всё равно редирект.
-	// Субъектная телеметрия в ClickHouse (данные КОНЕЧНЫХ пользователей
-	// наблюдаемых приложений) при этом не затрагивается — это не ПДн владельца
-	// аккаунта; см. privacy-доку.
-	//
-	// email == "" здесь — не «нечего чистить»: личность юзера проверена выше
-	// (auth.UserID), строка в users на момент чтения ещё была на месте, и
-	// currentEmail превращает в "" ЛЮБУЮ ошибку чтения (см. её докблок в
-	// web.go), а не только «юзера нет». Молча пропустить эту ветку —
-	// получить тот же тихий отказ, ради устранения которого писалась вся
-	// задача: аккаунт удалён, приглашение осталось, в логе ничего.
+	// Pending-инвайты не связаны с users по FK — каскад их не трогает, чистим отдельно, best-effort.
 	if h.Org != nil {
 		if email != "" {
 			if _, err := h.Org.DeleteInvitesByEmail(r.Context(), email); err != nil {
 				slog.Error("profileDelete: purge pending invites", "error", err)
 			}
 		} else {
+			// currentEmail превращает в "" любую ошибку чтения, не только «юзера нет» — залогировать обязательно.
 			slog.Error("profileDelete: could not read user email, pending invites not purged", "user_id", uid)
 		}
 	}
@@ -106,8 +80,6 @@ func (h *Handler) profileDelete(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
-// profilePage — GET /profile: email юзера, форма смены пароля, кнопка
-// «выйти со всех других устройств».
 func (h *Handler) profilePage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -117,10 +89,6 @@ func (h *Handler) profilePage(w http.ResponseWriter, r *http.Request) {
 	h.renderProfile(w, r, http.StatusOK, uid, "", "")
 }
 
-// renderProfile — общий рендер страницы профиля: используется и
-// GET-обработчиком, и обоими POST-обработчиками (422 с сообщением об ошибке
-// либо 200 с подтверждением — оба на месте, без редиректа, как и
-// renderOrgSettings).
 func (h *Handler) renderProfile(w http.ResponseWriter, r *http.Request, status int, uid int64, errMsg, message string) {
 	email, err := h.Auth.UserEmail(r.Context(), uid)
 	if err != nil {
@@ -167,9 +135,7 @@ func (h *Handler) renderProfile(w http.ResponseWriter, r *http.Request, status i
 	_ = templates.Profile(email, errMsg, message, hasPassword, linked, linkable, isInstanceAdmin, h.currentEmail(r)).Render(r.Context(), w)
 }
 
-// providerDisplayName — человекочитаемое имя провайдера по локали зрителя
-// (см. providerLabel, №137); fallback — сам ключ (провайдер мог быть
-// выключен после привязки).
+// Fallback — сам ключ: провайдер мог быть выключен после привязки.
 func (h *Handler) providerDisplayName(ctx context.Context, name string) string {
 	if h.OAuth != nil {
 		if p, ok := h.OAuth.Get(name); ok {
@@ -179,9 +145,6 @@ func (h *Handler) providerDisplayName(ctx context.Context, name string) string {
 	return name
 }
 
-// profileIdentityUnlink — POST /profile/identities/unlink: отвязывает провайдера
-// от аккаунта. Защита последнего способа входа: если у аккаунта нет пароля и
-// это его единственная привязка — отказ (409), иначе юзер лишился бы доступа.
 func (h *Handler) profileIdentityUnlink(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -207,6 +170,7 @@ func (h *Handler) profileIdentityUnlink(w http.ResponseWriter, r *http.Request) 
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
+	// Без пароля и с единственной привязкой юзер лишился бы всякого доступа.
 	if !hasPassword && len(ids) <= 1 {
 		h.renderProfile(w, r, http.StatusConflict, uid,
 			i18n.T(r.Context(), "err.profile.last_login_method"), "")
@@ -222,10 +186,7 @@ func (h *Handler) profileIdentityUnlink(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-// profilePasswordSet — POST /profile/password/set: задаёт пароль аккаунту без
-// пароля (OAuth-only). Несовпадение new/new2 или ошибка SetPassword (слабый
-// пароль, пароль уже задан) → 422. Успех: пароль задан, сессии не трогаем
-// (в отличие от смены пароля) — юзер продолжает работать.
+// Успех не трогает сессии (в отличие от смены пароля) — юзер продолжает работать.
 func (h *Handler) profilePasswordSet(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -261,12 +222,8 @@ func (h *Handler) profilePasswordSet(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// profilePasswordSubmit — POST /profile/password: old, new, new2. Несовпадение
-// new/new2 и любая ошибка auth.ChangePassword (неверный старый пароль, слабый
-// новый) — 422. Успех: ChangePassword уже уничтожил ВСЕ сессии пользователя
-// (включая текущую), поэтому хендлер тут же выпускает новую сессию и
-// переустанавливает cookie — юзер остаётся залогинен, а не выкидывается на
-// /login посреди собственной смены пароля.
+// ChangePassword уничтожает ВСЕ сессии, включая текущую — хендлер тут же выпускает
+// новую и переустанавливает cookie, иначе юзер вылетел бы на /login посреди смены пароля.
 func (h *Handler) profilePasswordSubmit(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -277,10 +234,8 @@ func (h *Handler) profilePasswordSubmit(w http.ResponseWriter, r *http.Request) 
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	// Rate-limit по uid (security fix): без этого укравший cookie может
-	// перебирать текущий пароль неограниченно — тот же loginLimiter, что и у
-	// /login, но с отдельным ключевым пространством ("pw|"+uid), чтобы не
-	// делить бюджет попыток с логином и не зависеть от email/IP.
+	// Без rate-limit укравший cookie мог бы перебирать текущий пароль неограниченно;
+	// отдельное ключевое пространство ("pw|"+uid) не делит бюджет с /login.
 	if !h.loginLimiter.Allow("pw|" + strconv.FormatInt(uid, 10)) {
 		h.renderProfile(w, r, http.StatusTooManyRequests, uid, i18n.T(r.Context(), "err.auth.rate_limited"), "")
 		return
@@ -311,8 +266,6 @@ func (h *Handler) profilePasswordSubmit(w http.ResponseWriter, r *http.Request) 
 	h.renderProfile(w, r, http.StatusOK, uid, "", i18n.T(r.Context(), "msg.profile.password_changed"))
 }
 
-// profilePasswordErrorMessage переводит ошибки auth.ChangePassword в
-// человекочитаемое сообщение для 422-страницы профиля.
 func profilePasswordErrorMessage(ctx context.Context, err error) string {
 	switch {
 	case errors.Is(err, auth.ErrInvalidCredentials):
@@ -324,10 +277,6 @@ func profilePasswordErrorMessage(ctx context.Context, err error) string {
 	}
 }
 
-// profileSessionsRevoke — POST /profile/sessions/revoke: DestroyOtherSessions
-// с токеном ТЕКУЩЕЙ сессии (из cookie запроса) — все остальные сессии
-// пользователя (другие устройства/вкладки) уничтожаются, текущая остаётся
-// живой. Рендерит страницу профиля с числом завершённых сессий.
 func (h *Handler) profileSessionsRevoke(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -355,13 +304,7 @@ func revokedSessionsMessage(ctx context.Context, count int64) string {
 	return i18n.Tf(ctx, "msg.profile.sessions_revoked", "count", strconv.FormatInt(count, 10))
 }
 
-// profileInstanceAdminTransfer — POST /profile/instance-admin/transfer: K7-1,
-// единственный способ передать роль администратора инстанса другому
-// пользователю (см. profileDelete — без передачи аккаунт нельзя удалить).
-// Гейт — тот же requireInstanceAdminForSSO, что закрывает настройку SSO:
-// это один и тот же флаг users.is_instance_admin. Двухшаговое подтверждение,
-// как у profileDelete: без confirmed=yes — страница подтверждения с email
-// получателя, чтобы опечатка в адресе была видна до необратимой передачи.
+// Подтверждение называет email получателя, чтобы опечатка была видна до необратимой передачи.
 func (h *Handler) profileInstanceAdminTransfer(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)

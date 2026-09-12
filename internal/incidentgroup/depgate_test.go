@@ -10,9 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// fakeB5Checker — минимальный B5Checker (duck-typing, см. depgate.go) для
-// изоляции ЛОГИКИ DepGate от настоящего depsuppress.Suppressor: позволяет
-// продиктовать ошибку MarkSuppressed, не завися от состояния БД.
 type fakeB5Checker struct {
 	markErr error
 }
@@ -25,9 +22,6 @@ func (f *fakeB5Checker) MarkSuppressed(ctx context.Context, source string, incid
 	return f.markErr
 }
 
-// erroringRootResolver — RootResolver (см. grouper.go), чей DownRoot всегда
-// возвращает заданную ошибку — способ детерминированно уронить Grouper.Attach
-// изнутри DepGate.MarkSuppressed, не полагаясь на реальный сбой БД.
 type erroringRootResolver struct {
 	err error
 }
@@ -38,10 +32,6 @@ func (e *erroringRootResolver) DownRoot(ctx context.Context, kind string, nodeID
 
 func (e *erroringRootResolver) Invalidate() {}
 
-// TestDepGateMarkSuppressedAttachesToGroup — DepGate.MarkSuppressed
-// делегирует B5-подавление настоящему Suppressor'у (suppressed_by_dep=true)
-// и тем же вызовом присоединяет host-инцидент к группе его down-корня
-// (D3-хук, §4.2: «B5-подавленные дети видны в составе»).
 func TestDepGateMarkSuppressedAttachesToGroup(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -86,13 +76,6 @@ func TestDepGateMarkSuppressedAttachesToGroup(t *testing.T) {
 	}
 }
 
-// TestDepGateMarkSuppressedNonHostSourceSkipsAttach — источник, отличный от
-// "host" (uptime сам маркирует себя, см. depgate.go), должен пройти мимо
-// D3-хука целиком: гейт на source обязан сработать РАНЬШЕ, чем DepGate
-// попытается прочитать host_id по incidentID. Проверяем это через
-// incidentID, который на самом деле СУЩЕСТВУЕТ в host_incidents с рабочим
-// down-корнем — если бы гейт по source отсутствовал, DepGate.MarkSuppressed
-// всё равно нашёл бы host_id и ошибочно присоединил бы инцидент к группе.
 func TestDepGateMarkSuppressedNonHostSourceSkipsAttach(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -111,9 +94,7 @@ func TestDepGateMarkSuppressedNonHostSourceSkipsAttach(t *testing.T) {
 	grouper, _ := newGrouper(pool)
 	gate := &incidentgroup.DepGate{Dep: sup, Grouper: grouper}
 
-	// source="uptime" маркирует себя (delegate — no-op на настоящем
-	// Suppressor), но не должен трогать membership host_incidents-строки,
-	// даже если её id совпадает с существующим host-инцидентом.
+	// incidentID совпадает с реальным host-инцидентом — проверяем, что гейт по source сработал раньше.
 	if err := gate.MarkSuppressed(ctx, "uptime", childInc); err != nil {
 		t.Fatalf("MarkSuppressed(uptime): %v", err)
 	}
@@ -127,10 +108,6 @@ func TestDepGateMarkSuppressedNonHostSourceSkipsAttach(t *testing.T) {
 	}
 }
 
-// TestDepGateMarkSuppressedNilGrouperNoPanic — планировщик может собраться
-// без Grouper'а (D3 не подключён); MarkSuppressed обязан по-прежнему
-// делегировать B5-подавление и просто не выполнять membership-хук, без
-// паники на нулевом Grouper.
 func TestDepGateMarkSuppressedNilGrouperNoPanic(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -156,11 +133,6 @@ func TestDepGateMarkSuppressedNilGrouperNoPanic(t *testing.T) {
 	}
 }
 
-// TestDepGateMarkSuppressedHostVanished — гонка «инцидент закрылся между
-// OpenUnacked планировщика и tickOne»: SELECT host_id по несуществующему
-// host_incidents.id обязан вернуть pgx.ErrNoRows, который DepGate обязан
-// проглотить (nil), а не вернуть ошибкой — иначе тик планировщика падал бы
-// из-за безобидной гонки с закрытием.
 func TestDepGateMarkSuppressedHostVanished(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -174,10 +146,6 @@ func TestDepGateMarkSuppressedHostVanished(t *testing.T) {
 	}
 }
 
-// TestDepGateCheckIncidentDelegates — CheckIncident — чистый passthrough к
-// Dep.CheckIncident (планировщику нужен тот же ответ, что и у "сырого"
-// Suppressor'а); сверяем результат DepGate с прямым вызовом на том же
-// сценарии (родитель задекларирован и упал).
 func TestDepGateCheckIncidentDelegates(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -214,9 +182,6 @@ func TestDepGateCheckIncidentDelegates(t *testing.T) {
 	}
 }
 
-// TestDepGateMarkSuppressedPropagatesDepError — если сам B5-суппрессор не
-// смог подавить (Dep.MarkSuppressed вернул ошибку), DepGate обязан вернуть
-// её КАК ЕСТЬ и не пытаться выполнить D3-хук (подавление не состоялось).
 func TestDepGateMarkSuppressedPropagatesDepError(t *testing.T) {
 	wantErr := errors.New("dep marksuppressed boom")
 	gate := &incidentgroup.DepGate{Dep: &fakeB5Checker{markErr: wantErr}}
@@ -225,12 +190,6 @@ func TestDepGateMarkSuppressedPropagatesDepError(t *testing.T) {
 	}
 }
 
-// TestDepGateMarkSuppressedHostIDQueryErrorSwallowed — D3-хук best-effort
-// (комментарий depgate.go: «ошибка членства не должна отменить подавление»):
-// если SELECT host_id упал НЕ гонкой закрытия (ErrNoRows), а настоящей
-// ошибкой БД, MarkSuppressed обязан её проглотить и вернуть nil — подавление
-// уже состоялось (fakeB5Checker успешно "подавил"), только состав группы не
-// обновится. Ошибка запроса моделируется закрытым пулом.
 func TestDepGateMarkSuppressedHostIDQueryErrorSwallowed(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	projectID := seedProject(t, pool)
@@ -249,9 +208,6 @@ func TestDepGateMarkSuppressedHostIDQueryErrorSwallowed(t *testing.T) {
 	}
 }
 
-// TestDepGateMarkSuppressedAttachErrorSwallowed — тот же best-effort принцип
-// для самого Grouper.Attach: ошибка присоединения к группе не должна
-// пробрасываться наружу (подавление важнее состава).
 func TestDepGateMarkSuppressedAttachErrorSwallowed(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()

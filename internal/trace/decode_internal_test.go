@@ -32,8 +32,7 @@ func TestDecodeSpanData(t *testing.T) {
 	}
 }
 
-// TestUsFromFloat: NaN и не-положительные → 0; переполнение → MaxUint32; иначе
-// округление. NaN раньше проскакивал оба сравнения и давал мусорный uint32.
+// NaN и не-положительные → 0; переполнение → MaxUint32; иначе округление.
 func TestUsFromFloat(t *testing.T) {
 	if got := usFromFloat(math.NaN()); got != 0 {
 		t.Errorf("usFromFloat(NaN) = %d, want 0", got)

@@ -72,14 +72,11 @@ func TestApplyRulesIdempotent(t *testing.T) {
 		}
 	}
 
-	// Second apply: everything already exists.
 	created, skipped, err = recipes.ApplyRules(ctx, svc, pid, rec)
 	if err != nil || created != 0 || skipped != len(rec.Rules) {
 		t.Fatalf("second apply = (%d,%d,%v), want (0,%d,nil)", created, skipped, err, len(rec.Rules))
 	}
 
-	// User tuned a threshold: not overwritten, not duplicated (threshold is
-	// deliberately NOT part of the idempotency key).
 	first := rec.Rules[0]
 	if _, err := pool.Exec(ctx,
 		"UPDATE metric_alert_rules SET threshold = threshold + 123 WHERE project_id = $1 AND metric_name = $2",
@@ -100,8 +97,6 @@ func TestApplyRulesIdempotent(t *testing.T) {
 		t.Fatalf("tuned threshold = %v, want %v (must not be overwritten)", tuned, first.Threshold+123)
 	}
 
-	// Env-scoped user rule does NOT block the all-env default: drop the
-	// all-env rule for the second spec, recreate it env-scoped, re-apply.
 	second := rec.Rules[1]
 	if _, err := pool.Exec(ctx,
 		"DELETE FROM metric_alert_rules WHERE project_id = $1 AND metric_name = $2",
@@ -139,11 +134,8 @@ func TestRuleStatuses(t *testing.T) {
 			LabelKey: "state", LabelValue: "active"},
 	}}
 	existing := []metric.Rule{
-		// Matches m.a: same key, different threshold (threshold not in key).
 		{MetricName: "m.a", Aggregation: "avg", Comparator: "gt", Threshold: 99, WindowSeconds: 60},
-		// Same key as m.b but env-scoped: must NOT count as existing.
 		{MetricName: "m.b", Aggregation: "sum", Comparator: "gt", Environment: "staging"},
-		// Same metric as m.c but different label value: no match.
 		{MetricName: "m.c", Aggregation: "avg", Comparator: "lt", LabelKey: "state", LabelValue: "waiting"},
 	}
 	got := recipes.RuleStatuses(existing, rec)
@@ -160,7 +152,6 @@ func TestRuleStatuses(t *testing.T) {
 		}
 	}
 
-	// Full-key match including labels.
 	existing = append(existing, metric.Rule{
 		MetricName: "m.c", Aggregation: "avg", Comparator: "lt",
 		LabelKey: "state", LabelValue: "active",

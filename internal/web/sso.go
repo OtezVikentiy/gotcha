@@ -15,19 +15,16 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// ssoProviderPrefix — имя per-org SSO-провайдера в потоке /auth/oauth/{provider}:
-// "sso-{orgID}". Отличает per-org OIDC (конфиг из БД) от env-провайдеров этапа 5.
+// Отличает per-org OIDC (конфиг из БД) от env-провайдеров.
 const ssoProviderPrefix = "sso-"
 
-// ssoMeta — метаданные per-org SSO для callback (domain guard + JIT-провижининг).
 type ssoMeta struct {
 	OrgID       int64
 	Domain      string
 	DefaultRole string
 }
 
-// ssoCacheTTL — как долго кешируем построенный OIDC-провайдер по orgID, чтобы не
-// читать org_sso на каждый запрос (правка конфига применяется в пределах TTL).
+// Не читаем org_sso на каждый запрос — правка конфига применяется в пределах TTL.
 const ssoCacheTTL = 5 * time.Minute
 
 type ssoCacheEntry struct {
@@ -36,7 +33,6 @@ type ssoCacheEntry struct {
 	expires  time.Time
 }
 
-// ssoCache — процесс-локальный кеш per-org OIDC-провайдеров.
 type ssoCache struct {
 	mu      sync.Mutex
 	entries map[int64]ssoCacheEntry
@@ -51,11 +47,8 @@ func (c *ssoCache) get(orgID int64, now time.Time) (*oauth.OIDC, ssoMeta, bool) 
 	return nil, ssoMeta{}, false
 }
 
-// invalidate выбрасывает кеш провайдера организации. Обязателен при изменении и
-// удалении федерации: без него отозванный IdP продолжал выдавать логины и
-// JIT-провижнинг участников ещё до ssoCacheTTL — то есть отзыв федерации
-// (например, из-за компрометации IdP) вступал в силу с задержкой в 5 минут.
-// Симметрично statusCache.invalidate в этом же пакете.
+// Без вызова при изменении/удалении федерации отозванный IdP продолжал бы выдавать логины —
+// отзыв (например, при компрометации IdP) применялся бы с задержкой до ssoCacheTTL.
 func (c *ssoCache) invalidate(orgID int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -71,9 +64,6 @@ func (c *ssoCache) put(orgID int64, p *oauth.OIDC, meta ssoMeta, now time.Time) 
 	c.entries[orgID] = ssoCacheEntry{provider: p, meta: meta, expires: now.Add(ssoCacheTTL)}
 }
 
-// resolveProvider возвращает провайдера потока OAuth по имени. Обычные
-// (oidc/yandex/vk) — из env-Registry (этап 5, sso=nil). "sso-{id}" — per-org
-// OIDC, построенный из org_sso (этап 10), с ssoMeta.
 func (h *Handler) resolveProvider(ctx context.Context, name string) (oauth.Provider, *ssoMeta, bool) {
 	if !strings.HasPrefix(name, ssoProviderPrefix) {
 		p, ok := h.OAuth.Get(name)
@@ -100,11 +90,8 @@ func (h *Handler) resolveProvider(ctx context.Context, name string) (oauth.Provi
 	return p, &meta, true
 }
 
-// emailDomain — часть email после '@', в нижнем регистре. Нет '@' → "".
-// RA-L2: обрезаем ВСЕ конечные точки FQDN ("user@enforced.com.." → "enforced.com"),
-// иначе trailing-dot обходил бы enforced-SSO гейт и domain guard (домен с точкой
-// не совпал бы ни с конфигом org_sso, ни в enforcedSSO-поиске). TrimRight снимает
-// любое число точек, тогда как TrimSuffix снял бы лишь одну.
+// Обрезаем ВСЕ конечные точки FQDN («user@enforced.com..» → «enforced.com») через TrimRight,
+// не TrimSuffix — иначе trailing-dot обходил бы enforced-SSO гейт и domain guard.
 func emailDomain(email string) string {
 	email = strings.ToLower(strings.TrimSpace(email))
 	at := strings.LastIndexByte(email, '@')
@@ -115,17 +102,8 @@ func emailDomain(email string) string {
 	return domain
 }
 
-// enforcedSSO — принадлежит ли домен организации с обязательным (enforced) SSO.
-// Централизует SEC-H2-проверку для password-логина, env-OAuth и регистрации.
-// Безопасно при h.Org == nil и пустом домене.
-//
-// Ошибка возвращается наружу, а не сворачивается в false. Раньше здесь стояло
-// `return err == nil && ok && cfg.Enforced`, то есть ЛЮБОЙ сбой означал «SSO не
-// обязателен»: SSOByDomain расшифровывает конфигурацию, и после смены
-// GOTCHA_SECRET_KEY (или транзиентной ошибки pgx) обязательный SSO молча
-// исчезал сразу для всех доменов — уволенный сотрудник заходил по старому
-// паролю, и ни в логе, ни в UI следа не оставалось. Вызывающие обязаны падать
-// в 500: отказать во входе при неизвестном состоянии дешевле, чем пустить.
+// Ошибка возвращается наружу, не сворачивается в false: иначе смена GOTCHA_SECRET_KEY или сбой
+// pgx молча снимает обязательный SSO. Падать в 500 дешевле, чем пустить.
 func (h *Handler) enforcedSSO(ctx context.Context, domain string) (bool, error) {
 	if h.Org == nil || domain == "" {
 		return false, nil
@@ -137,10 +115,8 @@ func (h *Handler) enforcedSSO(ctx context.Context, domain string) (bool, error) 
 	return ok && cfg.Enforced, nil
 }
 
-// ssoCallback — SSO-ветка callback (этап 10, JIT-провижининг вместо invite-gated).
-// verified email обязателен; email обязан быть из домена организации (domain
-// guard — IdP может вернуть чужой email). Новый юзер провижинится в орг с
-// DefaultRole; существующий — линкуется и гарантированно становится участником.
+// verified email обязателен, email обязан быть из домена организации (IdP может вернуть
+// чужой) — новый юзер провижинится с DefaultRole, существующий линкуется и получает членство.
 func (h *Handler) ssoCallback(w http.ResponseWriter, r *http.Request, name string, id oauth.Identity, sso *ssoMeta) {
 	if !id.EmailVerified {
 		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.oauth.provider_no_email"))
@@ -152,7 +128,6 @@ func (h *Handler) ssoCallback(w http.ResponseWriter, r *http.Request, name strin
 	}
 	role := org.Role(sso.DefaultRole)
 
-	// Вход по стабильному субъекту.
 	if uid, err := h.Auth.IdentityUser(r.Context(), name, id.Subject); err == nil {
 		_ = h.Auth.UpdateIdentityEmail(r.Context(), name, id.Subject, id.Email)
 		if err := h.Org.EnsureMember(r.Context(), sso.OrgID, uid, role); err != nil {
@@ -166,11 +141,9 @@ func (h *Handler) ssoCallback(w http.ResponseWriter, r *http.Request, name strin
 		return
 	}
 
-	// JIT: найти/создать юзера по email, привязать identity, гарантировать членство.
 	uid, err := h.Auth.UserByEmail(r.Context(), id.Email)
 	switch {
 	case err == nil:
-		// существующий юзер
 	case errors.Is(err, auth.ErrUserNotFound):
 		uid, err = h.Auth.CreateOAuthUser(r.Context(), id.Email)
 		if err != nil {

@@ -9,10 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/theme"
 )
 
-// TestHeadThemeColorExplicitTheme — при явной теме <head> печатает одну
-// <meta name="theme-color"> с полотном этой темы и без media: тема выбрана
-// пользователем, а не системой, и рамка браузера не должна ходить за
-// prefers-color-scheme.
 func TestHeadThemeColorExplicitTheme(t *testing.T) {
 	for _, code := range []string{"dark", "light"} {
 		ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
@@ -35,9 +31,6 @@ func TestHeadThemeColorExplicitTheme(t *testing.T) {
 	}
 }
 
-// TestHeadThemeColorSystemTheme — тема «system»: две <meta> с media по
-// prefers-color-scheme, по одной на каждое полотно — ровно так же app.css
-// выбирает палитру.
 func TestHeadThemeColorSystemTheme(t *testing.T) {
 	out := renderTo(t, ErrorPage(404, "", ""))
 	for code, media := range map[string]string{"dark": "(prefers-color-scheme: dark)", "light": "(prefers-color-scheme: light)"} {

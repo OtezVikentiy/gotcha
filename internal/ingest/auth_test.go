@@ -43,7 +43,6 @@ func TestKeyCache(t *testing.T) {
 		t.Fatalf("calls = %d, want 1 (cached)", fr.calls)
 	}
 
-	// TTL истёк — ходим в источник снова.
 	now = now.Add(31 * time.Second)
 	if _, err := kc.Resolve(ctx, "abc"); err != nil {
 		t.Fatal(err)
@@ -52,8 +51,6 @@ func TestKeyCache(t *testing.T) {
 		t.Fatalf("calls = %d, want 2 (expired)", fr.calls)
 	}
 
-	// Промахи негативно кешируются на negTTL: два подряд Resolve одного
-	// неизвестного ключа бьют в источник лишь ОДИН раз (SEC-M1).
 	if _, err := kc.Resolve(ctx, "nope"); !errors.Is(err, org.ErrNotFound) {
 		t.Fatalf("miss: %v", err)
 	}
@@ -64,7 +61,6 @@ func TestKeyCache(t *testing.T) {
 		t.Fatalf("calls = %d, want 3 (miss negative-cached)", fr.calls)
 	}
 
-	// По истечении negTTL негативная запись протухает — снова идём в источник.
 	now = now.Add(negTTL + time.Second)
 	if _, err := kc.Resolve(ctx, "nope"); !errors.Is(err, org.ErrNotFound) {
 		t.Fatalf("miss after neg TTL: %v", err)
@@ -74,8 +70,6 @@ func TestKeyCache(t *testing.T) {
 	}
 }
 
-// TestKeyCacheTransientNotCached: транзиентная ошибка (не ErrNotFound) НЕ
-// кешируется — иначе валидный ключ был бы отвергнут на весь negTTL.
 func TestKeyCacheTransientNotCached(t *testing.T) {
 	fr := &flakyResolver{err: context.DeadlineExceeded}
 	kc := NewKeyCache(fr)
@@ -120,11 +114,6 @@ func TestPublicKeyFromRequest(t *testing.T) {
 	}
 }
 
-// TestKeyCacheFloodKeepsLiveProjects фиксирует правку вытеснения: поток запросов
-// со случайными несуществующими ключами не должен выбивать из кеша позитивные
-// записи живых проектов. Раньше кеш при переполнении стирался ЦЕЛИКОМ, поэтому
-// перебор ключей заставлял и легитимный трафик ходить в PostgreSQL на каждое
-// событие — усиление нагрузки на общий пул.
 func TestKeyCacheFloodKeepsLiveProjects(t *testing.T) {
 	fr := &fakeResolver{keys: map[string]org.Key{"live": {ID: 1, ProjectID: 7, OrgID: 3, PublicKey: "live"}}}
 	kc := NewKeyCache(fr)
@@ -132,18 +121,15 @@ func TestKeyCacheFloodKeepsLiveProjects(t *testing.T) {
 	kc.now = func() time.Time { return now }
 	ctx := context.Background()
 
-	// Живой проект попадает в кеш.
 	if _, err := kc.Resolve(ctx, "live"); err != nil {
 		t.Fatalf("resolve live: %v", err)
 	}
 	callsAfterWarmup := fr.calls
 
-	// Перебор: заведомо больше ёмкости кеша несуществующих ключей.
 	for i := 0; i < maxKeyCacheEntries+5000; i++ {
 		_, _ = kc.Resolve(ctx, "miss-"+strconv.Itoa(i))
 	}
 
-	// Живой ключ обязан по-прежнему обслуживаться из кеша.
 	if _, err := kc.Resolve(ctx, "live"); err != nil {
 		t.Fatalf("resolve live after flood: %v", err)
 	}

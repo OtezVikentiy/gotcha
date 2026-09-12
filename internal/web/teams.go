@@ -36,9 +36,7 @@ func teamDeletePath(teamID int64) string {
 	return "/teams/" + strconv.FormatInt(teamID, 10) + "/delete"
 }
 
-// teamName — имя команды для текста подтверждения; пустая строка, если
-// команда не нашлась (тогда подтверждение показывает вопрос без имени, а
-// само действие всё равно упрётся в ErrNotFound).
+// пустая строка, если команда не нашлась — действие всё равно упрётся в ErrNotFound.
 func (h *Handler) teamName(ctx context.Context, orgID, teamID int64) string {
 	teams, err := h.Org.TeamsOf(ctx, orgID)
 	if err != nil {
@@ -52,12 +50,8 @@ func (h *Handler) teamName(ctx context.Context, orgID, teamID int64) string {
 	return ""
 }
 
-// errCrossOrgProject — попытка привязать к команде проект, не принадлежащий
-// организации этой команды.
 var errCrossOrgProject = errors.New("web: project belongs to a different organization")
 
-// parsePathTeamID достаёт teamID из {id} пути /teams/{id}*; на невалидный id —
-// 404, тот же принцип, что и у parsePathOrgID/parsePathProjectID.
 func (h *Handler) parsePathTeamID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	teamID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -67,10 +61,8 @@ func (h *Handler) parsePathTeamID(w http.ResponseWriter, r *http.Request) (int64
 	return teamID, true
 }
 
-// requireTeamRole резолвит teamID -> orgID (org.TeamOrg) и проверяет роль
-// вызывающего в этой организации (requireOrgRole): несуществующая команда и
-// недостаточная роль дают одну и ту же стилизованную 404 — не палим
-// существование чужой команды.
+// несуществующая команда и недостаточная роль дают одну и ту же 404 — не
+// палим существование чужой команды.
 func (h *Handler) requireTeamRole(w http.ResponseWriter, r *http.Request, teamID, userID int64) (int64, bool) {
 	orgID, err := h.Org.TeamOrg(r.Context(), teamID)
 	if err != nil {
@@ -104,8 +96,6 @@ func teamsErrorMessage(ctx context.Context, err error) string {
 	}
 }
 
-// teamsPage — GET /orgs/{id}/teams: список команд организации. Доступ только
-// owner/admin (requireOrgRole).
 func (h *Handler) teamsPage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -122,9 +112,6 @@ func (h *Handler) teamsPage(w http.ResponseWriter, r *http.Request) {
 	h.renderTeamsPage(w, r, http.StatusOK, orgID, nil, "")
 }
 
-// renderTeamsPage — общий рендер: используется и GET-обработчиком, и всеми
-// POST-обработчиками этого файла на 422 (то же сообщение об ошибке на месте,
-// без редиректа — тот же принцип, что и renderOrgSettings).
 func (h *Handler) renderTeamsPage(w http.ResponseWriter, r *http.Request, status int, orgID int64, form templates.FormState, errMsg string) {
 	o, err := h.Org.Get(r.Context(), orgID)
 	if err != nil {
@@ -136,9 +123,8 @@ func (h *Handler) renderTeamsPage(w http.ResponseWriter, r *http.Request, status
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	// Участники и проекты всех команд — двумя запросами на страницу, а не по
-	// два на каждую команду (аудит 2026-09-04, K8-2); порядок строк — как у
-	// TeamMembers/TeamProjects.
+	// участники и проекты всех команд — двумя запросами на страницу, не по
+	// два на каждую.
 	teamIDs := make([]int64, len(teams))
 	for i, tm := range teams {
 		teamIDs[i] = tm.ID
@@ -171,8 +157,6 @@ func (h *Handler) renderTeamsPage(w http.ResponseWriter, r *http.Request, status
 	_ = templates.Teams(o, views, orgMembers, orgProjects, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
 }
 
-// teamsCreate — POST /orgs/{id}/teams: slug, name. ErrInvalidSlug/ErrSlugTaken
-// → 422.
 func (h *Handler) teamsCreate(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -196,8 +180,8 @@ func (h *Handler) teamsCreate(w http.ResponseWriter, r *http.Request) {
 	slug := r.FormValue("slug")
 	name := r.FormValue("name")
 	if _, err := h.Org.CreateTeam(r.Context(), orgID, slug, name); err != nil {
-		// Состояние формы возвращает введённое и открывает модалку: без него
-		// человек получал закрытую пустую форму и сообщение где-то на странице.
+		// без этого человек получал закрытую пустую форму и сообщение где-то
+		// на странице.
 		h.renderTeamsPage(w, r, http.StatusUnprocessableEntity, orgID,
 			templates.FormState{"slug": slug, "name": name}.Open("new-team"),
 			teamsErrorMessage(r.Context(), err))
@@ -206,12 +190,7 @@ func (h *Handler) teamsCreate(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, orgTeamsPath(orgID), http.StatusSeeOther)
 }
 
-// teamRename — POST /teams/{id}/rename: name.
-//
-// У команд был только жизненный цикл «создать/удалить»: опечатку в названии или
-// переезд отдела нельзя было отразить, а пересоздание команды теряло и её
-// участников, и привязанные проекты. Slug остаётся прежним — он участвует в
-// адресах и в выдаче прав.
+// slug остаётся прежним — он участвует в адресах и в выдаче прав.
 func (h *Handler) teamRename(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -226,8 +205,8 @@ func (h *Handler) teamRename(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Проверка роли идёт по организации команды — она же даёт orgID для
-	// перерисовки страницы и служит скоупом для самого UPDATE.
+	// роль проверяется по организации команды — она же даёт orgID для
+	// перерисовки и скоуп для UPDATE.
 	orgID, ok := h.requireTeamRole(w, r, teamID, uid)
 	if !ok {
 		return
@@ -250,8 +229,6 @@ func (h *Handler) teamRename(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, orgTeamsPath(orgID), http.StatusSeeOther)
 }
 
-// teamMembersAdd — POST /teams/{id}/members: user_id. ErrNotMember (не
-// участник организации команды) → 422.
 func (h *Handler) teamMembersAdd(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -285,7 +262,6 @@ func (h *Handler) teamMembersAdd(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, orgTeamsPath(orgID), http.StatusSeeOther)
 }
 
-// teamMembersRemove — POST /teams/{id}/members/remove: user_id.
 func (h *Handler) teamMembersRemove(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -312,9 +288,8 @@ func (h *Handler) teamMembersRemove(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
-	// Двухшаговое подтверждение (CSP default-src 'self' без unsafe-inline не
-	// исполняет inline confirm() — см. renderConfirm): без confirmed=yes
-	// показываем страницу подтверждения вместо необратимого действия.
+	// CSP без unsafe-inline не исполняет inline confirm() — двухшаговое
+	// подтверждение вместо необратимого действия сразу.
 	if r.FormValue("confirmed") != "yes" {
 		h.renderConfirm(w, r, "confirm.title", "confirm.team_member_remove.message", "confirm.remove",
 			orgTeamsPath(orgID), teamMembersRemovePath(teamID),
@@ -328,10 +303,8 @@ func (h *Handler) teamMembersRemove(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, orgTeamsPath(orgID), http.StatusSeeOther)
 }
 
-// teamProjectsAttach — POST /teams/{id}/projects: project_id. Проект должен
-// принадлежать той же организации, что и команда, иначе 422
-// (errCrossOrgProject) — иначе можно было бы дать команде одной организации
-// доступ к issues чужой.
+// проект обязан принадлежать той же организации, что и команда — иначе
+// команда одной организации получила бы доступ к issues чужой.
 func (h *Handler) teamProjectsAttach(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -378,9 +351,8 @@ func (h *Handler) teamProjectsAttach(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, orgTeamsPath(orgID), http.StatusSeeOther)
 }
 
-// teamProjectsDetach — POST /teams/{id}/projects/detach: project_id.
-// DetachTeam идемпотентен — здесь не нужна проверка org, потому что она
-// только сужает то, к чему у команды и так есть доступ.
+// DetachTeam идемпотентен — проверка org не нужна, она лишь сужает то, к
+// чему у команды и так есть доступ.
 func (h *Handler) teamProjectsDetach(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -407,9 +379,8 @@ func (h *Handler) teamProjectsDetach(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.bad_request"))
 		return
 	}
-	// Двухшаговое подтверждение (№61): отвязка мгновенно отбирает у всей
-	// команды доступ к проекту — с именами обеих сторон, иначе вопрос без
-	// деталей не страхует от промаха по соседней строке.
+	// отвязка мгновенно отбирает у всей команды доступ к проекту —
+	// подтверждение с именами обеих сторон, не абстрактный вопрос.
 	if r.FormValue("confirmed") != "yes" {
 		projectName := ""
 		if p, err := h.Org.GetProject(r.Context(), projectID); err == nil {
@@ -428,10 +399,8 @@ func (h *Handler) teamProjectsDetach(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, orgTeamsPath(orgID), http.StatusSeeOther)
 }
 
-// teamDelete — POST /teams/{id}/delete: удаление команды (№26). Членства и
-// привязки к проектам уходят вместе с ней (org.DeleteTeam) — участники
-// теряют доступ к её проектам сразу, поэтому действие двухшаговое, как
-// прочие необратимые.
+// членства и привязки уходят вместе с командой — участники теряют доступ к
+// её проектам сразу, действие двухшаговое, как прочие необратимые.
 func (h *Handler) teamDelete(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)

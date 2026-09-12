@@ -16,17 +16,10 @@ import (
 
 var entitySeq atomic.Int64
 
-// uniformRetention — один и тот же срок для всех классов данных. Тесты ниже
-// проверяют не разделение сроков (для этого есть
-// TestEntityJanitorUsesPerEntityRetention), а сам механизм удаления, и им
-// нужен ровно прежний, общий срок.
 func uniformRetention(d time.Duration) telemetry.Retentions {
 	return telemetry.Retentions{Events: d, Metrics: d, Profiles: d, Incidents: d, Deployments: d}
 }
 
-// newEntityProject создаёт организацию с проектом. Каждый тест работает в своём
-// проекте: контейнер PostgreSQL переиспользуется между запусками, и общие
-// project_id связали бы тесты друг с другом.
 func newEntityProject(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -50,7 +43,6 @@ func newEntityProject(t *testing.T, pool *pgxpool.Pool) int64 {
 	return projectID
 }
 
-// insertIssue добавляет группу с заданным возрастом последнего события.
 func insertIssue(t *testing.T, pool *pgxpool.Pool, projectID int64, fingerprint string, lastSeen time.Time, status string) int64 {
 	t.Helper()
 	var id int64
@@ -63,8 +55,6 @@ func insertIssue(t *testing.T, pool *pgxpool.Pool, projectID int64, fingerprint 
 	return id
 }
 
-// insertMonitorIncident добавляет монитор с инцидентом. resolvedAt == nil —
-// инцидент открыт.
 func insertMonitorIncident(t *testing.T, pool *pgxpool.Pool, projectID int64, startedAt time.Time, resolvedAt *time.Time) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -106,8 +96,6 @@ func incidentExists(t *testing.T, pool *pgxpool.Pool, id int64) bool {
 	return exists
 }
 
-// TestEntityJanitorPurgesExpiredKeepsFresh — основное правило: группа, событий
-// которой уже нет в ClickHouse, не должна оставаться в списке проблем.
 func TestEntityJanitorPurgesExpiredKeepsFresh(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -134,9 +122,6 @@ func TestEntityJanitorPurgesExpiredKeepsFresh(t *testing.T) {
 	}
 }
 
-// TestEntityJanitorKeepsOpenIncident — открытый инцидент описывает то, что
-// происходит сейчас: его возраст не значит, что проблему можно перестать
-// показывать.
 func TestEntityJanitorKeepsOpenIncident(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -163,9 +148,6 @@ func TestEntityJanitorKeepsOpenIncident(t *testing.T) {
 	}
 }
 
-// TestEntityJanitorPurgesBeyondOneBatch — чистка не должна останавливаться на
-// первом батче: иначе при накопленном за месяцы объёме проход удалял бы
-// entityBatchSize строк в час и никогда не догонял приём.
 func TestEntityJanitorPurgesBeyondOneBatch(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -196,9 +178,6 @@ func TestEntityJanitorPurgesBeyondOneBatch(t *testing.T) {
 	}
 }
 
-// TestEntityJanitorCascadesToChildRows — удаление группы должно убирать и
-// связанные с ней строки, иначе окружения и записи глушения алертов остаются
-// сиротами.
 func TestEntityJanitorCascadesToChildRows(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -226,9 +205,6 @@ func TestEntityJanitorCascadesToChildRows(t *testing.T) {
 	}
 }
 
-// TestEntityJanitorNoRetentionKeepsEverything — без заданного срока хранения
-// продукт ничего не удаляет: молча вычищать данные у того, кто хранение не
-// настраивал, нельзя.
 func TestEntityJanitorNoRetentionKeepsEverything(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -250,8 +226,6 @@ func TestEntityJanitorNoRetentionKeepsEverything(t *testing.T) {
 	}
 }
 
-// insertProfileRegression добавляет ЗАКРЫТУЮ регрессию профиля с заданным
-// моментом закрытия.
 func insertProfileRegression(t *testing.T, pool *pgxpool.Pool, projectID int64, resolvedAt time.Time) int64 {
 	t.Helper()
 	n := entitySeq.Add(1)
@@ -267,7 +241,6 @@ func insertProfileRegression(t *testing.T, pool *pgxpool.Pool, projectID int64, 
 	return id
 }
 
-// insertPerfRegression добавляет ЗАКРЫТУЮ регрессию производительности.
 func insertPerfRegression(t *testing.T, pool *pgxpool.Pool, projectID int64, resolvedAt time.Time) int64 {
 	t.Helper()
 	n := entitySeq.Add(1)
@@ -283,8 +256,6 @@ func insertPerfRegression(t *testing.T, pool *pgxpool.Pool, projectID int64, res
 	return id
 }
 
-// insertMetricIncident добавляет ЗАКРЫТЫЙ инцидент по метрике вместе с
-// правилом, на которое он ссылается.
 func insertMetricIncident(t *testing.T, pool *pgxpool.Pool, projectID int64, resolvedAt time.Time) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -306,8 +277,6 @@ func insertMetricIncident(t *testing.T, pool *pgxpool.Pool, projectID int64, res
 	return id
 }
 
-// insertSLOIncident добавляет инцидент сжигания бюджета SLO вместе с самим SLO,
-// на который он ссылается. resolvedAt==nil — инцидент открыт.
 func insertSLOIncident(t *testing.T, pool *pgxpool.Pool, projectID int64, resolvedAt *time.Time) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -333,10 +302,6 @@ func insertSLOIncident(t *testing.T, pool *pgxpool.Pool, projectID int64, resolv
 	return id
 }
 
-// TestEntityJanitorPurgesResolvedSLOIncidents — закрытый инцидент сжигания
-// бюджета SLO живёт сроком метрик (зеркало metric_incidents): карточка показывает
-// период, за который точек good/total в ClickHouse уже нет. Открытый инцидент
-// описывает то, что с бюджетом происходит сейчас, и по возрасту не удаляется.
 func TestEntityJanitorPurgesResolvedSLOIncidents(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -366,7 +331,6 @@ func TestEntityJanitorPurgesResolvedSLOIncidents(t *testing.T) {
 	}
 }
 
-// rowExists — жива ли строка таблицы. Имя таблицы приходит из литералов теста.
 func rowExists(t *testing.T, pool *pgxpool.Pool, table string, id int64) bool {
 	t.Helper()
 	var exists bool
@@ -377,14 +341,6 @@ func rowExists(t *testing.T, pool *pgxpool.Pool, table string, id int64) bool {
 	return exists
 }
 
-// TestEntityJanitorUsesPerEntityRetention — находка №108: все шесть правил жили
-// одним GOTCHA_EVENT_RETENTION_DAYS, хотя сроков в продукте четыре.
-//
-// Регрессия профиля переживала свои сэмплы на восемьдесят три дня — карточка
-// открывалась, а флеймграфа за ней уже не было; инцидент метрики переживал
-// точки метрик на шестьдесят. Проверяем на одном и том же возрасте закрытия,
-// что каждое правило смотрит на СВОЙ срок: удаляется то, что пережило свою
-// телеметрию, и остаётся то, что нет.
 func TestEntityJanitorUsesPerEntityRetention(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -421,7 +377,6 @@ func TestEntityJanitorUsesPerEntityRetention(t *testing.T) {
 	}
 }
 
-// insertHost добавляет хост проекта с заданным last_seen.
 func insertHost(t *testing.T, pool *pgxpool.Pool, projectID int64, lastSeen time.Time) int64 {
 	t.Helper()
 	n := entitySeq.Add(1)
@@ -435,7 +390,6 @@ func insertHost(t *testing.T, pool *pgxpool.Pool, projectID int64, lastSeen time
 	return id
 }
 
-// insertHostIncident добавляет инцидент хоста (открытый при resolvedAt=nil).
 func insertHostIncident(t *testing.T, pool *pgxpool.Pool, projectID, hostID int64, resolvedAt *time.Time) int64 {
 	t.Helper()
 	status := "resolved"
@@ -452,17 +406,6 @@ func insertHostIncident(t *testing.T, pool *pgxpool.Pool, projectID, hostID int6
 	return id
 }
 
-// TestEntityJanitorPurgesStaleHostsCascadesIncidents — находка A1 (пороги по
-// хостам): хост, не подававший признаков жизни дольше срока хранения метрик,
-// в ClickHouse уже ничего не покажет — держать его строкой в списке хостов
-// незачем. Правило смотрит на last_seen БЕЗ closedOnly (как issues), и
-// host_incidents хоста уходят каскадом FK — в том числе открытые.
-//
-// Молчаливым исчезновением открытого инцидента это не становится: в проде на
-// правило hosts повешен хук PreDelete (host.Retirer), который перед удалением
-// закрывает инциденты и рассылает уведомление о снятии хоста с наблюдения (см.
-// host.TestEntityJanitorRetiresHostsBeforeDelete). Здесь хука нет намеренно —
-// проверяется само правило.
 func TestEntityJanitorPurgesStaleHostsCascadesIncidents(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -498,10 +441,6 @@ func TestEntityJanitorPurgesStaleHostsCascadesIncidents(t *testing.T) {
 	}
 }
 
-// TestEntityJanitorPreDeleteHookSeesBatchBeforeDelete — контракт хука: он
-// получает идентификаторы батча ДО удаления и видит строки ещё живыми. На этом
-// стоит снятие хоста с наблюдения (host.Retirer): закрыть инциденты и
-// разослать уведомления можно только пока хост существует.
 func TestEntityJanitorPreDeleteHookSeesBatchBeforeDelete(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -543,10 +482,6 @@ func TestEntityJanitorPreDeleteHookSeesBatchBeforeDelete(t *testing.T) {
 	}
 }
 
-// TestEntityJanitorPreDeleteHookErrorKeepsRows — провал хука отменяет удаление
-// батча. Удалить строки, о которых не удалось сообщить, — ровно тот
-// молчаливый исход, ради которого хук и заведён; строки дождутся следующего
-// прохода.
 func TestEntityJanitorPreDeleteHookErrorKeepsRows(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -584,9 +519,6 @@ func TestEntityJanitorPreDeleteHookErrorKeepsRows(t *testing.T) {
 	}
 }
 
-// TestEntityJanitorPreDeleteHookOnlyForItsTable — хук привязан к таблице
-// своего правила: чужие правила про него не знают и работают прежним
-// однооператорным путём.
 func TestEntityJanitorPreDeleteHookOnlyForItsTable(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -619,11 +551,6 @@ func TestEntityJanitorPreDeleteHookOnlyForItsTable(t *testing.T) {
 	}
 }
 
-// TestEntityJanitorPurgesResolvedHostIncidents — ревью I3: у host_incidents
-// не было своего правила, и каскад от hosts спасал только тогда, когда хост
-// удалён целиком. У ЖИВОГО сервера, регулярно пробивающего порог, закрытые
-// инциденты копились бы вечно. Срок — метрик: карточка закрытого инцидента
-// показывает период, за который точек в ClickHouse уже нет.
 func TestEntityJanitorPurgesResolvedHostIncidents(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -660,10 +587,6 @@ func TestEntityJanitorPurgesResolvedHostIncidents(t *testing.T) {
 	}
 }
 
-// TestEntityJanitorHostsUseMetricRetentionNotEvents — хосты живут сроком
-// метрик (GOTCHA_METRIC_RETENTION_DAYS), а не сроком событий: инстанс с
-// долгим хранением событий, но коротким — метрик, не обязан помнить хосты,
-// метрики которых уже вычищены из ClickHouse.
 func TestEntityJanitorHostsUseMetricRetentionNotEvents(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -685,10 +608,6 @@ func TestEntityJanitorHostsUseMetricRetentionNotEvents(t *testing.T) {
 	}
 }
 
-// TestEntityJanitorHostsZeroMetricRetentionKeepsHosts — нулевой срок метрик
-// выключает удаление ИМЕННО правила hosts, не задевая соседние правила с
-// другим классом (по образцу TestEntityJanitorZeroClassKeepsItsEntities, но
-// для конкретно добавленного правила hosts/retentionMetrics).
 func TestEntityJanitorHostsZeroMetricRetentionKeepsHosts(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -714,7 +633,6 @@ func TestEntityJanitorHostsZeroMetricRetentionKeepsHosts(t *testing.T) {
 	}
 }
 
-// insertDeployment добавляет маркер выкладки с заданным моментом деплоя.
 func insertDeployment(t *testing.T, pool *pgxpool.Pool, projectID int64, deployedAt time.Time) int64 {
 	t.Helper()
 	n := entitySeq.Add(1)
@@ -728,10 +646,6 @@ func insertDeployment(t *testing.T, pool *pgxpool.Pool, projectID int64, deploye
 	return id
 }
 
-// TestEntityJanitorPurgesExpiredDeployments — маркеры выкладок пишет публичный
-// ключ приёма (CI шлёт деплой тем же DSN, что и события) и вне квоты: без
-// своего срока таблица растёт вечно. Правило смотрит на deployed_at без
-// closedOnly — деплой это точечное событие, оно всегда «состоялось».
 func TestEntityJanitorPurgesExpiredDeployments(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -755,9 +669,6 @@ func TestEntityJanitorPurgesExpiredDeployments(t *testing.T) {
 	}
 }
 
-// TestEntityJanitorDeploymentsUseOwnRetention — деплои живут своим сроком
-// (GOTCHA_DEPLOY_RETENTION_DAYS), а не сроком событий: нулевой срок деплоев
-// выключает удаление ИМЕННО их, не задевая соседние правила.
 func TestEntityJanitorDeploymentsUseOwnRetention(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -784,8 +695,6 @@ func TestEntityJanitorDeploymentsUseOwnRetention(t *testing.T) {
 	}
 }
 
-// TestEntityJanitorZeroClassKeepsItsEntities — нулевой срок класса выключает
-// удаление только в его правилах, не задевая остальные.
 func TestEntityJanitorZeroClassKeepsItsEntities(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

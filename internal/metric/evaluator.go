@@ -14,31 +14,21 @@ import (
 
 const evaluatorDefaultInterval = 60 * time.Second
 
-// tickBudgetShare/minTickBudget — та же пара, что host.Evaluator (см. её
-// докблок): дедлайн тика — доля Interval, но не меньше пола, иначе висящий
-// ClickHouse-запрос (Query здесь не ставит СВОЙ таймаут, в отличие от
-// host.Evaluator) съедал бы тик целиком и сдвигал бы все последующие.
+// Дедлайн тика — доля Interval, но не меньше пола (как у host.Evaluator): Query здесь не ставит СВОЙ
+// таймаут — висящий ClickHouse-запрос иначе съедал бы тик целиком и сдвигал бы все последующие.
 const (
 	tickBudgetShare = 0.8
 	minTickBudget   = 10 * time.Second
 )
 
-// Evaluator периодически считает агрегат каждой enabled-метрики за окно правила
-// и открывает/закрывает инциденты, шлёт алерт ровно один раз на открытие и
-// закрытие (калька trace.Evaluator). Тикер живёт в режимах uptime|all.
-// ruleLister — источник включённых правил. Интерфейс, а не конкретный тип,
-// ровно по той же причине, что issueUpserter/eventSink в пакете ingest: без
-// него у цикла Run нет наблюдаемого следа, и тест «поспал и убедился, что
-// горутина вышла» оставался зелёным, даже если вырезать тело тика целиком.
+// Интерфейс, не конкретный тип: иначе Run не даёт наблюдаемого следа, и тест «поспал,
+// проверил, что горутина вышла» остался бы зелёным даже при вырезанном тике.
 type ruleLister interface {
 	ListEnabled(ctx context.Context) ([]Rule, error)
 }
 
-// metricGroupHook — членство в группах инцидентов (D3, incidentgroup.Grouper)
-// для правил с label_key='host': узел резолвится по hosts.name = label_value
-// того же проекта (Р1). Duck-typed локально, как MaintenanceChecker: пакет
-// metric не импортирует incidentgroup. Nil-совместим — деградированная сборка
-// без групп ведёт себя как до D3.
+// Членство в группах инцидентов для правил с label_key='host' — узел резолвится по hosts.name =
+// label_value того же проекта. Duck-typed локально (metric не импортирует incidentgroup), nil-совместим.
 type metricGroupHook interface {
 	AttachMetric(ctx context.Context, incidentID, projectID int64, hostName string) (attached, rootInforming bool, err error)
 }
@@ -50,34 +40,26 @@ type Evaluator struct {
 	Notifier  *MetricNotifier
 	Interval  time.Duration
 
-	// Maint — окна обслуживания проекта (B3: подавление уведомлений). Nil-
-	// совместим: деградированная сборка без него просто никогда не подавляет
-	// (inMaintenance всегда false), а не паникует. ПРОД (main.go,
-	// startEvaluators) обязан его заполнять.
+	// Окна обслуживания проекта — nil-совместимо: без него просто никогда не подавляет (inMaintenance
+	// всегда false), не паникует. Прод (main.go, startEvaluators) обязан заполнять.
 	Maint MaintenanceChecker
 
-	// Policy — политика эскалации (B4, T7): резолвит лесенку (project,
-	// severity) на открытии инцидента. Nil-совместим — деградированная сборка
-	// без него просто не уведомляет об открытии.
+	// Политика эскалации: резолвит лесенку (project, severity) на открытии. Nil-совместима — без неё
+	// просто не уведомляет об открытии.
 	Policy *escalation.PolicyStore
 
-	// Pool — та же PG, что под Incidents/Rules: читает лог эскалации
-	// incident_escalations для адресного recovery при закрытии (B4, T7, см.
-	// notifyClose, escalation.RecoveryChannels). Nil-совместим.
+	// Та же PG, что под Incidents/Rules: читает лог эскалации для адресного recovery при закрытии.
+	// Nil-совместим.
 	Pool *pgxpool.Pool
 
-	// IncidentGroups — группы инцидентов (D3, incidentgroup.Grouper): членство
-	// свежеоткрытого инцидента правила label_key='host' в группе его
-	// down-корня. Уведомление уходит только при конъюнкции гейтов
-	// «не maintenance И не grouped» (исход от порядка проверок не зависит).
-	// Nil-совместим, как Maint.
+	// Членство свежеоткрытого инцидента правила label_key='host' в группе его down-корня. Уведомление уходит
+	// только при «не maintenance И не grouped» (порядок проверок не важен). Nil-совместимо, как Maint.
 	IncidentGroups metricGroupHook
 
 	lastTickUnix    atomic.Int64  // unix-время последнего завершённого тика
 	lastTickSeconds atomic.Uint64 // длительность последнего тика, math.Float64bits
 }
 
-// Run тикает каждый Interval, пока не отменят ctx.
 func (e *Evaluator) Run(ctx context.Context) {
 	interval := e.interval()
 	tick := time.NewTicker(interval)
@@ -99,7 +81,6 @@ func (e *Evaluator) interval() time.Duration {
 	return e.Interval
 }
 
-// tickBudget — дедлайн одного тика (см. tickBudgetShare/minTickBudget).
 func (e *Evaluator) tickBudget() time.Duration {
 	budget := time.Duration(float64(e.interval()) * tickBudgetShare)
 	if budget < minTickBudget {
@@ -108,22 +89,16 @@ func (e *Evaluator) tickBudget() time.Duration {
 	return budget
 }
 
-// LastTickUnix — unix-время последнего завершённого тика (0, если ни одного
-// ещё не было). Self-метрика живости: умерший или отставший оценщик снаружи
-// выглядит ровно как «по всем правилам спокойно» — молчание и есть его
-// нормальный вывод, как у host.Evaluator/slo.Evaluator.
+// Self-метрика живости: умерший или отставший оценщик снаружи выглядит ровно как «по всем правилам
+// спокойно» — молчание и есть нормальный вывод, как у host.Evaluator/slo.Evaluator.
 func (e *Evaluator) LastTickUnix() int64 { return e.lastTickUnix.Load() }
 
-// LastTickSeconds — длительность последнего завершённого тика в секундах.
 func (e *Evaluator) LastTickSeconds() float64 {
 	return math.Float64frombits(e.lastTickSeconds.Load())
 }
 
-// Tick — один проход по всем enabled-правилам. Ошибка по одному правилу не
-// роняет остальные (error-isolation). Тик ограничен дедлайном (tickBudget):
-// Query здесь берёт голый ClickHouse-запрос без собственного таймаута, и без
-// внешнего дедлайна повисший запрос держал бы тик (и self-метрику живости)
-// бесконечно.
+// Ошибка по одному правилу не роняет остальные (error-isolation). Тик ограничен дедлайном: Query берёт
+// голый CH-запрос без своего таймаута — без внешнего дедлайна повисший запрос держал бы тик бесконечно.
 func (e *Evaluator) Tick(ctx context.Context) {
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, e.tickBudget())
@@ -180,8 +155,8 @@ func (e *Evaluator) evalRule(ctx context.Context, r Rule, now time.Time) {
 			return
 		}
 		if created {
-			// D3: членство решается и для инцидента, открытого в maintenance,
-			// — состав группы собирается всегда, гейтится только уведомление.
+			// Членство решается и для инцидента, открытого в maintenance — состав группы собирается всегда,
+			// гейтится только уведомление.
 			grouped := e.groupGate(ctx, r, in)
 			if !inMaint && !grouped {
 				e.notifyOpen(ctx, r, in)
@@ -204,10 +179,8 @@ func (e *Evaluator) evalRule(ctx context.Context, r Rule, now time.Time) {
 	}
 }
 
-// ruleSeverity — severity для резолва лесенки эскалации: override правила
-// (Task 5, metric_alert_rules.severity), а "" (нет override) — table-DEFAULT
-// metric_incidents.severity ('warning', 0077), той же константой, что
-// IncidentService.Open подставляет в БД через COALESCE.
+// override правила, а при его отсутствии ("") — table-DEFAULT metric_incidents.severity ('warning'),
+// той же константой, что IncidentService.Open подставляет в БД через COALESCE.
 func ruleSeverity(r Rule) string {
 	if r.Severity != "" {
 		return r.Severity
@@ -215,12 +188,8 @@ func ruleSeverity(r Rule) string {
 	return escalation.SeverityWarning
 }
 
-// inMaintenance — проект сейчас в окне обслуживания (B3), для гейта
-// open-notify в evalRule. Ошибка проверки НЕ отменяет открытие инцидента: она
-// лишь означает, что не удалось выяснить, плановые ли это работы, и
-// трактуется как «не в окне» — молчать о реальном инциденте дороже, чем
-// уведомить лишний раз (то же решение, что host.Evaluator.inMaintenance).
-// Maint==nil (деградированная сборка) — тот же результат.
+// Ошибка проверки НЕ отменяет открытие инцидента — трактуется как «не в окне»: молчать о реальном
+// инциденте дороже, чем уведомить лишний раз (как host.Evaluator.inMaintenance). Maint==nil — тот же результат.
 func (e *Evaluator) inMaintenance(ctx context.Context, projectID int64, now time.Time) bool {
 	if e.Maint == nil {
 		return false
@@ -234,13 +203,8 @@ func (e *Evaluator) inMaintenance(ctx context.Context, projectID int64, now time
 	return v
 }
 
-// groupGate — D3-гейт открытия: только правила label_key='host' (у прочих
-// правил нет узла дерева зависимостей, Р1) — их инциденты присоединяются к
-// группе down-корня своего хоста. true — член ИНФОРМИРУЮЩЕЙ группы (Р4,
-// root.notified_open на момент attach): step0 не зовётся, информирует
-// корень. Немой корень / неизвестный хост — attach только для состава или
-// вовсе без attach, уведомление штатно. Fail-safe (fail-noisy): ошибка →
-// шумим как без D3 — лучше лишний алерт, чем пропущенный.
+// Только правила label_key='host' — их инциденты присоединяются к группе down-корня своего хоста.
+// Fail-safe (fail-noisy): ошибка → шумим как без группировки, лучше лишний алерт, чем пропущенный.
 func (e *Evaluator) groupGate(ctx context.Context, r Rule, in Incident) bool {
 	if e.IncidentGroups == nil || r.LabelKey != "host" || r.LabelValue == "" {
 		return false
@@ -253,10 +217,8 @@ func (e *Evaluator) groupGate(ctx context.Context, r Rule, in Incident) bool {
 	return attached && informing
 }
 
-// notifyOpen — реролл (B4, T7): открытие инцидента резолвит лесенку
-// эскалации (project, severity правила — ruleSeverity) и шлёт РОВНО СТУПЕНЬ
-// 0, если её задержка (обычно 0) уже настала; остальные ступени досылает
-// планировщик (T8). Ошибка политики/уведомления не должна ронять оценку.
+// Открытие резолвит лесенку эскалации (project, severity правила) и шлёт РОВНО СТУПЕНЬ 0, если её
+// задержка уже настала; остальные ступени досылает планировщик. Ошибка не должна ронять оценку.
 func (e *Evaluator) notifyOpen(ctx context.Context, r Rule, in Incident) {
 	if e.Policy == nil || e.Notifier == nil || e.Pool == nil {
 		return
@@ -280,10 +242,8 @@ func (e *Evaluator) notifyOpen(ctx context.Context, r Rule, in Incident) {
 	}
 }
 
-// notifyClose — реролл (B4, T7): закрытие инцидента шлёт recovery адресно, в
-// каналы из лога эскалации (escalation.RecoveryChannels); пустой набор —
-// молчание (M-7 брифа Task 6, ничего не отправлялось — отправлять «закрыт»
-// нечего).
+// Закрытие шлёт recovery адресно, в каналы из лога эскалации — пустой набор значит молчание
+// (отправлять «закрыт» нечего).
 func (e *Evaluator) notifyClose(ctx context.Context, open Incident) {
 	if e.Pool == nil || e.Notifier == nil {
 		return
@@ -305,8 +265,7 @@ func (e *Evaluator) notifyClose(ctx context.Context, open Incident) {
 	}
 }
 
-// worse возвращает экстремум в сторону нарушения: для gt — больший, для lt —
-// меньший (peak = самое «плохое» значение за время инцидента).
+// Для gt экстремум — больший, для lt — меньший (peak = худшее значение за инцидент).
 func worse(comparator string, a, b float64) float64 {
 	if comparator == "lt" {
 		if b < a {

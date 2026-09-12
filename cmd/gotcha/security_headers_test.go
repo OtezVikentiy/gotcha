@@ -8,23 +8,9 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/selfmetrics"
 )
 
-// TestBaseSecurityHeadersCoverServiceRoutes: служебные и приёмные ручки
-// регистрируются на корневом mux и по правилам Go 1.22 перекрывают «/», то есть
-// проходят мимо web.securityHeaders. Заголовки, верные для любого ответа,
-// обязаны стоять на уровне сервера.
-//
-// Тест собирает РЕАЛЬНЫЙ сервер через newServer(cfg, newRootMux(deps)) — те же
-// две функции, что используются в run() (server.go), — и проверяет заголовки
-// на настоящих путях: /healthz, /readyz, /version, /metrics и приёмном
-// /api/{project}/store/. Раньше тест собирал свой mux с тремя заглушками, и
-// замена боевой строки `Handler: baseSecurityHeaders(mux)` на `Handler: mux`
-// в newServer никак не красила этот тест — проверялась только миддлварь, а не
-// сервер, который реально слушает порт.
 func TestBaseSecurityHeadersCoverServiceRoutes(t *testing.T) {
-	// authenticate() в ingest.Handler.store возвращает 401 раньше, чем
-	// коснётся keys/quota/pipeline, если в запросе нет sentry_key — поэтому
-	// nil-зависимости здесь безопасны: заголовки нас интересуют, а не тело
-	// ответа приёма.
+	// authenticate() возвращает 401 раньше, чем коснётся keys/quota/pipeline,
+	// если в запросе нет sentry_key — nil-зависимости здесь безопасны.
 	ingestHandler := ingest.NewHandler(nil, nil, nil, 1<<20)
 	var metrics selfmetrics.Registry
 	srv := newServer(&Config{Addr: ":0"}, newRootMux(rootDeps{

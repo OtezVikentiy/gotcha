@@ -1,11 +1,5 @@
 package db_test
 
-// Тест на непустой базе для 0068 (host_incidents_host_id_idx.up.sql, T10).
-// Новейшая миграция сдвинулась на 0069 (hosts_agent_version, T8, см.
-// migrate_0069_test.go) — комментарий-указатель для TestLatestMigrationHasDataTest
-// (internal/guards) переехал туда. Тест 0065 (host_threshold_settings, T9)
-// трогать не нужно, он остаётся за 0065.
-
 import (
 	"context"
 	"testing"
@@ -16,14 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0068HostIncidentsCreateOpenResolveThenDropCascade — миграции
-// 0066-0068 (§4.3 дизайна) на непустой базе: 0066 заводит host_incidents с
-// project_id/host_id FK, CHECK'ами на kind/status И частичным уникальным
-// индексом (host_id, kind) WHERE status='open' — тем самым, на который
-// опирается гонко-безопасный IncidentService.Open (второй INSERT того же
-// открытого (host_id, kind) обязан упасть на конфликт); 0067/0068 — индексы
-// для листинга по проекту и покрытия FK по host_id. Откат до 63 убирает
-// таблицу целиком (DROP TABLE каскадом снимает и её индексы).
+// 0066 заводит host_incidents с частичным уникальным индексом (host_id, kind) WHERE status='open' —
+// на нём держится гонко-безопасный IncidentService.Open; 0067/0068 — индексы для листинга/FK.
 func TestMigrate0068HostIncidentsCreateOpenResolveThenDropCascade(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -55,8 +43,6 @@ func TestMigrate0068HostIncidentsCreateOpenResolveThenDropCascade(t *testing.T) 
 	mustScan(t, pool, &hostID,
 		"INSERT INTO hosts (project_id, name) VALUES ($1, 'm68-web') RETURNING id", projectID)
 
-	// Открываем инцидент — обязательные NOT NULL/CHECK колонки (kind, status)
-	// принимают допустимые значения.
 	var incidentID int64
 	mustScan(t, pool, &incidentID, `
 		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value, detail)
@@ -70,9 +56,7 @@ func TestMigrate0068HostIncidentsCreateOpenResolveThenDropCascade(t *testing.T) 
 		t.Fatal("insert с kind='bogus' должен упасть на CHECK, но прошёл")
 	}
 
-	// 0066: частичный уникальный индекс (host_id, kind) WHERE status='open' —
-	// второй открытый инцидент того же (host_id, kind) обязан конфликтовать
-	// (реальный сценарий IncidentService.Open под конкурентными вызовами).
+	// Второй открытый инцидент того же (host_id, kind) обязан конфликтовать — сценарий IncidentService.Open.
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO host_incidents (project_id, host_id, kind, status, peak_value, current_value)
 		VALUES ($1, $2, 'disk', 'open', 0.9, 0.9)`, projectID, hostID); err == nil {
@@ -86,8 +70,7 @@ func TestMigrate0068HostIncidentsCreateOpenResolveThenDropCascade(t *testing.T) 
 		t.Fatalf("insert другого kind того же хоста не должен конфликтовать: %v", err)
 	}
 
-	// Резолвим первый — после этого повторное открытие того же (host_id,
-	// kind='disk') снова проходит: частичный индекс больше не видит строку.
+	// После resolve частичный индекс не видит строку — то же (host_id, kind) открывается снова.
 	if _, err := pool.Exec(ctx,
 		"UPDATE host_incidents SET status = 'resolved', resolved_at = now() WHERE id = $1", incidentID); err != nil {
 		t.Fatalf("resolve incident: %v", err)
@@ -98,8 +81,7 @@ func TestMigrate0068HostIncidentsCreateOpenResolveThenDropCascade(t *testing.T) 
 		t.Fatalf("insert disk после resolve не должен конфликтовать: %v", err)
 	}
 
-	// 0067/0068: индексы существуют (используются планировщиком для
-	// листинга по проекту и покрытия FK host_id).
+	// Индексы 0067/0068 — для листинга по проекту и покрытия FK host_id.
 	for _, idx := range []string{
 		"host_incidents_one_open_idx",
 		"host_incidents_project_started_idx",

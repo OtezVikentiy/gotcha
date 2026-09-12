@@ -11,18 +11,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// TestTraceIsNeverServed — TRACE не обслуживается ни в одной конфигурации
-// корневого mux и не отражает запрос обратно (XST).
-//
-// Режимов два, и они чисты ПО-РАЗНОМУ. В "web"/"all" catch-all веб-слоя
-// (web.go:873) перехватывает любой метод раньше, чем stdlib успевает отдать
-// 405, — приложение отвечает стилизованной 404 и Allow не отдаёт вовсе.
-// В "ingest" веб-хендлера нет, и mux штатно отвечает 405 с Allow:
-// "OPTIONS, POST" — OPTIONS в этот список добавляет сам stdlib, TRACE не
-// добавляет никто, потому что он нигде не зарегистрирован.
-// Поэтому ассерт «строго 404» или «строго 405» был бы верен ровно в половине
-// конфигураций: проверяем то, что верно в обеих — ответ не 200, тело не
-// отражает запрос, а Allow, если он вообще отдан, не содержит TRACE.
+// «web» ловит TRACE catch-all-ом раньше 405 (голая 404, без Allow), «ingest» отвечает 405 с Allow
+// без TRACE — проверяем общее для обоих: не 200, тело не отражено, Allow не содержит TRACE
 func TestTraceIsNeverServed(t *testing.T) {
 	ingestHandler := ingest.NewHandler(nil, nil, nil, 1<<20)
 	var metrics selfmetrics.Registry

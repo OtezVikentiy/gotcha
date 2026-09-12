@@ -22,24 +22,15 @@ var (
 	ErrInvalidMonitor = errors.New("uptime: invalid monitor")
 )
 
-// Service — CRUD над мониторами доступности поверх PostgreSQL.
 type Service struct {
 	pool *pgxpool.Pool
 
-	// LocalRegion — как на самом деле НАЗЫВАЕТСЯ регион встроенной пробы в
-	// этой инсталляции: тот, которым Runner помечает свои проверки и который
-	// он лизит (cmd/gotcha: cfg.LocalRegion, GOTCHA_UPTIME_LOCAL_REGION). Пустое
-	// значение — DefaultRegion ("local"). Хардкодить "local" нельзя: Regions
-	// предлагает этот список в форме монитора, и монитор, назначенный в
-	// регион, который никто не лизит, не будет проверяться НИКОГДА (см.
-	// localRegion).
+	// реальное имя региона встроенной пробы (cfg.LocalRegion), которым лизит Runner —
+	// хардкодить "local" нельзя, иначе монитор в другом регионе не проверится никогда.
 	LocalRegion string
 
-	// ring/secretKeySet — кольцо ключей шифрования ЗНАЧЕНИЙ HTTP-заголовков
-	// монитора at-rest (то же кольцо, что у alert.Service для секретов каналов
-	// и org для SSO client_secret). secretKeySet=false (кольцо не задано, dev)
-	// — заголовки хранятся plaintext, читатель распознаёт по отсутствию
-	// префикса "enc:". Ставится из main.go.
+	// secretKeySet=false (dev, ключ не задан) — заголовки хранятся plaintext,
+	// читатель распознаёт по отсутствию префикса "enc:".
 	ring         secretbox.Keyring
 	secretKeySet bool
 }
@@ -48,19 +39,12 @@ func NewService(pool *pgxpool.Pool) *Service {
 	return &Service{pool: pool}
 }
 
-// SetKeyring включает шифрование значений HTTP-заголовков монитора at-rest тем
-// же кольцом ключей, что и остальные секреты продукта. Не вызывается вовсе
-// для dev-стендов — заголовки остаются plaintext (openHTTPHeaders распознаёт
-// это по отсутствию префикса "enc:"). Мирроринг alert.Service.SetKeyring.
 func (s *Service) SetKeyring(ring secretbox.Keyring) {
 	s.ring = ring
 	s.secretKeySet = true
 }
 
-// encryptMonitorConfig возвращает config со ЗАШИФРОВАННЫМИ значениями заголовков
-// (только kind=http и только при заданном ключе); иначе config без изменений.
-// Применяется на записи (Create/Update): в БД значения заголовков не должны
-// лежать plaintext — их видит роль operator.
+// в БД заголовки не должны лежать plaintext — их видит роль operator.
 func (s *Service) encryptMonitorConfig(kind Kind, raw json.RawMessage) (json.RawMessage, error) {
 	if !s.secretKeySet || kind != KindHTTP {
 		return raw, nil
@@ -68,18 +52,8 @@ func (s *Service) encryptMonitorConfig(kind Kind, raw json.RawMessage) (json.Raw
 	return sealHTTPHeaders(s.ring, raw)
 }
 
-// decryptMonitorConfig расшифровывает значения заголовков http-монитора на месте.
-// Для прочих типов — no-op. Ошибка означает неразбираемый ciphertext
-// (сменившийся GOTCHA_SECRET_KEY): вызывающий решает, ронять операцию (Get)
-// или деградировать поштучно (lease), не убивая всю партию.
-//
-// При отсутствии ключа (dev-дефолт или ОТКАТ GOTCHA_SECRET_KEY на dev — этот
-// метод по имени совпадает с тем, что читает env, но фактически ключ не
-// установлен) заголовки НЕ no-op: настоящий enc:-ciphertext, оставшийся от
-// работы с реальным ключом, без него не читается, и отдать его как значение
-// заголовка — значит отправить ciphertext в исходящий запрос чекера (проверка
-// упадёт на мусорном значении молча, как «неверный токен», а не явно). Такие
-// значения обнуляются; legacy plaintext остаётся как есть.
+// ошибка = нечитаемый ciphertext — вызывающий сам решает, ронять операцию или
+// деградировать поштучно; без ключа enc:-заголовки обнуляются, а не текут наружу.
 func (s *Service) decryptMonitorConfig(m *Monitor) error {
 	if m.Kind != KindHTTP {
 		return nil
@@ -104,49 +78,11 @@ func (s *Service) decryptMonitorConfig(m *Monitor) error {
 	return nil
 }
 
-// rewrapLogCap — сколько нечитаемых значений заголовков бэкфилл логирует
-// подробно за один проход. Симметрично alert.rewrapLogCap/org.rewrapLogCap.
+// сколько нечитаемых заголовков бэкфилл логирует подробно за один проход.
 const rewrapLogCap = 5
 
-// RewrapSecrets поднимает значения HTTP-заголовков мониторов kind=http до
-// конверта v2 ТЕКУЩЕГО ключа кольца. Заменяет EncryptLegacyHeaders (A2a):
-// тот дошифровывал только legacy plaintext, этот поднимает вообще всё
-// читаемое — legacy plaintext, v1 текущим ключом, v2 предыдущим ключом — до
-// текущей версии. Это и есть смысл ротации GOTCHA_SECRET_KEY (см. §6 спеки
-// ротации мастер-ключа): инстанс, который ещё ни разу не ротировал ключ,
-// всё равно приезжает в v2, иначе первая реальная ротация упёрлась бы в
-// v1-значения, для которых нет id. Вызывается один раз на старте сразу после
-// SetKeyring (main.go), до подъёма слушателя. Без ключа (dev) — no-op.
-//
-// Идемпотентен: строка, целиком лежащая в v2 текущего ключа, не
-// переписывается — второй проход возвращает 0.
-//
-// Деградация ПО ЗНАЧЕНИЮ, а не по строке (rewrapHTTPHeaders, config.go): у
-// монитора может быть один читаемый и один нечитаемый (запечатан потерянным
-// ключом) заголовок разом. Читаемый поднимается, нечитаемый остаётся как
-// есть, строка обновляется — пропуск всей строки навсегда законсервировал бы
-// читаемый plaintext.
-//
-// CAS по старому значению config (casUpdateMonitorConfig): ноль затронутых
-// строк значит, что монитор изменили между чтением и записью — другой
-// оператор через форму или другой инстанс в параллели уже перешифровал —
-// и не является ошибкой, просто пропуск. Ужесточение против прежнего
-// EncryptLegacyHeaders, писавшего безусловным UPDATE ... WHERE id = $1,
-// способным затереть такую параллельную правку.
-//
-// Читает партиями: курсор закрывается ДО первого UPDATE — держать его
-// открытым и параллельно слать запись по тому же пулу нельзя (грабли уже
-// были учтены в прежнем EncryptLegacyHeaders).
-//
-// Не роняет старт: нерасшифруемое значение — slog.Error (id монитора и
-// причина; key-id конверта, если он был в форме, уже есть в тексте
-// secretbox.ErrOpen), проход продолжается. Подробный лог капируется первыми
-// rewrapLogCap значениями на весь вызов — иначе массово провалившаяся
-// ротация топит итог в полотне на тысячу строк. Итог — одна slog.Info:
-// сколько обновлено, сколько пропущено как нечитаемые. Ошибка всего прохода
-// (сам SQL — Query/Scan/rows.Err) возвращается вызывающему; решение «не
-// ронять старт» принимает bootstrap, здесь только журналирование не
-// задваивается.
+// курсор закрывается до UPDATE — держать его открытым при записи по тому же
+// пулу нельзя; апгрейд идёт по значению, нечитаемый сосед в строке не мешает.
 func (s *Service) RewrapSecrets(ctx context.Context) (int, error) {
 	if !s.secretKeySet {
 		return 0, nil
@@ -155,8 +91,6 @@ func (s *Service) RewrapSecrets(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	// Собираем кандидатов ДО апдейтов: держать rows открытыми и параллельно
-	// слать UPDATE по тому же пулу нельзя.
 	type candidate struct {
 		id  int64
 		cfg json.RawMessage
@@ -204,11 +138,7 @@ func (s *Service) RewrapSecrets(ctx context.Context) (int, error) {
 	return updated, nil
 }
 
-// casUpdateMonitorConfig — точечный compare-and-swap апдейт config: UPDATE
-// применяется, только если config в таблице всё ещё равен oldCfg. Ноль
-// затронутых строк — не ошибка, просто «промахнулись» (см. RewrapSecrets).
-// Выделен в отдельный метод (а не заинлайнен в цикл RewrapSecrets), чтобы
-// race-safety CAS-предиката проверялась отдельным детерминированным тестом,
+// отдельный метод — CAS-предикат проверяется детерминированным тестом,
 // без гонки по времени с остальным циклом бэкфилла.
 func (s *Service) casUpdateMonitorConfig(ctx context.Context, id int64, newCfg, oldCfg json.RawMessage) (bool, error) {
 	tag, err := s.pool.Exec(ctx,
@@ -219,8 +149,6 @@ func (s *Service) casUpdateMonitorConfig(ctx context.Context, id int64, newCfg, 
 	return tag.RowsAffected() > 0, nil
 }
 
-// localRegion — имя встроенного региона: LocalRegion, а если не задано —
-// DefaultRegion.
 func (s *Service) localRegion() string {
 	if s.LocalRegion == "" {
 		return DefaultRegion
@@ -228,7 +156,6 @@ func (s *Service) localRegion() string {
 	return s.LocalRegion
 }
 
-// generateHeartbeatToken — 32 случайных байта в hex (64 символа).
 func generateHeartbeatToken() (string, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
@@ -237,17 +164,13 @@ func generateHeartbeatToken() (string, error) {
 	return hex.EncodeToString(raw), nil
 }
 
-// heartbeatTokenHash — sha256 сырого heartbeat-токена. В БД хранится только он
-// (monitors.heartbeat_token_hash), а не сам токен — так же, как probe-токены
-// (probeTokenHash) и session-токены. Сырой токен вызывающий видит один раз при
-// Create; на приёме пинга входящий токен снова хешируется и ищется по хешу.
+// в БД хранится только хеш, не сам токен; вызывающий видит сырой токен
+// один раз при Create, дальше пинг хешируется и ищется по хешу.
 func heartbeatTokenHash(token string) []byte {
 	sum := sha256.Sum256([]byte(token))
 	return sum[:]
 }
 
-// checkChannelsBelongToProject проверяет, что все channelIDs — каналы
-// проекта projectID; иначе ErrInvalidMonitor.
 func checkChannelsBelongToProject(ctx context.Context, tx pgx.Tx, projectID int64, channelIDs []int64) error {
 	if len(channelIDs) == 0 {
 		return nil
@@ -278,15 +201,8 @@ func checkChannelsBelongToProject(ctx context.Context, tx pgx.Tx, projectID int6
 	return nil
 }
 
-// checkRegionsAvailable проверяет, что все выбранные регионы доступны
-// организации проекта: встроенный регион этой инсталляции плюс регионы её
-// неотозванных проб.
-//
-// Форма предлагает только свои регионы, но POST принимал любую строку. Монитор
-// с несуществующим регионом попадал в очередь, и его не забирал никто — тихий
-// отказ мониторинга, который выглядит как «проверок нет, значит всё хорошо».
-// Кросс-тенантной утечки тут не было (лизы скоупятся по организации), но именно
-// поэтому дефект и был незаметен.
+// не кросс-тенантная защита — та обеспечена скоупом лиз по организации;
+// здесь только против монитора в регионе, который никто не лизит.
 func (s *Service) checkRegionsAvailable(ctx context.Context, tx pgx.Tx, projectID int64, regions []string) error {
 	if len(regions) == 0 {
 		return nil
@@ -333,9 +249,6 @@ func insertChannels(ctx context.Context, tx pgx.Tx, monitorID int64, channelIDs 
 	return nil
 }
 
-// Create создаёт монитор вместе с регионами и каналами в одной транзакции.
-// Пустые regions превращаются в ["local"]. Для kind=heartbeat генерирует
-// уникальный heartbeat_token.
 func (s *Service) Create(ctx context.Context, m Monitor, regions []string, channelIDs []int64) (Monitor, error) {
 	if err := validateMonitor(m, regions); err != nil {
 		return Monitor{}, err
@@ -366,8 +279,7 @@ func (s *Service) Create(ctx context.Context, m Monitor, regions []string, chann
 	} else {
 		m.HeartbeatToken = ""
 	}
-	// В БД сохраняем только sha256 токена. Сырой m.HeartbeatToken остаётся в
-	// возвращаемом мониторе и показывается вызывающему один раз (как probe).
+	// в БД — только sha256 токена; сырой остаётся в m и показывается один раз.
 	var heartbeatTokenHashVal []byte
 	if m.HeartbeatToken != "" {
 		heartbeatTokenHashVal = heartbeatTokenHash(m.HeartbeatToken)
@@ -410,9 +322,8 @@ func (s *Service) Create(ctx context.Context, m Monitor, regions []string, chann
 	return m, nil
 }
 
-// Update обновляет монитор и заменяет его regions/channels. kind и
-// heartbeat_token монитора не меняются, даже если m содержит другие
-// значения — они читаются из БД перед валидацией и записью.
+// kind и heartbeat_token не меняются через Update, даже если m содержит
+// другие значения — читаются из БД до валидации и записи.
 func (s *Service) Update(ctx context.Context, m Monitor, regions []string, channelIDs []int64) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -446,9 +357,8 @@ func (s *Service) Update(ctx context.Context, m Monitor, regions []string, chann
 		return err
 	}
 
-	// Значения заголовков шифруем at-rest (kind берётся из БД выше). Это же —
-	// точка ленивой миграции старых plaintext-записей: форма грузит монитор через
-	// Get (расшифровка), пользователь сохраняет — Update кладёт обратно enc:.
+	// точка ленивой миграции: форма грузит монитор через Get (расшифровка),
+	// пользователь сохраняет — Update кладёт обратно enc:.
 	storedConfig, err := s.encryptMonitorConfig(m.Kind, m.Config)
 	if err != nil {
 		return fmt.Errorf("uptime: update: %w", err)
@@ -474,12 +384,8 @@ func (s *Service) Update(ctx context.Context, m Monitor, regions []string, chann
 	if err := insertRegions(ctx, tx, m.ID, regions); err != nil {
 		return err
 	}
-	// Состояние и невыполненные задания снятых регионов — вслед за самими
-	// регионами. Иначе строка состояния остаётся навсегда (её больше некому
-	// перезаписать: задание для снятого региона не ставится), а задание в
-	// очереди будет один раз взято в лизу и выполнено уже после того, как
-	// регион у монитора убрали. Чтение дополнительно защищено JOIN'ом в
-	// States/StatesBatch — это для тех строк, что уже накопились.
+	// иначе строка состояния снятого региона зависает навсегда (её больше
+	// некому перезаписать), а его задание в очереди ещё раз выполнится.
 	if _, err := tx.Exec(ctx,
 		"DELETE FROM monitor_state WHERE monitor_id = $1 AND region <> ALL($2)", m.ID, regions); err != nil {
 		return fmt.Errorf("uptime: update: drop stale state: %w", err)
@@ -502,8 +408,7 @@ func (s *Service) Update(ctx context.Context, m Monitor, regions []string, chann
 	return nil
 }
 
-// Delete удаляет монитор. Каскадом (FK ON DELETE CASCADE) удаляются его
-// regions, channels, state, инциденты и т.д.
+// каскадом (FK ON DELETE CASCADE) удаляются regions/channels/state/инциденты.
 func (s *Service) Delete(ctx context.Context, monitorID int64) error {
 	tag, err := s.pool.Exec(ctx, "DELETE FROM monitors WHERE id = $1", monitorID)
 	if err != nil {
@@ -533,10 +438,8 @@ func regionsOf(ctx context.Context, pool *pgxpool.Pool, monitorID int64) ([]stri
 	return out, rows.Err()
 }
 
-// regionsOfBatch — то же, что regionsOf, но для набора monitorIDs одним
-// запросом (ORDER BY monitor_id, region — порядок регионов внутри каждого
-// монитора тот же, что даёт regionsOf). Мониторы без регионов отсутствуют в
-// карте; GetBatch читает через неё с обычным zero-value для nil-слайса.
+// мониторы без регионов отсутствуют в карте — GetBatch читает нулевым
+// значением для nil-слайса, порядок внутри монитора тот же, что у regionsOf.
 func regionsOfBatch(ctx context.Context, pool *pgxpool.Pool, monitorIDs []int64) (map[int64][]string, error) {
 	out := make(map[int64][]string, len(monitorIDs))
 	if len(monitorIDs) == 0 {
@@ -578,10 +481,8 @@ func channelIDsOf(ctx context.Context, pool *pgxpool.Pool, monitorID int64) ([]i
 	return out, rows.Err()
 }
 
-// scanMonitor заполняет монитор из строки monitorColumns. HeartbeatToken при
-// чтении не восстанавливается: в БД хранится только sha256 токена
-// (heartbeat_token_hash), а сырой токен вызывающий видит лишь один раз при
-// Create.
+// HeartbeatToken не восстанавливается: в БД только его sha256; сырой
+// вызывающий видит один раз при Create.
 func scanMonitor(row pgx.Row, m *Monitor) error {
 	return row.Scan(&m.ProjectID, &m.Name, &m.Kind, &m.Enabled, &m.IntervalSeconds, &m.TimeoutSeconds,
 		&m.Config, &m.FailThreshold, &m.RecoveryThreshold, &m.Consensus, &m.RemindEveryMinutes,
@@ -592,7 +493,6 @@ const monitorColumns = `project_id, name, kind, enabled, interval_seconds, timeo
 	fail_threshold, recovery_threshold, consensus, remind_every_minutes, ssl_alert_days,
 	ssl_expires_at, last_beat_at, created_at, retries`
 
-// Get возвращает монитор вместе с его regions и channels.
 func (s *Service) Get(ctx context.Context, monitorID int64) (Monitor, error) {
 	m := Monitor{ID: monitorID}
 	row := s.pool.QueryRow(ctx, "SELECT "+monitorColumns+" FROM monitors WHERE id = $1", monitorID)
@@ -602,8 +502,8 @@ func (s *Service) Get(ctx context.Context, monitorID int64) (Monitor, error) {
 		}
 		return Monitor{}, fmt.Errorf("uptime: get: %w", err)
 	}
-	// Отдаём расшифрованные значения заголовков: этим Get кормит и форму
-	// редактирования (A2b её маскирует), и разовую живую проверку.
+	// Get отдаёт расшифрованные заголовки — его читают форма редактирования
+	// и разовая живая проверка.
 	if err := s.decryptMonitorConfig(&m); err != nil {
 		return Monitor{}, fmt.Errorf("uptime: get: decrypt headers: %w", err)
 	}
@@ -624,30 +524,8 @@ func (s *Service) Get(ctx context.Context, monitorID int64) (Monitor, error) {
 	return m, nil
 }
 
-// GetBatch возвращает мониторы набора monitorIDs одним обходом таблицы
-// monitors плюс один пакетный запрос regions (два запроса вместо Get()'овских
-// трёх на монитор, умноженных на N) — публичная статус-страница иначе звала
-// Get() в цикле и на сорока мониторах упиралась в таймаут сборки.
-//
-// ChannelIDs не заполняются, как и у List() (см. её комментарий): странице
-// они не нужны, а тянуть их батчем ради неиспользуемого поля — лишняя работа.
-// Если появится потребитель, которому ChannelIDs нужны в пакетном виде —
-// заводить тем же приёмом, что ниже для Regions, а не звать channelIDsOf в
-// цикле.
-//
-// Карта заполняется для ВСЕХ monitorIDs, а не только найденных (тот же
-// приём, что StatesBatch, см. её комментарий): монитор, которого уже нет в
-// БД (удалён между чтением списка страницы и сборкой самой страницы),
-// получает нулевой Monitor{ID: id} — у настоящего монитора ProjectID
-// никогда не бывает 0 (bigint GENERATED ALWAYS AS IDENTITY стартует с 1),
-// поэтому проверка "m.ProjectID != sp.ProjectID" на стороне вызывающего
-// одинаково отсекает и «монитора больше нет», и «монитор чужого проекта» —
-// то же самое единственное решение (не показывать монитор на странице), что
-// принимал раньше отдельный errors.Is(err, ErrNotFound) до объединения.
-//
-// ВНИМАНИЕ: как и List, Config здесь НЕ расшифрован — значения заголовков
-// возвращаются в виде enc: (потребителю-статус-странице они не нужны). Не
-// скармливать обратно в Update; за реальными заголовками — в Get.
+// удалённый монитор получает нулевой Monitor{ID: id} — ProjectID=0 и есть сигнал
+// «нет»; Config тут в виде enc: (не расшифрован) — не скармливать обратно в Update.
 func (s *Service) GetBatch(ctx context.Context, monitorIDs []int64) (map[int64]Monitor, error) {
 	out := make(map[int64]Monitor, len(monitorIDs))
 	if len(monitorIDs) == 0 {
@@ -691,15 +569,8 @@ func (s *Service) GetBatch(ctx context.Context, monitorIDs []int64) (map[int64]M
 	return out, nil
 }
 
-// List возвращает мониторы проекта, отсортированные по name, вместе с их
-// regions (ChannelIDs не заполняются — см. Get).
-//
-// ВНИМАНИЕ: Config здесь НЕ расшифрован (в отличие от Get) — значения заголовков
-// http-мониторов возвращаются как лежат в БД (enc:). Списочной и статус-странице
-// значения заголовков не нужны, поэтому plaintext-секреты по этому пути не
-// размазываем. Нельзя скармливать этот Config обратно в Update: sealHTTPHeaders
-// идемпотентен и не перешифрует enc:, но полагаться на это как на контракт не
-// стоит — кому нужны реальные заголовки, берёт монитор через Get.
+// Config здесь НЕ расшифрован (в отличие от Get) — значения как в БД (enc:);
+// не скармливать обратно в Update, за реальными заголовками — в Get.
 func (s *Service) List(ctx context.Context, projectID int64) ([]Monitor, error) {
 	rows, err := s.pool.Query(ctx,
 		"SELECT id, "+monitorColumns+" FROM monitors WHERE project_id = $1 ORDER BY name", projectID)
@@ -734,7 +605,6 @@ func (s *Service) List(ctx context.Context, projectID int64) ([]Monitor, error) 
 	return out, nil
 }
 
-// SetEnabled включает/выключает монитор.
 func (s *Service) SetEnabled(ctx context.Context, monitorID int64, enabled bool) error {
 	tag, err := s.pool.Exec(ctx, "UPDATE monitors SET enabled = $2 WHERE id = $1", monitorID, enabled)
 	if err != nil {
@@ -746,8 +616,6 @@ func (s *Service) SetEnabled(ctx context.Context, monitorID int64, enabled bool)
 	return nil
 }
 
-// ByHeartbeatToken ищет монитор kind=heartbeat по его токену — используется
-// эндпоинтом приёма heartbeat-пингов.
 func (s *Service) ByHeartbeatToken(ctx context.Context, token string) (Monitor, error) {
 	var id int64
 	err := s.pool.QueryRow(ctx,
@@ -761,13 +629,8 @@ func (s *Service) ByHeartbeatToken(ctx context.Context, token string) (Monitor, 
 	return s.Get(ctx, id)
 }
 
-// SetSSLExpiry records the certificate expiry observed by an https check.
-// A no-op (besides the write itself) when expires equals the value already
-// stored. When it differs and is LATER than the stored one, ssl_alerted_days
-// is cleared — a later expiry means a new certificate was issued, so any
-// "N days left" alerts already sent for the old one no longer apply. The
-// comparison and the clear happen in a single UPDATE so a concurrent caller
-// can't observe (or race) a half-applied state.
+// новая expires позже прежней — новый сертификат, обнуляем ssl_alerted_days
+// (старые «осталось N дней» уже неактуальны); сравнение и обнуление — в одном UPDATE.
 func (s *Service) SetSSLExpiry(ctx context.Context, monitorID int64, expires time.Time) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE monitors SET
@@ -787,22 +650,8 @@ func (s *Service) SetSSLExpiry(ctx context.Context, monitorID int64, expires tim
 	return nil
 }
 
-// MonitorChannelIDs returns the ids of monitorID's own delivery channels —
-// the ones linked via monitor_channels — ordered by id, ВКЛЮЧАЯ выключенные.
-// Пустой (nil) результат не ошибка: он означает, что у монитора нет
-// собственных каналов, и вызывающий (см. OutboxNotifier.Notify) откатывается
-// на каналы проекта. Выключенные каналы намеренно НЕ отфильтрованы здесь:
-// иначе монитор, у которого единственный канал выключили, выглядел бы как
-// «без собственных каналов» и его уведомления уходили бы ВО ВСЕ каналы
-// проекта — ровно в те, которые оператор явно исключил. Пропуск выключенных
-// делает сам Notify.
-//
-// Возвращаются именно идентификаторы, а не строки каналов: секреты лежат в
-// alert_channels зашифрованными (secretbox, префикс "enc:"), а мастер-ключ
-// есть только у alert.Service. Читая тут c.secret напрямую, uptime отдавал бы
-// в доставку шифротекст в качестве токена бота — и молча, потому что попытки
-// расшифровать не было, а значит не было и ошибки. Тело канала (включая
-// расшифрованный секрет) добирается через alert.Service.Channels.
+// nil — своих каналов нет, откат на проектные; выключенные не фильтруются здесь,
+// иначе Notify ушёл бы во все каналы проекта; тела каналов — через alert.Service.
 func (s *Service) MonitorChannelIDs(ctx context.Context, monitorID int64) ([]int64, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT channel_id FROM monitor_channels
@@ -823,11 +672,6 @@ func (s *Service) MonitorChannelIDs(ctx context.Context, monitorID int64) ([]int
 	return out, rows.Err()
 }
 
-// TouchHeartbeat records that a heartbeat monitor just received a ping,
-// setting last_beat_at = now(). Used by the public heartbeat endpoint
-// (internal/web/heartbeat.go); the missed-ping watchdog (plan 3) reads
-// last_beat_at to detect a monitor that stopped pinging
-// (last_beat_at + grace < now()).
 func (s *Service) TouchHeartbeat(ctx context.Context, monitorID int64) error {
 	tag, err := s.pool.Exec(ctx, "UPDATE monitors SET last_beat_at = now() WHERE id = $1", monitorID)
 	if err != nil {
@@ -839,10 +683,8 @@ func (s *Service) TouchHeartbeat(ctx context.Context, monitorID int64) error {
 	return nil
 }
 
-// RotateHeartbeatToken выдаёт монитору новый heartbeat-токен, сохраняет только
-// его sha256 и возвращает сырой токен — он показывается пользователю ОДИН РАЗ
-// (в БД плейнтекста нет, «посмотреть» старый URL нельзя, можно лишь перевыпустить).
-// Старый токен сразу перестаёт работать. Только для kind=heartbeat.
+// сырой токен виден один раз; посмотреть прежний нельзя, только перевыпустить —
+// старый сразу перестаёт работать. Только для kind=heartbeat.
 func (s *Service) RotateHeartbeatToken(ctx context.Context, monitorID int64) (string, error) {
 	token, err := generateHeartbeatToken()
 	if err != nil {

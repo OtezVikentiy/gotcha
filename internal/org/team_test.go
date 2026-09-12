@@ -30,7 +30,6 @@ func TestTeamsOf(t *testing.T) {
 		t.Fatalf("CreateTeam: %v", err)
 	}
 
-	// Другая организация не должна протекать в выборку.
 	otherOwner := newUser(t, pool, "teamsof-other@example.com")
 	otherOrg, err := svc.CreateOrg(ctx, "teamsof-other-org", "Other", otherOwner)
 	if err != nil {
@@ -78,7 +77,6 @@ func TestTeamMembers(t *testing.T) {
 			t.Fatalf("AddTeamMember: %v", err)
 		}
 	}
-	// Участник организации, но не команды, не должен попасть в выборку.
 	outsider := newUser(t, pool, "not-in-team@example.com")
 	if err := svc.AddMember(ctx, o.ID, outsider, org.RoleMember); err != nil {
 		t.Fatalf("AddMember (outsider): %v", err)
@@ -191,15 +189,11 @@ func TestRemoveTeamMember(t *testing.T) {
 		t.Fatalf("TeamMembers after remove = %+v err=%v, want empty", members, err)
 	}
 
-	// Повторное удаление (или удаление того, кто и не состоял) → ErrNotMember.
 	if err := svc.RemoveTeamMember(ctx, team.ID, dev); !errors.Is(err, org.ErrNotMember) {
 		t.Fatalf("RemoveTeamMember (already gone): got %v, want ErrNotMember", err)
 	}
 }
 
-// TestRenameTeam — переименование команды не трогает slug, участников и
-// привязанные проекты. До этого правки не было вовсе, и единственным способом
-// поправить название было пересоздать команду, потеряв и то, и другое.
 func TestRenameTeam(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)
@@ -239,9 +233,6 @@ func TestRenameTeam(t *testing.T) {
 	}
 }
 
-// TestRenameTeamScopedToOrg — id команды приходит из формы, поэтому org_id
-// стоит в условии UPDATE: без него администратор одной организации
-// переименовал бы команду соседней, подобрав id.
 func TestRenameTeamScopedToOrg(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)
@@ -273,8 +264,6 @@ func TestRenameTeamScopedToOrg(t *testing.T) {
 	}
 }
 
-// TestRenameTeamRejectsEmptyName — пустое название отклоняется: команда без
-// имени неотличима от соседней в любом списке.
 func TestRenameTeamRejectsEmptyName(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)
@@ -295,10 +284,6 @@ func TestRenameTeamRejectsEmptyName(t *testing.T) {
 	}
 }
 
-// TestDeleteTeam — команду можно удалить (№26): членства и привязки к
-// проектам уходят вместе с ней (FK ON DELETE CASCADE — но контракт
-// проверяем содержательно), чужой orgID её не видит (ErrNotFound), соседняя
-// команда не задета.
 func TestDeleteTeam(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)
@@ -329,7 +314,6 @@ func TestDeleteTeam(t *testing.T) {
 		t.Fatalf("AttachTeam: %v", err)
 	}
 
-	// Чужой orgID команду не удаляет и не палит её существование.
 	strangerOwner := newUser(t, pool, "delteam-stranger@example.com")
 	strangerOrg, err := svc.CreateOrg(ctx, "delteam-stranger-org", "S", strangerOwner)
 	if err != nil {
@@ -353,11 +337,9 @@ func TestDeleteTeam(t *testing.T) {
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM project_teams WHERE team_id = $1", team.ID).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("project_teams rows = %d err=%v, want 0", n, err)
 	}
-	// Соседняя команда жива.
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM teams WHERE id = $1", other.ID).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("keeper rows = %d err=%v, want 1", n, err)
 	}
-	// Повторное удаление — уже ErrNotFound.
 	if err := svc.DeleteTeam(ctx, o.ID, team.ID); !errors.Is(err, org.ErrNotFound) {
 		t.Fatalf("повторный DeleteTeam: err = %v, want ErrNotFound", err)
 	}

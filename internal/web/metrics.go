@@ -17,14 +17,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// systemMetricPrefix — метрики хостового коллектора (T14–T16), которые иначе
-// затопили бы список метрик проекта после подключения хоста.
 const systemMetricPrefix = "system."
 
-// filterSystemMetrics отделяет system.*-метрики от списка, уже полученного
-// ListMetrics (SQL не трогаем — фильтрация только здесь). showSystem=false
-// вырезает их из видимого среза; hiddenCount считается в любом случае — по
-// нему шаблон решает, рисовать ли переключатель.
 func filterSystemMetrics(metrics []metric.MetricInfo, showSystem bool) (visible []metric.MetricInfo, hiddenCount int) {
 	for _, m := range metrics {
 		if strings.HasPrefix(m.Name, systemMetricPrefix) {
@@ -42,11 +36,9 @@ func metricsPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/metrics"
 }
 
-// metricChartBuckets — целевое число корзин графика метрики. Шаг подбирается
 // autoStep по окну (не мельче минуты): 1ч→~1м, 24ч→~12м, 7д→~1.4ч, 30д→~6ч.
 const metricChartBuckets = 120
 
-// metricsList — GET /projects/{id}/metrics: перечень метрик проекта.
 func (h *Handler) metricsList(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -72,9 +64,7 @@ func (h *Handler) metricsList(w http.ResponseWriter, r *http.Request) {
 	}
 	environment := r.URL.Query().Get("environment")
 	metrics, err := h.Metrics.ListMetrics(r.Context(), projectID, environment)
-	// Отказ ClickHouse — НЕ 500: оболочка страницы остаётся живой, на месте
-	// списка — «данные временно недоступны» (тот же приём, что у логов,
-	// см. logsList).
+	// Отказ ClickHouse — не 500: список остаётся, «данные временно недоступны».
 	loadFailed := err != nil
 	if loadFailed {
 		slog.Warn("metrics: list failed", "project_id", projectID, "err", err)
@@ -85,17 +75,13 @@ func (h *Handler) metricsList(w http.ResponseWriter, r *http.Request) {
 	_ = templates.MetricsList(projectID, visible, environment, h.currentEmail(r), showSystem, hiddenCount, loadFailed).Render(r.Context(), w)
 }
 
-// metricChartWidth/metricChartHeight — размер графика ряда на странице метрики.
-// Ширина названа константой, а не вписана числом в вызов: от неё зависит класс
-// chart-vb<ширина>, который проставляет svgRoot, а значит — и кегль подписей
-// осей в app.css. Связь держит сторож TestChartViewBoxFontSizeRules
-// (css_chart_vb_test.go), и ему нужно имя, а не литерал в аргументе.
+// ширина завязана на класс chart-vb<ширина> (кегль подписей осей в app.css);
+// связь проверяет TestChartViewBoxFontSizeRules по имени константы, не по литералу.
 const (
 	metricChartWidth  = 720
 	metricChartHeight = 200
 )
 
-// metricDetail — GET /projects/{id}/metrics/{name}: график ряда метрики.
 func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -121,14 +107,9 @@ func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 
-	// Тип метрики: перцентили допустимы только для histogram. Точечный поиск по
-	// (project_id, name) вместо скана всех метрик проекта ради одной.
 	info, found, err := h.Metrics.MetricInfoByName(r.Context(), projectID, name)
 	if err != nil {
-		// Отказ ClickHouse: страница метрики без данных, но с оболочкой и
-		// крошкой назад (см. metricsList). Различать «нет такой метрики»
-		// (404 ниже) и отказ хранилища здесь можно по err — found=false без
-		// ошибки означает именно отсутствие.
+		// found=false БЕЗ ошибки означает отсутствие метрики (404 ниже); err != nil — отказ хранилища.
 		h.renderMetricUnavailable(w, r, projectID, name, err)
 		return
 	}
@@ -147,16 +128,14 @@ func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	from, now := tr.From, tr.To
-	// Метрики читают сырую metric_points (без 5m-MV, как у perf), поэтому шаг
-	// может быть мельче — не мельче минуты, без выравнивания (align=0).
+	// metric_points читается сырым (без 5m-MV, как у perf) — шаг без выравнивания (align=0).
 	step := autoStep(tr.Window(), time.Minute, 0, metricChartBuckets)
 	points, err := h.Metrics.Series(r.Context(), projectID, name, environment, "", matchers, agg, from, now, step)
 	if err != nil {
 		h.renderMetricUnavailable(w, r, projectID, name, err)
 		return
 	}
-	// Дозаполняем окно: пустые корзины помечаем NaN — линия рвётся на них, а
-	// ось X идёт по всему выбранному интервалу (а не по диапазону с данными).
+	// пустые корзины помечаем NaN — линия рвётся на них, ось X идёт по всему интервалу.
 	points = fillSeries(points, from, now, step,
 		func(p metric.Point) time.Time { return p.T },
 		func(t time.Time) metric.Point { return metric.Point{T: t, V: math.NaN()} })
@@ -170,7 +149,6 @@ func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
 		h.renderMetricUnavailable(w, r, projectID, name, err)
 		return
 	}
-	// Маркеры деплоев на графике метрики (C5), выкладки проекта за то же окно.
 	var deploys []deploy.Deployment
 	if h.Deploy != nil {
 		deploys, _ = h.Deploy.List(r.Context(), projectID, from, now, 20)
@@ -191,11 +169,6 @@ func (h *Handler) metricDetail(w http.ResponseWriter, r *http.Request) {
 	_ = templates.MetricDetail(vm, h.currentEmail(r)).Render(r.Context(), w)
 }
 
-// renderMetricUnavailable — страница метрики при отказе ClickHouse: оболочка,
-// крошка к списку и имя метрики на месте, вместо графика и фильтров —
-// «данные временно недоступны». 200, а не 500: отказ источника данных одного
-// блока не должен лишать пользователя навигации (единый приём для всех
-// CH-страниц, образец — logsList).
 func (h *Handler) renderMetricUnavailable(w http.ResponseWriter, r *http.Request, projectID int64, name string, err error) {
 	slog.Warn("metrics: detail failed", "project_id", projectID, "metric", name, "err", err)
 	vm := templates.MetricDetailVM{
@@ -206,9 +179,6 @@ func (h *Handler) renderMetricUnavailable(w http.ResponseWriter, r *http.Request
 	_ = templates.MetricDetail(vm, h.currentEmail(r)).Render(r.Context(), w)
 }
 
-// metricThresholdsFor собирает пороги включённых правил алертов для этой
-// метрики (совпадающих по имени и агрегации) — для отрисовки пороговых линий на
-// графике. Ошибка загрузки не критична: график просто рисуется без линий.
 func (h *Handler) metricThresholdsFor(ctx context.Context, projectID int64, name, agg string) []metricThreshold {
 	if h.MetricRules == nil {
 		return nil
@@ -226,8 +196,6 @@ func (h *Handler) metricThresholdsFor(ctx context.Context, projectID int64, name
 	return out
 }
 
-// metricAggFor нормализует агрегацию под тип метрики: перцентили только для
-// histogram; иначе дефолт avg. Скалярные допускают avg/max/min/sum.
 func metricAggFor(typ, agg string) string {
 	if typ == "histogram" {
 		switch agg {
@@ -245,7 +213,6 @@ func metricAggFor(typ, agg string) string {
 	}
 }
 
-// metricDetailURL строит ссылку на страницу метрики с экранированным именем.
 func metricDetailURL(projectID int64, name string) string {
 	return metricsPath(projectID) + "/" + url.PathEscape(name)
 }

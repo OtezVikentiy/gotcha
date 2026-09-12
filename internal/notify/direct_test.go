@@ -23,9 +23,6 @@ func (s staticSecrets) ChannelSecret(context.Context, int64) (string, error) {
 	return string(s), nil
 }
 
-// TestDirectSend — синхронная доставка (№69): выбирает отправителя по kind,
-// подкладывает секрет (кроме email), возвращает ошибку отправителя как есть;
-// незнакомый kind — ошибка, а не паника.
 func TestDirectSend(t *testing.T) {
 	rec := &recordingSender{}
 	d := &Direct{Senders: map[string]Sender{"telegram": rec}, Secrets: staticSecrets("tok")}

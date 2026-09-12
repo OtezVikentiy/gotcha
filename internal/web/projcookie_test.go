@@ -11,12 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// TestIndexStickyProject — корень "/" уводит на «Обзор» запомненного в
-// cookie "proj" проекта (задача 6 nav-ia); недоступный, битый или отсутствующий
-// id в cookie откатывает НЕ на первый проект списка (кука голая "/" —
-// единственное место, где ей вообще дан голос, §5 спеки — молчаливый откат на
-// первый проект подменял бы явный выбор организации), а на список проектов
-// первой по порядку организации.
 func TestIndexStickyProject(t *testing.T) {
 	s := newStack(t)
 	ctx := context.Background()
@@ -30,9 +24,6 @@ func TestIndexStickyProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// p1 существует только чтобы у организации было больше одного проекта
-	// (см. "Мусор"/"Недоступный id" ниже: откат больше не выбирает первый
-	// проект списка, поэтому сам p1 нигде дальше не нужен по значению).
 	if _, err := orgSvc.CreateProject(ctx, o.ID, "one", "One", "go"); err != nil {
 		t.Fatal(err)
 	}
@@ -70,20 +61,15 @@ func TestIndexStickyProject(t *testing.T) {
 	}
 	orgProjects := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/projects"
 
-	// Без cookie — дверь в список проектов организации, не молчаливый выбор
-	// первого проекта.
 	if got := getRoot(""); got != orgProjects {
 		t.Fatalf("GET / (no cookie) Location = %q, want %q", got, orgProjects)
 	}
-	// С cookie — «Обзор» запомненного проекта.
 	if got := getRoot(strconv.FormatInt(p2.ID, 10)); got != overviewPath(p2.ID) {
 		t.Fatalf("GET / (proj=p2) Location = %q, want %q", got, overviewPath(p2.ID))
 	}
-	// Недоступный id — список проектов организации, не первый проект.
 	if got := getRoot(strconv.FormatInt(p2.ID+12345, 10)); got != orgProjects {
 		t.Fatalf("GET / (foreign proj) Location = %q, want %q", got, orgProjects)
 	}
-	// Мусор — список проектов организации, не первый проект.
 	if got := getRoot("garbage"); got != orgProjects {
 		t.Fatalf("GET / (garbage proj) Location = %q, want %q", got, orgProjects)
 	}

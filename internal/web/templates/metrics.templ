@@ -16,8 +16,6 @@ func metricLink(projectID int64, name string) string {
 	return metricsBasePath(projectID) + "/" + url.PathEscape(name)
 }
 
-// metricsSystemToggleURL — ссылка на список метрик с указанным состоянием
-// переключателя system.*, с сохранением фильтра environment.
 func metricsSystemToggleURL(projectID int64, environment string, showSystem bool) string {
 	q := url.Values{}
 	if environment != "" {
@@ -33,10 +31,7 @@ func metricsSystemToggleURL(projectID int64, environment string, showSystem bool
 	return u
 }
 
-// MetricsList — GET /projects/{id}/metrics: перечень метрик проекта. metrics
-// уже отфильтрован по showSystem в metricsList (internal/web/metrics.go);
-// hiddenCount — сколько system.*-метрик скрыто (0, если хостов нет —
-// переключатель тогда не рисуется, поведение без хостов не меняется).
+// hiddenCount — метрик system.* скрыто; 0 без хостов означает, что переключатель не рисуется.
 templ MetricsList(projectID int64, metrics []metric.MetricInfo, environment, userEmail string, showSystem bool, hiddenCount int, loadFailed bool) {
 	@layout(i18n.T(ctx, "metrics.title"), userEmail) {
 		<div class="metrics">
@@ -82,7 +77,6 @@ templ MetricsList(projectID int64, metrics []metric.MetricInfo, environment, use
 	}
 }
 
-// MetricDetailVM — данные страницы метрики.
 type MetricDetailVM struct {
 	ProjectID    int64
 	Info         metric.MetricInfo
@@ -95,15 +89,11 @@ type MetricDetailVM struct {
 	LabelValue   string
 	Chart        templ.Component
 	Percentiles  bool // histogram → доступны p50/p95/p99
-	// LoadFailed — ClickHouse не ответил: вместо сводки, фильтров и графика
-	// рисуется «данные временно недоступны», оболочка и крошка остаются.
+	// LoadFailed — ClickHouse не ответил: вместо сводки/фильтров/графика — «данные недоступны».
 	LoadFailed bool
 }
 
-// metricUnitText — юнит для показа человеку. "1" по соглашению OTLP означает
-// безразмерную метрику (счётчики, количества): показывать его как значение
-// юнита бессмысленно — в плитке это выглядит как «ЮНИТ 1», будто единица
-// измерения так и называется.
+// "1" по OTLP — безразмерная метрика: показывать её как юнит бессмысленно («ЮНИТ 1»).
 func metricUnitText(unit string) string {
 	if unit == "" || unit == "1" {
 		return "—"
@@ -111,16 +101,8 @@ func metricUnitText(unit string) string {
 	return unit
 }
 
-// metricAggOptions — оба возвращаемых среза — литеральные подмножества
-// metric.Aggregations (не отражение того, что реально пришло по метрике), и
-// vm.Agg (сравнение ниже в select) нормализован через metricAggFor
-// (internal/web/metrics.go) тем же закрытым перечислением — значит опция
-// select'а никогда не выходит за пределы известных агрегаций, и
-// "metrics.aggregation."+a в шаблоне ниже можно переводить напрямую тем же
-// ключом, что и в metricalerts.templ, без отдельной группы в стороже
-// динамических ключей: она уже покрыта существующей группой
-// "metrics.aggregation." (internal/guards/i18n_dynamic_test.go), проверяющей
-// ВЕСЬ metric.Aggregations, надмножество того, что здесь может появиться.
+// Опции — подмножество закрытого metric.Aggregations (через metricAggFor) — переводить
+// "metrics.aggregation."+a можно напрямую: группа сторожа i18n покрывает весь набор целиком.
 func metricAggOptions(percentiles bool) []string {
 	if percentiles {
 		return []string{"p50", "p95", "p99", "avg"}
@@ -128,7 +110,6 @@ func metricAggOptions(percentiles bool) []string {
 	return []string{"avg", "max", "min", "sum"}
 }
 
-// MetricDetail — GET /projects/{id}/metrics/{name}: график ряда с фильтрами.
 templ MetricDetail(vm MetricDetailVM, userEmail string) {
 	@layout(i18n.Tf(ctx, "metrics.detail.title", "name", vm.Info.Name), userEmail) {
 		<div class="metric-detail">
@@ -204,7 +185,6 @@ templ MetricDetail(vm MetricDetailVM, userEmail string) {
 	}
 }
 
-// metricLabelFilterURL — ссылка на ту же метрику с фильтром по лейблу.
 func metricLabelFilterURL(vm MetricDetailVM, key, value string) string {
 	q := url.Values{}
 	vm.Range.apply(q)

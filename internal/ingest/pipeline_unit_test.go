@@ -12,8 +12,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// fakeSpanSink считает принятые транзакции — им проверяется главное свойство
-// детекции: что бы в ней ни случилось, транзакция всё равно уезжает в CH.
 type fakeSpanSink struct {
 	mu    sync.Mutex
 	added []trace.Transaction
@@ -31,8 +29,6 @@ func (f *fakeSpanSink) count() int {
 	return len(f.added)
 }
 
-// fakePerfSink — PerfSink, который либо паникует, либо возвращает ошибку,
-// либо считает вызовы Record и отдаёт created/regression по спискам.
 type fakePerfSink struct {
 	mu         sync.Mutex
 	calls      int
@@ -41,8 +37,8 @@ type fakePerfSink struct {
 	created    []bool // created для i-го вызова (по исчерпании — false)
 	regression []bool // regression для i-го вызова (по исчерпании — false)
 	recorded   []trace.Finding
-	deadlines  []time.Time   // дедлайн ctx на i-м вызове: общий бюджет — один на все находки
-	delay      time.Duration // сколько «работает» один Record
+	deadlines  []time.Time // дедлайн ctx на i-м вызове: общий бюджет — один на все находки
+	delay      time.Duration
 }
 
 func (f *fakePerfSink) Record(ctx context.Context, projectID int64, fi trace.Finding, _ string) (trace.RecordResult, error) {
@@ -75,7 +71,6 @@ func (f *fakePerfSink) Record(ctx context.Context, projectID int64, fi trace.Fin
 	}, nil
 }
 
-// fakePerfNotifier считает алерты о первом обнаружении и о регрессии.
 type fakePerfNotifier struct {
 	mu          sync.Mutex
 	notified    int
@@ -108,8 +103,6 @@ func (f *fakePerfNotifier) regressionCount() int {
 	return f.regressions
 }
 
-// nPlusOneTx — транзакция с NPlusOneMin (5) одинаковыми db-спанами под одним
-// родителем: детектор обязан найти в ней ровно одну проблему.
 func nPlusOneTx() trace.Transaction {
 	start := time.Now().UTC()
 	tx := trace.Transaction{
@@ -126,9 +119,8 @@ func nPlusOneTx() trace.Transaction {
 	return tx
 }
 
-// TestEnqueueAfterCloseDoesNotPanic покрывает гонку main.go: drain() закрывает
-// очередь (Close), пока ещё не завершившиеся обработчики могут звать Enqueue.
-// До фикса это паниковало (send on closed channel).
+// покрывает гонку main.go: drain() закрывает очередь, пока in-flight обработчики
+// зовут Enqueue.
 func TestEnqueueAfterCloseDoesNotPanic(t *testing.T) {
 	p := NewPipeline(nil, nil)
 	p.Start()
@@ -147,8 +139,6 @@ func TestEnqueueAfterCloseDoesNotPanic(t *testing.T) {
 	}
 }
 
-// TestDoubleCloseDoesNotPanic — Close должен быть идемпотентным (закрытие
-// уже закрытого канала паникует).
 func TestDoubleCloseDoesNotPanic(t *testing.T) {
 	p := NewPipeline(nil, nil)
 	p.Start()
@@ -162,8 +152,6 @@ func TestDoubleCloseDoesNotPanic(t *testing.T) {
 	p.Close(context.Background())
 }
 
-// TestTransactionDetectionAlertsOnlyOnFirstDetection: находка, увиденная
-// впервые (created=true), шлёт алерт; та же находка второй раз — нет.
 func TestTransactionDetectionAlertsOnlyOnFirstDetection(t *testing.T) {
 	spans := &fakeSpanSink{}
 	perf := &fakePerfSink{created: []bool{true}} // created только на первом Record
@@ -192,9 +180,6 @@ func TestTransactionDetectionAlertsOnlyOnFirstDetection(t *testing.T) {
 	}
 }
 
-// TestTransactionDetectionAlertsOnRegression: проблему пометили resolved, она
-// вернулась — дежурный должен об этом узнать, а не обнаружить тихо переоткрытую
-// проблему в списке (так же устроены алерты об ошибках, alert.KindRegression).
 func TestTransactionDetectionAlertsOnRegression(t *testing.T) {
 	spans := &fakeSpanSink{}
 	// Первое обнаружение — новая проблема; второе — регрессия (Record вернул
@@ -223,8 +208,6 @@ func TestTransactionDetectionAlertsOnRegression(t *testing.T) {
 	}
 }
 
-// TestTransactionDetectionFailureDoesNotBreakIngest: паника и ошибка внутри
-// детекции не должны ни ронять воркер, ни мешать записи транзакции в CH.
 func TestTransactionDetectionFailureDoesNotBreakIngest(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -251,8 +234,6 @@ func TestTransactionDetectionFailureDoesNotBreakIngest(t *testing.T) {
 	}
 }
 
-// TestTransactionWithoutPerfSinkStillWrites — детекция необязательна:
-// Perf == nil означает «детекторы выключены».
 func TestTransactionWithoutPerfSinkStillWrites(t *testing.T) {
 	spans := &fakeSpanSink{}
 	p := NewPipeline(nil, nil)
@@ -266,21 +247,14 @@ func TestTransactionWithoutPerfSinkStillWrites(t *testing.T) {
 	}
 }
 
-// fakeMaint — MaintenanceChecker для тестов: func-обёртка вместо полноценного
-// uptime.Service (интерфейс в один метод — реальный сервис с окнами
-// обслуживания и своей БД тестам этого пакета не нужен). Калька
-// host.mockMaint/trace.mockMaint (Task 3/5, Путь A).
+// func-обёртка вместо полноценного uptime.Service — реальный сервис с окнами
+// обслуживания и своей БД тестам этого пакета не нужен.
 type fakeMaint func(ctx context.Context, projectID int64, at time.Time) (bool, error)
 
 func (f fakeMaint) InMaintenance(ctx context.Context, projectID int64, at time.Time) (bool, error) {
 	return f(ctx, projectID, at)
 }
 
-// TestPerfIssueMaintenanceSuppressesNotify — B3 Task 5, Путь B: находка в окне
-// обслуживания (Maint→true) по-прежнему пишется в perf_issues (Record
-// вызывается), но NotifyNew НЕ уходит. perf_issues — throttle-детектор без
-// жизненного цикла инцидента, поэтому гейт стоит в recordFinding ДО notify, а
-// не флагом на записи (см. Pipeline.Maint).
 func TestPerfIssueMaintenanceSuppressesNotify(t *testing.T) {
 	spans := &fakeSpanSink{}
 	perf := &fakePerfSink{created: []bool{true}}
@@ -303,10 +277,6 @@ func TestPerfIssueMaintenanceSuppressesNotify(t *testing.T) {
 	}
 }
 
-// TestPerfIssueMaintenanceFalseStillNotifies — Maint заполнен (не nil), но вне
-// окна (InMaintenance→false): поведение обычное, NotifyNew уходит. Отличает
-// «MaintenanceChecker сконфигурирован и говорит false» от «MaintenanceChecker
-// ==nil» (последнее уже покрыто TestTransactionDetectionAlertsOnlyOnFirstDetection).
 func TestPerfIssueMaintenanceFalseStillNotifies(t *testing.T) {
 	spans := &fakeSpanSink{}
 	perf := &fakePerfSink{created: []bool{true}}
@@ -326,7 +296,6 @@ func TestPerfIssueMaintenanceFalseStillNotifies(t *testing.T) {
 	}
 }
 
-// twoFindingTx — транзакция, дающая ДВЕ находки: N+1 и медленный запрос.
 func twoFindingTx() trace.Transaction {
 	tx := nPlusOneTx()
 	start := tx.Start
@@ -337,9 +306,6 @@ func twoFindingTx() trace.Transaction {
 	return tx
 }
 
-// Бюджет детекции ОДИН на всю транзакцию, а не на каждую находку: иначе
-// транзакция с максимумом находок держала бы воркера ~100с, пока из той же
-// очереди дропаются события об ошибках.
 func TestPerfDetectionSharesOneBudget(t *testing.T) {
 	spans := &fakeSpanSink{}
 	perf := &fakePerfSink{}
@@ -363,9 +329,6 @@ func TestPerfDetectionSharesOneBudget(t *testing.T) {
 	}
 }
 
-// Исчерпанный бюджет детекции: хвост находок пропускается (с warn-логом), а не
-// удерживает воркера. Событиям об ошибках, идущим через ту же очередь, важнее
-// живой воркер, чем полнота детекции.
 func TestPerfDetectionStopsWhenBudgetExhausted(t *testing.T) {
 	spans := &fakeSpanSink{}
 	perf := &fakePerfSink{delay: 50 * time.Millisecond}
@@ -387,9 +350,6 @@ func TestPerfDetectionStopsWhenBudgetExhausted(t *testing.T) {
 	}
 }
 
-// TestPipelineDropCounters фиксирует то, чего раньше не существовало: потери
-// очереди ТОЛЬКО логировались и никуда не считались, поэтому оператор не мог
-// узнать, что часть событий не доехала (org_usage.dropped_* их не видел).
 func TestPipelineDropCounters(t *testing.T) {
 	p := NewPipeline(nil, nil)
 	// Воркеры НЕ запускаем: очередь никто не разбирает, значит переполнится.
@@ -416,8 +376,7 @@ func TestPipelineDropCounters(t *testing.T) {
 	}
 }
 
-// failingUpserter изображает деградировавший PostgreSQL: апсерт issue
-// отваливается по таймауту.
+// изображает деградировавший PostgreSQL: апсерт issue отваливается по таймауту.
 type failingUpserter struct{ calls atomic.Int64 }
 
 func (f *failingUpserter) Upsert(ctx context.Context, projectID int64, fingerprint, title, culprit, level, environment string, seenAt time.Time) (issue.UpsertResult, error) {
@@ -429,10 +388,6 @@ func (f *failingUpserter) Get(ctx context.Context, issueID int64) (issue.Issue, 
 	return issue.Issue{}, errors.New("timeout: context deadline exceeded")
 }
 
-// TestStorageFailureCountsAsDrop: событие, выброшенное из-за отказа PostgreSQL,
-// обязано попадать в счётчик потерь. Раньше оно только логировалось, а
-// документация учила читать нулевой счётчик как «события не приходили» — и
-// оператор при деградации базы уходил проверять SDK.
 func TestStorageFailureCountsAsDrop(t *testing.T) {
 	up := &failingUpserter{}
 	p := NewPipeline(nil, nil)
@@ -458,8 +413,6 @@ func TestStorageFailureCountsAsDrop(t *testing.T) {
 	}
 }
 
-// TestDropReasonsAreDistinguishable: переполнение очереди и отказ хранилища
-// лечатся по-разному, поэтому обязаны различаться в метрике.
 func TestDropReasonsAreDistinguishable(t *testing.T) {
 	p := NewPipeline(nil, nil)
 	for i := 0; i < int(p.QueueCap())+7; i++ {
@@ -476,10 +429,6 @@ func TestDropReasonsAreDistinguishable(t *testing.T) {
 	}
 }
 
-// fakeDropCounter — DropCounter в памяти: считает вызовы по (orgID, kind), не
-// трогая PostgreSQL. Реализует ingest.DropCounter — тот же интерфейс, что
-// подставляется *org.Service и в Handler.DropCounter, и в Pipeline.DropCounter
-// (см. w3-brief: пути не пересекаются, но делят интерфейс и реализацию).
 type fakeDropCounter struct {
 	mu            sync.Mutex
 	events        map[int64]int64
@@ -493,11 +442,8 @@ func newFakeDropCounter() *fakeDropCounter {
 	return &fakeDropCounter{events: map[int64]int64{}, transactions: map[int64]int64{}}
 }
 
-// IncDroppedEvents/IncDroppedTransactions проверяют ctx.Err() ПЕРВЫМ делом,
-// как это сделал бы реальный pgx-запрос с уже отменённым/истёкшим ctx —
-// без этого fakeDropCounter не отличил бы флаш со свежим контекстом от флаша
-// с унаследованным истёкшим (см. TestPipelineDropFlushSurvivesDrainTimeout,
-// которая иначе проходила бы и с багом, и без него).
+// проверяет ctx.Err() первым, как реальный pgx-запрос с уже истёкшим ctx —
+// иначе не отличить флаш со свежим контекстом от флаша с унаследованным истёкшим.
 func (f *fakeDropCounter) IncDroppedEvents(ctx context.Context, orgID int64, _ time.Time, n int64) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -518,9 +464,6 @@ func (f *fakeDropCounter) IncDroppedTransactions(ctx context.Context, orgID int6
 	return nil
 }
 
-// IncDroppedMetrics/IncDroppedProfiles — Pipeline не должен звать их вовсе
-// (метрики/профили идут мимо очереди, см. handler.go); тесты ниже проверяют
-// счётчики вызовов, чтобы это осталось так.
 func (f *fakeDropCounter) IncDroppedMetrics(_ context.Context, _ int64, _ time.Time, _ int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -535,8 +478,6 @@ func (f *fakeDropCounter) IncDroppedProfiles(_ context.Context, _ int64, _ time.
 	return nil
 }
 
-// IncDroppedLogs — та же заглушка, что IncDroppedMetrics/IncDroppedProfiles:
-// логи, как и метрики/профили, идут мимо очереди Pipeline (см. handler.go).
 func (f *fakeDropCounter) IncDroppedLogs(_ context.Context, _ int64, _ time.Time, _ int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -556,11 +497,6 @@ func (f *fakeDropCounter) txFor(orgID int64) int64 {
 	return f.transactions[orgID]
 }
 
-// TestPipelineFlushesDropsPerOrg — находка w3 (P1): пайплайн-дропы (переполнение
-// очереди — уже ПОСЛЕ того, как grant списал квоту) раньше не попадали в
-// org_usage.dropped_* вовсе, только в process-local Pipeline.dropped.
-// Агрегация копится в памяти между флашами (не пишет в БД на каждый дроп —
-// см. докблок Pipeline.DropCounter) и сливается по вызову flushDropped.
 func TestPipelineFlushesDropsPerOrg(t *testing.T) {
 	dc := newFakeDropCounter()
 	p := NewPipeline(nil, nil)
@@ -578,9 +514,7 @@ func TestPipelineFlushesDropsPerOrg(t *testing.T) {
 	if got := dc.eventsFor(42); got != 5 {
 		t.Errorf("dropped events для org 42 после флаша = %d, want 5 (ровно столько не поместилось)", got)
 	}
-	// Повторный флаш без новых дропов ничего не добавляет — агрегат обязан
-	// обнуляться при флаше (drainDropAgg), иначе окно задваивалось бы на
-	// каждый следующий тик.
+	// агрегат обязан обнуляться при флаше — иначе окно задваивалось бы на каждый следующий тик.
 	p.flushDropped(context.Background())
 	if got := dc.eventsFor(42); got != 5 {
 		t.Errorf("повторный флаш изменил счётчик: got %d, want 5 (агрегат должен обнуляться при флаше)", got)
@@ -591,8 +525,6 @@ func TestPipelineFlushesDropsPerOrg(t *testing.T) {
 	}
 }
 
-// TestPipelineFlushesTransactionDropsPerOrg — то же самое для транзакций
-// (dropTransaction), отдельный класс и отдельный счётчик org_usage.
 func TestPipelineFlushesTransactionDropsPerOrg(t *testing.T) {
 	dc := newFakeDropCounter()
 	p := NewPipeline(nil, nil)
@@ -609,10 +541,6 @@ func TestPipelineFlushesTransactionDropsPerOrg(t *testing.T) {
 	}
 }
 
-// TestPipelineSkipsOrgAttributionWithoutOrgID — orgID<=0 (вызывающий не провёл
-// организацию) не должен уйти в DropCounter ни под каким ключом: атрибутировать
-// некуда. Process-local счётчик (см. Pipeline.dropped) при этом не зависит от
-// orgID и продолжает считать как раньше.
 func TestPipelineSkipsOrgAttributionWithoutOrgID(t *testing.T) {
 	dc := newFakeDropCounter()
 	p := NewPipeline(nil, nil)
@@ -629,10 +557,6 @@ func TestPipelineSkipsOrgAttributionWithoutOrgID(t *testing.T) {
 	}
 }
 
-// TestPipelineDropFlushOnClose — Close обязан слить накопленное ПЕРЕД
-// остановкой процесса: dropAgg живёт только в памяти, и без финального флаша
-// последнее окно потерь исчезало бы бесследно (в отличие от process-local
-// Pipeline.dropped, который для отчёта оператору не нужен после смерти процесса).
 func TestPipelineDropFlushOnClose(t *testing.T) {
 	dc := newFakeDropCounter()
 	p := NewPipeline(nil, nil)
@@ -649,12 +573,6 @@ func TestPipelineDropFlushOnClose(t *testing.T) {
 	}
 }
 
-// TestHandlerQuotaDropsAndPipelineDropsDoNotOverlap — верификация из w3-brief:
-// Handler.countDrop (квотные отказы, ДО постановки в очередь) и
-// Pipeline.countDroppedOrg (потери самой очереди/обработки, ПОСЛЕ того как
-// grant уже списал квоту) — это две ТОЧКИ ЖИЗНЕННОГО ЦИКЛА, которые не
-// пересекаются. Общий DropCounter получает вклад от обеих и просто складывает
-// — задвоения быть не должно.
 func TestHandlerQuotaDropsAndPipelineDropsDoNotOverlap(t *testing.T) {
 	dc := newFakeDropCounter()
 
@@ -674,12 +592,6 @@ func TestHandlerQuotaDropsAndPipelineDropsDoNotOverlap(t *testing.T) {
 	}
 }
 
-// TestPipelineDropFlushSurvivesDrainTimeout — код-ревью (w3): финальный флаш в
-// Close ДО фикса наследовал ctx дренажа, а на пути таймаута дренажа этот ctx
-// уже Done() — WithTimeout от него отменён немедленно, и IncDropped* отваливался
-// бы, теряя ровно то окно, которое финальный флаш обязан был спасти. Тест
-// намеренно доводит Close до ветки таймаута (воркер занят дольше дедлайна
-// Close) и проверяет, что дроп, поставленный ДО Close, всё равно долетает.
 func TestPipelineDropFlushSurvivesDrainTimeout(t *testing.T) {
 	dc := newFakeDropCounter()
 	p := NewPipeline(nil, nil)

@@ -10,26 +10,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// MinSilentAfter — минимальный порог «тишины» хоста: инвариант ≥3×
-// троттлинга регистрации хостов на приёме (Toucher, every=60с, см. touch.go).
-// На меньших значениях живой хост с редким экспортом метрик ловил бы ложный
-// silent-инцидент из-за устаревшего last_seen — Toucher обновляет его не
-// чаще раза в 60с, поэтому у порога должен быть запас в несколько таких
-// интервалов, а не строго больше одного.
+// ≥3× троттлинга Toucher (60с) — иначе живой хост ловит ложный silent из-за устаревшего last_seen.
 const MinSilentAfter = 180 * time.Second
 
-// MaxSilentAfter — верхняя граница порога «тишины». Смысловая: оценщик
-// рассматривает только хосты, чей last_seen свежее суток (freshWithin в
-// evaluator.go), поэтому порог, сравнимый с этим окном, не сработал бы никогда
-// — молчащий хост выпал бы из выборки раньше, чем накопил бы столько тишины.
-// Граница нужна и технически: без неё введённые в форму 10^12 минут
-// переполняли и time.Duration, и колонку int4, превращая опечатку в 500-ю
-// вместо честного «поле заполнено не так».
+// Меньше суток (freshWithin оценщика) с запасом — иначе хост выпадет из выборки раньше,
+// чем накопит порог тишины; заодно ограничивает переполнение Duration/int4 в форме.
 const MaxSilentAfter = 12 * time.Hour
 
-// Settings — пороги встроенных инцидентов хоста одного проекта (диск/память/
-// нагрузка/тишина). Диск и память хранятся долями (0..1] — конверсия в
-// проценты на границе веба.
+// Диск и память хранятся долями (0..1], конверсия в проценты — на границе веба.
 type Settings struct {
 	DiskEnabled     bool
 	DiskThreshold   float64
@@ -41,8 +29,6 @@ type Settings struct {
 	SilentAfter     time.Duration
 }
 
-// DefaultSettings — встроенный набор по умолчанию (§4.1 дизайна): диск/
-// память >90%, load >2.0 на ядро, тишина >5 минут.
 func DefaultSettings() Settings {
 	return Settings{
 		DiskEnabled:     true,
@@ -56,15 +42,8 @@ func DefaultSettings() Settings {
 	}
 }
 
-// KindEnabled — оценивается ли порог вида kind (Kinds) при этих настройках:
-// тот же предикат, по которому Evaluator.Tick решает, звать ли evalDisk/
-// evalMemory/evalLoad, а evalSilent — выходить ли первой строкой.
-//
-// ok=false для незнакомого вида (как thresholdFor в notify.go): вызывающий,
-// который на «выключено» совершает действие над инцидентами (web:
-// hostSettingsSave закрывает открытые инциденты выключенных видов), не должен
-// принимать неизвестный вид за выключенный и трогать его. Сторож —
-// TestKindEnabledKnowsEveryKind: новый вид в Kinds обязан появиться и здесь.
+// ok=false для незнакомого вида: вызывающий не должен принимать «неизвестно» за «выключено» и
+// действовать над его инцидентами (например, закрывать их при выключении в hostSettingsSave).
 func (s Settings) KindEnabled(kind string) (enabled, ok bool) {
 	switch kind {
 	case "disk":
@@ -80,8 +59,7 @@ func (s Settings) KindEnabled(kind string) (enabled, ok bool) {
 	}
 }
 
-// Границы валидации — различимые ошибки, чтобы вызывающий (FormState) знал,
-// какое конкретно поле подсветить.
+// Различимые ошибки — чтобы вызывающий (FormState) знал, какое поле подсветить.
 var (
 	ErrInvalidDiskThreshold   = errors.New("host: disk threshold must be in (0, 1)")
 	ErrInvalidMemoryThreshold = errors.New("host: memory threshold must be in (0, 1)")
@@ -89,19 +67,8 @@ var (
 	ErrInvalidSilentAfter     = errors.New("host: silent after must be between 180s and 12h")
 )
 
-// Validate проверяет Settings на границы CHECK'ов миграции 0065, ужесточённые
-// там, где CHECK пропускает значение, которое логика оценки использовать не
-// может. Диск и память — строго (0, 1): applyDecision сравнивает метрику с
-// порогом через metric.Decide "gt" (строго «больше»), а занятость диска и
-// памяти — доля, не превышающая 1.0, поэтому порог 1.0 (100%) не сработал бы
-// никогда — правило выглядело бы включённым, но было бы мёртвым. CHECK в БД
-// (<= 1) остаётся шире валидатора намеренно: уже сохранённые 1.0 не мигрируем,
-// такие строки читаются как есть и получают ошибку при следующем сохранении
-// формы. MinSilentAfter — семантический инвариант, не выразимый в CHECK на
-// секундах без потери читаемости. Значения ВЫКЛЮЧЕННЫХ порогов (Enabled=false)
-// проверяются наравне с включёнными: сохранённое, но временно выключенное
-// значение должно быть валидным само по себе — иначе включение порога назад
-// без повторного ввода тихо активирует мусор.
+// Диск/память строго (0,1): applyDecision сравнивает через строгое «>», и 1.0 было бы мёртвым порогом.
+// Значения выключенных порогов проверяются наравне — иначе включение обратно тихо активирует мусор.
 func Validate(s Settings) error {
 	if s.DiskThreshold <= 0 || s.DiskThreshold >= 1 {
 		return fmt.Errorf("%w: got %v", ErrInvalidDiskThreshold, s.DiskThreshold)
@@ -118,7 +85,6 @@ func Validate(s Settings) error {
 	return nil
 }
 
-// SettingsService — Get/Save порогов хоста поверх host_threshold_settings.
 type SettingsService struct {
 	pool *pgxpool.Pool
 }
@@ -127,12 +93,8 @@ func NewSettingsService(pool *pgxpool.Pool) *SettingsService {
 	return &SettingsService{pool: pool}
 }
 
-// GetWithExists возвращает пороги проекта и признак, есть ли для проекта
-// сохранённая строка (M2: нужен вызывающим, различающим «явно не настроено»
-// от «настроено и совпало с дефолтом» — например, каскаду override/group/
-// project/default, которому важно, останавливаться ли на уровне проекта).
-// Строки нет (порог ещё не сохранялся) — не ошибка: DefaultSettings() и
-// exists=false, строка создаётся лениво, только при первом Save.
+// exists различает «не настроено» от «совпало с дефолтом» — важно каскаду override/group/project.
+// Строки нет — не ошибка: DefaultSettings() и exists=false; строка создаётся лениво при первом Save.
 func (s *SettingsService) GetWithExists(ctx context.Context, projectID int64) (Settings, bool, error) {
 	row := s.pool.QueryRow(ctx, `
 		SELECT disk_enabled, disk_threshold, memory_enabled, memory_threshold,
@@ -158,15 +120,11 @@ func (s *SettingsService) GetWithExists(ctx context.Context, projectID int64) (S
 	return out, true, nil
 }
 
-// Get возвращает пороги проекта — обёртка над GetWithExists, отбрасывающая
-// признак наличия строки для вызывающих, которым он не нужен.
 func (s *SettingsService) Get(ctx context.Context, projectID int64) (Settings, error) {
 	out, _, err := s.GetWithExists(ctx, projectID)
 	return out, err
 }
 
-// Save валидирует и сохраняет пороги проекта (upsert — первый Save проекта
-// создаёт строку, последующие обновляют её и updated_at).
 func (s *SettingsService) Save(ctx context.Context, projectID int64, settings Settings) error {
 	if err := Validate(settings); err != nil {
 		return err

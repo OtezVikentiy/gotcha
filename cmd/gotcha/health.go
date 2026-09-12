@@ -14,7 +14,6 @@ type pinger interface {
 	Ping(ctx context.Context) error
 }
 
-// versionHandler — GET /version: публичные сведения о сборке (без секретов).
 func versionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -22,17 +21,8 @@ func versionHandler() http.HandlerFunc {
 	}
 }
 
-// livenessHandler — GET /healthz: жив ли процесс.
-//
-// Отвечает 200, пока HTTP-сервер обслуживает запросы, и НЕ зависит от
-// доступности хранилищ. Раньше зависел, и это делало ручку опасной на
-// liveness-пробе: недоступный ClickHouse давал 503, оркестратор перезапускал
-// живой контейнер, а каждый перезапуск выбрасывает буферы — то есть ровно ту
-// телеметрию, которую буферы и копили, чтобы дождаться возвращения хранилища.
-// Сбой хранилища превращался в потерю данных.
-//
-// Состояние компонентов в теле сохранено: его читают и глазами, и скриптами. Но
-// на код ответа оно больше не влияет — за это отвечает /readyz.
+// код ответа не зависит от готовности хранилищ: иначе сбой ClickHouse рестартовал
+// бы контейнер и ронял буферы телеметрии, которые как раз ждут его возврата
 func livenessHandler(pg, ch pinger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		status := probeComponents(r.Context(), pg, ch)
@@ -43,12 +33,6 @@ func livenessHandler(pg, ch pinger) http.HandlerFunc {
 	}
 }
 
-// readinessHandler — GET /readyz: готов ли инстанс работать.
-//
-// 503, пока PostgreSQL или ClickHouse недоступны. Это тот ответ, который нужен
-// балансировщику, чтобы не слать трафик на реплику, которая всё равно ничего не
-// запишет; сюда же смотрит healthcheck контейнера. На первом старте миграции
-// держат порт закрытым до минуты, и признака готовности не существовало вовсе.
 func readinessHandler(pg, ch pinger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		status := probeComponents(r.Context(), pg, ch)
@@ -68,9 +52,7 @@ func readinessHandler(pg, ch pinger) http.HandlerFunc {
 	}
 }
 
-// probeComponents пингует оба хранилища параллельно и возвращает их состояние.
-// Детали ошибок (хосты, DSN) уходят только в лог: обе ручки отвечают без
-// аутентификации.
+// детали ошибок (хосты, DSN) идут только в лог: обе ручки отвечают без аутентификации
 func probeComponents(ctx context.Context, pg, ch pinger) map[string]string {
 	type result struct {
 		name string

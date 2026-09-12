@@ -8,9 +8,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// Query — чтение логов из ClickHouse. По образцу internal/trace/query.go:
-// параметризованные запросы (значения только через ?, никогда не
-// конкатенируются в текст), WHERE собирается конкатенацией строк-условий, а
+// Параметризованные запросы — значения только через ?, никогда конкатенацией; WHERE собирается строкой,
 // подставляемые значения идут отдельным срезом args в том же порядке.
 type Query struct {
 	conn driver.Conn
@@ -20,8 +18,7 @@ func NewQuery(conn driver.Conn) *Query {
 	return &Query{conn: conn}
 }
 
-// LogRow — одна строка результата List. ProjectID не хранится: он известен
-// из пути вызова (List принимает его отдельным параметром).
+// ProjectID не хранится — он известен из пути вызова (List принимает его отдельным параметром).
 type LogRow struct {
 	Timestamp      time.Time
 	ObservedTS     time.Time
@@ -37,15 +34,13 @@ type LogRow struct {
 	Environment    string
 }
 
-// AttrFilter — фильтр по одному атрибуту записи: Resource=true проверяет
-// resource_attrs, иначе — log_attributes (см. схему таблицы logs).
+// Resource=true проверяет resource_attrs, иначе — log_attributes (см. схему таблицы logs).
 type AttrFilter struct {
 	Resource bool
 	Key      string
 	Value    string
 }
 
-// ListFilter — параметры List.
 type ListFilter struct {
 	From, To time.Time
 
@@ -55,61 +50,34 @@ type ListFilter struct {
 	Query       string // подстрока body, регистронезависимо
 	Attrs       []AttrFilter
 
-	// Not — отрицательные условия (см. predicate.go). Положительные условия
-	// остаются полями выше; отрицательные списком, потому что их произвольное
-	// количество по любому полю.
+	// Отрицательные условия (см. predicate.go) — срезом, потому что их произвольное количество по любому полю.
 	Not []Predicate
 
-	// TraceID — жёсткий скоуп по trace_id (C3, logs in context): при непустом
-	// добавляет "AND trace_id = ?" во ВСЕ запросы логов, включая подзапрос
-	// AttrKeys (в отличие от прочих фильтров f, которые AttrKeys игнорирует, —
-	// это осознанное отклонение: автокомплит ключей в контексте трейса обязан
-	// быть по строкам этого трейса).
+	// Жёсткий скоуп по trace_id: при непустом добавляет "AND trace_id = ?" во ВСЕ запросы, включая подзапрос AttrKeys —
+	// единственный фильтр из f, который она применяет (автокомплит ключей обязан быть по трейсу).
 	TraceID string
 
 	Limit int
 
-	// Before/TieSkip — курсор пагинации keyset, см. List. TieSkip — сколько
-	// строк с timestamp == Before ВСЕГО уже показано вызывающему. Если
-	// хвостовой Before НЕ меняется между вызовами (тай тянется больше одной
-	// страницы), TieSkip накапливается вызывающим (прибавляется), а не
-	// пересчитывается заново по последней странице — иначе следующая
-	// страница переспросит уже показанные строки этой тай-группы и вернёт
-	// дубль. Референс правильной логики накопления — тестовый цикл
-	// постраничного обхода в query_test.go.
+	// Курсор пагинации keyset (см. List). TieSkip — сколько строк с timestamp==Before уже показано ВСЕГО;
+	// накапливается вызывающим между страницами с тем же Before, не пересчитывается — иначе будет дубль.
 	Before  time.Time
 	TieSkip int
 }
 
-// FacetValue — значение фасета с числом вхождений. Тип объявлен здесь для
-// будущего метода Facet (следующая задача); List его не использует.
 type FacetValue struct {
 	Value string
 	Count int64
 }
 
-// defaultListLimit — сколько строк отдаёт List, если Limit не задан.
-// maxListLimit — верхняя граница вне зависимости от запрошенного Limit:
-// защита от случайно огромного значения из внешнего слоя (парсер запроса
-// тоже клампит, но List не должен полагаться только на вызывающего).
+// Сколько строк отдаёт List без явного Limit. maxListLimit — потолок вне зависимости от запрошенного:
+// List не должен полагаться только на клампинг вызывающего.
 const (
 	defaultListLimit = 100
 	maxListLimit     = 500
 )
 
-// List возвращает страницу логов проекта за [From, To), отфильтрованных по f,
-// отсортированных newest-first, не более Limit штук (после клампа).
-//
-// Курсор пагинации (Before, TieSkip): timestamp в logs — DateTime64(3), на
-// высоком rps у нескольких строк одна и та же миллисекунда. Строгое условие
-// "timestamp < Before" на границе страницы теряет строки с тем же
-// timestamp, что и последняя показанная (они физически могут идти ПОСЛЕ неё
-// в результате следующего запроса и не соответствовать "<"); "timestamp <=
-// Before" без поправки, наоборот, дублирует уже показанные. Вместо этого:
-// условие "timestamp <= Before", лимит запроса увеличен на TieSkip
-// (сколько строк с timestamp == Before уже показано предыдущей страницей),
-// а после скана в Go среди строк с Timestamp == Before пропускаются первые
-// TieSkip штук — это они и есть. Затем результат обрезается до Limit.
+// Курсор пагинации — см. поле Before/TieSkip у ListFilter.
 func (q *Query) List(ctx context.Context, projectID int64, f ListFilter) ([]LogRow, error) {
 	limit := f.Limit
 	if limit <= 0 {
@@ -119,38 +87,13 @@ func (q *Query) List(ctx context.Context, projectID int64, f ListFilter) ([]LogR
 		limit = maxListLimit
 	}
 
-	// toDateTime64(?, 3) + строковый аргумент вместо голого "timestamp >= ?"
-	// с time.Time — обход бага биндинга clickhouse-go: позиционный "?"
-	// (bindPositional в bind.go драйвера) форматирует ЛЮБОЙ time.Time
-	// аргумент с жёстко зашитым TimeUnit=Seconds ("toDateTime('%d')" от
-	// value.Unix()), то есть ВСЕГДА обрезает миллисекунды параметра до целой
-	// секунды — независимо от реальной точности значения и от того, что
-	// колонка timestamp объявлена DateTime64(3). Для полуоткрытого окна
-	// [From, To) эта потеря безобидна (фуззи на <1с по краю окна, тот же
-	// паттерн есть и в trace/metric/event query.go, там сравнение не
-	// точечное). Но для Before — точечного курсора keyset-пагинации
-	// ("timestamp <= Before" + постфильтр Timestamp.Equal(Before) в конце
-	// функции) она РОНЯЕТ ровно ГРАНИЧНУЮ строку курсора всякий раз, когда её
-	// миллисекунды не нулевые (то есть почти всегда на реальных данных):
-	// секундное округление параметра делает Before МЕНЬШЕ фактического
-	// значения строки, и "stored_ts <= truncated(Before)" ложно для самой
-	// строки-границы — следующая страница «показать старее» теряет её молча.
-	// chTimeArg форматирует время строкой с миллисекундами САМ (в обход
-	// автоопределения типа драйвером — аргумент из time.Time становится
-	// string), а toDateTime64(?, 3) в SQL кастует её обратно с нужной
-	// точностью на стороне ClickHouse.
+	// chTimeArg обходит баг биндинга clickhouse-go — время строкой с миллисекундами (см. её докблок).
 	where, args := buildWhere(projectID, f, whereOpts{})
 
 	queryLimit := limit
 	if !f.Before.IsZero() {
-		// TieSkip приходит из URL (внешний слой) и ОБЯЗАН клампиться здесь, как
-		// limit (List не полагается на вызывающего, см. maxListLimit выше): без
-		// потолка queryLimit = limit + TieSkip снимает LIMIT и материализует всё
-		// окно в память до обрезки out[:limit] — одиночный GET с гигантским
-		// tskip кладёт мультитенантный процесс OOM. Легитимное накопление тай
-		// крошечно (строки одной миллисекунды, при высоком rps единицы), так что
-		// потолок maxListLimit с огромным запасом безопасен; отрицательный tskip
-		// (дал бы отрицательный queryLimit → ошибка CH) обнуляется.
+		// TieSkip приходит из URL и обязан клампиться, как limit: без потолка queryLimit=limit+TieSkip снимает
+		// LIMIT фактически, гигантский tskip даёт OOM. Отрицательный tskip обнуляется.
 		if f.TieSkip < 0 {
 			f.TieSkip = 0
 		} else if f.TieSkip > maxListLimit {
@@ -162,30 +105,8 @@ func (q *Query) List(ctx context.Context, projectID int64, f ListFilter) ([]LogR
 	}
 	args = append(args, queryLimit)
 
-	// Второй ключ сортировки обязателен для устойчивости курсора: "ORDER BY
-	// timestamp DESC" без него не гарантирует ОДИНАКОВЫЙ относительный порядок
-	// строк с равным timestamp между двумя разными запросами (страница 1 без
-	// "AND timestamp <= ?" и страница 2 с ним — разные планы выполнения, CH
-	// вправе перемешать тай по-своему). Без второго ключа TieSkip пропускает
-	// не те строки и дублирует/теряет их на границе. cityHash64 — чистая
-	// функция от значений самой строки, поэтому детерминирована между любыми
-	// запросами по неизменным данным (строка в таблице не меняется между
-	// вызовами); хэшируем ВСЕ 12 колонок результата, включая log_attributes/
-	// resource_attrs через toString(Map) — иначе две строки, различающиеся
-	// только атрибутами, схлопывались бы в один и тот же хэш. Коллизия
-	// (а с ней риск дубля/потери одной строки на границе страницы) остаётся
-	// только для строк, идентичных БУКВАЛЬНО по всем 12 колонкам в одну и ту
-	// же миллисекунду — у logs нет уникального id, и такие строки неотличимы
-	// друг от друга по содержимому, так что дубль/потеря одной из них не
-	// заметны: контент на экране тот же.
-	// SETTINGS max_execution_time = 20 (тот же литеральный приём, что у
-	// Facet/AttrKeys/AttrValues ниже, только запас больше: список — единственный
-	// из запросов логов, где полнотекст positionCaseInsensitiveUTF8 сочетается с
-	// широким окном И это основной путь экрана, не вспомогательный фасет, так
-	// что 20с вместо 5с). Без потолка тяжёлый запрос держит соединение до
-	// дефолтных 60с общего CH-пула, которым делятся трейсы/метрики — долгий
-	// список логов подвесил бы соседние разделы. При таймауте List вернёт
-	// ошибку — logsList уже показывает её дружелюбно (loadFailed), а не 500-й.
+	// cityHash64 по колонкам — второй ключ сортировки, иначе курсор между страницами плывёт.
+	// max_execution_time=20: без потолка CH держит соединение до 60с и блокирует другие запросы.
 	rows, err := q.conn.Query(ctx, `
 		SELECT timestamp, observed_ts, severity, severity_number, severity_text,
 			body, trace_id, span_id, log_attributes, resource_attrs, service, environment
@@ -230,22 +151,8 @@ func (q *Query) List(ctx context.Context, projectID int64, f ListFilter) ([]LogR
 	return out, nil
 }
 
-// Histogram считает объём логов проекта на окне [f.From, f.To), разложенный
-// по корзинам времени и severity (для stacked-графика T3). Корзин ровно
-// buckets, ширина — размах окна / buckets, сетка выровнена по Unix epoch тем
-// же приёмом, что EndpointLatency в trace/query.go (startUnix/endUnix через
-// целочисленное деление на шаг). where — тот же набор условий, что у List
-// (severity/service/environment/полнотекст/attrs), но БЕЗ курсора
-// (Before/TieSkip) и БЕЗ LIMIT: гистограмма считает объём по ВСЕМУ окну, а не
-// по одной странице.
-//
-// Результат уже пивотирован и добит нулями: series содержит ровно
-// len(Severities) рядов (по одному на каждый канон severity, даже если в
-// окне такого уровня вообще не было), каждый длиной len(times), пустая
-// корзина — 0. GROUP BY t, severity в SQL отдаёт только НЕпустые пары
-// (корзина, severity) — плоский пивот по всем 6 severity и добивка сеткой
-// делаются здесь, в Go (fillSeries из trace/query.go заполняет один ряд, для
-// stacked-графика по 6 severity нужен пивот, не переиспользуем его как есть).
+// Без курсора/LIMIT — считает по ВСЕМУ окну, не по странице. GROUP BY отдаёт только непустые пары
+// (корзина, severity); плоский пивот по всем severity и добивка нулевых корзин делаются здесь, в Go.
 func (q *Query) Histogram(ctx context.Context, projectID int64, f ListFilter, buckets int) ([]time.Time, map[string][]int64, error) {
 	if buckets <= 0 {
 		return nil, nil, fmt.Errorf("log: histogram: buckets must be positive, got %d", buckets)
@@ -261,10 +168,7 @@ func (q *Query) Histogram(ctx context.Context, projectID int64, f ListFilter, bu
 	where, whereArgs := buildWhere(projectID, f, whereOpts{})
 	args := append([]any{stepSec}, whereArgs...)
 
-	// SETTINGS max_execution_time = 10 (тот же приём, что у List/Facet выше и
-	// ниже) — Histogram считает по ВСЕМУ окну без LIMIT (см. докблок), поэтому
-	// без потолка держит CH-соединение общего пула до дефолтных 60с. При
-	// таймауте logsHistogram уже деградирует дружелюбно (Empty=true).
+	// max_execution_time=10 — без LIMIT это тяжёлый запрос; logsHistogram при таймауте деградирует (Empty=true).
 	rows, err := q.conn.Query(ctx, `
 		SELECT toStartOfInterval(timestamp, INTERVAL ? second) AS t, severity, count() AS c
 		FROM logs
@@ -295,10 +199,8 @@ func (q *Query) Histogram(ctx context.Context, projectID int64, f ListFilter, bu
 		return nil, nil, fmt.Errorf("log: histogram: %w", err)
 	}
 
-	// Сетка по Unix epoch — тот же приём, что EndpointLatency: последняя
-	// корзина — та, что СОДЕРЖИТ момент f.To (не следующая за ним), иначе в
-	// сетку попала бы корзина, для которой запрос физически не мог вернуть
-	// данных (timestamp < f.To).
+	// Сетка по Unix epoch: последняя корзина — та, что СОДЕРЖИТ f.To (не следующая), иначе включит корзину,
+	// для которой запрос физически не мог вернуть данных.
 	fromUnix := f.From.UTC().Unix()
 	toUnix := f.To.UTC().Unix()
 	startUnix := (fromUnix / stepSec) * stepSec
@@ -324,53 +226,25 @@ func (q *Query) Histogram(ctx context.Context, projectID int64, f ListFilter, bu
 	return times, series, nil
 }
 
-// facetColumns — whitelist имён колонок, допустимых в Facet: единственное
-// место во всём файле, где текст SQL строится из параметра, а не из
-// плейсхолдера ?. Значение параметра col сверяется с этой картой ДО того,
-// как попасть в текст запроса (fmt.Errorf на отсутствии), поэтому подставить
-// произвольную колонку (тем более что-то вроде "1=1 UNION ...") через него
-// нельзя — конкатенации пользовательского ввода тут нет в принципе, только
-// сверка с закрытым списком.
+// Whitelist имён колонок для Facet — единственное место, где текст SQL строится из параметра, не из ?.
+// col сверяется с картой ДО попадания в текст запроса — подставить произвольную колонку нельзя.
 var facetColumns = map[string]bool{
 	"severity":    true,
 	"service":     true,
 	"environment": true,
 }
 
-// facetLimit — сколько топ-значений отдаёт Facet (см. §4 спеки C2).
 const facetLimit = 10
 
-// Facet считает распределение значений колонки col (severity/service/
-// environment — только они, facetColumns; иначе ошибка) в окне+фильтрах f,
-// топ facetLimit по убыванию count. Курсор (Before/TieSkip) и Limit из f не
-// применяются — фасет считает распределение по ВСЕМУ окну, а не по одной
-// странице списка (тот же принцип, что и у Histogram).
-//
-// exclude-self: для col=="severity" собственное условие "severity IN (...)"
-// в WHERE не добавляется — фасет обязан показывать распределение по ВСЕМ
-// уровням, даже когда часть из них уже выбрана пользователем (иначе счётчик
-// невыбранного уровня был бы всегда 0 — строки с этим уровнем уже отфильтрованы
-// самим f.Severity — и клик по нему стал бы невозможен: он не сумел бы сузить
-// список за пределы того, что уже видно). Для service/environment такой
-// проблемы в MVP нет (одиночный select-фильтр, не мультивыбор, как у
-// severity) — применяются ВСЕ фильтры, включая f.Severity, как в List.
-//
-// SETTINGS max_execution_time = 5 (литерал в тексте, НЕ плейсхолдер — тот же
-// приём, что export.go) снижает пер-соединенческий дефолт 60с до 5с: тяжёлый
-// фасет-запрос на большом окне обрывается быстро, а не вешает страницу —
-// logsList при ошибке показывает конкретную секцию фасета пустой с пометкой,
-// а не 500-т всю страницу.
+// exclude-self: для col==severity условие "severity IN (...)" в WHERE не добавляется — иначе счётчик
+// уже выбранного уровня (мультивыбор) был бы всегда 0, и клик по нему не сужал бы список.
 func (q *Query) Facet(ctx context.Context, projectID int64, f ListFilter, col string) ([]FacetValue, error) {
 	if !facetColumns[col] {
 		return nil, fmt.Errorf("log: facet: column %q is not in the whitelist", col)
 	}
 
-	// where — тот же набор условий, что у List/Histogram (окно+прочие
-	// фильтры), но БЕЗ курсора/LIMIT списка и без пустых значений самой
-	// фасетной колонки (пустая строка — "атрибут не заполнен", отдельная
-	// строка "" в топе только шумит). OmitNegative по своей же колонке —
-	// иначе исключённое кликом значение пропадает из счётчиков фасета
-	// вместе с возможностью снять исключение обратным кликом.
+	// where — тот же набор, что у List/Histogram, без курсора/LIMIT, плюс col != '' (пустой атрибут не
+	// шумит в топе). OmitNegative по своей колонке — иначе исключённое кликом значение пропадает из фасета.
 	opts := whereOpts{
 		BaseExtra:    col + " != ''",
 		OmitNegative: map[string]bool{col: true},
@@ -409,29 +283,12 @@ func (q *Query) Facet(ctx context.Context, projectID int64, f ListFilter, col st
 	return out, nil
 }
 
-// attrKeysScanLimit — сколько последних (по timestamp) строк сканирует
-// AttrKeys для обнаружения ключей (правка ревью IMPORTANT-1, §4 спеки C2):
-// наивный "ARRAY JOIN mapKeys(log_attributes) GROUP BY key" по ВСЕМУ окну
-// раскладывает каждую строку в N и на целевом трафике (150k rpm × 24ч ≈
-// 200M+ строк) почти всегда обрывает SETTINGS max_execution_time=5 — тогда
-// ядро-дифференциатор фичи (авто-фасеты по Map-атрибутам) молча пустует.
-// Обнаружению ключей полная точность окна не нужна: ограниченная свежая
-// выборка (50000 самых новых строк окна) даёт представительный набор ключей
-// по предсказуемой и малой стоимости.
+// Полное окно ARRAY JOIN mapKeys по всем строкам обрывает max_execution_time=5 на целевом трафике —
+// ограниченная свежая выборка (50000 строк) даёт представительный набор ключей дешевле.
 const attrKeysScanLimit = 50000
 
-// AttrKeys возвращает топ ключей log_attributes по count() DESC в окне
-// f.From/f.To — авто-обнаружение атрибут-фасетов (§4 спеки C2, ядро-
-// дифференциатор: Grafana поверх Map-колонок так не умеет). Считается по
-// ОГРАНИЧЕННОЙ свежей выборке (attrKeysScanLimit последних по времени
-// строк), а не по всему окну — см. её комментарий. prefix, если не пустой,
-// фильтрует ключи по префиксу (used автокомплитом T6); limit<=0 — facetLimit.
-// Прочие фильтры f (severity/service/...) НЕ применяются: подзапрос сузил
-// бы выборку ключей ещё сильнее, теряя редкие ключи ради точности, которая
-// обнаружению ключей не нужна (ту же логику отражает spec §4 — только
-// project_id+окно). ЕДИНСТВЕННОЕ исключение — f.TraceID (C3): он не мягкий
-// фасет, а жёсткий скоуп контекста трейса, поэтому применяется и здесь (см.
-// условие в подзапросе ниже).
+// Считается по ОГРАНИЧЕННОЙ выборке (attrKeysScanLimit), не по всему окну — прочие фильтры f игнорируются,
+// кроме TraceID: это жёсткий скоуп контекста трейса, а не мягкий фасет.
 func (q *Query) AttrKeys(ctx context.Context, projectID int64, f ListFilter, prefix string, limit int) ([]FacetValue, error) {
 	if limit <= 0 {
 		limit = facetLimit
@@ -489,19 +346,8 @@ func (q *Query) AttrKeys(ctx context.Context, projectID int64, f ListFilter, pre
 	return out, nil
 }
 
-// AttrValues возвращает топ значений одного атрибута (log_attributes, либо
-// resource_attrs при resource=true) по count() DESC в окне+фильтрах f — для
-// РАСКРЫТОГО в UI ключа атрибут-фасета (§4 спеки C2), подгружается лениво
-// (только для конкретного key по клику, не для всех ключей сразу). В
-// отличие от AttrKeys считается по ВСЕМУ окну+фильтрам (тот же принцип, что
-// Facet/Histogram) — раз ключ уже выбран, для него важна точность, не
-// ограниченная выборка.
-//
-// mapContains(<map>, ?)-гард ОБЯЗАТЕЛЕН: `<map>[key]` в ClickHouse
-// возвращает пустую строку для строки, где такого ключа вообще нет — без
-// гарда такие строки молча склеились бы в один бакет с пустым значением
-// вместе с реальными пустыми значениями атрибута, искажая counts. mapContains,
-// а не has(mapKeys(...)) — не строит промежуточный массив ключей, дешевле.
+// В отличие от AttrKeys считается по ВСЕМУ окну+фильтрам — раз ключ уже выбран (раскрыт в UI), для него
+// важна точность, не ограниченная выборка. mapContains, не has(mapKeys(...)) — дешевле, без промежуточного массива.
 func (q *Query) AttrValues(ctx context.Context, projectID int64, f ListFilter, resource bool, key string, limit int) ([]FacetValue, error) {
 	if limit <= 0 {
 		limit = facetLimit
@@ -511,11 +357,8 @@ func (q *Query) AttrValues(ctx context.Context, projectID int64, f ListFilter, r
 		col = "resource_attrs"
 	}
 
-	// where — тот же набор условий, что у List/Facet (окно+ВСЕ фильтры,
-	// включая f.Attrs — точечные фильтры по ДРУГИМ ключам продолжают сужать
-	// выборку значений этого ключа). Отрицание по САМОМУ раскрытому ключу
-	// пропускается тем же правилом, что и у Facet: иначе исключённое кликом
-	// значение исчезает из списка значений вместе с возможностью его вернуть.
+	// where — тот же набор, что у List/Facet (включая f.Attrs — другие ключи продолжают сужать выборку).
+	// Отрицание по САМОМУ раскрытому ключу пропускается — иначе исключённое значение пропало бы из списка.
 	omitKey := FieldAttr
 	if resource {
 		omitKey = FieldResourceAttr
@@ -524,9 +367,7 @@ func (q *Query) AttrValues(ctx context.Context, projectID int64, f ListFilter, r
 		OmitNegative: map[string]bool{omitKey + ":" + key: true},
 	})
 
-	// Порядок args обязан идти 1:1 с порядком "?" в тексте запроса ниже:
-	// сперва SELECT col[?] (key), затем where-условия, затем mapContains(col,
-	// ?) (key ещё раз), затем LIMIT.
+	// Порядок args обязан идти 1:1 с "?" в запросе: SELECT col[?], where-условия, mapContains(col, ?), LIMIT.
 	args := make([]any, 0, len(whereArgs)+3)
 	args = append(args, key)
 	args = append(args, whereArgs...)
@@ -561,12 +402,8 @@ func (q *Query) AttrValues(ctx context.Context, projectID int64, f ListFilter, r
 	return out, nil
 }
 
-// chTimeArg форматирует t строкой с точностью до миллисекунды для
-// toDateTime64(?, 3) в SQL — см. комментарий у сборки where в List: голый
-// time.Time аргументом "?" драйвер clickhouse-go биндит с точностью только до
-// секунды (bindPositional жёстко использует TimeUnit=Seconds), это теряет
-// миллисекунды параметра молча. UTC — то же соглашение, что и у остальных
-// временных сравнений продукта (сервер и хранилище работают в UTC).
+// Точность до миллисекунды для toDateTime64(?,3): голый time.Time аргументом "?" драйвер биндит только до
+// секунды (bindPositional жёстко TimeUnit=Seconds), теряя миллисекунды молча. UTC — соглашение продукта.
 func chTimeArg(t time.Time) string {
 	return t.UTC().Format("2006-01-02 15:04:05.000")
 }

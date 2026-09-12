@@ -7,16 +7,13 @@ import (
 	"net/url"
 )
 
-// CookieName — имя сессионной cookie на plain-http.
 const CookieName = "gotcha_session"
 
-// hostCookieName — имя сессионной cookie на HTTPS. Префикс __Host- заставляет
-// браузер отвергнуть cookie без Secure, без Path=/ или с Domain — это защищает
-// от подмены cookie поддоменом/по plain-http.
+// Префикс __Host- заставляет браузер отвергнуть cookie без Secure/Path=/ или с Domain —
+// защита от подмены cookie поддоменом или по plain-http.
 const hostCookieName = "__Host-gotcha_session"
 
-// sessionCookieName выбирает имя cookie по схеме: на HTTPS — префиксное __Host-,
-// на plain-http — обычное (там __Host- невозможен, т.к. требует Secure).
+// __Host- требует Secure и на plain-http невозможен — там имя обычное, на HTTPS префиксное.
 func sessionCookieName(secure bool) string {
 	if secure {
 		return hostCookieName
@@ -24,13 +21,8 @@ func sessionCookieName(secure bool) string {
 	return CookieName
 }
 
-// ReadSessionToken достаёт сессионный токен. Всегда сначала пробует префиксное
-// имя (__Host-). Непрефиксное gotcha_session принимается ТОЛЬКО на plain-http
-// (secure=false) — ради совместимости и смены схемы http↔https без разлогина.
-//
-// RA-L1: на HTTPS (secure=true) непрефиксную cookie игнорируем. Иначе смысл
-// __Host- теряется: поддомен или MITM на plain-http мог бы навязать
-// непрефиксную gotcha_session и провести узкий pre-login session-fixation.
+// На HTTPS непрефиксную cookie игнорируем — иначе поддомен или MITM на plain-http навяжут её,
+// проведя pre-login session-fixation в обход __Host-.
 func ReadSessionToken(r *http.Request, secure bool) (string, bool) {
 	if c, err := r.Cookie(hostCookieName); err == nil {
 		return c.Value, true
@@ -46,23 +38,13 @@ func ReadSessionToken(r *http.Request, secure bool) (string, bool) {
 
 type ctxKey struct{}
 
-// UserID достаёт id аутентифицированного пользователя из контекста запроса.
 func UserID(ctx context.Context) (int64, bool) {
 	id, ok := ctx.Value(ctxKey{}).(int64)
 	return id, ok
 }
 
-// RequireUser пропускает только запросы с живой сессией; остальных отправляет
-// на /login, сохраняя, куда человек шёл, в параметре next.
-//
-// Без next любая глубокая ссылка теряла адресата: пришедший по ссылке-
-// приглашению попадал на форму входа, входил — и оказывался на главной, а
-// приглашение так и висело непринятым в почте. То же с любой ссылкой на issue
-// из письма алерта.
-//
-// Сохраняется только путь безопасных методов: перенаправлять POST после входа
-// нельзя — тело запроса потеряно, а повторить его молча означало бы выполнить
-// действие, которого человек в этот раз не просил.
+// Без next приглашения и ссылки из писем вели бы после входа на главную; next сохраняем только
+// для безопасных методов — POST молча не повторяем, перенаправляя после входа.
 func (s *Service) RequireUser(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, ok := ReadSessionToken(r, s.Secure)
@@ -85,9 +67,8 @@ func (s *Service) RequireUser(next http.Handler) http.Handler {
 	})
 }
 
-// SetSessionCookie выставляет сессионную cookie. secure приходит от
-// вызывающего (BaseURL начинается с https:// → true): безусловный Secure
-// сломал бы логин на plain-http self-hosted инсталляциях.
+// Secure всегда true сломал бы логин на plain-http self-hosted — значение приходит от BaseURL
+// (https:// → true).
 func SetSessionCookie(w http.ResponseWriter, token string, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName(secure),
@@ -100,8 +81,7 @@ func SetSessionCookie(w http.ResponseWriter, token string, secure bool) {
 	})
 }
 
-// ClearSessionCookie стирает сессионную cookie под обоими именами, чтобы logout
-// сработал независимо от схемы, под которой cookie была выставлена.
+// Чистит оба имени cookie — logout должен сработать независимо от схемы, под которой её выставили.
 func ClearSessionCookie(w http.ResponseWriter) {
 	for _, name := range []string{CookieName, hostCookieName} {
 		// Для __Host- нужен Secure, иначе браузер по HTTPS отвергнет и удаление.
@@ -117,10 +97,8 @@ func ClearSessionCookie(w http.ResponseWriter) {
 	}
 }
 
-// loginWithNext — адрес формы входа с сохранённым адресатом. Путь берётся из
-// самого запроса, то есть заведомо локальный; валидировать его придётся всё
-// равно на другой стороне (значение доедет туда через форму и может быть
-// подменено) — см. safeNextPath в пакете web.
+// Путь берётся из запроса — локальный, но через форму может быть подменён;
+// валидирует его safeNextPath в пакете web.
 func loginWithNext(r *http.Request) string {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return "/login"

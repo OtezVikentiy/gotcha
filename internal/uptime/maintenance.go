@@ -12,12 +12,8 @@ import (
 
 var ErrInvalidWindow = errors.New("uptime: invalid maintenance window")
 
-// Подпричины ErrInvalidWindow — каждая validateWindow-ветка оборачивает и
-// ErrInvalidWindow (для существующих errors.Is(err, ErrInvalidWindow) —
-// см. web/maintenance.go), и одну из этих сентинелей (fmt.Errorf с двумя
-// %w, Go 1.20+): вызывающий может отличить конкретную причину через
-// errors.Is, не парся текст ошибки (который к тому же был бы на английском
-// от time.LoadLocation/time.Parse — P2-1 usability-аудита 2026-08-12).
+// каждая ошибка валидации оборачивает и ErrInvalidWindow, и свою причину
+// (fmt.Errorf с двумя %w) — errors.Is различает причину без парсинга текста.
 var (
 	ErrInvalidWindowName      = errors.New("uptime: maintenance window name required")
 	ErrInvalidWindowTimezone  = errors.New("uptime: invalid maintenance window timezone")
@@ -28,8 +24,6 @@ var (
 	ErrInvalidWindowRange     = errors.New("uptime: maintenance window starts_at must be before ends_at")
 )
 
-// Window — окно обслуживания проекта: разовое (StartsAt/EndsAt) либо
-// еженедельное (Weekday + StartTime/EndTime "15:04" в Timezone).
 type Window struct {
 	ID        int64
 	ProjectID int64
@@ -43,8 +37,6 @@ type Window struct {
 	Timezone  string
 }
 
-// parseHHMM parses a "15:04" wall-clock time, rejecting anything else
-// (including seconds, AM/PM, or out-of-range hour/minute).
 func parseHHMM(s string) (hour, minute int, err error) {
 	t, err := time.Parse("15:04", s)
 	if err != nil {
@@ -69,12 +61,6 @@ func pgTimeToHHMM(t pgtype.Time) string {
 	return fmt.Sprintf("%02d:%02d", totalMinutes/60, totalMinutes%60)
 }
 
-// validateWindow checks the window is well-formed before it ever reaches
-// the DB: the timezone must be a real IANA name (time.LoadLocation), and
-// depending on Weekly either the one-off range or the weekday+HH:MM pair
-// must be present and sane. This mirrors — but is stricter in the TZ case
-// than — the maintenance_windows CHECK constraint, which only enforces the
-// one-off-vs-weekly shape.
 func validateWindow(w Window) error {
 	if w.Name == "" {
 		return fmt.Errorf("%w: %w", ErrInvalidWindow, ErrInvalidWindowName)
@@ -92,18 +78,15 @@ func validateWindow(w Window) error {
 		if _, _, err := parseHHMM(w.EndTime); err != nil {
 			return fmt.Errorf("%w: %w: %v", ErrInvalidWindow, ErrInvalidWindowEndTime, err)
 		}
-		// Одноразовые окна уже требуют EndsAt.After(StartsAt) — тот же запрет
-		// нужен и здесь: StartTime == EndTime не задаёт «мгновенное» окно, а
-		// молча трактуется windowDuration как полные 24 часа (переход через
-		// полночь), так что опечатка при вводе времени блэкаутит уведомления/
-		// аптайм на весь день недели без единого сигнала об ошибке.
+		// StartTime == EndTime не значит «мгновенное» окно — windowDuration
+		// трактует это как полные 24 часа: опечатка молча блэкает весь день.
 		if w.StartTime == w.EndTime {
 			return fmt.Errorf("%w: %w", ErrInvalidWindow, ErrInvalidWindowSameTime)
 		}
 		return nil
 	}
-	// «Бессрочно»: EndsAt == nil означает открытое окно, StartsAt всё равно
-	// обязателен — иначе не от чего было бы вести активность (windowActive).
+	// EndsAt == nil — окно бессрочно; StartsAt всё равно обязателен, иначе
+	// не от чего вести активность (windowActive).
 	if w.StartsAt == nil {
 		return fmt.Errorf("%w: %w", ErrInvalidWindow, ErrInvalidWindowRange)
 	}
@@ -113,7 +96,6 @@ func validateWindow(w Window) error {
 	return nil
 }
 
-// CreateWindow validates and creates a maintenance window.
 func (s *Service) CreateWindow(ctx context.Context, w Window) (Window, error) {
 	if err := validateWindow(w); err != nil {
 		return Window{}, err
@@ -144,19 +126,8 @@ func (s *Service) CreateWindow(ctx context.Context, w Window) (Window, error) {
 	return w, nil
 }
 
-// UpdateWindow rewrites a maintenance window in place.
-//
-// Windows were create-and-delete only, which meant that shifting a weekly
-// window by an hour — the most common edit there is — cost the operator a
-// retype of every field, and a one-off window whose end date moved could not be
-// extended at all.
-//
-// project_id is part of the WHERE clause for scope: the id arrives from a form,
-// and without it the owner of one project could rewrite another's window.
-//
-// The columns of the other schedule kind are nulled rather than left alone: a
-// window switched from one-off to weekly with stale starts_at would satisfy
-// neither validateWindow nor windowActive.
+// project_id в WHERE — без него владелец одного проекта мог бы переписать
+// окно другого; колонки другого расписания обнуляются, не остаются от старого.
 func (s *Service) UpdateWindow(ctx context.Context, w Window) error {
 	if err := validateWindow(w); err != nil {
 		return err
@@ -191,11 +162,8 @@ func (s *Service) UpdateWindow(ctx context.Context, w Window) error {
 	return nil
 }
 
-// DeleteWindow deletes a maintenance window by id, scoped to projectID —
-// same defense-in-depth as UpdateWindow's WHERE clause: the caller already
-// checks windowBelongsToProject before this is reached, but a bare id would
-// let one project's owner delete another project's window by a guessed id
-// if that upstream check ever slipped.
+// project_id в WHERE — defense-in-depth: вызывающий уже проверяет
+// принадлежность окна проекту выше, но без этого условия здесь её нет вовсе.
 func (s *Service) DeleteWindow(ctx context.Context, id, projectID int64) error {
 	tag, err := s.pool.Exec(ctx, "DELETE FROM maintenance_windows WHERE id = $1 AND project_id = $2", id, projectID)
 	if err != nil {
@@ -207,7 +175,6 @@ func (s *Service) DeleteWindow(ctx context.Context, id, projectID int64) error {
 	return nil
 }
 
-// Windows returns projectID's maintenance windows.
 func (s *Service) Windows(ctx context.Context, projectID int64) ([]Window, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, project_id, name, weekly, starts_at, ends_at, weekday, start_time, end_time, timezone
@@ -243,8 +210,6 @@ func scanWindow(row pgx.Row) (Window, error) {
 	return w, nil
 }
 
-// InMaintenance reports whether at falls inside any of projectID's active
-// maintenance windows, honouring each window's own timezone.
 func (s *Service) InMaintenance(ctx context.Context, projectID int64, at time.Time) (bool, error) {
 	windows, err := s.Windows(ctx, projectID)
 	if err != nil {
@@ -262,14 +227,8 @@ func (s *Service) InMaintenance(ctx context.Context, projectID int64, at time.Ti
 	return false, nil
 }
 
-// WindowIntervals computes the concrete [from,to) intervals struck out by ws
-// within the query range [from, to), honouring each window's own timezone
-// and weekly/one-off semantics — the "exclude" argument for Query.Uptime, so
-// the monitor-detail page's uptime % doesn't count checks made during
-// maintenance. A window with invalid/malformed fields (should not happen —
-// CreateWindow validates before persisting) is silently skipped rather than
-// erroring: this helper only feeds a display computation, and one broken
-// window must not blank out the whole page.
+// битое окно (не должно случаться — CreateWindow валидирует) молча
+// пропускается, не роняя всю выборку — это только вычисление отображения.
 func WindowIntervals(ws []Window, from, to time.Time) []Interval {
 	var out []Interval
 	for _, w := range ws {
@@ -278,21 +237,15 @@ func WindowIntervals(ws []Window, from, to time.Time) []Interval {
 	return out
 }
 
-// windowIntervalsOne computes w's own contribution to WindowIntervals. A
-// one-off window contributes at most one interval (clipped to [from,to)); a
-// weekly window contributes one interval per occurrence of its weekday that
-// overlaps [from,to) — e.g. a 30-day range touches roughly four occurrences
-// of a weekly window.
+// недельное окно даёт по интервалу на каждое вхождение своего дня недели в
+// [from,to), не одно на окно — 30-дневный диапазон даёт около четырёх.
 func windowIntervalsOne(w Window, from, to time.Time) []Interval {
 	if !w.Weekly {
 		if w.StartsAt == nil {
 			return nil
 		}
-		// «Бессрочно» (EndsAt == nil): не буквальная +∞ — WindowIntervals
-		// всегда зовётся с ограниченным [from,to), и клипа к `to` довольно,
-		// чтобы отдать «активно до конца запрошенного диапазона» и оставить
-		// caller'ам (uptime %, slo.excludeMaintenance) дело с обычными
-		// конечными интервалами.
+		// EndsAt == nil клипается к `to`, не трактуется как +∞ — вызов всегда
+		// идёт с ограниченным диапазоном, клипа довольно.
 		end := to
 		if w.EndsAt != nil {
 			end = *w.EndsAt
@@ -308,20 +261,16 @@ func windowIntervalsOne(w Window, from, to time.Time) []Interval {
 	if err != nil {
 		return nil
 	}
-	// Walk every calendar day (in the window's own timezone) that could
-	// possibly produce an occurrence overlapping [from, to): a day before
-	// from's local date can still bleed in via a midnight-crossing window,
-	// so the walk starts one day before from's local date and runs through
-	// one day past to's local date.
+	// проход начинается на день раньше from и кончается на день позже to —
+	// окно, переходящее через полночь, может зацепить эти дни.
 	cur := floorToDay(from.In(loc), loc).AddDate(0, 0, -1)
 	end := floorToDay(to.In(loc), loc).AddDate(0, 0, 1)
 
 	var out []Interval
 	for !cur.After(end) {
 		if int(cur.Weekday()) == w.Weekday {
-			// Границы вхождения — из windowOccurrence, того же источника, что у
-			// windowActive: два независимых вычисления одного правила
-			// разъезжались в ночь перевода часов.
+			// единственный источник границ вхождения — иначе легко разойтись
+			// с windowActive в ночь перевода часов.
 			start, occEnd := windowOccurrence(w, cur, loc)
 			if !start.IsZero() {
 				if iv, ok := clipInterval(start, occEnd, from, to); ok {
@@ -338,8 +287,7 @@ func floorToDay(t time.Time, loc *time.Location) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
 }
 
-// clipInterval clips [start,end) to [from,to); ok=false when the clipped
-// range is empty (no overlap).
+// ok=false, когда обрезанный интервал пуст (нет пересечения).
 func clipInterval(start, end, from, to time.Time) (Interval, bool) {
 	if start.Before(from) {
 		start = from
@@ -353,12 +301,8 @@ func clipInterval(start, end, from, to time.Time) (Interval, bool) {
 	return Interval{From: start, To: end}, true
 }
 
-// windowDuration — сколько окно длится по НАСТЕННЫМ часам. Плюс сутки, если
-// конец не позже начала: окно переходит через полночь.
-//
-// Длительность существует как отдельная величина потому, что в ночь перевода
-// часов пара «начало–конец» перестаёт задавать её однозначно: несуществующие
-// 02:00 нормализуются в 03:00, и окно 02:00–04:00 схлопывалось до часа.
+// существует отдельно от start/end: в ночь перевода часов пара не задаёт
+// длительность однозначно (02:00 нормализуется в 03:00, схлопывая интервал).
 func windowDuration(w Window) time.Duration {
 	sh, sm, err := parseHHMM(w.StartTime)
 	if err != nil {
@@ -375,14 +319,8 @@ func windowDuration(w Window) time.Duration {
 	return d
 }
 
-// earliestOccurrence — первое вхождение настенного времени в этот календарный
-// день.
-//
-// time.Date для удвоенного часа осеннего перевода возвращает вхождение ПОСЛЕ
-// перевода стрелок, и окно начиналось на час позже, чем назначил оператор.
-// Совпадение настенного времени двух моментов, разнесённых на час, и означает
-// удвоенный час — отступаем на него назад. Одного шага довольно: переводы часов
-// в базе tzdata кратны часу.
+// time.Date для удвоенного часа осеннего перевода отдаёт вхождение ПОСЛЕ
+// перевода — совпадение с моментом часом раньше выявляет это и откатывает.
 func earliestOccurrence(day time.Time, hour, minute int, loc *time.Location) time.Time {
 	y, m, d := day.In(loc).Date()
 	t := time.Date(y, m, d, hour, minute, 0, 0, loc)
@@ -392,13 +330,8 @@ func earliestOccurrence(day time.Time, hour, minute int, loc *time.Location) tim
 	return t
 }
 
-// windowOccurrence — границы вхождения окна в указанный календарный день его
-// пояса. Единственный источник этих границ: раньше правило перехода через
-// полночь было записано отдельно в windowActive и в windowIntervalsOne, а такие
-// пары разъезжаются — эта и разъехалась в ночь перевода часов.
-//
-// Нулевое начало означает «окно не разбирается» (битое время в конфиге);
-// вызывающий такое вхождение пропускает.
+// общий источник границ вхождения для windowActive и windowIntervalsOne;
+// нулевое начало значит «не разбирается» — вызывающий его пропускает.
 func windowOccurrence(w Window, day time.Time, loc *time.Location) (time.Time, time.Time) {
 	sh, sm, err := parseHHMM(w.StartTime)
 	if err != nil {
@@ -414,10 +347,8 @@ func windowOccurrence(w Window, day time.Time, loc *time.Location) (time.Time, t
 
 func windowActive(w Window, at time.Time) (bool, error) {
 	if !w.Weekly {
-		// Guard перед разыменованием: CHECK maintenance_windows_shape
-		// гарантирует StartsAt для разовых окон, но windowActive не должен
-		// зависеть от этого — защита остаётся, даже если её никогда не
-		// заденет валидная строка.
+		// страховка перед разыменованием: CHECK в БД гарантирует StartsAt для
+		// разовых окон, но код не должен на неё полагаться.
 		if w.StartsAt == nil {
 			return false, nil
 		}
@@ -431,14 +362,8 @@ func windowActive(w Window, at time.Time) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	// Проверяем вхождения сегодняшнего и вчерашнего дня: окно могло начаться
-	// вчера и тянуться через полночь. Двух дней довольно — длительность окна
-	// меньше суток по построению windowDuration.
-	//
-	// Арифметики по минутам здесь больше нет. Она и была вторым, независимым
-	// изложением правила о переходе через полночь (включая prevWeekday, чьё имя
-	// вычисляло СЛЕДУЮЩИЙ день), и расходилась с windowIntervalsOne в ночь
-	// перевода часов.
+	// проверяем сегодня и вчера — окно могло начаться вчера и тянуться через
+	// полночь; длительность окна короче суток по построению windowDuration.
 	local := at.In(loc)
 	for _, dayOffset := range []int{0, -1} {
 		day := local.AddDate(0, 0, dayOffset)

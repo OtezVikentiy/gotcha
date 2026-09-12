@@ -1,12 +1,9 @@
 package templates
 
-// KV — пара ключ/значение для машинной сборки (LLM-дамп события). Экспортируемый
-// аналог неэкспортируемого ctxRow, чтобы дамп собирался в пакете web.
+// экспортируемый дубль ctxRow — дамп собирается в пакете web, где ctxRow недоступен.
 type KV struct{ Key, Val string }
 
-// RequestDump — HTTP-запрос события в форме, пригодной для текстового дампа.
-// Экспортируемая обёртка над sentryRequest (неэкспортируем): переиспользует тот же
-// parseRequest, что и рендер страницы, без дублирования разбора JSON.
+// обёртка над неэкспортируемым sentryRequest, переиспользует его parseRequest.
 type RequestDump struct {
 	Method, URL string
 	Query       []KV
@@ -14,8 +11,7 @@ type RequestDump struct {
 	Body        string
 }
 
-// RequestForDump разбирает Sentry request-интерфейс через существующий
-// parseRequest и отдаёт экспортируемую структуру. nil — пусто/битый JSON.
+// nil при пустом или битом JSON.
 func RequestForDump(requestJSON string) *RequestDump {
 	r := parseRequest(requestJSON)
 	if r == nil {

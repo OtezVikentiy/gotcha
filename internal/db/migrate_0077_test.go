@@ -10,13 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0077Escalations — BLOCKER-2 на непустой базе: открытый и уже
-// отнотифаенный host-инцидент, существующий до миграции 77, обязан получить
-// escalation_level=1 (шаг 0 уже состоялся) и синтетическую строку в
-// incident_escalations — иначе планировщик (T4) зашлёт step0 повторно на
-// первом тике, а recovery (T6) не найдёт лог, в который слать «тем же» при
-// закрытии. Плюс per-table DEFAULT severity: host_incidents='critical',
-// metric_incidents='warning'.
+// Открытый и уже отнотифаенный инцидент до миграции обязан получить escalation_level=1 и синтетическую
+// строку в incident_escalations — иначе планировщик зашлёт step0 повторно, а recovery не найдёт лог.
 func TestMigrate0077Escalations(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -66,7 +61,6 @@ func TestMigrate0077Escalations(t *testing.T) {
 		t.Fatalf("migrate to 77: %v", err)
 	}
 
-	// (1) escalation_level=1 на существующем открытом+отнотифаенном host-инциденте.
 	var level int
 	if err := pool.QueryRow(ctx,
 		"SELECT escalation_level FROM host_incidents WHERE id=$1", hostIncidentID).Scan(&level); err != nil {
@@ -76,7 +70,6 @@ func TestMigrate0077Escalations(t *testing.T) {
 		t.Fatalf("host_incidents.escalation_level = %d, want 1", level)
 	}
 
-	// (3) severity дефолт host_incidents = 'critical'.
 	var hostSeverity string
 	if err := pool.QueryRow(ctx,
 		"SELECT severity FROM host_incidents WHERE id=$1", hostIncidentID).Scan(&hostSeverity); err != nil {
@@ -86,7 +79,6 @@ func TestMigrate0077Escalations(t *testing.T) {
 		t.Fatalf("host_incidents.severity = %q, want critical", hostSeverity)
 	}
 
-	// severity дефолт metric_incidents = 'warning'.
 	var metricSeverity string
 	if err := pool.QueryRow(ctx,
 		"SELECT severity FROM metric_incidents WHERE id=$1", metricIncidentID).Scan(&metricSeverity); err != nil {
@@ -96,7 +88,6 @@ func TestMigrate0077Escalations(t *testing.T) {
 		t.Fatalf("metric_incidents.severity = %q, want warning", metricSeverity)
 	}
 
-	// (2) синтетический step0-лог для host-инцидента: source='host', step=0, канал совпадает.
 	var loggedChannel int64
 	var loggedStep int
 	if err := pool.QueryRow(ctx,
@@ -108,7 +99,6 @@ func TestMigrate0077Escalations(t *testing.T) {
 		t.Fatalf("synthetic log = (channel %d, step %d), want (channel %d, step 0)", loggedChannel, loggedStep, channelID)
 	}
 
-	// синтетический лог и для metric-инцидента, с тем же контрактом.
 	var metricLoggedStep int
 	if err := pool.QueryRow(ctx,
 		`SELECT step FROM incident_escalations
@@ -119,7 +109,6 @@ func TestMigrate0077Escalations(t *testing.T) {
 		t.Fatalf("metric synthetic log step = %d, want 0", metricLoggedStep)
 	}
 
-	// (4) новые таблицы политик пусты — эскалация ещё не настраивалась.
 	var stepsCount, stepChannelsCount int64
 	mustScan(t, pool, &stepsCount, "SELECT count(*) FROM escalation_steps")
 	if stepsCount != 0 {

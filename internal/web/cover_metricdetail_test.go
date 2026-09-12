@@ -10,11 +10,6 @@ import (
 	"testing"
 )
 
-// TestWebMetricDetail покрывает страницу метрики GET /projects/{id}/metrics/{name}
-// (metricDetail): существующие тесты трогают только список. Гоняем полный
-// render-путь ряда (Series/Labels/Environments) с не-дефолтным окном ?period=1h,
-// агрегацией ?agg, фильтром окружения и меткой ?label_key/?label_value, а также
-// ветки «нет такой метрики» → 404 и чужой проект → 404.
 func TestWebMetricDetail(t *testing.T) {
 	s := newMetricsStack(t, true)
 	ctx := context.Background()
@@ -29,14 +24,11 @@ func TestWebMetricDetail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	// Две точки одного gauge в prod с меткой host — даёт непустой ряд, список
-	// меток (host) и список окружений (prod).
 	s.seedGauge(t, proj.ID, "cpu.usage", "prod", 0.4, map[string]string{"host": "h1"})
 	s.seedGauge(t, proj.ID, "cpu.usage", "prod", 0.6, map[string]string{"host": "h1"})
 
 	detail := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/metrics/" + url.PathEscape("cpu.usage")
 
-	// Полный набор параметров: не-дефолтное окно, агрегация, окружение, метка.
 	q := "?period=1h&agg=max&environment=prod&label_key=host&label_value=h1"
 	resp := getWithCookie(t, s.srv, detail+q, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
@@ -50,7 +42,6 @@ func TestWebMetricDetail(t *testing.T) {
 		}
 	}
 
-	// Дефолтные параметры (без query) — тоже 200.
 	resp = getWithCookie(t, s.srv, detail, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -58,8 +49,6 @@ func TestWebMetricDetail(t *testing.T) {
 		t.Fatalf("GET %s (defaults) status = %d, want 200", detail, resp.StatusCode)
 	}
 
-	// Произвольный диапазон: parseTimeRange custom + autoStep, селектор в
-	// режиме custom, чипы лейблов несут period=custom+start+end.
 	cq := "?period=custom&start=2026-07-01T00:00&end=2026-07-10T00:00"
 	resp = getWithCookie(t, s.srv, detail+cq, ownerCookie)
 	cbody, _ := io.ReadAll(resp.Body)
@@ -71,7 +60,6 @@ func TestWebMetricDetail(t *testing.T) {
 		t.Fatalf("GET %s did not render custom range selected: %s", detail+cq, cbody)
 	}
 
-	// Несуществующая метрика → 404.
 	missing := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/metrics/" + url.PathEscape("nope.metric")
 	resp = getWithCookie(t, s.srv, missing, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -80,7 +68,6 @@ func TestWebMetricDetail(t *testing.T) {
 		t.Fatalf("GET %s (missing metric) status = %d, want 404", missing, resp.StatusCode)
 	}
 
-	// Чужой проект → 404.
 	resp = getWithCookie(t, s.srv, detail, outsiderCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()

@@ -1,14 +1,12 @@
-// Package theme — выбранная тема оформления (dark/light/system) в контексте.
 package theme
 
 import "context"
 
-// Theme — выбранная тема оформления. Code ∈ "dark"|"light"|"system".
+// Code ∈ "dark"|"light"|"system".
 type Theme struct{ Code string }
 
 type ctxKey struct{}
 
-// Default — тема по умолчанию.
 var Default = Theme{Code: "system"}
 
 var known = map[string]bool{"dark": true, "light": true, "system": true}
@@ -24,7 +22,6 @@ func FromContext(ctx context.Context) Theme {
 	return Default
 }
 
-// Parse проверяет код темы. ok=false для неизвестных значений.
 func Parse(code string) (Theme, bool) {
 	if known[code] {
 		return Theme{Code: code}, true

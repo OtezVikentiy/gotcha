@@ -11,9 +11,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/recipes"
 )
 
-// validAgg — проверка агрегации по metric.Aggregations (источник истины
-// rule.go): реестр не имеет права ссылаться на агрегацию, которую движок
-// правил и explorer не понимают.
+// сверяет с metric.Aggregations — источником истины для движка правил и explorer.
 func validAgg(a string) bool {
 	for _, x := range metric.Aggregations {
 		if x == a {
@@ -32,11 +30,7 @@ func contains(ss []string, s string) bool {
 	return false
 }
 
-// nativeDatapointAttrs — родные datapoint-атрибуты ресиверов по итогам сверки
-// с metadata.yaml otel-collector-contrib (T1 Step 1): nginx.connections_current
-// несёт `state` (active/reading/writing/waiting) прямо на датапойнте;
-// postgresql.rows — `state` (dead/live). Для них transform не нужен — атрибут
-// доезжает до attributes через MapOTLP без продвижения.
+// родные datapoint-атрибуты ресиверов (сверено с metadata.yaml) — для них transform не нужен.
 func nativeDatapointAttrs(id string) []string {
 	switch id {
 	case "nginx":
@@ -44,12 +38,6 @@ func nativeDatapointAttrs(id string) []string {
 	case "postgres":
 		return []string{"state"}
 	case "mariadb":
-		// mysqlreceiver (сверка Step 1 B6-2): kind — на mysql.threads
-		// (cached/connected/created/running), mysql.buffer_pool.pages
-		// (data/free/misc) и mysql.locks (immediate/waited); operation — на
-		// mysql.operations (fsyncs/reads/writes) и mysql.row_operations
-		// (deleted/inserted/read/updated). Всё — datapoint-атрибуты,
-		// transform не нужен.
 		return []string{"kind", "operation"}
 	}
 	return nil
@@ -70,8 +58,6 @@ func TestRegistryInvariants(t *testing.T) {
 		}
 		chartKeys := map[string]bool{}
 		for _, c := range r.Charts {
-			// Chart.Key — суффикс i18n-ключа заголовка и data-chart-маркер:
-			// дубль дал бы два графика с одним заголовком и неразличимые тесты.
 			if chartKeys[c.Key] {
 				t.Fatalf("recipe %q: дубль Chart.Key %q", r.ID, c.Key)
 			}
@@ -84,10 +70,7 @@ func TestRegistryInvariants(t *testing.T) {
 			if len(c.Series) == 0 {
 				t.Fatalf("recipe %q chart %q: нет рядов", r.ID, c.Key)
 			}
-			// Несколько рядов без различимых LabelSuffix — легенда из
-			// одинаковых (или пустых) подписей, нечитаемая по построению;
-			// проверка на ЛЮБОЕ число рядов ≥2 (ревью MIN-2: трёхрядный
-			// threads у mariadb обязан попадать под инвариант).
+			// порог >=2, не >2: у mariadb threads уже три ряда, легенда неразличима с двух.
 			if len(c.Series) >= 2 {
 				suffixes := map[string]bool{}
 				for _, s := range c.Series {
@@ -113,12 +96,8 @@ func TestRegistryInvariants(t *testing.T) {
 		if strings.Contains(cfg, "%!") {
 			t.Fatalf("recipe %q: артефакт форматирования в Config", r.ID)
 		}
-		// Разбор YAML-парсером, а не strings.Contains (аудит W3-G #3): сниппет
-		// отдаётся пользователю на копирование в config.yaml коллектора, и
-		// «строка присутствует» ничего не говорит о том, что otelcol его
-		// прочитает — битый отступ переживал бы strings.Contains-проверки, но
-		// ломал бы коллектор в проде. Тот же приём, что filesystemScraperConfig
-		// (internal/web/hosts_test.go) применяет к сниппету hostmetrics.
+		// YAML-парсер, не strings.Contains: битый отступ пережил бы проверку строк,
+		// но сломал бы коллектор при реальной загрузке сниппета пользователем.
 		var parsed struct {
 			Receivers map[string]any `yaml:"receivers"`
 			Exporters map[string]any `yaml:"exporters"`
@@ -138,11 +117,8 @@ func TestRegistryInvariants(t *testing.T) {
 		if len(parsed.Service.Pipelines) == 0 {
 			t.Fatalf("recipe %q: Config без секции service.pipelines после разбора YAML\n%s", r.ID, cfg)
 		}
-		// Transform-инвариант (BLOCKER-1 спеки): каждый PromotedAttr реально
-		// продвигается сниппетом ПОЛНЫМ transform-стейтментом (два раздельных
-		// Contains пропускали бы attr, упомянутый где угодно в конфиге при
-		// любом transform); GroupKey либо продвинут, либо родной
-		// datapoint-атрибут (nginx/postgres state — сверено в Step 1).
+		// целым stmt, не двумя раздельными Contains: те пропускали бы attr,
+		// упомянутый где угодно в конфиге при любом transform.
 		for _, attr := range r.PromotedAttrs {
 			stmt := `set(attributes["` + attr + `"], resource.attributes["` + attr + `"])`
 			if !strings.Contains(cfg, stmt) {
@@ -168,15 +144,13 @@ func TestRegistryInvariants(t *testing.T) {
 			if !contains(r.Metrics, rs.Metric) {
 				t.Fatalf("recipe %q rule: метрика %q не в Metrics", r.ID, rs.Metric)
 			}
-			// LabelValue без LabelKey ключ идемпотентности (matches) ещё
-			// переживёт, а LabelKey без LabelValue — матчер «ключ есть,
-			// значение пустое», которого модель правил не выражает.
+			// LabelKey без LabelValue — матчер «ключ есть, значение пустое», которого
+			// модель правил не выражает (обратное, LabelValue без LabelKey, допустимо).
 			if rs.LabelKey != "" && rs.LabelValue == "" {
 				t.Fatalf("recipe %q rule %q: LabelKey без LabelValue", r.ID, rs.Metric)
 			}
-			// Полный ключ идемпотентности ApplyRules: два RuleSpec с одним
-			// ключом в одном рецепте — второй никогда не создастся (первый
-			// уже existing) и вечно висел бы «будет создан».
+			// два RuleSpec с одним ключом ApplyRules в одном рецепте — второй
+			// никогда не создастся, первый навсегда числится existing.
 			key := rs.Metric + "|" + rs.Agg + "|" + rs.Comparator + "|" + rs.LabelKey + "|" + rs.LabelValue
 			if ruleKeys[key] {
 				t.Fatalf("recipe %q: дубль ключа RuleSpec %q", r.ID, key)

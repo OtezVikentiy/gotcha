@@ -47,17 +47,12 @@ func TestParseKindRejectsUnknown(t *testing.T) {
 	}
 }
 
-// TestContentTypeUnknownFormat — неизвестное значение Format (в обход ParseFormat,
-// например уже сохранённое в базе значение из будущей версии) не должно паниковать
-// и обязано откатываться на нейтральный content-type.
 func TestContentTypeUnknownFormat(t *testing.T) {
 	if got := Format("bogus").ContentType(); got != "application/octet-stream" {
 		t.Errorf("Format(bogus).ContentType() = %q, ожидали application/octet-stream", got)
 	}
 }
 
-// TestStatusTerminal — переберает все статусы: Terminal() обязан отличать
-// финальные (done/failed/expired) от промежуточных (queued/running).
 func TestStatusTerminal(t *testing.T) {
 	for _, c := range []struct {
 		status   Status
@@ -75,10 +70,6 @@ func TestStatusTerminal(t *testing.T) {
 	}
 }
 
-// TestMigrationCreatesExportJobs — проверяет, что миграция 0081 действительно
-// накатывает таблицу заявок с ожидаемой формой, а не только сам факт её наличия:
-// ключевые колонки с типами и NOT NULL, все три индекса, CHECK-констрейнты на
-// перечислениях kind/format/status.
 func TestMigrationCreatesExportJobs(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()

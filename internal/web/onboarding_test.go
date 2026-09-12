@@ -12,13 +12,9 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// TestWebOnboardingFlow — сквозной сценарий задачи 5: регистрация →
-// онбординг (организация + проект + ключ) → страница подключения SDK →
-// навигация по проектам.
 func TestWebOnboardingFlow(t *testing.T) {
 	s := newStack(t)
 
-	// Регистрация нового юзера — сразу залогинен.
 	regForm := url.Values{
 		"email":     {"onboard-user@example.com"},
 		"password":  {"correct-horse-battery"},
@@ -32,7 +28,6 @@ func TestWebOnboardingFlow(t *testing.T) {
 		t.Fatalf("register did not set session cookie")
 	}
 
-	// GET /onboarding → 200 + форма (у юзера ещё нет организаций).
 	req, _ := http.NewRequest(http.MethodGet, s.srv.URL+"/onboarding", nil)
 	req.AddCookie(cookie)
 	resp, err := noRedirectClient().Do(req)
@@ -48,7 +43,6 @@ func TestWebOnboardingFlow(t *testing.T) {
 		t.Fatalf("GET /onboarding body has no <form: %s", body)
 	}
 
-	// POST /onboarding с невалидным org slug → 422 с перерисованной формой.
 	badForm := url.Values{
 		"org_slug":     {"Bad!"},
 		"org_name":     {"Bad Org"},
@@ -66,7 +60,6 @@ func TestWebOnboardingFlow(t *testing.T) {
 		t.Fatalf("POST /onboarding (bad slug) body has no <form: %s", body)
 	}
 
-	// POST /onboarding без Origin → 403.
 	resp = postForm(t, s.srv, "/onboarding", badForm, "", cookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -74,7 +67,6 @@ func TestWebOnboardingFlow(t *testing.T) {
 		t.Fatalf("POST /onboarding (no origin) status = %d, want 403", resp.StatusCode)
 	}
 
-	// POST /onboarding валидный → 303 на /projects/{id}/setup.
 	validForm := url.Values{
 		"org_slug":     {"acme"},
 		"org_name":     {"Acme Inc"},
@@ -98,17 +90,13 @@ func TestWebOnboardingFlow(t *testing.T) {
 		t.Fatalf("parse project id from %q: %v", setupPath, err)
 	}
 
-	// Достаём публичный ключ проекта напрямую из БД для сверки с DSN на
-	// странице setup.
 	orgSvc := org.NewService(s.pool, 1_000_000)
 	keys, err := orgSvc.KeysForProject(context.Background(), projectID)
 	if err != nil {
 		t.Fatalf("keys for project: %v", err)
 	}
-	// Онбординг выпускает сразу три ключа — по одному на класс источника
-	// (browser/server/agent) — страница setup показывает DSN, подобранный по
-	// платформе проекта (см. liveKeyFor в onboarding.go); JS-сниппет на
-	// странице в любом случае несёт browser-DSN — его и сверяем ниже.
+	// Все языковые сниппеты рендерятся на странице, включая JS с browser-DSN,
+	// хотя платформа проекта — go; его и сверяем ниже.
 	if len(keys) != 3 {
 		t.Fatalf("keys for project = %+v, want exactly three keys", keys)
 	}
@@ -123,7 +111,6 @@ func TestWebOnboardingFlow(t *testing.T) {
 	}
 	publicKey := keys[0].PublicKey
 
-	// GET /projects/{id}/setup → 200, содержит DSN с public_key проекта.
 	req, _ = http.NewRequest(http.MethodGet, s.srv.URL+setupPath, nil)
 	req.AddCookie(cookie)
 	resp, err = noRedirectClient().Do(req)
@@ -140,20 +127,14 @@ func TestWebOnboardingFlow(t *testing.T) {
 		t.Fatalf("GET %s body missing DSN %q: %s", setupPath, wantDSN, body)
 	}
 
-	// orgID проекта — нужен и здесь (GET /), и ниже (GET /projects).
 	orgID, err := orgSvc.ProjectOrg(context.Background(), projectID)
 	if err != nil {
 		t.Fatalf("project org: %v", err)
 	}
 	orgProjectsPath := "/orgs/" + strconv.FormatInt(orgID, 10) + "/projects"
 
-	// GET / без cookie проекта (запрос ниже несёт только сессионную cookie,
-	// "proj" сюда не долетала ни разу — visiting /setup её выставляет через
-	// Set-Cookie, но этот тест не гоняет cookie jar и не переносит её между
-	// запросами) → 303 на список проектов организации (задача 6 nav-ia,
-	// §5 спеки: кука решает дверь на голом "/", только если она есть; без
-	// неё — явный выбор организации/проекта, а не молчаливый первый проект
-	// из списка).
+	// Запрос несёт только сессионную cookie — тест не гоняет cookie jar,
+	// поэтому cookie "proj" от /setup сюда не долетает.
 	req, _ = http.NewRequest(http.MethodGet, s.srv.URL+"/", nil)
 	req.AddCookie(cookie)
 	resp, err = noRedirectClient().Do(req)
@@ -168,8 +149,7 @@ func TestWebOnboardingFlow(t *testing.T) {
 	if got := resp.Header.Get("Location"); got != orgProjectsPath {
 		t.Fatalf("GET / Location = %q, want %q", got, orgProjectsPath)
 	}
-	// Редирект обязан резолвиться, а не 404-ить: сверяем реальным GET, а не
-	// только адресом в Location.
+	// Редирект обязан резолвиться: сверяем реальным GET, а не только адресом в Location.
 	req, _ = http.NewRequest(http.MethodGet, s.srv.URL+orgProjectsPath, nil)
 	req.AddCookie(cookie)
 	resp, err = noRedirectClient().Do(req)
@@ -185,7 +165,6 @@ func TestWebOnboardingFlow(t *testing.T) {
 		t.Fatalf("GET %s body missing the onboarded project: %s", orgProjectsPath, body)
 	}
 
-	// GET /onboarding теперь (у юзера уже есть организация) → 303 на /.
 	req, _ = http.NewRequest(http.MethodGet, s.srv.URL+"/onboarding", nil)
 	req.AddCookie(cookie)
 	resp, err = noRedirectClient().Do(req)
@@ -201,9 +180,6 @@ func TestWebOnboardingFlow(t *testing.T) {
 		t.Fatalf("GET /onboarding (has org) Location = %q, want /", got)
 	}
 
-	// GET /projects → 303 на /orgs/{orgID}/projects (задача 5 nav-ia: дверь
-	// в организацию вместо плоского списка всех проектов). orgID/
-	// orgProjectsPath уже посчитаны выше для GET /.
 	req, _ = http.NewRequest(http.MethodGet, s.srv.URL+"/projects", nil)
 	req.AddCookie(cookie)
 	resp, err = noRedirectClient().Do(req)
@@ -219,7 +195,6 @@ func TestWebOnboardingFlow(t *testing.T) {
 		t.Fatalf("GET /projects Location = %q, want %q", got, orgProjectsPath)
 	}
 
-	// GET /orgs/{id}/projects → 200, содержит ссылку на созданный проект.
 	req, _ = http.NewRequest(http.MethodGet, s.srv.URL+orgProjectsPath, nil)
 	req.AddCookie(cookie)
 	resp, err = noRedirectClient().Do(req)
@@ -238,13 +213,9 @@ func TestWebOnboardingFlow(t *testing.T) {
 	if !strings.Contains(string(body), overviewLinkPath) {
 		t.Fatalf("GET %s body missing link to overview %q: %s", orgProjectsPath, overviewLinkPath, body)
 	}
-	// Карточка проекта держит и прямую ссылку на подключение SDK (фикс-раунд
-	// 1, п.2) — тот же аффорданс, что раньше был у Setup в плоском списке.
 	if !strings.Contains(string(body), setupPath) {
 		t.Fatalf("GET %s body missing link %q: %s", orgProjectsPath, setupPath, body)
 	}
-	// Logout must be reachable: the header renders the logged-in user's
-	// email and a logout form once userEmail is wired through (fix 1).
 	if !strings.Contains(string(body), "onboard-user@example.com") {
 		t.Fatalf("GET /projects body missing user email: %s", body)
 	}
@@ -252,13 +223,8 @@ func TestWebOnboardingFlow(t *testing.T) {
 		t.Fatalf("GET /projects body missing logout form: %s", body)
 	}
 
-	// POST /onboarding с валидным org slug, но невалидным project slug →
-	// 422, БЕЗ сиротской организации (баг: раньше CreateOrg успевал
-	// закоммититься до провала CreateProject), форма сохраняет org_slug.
-	//
-	// Проверка идёт от ВТОРОГО пользователя: онбординг доступен только тому, у
-	// кого ещё нет ни одного проекта, и POST теперь проверяет это так же, как
-	// GET. У первого пользователя проект уже создан выше по тесту.
+	// От ВТОРОГО пользователя: у первого уже есть проект, а онбординг доступен
+	// только тому, у кого нет ни одного.
 	secondReg := url.Values{
 		"email":     {"onboard-second@example.com"},
 		"password":  {"correct-horse-battery"},
@@ -297,8 +263,6 @@ func TestWebOnboardingFlow(t *testing.T) {
 		t.Fatalf("orphan org left behind: count = %d, want 0", orphanCount)
 	}
 
-	// POST /onboarding с непроверенной платформой → 303, платформа в БД
-	// нормализуется на "other".
 	hax0rForm := url.Values{
 		"org_slug":     {"hax0r-org"},
 		"org_name":     {"Hax0r Org"},
@@ -306,8 +270,6 @@ func TestWebOnboardingFlow(t *testing.T) {
 		"project_name": {"Hax0r Proj"},
 		"platform":     {"hax0r"},
 	}
-	// Тоже от второго пользователя: его предыдущая попытка провалилась на
-	// невалидном slug, поэтому проекта у него по-прежнему нет.
 	resp = postForm(t, s.srv, "/onboarding", hax0rForm, s.srv.URL, secondCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -323,7 +285,6 @@ func TestWebOnboardingFlow(t *testing.T) {
 		t.Fatalf("platform in DB = %q, want %q", gotPlatform, "other")
 	}
 
-	// GET /projects/{id}/setup от юзера без доступа к проекту → 404.
 	otherForm := url.Values{
 		"email":     {"other-user@example.com"},
 		"password":  {"correct-horse-battery"},
@@ -350,13 +311,6 @@ func TestWebOnboardingFlow(t *testing.T) {
 	}
 }
 
-// TestProjectSetupShowsSnippetsWithoutPlatformDSN — MAJOR из ревью задачи 5:
-// шапка страницы показывает DSN платформы проекта (browser для JS, server
-// для остальных), но видимость ВСЕГО блока сниппетов обязана идти по
-// наличию сниппетов, а не по этому одному DSN. У JS-проекта с отозванным
-// browser-ключом и живым server-ключом шапочный DSN пуст, но Go/PHP/Python
-// сниппеты валидны и обязаны быть на странице — старый гейт по dsn==""
-// прятал их вместе с пустым состоянием, хотя рабочий путь подключения есть.
 func TestProjectSetupShowsSnippetsWithoutPlatformDSN(t *testing.T) {
 	s := newStack(t)
 	ctx := context.Background()
@@ -415,16 +369,10 @@ func TestProjectSetupShowsSnippetsWithoutPlatformDSN(t *testing.T) {
 	if !strings.Contains(string(body), `<div class="card-stack">`) {
 		t.Errorf("GET %s: нет обёртки card-stack вокруг блоков setup", setupPath)
 	}
-	// Ловушка: JS-сниппета с пустым DSN на странице быть не должно вовсе —
-	// он выглядит готовым к копированию и молча не работает. Сниппета нет —
-	// значит нет и его команды установки (шаблон HTML-экранирует кавычки,
-	// поэтому "пустой dsn" ищем по отсутствию всего блока, а не по
-	// буквальным символам кавычек).
+	// Ищем по отсутствию команды установки, а не по кавычкам dsn: "" — шаблон их HTML-экранирует.
 	if strings.Contains(string(body), "npm install @sentry/browser") {
 		t.Errorf("страница показывает JS-сниппет с пустым DSN (ловушка копирования): %s", body)
 	}
-	// Молчаливое исчезновение JS объяснено: платформа проекта — javascript,
-	// её сниппет пропал именно из-за отсутствия browser-ключа.
 	if !strings.Contains(string(body), "Для JavaScript нужен ключ типа «Браузер»") {
 		t.Errorf("GET %s не объясняет пропажу JS-сниппета: %s", setupPath, body)
 	}
@@ -432,7 +380,6 @@ func TestProjectSetupShowsSnippetsWithoutPlatformDSN(t *testing.T) {
 		t.Errorf("GET %s: подсказка без ссылки «Настройки проекта»: %s", setupPath, body)
 	}
 
-	// Симметричный случай: живых ключей нет вовсе → честное пустое состояние.
 	project2, err := s.h.Org.CreateProject(ctx, o.ID, "js-proj-empty", "JS Proj Empty", "javascript")
 	if err != nil {
 		t.Fatalf("create project 2: %v", err)
@@ -453,9 +400,7 @@ func TestProjectSetupShowsSnippetsWithoutPlatformDSN(t *testing.T) {
 		t.Errorf("GET %s без ключей должен показывать пустое состояние: %s", setupPath2, body2)
 	}
 
-	// Зеркальный случай: серверная платформа (go), отозван server-ключ,
-	// browser жив — шапочный DSN пуст (для go он берётся из server), но
-	// JS-сниппет с рабочим browser-DSN обязан остаться на странице.
+	// Шапочный DSN пуст (для go он берётся из server), но JS-сниппет с browser-DSN должен остаться.
 	project3, err := s.h.Org.CreateProject(ctx, o.ID, "go-proj", "Go Proj", "go")
 	if err != nil {
 		t.Fatalf("create project 3: %v", err)
@@ -500,9 +445,6 @@ func TestProjectSetupShowsSnippetsWithoutPlatformDSN(t *testing.T) {
 	if !strings.Contains(string(body3), wantBrowserDSN) {
 		t.Fatalf("GET %s body missing browser DSN %q (JS-сниппет должен остаться): %s", setupPath3, wantBrowserDSN, body3)
 	}
-	// Ловушка: Go-сниппет с пустым DSN (платформа самого проекта — go) быть
-	// не должен, как и PHP/Python — все трое требуют server-ключа. Сниппета
-	// нет — значит нет и его команды установки.
 	if strings.Contains(string(body3), "go get github.com/getsentry/sentry-go") {
 		t.Errorf("страница показывает Go-сниппет с пустым DSN (ловушка копирования): %s", body3)
 	}
@@ -514,9 +456,6 @@ func TestProjectSetupShowsSnippetsWithoutPlatformDSN(t *testing.T) {
 	}
 }
 
-// projectSetupPathForTest — тот же путь, что строит projectSetupPath
-// (onboarding.go), но функция неэкспортируема, а этот файл — package
-// web_test.
 func projectSetupPathForTest(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/setup"
 }

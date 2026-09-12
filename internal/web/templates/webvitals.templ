@@ -12,14 +12,8 @@ func webVitalsPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/web-vitals"
 }
 
-// wvListSortURL — ссылка на список web vitals с заданной сортировкой, сохраняя
-// период и окружение фильтра (клик по заголовку колонки), как perfListSortURL.
-// endpointVitalsPath — переход на страницу эндпойнта из списка Web Vitals.
-// Страница у «Транзакций» и «Web Vitals» общая, поэтому к ссылке добавляется
-// пометка об источнике: по ней страница возвращает хлебную крошку в Web Vitals
-// и оставляет подсвеченным исходный подраздел. Якорь ведёт сразу к панели
-// Web Vitals — иначе пользователь попадает на шапку и ищет глазами тот блок,
-// ради которого пришёл.
+// shared-страница «Транзакций»/«Web Vitals»: from=web-vitals возвращает крошку и подсветку раздела.
+// якорь #web-vitals ведёт сразу к панели, не к шапке.
 func endpointVitalsPath(projectID int64, transaction string) string {
 	return endpointPath(projectID, transaction) + "?from=web-vitals#web-vitals"
 }
@@ -34,7 +28,6 @@ func wvListSortURL(projectID int64, f PerfFilter, sort string) string {
 	return webVitalsPath(projectID) + "?" + q.Encode()
 }
 
-// vitalLabel — человекочитаемое имя web vital для заголовка колонки/строки.
 func vitalLabel(name string) string {
 	switch name {
 	case "lcp":
@@ -51,8 +44,6 @@ func vitalLabel(name string) string {
 	return name
 }
 
-// vitalHelpKey — i18n-ключ пояснения метрики для тултипа (что она измеряет).
-// Пустая строка — метрика без расшифровки (аббревиатура выводится как есть).
 func vitalHelpKey(name string) string {
 	switch name {
 	case "lcp":
@@ -69,9 +60,7 @@ func vitalHelpKey(name string) string {
 	return ""
 }
 
-// vitalAbbr — аббревиатура метрики со всплывающей расшифровкой (нативный
-// <abbr title>, без JS и CSP-исключений): «LCP/INP/CLS…» непосвящённому ничего
-// не говорят, подсказка при наведении объясняет, что метрика измеряет.
+// abbr нативный, без JS и CSP-исключений — подсказка при наведении объясняет аббревиатуру.
 templ vitalAbbr(name string) {
 	if key := vitalHelpKey(name); key != "" {
 		<abbr class="vital-abbr" title={ i18n.T(ctx, key) }>{ vitalLabel(name) }</abbr>
@@ -80,9 +69,7 @@ templ vitalAbbr(name string) {
 	}
 }
 
-// formatVitalValue форматирует p75 web vital человекочитаемо: CLS —
-// безразмерный (два знака после запятой, НЕ миллисекунды), остальные — мс/с.
-// Нет данных (Rating == "" для известного vital) → «—».
+// CLS — безразмерный (два знака, не миллисекунды); нет данных (Rating=="") → «—».
 func formatVitalValue(v trace.Vital) string {
 	if v.Rating == "" {
 		return "—"
@@ -93,8 +80,6 @@ func formatVitalValue(v trace.Vital) string {
 	return formatVitalMS(v.P75)
 }
 
-// formatVitalMS форматирует миллисекунды человекочитаемо: <1000 → «Nms», иначе
-// «N.NNs».
 func formatVitalMS(ms float64) string {
 	if ms < 1000 {
 		return strconv.FormatFloat(ms, 'f', 0, 64) + "ms"
@@ -102,9 +87,6 @@ func formatVitalMS(ms float64) string {
 	return strconv.FormatFloat(ms/1000, 'f', 2, 64) + "s"
 }
 
-// vitalBadgeClass — CSS-класс бейджа рейтинга Google (good/needs-improvement/
-// poor), выражен через дизайн-систему (.badge-good/-warn/-danger). Пустой
-// рейтинг (нет данных) → без бейджа.
 func vitalBadgeClass(rating string) string {
 	switch rating {
 	case "good":
@@ -117,8 +99,6 @@ func vitalBadgeClass(rating string) string {
 	return ""
 }
 
-// vitalRatingKey — ключ i18n человекочитаемой подписи рейтинга (сырое
-// значение good/needs-improvement/poor — код, не текст для показа).
 func vitalRatingKey(rating string) string {
 	switch rating {
 	case "good":
@@ -131,15 +111,12 @@ func vitalRatingKey(rating string) string {
 	return ""
 }
 
-// vitalRatingBadge — бейдж рейтинга vital, общий для списка (vitalCell) и
-// панели Web Vitals на странице эндпойнта (endpoint.templ, тот же пакет).
 templ vitalRatingBadge(rating string) {
 	if rating != "" {
 		<span class={ vitalBadgeClass(rating) }>{ i18n.T(ctx, vitalRatingKey(rating)) }</span>
 	}
 }
 
-// vitalCell — ячейка таблицы с p75 и (если есть данные) бейджем рейтинга.
 templ vitalCell(v trace.Vital) {
 	<td class="num">
 		<span class="vital-value">{ formatVitalValue(v) }</span>
@@ -147,11 +124,7 @@ templ vitalCell(v trace.Vital) {
 	</td>
 }
 
-// WebVitalsList — GET /projects/{id}/web-vitals: таблица страниц (pageload-
-// транзакций) с p75 LCP/INP/CLS, цветными бейджами рейтинга и числом замеров.
-// Фильтры окружения/периода и сортировка — как на странице Performance.
-// loadFailed — ClickHouse не ответил: фильтры на месте, вместо таблицы —
-// «данные временно недоступны».
+// loadFailed — ClickHouse не ответил: фильтры на месте, вместо таблицы «данные временно недоступны».
 templ WebVitalsList(projectID int64, pages []trace.PageVitals, filter PerfFilter, environments []string, userEmail string, loadFailed bool) {
 	@layout(i18n.T(ctx, "perf.webvitals"), userEmail) {
 		<div class="web-vitals">

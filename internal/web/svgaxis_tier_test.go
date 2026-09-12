@@ -10,12 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 )
 
-// TestFitYLabelsWidensPadForTierWidth — геометрия latencyLinesMarkup
-// (chart-vb1200, padL=64): подпись «400ms» по калибровке тира ≥700px занимает
-// 5×15.06≈75 единиц и в поле 64 не помещалась — writeYGrid прижимал её к x0,
-// и левый край уходил за вьюбокс (аудит 09-04 K9-4: «l00ms» на 1000-1300px).
-// fitYLabels должен раздвинуть поле под самую широкую подпись + yLabelGap,
-// после чего ни одна подпись writeYGrid не выходит за x=0.
+// padL=64 не вмещал «400ms» (≈75 единиц) — fitYLabels должен раздвинуть
+// поле под самую широкую подпись + yLabelGap.
 func TestFitYLabelsWidensPadForTierWidth(t *testing.T) {
 	g := newChartGeom(perfLatencyChartWidth, perfLatencyChartHeight, 64, 16, 26, 26)
 	s := newYScaleFloat(400_000, 3) // мкс → «200ms», «400ms», …
@@ -43,16 +39,13 @@ func TestFitYLabelsWidensPadForTierWidth(t *testing.T) {
 		if tag.anchor != "end" {
 			t.Fatalf("якорь подписи оси Y = %q, ожидался end", tag.anchor)
 		}
-		// Ширина подписи по позиции: все подписи тут не короче «0», проверяем
-		// по самой широкой — прижим writeYGrid у неё же.
+		// проверяем по самой широкой подписи — прижим writeYGrid именно у неё.
 		if left := tag.x - widest; tag.x > fit.x0-yLabelGap+0.05 && left < -0.05 {
 			t.Errorf("подпись оси Y на x=%.2f выходит за левый край вьюбокса (левый край %.2f)", tag.x, left)
 		}
 	}
 }
 
-// TestFitYLabelsKeepsPadForShortLabels — короткие подписи («0», «5», «10»)
-// поле не трогают: x0 остаётся padL, как задал вызывающий.
 func TestFitYLabelsKeepsPadForShortLabels(t *testing.T) {
 	g := newChartGeom(latencyChartWidth, latencyChartHeight, 48, 16, 26, 26)
 	s := newYScale(10, 3)
@@ -62,8 +55,6 @@ func TestFitYLabelsKeepsPadForShortLabels(t *testing.T) {
 	}
 }
 
-// TestFitYLabelsZeroStepIsNoop — шкала с нулевым шагом (пустая) не должна
-// зацикливать перебор уровней.
 func TestFitYLabelsZeroStepIsNoop(t *testing.T) {
 	g := newChartGeom(720, 200, 48, 16, 26, 26)
 	fit := g.fitYLabels(yScale{top: 0, step: 0}, formatCountAxis)
@@ -72,9 +63,8 @@ func TestFitYLabelsZeroStepIsNoop(t *testing.T) {
 	}
 }
 
-// TestYAxisPadLCapsAtQuarterOfCanvas — патологически длинный unit (OTLP) не
-// съедает график: поле растёт не выше yLabelPadMaxShare холста, дальше
-// работает компромисс writeYGrid (обрезка слева).
+// патологически длинный unit не съедает график — поле растёт не выше
+// yLabelPadMaxShare, дальше работает обрезка слева.
 func TestYAxisPadLCapsAtQuarterOfCanvas(t *testing.T) {
 	long := strings.Repeat("x", 40)
 	got := yAxisPadL(1200, 58, []string{"0", long})
@@ -86,9 +76,8 @@ func TestYAxisPadLCapsAtQuarterOfCanvas(t *testing.T) {
 	}
 }
 
-// TestChartBarsWidensPadForWideCounts — chartBars (частота на issue) ведёт
-// шкалу сам, но поле под подписи берёт из той же yAxisPadL: счётчики
-// «1000»+ на chart-vb1200 шире chartPadL=40, и ось должна встать правее.
+// chartBars ведёт свою шкалу, но поле берёт из общей yAxisPadL — широкие
+// счётчики должны сдвигать ось правее.
 func TestChartBarsWidensPadForWideCounts(t *testing.T) {
 	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	points := []event.Point{{T: base, N: 1500}, {T: base.Add(time.Hour), N: 2000}}
@@ -111,20 +100,12 @@ func TestChartBarsWidensPadForWideCounts(t *testing.T) {
 	}
 }
 
-// deployGeom — геометрия latencyLinesMarkup (chart-vb1200), на которой аудит
-// снял слипшиеся подписи версий.
 func deployGeom() chartGeom {
 	return newChartGeom(perfLatencyChartWidth, perfLatencyChartHeight, 64, 16, 26, 26)
 }
 
-// TestWriteDeployMarkerLabelGapFollowsTierWidth — зазор между подписями
-// версий считается по ширине подписи на тире, а не константой 44: на
-// chart-vb1200 «v1.2.2» ≈90 единиц, два деплоя в 62 единицах друг от друга
-// раньше подписывались оба (62 ≥ 44) и накладывались («v1.2.2v1.2.3»), теперь
-// вторая подпись подавляется, третья (в 106 от второй, 168 от первой)
-// рисуется. Деплои подаются в порядке БД (DESC): без сортировки по времени
-// «предыдущей нарисованной» оказалась бы самая правая, и подписи слева от
-// неё подавлялись бы все.
+// зазор между подписями версий — по ширине подписи на тире, не константой.
+// деплои подаются в порядке БД (DESC): без сортировки «предыдущей» была бы самая правая.
 func TestWriteDeployMarkerLabelGapFollowsTierWidth(t *testing.T) {
 	g := deployGeom()
 	base := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
@@ -161,10 +142,8 @@ func TestWriteDeployMarkerLabelGapFollowsTierWidth(t *testing.T) {
 	}
 }
 
-// TestWriteDeployMarkerEndAnchorByLabelWidth — разворот подписи у правого
-// края тоже считается по ширине подписи: маркер в 62 единицах от x1 при
-// подписи ≈90 раньше оставался start (порог был 40 единиц) и вылезал за
-// холст, теперь — end, и правый край подписи не правее x1.
+// разворот подписи у правого края — тоже по ширине подписи, не фиксированным
+// порогом, иначе подпись вылезает за холст.
 func TestWriteDeployMarkerEndAnchorByLabelWidth(t *testing.T) {
 	g := deployGeom()
 	base := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)

@@ -5,25 +5,20 @@ import (
 	"testing"
 )
 
-// TestFuncContexts проверяет, что funcContexts правильно относит каждую
-// строку к ближайшей ПРЕДШЕСТВУЮЩЕЙ названной функции/templ-блоку — это
-// единственный источник "различающего контекста", на который опирается
-// ContentAnchor при девяти похожих местах в internal/web/svg.go (см. её
-// докблок).
 func TestFuncContexts(t *testing.T) {
 	body := strings.Join([]string{
-		`package demo`,                        // 1: до первого объявления — ""
-		``,                                    // 2
-		`func plain(a int) int {`,             // 3: plain
-		`	return a + 1`,                       // 4: plain
-		`}`,                                   // 5: plain (тело ещё внутри функции)
-		``,                                    // 6: plain — funcContexts не видит "}",
-		`func (g geom) xFor(i int) float64 {`, // 7: geom.xFor
-		`	return float64(i)`,                  // 8: geom.xFor
-		`}`,                                   // 9: geom.xFor
-		`templ widget(name string) {`,         // 10: widget
-		`	<div>{ name }</div>`,                // 11: widget
-		`}`,                                   // 12: widget
+		`package demo`,
+		``,
+		`func plain(a int) int {`,
+		`	return a + 1`,
+		`}`,
+		``,
+		`func (g geom) xFor(i int) float64 {`,
+		`	return float64(i)`,
+		`}`,
+		`templ widget(name string) {`,
+		`	<div>{ name }</div>`,
+		`}`,
 	}, "\n")
 
 	ctx := funcContexts(body)
@@ -53,20 +48,6 @@ func TestFuncContexts(t *testing.T) {
 	}
 }
 
-// TestFuncContextsRecognizesGenericFunctions — доработка по ревью задачи
-// W3-J: funcDeclRe изначально не понимал список типовых параметров
-// дженерика (func Foo[T any](...)) — "[T any]" рвал `(\w+)\s*\(` сразу
-// после имени, и всё внутри такой функции молча приписывалось предыдущей
-// НАЗВАННОЙ функции выше по файлу — тот же класс тихой порчи контекста, что
-// и у самих номеров строк. Ревьюер нашёл пять реальных пропущенных
-// объявлений отдельным скриптом на go/ast (см. докблок funcDeclRe); эта
-// проба закрывает синтетическую сторону, следующая ниже — живую.
-//
-// Три формы: один типовой параметр в однострочной сигнатуре (Foo), два
-// типовых параметра (Bar — "[K comparable, V any]" не должен обрываться на
-// первой запятой), и многострочная сигнатура (fillSeries — ровно форма
-// internal/web/gapfill.go, где список параметров переносится на вторую
-// строку уже ПОСЛЕ распознанного объявления).
 func TestFuncContextsRecognizesGenericFunctions(t *testing.T) {
 	body := strings.Join([]string{
 		`package demo`,
@@ -110,13 +91,8 @@ func TestFuncContextsRecognizesGenericFunctions(t *testing.T) {
 	}
 }
 
-// TestFuncContextsRecognizesGenericFunctionsOnRealTree — та же проба на
-// живом дереве, а не на синтетике: все пять функций, которые ревью нашло
-// пропущенными (internal/chbatch/isolate.go:27, internal/host/resolve.go:83
-// и 102, internal/ingest/otlp.go:1436, internal/web/gapfill.go:16), обязаны
-// правильно атрибутировать строку ВНУТРИ своего тела (не саму строку
-// объявления — до правки она распознавалась бы тоже, ложноположительно, по
-// случайному совпадению регэкспа "(\w+)\s*\(" на предыдущей функции).
+// Проверяет строку ВНУТРИ тела функции, не саму декларацию — до правки
+// декларация распозналась бы и так, ложноположительно.
 func TestFuncContextsRecognizesGenericFunctionsOnRealTree(t *testing.T) {
 	tree := Load(t)
 	byPath := map[string]string{}
@@ -143,10 +119,7 @@ func TestFuncContextsRecognizesGenericFunctionsOnRealTree(t *testing.T) {
 		lines := strings.Split(body, "\n")
 		found := false
 		for i, line := range lines {
-			// Строка вида "func <wantFunc>[...](" — сама декларация,
-			// намеренно пропускаем её и проверяем строку ПОСЛЕ: важно, что
-			// ТЕЛО функции атрибутировано верно, а не только то, что
-			// объявление где-то совпало.
+			// Пропускаем саму декларацию, проверяем строку после — важно тело, не совпадение объявления.
 			if strings.Contains(line, "func "+c.wantFunc+"[") && i+1 < len(ctx) {
 				if got := ctx[i+1]; got != c.wantFunc {
 					t.Errorf("%s: строка внутри тела %s (%q) = %q, want %q", c.path, c.wantFunc, strings.TrimSpace(lines[i+1]), got, c.wantFunc)
@@ -161,9 +134,6 @@ func TestFuncContextsRecognizesGenericFunctionsOnRealTree(t *testing.T) {
 	}
 }
 
-// TestContentAnchor закрепляет форму ключа и явно проверяет случай пустого
-// funcName (строка выше первого объявления в файле) — см. докблок
-// ContentAnchor про то, что схема гарантирует.
 func TestContentAnchor(t *testing.T) {
 	got := ContentAnchor("internal/web/svg.go", "chartBars", `text := points[idx].T.UTC().Format("02.01")`)
 	want := `internal/web/svg.go in chartBars: text := points[idx].T.UTC().Format("02.01")`
@@ -177,12 +147,6 @@ func TestContentAnchor(t *testing.T) {
 	}
 }
 
-// TestRecordAnchorRejectsAmbiguousDifferentLines — проба на неоднозначность,
-// требуемая брифом W3-J: якорь, совпавший с двумя РАЗНЫМИ строками, обязан
-// провалить тест с внятным сообщением, а не молча оставить первую находку.
-// Без этого механизма два похожих места в одном файле, отличить которые
-// текстово не удалось, тихо схлопнулись бы в одно исключение — и одна из
-// находок осталась бы непроверенной сторожем навсегда.
 func TestRecordAnchorRejectsAmbiguousDifferentLines(t *testing.T) {
 	ft := &fakeT{}
 	seenLines := map[string]int{}
@@ -196,12 +160,6 @@ func TestRecordAnchorRejectsAmbiguousDifferentLines(t *testing.T) {
 	ft.requireFailure(t, "неоднозначен")
 }
 
-// TestRecordAnchorAllowsSameAnchorSameLineTwice — обратная сторона той же
-// пробы: ДВА совпадения на ОДНОЙ физической строке (в internal/web/svg.go
-// есть строка с двумя вызовами .Format("02.01") подряд) обязаны остаться
-// одним местом находки, а не провалить тест как мнимую неоднозначность —
-// иначе сама схема оказалась бы строже старой exemptLoc, которая этот случай
-// прямо разрешала (см. докблок recordAnchor).
 func TestRecordAnchorAllowsSameAnchorSameLineTwice(t *testing.T) {
 	ft := &fakeT{}
 	seenLines := map[string]int{}

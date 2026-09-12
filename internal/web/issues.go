@@ -17,16 +17,11 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// sparklineWindow/Buckets — окно и разрешение спарклайнов в списке issues:
-// 24 часа, разбитые на 24 часовых корзины.
 const (
 	sparklineWindow  = 24 * time.Hour
 	sparklineBuckets = 24
 )
 
-// issuesList — GET /projects/{id}/issues: таблица issues проекта (доступ
-// только у CanAccessProject, иначе 404, чтобы не палить существование
-// чужих числовых id — тот же принцип, что и в projectSetup).
 func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -48,11 +43,8 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// canManage — виден ли «Project settings» (dead link fix, задача 5/2):
-	// ссылка ведёт на страницу, которая сама требует owner/admin, поэтому
-	// member её видеть не должен вовсе. org.ErrNotMember не должен ронять
-	// страницу — это лишь означает, что показывать ссылку не нужно (доступ к
-	// проекту у юзера мог быть только через команду).
+	// Ссылка на «Project settings» требует owner/admin — member её не должен видеть вовсе.
+	// org.ErrNotMember не роняет страницу: значит доступ был только через команду.
 	orgID, err := h.Org.ProjectOrg(r.Context(), projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
@@ -66,19 +58,14 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 	canManage := role == org.RoleOwner || role == org.RoleAdmin
 
 	q := r.URL.Query()
-	// Дефолтный вид списка — только «Не решено»: решённые и игнорируемые
-	// проблемы обычно не нужны при первом открытии и лишь зашумляют список.
-	// Отличаем «параметр не задан» (первый заход → unresolved) от «пользователь
-	// явно выбрал Все» (?status= присутствует, но пусто → без фильтра): так
-	// дефолт остаётся полностью переопределяемым из UI-фильтра.
+	// «Параметр не задан» (дефолт unresolved) отличается от «явно выбрано Все» (?status= пусто) —
+	// так дефолт остаётся переопределяемым из UI.
 	status := q.Get("status")
 	if !q.Has("status") {
 		status = issue.StatusUnresolved
 	}
-	// Тот же контрол окна времени, что и на остальных страницах, с
-	// дополнительным пунктом «за всё время» — он же по умолчанию: большинство
-	// групп старше суток, и окно на 24 часа показывало бы пустой список на
-	// здоровом проекте.
+	// «За всё время» по умолчанию: большинство групп старше суток, окно 24ч показало бы
+	// пустой список на здоровом проекте.
 	rng := h.resolveTimeRange(w, r, RangeAll)
 	filter := issue.Filter{
 		Status:      status,
@@ -103,10 +90,8 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Спарклайны — единственное чтение ClickHouse на странице; сам список
-	// ошибок — PostgreSQL. Отказ CH не роняет страницу (единый приём
-	// CH-страниц, образец — logsList): строки на месте, колонка пустая, над
-	// таблицей — «графики временно недоступны».
+	// Единственное чтение ClickHouse на странице; отказ не роняет её — колонка спарклайнов
+	// пустая, «графики временно недоступны».
 	sparklines, err := h.sparklinesFor(r.Context(), projectID, items)
 	sparklinesFailed := err != nil
 	if sparklinesFailed {
@@ -117,9 +102,7 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 	rows := make([]templates.IssueRow, len(items))
 	for i, it := range items {
 		rows[i] = templates.IssueRow{
-			Issue: it,
-			// Тренд событий за сутки: значения — счётчики, поэтому в
-			// подсказке показываются как есть.
+			Issue:     it,
 			Sparkline: sparklineSVG(r.Context(), sparklines[it.ID], sparklineWidth, sparklineHeight, nil),
 		}
 	}
@@ -137,71 +120,35 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 		Sort:        filter.Sort,
 		Environment: filter.Environment,
 		Range:       rangeVM,
-		// №23: фильтр «активен», если сужает список относительно умолчаний
-		// (unresolved + всё время). Явный ?status= («Все») и явный
-		// ?status=unresolved список не сужают — это не повод показывать
-		// «ничего не подошло» вместо «событий ещё не было».
+		// «Активен», если сужает список относительно умолчаний (unresolved + всё время) — явные
+		// ?status=Все/unresolved не в счёт, иначе пустой список выглядел бы как «ничего не подошло».
 		Active: filter.Level != "" || filter.Query != "" || filter.Environment != "" ||
 			(q.Has("status") && status != "" && status != issue.StatusUnresolved) ||
 			rng.Key != RangeAll,
 	}
 	banner := h.quotaBanner(r.Context(), orgID, canManage)
-	// Operate-право — через тот же хелпер, что и у остальных страниц
-	// (canOperateProject, operate.go), а не через canAccess. Сегодня предикаты
-	// совпадают (canOperateProject буквально зовёт CanAccessProject), и
-	// подстановка canAccess была верна по факту — но делала конъюнкт
-	// CanOperate в checklistVisible() (help.templ) недостижимым по построению:
-	// доступ к странице уже подтверждён, значит значение всегда true. При
-	// расхождении предикатов (ужесточение «оперировать» относительно
-	// «видеть») чек-лист и кнопки экспорта обязаны следовать за operate-правом
-	// сами, без правки этого места — цена: один лишний запрос на странице.
+	// canOperateProject, не canAccess: сегодня предикаты совпадают и это ничего не меняет, но
+	// при их расхождении CanOperate ниже обязана следовать сама, без правки этого места.
 	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
 	gs := h.gettingStarted(r.Context(), uid, projectID, orgID, canManage, canOperate)
-	// canManage больше не передаётся (№117): шаблон его не использовал —
-	// роль питает QuotaBanner и GettingStartedVM выше.
-	//
-	// canOperate гейтит кнопки экспорта на списке (E1, задача 11) — тот же
-	// predicate, что и у requireProjectOperator. Дополнительно —
-	// h.Exports != nil: на инстансе без каталога выгрузок воркер не
-	// стартует, кнопка «Выгрузить» поведёт на 404 (ревью веб-части E1, п.3).
+	// h.Exports == nil на инстансе без каталога выгрузок — воркер не стартовал, кнопка ведёт на 404.
 	canExport := canOperate && h.Exports != nil
-	// canManagePII — та же роль (owner/admin), что и authz.CanManage в
-	// exports.go: галка «выгрузить как есть» на раскрытых формах экспорта
-	// видна только ей (спека §7/§8), оператору include_pii молча
-	// игнорируется на бэкенде (exports.go:exportsCreate) — здесь просто не
-	// рендерим контрол, которым нельзя воспользоваться (находка аудита
-	// P2-UX-3).
+	// Галка «выгрузить как есть» видна только owner/admin — оператору include_pii молча
+	// игнорируется на бэкенде, здесь просто не рендерим то, чем нельзя воспользоваться.
 	_ = templates.IssuesList(projectID, rows, tplFilter, page, total, h.currentEmail(r), environments, banner, gs, canExport, canManage, sparklinesFailed).Render(r.Context(), w)
 }
 
-// gettingStarted собирает вьюмодель чек-листа «Первые шаги» (задача 5,
-// docs-onboarding): шаг 1 (создать проект) всегда закрыт — раз страница
-// issues открылась, проект уже существует. Остальные шаги определяются по
-// реальным данным: подключён ли SDK (есть хотя бы одна issue — фильтр
-// пустой, а не тот, что пришёл в query, иначе активный ?status=resolved
-// без открытых issues спрятал бы уже закрытый шаг), настроено ли хотя бы
-// одно оповещение, позвана ли команда (>1 участника в орге) или добавлен ли
-// хотя бы один монитор аптайма.
-//
-// Как и quotaBanner, это вспомогательная (не критичная) вьюмодель: сервисы
-// могут быть не подключены к стенду (h.Alerts/h.Uptime == nil в части
-// тестовых стендов), а сами запросы — упасть с ошибкой сети/БД. Ни то, ни
-// другое не должно ронять страницу issues 500-й — недостающий сигнал просто
-// трактуется как «шаг ещё не закрыт», а причина логируется на Warn.
+// Шаг 1 всегда закрыт — страница issues уже требует существующий проект. Недостающие сервисы
+// (h.Alerts/h.Uptime nil) или их ошибки не роняют страницу — шаг просто «ещё не закрыт».
 func (h *Handler) gettingStarted(ctx context.Context, uid, projectID, orgID int64, canManage, canOperate bool) templates.GettingStartedVM {
 	gs := templates.GettingStartedVM{ProjectID: projectID, OrgID: orgID, CanManage: canManage, CanOperate: canOperate}
 
-	// №71: скрытый пользователем чек-лист сам не считается и не рендерится
-	// (Hidden гасит checklistVisible() независимо от Done/CanOperate — см.
-	// help.templ), но KeyRejects ниже всё равно собирается: это единственный
-	// способ увидеть отказы по ключу (в пустом состоянии issues), когда
-	// чек-лист, который иначе нёс бы ту же врезку, скрыт (находка ревью
-	// аудита G1 — раньше hidden сразу отдавал нулевую VM, и KeyRejects до
-	// этого места не доходил).
+	// KeyRejects собирается даже когда чек-лист скрыт (Hidden) — единственный способ увидеть
+	// отказы по ключу в пустом состоянии issues.
 	hidden, err := h.Auth.HideGettingStarted(ctx, uid)
 	if err != nil {
 		slog.Warn("gettingStarted: hide flag lookup failed", "user_id", uid, "err", err)
@@ -215,11 +162,8 @@ func (h *Handler) gettingStarted(ctx context.Context, uid, projectID, orgID int6
 			gs.Step2Done = exists
 		}
 
-		// B1: Channels() здесь вызывается напрямую, мимо channelsForView —
-		// намеренно (allowlist-запись "count-only" в internal/guards). Результат
-		// идёт только в len(channels) ниже, ни Target, ни Secret никогда не
-		// покидают эту функцию — маскировать нечего, а гонять через дверь ради
-		// счётчика было бы лишним чтением.
+		// Channels() напрямую, мимо channelsForView: только len(channels) идёт наружу,
+		// Target/Secret никогда не покидают функцию — маскировать нечего.
 		if h.Alerts == nil {
 			slog.Warn("gettingStarted: Alerts service not configured", "project_id", projectID)
 		} else if channels, err := h.Alerts.Channels(ctx, projectID); err != nil {
@@ -228,8 +172,6 @@ func (h *Handler) gettingStarted(ctx context.Context, uid, projectID, orgID int6
 			gs.Step3Done = len(channels) > 0
 		}
 
-		// №71: команда и монитор — два отдельных шага с раздельными ссылками,
-		// а не один «или/или» с единственной дверью в настройки организации.
 		if members, err := h.Org.MembersOf(ctx, orgID); err != nil {
 			slog.Warn("gettingStarted: org members failed", "org_id", orgID, "err", err)
 		} else {
@@ -244,13 +186,8 @@ func (h *Handler) gettingStarted(ctx context.Context, uid, projectID, orgID int6
 		}
 	}
 
-	// K7-5/K7-6: отказы по ключу этого проекта за последний час — на пустом
-	// списке issues и под шагом 2 чек-листа неверный DSN/номер проекта/скоуп
-	// ключа объясняет отсутствие данных лучше, чем голый пустой список.
-	// h.Signals — необязательное поле, как Deploy/Trace (не как
-	// Alerts/Uptime выше): нет Warn на nil, секция просто не появляется (тот
-	// же приём, что deprecatedPathsView в projsettings.go). Собирается и
-	// когда чек-лист скрыт (hidden) — см. комментарий выше.
+	// h.Signals — необязательное поле, как Deploy/Trace (не как Alerts/Uptime выше): nil просто
+	// скрывает секцию, без Warn в логе.
 	if h.Signals != nil {
 		if signals, err := h.Signals.ForProject(ctx, projectID); err != nil {
 			slog.Warn("gettingStarted: ingest signals failed", "project_id", projectID, "err", err)
@@ -278,9 +215,7 @@ func (h *Handler) gettingStarted(ctx context.Context, uid, projectID, orgID int6
 	return gs
 }
 
-// isKeyRejectKind — kind относится к отказам по ключу (K7-5/K7-6), а не к
-// устаревшим путям приёма (те показываются отдельно, на странице настроек
-// проекта — см. deprecatedPathByKind в projsettings.go).
+// Отказы по ключу, не устаревшие пути приёма — те показываются отдельно, в настройках проекта.
 func isKeyRejectKind(k ingestsignal.Kind) bool {
 	switch k {
 	case ingestsignal.KindKeyInvalid, ingestsignal.KindKeyProjectMismatch, ingestsignal.KindKeyScope:
@@ -290,9 +225,6 @@ func isKeyRejectKind(k ingestsignal.Kind) bool {
 	}
 }
 
-// gettingStartedHide — POST /profile/getting-started/hide (№71): скрывает
-// чек-лист «Первые шаги» навсегда для текущего пользователя. Flash не нужен
-// — карточка просто исчезает со страницы, на которую ведёт редирект.
 func (h *Handler) gettingStartedHide(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -310,8 +242,6 @@ func (h *Handler) gettingStartedHide(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, safeRedirect(r, h.BaseURL), http.StatusSeeOther)
 }
 
-// sparklinesFor — один запрос Events.Sparklines на все issues страницы
-// (а не по запросу на issue), как того требует спека.
 func (h *Handler) sparklinesFor(ctx context.Context, projectID int64, items []issue.Issue) (map[int64][]uint64, error) {
 	if len(items) == 0 {
 		return map[int64][]uint64{}, nil
@@ -324,11 +254,8 @@ func (h *Handler) sparklinesFor(ctx context.Context, projectID int64, items []is
 	return h.Events.Sparklines(ctx, projectID, ids, since, sparklineBuckets)
 }
 
-// maxPage — верхняя граница номера страницы. Без неё `?page=<огромное>` даёт
-// (page-1)*perPage с переполнением int → отрицательный SQL OFFSET → 500 на
-// списках проблем/инцидентов/детали монитора. Потолок заведомо выше любого
-// реального набора (при perPage≤100 это ≥100M строк), поэтому легитимную
-// глубокую пагинацию не ограничивает, а перелившийся ввод даёт пустую страницу.
+// Без потолка `?page=<огромное>` даёт переполнение int в (page-1)*perPage → отрицательный
+// SQL OFFSET → 500. Значение заведомо выше любого реального набора данных.
 const maxPage = 1_000_000
 
 func parsePage(s string) int {
@@ -342,36 +269,20 @@ func parsePage(s string) int {
 	return n
 }
 
-// bulkActionStatus — whitelist допустимых POST-действий bulk-панели.
-// Значения — issue.StatusXxx, не литералы: раньше здесь была третья копия
-// того же множества, что и default status выше и exportValidStatuses
-// (internal/web/exports.go) — устранено, issue остаётся единственным
-// владельцем набора (internal/guards следит, чтобы копия не вернулась).
 var bulkActionStatus = map[string]string{
 	"resolve":   issue.StatusResolved,
 	"ignore":    issue.StatusIgnored,
 	"unresolve": issue.StatusUnresolved,
 }
 
-// bulkActionFlashKey — сообщение об итоге каждого массового действия.
 var bulkActionFlashKey = map[string]string{
 	"resolve":   "flash.issues_resolved",
 	"ignore":    "flash.issues_ignored",
 	"unresolve": "flash.issues_reopened",
 }
 
-// BulkActionFlashKeys — экспортированный набор значений bulkActionFlashKey,
-// для internal/guards: ключ здесь собирается не литералом в вызове flashOK
-// (issuesBulk передаёт bulkActionFlashKey[r.FormValue("action")]), поэтому
-// сканер по местам вызова (internal/guards/flash_test.go) его не видит.
-// Экспорт значений — тот же приём, каким TestDynamicKeysResolve
-// (internal/guards/i18n_dynamic_test.go) читает uptime.Kinds/org.Platforms:
-// множество значений знает только код-владелец, и правило обязано читать
-// его оттуда, а не копировать литералом в тест, где копия неизбежно
-// разойдётся с картой при следующей правке issuesBulk.
-//
-// Строится из bulkActionFlashKey, а не дублирует её литералы — единственный
-// источник истины остаётся один.
+// Экспортируется для internal/guards: ключ уходит в flashOK динамически (карта не литерал),
+// сканер по местам вызова его не видит — множество значений должно читаться отсюда.
 var BulkActionFlashKeys = func() []string {
 	out := make([]string, 0, len(bulkActionFlashKey))
 	for _, key := range bulkActionFlashKey {
@@ -380,10 +291,6 @@ var BulkActionFlashKeys = func() []string {
 	return out
 }()
 
-// issuesBulk — POST /projects/{id}/issues/bulk: action=resolve|ignore|unresolve
-// + ids[] → SetStatusBulk → 303. Редирект идёт на Referer (сохраняет текущие
-// фильтры/страницу), если Referer same-origin, иначе на список issues без
-// query — тот же принцип sameOrigin, что и у остальных POST в этом пакете.
 func (h *Handler) issuesBulk(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -419,8 +326,6 @@ func (h *Handler) issuesBulk(w http.ResponseWriter, r *http.Request) {
 	}
 	ids := parseIDs(r.Form["ids"])
 	if len(ids) == 0 {
-		// Раньше пустой выбор давал полную перезагрузку и ровно ничего: человек
-		// не мог отличить «не отметил» от «не сработало».
 		h.flashWarn(w, "flash.nothing_selected", 0)
 		http.Redirect(w, r, BulkRedirectTarget(r, h.BaseURL, projectID), http.StatusSeeOther)
 		return
@@ -430,8 +335,7 @@ func (h *Handler) issuesBulk(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	// Сообщаем ЧИСЛО и действие: строка просто исчезала из списка, и понять,
-	// сработало ли и на скольких, было нельзя.
+	// Число входит во flash-сообщение: без него нельзя понять, сработало ли и на скольких.
 	h.flashOK(w, bulkActionFlashKey[r.FormValue("action")], int(n))
 
 	http.Redirect(w, r, BulkRedirectTarget(r, h.BaseURL, projectID), http.StatusSeeOther)
@@ -449,12 +353,8 @@ func parseIDs(raw []string) []int64 {
 	return ids
 }
 
-// BulkRedirectTarget — Referer, если он same-origin (сохраняет query string
-// со всеми фильтрами и текущей страницей пагинации), иначе список issues
-// проекта без query. Отвергает пути, начинающиеся с "//" (protocol-relative
-// URLs) или "/\" (браузеры при навигации нормализуют обратный слэш в прямой,
-// так что "/\evil.com" превращается в "//evil.com" — тот же protocol-relative
-// обход), чтобы предотвратить открытые редиректы.
+// Отвергает "//" и "/\" — браузеры нормализуют обратный слэш в прямой при навигации, так что
+// "/\evil.com" стал бы "//evil.com" (protocol-relative обход) — открытый редирект.
 func BulkRedirectTarget(r *http.Request, baseURL string, projectID int64) string {
 	ref := r.Header.Get("Referer")
 	if ref != "" && isSameOriginURL(ref, baseURL) {

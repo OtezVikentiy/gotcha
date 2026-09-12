@@ -24,10 +24,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// monitorFormStack — own stand (like monitorsStack in monitors_test.go), plus
-// h.Alerts (alert.Service): the monitor form's channel checkboxes come from
-// Alerts.Channels, which monitorsStack never wires (it doesn't need it — the
-// list/detail pages this task doesn't touch alert channels at all).
 type monitorFormStack struct {
 	pool   *pgxpool.Pool
 	srv    *httptest.Server
@@ -46,7 +42,7 @@ func newMonitorFormStack(t *testing.T) *monitorFormStack {
 	authSvc := auth.NewService(pool)
 	orgSvc := org.NewService(pool, 1_000_000)
 	issueSvc := issue.NewService(pool)
-	var events *event.Query // страницы мониторов его не используют
+	var events *event.Query
 
 	uptimeSvc := uptime.NewService(pool)
 	alertSvc := alert.NewService(pool)
@@ -74,9 +70,6 @@ func newMonitorFormStack(t *testing.T) *monitorFormStack {
 	return &monitorFormStack{pool: pool, srv: srv, org: orgSvc, auth: authSvc, uptime: uptimeSvc, alerts: alertSvc, writer: writer}
 }
 
-// ownerAndMember — общий сетап большинства сценариев этого файла: организация
-// с owner'ом (может управлять формами монитора) и member'ом с view-доступом
-// через команду (не может), плюс сам проект.
 func ownerAndMember(t *testing.T, s *monitorFormStack, namePrefix string) (org.Project, *http.Cookie, *http.Cookie) {
 	t.Helper()
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, namePrefix+"-owner@example.com")
@@ -97,9 +90,6 @@ func ownerAndMember(t *testing.T, s *monitorFormStack, namePrefix string) (org.P
 	return proj, ownerCookie, memberCookie
 }
 
-// TestWebMonitorCreateHTTP — вся форма http-монитора со всеми полями:
-// проверка, что итоговый монитор в БД получает правильный типизированный
-// config, регионы и каналы; успех редиректит на страницу монитора (303).
 func TestWebMonitorCreateHTTP(t *testing.T) {
 	s := newMonitorFormStack(t)
 	proj, ownerCookie, _ := ownerAndMember(t, s, "moncreate")
@@ -113,7 +103,6 @@ func TestWebMonitorCreateHTTP(t *testing.T) {
 
 	newPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/monitors/new"
 
-	// GET new -> 200, форма содержит регион "local" и созданный канал.
 	resp := getWithCookie(t, s.srv, newPath, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -207,9 +196,6 @@ func TestWebMonitorCreateHTTP(t *testing.T) {
 	}
 }
 
-// TestWebMonitorCreateInvalidURLPreservesForm — невалидный http url -> 422, а
-// не 500/редирект, и все ранее введённые значения (в т.ч. невалидный url)
-// остаются в форме — пользователю не нужно перепечатывать всё заново.
 func TestWebMonitorCreateInvalidURLPreservesForm(t *testing.T) {
 	s := newMonitorFormStack(t)
 	proj, ownerCookie, _ := ownerAndMember(t, s, "moninvalid")
@@ -248,9 +234,6 @@ func TestWebMonitorCreateInvalidURLPreservesForm(t *testing.T) {
 	}
 }
 
-// TestWebMonitorEditChangesFieldsButNotKind — редактирование меняет имя и
-// tcp-поля, но kind монитора остаётся прежним, даже если POST пытается
-// протащить другое значение kind.
 func TestWebMonitorEditChangesFieldsButNotKind(t *testing.T) {
 	s := newMonitorFormStack(t)
 	proj, ownerCookie, _ := ownerAndMember(t, s, "monedit")
@@ -270,7 +253,6 @@ func TestWebMonitorEditChangesFieldsButNotKind(t *testing.T) {
 
 	editPath := "/monitors/" + strconv.FormatInt(created.ID, 10) + "/edit"
 
-	// GET edit -> 200, содержит текущее имя/host/port, тип показан как tcp.
 	resp := getWithCookie(t, s.srv, editPath, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -286,7 +268,7 @@ func TestWebMonitorEditChangesFieldsButNotKind(t *testing.T) {
 	updatePath := "/monitors/" + strconv.FormatInt(created.ID, 10)
 	form := url.Values{
 		"name":               {"SSH (renamed)"},
-		"kind":               {"http"}, // попытка сменить тип - должна быть проигнорирована
+		"kind":               {"http"},
 		"tcp_host":           {"new.example.com"},
 		"tcp_port":           {"2222"},
 		"interval_seconds":   {"120"},
@@ -328,9 +310,6 @@ func TestWebMonitorEditChangesFieldsButNotKind(t *testing.T) {
 	}
 }
 
-// TestWebMonitorHeartbeatCreateShowsPingURL — создание heartbeat-монитора
-// редиректит на страницу монитора, которая показывает URL пинга с токеном и
-// cron-сниппет.
 func TestWebMonitorHeartbeatCreateShowsPingURL(t *testing.T) {
 	s := newMonitorFormStack(t)
 	proj, ownerCookie, _ := ownerAndMember(t, s, "monhb")
@@ -348,9 +327,6 @@ func TestWebMonitorHeartbeatCreateShowsPingURL(t *testing.T) {
 		"regions":                 {"local"},
 	}
 
-	// Heartbeat create рендерит деталь СРАЗУ (200) с URL пинга, показанным один
-	// раз: сырой токен живёт только в этом ответе (в БД — sha256), redirect его
-	// потерял бы. Раньше был 303 + чтение токена из БД.
 	resp := postForm(t, s.srv, createPath, form, s.srv.URL, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -365,7 +341,6 @@ func TestWebMonitorHeartbeatCreateShowsPingURL(t *testing.T) {
 		t.Fatalf("POST %s missing cron snippet: %s", createPath, bodyStr)
 	}
 
-	// Монитор сохранён; Get больше НЕ возвращает сырой токен (хранится хешем).
 	monitors, err := s.uptime.List(context.Background(), proj.ID)
 	if err != nil {
 		t.Fatalf("list monitors: %v", err)
@@ -382,12 +357,6 @@ func TestWebMonitorHeartbeatCreateShowsPingURL(t *testing.T) {
 	}
 }
 
-// validMonitorForm — минимально валидная форма создания/обновления
-// http-монитора (проходит uptime.validateMonitor): используется тестами,
-// которым нужен именно факт успеха POST, а не конкретные значения полей (в
-// отличие от TestWebMonitorCreateHTTP, который проверяет каждое поле и
-// требует созданный alert-канал). Каналы не передаются — необязательны
-// (checkChannelsBelongToProject не проверяет пустой список).
 func validMonitorForm() url.Values {
 	return url.Values{
 		"name":               {"member monitor"},
@@ -403,14 +372,6 @@ func validMonitorForm() url.Values {
 	}
 }
 
-// TestWebMonitorFormOperatorAccess — с задачи 2 (спека
-// cld/plans/2026-08-08-access-model-rework.md) формы монитора доступны
-// оператору проекта, а не только owner/admin: участник команды (view-доступ
-// через team, не owner/admin) видит New/Edit и успешно проводит Create/
-// Update. Честного 403 здесь больше нет — граница «доступ к проекту есть, а
-// оператор — нет» сегодня недостижима (canOperateProject == CanAccessProject,
-// см. operate.go); чужак без доступа к организации по-прежнему получает 404
-// на все четыре маршрута (единый existence-oracle, №72).
 func TestWebMonitorFormOperatorAccess(t *testing.T) {
 	s := newMonitorFormStack(t)
 	proj, ownerCookie, memberCookie := ownerAndMember(t, s, "monopaccess")
@@ -428,7 +389,6 @@ func TestWebMonitorFormOperatorAccess(t *testing.T) {
 	editPath := "/monitors/" + strconv.FormatInt(created.ID, 10) + "/edit"
 	updatePath := "/monitors/" + strconv.FormatInt(created.ID, 10)
 
-	// Участник команды: GET New/Edit -> 200.
 	resp := getWithCookie(t, s.srv, newPath, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -443,7 +403,6 @@ func TestWebMonitorFormOperatorAccess(t *testing.T) {
 		t.Fatalf("GET %s (member) status = %d, want 200", editPath, resp.StatusCode)
 	}
 
-	// Участник команды: POST Create -> 303 (валидная форма создаёт монитор).
 	resp = postForm(t, s.srv, createPath, validMonitorForm(), s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -451,7 +410,6 @@ func TestWebMonitorFormOperatorAccess(t *testing.T) {
 		t.Fatalf("POST %s (member) status = %d, want 303", createPath, resp.StatusCode)
 	}
 
-	// Участник команды: POST Update -> 303 (тот же монитор, что и в GET Edit выше).
 	updateForm := validMonitorForm()
 	updateForm.Set("name", "Existing renamed")
 	resp = postForm(t, s.srv, updatePath, updateForm, s.srv.URL, memberCookie)
@@ -461,8 +419,6 @@ func TestWebMonitorFormOperatorAccess(t *testing.T) {
 		t.Fatalf("POST %s (member) status = %d, want 303", updatePath, resp.StatusCode)
 	}
 
-	// Чужак без доступа к организации: 404 на всех четырёх маршрутах — тот же
-	// existence-oracle, что и у остальных ресурсов проекта.
 	resp = getWithCookie(t, s.srv, newPath, outsiderCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -491,7 +447,6 @@ func TestWebMonitorFormOperatorAccess(t *testing.T) {
 		t.Fatalf("POST %s (outsider) status = %d, want 404", updatePath, resp.StatusCode)
 	}
 
-	// Sanity: owner still works.
 	resp = getWithCookie(t, s.srv, newPath, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -500,14 +455,6 @@ func TestWebMonitorFormOperatorAccess(t *testing.T) {
 	}
 }
 
-// TestWebMonitorFormChannelMasking — зеркало TestWebAlertsOperator
-// (alerts_test.go): оператор проекта (не owner/admin) видит форму монитора
-// (задача 2 сдвинула её на requireProjectOperator), но channelCheckbox
-// рендерит { c.Target } буквально — до этой правки оператор получал сырые
-// цели каналов (и расшифрованный Secret, хотя тот в HTML не попадает) через
-// renderMonitorForm -> h.Alerts.Channels, в обход маскировки, которую
-// renderAlerts уже применяет для той же аудитории. Владелец/admin
-// (canManageProject=true) по-прежнему видит цель как есть.
 func TestWebMonitorFormChannelMasking(t *testing.T) {
 	s := newMonitorFormStack(t)
 	proj, ownerCookie, memberCookie := ownerAndMember(t, s, "monformmask")
@@ -520,8 +467,6 @@ func TestWebMonitorFormChannelMasking(t *testing.T) {
 
 	newPath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/monitors/new"
 
-	// Оператор (участник команды, не owner/admin): маскированная цель видна,
-	// сырая — нет.
 	resp := getWithCookie(t, s.srv, newPath, memberCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -536,7 +481,6 @@ func TestWebMonitorFormChannelMasking(t *testing.T) {
 		t.Errorf("GET %s (operator) leaks raw target: %s", newPath, bodyStr)
 	}
 
-	// Owner (canManageProject): видит цель как есть.
 	resp = getWithCookie(t, s.srv, newPath, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -548,9 +492,6 @@ func TestWebMonitorFormChannelMasking(t *testing.T) {
 	}
 }
 
-// TestWebIncidentsList — incidents are visible to a member (view access, not
-// just owner/admin — CanAccessProject) with monitor link, cause, and regions;
-// outsider gets 404.
 func TestWebIncidentsList(t *testing.T) {
 	s := newMonitorFormStack(t)
 	proj, ownerCookie, memberCookie := ownerAndMember(t, s, "monincident")
@@ -598,14 +539,6 @@ func TestWebIncidentsList(t *testing.T) {
 	}
 }
 
-// TestWebIncidentsListShowsDeliveryFailedBadge — ревью аудита 2026-08-27
-// (усиление находки 1): исчерпавший retry-бюджет (NotifyOpenFailed &&
-// NotifyOpenAttempts >= maxNotifyOpenAttempts) инцидент обязан показывать
-// явный бейдж — иначе он неотличим от обычного открытого неподтверждённого
-// на экране, а ровно этот случай (канал доставки мёртв по-настоящему) и
-// есть тот, ради которого заводилась находка: человек об аварии не узнаёт.
-// Инцидент с попытками ниже границы бейдж НЕ показывает — ретрай ещё идёт,
-// showing тревогу раньше срока хуже, чем не показать вовсе.
 func TestWebIncidentsListShowsDeliveryFailedBadge(t *testing.T) {
 	s := newMonitorFormStack(t)
 	proj, ownerCookie, _ := ownerAndMember(t, s, "monincidentdlv")
@@ -659,10 +592,6 @@ func TestWebIncidentsListShowsDeliveryFailedBadge(t *testing.T) {
 	}
 }
 
-// tableRowContaining возвращает содержимое одного <tr>...</tr>, несущего
-// needle — используется, чтобы проверять бейджи/текст СТРОГО в границах
-// своей строки таблицы, а не где-то ещё на странице (соседняя строка,
-// dry-run-блок и т.п.).
 func tableRowContaining(t *testing.T, html, needle string) string {
 	t.Helper()
 	idx := strings.Index(html, needle)

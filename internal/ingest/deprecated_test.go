@@ -13,9 +13,6 @@ import (
 	pp "github.com/google/pprof/profile"
 )
 
-// serveIngest прогоняет запрос через НАСТОЯЩИЙ роутинг: обёртка алиаса живёт в
-// Register, поэтому прямой вызов хендлера (как в reject_test.go) её бы не
-// задел и тест проходил бы без реализации.
 func serveIngest(h *Handler, req *http.Request) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
 	h.Register(mux)
@@ -24,15 +21,13 @@ func serveIngest(h *Handler, req *http.Request) *httptest.ResponseRecorder {
 	return rec
 }
 
-// ndjsonRequest — POST c одной NDJSON-строкой лога и валидным Bearer.
 func ndjsonRequest(path string) *http.Request {
 	req := httptest.NewRequest("POST", path, strings.NewReader(`{"message":"hi"}`+"\n"))
 	req.Header.Set("Authorization", "Bearer pub")
 	return req
 }
 
-// validPprofBody — минимальный корректный pprof-профиль. profile.Write отдаёт
-// уже gzip'нутый protobuf — ровно то, что ждёт pprofIngest (gunzipLimited).
+// profile.Write отдаёт уже gzip'нутый protobuf — то, что ждёт pprofIngest.
 func validPprofBody(t *testing.T) []byte {
 	t.Helper()
 	fn := &pp.Function{ID: 1, Name: "main", Filename: "m.go"}
@@ -50,8 +45,6 @@ func validPprofBody(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
-// assertDeprecated проверяет, что ответ помечен как пришедший на устаревший
-// путь: оба заголовка на месте и Link ведёт на страницу нужного входа.
 func assertDeprecated(t *testing.T, rec *httptest.ResponseRecorder, wantDocs string) {
 	t.Helper()
 	if got := rec.Header().Get("Deprecation"); got != "@1788134400" {
@@ -63,8 +56,6 @@ func assertDeprecated(t *testing.T, rec *httptest.ResponseRecorder, wantDocs str
 	}
 }
 
-// assertNotDeprecated — канонический путь НЕ помечается. Это ассерт против
-// мутации «обернули алиасом оба паттерна»: без него такая мутация проходит.
 func assertNotDeprecated(t *testing.T, rec *httptest.ResponseRecorder) {
 	t.Helper()
 	if got := rec.Header().Get("Deprecation"); got != "" {
@@ -75,8 +66,6 @@ func assertNotDeprecated(t *testing.T, rec *httptest.ResponseRecorder) {
 	}
 }
 
-// TestDeprecatedAliasLogs — /logs работает как алиас /api/v1/logs: тот же код,
-// то же тело ответа, заголовки устаревания и счётчик — только на алиасе.
 func TestDeprecatedAliasLogs(t *testing.T) {
 	h := newRejectHandler(1 << 20)
 	h.Logs = &collectLogSink{}
@@ -105,7 +94,6 @@ func TestDeprecatedAliasLogs(t *testing.T) {
 	}
 }
 
-// TestDeprecatedAliasPprof — то же для /profiles/pprof.
 func TestDeprecatedAliasPprof(t *testing.T) {
 	h := newRejectHandler(1 << 20)
 	sink := &countingProfileSink{}
@@ -144,11 +132,6 @@ func TestDeprecatedAliasPprof(t *testing.T) {
 	}
 }
 
-// TestDeprecatedAliasDeployments — старый Sentry-образный путь деплоя остаётся
-// алиасом, а канон принимается в ОБЕИХ формах (со слэшем и без) и обе — без
-// заголовков устаревания. Обе формы регистрируются явно: на незарегистрированную
-// ServeMux ответил бы 307, а клиенты приёма (CI, curl без -L) редиректы на POST
-// не следуют — это была бы тихая потеря маркеров.
 func TestDeprecatedAliasDeployments(t *testing.T) {
 	h, projectID := newIngestTestWithDeploy(t)
 	id := strconv.FormatInt(projectID, 10)
@@ -187,10 +170,6 @@ func TestDeprecatedAliasDeployments(t *testing.T) {
 	}
 }
 
-// TestDeprecatedAliasLogsOnce — предупреждение в лог пишется ОДИН раз на путь
-// за жизнь процесса: старые пути принимают телеметрию с той же частотой, что и
-// новые, и пер-запросный лог был бы усилителем нагрузки. sync.Once живёт на
-// Handler, а каждый тест создаёт свой Handler — изоляция между тестами есть.
 func TestDeprecatedAliasLogsOnce(t *testing.T) {
 	h := newRejectHandler(1 << 20)
 	h.Logs = &collectLogSink{}
@@ -215,9 +194,6 @@ func TestDeprecatedAliasLogsOnce(t *testing.T) {
 	}
 }
 
-// TestDeprecatedPathsIsCopy — DeprecatedPaths отдаёт КОПИЮ: main ходит по этому
-// набору в цикле регистрации метрик, и мутация вызывающим не должна портить
-// общий слайс (та же защита, что у IngestRejectionPairs/KeyRejectReasons).
 func TestDeprecatedPathsIsCopy(t *testing.T) {
 	got := DeprecatedPaths()
 	if len(got) != 3 {
@@ -229,9 +205,6 @@ func TestDeprecatedPathsIsCopy(t *testing.T) {
 	}
 }
 
-// TestDeprecatedPathHitsUnknownPath — путь вне закрытого набора: счётчика для
-// него нет, DeprecatedPathHits отдаёт 0 и не паникует (тот же контракт, что у
-// RejectedBy для пары вне набора, см. reject_test.go).
 func TestDeprecatedPathHitsUnknownPath(t *testing.T) {
 	h := newRejectHandler(1 << 20)
 	if got := h.DeprecatedPathHits(DeprecatedPath("/nowhere")); got != 0 {
@@ -239,10 +212,6 @@ func TestDeprecatedPathHitsUnknownPath(t *testing.T) {
 	}
 }
 
-// TestDocsPath — экспорт для web.deprecatedPathsView (аудит перед 1.0, F3):
-// известный путь отдаёт страницу СВОЕГО входа (та же, что уходит в заголовок
-// Link deprecatedAlias — см. TestDeprecatedAliasLogs), путь вне закрытого
-// набора — пустую строку и ok=false, а не панику или нулевое значение молча.
 func TestDocsPath(t *testing.T) {
 	cases := []struct {
 		path     DeprecatedPath
@@ -262,13 +231,6 @@ func TestDocsPath(t *testing.T) {
 	}
 }
 
-// TestDeprecatedTargetsAndKindsHaveSameKeys — minor m2: deprecatedTargets и
-// deprecatedKinds — две независимые карты по одному и тому же набору
-// DeprecatedPath. Новый путь, добавленный в одну карту без другой, давал бы
-// либо nil-Link/docs (если забыт deprecatedTargets), либо молчаливое «сигнал
-// не пишется» (если забыт deprecatedKinds, см. kindForDeprecated: ok=false —
-// no-op без предупреждения). Сторож ловит расхождение сразу, а не когда кто-то
-// заметит пропавший сигнал в проде.
 func TestDeprecatedTargetsAndKindsHaveSameKeys(t *testing.T) {
 	for p := range deprecatedTargets {
 		if _, ok := deprecatedKinds[p]; !ok {

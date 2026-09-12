@@ -15,7 +15,6 @@ func profilesPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/profiles"
 }
 
-// profilesList — GET /projects/{id}/profiles: перечень групп профилей за период.
 func (h *Handler) profilesList(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -42,9 +41,7 @@ func (h *Handler) profilesList(w http.ResponseWriter, r *http.Request) {
 	tr := h.resolveTimeRange(w, r, "24h")
 	environment := r.URL.Query().Get("environment")
 	services, err := h.Profiles.ListServices(r.Context(), projectID, environment, tr.From, tr.To)
-	// Отказ ClickHouse — НЕ 500: оболочка и фильтры остаются, на месте списка
-	// — «данные временно недоступны» (единый приём CH-страниц, образец —
-	// logsList).
+	// Отказ ClickHouse — не 500: список рендерится с loadFailed вместо страницы ошибки.
 	loadFailed := err != nil
 	if loadFailed {
 		slog.Warn("profiles: list failed", "project_id", projectID, "err", err)
@@ -53,7 +50,6 @@ func (h *Handler) profilesList(w http.ResponseWriter, r *http.Request) {
 	_ = templates.ProfilesList(projectID, services, timeRangeVM(tr), environment, h.currentEmail(r), loadFailed).Render(r.Context(), w)
 }
 
-// profileFlame — GET /projects/{id}/profiles/flame: flamegraph по фильтрам.
 func (h *Handler) profileFlame(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -84,8 +80,6 @@ func (h *Handler) profileFlame(w http.ResponseWriter, r *http.Request) {
 	environment := q.Get("environment")
 	transaction := q.Get("transaction")
 	root, err := h.Profiles.Flame(r.Context(), projectID, service, environment, profileType, transaction, tr.From, tr.To)
-	// Отказ ClickHouse: вместо флеймграфа — «данные временно недоступны»
-	// (см. profilesList).
 	loadFailed := err != nil
 	if loadFailed {
 		slog.Warn("profiles: flame failed", "project_id", projectID, "service", service, "err", err)
@@ -105,10 +99,6 @@ func (h *Handler) profileFlame(w http.ResponseWriter, r *http.Request) {
 	_ = templates.ProfileFlame(vm, h.currentEmail(r)).Render(r.Context(), w)
 }
 
-// flameLink — билдер ссылок зума флеймграфа для текущего запроса: фильтры и
-// период сохраняются, focus подменяется на путь узла (повторяющийся параметр,
-// порядок = путь по именам от первого уровня ниже корня). nil-путь — корень:
-// ссылка без focus, то есть сброс зума.
 func flameLink(r *http.Request) func(path []string) string {
 	// EscapedPath, а не Path: trace_id со спецсимволами (?, #, %) в сыром виде
 	// сломал бы ссылку — браузер разобрал бы его как начало query/фрагмента.

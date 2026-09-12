@@ -18,21 +18,13 @@ func statusPageDeletePath(statusPageID int64) string {
 	return statusPageIDPath(statusPageID) + "/delete"
 }
 
-// statusPagePublicURL — адрес публичной страницы для показа админу
-// (BaseURL + /status/{public_id}). До T3 показывал slug — публичный адрес
-// теперь непрозрачный ключ (public_id), slug для него больше не резолвится
-// напрямую (только через 301, см. web/statuspage.go).
+// публичный адрес — непрозрачный public_id, не slug (slug резолвится только через 301).
 func statusPagePublicURL(baseURL, publicID string) string {
 	return baseURL + "/status/" + publicID
 }
 
-// StatusPageForm — значения одной формы статус-страницы: либо создания
-// (ID == 0), либо редактирования существующей. Заполняется из БД, а на 422 —
-// из тела запроса, чтобы введённое пользователем не пропадало
-// (web/statuspage.go: renderStatusPages + statusPageFormView). PublicID на
-// 422 пуст (страница ещё не создана/не перечитана) — не беда: ссылка на
-// публичный адрес рендерится только при f.ID != 0, а 422 всегда
-// перерисовывает форму с ID существующей страницы или ID==0 у создания.
+// на 422 заполняется из тела запроса, чтобы ввод не пропадал; PublicID тогда пуст — это нормально.
+// ссылка на публичный адрес рендерится только при f.ID != 0.
 type StatusPageForm struct {
 	ID          int64
 	PublicID    string
@@ -40,17 +32,11 @@ type StatusPageForm struct {
 	Description string
 	Enabled     bool
 	Monitors    []StatusPageFormMonitor
-	// Submitted — форму только что отправляли и она не прошла валидацию.
-	// Модалка строится на CSS :target: при перерисовке страницы фрагмента #id в
-	// адресе уже нет, и без этого флага она закрывалась вместе с заполненными
-	// полями, хотя сами значения сюда возвращались.
+	// модалка на CSS :target — без флага она закрывалась бы при перерисовке, хотя значения сохранялись.
 	Submitted bool
 }
 
-// StatusPageFormMonitor — чекбокс монитора проекта в форме: Selected — стоит
-// ли он на странице, DisplayName — публичное имя (по умолчанию совпадает с
-// именем монитора), MonitorName — настоящее имя монитора (показывается только
-// админу, на публичную страницу не попадает).
+// MonitorName — настоящее имя монитора, только для админа; на публичную страницу не попадает.
 type StatusPageFormMonitor struct {
 	ID          int64
 	MonitorName string
@@ -58,9 +44,7 @@ type StatusPageFormMonitor struct {
 	DisplayName string
 }
 
-// statusPageFormID — id формы: кнопка «Сохранить» лежит в соседней карточке
-// («Публикация»), а не внутри формы, поэтому связывается с ней атрибутом
-// form=. Это штатный HTML, без JS.
+// кнопка «Сохранить» лежит в соседней карточке — связывается с формой через form=, без JS.
 func statusPageFormID(f StatusPageForm) string {
 	if f.ID == 0 {
 		return "status-page-new"
@@ -75,19 +59,11 @@ func statusPageFormAction(projectID int64, f StatusPageForm) string {
 	return statusPageIDPath(f.ID)
 }
 
-// statusPageMonitorRow — строка выбора сервиса: чекбокс, имя монитора и его
-// публичное имя. Раньше это был список <li> с вложенным полем: подписи
-// «Публичное имя» повторялись у каждой строки, а поля начинались с разного
-// отступа, потому что ширина имени монитора у всех разная. Таблица выравнивает
-// колонки и позволяет подписать их один раз в шапке.
 templ statusPageMonitorRow(formID string, f StatusPageFormMonitor) {
 	<tr>
 		<td>
-			// Поля лежат в соседней карточке, вне тега <form>, поэтому
-			// связываются с ней атрибутом form= — иначе браузер их просто не
-			// отправит, и выбор сервисов молча терялся бы при сохранении.
-			// aria-label с именем монитора: имя лежит в соседней ячейке, и без
-			// него скринридер объявляет голый «флажок».
+			// form= — поля вне <form>; без него браузер их не отправит, выбор молча терялся бы.
+			// aria-label с именем — оно в соседней ячейке, без него скринридер объявит голый «флажок».
 			if f.Selected {
 				<input type="checkbox" form={ formID } name="monitors" value={ strconv.FormatInt(f.ID, 10) } aria-label={ f.MonitorName } checked/>
 			} else {
@@ -108,17 +84,7 @@ templ statusPageMonitorRow(formID string, f StatusPageFormMonitor) {
 	</tr>
 }
 
-// statusPageFormBlock — одна форма (создания или редактирования): три блока в
-// ряд — настройки страницы, выбор сервисов и публикация с удалением. Саму
-// карточку рисует вызывающий: в списке это карточка статус-страницы, в
-// модалке создания — контейнер модалки, и вкладывать карточку в карточку
-// незачем. Порядок строк = порядок мониторов на странице (position 0,1,2…).
-// canManage — owner/admin организации проекта: публикация (enabled) — их
-// зона, у оператора без этих прав поле скрыто (сервер его и так не примет —
-// statuspage.go: statusPagesCreate/Update, но скрытое поле, которое молча не
-// сработает, хуже, чем его отсутствие). Slug'а в форме больше нет вовсе
-// (задача 4 плана): публичный адрес — сгенерированный public_id, он не
-// вводится, а показывается (ниже, в блоке «Публикация»).
+// canManage — owner/admin; скрытое, но нерабочее поле для оператора хуже, чем его отсутствие.
 templ statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, canManage bool) {
 	<div class="status-page-editor">
 		<div class="status-page-block">
@@ -196,11 +162,8 @@ templ statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, can
 					<button type="submit" form={ statusPageFormID(f) } class="btn btn-primary">
 						{ i18n.T(ctx, "uptime.statuspages.submit_save") }
 					</button>
-					// Удаление ОПУБЛИКОВАННОЙ страницы — зона canManage (снятие из
-					// интернета + релиз глобального slug), сервер режет оператора 403
-					// (statuspage.go: statusPagesDelete). Кнопку, которая всё равно
-					// упрётся в 403, оператору не показываем — как со slug/enabled
-					// выше. Невыключенную (черновик) оператор удаляет свободно.
+					// удаление опубликованной страницы — только canManage (сервер иначе вернёт 403 оператору).
+					// черновик (не enabled) оператор удаляет свободно.
 					if canManage || !f.Enabled {
 						<form method="post" action={ templ.URL(statusPageDeletePath(f.ID)) } class="status-page-delete-form">
 							<button type="submit" class="btn btn-danger-ghost">{ i18n.T(ctx, "uptime.detail.action_delete") }</button>
@@ -212,12 +175,7 @@ templ statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, can
 	</div>
 }
 
-// StatusPagesSettings — GET/POST /projects/{id}/statuspages: существующие
-// статус-страницы проекта (каждая — формой редактирования + публичной ссылкой
-// + кнопкой удаления) и форма создания новой. Доступ — оператор проекта
-// (requireProjectOperator): контент — оператору, публикация (slug/enabled) —
-// только owner/admin (canManage), спека
-// cld/plans/2026-08-08-access-model-rework.md.
+// контент — оператору проекта, публикация (slug/enabled) — только owner/admin (canManage).
 templ StatusPagesSettings(projectID int64, baseURL string, forms []StatusPageForm, newForm StatusPageForm, canManage bool, errMsg, userEmail string) {
 	@layout(i18n.T(ctx, "nav.status_pages"), userEmail) {
 		<div class="status-pages">

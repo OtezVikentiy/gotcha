@@ -15,9 +15,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// TestCoverOrgSettingsInvalidPathAndForm — общие ветки orgsettings: невалидный
-// {id} в пути → 404; нечисловой user_id → 400; SSO без Origin → 403 и с
-// неполными полями → 422; SSODelete не-owner → 404.
 func TestCoverOrgSettingsInvalidPathAndForm(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -33,7 +30,6 @@ func TestCoverOrgSettingsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("add admin: %v", err)
 	}
 
-	// Невалидный {id} в пути → 404 (parsePathOrgID).
 	resp := getWithCookie(t, s.srv, "/orgs/not-a-number/settings", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -43,7 +39,6 @@ func TestCoverOrgSettingsInvalidPathAndForm(t *testing.T) {
 
 	base := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings"
 
-	// Нечисловой user_id в role → 400.
 	resp = postForm(t, s.srv, base+"/role", url.Values{"user_id": {"abc"}, "role": {"admin"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -51,7 +46,6 @@ func TestCoverOrgSettingsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("POST role (bad user_id) status = %d, want 400", resp.StatusCode)
 	}
 
-	// Нечисловой user_id в remove → 400.
 	resp = postForm(t, s.srv, base+"/remove", url.Values{"user_id": {"xyz"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -59,7 +53,6 @@ func TestCoverOrgSettingsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("POST remove (bad user_id) status = %d, want 400", resp.StatusCode)
 	}
 
-	// SSO без Origin → 403.
 	resp = postForm(t, s.srv, base+"/sso", url.Values{"issuer": {"x"}}, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -67,8 +60,6 @@ func TestCoverOrgSettingsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("POST sso (no origin) status = %d, want 403", resp.StatusCode)
 	}
 
-	// SSO настраивает только инстанс-админ (requireInstanceAdminForSSO): не-админ
-	// (org-admin adminID) → 403 ещё до валидации полей.
 	resp = postForm(t, s.srv, base+"/sso", url.Values{"issuer": {""}, "client_id": {""}}, s.srv.URL, adminCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -76,7 +67,6 @@ func TestCoverOrgSettingsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("POST sso (non-instance-admin) status = %d, want 403", resp.StatusCode)
 	}
 
-	// Делаем ownerID инстанс-админом → доходит до валидации; неполные поля → 422.
 	if _, err := s.pool.Exec(context.Background(), "UPDATE users SET is_instance_admin = true WHERE id = $1", ownerID); err != nil {
 		t.Fatalf("promote owner: %v", err)
 	}
@@ -87,7 +77,6 @@ func TestCoverOrgSettingsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("POST sso (invalid fields) status = %d, want 422", resp.StatusCode)
 	}
 
-	// SSODelete не-инстанс-админ (admin) → 403; без Origin → 403.
 	resp = postForm(t, s.srv, base+"/sso/delete", url.Values{"confirmed": {"yes"}}, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -101,7 +90,6 @@ func TestCoverOrgSettingsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("POST sso/delete (non-instance-admin) status = %d, want 403", resp.StatusCode)
 	}
 
-	// SSODelete инстанс-админ без сохранённой конфигурации → всё равно 303 (идемпотентно).
 	resp = postForm(t, s.srv, base+"/sso/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -109,7 +97,6 @@ func TestCoverOrgSettingsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("POST sso/delete (owner) status = %d, want 303", resp.StatusCode)
 	}
 
-	// Invite без Origin → 403.
 	resp = postForm(t, s.srv, base+"/invite", url.Values{"email": {"x@example.com"}, "role": {"member"}}, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -117,7 +104,6 @@ func TestCoverOrgSettingsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("POST invite (no origin) status = %d, want 403", resp.StatusCode)
 	}
 
-	// Quota с нечисловым значением → 422 (ErrInvalidQuota).
 	resp = postForm(t, s.srv, base+"/quota", url.Values{"event_quota": {"not-a-number"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -126,9 +112,6 @@ func TestCoverOrgSettingsInvalidPathAndForm(t *testing.T) {
 	}
 }
 
-// TestCoverOrgSettingsLeave — POST /orgs/{id}/settings/leave: без Origin → 403;
-// без confirmed → страница подтверждения (200); не-участник → 404; единственный
-// owner → 422; обычный участник уходит → 303 на /.
 func TestCoverOrgSettingsLeave(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -147,7 +130,6 @@ func TestCoverOrgSettingsLeave(t *testing.T) {
 	}
 	leavePath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings/leave"
 
-	// Без Origin → 403.
 	resp := postForm(t, s.srv, leavePath, url.Values{}, "", memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -155,7 +137,6 @@ func TestCoverOrgSettingsLeave(t *testing.T) {
 		t.Fatalf("POST leave (no origin) status = %d, want 403", resp.StatusCode)
 	}
 
-	// Без confirmed → страница подтверждения (200).
 	resp = postForm(t, s.srv, leavePath, url.Values{}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -163,7 +144,6 @@ func TestCoverOrgSettingsLeave(t *testing.T) {
 		t.Fatalf("POST leave (unconfirmed) status = %d, want 200", resp.StatusCode)
 	}
 
-	// Не-участник (stranger) с confirmed → 404 (ErrNotMember).
 	resp = postForm(t, s.srv, leavePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, strangerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -171,7 +151,6 @@ func TestCoverOrgSettingsLeave(t *testing.T) {
 		t.Fatalf("POST leave (stranger) status = %d, want 404", resp.StatusCode)
 	}
 
-	// Единственный owner → 422 (ErrLastOwner).
 	resp = postForm(t, s.srv, leavePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -179,7 +158,6 @@ func TestCoverOrgSettingsLeave(t *testing.T) {
 		t.Fatalf("POST leave (last owner) status = %d, want 422", resp.StatusCode)
 	}
 
-	// Обычный участник уходит → 303 на /.
 	resp = postForm(t, s.srv, leavePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -191,8 +169,6 @@ func TestCoverOrgSettingsLeave(t *testing.T) {
 	}
 }
 
-// TestCoverQuotaBannerNearLimit — баннер приближения к лимиту событий: при
-// заданном лимите и использовании ≥90% страница настроек показывает баннер.
 func TestCoverQuotaBannerNearLimit(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -203,7 +179,6 @@ func TestCoverQuotaBannerNearLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create org: %v", err)
 	}
-	// Маленький лимит и использование выше 90%.
 	if err := orgSvc.SetQuota(context.Background(), o.ID, 10); err != nil {
 		t.Fatalf("set quota: %v", err)
 	}
@@ -220,10 +195,6 @@ func TestCoverQuotaBannerNearLimit(t *testing.T) {
 	}
 }
 
-// TestCoverQuotaBannerDroppedLogs — Fix B волны устранения аудита C1: дропы
-// логов обязаны быть видны оператору в баннере (принцип PROD-P1, как и у
-// прочих видов), НО log_quota намеренно не выставлен полем формы настроек
-// квот (см. org.QuotaKinds) — эта проверка бьёт только по баннеру.
 func TestCoverQuotaBannerDroppedLogs(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -244,9 +215,6 @@ func TestCoverQuotaBannerDroppedLogs(t *testing.T) {
 		t.Fatalf("GET settings (dropped logs) status = %d, want 200", resp.StatusCode)
 	}
 	html := string(body)
-	// Разбивка баннера ("Отклонено по видам: логи 4.") — короткая метка вида и
-	// число; итог баннера ("...4 элемента отклонено...") тоже должен считать
-	// логи, а не игнорировать их.
 	if !containsAll(html, "логи", "4") {
 		t.Fatalf("страница настроек не показывает дропнутые логи в баннере, body=%s", html)
 	}
@@ -264,9 +232,6 @@ func containsAll(s string, subs ...string) bool {
 	return true
 }
 
-// TestCoverTeamsInvalidPathAndForm — teams: невалидный {id} команды → 404;
-// несуществующая команда → 404; нечисловые user_id/project_id → 400; create/add
-// не-участником → 404; attach несуществующего проекта → 422.
 func TestCoverTeamsInvalidPathAndForm(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -284,7 +249,6 @@ func TestCoverTeamsInvalidPathAndForm(t *testing.T) {
 	}
 	teamBase := "/teams/" + strconv.FormatInt(team.ID, 10)
 
-	// Невалидный {id} команды → 404 (parsePathTeamID).
 	resp := postForm(t, s.srv, "/teams/not-a-number/members", url.Values{"user_id": {"1"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -292,7 +256,6 @@ func TestCoverTeamsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("POST /teams/not-a-number/members status = %d, want 404", resp.StatusCode)
 	}
 
-	// Несуществующая (но числовая) команда → 404 (requireTeamRole TeamOrg NotFound).
 	resp = postForm(t, s.srv, "/teams/9999999/members", url.Values{"user_id": {"1"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -300,7 +263,6 @@ func TestCoverTeamsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("POST /teams/9999999/members status = %d, want 404", resp.StatusCode)
 	}
 
-	// Нечисловой user_id → 400.
 	resp = postForm(t, s.srv, teamBase+"/members", url.Values{"user_id": {"abc"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -308,7 +270,6 @@ func TestCoverTeamsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("POST members (bad user_id) status = %d, want 400", resp.StatusCode)
 	}
 
-	// Нечисловой user_id в remove → 400.
 	resp = postForm(t, s.srv, teamBase+"/members/remove", url.Values{"confirmed": {"yes"}, "user_id": {"abc"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -316,7 +277,6 @@ func TestCoverTeamsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("POST members/remove (bad user_id) status = %d, want 400", resp.StatusCode)
 	}
 
-	// Нечисловой project_id в attach → 400.
 	resp = postForm(t, s.srv, teamBase+"/projects", url.Values{"project_id": {"abc"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -324,7 +284,6 @@ func TestCoverTeamsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("POST projects (bad project_id) status = %d, want 400", resp.StatusCode)
 	}
 
-	// Нечисловой project_id в detach → 400.
 	resp = postForm(t, s.srv, teamBase+"/projects/detach", url.Values{"project_id": {"abc"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -332,7 +291,6 @@ func TestCoverTeamsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("POST projects/detach (bad project_id) status = %d, want 400", resp.StatusCode)
 	}
 
-	// Attach несуществующего проекта → 422 (errCrossOrgProject через ProjectOrg NotFound).
 	resp = postForm(t, s.srv, teamBase+"/projects", url.Values{"project_id": {"9999999"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -340,8 +298,6 @@ func TestCoverTeamsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("POST projects (nonexistent project) status = %d, want 422", resp.StatusCode)
 	}
 
-	// Detach проекта, не привязанного к команде → 303 (идемпотентно;
-	// confirmed=yes — подтверждение теперь двухшаговое, №61).
 	proj, err := orgSvc.CreateProject(context.Background(), o.ID, "cover-team-proj", "Cover Team Proj", "go")
 	if err != nil {
 		t.Fatalf("create project: %v", err)
@@ -353,7 +309,6 @@ func TestCoverTeamsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("POST projects/detach (unattached) status = %d, want 303", resp.StatusCode)
 	}
 
-	// Create team не-участником → 404; невалидный org {id} → 404.
 	resp = postForm(t, s.srv, "/orgs/"+strconv.FormatInt(o.ID, 10)+"/teams", url.Values{"slug": {"x"}, "name": {"X"}}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -368,10 +323,6 @@ func TestCoverTeamsInvalidPathAndForm(t *testing.T) {
 	}
 }
 
-// TestCoverProjSettingsValidation — projsettings: невалидный {id} → 404; keys/
-// performance/regressions без Origin → 403; keyRevoke нечисловой key_id → 400;
-// perf/regressions/rename не-owner → 404; удаление проекта → 303 и заявка на
-// очистку телеметрии в очереди.
 func TestCoverProjSettingsValidation(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -392,7 +343,6 @@ func TestCoverProjSettingsValidation(t *testing.T) {
 	}
 	base := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/settings"
 
-	// Невалидный {id} → 404.
 	resp := getWithCookie(t, s.srv, "/projects/not-a-number/settings", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -400,7 +350,6 @@ func TestCoverProjSettingsValidation(t *testing.T) {
 		t.Fatalf("GET settings (bad id) status = %d, want 404", resp.StatusCode)
 	}
 
-	// keys без Origin → 403.
 	resp = postForm(t, s.srv, base+"/keys", url.Values{}, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -408,7 +357,6 @@ func TestCoverProjSettingsValidation(t *testing.T) {
 		t.Fatalf("POST keys (no origin) status = %d, want 403", resp.StatusCode)
 	}
 
-	// keys не-owner (member) → 403 (№72: член с малой ролью).
 	resp = postForm(t, s.srv, base+"/keys", url.Values{}, s.srv.URL, memberCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -416,7 +364,6 @@ func TestCoverProjSettingsValidation(t *testing.T) {
 		t.Fatalf("POST keys (member) status = %d, want 403", resp.StatusCode)
 	}
 
-	// keyRevoke нечисловой key_id → 400.
 	resp = postForm(t, s.srv, base+"/keys/revoke", url.Values{"key_id": {"abc"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -424,7 +371,6 @@ func TestCoverProjSettingsValidation(t *testing.T) {
 		t.Fatalf("POST keys/revoke (bad key_id) status = %d, want 400", resp.StatusCode)
 	}
 
-	// performance/regressions без Origin → 403.
 	for _, sub := range []string{"/performance", "/regressions"} {
 		resp = postForm(t, s.srv, base+sub, url.Values{}, "", ownerCookie)
 		io.Copy(io.Discard, resp.Body)
@@ -432,7 +378,6 @@ func TestCoverProjSettingsValidation(t *testing.T) {
 		if resp.StatusCode != http.StatusForbidden {
 			t.Fatalf("POST %s (no origin) status = %d, want 403", sub, resp.StatusCode)
 		}
-		// член с малой ролью → 403 (№72).
 		resp = postForm(t, s.srv, base+sub, url.Values{}, s.srv.URL, memberCookie)
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
@@ -441,7 +386,6 @@ func TestCoverProjSettingsValidation(t *testing.T) {
 		}
 	}
 
-	// keyRevoke без Origin → 403.
 	resp = postForm(t, s.srv, base+"/keys/revoke", url.Values{"key_id": {"1"}}, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -449,9 +393,6 @@ func TestCoverProjSettingsValidation(t *testing.T) {
 		t.Fatalf("POST keys/revoke (no origin) status = %d, want 403", resp.StatusCode)
 	}
 
-	// Удаление проекта: confirmed=yes → 303. Телеметрия из ClickHouse здесь
-	// больше не чистится — та же транзакция ставит заявку, и она обязана
-	// остаться в очереди (стенд без ClickHouse исполнителя не запускает).
 	resp = postForm(t, s.srv, base+"/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()

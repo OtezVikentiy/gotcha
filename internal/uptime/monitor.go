@@ -1,5 +1,3 @@
-// Package uptime — мониторы доступности (http/tcp/dns/heartbeat): типы,
-// валидация и CRUD. Проверки и инциденты — в последующих задачах плана.
 package uptime
 
 import (
@@ -15,9 +13,6 @@ const (
 	maxRegionLen = 40
 )
 
-// Monitor — монитор доступности. Regions/ChannelIDs заполняются
-// Service.Get/List; сам Monitor их не хранит в БД напрямую (см.
-// monitor_regions/monitor_channels).
 type Monitor struct {
 	ID                int64
 	ProjectID         int64
@@ -29,19 +24,15 @@ type Monitor struct {
 	Config            json.RawMessage // валидированный конфиг соответствующего типа
 	FailThreshold     int
 	RecoveryThreshold int
-	// Retries — сколько РАЗ повторить одну проверку при неуспехе, прежде чем
-	// записать её как сбой (0 = без повторов). Гасит транзиентные блипы
-	// (например периодический TLS-тарпит фронта, проходящий на повторе) — в
-	// отличие от FailThreshold, который считает уже записанные сбои подряд.
+	// повторы одной проверки (0 — без них), в отличие от FailThreshold,
+	// который считает уже записанные сбои подряд.
 	Retries            int
 	Consensus          Consensus
 	RemindEveryMinutes int
 	SSLAlertDays       int
 	SSLExpiresAt       *time.Time
-	// SSLAlertedDays — пороги (в днях), за которые уже отправлено
-	// уведомление об истечении сертификата (monitors.ssl_alerted_days).
-	// Заполняется только Service.SSLCandidates — остальные методы
-	// (Get/List/...) его не читают и оставляют nil.
+	// заполняется только Service.SSLCandidates — остальные методы
+	// (Get/List/...) оставляют nil.
 	SSLAlertedDays []int
 	HeartbeatToken string // только для kind=heartbeat
 	LastBeatAt     *time.Time
@@ -49,13 +40,8 @@ type Monitor struct {
 	Regions        []string
 	ChannelIDs     []int64
 
-	// RegionCount — сколько регионов НАСТРОЕНО у монитора. Отдельно от Regions,
-	// потому что путь детекции (lease → scanMonitor) список регионов не грузит, а
-	// консенсусу all/majority нужен именно знаменатель: без него «все регионы
-	// down» считалось по регионам, которые УЖЕ прислали результат, и у свежего
-	// монитора на 3 региона первый же упавший регион давал down==decided==1,
-	// то есть срабатывал и `all`, и `majority`. 0 — счёт неизвестен, тогда
-	// aggregate откатывается на прежнее поведение (см. detector.aggregate).
+	// знаменатель для aggregate (all/majority) — без него «все down»
+	// считалось бы только по уже ответившим регионам. 0 — счёт неизвестен.
 	RegionCount int
 }
 
@@ -77,9 +63,8 @@ func validConsensus(c Consensus) bool {
 	}
 }
 
-// validateMonitor проверяет общие поля монитора, регионы и (по kind)
-// типизированный config. Каналы проверяются отдельно (checkChannelsBelongToProject) —
-// это требует похода в БД внутри транзакции.
+// каналы проверяются отдельно (checkChannelsBelongToProject) — это требует
+// похода в БД внутри транзакции.
 func validateMonitor(m Monitor, regions []string) error {
 	if !validKind(m.Kind) {
 		return invalid("kind", "unknown_kind", "kind", string(m.Kind))

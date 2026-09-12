@@ -5,10 +5,7 @@ import (
 	"time"
 )
 
-// TestSLOEvaluatorTickBudget — табличный тест на tickBudget() (K15-1): доля
-// Interval (tickBudgetShare), но не меньше пола (minTickBudget). Белый ящик —
-// tickBudget неэкспортирован, поэтому файл живёт в package slo, а не slo_test
-// (как остальные тесты пакета, гоняющие Evaluator через реальные PG/CH).
+// tickBudget неэкспортирован — файл живёт в package slo, а не slo_test, как остальные.
 func TestSLOEvaluatorTickBudget(t *testing.T) {
 	cases := []struct {
 		name     string

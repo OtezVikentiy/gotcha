@@ -11,10 +11,8 @@ import (
 
 const langCookie = "lang"
 
-// withLocale кладёт выбранную локаль в контекст запроса. Порядок разрешения:
-// cookie lang → сохранённая users.locale залогиненного (с self-heal cookie,
-// см. resolveLocale) → Accept-Language → Default. /static/* пропускаем без
-// резолвинга.
+// Порядок: cookie lang → сохранённая users.locale залогиненного → Accept-Language → Default.
+// /static/* пропускаем без резолвинга.
 func (h *Handler) withLocale(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/static/") {
@@ -26,8 +24,7 @@ func (h *Handler) withLocale(next http.Handler) http.Handler {
 	})
 }
 
-// resolveLocaleNoUser — часть цепочки без обращения к БД: cookie → Accept-Language.
-// bool=true, если разрешено из cookie (тогда пользовательскую ветку пропускаем).
+// bool=true, если разрешено из cookie — тогда пользовательскую ветку пропускаем.
 func resolveLocaleNoUser(r *http.Request) (i18n.Locale, bool) {
 	if c, err := r.Cookie(langCookie); err == nil {
 		if loc, ok := i18n.Parse(c.Value); ok {
@@ -42,11 +39,8 @@ func (h *Handler) resolveLocale(w http.ResponseWriter, r *http.Request) i18n.Loc
 	if fromCookie {
 		return loc
 	}
-	// Нет cookie. У залогиненного берём сохранённую users.locale; если она не
-	// задана — засеваем cookie разрешённым фолбэком (Accept-Language/дефолт),
-	// чтобы последующие запросы шли по cookie-ветке без похода в БД (один
-	// запрос к БД на сессию, а не на запрос). Анонимов НЕ засеваем: иначе
-	// сохранённый язык, выбранный при будущем логине, оказался бы затенён.
+	// Нет cookie: у залогиненного берём users.locale, иначе засеваем cookie фолбэком — один
+	// запрос к БД на сессию. Анонимов не засеваем: затенило бы язык, выбранный при логине.
 	if tok, ok := auth.ReadSessionToken(r, h.Secure); ok {
 		if uid, err := h.Auth.SessionUser(r.Context(), tok); err == nil {
 			if code, err := h.Auth.UserLocale(r.Context(), uid); err == nil {
@@ -61,8 +55,7 @@ func (h *Handler) resolveLocale(w http.ResponseWriter, r *http.Request) i18n.Loc
 	return loc
 }
 
-// setLangCookie выставляет cookie lang на год. Не HttpOnly — язык не секрет, и
-// клиентский код (позже) может его читать; SameSite=Lax, Secure по схеме.
+// Не HttpOnly: язык не секрет, клиентский код может его читать.
 func setLangCookie(w http.ResponseWriter, code string, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     langCookie,
@@ -74,10 +67,6 @@ func setLangCookie(w http.ResponseWriter, code string, secure bool) {
 	})
 }
 
-// localeSwitch — POST /settings/locale (lang=ru|en): ставит cookie lang, для
-// залогиненного пишет users.locale, редиректит на Referer (в пределах origin).
-// Доступен и анониму (переключение на странице логина). sameOrigin обязателен —
-// это меняющий состояние POST.
 func (h *Handler) localeSwitch(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -98,23 +87,8 @@ func (h *Handler) localeSwitch(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, safeRedirect(r, h.BaseURL), http.StatusSeeOther)
 }
 
-// isLocalPath — адрес ведёт на этот же сайт: одиночная ведущая косая и ничего
-// похожего на чужой хост.
-//
-// «//evil.example» браузер читает как протокол-относительный адрес, а «\»
-// нормализует в «/», поэтому «/\evil.example» — тот же чужой хост, записанный
-// иначе. Обе формы отвергаются.
-//
-// Управляющие символы отвергаются целиком, и это третья форма того же обхода,
-// а не перестраховка: по WHATWG URL браузер ВЫБРАСЫВАЕТ из адреса табы и
-// переводы строк ещё до разбора, поэтому «/<TAB>/evil.example» доезжает до
-// разборщика как «//evil.example» — протокол-относительный адрес чужого
-// хоста, пройдя обе проверки выше. Go оставляет такой байт в заголовке
-// Location: hexEscapeNonASCII экранирует только non-ASCII, а замену \r\n на
-// пробел делает уже сериализатор заголовков — табу и прочим CTL она не
-// мешает. Раньше от этой формы спасал только url.Parse в safeNextPath (он
-// отвергает CTL-байты), то есть проверка вызывающего — ровно то, на что
-// redirectLocal обещает не полагаться.
+// Управляющие символы (TAB и т.п.) браузер выбрасывает из адреса до разбора URL —
+// «/<TAB>/evil.example» доезжает как «//evil.example», обходя проверки "//" и "/\" без этого.
 func isLocalPath(p string) bool {
 	if !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") || strings.HasPrefix(p, "/\\") {
 		return false
@@ -122,14 +96,8 @@ func isLocalPath(p string) bool {
 	return strings.IndexFunc(p, func(r rune) bool { return r < 0x20 || r == 0x7f }) < 0
 }
 
-// redirectLocal перенаправляет на путь этого же сайта; пустой или чужой адрес
-// заменяется на главную.
-//
-// Проверка повторяет ту, что уже сделал safeNextPath, и это намеренно: адрес
-// приходит из формы, а решение «этот адрес свой» принимается там, где ставится
-// заголовок Location, а не остаётся обещанием функции, разобравшей строку
-// двадцатью строками выше. Тот же принцип, что у hostOfURL: проверка стоит у
-// места, где принимается решение.
+// Повторяет проверку safeNextPath намеренно: решение «адрес свой» принимается там, где
+// ставится Location, а не остаётся обещанием другой функции.
 func redirectLocal(w http.ResponseWriter, r *http.Request, dest string) {
 	if !isLocalPath(dest) {
 		dest = "/"
@@ -137,12 +105,8 @@ func redirectLocal(w http.ResponseWriter, r *http.Request, dest string) {
 	http.Redirect(w, r, dest, http.StatusSeeOther)
 }
 
-// safeNextPath — куда вернуть человека после входа. Пустая строка означает
-// «некуда, веди на главную».
-//
-// Значение приходит из формы, то есть от клиента, поэтому проверяется теми же
-// правилами, что и Referer в safeRedirect: только относительный путь этого же
-// сайта, без схемы и хоста.
+// Пустая строка — «веди на главную». Значение от клиента, проверяется теми же правилами,
+// что Referer в safeRedirect: только относительный путь этого же сайта, без схемы и хоста.
 func safeNextPath(raw string) string {
 	if raw == "" || !isLocalPath(raw) {
 		return ""
@@ -154,8 +118,6 @@ func safeNextPath(raw string) string {
 	return u.RequestURI()
 }
 
-// safeRedirect возвращает Referer, если он same-origin и его путь безопасен,
-// иначе "/". Тот же паттерн, что BulkRedirectTarget.
 func safeRedirect(r *http.Request, baseURL string) string {
 	ref := r.Referer()
 	if ref != "" && isSameOriginURL(ref, baseURL) {

@@ -2,19 +2,13 @@ package templates
 
 import "gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 
-// QuotaBanner — вьюмодель баннера про ограничение приёма (PROD-P1: конец
-// молчаливых потерь). Собирается в web-слое (Handler.quotaBanner) из
-// DroppedUsage/Usage/лимита орга. nil = баннер показывать не нужно.
+// nil — баннер не нужен.
 type QuotaBanner struct {
-	Text string // текст баннера (про дропы или приближение к лимиту)
-	// Detail — разбивка по видам приёма. Пусто, когда её нет (приближение к
-	// лимиту), — общее число там относится к одному виду и так.
+	Text   string
 	Detail string
-	Href   string // ссылка на настройки орга (rate-guard)
+	Href   string
 }
 
-// quotaBannerView рендерит баннер, если b != nil; иначе не выводит ничего.
-// Ссылка ведёт на настройки орга, где оператор поднимает/снимает rate-guard.
 templ quotaBannerView(b *QuotaBanner) {
 	if b != nil {
 		<div class="quota-banner">

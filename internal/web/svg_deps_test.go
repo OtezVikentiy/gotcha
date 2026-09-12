@@ -11,8 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// renderDepsMap — рендер карты в строку; высота считается внутри
-// dependencyMapSVG, снаружи задаётся только ширина viewBox.
 func renderDepsMap(t *testing.T, deps []templates.DependencyRow) string {
 	t.Helper()
 	var sb strings.Builder
@@ -22,7 +20,6 @@ func renderDepsMap(t *testing.T, deps []templates.DependencyRow) string {
 	return sb.String()
 }
 
-// depsMapHeight достаёт высоту viewBox из вывода карты.
 func depsMapHeight(t *testing.T, out string) int {
 	t.Helper()
 	m := regexp.MustCompile(`viewBox="0 0 760 (\d+)"`).FindStringSubmatch(out)
@@ -33,8 +30,6 @@ func depsMapHeight(t *testing.T, out string) int {
 	return h
 }
 
-// depsNodeYs — верхние края прямоугольников узлов одной колонки (x=24 —
-// левая, x=516 — правая) в порядке появления.
 func depsNodeYs(out string, x int) []int {
 	re := regexp.MustCompile(`<rect x="` + strconv.Itoa(x) + `" y="(\d+)"`)
 	var ys []int
@@ -45,10 +40,6 @@ func depsNodeYs(out string, x int) []int {
 	return ys
 }
 
-// TestDependencyMapSVG — карта зависимостей: сервис в центре, узлы двумя
-// колонками, рёбра с подсказкой. Проверяем содержимое (имена целей, метрики
-// в узле, подсказка ребра) и детерминизм (два рендера одних и тех же данных
-// дают идентичный вывод — раскладка не зависит от map-итерации или времени).
 func TestDependencyMapSVG(t *testing.T) {
 	deps := []templates.DependencyRow{
 		{Kind: "database", Target: "postgresql", Calls: 1200, P50US: 3000, P95US: 8000, ErrorRate: 0.001, Direction: "both"},
@@ -57,25 +48,20 @@ func TestDependencyMapSVG(t *testing.T) {
 	out := renderDepsMap(t, deps)
 	for _, want := range []string{
 		`<svg class="deps-map`, "postgresql", "api.stripe.com",
-		// метрики в узле: вызовы компактно, p95, доля ошибок
 		`1.2k · p95 8ms · 0.1%`, `40 · p95 120ms · 2.0%`,
-		// подсказка ребра — полный набор
 		`<title>postgresql: 1200 · p50 3ms · p95 8ms · 0.1%</title>`,
-		// хаб
 		`deps-node deps-center`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("SVG не содержит %q: %s", want, out)
 		}
 	}
-	// рёбра — кривые Безье, по одному на узел
 	if got := strings.Count(out, `<path class="deps-edge`); got != 2 {
 		t.Errorf("рёбер = %d, ожидалось 2: %s", got, out)
 	}
 	if !regexp.MustCompile(`<path class="deps-edge[^"]*" d="M [\d.]+ [\d.]+ C `).MatchString(out) {
 		t.Errorf("ребро не кривая Безье от хаба: %s", out)
 	}
-	// окраска ребра по доле ошибок
 	if !strings.Contains(out, `class="deps-edge deps-edge-warn"`) {
 		t.Errorf("ребро с 2%% ошибок не помечено warn: %s", out)
 	}
@@ -84,8 +70,6 @@ func TestDependencyMapSVG(t *testing.T) {
 	}
 }
 
-// TestDependencyMapSVGSides — хранилища (database/cache) слева (x=24), HTTP
-// справа (x=516); если один вид отсутствует, все узлы на одной стороне.
 func TestDependencyMapSVGSides(t *testing.T) {
 	mixed := []templates.DependencyRow{
 		{Kind: "database", Target: "postgresql"},
@@ -96,7 +80,6 @@ func TestDependencyMapSVGSides(t *testing.T) {
 	if l, r := depsNodeYs(out, 24), depsNodeYs(out, 516); len(l) != 2 || len(r) != 1 {
 		t.Errorf("смешанный набор: слева %d, справа %d, ожидалось 2/1: %s", len(l), len(r), out)
 	}
-	// порядок внутри стороны — как пришёл: postgresql выше redis
 	if pi, ri := strings.Index(out, "postgresql"), strings.Index(out, "redis"); pi > ri {
 		t.Errorf("порядок узлов слева нарушен: postgresql должен идти первым")
 	}
@@ -118,10 +101,6 @@ func TestDependencyMapSVGSides(t *testing.T) {
 	}
 }
 
-// TestDependencyMapSVGNoOverlap — узлы одной колонки идут с шагом строки
-// (pitch=60) и не накладываются друг на друга: колонка длиннее «своей
-// половины» кэпа (12 слева при 4 справа) всё равно раскладывается без
-// пересечений, а высота карты растёт под самую длинную сторону.
 func TestDependencyMapSVGNoOverlap(t *testing.T) {
 	var deps []templates.DependencyRow
 	for i := 0; i < 12; i++ {
@@ -147,23 +126,18 @@ func TestDependencyMapSVGNoOverlap(t *testing.T) {
 	if got := depsMapHeight(t, out); got != 12*60+32 {
 		t.Errorf("высота = %d, ожидалось %d (12 строк слева)", got, 12*60+32)
 	}
-	// узел не вылезает за нижний край карты
 	ys := depsNodeYs(out, 24)
 	if last := ys[len(ys)-1] + 44; last > 12*60+32 {
 		t.Errorf("последний узел (низ %d) ниже края карты", last)
 	}
 }
 
-// TestDependencyMapSVGHeight — высота считается по самой длинной стороне:
-// минимум 120 на один узел, 5 слева / 2 справа → 5·60+32, хвост «+N ещё»
-// добавляет строку под картой.
 func TestDependencyMapSVGHeight(t *testing.T) {
 	one := []templates.DependencyRow{{Kind: "http", Target: "a.example"}}
 	out := renderDepsMap(t, one)
 	if got := depsMapHeight(t, out); got != 120 {
 		t.Errorf("1 узел: высота = %d, ожидалось 120", got)
 	}
-	// единственный узел стоит по центру: верх = (120-60)/2 + 8
 	if ys := depsNodeYs(out, 516); len(ys) != 1 || ys[0] != 38 {
 		t.Errorf("1 узел: y = %v, ожидалось [38]", ys)
 	}
@@ -179,7 +153,6 @@ func TestDependencyMapSVGHeight(t *testing.T) {
 	if got := depsMapHeight(t, out); got != 332 {
 		t.Errorf("5/2: высота = %d, ожидалось 332", got)
 	}
-	// короткая сторона центрирована по вертикали: (332-120)/2 + 8 = 114
 	if ys := depsNodeYs(out, 516); len(ys) != 2 || ys[0] != 114 || ys[1] != 174 {
 		t.Errorf("5/2: правая колонка y = %v, ожидалось [114 174]", ys)
 	}
@@ -197,15 +170,8 @@ func TestDependencyMapSVGHeight(t *testing.T) {
 	}
 }
 
-// TestDependencyMapSVGGeometry — точные координаты рёбер и хаба на наборе
-// 5 БД / 2 http (H=332, cy=166), выведенные из формул раскладки, а не
-// скопированные из вывода. Порт ребра на хабе — своя доля высоты хаба на
-// каждое ребро стороны: правая (n=2) i=0 → 142+0.5·24 = 154; левая (n=5)
-// i=0 → 142+0.5·9.6 = 146.8. Путь идёт ОТ хаба (x=450/310) К узлу (516/244)
-// — на этом держится семантика маркеров (marker-start у хаба); контрольные
-// точки на середине по x (483/277) с горизонтальными касательными: первая
-// на высоте порта, вторая — на высоте центра узла (114+22=136 справа,
-// 24+22=46 слева). Хаб: x=380-70, y=166-24.
+// координаты выведены из формул раскладки (5 БД/2 http, H=332, cy=166), не
+// скопированы из вывода — держатся на порядке хаб→узел (marker-start у хаба).
 func TestDependencyMapSVGGeometry(t *testing.T) {
 	var deps []templates.DependencyRow
 	for i := 0; i < 5; i++ {
@@ -218,7 +184,6 @@ func TestDependencyMapSVGGeometry(t *testing.T) {
 	for _, want := range []string{
 		`<path class="deps-edge" d="M 450 154.0 C 483.0 154.0 483.0 136.0 516 136.0"`,
 		`<path class="deps-edge" d="M 310 146.8 C 277.0 146.8 277.0 46.0 244 46.0"`,
-		// второе ребро справа — порт ниже на 24 (полная доля), узел ниже на 60
 		`<path class="deps-edge" d="M 450 178.0 C 483.0 178.0 483.0 196.0 516 196.0"`,
 		`<g class="deps-node deps-center"><rect x="310" y="142" rx="6" width="140" height="48"/>`,
 	} {
@@ -228,10 +193,6 @@ func TestDependencyMapSVGGeometry(t *testing.T) {
 	}
 }
 
-// TestDependencyMapSVGMarkers — стрелки направления: путь всегда от хаба к
-// узлу, поэтому «читаем» (in) — маркер у хаба (marker-start), «пишем» (out) —
-// у узла (marker-end), both — оба, none — без стрелок. Цвет маркера — по
-// доле ошибок, как у ребра.
 func TestDependencyMapSVGMarkers(t *testing.T) {
 	cases := []struct {
 		dir        string
@@ -252,19 +213,13 @@ func TestDependencyMapSVGMarkers(t *testing.T) {
 			t.Errorf("dir=%q: marker-end = %v, ожидалось %v: %s", c.dir, got, c.end, out)
 		}
 	}
-	// определения маркеров — все три, с разворотом на старте
 	out := renderDepsMap(t, []templates.DependencyRow{{Kind: "http", Target: "x.example", Direction: "both"}})
-	// refX равен ширине маркера — остриё стоит ровно на конце пути (refX=0
-	// сдвинул бы стрелку на 10 единиц за узел/хаб); размер в userSpaceOnUse
-	// не зависит от толщины штриха; auto-start-reverse разворачивает стрелку
-	// на marker-start, иначе у хаба она смотрела бы от него.
 	const attrs = `viewBox="0 0 10 8" refX="10" refY="4" markerWidth="10" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto-start-reverse"`
 	for _, id := range []string{"deps-arrow-ok", "deps-arrow-warn", "deps-arrow-bad"} {
 		if !strings.Contains(out, `<marker id="`+id+`" class="`+id+`" `+attrs+`>`) {
 			t.Errorf("нет определения маркера %s с полным набором атрибутов: %s", id, out)
 		}
 	}
-	// класс маркера по доле ошибок
 	out = renderDepsMap(t, []templates.DependencyRow{{Kind: "http", Target: "x.example", Direction: "out", ErrorRate: 0.1}})
 	if !strings.Contains(out, `marker-end="url(#deps-arrow-bad)"`) {
 		t.Errorf("10%% ошибок: маркер не bad: %s", out)
@@ -275,8 +230,6 @@ func TestDependencyMapSVGMarkers(t *testing.T) {
 	}
 }
 
-// TestDependencyMapSVGTruncate — имя длиннее рамки усекается с «…», полное
-// имя уходит в <title> узла; короткое имя — без подсказки.
 func TestDependencyMapSVGTruncate(t *testing.T) {
 	long := strings.Repeat("a", 40)
 	out := renderDepsMap(t, []templates.DependencyRow{{Kind: "http", Target: long}})
@@ -297,8 +250,6 @@ func TestDependencyMapSVGTruncate(t *testing.T) {
 	if strings.Contains(out, "…") {
 		t.Errorf("короткое имя усечено: %s", out)
 	}
-	// разметка внутри имени экранируется — и в подписи, и в <title> усечённого
-	// узла (полное имя в подсказке — тоже пользовательская строка).
 	out = renderDepsMap(t, []templates.DependencyRow{{Kind: "http", Target: "<b>x</b>"}})
 	if strings.Contains(out, "<b>") || !strings.Contains(out, "&lt;b&gt;") {
 		t.Errorf("имя не экранировано: %s", out)
@@ -310,7 +261,6 @@ func TestDependencyMapSVGTruncate(t *testing.T) {
 	}
 }
 
-// TestDepCount — компактный формат числа вызовов в узле.
 func TestDepCount(t *testing.T) {
 	cases := []struct {
 		n    int64
@@ -326,9 +276,6 @@ func TestDepCount(t *testing.T) {
 	}
 }
 
-// TestDependencyMapSVGCap — карта кэпируется топ-N узлами (depsMapNodeCap),
-// лишние остаются только в таблице; под картой — пометка «+N ещё» (аудит UX
-// P1: раскладка на десятки узлов нечитаема).
 func TestDependencyMapSVGCap(t *testing.T) {
 	if depsMapNodeCap != 16 {
 		t.Fatalf("depsMapNodeCap = %d, ожидалось 16", depsMapNodeCap)
@@ -338,21 +285,16 @@ func TestDependencyMapSVGCap(t *testing.T) {
 		deps = append(deps, templates.DependencyRow{Kind: "http", Target: fmt.Sprintf("svc-%02d", i), Calls: int64(100 - i)})
 	}
 	out := renderDepsMap(t, deps)
-	// последний узел в пределах кэпа нарисован
 	if !strings.Contains(out, fmt.Sprintf("svc-%02d", depsMapNodeCap-1)) {
 		t.Errorf("узел в пределах кэпа не нарисован: %s", out)
 	}
-	// первый узел за кэпом — НЕ нарисован
 	if strings.Contains(out, fmt.Sprintf("svc-%02d", depsMapNodeCap)) {
 		t.Errorf("узел за кэпом (svc-%02d) не должен рисоваться на карте", depsMapNodeCap)
 	}
-	// РОВНО depsMapNodeCap узлов-зависимостей (класс `deps-node"` с кавычкой —
-	// у центра класс `deps-node deps-center` без кавычки после, не считается) —
-	// ловит off-by-one в срезе кэпа.
+	// класс `deps-node deps-center` у центра без кавычки после — не совпадёт.
 	if got := strings.Count(out, `deps-node"`); got != depsMapNodeCap {
 		t.Errorf("узлов-зависимостей на карте = %d, ожидалось %d (кэп)", got, depsMapNodeCap)
 	}
-	// пометка про остаток — ровно «+4»
 	if !strings.Contains(out, "deps-more") || !strings.Contains(out, "+4 ") {
 		t.Errorf("нет пометки «+4 ещё» при превышении кэпа: %s", out)
 	}

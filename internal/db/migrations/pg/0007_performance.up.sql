@@ -1,5 +1,5 @@
 -- backward-compatible: yes (новые таблицы плюс ADD COLUMN с дефолтами)
--- kind: 'n_plus_one' | 'slow_db_query' | 'http_flood' (детекторы, спека §5)
+-- kind: 'n_plus_one' | 'slow_db_query' | 'http_flood' (не CHECK, валидируется в коде)
 CREATE TABLE perf_issues (
     id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     project_id      bigint NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

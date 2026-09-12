@@ -10,13 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestGetScrubsEncryptedHeadersWithoutMasterKey — воспроизводит W2/P1-7: монитор
-// заведён под мастер-ключом (значения заголовков зашифрованы, enc:-ciphertext в
-// БД), а читается сервисом БЕЗ ключа вовсе (откат GOTCHA_SECRET_KEY на
-// dev-дефолт: main.go SetKeyring тогда не вызывается, secretKeySet остаётся
-// false). Раньше decryptMonitorConfig был no-op при !secretKeySet и отдавал
-// config как есть — сырой enc:base64... лежал бы в значении заголовка. Теперь
-// такое значение обнуляется, а не отдаётся ciphertext'ом.
+// сервис без ключа (secretKeySet=false) обязан обнулять зашифрованное значение,
+// а не отдавать сырой enc:base64... ciphertext вместо него.
 func TestGetScrubsEncryptedHeadersWithoutMasterKey(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -31,13 +26,11 @@ func TestGetScrubsEncryptedHeadersWithoutMasterKey(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	// Заголовок и правда зашифрован at rest.
 	stored := rawConfigOf(t, pool, created.ID)
 	if got := stored.Headers["Authorization"]; got == "Bearer rollback-victim" {
 		t.Fatalf("precondition: header must be encrypted at rest, got plaintext %q", got)
 	}
 
-	// Ключ откатился на dev-дефолт: новый сервис БЕЗ SetKeyring.
 	noKey := uptime.NewService(pool)
 	got, err := noKey.Get(ctx, created.ID)
 	if err != nil {
@@ -52,10 +45,8 @@ func TestGetScrubsEncryptedHeadersWithoutMasterKey(t *testing.T) {
 	}
 }
 
-// TestLeaseScrubsEncryptedHeadersWithoutMasterKey — тот же откат ключа, но по
-// пути lease → checker (check_http.go шлёт значения заголовков в исходящий
-// запрос): монитор должен уйти на проверку БЕЗ ciphertext в заголовке, а не с
-// enc:base64... вместо bearer-токена.
+// тот же откат ключа, но по пути lease → checker: чекер не должен получить
+// ciphertext вместо bearer-токена в исходящем запросе.
 func TestLeaseScrubsEncryptedHeadersWithoutMasterKey(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

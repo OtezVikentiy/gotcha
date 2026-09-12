@@ -8,11 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 )
 
-// TestHelpPanelOnRemainingSections — K9-17: @helpPanel был на 24 подразделах
-// из ~30 и отсутствовал ровно на зависимостях, деплоях, логах и выгрузках.
-// Ключи резолвятся сторожем TestHelpPanelKeysResolve (guards); здесь — что
-// панель реально отрендерена на каждой из четырёх страниц и ведёт в свой
-// гайд.
 func TestHelpPanelOnRemainingSections(t *testing.T) {
 	now := time.Now()
 	pages := map[string]struct {

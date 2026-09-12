@@ -19,9 +19,8 @@ import (
 
 var projectSeq atomic.Int64
 
-// newProject: прямые вставки — uptime-пакет не зависит от org. Каждый вызов
-// заводит свой уникальный slug/email — тесты нередко создают несколько
-// проектов, а users.email и organizations.slug уникальны глобально.
+// уникальный slug/email на каждый вызов — users.email и organizations.slug
+// уникальны глобально, а тесты нередко создают несколько проектов.
 func newProject(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -44,10 +43,6 @@ func newProject(t *testing.T, pool *pgxpool.Pool) int64 {
 	return projectID
 }
 
-// newProjectInOrg заводит проект в УЖЕ существующей организации (см. newOrgID):
-// нужно там, где проба и монитор обязаны жить в одном тенанте.
-// orgOfProject возвращает организацию проекта — нужна, чтобы завести пробу в
-// том же скоупе, что и монитор.
 func orgOfProject(t *testing.T, pool *pgxpool.Pool, projectID int64) int64 {
 	t.Helper()
 	var orgID int64
@@ -291,11 +286,6 @@ func TestListByProjectOrderedByName(t *testing.T) {
 	}
 }
 
-// TestGetBatchMatchesGetAndFillsMissing: GetBatch обязан отдавать те же
-// данные, что и Get по одному (кроме ChannelIDs — она умышленно не
-// заполняется, см. докблок GetBatch, как и у List), и заполнять карту для
-// ВСЕХ запрошенных id, включая несуществующий — нулевым Monitor{ID: id}, а
-// не отсутствием ключа.
 func TestGetBatchMatchesGetAndFillsMissing(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)
@@ -336,9 +326,6 @@ func TestGetBatchMatchesGetAndFillsMissing(t *testing.T) {
 			t.Fatalf("Get(%d): %v", id, err)
 		}
 		batch := got[id]
-		// ChannelIDs — единственное сознательное расхождение с Get (см.
-		// докблок GetBatch), поэтому сравниваем поля отдельно, а не всю
-		// структуру reflect.DeepEqual.
 		if batch.ID != single.ID || batch.ProjectID != single.ProjectID || batch.Name != single.Name ||
 			batch.Kind != single.Kind || batch.Enabled != single.Enabled || batch.Consensus != single.Consensus {
 			t.Errorf("GetBatch[%d] расходится с Get(%d): batch=%+v single=%+v", id, id, batch, single)
@@ -363,9 +350,6 @@ func TestGetBatchMatchesGetAndFillsMissing(t *testing.T) {
 		}
 	}
 
-	// Несуществующий id: нулевой Monitor с проставленным ID, ProjectID == 0
-	// — вызывающий отличает "не найден" от любого настоящего проекта, ID
-	// которого всегда положителен.
 	miss := got[missingID]
 	if miss.ID != missingID || miss.ProjectID != 0 {
 		t.Errorf("GetBatch[missing] = %+v, want {ID: %d, ProjectID: 0}", miss, missingID)
@@ -444,7 +428,7 @@ func TestUpdateDoesNotChangeKindOrHeartbeatToken(t *testing.T) {
 	}
 
 	updated := created
-	updated.Kind = uptime.KindTCP // должно быть проигнорировано
+	updated.Kind = uptime.KindTCP
 	updated.HeartbeatToken = "attacker-supplied-token"
 	updated.Config = heartbeatConfig(t, uptime.HeartbeatConfig{GraceSeconds: 90})
 	if err := svc.Update(ctx, updated, nil, nil); err != nil {
@@ -458,9 +442,8 @@ func TestUpdateDoesNotChangeKindOrHeartbeatToken(t *testing.T) {
 	if got.Kind != uptime.KindHeartbeat {
 		t.Errorf("Kind = %v, want heartbeat (unchanged)", got.Kind)
 	}
-	// Get больше не возвращает сырой токен (в БД лежит только его sha256),
-	// поэтому неизменность токена проверяем через ByHeartbeatToken: исходный
-	// токен по-прежнему находит этот монитор, а подсунутый в Update — нет.
+	// Get не возвращает сырой токен (в БД — только его sha256), поэтому
+	// неизменность проверяем через ByHeartbeatToken.
 	if found, err := svc.ByHeartbeatToken(ctx, created.HeartbeatToken); err != nil || found.ID != created.ID {
 		t.Errorf("original token must still resolve to the monitor: found id %d, err %v", found.ID, err)
 	}
@@ -684,7 +667,6 @@ func TestUnicodeNameAndRegionLimits(t *testing.T) {
 
 	pid := newProject(t, pool)
 
-	// Test: 200 Cyrillic characters in name should be accepted
 	m := baseHTTPMonitor(pid)
 	m.Name = strings.Repeat("я", 200)
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
@@ -696,7 +678,6 @@ func TestUnicodeNameAndRegionLimits(t *testing.T) {
 		t.Fatalf("Create with 200 Cyrillic chars: expected non-zero id")
 	}
 
-	// Test: 201 Cyrillic characters in name should be rejected
 	m2 := baseHTTPMonitor(pid)
 	m2.Name = strings.Repeat("я", 201)
 	m2.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
@@ -704,7 +685,6 @@ func TestUnicodeNameAndRegionLimits(t *testing.T) {
 		t.Fatalf("Create with 201 Cyrillic chars in name: err = %v, want ErrInvalidMonitor", err)
 	}
 
-	// Test: 40 Cyrillic characters in region should be accepted
 	m3 := baseHTTPMonitor(pid)
 	m3.Name = "Test 40 chars region"
 	m3.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
@@ -717,7 +697,6 @@ func TestUnicodeNameAndRegionLimits(t *testing.T) {
 		t.Fatalf("Create with 40 Cyrillic chars region: expected non-zero id")
 	}
 
-	// Test: 41 Cyrillic characters in region should be rejected
 	m4 := baseHTTPMonitor(pid)
 	m4.Name = "Test 41 chars region"
 	m4.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})

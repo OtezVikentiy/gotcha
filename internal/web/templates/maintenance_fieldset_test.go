@@ -6,9 +6,6 @@ import (
 	"testing"
 )
 
-// TestMaintenanceKindIsFieldset: группа radio «Тип окна» обязана быть
-// fieldset/legend — без группы скринридер читает «Разовое» и «Еженедельное»
-// как одиночные radio без общего вопроса (№79, WCAG 1.3.1).
 func TestMaintenanceKindIsFieldset(t *testing.T) {
 	var sb strings.Builder
 	if err := maintenanceFields(FormState{}, "uptime.maintenance.create.submit", "", "new-maintenance-window").Render(context.Background(), &sb); err != nil {

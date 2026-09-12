@@ -31,26 +31,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/version"
 )
 
-// TestMain уменьшает внутренний буфер templ до 1 байта на весь прогон пакета.
-// templ пишет через bufio (по умолчанию 4КБ) и отдаёт ошибку нижележащего
-// writer'а только после сброса; с однобайтовым буфером каждая запись сбрасывается
-// сразу, что позволяет проверить распространение ошибок writer'а на каждой
-// границе записи (см. TestRenderPropagatesWriteErrors). На корректность вывода
-// это не влияет — bufio лишь чаще сбрасывается.
-//
-// Значение обязано выставляться в TestMain, ДО первого рендера в процессе:
-// templ берёт Buffer из sync.Pool, а Buffer.Reset создаёт bufio.Writer только
-// если тот ещё nil, — то есть размер фиксируется на первом же рендере и
-// последующая правка DefaultBufferSize ни на что не влияет. Попытка вынести
-// это в per-test хелпер была ошибкой: файлы пакета идут по алфавиту, about_test
-// рендерит раньше, и в пул успевает лечь буфер на 4096 байт. Тест при этом
-// оставался зелёным, проверяя уже не то — границы flush по 4 КБ вместо каждой
-// записи.
-//
-// Прежняя цена (52 с на пакет) была не от этой строки, а от того, что
-// TestRenderPropagatesWriteErrors рендерил каждую страницу по разу НА КАЖДЫЙ
-// байт вывода. Это лечится выборкой смещений (writeOffsets), и однобайтовый
-// буфер сам по себе стоит дёшево.
+// templ фиксирует размер буфера при первом Buffer.Reset из sync.Pool: задавать
+// DefaultBufferSize нужно здесь, до первого рендера в процессе — правка позже не подействует.
 func TestMain(m *testing.M) {
 	templruntime.DefaultBufferSize = 1
 	os.Exit(m.Run())
@@ -58,10 +40,6 @@ func TestMain(m *testing.M) {
 
 var errWrite = errors.New("write failed")
 
-// failAfter — writer, успешно принимающий ровно n байт, затем возвращающий
-// ошибку (с частичной записью на переходной записи). tripped фиксирует, что
-// ошибка реально была отдана хотя бы раз — иначе проверять распространение
-// нечего (см. TestRenderPropagatesWriteErrors).
 type failAfter struct {
 	n       int
 	tripped bool
@@ -82,9 +60,6 @@ func (f *failAfter) Write(p []byte) (int, error) {
 	return w, errWrite
 }
 
-// pageComponents — конструкторы всех страничных компонентов с заполненными
-// доменными данными. Каждый компонент рендерит layout и дерево под-компонентов,
-// поэтому проверка ошибок writer'а на них покрывает и вложенные шаблоны.
 func pageComponents() map[string]templ.Component {
 	now := time.Now()
 	stubC := templ.Raw("<svg data-c></svg>")
@@ -95,12 +70,6 @@ func pageComponents() map[string]templ.Component {
 		{Issue: issue.Issue{ID: 1, Title: "boom", Level: "error", Status: "unresolved", TimesSeen: 9, LastSeen: now, AssigneeEmail: "a@b.c"}, Sparkline: stubC},
 		{Issue: issue.Issue{ID: 2, Title: "warn", Level: "warning", Status: "resolved", LastSeen: now}, Sparkline: stubC},
 	}
-	// Request заполнен: рендер issue-детали проходит по requestFullView
-	// (метод/URL/параметры/тело/заголовки), покрывая per-write error-glue
-	// этой карточки на failing-writer'е.
-	// Request/Breadcrumbs/Contexts заполнены: рендер issue-детали проходит по
-	// requestFullView, breadcrumbsView и группам контекста, покрывая per-write
-	// error-glue этих карточек на failing-writer'е.
 	ev := event.Stored{
 		ID: "e1", Level: "error", ExceptionType: "NPE", ExceptionValue: "nil",
 		Environment: "production", TraceID: "tr", Tags: map[string]string{"k": "v"},
@@ -161,12 +130,6 @@ func pageComponents() map[string]templ.Component {
 		"SSOLogin":             SSOLogin("err"),
 		"InviteAccept":         InviteAccept("tok", "err", "u@e.com", org.InviteInfo{}),
 
-		// Волна 2 полного аудита (кластер 8/10 DEDUP-P1.md): эти 17
-		// страничных компонентов отсутствовали здесь — TestRenderPropagatesWriteErrors
-		// и TestRenderRespectsCancelledContext их вовсе не касались, хотя
-		// выглядели проверенными по всему дереву. Полный список 59 страничных
-		// компонентов и сверку с этой картой держит сторож
-		// guards.TestPageComponentsMapComplete (internal/guards/page_components_test.go).
 		"About":              About(version.Info{Version: "v0.22.1", Commit: "abcdef1", Date: "2026-08-01", Go: "go1.26", Stamped: true}, "u@e.com"),
 		"AlertSuppression":   AlertSuppression(7, []SuppressionEdgeView{{ID: 1, ParentLabel: "хост: web-1", ChildLabel: "монитор: api"}}, []SuppressionNodeOption{{ID: 1, Name: "web-1"}}, []SuppressionNodeOption{{ID: 2, Name: "api"}}, []SuppressionPreviewView{{ParentLabel: "web-1", Children: []string{"api"}}}, 5*time.Minute, nil, "", "u@e.com"),
 		"DependenciesScreen": DependenciesScreen(7, []DependencyRow{{Kind: "postgres", Target: "db", Calls: 100, P50US: 1000, P95US: 5000, ErrorRate: 0.01}}, DepsFilter{Range: TimeRangeVM{Key: "24h"}, Active: true}, stubC, false, false, "u@e.com"),
@@ -189,22 +152,10 @@ func pageComponents() map[string]templ.Component {
 	return m
 }
 
-// TestRenderPropagatesWriteErrors — SSR-шаблоны не должны молча глотать ошибку
-// записи (например, при обрыве соединения клиентом): на каждой границе записи
-// прогоняем рендер в writer, падающий после k байт, и требуем, чтобы ошибка
-// всплывала наружу, а не терялась (обрезанный ответ без сигнала об ошибке).
-//
-// Утверждаем только по факту срабатывания writer'а (fw.tripped): часть шаблонов
-// рисует относительное время (time.Now()), поэтому длина вывода между рендерами
-// на границе секунды может меняться на байт-другой, и на хвостовых смещениях
-// writer иногда не добирает свой лимит. Такой рендер просто не относится к
-// проверке — важно, что КАЖДЫЙ рендер, где ошибка записи реально произошла,
-// её распространил.
+// ошибка проверяется только при fw.tripped: вывод части шаблонов зависит от
+// time.Now(), и на хвостовых смещениях writer иногда не добирает свой лимит.
 func TestRenderPropagatesWriteErrors(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
-	// tripped хотя бы раз за весь тест: без этой проверки тест оставался бы
-	// зелёным, даже если failAfter перестанет срабатывать вовсе — он молотил бы
-	// впустую и ничего не проверял.
 	trippedAny := false
 	for name, comp := range pageComponents() {
 		var good strings.Builder
@@ -228,14 +179,8 @@ func TestRenderPropagatesWriteErrors(t *testing.T) {
 	}
 }
 
-// writeOffsets — смещения обрыва записи для одного шаблона.
-//
-// Раньше проверялся КАЖДЫЙ байт вывода каждой страницы, то есть работа росла
-// квадратично от размера шаблона: пакет отрабатывал 41 секунду без -race и
-// уходил в таймаут 10 минут под -race, из-за чего `make test-race` не проходил
-// вовсе. Плотно берём начало (там сосредоточены границы записи заголовка и
-// первых элементов), дальше — равномерная выборка: границы записи распределены
-// по выводу, и выборка ловит те же классы обрыва за линейное время.
+// проверка каждого байта вывода растёт квадратично от размера шаблона; вместо
+// этого плотно берём начало и дальше — равномерную выборку по линии.
 func writeOffsets(full int) []int {
 	const (
 		dense   = 96  // первые N байт — подряд
@@ -262,8 +207,6 @@ func writeOffsets(full int) []int {
 	return out
 }
 
-// TestRenderRespectsCancelledContext — при уже отменённом контексте рендер
-// обязан вернуть ошибку контекста, а не рисовать страницу впустую.
 func TestRenderRespectsCancelledContext(t *testing.T) {
 	base := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	ctx, cancel := context.WithCancel(base)

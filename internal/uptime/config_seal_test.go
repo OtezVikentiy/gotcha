@@ -7,13 +7,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/secretbox"
 )
 
-// TestSealHTTPHeadersEncryptsValueThatLooksLikeEncPrefix — значение заголовка,
-// которое само по себе начинается с "enc:" (реальное, незашифрованное
-// значение, не продукт Seal), обязано быть зашифровано, а не принято за уже
-// зашифрованное и сохранено как plaintext.
-//
-// Раньше идемпотентность определялась голым strings.HasPrefix(v, "enc:") —
-// такое значение прошло бы мимо Seal насквозь (P2-4 из аудита 2026-08-12).
+// значение, которое само начинается с "enc:" (не продукт Seal), должно быть
+// зашифровано, не принято за уже зашифрованное.
 func TestSealHTTPHeadersEncryptsValueThatLooksLikeEncPrefix(t *testing.T) {
 	ring, err := secretbox.NewKeyring("seal-test-master-key-32-bytes!!", "")
 	if err != nil {
@@ -56,8 +51,6 @@ func TestSealHTTPHeadersEncryptsValueThatLooksLikeEncPrefix(t *testing.T) {
 	}
 }
 
-// TestSealHTTPHeadersIsIdempotentOnRealCiphertext — реальное enc:-значение
-// (продукт Seal) не должно шифроваться повторно.
 func TestSealHTTPHeadersIsIdempotentOnRealCiphertext(t *testing.T) {
 	ring, err := secretbox.NewKeyring("seal-test-master-key-32-bytes!!", "")
 	if err != nil {

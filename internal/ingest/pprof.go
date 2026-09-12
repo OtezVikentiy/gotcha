@@ -10,9 +10,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
 )
 
-// pprofIngest — POST /api/v1/profiles/pprof: приём pprof-профиля (gzip-protobuf) с
-// Bearer-DSN аутентификацией и метаданными из query (service/transaction/
-// environment/type). Профили выключены (h.Profiles==nil) → 202 без записи.
 func (h *Handler) pprofIngest(w http.ResponseWriter, r *http.Request) {
 	key, ok := h.otlpAuthenticate(w, r, SignalProfile)
 	if !ok {
@@ -52,10 +49,8 @@ func (h *Handler) pprofIngest(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "bad body")
 		return
 	}
-	// pprof присылают gzip'ом внутри тела (без Content-Encoding), поэтому h.body
-	// его не разжал — разжимаем сами с ограничением размера, иначе ParsePprof →
-	// pp.ParseData разжали бы «бомбу» без предела (OOM). Лимит тот же, что у
-	// сжатых тел в h.body (maxBytes*10).
+	// pprof шлют gzip внутри тела без Content-Encoding — h.body его не разжал,
+	// разжимаем сами с тем же лимитом, иначе ParsePprof разжал бы «бомбу» без предела.
 	raw, err = gunzipLimited(raw, h.maxBytes*10)
 	if err != nil {
 		if errors.Is(err, ErrTooLarge) {
@@ -76,9 +71,8 @@ func (h *Handler) pprofIngest(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "malformed pprof")
 		return
 	}
-	// Метаданные из query недоверенные (их шлёт клиент): каппим до 200 рун, как
-	// и остальные строковые поля приёма (см. capRunes / transaction.go), иначе
-	// гигантский ?service=... раздул бы колонки profiles без ограничений.
+	// метаданные из query недоверенные — каппим, иначе гигантский ?service=...
+	// раздул бы колонки без ограничений.
 	prof.Service = capRunes(q.Get("service"), 200)
 	prof.Transaction = capRunes(q.Get("transaction"), 200)
 	prof.Environment = capRunes(q.Get("environment"), 200)

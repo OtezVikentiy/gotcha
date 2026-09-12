@@ -43,17 +43,14 @@ func TestPgx5URL(t *testing.T) {
 }
 
 func TestExplainMigrateErr(t *testing.T) {
-	// nil остаётся nil.
 	if err := explainMigrateErr("migrations/pg", nil); err != nil {
 		t.Errorf("explainMigrateErr(nil) = %v, want nil", err)
 	}
 
-	// ErrNoChange трактуется как «нечего применять» → nil.
 	if err := explainMigrateErr("migrations/pg", migrate.ErrNoChange); err != nil {
 		t.Errorf("explainMigrateErr(ErrNoChange) = %v, want nil", err)
 	}
 
-	// dirty-состояние: внятный текст + сохранённая исходная ошибка.
 	dirty := migrate.ErrDirty{Version: 5}
 	got := explainMigrateErr("migrations/pg", dirty)
 	if got == nil {
@@ -66,7 +63,6 @@ func TestExplainMigrateErr(t *testing.T) {
 	if !strings.Contains(msg, "5") {
 		t.Errorf("сообщение не содержит номер версии 5: %q", msg)
 	}
-	// %w сохраняет исходную ErrDirty — errors.As должен её достать.
 	var derr migrate.ErrDirty
 	if !errors.As(got, &derr) {
 		t.Fatal("errors.As не нашёл ErrDirty в обёртке")
@@ -75,7 +71,6 @@ func TestExplainMigrateErr(t *testing.T) {
 		t.Errorf("ErrDirty.Version = %d, want 5", derr.Version)
 	}
 
-	// Произвольная ошибка тоже оборачивается и сохраняется через %w.
 	sentinel := errors.New("boom")
 	wrapped := explainMigrateErr("migrations/ch", sentinel)
 	if wrapped == nil {
@@ -117,10 +112,6 @@ func TestMaxMigrationVersion(t *testing.T) {
 			want:  0,
 		},
 		{
-			// Номер уезжает в bigint-колонку schema_compat и живёт в uint,
-			// разрядность которого зависит от платформы. Число за потолком —
-			// не версия, а мусор в имени файла, и считать его максимумом
-			// значит сравнивать гейт схемы с выдуманным числом.
 			name:  "номер за потолком не считается версией",
 			names: []string{"99999999999999_timestamp.up.sql", "0004_ok.up.sql"},
 			want:  4,
@@ -135,10 +126,6 @@ func TestMaxMigrationVersion(t *testing.T) {
 	}
 }
 
-// maxEmbeddedPGVersion считает по реальному embed FS и должен вернуть номер
-// последней встроенной миграции. Растёт с добавлением миграций — проверяем
-// нижнюю границу (>= 19, последняя закоммиченная на момент RA-8), а не точное
-// число, чтобы не ломаться при добавлении новых миграций.
 func TestMaxEmbeddedPGVersion(t *testing.T) {
 	got, err := maxEmbeddedPGVersion()
 	if err != nil {
@@ -149,10 +136,6 @@ func TestMaxEmbeddedPGVersion(t *testing.T) {
 	}
 }
 
-// TestSchemaGateErr закрепляет чистую логику version-гейта схемы: got==want —
-// ок; got<want — отставание; dirty перекрывает всё; got>want разбирается по
-// окну совместимости — аддитивные миграции пропускаются с предупреждением,
-// ломающие и неизвестные отказывают.
 func TestSchemaGateErr(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -175,8 +158,6 @@ func TestSchemaGateErr(t *testing.T) {
 			wantSubstr: []string{"PG", "18", "20", "отстаёт"},
 		},
 		{
-			// Откат релиза через аддитивные миграции: старый бинарь работает,
-			// администратор видит предупреждение с перечнем версий.
 			name: "база впереди, все версии совместимы — пуск с предупреждением", label: "PG",
 			got: 22, want: 20, compat: map[uint]bool{21: true, 22: true},
 			wantErr: false, wantWarn: true,
@@ -189,7 +170,6 @@ func TestSchemaGateErr(t *testing.T) {
 			wantSubstr: []string{"PG", "22", "20", "несовместим"},
 		},
 		{
-			// Fail-closed: схему применял бинарь, не знавший о признаке.
 			name: "база впереди, о версии нет записи — отказ", label: "PG",
 			got: 22, want: 20, compat: map[uint]bool{21: true},
 			wantErr:    true,
@@ -239,8 +219,6 @@ func TestSchemaGateErr(t *testing.T) {
 	}
 }
 
-// TestMaxEmbeddedCHVersion: максимум встроенных CH-миграций считается по embed FS
-// и не меньше 11 (последняя закоммиченная на момент audit3), растёт с новыми.
 func TestMaxEmbeddedCHVersion(t *testing.T) {
 	got, err := maxEmbeddedCHVersion()
 	if err != nil {
@@ -251,12 +229,6 @@ func TestMaxEmbeddedCHVersion(t *testing.T) {
 	}
 }
 
-// TestRetentionValidatesDays закрепляет guard `days < 0`: функции с явной
-// валидацией возвращают ошибку ДО обращения к conn, поэтому здесь безопасно
-// передать nil — если бы guard пропал, тест упал бы паникой на nil conn, а не
-// молча. Покрывает ранние return-ветки без ClickHouse-контейнера.
-// 0 теперь валиден — снимает TTL (№34), покрыт интеграционным тестом
-// TestRetentionZeroRemovesTTL.
 func TestRetentionValidatesDays(t *testing.T) {
 	ctx := context.Background()
 	funcs := map[string]func(context.Context, driver.Conn, int) error{

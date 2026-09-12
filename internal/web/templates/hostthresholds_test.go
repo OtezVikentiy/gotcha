@@ -9,11 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 )
 
-// hostThresholdsFixtureVM — HostDetailVM с показательным набором режимов по
-// каждому виду (B2, T6): disk — override (host), memory — inherit
-// (project), load — off (host), silent — inherit (role "web"). Effective
-// подобрана вручную (не через ThresholdResolver — тот покрыт
-// internal/host/resolve_test.go, T4) так, чтобы соответствовать Override.
 func hostThresholdsFixtureVM(canOperate bool, form FormState) HostDetailVM {
 	diskEnabled := true
 	diskThreshold := 0.5
@@ -57,50 +52,35 @@ func renderHostThresholds(t *testing.T, vm HostDetailVM) string {
 	return sb.String()
 }
 
-// TestHostThresholdsFormModes — оператору видна форма с тремя radio на вид
-// порога (наследовать/переопределить/выключить), выбранный режим совпадает с
-// Override, а числовое поле переопределения предзаполнено ДЕЙСТВУЮЩИМ
-// значением (Effective), не нулём — переключение на "Переопределить" не
-// начинается с чистого листа.
 func TestHostThresholdsFormModes(t *testing.T) {
 	out := renderHostThresholds(t, hostThresholdsFixtureVM(true, nil))
 
 	if !strings.Contains(out, `class="host-thresholds-form"`) {
 		t.Fatalf("нет формы порогов у оператора: %s", out)
 	}
-	// disk — override, checked на "override".
 	if !strings.Contains(out, `name="disk_mode" value="override" checked`) {
 		t.Errorf("disk_mode не выбран override: %s", out)
 	}
 	if strings.Contains(out, `name="disk_mode" value="inherit" checked`) {
 		t.Errorf("disk_mode ошибочно выбран inherit: %s", out)
 	}
-	// memory — inherit (Override.MemoryEnabled == nil).
 	if !strings.Contains(out, `name="memory_mode" value="inherit" checked`) {
 		t.Errorf("memory_mode не выбран inherit: %s", out)
 	}
-	// load — off.
 	if !strings.Contains(out, `name="load_mode" value="off" checked`) {
 		t.Errorf("load_mode не выбран off: %s", out)
 	}
-	// silent — inherit.
 	if !strings.Contains(out, `name="silent_mode" value="inherit" checked`) {
 		t.Errorf("silent_mode не выбран inherit: %s", out)
 	}
-	// Значение поля переопределения диска — 50% (Override.DiskThreshold),
-	// не 0.
 	if !strings.Contains(out, `name="disk_value"`) || !strings.Contains(out, `value="50"`) {
 		t.Errorf("disk_value не предзаполнен текущим override (50): %s", out)
 	}
-	// memory без override → предзаполнено ЭФФЕКТИВНЫМ (90), не нулём.
 	if !strings.Contains(out, `name="memory_value"`) || !strings.Contains(out, `value="90"`) {
 		t.Errorf("memory_value не предзаполнен эффективным значением (90): %s", out)
 	}
 }
 
-// TestHostThresholdsSourceLabels — подпись «действует: значение (источник)»
-// у каждого вида: host/project по уровню без метки, role — с меткой ("web"),
-// выключенный вид (load) показывает "выключено", а не число.
 func TestHostThresholdsSourceLabels(t *testing.T) {
 	out := renderHostThresholds(t, hostThresholdsFixtureVM(true, nil))
 
@@ -118,9 +98,6 @@ func TestHostThresholdsSourceLabels(t *testing.T) {
 	}
 }
 
-// TestHostThresholdsReadonlyForNonOperator — не-оператору форма не
-// показывается (нет ни одного input), только список эффективных значений
-// (тот же источник, что видел бы оператор).
 func TestHostThresholdsReadonlyForNonOperator(t *testing.T) {
 	out := renderHostThresholds(t, hostThresholdsFixtureVM(false, nil))
 
@@ -138,14 +115,6 @@ func TestHostThresholdsReadonlyForNonOperator(t *testing.T) {
 	}
 }
 
-// TestHostThresholdsLoadOverrideValue — thresholdFloatValue (в отличие от
-// thresholdPercentValue/thresholdMinutesValue, покрытых disk/memory/silent
-// выше) обслуживает ТОЛЬКО load_value — обе его ветки нужно бить отдельно:
-// hostThresholdsFixtureVM даёт load БЕЗ override (Override.LoadThreshold ==
-// nil, предзаполнение эффективным значением 4 — ветка ov==nil, уже покрыта
-// TestHostThresholdsFormModes косвенно через "load — off"). Здесь —
-// LoadThreshold ЗАДАН (ov != nil), поле должно показать именно его
-// (2.5), а не эффективное значение каскада.
 func TestHostThresholdsLoadOverrideValue(t *testing.T) {
 	vm := hostThresholdsFixtureVM(true, nil)
 	loadEnabled := true
@@ -162,13 +131,10 @@ func TestHostThresholdsLoadOverrideValue(t *testing.T) {
 	}
 }
 
-// TestHostThresholdsErrorAndFormState — при ошибке валидации (422) карточка
-// переотрисовывается с сообщением и введёнными (а не старыми) значениями
-// формы — тот же приём, что у HostSettings/FormState.
 func TestHostThresholdsErrorAndFormState(t *testing.T) {
 	form := FormState{
 		"disk_mode":  "override",
-		"disk_value": "150", // невалидное значение, но должно остаться в форме
+		"disk_value": "150",
 	}
 	vm := hostThresholdsFixtureVM(true, form)
 	vm.ThresholdsErr = "порог диска должен быть от 1 до 100%"

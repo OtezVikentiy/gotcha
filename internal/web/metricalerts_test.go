@@ -63,7 +63,6 @@ func TestWebMetricAlerts(t *testing.T) {
 	}
 	base := "/projects/" + strconv.FormatInt(project.ID, 10) + "/metrics/alerts"
 
-	// Создание валидного правила (owner, с Origin) → 303, правило в списке.
 	form := url.Values{
 		"metric_name": {"http.errors"}, "aggregation": {"avg"}, "comparator": {"gt"},
 		"threshold": {"100"}, "window_seconds": {"300"},
@@ -79,7 +78,6 @@ func TestWebMetricAlerts(t *testing.T) {
 		t.Fatalf("rules = %d, want 1", len(rules))
 	}
 
-	// Страница показывает правило.
 	resp = getWithCookie(t, s.srv, base, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -87,9 +85,6 @@ func TestWebMetricAlerts(t *testing.T) {
 		t.Fatalf("page missing rule (status %d): %s", resp.StatusCode, body)
 	}
 
-	// Невалидный порог → 422. Включая литералы, которые ParseFloat принимает без
-	// ошибки (NaN/Inf/+Inf/-Inf) — такой порог сломал бы сравнение и график, его
-	// нужно отклонять, а не сохранять.
 	for _, badThreshold := range []string{"nan!!", "NaN", "Inf", "+Inf", "-Inf"} {
 		bad := url.Values{"metric_name": {"m"}, "aggregation": {"avg"}, "comparator": {"gt"}, "threshold": {badThreshold}, "window_seconds": {"300"}}
 		resp = postForm(t, s.srv, base, bad, s.srv.URL, ownerCookie)
@@ -100,7 +95,6 @@ func TestWebMetricAlerts(t *testing.T) {
 		}
 	}
 
-	// Без Origin → 403.
 	resp = postForm(t, s.srv, base, form, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -108,7 +102,6 @@ func TestWebMetricAlerts(t *testing.T) {
 		t.Fatalf("no-origin status = %d, want 403", resp.StatusCode)
 	}
 
-	// Удаление правила.
 	del := url.Values{"confirmed": {"yes"}, "rule_id": {strconv.FormatInt(rules[0].ID, 10)}}
 	resp = postForm(t, s.srv, base+"/delete", del, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
@@ -120,11 +113,6 @@ func TestWebMetricAlerts(t *testing.T) {
 		t.Fatalf("rule not deleted")
 	}
 
-	// Член организации БЕЗ команды на проекте (не owner/admin, не оператор) →
-	// 404: requireProjectOperator (задача 3, спека 2026-08-08) не смотрит на
-	// организационную роль, только на canOperateProject — членства
-	// недостаточно, а раскрывать существование проекта чужой команде незачем
-	// (тот же existence-oracle, что и для полного постороннего).
 	memberID, memberCookie := orgSettingsRegister(t, s.auth, "ma-member@example.com")
 	if err := s.org.AddMember(ctx, o.ID, memberID, org.RoleMember); err != nil {
 		t.Fatalf("add member: %v", err)

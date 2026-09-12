@@ -14,11 +14,7 @@ type LinkableProvider struct {
 	DisplayName string
 }
 
-// Profile — GET/POST /profile: email юзера, форма пароля (смена, если пароль
-// есть; задание, если аккаунт OAuth-only), связанные аккаунты (привязка/отвязка)
-// и кнопка «выйти со всех других устройств». errMsg — ошибка последнего POST,
-// message — подтверждение успеха. Оба рендерятся на этой же странице без
-// редиректа — как и OrgSettings.
+// errMsg/message рендерятся на этой же странице без редиректа после POST — как и OrgSettings.
 templ Profile(email, errMsg, message string, hasPassword bool, linked []LinkedIdentity, linkable []LinkableProvider, isInstanceAdmin bool, userEmail string) {
 	@layout(i18n.T(ctx, "profile.title"), userEmail) {
 		<div class="profile">

@@ -7,9 +7,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/recipes"
 )
 
-// mustRecipe — рецепт из реестра по slug'у; тесты рендера гоняют настоящие
-// рецепты (а не рукодельные Recipe{}), чтобы switch пер-рецептных подсказок
-// в recipes.templ исполнялся ровно теми ID, что живут в продукте.
+// из реестра, не рукодельный Recipe{} — иначе switch подсказок не покрылся бы реальными ID.
 func mustRecipe(t *testing.T, id string) recipes.Recipe {
 	t.Helper()
 	rec, ok := recipes.ByID(id)
@@ -19,9 +17,6 @@ func mustRecipe(t *testing.T, id string) recipes.Recipe {
 	return rec
 }
 
-// TestRecipeDetailDockerNoRules — docker: единственный рецепт без порогов.
-// Вместо таблицы — пояснение с рабочей ссылкой на правила метрик; сниппет
-// со своей socket-подсказкой; общий assumption-хинт и ссылка на /docs/recipes.
 func TestRecipeDetailDockerNoRules(t *testing.T) {
 	rec := mustRecipe(t, "docker")
 	out := renderTo(t, RecipeDetail(RecipeDetailVM{
@@ -46,8 +41,7 @@ func TestRecipeDetailDockerNoRules(t *testing.T) {
 	if !strings.Contains(out, `href="/docs/recipes"`) {
 		t.Error("страница рецепта должна ссылаться на гайд /docs/recipes")
 	}
-	// «Данные приходят» встречается и в тексте шага restart — различаем
-	// именно бейдж по его классу.
+	// «Данные приходят» встречается и в шаге restart — различаем бейдж именно по классу.
 	if !strings.Contains(out, "Ждём данные") || strings.Contains(out, `badge-good">Данные приходят`) {
 		t.Error("DataArrives=false — бейдж «Ждём данные», не «Данные приходят»")
 	}
@@ -56,9 +50,6 @@ func TestRecipeDetailDockerNoRules(t *testing.T) {
 	}
 }
 
-// TestRecipeDetailSnippetHints — пер-рецептные подсказки предусловий рядом со
-// сниппетом (postgres/nginx/redis) и ветка «нет живого ключа»: сниппет скрыт,
-// вместо него причина со ссылкой на настройки проекта.
 func TestRecipeDetailSnippetHints(t *testing.T) {
 	cases := []struct {
 		id, hint string
@@ -84,7 +75,6 @@ func TestRecipeDetailSnippetHints(t *testing.T) {
 		}
 	}
 
-	// Без живого ключа: сниппета и его подсказки нет, есть причина + ссылка.
 	rec := mustRecipe(t, "nginx")
 	out := renderTo(t, RecipeDetail(RecipeDetailVM{
 		ProjectID:  7,
@@ -104,10 +94,6 @@ func TestRecipeDetailSnippetHints(t *testing.T) {
 	}
 }
 
-// TestRecipeDetailCharts — блок преднастроенных графиков: непустой график с
-// легендой из двух рядов, подписью top-N усечения и ссылкой «открыть в
-// метриках»; рядом Empty-график с пустым состоянием без легенды и ссылки.
-// DataArrives=true заодно исполняет «зелёную» ветку бейджа данных.
 func TestRecipeDetailCharts(t *testing.T) {
 	rec := mustRecipe(t, "redis")
 	charts := []RecipeChartVM{
@@ -162,9 +148,6 @@ func TestRecipeDetailCharts(t *testing.T) {
 	}
 }
 
-// TestRecipeDetailThresholdStatuses — таблица порогов: пока есть pending —
-// строки «Будет создан» и форма POST у оператора; когда все созданы — бейджи
-// «Создан», вместо кнопки честное «все созданы».
 func TestRecipeDetailThresholdStatuses(t *testing.T) {
 	rec := mustRecipe(t, "redis")
 
@@ -207,9 +190,6 @@ func TestRecipeDetailThresholdStatuses(t *testing.T) {
 	}
 }
 
-// TestRecipesListCards — список: карточка с порогами несёт счётчик
-// «создано X из Y», карточка без порогов (docker) — честное «без
-// рекомендованных порогов»; бейдж данных — по DataArrives карточки.
 func TestRecipesListCards(t *testing.T) {
 	cards := []RecipeCardVM{
 		{ID: "redis", DataArrives: true, CreatedRules: 2, TotalRules: 3},
@@ -235,9 +215,6 @@ func TestRecipesListCards(t *testing.T) {
 	}
 }
 
-// TestRecipeThresholdsTableIsDataTable — K9-10: таблица порогов рецепта была
-// единственной из таблиц без class="data-table" (числа не прижаты вправо,
-// стилистика выпадала).
 func TestRecipeThresholdsTableIsDataTable(t *testing.T) {
 	rec := mustRecipe(t, "redis")
 	out := renderTo(t, RecipeDetail(RecipeDetailVM{

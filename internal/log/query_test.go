@@ -10,17 +10,15 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestQueryList поднимает один CH-контейнер, наполняет его через log.Writer и
-// прогоняет фильтры log.Query.List подтестами (как trace/query_test).
 func TestQueryList(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
 	const projectID = int64(70)
-	const projectID2 = int64(71) // чужой проект — не должен утекать в List(projectID, ...)
-	const projectID3 = int64(72) // отдельный проект под курсорный тест (границы по одинаковому timestamp)
-	const projectID4 = int64(73) // курсорный тест: строки-«близнецы» с разными атрибутами в одну мс
+	const projectID2 = int64(71)
+	const projectID3 = int64(72)
+	const projectID4 = int64(73)
 
 	w := log.NewWriter(conn)
 	go w.Run()
@@ -29,7 +27,6 @@ func TestQueryList(t *testing.T) {
 	from := base
 	to := base.Add(time.Hour)
 
-	// 40 info-логов сервиса "api"/production — с атрибутами лога и ресурса.
 	for i := 0; i < 40; i++ {
 		w.Add(projectID, log.LogRecord{
 			Timestamp:      base.Add(time.Duration(i) * time.Minute),
@@ -45,8 +42,6 @@ func TestQueryList(t *testing.T) {
 		})
 	}
 
-	// 5 error-логов сервиса "worker"/staging, тело содержит "boom" — для
-	// фильтров Severity/Service/Environment/Query и атрибута log_attributes.
 	for i := 0; i < 5; i++ {
 		w.Add(projectID, log.LogRecord{
 			Timestamp:      base.Add(time.Duration(i) * time.Minute),
@@ -62,7 +57,6 @@ func TestQueryList(t *testing.T) {
 		})
 	}
 
-	// Другой проект — должен полностью отсутствовать в результатах List(projectID, ...).
 	w.Add(projectID2, log.LogRecord{
 		Timestamp:   base.Add(10 * time.Minute),
 		ObservedTS:  base.Add(10 * time.Minute),
@@ -72,9 +66,6 @@ func TestQueryList(t *testing.T) {
 		Environment: "production",
 	})
 
-	// Курсорный набор: 5 строк — самая старая, три с ОДИНАКОВЫМ timestamp
-	// (одна и та же мс) и самая новая. При Limit=2 граница страницы неизбежно
-	// падает ВНУТРИ тройки — ровно тот сценарий, который проверяет TieSkip.
 	cursorFrom := base.Add(30 * time.Minute)
 	cursorOld := cursorFrom.Add(1 * time.Second)
 	cursorTie := cursorFrom.Add(2 * time.Second).Truncate(time.Millisecond)
@@ -90,11 +81,6 @@ func TestQueryList(t *testing.T) {
 	}
 	w.Add(projectID3, log.LogRecord{Timestamp: cursorNew, ObservedTS: cursorNew, Severity: log.SevInfo, Body: "cursor new", TraceID: "cursor-new"})
 
-	// Пара строк-«близнецов»: совпадают по всем скалярным полям (timestamp,
-	// observed_ts, severity, body, trace_id, span_id, service, environment —
-	// у обеих нулевые/одинаковые значения), различаются ТОЛЬКО атрибутом
-	// log_attributes. Проверяет, что хэш второго ключа сортировки учитывает
-	// атрибуты и не схлопывает такие строки в один тай-порядок.
 	twinTS := cursorFrom.Add(10 * time.Second).Truncate(time.Millisecond)
 	for i := 0; i < 2; i++ {
 		w.Add(projectID4, log.LogRecord{
@@ -217,7 +203,7 @@ func TestQueryList(t *testing.T) {
 		if err != nil {
 			t.Fatalf("List: %v", err)
 		}
-		if len(got) != 45 { // дефолт 100 > 45 строк проекта — весь набор должен вернуться
+		if len(got) != 45 {
 			t.Fatalf("len(got) = %d, want 45", len(got))
 		}
 	})
@@ -232,10 +218,6 @@ func TestQueryList(t *testing.T) {
 		}
 	})
 
-	// Курсорная пагинация: собираем весь набор projectID3 (5 строк) постранично
-	// с Limit=2, скармливая Before/TieSkip от предыдущей страницы. Проверяем,
-	// что тройка с одинаковым timestamp не теряет и не дублирует строки на
-	// границе страницы.
 	t.Run("cursor pagination across timestamp tie", func(t *testing.T) {
 		const limit = 2
 		var before time.Time
@@ -243,7 +225,7 @@ func TestQueryList(t *testing.T) {
 		seen := make(map[string]bool)
 		var all []log.LogRow
 
-		for page := 0; page < 10; page++ { // предохранитель от зацикливания
+		for page := 0; page < 10; page++ {
 			got, err := q.List(ctx, projectID3, log.ListFilter{
 				From: cursorFrom, To: cursorTo, Limit: limit, Before: before, TieSkip: tieSkip,
 			})
@@ -261,11 +243,8 @@ func TestQueryList(t *testing.T) {
 				all = append(all, r)
 			}
 			last := got[len(got)-1]
-			// TieSkip — СКОЛЬКО строк с timestamp==Before уже отдано вызывающему
-			// ВСЕГО (не только этой страницей): если тай растягивается больше чем
-			// на одну страницу (граница снова падает на тот же Before), счётчик
-			// накапливается, а не пересчитывается заново — иначе следующая
-			// страница переспросит уже показанные строки этой тай-группы.
+			// TieSkip — сколько строк с timestamp==Before показано ВСЕГО; накапливается, если тай растягивается
+			// на несколько страниц (Before не меняется), иначе пересчитывается заново.
 			matches := 0
 			for _, r := range got {
 				if r.Timestamp.Equal(last.Timestamp) {
@@ -294,10 +273,6 @@ func TestQueryList(t *testing.T) {
 		}
 	})
 
-	// TieSkip из URL заклампен в самой List: гигантский tskip не превращается в
-	// LIMIT = limit + tskip (иначе одиночный GET материализует всё окно → OOM
-	// мультитенантного процесса, находка финального ревью C2). Отрицательный
-	// tskip тоже обнуляется (иначе отрицательный queryLimit роняет CH).
 	t.Run("TieSkip из URL заклампен — гигантский/отрицательный не амплифицирует LIMIT", func(t *testing.T) {
 		for _, tskip := range []int{2_000_000_000, -999_999} {
 			got, err := q.List(ctx, projectID3, log.ListFilter{
@@ -312,10 +287,6 @@ func TestQueryList(t *testing.T) {
 		}
 	})
 
-	// Проверяет фикс на «близнецах»: две строки с одинаковым timestamp и
-	// одинаковыми всеми скалярными полями (различаются только log_attributes)
-	// разведены по разным страницам (Limit=1) без дубля и без потери — второй
-	// ключ сортировки должен учитывать атрибуты, а не только скаляры.
 	t.Run("cursor pagination: twin rows differing only by attributes don't collide", func(t *testing.T) {
 		page1, err := q.List(ctx, projectID4, log.ListFilter{From: cursorFrom, To: cursorTo, Limit: 1})
 		if err != nil {
@@ -343,17 +314,8 @@ func TestQueryList(t *testing.T) {
 	})
 }
 
-// TestQueryListBeforeCursorSubMillisecondPrecision — регрессия: Before с
-// НЕнулевыми миллисекундами (реальные timestamp почти никогда не выровнены
-// на секунду) не должен терять граничную строку. До фикса (toDateTime64(?, 3)
-// + строковый аргумент вместо голого time.Time в "?") позиционный биндинг
-// clickhouse-go форматировал ЛЮБОЙ time.Time-аргумент с TimeUnit=Seconds
-// (bindPositional в драйвере жёстко использует эту шкалу), то есть Before
-// обрезался до целой секунды на пути в SQL — "timestamp <= Before" ложно
-// сравнивалось для самой граничной строки, и курсор «показать старее» терял
-// её молча. Тест выше (TestQueryList/cursor pagination…) этот баг не ловил:
-// его фикстуры построены на Truncate(time.Hour)+целые секунды, то есть
-// специально без миллисекунд — там обрезка до секунды ничего не меняла.
+// Регресс: Before с ненулевыми миллисекундами (обычный случай) не должен терять граничную строку —
+// прежний баг обрезал Before до целой секунды при биндинге (см. chTimeArg в query.go).
 func TestQueryListBeforeCursorSubMillisecondPrecision(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -389,11 +351,7 @@ func TestQueryListBeforeCursorSubMillisecondPrecision(t *testing.T) {
 	}
 }
 
-// TestQueryHistogram — задача 3 плана C2: гистограмма объёма логов по времени
-// и severity. Окно 6 часов, buckets=6 (шаг 1ч): корзина 0 — 3 info + 2 error,
-// корзина 2 — 4 warn, корзина 5 — 1 fatal, корзины 1/3/4 — пусты (проверка
-// добивки нулями по ВСЕМ 6 severity, не только по тем, что встретились в
-// окне).
+// buckets=6/шаг 1ч: корзина 0 — 3 info+2 error, корзина 2 — 4 warn, корзина 5 — 1 fatal, 1/3/4 пусты.
 func TestQueryHistogram(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
@@ -447,8 +405,6 @@ func TestQueryHistogram(t *testing.T) {
 		}
 	}
 
-	// Пустые корзины (1, 3, 4) — нули по ВСЕМ severity, не только по тем, что
-	// встретились где-то ещё в окне.
 	for _, idx := range []int{1, 3, 4} {
 		for _, sev := range log.Severities {
 			if series[sev][idx] != 0 {
@@ -473,7 +429,6 @@ func TestQueryHistogram(t *testing.T) {
 		t.Fatalf("series[trace/debug][0] should be 0, got trace=%d debug=%d", series[log.SevTrace][0], series[log.SevDebug][0])
 	}
 
-	// Сумма по всем корзинам и severity = число написанных строк.
 	var total int64
 	for _, sev := range log.Severities {
 		for _, v := range series[sev] {
@@ -485,9 +440,6 @@ func TestQueryHistogram(t *testing.T) {
 	}
 }
 
-// facetCount — count() значения value в результате Facet, 0 если значения
-// вообще нет в срезе (facet ORDER BY count() DESC GROUP BY — отсутствующее
-// значение просто не встретилось в окне+фильтрах, это не ошибка теста).
 func facetCount(values []log.FacetValue, value string) int64 {
 	for _, v := range values {
 		if v.Value == value {
@@ -497,12 +449,6 @@ func facetCount(values []log.FacetValue, value string) int64 {
 	return 0
 }
 
-// TestQueryFacet — задача 4 плана C2: встроенные фасеты severity/service/
-// environment. Ключевая проверка — exclude-self: фасет severity игнорирует
-// СВОЙ фильтр (f.Severity), но применяет остальные (Service/Environment/...),
-// тогда как фасеты service/environment применяют ВСЕ фильтры без исключений
-// (включая severity) — иначе клик по невыбранному значению фасета не мог бы
-// расширить выборку обратно (счётчик всегда 0, раз строки уже отфильтрованы).
 func TestQueryFacet(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
@@ -545,8 +491,6 @@ func TestQueryFacet(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Facet: %v", err)
 		}
-		// exclude-self: собственный фильтр Severity=["error"] игнорируется —
-		// видны ВСЕ уровни, встретившиеся в окне, не только error.
 		if c := facetCount(got, log.SevInfo); c != 10 {
 			t.Fatalf("info count = %d, want 10 (%+v)", c, got)
 		}
@@ -613,10 +557,6 @@ func TestQueryFacet(t *testing.T) {
 	})
 }
 
-// TestQueryFacetLimit — Facet отдаёт top-N по count() DESC (facetLimit=10),
-// а не все различающиеся значения колонки: 15 сервисов с УБЫВАЮЩИМ числом
-// строк (svc00 больше всех, svc14 меньше всех) — должны остаться ровно
-// svc00..svc09 в порядке убывания.
 func TestQueryFacetLimit(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
@@ -665,15 +605,6 @@ func TestQueryFacetLimit(t *testing.T) {
 	}
 }
 
-// TestQueryAttrKeys — задача 5 плана C2: авто-обнаружение ключей
-// log_attributes (Query.AttrKeys) — топ ключей+counts DESC и фильтрация по
-// префиксу. Наивная реализация ("ARRAY JOIN mapKeys по всему окну") на
-// целевом трафике (150k rpm) обрывается SETTINGS max_execution_time=5 —
-// поэтому AttrKeys считает по ограниченной СВЕЖЕЙ выборке (LIMIT 50000
-// внутреннего подзапроса), но это деталь стоимости, не корректности: тест
-// проверяет только правильность результата на маленьком наборе (полный
-// прогон 50k+ строк — отдельная забота нагрузочного тестирования, не
-// unit/integration уровня).
 func TestQueryAttrKeys(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
@@ -765,10 +696,7 @@ func TestQueryAttrKeys(t *testing.T) {
 	})
 }
 
-// TestQueryAttrValues — задача 5 плана C2: значения раскрытого ключа
-// атрибут-фасета (Query.AttrValues) — topN+counts DESC, mapContains-гард
-// (строки без ключа НЕ должны склеиваться в бакет "") и источник
-// log_attributes/resource_attrs по флагу resource.
+// mapContains-гард: строки без ключа НЕ должны склеиваться в бакет "".
 func TestQueryAttrValues(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
@@ -794,8 +722,6 @@ func TestQueryAttrValues(t *testing.T) {
 	}
 	add(8, map[string]string{"http.method": "GET"}, map[string]string{"host.name": "web-01"})
 	add(3, map[string]string{"http.method": "POST"}, map[string]string{"host.name": "web-01"})
-	// Строки БЕЗ ключа http.method вообще (только http.status) — mapContains
-	// обязан их исключить из значений http.method, а не склеить в бакет "".
 	add(5, map[string]string{"http.status": "200"}, map[string]string{"host.name": "web-02"})
 
 	if err := w.Close(ctx); err != nil {
@@ -862,9 +788,6 @@ func TestQueryAttrValues(t *testing.T) {
 	})
 }
 
-// TestQueryTraceIDScope — задача 1 плана C3 (logs in context): ListFilter.TraceID
-// должен жёстко скопировать List и AttrKeys к строкам одного trace_id (в
-// отличие от прочих фильтров f, которые AttrKeys игнорирует, — см. её докблок).
 func TestQueryTraceIDScope(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
@@ -943,11 +866,8 @@ func TestQueryTraceIDScope(t *testing.T) {
 		}
 	})
 
-	// Инвертированное окно (From>To) — аудит QA P1a: ссылка «Логи вокруг события»
-	// на событие старше срока хранения логов приходит на /logs, где кламп
-	// ретеншена поднимает From к cutoff, а To остаётся в прошлом → From>To. Это
-	// НЕ ошибка, а корректно-пустой результат (логи той давности уже удалены TTL):
-	// List/Histogram обязаны вернуть пусто без ошибки, а не упасть.
+	// From>To происходит на практике: кламп ретеншена поднимает From к cutoff, а To остаётся в прошлом —
+	// это корректно-пустой результат, не ошибка.
 	t.Run("inverted window (From>To) is graceful empty", func(t *testing.T) {
 		rows, err := q.List(ctx, projectID, log.ListFilter{From: to, To: from})
 		if err != nil {
@@ -970,10 +890,8 @@ func TestQueryTraceIDScope(t *testing.T) {
 	})
 }
 
-// TestListNegatedAttrKeepsRowsWithoutKey проверяет главный инвариант
-// отрицания по атрибуту: строки, где исключаемого ключа нет вовсе, обязаны
-// остаться в выдаче. NOT (col[?] = ?) даёт это свойство, col[?] != ? — нет
-// (в ClickHouse отсутствующий ключ карты читается как пустая строка).
+// NOT(col[?] = ?) сохраняет строки без ключа вовсе; col[?] != ? — нет (отсутствующий ключ карты в
+// ClickHouse читается как пустая строка).
 func TestListNegatedAttrKeepsRowsWithoutKey(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
@@ -1018,8 +936,6 @@ func TestListNegatedAttrKeepsRowsWithoutKey(t *testing.T) {
 	}
 }
 
-// TestListNegatedBodyIsCaseInsensitive проверяет, что исключение по телу
-// нечувствительно к регистру — как и обычный поиск по телу (Query).
 func TestListNegatedBodyIsCaseInsensitive(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)

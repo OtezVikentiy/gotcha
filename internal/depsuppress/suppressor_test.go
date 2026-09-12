@@ -8,10 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestParentDownExplicit проверяет прямое подавление через явное ребро
-// монитор→хост: пока родитель-монитор жив, ParentDown лжив; как только у
-// него открывается uptime-инцидент, ParentDown становится true, а HasParent
-// подтверждает, что ребро вообще задекларировано.
 func TestParentDownExplicit(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	pid, hostID, monID := seedProjectHostMonitor(t, pool)
@@ -21,13 +17,11 @@ func TestParentDownExplicit(t *testing.T) {
 	}
 	sup := depsuppress.NewSuppressor(pool)
 	ctx := context.Background()
-	// родитель жив → ложь
 	if down, err := sup.ParentDown(ctx, "host", hostID); err != nil || down {
 		t.Fatalf("parent up → ParentDown = %v/%v, want false", down, err)
 	}
-	// открыть uptime-инцидент родителя-монитора
 	mustExec(t, pool, `INSERT INTO incidents (monitor_id, started_at) VALUES ($1, now())`, monID)
-	sup2 := depsuppress.NewSuppressor(pool) // свежий (без кеша прошлого)
+	sup2 := depsuppress.NewSuppressor(pool)
 	if down, err := sup2.ParentDown(ctx, "host", hostID); err != nil || !down {
 		t.Fatalf("parent down → ParentDown = %v/%v, want true", down, err)
 	}
@@ -36,21 +30,9 @@ func TestParentDownExplicit(t *testing.T) {
 	}
 }
 
-// TestParentDownLabelAndTransitive проверяет резолвинг label-селектора
-// (родитель-хост → дети по role=web) и self-match исключение: ребро на
-// собственную группу не должно подавлять самого родителя.
-//
-// Ребро parent=gwHost(role=web) → child_label role=web вставляется НАПРЯМУЮ
-// в alert_dependencies, а не через Store.Create: gwHost из
-// seedProjectHostMonitor уже имеет role='web', и Store.checkSelfMatch (T2)
-// отверг бы именно такое ребро на этапе создания (ErrSelfMatch) — здесь же
-// проверяется defense-in-depth самого Suppressor на случай, если такая
-// строка всё же оказалась в таблице (смена роли хоста после создания ребра
-// и т.п.): резолвинг обязан исключать self-match независимо от того, как
-// ребро туда попало.
 func TestParentDownLabelAndTransitive(t *testing.T) {
 	pool := testenv.MigratedPG(t)
-	pid, gwHost, monID := seedProjectHostMonitor(t, pool) // gwHost role='web' env='prod'
+	pid, gwHost, monID := seedProjectHostMonitor(t, pool)
 	_ = monID
 	web := seedHost(t, pool, pid, "web1", "web", "prod")
 	mustExec(t, pool, `INSERT INTO alert_dependencies (project_id, parent_host_id, child_label_scope, child_label_value)
@@ -61,17 +43,11 @@ func TestParentDownLabelAndTransitive(t *testing.T) {
 	if down, err := sup.ParentDown(ctx, "host", web); err != nil || !down {
 		t.Fatalf("web-host под упавшим gw (по метке role=web) → ParentDown = %v/%v, want true", down, err)
 	}
-	// self-match: сам gwHost (role=web) НЕ должен подавляться собственным ребром
 	if down, err := sup.ParentDown(ctx, "host", gwHost); err != nil || down {
 		t.Fatalf("gw подавляет сам себя через self-match (баг MAJOR-5): ParentDown = %v/%v", down, err)
 	}
 }
 
-// TestTransitiveChainViaOpenIntermediate фиксирует инвариант MINOR-7:
-// ParentDown смотрит только на ПРЯМЫХ родителей узла и не фильтрует их
-// инциденты по suppressed_by_dep. B — промежуточный узел цепочки A→B→C,
-// у него открытый silent-инцидент, уже помеченный как подавленный
-// (suppressed_by_dep=true), но это не мешает B продолжать подавлять C.
 func TestTransitiveChainViaOpenIntermediate(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	pid, b, monID := seedProjectHostMonitor(t, pool)
@@ -91,16 +67,6 @@ func TestTransitiveChainViaOpenIntermediate(t *testing.T) {
 	}
 }
 
-// TestParentDownReciprocalCycleNoBlackHole — находка аудита корректности
-// (P1, «чёрная дыра»): два reciprocal label-ребра (A→role=web, B→role=web),
-// A и B оба role=web, оба с открытым silent-инцидентом. Наивный one-level
-// резолвер счёл бы A подавленным (видит упавшего родителя B) И B подавленным
-// (видит упавшего родителя A): оба ушли бы в suppressed_by_dep при открытых
-// инцидентах, и НИКТО бы не запейджил — молчаливая авария. Цикло-устойчивый
-// обход до down-КОРНЯ обязан вернуть false для обоих (реального корня в цикле
-// нет, оба пейджат). Рёбра создаются прямым INSERT: Store.Create отверг бы
-// self-match, а тут проверяется рантайм-резолвер на строках, которые могли
-// оказаться в таблице после смены роли хоста.
 func TestParentDownReciprocalCycleNoBlackHole(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	pid, _, monID := seedProjectHostMonitor(t, pool)
@@ -123,8 +89,6 @@ func TestParentDownReciprocalCycleNoBlackHole(t *testing.T) {
 		t.Fatalf("B во взаимном цикле НЕ должен подавляться (чёрная дыра): ParentDown(B) = %v/%v, want false", down, err)
 	}
 
-	// Контроль: обычное explicit-ребро monitor→host с упавшим монитором
-	// по-прежнему подавляется — обход доходит до монитора-корня без родителя.
 	ctl := seedHost(t, pool, pid, "ctl", "db", "prod")
 	if _, err := depsuppress.NewStore(pool).Create(ctx, depsuppress.Edge{
 		ProjectID: pid, ParentMonitorID: &monID, ChildHostID: &ctl}); err != nil {
@@ -137,11 +101,6 @@ func TestParentDownReciprocalCycleNoBlackHole(t *testing.T) {
 	}
 }
 
-// TestCheckIncidentHostVanished — FIX 2: инцидент закрылся между OpenUnacked
-// и tickOne, строки host_incidents уже нет → pgx.ErrNoRows. Это не сбой
-// сервиса, а гонка с закрытием: CheckIncident обязан вернуть (false, false,
-// nil), чтобы планировщик просто пропустил исчезнувший инцидент, а не ронял
-// тик ошибкой.
 func TestCheckIncidentHostVanished(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	sup := depsuppress.NewSuppressor(pool)
@@ -151,8 +110,6 @@ func TestCheckIncidentHostVanished(t *testing.T) {
 	}
 }
 
-// TestMarkSuppressed проверяет единственного писателя флага для host-
-// инцидентов: source="host" ставит suppressed_by_dep, прочие source — no-op.
 func TestMarkSuppressed(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	pid, hostID, _ := seedProjectHostMonitor(t, pool)
@@ -176,19 +133,12 @@ func TestMarkSuppressed(t *testing.T) {
 	}
 }
 
-// TestParentDownLabelDoesNotCrossProjectBoundary — находка ревью (CRITICAL):
-// label-ребро одного проекта (родитель gw role=web, проект P1) не должно
-// матчить одноимённую метку role=web у хоста ДРУГОГО проекта (P2) — метки
-// типовые (web/prod/db) и коллизируют между тенантами. Без сверки project_id
-// упавший gw в P1 подавлял бы реальный инцидент чужого хоста в P2 (тихая
-// потеря алертов). Контрольная проверка: хост с той же меткой В ТОМ ЖЕ
-// проекте P1 обязан подавляться как обычно.
 func TestParentDownLabelDoesNotCrossProjectBoundary(t *testing.T) {
 	pool := testenv.MigratedPG(t)
-	p1, gw, mon1 := seedProjectHostMonitor(t, pool) // gw role='web' env='prod', проект P1
+	p1, gw, mon1 := seedProjectHostMonitor(t, pool)
 	_ = mon1
-	p1Web := seedHost(t, pool, p1, "p1-web", "web", "prod") // контроль: тот же проект P1
-	p2, p2Web, _ := seedProjectHostMonitor(t, pool)         // независимый проект P2
+	p1Web := seedHost(t, pool, p1, "p1-web", "web", "prod")
+	p2, p2Web, _ := seedProjectHostMonitor(t, pool)
 	_ = p2
 
 	mustExec(t, pool, `INSERT INTO alert_dependencies (project_id, parent_host_id, child_label_scope, child_label_value)
@@ -206,10 +156,6 @@ func TestParentDownLabelDoesNotCrossProjectBoundary(t *testing.T) {
 	}
 }
 
-// TestCheckIncidentHostSource проверяет резолвинг по инциденту (не по
-// узлу), как его вызывает escalation-scheduler: source="host" join'ит
-// host_id и резолвит HasParent/ParentDown; прочие source — сразу
-// (false,false,nil), без запроса к БД.
 func TestCheckIncidentHostSource(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	pid, hostID, monID := seedProjectHostMonitor(t, pool)

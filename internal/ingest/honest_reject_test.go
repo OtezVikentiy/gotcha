@@ -7,32 +7,14 @@ import (
 	"testing"
 )
 
-// Этот файл — T5: постановка в очередь (Enqueue/EnqueueTransaction) честно
-// сообщает результат, и хендлер обязан превратить «ничего не встало по
-// причине ёмкости» в 503 вместо прежнего молчаливого 200. Окно, которое
-// закрывает T5, не воспроизводится через saturation-моки (newSatPipeline из
-// overload_internal_test.go): там заполненность подставляется тестом и сама
-// решает исход preflight'а. Здесь наоборот — preflight обязан ПРОПУСТИТЬ
-// запрос (заполненность низкая), а реальная постановка в очередь всё равно
-// обязана провалиться, потому что байтовый бюджет очереди (SetMaxQueueBytes)
-// исчерпан или занижен ниже цены задачи. Воркеры нигде не запускаются
-// (p.Start() не зовётся): без него постановленная задача остаётся в канале
-// до конца теста, и бюджет не освобождается гонкой с обработкой — расход
-// бюджета внутри одного запроса детерминирован.
-
-// honestStoreRequest — тело для legacy-эндпоинта /api/1/store/: одно валидное
-// событие, ключ и проект — как у overloadKeyCache().
+// Воркеры нигде не запускаются (p.Start() не зовётся): без него задача
+// остаётся в канале, и бюджет не освобождается гонкой с обработкой.
 func honestStoreRequest() *http.Request {
 	req := httptest.NewRequest("POST", "/api/1/store/?sentry_key=pub", strings.NewReader(`{"message":"e"}`))
 	req.SetPathValue("project", "1")
 	return req
 }
 
-// TestHonestEnvelopeEventsCapacityDropReturns503 — конверт из одних событий:
-// preflight видит низкую заполненность (пропускает), но байтовый бюджет
-// очереди меньше цены любой задачи — Enqueue гарантированно вернёт false.
-// Ничего не встало ни по одной причине, кроме ёмкости → 503 + Retry-After,
-// а не прежний тихий 200.
 func TestHonestEnvelopeEventsCapacityDropReturns503(t *testing.T) {
 	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
 {"type":"event"}
@@ -62,9 +44,6 @@ func TestHonestEnvelopeEventsCapacityDropReturns503(t *testing.T) {
 	}
 }
 
-// TestHonestStoreCapacityDropReturns503 — тот же сценарий на legacy-эндпоинте
-// /api/1/store/: одно-единственное событие запроса — всё его содержимое, и
-// если Enqueue вернёт false, запрос не внёс ничего.
 func TestHonestStoreCapacityDropReturns503(t *testing.T) {
 	p, ev, _ := newSatPipeline(0, 0)
 	p.SetMaxQueueBytes(1)
@@ -87,9 +66,6 @@ func TestHonestStoreCapacityDropReturns503(t *testing.T) {
 	}
 }
 
-// TestHonestOTLPTracesCapacityDropReturns503 — тот же сценарий на /v1/traces:
-// экспорт с единственным спаном, EnqueueTransaction гарантированно возвращает
-// false, signal в отказе — transaction, а не event.
 func TestHonestOTLPTracesCapacityDropReturns503(t *testing.T) {
 	p, _, sp := newSatPipeline(0, 0) // TransactionSaturation тоже низкая
 	p.SetMaxQueueBytes(1)
@@ -114,13 +90,6 @@ func TestHonestOTLPTracesCapacityDropReturns503(t *testing.T) {
 	}
 }
 
-// TestHonestEnvelopePartialCapacityDropStays200 — два события в одном
-// конверте, бюджет очереди пропускает первое и не пропускает второе (тот же
-// приём, что и TestQueueByteBudgetDropsOversizedFlood: бюджет — общий
-// накопительный счётчик, второе Enqueue проверяется УЖЕ против занятого
-// первым бюджета). Частичная потеря НЕ должна превращаться в отказ: повтор
-// клиента продублировал бы уже принятое первое событие — дедупликации по
-// event_id в продукте нет (см. запрет в брифе T5, п.3).
 func TestHonestEnvelopePartialCapacityDropStays200(t *testing.T) {
 	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
 {"type":"event"}
@@ -151,12 +120,6 @@ func TestHonestEnvelopePartialCapacityDropStays200(t *testing.T) {
 	}
 }
 
-// TestHonestEnvelopeAllBadItemsStays503Free — сторож: ноль поставлено, но
-// причина — НЕ ёмкость, а битый item (не проходит json.Unmarshal в
-// ParseEvent). Такой item никогда не доходит до Enqueue, поэтому
-// eventCapacityDropped не взводится, и ответ обязан остаться прежним 200.
-// Без этого сторожа приёмник начал бы отвечать 503 на мусор клиента, и
-// клиент бы ретраил этот же мусор бесконечно (см. запрет в брифе, п.2).
 func TestHonestEnvelopeAllBadItemsStays503Free(t *testing.T) {
 	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
 {"type":"event"}
@@ -183,15 +146,6 @@ not-json-at-all
 	}
 }
 
-// TestHonestEnvelopeMixedCapacityDropStays200 — события и транзакции в одном
-// конверте: событие раздуто так, что его цена превышает бюджет целиком (сам
-// по себе, без накопления с чем-то ещё), а транзакция — нет. Общий
-// накопительный счётчик бюджета (queueBytes) при этом не тратится неудачной
-// попыткой (admit — CAS, при провале cur не меняется), поэтому проверка
-// транзакции идёт против ПОЛНОГО бюджета, а не остатка. Событие дропнуто по
-// ёмкости, транзакция встала — что-то реально принято → 200, а не 503:
-// смешанный конверт, где отказ по ОДНОМУ классу не должен хоронить успех
-// другого (та же дисциплина, что и у overload-preflight).
 func TestHonestEnvelopeMixedCapacityDropStays200(t *testing.T) {
 	bigMessage := strings.Repeat("m", 5000)
 	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
@@ -225,10 +179,6 @@ func TestHonestEnvelopeMixedCapacityDropStays200(t *testing.T) {
 	}
 }
 
-// TestHonestEnvelopeAllEnqueuedStaysQuiet — сторож обычного пути: щедрый
-// бюджет, единственное событие ставится без проблем → 200, счётчик отказов
-// по ёмкости не двигается. Ловит мутацию «весь ответ 503 независимо от
-// результата постановки».
 func TestHonestEnvelopeAllEnqueuedStaysQuiet(t *testing.T) {
 	body := `{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
 {"type":"event"}

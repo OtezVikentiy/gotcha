@@ -13,10 +13,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// TestInvitePageGuidesAnonymous — аноним по ссылке видит, КУДА его зовут, и
-// получает оба пути внутрь. Без этого страница показывала форму принятия,
-// которая для неавторизованного молча уводила на /login, теряя токен, — из-за
-// чего поток и замкнули когда-то по email.
 func TestInvitePageGuidesAnonymous(t *testing.T) {
 	s := newInviteModeStack(t)
 	_, token := seedOrgWithInvite(t, s, "guest@corp.example", "member")
@@ -29,28 +25,20 @@ func TestInvitePageGuidesAnonymous(t *testing.T) {
 	resp.Body.Close()
 	page := string(body)
 
-	// seedOrgWithInvite заводит организацию с фиксированным названием "Seed
-	// Co" (slug уникален через seedSeq, название — нет): проверяем именно его.
+	// seedOrgWithInvite заводит организацию с фиксированным названием (slug уникален через
+	// seedSeq, название — нет).
 	if !strings.Contains(page, "Seed Co") {
 		t.Error("страница не называет организацию — человек подтверждает вслепую")
 	}
-	// Раунд правок 1 (решение владельца): адрес приглашения НЕ показывается —
-	// страница публична, а токен утекает реальными способами (переслали в
-	// чат, история браузера, Referer). Гейт регистрации требует токен И
-	// совпадение адреса именно затем, чтобы одного утёкшего токена было
-	// недостаточно; показ адреса здесь свёл бы это требование на нет.
+	// Адрес приглашения не показывается: страница публична, токен может утечь. Гейт
+	// регистрации требует токен И совпадение адреса — показ здесь свёл бы это к одному фактору.
 	if strings.Contains(page, "guest@corp.example") {
 		t.Error("страница не должна называть адрес приглашения — держатель токена не обязан быть приглашённым")
 	}
-	// Роль выводится человеческой подписью (memberRoleLabelKey), а не сырым
-	// значением "member" — иначе аноним видит служебное имя роли.
+	// Роль — человеческой подписью (memberRoleLabelKey), не сырым значением "member".
 	if !strings.Contains(page, "Участник") {
 		t.Error("роль должна выводиться человеческой подписью, а не сырым значением")
 	}
-	// K9-19: токен приглашения не должен появляться в query ни в одной ссылке
-	// страницы — ни в /login, ни в /register. Раньше обе ссылки несли
-	// next=/invite/{token}, и адрес утекал в историю браузера, в лог
-	// обратного прокси и в Referer при переходе с этих страниц вовне.
 	if strings.Contains(page, url.QueryEscape(token)) {
 		t.Error("токен приглашения не должен встречаться в query — он был найден на странице закодированным")
 	}
@@ -60,8 +48,7 @@ func TestInvitePageGuidesAnonymous(t *testing.T) {
 	if !strings.Contains(page, `href="/login"`) {
 		t.Error("нет голой ссылки на вход (без next в query)")
 	}
-	// Адресат переживает переход не через query, а через invite-cookie —
-	// HttpOnly, чтобы не читалась ни JS, ни через XSS.
+	// Адресат переживает переход через invite-cookie, HttpOnly, а не через query.
 	var inviteCookie *http.Cookie
 	for _, c := range resp.Cookies() {
 		if c.Name == "invite_next" {
@@ -79,10 +66,6 @@ func TestInvitePageGuidesAnonymous(t *testing.T) {
 	}
 }
 
-// TestInvitePageAnonymousLoginRoundTrip — полный маршрут анонима: страница
-// приглашения → «войти» (без токена в query) → вход по cookie → назад на
-// /invite/{token}, тоже без токена в query. Мутация, обратная K9-19: если
-// token вернуть в query (см. проверки ниже), тест обязан упасть.
 func TestInvitePageAnonymousLoginRoundTrip(t *testing.T) {
 	s := newInviteModeStack(t)
 	_, token := seedOrgWithInvite(t, s, "roundtrip@corp.example", "member")
@@ -92,7 +75,6 @@ func TestInvitePageAnonymousLoginRoundTrip(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 
-	// Шаг 1: аноним видит страницу приглашения, получает invite-cookie.
 	getInvite, err := http.Get(s.srv.URL + inviteAcceptPath)
 	if err != nil {
 		t.Fatalf("GET %s: %v", inviteAcceptPath, err)
@@ -109,9 +91,6 @@ func TestInvitePageAnonymousLoginRoundTrip(t *testing.T) {
 		t.Fatal("invite-cookie не выставлена")
 	}
 
-	// Шаг 2: GET /login БЕЗ next в query (ровно так ссылка со страницы
-	// приглашения теперь и устроена) — форма всё равно должна знать адресата
-	// через cookie.
 	loginReq, err := http.NewRequest(http.MethodGet, s.srv.URL+"/login", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
@@ -127,9 +106,6 @@ func TestInvitePageAnonymousLoginRoundTrip(t *testing.T) {
 		t.Fatalf("форма входа не восстановила адресата из invite-cookie:\n%s", loginBody)
 	}
 
-	// Шаг 3: вход — POST несёт next скрытым полем формы (не query), это не
-	// предмет находки K9-19 (тело POST не попадает ни в адресную строку, ни в
-	// Referer, ни в типичный лог прокси).
 	resp := postForm(t, s.srv, "/login", url.Values{
 		"email": {"roundtrip@corp.example"}, "password": {"correct-horse-battery"},
 		"next": {inviteAcceptPath},
@@ -141,7 +117,6 @@ func TestInvitePageAnonymousLoginRoundTrip(t *testing.T) {
 	if strings.Contains(resp.Header.Get("Location"), "?") {
 		t.Errorf("Location несёт query: %q", resp.Header.Get("Location"))
 	}
-	// Invite-cookie одноразовая: успешный вход её гасит.
 	for _, c := range resp.Cookies() {
 		if c.Name == "invite_next" && c.Value != "" {
 			t.Error("invite-cookie должна быть погашена после успешного входа")
@@ -149,7 +124,6 @@ func TestInvitePageAnonymousLoginRoundTrip(t *testing.T) {
 	}
 }
 
-// TestInvitePageHidesDeadToken — мёртвый токен неотличим от несуществующего.
 func TestInvitePageHidesDeadToken(t *testing.T) {
 	s := newInviteModeStack(t)
 	resp, err := http.Get(s.srv.URL + "/invite/no-such-token")
@@ -164,8 +138,6 @@ func TestInvitePageHidesDeadToken(t *testing.T) {
 	if !strings.Contains(string(body), "риглашение недействительно") {
 		t.Error("мёртвый токен должен показать err.org.invite_invalid, тот же текст, что и у POST")
 	}
-	// Мёртвый токен не даёт ни ссылок входа/регистрации (см. шаблон
-	// InviteAccept), ни invite-cookie — запоминать нечего.
 	for _, c := range resp.Cookies() {
 		if c.Name == "invite_next" {
 			t.Error("invite-cookie не должна выставляться для несуществующего/просроченного токена")
@@ -173,16 +145,10 @@ func TestInvitePageHidesDeadToken(t *testing.T) {
 	}
 }
 
-// TestInvitePageAuthenticatedShowsAcceptForm — авторизованный держатель
-// токена по-прежнему видит форму принятия (а не ссылки входа/регистрации,
-// которые ему не нужны) — существующее поведение не должно было измениться.
 func TestInvitePageAuthenticatedShowsAcceptForm(t *testing.T) {
 	s := newInviteModeStack(t)
 	_, token := seedOrgWithInvite(t, s, "member-to-be@corp.example", "member")
 
-	// Заводим отдельного пользователя и выпускаем ему сессию напрямую (минуя
-	// форму входа — это не предмет теста), чтобы получить cookie для
-	// authenticated-запроса.
 	uid, err := s.auth.Register(t.Context(), "member-to-be@corp.example", "correct-horse-battery")
 	if err != nil {
 		t.Fatalf("register: %v", err)
@@ -208,8 +174,6 @@ func TestInvitePageAuthenticatedShowsAcceptForm(t *testing.T) {
 	if strings.Contains(page, "/register?next=") {
 		t.Error("авторизованному не нужна ссылка на регистрацию")
 	}
-	// Авторизованному не нужна ссылка на вход, значит и invite-cookie не
-	// выставляется — ей некуда пригодиться.
 	for _, c := range resp.Cookies() {
 		if c.Name == "invite_next" {
 			t.Error("авторизованному invite-cookie не нужна")
@@ -217,10 +181,6 @@ func TestInvitePageAuthenticatedShowsAcceptForm(t *testing.T) {
 	}
 }
 
-// TestInvitePageAnonymousRegisterRoundTrip — тот же маршрут, что
-// TestInvitePageAnonymousLoginRoundTrip, но для «не зарегистрирован» ветки:
-// страница приглашения → «создать аккаунт» (без токена в query) → регистрация
-// по cookie → назад на /invite/{token}.
 func TestInvitePageAnonymousRegisterRoundTrip(t *testing.T) {
 	s := newInviteModeStack(t)
 	_, token := seedOrgWithInvite(t, s, "newbie@corp.example", "member")
@@ -242,8 +202,6 @@ func TestInvitePageAnonymousRegisterRoundTrip(t *testing.T) {
 		t.Fatal("invite-cookie не выставлена")
 	}
 
-	// GET /register БЕЗ next в query — ровно так теперь и устроена ссылка
-	// «создать аккаунт» со страницы приглашения.
 	regReq, err := http.NewRequest(http.MethodGet, s.srv.URL+"/register", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
@@ -275,9 +233,6 @@ func TestInvitePageAnonymousRegisterRoundTrip(t *testing.T) {
 	}
 }
 
-// TestWebInviteFormKeepsInputOn422 — 422 формы приглашения сохраняет ввод
-// (№27): email и выбранная роль возвращаются в форму, ошибка рендерится у
-// самой формы (invite-error), а не абзацем под h1.
 func TestWebInviteFormKeepsInputOn422(t *testing.T) {
 	s := newStack(t)
 	authSvc := auth.NewService(s.pool)
@@ -309,19 +264,8 @@ func TestWebInviteFormKeepsInputOn422(t *testing.T) {
 	}
 }
 
-// TestInviteNextCookieRejectsPathBreakingValue — фикс-раунд 1 по T7:
-// inviteNextToken отбрасывает значение cookie, которое ломает путь
-// /invite/{token} (несёт "/", "?" или "#"). Cookie полностью подконтрольна
-// клиенту — сервер сам никогда не кладёт туда такое значение (setInviteNextCookie
-// пишет ровно сырой токен приглашения), но проверка защищает от следующего,
-// кто станет подставлять cookie иначе, и от cookie, навязанной извне (что
-// возможно и для HttpOnly cookie: не через JS, но через forged Set-Cookie от
-// другого источника на том же сайте — например, компрометацию поддомена).
-//
-// Проверяется НАБЛЮДАЕМОЕ поведение GET /login: без query next, но с плохой
-// cookie, форма не должна получить псевдо-адресата "/invite/{плохое
-// значение}" — испорченная cookie равносильна отсутствию приглашения вовсе
-// (никакого скрытого поля next).
+// Cookie подконтрольна клиенту (в т.ч. forged Set-Cookie с того же сайта, например через
+// скомпрометированный поддомен) — защита от подстановки пути через её значение.
 func TestInviteNextCookieRejectsPathBreakingValue(t *testing.T) {
 	s := newInviteModeStack(t)
 

@@ -14,28 +14,18 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/slo"
 )
 
-// sloBurndownWidth/Height — размер SVG burn-down графика на экране деталей SLO.
-// Ширина 1200 — как у графиков перцентилей/метрик (класс осей chart-vb1200).
+// ширина 1200 — как у графиков перцентилей/метрик (класс осей chart-vb1200).
 const (
 	sloBurndownWidth  = 1200
 	sloBurndownHeight = 260
 )
 
-// sloBudgetPct форматирует долю бюджета как процент без дробной части:
-// 1.0 → "100%", 0 → "0%", -4.0 → "-400%" (перерасход). Отдельная от fmtPct
-// (templates) функция: там процент уже умножен на 100, здесь на входе доля.
+// доля, не проценты — в отличие от fmtPct (templates), где вход уже умножен на 100.
 func sloBudgetPct(frac float64) string {
 	return strconv.FormatFloat(frac*100, 'f', 0, 64) + "%"
 }
 
-// sloBudgetBurndownSVG рисует burn-down график остатка error budget за окно SLO:
-// накопительный остаток бюджета (в процентах) по времени. В каждой корзине
-// остаток считается по ВСЕМ корзинам окна от начала до неё
-// (slo.BudgetRemainingFraction над суммой good/total): линия стартует у 100%
-// (бюджет цел) и убывает по мере накопления плохих событий. Ниже линии 0%
-// (бюджет исчерпан) — красная зона перерасхода. Текст SVG состоит из чисел и
-// html-экранированных подписей — templ.Raw безопасен, как у прочих графиков
-// этого пакета.
+// templ.Raw безопасен: SVG строится из чисел и html-экранированных подписей.
 func sloBudgetBurndownSVG(ctx context.Context, points []slo.Bucket, target float64, w, h int) templ.Component {
 	return templ.Raw(sloBudgetBurndownMarkup(ctx, points, target, w, h))
 }
@@ -46,9 +36,7 @@ func sloBudgetBurndownMarkup(ctx context.Context, points []slo.Bucket, target fl
 	var sb strings.Builder
 	sb.WriteString(svgRoot("slo-burndown", w, h, i18n.T(ctx, "a11y.chart.slo_burndown")))
 
-	// Накопительный остаток бюджета в каждой корзине: суммируем good/total от
-	// начала окна и считаем долю остатка по этой сумме. Пустой префикс (Total==0,
-	// событий ещё не было) — разрыв линии, а не мнимый ноль.
+	// Total==0 в префиксе — разрыв линии, не мнимый ноль.
 	type burnPoint struct {
 		t   time.Time
 		rem float64
@@ -84,9 +72,8 @@ func sloBudgetBurndownMarkup(ctx context.Context, points []slo.Bucket, target fl
 		return sb.String()
 	}
 
-	// Домен Y: верх фиксирован на 100% (полный бюджет — линия не может быть выше),
-	// низ — 0% или ниже, если был перерасход. Небольшой запас сверху/снизу, чтобы
-	// линия не липла к рамке.
+	// верх фиксирован на 100% — линия остатка не бывает выше; низ 0% или
+	// ниже при перерасходе, плюс небольшой запас, чтобы не липнуть к рамке.
 	top, bottom := 1.0, 0.0
 	if minRem < 0 {
 		bottom = minRem
@@ -98,10 +85,7 @@ func sloBudgetBurndownMarkup(ctx context.Context, points []slo.Bucket, target fl
 		return g.y1 - (v-bottom)/(top-bottom)*(g.y1-g.y0)
 	}
 
-	// Уровни сетки Y (100/50/0%) и поле под их подписи — ДО первого
-	// рисования: зона перерасхода и рамка идут от g.x0, и «100%» на тире
-	// chart-vb1200 (≈60 единиц) в поле 58 не помещался — резался левым краем
-	// (K9-4, тот же приём, что fitYLabels у остальных генераторов).
+	// считаем до первой отрисовки — «100%» шире поля 58, иначе резалось бы левым краем.
 	var levels []float64
 	var yLabels []string
 	for _, lvl := range []float64{1.0, 0.5, 0.0} {
@@ -113,9 +97,8 @@ func sloBudgetBurndownMarkup(ctx context.Context, points []slo.Bucket, target fl
 	}
 	g.x0 = yAxisPadL(g.w, g.x0, yLabels)
 
-	// Красная зона перерасхода: всё ниже линии 0% (бюджет исчерпан). Рисуем
-	// только когда остаток реально уходил в минус — иначе узкая полоса запаса под
-	// нулём пугала бы зря. Зона идёт первой (под сеткой и линией данных).
+	// рисуем, только когда остаток реально уходил в минус — иначе узкая
+	// полоса запаса под нулём пугала бы зря.
 	if minRem < 0 {
 		zeroY := yFor(0)
 		sb.WriteString(`<rect class="slo-burndown-overspend" x="`)
@@ -129,7 +112,6 @@ func sloBudgetBurndownMarkup(ctx context.Context, points []slo.Bucket, target fl
 		sb.WriteString(`"/>`)
 	}
 
-	// Оси и сетка: рамка + горизонтали 100/50/0% с подписями в процентах.
 	sb.WriteString(`<g class="chart-axis">`)
 	writeFrame(&sb, g)
 	for _, lvl := range levels {
@@ -151,9 +133,7 @@ func sloBudgetBurndownMarkup(ctx context.Context, points []slo.Bucket, target fl
 	writeXTicks(&sb, g, timeAxis(times, func(i int) float64 { return g.xForIndex(i, n) }, 70))
 	sb.WriteString(`</g>`)
 
-	// Линия остатка бюджета с мягкой заливкой под ней; разрывы на пустых
-	// префиксах (has=false). Цвет линии — из CSS (.slo-burndown-line), заливка —
-	// currentColor (.slo-burndown), как у остальных графиков.
+	// разрывы линии на пустых префиксах (has=false).
 	line := make([]seriesPoint, len(bpts))
 	for i, bp := range bpts {
 		x := g.xForIndex(i, len(bpts))
@@ -165,8 +145,7 @@ func sloBudgetBurndownMarkup(ctx context.Context, points []slo.Bucket, target fl
 	}
 	writeLineWithArea(&sb, line, g.y1, "currentColor", "gradSloBurndown", `class="slo-burndown-line"`)
 
-	// Полосы наведения: остаток бюджета в каждой корзине. humanize.Time — без
-	// собственного макета времени (format-guard), как в multiSeriesMarkup.
+	// humanize.Time без своего формата времени — как в multiSeriesMarkup.
 	band := (g.x1 - g.x0) / float64(n)
 	for i, bp := range bpts {
 		if !bp.has {

@@ -15,19 +15,14 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
-// inviteStack — стенд в режиме invite (он же режим по умолчанию инстанса) с
-// прямым доступом к сервисам: тесты этого файла проверяют не только код
-// ответа, но и то, что осталось в базе — заведён ли аккаунт и появился ли
-// участник. Именно эти два факта и были ценой дыры.
+// Тесты проверяют не только код ответа, но и состояние БД — учётку и участника: именно эти
+// два факта были ценой дыры.
 type inviteStack struct {
 	*stack
 	auth *auth.Service
 	org  *org.Service
 }
 
-// seedSeq даёт уникальные slug/email внутри одного теста: seedOrgWithInvite
-// может вызываться несколько раз, а slug организации и email пользователя
-// уникальны на уровне схемы.
 var seedSeq atomic.Int64
 
 func newInviteModeStack(t *testing.T) *inviteStack {
@@ -41,13 +36,8 @@ func newInviteModeStack(t *testing.T) *inviteStack {
 	}
 }
 
-// seedOrgWithInvite заводит организацию с владельцем и выписывает приглашение
-// на email с ролью role. Возвращает id организации и СЫРОЙ токен — тот самый,
-// что уходит в ссылку из письма.
-//
-// Владелец — первый пользователь инстанса, поэтому bootstrap-исключение
-// («первый регистрируется всегда») к последующим регистрациям уже не
-// применяется и режим действует в полную силу.
+// Владелец — первый пользователь инстанса: bootstrap-исключение «первый регистрируется
+// всегда» к последующим уже не применяется, режим действует в полную силу.
 func seedOrgWithInvite(t *testing.T, s *inviteStack, email string, role org.Role) (int64, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -68,9 +58,8 @@ func seedOrgWithInvite(t *testing.T, s *inviteStack, email string, role org.Role
 	return o.ID, token
 }
 
-// expireInvite делает приглашение просроченным, не трогая его в остальном:
-// ждать реального истечения тест не может, а подменять срок при выписке
-// значило бы проверять не тот путь.
+// Ждать реального истечения тест не может, а подменять срок при выписке значило бы
+// проверять не тот путь.
 func expireInvite(t *testing.T, s *inviteStack, email string) {
 	t.Helper()
 	if _, err := s.pool.Exec(context.Background(),
@@ -99,8 +88,7 @@ func orgMemberCount(t *testing.T, s *inviteStack, orgID int64) int {
 	return n
 }
 
-// registerForm — форма регистрации с адресатом (next). Пустой next не
-// отправляется вовсе: так же ведёт себя и настоящая форма (скрытое поле
+// Пустой next не отправляется вовсе — так же ведёт себя настоящая форма (скрытое поле
 // рисуется только при непустом next).
 func registerForm(email, next string) url.Values {
 	f := url.Values{
@@ -112,10 +100,8 @@ func registerForm(email, next string) url.Values {
 	return f
 }
 
-// TestRegisterRequiresInviteToken — ЗАКРЫВАЕМАЯ ДЫРА (P0 №2 аудита
-// 2026-07-30). В режиме invite знание приглашённого адреса давало аккаунт И
-// членство в чужой организации с ролью приглашения. Доказательством права
-// теперь служит только токен из ссылки.
+// Знание приглашённого адреса раньше давало аккаунт и членство в чужой организации —
+// доказательством права теперь служит только токен из ссылки.
 func TestRegisterRequiresInviteToken(t *testing.T) {
 	s := newInviteModeStack(t)
 	orgID, _ := seedOrgWithInvite(t, s, "victim@corp.example", org.RoleAdmin)
@@ -137,15 +123,8 @@ func TestRegisterRequiresInviteToken(t *testing.T) {
 	}
 }
 
-// TestRegisterWithInviteTokenCreatesAccountWithoutMembership — законный путь:
-// человек пришёл по ссылке, форма несёт адресата, адрес совпал с адресом
-// приглашения. Аккаунт заводится, но членство ЕЩЁ НЕ выдаётся.
-//
-// Пришло на смену прежнему TestRegisterInviteModeAllowsInvitedEmail, который
-// закреплял ровно снятое поведение: регистрация по совпадению адреса и
-// немедленная выдача членства с ролью приглашения. Членство теперь появляется
-// только после явного подтверждения на /invite/{token} — см.
-// TestInviteAcceptGrantsMembership.
+// Аккаунт заводится по валидному токену, но членство выдаётся только после подтверждения
+// на /invite/{token} — см. TestInviteAcceptGrantsMembership.
 func TestRegisterWithInviteTokenCreatesAccountWithoutMembership(t *testing.T) {
 	s := newInviteModeStack(t)
 	orgID, token := seedOrgWithInvite(t, s, "invited@corp.example", org.RoleMember)
@@ -172,8 +151,6 @@ func TestRegisterWithInviteTokenCreatesAccountWithoutMembership(t *testing.T) {
 	}
 }
 
-// TestInviteAcceptGrantsMembership — продолжение предыдущего: членство и роль
-// приходят с подтверждением приглашения, а не с регистрацией.
 func TestInviteAcceptGrantsMembership(t *testing.T) {
 	s := newInviteModeStack(t)
 	orgID, token := seedOrgWithInvite(t, s, "invited2@corp.example", org.RoleAdmin)
@@ -215,12 +192,8 @@ func TestInviteAcceptGrantsMembership(t *testing.T) {
 	}
 }
 
-// TestRegisterRejectsForeignInviteToken — утёкшая ссылка не даёт завести
-// аккаунт на чужой адрес: токен живой, но выписан не на тот email.
-//
-// Совпадение адреса проверяется здесь, а не только в AcceptInvite: к моменту
-// AcceptInvite аккаунт уже создан, и откатывать его нечем — на закрытом
-// инстансе остался бы посторонний аккаунт.
+// Совпадение адреса проверяется уже здесь, не только в AcceptInvite: к моменту AcceptInvite
+// аккаунт уже создан, откатывать нечем — остался бы посторонний аккаунт на закрытом инстансе.
 func TestRegisterRejectsForeignInviteToken(t *testing.T) {
 	s := newInviteModeStack(t)
 	orgID, token := seedOrgWithInvite(t, s, "alice@corp.example", org.RoleAdmin)
@@ -241,8 +214,6 @@ func TestRegisterRejectsForeignInviteToken(t *testing.T) {
 	}
 }
 
-// TestRegisterRejectsExpiredInviteToken — просроченное приглашение правом на
-// регистрацию не является.
 func TestRegisterRejectsExpiredInviteToken(t *testing.T) {
 	s := newInviteModeStack(t)
 	_, token := seedOrgWithInvite(t, s, "late@corp.example", org.RoleMember)
@@ -261,15 +232,8 @@ func TestRegisterRejectsExpiredInviteToken(t *testing.T) {
 	}
 }
 
-// TestRegisterDenialIsIndistinguishable — все причины отказа выглядят для
-// клиента одинаково. Различие между ними и было оракулом: живое приглашение
-// давало 303, отсутствующее — 403, и перебором адресов выяснялось, кто
-// приглашён.
-//
-// Тело сравнивается после замены адресата (next) на заглушку: адресат прислал
-// сам клиент, эхо его собственной строки ничего о чужих приглашениях не
-// сообщает. Всё остальное обязано совпадать байт в байт. Случай «адресата нет
-// вовсе» сравнивается отдельно — там эхо-подстановки нет по построению.
+// Различие в статусе/тексте между причинами отказа было оракулом: перебором адресов можно
+// было выяснить, кто приглашён — тело сравнивается после замены next-адресата на заглушку.
 func TestRegisterDenialIsIndistinguishable(t *testing.T) {
 	s := newInviteModeStack(t)
 	_, live := seedOrgWithInvite(t, s, "known@corp.example", org.RoleAdmin)
@@ -281,7 +245,6 @@ func TestRegisterDenialIsIndistinguishable(t *testing.T) {
 		email string
 		next  string
 	}{
-		// Адресат есть, но токена в нём нет (лишний сегмент — разбор строгий).
 		{"нет токена", "known@corp.example", "/invite/nothing/here"},
 		{"мусорный токен", "known@corp.example", "/invite/00000000000000000000000000000000"},
 		{"просроченный токен", "gone@corp.example", "/invite/" + dead},
@@ -308,8 +271,6 @@ func TestRegisterDenialIsIndistinguishable(t *testing.T) {
 		}
 	}
 
-	// Отказ без адресата: тот же код и тот же текст. Тело целиком совпасть не
-	// может — в нём нет ссылки с next, — но различие внесено самим клиентом.
 	resp := postForm(t, s.srv, "/register", registerForm("known@corp.example", ""), s.srv.URL, nil)
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -322,17 +283,8 @@ func TestRegisterDenialIsIndistinguishable(t *testing.T) {
 	}
 }
 
-// TestRegisterDenialRearmsInviteCookie — устранение находки финревью волны:
-// отказ регистрации (denyRegistration) обязан перевзвести invite-cookie тем
-// же токеном, что пришёл в next, а не просто передать next в шаблон.
-//
-// Сценарий: приглашение просрочено (denyRegistration сработает по причине
-// "bad_token"), а invite-cookie у клиента к моменту POST уже нет — как если
-// бы человек заполнял форму дольше inviteNextTTL (10 минут) и кука, взведённая
-// на GET, успела истечь. Ссылка «войти» на экране отказа (RegisterStub) не
-// кладёт токен в query (loginLinkWithNext, K9-19) и опирается только на
-// куку — без перевзвода она вела бы в никуда, и вернуться можно было бы
-// только по письму заново.
+// denyRegistration обязан перевзвести invite-cookie тем же токеном, что пришёл в next — иначе
+// истёкшая по TTL кука не восстановится, и ссылка «войти» на экране отказа ведёт в никуда.
 func TestRegisterDenialRearmsInviteCookie(t *testing.T) {
 	s := newInviteModeStack(t)
 	_, token := seedOrgWithInvite(t, s, "cookie-rearm@corp.example", org.RoleMember)
@@ -365,18 +317,12 @@ func TestRegisterDenialRearmsInviteCookie(t *testing.T) {
 	}
 }
 
-// emailLimitPerWindow — ёмкость per-EMAIL бакета регистрации/входа. Значение
-// не выведено из наблюдения, а взято из места, где ограничитель создаётся:
-// internal/web/web.go, `emailLimiter: newRateLimiter(time.Now, 50, 15*time.Minute, ...)`.
-// Если порог там изменится, этот тест упадёт и потребует осознанной правки —
-// это и нужно: он закрепляет наличие бакета, а не случайное число.
+// Значение — из web.go (`emailLimiter: newRateLimiter(time.Now, 50, ...)`), не наблюдением:
+// смена порога там роняет тест и требует осознанной правки.
 const emailLimitPerWindow = 50
 
-// postRegisterFromIP шлёт форму регистрации, представляясь клиентом с адреса
-// clientIP. Работает через X-Forwarded-For, которому Handler доверяет, только
-// когда непосредственный пир входит в TrustedProxies (см. clientIP в
-// ratelimit.go) — стенд для этого проставляет loopback доверенной сетью.
-// postForm заголовки задавать не умеет, поэтому запрос собирается здесь.
+// X-Forwarded-For доверяется только когда пир — доверенный прокси (см. clientIP) — стенд
+// объявляет loopback доверенным. postForm заголовки не умеет, поэтому запрос собран здесь.
 func postRegisterFromIP(t *testing.T, s *inviteStack, clientIP string, form url.Values) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, s.srv.URL+"/register", strings.NewReader(form.Encode()))
@@ -393,40 +339,22 @@ func postRegisterFromIP(t *testing.T, s *inviteStack, clientIP string, form url.
 	return resp
 }
 
-// TestRegisterEmailLimiterCapsDistributedGuessing — перебор ОДНОГО
-// приглашённого адреса с пула адресов ограничен per-EMAIL бакетом.
-//
-// Ограничители стоят ДО гейта приглашения, поэтому отказ по мусорному токену
-// расходует те же бакеты, что и вход, — но два из трёх ключуются по IP
-// (loginLimiter — ip|email, ipLimiter — ip) и с каждым новым адресом атакующего
-// начинаются заново. Единственное, что считает попытки на один email со всех
-// адресов сразу, — emailLimiter, и проверяется здесь именно он: каждый запрос
-// приходит с собственного клиентского адреса, поэтому сработать может только
-// он. Уберите его из цепочки в registerSubmit — 429 не наступит вовсе и тест
-// покраснеет.
-//
-// До исчерпания бакета каждая попытка получает обычный отказ гейта (403) —
-// это подтверждает, что она дошла до гейта, а не была срезана другим
-// ограничителем раньше.
-//
-// Сам токен — 32 случайных байта, перебрать его нельзя и без лимитов; ценность
-// капа в том, что ветка отказа не стала дешёвым способом дёргать базу с любого
-// числа адресов.
+// emailLimiter — единственный лимитер, ключующийся по email, а не IP: он один ловит перебор
+// одного адреса с пула IP, которые обходят per-IP лимитеры (login/ip).
 func TestRegisterEmailLimiterCapsDistributedGuessing(t *testing.T) {
 	s := newInviteModeStack(t)
 	seedOrgWithInvite(t, s, "target@corp.example", org.RoleAdmin)
 
-	// Пир (httptest-клиент) — loopback; объявляем loopback доверенным прокси,
-	// иначе X-Forwarded-For игнорируется и все запросы схлопнутся в один IP.
+	// Пир (httptest) — loopback: без доверия к нему XFF игнорируется и все запросы
+	// схлопнутся в один IP.
 	_, loopback, err := net.ParseCIDR("127.0.0.0/8")
 	if err != nil {
 		t.Fatalf("parse cidr: %v", err)
 	}
 	s.h.TrustedProxies = []*net.IPNet{loopback}
 
-	// Адреса из TEST-NET-3 (203.0.113.0/24, RFC 5737) — заведомо не loopback,
-	// то есть не попадают в доверенный набор и принимаются как клиентские.
-	// Их с запасом хватает на бакет: /24 против лимита в 50.
+	// TEST-NET-3 (203.0.113.0/24, RFC 5737) — не loopback, принимается как клиентский; /24 с
+	// запасом хватает на бакет (лимит 50).
 	for i := 1; i <= emailLimitPerWindow; i++ {
 		resp := postRegisterFromIP(t, s, fmt.Sprintf("203.0.113.%d", i),
 			registerForm("target@corp.example", fmt.Sprintf("/invite/guess-%d", i)))
@@ -438,8 +366,6 @@ func TestRegisterEmailLimiterCapsDistributedGuessing(t *testing.T) {
 		}
 	}
 
-	// Бакет выбран: следующая попытка на тот же адрес с ЕЩЁ ОДНОГО клиентского
-	// адреса упирается в per-email кап, не доходя до гейта.
 	resp := postRegisterFromIP(t, s, "203.0.113.200",
 		registerForm("target@corp.example", "/invite/guess-over"))
 	io.Copy(io.Discard, resp.Body)
@@ -449,8 +375,6 @@ func TestRegisterEmailLimiterCapsDistributedGuessing(t *testing.T) {
 			emailLimitPerWindow+1, resp.StatusCode)
 	}
 
-	// Контроль: кап именно per-EMAIL, а не общий на инстанс — другой адрес с
-	// того же клиентского IP по-прежнему доходит до гейта.
 	other := postRegisterFromIP(t, s, "203.0.113.200",
 		registerForm("someone-else@corp.example", "/invite/guess-other"))
 	io.Copy(io.Discard, other.Body)
@@ -460,8 +384,6 @@ func TestRegisterEmailLimiterCapsDistributedGuessing(t *testing.T) {
 	}
 }
 
-// TestRegisterInviteModeRejectsUninvited — адрес без приглашения вовсе:
-// самостоятельная регистрация по-прежнему закрыта.
 func TestRegisterInviteModeRejectsUninvited(t *testing.T) {
 	s := newInviteModeStack(t)
 	seedOrgWithInvite(t, s, "somebody@example.com", org.RoleMember)
@@ -477,9 +399,6 @@ func TestRegisterInviteModeRejectsUninvited(t *testing.T) {
 	}
 }
 
-// TestRegisterClosedModeRejectsEvenInvited — closed отличается от invite ровно
-// этим: новых аккаунтов не появляется даже по действующему приглашению — и
-// теперь даже при предъявленном живом токене.
 func TestRegisterClosedModeRejectsEvenInvited(t *testing.T) {
 	s := newInviteModeStack(t)
 	s.h.RegistrationMode = "closed"
@@ -500,8 +419,6 @@ func TestRegisterClosedModeRejectsEvenInvited(t *testing.T) {
 	}
 }
 
-// TestRegisterFormVisibleInInviteMode — форму в режиме invite надо показывать:
-// приглашённому больше некуда ввести свой адрес. В closed — заглушка.
 func TestRegisterFormVisibleInInviteMode(t *testing.T) {
 	s := newInviteModeStack(t)
 	seedOrgWithInvite(t, s, "formcheck@example.com", org.RoleMember)
@@ -528,10 +445,6 @@ func TestRegisterFormVisibleInInviteMode(t *testing.T) {
 	}
 }
 
-// TestRegisterModeCopy — копия /register различает режимы (QA MINOR-UX-2):
-// invite-форма без токена предупреждает о тупике ДО сабмита, с токеном — нет;
-// closed-заглушка не советует «получить приглашение» (оно там не поможет);
-// 403-отказ не дублирует один и тот же текст плашкой и абзацем.
 func TestRegisterModeCopy(t *testing.T) {
 	get := func(t *testing.T, srvURL, path string) string {
 		t.Helper()
@@ -548,7 +461,6 @@ func TestRegisterModeCopy(t *testing.T) {
 		s := newInviteModeStack(t)
 		_, token := seedOrgWithInvite(t, s, "copycheck@example.com", org.RoleMember)
 
-		// Без токена: форма на месте, предупреждение видно.
 		body := get(t, s.srv.URL, "/register")
 		if !strings.Contains(body, `name="password2"`) {
 			t.Fatalf("invite mode must render the form:\n%s", body)
@@ -557,7 +469,6 @@ func TestRegisterModeCopy(t *testing.T) {
 			t.Fatalf("invite mode without token must warn about invite-only sign-up:\n%s", body)
 		}
 
-		// С токеном приглашения путь штатный — предупреждения нет.
 		body = get(t, s.srv.URL, "/register?next="+url.QueryEscape("/invite/"+token))
 		if strings.Contains(body, `class="warning"`) {
 			t.Fatalf("invite link flow must not warn:\n%s", body)
@@ -582,7 +493,6 @@ func TestRegisterModeCopy(t *testing.T) {
 		s := newInviteModeStack(t)
 		seedOrgWithInvite(t, s, "denycopy@example.com", org.RoleMember)
 
-		// invite: отказ без токена — плашка есть, дублирующего абзаца нет.
 		resp := postForm(t, s.srv, "/register", registerForm("denycopy@example.com", ""), s.srv.URL, nil)
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -596,7 +506,6 @@ func TestRegisterModeCopy(t *testing.T) {
 			t.Fatalf("invite denial must not duplicate the info paragraph:\n%s", body)
 		}
 
-		// closed: отказ говорит «регистрация отключена», а не «получите приглашение».
 		s.h.RegistrationMode = "closed"
 		resp = postForm(t, s.srv, "/register", registerForm("denycopy2@example.com", ""), s.srv.URL, nil)
 		body, _ = io.ReadAll(resp.Body)

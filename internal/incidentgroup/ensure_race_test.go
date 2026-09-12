@@ -9,15 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestEnsureGroupConcurrentRaceYieldsExactlyOneGroup — R2b/W37: EnsureGroup
-// полагается на INSERT .. ON CONFLICT (root_source, root_incident_id) DO
-// NOTHING + дочитывание проигравшими победителя (комментарий в group.go —
-// «тот же приём, что и host.IncidentService.Open»). До этого теста гонка
-// проверялась только последовательной идемпотентностью (вызов за вызовом в
-// одной горутине) — реальная параллельность ни разу не запускалась. Здесь N
-// горутин одновременно бьются за один и тот же корень: должна выжить ровно
-// одна строка группы, и ВСЕ горутины обязаны получить один и тот же id
-// (не только «не упасть с ошибкой»).
 func TestEnsureGroupConcurrentRaceYieldsExactlyOneGroup(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()

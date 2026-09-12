@@ -15,11 +15,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// newGroupGrouper — РЕАЛЬНЫЙ incidentgroup.Grouper поверх реального
-// depsuppress.Suppressor (T4, Step 6 брифа): интеграция host↔группы
-// тестируется без фейков резолвера корней. Присваивается в поле
-// Evaluator.IncidentGroups структурно (duck-typing groupHook, как
-// mockDepChecker в dep_test.go).
 func newGroupGrouper(pool *pgxpool.Pool) *incidentgroup.Grouper {
 	return &incidentgroup.Grouper{
 		Pool:  pool,
@@ -28,7 +23,6 @@ func newGroupGrouper(pool *pgxpool.Pool) *incidentgroup.Grouper {
 	}
 }
 
-// seedDepEdge — явное ребро зависимости host(parent) -> host(child) (B5).
 func seedDepEdge(t *testing.T, pool *pgxpool.Pool, projectID, parentHostID, childHostID int64) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `
@@ -38,9 +32,6 @@ func seedDepEdge(t *testing.T, pool *pgxpool.Pool, projectID, parentHostID, chil
 	}
 }
 
-// seedMonitorHostEdge — явное ребро зависимости monitor(parent) ->
-// host(child) (B5): образец для теста кросс-видового каскада (R3b, W25),
-// где корень цепочки — монитор, а не хост.
 func seedMonitorHostEdge(t *testing.T, pool *pgxpool.Pool, projectID, parentMonitorID, childHostID int64) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `
@@ -50,9 +41,6 @@ func seedMonitorHostEdge(t *testing.T, pool *pgxpool.Pool, projectID, parentMoni
 	}
 }
 
-// seedGroupMonitor — минимальный монитор проекта, узел кросс-видового
-// каскада (host не имеет собственных хелперов uptime — образец
-// internal/uptime/group_test.go:seedGroupHost).
 func seedGroupMonitor(t *testing.T, pool *pgxpool.Pool, projectID int64, name string) int64 {
 	t.Helper()
 	var id int64
@@ -64,8 +52,6 @@ func seedGroupMonitor(t *testing.T, pool *pgxpool.Pool, projectID int64, name st
 	return id
 }
 
-// seedOpenMonitorIncident — уже открытый (down) инцидент монитора, минуя
-// uptime.Detector: монитор-корень кросс-видового каскада (R3b, W25).
 func seedOpenMonitorIncident(t *testing.T, pool *pgxpool.Pool, monitorID int64) int64 {
 	t.Helper()
 	var id int64
@@ -77,8 +63,6 @@ func seedOpenMonitorIncident(t *testing.T, pool *pgxpool.Pool, monitorID int64) 
 	return id
 }
 
-// seedOpenSilentIncident — уже открытый silent-инцидент хоста, минуя
-// оценщик; notified управляет гейтом «информирующего корня» (Р4).
 func seedOpenSilentIncident(t *testing.T, pool *pgxpool.Pool, projectID, hostID int64, notified bool) int64 {
 	t.Helper()
 	var id int64
@@ -91,8 +75,6 @@ func seedOpenSilentIncident(t *testing.T, pool *pgxpool.Pool, projectID, hostID 
 	return id
 }
 
-// seedOpenDiskIncident — уже открытый (и уведомлённый) disk-инцидент хоста,
-// минуя оценщик: кандидат ретро-присоединения (Р7).
 func seedOpenDiskIncident(t *testing.T, pool *pgxpool.Pool, projectID, hostID int64) int64 {
 	t.Helper()
 	var id int64
@@ -105,7 +87,6 @@ func seedOpenDiskIncident(t *testing.T, pool *pgxpool.Pool, projectID, hostID in
 	return id
 }
 
-// readGroupID — group_id инцидента (nil — вне групп).
 func readGroupID(t *testing.T, pool *pgxpool.Pool, incidentID int64) *int64 {
 	t.Helper()
 	var gid *int64
@@ -116,8 +97,6 @@ func readGroupID(t *testing.T, pool *pgxpool.Pool, incidentID int64) *int64 {
 	return gid
 }
 
-// seedGroupChannel — включённый канал проекта с возвратом id (в отличие от
-// seedAlertChannel): тесту планировщика нужны конкретные каналы ступеней.
 func seedGroupChannel(t *testing.T, pool *pgxpool.Pool, projectID int64) int64 {
 	t.Helper()
 	var id int64
@@ -129,10 +108,6 @@ func seedGroupChannel(t *testing.T, pool *pgxpool.Pool, projectID int64) int64 {
 	return id
 }
 
-// groupStepNotifier — фейковый escalation.StepNotifier (образец
-// internal/escalation/scheduler_test.go), копит НОМЕРА отправленных ступеней:
-// тесту анти-залпа важно, какая именно ступень ушла на каждом тике, а не
-// только их число (fakeNotifier пакета номер ступени не хранит).
 type groupStepNotifier struct {
 	mu    sync.Mutex
 	steps []int
@@ -151,10 +126,6 @@ func (n *groupStepNotifier) sentSteps() []int {
 	return append([]int(nil), n.steps...)
 }
 
-// TestEvaluatorGroupsMemberSilenced — «host silent → алерт этого хоста молчит
-// и в составе» (сценарий 1 брифа), host-часть: disk-инцидент ребёнка под
-// ИНФОРМИРУЮЩИМ silent-корнем (notified_open=true) присоединяется к группе,
-// а его собственный notifyOpen НЕ зовётся — информирует корень.
 func TestEvaluatorGroupsMemberSilenced(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -168,8 +139,6 @@ func TestEvaluatorGroupsMemberSilenced(t *testing.T) {
 	child := seedEvalHost(t, pool, pid, "web-01")
 	seedDepEdge(t, pool, pid, root.ID, child.ID)
 
-	// Корень упал: молчит 10 минут, его silent-инцидент открыт и УЖЕ
-	// уведомлён (информирующий, Р4).
 	setHostLastSeen(t, pool, root.ID, time.Now().UTC().Add(-10*time.Minute))
 	rootInc := seedOpenSilentIncident(t, pool, pid, root.ID, true)
 
@@ -211,10 +180,6 @@ func TestEvaluatorGroupsMemberSilenced(t *testing.T) {
 	}
 }
 
-// TestEvaluatorGroupsSilentRootMemberNotifies — немой корень (MAJOR-3):
-// root silent с notified_open=false (сам не уведомлял — например, открыт в
-// maintenance или на B5-гейте) → член в составе группы, но уведомляет САМ
-// (fail-noisy): NotifyStep у фейка зафиксирован.
 func TestEvaluatorGroupsSilentRootMemberNotifies(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -230,7 +195,7 @@ func TestEvaluatorGroupsSilentRootMemberNotifies(t *testing.T) {
 	seedDepEdge(t, pool, pid, root.ID, child.ID)
 
 	setHostLastSeen(t, pool, root.ID, time.Now().UTC().Add(-10*time.Minute))
-	seedOpenSilentIncident(t, pool, pid, root.ID, false) // немой корень
+	seedOpenSilentIncident(t, pool, pid, root.ID, false)
 
 	seedHostMetricPoint(t, ch, pid, "system.filesystem.utilization", child.Name, map[string]string{"mountpoint": "/"}, 0.95, time.Minute)
 
@@ -255,10 +220,6 @@ func TestEvaluatorGroupsSilentRootMemberNotifies(t *testing.T) {
 	}
 }
 
-// TestOpenUnackedGreatestAfterGroupResolve — анти-залп (BLOCKER-1, механизм):
-// член ЗАКРЫТОЙ группы возвращается в OpenUnacked со StartedAt = resolved_at
-// группы, а не с исходным started_at трёхчасовой давности — лесенка бывшего
-// члена стартует с нуля от момента освобождения.
 func TestOpenUnackedGreatestAfterGroupResolve(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -308,9 +269,6 @@ func TestOpenUnackedGreatestAfterGroupResolve(t *testing.T) {
 	}
 }
 
-// TestOpenUnackedExcludesOpenGroupMembers — член ОТКРЫТОЙ группы исключён из
-// OpenUnacked (Р5: информирование берёт на себя корень); после Resolve
-// группы — снова в выборке (досылка step0 штатна).
 func TestOpenUnackedExcludesOpenGroupMembers(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -363,9 +321,6 @@ func TestOpenUnackedExcludesOpenGroupMembers(t *testing.T) {
 	}
 }
 
-// TestEvaluatorRootOpenRetroAttach — ретро (Р7) через evaluator: disk-алерт
-// ребёнка опередил смерть корня; открытие silent-корня через evalSilent
-// присоединяет его задним числом (group_id появился).
 func TestEvaluatorRootOpenRetroAttach(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -380,7 +335,6 @@ func TestEvaluatorRootOpenRetroAttach(t *testing.T) {
 	seedDepEdge(t, pool, pid, root.ID, child.ID)
 
 	memberInc := seedOpenDiskIncident(t, pool, pid, child.ID)
-	// Корень замолкает ПОСЛЕ того, как disk-инцидент ребёнка уже открыт.
 	setHostLastSeen(t, pool, root.ID, time.Now().UTC().Add(-10*time.Minute))
 
 	notifier := &fakeNotifier{}
@@ -410,12 +364,6 @@ func TestEvaluatorRootOpenRetroAttach(t *testing.T) {
 	}
 }
 
-// TestGroupedMemberClosesSilently — «член закрылся в группе — close-
-// уведомления нет» (§8 спеки, фикс ревью плана M-1): open-уведомление члена
-// информирующей группы было подавлено → лог incident_escalations пуст →
-// notifyClose (RecoveryChannels) не находит адресатов, NotifyRecovery не
-// зовётся. Канал проекта заведён нарочно: молчание обязано объясняться
-// пустым логом эскалации, а не отсутствием каналов.
 func TestGroupedMemberClosesSilently(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -453,7 +401,6 @@ func TestGroupedMemberClosesSilently(t *testing.T) {
 		t.Fatalf("setup: opened notifications = %d, want 0 (подавлено информирующим корнем)", notifier.openedCount())
 	}
 
-	// Диск ребёнка восстановился — член закрывается молча внутри группы.
 	if err := ch.Exec(ctx, "TRUNCATE TABLE metric_points"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
@@ -474,10 +421,6 @@ func TestGroupedMemberClosesSilently(t *testing.T) {
 	}
 }
 
-// TestGroupedMemberInMaintenance — «maintenance поверх группы» (§8 спеки,
-// фикс ревью плана M-2): член открывается при inMaint=true под информирующим
-// корнем → group_id проставлен (состав собран), NotifyStep НЕ вызван,
-// notified_open=false — maintenance-гейт и D3-гейт не конфликтуют.
 func TestGroupedMemberInMaintenance(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -520,15 +463,6 @@ func TestGroupedMemberInMaintenance(t *testing.T) {
 	}
 }
 
-// TestSchedulerNoBurstAfterGroupResolve — анти-залп ЧЕРЕЗ ПЛАНИРОВЩИК
-// (BLOCKER-1 ревью дизайна, фикс ревью плана M-3; спека §8: «после Resolve
-// группы step1 НЕ летит на следующем тике»): реальный escalation.Scheduler
-// поверх реального host.IncidentService. Член группы открыт 3 часа назад;
-// после Resolve группы Tick №1 шлёт ТОЛЬКО step0, Tick №2 сразу следом
-// step1 НЕ шлёт — elapsed считается от resolved_at группы (≈0), а не от
-// started_at (3ч, при котором step1 с delay=10м был бы дью немедленно).
-// Ловит регрессию elapsed в scheduler.go (счёт от другого таймстемпа) —
-// прокси-тест GREATEST выше её не поймал бы.
 func TestSchedulerNoBurstAfterGroupResolve(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	ctx := context.Background()
@@ -556,8 +490,6 @@ func TestSchedulerNoBurstAfterGroupResolve(t *testing.T) {
 	if _, err := store.SetGroup(ctx, pid, "host", member.ID, grp.ID); err != nil {
 		t.Fatalf("SetGroup: %v", err)
 	}
-	// Корень восстановился: его инцидент закрыт (не мешает выборке
-	// планировщика), группа распущена — resolved_at = now().
 	if ok, err := svc.Resolve(ctx, rootInc, 0); err != nil || !ok {
 		t.Fatalf("Resolve root incident: ok=%v err=%v", ok, err)
 	}
@@ -568,7 +500,6 @@ func TestSchedulerNoBurstAfterGroupResolve(t *testing.T) {
 	c1 := seedGroupChannel(t, pool, pid)
 	c2 := seedGroupChannel(t, pool, pid)
 	policy := escalation.NewPolicyStore(pool)
-	// Host-инциденты всегда severity='critical' (DEFAULT 0077).
 	if err := policy.SetLadder(ctx, pid, escalation.SeverityCritical, []escalation.Step{
 		{StepNo: 0, DelayMinutes: 0, ChannelIDs: []int64{c1}},
 		{StepNo: 1, DelayMinutes: 10, ChannelIDs: []int64{c2}},
@@ -585,27 +516,17 @@ func TestSchedulerNoBurstAfterGroupResolve(t *testing.T) {
 		Now:      time.Now,
 	}
 
-	sched.Tick(ctx) // Tick №1: досылка step0 бывшему члену
+	sched.Tick(ctx)
 	if got := stepNotifier.sentSteps(); len(got) != 1 || got[0] != 0 {
 		t.Fatalf("после Tick №1 ушли ступени %v, want ровно [0]", got)
 	}
 
-	sched.Tick(ctx) // Tick №2 сразу следом: step1 (delay 10м) НЕ дью
+	sched.Tick(ctx)
 	if got := stepNotifier.sentSteps(); len(got) != 1 {
 		t.Fatalf("после Tick №2 ушли ступени %v, want по-прежнему [0]: step1 полетел очередью — elapsed считается от started_at, а не от resolved_at группы (залп BLOCKER-1)", got)
 	}
 }
 
-// TestEvaluatorCascadeIntermediateRetroAttachesGrandchild — «каскад сверху
-// вниз» (R3, W25): A — корень, уже упавший; B — dep-child A, падает
-// ПОЗЖЕ; C — dep-child B, чей disk-инцидент открылся ДО падения B. До этой
-// правки groupRootOpened выходила при attachedAsMember=true (B
-// присоединился членом группы A) и ретро-перебор не запускался вовсе — C
-// оставался вне группы навсегда: DownRoot(C) в момент открытия disk-
-// инцидента C ещё не находил down-предка (B тогда был жив), а
-// OnRootOpened(A) отработал ещё раньше, до падения B, и заново не звался.
-// Падение B обязано перезапустить ретро-перебор, но по ФАКТИЧЕСКОМУ корню
-// каскада (A), не по узлу B.
 func TestEvaluatorCascadeIntermediateRetroAttachesGrandchild(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -621,13 +542,8 @@ func TestEvaluatorCascadeIntermediateRetroAttachesGrandchild(t *testing.T) {
 	seedDepEdge(t, pool, pid, a.ID, b.ID)
 	seedDepEdge(t, pool, pid, b.ID, c.ID)
 
-	// C: disk-инцидент открыт ДО того, как B ушёл в silent.
 	memberInc := seedOpenDiskIncident(t, pool, pid, c.ID)
 
-	// Прод держит ОДИН Suppressor на процесс и для Grouper.Roots, и для
-	// Evaluator.Dep (см. main.go, depSuppressor) — общий 5с-кеш снимка;
-	// тест обязан воспроизвести то же разделение, иначе DownRoot внутри
-	// groupRootOpened не сможет узнать фактический корень каскада.
 	sup := depsuppress.NewSuppressor(pool)
 	notifier := &fakeNotifier{}
 	eval := newEvaluator(pool, ch, notifier)
@@ -638,7 +554,6 @@ func TestEvaluatorCascadeIntermediateRetroAttachesGrandchild(t *testing.T) {
 		Roots: sup,
 	}
 
-	// Тик 1: A замолкает, становится корнем собственной группы.
 	setHostLastSeen(t, pool, a.ID, time.Now().UTC().Add(-10*time.Minute))
 	if err := eval.Tick(ctx); err != nil {
 		t.Fatalf("Tick (A down): %v", err)
@@ -647,7 +562,6 @@ func TestEvaluatorCascadeIntermediateRetroAttachesGrandchild(t *testing.T) {
 		t.Fatalf("до падения B C уже в группе (gid=%v) — сценарий теста сломан, B ещё жив", *gid)
 	}
 
-	// Тик 2: B тоже замолкает (падение ПРОМЕЖУТОЧНОГО узла).
 	setHostLastSeen(t, pool, b.ID, time.Now().UTC().Add(-10*time.Minute))
 	if err := eval.Tick(ctx); err != nil {
 		t.Fatalf("Tick (B down): %v", err)
@@ -673,13 +587,6 @@ func TestEvaluatorCascadeIntermediateRetroAttachesGrandchild(t *testing.T) {
 	}
 }
 
-// TestEvaluatorCascadeThroughMonitorRootAttachesGrandchild — кросс-видовой
-// каскад (R3b, W25): M — монитор, УЖЕ упавший корень; A — dep-child M
-// (ребро monitor(parent)->host(child)); C — dep-child A (host->host), чей
-// disk-инцидент открылся ДО того, как A ушёл в silent. До этой правки
-// groupRootOpened бейлилась на rootKind != "host" (не умела резолвить
-// rootIncidentID монитора) — ретро-перебор при падении A не запускался
-// вовсе, и C оставался вне группы монитора навсегда.
 func TestEvaluatorCascadeThroughMonitorRootAttachesGrandchild(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -695,17 +602,10 @@ func TestEvaluatorCascadeThroughMonitorRootAttachesGrandchild(t *testing.T) {
 	seedMonitorHostEdge(t, pool, pid, mon, a.ID)
 	seedDepEdge(t, pool, pid, a.ID, c.ID)
 
-	// M: инцидент монитора уже открыт (down) — корень каскада, вне охвата
-	// host.Evaluator (у него нет доступа к таблице incidents монитора).
 	monInc := seedOpenMonitorIncident(t, pool, mon)
 
-	// C: disk-инцидент открыт ДО того, как A ушёл в silent.
 	memberInc := seedOpenDiskIncident(t, pool, pid, c.ID)
 
-	// Тот же ОДИН Suppressor на процесс, что и в межхостовом сценарии выше
-	// (прод держит его один и на Grouper.Roots, и на Evaluator.Dep) — общий
-	// 5с-кеш снимка, иначе DownRoot внутри groupRootOpened не увидит M
-	// упавшим.
 	sup := depsuppress.NewSuppressor(pool)
 	notifier := &fakeNotifier{}
 	eval := newEvaluator(pool, ch, notifier)
@@ -716,7 +616,6 @@ func TestEvaluatorCascadeThroughMonitorRootAttachesGrandchild(t *testing.T) {
 		Roots: sup,
 	}
 
-	// A замолкает (падение ПРОМЕЖУТОЧНОГО узла, корень — монитор M).
 	setHostLastSeen(t, pool, a.ID, time.Now().UTC().Add(-10*time.Minute))
 	if err := eval.Tick(ctx); err != nil {
 		t.Fatalf("Tick (A down): %v", err)
@@ -738,8 +637,6 @@ func TestEvaluatorCascadeThroughMonitorRootAttachesGrandchild(t *testing.T) {
 			rootSource, rootIncID, rootNodeKind, rootNodeID, mon, monInc)
 	}
 
-	// A сам обязан оказаться членом ТОЙ ЖЕ группы монитора (Attach в
-	// groupGate резолвит его собственный DownRoot симметрично C).
 	incidents := host.NewIncidentService(pool)
 	aIn, open, err := incidents.OpenFor(ctx, a.ID, "silent")
 	if err != nil || !open {

@@ -1,12 +1,5 @@
 package db_test
 
-// TestLatestMigrationHasDataTest (internal/guards) требует, чтобы НОВЕЙШАЯ
-// миграция PostgreSQL приезжала с тестом на непустой базе — db.MigratePGTo на
-// схему, уже содержащую строки, а не на чистую. На момент этой правки
-// новейшая — 0056_project_purge_queue.up.sql (см. migrate_0055_test.go про то,
-// почему предыдущие файлы не переименовываются: правило смотрит только на
-// ТЕКУЩУЮ последнюю версию).
-
 import (
 	"context"
 	"testing"
@@ -16,16 +9,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestMigrate0056QueueSurvivesProjectDeletion — содержательная проверка того
-// единственного свойства, ради которого таблица заводится: заявка обязана
-// пережить строку projects.
-//
-// Отсутствие внешнего ключа на projects — не упущение, а условие
-// работоспособности (см. докблок миграции): ON DELETE CASCADE снёс бы заявку
-// вместе с проектом, ради очистки которого она заведена, а RESTRICT запретил
-// бы само удаление. Проверяем не «ключа нет в каталоге» (это формальность,
-// которая молчала бы, добавь кто-нибудь ключ с другим именем), а поведение:
-// проект удаляется, заявка остаётся, и идентификатор в ней прежний.
+// Отсутствие FK на projects — не упущение: ON DELETE CASCADE снёс бы заявку вместе с проектом, а
+// RESTRICT запретил бы само удаление. Проверяем поведение, не факт отсутствия ключа в каталоге.
 func TestMigrate0056QueueSurvivesProjectDeletion(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -41,7 +26,6 @@ func TestMigrate0056QueueSurvivesProjectDeletion(t *testing.T) {
 	}
 	defer pool.Close()
 
-	// База непустая на момент наката: организация, проект и группа.
 	var orgID, projectID, issueID int64
 	mustScan(t, pool, &orgID,
 		"INSERT INTO organizations (slug, name, event_quota) VALUES ('m56', 'M56', 0) RETURNING id")
@@ -55,7 +39,6 @@ func TestMigrate0056QueueSurvivesProjectDeletion(t *testing.T) {
 		t.Fatalf("migrate to 56: %v", err)
 	}
 
-	// Данные не пострадали.
 	var gotTitle string
 	if err := pool.QueryRow(ctx,
 		"SELECT title FROM issues WHERE id = $1", issueID).Scan(&gotTitle); err != nil {
@@ -80,7 +63,6 @@ func TestMigrate0056QueueSurvivesProjectDeletion(t *testing.T) {
 		t.Fatalf("после удаления проекта заявок осталось %d, want 1: заявка снята каскадом и телеметрия стала неадресуемой", left)
 	}
 
-	// Индекс под выборку следующей заявки существует и действителен.
 	var valid bool
 	if err := pool.QueryRow(ctx,
 		"SELECT indisvalid FROM pg_index WHERE indexrelid = $1::regclass",

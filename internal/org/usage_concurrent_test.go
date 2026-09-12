@@ -11,15 +11,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestCheckAndCountConcurrentRespectsQuota — двести параллельных списаний по
-// одной единице при квоте 50 не должны выдать больше пятидесяти в сумме.
-//
-// Тест написан НЕ для того, чтобы упасть на текущем коде: списание корректно и
-// сейчас. Он существует, чтобы упасть, если из списания уйдёт блокировка
-// строки. Строка месяца одна на всю организацию, и без блокировки конкуренты
-// прочитали бы одно и то же значение счётчика — квоту можно было бы превысить
-// ровно во столько раз, сколько приёмов идёт одновременно. Проверено: замена
-// оператора на «прочитать, потом обновить» роняет этот тест.
 func TestCheckAndCountConcurrentRespectsQuota(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -64,9 +55,6 @@ func TestCheckAndCountConcurrentRespectsQuota(t *testing.T) {
 	}
 }
 
-// TestCheckAndCountConcurrentUnlimitedCountsEverything — безлимит под нагрузкой
-// обязан посчитать каждую единицу: потерянное обновление здесь не превышение
-// квоты, а заниженный счётчик потребления, по которому выставляют счета.
 func TestCheckAndCountConcurrentUnlimitedCountsEverything(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -103,11 +91,6 @@ func TestCheckAndCountConcurrentUnlimitedCountsEverything(t *testing.T) {
 	}
 }
 
-// TestCheckAndCountExhaustedDoesNotWriteRow — при исчерпанной квоте строка
-// потребления не должна переписываться: приём в таком состоянии продолжает
-// идти потоком, и запись на каждый отклонённый запрос грела бы журнал
-// предзаписи ради нулевого результата. Версия строки (xmin) — прямой признак
-// того, что запись была.
 func TestCheckAndCountExhaustedDoesNotWriteRow(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

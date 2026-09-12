@@ -10,18 +10,12 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/flashctx"
 )
 
-// flashCookie — имя cookie, переносящей сообщение через редирект.
 const flashCookie = "flash"
 
-// Сообщение переносится cookie, а не query-параметром, ровно по одной причине:
-// параметр остаётся в адресе, и сообщение залипает при F5 и уезжает в закладку.
-// Cookie читается и гасится тем же запросом, поэтому показывается ровно один раз.
-//
-// Сам тип живёт в листовом пакете flashctx: его читает слой шаблонов, а тот
-// импортируется из web — обратный импорт замкнул бы цикл.
+// Cookie, не query: параметр остался бы в адресе и всплывал при F5/из закладки.
+// Тип живёт в flashctx — импорт из web сюда замкнул бы цикл.
 
-// flashKeys — белый список ключей, которые разрешено показывать. Всё, чего тут
-// нет, отбрасывается: значение cookie полностью подконтрольно клиенту.
+// Белый список: то, чего тут нет, отбрасывается — значение cookie подконтрольно клиенту.
 var flashKeys = map[string]bool{
 	"flash.saved":             true,
 	"flash.deleted":           true,
@@ -39,57 +33,39 @@ var flashKeys = map[string]bool{
 	"flash.subject_purged":    true,
 	"flash.invite_revoked":    true,
 	"flash.export_requested":  true,
-	// Удаление проекта и организации сообщает про ОЧЕРЕДЬ, а не про
-	// выполненную очистку: телеметрия в ClickHouse на момент ответа ещё жива,
-	// её удаляет фоновый исполнитель. Сказать «удалено» здесь означало бы
-	// повторить исходный дефект — страница успеха при невыполненной работе.
+	// «Queued», не «удалено»: телеметрия ещё жива, чистит фоновый исполнитель — иначе
+	// страница соврала бы об уже выполненной очистке.
 	"flash.project_delete_queued": true,
 	"flash.org_delete_queued":     true,
 	"flash.recipes_applied":       true,
-	// Мутации, которые раньше отвечали голым редиректом (K7-9): пауза и
-	// возобновление монитора — разными ключами, чтобы сообщение называло
-	// состояние, в котором монитор остался; статус и ответственный issue.
+	// Раздельные ключи по состоянию: сообщение называет то, в чём монитор остался.
 	"flash.monitor_paused":     true,
 	"flash.monitor_resumed":    true,
 	"flash.issue_status_saved": true,
 	"flash.issue_assigned":     true,
 	"flash.issue_unassigned":   true,
-	// Сохранённые фильтры логов (задача 9): раздельные ключи по действию —
-	// сообщение называет именно то, что произошло, тот же принцип, что у
-	// monitor_paused/monitor_resumed выше.
+	// Раздельные ключи по действию — сообщение называет именно то, что произошло.
 	"flash.log_filter_saved":       true,
 	"flash.log_filter_updated":     true,
 	"flash.log_filter_deleted":     true,
 	"flash.log_filter_default_set": true,
 }
 
-// flashPairKeys — подмножество flashKeys с ДВУМЯ числами в сообщении
-// («создано N, пропущено M»): плюральный Tn несёт только одно {n}, поэтому
-// такие ключи рендерятся плоским переводом с подстановкой {n}/{m} через Tf
-// (см. flashView). Ключ обязан состоять и в flashKeys: этот список только
-// выбирает способ рендера, белый список — один.
+// Ключи с ДВУМЯ числами в сообщении рендерятся через Tf с {n}/{m}, а не Tn с одним {n}.
+// Ключ обязан быть и в flashKeys — этот список только выбирает способ рендера.
 var flashPairKeys = map[string]bool{
 	"flash.recipes_applied": true,
 }
 
-// setFlash кладёт сообщение в cookie перед редиректом. Path=/ — сообщение может
-// показаться на любой странице, куда ведёт редирект. MaxAge короткий: если
-// показать не удалось (пользователь закрыл вкладку), оно не всплывёт через час.
-//
-// Ключ сюда приходит из кода, литералом — в отличие от parseFlash (строка 93),
-// которая разбирает значение, целиком подконтрольное клиенту, и потому обязана
-// отбрасывать подделку молча. Здесь молчание означало бы прятать опечатку или
-// забытый в списке ключ: сообщение просто не появится, и отличить это от
-// несработавшей формы будет нечем — ровно так годами жила находка про отзыв
-// приглашения (flash.invite.revoked не было в списке).
+// Ключ — литерал из кода: непопадание в белый список логируется как ошибка, а не
+// отбрасывается молча, как в parseFlash (тот разбирает подконтрольное клиенту).
 func setFlash(w http.ResponseWriter, secure bool, kind, key string, n, m int) {
 	if !flashKeys[key] {
 		slog.Error("setFlash: ключ не найден в белом списке", "key", key)
 		return
 	}
 	v := kind + "|" + key
-	// Для парного ключа с m != 0 значение n пишется даже нулевым — позиция
-	// в cookie важна (kind|key|n|m), parseFlash разбирает по индексам.
+	// n пишется даже нулевым, если m != 0 — позиция в cookie важна, parseFlash разбирает по индексам.
 	if n != 0 || m != 0 {
 		v += "|" + strconv.Itoa(n)
 	}
@@ -107,9 +83,6 @@ func setFlash(w http.ResponseWriter, secure bool, kind, key string, n, m int) {
 	})
 }
 
-// clearFlash гасит cookie. Вызывается сразу при чтении, поэтому сообщение
-// показывается ровно один раз и переживает F5 корректно (второй показ не
-// случится).
 func clearFlash(w http.ResponseWriter, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     flashCookie,
@@ -122,8 +95,6 @@ func clearFlash(w http.ResponseWriter, secure bool) {
 	})
 }
 
-// parseFlash разбирает значение cookie. Возвращает nil на всём, чего нет в
-// белом списке.
 func parseFlash(raw string) *flashctx.Flash {
 	v, err := url.QueryUnescape(raw)
 	if err != nil {
@@ -154,12 +125,8 @@ func parseFlash(raw string) *flashctx.Flash {
 	return f
 }
 
-// withFlash достаёт сообщение из cookie, гасит её и кладёт сообщение в контекст.
-//
-// Через контекст, а не параметром layout: layout зовут все страницы продукта, и
-// протаскивать сообщение через каждую сигнатуру значило бы менять их все ради
-// того, что к содержимому страницы отношения не имеет. Тем же приёмом сделаны
-// локаль и тема.
+// Через контекст, не параметром layout: протаскивать через каждую сигнатуру страницы
+// ради того, что к содержимому не относится, смысла нет — так же сделаны локаль и тема.
 func (h *Handler) withFlash(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/static/") {
@@ -181,13 +148,10 @@ func (h *Handler) withFlash(next http.Handler) http.Handler {
 	})
 }
 
-// secureCookies — ставить ли Secure на служебные cookie. То же правило, что у
-// сессионной: HTTPS-инстанс.
 func (h *Handler) secureCookies() bool {
 	return strings.HasPrefix(h.BaseURL, "https://")
 }
 
-// flashOK/flashWarn — сокращения для обработчиков.
 func (h *Handler) flashOK(w http.ResponseWriter, key string, n int) {
 	setFlash(w, h.secureCookies(), "ok", key, n, 0)
 }
@@ -196,9 +160,7 @@ func (h *Handler) flashWarn(w http.ResponseWriter, key string, n int) {
 	setFlash(w, h.secureCookies(), "warn", key, n, 0)
 }
 
-// flashOKPair — сообщение с двумя счётчиками («создано N, пропущено M»):
-// key обязан состоять в flashPairKeys, иначе рендер уйдёт в плюральную
-// ветку и второе число потеряется.
+// key обязан быть в flashPairKeys — иначе рендер уйдёт в плюральную ветку, второе число потеряется.
 func (h *Handler) flashOKPair(w http.ResponseWriter, key string, n, m int) {
 	setFlash(w, h.secureCookies(), "ok", key, n, m)
 }

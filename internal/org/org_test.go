@@ -14,7 +14,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// newUser вставляет пользователя напрямую: org-пакет не зависит от auth.
 func newUser(t *testing.T, pool *pgxpool.Pool, email string) int64 {
 	t.Helper()
 	var id int64
@@ -118,7 +117,6 @@ func TestLastOwnerProtected(t *testing.T) {
 	if err := svc.RemoveMember(ctx, o.ID, owner); !errors.Is(err, org.ErrLastOwner) {
 		t.Fatalf("remove last owner: got %v, want ErrLastOwner", err)
 	}
-	// Второй owner снимает защиту.
 	second := newUser(t, pool, "second@example.com")
 	if err := svc.AddMember(ctx, o.ID, second, org.RoleOwner); err != nil {
 		t.Fatalf("AddMember: %v", err)
@@ -159,7 +157,6 @@ func TestDeleteOrg(t *testing.T) {
 		t.Fatalf("DeleteOrg: %v", err)
 	}
 
-	// Каскадом должно удалиться и членство.
 	if _, err := svc.Role(ctx, o.ID, owner); !errors.Is(err, org.ErrNotMember) {
 		t.Fatalf("Role after DeleteOrg: got %v, want ErrNotMember", err)
 	}
@@ -185,7 +182,6 @@ func TestMembersOf(t *testing.T) {
 		t.Fatalf("AddMember: %v", err)
 	}
 
-	// Посторонний из другой организации не должен попасть в выборку.
 	otherOwner := newUser(t, pool, "membersof-other@example.com")
 	if _, err := svc.CreateOrg(ctx, "membersof-other-org", "Other", otherOwner); err != nil {
 		t.Fatalf("CreateOrg (other): %v", err)
@@ -198,7 +194,6 @@ func TestMembersOf(t *testing.T) {
 	if len(members) != 2 {
 		t.Fatalf("MembersOf = %+v, want 2 members", members)
 	}
-	// Отсортированы по email: dev раньше owner.
 	if members[0].Email != "membersof-dev@example.com" || members[0].UserID != dev || members[0].Role != org.RoleMember {
 		t.Errorf("members[0] = %+v, want dev/member", members[0])
 	}
@@ -228,7 +223,6 @@ func TestOrgsOf(t *testing.T) {
 		t.Fatalf("AddMember: %v", err)
 	}
 
-	// Организация без uid не должна протекать в выборку.
 	stranger := newUser(t, pool, "orgsof-stranger@example.com")
 	if _, err := svc.CreateOrg(ctx, "orgsof-stranger-org", "Stranger", stranger); err != nil {
 		t.Fatalf("CreateOrg (stranger): %v", err)
@@ -245,7 +239,6 @@ func TestOrgsOf(t *testing.T) {
 		t.Errorf("OrgsOf order = %+v, want alpha before zeta", orgs)
 	}
 
-	// Юзер без организаций получает пустой (не nil-паникующий) срез.
 	lonely := newUser(t, pool, "orgsof-lonely@example.com")
 	orgs, err = svc.OrgsOf(ctx, lonely)
 	if err != nil {
@@ -279,8 +272,6 @@ func TestUsageAndQuota(t *testing.T) {
 	if n, err := svc.IncUsage(ctx, o.ID, jan); err != nil || n != 2 {
 		t.Fatalf("IncUsage (2nd): n=%d err=%v, want 2", n, err)
 	}
-	// Другой день того же месяца бьёт в тот же счётчик (period_month
-	// нормализуется к 1-му числу).
 	janLater := time.Date(2026, time.January, 28, 3, 0, 0, 0, time.UTC)
 	if n, err := svc.IncUsage(ctx, o.ID, janLater); err != nil || n != 3 {
 		t.Fatalf("IncUsage (same month, later day): n=%d err=%v, want 3", n, err)
@@ -289,7 +280,6 @@ func TestUsageAndQuota(t *testing.T) {
 		t.Fatalf("Usage (january): n=%d err=%v, want 3", n, err)
 	}
 
-	// Другой месяц независим.
 	feb := time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC)
 	if n, err := svc.Usage(ctx, o.ID, feb); err != nil || n != 0 {
 		t.Fatalf("Usage (february, before inc): n=%d err=%v, want 0", n, err)
@@ -313,9 +303,6 @@ func TestUsageAndQuota(t *testing.T) {
 	}
 }
 
-// TestCreateOrgQuotas — CreateOrg проставляет все 5 квот из дефолтов сервиса:
-// event = defaultQuota (из NewService), tx/metric/profile/log — из SetQuotaDefaults.
-// В OSS-конфиге все дефолты = 0 (безлимит), и созданная орга наследует их.
 func TestCreateOrgQuotas(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 0)
@@ -328,7 +315,6 @@ func TestCreateOrgQuotas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateOrg: %v", err)
 	}
-	// Возврат CreateOrg тоже несёт все квоты.
 	if o.EventQuota != 0 || o.TransactionQuota != 0 || o.MetricQuota != 0 || o.ProfileQuota != 0 || o.LogQuota != 0 {
 		t.Fatalf("CreateOrg returned %+v, want all quotas 0", o)
 	}
@@ -354,8 +340,6 @@ func TestCreateOrgQuotas(t *testing.T) {
 	}
 }
 
-// TestCreateOrgQuotasFromConfig — все 5 дефолтов берутся из конфига независимо:
-// event из NewService, остальные из SetQuotaDefaults.
 func TestCreateOrgQuotasFromConfig(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 500)
@@ -389,13 +373,11 @@ func TestSetQuotaNegative(t *testing.T) {
 		t.Fatalf("CreateOrg: %v", err)
 	}
 
-	// Initial quota is default (1_000_000).
 	initialOrg, err := svc.Get(ctx, o.ID)
 	if err != nil || initialOrg.EventQuota != 1_000_000 {
 		t.Fatalf("Get initial: %+v err=%v", initialOrg, err)
 	}
 
-	// SetQuota(-5) should reject and leave quota unchanged.
 	if err := svc.SetQuota(ctx, o.ID, -5); !errors.Is(err, org.ErrInvalidQuota) {
 		t.Fatalf("SetQuota(-5): got %v, want ErrInvalidQuota", err)
 	}
@@ -404,7 +386,6 @@ func TestSetQuotaNegative(t *testing.T) {
 		t.Fatalf("Get after SetQuota(-5): %+v err=%v, want quota unchanged", afterReject, err)
 	}
 
-	// SetQuota(0) should succeed (0 = unlimited).
 	if err := svc.SetQuota(ctx, o.ID, 0); err != nil {
 		t.Fatalf("SetQuota(0): %v", err)
 	}
@@ -414,12 +395,6 @@ func TestSetQuotaNegative(t *testing.T) {
 	}
 }
 
-// TestSetQuotas — P2-8 (+ волна 3 задача H): SetQuotas применяет любое
-// подмножество из пяти квот (событий/транзакций/метрик/профилей/логов)
-// одним UPDATE. Непереданные (nil) поля не трогает — COALESCE сохраняет
-// прежнее значение, а не сбрасывает его в 0/NULL, — а на невалидном значении
-// не применяет ничего (в отличие от цикла отдельных Set*Quota, который мог
-// оставить квоты частично изменёнными на сбое посреди цикла).
 func TestSetQuotas(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)
@@ -432,8 +407,6 @@ func TestSetQuotas(t *testing.T) {
 		t.Fatalf("CreateOrg: %v", err)
 	}
 
-	// Меняем три поля из пяти (включая log) — остальные два должны остаться
-	// дефолтными (event=1_000_000 задан CreateOrg, tx/profile=0).
 	event, metric, log := int64(700), int64(200), int64(300)
 	if err := svc.SetQuotas(ctx, o.ID, &event, nil, &metric, nil, &log); err != nil {
 		t.Fatalf("SetQuotas(event, nil, metric, nil, log): %v", err)
@@ -446,11 +419,6 @@ func TestSetQuotas(t *testing.T) {
 		t.Fatalf("Get after partial SetQuotas = %+v, want event=700 metric=200 log=300 tx=0(unchanged) profile=0(unchanged)", got)
 	}
 
-	// Ещё один частичный вызов, log_quota в нём nil: уже заданное значение
-	// (300) обязано сохраниться через COALESCE, а не сброситься нулём —
-	// та же проверка, что выше для tx/profile, но теперь на поле, которое
-	// уже было ненулевым перед вызовом (иначе "не тронуто" и "сброшено в 0"
-	// неотличимы).
 	profile := int64(150)
 	if err := svc.SetQuotas(ctx, o.ID, nil, nil, nil, &profile, nil); err != nil {
 		t.Fatalf("SetQuotas(nil, nil, nil, profile, nil): %v", err)
@@ -466,8 +434,6 @@ func TestSetQuotas(t *testing.T) {
 		t.Fatalf("ProfileQuota after SetQuotas = %d, want 150", afterNilLog.ProfileQuota)
 	}
 
-	// Невалидное значение (отрицательное) в одном из пяти полей → ничего не
-	// применяется, даже прочие валидные поля того же вызова — включая log.
 	badTx := int64(-1)
 	newEvent := int64(999)
 	newLog := int64(9999)
@@ -482,7 +448,6 @@ func TestSetQuotas(t *testing.T) {
 		t.Fatalf("Get after rejected SetQuotas = %+v, want event still 700 and log still 300 (nothing applied)", afterReject)
 	}
 
-	// Неизвестная организация → ErrNotFound.
 	if err := svc.SetQuotas(ctx, 999999, &event, nil, nil, nil, nil); !errors.Is(err, org.ErrNotFound) {
 		t.Fatalf("SetQuotas(unknown org): got %v, want ErrNotFound", err)
 	}
@@ -527,11 +492,6 @@ func TestLastOwnerRace(t *testing.T) {
 	}
 }
 
-// TestSetRoleAsOwnerOnly — security fix (задача 5/1, TOCTOU в owner-guard):
-// SetRoleAs/RemoveMemberAs проверяют актёра и цель в той же транзакции, что и
-// саму мутацию. admin не может ни выдать owner, ни тронуть существующего
-// owner'а (ErrOwnerOnly), а owner может и то, и другое; last-owner защита
-// по-прежнему работает через *As-варианты.
 func TestSetRoleAsOwnerOnly(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)
@@ -552,7 +512,6 @@ func TestSetRoleAsOwnerOnly(t *testing.T) {
 		t.Fatalf("AddMember member: %v", err)
 	}
 
-	// admin → member получает owner: ErrOwnerOnly, роль не меняется.
 	if err := svc.SetRoleAs(ctx, o.ID, admin, member, org.RoleOwner); !errors.Is(err, org.ErrOwnerOnly) {
 		t.Fatalf("admin promotes member to owner: got %v, want ErrOwnerOnly", err)
 	}
@@ -560,7 +519,6 @@ func TestSetRoleAsOwnerOnly(t *testing.T) {
 		t.Fatalf("member role after blocked promotion = %v, %v, want member, nil", r, err)
 	}
 
-	// admin понижает owner'а: ErrOwnerOnly, роль не меняется.
 	if err := svc.SetRoleAs(ctx, o.ID, admin, owner, org.RoleAdmin); !errors.Is(err, org.ErrOwnerOnly) {
 		t.Fatalf("admin demotes owner: got %v, want ErrOwnerOnly", err)
 	}
@@ -568,7 +526,6 @@ func TestSetRoleAsOwnerOnly(t *testing.T) {
 		t.Fatalf("owner role after blocked demotion = %v, %v, want owner, nil", r, err)
 	}
 
-	// admin удаляет owner'а: ErrOwnerOnly, участник остаётся.
 	if err := svc.RemoveMemberAs(ctx, o.ID, admin, owner); !errors.Is(err, org.ErrOwnerOnly) {
 		t.Fatalf("admin removes owner: got %v, want ErrOwnerOnly", err)
 	}
@@ -576,7 +533,6 @@ func TestSetRoleAsOwnerOnly(t *testing.T) {
 		t.Fatalf("owner role after blocked removal = %v, %v, want owner, nil", r, err)
 	}
 
-	// admin по-прежнему управляет member/admin-уровнем без ограничений.
 	if err := svc.SetRoleAs(ctx, o.ID, admin, member, org.RoleAdmin); err != nil {
 		t.Fatalf("admin promotes member to admin: %v", err)
 	}
@@ -584,8 +540,6 @@ func TestSetRoleAsOwnerOnly(t *testing.T) {
 		t.Fatalf("member role after admin->admin promotion = %v, %v, want admin, nil", r, err)
 	}
 
-	// owner может и выдать owner, и понизить owner'а (второй owner в наличии
-	// после промоции — last-owner защита не срабатывает).
 	if err := svc.SetRoleAs(ctx, o.ID, owner, member, org.RoleOwner); err != nil {
 		t.Fatalf("owner promotes member to owner: %v", err)
 	}
@@ -599,8 +553,6 @@ func TestSetRoleAsOwnerOnly(t *testing.T) {
 		t.Fatalf("member role after owner demotion = %v, %v, want admin, nil", r, err)
 	}
 
-	// last-owner защита всё ещё работает через *As-варианты: единственный
-	// owner не может ни понизить, ни удалить сам себя.
 	if err := svc.SetRoleAs(ctx, o.ID, owner, owner, org.RoleAdmin); !errors.Is(err, org.ErrLastOwner) {
 		t.Fatalf("last owner demotes self via SetRoleAs: got %v, want ErrLastOwner", err)
 	}

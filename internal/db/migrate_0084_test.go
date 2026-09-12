@@ -10,15 +10,8 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestMigrate0084BackfillsUptimeEscalationState — миграция 0084 (W2-C
-// находка 2 аудита 2026-08-27) добавляет incidents (uptime) те же колонки,
-// что 0077 дала пяти остальным инцидент-таблицам, и — как и 0077 —
-// бэкафилливает существующие открытые+отнотифаенные инциденты: они уже
-// отправили open-уведомление ДО появления эскалаций, значит ступень 0
-// фактически состоялась, и планировщик не должен зашить её заново
-// (escalation_level=1) или молчать на recovery (синтетический step0-лог).
-// Строка здесь заводится ДО миграции (schema-версия 83), ровно как её увидит
-// любая работающая инсталляция при апгрейде.
+// incidents (uptime) получает те же колонки, что 0077 дала остальным пяти инцидент-таблицам, и тем же
+// способом бэкафилливает открытые+отнотифаенные строки как «шаг 0 состоялся».
 func TestMigrate0084BackfillsUptimeEscalationState(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -43,14 +36,12 @@ func TestMigrate0084BackfillsUptimeEscalationState(t *testing.T) {
 	mustScan(t, pool, &monitorID, `
 		INSERT INTO monitors (project_id, name, kind, interval_seconds)
 		VALUES ($1, 'm84-monitor', 'heartbeat', 60) RETURNING id`, projectID)
-	// Открытый, уже отнотифаенный инцидент — то самое доэскалационное
-	// состояние, которое 0084 обязана унаследовать как "шаг 0 состоялся".
+	// Доэскалационное состояние — 0084 обязана унаследовать его как «шаг 0 состоялся».
 	mustScan(t, pool, &incidentID, `
 		INSERT INTO incidents (monitor_id, cause, notified_open)
 		VALUES ($1, 'connection refused', true) RETURNING id`, monitorID)
-	// Закрытый несвязанный инцидент — контрольная строка: backfill не должен
-	// трогать resolved-инциденты (миграция 0077 фильтрует по "status='open'"
-	// у остальных таблиц, incidents эквивалент — resolved_at IS NULL).
+	// Контрольная строка — backfill не должен трогать resolved-инциденты (0077 фильтрует по status='open',
+	// здесь эквивалент — resolved_at IS NULL).
 	var closedIncidentID int64
 	mustScan(t, pool, &closedIncidentID, `
 		INSERT INTO incidents (monitor_id, cause, notified_open, resolved_at)
@@ -95,8 +86,7 @@ func TestMigrate0084BackfillsUptimeEscalationState(t *testing.T) {
 		t.Errorf("closed incident escalation_level = %d, want 0 (backfill only touches open incidents)", closedLevel)
 	}
 
-	// Синтетический step0-лог: без него RecoveryChannels ничего не найдёт
-	// для этого инцидента, и recovery ("up") не сможет адресоваться никуда.
+	// Без синтетического step0-лога RecoveryChannels не найдёт адресата для recovery («up»).
 	var logged int
 	if err := pool.QueryRow(ctx,
 		"SELECT count(*) FROM incident_escalations WHERE incident_source='uptime' AND incident_id=$1 AND channel_id=$2 AND step=0",

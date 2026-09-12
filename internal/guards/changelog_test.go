@@ -7,10 +7,8 @@ import (
 	"testing"
 )
 
-// changelogHeadings — канонический словарь ###-заголовков по файлам: шесть
-// заголовков Keep a Changelog плюс принятые в репозитории расширения.
 // Скобочные варианты («Fixed (usability)») запрещены: тематика пункта
-// выражается первой фразой самого пункта, а не заголовком секции.
+// выражается первой фразой пункта, а не заголовком секции.
 var changelogHeadings = map[string][]string{
 	"CHANGELOG.md": {
 		"Added", "Changed", "Deprecated", "Removed", "Fixed", "Security", "Breaking",
@@ -22,10 +20,6 @@ var changelogHeadings = map[string][]string{
 	},
 }
 
-// TestChangelogSectionHeadings — №128: внутри КАЖДОЙ версии-секции (## […])
-// обоих changelog-файлов ###-заголовки берутся из словаря и не повторяются.
-// Один заголовок — одна секция: дубли (Fixed ×4) заставляли читателя собирать
-// список исправлений по всему файлу.
 func TestChangelogSectionHeadings(t *testing.T) {
 	tree := Load(t)
 	for file, allowed := range changelogHeadings {

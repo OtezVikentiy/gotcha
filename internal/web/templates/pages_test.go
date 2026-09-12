@@ -20,8 +20,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// renderTo — общий помощник: рендерит компонент в русской локали и возвращает
-// HTML; фейлит тест на ошибке рендера.
 func renderTo(t *testing.T, c templ.Component) string {
 	t.Helper()
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
@@ -32,16 +30,12 @@ func renderTo(t *testing.T, c templ.Component) string {
 	return sb.String()
 }
 
-// stub — тривиальный дочерний компонент (график/спарклайн) для мест, где
-// шаблон рендерит переданную templ.Component; nil бы уронил рендер.
+// nil уронил бы рендер — везде, где шаблон рендерит переданный templ.Component.
 func stub() templ.Component { return templ.Raw("<svg data-stub></svg>") }
 
 func ptrTime(t time.Time) *time.Time { return &t }
 func ptrInt64(v int64) *int64        { return &v }
 
-// TestIssuesListPopulatedVsEmpty — непустой список рисует строки issue с
-// уровнем/статусом, а пустой показывает пустое состояние; canManage=true
-// открывает массовые действия.
 func TestIssuesListPopulatedVsEmpty(t *testing.T) {
 	rows := []IssueRow{
 		{Issue: issue.Issue{ID: 1, Title: "boom error", Level: "error", Status: "unresolved", TimesSeen: 42, LastSeen: time.Now().Add(-time.Hour)}, Sparkline: stub()},
@@ -56,8 +50,6 @@ func TestIssuesListPopulatedVsEmpty(t *testing.T) {
 		t.Error("баннер квоты должен отрендериться")
 	}
 
-	// Тулбар над таблицей: массовые действия слева, обе точки входа экспорта
-	// (группы/события) справа — у оператора с canOperate=true.
 	if !strings.Contains(out, `class="card-toolbar"`) {
 		t.Error("непустой список должен рисовать тулбар .card-toolbar над таблицей")
 	}
@@ -65,8 +57,6 @@ func TestIssuesListPopulatedVsEmpty(t *testing.T) {
 		t.Errorf("тулбар при canOperate=true должен нести ровно 2 раскрывающиеся кнопки экспорта, got %d", n)
 	}
 
-	// Без canOperate тулбар остаётся (массовые действия доступны), а кнопок
-	// экспорта нет — они вели бы на 404.
 	noExport := renderTo(t, IssuesList(7, rows, IssuesFilter{}, 1, 2, "u@e.com", nil, nil, gs, false, false, false))
 	if !strings.Contains(noExport, `class="card-toolbar"`) {
 		t.Error("непустой список при canOperate=false должен рисовать тулбар с массовыми действиями")
@@ -79,8 +69,6 @@ func TestIssuesListPopulatedVsEmpty(t *testing.T) {
 	if strings.Contains(empty, "boom error") {
 		t.Error("пустой список не должен содержать строк")
 	}
-	// На пустом списке нечего ни отмечать, ни выгружать: ни тулбара, ни
-	// bulk-формы, ни точек входа экспорта — даже при canOperate=true.
 	emptyOp := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, true, false))
 	for name, body := range map[string]string{"canOperate=false": empty, "canOperate=true": emptyOp} {
 		for _, marker := range []string{"card-toolbar", "issues-bulk", "dropdown-control"} {
@@ -91,10 +79,7 @@ func TestIssuesListPopulatedVsEmpty(t *testing.T) {
 	}
 }
 
-// TestIssuesListFilterOrder — порядок полей в GET-форме фильтров списка
-// ошибок: поиск первым, дальше статус, уровень, окружение, период, сортировка.
-// Поиск — самое частое действие, и он стоит первым; сортировка — не фильтр,
-// поэтому уходит в конец, перед кнопкой «Применить».
+// поиск первым — самое частое действие; сортировка — не фильтр, уходит в конец перед «Применить».
 func TestIssuesListFilterOrder(t *testing.T) {
 	out := renderTo(t, IssuesList(7, nil, IssuesFilter{Range: TimeRangeVM{Key: "24h"}}, 1, 0, "u@e.com", []string{"prod"}, nil, GettingStartedVM{}, false, false, false))
 	start := strings.Index(out, `class="issues-filters"`)
@@ -119,15 +104,9 @@ func TestIssuesListFilterOrder(t *testing.T) {
 	}
 }
 
-// TestGettingStartedChecklistGatedByCanOperate — C5 (аудит-находка ux/arch/
-// frontend P2): карточка «Первые шаги» раньше гейтилась целиком на
-// CanManage (owner/admin), хотя 2 из 5 шагов (алерт, монитор) уже давно
-// открыты оператору (requireProjectOperator). Теперь гейт карточки —
-// CanOperate; CanManage остаётся только у шага 4a («Позвать команду»,
-// requireOrgRole owner/admin-only на /orgs/{id}/settings).
+// гейт карточки — CanOperate, не CanManage: 2 из 5 шагов уже давно открыты оператору.
+// CanManage остаётся только у шага 4a («Позвать команду», owner/admin-only).
 func TestGettingStartedChecklistGatedByCanOperate(t *testing.T) {
-	// Оператор без CanManage: карточка видна, операторские шаги 2/3/4b —
-	// рабочие ссылки, шаг 4a — без ссылки (иначе оператор упрётся в 403).
 	opGS := GettingStartedVM{ProjectID: 7, OrgID: 9, Done: 1, CanOperate: true, CanManage: false}
 	out := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, opGS, false, false, false))
 	if !strings.Contains(out, `class="card getting-started"`) {
@@ -145,9 +124,7 @@ func TestGettingStartedChecklistGatedByCanOperate(t *testing.T) {
 		t.Error("незакрытый шаг 4a у оператора без CanManage должен рендериться неактивным (gs-todo-locked), а не пропадать бесследно")
 	}
 
-	// CanManage без CanOperate (гипотетическая комбинация, но проверяет
-	// именно гейт карточки): чек-лист больше не показывается — раньше он
-	// показывался бы именно так, это и была находка C5.
+	// CanManage без CanOperate — гипотетическая комбинация, но проверяет именно гейт карточки.
 	adminOnlyGS := GettingStartedVM{ProjectID: 7, OrgID: 9, Done: 1, CanOperate: false, CanManage: true}
 	out2 := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, adminOnlyGS, false, false, false))
 	if strings.Contains(out2, `class="card getting-started"`) {
@@ -155,22 +132,12 @@ func TestGettingStartedChecklistGatedByCanOperate(t *testing.T) {
 	}
 }
 
-// TestKeyRejectsBodyRendersOnceAcrossChecklistAndEmptyState — F5 (аудит
-// перед 1.0): врезка «отказы по ключу» умеет рисоваться в двух местах
-// страницы issues (чек-лист «Первые шаги» и пустое состояние списка), но на
-// одной и той же странице должна показаться только там, где чек-лист
-// реально виден — иначе свежий проект видел бы один и тот же текст дважды.
-// checklistVisible() — общий predicate обоих мест; сценарии здесь
-// используют VM напрямую (а не полный HTTP-стек), потому что на реальной
-// странице issues чек-лист прячется, только когда gs.KeyRejects тоже пуст
-// (см. gettingStarted в web/issues.go) — эта пара условий совместно
-// недостижима через настоящий запрос, только через VM.
+// врезка «отказы по ключу» рисуется ровно в одном месте — чек-лист либо пустое состояние, не оба сразу.
+// сценарии идут через VM напрямую: нужная пара условий недостижима через настоящий HTTP-запрос.
 func TestKeyRejectsBodyRendersOnceAcrossChecklistAndEmptyState(t *testing.T) {
 	rejects := []KeyRejectView{{Kind: "key_invalid", Hits: 5, LastSeenAt: time.Now()}}
 	wantReason := i18n.Tf(context.Background(), "ingest_signals.rejects.key_invalid", "hits", "5")
 
-	// Чек-лист виден (Done < 5, CanOperate) → врезка обязана быть ВНУТРИ его
-	// секции, а пустое состояние — не нести свою копию.
 	visible := GettingStartedVM{ProjectID: 7, OrgID: 9, Done: 1, CanOperate: true, KeyRejects: rejects}
 	out := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, visible, false, false, false))
 	section := sectionBetween(t, out, `<section class="card getting-started">`, "</section>")
@@ -181,8 +148,6 @@ func TestKeyRejectsBodyRendersOnceAcrossChecklistAndEmptyState(t *testing.T) {
 		t.Error("чек-лист виден — пустое состояние не должно дублировать врезку notice--warn")
 	}
 
-	// Чек-лист не виден (CanOperate=false) → врезка обязана показаться в
-	// пустом состоянии — иначе отказ по ключу нигде не виден вовсе.
 	hidden := GettingStartedVM{ProjectID: 7, OrgID: 9, Done: 1, CanOperate: false, KeyRejects: rejects}
 	out2 := renderTo(t, IssuesList(7, nil, IssuesFilter{}, 1, 0, "u@e.com", nil, nil, hidden, false, false, false))
 	if strings.Contains(out2, `class="card getting-started"`) {
@@ -194,11 +159,7 @@ func TestKeyRejectsBodyRendersOnceAcrossChecklistAndEmptyState(t *testing.T) {
 	}
 }
 
-// sectionBetween — первая подстрока между двумя маркерами; фейлит тест,
-// если открывающий или закрывающий маркер не найден. Используется, чтобы
-// ассертить текст ВНУТРИ конкретной секции разметки, а не по всему телу
-// страницы — иначе поломка одной врезки может маскироваться другой (аудит
-// перед 1.0, M9/M10).
+// ищет текст внутри конкретной секции, не по всему телу — иначе поломка одной врезки маскируется другой.
 func sectionBetween(t *testing.T, s, openTag, closeTag string) string {
 	t.Helper()
 	i := strings.Index(s, openTag)
@@ -213,8 +174,6 @@ func sectionBetween(t *testing.T, s, openTag, closeTag string) string {
 	return rest[:j]
 }
 
-// TestIssueDetail — деталь issue показывает событие, стектрейс-кадры и
-// назначенного; выбранное событие раскрывается.
 func TestIssueDetail(t *testing.T) {
 	it := issue.Issue{ID: 5, Title: "NPE", Level: "error", Status: "unresolved", Culprit: "svc.Do", TimesSeen: 7, FirstSeen: time.Now().Add(-48 * time.Hour), LastSeen: time.Now(), AssigneeID: ptrInt64(2), AssigneeEmail: "dev@x.io"}
 	members := []org.Member{{UserID: 2, Email: "dev@x.io", Role: org.RoleAdmin}}
@@ -229,22 +188,17 @@ func TestIssueDetail(t *testing.T) {
 	}
 }
 
-// TestPerformanceList — список эндпойнтов с перцентилями и apdex; пустой даёт
-// пустое состояние.
 func TestPerformanceList(t *testing.T) {
 	rows := []EndpointRow{
 		{Stat: trace.EndpointStat{Transaction: "GET /api", Count: 1000, Throughput: 12, P50: 5000, P95: 20000, P99: 50000, FailureRate: 0.02, ApdexScore: 0.95, Environments: []string{"production"}}, Sparkline: stub()},
 	}
 	out := renderTo(t, PerformanceList(7, rows, 1, PerfFilter{Range: TimeRangeVM{Key: "24h"}, Sort: "throughput"}, []string{"production"}, 500,
-		// Предупреждение о схлопнутой кардинальности с примерами: без примеров
-		// человек не догадается, что в имя транзакции попал идентификатор.
+		// без примеров человек не догадается, что в имя транзакции попал идентификатор.
 		[]CardinalityNotice{{Field: "transaction name", Limit: 10000, Collapsed: 47213,
 			Samples: []string{"GET /users/8812/profile", "GET /users/8813/profile"}}}, "u@e.com", false))
 	if !strings.Contains(out, "GET /api") {
 		t.Error("список должен содержать транзакцию")
 	}
-	// Примеры схлопнутых значений обязаны быть на странице: диагностика без них
-	// сводится к «что-то пропало».
 	if !strings.Contains(out, "GET /users/8812/profile") {
 		t.Error("страница производительности должна показывать примеры схлопнутых имён")
 	}
@@ -258,16 +212,12 @@ func TestPerformanceList(t *testing.T) {
 	}
 }
 
-// TestEndpointDetail — деталь эндпойнта с медленными трейсами, perf-issue и
-// панелью web-vitals.
 func TestEndpointDetail(t *testing.T) {
 	d := EndpointDetailData{
 		ProjectID: 7, Transaction: "GET /api", Range: TimeRangeVM{Key: "24h"}, Environment: "production", ApdexT: 500,
 		LatencyChart: stub(), Throughput: stub(), Histogram: stub(), StepLabel: "1h",
 		Slowest: []SlowestTraceRow{
 			{Row: trace.TraceRow{TraceID: "t1", DurationUS: 120000, Timestamp: time.Now(), Status: "ok"}},
-			// Expired: спаны вне TTL — trace_id должен рендериться текстом, а не
-			// ссылкой на /traces/{id} (там теперь состояние «спаны истекли»).
 			{Row: trace.TraceRow{TraceID: "t2-expired", DurationUS: 90000, Timestamp: time.Now().Add(-60 * 24 * time.Hour), Status: "ok"}, Expired: true},
 		},
 		PerfIssues: []trace.PerfIssue{{ID: 1, Kind: trace.KindNPlusOne, Title: "N+1", Status: "unresolved", Count: 9}},
@@ -286,8 +236,7 @@ func TestEndpointDetail(t *testing.T) {
 	if !strings.Contains(out, "t2-expired") {
 		t.Error("истёкший трейс всё равно должен показывать trace_id текстом")
 	}
-	// Баг C: подсказка «Порога Apdex» (значение в мс) должна объяснять порог,
-	// а не индекс 0..1 (страница не показывает Apdex-индекс вообще).
+	// «Порог Apdex» (мс) — свой ключ apdex_threshold, не apdex (это подсказка индекса 0..1).
 	if !strings.Contains(out, i18n.T(ruCtx(), "perf.help.apdex_threshold")) {
 		t.Error("подсказка «Порог Apdex» должна использовать perf.help.apdex_threshold")
 	}
@@ -296,8 +245,6 @@ func TestEndpointDetail(t *testing.T) {
 	}
 }
 
-// TestMonitorDetail — деталь монитора: статус, проверки (ok и fail), открытый
-// и закрытый инциденты, права управления.
 func TestMonitorDetail(t *testing.T) {
 	m := uptime.Monitor{ID: 3, Name: "api", Kind: uptime.KindHTTP, Enabled: true, IntervalSeconds: 60, SSLExpiresAt: ptrTime(time.Now().Add(240 * time.Hour))}
 	now := time.Now()
@@ -315,15 +262,12 @@ func TestMonitorDetail(t *testing.T) {
 		t.Error("деталь монитора должна показать имя и статусы проверок")
 	}
 
-	// Без прав управления — рендер не должен падать и остаётся валидным.
 	noManage := renderTo(t, MonitorDetail(m, "down", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, false, false, "https://x", "u@e.com", false))
 	if !strings.Contains(noManage, "api") {
 		t.Error("монитор без прав всё равно рендерится")
 	}
 }
 
-// TestMonitorsList — список мониторов со статусами и правами; пустой список
-// даёт пустое состояние.
 func TestMonitorsList(t *testing.T) {
 	last := time.Now().Add(-2 * time.Minute)
 	rows := []MonitorRow{
@@ -340,8 +284,6 @@ func TestMonitorsList(t *testing.T) {
 	}
 }
 
-// TestMonitorFormEachKind — форма монитора рендерит поля для каждого типа
-// (http/tcp/dns/heartbeat) и режим редактирования с ошибкой.
 func TestMonitorFormEachKind(t *testing.T) {
 	base := MonitorFormData{
 		ProjectID: 7, IntervalSeconds: "60", TimeoutSeconds: "10", FailThreshold: "3", RecoveryThreshold: "2",
@@ -361,7 +303,6 @@ func TestMonitorFormEachKind(t *testing.T) {
 			t.Errorf("форма kind=%s должна содержать имя", k)
 		}
 	}
-	// Режим правки с ошибкой.
 	d := base
 	d.IsEdit = true
 	d.MonitorID = 9
@@ -373,7 +314,6 @@ func TestMonitorFormEachKind(t *testing.T) {
 	}
 }
 
-// TestAlerts — правила и каналы алертинга рендерятся с включённостью и целью.
 func TestAlerts(t *testing.T) {
 	rules := []alert.Rule{
 		{ID: 1, Kind: alert.KindNewIssue, Enabled: true},
@@ -387,15 +327,12 @@ func TestAlerts(t *testing.T) {
 	if !strings.Contains(out, "team@x.io") || !strings.Contains(out, "https://hook") {
 		t.Error("каналы должны отрендериться")
 	}
-	// С ошибкой.
 	outErr := renderTo(t, Alerts(7, nil, nil, false, true, nil, "ошибка сохранения", "u@e.com"))
 	if !strings.Contains(outErr, "ошибка сохранения") {
 		t.Error("ошибка должна отрендериться")
 	}
 }
 
-// TestOrgSettings — настройки орга с участниками разных ролей, квотами, SSO и
-// пригласительной ссылкой; владелец видит опасную зону.
 func TestOrgSettings(t *testing.T) {
 	o := org.Org{ID: 1, Slug: "acme", Name: "Acme", EventQuota: 100000}
 	members := []org.Member{
@@ -415,14 +352,12 @@ func TestOrgSettings(t *testing.T) {
 	if !strings.Contains(out, "https://gotcha/invite/tok") {
 		t.Error("пригласительная ссылка должна отрендериться")
 	}
-	// Не-владелец (uid=2): часть управления скрыта, но рендер валиден.
 	out2 := renderTo(t, OrgSettings(o, members, 2, quotas, false, "боом", "", SSOSettings{}, "admin@x.io", &QuotaBanner{Text: "лимит", Href: "/x"}, SubjectPurgeVM{}, nil, nil))
 	if !strings.Contains(out2, "боом") {
 		t.Error("ошибка орга должна отрендериться")
 	}
 }
 
-// TestTeams — команды с участниками и проектами, доступные для добавления.
 func TestTeams(t *testing.T) {
 	o := org.Org{ID: 1, Slug: "acme", Name: "Acme"}
 	orgMembers := []org.Member{{UserID: 1, Email: "a@x.io", Role: org.RoleOwner}, {UserID: 2, Email: "b@x.io", Role: org.RoleMember}}
@@ -434,15 +369,12 @@ func TestTeams(t *testing.T) {
 	if !strings.Contains(out, "Core") || !strings.Contains(out, "web") {
 		t.Error("команды и проекты должны отрендериться")
 	}
-	// Пустой список команд + ошибка.
 	outEmpty := renderTo(t, Teams(o, nil, orgMembers, orgProjects, nil, "ошибка", "u@e.com"))
 	if !strings.Contains(outEmpty, "ошибка") {
 		t.Error("ошибка должна отрендериться")
 	}
 }
 
-// TestProfilesList — обзор профилей с весами по типам; пустой даёт пустое
-// состояние.
 func TestProfilesList(t *testing.T) {
 	services := []profile.ServiceInfo{
 		{Service: "web", Type: "cpu", Transaction: "GET /", Weight: 2_000_000_000, Unit: "nanoseconds", Samples: 1000, Environments: []string{"production"}},
@@ -458,7 +390,6 @@ func TestProfilesList(t *testing.T) {
 	}
 }
 
-// TestProfileRegressionsList — регрессии профилей: открытая и закрытая.
 func TestProfileRegressionsList(t *testing.T) {
 	now := time.Now()
 	regs := []profile.Regression{
@@ -471,7 +402,6 @@ func TestProfileRegressionsList(t *testing.T) {
 	}
 }
 
-// TestMetricsListAndDetail — список метрик и деталь с перцентилями и лейблами.
 func TestMetricsListAndDetail(t *testing.T) {
 	metrics := []metric.MetricInfo{{Name: "http.rps", Type: "gauge", Unit: "1/s"}, {Name: "queue.depth", Type: "histogram", Unit: ""}}
 	out := renderTo(t, MetricsList(7, metrics, "production", "u@e.com", false, 0, false))
@@ -491,7 +421,6 @@ func TestMetricsListAndDetail(t *testing.T) {
 	}
 }
 
-// TestMetricAlerts — правила метрик со scope и инциденты open/resolved.
 func TestMetricAlerts(t *testing.T) {
 	now := time.Now()
 	rules := []metric.Rule{
@@ -502,8 +431,7 @@ func TestMetricAlerts(t *testing.T) {
 		{ID: 1, RuleID: 1, Status: "open", PeakValue: 150, CurrentValue: 120, StartedAt: now.Add(-time.Hour)},
 		{ID: 2, RuleID: 2, Status: "resolved", PeakValue: 0.9, StartedAt: now.Add(-2 * time.Hour), ResolvedAt: ptrTime(now.Add(-time.Hour))},
 	}
-	// Список известных имён метрик подсказывается в форме (datalist): опечатка
-	// в свободном поле создавала правило, которое никогда не срабатывает.
+	// datalist с известными именами — опечатка в свободном поле создавала бы правило, которое не сработает.
 	known := []string{"http.rps", "process.memory.usage"}
 	out := renderTo(t, MetricAlerts(7, rules, incidents, known, nil, "", "u@e.com"))
 	if !strings.Contains(out, "process.memory.usage") {
@@ -514,8 +442,6 @@ func TestMetricAlerts(t *testing.T) {
 	}
 }
 
-// TestWebVitalsList — список страниц с рейтингами всех трёх core-vitals;
-// пустой даёт пустое состояние.
 func TestWebVitalsList(t *testing.T) {
 	pages := []trace.PageVitals{
 		{Transaction: "/home", LCP: trace.Vital{Name: "lcp", P75: 2400, Rating: "good"}, INP: trace.Vital{Name: "inp", P75: 300, Rating: "needs-improvement"}, CLS: trace.Vital{Name: "cls", P75: 0.3, Rating: "poor"}, Count: 500, Environments: []string{"production"}},
@@ -530,8 +456,6 @@ func TestWebVitalsList(t *testing.T) {
 	}
 }
 
-// TestPerfIssuesListAndDetail — список perf-issue разных видов и деталь с
-// доказательствами (evidence) и правами.
 func TestPerfIssuesListAndDetail(t *testing.T) {
 	now := time.Now()
 	issues := []trace.PerfIssue{
@@ -553,7 +477,6 @@ func TestPerfIssuesListAndDetail(t *testing.T) {
 	}
 }
 
-// TestIncidentsAndRegressionsLists — списки инцидентов uptime и регрессий perf.
 func TestIncidentsAndRegressionsLists(t *testing.T) {
 	now := time.Now()
 	incRows := []IncidentRow{
@@ -575,8 +498,6 @@ func TestIncidentsAndRegressionsLists(t *testing.T) {
 	}
 }
 
-// TestRegressionsListSeasonalBadge — при включённом у проекта сезонном режиме
-// список показывает бейдж «Сезонный режим»; при выключенном — нет.
 func TestRegressionsListSeasonalBadge(t *testing.T) {
 	now := time.Now()
 	regs := []trace.Regression{
@@ -592,8 +513,6 @@ func TestRegressionsListSeasonalBadge(t *testing.T) {
 	}
 }
 
-// TestProbes — региональные пробы со статусами online/offline и токеном
-// новой пробы.
 func TestProbes(t *testing.T) {
 	now := time.Now()
 	rows := []ProbeRow{
@@ -606,18 +525,12 @@ func TestProbes(t *testing.T) {
 	}
 }
 
-// TestProjectSettings — настройки проекта с ключами (активный/отозванный,
-// типизированный, legacy и без типа вовсе), формами perf/регрессий и
-// собственным DSN каждого ключа.
 func TestProjectSettings(t *testing.T) {
 	project := org.Project{ID: 7, OrgID: 1, Slug: "web", Name: "Web", Platform: "go"}
 	keys := []ProjectKeyView{
 		{Key: org.Key{ID: 1, PublicKey: "pk_live", Kind: org.KindServer, Revoked: false}, DSN: "https://pk_live@dsn"},
 		{Key: org.Key{ID: 2, PublicKey: "pk_old", Kind: org.KindLegacy, Revoked: true}, DSN: "https://pk_old@dsn"},
-		// Kind == "" — строка, вставленная кодом, не знающим о типах (до
-		// миграции 0088 столбец не существовал вовсе); keyKindLabelKey
-		// обязана показать её как «без типа», как и явный KindLegacy, а не
-		// пустым/сломанным бейджем.
+		// Kind=="" — строки без миграции типов; keyKindLabelKey должна показать «без типа», как и явный legacy.
 		{Key: org.Key{ID: 3, PublicKey: "pk_untyped", Kind: "", Revoked: false}, DSN: "https://pk_untyped@dsn"},
 	}
 	perf := PerfSettingsForm{SampleRate: "1.0", ApdexMS: "500", NPlusOneMin: "5", SlowDBMs: "300"}
@@ -638,10 +551,7 @@ func TestProjectSettings(t *testing.T) {
 	if !strings.Contains(out, "https://pk_untyped@dsn") {
 		t.Error("ключ с Kind==\"\" должен показывать собственный DSN")
 	}
-	// Карточка конкретно ЭТОГО ключа (а не любая другая с badge-warn — legacy
-	// pk_old его тоже несёт) обязана получить предупреждающий бейдж и
-	// подпись «без типа». Границы карточки — <article class="key-card...">,
-	// пришедшая на смену <tr> таблицы (см. keyCard в projsettings.templ).
+	// бейдж ищем в карточке именно этого ключа — pk_old (legacy) тоже несёт badge-warn.
 	idx := strings.Index(out, "pk_untyped")
 	if idx == -1 {
 		t.Fatal("ключ с Kind==\"\" не найден в выводе")
@@ -660,7 +570,6 @@ func TestProjectSettings(t *testing.T) {
 	}
 }
 
-// TestProjectsListAndNoProjects — список проектов и пустой экран без проектов.
 func TestProjectsListAndNoProjects(t *testing.T) {
 	items := []ProjectListItem{
 		{Project: org.Project{ID: 1, Name: "web", Slug: "web", Platform: "go"}, CanManage: true},
@@ -670,8 +579,7 @@ func TestProjectsListAndNoProjects(t *testing.T) {
 	if !strings.Contains(out, "web") || !strings.Contains(out, "api") {
 		t.Error("список проектов должен содержать имена")
 	}
-	// №21: владельцу/админу — CTA в создание проекта, участнику — прежний
-	// текст без CTA; выход доступен обоим (chromeless-шапка).
+	// владельцу/админу — CTA в создание проекта, участнику — текст без CTA; выход доступен обоим.
 	np := renderTo(t, NoProjects(true, "u@e.com"))
 	if !strings.Contains(np, `href="/projects"`) || !strings.Contains(np, `action="/logout"`) {
 		t.Error("админский экран без проектов должен вести в /projects и давать выход")
@@ -685,7 +593,6 @@ func TestProjectsListAndNoProjects(t *testing.T) {
 	}
 }
 
-// TestOnboarding — форма онбординга рендерит переданные значения и ошибку.
 func TestOnboarding(t *testing.T) {
 	out := renderTo(t, Onboarding("занятый slug", "acme", "Acme", "web", "Web", "go", "u@e.com"))
 	if !strings.Contains(out, "занятый slug") || !strings.Contains(out, "Acme") {
@@ -693,7 +600,6 @@ func TestOnboarding(t *testing.T) {
 	}
 }
 
-// TestAlertDeliveries — журнал упавших доставок с усечённой ошибкой.
 func TestAlertDeliveries(t *testing.T) {
 	failed := []notify.FailedJob{
 		{ID: 1, ChannelKind: "email", Target: "a@b.c", LastError: strings.Repeat("x", 400), Attempts: 5, CreatedAt: time.Now()},
@@ -708,8 +614,7 @@ func TestAlertDeliveries(t *testing.T) {
 	}
 }
 
-// TestAlertDeliveriesMaskedHint — C3: не-admin видит подсказку про
-// маскировку рядом с таблицей упавших доставок, admin (canManage) — нет.
+// не-admin видит подсказку про маскировку рядом с таблицей, admin (canManage) — нет.
 func TestAlertDeliveriesMaskedHint(t *testing.T) {
 	failed := []notify.FailedJob{
 		{ID: 1, ChannelKind: "email", Target: "a@b.c", CreatedAt: time.Now()},
@@ -725,8 +630,6 @@ func TestAlertDeliveriesMaskedHint(t *testing.T) {
 	}
 }
 
-// TestProfilePage — страница профиля пользователя: связанные и подключаемые
-// провайдеры, наличие пароля, сообщение и ошибка.
 func TestProfilePage(t *testing.T) {
 	linked := []LinkedIdentity{{Provider: "yandex", DisplayName: "Яндекс", Email: "u@ya.ru", CanUnlink: true}}
 	linkable := []LinkableProvider{{Name: "github", DisplayName: "GitHub"}}
@@ -740,15 +643,12 @@ func TestProfilePage(t *testing.T) {
 	if strings.Contains(out, "/profile/instance-admin/transfer") {
 		t.Error("не-админу инстанса секция передачи роли не должна показываться")
 	}
-	// Без пароля и с ошибкой.
 	outErr := renderTo(t, Profile("u@e.com", "ошибка", "", false, nil, linkable, false, "u@e.com"))
 	if !strings.Contains(outErr, "ошибка") {
 		t.Error("ошибка профиля должна отрендериться")
 	}
 }
 
-// TestProfilePageInstanceAdmin — K7-1: администратору инстанса на /profile
-// показывается секция передачи роли.
 func TestProfilePageInstanceAdmin(t *testing.T) {
 	out := renderTo(t, Profile("u@e.com", "", "", true, nil, nil, true, "u@e.com"))
 	if !strings.Contains(out, "/profile/instance-admin/transfer") {
@@ -756,29 +656,22 @@ func TestProfilePageInstanceAdmin(t *testing.T) {
 	}
 }
 
-// TestIncidentsPagerOnEmptyPage (S1 regression guard): на out-of-range странице
-// (строк нет, total=0) пейджер обязан остаться — со ссылкой «назад» на первую
-// страницу, иначе пользователь застревает на пустом экране. До фикла пейджер
-// сидел внутри else-ветки len(rows)==0 и не рендерился.
+// пейджер обязан остаться на пустой out-of-range странице — иначе пользователь застревает без пути назад.
 func TestIncidentsPagerOnEmptyPage(t *testing.T) {
 	out := renderTo(t, IncidentsList(7, nil, 5, 0, "u@e.com"))
 	if !strings.Contains(out, `class="pagination"`) {
 		t.Fatalf("на пустой out-of-range странице нет пейджера:\n%s", out)
 	}
-	// pagerPrev(5,0)=1, а первая страница — это базовый URL без ?page.
+	// первая страница — базовый URL без ?page.
 	if !strings.Contains(out, `href="/projects/7/incidents"`) {
 		t.Errorf("ссылка «назад» должна вести на первую страницу:\n%s", out)
 	}
-	// total=0 → счётчик «N / M» не показываем.
 	if strings.Contains(out, "5 / 0") {
 		t.Errorf("не должно быть счётчика при total=0:\n%s", out)
 	}
 }
 
-// TestIssuesUntitledFallback — issue с пустым title (событие без exception/
-// message/transaction/logger): список рисует локализованную заглушку и в
-// ссылке, и в aria-label чекбокса массовых действий, деталь — в <h1> и
-// <title>. Пустой aria-label и пустой <h1> недопустимы ни при каком входе.
+// заглушка issues.untitled обязана попасть и в aria-label чекбокса, и в ссылку списка, и в <h1>/<title> детали.
 func TestIssuesUntitledFallback(t *testing.T) {
 	untitled := i18n.T(i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"}), "issues.untitled")
 	if untitled == "" || untitled == "issues.untitled" {
@@ -811,7 +704,6 @@ func TestIssuesUntitledFallback(t *testing.T) {
 		t.Errorf("деталь: <title> должен нести заглушку %q", untitled)
 	}
 
-	// Непустой заголовок заглушкой не подменяется.
 	rows[0].Issue.Title = "NPE"
 	list = renderTo(t, IssuesList(7, rows, IssuesFilter{Status: "unresolved"}, 1, 1, "u@e.com", nil, nil, GettingStartedVM{ProjectID: 7, Done: 3, Step2Done: true}, true, true, false))
 	if !strings.Contains(list, `aria-label="NPE"`) || strings.Contains(list, untitled) {
@@ -819,12 +711,8 @@ func TestIssuesUntitledFallback(t *testing.T) {
 	}
 }
 
-// TestChecklistVisibleTable — checklistVisible() (help.templ) табличкой по
-// всем сочетаниям флагов: карточка видна только при !Hidden && Done < 5 &&
-// CanOperate. Конъюнкт CanOperate раньше был недостижим по построению:
-// issues.go подставлял в него canAccess, уже подтверждённый гейтом страницы
-// (хвост 4 волны 1) — теперь значение идёт через canOperateProject, и
-// predicate обязан держать каждую ветку сам.
+// видна только при !Hidden && Done < 5 && CanOperate.
+// CanOperate раньше был недостижим по построению — теперь predicate обязан держать каждую ветку сам.
 func TestChecklistVisibleTable(t *testing.T) {
 	cases := []struct {
 		name       string

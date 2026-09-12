@@ -12,21 +12,12 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// mockMaint — profile.MaintenanceChecker для тестов: func-обёртка вместо
-// полноценного uptime.Service (интерфейс здесь в один метод — реальный сервис
-// с окнами обслуживания и своей БД тестам этого пакета не нужен). Калька
-// host.mockMaint / trace.mockMaint (Task 3/5).
 type mockMaint func(ctx context.Context, projectID int64, at time.Time) (bool, error)
 
 func (m mockMaint) InMaintenance(ctx context.Context, projectID int64, at time.Time) (bool, error) {
 	return m(ctx, projectID, at)
 }
 
-// TestRegressionEvaluatorMaintenanceSuppressesNotify — B3 Task 6: открытие
-// регрессии в окне обслуживания (Maint→true) пишет инцидент с
-// InMaintenance=true, но НЕ уведомляет; закрытие того же инцидента (ещё
-// внутри окна) тоже не уведомляет. Зеркало
-// trace.TestEvaluatorMaintenanceSuppressesRegressionNotify (Task 5).
 func TestRegressionEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -38,10 +29,7 @@ func TestRegressionEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 	asvc := alert.NewService(pool)
 	ob := notify.NewOutbox(pool)
 	pid := seedProject(t, pool)
-	// Канал ОБЯЗАТЕЛЕН: без него Notify не пишет outbox независимо от гейта
-	// (Notifier.Notify: «проект без включённых каналов — задач не будет»), и
-	// проверка outbox-очереди ниже доказывала бы только отсутствие канала, а
-	// не работу гейта maintenance.
+	// без канала Notify не пишет outbox независимо от гейта — проверка ниже была бы пустой.
 	if _, err := asvc.CreateChannel(ctx, alert.Channel{
 		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
 	}); err != nil {
@@ -62,8 +50,6 @@ func TestRegressionEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 		Maint: mockMaint(func(context.Context, int64, time.Time) (bool, error) { return true, nil }),
 	}
 
-	// Свежее окно: slow — 80 из 100 (80%). Прошлые дни: slow — 30 из 300 (10%) →
-	// база (медиана) ~0.1 → рост ≥ порога, доля ≥ пола, samples=100 → Open.
 	seedProfSample(t, ch, pid, "slow", 80, 5*time.Minute)
 	seedProfSample(t, ch, pid, "other", 20, 5*time.Minute)
 	seedProfSample(t, ch, pid, "slow", 30, 24*time.Hour)
@@ -83,9 +69,6 @@ func TestRegressionEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 		t.Errorf("outbox jobs after open tick = %d, want 0 (suppressed by maintenance)", len(jobs))
 	}
 
-	// Доля упала: очищаем и сеем низкую свежую долю → инцидент закрыт. Окно
-	// обслуживания всё ещё активно (mockMaint не менялся) — закрытие тоже не
-	// должно уведомлять.
 	if err := ch.Exec(ctx, "TRUNCATE TABLE profile_samples"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
@@ -100,10 +83,6 @@ func TestRegressionEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 	}
 }
 
-// TestRegressionEvaluatorMaintenanceFalseStillNotifies — Maint сконфигурирован
-// (не nil), но вне окна (InMaintenance→false): поведение обычное, уведомление
-// уходит. Отличает «MaintenanceChecker сконфигурирован и говорит false» от
-// «MaintenanceChecker==nil» (последнее уже покрыто TestRegressionEvaluatorOpenCloseAlertOnce).
 func TestRegressionEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -155,12 +134,6 @@ func TestRegressionEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 	}
 }
 
-// TestRegressionEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds —
-// дискриминирует close-гейт «по сохранённому флагу» (!open.InMaintenance) от
-// ошибочного «по текущему окну» (!e.inMaintenance(now)): открываем регрессию В
-// окне, затем окно ЗАКАНЧИВАЕТСЯ (mock→false) — close всё равно должен быть
-// подавлен, т.к. читается сохранённый флаг инцидента. Зеркало
-// trace.TestEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds.
 func TestRegressionEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
@@ -212,8 +185,6 @@ func TestRegressionEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *t
 		t.Fatalf("outbox jobs after open tick = %d, want 0 (suppressed by maintenance)", len(jobs))
 	}
 
-	// Окно обслуживания закончилось — close-гейт должен смотреть на
-	// сохранённый флаг, а не на текущее состояние окна.
 	inWindow = false
 
 	if err := ch.Exec(ctx, "TRUNCATE TABLE profile_samples"); err != nil {

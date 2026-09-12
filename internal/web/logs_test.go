@@ -23,9 +23,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
-// logsStack — мигрированные PG+CH и Handler для /projects/{id}/logs, как
-// newHostsStack (hosts_web_test.go). wireLogQuery=false моделирует стенд без
-// проводки логов (h.LogQuery остаётся nil) — для проверки гейта в logsList.
 type logsStack struct {
 	pool *pgxpool.Pool
 	ch   driver.Conn
@@ -56,8 +53,6 @@ func newLogsStack(t *testing.T, wireLogQuery bool) *logsStack {
 	return &logsStack{pool: pool, ch: ch, srv: srv, h: h, org: orgSvc, auth: authSvc}
 }
 
-// seedLogs пишет записи через log.Writer и синхронно доливает буфер (Close),
-// как internal/log/query_test.go — детерминированно для GET сразу после.
 func (s *logsStack) seedLogs(t *testing.T, projectID int64, records ...log.LogRecord) {
 	t.Helper()
 	w := log.NewWriter(s.ch)
@@ -91,9 +86,6 @@ func logsBasePath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/logs"
 }
 
-// TestWebLogsList покрывает основной сценарий Step 1 брифа: список виден
-// (тело/severity/service), фильтры severity/q сужают и сохраняются в форме,
-// чужой проект — 404, неавторизованный — редирект на /login.
 func TestWebLogsList(t *testing.T) {
 	s := newLogsStack(t, true)
 	_, ownerCookie, project := newLogsProject(t, s, "logs-owner@example.com", "logs-co", "logs-proj")
@@ -126,7 +118,6 @@ func TestWebLogsList(t *testing.T) {
 		}
 	}
 
-	// ?severity=error сужает список и остаётся отмеченным в форме.
 	resp = getWithCookie(t, s.srv, base+"?severity=error", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -147,7 +138,6 @@ func TestWebLogsList(t *testing.T) {
 		t.Errorf("чекбокс severity=info отмечен, хотя не выбран: %s", text)
 	}
 
-	// ?q=boom фильтрует по телу.
 	resp = getWithCookie(t, s.srv, base+"?q=boom", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -159,7 +149,6 @@ func TestWebLogsList(t *testing.T) {
 		t.Errorf("q=boom потерял подходящую запись: %s", text)
 	}
 
-	// Чужой (не член организации) → 404.
 	_, outsider := orgSettingsRegister(t, s.auth, "logs-outsider@example.com")
 	resp = getWithCookie(t, s.srv, base, outsider)
 	io.Copy(io.Discard, resp.Body)
@@ -168,7 +157,6 @@ func TestWebLogsList(t *testing.T) {
 		t.Fatalf("outsider status = %d, want 404", resp.StatusCode)
 	}
 
-	// Неавторизованный → редирект на /login.
 	resp = getWithCookie(t, s.srv, base, nil)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -180,13 +168,6 @@ func TestWebLogsList(t *testing.T) {
 	}
 }
 
-// TestWebLogsListTraceLink — правка ревью UX Important #4: trace_id
-// раскрытой строки лога должен вести на реальную страницу трейса
-// (/traces/{trace_id}), а не на общий раздел «Производительность» без
-// пометки, и появляться независимо от span_id (раньше ссылка требовала ОБА
-// поля, хотя у самого трейса своей страницы достаточно trace_id). Заодно
-// (правка Minor #2) — таблица атрибутов раскрытой строки должна получить
-// заголовок (мёртвый до этой правки ключ "logs.table.attributes").
 func TestWebLogsListTraceLink(t *testing.T) {
 	s := newLogsStack(t, true)
 	_, ownerCookie, project := newLogsProject(t, s, "logs-tracelink-owner@example.com", "logs-tracelink-co", "logs-tracelink-proj")
@@ -196,7 +177,7 @@ func TestWebLogsListTraceLink(t *testing.T) {
 		log.LogRecord{
 			Timestamp: now.Add(-time.Minute), ObservedTS: now.Add(-time.Minute),
 			Severity: log.SevInfo, Body: "row-with-trace", Service: "api",
-			TraceID:       "trace-abc-123", // без SpanID — ссылка обязана появиться и так
+			TraceID:       "trace-abc-123",
 			LogAttributes: map[string]string{"http.method": "GET"},
 		},
 	)
@@ -212,9 +193,6 @@ func TestWebLogsListTraceLink(t *testing.T) {
 	if !strings.Contains(text, `href="/traces/trace-abc-123"`) {
 		t.Errorf("trace_id должен вести на /traces/trace-abc-123: %s", text)
 	}
-	// Именно строка trace_id (не вся страница — в rail-навигации всегда есть
-	// своя ссылка "Транзакции" на /projects/{id}/performance, это отдельное
-	// и легитимное) не должна вести на общий раздел без пометки.
 	i := strings.Index(text, `class="log-row-trace"`)
 	if i == -1 {
 		t.Fatalf("не нашли блок log-row-trace: %s", text)
@@ -228,9 +206,6 @@ func TestWebLogsListTraceLink(t *testing.T) {
 	}
 }
 
-// TestWebLogsListRangeClamped — правка ревью UX Important #2 / ops P2:
-// выбранный пресет окна шире срока хранения логов должен показывать явную
-// подпись о клампе, а не молча урезанный список без объяснения.
 func TestWebLogsListRangeClamped(t *testing.T) {
 	s := newLogsStack(t, true)
 	s.h.LogRetentionDays = 3
@@ -243,7 +218,6 @@ func TestWebLogsListRangeClamped(t *testing.T) {
 
 	base := logsBasePath(project.ID)
 
-	// period=30d шире retentionDays=3 — подпись обязана появиться.
 	resp := getWithCookie(t, s.srv, base+"?period=30d", ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -258,7 +232,6 @@ func TestWebLogsListRangeClamped(t *testing.T) {
 		t.Errorf("подпись о клампе должна упомянуть retentionDays=3 (i18n-подстановка {days}): %s", text)
 	}
 
-	// period=1h короче retentionDays=3 — клампа нет, подписи тоже.
 	resp = getWithCookie(t, s.srv, base+"?period=1h", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -268,9 +241,6 @@ func TestWebLogsListRangeClamped(t *testing.T) {
 	}
 }
 
-// TestWebLogsListEmptyStates — оба пустых состояния: проект без единого лога
-// («logs.empty.none») и проект с логами, но фильтр ничего не оставил
-// («logs.empty.filter»).
 func TestWebLogsListEmptyStates(t *testing.T) {
 	s := newLogsStack(t, true)
 	_, ownerCookie, project := newLogsProject(t, s, "logs-empty-owner@example.com", "logs-empty-co", "logs-empty-proj")
@@ -306,10 +276,6 @@ func TestWebLogsListEmptyStates(t *testing.T) {
 	}
 }
 
-// TestWebLogsListCursorPagination — ?before=<unix_ms>&tskip=<n> отрезает
-// более новые строки и пропускает уже показанные строки тай-группы (та же
-// семантика, что и log.Query.List, проверенная в internal/log/query_test.go;
-// здесь — что параметры действительно долетают от query до log.ListFilter).
 func TestWebLogsListCursorPagination(t *testing.T) {
 	s := newLogsStack(t, true)
 	_, ownerCookie, project := newLogsProject(t, s, "logs-cursor-owner@example.com", "logs-cursor-co", "logs-cursor-proj")
@@ -326,7 +292,6 @@ func TestWebLogsListCursorPagination(t *testing.T) {
 
 	base := logsBasePath(project.ID)
 
-	// Без курсора — видны все три.
 	resp := getWithCookie(t, s.srv, base, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -339,7 +304,6 @@ func TestWebLogsListCursorPagination(t *testing.T) {
 
 	before := strconv.FormatInt(t2.UnixMilli(), 10)
 
-	// before=t2, tskip=0 — отрезает t3 (новее), t2 и t1 остаются.
 	resp = getWithCookie(t, s.srv, base+"?before="+before, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -351,8 +315,6 @@ func TestWebLogsListCursorPagination(t *testing.T) {
 		t.Errorf("before=t2 потерял строки на границе или старее: %s", text)
 	}
 
-	// before=t2, tskip=1 — пропускает саму строку t2 (уже показана на
-	// предыдущей «странице»), остаётся только t1.
 	resp = getWithCookie(t, s.srv, base+"?before="+before+"&tskip=1", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -365,29 +327,13 @@ func TestWebLogsListCursorPagination(t *testing.T) {
 	}
 }
 
-// logRowBodyRe вытаскивает тело строки лога из <summary> раскрытия
-// (logRowView в logs.templ — <summary>{ logBodyPreview(...) }</summary>, БЕЗ
-// атрибутов). Осознанно НЕ используем плоский "(?s)<summary>(.*?)</summary>"
-// по всему документу: у шаблона хватает других plain <summary> без класса —
-// переключатель проекта в топбаре (details class="proj-switch"><summary>...)
-// и мобильное disclosure-меню (class="mobile-nav") тоже рендерят его.
-// Поэтому сначала вырезаем <tbody>...</tbody> (см. logRowsTBodyRe), и уже
-// внутри него ищем <summary>.
 var logRowsTBodyRe = regexp.MustCompile(`(?s)<tbody>(.*?)</tbody>`)
 var logRowBodyRe = regexp.MustCompile(`<summary>([^<]*)</summary>`)
 
-// olderHrefRe вытаскивает href ссылки «показать старее» — единственный
-// <nav class="pagination"> на странице логов (см. logs.templ, LogsScreen).
 var olderHrefRe = regexp.MustCompile(`<nav class="pagination"[^>]*><a href="([^"]+)">`)
 
-// beforeParamRe — значение ?before= в извлечённой ссылке, для подсчёта, сколько
-// страниц подряд идут с ОДНИМ И ТЕМ ЖЕ курсором (тай растягивается больше чем
-// на страницу — именно этот путь ловит off-by-one в накоплении TieSkip).
 var beforeParamRe = regexp.MustCompile(`before=(\d+)`)
 
-// logRowBodiesOnPage возвращает тела строк лога, показанных на текущей
-// странице (см. logRowBodyRe), пусто — если таблицы на странице нет
-// (пустое состояние).
 func logRowBodiesOnPage(t *testing.T, htmlBody string) []string {
 	t.Helper()
 	m := logRowsTBodyRe.FindStringSubmatch(htmlBody)
@@ -401,14 +347,6 @@ func logRowBodiesOnPage(t *testing.T, htmlBody string) []string {
 	return out
 }
 
-// TestWebLogsListCursorNoDupNoLoss — курсор «показать старее», пройденный по
-// РЕАЛЬНО СГЕНЕРИРОВАННОЙ хендлером ссылке (не собранной вручную в тесте, как
-// в TestWebLogsListCursorPagination выше): тай-группа (250 строк на одной
-// timestamp) больше лимита страницы (100) и заведомо растягивается на
-// НЕСКОЛЬКО страниц подряд с ОДНИМ И ТЕМ ЖЕ Before и растущим TieSkip — именно
-// эта конфигурация ловит off-by-one в накоплении (web.nextLogCursor). Полное
-// прохождение курсора обязано покрыть весь засеянный набор без дублей и без
-// потерь.
 func TestWebLogsListCursorNoDupNoLoss(t *testing.T) {
 	s := newLogsStack(t, true)
 	_, ownerCookie, project := newLogsProject(t, s, "logs-walk-owner@example.com", "logs-walk-co", "logs-walk-proj")
@@ -421,9 +359,6 @@ func TestWebLogsListCursorNoDupNoLoss(t *testing.T) {
 	want := map[string]bool{}
 	var records []log.LogRecord
 
-	// Самые свежие distinctCount строк — каждая на своей отметке времени, не
-	// участвуют в тай-группе; должны попасть на первую страницу вместе с
-	// частью тай-группы (тай — сразу следом, старше).
 	for i := 0; i < distinctCount; i++ {
 		ts := now.Add(-time.Duration(i) * time.Second)
 		body := "row-" + strconv.Itoa(i)
@@ -431,9 +366,6 @@ func TestWebLogsListCursorNoDupNoLoss(t *testing.T) {
 		want[body] = true
 	}
 
-	// Тай-группа: все tieCount строк на ОДНОЙ отметке времени, старше всех
-	// distinctCount — ложится ровно на границу первой страницы и растягивается
-	// на несколько последующих (лимит 100 << 250).
 	tieTS := now.Add(-time.Duration(distinctCount+1) * time.Second)
 	for i := 0; i < tieCount; i++ {
 		body := "tie-" + strconv.Itoa(i)
@@ -441,7 +373,6 @@ func TestWebLogsListCursorNoDupNoLoss(t *testing.T) {
 		want[body] = true
 	}
 
-	// Хвостовая строка старше тай-группы — маркер «страниц больше нет».
 	tailTS := tieTS.Add(-time.Minute)
 	records = append(records, log.LogRecord{Timestamp: tailTS, ObservedTS: tailTS, Severity: log.SevInfo, Body: "tail"})
 	want["tail"] = true
@@ -475,7 +406,7 @@ func TestWebLogsListCursorNoDupNoLoss(t *testing.T) {
 
 		m := olderHrefRe.FindStringSubmatch(text)
 		if m == nil {
-			break // страниц больше нет
+			break
 		}
 		href := html.UnescapeString(m[1]) // атрибут href экранирован (& -> &amp;)
 		if bm := beforeParamRe.FindStringSubmatch(href); bm != nil {
@@ -509,15 +440,8 @@ func TestWebLogsListCursorNoDupNoLoss(t *testing.T) {
 	}
 }
 
-// logFacetSectionRe вырезает одну секцию сайдбара фасетов (logFacetSection в
-// logs.templ) — секции идут в фиксированном порядке severity/service/
-// environment (см. logFacetsSidebar), поэтому индекс совпадения однозначно
-// говорит, какой это фасет, без завязки на локализованный заголовок.
 var logFacetSectionRe = regexp.MustCompile(`(?s)<section class="card logs-facet">(.*?)</section>`)
 
-// logFacetItemRe вытаскивает одно значение фасета внутри секции: класс
-// ссылки (logs-facet-value или logs-facet-value logs-facet-value-active),
-// href, метку и count (logFacetSection в logs.templ).
 var logFacetItemRe = regexp.MustCompile(`<a class="(logs-facet-value[^"]*)" href="([^"]+)"[^>]*>([^<]*)</a>\s*<span class="logs-facet-count">(\d+)</span>`)
 
 type logFacetItem struct {
@@ -527,8 +451,6 @@ type logFacetItem struct {
 	Count  string
 }
 
-// logFacetItems разбирает N-ю (0-based) секцию сайдбара фасетов из HTML
-// страницы логов.
 func logFacetItems(t *testing.T, htmlBody string, sectionIdx int) []logFacetItem {
 	t.Helper()
 	sections := logFacetSectionRe.FindAllStringSubmatch(htmlBody, -1)
@@ -556,10 +478,6 @@ func findFacetItem(items []logFacetItem, label string) (logFacetItem, bool) {
 	return logFacetItem{}, false
 }
 
-// findSeverityInfoItem — значение фасета severity для уровня "info": метка
-// уже локализована (severityLabel), а тест не знает заранее, ru или en
-// отдаёт стенд по умолчанию (тот же приём, что и остальные тесты файла,
-// проверяющие оба варианта литералом).
 func findSeverityInfoItem(items []logFacetItem) (logFacetItem, bool) {
 	if it, ok := findFacetItem(items, "Info"); ok {
 		return it, true
@@ -567,10 +485,6 @@ func findSeverityInfoItem(items []logFacetItem) (logFacetItem, bool) {
 	return findFacetItem(items, "Инфо")
 }
 
-// TestWebLogsListFacets — задача 4 плана C2: встроенные фасеты severity/
-// service/environment в сайдбаре — counts, отсутствие активной метки без
-// фильтров, клик по значению (переход по сгенерированной ссылке) реально
-// сужает список и помечает значение активным.
 func TestWebLogsListFacets(t *testing.T) {
 	s := newLogsStack(t, true)
 	_, ownerCookie, project := newLogsProject(t, s, "logs-facets-owner@example.com", "logs-facets-co", "logs-facets-proj")
@@ -619,9 +533,6 @@ func TestWebLogsListFacets(t *testing.T) {
 		t.Fatalf("environment facet: staging count != 1: %+v", envItems)
 	}
 
-	// Клик по значению "worker" фасета service — переход по СГЕНЕРИРОВАННОЙ
-	// ссылке (не собранной вручную в тесте) должен сузить список до
-	// service=worker и пометить это значение активным.
 	resp = getWithCookie(t, s.srv, svcWorker.Href, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -645,8 +556,6 @@ func TestWebLogsListFacets(t *testing.T) {
 		t.Fatalf("после выбора worker значение api не должно быть активным: %+v", svcItemsAfter)
 	}
 
-	// exclude-self: ?severity=error всё равно показывает ВСЕ уровни в фасете
-	// severity (не только error) — счётчик info не должен упасть до 0.
 	resp = getWithCookie(t, s.srv, base+"?severity=error", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -658,16 +567,6 @@ func TestWebLogsListFacets(t *testing.T) {
 	}
 }
 
-// TestFacetValueHasExcludeLink — задача 7: у каждого значения встроенных
-// фасетов (severity/service/environment) рядом с обычной ссылкой появляется
-// вторая — «исключить» (logExcludeURL). Проверка идёт ВНУТРИ секции фасета,
-// а не по всей странице: строка лога уже несёт свои собственные ссылки
-// исключения severity/service (задача 6, logRowSeverityActions/
-// logRowServiceActions) — проверка по всей странице не отличила бы вклад
-// фасета от уже существующих кнопок строки. Environment вдобавок и есть тот
-// случай, который у строки лога кнопок исключения не имеет вовсе (колонки
-// под окружение в строке нет, см. докблок разметки logFacetSection) — там
-// такая ссылка может появиться только из фасета.
 func TestFacetValueHasExcludeLink(t *testing.T) {
 	s := newLogsStack(t, true)
 	projectID, cookie, _ := newLogsProject(t, s, "facet-exclude@example.com", "facet-exclude-org", "facet-exclude-proj")
@@ -705,20 +604,11 @@ func TestFacetValueHasExcludeLink(t *testing.T) {
 	if !strings.Contains(envSection, "environment_not=production") {
 		t.Fatalf("у значения фасета environment «production» нет ссылки исключения: %s", envSection)
 	}
-	// Собственная сборка URL вместо logExcludeURL/logsPageURLValues (которая
-	// курсор намеренно не включает) потащила бы в ссылку исключения
-	// before/tskip текущей страницы.
 	if strings.Contains(svcSection, "before=") || strings.Contains(svcSection, "tskip=") {
 		t.Errorf("ссылка исключения фасета service тащит курсор пагинации: %s", svcSection)
 	}
 }
 
-// TestWebLogsListAttrFacets — задача 5 плана C2: сайдбар атрибут-фасетов
-// (4-я секция, после severity/service/environment, см. logAttrFacetSection в
-// logs.templ) — авто-обнаруженные ключи со счётчиками видны сразу; клик по
-// ключу (переход по СГЕНЕРИРОВАННОЙ ссылке ?facet=<key>) раскрывает его
-// значения; клик по значению добавляет точечный фильтр и сужает список;
-// повторный клик по уже активному значению снимает фильтр.
 func TestWebLogsListAttrFacets(t *testing.T) {
 	s := newLogsStack(t, true)
 	_, ownerCookie, project := newLogsProject(t, s, "logs-attrfacets-owner@example.com", "logs-attrfacets-co", "logs-attrfacets-proj")
@@ -751,8 +641,6 @@ func TestWebLogsListAttrFacets(t *testing.T) {
 	}
 	text := string(body)
 
-	// Сайдбар (4-я секция, индекс 3): ключ http.method виден сразу со
-	// счётчиком, значения ещё не раскрыты (ссылка на раскрытие).
 	attrItems := logFacetItems(t, text, 3)
 	keyItem, ok := findFacetItem(attrItems, "http.method")
 	if !ok || keyItem.Count != "3" {
@@ -765,8 +653,6 @@ func TestWebLogsListAttrFacets(t *testing.T) {
 		t.Fatalf("значения нераскрытого ключа не должны быть видны: %+v", attrItems)
 	}
 
-	// Клик по ключу (сгенерированная ссылка ?facet=http.method) раскрывает
-	// значения GET/POST со своими counts.
 	resp = getWithCookie(t, s.srv, keyItem.Href, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -791,8 +677,6 @@ func TestWebLogsListAttrFacets(t *testing.T) {
 		t.Fatalf("без выбранного значения ни GET, ни POST не должны быть активны: get=%v post=%v", getValue.Active, postValue.Active)
 	}
 
-	// Клик по значению GET (сгенерированная ссылка) сужает список до
-	// log_attributes[http.method]=GET и помечает значение активным.
 	resp = getWithCookie(t, s.srv, getValue.Href, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -812,8 +696,6 @@ func TestWebLogsListAttrFacets(t *testing.T) {
 		t.Fatalf("после клика значение GET должно быть активным: %+v", afterClickItems)
 	}
 
-	// Повторный клик по уже активному значению GET снимает фильтр — список
-	// возвращается к полному набору http.method.
 	resp = getWithCookie(t, s.srv, getAfter.Href, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -823,8 +705,6 @@ func TestWebLogsListAttrFacets(t *testing.T) {
 	}
 }
 
-// TestWebLogsListNilLogQuery404 — h.LogQuery == nil (стенд без проводки
-// логов) отдаёт 404, а не паникует на разыменовании.
 func TestWebLogsListNilLogQuery404(t *testing.T) {
 	s := newLogsStack(t, false)
 	_, ownerCookie, project := newLogsProject(t, s, "logs-noquery-owner@example.com", "logs-noquery-co", "logs-noquery-proj")
@@ -837,19 +717,11 @@ func TestWebLogsListNilLogQuery404(t *testing.T) {
 	}
 }
 
-// attrKeyJSON — форма одного элемента ответа logsAttrKeys (см.
-// web.attrKeyJSON) — тест собственную копию не импортирует (неэкспортируемый
-// тип другого пакета), декодирует в такую же структуру по контракту JSON.
 type attrKeyJSON struct {
 	Key   string `json:"key"`
 	Count int64  `json:"count"`
 }
 
-// TestWebLogsAttrKeysAutocomplete — задача 6 плана C2, §6 спеки: JSON-
-// эндпоинт GET /projects/{id}/logs/attr-keys?q=<prefix> фильтрует по
-// префиксу ключа, чужой проект → 404, неавторизованный → редирект на
-// /login, стенд без проводки логов (h.LogQuery==nil) → 404 (тот же гейт,
-// что у самого списка).
 func TestWebLogsAttrKeysAutocomplete(t *testing.T) {
 	s := newLogsStack(t, true)
 	_, ownerCookie, project := newLogsProject(t, s, "logs-attrkeys-owner@example.com", "logs-attrkeys-co", "logs-attrkeys-proj")
@@ -870,7 +742,6 @@ func TestWebLogsAttrKeysAutocomplete(t *testing.T) {
 
 	base := logsBasePath(project.ID) + "/attr-keys"
 
-	// Префикс "http." отфильтровывает db.statement.
 	resp := getWithCookie(t, s.srv, base+"?q=http.", ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -895,7 +766,6 @@ func TestWebLogsAttrKeysAutocomplete(t *testing.T) {
 		t.Errorf("attr-keys q=http. не должен вернуть db.statement (не совпадает по префиксу): %+v", got)
 	}
 
-	// Без q — все обнаруженные ключи, включая db.statement.
 	resp = getWithCookie(t, s.srv, base, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -911,7 +781,6 @@ func TestWebLogsAttrKeysAutocomplete(t *testing.T) {
 		t.Errorf("attr-keys без q должен вернуть db.statement тоже: %+v", got)
 	}
 
-	// Чужой (не член организации) → 404.
 	_, outsider := orgSettingsRegister(t, s.auth, "logs-attrkeys-outsider@example.com")
 	resp = getWithCookie(t, s.srv, base+"?q=http.", outsider)
 	io.Copy(io.Discard, resp.Body)
@@ -920,7 +789,6 @@ func TestWebLogsAttrKeysAutocomplete(t *testing.T) {
 		t.Fatalf("outsider status = %d, want 404", resp.StatusCode)
 	}
 
-	// Неавторизованный → редирект на /login.
 	resp = getWithCookie(t, s.srv, base+"?q=http.", nil)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -932,13 +800,6 @@ func TestWebLogsAttrKeysAutocomplete(t *testing.T) {
 	}
 }
 
-// TestWebLogsAttrKeysAutocompleteWindow — правка ревью UX Important #3 (§6
-// спеки, C2): автокомплит ключей атрибутов ищет в ТЕКУЩЕМ окне фильтра
-// (period=/start=/end= из адресной строки, дописывает logs.js), а не в
-// фиксированных последних 24ч. Узкое окно (period=1h) не должно вернуть
-// ключ записи трёхчасовой давности — иначе подсказка вела бы к ключу,
-// которого в видимой при этом окне выборке нет; широкое окно (7d) видит
-// обе записи.
 func TestWebLogsAttrKeysAutocompleteWindow(t *testing.T) {
 	s := newLogsStack(t, true)
 	_, ownerCookie, project := newLogsProject(t, s, "logs-attrkeys-window-owner@example.com", "logs-attrkeys-window-co", "logs-attrkeys-window-proj")
@@ -959,7 +820,6 @@ func TestWebLogsAttrKeysAutocompleteWindow(t *testing.T) {
 
 	base := logsBasePath(project.ID) + "/attr-keys"
 
-	// Узкое окно (последний час) — виден только recent.key.
 	resp := getWithCookie(t, s.srv, base+"?period=1h", ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -981,8 +841,6 @@ func TestWebLogsAttrKeysAutocompleteWindow(t *testing.T) {
 		t.Errorf("period=1h должен вернуть recent.key: %+v", got)
 	}
 
-	// Широкое окно (7d) — виден и старый ключ тоже (и другой ключ кеша, чем у
-	// period=1h выше — не должно склеиться с уже закешированным ответом).
 	resp = getWithCookie(t, s.srv, base+"?period=7d", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -1002,8 +860,6 @@ func TestWebLogsAttrKeysAutocompleteWindow(t *testing.T) {
 	}
 }
 
-// TestWebLogsAttrKeysAutocompleteNilLogQuery404 — тот же гейт, что у
-// logsList: без проводки логов эндпоинт отдаёт 404, а не паникует.
 func TestWebLogsAttrKeysAutocompleteNilLogQuery404(t *testing.T) {
 	s := newLogsStack(t, false)
 	_, ownerCookie, project := newLogsProject(t, s, "logs-attrkeys-noquery-owner@example.com", "logs-attrkeys-noquery-co", "logs-attrkeys-noquery-proj")
@@ -1016,20 +872,12 @@ func TestWebLogsAttrKeysAutocompleteNilLogQuery404(t *testing.T) {
 	}
 }
 
-// TestWebLogsAttrFacetsExpandedKeyOutsideTop — carry-fix из ревью задачи T5
-// (§6 спеки, задача 6): раскрытый в URL ключ (?facet=<key>), найденный
-// автокомплитом, но не входящий в топ-N сайдбара (logsAttrKeysLimit=20),
-// всё равно должен посчитаться и отрендериться со своими значениями — иначе
-// «кликнул из автокомплита — ничего не раскрылось» (см. NewAttrFacets в
-// logs.templ). Здесь topN намеренно исчерпан 20 РАЗНЫМИ ключами большей
-// частоты, а искомый rare.key — 21-й, редкий, гарантированно вне топа.
 func TestWebLogsAttrFacetsExpandedKeyOutsideTop(t *testing.T) {
 	s := newLogsStack(t, true)
 	_, ownerCookie, project := newLogsProject(t, s, "logs-attrtop-owner@example.com", "logs-attrtop-co", "logs-attrtop-proj")
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	var records []log.LogRecord
-	// 20 частых ключей (по 3 записи каждый) занимают весь топ сайдбара.
 	for i := 0; i < 20; i++ {
 		key := "common.key" + strconv.Itoa(i)
 		for j := 0; j < 3; j++ {
@@ -1040,7 +888,6 @@ func TestWebLogsAttrFacetsExpandedKeyOutsideTop(t *testing.T) {
 			})
 		}
 	}
-	// rare.key — редкий, один раз, гарантированно вне топ-20 по count DESC.
 	records = append(records, log.LogRecord{
 		Timestamp: now.Add(-500 * time.Millisecond), ObservedTS: now,
 		Severity: log.SevInfo, Body: "row-rare", Service: "api",
@@ -1048,7 +895,6 @@ func TestWebLogsAttrFacetsExpandedKeyOutsideTop(t *testing.T) {
 	})
 	s.seedLogs(t, project.ID, records...)
 
-	// Сайдбар не показывает rare.key в списке ключей (он вне топ-20).
 	base := logsBasePath(project.ID)
 	resp := getWithCookie(t, s.srv, base, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
@@ -1061,7 +907,6 @@ func TestWebLogsAttrFacetsExpandedKeyOutsideTop(t *testing.T) {
 		t.Fatalf("rare.key не должен быть виден в топ-N сайдбара (тест сам себя не проверяет): %+v", attrItems)
 	}
 
-	// Автокомплит его находит.
 	resp = getWithCookie(t, s.srv, base+"/attr-keys?q=rare.", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -1073,8 +918,6 @@ func TestWebLogsAttrFacetsExpandedKeyOutsideTop(t *testing.T) {
 		t.Fatalf("attr-keys q=rare. = %+v, want [{rare.key 1}]", found)
 	}
 
-	// Клик по найденному автокомплитом ключу (?facet=rare.key) — carry-fix:
-	// значение rare-value должно отрендериться, хотя ключ вне топ-N.
 	resp = getWithCookie(t, s.srv, base+"?facet=rare.key", ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -1095,11 +938,6 @@ func TestWebLogsAttrFacetsExpandedKeyOutsideTop(t *testing.T) {
 	}
 }
 
-// TestWebLogsTraceIDFilterChip — задача 2 плана C3: экран /logs принимает
-// ?trace_id=, показывает его снимаемым чипом (укороченный id) и переносит
-// параметр в ссылки фасетов сайдбара (не только пагинацию — logsPageURLValues
-// единая точка сборки для обеих). Ссылка снятия чипа ведёт на тот же экран
-// БЕЗ trace_id.
 func TestWebLogsTraceIDFilterChip(t *testing.T) {
 	s := newLogsStack(t, true)
 	_, ownerCookie, project := newLogsProject(t, s, "logs-tracechip-owner@example.com", "logs-tracechip-co", "logs-tracechip-proj")
@@ -1127,7 +965,6 @@ func TestWebLogsTraceIDFilterChip(t *testing.T) {
 	}
 	text := string(body)
 
-	// Список сужен до строки этого trace_id (Task 1, query-слой).
 	if strings.Contains(text, "row-without-trace") {
 		t.Errorf("trace_id=%s не сузил список: %s", traceID, text)
 	}
@@ -1135,13 +972,10 @@ func TestWebLogsTraceIDFilterChip(t *testing.T) {
 		t.Errorf("trace_id=%s потерял свою же строку: %s", traceID, text)
 	}
 
-	// Чип виден с укороченным id.
 	if !strings.Contains(text, "abcd1234") {
 		t.Errorf("чип с укороченным trace_id не найден: %s", text)
 	}
 
-	// Facet-ссылки (сайдбар) несут trace_id дальше — фасет service гарантированно
-	// есть (одна строка в скоупе trace_id, service=api).
 	svcItems := logFacetItems(t, text, 1)
 	svcAPI, ok := findFacetItem(svcItems, "api")
 	if !ok {
@@ -1151,7 +985,6 @@ func TestWebLogsTraceIDFilterChip(t *testing.T) {
 		t.Errorf("facet-ссылка service=api не несёт trace_id: %s", svcAPI.Href)
 	}
 
-	// Ссылка снятия чипа ведёт на тот же экран логов БЕЗ trace_id.
 	removeRe := regexp.MustCompile(`<a class="chip-remove" href="([^"]+)"[^>]*title="[^"]*"`)
 	m := removeRe.FindStringSubmatch(text)
 	if m == nil {
@@ -1165,7 +998,6 @@ func TestWebLogsTraceIDFilterChip(t *testing.T) {
 		t.Errorf("ссылка снятия чипа должна вести на %s, получили %s", base, removeHref)
 	}
 
-	// Переход по ссылке снятия чипа реально убирает скоуп по trace_id.
 	resp = getWithCookie(t, s.srv, removeHref, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -1178,10 +1010,6 @@ func TestWebLogsTraceIDFilterChip(t *testing.T) {
 	}
 }
 
-// TestWebLogsAttrFilterChip — аудит UX P1: ссылка «Логи хоста» ставит
-// resource-attr фильтр ?attr=res:host.name:X. До фикса он был НЕВИДИМ (чип
-// показывался только для trace_id). Теперь активный attr-фильтр (в т.ч.
-// resource, у которого фасета в сайдбаре нет) рендерится снимаемым чипом.
 func TestWebLogsAttrFilterChip(t *testing.T) {
 	s := newLogsStack(t, true)
 	_, ownerCookie, project := newLogsProject(t, s, "logs-attrchip-owner@example.com", "logs-attrchip-co", "logs-attrchip-proj")
@@ -1209,7 +1037,6 @@ func TestWebLogsAttrFilterChip(t *testing.T) {
 	}
 	text := string(body)
 
-	// Список сужен до строки этого хоста (существующий attr-фильтр C2).
 	if strings.Contains(text, "row-other-host") {
 		t.Errorf("attr host.name=web-01 не сузил список: %s", text)
 	}
@@ -1217,12 +1044,10 @@ func TestWebLogsAttrFilterChip(t *testing.T) {
 		t.Errorf("attr host.name=web-01 потерял свою же строку: %s", text)
 	}
 
-	// Чип активного attr-фильтра виден с подписью "host.name: web-01".
 	if !strings.Contains(text, "host.name: web-01") {
 		t.Errorf("чип attr-фильтра host.name не найден: %s", text)
 	}
 
-	// Ссылка снятия чипа ведёт на тот же экран БЕЗ этого attr.
 	removeRe := regexp.MustCompile(`<a class="chip-remove" href="([^"]+)"`)
 	m := removeRe.FindStringSubmatch(text)
 	if m == nil {
@@ -1233,7 +1058,6 @@ func TestWebLogsAttrFilterChip(t *testing.T) {
 		t.Errorf("ссылка снятия attr-чипа не должна содержать host.name: %s", removeHref)
 	}
 
-	// Переход по снятию реально убирает attr-скоуп.
 	resp = getWithCookie(t, s.srv, removeHref, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -1245,12 +1069,6 @@ func TestWebLogsAttrFilterChip(t *testing.T) {
 	}
 }
 
-// TestLogsFormCarriesNonFieldFilters — задача 5 («исключающие фильтры
-// логов»): условия, у которых нет своего видимого поля (attr, trace_id, все
-// виды *_not), обязаны быть скрытыми полями ВНУТРИ формы — иначе повторное
-// нажатие «Применить» без изменения видимых полей тихо сбрасывает уже
-// выбранные условия (существующий дефект по attr/trace_id, устранённый
-// заодно с выводом *_not).
 func TestLogsFormCarriesNonFieldFilters(t *testing.T) {
 	s := newLogsStack(t, true)
 	projectID, cookie, _ := newLogsProject(t, s, "form@example.com", "form-org", "form-proj")
@@ -1276,9 +1094,6 @@ func TestLogsFormCarriesNonFieldFilters(t *testing.T) {
 		}
 	}
 
-	// Скрытые поля обязаны лежать ВНУТРИ <form>…</form> — иначе браузер их
-	// с GET-сабмитом не отправит, и предыдущая проверка «поле есть в
-	// разметке» ничего не гарантирует.
 	formStart := strings.Index(page, `<form method="get"`)
 	if formStart < 0 {
 		t.Fatalf("не нашли форму фильтров логов в разметке")
@@ -1295,15 +1110,11 @@ func TestLogsFormCarriesNonFieldFilters(t *testing.T) {
 		}
 	}
 
-	// Чип исключения отображён отдельным модификатором (задача 5, шаг 10).
 	if !strings.Contains(page, "logs-filter-chip--not") {
 		t.Errorf("не нашли чип исключения (класс logs-filter-chip--not): %s", page)
 	}
 }
 
-// TestLogRowHasExcludeLinks — задача 6: ссылки «исключить» у уровня, сервиса
-// и атрибута прямо в строке лога собраны из реального запроса, а не заново
-// с нуля (иначе они потеряли бы уже активные фильтры страницы).
 func TestLogRowHasExcludeLinks(t *testing.T) {
 	s := newLogsStack(t, true)
 	projectID, cookie, _ := newLogsProject(t, s, "row@example.com", "row-org", "row-proj")
@@ -1335,22 +1146,11 @@ func TestLogRowHasExcludeLinks(t *testing.T) {
 			t.Errorf("в строке нет ссылки исключения с %s: %s", want, page)
 		}
 	}
-	// Собственный сборщик URL вместо logsPageURLValues (которая курсор
-	// намеренно не включает) потащил бы в ссылку исключения before/tskip
-	// текущей страницы и сломал бы выдачу на второй странице.
 	if strings.Contains(page, "before=") || strings.Contains(page, "tskip=") {
 		t.Errorf("ссылка исключения тащит курсор пагинации — собрана мимо logsPageURLValues: %s", page)
 	}
 }
 
-// TestLogRowAttrExcludeUsesExplicitOrigin — устранение находки ревью задачи
-// 6: происхождение атрибута (log_attributes/resource_attrs) для ссылки
-// исключения не восстанавливается разбором отображаемого ключа. Запись, у
-// которой атрибут ЗАПИСИ буквально называется "resource.pool" (случайное
-// совпадение с префиксом, которым помечаются в таблице атрибуты РЕСУРСА), и
-// одновременно есть настоящий атрибут ресурса — ссылка на первый обязана
-// остаться attr_not (log_attributes), а не подмениться на resource_attr
-// (res:) через обратный разбор строки "resource.pool".
 func TestLogRowAttrExcludeUsesExplicitOrigin(t *testing.T) {
 	s := newLogsStack(t, true)
 	projectID, cookie, _ := newLogsProject(t, s, "attrorigin@example.com", "attrorigin-org", "attrorigin-proj")
@@ -1377,12 +1177,9 @@ func TestLogRowAttrExcludeUsesExplicitOrigin(t *testing.T) {
 	if !strings.Contains(page, "attr_not=resource.pool%3Adb-1") {
 		t.Errorf("лог-атрибут resource.pool должен исключаться как обычный attr (attr_not=resource.pool%%3Adb-1): %s", page)
 	}
-	// Так выглядела бы ссылка при обратном разборе отображаемой строки:
-	// префикс "resource." снят, ключ ошибочно принят за resource_attr "pool".
 	if strings.Contains(page, "attr_not=res%3Apool%3Adb-1") {
 		t.Errorf("лог-атрибут resource.pool подменён на resource_attr (res:pool) — происхождение восстановлено разбором отображаемого ключа, а не явным полем: %s", page)
 	}
-	// Настоящий атрибут ресурса по-прежнему должен уходить с префиксом res:.
 	if !strings.Contains(page, "attr_not=res%3Ahost.name%3Aweb-1") {
 		t.Errorf("настоящий атрибут ресурса host.name должен исключаться как resource_attr (res:host.name): %s", page)
 	}

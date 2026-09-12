@@ -9,9 +9,6 @@ import (
 	"time"
 )
 
-// DefaultRegion — встроенный регион локальной пробы (та же реплика, что и
-// центральный процесс). Существует всегда, даже без единой выносной пробы
-// (см. Service.Regions и спека §4).
 const DefaultRegion = "local"
 
 const (
@@ -19,28 +16,12 @@ const (
 	defaultConcurrency = 50
 )
 
-// leaseBudget — дедлайн ОДНОГО вызова Svc.LeaseLocal, не всего
-// leaseAndDispatch: раздача пойманных заданий по семафору намеренно может
-// ждать дольше (это backpressure, не зависание — см. leaseAndDispatch), а вот
-// сам поход в PostgreSQL за партией заданий обязан укладываться в разумное
-// время, иначе тик молча не наступает вовсе, ровно как у host.Evaluator без
-// tickBudget. Пять секунд — на порядок больше обычного запроса LeaseLocal
-// (один UPDATE ... RETURNING по индексу monitor_id/region), но всё ещё
-// однозначный сигнал "PG для этого запроса недоступен", а не транзиентная
-// задержка на загруженном пуле.
+// дедлайн ОДНОГО LeaseLocal, не всей раздачи по семафору (это backpressure,
+// не зависание); 5с — на порядок больше обычного запроса, но не транзиент.
 const leaseBudget = 5 * time.Second
 
-// Runner — локальная проба: исполняет проверки в том же процессе, что и центр
-// (регион DefaultRegion, если Region не задан). Забирает задания через
-// Svc.LeaseLocal раз в LeaseEvery и выполняет их пулом, ограниченным
-// Concurrency. Zero-value полей (LeaseEvery/Concurrency/Region) означает
-// "используй дефолт" — так Runner можно собрать литералом без конструктора,
-// как notify.Worker/alert.Spike.
-//
-// ПОСТАНОВКУ заданий Runner не делает: она вынесена в Scheduler, который
-// запускается в любом процессе с базой. Пока постановка была вторым тикером
-// здесь, аптайм в раздельном развёртывании web+ingest не работал вовсе — см.
-// комментарий к Scheduler.
+// постановку заданий Runner не делает — она в Scheduler, который может
+// работать в другом процессе (раздельное развёртывание web+ingest).
 type Runner struct {
 	Svc    *Service
 	Writer *ResultWriter
@@ -48,20 +29,17 @@ type Runner struct {
 	Region      string
 	Concurrency int
 
-	// AllowPrivateTargets отключает SSRF-фильтр приватных целей в HTTP/TCP
-	// чекерах (прокидывается в CheckerFor). false (по умолчанию) — фильтр
-	// включён: чекеры режут loopback/приватные/link-local адреса.
+	// по умолчанию (false) SSRF-фильтр включён: чекеры режут
+	// loopback/приватные/link-local адреса.
 	AllowPrivateTargets bool
 
 	LeaseEvery time.Duration
 
-	// Checkers — опциональное переопределение CheckerFor по Kind, для
-	// тестов (инъекция фейкового чекера, например паникующего). nil
-	// (по умолчанию) — используется пакетный CheckerFor.
+	// переопределение CheckerFor по Kind для тестов; nil — используется
+	// пакетный CheckerFor.
 	Checkers map[Kind]Checker
 
-	// OnResult — опциональный колбэк после ApplyResult; nil (по умолчанию)
-	// — ничего не делает. План 3 подключит сюда детекцию инцидентов.
+	// колбэк после ApplyResult; nil — не делает ничего.
 	OnResult func(ctx context.Context, m Monitor, region string, r Result, st State)
 
 	wg sync.WaitGroup // проверки, выполняющиеся прямо сейчас (см. Close)
@@ -71,24 +49,19 @@ type Runner struct {
 	stop     chan struct{}
 	done     chan struct{}
 
-	// ing — общий с /probe/results хвост обработки результата (см.
-	// Ingestor); собирается в init() из Svc/Writer/OnResult, чтобы Runner
-	// по-прежнему можно было собрать литералом без конструктора.
+	// собирается в init() из Svc/Writer/OnResult, чтобы Runner можно было
+	// собрать литералом без конструктора.
 	ing *Ingestor
 
 	lastTickUnix    atomic.Int64  // unix-время последнего завершённого lease-прохода
 	lastTickSeconds atomic.Uint64 // длительность последнего lease-прохода, math.Float64bits
 }
 
-// LastTickUnix — unix-время последнего завершённого прохода
-// leaseAndDispatch (0, если ни одного ещё не было). Self-метрика живости, как
-// у host.Evaluator: умерший или отставший Runner снаружи выглядит ровно как
-// «мониторов к проверке сейчас нет».
+// 0, если ни одного прохода ещё не было. Мёртвый или отставший Runner
+// снаружи выглядит как «мониторов к проверке сейчас нет».
 func (r *Runner) LastTickUnix() int64 { return r.lastTickUnix.Load() }
 
-// LastTickSeconds — длительность последнего прохода leaseAndDispatch в
-// секундах (только сам вызов LeaseLocal — раздача по семафору исполнителям
-// не входит, см. leaseBudget).
+// только сам вызов LeaseLocal — раздача по семафору исполнителям не входит.
 func (r *Runner) LastTickSeconds() float64 {
 	return math.Float64frombits(r.lastTickSeconds.Load())
 }
@@ -115,8 +88,6 @@ func (r *Runner) concurrency() int {
 	return r.Concurrency
 }
 
-// checkerFor resolves the Checker for kind — r.Checkers[kind] if the test
-// injected one, otherwise the package-level CheckerFor.
 func (r *Runner) checkerFor(kind Kind) (Checker, error) {
 	if c, ok := r.Checkers[kind]; ok {
 		return c, nil
@@ -124,11 +95,8 @@ func (r *Runner) checkerFor(kind Kind) (Checker, error) {
 	return CheckerFor(kind, r.AllowPrivateTargets)
 }
 
-// Run — цикл планировщика+исполнителя; запускать горутиной. Завершается,
-// когда отменяется ctx или зовётся Close. Каждый тик исполнителя блокируется
-// на семафоре, если пул занят, — это осознанное давление назад
-// (backpressure): следующий тик планировщика чуть задержится, но очередь
-// не переполнится необработанными горутинами.
+// если пул семафора занят, тик блокируется — осознанный backpressure:
+// планировщик чуть задержится, но не переполнит очередь горутинами.
 func (r *Runner) Run(ctx context.Context) {
 	r.init()
 	defer close(r.done)
@@ -155,10 +123,8 @@ func (r *Runner) Run(ctx context.Context) {
 	}
 }
 
-// leaseAndDispatch забирает до Concurrency готовых заданий своего региона и
-// запускает их проверку в пуле, ограниченном sem. Занятые слоты семафора
-// блокируют раздачу следующих заданий этого тика (не всего Run — только
-// текущего вызова), пока какая-то проверка не освободит слот.
+// блокировка на занятом семафоре ограничена этим тиком, не всем Run —
+// раздача продолжится, когда освободится слот.
 func (r *Runner) leaseAndDispatch(ctx context.Context, sem chan struct{}) {
 	started := time.Now()
 	leaseCtx, cancel := context.WithTimeout(ctx, leaseBudget)
@@ -176,11 +142,8 @@ func (r *Runner) leaseAndDispatch(ctx context.Context, sem chan struct{}) {
 		case <-ctx.Done():
 			return
 		case <-r.stop:
-			// Close was called while this tick was still handing out
-			// leased jobs to a full pool: stop dispatching immediately
-			// rather than waiting for a worker to free up. The jobs not
-			// yet dispatched stay leased in the DB and get retried once
-			// their lease expires — same as any other DB-side skip.
+			// незавершённая раздача при Close не теряет задания — они остаются
+			// зализенными в БД и переберутся заново после истечения лизы.
 			return
 		}
 		r.wg.Add(1)
@@ -192,16 +155,8 @@ func (r *Runner) leaseAndDispatch(ctx context.Context, sem chan struct{}) {
 	}
 }
 
-// runOne выполняет одно задание: чекер → Ingestor.Accept (ClaimJob → буфер CH
-// → ApplyResult → OnResult — тот же хвост, что и у результатов выносных проб,
-// см. ingest.go). Ошибка самого чекера (сайт лежит, DNS не резолвится и т.п.)
-// — не Go-ошибка, а нормальный Result{OK:false}, который доходит до Accept как
-// обычно. Проверка, чей lease успел протухнуть и чьё задание перехватила
-// другая реплика, свой результат не применит: claim не пройдёт (см.
-// Ingestor.Accept). Ошибка похода в БД — лог и возврат. Паника
-// внутри самого чекера (баг в стороннем коде проверки) перехватывается и
-// превращается в Result{OK:false} — иначе она уронила бы весь процесс,
-// который в --mode=all держит ещё и web+ingest.
+// паника внутри чекера ловится и становится Result{OK:false} — иначе она
+// уронила бы весь процесс, который в --mode=all держит ещё web+ingest.
 func (r *Runner) runOne(ctx context.Context, j Job) {
 	checker, err := r.checkerFor(j.Monitor.Kind)
 	if err != nil {
@@ -220,32 +175,16 @@ func (r *Runner) runOne(ctx context.Context, j Job) {
 	}()
 	at := time.Now().UTC()
 
-	// Проверка, оборванная НАШЕЙ остановкой, — не отказ сервиса. Отмена ctx
-	// приходит от SIGTERM (деплой, рестарт контейнера), и checkWithRetries в
-	// этот момент возвращает Result{OK:false} с «context canceled»: строка
-	// уезжала в check_results как настоящее падение. При конкурентности по
-	// умолчанию в полёте бывает до полусотни проверок — каждый деплой занижал
-	// аптайм, а у монитора с fail_threshold=1 ещё и открывал инцидент с
-	// рассылкой «сервис недоступен». Постфактум отличить это от реального
-	// падения в данных невозможно.
-	//
-	// Задание при этом остаётся зализенным и будет перевыполнено после
-	// истечения лизы — тем же путём, что при перехвате другой репликой.
+	// отмена ctx при SIGTERM — не падение: иначе каждый деплой открывал бы
+	// инциденты по context canceled; задание перевыполнится после истечения лизы.
 	if ctx.Err() != nil && !result.OK {
 		slog.Info("uptime: runner: check aborted by shutdown, result discarded",
 			"monitor_id", j.MonitorID, "region", j.Region, "queue_id", j.QueueID)
 		return
 	}
 
-	// The check itself uses ctx (so a shutdown aborts a slow in-flight HTTP
-	// check quickly), but everything after this point is a fire-once DB
-	// write that must not be lost just because ctx was cancelled: Close()
-	// waits for exactly these calls (see Close's doc comment) via r.wg, and
-	// in production ctx is ALREADY cancelled by the time Close() runs
-	// (cmd/gotcha/main.go's drain() calls Close() only after the run ctx is
-	// done). context.WithoutCancel keeps request-scoped values but drops
-	// cancellation, and the bounded timeout still lets these calls give up
-	// instead of hanging forever if the DB is unreachable.
+	// пишем через context.WithoutCancel: ctx уже отменён в проде к моменту
+	// Close (см. drain() в main.go), но таймаут не даёт зависнуть при недоступной БД.
 	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 
@@ -255,13 +194,8 @@ func (r *Runner) runOne(ctx context.Context, j Job) {
 	}
 }
 
-// Close останавливает цикл Run и дожидается завершения проверок,
-// выполняющихся прямо сейчас (включая их ClaimJob/ApplyResult).
-// Идемпотентен — повторный вызов безопасен. Не зависит от ctx, переданного
-// в Run: если тот уже отменён, Close всё равно корректно дождётся выхода
-// из цикла и in-flight проверок через собственный канал остановки (как
-// ResultWriter.Close, вызывать Close без хотя бы одного запущенного Run —
-// заблокируется навсегда, ждать нечего).
+// идемпотентен; не зависит от ctx, переданного в Run. Вызов без хотя бы
+// одного запущенного Run заблокируется навсегда — ждать нечего.
 func (r *Runner) Close() {
 	r.init()
 	r.stopOnce.Do(func() { close(r.stop) })

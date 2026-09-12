@@ -8,8 +8,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// TestPathHelpers — построители путей: чистые строковые функции, покрываются
-// прямым вызовом (в интеграционных тестах они прячутся внутри рендера).
 func TestPathHelpers(t *testing.T) {
 	cases := []struct {
 		got, want string
@@ -33,8 +31,6 @@ func TestPathHelpers(t *testing.T) {
 	}
 }
 
-// TestHeadersToText — сериализация заголовков в textarea: пусто → пустая
-// строка, иначе строки «Key: Value» в стабильном (отсортированном) порядке.
 func TestHeadersToText(t *testing.T) {
 	if got := headersToText(nil); got != "" {
 		t.Errorf("пустая карта = %q, want пусто", got)
@@ -45,7 +41,6 @@ func TestHeadersToText(t *testing.T) {
 	}
 }
 
-// TestIntsToText — коды ответа через запятую.
 func TestIntsToText(t *testing.T) {
 	if got := intsToText(nil); got != "" {
 		t.Errorf("пусто = %q", got)
@@ -55,7 +50,6 @@ func TestIntsToText(t *testing.T) {
 	}
 }
 
-// TestHeartbeatSnippets — публичный ping-URL и cron-строка heartbeat.
 func TestHeartbeatSnippets(t *testing.T) {
 	if got := heartbeatPingURL("https://g.example", "tok123"); got != "https://g.example/uptime/hb/tok123" {
 		t.Errorf("pingURL = %q", got)
@@ -67,15 +61,12 @@ func TestHeartbeatSnippets(t *testing.T) {
 	if got := heartbeatCronSnippet("https://g.example", "tok", 30); !strings.HasPrefix(got, "*/1 * * * *") {
 		t.Errorf("cron 30s = %q, ожидался минимум 1 минута", got)
 	}
-	// Рекомендуемая форма команды в интерфейсе — явный -X POST (T9): голый GET
-	// неотличим от префетч-бота/антивирусного прокси на стороне клиента.
+	// явный -X POST: голый GET неотличим от префетч-бота/антивирусного прокси.
 	if got := heartbeatCronSnippet("https://g.example", "tok", 300); !strings.Contains(got, "curl -fsS -X POST ") {
 		t.Errorf("cron snippet = %q, want содержит \"curl -fsS -X POST \"", got)
 	}
 }
 
-// TestMetricAggFor — допустимая агрегация зависит от типа метрики: у histogram
-// разрешены перцентили, у прочих — max/min/sum/avg; неизвестное → дефолт.
 func TestMetricAggFor(t *testing.T) {
 	cases := []struct{ typ, agg, want string }{
 		{"histogram", "p95", "p95"},
@@ -92,8 +83,6 @@ func TestMetricAggFor(t *testing.T) {
 	}
 }
 
-// TestMonitorFormFromMonitor — форма редактирования заполняется из монитора;
-// покрываем все четыре ветки switch по Kind, каждая распаковывает свой конфиг.
 func TestMonitorFormFromMonitor(t *testing.T) {
 	mk := func(kind uptime.Kind, cfg any) uptime.Monitor {
 		raw, _ := json.Marshal(cfg)

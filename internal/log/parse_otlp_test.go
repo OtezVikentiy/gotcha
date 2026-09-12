@@ -21,7 +21,6 @@ func kv(k, v string) *commonpb.KeyValue {
 
 func fallbackTS() time.Time { return time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC) }
 
-// resourceLogs собирает один ResourceLogs с одним ScopeLogs и заданными записями.
 func resourceLogs(resAttrs []*commonpb.KeyValue, records ...*logspb.LogRecord) []*logspb.ResourceLogs {
 	return []*logspb.ResourceLogs{{
 		Resource: &resourcepb.Resource{Attributes: resAttrs},
@@ -88,7 +87,6 @@ func TestMapOTLPLogsFullRecord(t *testing.T) {
 	}
 }
 
-// SeverityNumber==0 → severity вычисляется из текста, а не дефолтится в info.
 func TestMapOTLPLogsSeverityFallbackToText(t *testing.T) {
 	rl := resourceLogs(nil, &logspb.LogRecord{
 		SeverityNumber: 0,
@@ -104,7 +102,6 @@ func TestMapOTLPLogsSeverityFallbackToText(t *testing.T) {
 	}
 }
 
-// TimeUnixNano==0 → timestamp = fallback (серверное время приёма), не ObservedTimeUnixNano.
 func TestMapOTLPLogsTimestampZeroUsesFallback(t *testing.T) {
 	rl := resourceLogs(nil, &logspb.LogRecord{
 		TimeUnixNano:         0,
@@ -117,7 +114,6 @@ func TestMapOTLPLogsTimestampZeroUsesFallback(t *testing.T) {
 	}
 }
 
-// Body-структура (kvlist) сериализуется в JSON-строку.
 func TestMapOTLPLogsBodyKvlist(t *testing.T) {
 	body := &commonpb.AnyValue{Value: &commonpb.AnyValue_KvlistValue{
 		KvlistValue: &commonpb.KeyValueList{Values: []*commonpb.KeyValue{
@@ -132,7 +128,6 @@ func TestMapOTLPLogsBodyKvlist(t *testing.T) {
 	}
 }
 
-// Body >64КиБ обрезается так, что итог (вместе с маркером усечения) ≤ maxBodyBytes.
 func TestMapOTLPLogsBodyCapped(t *testing.T) {
 	huge := strings.Repeat("a", maxBodyBytes+1000)
 	rl := resourceLogs(nil, &logspb.LogRecord{Body: strVal(huge)})
@@ -146,7 +141,6 @@ func TestMapOTLPLogsBodyCapped(t *testing.T) {
 	}
 }
 
-// Потолок числа записей на запрос.
 func TestMapOTLPLogsMaxPerRequest(t *testing.T) {
 	records := make([]*logspb.LogRecord, maxLogsPerRequest+50)
 	for i := range records {
@@ -159,7 +153,6 @@ func TestMapOTLPLogsMaxPerRequest(t *testing.T) {
 	}
 }
 
-// Окно таймстемпов: значение старше now-90d подтягивается к нижней границе.
 func TestMapOTLPLogsTimestampWindowLowerBound(t *testing.T) {
 	tooOld := fallbackTS().Add(-100 * 24 * time.Hour)
 	rl := resourceLogs(nil, &logspb.LogRecord{
@@ -173,7 +166,6 @@ func TestMapOTLPLogsTimestampWindowLowerBound(t *testing.T) {
 	}
 }
 
-// Окно таймстемпов: значение новее now+24h подтягивается к верхней границе.
 func TestMapOTLPLogsTimestampWindowUpperBound(t *testing.T) {
 	tooNew := fallbackTS().Add(48 * time.Hour)
 	rl := resourceLogs(nil, &logspb.LogRecord{
@@ -187,8 +179,6 @@ func TestMapOTLPLogsTimestampWindowUpperBound(t *testing.T) {
 	}
 }
 
-// deployment.environment (старая семконвенция, без .name) тоже промотируется,
-// когда текущего ключа нет.
 func TestMapOTLPLogsPromoteLegacyEnvironmentKey(t *testing.T) {
 	rl := resourceLogs([]*commonpb.KeyValue{kv("deployment.environment", "staging")},
 		&logspb.LogRecord{Body: strVal("x")})
@@ -198,8 +188,6 @@ func TestMapOTLPLogsPromoteLegacyEnvironmentKey(t *testing.T) {
 	}
 }
 
-// deployment.environment.name (текущая семконвенция) побеждает старую при
-// наличии обеих — порядок обхода не должен затирать уже найденное значение.
 func TestMapOTLPLogsPromoteEnvironmentNamePreferred(t *testing.T) {
 	rl := resourceLogs([]*commonpb.KeyValue{
 		kv("deployment.environment.name", "prod"),
@@ -211,7 +199,6 @@ func TestMapOTLPLogsPromoteEnvironmentNamePreferred(t *testing.T) {
 	}
 }
 
-// NUL в атрибутах и в body вырезается (PG на text падает на \x00).
 func TestMapOTLPLogsNulScrubbed(t *testing.T) {
 	rl := resourceLogs(nil, &logspb.LogRecord{
 		Body:       strVal("boo\x00m"),
@@ -226,8 +213,6 @@ func TestMapOTLPLogsNulScrubbed(t *testing.T) {
 	}
 }
 
-// Атрибуты сверх maxAttrKeys каппятся детерминированно (по отсортированным
-// ключам) — калька теста metric.attrsToMap.
 func TestMapOTLPLogsAttributesCapped(t *testing.T) {
 	attrs := make([]*commonpb.KeyValue, 0, maxAttrKeys+10)
 	for i := 0; i < maxAttrKeys+10; i++ {
@@ -240,8 +225,6 @@ func TestMapOTLPLogsAttributesCapped(t *testing.T) {
 	}
 }
 
-// Скалярные типы AnyValue (bool/int/double) в атрибутах и в теле — строковое
-// представление, а не JSON.
 func TestMapOTLPLogsScalarAttributeTypes(t *testing.T) {
 	attrs := []*commonpb.KeyValue{
 		{Key: "ok", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: true}}},
@@ -259,7 +242,6 @@ func TestMapOTLPLogsScalarAttributeTypes(t *testing.T) {
 	}
 }
 
-// Body-массив (array) тоже сериализуется в JSON, как kvlist.
 func TestMapOTLPLogsBodyArray(t *testing.T) {
 	body := &commonpb.AnyValue{Value: &commonpb.AnyValue_ArrayValue{
 		ArrayValue: &commonpb.ArrayValue{Values: []*commonpb.AnyValue{strVal("a"), strVal("b")}},
@@ -271,8 +253,6 @@ func TestMapOTLPLogsBodyArray(t *testing.T) {
 	}
 }
 
-// SeverityNumber вне диапазона uint8 (недоверенный клиент) не оборачивается
-// молча — хранится как 0, а не как испорченное число.
 func TestMapOTLPLogsSeverityNumberOutOfRangeStoredAsZero(t *testing.T) {
 	rl := resourceLogs(nil, &logspb.LogRecord{
 		SeverityNumber: logspb.SeverityNumber(300),
@@ -284,8 +264,6 @@ func TestMapOTLPLogsSeverityNumberOutOfRangeStoredAsZero(t *testing.T) {
 	}
 }
 
-// Тело точно на границе (<= maxBodyBytes) не трогается — маркер добавляется
-// только когда усечение реально требуется.
 func TestMapOTLPLogsBodyExactlyAtCapNotTruncated(t *testing.T) {
 	exact := strings.Repeat("a", maxBodyBytes)
 	rl := resourceLogs(nil, &logspb.LogRecord{Body: strVal(exact)})
@@ -295,8 +273,6 @@ func TestMapOTLPLogsBodyExactlyAtCapNotTruncated(t *testing.T) {
 	}
 }
 
-// severity_text длиннее 64 рун каппится (capRunes) — недоверенный текст не
-// должен раздувать LowCardinality-колонку.
 func TestMapOTLPLogsSeverityTextCapped(t *testing.T) {
 	long := strings.Repeat("э", 100) // многобайтовая руна — заодно проверяет рунный, не байтовый, кап
 	rl := resourceLogs(nil, &logspb.LogRecord{SeverityText: long, Body: strVal("x")})
@@ -306,7 +282,6 @@ func TestMapOTLPLogsSeverityTextCapped(t *testing.T) {
 	}
 }
 
-// Значение атрибута лога длиннее 200 рун каппится.
 func TestMapOTLPLogsAttributeValueCapped(t *testing.T) {
 	long := strings.Repeat("x", 250)
 	rl := resourceLogs(nil, &logspb.LogRecord{

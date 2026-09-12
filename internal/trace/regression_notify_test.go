@@ -13,10 +13,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-// TestRegressionNotifierEnqueuesPerChannel: открытие регрессии → по одной задаче
-// в outbox на каждый включённый канал проекта, с корректным payload. Ключевая
-// проверка — ловушка имён: адрес канала лежит под "target" (его читает
-// notify.Worker), а имя цели регрессии — под "target_name", они не путаются.
 func TestRegressionNotifierEnqueuesPerChannel(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	asvc := alert.NewService(pool)
@@ -100,8 +96,6 @@ func TestRegressionNotifierEnqueuesPerChannel(t *testing.T) {
 	}
 }
 
-// TestRegressionNotifierCloseSubject: закрытие регрессии несёт свой заголовок и
-// длительность инцидента — дежурному важно отличить «сломалось» от «починилось».
 func TestRegressionNotifierCloseSubject(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	asvc := alert.NewService(pool)
@@ -135,8 +129,6 @@ func TestRegressionNotifierCloseSubject(t *testing.T) {
 	}
 }
 
-// TestRegressionNotifierSkipsDisabledAndEmail: выключенный канал пропущен; email
-// пропущен при EmailEnabled=false — остаётся ровно один включённый не-email канал.
 func TestRegressionNotifierSkipsDisabledAndEmail(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	asvc := alert.NewService(pool)
@@ -177,8 +169,6 @@ func TestRegressionNotifierSkipsDisabledAndEmail(t *testing.T) {
 	}
 }
 
-// TestRegressionNotifierNoChannels: проект без каналов → ничего не ставится, без
-// ошибки.
 func TestRegressionNotifierNoChannels(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	asvc := alert.NewService(pool)
@@ -205,8 +195,6 @@ func TestRegressionNotifierNoChannels(t *testing.T) {
 	}
 }
 
-// Трансграничный гейт: при политике без доверия получателю во внешние каналы не должно
-// уезжать имя цели регрессии (target_name/тело); при true — уезжает.
 func TestRegressionNotifierExternalDetailsGate(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	asvc := alert.NewService(pool)

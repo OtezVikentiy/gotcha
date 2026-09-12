@@ -9,9 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
-// TestRemoveMemberSuccessAndNotMember покрывает happy-path RemoveMember (успешно
-// удаляем не-последнего участника) и ветку ErrNotMember (DELETE 0 строк для
-// того, кто участником не был). Ветка ErrLastOwner уже покрыта в org_test.go.
 func TestRemoveMemberSuccessAndNotMember(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -30,7 +27,6 @@ func TestRemoveMemberSuccessAndNotMember(t *testing.T) {
 		t.Fatalf("AddMember: %v", err)
 	}
 
-	// Успешное удаление обычного участника (owner остаётся — не last-owner).
 	if err := svc.RemoveMember(ctx, o.ID, dev); err != nil {
 		t.Fatalf("RemoveMember: %v", err)
 	}
@@ -38,16 +34,12 @@ func TestRemoveMemberSuccessAndNotMember(t *testing.T) {
 		t.Fatalf("Role after remove: got %v, want ErrNotMember", err)
 	}
 
-	// Удаление того, кто вообще не участник: ensureNotLastOwner пропускает
-	// (не owner), DELETE затрагивает 0 строк → ErrNotMember.
 	stranger := newUser(t, pool, "rm-stranger@example.com")
 	if err := svc.RemoveMember(ctx, o.ID, stranger); !errors.Is(err, org.ErrNotMember) {
 		t.Fatalf("RemoveMember(non-member): got %v, want ErrNotMember", err)
 	}
 }
 
-// TestRemoveMemberCancelledCtx: отменённый ctx роняет pool.Begin — покрывает
-// самую раннюю ветку ошибки RemoveMember.
 func TestRemoveMemberCancelledCtx(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -57,19 +49,11 @@ func TestRemoveMemberCancelledCtx(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	// errors.Is, не просто err != nil: pool.Begin на отменённом ctx обязан
-	// вернуть именно context.Canceled (обёрнутый %w) — голое "err != nil"
-	// пропустило бы тест и при подмене на произвольную другую ошибку (ту же
-	// ErrNotMember, если бы RemoveMember сломался и стал возвращать её раньше
-	// срока), не поймав реальную порчу поведения.
 	if err := svc.RemoveMember(ctx, 1, 1); !errors.Is(err, context.Canceled) {
 		t.Fatalf("RemoveMember on cancelled ctx: got %v, want context.Canceled", err)
 	}
 }
 
-// TestRemoveMemberAsSuccessAndGuards покрывает happy-path RemoveMemberAs (admin
-// удаляет member) и обе ErrNotMember-ветки owner-guard'а: актёр не участник и
-// цель не участник. ErrOwnerOnly/ErrLastOwner уже покрыты в org_test.go.
 func TestRemoveMemberAsSuccessAndGuards(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -92,7 +76,6 @@ func TestRemoveMemberAsSuccessAndGuards(t *testing.T) {
 		t.Fatalf("AddMember member: %v", err)
 	}
 
-	// admin удаляет member — успех.
 	if err := svc.RemoveMemberAs(ctx, o.ID, admin, member); err != nil {
 		t.Fatalf("RemoveMemberAs(admin→member): %v", err)
 	}
@@ -100,20 +83,16 @@ func TestRemoveMemberAsSuccessAndGuards(t *testing.T) {
 		t.Fatalf("Role after RemoveMemberAs: got %v, want ErrNotMember", err)
 	}
 
-	// Актёр не участник организации → ErrNotMember из owner-guard'а.
 	stranger := newUser(t, pool, "rma-stranger@example.com")
 	if err := svc.RemoveMemberAs(ctx, o.ID, stranger, admin); !errors.Is(err, org.ErrNotMember) {
 		t.Fatalf("RemoveMemberAs(stranger actor): got %v, want ErrNotMember", err)
 	}
 
-	// Цель не участник (member уже удалён) → ErrNotMember из owner-guard'а
-	// (targetRole не найден).
 	if err := svc.RemoveMemberAs(ctx, o.ID, owner, member); !errors.Is(err, org.ErrNotMember) {
 		t.Fatalf("RemoveMemberAs(missing target): got %v, want ErrNotMember", err)
 	}
 }
 
-// TestRemoveMemberAsCancelledCtx: отменённый ctx роняет pool.Begin.
 func TestRemoveMemberAsCancelledCtx(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -123,15 +102,11 @@ func TestRemoveMemberAsCancelledCtx(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	// Тот же принцип, что у TestRemoveMemberCancelledCtx: проверяем именно
-	// класс ошибки, не просто её наличие.
 	if err := svc.RemoveMemberAs(ctx, 1, 1, 2); !errors.Is(err, context.Canceled) {
 		t.Fatalf("RemoveMemberAs on cancelled ctx: got %v, want context.Canceled", err)
 	}
 }
 
-// TestUpdateRegressionConfig покрывает успешный UPDATE, ветку ErrNotFound
-// (несуществующий проект) и ошибку на отменённом ctx.
 func TestUpdateRegressionConfig(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -154,8 +129,6 @@ func TestUpdateRegressionConfig(t *testing.T) {
 	if err := svc.UpdateRegressionConfig(ctx, p.ID, cfgJSON); err != nil {
 		t.Fatalf("UpdateRegressionConfig: %v", err)
 	}
-	// perf_regression_config — jsonb, PG может переформатировать текст, поэтому
-	// сравниваем семантически, а не байт-в-байт.
 	var stored map[string]any
 	if err := pool.QueryRow(ctx,
 		"SELECT perf_regression_config FROM projects WHERE id = $1", p.ID).Scan(&stored); err != nil {
@@ -165,12 +138,10 @@ func TestUpdateRegressionConfig(t *testing.T) {
 		t.Errorf("stored config = %+v, want threshold=1.5 min_samples=10", stored)
 	}
 
-	// Несуществующий проект → ErrNotFound (RowsAffected==0).
 	if err := svc.UpdateRegressionConfig(ctx, 999999, cfgJSON); !errors.Is(err, org.ErrNotFound) {
 		t.Fatalf("UpdateRegressionConfig(missing): got %v, want ErrNotFound", err)
 	}
 
-	// Отменённый ctx → ошибка Exec.
 	cctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := svc.UpdateRegressionConfig(cctx, p.ID, cfgJSON); err == nil {
@@ -178,8 +149,6 @@ func TestUpdateRegressionConfig(t *testing.T) {
 	}
 }
 
-// TestSSOByDomainEdgeCases: пустой домен → not found без ошибки; отменённый ctx
-// на непустом домене → ошибка запроса.
 func TestSSOByDomainEdgeCases(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -198,8 +167,6 @@ func TestSSOByDomainEdgeCases(t *testing.T) {
 	}
 }
 
-// TestDeleteSSOCancelledCtx: отменённый ctx → ошибка Exec (DeleteSSO иначе
-// идемпотентен и не отдаёт ошибку на отсутствующем конфиге).
 func TestDeleteSSOCancelledCtx(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
@@ -207,7 +174,6 @@ func TestDeleteSSOCancelledCtx(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := org.NewService(pool, 1_000_000)
 
-	// Идемпотентность: удаление несуществующего конфига — не ошибка.
 	if err := svc.DeleteSSO(context.Background(), 999999); err != nil {
 		t.Fatalf("DeleteSSO(missing): %v", err)
 	}
@@ -219,7 +185,6 @@ func TestDeleteSSOCancelledCtx(t *testing.T) {
 	}
 }
 
-// TestGetOrgEdgeCases: несуществующая орга → ErrNotFound; отменённый ctx → ошибка.
 func TestGetOrgEdgeCases(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
