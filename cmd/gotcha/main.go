@@ -156,6 +156,23 @@ func autoMaxBufferBytes(heapLimitBytes int64) int64 {
 	return int64(float64(heapLimitBytes) * autoBufferSafeShare / autoBufferCapUnits)
 }
 
+// Доля ОСТАТКА кучи сверх писательских буферов (1-autoBufferSafeShare), отданная
+// суммарному весу одновременных разборов профиля (см. ingest.Handler.
+// SetProfileDecodeBudgetBytes) — тот же порядок допущения, что и у самих
+// буферов, не отдельная система координат. Остаток остатка — HTTP-приём,
+// разбор JSON, клиент PostgreSQL, рантайм.
+const profileDecodeBudgetShareOfResidual = 0.3
+
+// 0, если heapLimitBytes <= 0 — бюджет остаётся неограниченным, как и у
+// autoMaxBufferBytes в этом случае.
+func autoProfileDecodeBudgetBytes(heapLimitBytes int64) int64 {
+	if heapLimitBytes <= 0 {
+		return 0
+	}
+	residual := float64(heapLimitBytes) * (1 - autoBufferSafeShare)
+	return int64(residual * profileDecodeBudgetShareOfResidual)
+}
+
 // Явный GOTCHA_MAX_WRITER_BUFFER_BYTES всегда побеждает автодефолт от потолка кучи.
 func effectiveMaxBufferBytes(cfgMaxBufferBytes, heapLimitBytes int64) int64 {
 	if cfgMaxBufferBytes != 0 {
@@ -914,6 +931,7 @@ func run() error {
 		// burst = 2×лимит — та же пропорция, что у прежней захардкоженной пары
 		// 500/1000. 0 выключает.
 		ingestHandler.SetRateLimit(time.Now, float64(cfg.IngestRateLimit), 2*float64(cfg.IngestRateLimit))
+		ingestHandler.SetProfileDecodeBudgetBytes(autoProfileDecodeBudgetBytes(memLimitBytes))
 		// Отдельный счётчик от org_usage.transactions_count: исчерпанный бюджет
 		// транзакций не закрывает приём ошибок и наоборот.
 		ingestHandler.TxQuota = ingest.NewOrgTransactionQuota(orgSvc)
@@ -954,6 +972,14 @@ func run() error {
 				"Ingest requests rejected, by broad reason and telemetry signal. reason=\"key_revoked\" is reserved for future use (see ingest.IngestRejectReason) and never appears here today.",
 				map[string]string{"reason": string(p.Reason), "signal": string(p.Signal)},
 				func() int64 { return ingestHandler.RejectedBy(p.Reason, p.Signal) })
+		}
+		// Профиль принят (200/202), не отвергнут — parser говорит, какой из двух
+		// декодеров срезал часть сэмплов/кадров по капу.
+		for _, p := range ingest.ProfileParsers() {
+			selfMetrics.AddInt(selfmetrics.Counter, "gotcha_ingest_profile_truncated_total",
+				"Profiles accepted but truncated by a decode-time cap; parser says which path. Reason lives only in the warn-level log line, not in this metric.",
+				map[string]string{"parser": string(p)},
+				func() int64 { return ingestHandler.ProfileTruncatedBy(p) })
 		}
 		// ВРЕМЕННАЯ: исчезает вместе с алиасами в 2.0 — задокументировано в
 		// self-monitoring и CHANGELOG, удалять без релиза-предупреждения нельзя.

@@ -63,13 +63,28 @@ func (h *Handler) pprofIngest(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "malformed pprof")
 		return
 	}
+	release, ok := h.acquireProfileDecode(r.Context(), len(raw))
+	if !ok {
+		h.profileDecodeBudgetExhausted(w, key.OrgID, key.ProjectID)
+		return
+	}
 	q := r.URL.Query()
 	prof, err := profile.ParsePprof(raw, q.Get("type"), time.Now().UTC())
+	release()
 	if err != nil {
+		if errors.Is(err, profile.ErrProfileTooLarge) {
+			slog.Warn("ingest: pprof profile too large", "error", err)
+			h.countRejected(RejectTooLarge, SignalProfile)
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "profile too large")
+			return
+		}
 		slog.Warn("ingest: bad pprof profile", "error", err)
 		h.countRejected(RejectMalformed, SignalProfile)
 		writeJSONError(w, http.StatusBadRequest, "malformed pprof")
 		return
+	}
+	if prof.Truncated {
+		h.countProfileTruncated(ParserPprof)
 	}
 	// метаданные из query недоверенные — каппим, иначе гигантский ?service=...
 	// раздул бы колонки без ограничений.

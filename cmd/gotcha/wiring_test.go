@@ -210,6 +210,38 @@ func TestAutoMaxBufferBytesNoLimitFallsBackToPackageDefault(t *testing.T) {
 	}
 }
 
+func TestAutoProfileDecodeBudgetBytesMatchesSmallProfile(t *testing.T) {
+	// docker-compose.small.yml: mem_limit: 256m, GOMEMLIMIT не задан — потолок
+	// кучи выводится сам (defaultRatio=0.8 в internal/memlimit).
+	memLimitSmall := int64(256 << 20)
+	heapCeiling := int64(float64(memLimitSmall) * 0.8)
+
+	got := autoProfileDecodeBudgetBytes(heapCeiling)
+	if got <= 0 {
+		t.Fatalf("autoProfileDecodeBudgetBytes(%d) = %d, хочу положительный бюджет", heapCeiling, got)
+	}
+	// Замер: ~24.6 МиБ на этом потолке кучи; допуск — порядок, не точное число.
+	const wantApprox = 24 << 20
+	if got < wantApprox/2 || got > wantApprox*2 {
+		t.Fatalf("autoProfileDecodeBudgetBytes(%d) = %d, ожидался порядок %d (±2×) — доля от GOMEMLIMIT разошлась с замером отчёта",
+			heapCeiling, got, wantApprox)
+	}
+	// Честный профиль (несколько КБ) весит копейки от этого бюджета.
+	const typicalProfileBytes = 4 << 10
+	if weight := int64(typicalProfileBytes) * 35; weight >= got/10 {
+		t.Fatalf("вес честного профиля (%d) — больше 10%% бюджета (%d) на малом деплое — throttling задел бы обычный трафик",
+			weight, got)
+	}
+}
+
+func TestAutoProfileDecodeBudgetBytesUnlimitedWithoutCeiling(t *testing.T) {
+	for _, heapCeiling := range []int64{0, -1} {
+		if got := autoProfileDecodeBudgetBytes(heapCeiling); got != 0 {
+			t.Errorf("autoProfileDecodeBudgetBytes(%d) = %d, хочу 0 (бюджет не ограничен)", heapCeiling, got)
+		}
+	}
+}
+
 func TestEffectiveMaxBufferBytesRespectsExplicitOverride(t *testing.T) {
 	const heapCeiling = 800 << 20
 	const explicit = 24 << 20 // как в docker-compose.small.yml

@@ -177,6 +177,25 @@ this page, its name is deliberately excluded from the frozen observability
 contract, precisely because the metric is temporary and disappears together
 with the aliases in 2.0.
 
+**`gotcha_ingest_profile_truncated_total{parser="…"}`** — pprof/Sentry profiles
+that ingest ACCEPTED (200/202) but the decoder trimmed against one of its
+internal caps (sample count, frame count per stack, the byte budget for
+unrolling frames). The `parser` label is `pprof` or `sentry` — each has its own
+decoder and its own caps, cutting independently of the other. This is not a
+rejection — it never shows up in `gotcha_ingest_rejected_total` above; that
+metric's `too_large` means the request was refused BEFORE decoding, based on
+element counts, while this one means the profile was accepted but did not fit
+its budget in full.
+
+A non-zero value means a project's profiler data is incomplete: part of the
+samples or part of one stack's frames were silently dropped for the client —
+the response was a success and its body does not show this. The metric itself
+does not carry which specific cap fired; that reason lives in the warn-level
+log line next to the same event. The occasional hit on a very deep stack or a
+very hot profiler is normal; a sustained rise means the sender's profiler is
+configured for more depth/frequency than ingest can accept in full, and that
+project's data should be treated as a partial sample until it is retuned.
+
 **`gotcha_metric_points_clock_skew_total`** — metric points that arrived with a
 timestamp from the future and were clamped to the receive time. To charts and
 threshold rules a point from the future is otherwise as good as lost — a host

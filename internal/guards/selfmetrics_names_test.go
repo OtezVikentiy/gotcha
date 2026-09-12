@@ -39,6 +39,7 @@ var wantSelfMetrics = []selfMetricSpec{
 	{"gotcha_i18n_missing_key_total", "Counter"},
 	{"gotcha_ingest_deprecated_path_total", "Counter"},
 	{"gotcha_ingest_key_rejections_total", "Counter"},
+	{"gotcha_ingest_profile_truncated_total", "Counter"},
 	{"gotcha_ingest_rejected_total", "Counter"},
 	{"gotcha_memory_limit_bytes", "Gauge"},
 	{"gotcha_metric_evaluator_last_tick_timestamp_seconds", "Gauge"},

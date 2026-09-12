@@ -23,6 +23,9 @@ type Profile struct {
 	TraceID                                           string
 	Timestamp                                         time.Time
 	Samples                                           []Sample
+	// Truncated: часть сэмплов/кадров срезана капом приёма, а не самим клиентом.
+	// Только для наблюдаемости на приёме — не персистится и не отдаётся клиенту.
+	Truncated bool
 }
 
 // Экранирует ровно разделители ключа кадра "func (file:line)": без этого

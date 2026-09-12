@@ -86,6 +86,13 @@ type Handler struct {
 	// хост) и от Toucher.RejectedNames (потолок хостов на проект).
 	hostScopeSkipped atomic.Int64
 
+	// Профиль принят (200/202), но декодер срезал часть по капу; по парсеру,
+	// т.к. pprof и sentry режут независимо друг от друга.
+	profileTruncated map[ProfileParser]*atomic.Int64
+
+	// Общий для pprof и sentry-профилей — см. profile_trunc.go.
+	profileDecodeBudget *profileDecodeBudget
+
 	// Дешёвый per-DSN токен-бакет до quota-проверки; nil → лимит выключен.
 	rate *rateLimiter
 
@@ -183,6 +190,9 @@ func NewHandler(keys *KeyCache, quota QuotaChecker, pipeline *Pipeline, maxEvent
 
 		deprecated:       newDeprecatedCounters(),
 		deprecatedLogged: newDeprecatedLogOnce(),
+
+		profileTruncated:    newProfileTruncatedCounters(),
+		profileDecodeBudget: newProfileDecodeBudget(),
 	}
 }
 
@@ -704,10 +714,22 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 				h.countDrop(r.Context(), dropProfile, key.OrgID, dropped)
 			}
 			for _, raw := range env.Profiles[:profGranted] {
+				release, ok := h.acquireProfileDecode(r.Context(), len(raw))
+				if !ok {
+					// Как profOverloaded рядом: элемент теряется, остальной envelope — как обычно.
+					slog.Warn("ingest: dropping sentry profile, decode budget exhausted",
+						"project_id", projectID, "org_id", key.OrgID)
+					h.countDrop(r.Context(), dropProfile, key.OrgID, 1)
+					continue
+				}
 				prof, err := profile.ParseSentry(raw, time.Now().UTC())
+				release()
 				if err != nil {
 					slog.Warn("ingest: bad sentry profile, skipped", "project_id", projectID, "error", err)
 					continue
+				}
+				if prof.Truncated {
+					h.countProfileTruncated(ParserSentry)
 				}
 				h.scrubProfile(&prof)
 				h.limitProfileCardinality(projectID, &prof)

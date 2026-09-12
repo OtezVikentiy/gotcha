@@ -191,6 +191,9 @@ func TestParsePprofTruncatesMidStack(t *testing.T) {
 		if got := len(p.Samples[0].Stack); got != maxFrames {
 			t.Fatalf("длина стека = %d, want %d — счётный кап внутри одного Location из %d Line не сработал", got, maxFrames, nLines)
 		}
+		if !p.Truncated {
+			t.Fatal("Truncated не взведён при обрезанном по числу кадров стеке")
+		}
 	})
 
 	t.Run("budgetMidStack", func(t *testing.T) {
@@ -214,6 +217,9 @@ func TestParsePprofTruncatesMidStack(t *testing.T) {
 		}
 		if partial == 0 {
 			t.Fatal("ни один стек не обрезан посередине — бюджет останавливает сборку только на границе кадра или Location, не внутри неё")
+		}
+		if !p.Truncated {
+			t.Fatal("Truncated не взведён при обрезанном бюджетом профиле")
 		}
 	})
 }

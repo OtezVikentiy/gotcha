@@ -13,6 +13,8 @@ const (
 	RejectTooLarge   IngestRejectReason = "too_large"
 	RejectMalformed  IngestRejectReason = "malformed"
 	RejectOverloaded IngestRejectReason = "overloaded"
+	// Отдельно от overloaded: там буфер записи, здесь — бюджет разбора профиля.
+	RejectProfileDecodeBudget IngestRejectReason = "profile_decode_budget"
 )
 
 type IngestSignal string
@@ -57,6 +59,9 @@ var ingestRejectionPairs = append([]IngestRejectionKey{
 	{RejectOverloaded, SignalEvent}, {RejectOverloaded, SignalTransaction},
 	{RejectOverloaded, SignalMetric}, {RejectOverloaded, SignalProfile},
 	{RejectOverloaded, SignalLog},
+
+	// Только profile: бюджет декодирования существует лишь на pprof/sentry-путях приёма профиля.
+	{RejectProfileDecodeBudget, SignalProfile},
 }, keyScopeRejectionPairs()...)
 
 // Копия — чтобы вызывающий не мог испортить общий слайс.
