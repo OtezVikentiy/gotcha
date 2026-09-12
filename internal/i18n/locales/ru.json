@@ -1224,6 +1224,7 @@
     "error.name.empty": "Название не может быть пустым",
     "error.oauth.session_expired": "Сессия входа истекла, попробуйте снова",
     "error.oauth.provider_no_email": "Провайдер не подтвердил email",
+    "error.oauth.provider_not_trusted": "Этот провайдер не считается доверенным для создания аккаунта — обратитесь к администратору",
     "error.oauth.unknown_provider": "Неизвестный провайдер",
     "error.oauth.provider_unavailable": "Провайдер недоступен",
     "error.oauth.invalid_state": "Неверный state (возможная CSRF-атака)",

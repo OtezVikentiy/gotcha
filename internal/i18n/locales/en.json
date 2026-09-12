@@ -1224,6 +1224,7 @@
     "error.name.empty": "Name must not be empty",
     "error.oauth.session_expired": "Your sign-in session has expired, please try again",
     "error.oauth.provider_no_email": "The provider did not verify the email",
+    "error.oauth.provider_not_trusted": "This provider is not trusted for account creation — ask an administrator",
     "error.oauth.unknown_provider": "Unknown provider",
     "error.oauth.provider_unavailable": "Provider unavailable",
     "error.oauth.invalid_state": "Invalid state (possible CSRF attack)",

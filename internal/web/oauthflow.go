@@ -213,6 +213,12 @@ func (h *Handler) oauthProvision(w http.ResponseWriter, r *http.Request, provide
 		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.oauth.provider_no_email"))
 		return
 	}
+	// Провижининг доверяет email издателя не меньше линковки к существующему аккаунту:
+	// иначе self-service OIDC-тенант подделывает email и входит по чужому приглашению.
+	if !id.TrustedIssuer {
+		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.oauth.provider_not_trusted"))
+		return
+	}
 	if h.RegistrationMode == "open" {
 		uid, err := h.Auth.CreateOAuthUser(r.Context(), id.Email)
 		if err != nil {
