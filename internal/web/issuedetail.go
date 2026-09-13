@@ -290,8 +290,8 @@ type exceptionPayload struct {
 	Values []exceptionValue `json:"values"`
 }
 
-// Фреймы возвращаются в обратном порядке (новые/глубокие — сверху). Невалидный/пустой JSON —
-// nil, не ошибка: страница должна отрисоваться и без стектрейса.
+// Фреймы — в обратном порядке (новые сверху); `values` — от первопричины к внешнему исключению,
+// берём последний, как и internal/fingerprint/fingerprint.go. Пустой/невалидный JSON — nil, не ошибка.
 func parseStacktraceFrames(raw string) []templates.Frame {
 	if raw == "" {
 		return nil
@@ -300,7 +300,7 @@ func parseStacktraceFrames(raw string) []templates.Frame {
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil || len(payload.Values) == 0 {
 		return nil
 	}
-	frames := payload.Values[0].Stacktrace.Frames
+	frames := payload.Values[len(payload.Values)-1].Stacktrace.Frames
 	out := make([]templates.Frame, len(frames))
 	for i, f := range frames {
 		out[len(frames)-1-i] = templates.Frame{
