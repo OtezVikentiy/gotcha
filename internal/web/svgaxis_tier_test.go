@@ -118,9 +118,13 @@ func TestWriteDeployMarkerLabelGapFollowsTierWidth(t *testing.T) {
 	if w < 60 {
 		t.Fatalf("сценарий сломан: ширина подписи %.1f должна быть заметно больше прежнего зазора 44", w)
 	}
+	// смещения считаются от ширины подписи, не константой — иначе тест
+	// рассинхронизируется с калибровкой svgCharWidthPerVB при следующей правке.
+	suppressedAt := w / 2
+	drawnAt := w + 20
 	deploys := []deploy.Deployment{
-		{Version: "v1.2.4", DeployedAt: at(168)},
-		{Version: "v1.2.3", DeployedAt: at(62)},
+		{Version: "v1.2.4", DeployedAt: at(drawnAt)},
+		{Version: "v1.2.3", DeployedAt: at(suppressedAt)},
 		{Version: "v1.2.2", DeployedAt: at(0)},
 	}
 	var sb strings.Builder
@@ -135,10 +139,10 @@ func TestWriteDeployMarkerLabelGapFollowsTierWidth(t *testing.T) {
 		t.Errorf("первая подпись должна рисоваться: %s", out)
 	}
 	if label("v1.2.3") {
-		t.Errorf("вторая подпись в 62 единицах от первой (ширина %.1f) должна быть подавлена: %s", w, out)
+		t.Errorf("вторая подпись в %.1f единицах от первой (ширина %.1f) должна быть подавлена: %s", suppressedAt, w, out)
 	}
 	if !label("v1.2.4") {
-		t.Errorf("третья подпись в 106 единицах от подавленной и 168 от нарисованной должна рисоваться: %s", out)
+		t.Errorf("третья подпись в %.1f единицах от нарисованной (ширина %.1f) должна рисоваться: %s", drawnAt, w, out)
 	}
 }
 

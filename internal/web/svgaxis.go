@@ -92,9 +92,9 @@ func writeFrame(sb *strings.Builder, g chartGeom) {
 	axisLine(sb, g.x0, g.y1, g.x1, g.y1)
 }
 
-// 0.6024×кегль на руну, снято с крупнейшего кегля тира (chart-vb1200 на
-// 700-1300px) — с мелкой ступени константа выходила вдвое ниже и резала подписи.
-const svgCharWidthPerVB = 0.6024 * 15.0 / 720.0
+// 0.6024×кегль на руну, взят с БАЗОВОЙ (<700px) ступени chart-vb1200 — там
+// отношение кегль/viewBox наибольшее из всех тиров, оценка не занижена нигде.
+const svgCharWidthPerVB = 0.6024 * 57.0 / 1200.0
 
 func svgCharWidthPx(vbW int) float64 {
 	return float64(vbW) * svgCharWidthPerVB

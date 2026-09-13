@@ -245,9 +245,9 @@ func TestChartBarsDayLabelsShareXLabelPlacement(t *testing.T) {
 		{T: base.AddDate(0, 0, 1), N: 5},
 		{T: base.AddDate(0, 0, 2), N: 4},
 	}
-	// narrowW в окне ~62-69: только на таком узком холсте вторая подпись
+	// narrowW в окне ~88-140: только на таком узком холсте вторая подпись
 	// обязана переключиться на anchor start, не наехав на первую.
-	const narrowW = 66
+	const narrowW = 100
 	out := chartBars(context.Background(), points, narrowW, chartHeight)
 
 	// подписи дней на одной y=173.0 — этим отличаются от подписей оси Y и <title>.

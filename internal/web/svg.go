@@ -1412,6 +1412,7 @@ func waterfallMarkup(ctx context.Context, spans []trace.SpanRow, errIssues map[s
 			b.WriteString(`">`)
 		}
 
+		full := waterfallLabel(s)
 		b.WriteString(`<rect x="`)
 		b.WriteString(formatCoord(x))
 		b.WriteString(`" y="`)
@@ -1422,16 +1423,20 @@ func waterfallMarkup(ctx context.Context, spans []trace.SpanRow, errIssues map[s
 		b.WriteString(formatCoord(barH))
 		b.WriteString(`" class="`)
 		b.WriteString(cls)
-		b.WriteString(`"/>`)
+		b.WriteString(`"><title>`)
+		b.WriteString(html.EscapeString(full))
+		b.WriteString(`</title></rect>`)
 
 		labelX := waterfallPadX + os.depth*waterfallIndent
-		b.WriteString(`<text x="`)
-		b.WriteString(strconv.Itoa(labelX))
-		b.WriteString(`" y="`)
-		b.WriteString(formatCoord(y + float64(waterfallRowH) - 5))
-		b.WriteString(`" class="waterfall-label">`)
-		b.WriteString(templ.EscapeString(waterfallLabel(s)))
-		b.WriteString(`</text>`)
+		if label := fitWaterfallLabel(full, float64(waterfallLabelW-waterfallPadX-labelX)); label != "" {
+			b.WriteString(`<text x="`)
+			b.WriteString(strconv.Itoa(labelX))
+			b.WriteString(`" y="`)
+			b.WriteString(formatCoord(y + float64(waterfallRowH) - 5))
+			b.WriteString(`" class="waterfall-label">`)
+			b.WriteString(templ.EscapeString(label))
+			b.WriteString(`</text>`)
+		}
 
 		if isErr {
 			b.WriteString(`</a>`)
@@ -1505,6 +1510,20 @@ func waterfallLabel(s trace.SpanRow) string {
 		op = s.Description
 	}
 	return op + " " + waterfallMS(s.DurationUS)
+}
+
+// .waterfall-label — фиксированный кегль (--fs-label, вне тиров chart-vbN),
+// та же ширина руны, что и у флеймграфа; полный текст остаётся в <title>.
+func fitWaterfallLabel(label string, avail float64) string {
+	fit := int(avail / flameCharWidthPx)
+	r := []rune(label)
+	if len(r) <= fit {
+		return label
+	}
+	if fit-1 < 3 {
+		return ""
+	}
+	return string(r[:fit-1]) + "…"
 }
 
 // как formatDurationUS в templates, но локально — svg.go в другом пакете.

@@ -3687,15 +3687,22 @@ svg.flamegraph text {
 	.endpoint-chart .chart-freq,
 	.endpoint-chart .latency-chart,
 	.metric-chart-wrap .metric-chart,
+	.slo-burndown-card .slo-burndown,
 	.trace-waterfall .waterfall {
 		min-width: 480px;
 	}
 	.endpoint-chart .chart-freq text,
-	.endpoint-chart .latency-chart text {
+	.endpoint-chart .latency-chart text,
+	.slo-burndown-card .slo-burndown text {
 		font-size: 40px;
 	}
 	.metric-chart-wrap .metric-chart text {
 		font-size: 32px;
+	}
+	/* .waterfall-label не входит в тиры chart-vbN (см. комментарий у svg.flamegraph
+	   text) — компенсация кегля для узкого экрана нужна ей отдельно. */
+	.trace-waterfall .waterfall-label {
+		font-size: 30px;
 	}
 }
 .trace-flame {

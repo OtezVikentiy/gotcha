@@ -147,9 +147,9 @@ templ SLODetailScreen(vm SLODetailVM, userEmail string) {
 			<h2>{ i18n.T(ctx, "slo.detail.burndown_title") }</h2>
 			<p class="chart-caption">{ i18n.T(ctx, "slo.detail.burndown_caption") }</p>
 			if vm.HasData {
-				<div class="card slo-burndown-card">
+				@scrollRegion("card slo-burndown-card", "slo.detail.burndown_title") {
 					@vm.Chart
-				</div>
+				}
 			} else {
 				@emptyState("activity", "slo.detail.no_data.title", "slo.detail.no_data.body", "", "", 3)
 			}
