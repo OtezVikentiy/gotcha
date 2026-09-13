@@ -288,6 +288,40 @@ func TestIncidentServiceListByProjectFreshestFirst(t *testing.T) {
 	}
 }
 
+func TestIncidentServiceListRecentByHostFiltersInSQL(t *testing.T) {
+	pool, svc, projectID, hostID := setupIncidentHost(t)
+	ctx := context.Background()
+	noisyID := secondHost(t, pool, projectID, "noisy-01")
+
+	older, _, err := svc.Open(ctx, projectID, hostID, "disk", 0.95, "", false)
+	if err != nil {
+		t.Fatalf("Open older: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		"UPDATE host_incidents SET started_at = started_at - interval '1 hour' WHERE id = $1", older.ID); err != nil {
+		t.Fatalf("age older incident: %v", err)
+	}
+	newer, _, err := svc.Open(ctx, projectID, hostID, "load", 3.0, "", false)
+	if err != nil {
+		t.Fatalf("Open newer: %v", err)
+	}
+
+	if _, _, err := svc.Open(ctx, projectID, noisyID, "disk", 0.99, "", false); err != nil {
+		t.Fatalf("Open noisy disk: %v", err)
+	}
+	if _, _, err := svc.Open(ctx, projectID, noisyID, "memory", 0.99, "", false); err != nil {
+		t.Fatalf("Open noisy memory: %v", err)
+	}
+
+	got, err := svc.ListRecentByHost(ctx, hostID, 1)
+	if err != nil {
+		t.Fatalf("ListRecentByHost: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != newer.ID {
+		t.Fatalf("ListRecentByHost(hostID, limit=1) = %+v, want [newer %d]", got, newer.ID)
+	}
+}
+
 func secondHost(t *testing.T, pool *pgxpool.Pool, projectID int64, name string) int64 {
 	t.Helper()
 	ctx := context.Background()

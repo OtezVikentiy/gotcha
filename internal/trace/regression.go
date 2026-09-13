@@ -290,12 +290,17 @@ func (s *RegressionService) BumpEscalation(ctx context.Context, id int64, from i
 	return true, nil
 }
 
-func (s *RegressionService) List(ctx context.Context, projectID int64, limit int) ([]Regression, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT `+regressionColumns+`
-		FROM perf_regressions WHERE project_id = $1
-		ORDER BY started_at DESC
-		LIMIT $2`, projectID, limit)
+// status: ""/"all" — все записи, "open"/"resolved" — фильтр в самом запросе,
+// а не поверх уже усечённой limit-выборкой.
+func (s *RegressionService) List(ctx context.Context, projectID int64, status string, limit int) ([]Regression, error) {
+	q := "SELECT " + regressionColumns + " FROM perf_regressions WHERE project_id = $1"
+	args := []any{projectID}
+	if status == "open" || status == "resolved" {
+		q += " AND status = $2"
+		args = append(args, status)
+	}
+	q += fmt.Sprintf(" ORDER BY started_at DESC LIMIT %d", limit)
+	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("trace: list regressions: %w", err)
 	}

@@ -1063,7 +1063,7 @@ func (h *Handler) renderHostDetail(w http.ResponseWriter, r *http.Request, statu
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
 	}
-	recentIncidents, err := h.hostRecentIncidents(r.Context(), projectID, hst.ID)
+	recentIncidents, err := h.hostRecentIncidents(r.Context(), hst.ID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
 		return
@@ -1203,26 +1203,10 @@ func (h *Handler) hostThresholdsSave(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, hostDetailPath(projectID, name), http.StatusSeeOther)
 }
 
-const hostRecentIncidentsScan = 500
-
 const hostRecentIncidentsLimit = 20
 
-func (h *Handler) hostRecentIncidents(ctx context.Context, projectID, hostID int64) ([]host.Incident, error) {
-	all, err := h.HostIncidents.ListByProject(ctx, projectID, hostRecentIncidentsScan)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]host.Incident, 0, hostRecentIncidentsLimit)
-	for _, inc := range all {
-		if inc.HostID != hostID {
-			continue
-		}
-		out = append(out, inc)
-		if len(out) >= hostRecentIncidentsLimit {
-			break
-		}
-	}
-	return out, nil
+func (h *Handler) hostRecentIncidents(ctx context.Context, hostID int64) ([]host.Incident, error) {
+	return h.HostIncidents.ListRecentByHost(ctx, hostID, hostRecentIncidentsLimit)
 }
 
 func (h *Handler) hostDelete(w http.ResponseWriter, r *http.Request) {

@@ -350,6 +350,28 @@ func (s *IncidentService) ListOpenByProject(ctx context.Context, projectID int64
 	return out, rows.Err()
 }
 
+func (s *IncidentService) ListRecentByHost(ctx context.Context, hostID int64, limit int) ([]Incident, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx,
+		"SELECT "+incidentColumns+" FROM host_incidents WHERE host_id = $1 ORDER BY started_at DESC LIMIT $2",
+		hostID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("host: list recent incidents by host: %w", err)
+	}
+	defer rows.Close()
+	var out []Incident
+	for rows.Next() {
+		in, err := scanIncident(rows)
+		if err != nil {
+			return nil, fmt.Errorf("host: list recent incidents by host scan: %w", err)
+		}
+		out = append(out, in)
+	}
+	return out, rows.Err()
+}
+
 func (s *IncidentService) ListOpenByHost(ctx context.Context, hostID int64) ([]Incident, error) {
 	rows, err := s.pool.Query(ctx,
 		"SELECT "+incidentColumns+" FROM host_incidents WHERE host_id = $1 AND status = 'open' ORDER BY started_at DESC",
