@@ -18,7 +18,7 @@ var ErrRuleNotFound = errors.New("metric: alert rule not found")
 
 // Источник для сторожа динамических ключей i18n; validAggregations строится
 // из него же, чтобы наборы не разъехались.
-var Aggregations = []string{"avg", "max", "min", "sum", "p50", "p95", "p99"}
+var Aggregations = []string{"avg", "max", "min", "sum", "increase", "p50", "p95", "p99"}
 
 var validAggregations = func() map[string]bool {
 	m := make(map[string]bool, len(Aggregations))

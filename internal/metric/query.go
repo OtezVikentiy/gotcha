@@ -247,9 +247,9 @@ func (q *Query) scalarSeries(ctx context.Context, projectID int64, name, environ
 	return q.scanPoints(ctx, sql, args)
 }
 
-// max(value) по бакету, разность соседних / шаг; отрицательная разность
-// (сброс счётчика) → 0.
-func (q *Query) rateSeries(ctx context.Context, projectID int64, name, environment, host string, matchers []LabelMatcher, from, to time.Time, stepSec int64) ([]Point, error) {
+// max(value) по бакету — сырые значения кумулятивного счётчика, общие для
+// rateSeries (скорость) и aggregateIncrease (прирост).
+func (q *Query) cumulativeBuckets(ctx context.Context, projectID int64, name, environment, host string, matchers []LabelMatcher, from, to time.Time, stepSec int64) ([]Point, error) {
 	sql := fmt.Sprintf(`
 		SELECT toStartOfInterval(ts, INTERVAL %d second) AS b, max(value)
 		FROM metric_points
@@ -260,7 +260,13 @@ func (q *Query) rateSeries(ctx context.Context, projectID int64, name, environme
 		GROUP BY b ORDER BY b`, stepSec, matchersClause(matchers))
 	args := []any{projectID, name, from, to, environment, environment, host, host}
 	args = appendMatchersArgs(args, matchers)
-	cum, err := q.scanPoints(ctx, sql, args)
+	return q.scanPoints(ctx, sql, args)
+}
+
+// Разность соседних кумулятивных точек / шаг; отрицательная разность
+// (сброс счётчика) → 0.
+func (q *Query) rateSeries(ctx context.Context, projectID int64, name, environment, host string, matchers []LabelMatcher, from, to time.Time, stepSec int64) ([]Point, error) {
+	cum, err := q.cumulativeBuckets(ctx, projectID, name, environment, host, matchers, from, to, stepSec)
 	if err != nil {
 		return nil, err
 	}
@@ -282,6 +288,42 @@ func (q *Query) rateSeries(ctx context.Context, projectID int64, name, environme
 		out = append(out, Point{T: cum[i].T, V: delta / gapSec})
 	}
 	return out, nil
+}
+
+// Сумма положительных разностей соседних точек за окно — прирост, не скорость.
+// Сброс счётчика (delta < 0) обнуляет только сам переход, как в rateSeries.
+// Считает сама ClickHouse (lagInFrame в окне) — без правила на потолок WindowSeconds
+// суточное окно дало бы ~86400 секундных бакетов на КАЖДЫЙ тик оценщика, если бы их
+// тащило и суммировало приложение; так — одна строка независимо от длины окна.
+func (q *Query) aggregateIncrease(ctx context.Context, projectID int64, name, environment, host string, matchers []LabelMatcher, from, to time.Time) (float64, bool, error) {
+	query := fmt.Sprintf(`
+		SELECT count(), sum(d) FROM (
+			SELECT greatest(value - lagInFrame(value, 1, value) OVER (ORDER BY b), 0) AS d
+			FROM (
+				SELECT toStartOfInterval(ts, INTERVAL 1 second) AS b, max(value) AS value
+				FROM metric_points
+				WHERE project_id = ? AND name = ? AND ts >= ? AND ts < ?
+				  AND (? = '' OR environment = ?)
+				  AND (? = '' OR host = ?)
+				  %s
+				GROUP BY b
+			)
+		)`, matchersClause(matchers))
+	args := []any{projectID, name, from, to, environment, environment, host, host}
+	args = appendMatchersArgs(args, matchers)
+	row := q.conn.QueryRow(ctx, query, args...)
+	var cnt uint64
+	var total float64
+	if err := row.Scan(&cnt, &total); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil // пустое окно при empty_result_for_aggregation_by_empty_set=1
+		}
+		return 0, false, fmt.Errorf("metric: aggregate increase: %w", err)
+	}
+	if cnt < 2 {
+		return 0, false, nil
+	}
+	return total, true, nil
 }
 
 func (q *Query) histogramSeries(ctx context.Context, projectID int64, name, environment, host string, matchers []LabelMatcher, agg string, from, to time.Time, stepSec int64) ([]Point, error) {
@@ -351,9 +393,12 @@ func (q *Query) Aggregate(ctx context.Context, projectID int64, name, environmen
 	if err != nil {
 		return 0, false, err
 	}
-	// Должен считать то же, что Series (rateSeries для monotonic cumulative) —
-	// иначе алерт и график по одной метрике разошлись бы по значению и скорости.
+	// Должен считать то же, что Series (rateSeries) — иначе алерт и график разойдутся;
+	// increase — единственное исключение, порог берёт прирост за окно, не скорость.
 	if typ == "sum" && monotonic && temporality == "cumulative" {
+		if agg == "increase" {
+			return q.aggregateIncrease(ctx, projectID, name, environment, host, matchers, from, to)
+		}
 		return q.aggregateRate(ctx, projectID, name, environment, host, matchers, agg, from, to)
 	}
 	base := fmt.Sprintf(`FROM metric_points
@@ -492,7 +537,9 @@ func scalarAggExpr(typ, agg string) string {
 		return "max(value)"
 	case "min":
 		return "min(value)"
-	case "sum":
+	case "sum", "increase":
+		// increase на не-кумулятивный sum: значения уже точечные приращения,
+		// сумма по окну и есть честный прирост — как aggregateIncrease для cumulative.
 		return "sum(value)"
 	case "last":
 		return "argMax(value, ts)"
