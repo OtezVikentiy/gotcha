@@ -234,3 +234,29 @@ func TestWriterAttributeWeightTriggersByteTrim(t *testing.T) {
 		t.Fatal("надбавка за карту атрибутов не учтена — байтовый потолок не сработал")
 	}
 }
+
+// Close молчал об итоговых потерях, в отличие от event/trace/uptime — на
+// выключенном инстансе self-метрику Dropped уже не снять, лог был единственным следом.
+func TestWriterCloseLogsFinalDrops(t *testing.T) {
+	buf := captureWarnLog(t)
+	c := &fakeCHConn{}
+	w := NewWriter(c)
+	w.maxBuf = 2
+	w.batchSize = 1 << 30 // не флашим по наполнению — дроп только от переполнения буфера
+
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		w.Add(1, MetricPoint{Name: "m", TS: now, Value: 1})
+	}
+	if w.Dropped() == 0 {
+		t.Fatal("подготовка сценария сломана: дропов нет, Close нечего логировать")
+	}
+
+	go w.Run()
+	if err := w.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !strings.Contains(buf.String(), "dropped during lifetime") {
+		t.Errorf("Close не залогировал итоговые потери: %q", buf.String())
+	}
+}

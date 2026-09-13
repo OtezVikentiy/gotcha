@@ -10,14 +10,16 @@ import (
 // resourcedetection не ставим: host у точек пуст, страница рецепта работает без host-скоупа.
 
 // postgresql.deadlocks выключена в metadata.yaml — включаем явно, иначе critical-порог мёртв.
-// databases закомментирована нарочно: без неё ресивер берёт все базы, порог — по сумме/максимуму.
+// databases обязателен, не закомментирован: без него ресивер берёт все базы,
+// а порог по deadlocks считается max()-ом по бакету — всплеск в маленькой базе
+// тонет за счётчиком большой (для нескольких баз — отдельный рецепт на каждую).
 const postgresConfigTmpl = `receivers:
   postgresql:
     endpoint: localhost:5432
     transport: tcp
     username: CHANGE_ME
     password: CHANGE_ME
-    # databases: [CHANGE_ME]  # limit to a single database for a precise deadlock threshold
+    databases: [CHANGE_ME]
     tls:
       insecure: true
     collection_interval: 30s

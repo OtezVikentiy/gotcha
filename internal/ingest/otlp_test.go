@@ -722,6 +722,53 @@ func TestMapOTLPLimits(t *testing.T) {
 	}
 }
 
+// Многобайтовое db.statement каппится по БАЙТАМ: рунный кап пропустил бы
+// вчетверо больше входа в NormalizeSQL, чем предполагает maxSpanDescription.
+func TestMapOTLPCapsDescriptionByBytesNotRunes(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	start := now.Add(-time.Minute)
+
+	longRunes := func(n int) string {
+		b := make([]rune, n)
+		for i := range b {
+			b[i] = 'щ' // двухбайтовая руна — n рун даёт 2n байт
+		}
+		return string(b)
+	}
+
+	rs := []*tracepb.ResourceSpans{resSpans(nil,
+		&tracepb.Span{
+			TraceId:           traceIDBytes,
+			SpanId:            rootIDBytes,
+			Name:              "GET /x",
+			Kind:              tracepb.Span_SPAN_KIND_SERVER,
+			StartTimeUnixNano: nanos(start),
+			EndTimeUnixNano:   nanos(start.Add(time.Second)),
+		},
+		&tracepb.Span{
+			TraceId:           traceIDBytes,
+			SpanId:            dbIDBytes,
+			ParentSpanId:      rootIDBytes,
+			Name:              "q",
+			Kind:              tracepb.Span_SPAN_KIND_CLIENT,
+			StartTimeUnixNano: nanos(start),
+			EndTimeUnixNano:   nanos(start.Add(time.Second)),
+			Attributes: []*commonpb.KeyValue{
+				strAttr("db.system", "postgresql"),
+				strAttr("db.statement", longRunes(3000)),
+			},
+		},
+	)}
+
+	txs := MapOTLP(rs, now)
+	if len(txs) != 1 || len(txs[0].Spans) != 1 {
+		t.Fatalf("txs = %+v", txs)
+	}
+	if got := len(txs[0].Spans[0].Description); got > maxSpanDescription {
+		t.Errorf("len(Description) в байтах = %d, want <= %d", got, maxSpanDescription)
+	}
+}
+
 func TestMapOTLPMaxSpans(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	start := now.Add(-time.Minute)

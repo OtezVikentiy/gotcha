@@ -18,6 +18,7 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/log"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+	"gitflic.ru/otezvikentiy/gotcha/internal/scrub"
 )
 
 type collectLogSink struct{ records []log.LogRecord }
@@ -307,7 +308,7 @@ func TestLogsSanitizeNUL(t *testing.T) {
 func TestLogsSanitizeDenylistAttribute(t *testing.T) {
 	sink := &collectLogSink{}
 	h := newLogsTestHandler(sink)
-	h.Scrub = NewScrubber(false, false, []string{"token"})
+	h.Scrub = scrub.NewScrubber(false, false, []string{"token"})
 
 	rl := []*logspb.ResourceLogs{{
 		Resource: &resourcepb.Resource{Attributes: []*commonpb.KeyValue{logKV("token", "secret-abc")}},
@@ -324,18 +325,18 @@ func TestLogsSanitizeDenylistAttribute(t *testing.T) {
 		t.Fatalf("records = %d, want 1", len(sink.records))
 	}
 	r := sink.records[0]
-	if r.LogAttributes["token"] != scrubMask {
-		t.Errorf("LogAttributes[token] = %q, want маску %q", r.LogAttributes["token"], scrubMask)
+	if r.LogAttributes["token"] != "[scrubbed]" {
+		t.Errorf("LogAttributes[token] = %q, want маску %q", r.LogAttributes["token"], "[scrubbed]")
 	}
-	if r.ResourceAttrs["token"] != scrubMask {
-		t.Errorf("ResourceAttrs[token] = %q, want маску %q", r.ResourceAttrs["token"], scrubMask)
+	if r.ResourceAttrs["token"] != "[scrubbed]" {
+		t.Errorf("ResourceAttrs[token] = %q, want маску %q", r.ResourceAttrs["token"], "[scrubbed]")
 	}
 }
 
 func TestLogsSanitizeBodyURLScrub(t *testing.T) {
 	sink := &collectLogSink{}
 	h := newLogsTestHandler(sink)
-	h.Scrub = NewScrubber(false, false, []string{"token"}) // ScrubFreeText=false — URL всё равно чистится
+	h.Scrub = scrub.NewScrubber(false, false, []string{"token"}) // ScrubFreeText=false — URL всё равно чистится
 
 	body := `{"message":"GET https://api.example/reset?token=SECRET&ok=1"}` + "\n" +
 		`{"message":"DSN https://user:hunter2@db.example/app fell over"}` + "\n" +

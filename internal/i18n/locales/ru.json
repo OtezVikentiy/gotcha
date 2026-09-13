@@ -432,6 +432,7 @@
     "recipes.table.note": "Пояснение",
     "recipes.table.status": "Статус",
     "recipes.rule_status.exists": "Создан",
+    "recipes.rule_status.disabled": "Создан, выключен",
     "recipes.rule_status.pending": "Будет создан",
     "recipes.create_rules": "Создать рекомендованные пороги",
     "recipes.operator_only": "Создание порогов доступно оператору проекта.",

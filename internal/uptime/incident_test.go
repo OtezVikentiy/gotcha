@@ -285,6 +285,75 @@ func TestIncidentsForMonitorsBatchRespectsPerMonitorLimitAndIsolation(t *testing
 	}
 }
 
+// OpenSuppressed/ClearSuppressed — контракт escalation.SuppressedSource:
+// Scheduler опрашивает их периодически, независимо от того, придёт ли ещё
+// хоть один результат пробы для этого монитора.
+func TestOpenSuppressedListsAndClearRemoves(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 1, 1)
+
+	inc, _, err := svc.OpenIncident(ctx, mon.ID, "boom", []string{"local"}, false)
+	if err != nil {
+		t.Fatalf("OpenIncident: %v", err)
+	}
+
+	before, err := svc.OpenSuppressed(ctx)
+	if err != nil {
+		t.Fatalf("OpenSuppressed до MarkSuppressedByDep: %v", err)
+	}
+	for _, p := range before {
+		if p.ID == inc.ID {
+			t.Fatalf("инцидент %d в OpenSuppressed до подавления", inc.ID)
+		}
+	}
+
+	if err := svc.MarkSuppressedByDep(ctx, inc.ID); err != nil {
+		t.Fatalf("MarkSuppressedByDep: %v", err)
+	}
+
+	list, err := svc.OpenSuppressed(ctx)
+	if err != nil {
+		t.Fatalf("OpenSuppressed: %v", err)
+	}
+	found := false
+	for _, p := range list {
+		if p.ID == inc.ID {
+			found = true
+			if p.ProjectID != pid {
+				t.Errorf("OpenSuppressed[%d].ProjectID = %d, want %d", inc.ID, p.ProjectID, pid)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("OpenSuppressed не вернул подавленный инцидент %d: %+v", inc.ID, list)
+	}
+
+	if err := svc.ClearSuppressed(ctx, inc.ID); err != nil {
+		t.Fatalf("ClearSuppressed: %v", err)
+	}
+
+	after, err := svc.OpenSuppressed(ctx)
+	if err != nil {
+		t.Fatalf("OpenSuppressed после ClearSuppressed: %v", err)
+	}
+	for _, p := range after {
+		if p.ID == inc.ID {
+			t.Fatalf("инцидент %d всё ещё в OpenSuppressed после ClearSuppressed", inc.ID)
+		}
+	}
+
+	got, ok, err := svc.IncidentByID(ctx, inc.ID)
+	if err != nil || !ok {
+		t.Fatalf("IncidentByID: %v/%v", ok, err)
+	}
+	if got.SuppressedByDep {
+		t.Error("SuppressedByDep = true после ClearSuppressed, want false")
+	}
+}
+
 func TestClearSuppressedByDepIsIdempotent(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := uptime.NewService(pool)

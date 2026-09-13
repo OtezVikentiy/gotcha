@@ -98,6 +98,15 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		},
 	})
 
+	// та же строка trace_id в другом проекте, транзакция СВЕЖЕЕ: коллизия
+	// (случайная или подстроенная чужим отправителем) — ProjectsForTrace
+	// обязана вернуть оба, порядок — по свежести (это projectID2 первым).
+	wfCollisionStart := wfStart.Add(time.Minute)
+	w.Add(projectID2, projectID2, trace.Transaction{
+		TraceID: wfTrace, SpanID: "wf-collision-root", Name: "GET /other", Op: "http.server",
+		Status: "ok", Start: wfCollisionStart, End: wfCollisionStart.Add(100 * time.Millisecond), Environment: "production",
+	})
+
 	w.Add(projectID5, projectID5, trace.Transaction{
 		TraceID: "off-trace", SpanID: "off-root", Name: "POST /pay", Op: "http.server",
 		Status: "ok", Start: wfStart, End: wfStart.Add(950 * time.Millisecond), Environment: "production",
@@ -843,21 +852,25 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		}
 	})
 
-	t.Run("ProjectForTrace", func(t *testing.T) {
-		pid, found, err := q.ProjectForTrace(ctx, wfTrace)
+	t.Run("ProjectsForTrace", func(t *testing.T) {
+		pids, err := q.ProjectsForTrace(ctx, wfTrace)
 		if err != nil {
-			t.Fatalf("ProjectForTrace: %v", err)
+			t.Fatalf("ProjectsForTrace: %v", err)
 		}
-		if !found || pid != projectID {
-			t.Fatalf("ProjectForTrace = (%d, %v), want (%d, true)", pid, found, projectID)
+		// порядок не случаен: projectID2 обладает более свежей транзакцией по
+		// этому trace_id (wfCollisionStart = wfStart+1m) и обязан идти первым —
+		// если у пользователя есть доступ к обоим, он должен увидеть именно его.
+		want := []int64{projectID2, projectID}
+		if len(pids) != len(want) || pids[0] != want[0] || pids[1] != want[1] {
+			t.Fatalf("ProjectsForTrace = %v, want %v по убыванию свежести транзакции", pids, want)
 		}
 
-		_, found, err = q.ProjectForTrace(ctx, "unknown-trace-id")
+		none, err := q.ProjectsForTrace(ctx, "unknown-trace-id")
 		if err != nil {
-			t.Fatalf("ProjectForTrace unknown: %v", err)
+			t.Fatalf("ProjectsForTrace unknown: %v", err)
 		}
-		if found {
-			t.Fatalf("found = true for unknown trace")
+		if len(none) != 0 {
+			t.Fatalf("ProjectsForTrace(unknown) = %v, want пусто", none)
 		}
 	})
 

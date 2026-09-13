@@ -182,8 +182,10 @@ templ RecipeDetail(vm RecipeDetailVM, userEmail string) {
 										<td>{ i18n.T(ctx, recipeSeverityKey(st.Spec.Severity)) }</td>
 										<td>{ i18n.T(ctx, "recipes." + vm.Recipe.ID + ".rule." + st.Spec.NoteKey) }</td>
 										<td>
-											if st.Exists {
+											if st.Exists && st.Enabled {
 												<span class="badge badge-good">{ i18n.T(ctx, "recipes.rule_status.exists") }</span>
+											} else if st.Exists {
+												<span class="badge badge-warn">{ i18n.T(ctx, "recipes.rule_status.disabled") }</span>
 											} else {
 												<span class="badge badge-neutral">{ i18n.T(ctx, "recipes.rule_status.pending") }</span>
 											}

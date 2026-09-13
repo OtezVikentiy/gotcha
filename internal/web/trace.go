@@ -35,23 +35,18 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 
 	origin, originID, originTransaction := traceOrigin(r)
 
-	// found=false — 404 ниже; err — ClickHouse недоступен, деградация без 404.
-	projectID, found, err := h.Trace.ProjectForTrace(r.Context(), traceID)
+	// err — ClickHouse недоступен, деградация без 404; пустой список — трейса нет нигде.
+	candidates, err := h.Trace.ProjectsForTrace(r.Context(), traceID)
 	if err != nil {
 		h.renderTraceUnavailable(w, r, 0, traceID, origin, originID, originTransaction, err)
 		return
 	}
-	if !found {
-		h.notFound(w, r)
-		return
-	}
-
-	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
+	projectID, ok, err := h.resolveTraceProject(r.Context(), uid, candidates)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
-	if !canAccess {
+	if !ok {
 		h.notFound(w, r)
 		return
 	}
@@ -163,6 +158,25 @@ func (h *Handler) spansLookLost(ctx context.Context, projectID int64, traceID st
 	return !ts.Before(cutoff)
 }
 
+// Среди проектов, куда клиентский trace_id попал (штатно — один, при коллизии
+// с чужим проектом — больше), выбираем ПЕРВЫЙ доступный пользователю: иначе
+// чужой проект своей же строкой id закрыл бы владельцу доступ к трейсу. Если
+// пользователю доступны несколько (оба его собственных проекта), выбор не
+// произволен: candidates уже упорядочен ProjectsForTrace по свежести —
+// показываем проект с самой недавней транзакцией по этому id.
+func (h *Handler) resolveTraceProject(ctx context.Context, uid int64, candidates []int64) (projectID int64, found bool, err error) {
+	for _, pid := range candidates {
+		can, err := h.Org.CanAccessProject(ctx, uid, pid)
+		if err != nil {
+			return 0, false, err
+		}
+		if can {
+			return pid, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
 // 200, а не 500: единый приём для CH-страниц, 404 остаётся за «трейса нет».
 func (h *Handler) renderTraceUnavailable(w http.ResponseWriter, r *http.Request, projectID int64, traceID, origin string, originID int64, originTransaction string, err error) {
 	slog.Warn("trace: waterfall failed", "project_id", projectID, "trace_id", traceID, "err", err)
@@ -191,23 +205,19 @@ func (h *Handler) traceFlame(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	// err (не found=false) — ClickHouse недоступен: оболочка на месте,
+	// err (не пустой список) — ClickHouse недоступен: оболочка на месте,
 	// вместо флеймграфа «данные временно недоступны».
-	projectID, found, err := h.Trace.ProjectForTrace(r.Context(), traceID)
+	candidates, err := h.Trace.ProjectsForTrace(r.Context(), traceID)
 	if err != nil {
 		h.renderTraceFlameUnavailable(w, r, 0, traceID, err)
 		return
 	}
-	if !found {
-		h.notFound(w, r)
-		return
-	}
-	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
+	projectID, ok, err := h.resolveTraceProject(r.Context(), uid, candidates)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
-	if !canAccess {
+	if !ok {
 		h.notFound(w, r)
 		return
 	}

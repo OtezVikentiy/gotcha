@@ -435,9 +435,15 @@ type fakeDropCounter struct {
 	transactions  map[int64]int64
 	metrics       map[int64]int64
 	profiles      map[int64]int64
+	logs          map[int64]int64
 	metricsCalls  int
 	profilesCalls int
 	logsCalls     int
+	// Месяцы фактических вызовов IncDropped* — проверить, что дроп относят к
+	// своему месяцу, а не к месяцу флаша.
+	eventMonths  []time.Time
+	txMonths     []time.Time
+	metricMonths []time.Time
 }
 
 func newFakeDropCounter() *fakeDropCounter {
@@ -446,32 +452,35 @@ func newFakeDropCounter() *fakeDropCounter {
 		transactions: map[int64]int64{},
 		metrics:      map[int64]int64{},
 		profiles:     map[int64]int64{},
+		logs:         map[int64]int64{},
 	}
 }
 
 // проверяет ctx.Err() первым, как реальный pgx-запрос с уже истёкшим ctx —
 // иначе не отличить флаш со свежим контекстом от флаша с унаследованным истёкшим.
-func (f *fakeDropCounter) IncDroppedEvents(ctx context.Context, orgID int64, _ time.Time, n int64) error {
+func (f *fakeDropCounter) IncDroppedEvents(ctx context.Context, orgID int64, month time.Time, n int64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.events[orgID] += n
+	f.eventMonths = append(f.eventMonths, month)
 	return nil
 }
 
-func (f *fakeDropCounter) IncDroppedTransactions(ctx context.Context, orgID int64, _ time.Time, n int64) error {
+func (f *fakeDropCounter) IncDroppedTransactions(ctx context.Context, orgID int64, month time.Time, n int64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.transactions[orgID] += n
+	f.txMonths = append(f.txMonths, month)
 	return nil
 }
 
-func (f *fakeDropCounter) IncDroppedMetrics(ctx context.Context, orgID int64, _ time.Time, n int64) error {
+func (f *fakeDropCounter) IncDroppedMetrics(ctx context.Context, orgID int64, month time.Time, n int64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -479,6 +488,7 @@ func (f *fakeDropCounter) IncDroppedMetrics(ctx context.Context, orgID int64, _ 
 	defer f.mu.Unlock()
 	f.metricsCalls++
 	f.metrics[orgID] += n
+	f.metricMonths = append(f.metricMonths, month)
 	return nil
 }
 
@@ -493,10 +503,14 @@ func (f *fakeDropCounter) IncDroppedProfiles(ctx context.Context, orgID int64, _
 	return nil
 }
 
-func (f *fakeDropCounter) IncDroppedLogs(_ context.Context, _ int64, _ time.Time, _ int64) error {
+func (f *fakeDropCounter) IncDroppedLogs(ctx context.Context, orgID int64, _ time.Time, n int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.logsCalls++
+	f.logs[orgID] += n
 	return nil
 }
 
@@ -522,6 +536,12 @@ func (f *fakeDropCounter) profilesFor(orgID int64) int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.profiles[orgID]
+}
+
+func (f *fakeDropCounter) logsFor(orgID int64) int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.logs[orgID]
 }
 
 func TestPipelineFlushesDropsPerOrg(t *testing.T) {
@@ -565,6 +585,56 @@ func TestPipelineFlushesTransactionDropsPerOrg(t *testing.T) {
 	}
 	if got := dc.eventsFor(7); got != 0 {
 		t.Errorf("dropped events для org 7 = %d, want 0: транзакции не должны попадать в счётчик событий", got)
+	}
+}
+
+// Дроп из старого месяца, флашнутый уже в новом, обязан отчитаться в СВОЙ
+// месяц — не в тот, что идёт на часах в момент флаша.
+func TestPipelineFlushDroppedAttributesEachEntryToItsOwnMonth(t *testing.T) {
+	dc := newFakeDropCounter()
+	p := NewPipeline(nil, nil)
+	p.DropCounter = dc
+
+	oldMonth := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	newMonth := time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC)
+	// Как будто один дроп случился 31 января поздно вечером, другой — уже
+	// 1 февраля, но оба долежали в агрегате до одного и того же флаша.
+	p.dropAgg = map[dropAggKey]int64{
+		{orgID: 1, kind: dropEvent, month: oldMonth}: 3,
+		{orgID: 1, kind: dropEvent, month: newMonth}: 2,
+	}
+
+	p.flushDropped(context.Background())
+
+	if got := dc.eventsFor(1); got != 5 {
+		t.Fatalf("dropped events для org 1 = %d, want 5 (3+2)", got)
+	}
+	if len(dc.eventMonths) != 2 {
+		t.Fatalf("IncDroppedEvents вызван %d раз, want 2 (по одному на месяц)", len(dc.eventMonths))
+	}
+	seen := map[time.Time]bool{dc.eventMonths[0]: true, dc.eventMonths[1]: true}
+	if !seen[oldMonth] || !seen[newMonth] {
+		t.Errorf("месяцы вызовов = %v, want ровно %v и %v — старый дроп не должен списаться в новый месяц",
+			dc.eventMonths, oldMonth, newMonth)
+	}
+}
+
+// Идёт обычным путём потери (CountDroppedEvents), не засевает dropAgg напрямую —
+// иначе поломка dropMonthKey в самом countDroppedOrg осталась бы незамеченной.
+func TestPipelineCountDroppedOrgStampsMonthAtDropTime(t *testing.T) {
+	dc := newFakeDropCounter()
+	p := NewPipeline(nil, nil)
+	p.DropCounter = dc
+
+	want := dropMonthKey(time.Now())
+	p.CountDroppedEvents(1, 3)
+	p.flushDropped(context.Background())
+
+	if got := dc.eventsFor(1); got != 3 {
+		t.Fatalf("dropped events = %d, want 3", got)
+	}
+	if len(dc.eventMonths) != 1 || !dc.eventMonths[0].Equal(want) {
+		t.Fatalf("month = %v, want %v", dc.eventMonths, want)
 	}
 }
 

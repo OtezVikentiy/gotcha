@@ -17,7 +17,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/db"
 	"gitflic.ru/otezvikentiy/gotcha/internal/envcontract"
 	"gitflic.ru/otezvikentiy/gotcha/internal/export"
-	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
+	"gitflic.ru/otezvikentiy/gotcha/internal/scrub"
 )
 
 // переводит имена полей структуры (MaxRows, MaxBytes...) в имена переменных окружения:
@@ -209,10 +209,10 @@ var validModes = map[string]bool{
 	"ingest": true, "web": true, "uptime": true, "probe": true, "all": true,
 }
 
-// список живёт в internal/ingest: та же маска применяется в internal/export к
+// список живёт в internal/scrub: та же маска применяется в internal/export к
 // выгрузкам, и два независимых списка разъехались бы при первой же правке одного
 func defaultScrubKeys() []string {
-	return ingest.DefaultDenyKeys()
+	return scrub.DefaultDenyKeys()
 }
 
 func isLocalBaseURL(baseURL string) bool {

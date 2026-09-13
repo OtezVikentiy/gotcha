@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func phpEvent(ts time.Time) string {
@@ -491,6 +492,46 @@ func TestCapRunesStripsNUL(t *testing.T) {
 	}
 	if got := capRunes("\x00abcdef", 3); got != "abc" {
 		t.Fatalf("capRunes cap = %q, want %q", got, "abc")
+	}
+}
+
+// Многобайтовая руна режется рунным капом впустую: capRunes(n) на "щ" (2 байта)
+// пропускает до 2*n байт — ровно та амплификация, которую capBytes обязан закрыть.
+func TestCapBytesBoundsByBytesNotRunes(t *testing.T) {
+	in := strings.Repeat("щ", 2000) // 4000 байт, все двухбайтовые руны
+	if got := capRunes(in, 2000); len(got) != 4000 {
+		t.Fatalf("контроль: capRunes(2000) на двухбайтовых рунах = %d байт, want 4000 (амплификация ожидаема)", len(got))
+	}
+	got := capBytes(in, 2000)
+	if len(got) > 2000 {
+		t.Fatalf("capBytes(2000) = %d байт, want <= 2000", len(got))
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("capBytes обрезал руну пополам: %q не валидный UTF-8", got)
+	}
+}
+
+func TestCapBytesFastPath(t *testing.T) {
+	cases := []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"", 5, ""},
+		{"abc", 5, "abc"},
+		{"abcde", 5, "abcde"},
+		{"abcdef", 5, "abcde"},
+	}
+	for _, c := range cases {
+		if got := capBytes(c.in, c.n); got != c.want {
+			t.Errorf("capBytes(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+		}
+	}
+}
+
+func TestCapBytesStripsNUL(t *testing.T) {
+	if got := capBytes("a\x00b\x00", 100); got != "ab" {
+		t.Fatalf("capBytes = %q, want %q", got, "ab")
 	}
 }
 

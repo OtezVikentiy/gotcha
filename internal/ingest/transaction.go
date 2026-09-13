@@ -146,10 +146,12 @@ func ParseTransaction(raw []byte) (trace.Transaction, error) {
 			SpanID:       normalizeID(ss.SpanID, maxSpanID),
 			ParentSpanID: normalizeID(ss.ParentSpanID, maxSpanID),
 			Op:           capRunes(ss.Op, maxOp),
-			Description:  capRunes(ss.Description, maxSpanDescription),
-			Start:        sStart,
-			End:          sEnd,
-			Status:       transactionStatus(ss.Status),
+			// байтовый кап, не рунный: Description идёт в NormalizeSQL, чья
+			// цена зависит от длины в байтах (см. capBytes).
+			Description: capBytes(ss.Description, maxSpanDescription),
+			Start:       sStart,
+			End:         sEnd,
+			Status:      transactionStatus(ss.Status),
 			// Тот же ограничитель числа ключей/длины, что у OTLP-пути (capDataMap/otlpAttrMap).
 			Data: capDataMap(ss.Data),
 		})

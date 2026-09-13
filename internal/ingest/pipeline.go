@@ -11,6 +11,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/fingerprint"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
+	"gitflic.ru/otezvikentiy/gotcha/internal/scrub"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
@@ -82,7 +83,7 @@ type Pipeline struct {
 	Projects ProjectSettings
 
 	// nil — scrubbing выключен, методы Scrubber nil-safe (вызываются без проверки).
-	Scrub *Scrubber
+	Scrub *scrub.Scrubber
 
 	testPerfBudget time.Duration
 
@@ -117,6 +118,14 @@ type Pipeline struct {
 type dropAggKey struct {
 	orgID int64
 	kind  dropKind
+	month time.Time
+}
+
+// Усечение до начала месяца по UTC — иначе каждый дроп получил бы уникальный
+// ключ агрегации по наносекундам, и счётчики никогда бы не схлопывались.
+func dropMonthKey(t time.Time) time.Time {
+	y, m, _ := t.UTC().Date()
+	return time.Date(y, m, 1, 0, 0, 0, 0, time.UTC)
 }
 
 // Причина отделена от факта потери: переполнение очереди лечится размером/числом
@@ -166,8 +175,9 @@ func (p *Pipeline) countDroppedOrg(orgID int64, kind dropKind, n int64) {
 	if p.DropCounter == nil || orgID <= 0 || n <= 0 {
 		return
 	}
+	key := dropAggKey{orgID: orgID, kind: kind, month: dropMonthKey(time.Now())}
 	p.dropAggMu.Lock()
-	p.dropAgg[dropAggKey{orgID: orgID, kind: kind}] += n
+	p.dropAgg[key] += n
 	p.dropAggMu.Unlock()
 }
 
@@ -219,14 +229,13 @@ func (p *Pipeline) flushDropped(parent context.Context) {
 	}
 	ctx, cancel := context.WithTimeout(parent, dropFlushTimeout)
 	defer cancel()
-	month := time.Now().UTC()
 	for key, n := range agg {
 		var err error
 		switch key.kind {
 		case dropEvent:
-			err = p.DropCounter.IncDroppedEvents(ctx, key.orgID, month, n)
+			err = p.DropCounter.IncDroppedEvents(ctx, key.orgID, key.month, n)
 		case dropTransaction:
-			err = p.DropCounter.IncDroppedTransactions(ctx, key.orgID, month, n)
+			err = p.DropCounter.IncDroppedTransactions(ctx, key.orgID, key.month, n)
 		}
 		if err != nil {
 			slog.Warn("ingest: pipeline drop flush failed, this window's count lost",
@@ -645,13 +654,17 @@ func (p *Pipeline) process(t task) {
 		if res.Regression {
 			kind = alert.KindRegression
 		}
+		// Свой бюджет, не остаток от Upsert: иначе медленный Upsert оставлял бы
+		// постановке алерта считаные миллисекунды и терял её по таймауту.
+		alertCtx, alertCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer alertCancel()
 		timesSeen := int64(1)
-		if iss, err := p.issues.Get(ctx, res.IssueID); err != nil {
+		if iss, err := p.issues.Get(alertCtx, res.IssueID); err != nil {
 			slog.Error("issue lookup for alert failed", "issue_id", res.IssueID, "error", err)
 		} else {
 			timesSeen = iss.TimesSeen
 		}
-		p.Alerts.OnIssue(ctx, alert.Event{
+		p.Alerts.OnIssue(alertCtx, alert.Event{
 			ProjectID: t.projectID,
 			IssueID:   res.IssueID,
 			Kind:      kind,

@@ -10,6 +10,9 @@ import (
 type RuleStatus struct {
 	Spec   RuleSpec
 	Exists bool
+	// Валиден только при Exists: правило может существовать выключенным —
+	// «Создан» тогда неверно отвечает на вопрос «у меня настроены пороги?».
+	Enabled bool
 }
 
 // вне ключа — Threshold, WindowSeconds, Enabled: иначе подстроенный порог или
@@ -30,6 +33,7 @@ func RuleStatuses(existing []metric.Rule, r Recipe) []RuleStatus {
 		for _, ex := range existing {
 			if matches(ex, spec) {
 				st.Exists = true
+				st.Enabled = ex.Enabled
 				break
 			}
 		}

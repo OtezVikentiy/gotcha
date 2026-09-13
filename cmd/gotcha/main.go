@@ -39,6 +39,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
+	"gitflic.ru/otezvikentiy/gotcha/internal/scrub"
 	"gitflic.ru/otezvikentiy/gotcha/internal/secretbox"
 	"gitflic.ru/otezvikentiy/gotcha/internal/selfmetrics"
 	"gitflic.ru/otezvikentiy/gotcha/internal/slo"
@@ -968,7 +969,7 @@ func runServer(ctx context.Context, cfg Config, memLimitBytes int64) error {
 		// perf_issues продолжает работать как обычно.
 		pipeline.Maint = uptime.NewService(pg)
 		pipeline.Projects = projectCache
-		scrubber := ingest.NewScrubber(cfg.ScrubIP, cfg.ScrubEmail, cfg.ScrubKeys)
+		scrubber := scrub.NewScrubber(cfg.ScrubIP, cfg.ScrubEmail, cfg.ScrubKeys)
 		scrubber.ScrubFreeText = cfg.ScrubFreeText // opt-in маскирование email в свободном тексте
 		scrubber.SetAllowKeys(cfg.ScrubAllowKeys)  // явные исключения из fail-closed denylist
 		pipeline.Scrub = scrubber
@@ -984,12 +985,13 @@ func runServer(ctx context.Context, cfg Config, memLimitBytes int64) error {
 		spanWriter.SetSpanDropSink(func(orgID, n int64) {
 			slog.Warn("trace: spans dropped from buffer under load", "org_id", orgID, "n", n)
 		})
-		// Метрики/профили несут только project_id — резолв в org_id и запись в
-		// org_usage откладываются на собственный тикер, вне писательского mu.
+		// Метрики/профили/логи несут только project_id — резолв в org_id и запись
+		// в org_usage откладываются на собственный тикер, вне писательского mu.
 		writerDrops = ingest.NewWriterDropAttributor(projectCache, orgSvc, orgSvc)
 		go writerDrops.Run()
 		metricWriter.SetDropSink(writerDrops.CountDroppedMetrics)
 		profileWriter.SetDropSink(writerDrops.CountDroppedProfiles)
+		logWriter.SetDropSink(writerDrops.CountDroppedLogs)
 		pipeline.Start()
 		ingestHandler = ingest.NewHandler(
 			ingest.NewKeyCache(orgSvc), ingest.NewOrgQuota(orgSvc), pipeline, cfg.MaxEventBytes)

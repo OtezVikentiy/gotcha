@@ -482,6 +482,101 @@ func TestWebTraceCrossOrgStranger(t *testing.T) {
 	}
 }
 
+// Атакующий шлёт транзакцию с тем же trace_id в свой проект — резолв обязан
+// найти проект жертвы среди кандидатов, а не первую строку по trace_id.
+func TestWebTraceCollisionOwnerStillResolves(t *testing.T) {
+	s := newTraceStack(t)
+
+	victimID, victimCookie := orgSettingsRegister(t, s.auth, "trace-collision-victim@example.com")
+	victimOrg, err := s.org.CreateOrg(context.Background(), "trace-collision-victim-co", "Trace Collision Victim Co", victimID)
+	if err != nil {
+		t.Fatalf("create victim org: %v", err)
+	}
+	victimProj, err := s.org.CreateProject(context.Background(), victimOrg.ID, "trace-collision-victim-proj", "Trace Collision Victim Proj", "go")
+	if err != nil {
+		t.Fatalf("create victim project: %v", err)
+	}
+
+	attackerID, _ := orgSettingsRegister(t, s.auth, "trace-collision-attacker@example.com")
+	attackerOrg, err := s.org.CreateOrg(context.Background(), "trace-collision-attacker-co", "Trace Collision Attacker Co", attackerID)
+	if err != nil {
+		t.Fatalf("create attacker org: %v", err)
+	}
+	attackerProj, err := s.org.CreateProject(context.Background(), attackerOrg.ID, "trace-collision-attacker-proj", "Trace Collision Attacker Proj", "go")
+	if err != nil {
+		t.Fatalf("create attacker project: %v", err)
+	}
+
+	const traceID = "collision-trace-01"
+	start := time.Now().UTC().Add(-5 * time.Minute)
+	s.spans.Add(victimProj.ID, victimProj.ID, trace.Transaction{
+		TraceID: traceID, SpanID: "victim-root", Name: "GET /api/mine", Op: "http.server",
+		Status: "ok", Start: start, End: start.Add(100 * time.Millisecond), Environment: "production",
+	})
+	// та же строка id — не совпадение, а наведённая атакующим коллизия.
+	s.spans.Add(attackerProj.ID, attackerProj.ID, trace.Transaction{
+		TraceID: traceID, SpanID: "attacker-root", Name: "GET /api/other", Op: "http.server",
+		Status: "ok", Start: start, End: start.Add(50 * time.Millisecond), Environment: "production",
+	})
+	s.flush(t)
+
+	for _, path := range []string{"/traces/" + traceID, "/traces/" + traceID + "/flame"} {
+		resp := getWithCookie(t, s.srv, path, victimCookie)
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("victim GET %s status = %d, want 200 (коллизия в чужом проекте не должна прятать свой трейс)", path, resp.StatusCode)
+		}
+	}
+}
+
+// Пользователю доступны ОБА проекта (два своих проекта в одной организации) —
+// выбор не произволен: показывается проект с самой свежей транзакцией по этому
+// trace_id, а не первая строка в порядке хранения ClickHouse.
+func TestWebTraceCollisionBothAccessibleShowsMostRecent(t *testing.T) {
+	s := newTraceStack(t)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "trace-collision-owner@example.com")
+	ownerOrg, err := s.org.CreateOrg(context.Background(), "trace-collision-owner-co", "Trace Collision Owner Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	olderProj, err := s.org.CreateProject(context.Background(), ownerOrg.ID, "trace-collision-older-proj", "Trace Collision Older Proj", "go")
+	if err != nil {
+		t.Fatalf("create older project: %v", err)
+	}
+	recentProj, err := s.org.CreateProject(context.Background(), ownerOrg.ID, "trace-collision-recent-proj", "Trace Collision Recent Proj", "go")
+	if err != nil {
+		t.Fatalf("create recent project: %v", err)
+	}
+
+	const traceID = "collision-trace-02"
+	older := time.Now().UTC().Add(-2 * time.Hour)
+	recent := time.Now().UTC().Add(-5 * time.Minute)
+	s.spans.Add(olderProj.ID, olderProj.ID, trace.Transaction{
+		TraceID: traceID, SpanID: "older-root", Name: "GET /older-project", Op: "http.server",
+		Status: "ok", Start: older, End: older.Add(100 * time.Millisecond), Environment: "production",
+	})
+	s.spans.Add(recentProj.ID, recentProj.ID, trace.Transaction{
+		TraceID: traceID, SpanID: "recent-root", Name: "GET /recent-project", Op: "http.server",
+		Status: "ok", Start: recent, End: recent.Add(100 * time.Millisecond), Environment: "production",
+	})
+	s.flush(t)
+
+	resp := getWithCookie(t, s.srv, "/traces/"+traceID, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "GET /recent-project") {
+		t.Fatalf("страница не показывает более свежий проект (GET /recent-project):\n%s", body)
+	}
+	if strings.Contains(string(body), "GET /older-project") {
+		t.Fatalf("страница показала более старый проект вместо свежего:\n%s", body)
+	}
+}
+
 func TestWebTraceWaterfallExpiredSpans(t *testing.T) {
 	s := newTraceStack(t)
 	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "trace-expired-owner@example.com")

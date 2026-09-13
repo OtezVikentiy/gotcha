@@ -105,29 +105,44 @@ func parentDownFromSnapshot(snap *snapshot, start node) bool {
 	return false // все пути вверх зациклились, реального корня нет → start пейджит
 }
 
-// Для source, отличного от "host", зависимости не резолвятся — молчаливый
-// (false, false, nil): uptime резолвит их сам через свой сервис.
+// Список источников не закрыт (имя берётся из реализации Source), и незнакомый
+// source — не то же самое, что «зависимостей нет»: ошибка, не тихое false.
+var ErrUnknownSource = errors.New("depsuppress: unknown source")
+
 func (s *Suppressor) CheckIncident(ctx context.Context, source string, incidentID int64) (hasParent, parentDown bool, err error) {
-	if source != "host" {
-		return false, false, nil
-	}
-
-	var hostID int64
-	if err := s.pool.QueryRow(ctx,
-		`SELECT host_id FROM host_incidents WHERE id = $1`, incidentID,
-	).Scan(&hostID); err != nil {
-		// Гонка с закрытием инцидента между OpenUnacked и этим tickOne — не ошибка.
-		if errors.Is(err, pgx.ErrNoRows) {
-			return false, false, nil
+	var kind string
+	var nodeID int64
+	switch source {
+	case "host":
+		kind = "host"
+		if err := s.pool.QueryRow(ctx,
+			`SELECT host_id FROM host_incidents WHERE id = $1`, incidentID,
+		).Scan(&nodeID); err != nil {
+			// Гонка с закрытием инцидента между OpenUnacked и этим tickOne — не ошибка.
+			if errors.Is(err, pgx.ErrNoRows) {
+				return false, false, nil
+			}
+			return false, false, fmt.Errorf("depsuppress: load host_id for host_incident %d: %w", incidentID, err)
 		}
-		return false, false, fmt.Errorf("depsuppress: load host_id for host_incident %d: %w", incidentID, err)
+	case "uptime":
+		kind = "monitor"
+		if err := s.pool.QueryRow(ctx,
+			`SELECT monitor_id FROM incidents WHERE id = $1`, incidentID,
+		).Scan(&nodeID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return false, false, nil
+			}
+			return false, false, fmt.Errorf("depsuppress: load monitor_id for uptime incident %d: %w", incidentID, err)
+		}
+	default:
+		return false, false, fmt.Errorf("%w: %q", ErrUnknownSource, source)
 	}
 
-	hasParent, err = s.HasParent(ctx, "host", hostID)
+	hasParent, err = s.HasParent(ctx, kind, nodeID)
 	if err != nil {
 		return false, false, err
 	}
-	parentDown, err = s.ParentDown(ctx, "host", hostID)
+	parentDown, err = s.ParentDown(ctx, kind, nodeID)
 	if err != nil {
 		return false, false, err
 	}

@@ -161,3 +161,24 @@ func TestRuleStatuses(t *testing.T) {
 		t.Fatal("status[2].Exists = false after full-key match, want true")
 	}
 }
+
+// Enabled не входит в ключ matches (иначе выключенное правило задвоилось бы
+// при повторном применении рецепта), но статус страницы обязан его различать —
+// иначе оператор видит «Создан» про правило, которое молчит.
+func TestRuleStatusesTracksEnabled(t *testing.T) {
+	rec := recipes.Recipe{ID: "unit", Rules: []recipes.RuleSpec{
+		{Metric: "m.a", Agg: "avg", Comparator: "gt", Threshold: 10, WindowSeconds: 300},
+		{Metric: "m.b", Agg: "sum", Comparator: "gt", Threshold: 0, WindowSeconds: 300},
+	}}
+	existing := []metric.Rule{
+		{MetricName: "m.a", Aggregation: "avg", Comparator: "gt", Enabled: true},
+		{MetricName: "m.b", Aggregation: "sum", Comparator: "gt", Enabled: false},
+	}
+	got := recipes.RuleStatuses(existing, rec)
+	if !got[0].Exists || !got[0].Enabled {
+		t.Fatalf("status[0] = %+v, want Exists=true Enabled=true", got[0])
+	}
+	if !got[1].Exists || got[1].Enabled {
+		t.Fatalf("status[1] = %+v, want Exists=true Enabled=false (выключенное правило)", got[1])
+	}
+}

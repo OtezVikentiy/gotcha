@@ -432,6 +432,7 @@
     "recipes.table.note": "Note",
     "recipes.table.status": "Status",
     "recipes.rule_status.exists": "Created",
+    "recipes.rule_status.disabled": "Created, disabled",
     "recipes.rule_status.pending": "Will be created",
     "recipes.create_rules": "Create recommended thresholds",
     "recipes.operator_only": "Creating thresholds requires a project operator.",

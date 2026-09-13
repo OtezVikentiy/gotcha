@@ -310,6 +310,14 @@ func (w *Writer) Run() {
 func (w *Writer) Close(ctx context.Context) error {
 	w.stopOnce.Do(func() { close(w.stop) })
 	<-w.done
+	err := w.closeDrain(ctx)
+	if dropped := w.Dropped(); dropped > 0 {
+		slog.Warn("profiles dropped during lifetime", "dropped_total", dropped)
+	}
+	return err
+}
+
+func (w *Writer) closeDrain(ctx context.Context) error {
 	for {
 		n := w.buffered()
 		if n == 0 {

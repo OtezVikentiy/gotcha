@@ -209,9 +209,9 @@ func (s *Scheduler) tickOne(ctx context.Context, b Binding, p PendingIncident, n
 		return
 	}
 
-	// Гейт зависимостей — после maintenance и до резолва лесенки, чтобы не
-	// тратить время впустую.
-	if s.Dep != nil {
+	// Гейт зависимостей — только для источников с графом (SuppressedSource):
+	// для остальных «родителя нет» — их постоянный ответ, а не ошибка на тик.
+	if _, ok := b.Src.(SuppressedSource); ok && s.Dep != nil {
 		hasParent, parentDown, err := s.Dep.CheckIncident(ctx, b.Src.Name(), p.ID)
 		if err != nil {
 			slog.Error("escalation scheduler: dep check failed", "source", b.Src.Name(), "incident_id", p.ID, "error", err)

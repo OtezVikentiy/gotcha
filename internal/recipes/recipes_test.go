@@ -163,6 +163,22 @@ func TestRegistryInvariants(t *testing.T) {
 	}
 }
 
+// databases закомментированным даёт ресиверу все базы сразу — deadlocks-порог
+// (max() по бакету) тогда слеп к всплеску в любой не самой крупной базе.
+func TestPostgresConfigScopesDatabases(t *testing.T) {
+	r, ok := recipes.ByID("postgres")
+	if !ok {
+		t.Fatal("ByID(postgres): !ok")
+	}
+	cfg := r.Config("https://gotcha.example", "test-key-123")
+	if !strings.Contains(cfg, "\n    databases: [CHANGE_ME]") {
+		t.Fatalf("Config: databases не задан явно (незакомментированным списком):\n%s", cfg)
+	}
+	if strings.Contains(cfg, "# databases") {
+		t.Fatalf("Config: databases всё ещё закомментирован — ресивер возьмёт все базы:\n%s", cfg)
+	}
+}
+
 func TestByID(t *testing.T) {
 	r, ok := recipes.ByID("postgres")
 	if !ok || r.ID != "postgres" {

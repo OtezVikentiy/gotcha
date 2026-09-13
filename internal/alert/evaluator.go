@@ -114,6 +114,16 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 	channels, err := e.Svc.Channels(ctx, ev.ProjectID)
 	if err != nil {
 		slog.Error("alert: channels lookup failed", "project_id", ev.ProjectID, "error", err)
+		// throttle и budget уже списаны, а отправка не состоялась и не
+		// повторится сама — без отката алерт молчит до конца ThrottleMinutes.
+		if err := e.releaseThrottle(ctx, ev.IssueID, rule.ID); err != nil {
+			slog.Error("alert: release throttle after channels lookup failure",
+				"issue_id", ev.IssueID, "rule_id", rule.ID, "error", err)
+		}
+		if err := e.Svc.refundBudget(ctx, ev.ProjectID); err != nil {
+			slog.Error("alert: refund budget after channels lookup failure",
+				"project_id", ev.ProjectID, "error", err)
+		}
 		return
 	}
 

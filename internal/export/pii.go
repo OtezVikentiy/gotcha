@@ -6,7 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 
-	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
+	"gitflic.ru/otezvikentiy/gotcha/internal/scrub"
 )
 
 const maskedValue = "[masked]"
@@ -59,8 +59,8 @@ const PseudonymUniquenessNote = "user_id pseudonyms are unique to this export an
 // пересобирать на каждое событие. ScrubFreeText=true независимо от GOTCHA_SCRUB_FREETEXT.
 var jsonScrubber = newJSONScrubber()
 
-func newJSONScrubber() *ingest.Scrubber {
-	s := ingest.NewScrubber(true, true, ingest.DefaultDenyKeys())
+func newJSONScrubber() *scrub.Scrubber {
+	s := scrub.NewScrubber(true, true, scrub.DefaultDenyKeys())
 	s.ScrubFreeText = true
 	return s
 }

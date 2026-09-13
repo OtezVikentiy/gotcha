@@ -147,6 +147,23 @@ func (s *fakeSource) BumpEscalation(ctx context.Context, id int64, from int) (bo
 	return false, nil
 }
 
+// Реализует только escalation.Source, без SuppressedSource — как настоящие
+// metric/profile/slo/trace, у которых графа зависимостей нет архитектурно.
+type bareSource struct {
+	name string
+	inc  escalation.PendingIncident
+}
+
+func (s *bareSource) Name() string { return s.name }
+
+func (s *bareSource) OpenUnacked(ctx context.Context) ([]escalation.PendingIncident, error) {
+	return []escalation.PendingIncident{s.inc}, nil
+}
+
+func (s *bareSource) BumpEscalation(ctx context.Context, id int64, from int) (bool, error) {
+	return true, nil
+}
+
 type fakeMaint struct {
 	inMaint bool
 	err     error
@@ -163,6 +180,7 @@ type fakeDep struct {
 	checkErr   error
 	markErr    error
 	markCalls  []fakeMarkCall
+	checkedSrc []string
 }
 
 type fakeMarkCall struct {
@@ -170,8 +188,27 @@ type fakeMarkCall struct {
 	incidentID int64
 }
 
+// Ветвится по имени как настоящий depsuppress.Suppressor: только host/uptime
+// резолвятся, остальное — ошибка, а не молчаливое hasParent=false.
 func (d *fakeDep) CheckIncident(ctx context.Context, source string, incidentID int64) (bool, bool, error) {
-	return d.hasParent, d.parentDown, d.checkErr
+	d.mu.Lock()
+	d.checkedSrc = append(d.checkedSrc, source)
+	d.mu.Unlock()
+	if d.checkErr != nil {
+		return false, false, d.checkErr
+	}
+	switch source {
+	case "host", "uptime":
+		return d.hasParent, d.parentDown, nil
+	default:
+		return false, false, errors.New("fakeDep: unknown source: " + source)
+	}
+}
+
+func (d *fakeDep) checkedSources() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.checkedSrc...)
 }
 
 func (d *fakeDep) MarkSuppressed(ctx context.Context, source string, incidentID int64) error {
@@ -953,7 +990,7 @@ func TestSchedulerReleasesSuppressedIncidentWhenParentRecovers(t *testing.T) {
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
 
-	src := newFakeSource("metric")
+	src := newFakeSource("host")
 	const incidentID = int64(40001)
 	src.add(escalation.PendingIncident{
 		ID: incidentID, ProjectID: pid, StartedAt: now.Add(-2 * time.Hour),
@@ -1001,7 +1038,7 @@ func TestSchedulerKeepsSuppressedWhileParentDown(t *testing.T) {
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
 
-	src := newFakeSource("metric")
+	src := newFakeSource("host")
 	const incidentID = int64(40002)
 	src.add(escalation.PendingIncident{
 		ID: incidentID, ProjectID: pid, StartedAt: now.Add(-2 * time.Hour),
@@ -1052,7 +1089,7 @@ func TestSchedulerReleasesWhenDependencyRemoved(t *testing.T) {
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
 
-	src := newFakeSource("metric")
+	src := newFakeSource("host")
 	const incidentID = int64(40003)
 	src.add(escalation.PendingIncident{
 		ID: incidentID, ProjectID: pid, StartedAt: now.Add(-2 * time.Hour),
@@ -1096,7 +1133,7 @@ func TestSchedulerReleaseSuppressedOpenSuppressedError(t *testing.T) {
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
 
-	src := newFakeSource("metric")
+	src := newFakeSource("host")
 	const incidentID = int64(40004)
 	src.add(escalation.PendingIncident{
 		ID: incidentID, ProjectID: pid, StartedAt: now.Add(-2 * time.Hour),
@@ -1146,7 +1183,7 @@ func TestSchedulerReleaseSuppressedCheckIncidentError(t *testing.T) {
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
 
-	src := newFakeSource("metric")
+	src := newFakeSource("host")
 	const incidentID = int64(40005)
 	src.add(escalation.PendingIncident{
 		ID: incidentID, ProjectID: pid, StartedAt: now.Add(-2 * time.Hour),
@@ -1194,7 +1231,7 @@ func TestSchedulerReleaseSuppressedClearSuppressedError(t *testing.T) {
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
 
-	src := newFakeSource("metric")
+	src := newFakeSource("host")
 	const incidentID = int64(40006)
 	src.add(escalation.PendingIncident{
 		ID: incidentID, ProjectID: pid, StartedAt: now.Add(-2 * time.Hour),
@@ -1234,5 +1271,69 @@ func TestSchedulerReleaseSuppressedClearSuppressedError(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].ID != incidentID {
 		t.Fatalf("OpenSuppressed = %+v, want [инцидент %d] (флаг подавления не снят)", got, incidentID)
+	}
+}
+
+// Граф зависимостей есть только у host/uptime (SuppressedSource) — гейт не
+// должен звать CheckIncident у источников без него вовсе, иначе шум на тик.
+func TestSchedulerOnlyChecksDepsForSuppressedSources(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := newProject(t, pool)
+	c1 := newChannel(t, pool, pid, true)
+
+	policy := escalation.NewPolicyStore(pool)
+	setLadder(t, policy, pid, escalation.SeverityWarning, []escalation.Step{
+		{StepNo: 0, DelayMinutes: 0, ChannelIDs: []int64{c1}},
+	})
+
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	notifier := &fakeNotifier{}
+
+	var bindings []escalation.Binding
+	var id int64 = 50000
+	for _, name := range []string{"host", "uptime", "metric", "profile", "slo", "trace"} {
+		id++
+		inc := escalation.PendingIncident{
+			ID: id, ProjectID: pid, StartedAt: now.Add(-2 * time.Hour),
+			Severity: escalation.SeverityWarning, EscalationLevel: 0,
+		}
+		switch name {
+		case "host", "uptime":
+			src := newFakeSource(name)
+			src.clock = clock
+			src.add(inc)
+			bindings = append(bindings, escalation.Binding{Src: src, Notifier: notifier})
+		default:
+			bindings = append(bindings, escalation.Binding{Src: &bareSource{name: name, inc: inc}, Notifier: notifier})
+		}
+	}
+
+	dep := &fakeDep{hasParent: false, parentDown: false}
+	logs := captureInfoLog(t)
+
+	sched := &escalation.Scheduler{
+		Bindings: bindings,
+		Policy:   policy,
+		Maint:    &fakeMaint{inMaint: false},
+		Dep:      dep,
+		Pool:     pool,
+		Now:      clock,
+	}
+	sched.Tick(ctx)
+
+	seen := map[string]bool{}
+	for _, s := range dep.checkedSources() {
+		seen[s] = true
+	}
+	if len(seen) != 2 || !seen["host"] || !seen["uptime"] {
+		t.Fatalf("CheckIncident звался для %v, want ровно {host, uptime}", dep.checkedSources())
+	}
+	if strings.Contains(logs.String(), "dep check failed") {
+		t.Fatalf("log = %q, не должен содержать \"dep check failed\" для источников без графа зависимостей", logs.String())
+	}
+	if notifier.callCount() != 6 {
+		t.Fatalf("NotifyStep calls = %d, want 6 (все шесть инцидентов эскалируются штатно)", notifier.callCount())
 	}
 }

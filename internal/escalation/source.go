@@ -20,8 +20,10 @@ type Source interface {
 	BumpEscalation(ctx context.Context, id int64, from int) (bool, error)
 }
 
-// Необязательный интерфейс — реализует только host. uptime подавляется и
-// освобождается отдельно через Detector.settleHeldIncident, минуя Scheduler.
+// Необязательный интерфейс — реализуют host и uptime. У uptime есть ещё и
+// реактивный путь через Detector.settleHeldIncident (снимает подавление сразу
+// при новом результате пробы), а этот — подстраховка на случай, если новый
+// результат для монитора больше не придёт (пауза, удаление региона).
 type SuppressedSource interface {
 	OpenSuppressed(ctx context.Context) ([]PendingIncident, error)
 	// Часы лесенки перезапускаются от момента снятия, как при выходе из группы.

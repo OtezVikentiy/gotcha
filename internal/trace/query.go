@@ -823,19 +823,34 @@ func (q *Query) Environments(ctx context.Context, projectID int64, from, to time
 	return out, nil
 }
 
-// при коллизии trace_id между проектами результат НЕДЕТЕРМИНИРОВАН (LIMIT 1 без
-// ORDER BY) — вызывающий обязан проверить доступ к возвращённому project_id.
-func (q *Query) ProjectForTrace(ctx context.Context, traceID string) (projectID int64, found bool, err error) {
-	row := q.conn.QueryRow(ctx, `
-		SELECT project_id FROM transactions WHERE trace_id = ? LIMIT 1`, traceID)
-	var pid uint64
-	if err := row.Scan(&pid); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, false, nil
-		}
-		return 0, false, fmt.Errorf("trace: project for trace: %w", err)
+// trace_id — клиентское значение и не скопирован от project_id: чужой проект
+// может прислать ту же строку, поэтому список отдаём целиком, а не первую
+// попавшуюся строку — выбор среди них остаётся за вызывающим (доступ пользователя).
+// Порядок ЗНАЧИМ, не порядок хранения: если trace_id совпал в нескольких
+// проектах, ДОСТУПНЫХ ОДНОМУ пользователю, resolveTraceProject (web/trace.go)
+// берёт первый доступный — здесь это проект с самой свежей транзакцией по
+// этому id, а не произвольная строка ClickHouse.
+func (q *Query) ProjectsForTrace(ctx context.Context, traceID string) ([]int64, error) {
+	rows, err := q.conn.Query(ctx, `
+		SELECT project_id FROM transactions WHERE trace_id = ?
+		GROUP BY project_id ORDER BY max(timestamp) DESC, project_id ASC`, traceID)
+	if err != nil {
+		return nil, fmt.Errorf("trace: projects for trace: %w", err)
 	}
-	return int64(pid), true, nil
+	defer rows.Close()
+
+	var out []int64
+	for rows.Next() {
+		var pid uint64
+		if err := rows.Scan(&pid); err != nil {
+			return nil, fmt.Errorf("trace: projects for trace: scan: %w", err)
+		}
+		out = append(out, int64(pid))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("trace: projects for trace: %w", err)
+	}
+	return out, nil
 }
 
 // отличает настоящее истечение TTL спанов (транзакция ещё жива, её TTL длиннее)
@@ -854,7 +869,7 @@ func (q *Query) TransactionTimestamp(ctx context.Context, projectID int64, trace
 	return ts.UTC(), true, nil
 }
 
-// в отличие от ProjectForTrace: project_id — префикс PK transactions, запрос
+// в отличие от ProjectsForTrace: project_id — префикс PK transactions, запрос
 // прунит гранулы до проекта вместо обхода партиций всех проектов.
 func (q *Query) TraceExistsInProject(ctx context.Context, projectID int64, traceID string) (bool, error) {
 	row := q.conn.QueryRow(ctx, `

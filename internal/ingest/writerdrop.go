@@ -12,6 +12,7 @@ import (
 type DropRefunder interface {
 	RefundMetrics(ctx context.Context, orgID int64, month time.Time, n int64) error
 	RefundProfiles(ctx context.Context, orgID int64, month time.Time, n int64) error
+	RefundLogs(ctx context.Context, orgID int64, month time.Time, n int64) error
 }
 
 // Резолв project_id → org_id отложен до фонового flush, а не сделан в самом
@@ -35,6 +36,7 @@ type WriterDropAttributor struct {
 type writerDropKey struct {
 	projectID uint64
 	kind      dropKind
+	month     time.Time
 }
 
 func NewWriterDropAttributor(projects ProjectSettings, counter DropCounter, refund DropRefunder) *WriterDropAttributor {
@@ -57,12 +59,17 @@ func (a *WriterDropAttributor) CountDroppedProfiles(projectID uint64, n int64) {
 	a.add(projectID, dropProfile, n)
 }
 
+func (a *WriterDropAttributor) CountDroppedLogs(projectID uint64, n int64) {
+	a.add(projectID, dropLog, n)
+}
+
 func (a *WriterDropAttributor) add(projectID uint64, kind dropKind, n int64) {
 	if projectID == 0 || n <= 0 {
 		return
 	}
+	key := writerDropKey{projectID: projectID, kind: kind, month: dropMonthKey(time.Now())}
 	a.mu.Lock()
-	a.agg[writerDropKey{projectID: projectID, kind: kind}] += n
+	a.agg[key] += n
 	a.mu.Unlock()
 }
 
@@ -110,7 +117,6 @@ func (a *WriterDropAttributor) flush(parent context.Context) {
 	}
 	ctx, cancel := context.WithTimeout(parent, writerDropFlushTimeout)
 	defer cancel()
-	month := time.Now().UTC()
 	for key, n := range agg {
 		proj, err := a.Projects.Resolve(ctx, int64(key.projectID))
 		if err != nil {
@@ -118,7 +124,7 @@ func (a *WriterDropAttributor) flush(parent context.Context) {
 				"project_id", key.projectID, "kind", key.kind, "n", n, "error", err)
 			continue
 		}
-		a.report(ctx, key.kind, proj.OrgID, month, n)
+		a.report(ctx, key.kind, proj.OrgID, key.month, n)
 	}
 }
 
@@ -131,6 +137,9 @@ func (a *WriterDropAttributor) report(ctx context.Context, kind dropKind, orgID 
 	case dropProfile:
 		incErr = a.Counter.IncDroppedProfiles(ctx, orgID, month, n)
 		refundErr = a.Refund.RefundProfiles(ctx, orgID, month, n)
+	case dropLog:
+		incErr = a.Counter.IncDroppedLogs(ctx, orgID, month, n)
+		refundErr = a.Refund.RefundLogs(ctx, orgID, month, n)
 	}
 	if incErr != nil {
 		slog.Warn("ingest: writer drop counter update failed",

@@ -24,6 +24,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
+	"gitflic.ru/otezvikentiy/gotcha/internal/scrub"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
@@ -130,7 +131,7 @@ type Handler struct {
 
 	// Зачистка ПДн атрибутов OTLP-метрик (152-ФЗ) — путь метрик идёт мимо
 	// Pipeline.Scrubber. nil → выключен, методы nil-safe.
-	Scrub *Scrubber
+	Scrub *scrub.Scrubber
 
 	// nil — ограничение выключено (методы nil-safe).
 	Cardinality *CardinalityGuard

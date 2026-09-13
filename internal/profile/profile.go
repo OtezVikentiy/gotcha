@@ -28,9 +28,10 @@ type Profile struct {
 	Truncated bool
 }
 
-// Экранирует ровно разделители ключа кадра "func (file:line)": без этого
-// разные (Function,File,Line) могут дать одинаковый ключ и слиться в writer.go.
-var frameFieldEscaper = strings.NewReplacer(`\`, `\\`, `(`, `\(`, `:`, `\:`)
+// Экранирует разделители ключа кадра "func (file:line)" и разделитель стека
+// stackSep (writer.go): без последнего U+001F внутри имени функции/файла
+// склеил бы два разных стека в один ключ агрегации.
+var frameFieldEscaper = strings.NewReplacer(`\`, `\\`, `(`, `\(`, `:`, `\:`, stackSep, `\`+stackSep)
 
 func FrameKey(f Frame) string {
 	if f.File == "" {
