@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
@@ -829,5 +830,86 @@ func TestWebOrgSettingsSSOOwnerNotInstanceAdminRejected(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("owner (non-instance-admin) sso delete status = %d, want 403", resp.StatusCode)
+	}
+}
+
+// Адресат уже зарегистрирован и выбрал свой язык — письмо обязано уйти на нём,
+// даже если приглашающий сидит на другом (по умолчанию ru, Accept-Language в тесте пуст).
+func TestOrgInviteEmailUsesRecipientLocaleWhenRegistered(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "invite-locale-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "invite-locale-co", "Invite Locale Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	const inviteeEmail = "invite-locale-recipient@example.com"
+	inviteeID, err := authSvc.Register(context.Background(), inviteeEmail, "correct-horse-battery")
+	if err != nil {
+		t.Fatalf("register invitee: %v", err)
+	}
+	if err := authSvc.SetLocale(context.Background(), inviteeID, "en"); err != nil {
+		t.Fatalf("set invitee locale: %v", err)
+	}
+
+	host, port, received := fakeCapturingSMTP(t)
+	s.h.Email = notify.NewEmailSender(notify.EmailConfig{Host: host, Port: port, From: "noreply@gotcha.test"})
+
+	invitePath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings/invite"
+	resp := postForm(t, s.srv, invitePath, url.Values{"email": {inviteeEmail}, "role": {"member"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST %s status = %d, want 200", invitePath, resp.StatusCode)
+	}
+
+	select {
+	case msg := <-received:
+		if !strings.Contains(msg, "Invitation to the Invite Locale Co organization") {
+			t.Errorf("письмо не на локали получателя (en), хотя приглашающий на ru: %q", msg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("письмо не дошло до фейкового SMTP")
+	}
+}
+
+// Адресат не зарегистрирован — своей users.locale взять неоткуда, письмо обязано
+// уйти на языке приглашающего, как и раньше (он тут явно поставлен на en).
+func TestOrgInviteEmailFallsBackToInviterLocaleForUnknownRecipient(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "invite-locale-owner2@example.com")
+	if err := authSvc.SetLocale(context.Background(), ownerID, "en"); err != nil {
+		t.Fatalf("set owner locale: %v", err)
+	}
+	o, err := orgSvc.CreateOrg(context.Background(), "invite-locale-co2", "Invite Locale Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	host, port, received := fakeCapturingSMTP(t)
+	s.h.Email = notify.NewEmailSender(notify.EmailConfig{Host: host, Port: port, From: "noreply@gotcha.test"})
+
+	const inviteeEmail = "invite-locale-unknown@example.com"
+	invitePath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings/invite"
+	resp := postForm(t, s.srv, invitePath, url.Values{"email": {inviteeEmail}, "role": {"member"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST %s status = %d, want 200", invitePath, resp.StatusCode)
+	}
+
+	select {
+	case msg := <-received:
+		if !strings.Contains(msg, "Invitation to the Invite Locale Co organization") {
+			t.Errorf("письмо не на локали приглашающего (en) для незарегистрированного адресата: %q", msg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("письмо не дошло до фейкового SMTP")
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
@@ -540,6 +541,45 @@ func (h *Handler) orgSettingsLeave(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+// ctx уже несёт нужную locale — свою у адресата, если он зарегистрирован, иначе приглашающего.
+func inviteEmailPayload(ctx context.Context, orgName, inviter, link string) map[string]any {
+	return map[string]any{
+		"subject": i18n.Tf(ctx, "org.invite.email_subject", "org", orgName),
+		"body": i18n.Tf(ctx, "org.invite.email_body",
+			"org", orgName, "inviter", inviter, "link", link,
+			"expires", humanize.Duration(ctx, org.InviteTTL)),
+	}
+}
+
+const inviteEmailTimeout = 30 * time.Second
+
+// Фон, вне пути ответа: собственный ctx, не r.Context() — тот к этому моменту уже завершится.
+// requestLocale — фолбэк приглашающего, снятый с запроса ДО ухода в фон.
+func (h *Handler) sendInviteEmail(orgID, uid int64, email, link string, requestLocale i18n.Locale) {
+	if h.Email == nil || !h.Email.Configured() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), inviteEmailTimeout)
+	defer cancel()
+	orgName := ""
+	if o, err := h.Org.Get(ctx, orgID); err == nil {
+		orgName = o.Name
+	} else {
+		slog.Warn("orgSettingsInvite: org lookup for email failed", "org_id", orgID, "err", err)
+	}
+	inviter, err := h.Auth.UserEmail(ctx, uid)
+	if err != nil {
+		slog.Warn("orgSettingsInvite: inviter lookup for email failed", "org_id", orgID, "err", err)
+	}
+	// Незарегистрированный или без явного выбора — фолбэк на locale приглашающего, как раньше;
+	// поиск best-effort, ошибка БД на письмо не влияет.
+	locale := h.recipientLocale(ctx, email, requestLocale)
+	payload := inviteEmailPayload(i18n.WithLocale(ctx, locale), orgName, inviter, link)
+	if err := h.Email.Send(ctx, notify.Target{Kind: "email", Target: email}, payload); err != nil {
+		slog.Warn("orgSettingsInvite: failed to send invite email", "org_id", orgID, "err", err)
+	}
+}
+
 func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r, h.BaseURL) {
 		h.denyCrossOrigin(w, r)
@@ -574,29 +614,9 @@ func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	inviteLink := h.BaseURL + inviteAcceptPath(token)
 
-	// Письмо шлётся синхронно best-effort: сбой SMTP не роняет POST — ссылка-приглашение
-	// всё равно показана в UI ниже.
-	if h.Email != nil && h.Email.Configured() {
-		orgName := ""
-		if o, err := h.Org.Get(r.Context(), orgID); err == nil {
-			orgName = o.Name
-		} else {
-			slog.Warn("orgSettingsInvite: org lookup for email failed", "org_id", orgID, "err", err)
-		}
-		inviter, err := h.Auth.UserEmail(r.Context(), uid)
-		if err != nil {
-			slog.Warn("orgSettingsInvite: inviter lookup for email failed", "org_id", orgID, "err", err)
-		}
-		// Письмо уходит на языке приглашающего: локаль адресата ещё неизвестна — он не зарегистрирован.
-		payload := map[string]any{
-			"subject": i18n.Tf(r.Context(), "org.invite.email_subject", "org", orgName),
-			"body": i18n.Tf(r.Context(), "org.invite.email_body",
-				"org", orgName, "inviter", inviter, "link", inviteLink),
-		}
-		if err := h.Email.Send(r.Context(), notify.Target{Kind: "email", Target: email}, payload); err != nil {
-			slog.Warn("orgSettingsInvite: failed to send invite email", "org_id", orgID, "err", err)
-		}
-	}
+	// Письмо целиком в фоне: и поиск локали, и SMTP-сессия зависят от того, зарегистрирован
+	// ли адрес, а на пути ответа такой зависимости быть не должно.
+	go h.sendInviteEmail(orgID, uid, email, inviteLink, i18n.FromContext(r.Context()))
 
 	h.renderOrgSettings(w, r, http.StatusOK, orgID, uid, "", inviteLink, nil)
 }

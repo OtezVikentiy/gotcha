@@ -46,22 +46,48 @@ func (h *Handler) forgotPasswordSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, found, err := h.Auth.RequestPasswordReset(r.Context(), email)
+	// Ответ уходит ДО поиска пользователя: токен, локаль и письмо зависят от того, есть ли
+	// такой адрес, и вместе давали различимый тайминг даже с фоновой отправкой SMTP.
+	go h.processPasswordResetRequest(email)
+	_ = templates.ForgotPassword("", true, true, "").Render(r.Context(), w)
+}
+
+const passwordResetLookupTimeout = 10 * time.Second
+
+// Фон, вне пути ответа: собственный ctx, не r.Context() — тот к этому моменту уже завершится.
+// Ошибка RequestPasswordReset только логируется — синхронного ответа ей адресовать уже некуда.
+func (h *Handler) processPasswordResetRequest(email string) {
+	ctx, cancel := context.WithTimeout(context.Background(), passwordResetLookupTimeout)
+	defer cancel()
+	token, found, err := h.Auth.RequestPasswordReset(ctx, email)
 	if err != nil {
 		slog.Error("forgotPasswordSubmit: request reset failed", "error", err)
-		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
-	if found {
-		subject := i18n.T(r.Context(), "auth.forgot.email_subject")
-		body := i18n.Tf(r.Context(), "auth.forgot.email_body", "link", h.BaseURL+resetPasswordPath(token))
-		// Асинхронно и вне транзакции ответа: длительность SMTP-сессии иначе была бы таймингом,
-		// по которому различимо, существует ли адрес — см. identical response ниже.
-		go h.deliverPasswordResetEmail(email, subject, body)
+	if !found {
+		return
 	}
-	// Ответ одинаков независимо от found: перебор адресов не должен раскрывать, какие
-	// из них зарегистрированы.
-	_ = templates.ForgotPassword("", true, true, "").Render(r.Context(), w)
+	ctx = i18n.WithLocale(ctx, h.recipientLocale(ctx, email, h.NotifyLocale))
+	subject := i18n.T(ctx, "auth.forgot.email_subject")
+	body := i18n.Tf(ctx, "auth.forgot.email_body", "link", h.BaseURL+resetPasswordPath(token))
+	h.deliverPasswordResetEmail(email, subject, body)
+}
+
+// Личное письмо получателю, не канальное уведомление — читает users.locale адресата,
+// а не запроса отправителя. fallback — для незарегистрированного адреса или без явного выбора.
+func (h *Handler) recipientLocale(ctx context.Context, email string, fallback i18n.Locale) i18n.Locale {
+	uid, err := h.Auth.UserByEmail(ctx, email)
+	if err != nil {
+		return fallback
+	}
+	code, err := h.Auth.UserLocale(ctx, uid)
+	if err != nil {
+		return fallback
+	}
+	if l, ok := i18n.Parse(code); ok {
+		return l
+	}
+	return fallback
 }
 
 const passwordResetEmailTimeout = 30 * time.Second

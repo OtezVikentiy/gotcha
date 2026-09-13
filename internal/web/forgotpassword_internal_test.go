@@ -14,8 +14,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/db"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
+	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
 func postForgotPassword(h *Handler, email, remoteAddr string) *httptest.ResponseRecorder {
@@ -386,5 +391,184 @@ func TestDeliverPasswordResetEmailDoesNotLogToken(t *testing.T) {
 	}
 	if strings.Contains(log, secretToken) {
 		t.Errorf("токен попал в лог: %s", log)
+	}
+}
+
+// Личное письмо получателю обязано читать его users.locale, а не локаль инстанса
+// по умолчанию — иначе англоязычный сотрудник на GOTCHA_LOCALE=ru получит письмо по-русски.
+func TestRecipientLocaleUsesStoredLocaleOverInstanceDefault(t *testing.T) {
+	h := authTestHandler(t)
+	h.NotifyLocale = i18n.Locale{Code: "ru"}
+
+	uid, err := h.Auth.Register(context.Background(), "loc-explicit@example.com", "password123")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := h.Auth.SetLocale(context.Background(), uid, "en"); err != nil {
+		t.Fatalf("SetLocale: %v", err)
+	}
+
+	got := h.recipientLocale(context.Background(), "loc-explicit@example.com", h.NotifyLocale)
+	if got.Code != "en" {
+		t.Errorf("recipientLocale = %q, want %q (личная locale получателя)", got.Code, "en")
+	}
+}
+
+func TestRecipientLocaleFallsBackToInstanceWhenUnset(t *testing.T) {
+	h := authTestHandler(t)
+	h.NotifyLocale = i18n.Locale{Code: "en"}
+
+	if _, err := h.Auth.Register(context.Background(), "loc-unset@example.com", "password123"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	got := h.recipientLocale(context.Background(), "loc-unset@example.com", h.NotifyLocale)
+	if got.Code != "en" {
+		t.Errorf("recipientLocale = %q, want фолбэк %q — пользователь locale не выбирал", got.Code, "en")
+	}
+}
+
+func TestRecipientLocaleFallsBackToInstanceForUnknownEmail(t *testing.T) {
+	h := authTestHandler(t)
+	h.NotifyLocale = i18n.Locale{Code: "ru"}
+
+	got := h.recipientLocale(context.Background(), "loc-nobody@example.com", h.NotifyLocale)
+	if got.Code != "ru" {
+		t.Errorf("recipientLocale = %q, want фолбэк %q для несуществующего адреса", got.Code, "ru")
+	}
+}
+
+// Приглашение и итог выгрузки — единственные письма со сроком действия, показанным
+// пользователю в интерфейсе (org.invite.col_expires, exports.table.expires): не назвать
+// его в письме значит доверить человеку помнить дедлайн, которого он не видел.
+func TestInviteEmailPayloadMentionsExpiry(t *testing.T) {
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	payload := inviteEmailPayload(ctx, "Acme", "alice@example.com", "http://gotcha.example/invite/tok")
+
+	body := fmt.Sprint(payload["body"])
+	if !strings.Contains(body, "7 дней") {
+		t.Errorf("в письме-приглашении нет срока действия ссылки: %q", body)
+	}
+}
+
+// Свойство, не тайминг: пул на один коннект держим занятым — синхронный обработчик
+// повис бы, ожидая освобождения, асинхронный ответит, пока фон ещё ждёт соединение.
+func TestForgotPasswordSubmitRespondsWhileBackgroundWorkIsBlockedOnDB(t *testing.T) {
+	dsn := testenv.PostgresDSN(t)
+	if err := db.MigratePG(dsn); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	cfg.MaxConns = 1
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("new pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	held, err := pool.Acquire(context.Background())
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer held.Release()
+
+	h := &Handler{
+		BaseURL:                   "http://gotcha.example",
+		Auth:                      auth.NewService(pool),
+		EmailEnabled:              true,
+		passwordResetIPLimiter:    newRateLimiter(time.Now, 20, time.Minute, passwordResetMaxKeys, "passwordResetIPLimiter"),
+		passwordResetEmailLimiter: newRateLimiter(time.Now, 5, 15*time.Minute, passwordResetMaxKeys, "passwordResetEmailLimiter"),
+	}
+
+	body := "email=" + url.QueryEscape("blocked@example.com")
+	r := httptest.NewRequest(http.MethodPost, "/forgot-password", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Origin", h.BaseURL)
+	r.RemoteAddr = "203.0.113.66:1"
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		h.forgotPasswordSubmit(rec, r)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("обработчик не ответил, пока единственное соединение пула занято — путь ответа синхронно ждёт БД")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+// tag разводит email/DSN двух прогонов; registerUser сеет адрес заранее через отдельный,
+// нетрассируемый пул (регистрация — не часть проверяемого пути ответа).
+func forgotPasswordResponsePathQuerySequence(t *testing.T, tag string, registerUser bool) []string {
+	t.Helper()
+	dsn := testenv.PostgresDSN(t)
+	if err := db.MigratePG(dsn); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	fullPool, err := db.NewPostgres(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("full pool: %v", err)
+	}
+	t.Cleanup(fullPool.Close)
+
+	tracer := &recordingTracer{}
+	authCfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	authCfg.ConnConfig.Tracer = tracer
+	authPool, err := pgxpool.NewWithConfig(context.Background(), authCfg)
+	if err != nil {
+		t.Fatalf("auth pool: %v", err)
+	}
+	t.Cleanup(authPool.Close)
+
+	email := "forgot-trace-" + tag + "@example.com"
+	if registerUser {
+		if _, err := auth.NewService(fullPool).Register(context.Background(), email, "correct-horse-battery"); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+	}
+
+	h := &Handler{
+		BaseURL:                   "http://gotcha.example",
+		Auth:                      auth.NewService(authPool),
+		EmailEnabled:              true,
+		passwordResetIPLimiter:    newRateLimiter(time.Now, 20, time.Minute, passwordResetMaxKeys, "passwordResetIPLimiter"),
+		passwordResetEmailLimiter: newRateLimiter(time.Now, 5, 15*time.Minute, passwordResetMaxKeys, "passwordResetEmailLimiter"),
+	}
+
+	body := "email=" + url.QueryEscape(email)
+	r := httptest.NewRequest(http.MethodPost, "/forgot-password", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Origin", h.BaseURL)
+	r.RemoteAddr = "203.0.113.90:1"
+	r = r.WithContext(context.WithValue(r.Context(), responsePathMarkerKey{}, true))
+	rec := httptest.NewRecorder()
+
+	h.forgotPasswordSubmit(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	return tracer.sequence()
+}
+
+// Инвариант сильнее, чем у инвайта: путь ответа анонимен, аутентификации там нет вовсе —
+// значит обе последовательности обязаны быть ПУСТЫ, не просто одинаковы.
+func TestForgotPasswordSubmitResponsePathTouchesNoAuthQueriesRegardlessOfRecipientRegistration(t *testing.T) {
+	if existing := forgotPasswordResponsePathQuerySequence(t, "reg", true); len(existing) != 0 {
+		t.Errorf("путь ответа для существующего адреса обратился к БД аутентификации: %v", existing)
+	}
+	if unknown := forgotPasswordResponsePathQuerySequence(t, "unreg", false); len(unknown) != 0 {
+		t.Errorf("путь ответа для несуществующего адреса обратился к БД аутентификации: %v", unknown)
 	}
 }
