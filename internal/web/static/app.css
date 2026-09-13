@@ -1055,16 +1055,17 @@ button:hover,
 .notice--warn {
 	background: color-mix(in srgb, var(--warn) 14%, transparent);
 	border-color: var(--warn);
-	color: var(--warn);
+	color: var(--warn-ink);
 }
 
 .hint--warn {
 	color: var(--warn);
 }
 
+/* Текст — --warn-ink, не --warn: сырой токен на 14%-тинте вне .surface давал 4.38:1 (ниже 4.5). */
 .warning {
 	background: color-mix(in srgb, var(--warn) 14%, transparent);
-	color: var(--warn);
+	color: var(--warn-ink);
 	border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
 	border-radius: var(--radius);
 	padding: 8px 12px;
@@ -2554,9 +2555,11 @@ form.inline {
 	   одна не рисует рамку ни при каком цвете. */
 	border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
 }
+/* Текст — --danger-ink, не --danger: на подсвеченной hover-строке (--surface-2) сырой
+   токен давал 4.14-4.34:1 (ниже 4.5). */
 .btn-danger-ghost:hover {
 	background: color-mix(in srgb, var(--danger) 12%, transparent);
-	color: var(--danger);
+	color: var(--danger-ink);
 }
 /* Обёртка формы в .row-actions обязательна — без неё form своим display:block роняет
    соседнюю ссылку на новую строку. */

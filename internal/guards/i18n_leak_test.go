@@ -13,9 +13,43 @@ var cyrillicLiteral = regexp.MustCompile(`"[^"]*[а-яА-ЯёЁ][^"]*"`)
 // Go-строковом литерале — cyrillicLiteral его не увидит, нужна кириллица без кавычек.
 var anyCyrillic = regexp.MustCompile(`[а-яА-ЯёЁ]`)
 
-// Совпадение должно начинаться на границе идентификатора — иначе «log.»
-// совпало бы и с «catalog.», и с «dialog.».
-var logCallRe = regexp.MustCompile(`(^|[^\w.])s?log\.`)
+// Группа 2 — само имя вызова, отдельно от границы идентификатора в группе 1:
+// иначе «log.» совпало бы и с «catalog.», и с «dialog.».
+var logCallOpenRe = regexp.MustCompile(`(^|[^\w.])(s?log\.\w+)\(`)
+
+// Маскирует пробелами только текст вызова s?log.Xxx(...), не всю строку.
+// Незакрытая на этой строке скобка маскирует до конца строки.
+func maskLogCalls(line string) string {
+	out := []byte(line)
+	offset := 0
+	for offset < len(out) {
+		loc := logCallOpenRe.FindStringSubmatchIndex(string(out[offset:]))
+		if loc == nil {
+			break
+		}
+		callStart := offset + loc[4]
+		parenStart := offset + loc[1] - 1
+		depth := 1
+		end := parenStart + 1
+		for end < len(out) {
+			switch out[end] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+			end++
+			if depth == 0 {
+				break
+			}
+		}
+		for i := callStart; i < end && i < len(out); i++ {
+			out[i] = ' '
+		}
+		offset = end
+	}
+	return string(out)
+}
 
 // Получатель обязан быть буквально «t», не любым идентификатором на «t» —
 // иначе "fmt.Errorf(...)" тоже совпало бы («fmt» оканчивается на «t»).
@@ -176,12 +210,10 @@ func TestNoCyrillicUserFacingLiterals(t *testing.T) {
 			switch {
 			case strings.HasPrefix(trimmed, "//"):
 				continue
-			case logCallRe.MatchString(line):
-				continue
 			case testAssertRe.MatchString(line):
 				continue
 			}
-			checked := stripTrailingComment(line)
+			checked := maskLogCalls(stripTrailingComment(line))
 			if !isLeak(checked) {
 				continue
 			}
