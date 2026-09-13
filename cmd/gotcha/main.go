@@ -379,6 +379,12 @@ func run() error {
 		return nil
 	}
 
+	return runServer(ctx, cfg, memLimitBytes)
+}
+
+// Отделена от run(): построение процесса по cfg.Mode и его штатное завершение
+// проверяются тестами напрямую, без сигналов ОС и разбора os.Args/os.Environ.
+func runServer(ctx context.Context, cfg Config, memLimitBytes int64) error {
 	logDetailPolicy(cfg)
 
 	pg, err := db.NewPostgres(ctx, cfg.PostgresDSN)
