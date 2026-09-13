@@ -20,6 +20,7 @@ or with a major version bump:
 | Self-metric names | the names and labels of the metrics documented in [Monitoring gotcha itself](/docs/self-monitoring), except the ones explicitly marked temporary |
 | The outgoing webhook body | [the body shape is frozen](/docs/alerts#webhook-body-format); adding a new field is not a breaking change — parse it tolerant of fields you don't recognize |
 | The `GOTCHA_AGENT_*` contract | the agent's environment variables and the protocol it speaks to the server |
+| The `GOTCHA_PROBE_*` contract | the remote probe's environment variables and the protocol it speaks to the server (`/probe/lease`, `/probe/results`) |
 | Addresses of existing status pages | a status page's published URL does not change on its own |
 
 ## What it doesn't cover

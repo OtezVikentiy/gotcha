@@ -197,9 +197,11 @@ func (c *ProbeClient) postResults(ctx context.Context, results []ResultDTO) erro
 	if err := c.post(ctx, "/probe/results", ResultsRequest{Results: results}, &resp); err != nil {
 		return err
 	}
-	if resp.Rejected > 0 {
-		// норма, не сбой — lease истёк или задание уже выполнено другой пробой.
-		slog.Warn("uptime: probe: results rejected by server", "accepted", resp.Accepted, "rejected", resp.Rejected)
+	if resp.Rejected > 0 || resp.Dropped > 0 {
+		// норма, не сбой — lease истёк, задание уже выполнено другой пробой,
+		// либо результат потерян гонкой (dropped).
+		slog.Warn("uptime: probe: results rejected by server",
+			"accepted", resp.Accepted, "rejected", resp.Rejected, "dropped", resp.Dropped)
 	}
 	return nil
 }

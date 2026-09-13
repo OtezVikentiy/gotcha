@@ -791,6 +791,10 @@ func (h *Handler) envelope(w http.ResponseWriter, r *http.Request) {
 				h.Profiles.Add(key.ProjectID, prof)
 			}
 		}
+	} else if hasProfiles {
+		// h.Profiles == nil — приём профилей выключен на этом узле: элементы
+		// молча выброшены, но обязаны попасть в дропы, а не пройти незамеченными.
+		h.countDrop(r.Context(), dropProfile, key.OrgID, len(env.Profiles))
 	}
 	// Конверт из одних профилей с исчерпанной квотой получает 429, не 200 —
 	// та же честность, что для событий и транзакций.
@@ -980,13 +984,9 @@ func (h *Handler) store(w http.ResponseWriter, r *http.Request) {
 	if h.overloaded(w, key.OrgID, key.ProjectID, SignalEvent, h.pipeline.EventSaturation()) {
 		return
 	}
-	eventGranted, eventChargedAt := h.grant(r.Context(), h.quota, key.OrgID, "event", 1)
-	if eventGranted == 0 {
-		h.countDrop(r.Context(), dropEvent, key.OrgID, 1)
-		h.writeQuotaExceeded(w, SignalEvent, "event quota exceeded")
-		return
-	}
 	projectID := key.ProjectID
+	// Разбор — до списания квоты (тот же порядок, что у envelope): битое или
+	// слишком большое тело не должно стоить клиенту квоты.
 	body, closeBody, err := h.body(w, r)
 	if err != nil {
 		h.countRejected(RejectMalformed, SignalEvent)
@@ -1010,6 +1010,12 @@ func (h *Handler) store(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.countRejected(RejectMalformed, SignalEvent)
 		writeJSONError(w, http.StatusBadRequest, "malformed event")
+		return
+	}
+	eventGranted, eventChargedAt := h.grant(r.Context(), h.quota, key.OrgID, "event", 1)
+	if eventGranted == 0 {
+		h.countDrop(r.Context(), dropEvent, key.OrgID, 1)
+		h.writeQuotaExceeded(w, SignalEvent, "event quota exceeded")
 		return
 	}
 	// Единственное содержимое запроса не встало в очередь — честный 503, повтор

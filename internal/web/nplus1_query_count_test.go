@@ -454,8 +454,8 @@ func TestProbeResultsDuplicateQueueIDAppliedOnce(t *testing.T) {
 	}
 	var out uptime.ResultsResponse
 	decodeJSON(t, rresp, &out)
-	if out.Accepted != 2 || out.Rejected != 0 {
-		t.Fatalf("results = %+v, want accepted 2 rejected 0 (duplicate is dropped, not an error — as Accept at ClaimJob=false)", out)
+	if out.Accepted != 1 || out.Rejected != 0 || out.Dropped != 1 {
+		t.Fatalf("results = %+v, want accepted 1 rejected 0 dropped 1 (second copy loses the claim race)", out)
 	}
 	if got := len(s.results); got != 1 {
 		t.Fatalf("OnResult calls = %d, want exactly 1 — duplicate queue_id applied twice", got)
