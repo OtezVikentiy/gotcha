@@ -52,7 +52,7 @@ templ Login(errMsg, next, email string, providers []OAuthButton) {
 				</label>
 			</div>
 			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "auth.login.submit") }</button>
-			<p class="auth-switch"><a href="/register">{ i18n.T(ctx, "auth.login.register_link") }</a> · <a href="/sso">{ i18n.T(ctx, "auth.sso_link") }</a></p>
+			<p class="auth-switch"><a href="/register">{ i18n.T(ctx, "auth.login.register_link") }</a> · <a href="/sso">{ i18n.T(ctx, "auth.sso_link") }</a> · <a href="/forgot-password">{ i18n.T(ctx, "auth.login.forgot_password") }</a></p>
 		</form>
 		@oauthButtons(providers)
 	}
@@ -90,6 +90,11 @@ func loginLinkWithNext(next string) string {
 		return "/login"
 	}
 	return "/login?next=" + url.QueryEscape(next)
+}
+
+// Локальная копия web.resetPasswordPath: templates не может импортировать web (цикл).
+func resetPasswordPath(token string) string {
+	return "/reset-password/" + token
 }
 
 func registerLinkWithNext(next string) string {
@@ -155,5 +160,75 @@ templ RegisterStub(errMsg string, mode string, next string, providers []OAuthBut
 			<p class="auth-switch"><a href={ templ.URL(loginLinkWithNext(next)) }>{ i18n.T(ctx, "auth.register.have_account") }</a> · <a href="/sso">{ i18n.T(ctx, "auth.sso_link") }</a></p>
 		</div>
 		@oauthButtons(providers)
+	}
+}
+
+// sent=true рендерит один и тот же текст независимо от того, нашёлся ли адрес — перебор
+// email не должен различать зарегистрированные и незарегистрированные по ответу формы.
+templ ForgotPassword(errMsg string, sent bool, emailEnabled bool, email string) {
+	@chromeless(i18n.T(ctx, "auth.forgot.title"), "") {
+		if !emailEnabled {
+			<div class="auth-form">
+				<h1>{ i18n.T(ctx, "auth.forgot.title") }</h1>
+				<p>{ i18n.T(ctx, "auth.forgot.unavailable") }</p>
+				<p class="auth-switch"><a href="/login">{ i18n.T(ctx, "auth.forgot.back_to_login") }</a></p>
+			</div>
+		} else if sent {
+			<div class="auth-form">
+				<h1>{ i18n.T(ctx, "auth.forgot.title") }</h1>
+				<p>{ i18n.T(ctx, "auth.forgot.sent") }</p>
+				<p class="auth-switch"><a href="/login">{ i18n.T(ctx, "auth.forgot.back_to_login") }</a></p>
+			</div>
+		} else {
+			<form method="post" action="/forgot-password" class="auth-form">
+				<h1>{ i18n.T(ctx, "auth.forgot.title") }</h1>
+				if errMsg != "" {
+					<p class="error">{ errMsg }</p>
+				}
+				<p class="hint">{ i18n.T(ctx, "auth.forgot.hint") }</p>
+				<div class="field">
+					<label>
+						{ i18n.T(ctx, "auth.email") }
+						<input type="email" name="email" autocomplete="email" required autofocus class="input" value={ email }/>
+					</label>
+				</div>
+				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "auth.forgot.submit") }</button>
+				<p class="auth-switch"><a href="/login">{ i18n.T(ctx, "auth.forgot.back_to_login") }</a></p>
+			</form>
+		}
+	}
+}
+
+// valid=false — токен неизвестен/просрочен/уже использован; форма пароля скрыта целиком,
+// показывается только ссылка на новый запрос.
+templ ResetPassword(token, errMsg string, valid bool) {
+	@chromeless(i18n.T(ctx, "auth.reset.title"), "") {
+		if !valid {
+			<div class="auth-form">
+				<h1>{ i18n.T(ctx, "auth.reset.title") }</h1>
+				<p class="error">{ errMsg }</p>
+				<p class="auth-switch"><a href="/forgot-password">{ i18n.T(ctx, "auth.reset.request_new") }</a></p>
+			</div>
+		} else {
+			<form method="post" action={ templ.URL(resetPasswordPath(token)) } class="auth-form">
+				<h1>{ i18n.T(ctx, "auth.reset.title") }</h1>
+				if errMsg != "" {
+					<p class="error">{ errMsg }</p>
+				}
+				<div class="field">
+					<label>
+						{ i18n.T(ctx, "auth.reset.new_password") }
+						<input type="password" name="new" autocomplete="new-password" required class="input"/>
+					</label>
+				</div>
+				<div class="field">
+					<label>
+						{ i18n.T(ctx, "auth.password2") }
+						<input type="password" name="new2" autocomplete="new-password" required class="input"/>
+					</label>
+				</div>
+				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "auth.reset.submit") }</button>
+			</form>
+		}
 	}
 }

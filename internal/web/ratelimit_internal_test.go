@@ -121,11 +121,13 @@ func authTestHandler(t *testing.T) *Handler {
 	t.Helper()
 	pool := testenv.MigratedPG(t)
 	return &Handler{
-		BaseURL:      "http://gotcha.example",
-		Auth:         auth.NewService(pool),
-		loginLimiter: newRateLimiter(time.Now, 5, time.Minute, loginLimiterMaxKeys, "loginLimiter"),
-		ipLimiter:    newRateLimiter(time.Now, 20, time.Minute, ipLimiterMaxKeys, "ipLimiter"),
-		emailLimiter: newRateLimiter(time.Now, 50, 15*time.Minute, emailLimiterMaxKeys, "emailLimiter"),
+		BaseURL:                   "http://gotcha.example",
+		Auth:                      auth.NewService(pool),
+		loginLimiter:              newRateLimiter(time.Now, 5, time.Minute, loginLimiterMaxKeys, "loginLimiter"),
+		ipLimiter:                 newRateLimiter(time.Now, 20, time.Minute, ipLimiterMaxKeys, "ipLimiter"),
+		emailLimiter:              newRateLimiter(time.Now, 50, 15*time.Minute, emailLimiterMaxKeys, "emailLimiter"),
+		passwordResetIPLimiter:    newRateLimiter(time.Now, 20, time.Minute, passwordResetMaxKeys, "passwordResetIPLimiter"),
+		passwordResetEmailLimiter: newRateLimiter(time.Now, 5, 15*time.Minute, passwordResetMaxKeys, "passwordResetEmailLimiter"),
 	}
 }
 

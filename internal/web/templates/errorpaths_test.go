@@ -129,6 +129,8 @@ func pageComponents() map[string]templ.Component {
 		"RegisterStub":         RegisterStub("", "closed", "", nil),
 		"SSOLogin":             SSOLogin("err"),
 		"InviteAccept":         InviteAccept("tok", "err", "u@e.com", org.InviteInfo{}),
+		"ForgotPassword":       ForgotPassword("err", false, true, "u@e.com"),
+		"ResetPassword":        ResetPassword("tok", "err", true),
 
 		"About":              About(version.Info{Version: "v0.22.1", Commit: "abcdef1", Date: "2026-08-01", Go: "go1.26", Stamped: true}, "u@e.com"),
 		"AlertSuppression":   AlertSuppression(7, []SuppressionEdgeView{{ID: 1, ParentLabel: "хост: web-1", ChildLabel: "монитор: api"}}, []SuppressionNodeOption{{ID: 1, Name: "web-1"}}, []SuppressionNodeOption{{ID: 2, Name: "api"}}, []SuppressionPreviewView{{ParentLabel: "web-1", Children: []string{"api"}}}, 5*time.Minute, nil, "", "u@e.com"),

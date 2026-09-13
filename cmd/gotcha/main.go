@@ -60,6 +60,9 @@ func main() {
 	if url, ok := healthcheckRequested(os.Args[1:], os.Getenv); ok {
 		os.Exit(runHealthcheck(url))
 	}
+	if code, ok := dispatchSubcommand(os.Args[1:], os.Getenv); ok {
+		os.Exit(code)
+	}
 	if err := run(); err != nil {
 		slog.Error("gotcha failed", "error", err)
 		os.Exit(1)

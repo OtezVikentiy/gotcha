@@ -26,7 +26,20 @@ The instance administrator configures and removes [SSO](/docs/sso) for organizat
 
 Transfer the role from the "Instance admin" section on `/profile`: enter the email of an existing instance user and confirm the transfer. Once confirmed, the role moves to the recipient immediately, and the previous administrator loses access to SSO configuration and the ability to transfer the role again.
 
-**Recovery** if access to the instance administrator's account is lost: if only the password is forgotten, a regular password reset restores access — the administrator's account still cannot be deleted while other users exist on the instance. If the account is completely unreachable, an operator with access to the instance database assigns a new administrator directly, in one transaction — `BEGIN`/`COMMIT` are required: `psql` autocommits by default, and without them a typo in the email after the first `UPDATE` silently leaves the instance with no administrator at all:
+**Recovery** if access to the instance administrator's account is lost: the administrator's account still cannot be deleted while other users exist on the instance — but the password can be recovered if that's all that's missing.
+
+If only the password is forgotten, two paths:
+
+- **Self-service**, when the instance has outgoing email configured (`GOTCHA_SMTP_*`): the `/forgot-password` page ("Forgot password?" on `/login`) emails a link to set a new password to the given address. The link is valid for an hour and single-use; setting a new password through it ends every existing session for that account.
+- **Through an operator**, when email isn't configured (in that case `/forgot-password` says so plainly instead of showing a form that would silently do nothing) or the mailbox itself is also unreachable: the `gotcha set-password --email=<address>` subcommand sets a new password directly in the database. The password is read from standard input, not a command-line argument — an argument would end up in shell history and the process list. Don't type the password as a literal in the command either (that also lands in history) — use `read -s` so it's neither echoed nor saved:
+
+  ```bash
+  read -rs -p 'New password: ' PW && printf '%s\n' "$PW" | gotcha set-password --email=admin@example.com; unset PW
+  ```
+
+  The subcommand itself doesn't mask input — typing the password directly at its own prompt, bypassing `read -s`, echoes it to the screen.
+
+If the account is completely unreachable (no way to recover or reset the password — the email itself is gone too, say), an operator with access to the instance database assigns a new administrator directly, in one transaction — `BEGIN`/`COMMIT` are required: `psql` autocommits by default, and without them a typo in the email after the first `UPDATE` silently leaves the instance with no administrator at all:
 
 ```sql
 BEGIN;

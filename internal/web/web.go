@@ -196,7 +196,11 @@ type Handler struct {
 	// лимит активных заявок не ловит того, кто ставит заявку и сразу удаляет —
 	// здесь ограничена частота тяжёлой выборки по ClickHouse.
 	exportLimiter *rateLimiter
-	statusCache   statusCache
+	// СВОИ, не emailLimiter/ipLimiter логина — общий ключ запирал бы жертву на её же входе.
+	// IP-лимитер общий для /forgot-password и /reset-password/{token}.
+	passwordResetEmailLimiter *rateLimiter
+	passwordResetIPLimiter    *rateLimiter
+	statusCache               statusCache
 
 	crossOriginRejected atomic.Int64
 	coThrottle          coThrottle
@@ -219,26 +223,29 @@ const (
 	agentLimiterMaxKeys      = 5000
 	statusPageLimiterMaxKeys = 5000
 	exportLimiterMaxKeys     = 5000
+	passwordResetMaxKeys     = 20000
 )
 
 func New(authSvc *auth.Service, orgSvc *org.Service, issueSvc *issue.Service, events *event.Query, baseURL string) *Handler {
 	return &Handler{
-		Auth:              authSvc,
-		Org:               orgSvc,
-		Issues:            issueSvc,
-		Events:            events,
-		BaseURL:           baseURL,
-		Secure:            strings.HasPrefix(baseURL, "https://"),
-		HSTSHeader:        "max-age=31536000",
-		RegistrationMode:  "open",
-		loginLimiter:      newRateLimiter(time.Now, 5, time.Minute, loginLimiterMaxKeys, "loginLimiter"),
-		ipLimiter:         newRateLimiter(time.Now, 20, time.Minute, ipLimiterMaxKeys, "ipLimiter"),
-		emailLimiter:      newRateLimiter(time.Now, 50, 15*time.Minute, emailLimiterMaxKeys, "emailLimiter"),
-		publicLimiter:     newRateLimiter(time.Now, 600, time.Minute, publicLimiterMaxKeys, "publicLimiter"),
-		agentLimiter:      newRateLimiter(time.Now, 10, time.Minute, agentLimiterMaxKeys, "agentLimiter"),
-		statusPageLimiter: newRateLimiter(time.Now, 12, time.Minute, statusPageLimiterMaxKeys, "statusPageLimiter"),
-		exportLimiter:     newRateLimiter(time.Now, createRateLimit, createRateWindow, exportLimiterMaxKeys, "exportLimiter"),
-		attrKeysCache:     newAttrKeysCache(),
+		Auth:                      authSvc,
+		Org:                       orgSvc,
+		Issues:                    issueSvc,
+		Events:                    events,
+		BaseURL:                   baseURL,
+		Secure:                    strings.HasPrefix(baseURL, "https://"),
+		HSTSHeader:                "max-age=31536000",
+		RegistrationMode:          "open",
+		loginLimiter:              newRateLimiter(time.Now, 5, time.Minute, loginLimiterMaxKeys, "loginLimiter"),
+		ipLimiter:                 newRateLimiter(time.Now, 20, time.Minute, ipLimiterMaxKeys, "ipLimiter"),
+		emailLimiter:              newRateLimiter(time.Now, 50, 15*time.Minute, emailLimiterMaxKeys, "emailLimiter"),
+		publicLimiter:             newRateLimiter(time.Now, 600, time.Minute, publicLimiterMaxKeys, "publicLimiter"),
+		agentLimiter:              newRateLimiter(time.Now, 10, time.Minute, agentLimiterMaxKeys, "agentLimiter"),
+		statusPageLimiter:         newRateLimiter(time.Now, 12, time.Minute, statusPageLimiterMaxKeys, "statusPageLimiter"),
+		exportLimiter:             newRateLimiter(time.Now, createRateLimit, createRateWindow, exportLimiterMaxKeys, "exportLimiter"),
+		passwordResetEmailLimiter: newRateLimiter(time.Now, 5, 15*time.Minute, passwordResetMaxKeys, "passwordResetEmailLimiter"),
+		passwordResetIPLimiter:    newRateLimiter(time.Now, 20, time.Minute, passwordResetMaxKeys, "passwordResetIPLimiter"),
+		attrKeysCache:             newAttrKeysCache(),
 	}
 }
 
@@ -271,6 +278,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.HandleFunc("POST /logout", h.logout)
 	inner.HandleFunc("GET /sso", h.ssoPage)
 	inner.HandleFunc("POST /sso", h.ssoSubmit)
+	inner.HandleFunc("GET /forgot-password", h.forgotPasswordPage)
+	inner.HandleFunc("POST /forgot-password", h.forgotPasswordSubmit)
+	inner.HandleFunc("GET /reset-password/{token}", h.resetPasswordPage)
+	inner.HandleFunc("POST /reset-password/{token}", h.resetPasswordSubmit)
 
 	// публичный: аноним по ссылке-приглашению должен видеть, куда его зовут,
 	// не теряя токен под requireUser. Само чтение (InviteByToken) его не гасит.

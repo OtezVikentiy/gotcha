@@ -49,6 +49,7 @@ var flashKeys = map[string]bool{
 	"flash.log_filter_updated":     true,
 	"flash.log_filter_deleted":     true,
 	"flash.log_filter_default_set": true,
+	"flash.password_reset":         true,
 }
 
 // Ключи с ДВУМЯ числами в сообщении рендерятся через Tf с {n}/{m}, а не Tn с одним {n}.
