@@ -50,6 +50,35 @@ COMMIT;
 
 Before `COMMIT`, verify each `UPDATE` reported `UPDATE 1` — `UPDATE 0` on the second command means a typo in the email, and committing in that state leaves the instance with no administrator. The partial unique index `one_instance_admin` prevents two users from ending up as administrator at once.
 
+## Ending someone else's session
+
+There's no button, for an owner or admin, that ends another member's active
+login session directly — signing out of other devices is self-service only,
+from the "Sessions" section on `/profile` ("Sign out of all other devices"
+ends every session on that account except the one used to click it).
+
+If a member's device is lost or compromised and you need to act without
+them, what actually ends every one of their sessions is a password change on
+that account: it deletes every session row for that user immediately, the
+same mechanism the recovery paths above rely on. The member can do this
+themselves once they're on a device they trust; if they can't, an operator
+with access to the instance's server can force it with `gotcha
+set-password --email=<address>` (see above) — an admin or owner without
+server access has no way to do this through the web app.
+
+Two more actions address a related but different risk, worth doing alongside it:
+
+- **Revoke the project's ingest keys** the device had access to, from
+  project settings — this doesn't touch a login session at all, but it does
+  stop a key stored on that device from still sending telemetry (allow up to
+  30 seconds for the revocation to take effect, see [Ingest
+  keys](/docs/keys)).
+- **Remove the member from the organization** ("Settings" → "Organization" →
+  "Members") if they shouldn't have access at all: membership is checked on
+  every request, not cached, so this cuts off every project's data
+  immediately — even though, if their login session is still valid, they
+  could still sign in to an account that now sees no organization.
+
 ## Inviting members
 
 The "Settings" → "Organization" → "Members" page (`/orgs/{id}/settings`, owner/admin only) has a table of current members (email, role, change-role, remove) and an invite form:
