@@ -979,6 +979,10 @@ func run() error {
 		// burst = 2×лимит — та же пропорция, что у прежней захардкоженной пары
 		// 500/1000. 0 выключает.
 		ingestHandler.SetRateLimit(time.Now, float64(cfg.IngestRateLimit), 2*float64(cfg.IngestRateLimit))
+		// По клиентскому IP, до аутентификации DSN; burst = 2×лимит, как у дефолтной пары 2000/4000.
+		ingestHandler.SetPreAuthRateLimit(time.Now, float64(cfg.PreAuthRateLimit), 2*float64(cfg.PreAuthRateLimit))
+		// Только touchUnverifiedSignal; burst = 5×лимит, как у дефолтной пары 2/10.
+		ingestHandler.SetSignalTouchRateLimit(time.Now, float64(cfg.SignalTouchRateLimit), 5*float64(cfg.SignalTouchRateLimit))
 		ingestHandler.SetProfileDecodeBudgetBytes(autoProfileDecodeBudgetBytes(memLimitBytes))
 		// Отдельный счётчик от org_usage.transactions_count: исчерпанный бюджет
 		// транзакций не закрывает приём ошибок и наоборот.

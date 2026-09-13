@@ -734,6 +734,46 @@ func TestLoadConfigIngestRateLimit(t *testing.T) {
 	}
 }
 
+func TestLoadConfigPreAuthRateLimit(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.PreAuthRateLimit != 2000 {
+		t.Fatalf("default PreAuthRateLimit = %d, want 2000", cfg.PreAuthRateLimit)
+	}
+	cfg, err = loadConfig(getenvFrom(map[string]string{"GOTCHA_INGEST_PREAUTH_RATE_PER_SEC": "0"}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig with 0: %v", err)
+	}
+	if cfg.PreAuthRateLimit != 0 {
+		t.Fatalf("PreAuthRateLimit = %d, want 0", cfg.PreAuthRateLimit)
+	}
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_INGEST_PREAUTH_RATE_PER_SEC": "-1"}), nil); err == nil {
+		t.Fatal("GOTCHA_INGEST_PREAUTH_RATE_PER_SEC=-1: want error, got nil")
+	}
+}
+
+func TestLoadConfigSignalTouchRateLimit(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SignalTouchRateLimit != 2 {
+		t.Fatalf("default SignalTouchRateLimit = %d, want 2", cfg.SignalTouchRateLimit)
+	}
+	cfg, err = loadConfig(getenvFrom(map[string]string{"GOTCHA_INGEST_SIGNAL_RATE_PER_SEC": "0"}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig with 0: %v", err)
+	}
+	if cfg.SignalTouchRateLimit != 0 {
+		t.Fatalf("SignalTouchRateLimit = %d, want 0", cfg.SignalTouchRateLimit)
+	}
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_INGEST_SIGNAL_RATE_PER_SEC": "-1"}), nil); err == nil {
+		t.Fatal("GOTCHA_INGEST_SIGNAL_RATE_PER_SEC=-1: want error, got nil")
+	}
+}
+
 func TestLoadConfigOutboxRetention(t *testing.T) {
 	cfg, err := loadConfig(getenvFrom(nil), nil)
 	if err != nil {

@@ -49,6 +49,24 @@ func kindForDeprecated(p DeprecatedPath) (ingestsignal.Kind, bool) {
 	return k, ok
 }
 
+// Единственный источник соответствия — deprecatedKinds выше; обратный индекс
+// строится из него, чтобы вызывающие не держали свою ручную копию.
+var deprecatedPathsByKind = reverseDeprecatedKinds()
+
+func reverseDeprecatedKinds() map[ingestsignal.Kind]DeprecatedPath {
+	m := make(map[ingestsignal.Kind]DeprecatedPath, len(deprecatedKinds))
+	for p, k := range deprecatedKinds {
+		m[k] = p
+	}
+	return m
+}
+
+// ok=false — kind вне закрытого набора deprecatedKinds (не про устаревший путь).
+func PathForDeprecatedKind(k ingestsignal.Kind) (DeprecatedPath, bool) {
+	p, ok := deprecatedPathsByKind[k]
+	return p, ok
+}
+
 type deprecatedCtxKey struct{}
 
 // Путь известен раньше projectID (аутентификация ещё не пройдена) — сигнал

@@ -13,7 +13,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
-	"gitflic.ru/otezvikentiy/gotcha/internal/ingestsignal"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -226,14 +225,6 @@ func (h *Handler) renderProjectSettings(w http.ResponseWriter, r *http.Request, 
 // пропасть из виду, если заглянули на следующий день.
 const deprecatedIngestPathWindow = 7 * 24 * time.Hour
 
-// Обратное соответствие ingest.deprecatedKinds: держим его здесь, а не в ingest, чтобы не
-// заводить обратную зависимость ingest → web ради одного потребителя.
-var deprecatedPathByKind = map[ingestsignal.Kind]ingest.DeprecatedPath{
-	ingestsignal.KindDeprecatedLogs:        ingest.DeprecatedLogs,
-	ingestsignal.KindDeprecatedPprof:       ingest.DeprecatedProfilePprof,
-	ingestsignal.KindDeprecatedDeployments: ingest.DeprecatedDeployments,
-}
-
 func (h *Handler) deprecatedPathsView(ctx context.Context, projectID int64) []templates.DeprecatedPathView {
 	if h.Signals == nil {
 		return nil
@@ -246,11 +237,11 @@ func (h *Handler) deprecatedPathsView(ctx context.Context, projectID int64) []te
 	cutoff := time.Now().Add(-deprecatedIngestPathWindow)
 	var out []templates.DeprecatedPathView
 	for _, sig := range signals {
-		path, ok := deprecatedPathByKind[sig.Kind]
+		path, ok := ingest.PathForDeprecatedKind(sig.Kind)
 		if !ok || sig.LastSeenAt.Before(cutoff) {
 			continue
 		}
-		// docs всегда найдётся: путь из deprecatedPathByKind всегда покрыт ingest.DocsPath.
+		// docs всегда найдётся: путь из PathForDeprecatedKind всегда покрыт ingest.DocsPath.
 		docs, _ := ingest.DocsPath(path)
 		out = append(out, templates.DeprecatedPathView{Path: string(path), LastSeenAt: sig.LastSeenAt, Hits: sig.Hits, Docs: docs})
 	}

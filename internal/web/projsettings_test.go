@@ -790,7 +790,7 @@ func TestWebProjectSettingsShowsDeprecatedPathSignal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project stale: %v", err)
 	}
-	// wrongKind: kind (key_invalid) не входит в deprecatedPathByKind — про отказ по ключу,
+	// wrongKind: kind (key_invalid) не покрыт ingest.PathForDeprecatedKind — про отказ по ключу,
 	// не про устаревший адрес, callout не должен на него сработать.
 	wrongKind, err := orgSvc.CreateProject(context.Background(), o.ID, "depr-wrongkind", "Depr WrongKind", "go")
 	if err != nil {
@@ -861,7 +861,7 @@ func TestWebProjectSettingsShowsDeprecatedPathSignal(t *testing.T) {
 		t.Fatalf("GET %s status = %d, want 200: %s", wrongKindPath, resp.StatusCode, body)
 	}
 	if strings.Contains(string(body), i18n.T(context.Background(), "ingest_signals.deprecated.title")) {
-		t.Errorf("GET %s shows deprecated-path callout for a key-reject signal (kind outside deprecatedPathByKind): %s", wrongKindPath, body)
+		t.Errorf("GET %s shows deprecated-path callout for a key-reject signal (kind outside ingest.PathForDeprecatedKind): %s", wrongKindPath, body)
 	}
 
 	prevSignals := s.h.Signals

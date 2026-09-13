@@ -91,6 +91,10 @@ type Config struct {
 	// per-DSN токен-бакет, запросов/с на project id; burst = 2×лимит, 0 выключает;
 	// срабатывает после аутентификации ключа и до квоты, ответ 429
 	IngestRateLimit int
+	// по клиентскому IP, до аутентификации DSN; burst = 2×лимит, 0 выключает
+	PreAuthRateLimit int
+	// по клиентскому IP, только touchUnverifiedSignal; burst = 5×лимит, 0 выключает
+	SignalTouchRateLimit int
 	// незаданная (0) — дефолт пакета (64 МиБ); явный 0 или отрицательное — ошибка конфигурации
 	MaxQueueBytes int64
 	// пер-проектный потолок уведомлений; 0 у лимита выключает ограничение
@@ -471,6 +475,8 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		DefaultLogQuota:          num("GOTCHA_DEFAULT_LOG_QUOTA", defQuota),
 		MaxEventBytes:            num("GOTCHA_MAX_EVENT_BYTES", 1<<20),
 		IngestRateLimit:          intNum("GOTCHA_INGEST_RATE_PER_SEC", 500),
+		PreAuthRateLimit:         intNum("GOTCHA_INGEST_PREAUTH_RATE_PER_SEC", 2000),
+		SignalTouchRateLimit:     intNum("GOTCHA_INGEST_SIGNAL_RATE_PER_SEC", 2),
 		MaxBufferBytes:           maxBufferBytes,
 		MaxQueueBytes:            maxQueueBytes,
 		AlertBudgetWindowSeconds: intNum("GOTCHA_ALERT_BUDGET_WINDOW_SECONDS", 3600),
@@ -746,6 +752,12 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 	if cfg.IngestRateLimit < 0 {
 		errs = append(errs, fmt.Errorf("GOTCHA_INGEST_RATE_PER_SEC must be >= 0 (0 disables the limit), got %d", cfg.IngestRateLimit))
+	}
+	if cfg.PreAuthRateLimit < 0 {
+		errs = append(errs, fmt.Errorf("GOTCHA_INGEST_PREAUTH_RATE_PER_SEC must be >= 0 (0 disables the limit), got %d", cfg.PreAuthRateLimit))
+	}
+	if cfg.SignalTouchRateLimit < 0 {
+		errs = append(errs, fmt.Errorf("GOTCHA_INGEST_SIGNAL_RATE_PER_SEC must be >= 0 (0 disables the limit), got %d", cfg.SignalTouchRateLimit))
 	}
 	if cfg.CardinalityLimit < 0 {
 		errs = append(errs, fmt.Errorf("GOTCHA_CARDINALITY_LIMIT must be >= 0 (0 disables the limit), got %d", cfg.CardinalityLimit))

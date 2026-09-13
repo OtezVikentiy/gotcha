@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	pp "github.com/google/pprof/profile"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/ingestsignal"
 )
 
 func serveIngest(h *Handler, req *http.Request) *httptest.ResponseRecorder {
@@ -227,6 +229,25 @@ func TestDocsPath(t *testing.T) {
 		docs, ok := DocsPath(c.path)
 		if docs != c.wantDocs || ok != c.wantOK {
 			t.Errorf("DocsPath(%q) = (%q, %v), want (%q, %v)", c.path, docs, ok, c.wantDocs, c.wantOK)
+		}
+	}
+}
+
+func TestPathForDeprecatedKind(t *testing.T) {
+	cases := []struct {
+		kind     ingestsignal.Kind
+		wantPath DeprecatedPath
+		wantOK   bool
+	}{
+		{ingestsignal.KindDeprecatedLogs, DeprecatedLogs, true},
+		{ingestsignal.KindDeprecatedPprof, DeprecatedProfilePprof, true},
+		{ingestsignal.KindDeprecatedDeployments, DeprecatedDeployments, true},
+		{ingestsignal.KindKeyInvalid, "", false},
+	}
+	for _, c := range cases {
+		path, ok := PathForDeprecatedKind(c.kind)
+		if path != c.wantPath || ok != c.wantOK {
+			t.Errorf("PathForDeprecatedKind(%q) = (%q, %v), want (%q, %v)", c.kind, path, ok, c.wantPath, c.wantOK)
 		}
 	}
 }
