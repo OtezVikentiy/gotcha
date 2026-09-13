@@ -73,7 +73,9 @@ templ Profile(email, errMsg, message string, hasPassword bool, linked []LinkedId
 			</section>
 			<section class="card">
 				<h2 class="card-header">{ i18n.T(ctx, "profile.linked.title") }</h2>
-				if len(linked) == 0 {
+				if len(linked) == 0 && len(linkable) == 0 {
+					@emptyState("user", "profile.linked.unavailable.title", "profile.linked.unavailable.body", "", "", 3)
+				} else if len(linked) == 0 {
 					@emptyState("user", "profile.linked.empty.title", "profile.linked.empty.body", "", "", 3)
 				} else {
 					@scrollRegion("table-scroll", "profile.linked.title") {

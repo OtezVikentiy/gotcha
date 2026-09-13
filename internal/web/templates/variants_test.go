@@ -59,7 +59,7 @@ func TestIssueDetailBareFrame(t *testing.T) {
 	it := issue.Issue{ID: 6, Title: "err", Level: "info", Status: "ignored", TimesSeen: 1, FirstSeen: time.Now(), LastSeen: time.Now()}
 	frames := []Frame{{Function: "runtime.main", Module: "runtime", Filename: "", Lineno: 0, InApp: false}}
 	ev := event.Stored{ID: "e9", Level: "info", Message: "just a message"}
-	out := renderTo(t, IssueDetail(it, nil, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "e9", &ev, frames, "u@e.com", false, false, "", "", true, true, false))
+	out := renderTo(t, IssueDetail(it, nil, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "e9", &ev, frames, "u@e.com", false, false, "", "", true, true, false, 90))
 	if !strings.Contains(out, "runtime.main") || !strings.Contains(out, "frame-system") {
 		t.Error("системный кадр не из приложения должен отрендериться через <details>")
 	}

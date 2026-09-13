@@ -224,7 +224,7 @@ func TestIssuesListExportFormsCarryTimeRange(t *testing.T) {
 func TestIssueDetailHasExportForm(t *testing.T) {
 	it := issue.Issue{ID: 5, ProjectID: 7, Title: "NPE", Level: "error", Status: "unresolved"}
 	stubC := templ.Raw("<svg data-c></svg>")
-	out := renderTo(t, IssueDetail(it, nil, stubC, TimeRangeVM{Key: "24h"}, nil, "", nil, nil, "u@e.com", false, false, "", "", true, true, false))
+	out := renderTo(t, IssueDetail(it, nil, stubC, TimeRangeVM{Key: "24h"}, nil, "", nil, nil, "u@e.com", false, false, "", "", true, true, false, 90))
 
 	if !strings.Contains(out, `action="/projects/7/exports?period=24h"`) {
 		t.Error("нет формы экспорта событий issue или период страницы не проброшен в action")
@@ -237,7 +237,7 @@ func TestIssueDetailHasExportForm(t *testing.T) {
 func TestIssueDetailHidesExportFormWhenExportsDisabled(t *testing.T) {
 	it := issue.Issue{ID: 5, ProjectID: 7, Title: "NPE", Level: "error", Status: "unresolved"}
 	stubC := templ.Raw("<svg data-c></svg>")
-	out := renderTo(t, IssueDetail(it, nil, stubC, TimeRangeVM{Key: "24h"}, nil, "", nil, nil, "u@e.com", false, false, "", "", false, false, false))
+	out := renderTo(t, IssueDetail(it, nil, stubC, TimeRangeVM{Key: "24h"}, nil, "", nil, nil, "u@e.com", false, false, "", "", false, false, false, 90))
 
 	if strings.Contains(out, "/exports?period=24h") {
 		t.Error("форма экспорта показана при выключенной фиче (exportsEnabled=false)")
@@ -282,7 +282,7 @@ func TestIssueDetailExportFormOffersFormatAndPII(t *testing.T) {
 	it := issue.Issue{ID: 5, ProjectID: 7, Title: "NPE", Level: "error", Status: "unresolved"}
 	stubC := templ.Raw("<svg data-c></svg>")
 
-	admin := renderTo(t, IssueDetail(it, nil, stubC, TimeRangeVM{Key: "24h"}, nil, "", nil, nil, "u@e.com", false, false, "", "", true, true, false))
+	admin := renderTo(t, IssueDetail(it, nil, stubC, TimeRangeVM{Key: "24h"}, nil, "", nil, nil, "u@e.com", false, false, "", "", true, true, false, 90))
 	if !strings.Contains(admin, `<select name="format" class="select"`) {
 		t.Error("нет выбора формата на форме экспорта событий issue")
 	}
@@ -296,7 +296,7 @@ func TestIssueDetailExportFormOffersFormatAndPII(t *testing.T) {
 		t.Error("scope_issue_id потерян при добавлении формата/PII")
 	}
 
-	operator := renderTo(t, IssueDetail(it, nil, stubC, TimeRangeVM{Key: "24h"}, nil, "", nil, nil, "u@e.com", false, false, "", "", true, false, false))
+	operator := renderTo(t, IssueDetail(it, nil, stubC, TimeRangeVM{Key: "24h"}, nil, "", nil, nil, "u@e.com", false, false, "", "", true, false, false, 90))
 	if strings.Contains(operator, `name="include_pii"`) {
 		t.Error("оператору без CanManage показана галка include_pii на форме экспорта событий issue")
 	}
@@ -371,7 +371,7 @@ func TestExportPIICheckboxUsesInlineLabel(t *testing.T) {
 	pages := map[string]string{
 		"страница «Выгрузки»": renderTo(t, Exports(7, nil, true, "u@e.com", true, "", nil)),
 		"список ошибок":       renderTo(t, IssuesList(7, exportIssueRows(), filter, 1, 0, "u@e.com", nil, nil, GettingStartedVM{}, true, true, false)),
-		"карточка ошибки":     renderTo(t, IssueDetail(it, nil, stubC, TimeRangeVM{Key: "24h"}, nil, "", nil, nil, "u@e.com", false, false, "", "", true, true, false)),
+		"карточка ошибки":     renderTo(t, IssueDetail(it, nil, stubC, TimeRangeVM{Key: "24h"}, nil, "", nil, nil, "u@e.com", false, false, "", "", true, true, false, 90)),
 	}
 	for name, html := range pages {
 		idx := strings.Index(html, `name="include_pii"`)

@@ -158,7 +158,7 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	canManagePII := role == org.RoleOwner || role == org.RoleAdmin
 
-	_ = templates.IssueDetail(it, members, chart, timeRangeVM(tr), events, selectedID, selected, frames, h.currentEmail(r), hasTrace, showAllFrames, copyMD, copyTXT, exportsEnabled, canManagePII, loadFailed).Render(r.Context(), w)
+	_ = templates.IssueDetail(it, members, chart, timeRangeVM(tr), events, selectedID, selected, frames, h.currentEmail(r), hasTrace, showAllFrames, copyMD, copyTXT, exportsEnabled, canManagePII, loadFailed, h.RetentionDays).Render(r.Context(), w)
 }
 
 func (h *Handler) issueSetStatus(w http.ResponseWriter, r *http.Request) {

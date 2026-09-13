@@ -179,12 +179,53 @@ func TestIssueDetail(t *testing.T) {
 	members := []org.Member{{UserID: 2, Email: "dev@x.io", Role: org.RoleAdmin}}
 	ev := event.Stored{ID: "ev1", Level: "error", ExceptionType: "NPE", ExceptionValue: "nil ptr", Environment: "production", Release: "1.2.3", TraceID: "abc", Tags: map[string]string{"k": "v"}}
 	frames := []Frame{{Function: "main", Module: "app", Filename: "main.go", Lineno: 10, InApp: true}}
-	out := renderTo(t, IssueDetail(it, members, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "ev1", &ev, frames, "u@e.com", true, true, "", "", true, true, false))
+	out := renderTo(t, IssueDetail(it, members, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "ev1", &ev, frames, "u@e.com", true, true, "", "", true, true, false, 90))
 	if !strings.Contains(out, "NPE") || !strings.Contains(out, "main.go:10") {
 		t.Error("деталь issue должна показать исключение и локацию кадра")
 	}
 	if !strings.Contains(out, "dev@x.io") {
 		t.Error("должен отрисоваться назначенный")
+	}
+}
+
+func TestIssueDetailTagsSortedByKey(t *testing.T) {
+	it := issue.Issue{ID: 5, Title: "NPE", Level: "error", Status: "unresolved"}
+	ev := event.Stored{ID: "ev1", Level: "error", Tags: map[string]string{"zebra": "1", "alpha": "2", "mango": "3"}}
+	out := renderTo(t, IssueDetail(it, nil, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "ev1", &ev, nil, "u@e.com", false, false, "", "", true, true, false, 90))
+	ia, im, iz := strings.Index(out, ">alpha<"), strings.Index(out, ">mango<"), strings.Index(out, ">zebra<")
+	if ia < 0 || im < 0 || iz < 0 {
+		t.Fatalf("не все теги отрисованы: %s", out)
+	}
+	if !(ia < im && im < iz) {
+		t.Errorf("теги не в алфавитном порядке: alpha@%d, mango@%d, zebra@%d", ia, im, iz)
+	}
+}
+
+func TestIssueDetailNoEventsShowsRetentionExplanation(t *testing.T) {
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	it := issue.Issue{ID: 5, Title: "NPE", Level: "error", Status: "unresolved"}
+
+	out := renderTo(t, IssueDetail(it, nil, stub(), TimeRangeVM{Key: "24h"}, nil, "", nil, nil, "u@e.com", false, false, "", "", true, true, false, 90))
+	if strings.Contains(out, `class="issue-events data-table"`) {
+		t.Error("пустая таблица событий отрисована вместо пустого состояния")
+	}
+	if !strings.Contains(out, "90") {
+		t.Errorf("срок хранения не назван в пустом состоянии: %s", out)
+	}
+	wantPurgedBody := i18n.T(ctx, "issues.detail.events_empty.body_purged")
+	if strings.Contains(out, wantPurgedBody) {
+		t.Errorf("retention=90 не должен показывать текст про удаление по запросу: %s", out)
+	}
+
+	purged := renderTo(t, IssueDetail(it, nil, stub(), TimeRangeVM{Key: "24h"}, nil, "", nil, nil, "u@e.com", false, false, "", "", true, true, false, 0))
+	if strings.Contains(purged, `class="issue-events data-table"`) {
+		t.Error("пустая таблица событий отрисована вместо пустого состояния (retention=0)")
+	}
+	if !strings.Contains(purged, wantPurgedBody) {
+		t.Errorf("retention=0 должен показывать текст про удаление по запросу: %s", purged)
+	}
+	if strings.Contains(purged, "90") {
+		t.Errorf("retention=0 не должен называть срок хранения в днях: %s", purged)
 	}
 }
 
@@ -437,6 +478,21 @@ func TestProfileRegressionsList(t *testing.T) {
 	out := renderTo(t, ProfileRegressionsList(7, regs, "open", "u@e.com", true))
 	if !strings.Contains(out, "hot()") {
 		t.Error("регрессии профилей должны содержать функцию")
+	}
+}
+
+// Проект, где стоит только агент Gotcha, видит одни system.* метрики: пустой
+// список без единой видимой строки не должен выглядеть как поломка загрузки.
+func TestMetricsListAllSystemHiddenShowsEmptyState(t *testing.T) {
+	out := renderTo(t, MetricsList(7, nil, "", "u@e.com", false, 3, false))
+	if strings.Contains(out, `<table class="data-table">`) {
+		t.Errorf("пустая таблица отрисована при hiddenCount>0 и showSystem=false: %s", out)
+	}
+	if !strings.Contains(out, "empty-state") {
+		t.Errorf("нет пустого состояния при hiddenCount>0 и showSystem=false: %s", out)
+	}
+	if !strings.Contains(out, "3") {
+		t.Errorf("число скрытых системных метрик не названо: %s", out)
 	}
 }
 
@@ -731,7 +787,7 @@ func TestIssuesUntitledFallback(t *testing.T) {
 
 	it := issue.Issue{ID: 9, Title: "", Level: "error", Status: "unresolved", TimesSeen: 1, FirstSeen: now, LastSeen: now}
 	ev := event.Stored{ID: "ev1", Level: "error", Message: ""}
-	detail := renderTo(t, IssueDetail(it, nil, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "ev1", &ev, nil, "u@e.com", false, false, "", "", true, true, false))
+	detail := renderTo(t, IssueDetail(it, nil, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "ev1", &ev, nil, "u@e.com", false, false, "", "", true, true, false, 90))
 	if strings.Contains(detail, "<h1></h1>") {
 		t.Error("деталь: пустой <h1>")
 	}

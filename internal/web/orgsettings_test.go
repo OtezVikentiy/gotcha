@@ -224,6 +224,18 @@ func TestWebInviteEmailMismatch(t *testing.T) {
 	if !strings.Contains(string(body), "другой email") {
 		t.Fatalf("POST %s (stranger) body missing mismatch message: %s", invitePath, body)
 	}
+	if !strings.Contains(string(body), `action="/logout"`) {
+		t.Errorf("POST %s (stranger) body missing switch-account link: %s", invitePath, body)
+	}
+	inviteCookieSet := false
+	for _, c := range resp.Cookies() {
+		if c.Name == "invite_next" && c.Value == token {
+			inviteCookieSet = true
+		}
+	}
+	if !inviteCookieSet {
+		t.Error("POST (stranger, mismatch) не поставил invite_next — logout потеряет приглашение")
+	}
 	if _, err := orgSvc.Role(context.Background(), o.ID, strangerID); !errors.Is(err, org.ErrNotMember) {
 		t.Fatalf("stranger role: got %v, want ErrNotMember", err)
 	}

@@ -41,6 +41,15 @@ templ MetricsList(projectID int64, metrics []metric.MetricInfo, environment, use
 				@emptyState("chart", "metrics.error.title", "metrics.error.body", "", "", 2)
 			} else if len(metrics) == 0 && hiddenCount == 0 {
 				@emptyState("chart", "metrics.empty.title", "metrics.empty.body", "metrics.empty.cta", "/docs/metrics", 2)
+			} else if len(metrics) == 0 {
+				<div class="card">
+					<div class="empty-state">
+						@icon("chart")
+						<h3 class="empty-title">{ i18n.T(ctx, "metrics.empty.system_only.title") }</h3>
+						<p>{ i18n.T(ctx, "metrics.empty.system_only.body") }</p>
+						<a class="btn btn-primary empty-cta" href={ templ.URL(metricsSystemToggleURL(projectID, environment, true)) }>{ i18n.Tn(ctx, "metrics.system.show_toggle", hiddenCount) }</a>
+					</div>
+				</div>
 			} else {
 				<div class="card">
 				if hiddenCount > 0 {

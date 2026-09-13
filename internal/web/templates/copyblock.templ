@@ -10,7 +10,8 @@ templ copyBlock(id, labelKey, content string) {
 			data-copy-target={ id } aria-label={ i18n.T(ctx, labelKey) }>
 			{ i18n.T(ctx, labelKey) }
 		</button>
-		<span class="copy-done" data-copy-done hidden>{ i18n.T(ctx, "copy.done") }</span>
+		<span class="copy-done" data-copy-done hidden role="status" aria-live="polite">{ i18n.T(ctx, "copy.done") }</span>
+		<span class="copy-failed" data-copy-failed hidden role="alert">{ i18n.T(ctx, "copy.failed") }</span>
 		<textarea class="visually-hidden" id={ id } data-copy-blob readonly aria-hidden="true" tabindex="-1">{ content }</textarea>
 		<pre class="copy-preview">{ content }</pre>
 	</div>

@@ -2,19 +2,23 @@
  * на bare-HTTP — фолбэк execCommand по выделенной textarea. */
 (function () {
 	"use strict";
-	function flashDone(root) {
-		var m = root.querySelector("[data-copy-done]");
+	function flash(root, selector, ms) {
+		var m = root.querySelector(selector);
 		if (!m) return;
 		m.hidden = false;
-		setTimeout(function () { m.hidden = true; }, 1500);
+		setTimeout(function () { m.hidden = true; }, ms);
 	}
+	function flashDone(root) { flash(root, "[data-copy-done]", 1500); }
+	function flashFailed(root) { flash(root, "[data-copy-failed]", 4000); }
 	function fallbackCopy(ta, root) {
 		ta.removeAttribute("aria-hidden");
 		ta.focus();
 		ta.select();
-		try { if (document.execCommand("copy")) flashDone(root); } catch (e) {}
+		var ok = false;
+		try { ok = document.execCommand("copy"); } catch (e) {}
 		ta.setAttribute("aria-hidden", "true");
 		if (window.getSelection) window.getSelection().removeAllRanges();
+		if (ok) flashDone(root); else flashFailed(root);
 	}
 	function copyText(ta, root) {
 		// writeText может отклониться без фокуса/жеста или по permissions-policy —

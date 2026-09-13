@@ -57,7 +57,14 @@ export function buildCopyWidget(doc) {
 
 	var done = doc.createElement("span");
 	done.setAttribute("data-copy-done", "");
+	done.setAttribute("role", "status");
+	done.setAttribute("aria-live", "polite");
 	done.hidden = true;
+
+	var failed = doc.createElement("span");
+	failed.setAttribute("data-copy-failed", "");
+	failed.setAttribute("role", "alert");
+	failed.hidden = true;
 
 	var btn = doc.createElement("button");
 	btn.setAttribute("data-copy-format", "md");
@@ -65,10 +72,11 @@ export function buildCopyWidget(doc) {
 
 	root.appendChild(ta);
 	root.appendChild(done);
+	root.appendChild(failed);
 	root.appendChild(btn);
 	doc.body.appendChild(root);
 
-	return { root: root, textarea: ta, done: done, button: btn };
+	return { root: root, textarea: ta, done: done, failed: failed, button: btn };
 }
 
 export function buildExportForm(doc) {

@@ -958,11 +958,9 @@ func (h *Handler) inviteAcceptPage(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
-	if email == "" {
-		// Токен едет в HttpOnly cookie, а не в next= query — его читает resolveAuthNext
-		// на GET /login и /register.
-		h.setInviteNextCookie(w, token)
-	}
+	// Ставится и под уже вошедшим: чужой аккаунт может выйти и вернуться сюда же —
+	// без cookie логаут терял приглашение (resolveAuthNext на GET /login и /register).
+	h.setInviteNextCookie(w, token)
 	_ = templates.InviteAccept(token, "", email, inv).Render(r.Context(), w)
 }
 
@@ -982,6 +980,9 @@ func (h *Handler) inviteAcceptSubmit(w http.ResponseWriter, r *http.Request) {
 		msg := i18n.T(r.Context(), "err.org.invite_invalid")
 		if errors.Is(err, org.ErrInviteEmailMismatch) {
 			msg = i18n.T(r.Context(), "err.org.invite_other_email")
+			// Cookie могла истечь (TTL 600с) между GET и этим POST — без неё
+			// логаут-и-перевход потеряет приглашение так же, как на GET.
+			h.setInviteNextCookie(w, token)
 		}
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		// Нулевой InviteInfo{}: шаблон его не использует, когда errMsg != "".

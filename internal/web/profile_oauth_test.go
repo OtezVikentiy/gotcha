@@ -83,6 +83,32 @@ func TestProfileShowsLinkedAndLinkable(t *testing.T) {
 	}
 }
 
+// Инстанс без единого настроенного провайдера не должен обещать привязку — раньше
+// пустое состояние звало «привяжите GitHub, GitLab», которых в продукте нет вовсе.
+func TestProfileNoProviderConfiguredShowsUnavailable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	s := newOAuthProfileStack(t)
+	ctx := context.Background()
+	uid, err := s.auth.Register(ctx, "prof-noauth@example.com", "password12")
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	cookie := loginCookie(t, s.auth, uid)
+
+	resp := getWithCookie(t, s.srv, "/profile", cookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	bs := string(body)
+	if strings.Contains(bs, "GitHub") || strings.Contains(bs, "GitLab") {
+		t.Errorf("пустое состояние обещает несуществующих провайдеров: %s", bs)
+	}
+	if !strings.Contains(bs, "Вход через провайдера недоступен") {
+		t.Errorf("нет пояснения о недоступности входа через провайдера: %s", bs)
+	}
+}
+
 func TestProfileUnlinkLastMethodBlocked(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")

@@ -1115,11 +1115,16 @@ th {
 	letter-spacing: .4px;
 	white-space: nowrap;
 }
+/* min-width:0 + anywhere на базовом классе, не на каждом месте его использования — подпись
+   печатает произвольное значение (адрес канала, имя ступени и т. п.) в любой форме,
+   где чекбокс появится. */
 .checkbox-inline {
 	display: inline-flex;
 	flex-direction: row;
 	align-items: center;
 	gap: 8px;
+	min-width: 0;
+	overflow-wrap: anywhere;
 	color: var(--text);
 	font-size: var(--fs-base);
 	cursor: pointer;
@@ -1782,6 +1787,10 @@ th {
 .copy-done {
 	font-size: var(--fs-sm);
 	color: var(--text-dim);
+}
+.copy-failed {
+	font-size: var(--fs-sm);
+	color: var(--danger-ink);
 }
 /* Перенос по словам, не горизонтальный скролл — внутри <pre> скролл недоступен с клавиатуры
    (см. scrollRegion). */
@@ -2626,10 +2635,6 @@ form.inline {
 .escalation-step {
 	min-width: 0;
 }
-.escalation-step .checkbox-inline {
-	min-width: 0;
-	overflow-wrap: anywhere;
-}
 .escalation-dryrun {
 	margin-top: 16px;
 	border-left: 3px solid var(--accent);
@@ -2645,6 +2650,7 @@ form.inline {
 }
 .escalation-dryrun-list li {
 	margin: 2px 0;
+	overflow-wrap: anywhere;
 }
 
 .slo-detail {
@@ -3017,6 +3023,9 @@ form.inline {
 	align-items: center;
 	gap: 6px;
 	width: fit-content;
+	min-width: 0;
+	max-width: 100%;
+	overflow-wrap: anywhere;
 	padding: 3px 6px 3px 12px;
 	background: var(--accent-soft);
 	border: 1px solid var(--link);

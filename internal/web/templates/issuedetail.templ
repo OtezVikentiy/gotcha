@@ -160,6 +160,15 @@ func sortedKeys(m map[string]json.RawMessage) []string {
 	return keys
 }
 
+func sortedTagKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func contextGroups(contextsJSON string) []ctxGroup {
 	if contextsJSON == "" || contextsJSON == "{}" {
 		return nil
@@ -546,7 +555,7 @@ templ eventRow(issueID int64, ev event.Stored, selected bool, rng TimeRangeVM) {
 
 // selectedID может не совпадать ни с одним из events (устарело/удалено) — тогда деталей нет.
 // loadFailed — ClickHouse не ответил: график и события заменяет «данные временно недоступны».
-templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, rng TimeRangeVM, events []event.Stored, selectedID string, selected *event.Stored, frames []Frame, userEmail string, hasTrace bool, showAllFrames bool, copyMD string, copyTXT string, exportsEnabled bool, canManagePII bool, loadFailed bool) {
+templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, rng TimeRangeVM, events []event.Stored, selectedID string, selected *event.Stored, frames []Frame, userEmail string, hasTrace bool, showAllFrames bool, copyMD string, copyTXT string, exportsEnabled bool, canManagePII bool, loadFailed bool, eventRetentionDays int) {
 	@layout(issueTitle(ctx, it.Title), userEmail) {
 		<div class="issue-detail">
 			@breadcrumbBackTo(templ.URL(issuesPath(it.ProjectID)), i18n.T(ctx, "nav.issues"))
@@ -652,10 +661,10 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 						<h3>{ i18n.T(ctx, "issues.detail.tags") }</h3>
 						<table class="tags data-table data-table--auto">
 							<tbody>
-								for k, v := range selected.Tags {
+								for _, k := range sortedTagKeys(selected.Tags) {
 									<tr>
 										<td>{ k }</td>
-										<td>{ v }</td>
+										<td>{ selected.Tags[k] }</td>
 									</tr>
 								}
 							</tbody>
@@ -714,23 +723,35 @@ templ IssueDetail(it issue.Issue, members []org.Member, chart templ.Component, r
 			}
 
 			<h2 class="issue-events-heading">{ i18n.T(ctx, "issues.detail.recent_events") }</h2>
-			// Таблица — в своём скролл-регионе: без него она распирала страницу на 375px.
-			@scrollRegion("table-scroll", "issues.detail.recent_events") {
-				<table class="issue-events data-table">
-					<thead>
-						<tr>
-							<th scope="col">{ i18n.T(ctx, "issues.detail.events_table.when") }</th>
-							<th scope="col">{ i18n.T(ctx, "issues.detail.events_table.message") }</th>
-							<th scope="col">{ i18n.T(ctx, "issues.detail.events_table.environment") }</th>
-							<th scope="col">{ i18n.T(ctx, "issues.detail.events_table.release") }</th>
-						</tr>
-					</thead>
-					<tbody>
-						for _, ev := range events {
-							@eventRow(it.ID, ev, ev.ID == selectedID, rng)
-						}
-					</tbody>
-				</table>
+			if len(events) == 0 {
+				<div class="empty-state">
+					@icon("clock")
+					<h3 class="empty-title">{ i18n.T(ctx, "issues.detail.events_empty.title") }</h3>
+					if eventRetentionDays > 0 {
+						<p>{ i18n.Tf(ctx, "issues.detail.events_empty.body", "period", i18n.Tn(ctx, "unit.days", eventRetentionDays)) }</p>
+					} else {
+						<p>{ i18n.T(ctx, "issues.detail.events_empty.body_purged") }</p>
+					}
+				</div>
+			} else {
+				// Таблица — в своём скролл-регионе: без него она распирала страницу на 375px.
+				@scrollRegion("table-scroll", "issues.detail.recent_events") {
+					<table class="issue-events data-table">
+						<thead>
+							<tr>
+								<th scope="col">{ i18n.T(ctx, "issues.detail.events_table.when") }</th>
+								<th scope="col">{ i18n.T(ctx, "issues.detail.events_table.message") }</th>
+								<th scope="col">{ i18n.T(ctx, "issues.detail.events_table.environment") }</th>
+								<th scope="col">{ i18n.T(ctx, "issues.detail.events_table.release") }</th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, ev := range events {
+								@eventRow(it.ID, ev, ev.ID == selectedID, rng)
+							}
+						</tbody>
+					</table>
+				}
 			}
 			}
 		</div>
@@ -749,7 +770,8 @@ templ copyToolbar(md string, txt string) {
 				data-copy-target="copy-txt" aria-label={ i18n.T(ctx, "issue.copy.aria") }>
 				{ i18n.T(ctx, "issue.copy.txt") }
 			</button>
-			<span class="copy-done" data-copy-done hidden>{ i18n.T(ctx, "issue.copy.done") }</span>
+			<span class="copy-done" data-copy-done hidden role="status" aria-live="polite">{ i18n.T(ctx, "issue.copy.done") }</span>
+			<span class="copy-failed" data-copy-failed hidden role="alert">{ i18n.T(ctx, "issue.copy.failed") }</span>
 			<textarea class="visually-hidden" id="copy-md" data-copy-blob readonly aria-hidden="true" tabindex="-1">{ md }</textarea>
 			<textarea class="visually-hidden" id="copy-txt" data-copy-blob readonly aria-hidden="true" tabindex="-1">{ txt }</textarea>
 		</div>

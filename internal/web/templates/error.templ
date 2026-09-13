@@ -47,7 +47,11 @@ templ ErrorPage(status int, msg string, userEmail string) {
 			} else {
 				<h1 class="error-title">{ msg }</h1>
 			}
-			<a class="btn btn-primary" href="/">{ i18n.T(ctx, "error.home_link") }</a>
+			if userEmail == "" {
+				<a class="btn btn-primary" href="/login">{ i18n.T(ctx, "error.login_link") }</a>
+			} else {
+				<a class="btn btn-primary" href="/">{ i18n.T(ctx, "error.home_link") }</a>
+			}
 			// проект берётся из nav.Shell в ctx; без него (запрос мимо middleware)
 			// ссылки нет вовсе.
 			if pid := effectiveProjectID(nav.FromContext(ctx)); pid != 0 {

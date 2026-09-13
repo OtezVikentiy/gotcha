@@ -488,6 +488,16 @@ templ InviteAccept(token, errMsg, userEmail string, inv org.InviteInfo) {
 			<h1>{ i18n.T(ctx, "org.invite_accept.title") }</h1>
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
+				if userEmail == "" {
+					<p class="auth-switch">
+						<a href={ templ.URL(loginLinkWithNext(inviteAcceptPath(token))) }>{ i18n.T(ctx, "org.invite.sign_in") }</a> ·
+						<a href={ templ.URL(registerLinkWithNext(inviteAcceptPath(token))) }>{ i18n.T(ctx, "org.invite.create_account") }</a>
+					</p>
+				} else {
+					<form method="post" action="/logout" class="auth-switch">
+						<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "org.invite.switch_account") }</button>
+					</form>
+				}
 			} else {
 				<p>{ i18n.Tf(ctx, "org.invite.you_are_invited", "org", inv.OrgName) }</p>
 				<p>{ i18n.Tf(ctx, "org.invite.role", "role", i18n.T(ctx, memberRoleLabelKey(inv.Role))) }</p>

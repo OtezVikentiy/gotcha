@@ -62,3 +62,20 @@ func TestRenderErrorInternalShowsExplanation(t *testing.T) {
 		t.Fatalf("страница 500 не показывает подсказку error.500.body: %q", wantExplanation)
 	}
 }
+
+// Отказ OAuth-входа рендерится анонимному: без ссылки на /login возврат — угадать,
+// что «На главную» перенаправит на вход.
+func TestRenderErrorAnonymousOffersLoginLink(t *testing.T) {
+	h := &Handler{}
+	req := httptest.NewRequest("GET", "/whatever", nil)
+	rec := httptest.NewRecorder()
+	h.renderError(rec, req, 403, "")
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `<a class="btn btn-primary" href="/login">`) {
+		t.Errorf("анонимному не предложена ссылка на вход: %s", body)
+	}
+	if strings.Contains(body, `<a class="btn btn-primary" href="/">`) {
+		t.Errorf("анонимному предложена ссылка на главную (уведёт мимо входа): %s", body)
+	}
+}
