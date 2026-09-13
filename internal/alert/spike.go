@@ -36,6 +36,7 @@ type Spike struct {
 
 	lastTickUnix    atomic.Int64  // unix-время последнего завершённого тика
 	lastTickSeconds atomic.Uint64 // длительность последнего тика, math.Float64bits
+	skipped         atomic.Int64
 }
 
 // Self-метрика живости: остановленный или зависший цикл спайков снаружи
@@ -45,6 +46,8 @@ func (s *Spike) LastTickUnix() int64 { return s.lastTickUnix.Load() }
 func (s *Spike) LastTickSeconds() float64 {
 	return math.Float64frombits(s.lastTickSeconds.Load())
 }
+
+func (s *Spike) LastTickSkippedRules() int64 { return s.skipped.Load() }
 
 func (s *Spike) effectiveInterval() time.Duration {
 	if s.Interval <= 0 {
@@ -97,9 +100,12 @@ func (s *Spike) Tick(ctx context.Context) {
 	}
 
 	now := time.Now()
-	for _, rule := range rules {
+	done := len(rules)
+	for i, rule := range rules {
 		if ctx.Err() != nil {
-			slog.Warn("alert spike: tick budget exhausted, remaining rules skipped")
+			slog.Warn("alert spike: tick budget exhausted, remaining rules skipped",
+				"skipped_rules", len(rules)-i, "budget", s.tickBudget())
+			done = i
 			break
 		}
 		since := now.Add(-time.Duration(rule.WindowMinutes) * time.Minute)
@@ -138,6 +144,7 @@ func (s *Spike) Tick(ctx context.Context) {
 			})
 		}
 	}
+	s.skipped.Store(int64(len(rules) - done))
 }
 
 // Все проекты разом — Spike.Run не должен опрашивать их по одному.

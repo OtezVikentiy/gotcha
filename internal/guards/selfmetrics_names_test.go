@@ -21,9 +21,11 @@ type selfMetricSpec struct {
 // список отсортирован по имени для читаемого diff'а при правке.
 var wantSelfMetrics = []selfMetricSpec{
 	{"gotcha_alert_digest_last_tick_timestamp_seconds", "Gauge"},
+	{"gotcha_alert_digest_skipped_batches", "Gauge"},
 	{"gotcha_alert_digest_suppressed_lost_total", "Counter"},
 	{"gotcha_alert_digest_tick_duration_seconds", "Gauge"},
 	{"gotcha_alert_spike_last_tick_timestamp_seconds", "Gauge"},
+	{"gotcha_alert_spike_skipped_rules", "Gauge"},
 	{"gotcha_alert_spike_tick_duration_seconds", "Gauge"},
 	{"gotcha_build_info", "Gauge"},
 	{"gotcha_cardinality_collapsed_total", "Counter"},

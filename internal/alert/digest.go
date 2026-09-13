@@ -34,6 +34,10 @@ const (
 	minDigestTickBudget   = 10 * time.Second
 )
 
+// Восстановление счётчика уже пропущенных по бюджету батчей не должно
+// зависеть от бюджета самого тика, который его и вызвал.
+const restoreSkippedTimeout = 10 * time.Second
+
 // Живёт рядом с доставкой (гейт по Outbox, не по режиму процесса) — контур,
 // привязанный к режиму, молча не работает в части конфигураций.
 type Digester struct {
@@ -59,6 +63,7 @@ type Digester struct {
 
 	lastTickUnix    atomic.Int64  // unix-время последнего завершённого тика
 	lastTickSeconds atomic.Uint64 // длительность последнего тика, math.Float64bits
+	skipped         atomic.Int64
 
 	// Подавленные, для которых и отправка, и восстановление счётчика
 	// отказали — безвозвратная потеря, а не отложенный ретрай.
@@ -76,6 +81,8 @@ func (d *Digester) LastTickSeconds() float64 {
 // Число подавленных алертов, чью сводку не удалось ни доставить, ни вернуть
 // в счётчик для повторной попытки — оператор не узнает о них никак иначе.
 func (d *Digester) LostSuppressed() int64 { return d.lostSuppressed.Load() }
+
+func (d *Digester) LastTickSkippedBatches() int64 { return d.skipped.Load() }
 
 func (d *Digester) effectiveInterval() time.Duration {
 	if d.Interval <= 0 {
@@ -125,10 +132,13 @@ func (d *Digester) Tick(ctx context.Context) {
 		slog.Error("alert: claim suppressed for digest failed", "error", err)
 		return
 	}
-	for _, b := range batches {
+	done := len(batches)
+	for i, b := range batches {
 		if ctx.Err() != nil {
-			slog.Warn("alert digest: tick budget exhausted, remaining batches skipped")
-			return
+			slog.Warn("alert digest: tick budget exhausted, remaining batches skipped",
+				"skipped_batches", len(batches)-i, "budget", d.tickBudget())
+			done = i
+			break
 		}
 		if err := d.send(ctx, b); err != nil {
 			// claim уже необратимо обнулил счётчик — без возврата сводка
@@ -140,6 +150,25 @@ func (d *Digester) Tick(ctx context.Context) {
 				continue
 			}
 			slog.Error("alert: digest enqueue failed, suppressed count restored for retry",
+				"project_id", b.ProjectID, "suppressed", b.Suppressed, "error", err)
+		}
+	}
+	d.restoreSkipped(ctx, batches[done:])
+	d.skipped.Store(int64(len(batches) - done))
+}
+
+// claim уже обнулил счётчик у пропущенных батчей — без WithoutCancel их
+// восстановление оборвалось бы вместе с истёкшим бюджетом тика.
+func (d *Digester) restoreSkipped(ctx context.Context, skipped []SuppressedBatch) {
+	if len(skipped) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), restoreSkippedTimeout)
+	defer cancel()
+	for _, b := range skipped {
+		if err := d.Svc.RestoreSuppressed(ctx, b.ProjectID, b.Suppressed); err != nil {
+			d.lostSuppressed.Add(int64(b.Suppressed))
+			slog.Error("alert: digest tick budget exhausted, suppressed count lost",
 				"project_id", b.ProjectID, "suppressed", b.Suppressed, "error", err)
 		}
 	}

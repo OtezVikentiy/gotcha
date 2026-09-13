@@ -699,6 +699,9 @@ func run() error {
 			selfMetrics.AddInt(selfmetrics.Counter, "gotcha_alert_digest_suppressed_lost_total",
 				"Suppressed alerts whose digest summary could neither be delivered nor requeued for retry — permanently lost.",
 				nil, digester.LostSuppressed)
+			selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_alert_digest_skipped_batches",
+				"Number of suppressed-alert batches skipped in the last tick because the tick budget ran out. Non-zero means the digester cannot keep up with the batch count.",
+				nil, digester.LastTickSkippedBatches)
 		}
 
 		// Доставленные/проваленные строки без ретенции копятся бесконечно.
@@ -906,6 +909,9 @@ func run() error {
 		selfMetrics.Add(selfmetrics.Gauge, "gotcha_alert_spike_tick_duration_seconds",
 			"Duration of the last spike-rule evaluation pass. Approaching the interval means ClickHouse is not keeping up.",
 			nil, spikeWorker.LastTickSeconds)
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_alert_spike_skipped_rules",
+			"Number of enabled spike rules skipped in the last tick because the tick budget ran out. Non-zero means the worker cannot keep up with the rule count.",
+			nil, spikeWorker.LastTickSkippedRules)
 
 		// Один инстанс на процесс, тот же кеш, что читает transaction_sample_rate.
 		projectCache := ingest.NewProjectCache(orgSvc)

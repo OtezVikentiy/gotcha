@@ -405,12 +405,23 @@ hung loop looks from the outside like "no spikes happened" — spike alerts
 simply stop arriving. Duration creeping up to a minute means ClickHouse is
 not keeping up.
 
+**`gotcha_alert_spike_skipped_rules`** — number of enabled `spike` rules
+skipped in the last pass because the tick budget ran out. The scan is not
+rotated — the rule list is rebuilt from the start every tick, so a
+persistent budget crunch keeps starving the same tail of rules.
+
 **`gotcha_alert_digest_last_tick_timestamp_seconds`** /
 **`gotcha_alert_digest_tick_duration_seconds`** — timestamp of the last
 completed pass sending digests of budget-suppressed alerts, and its
 duration. The pass runs every 5 minutes; the interval is not configurable.
 A dead or hung digester is indistinguishable from "nothing was suppressed" —
 the operator never learns that some notifications were eaten by the budget.
+
+**`gotcha_alert_digest_skipped_batches`** — number of suppressed-alert
+batches that did not get their digest sent in the last pass because the
+tick budget ran out. Their suppressed count was already cleared by the
+claim; the skip restores it for the next pass, and a failed restore counts
+into `gotcha_alert_digest_suppressed_lost_total` instead.
 
 **`gotcha_alert_digest_suppressed_lost_total`** — suppressed alerts whose
 digest summary could neither be delivered nor requeued for retry on the next
