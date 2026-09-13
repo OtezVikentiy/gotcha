@@ -172,3 +172,34 @@ test("daterange: Escape закрывает попап и возвращает ф
 	assert.equal(popup.hidden, true);
 	assert.equal(document.activeElement, trigger);
 });
+
+test("daterange: «сегодня» пересчитывается при открытии, а не застревает на моменте загрузки страницы", function (t) {
+	t.mock.timers.enable({ apis: ["Date"], now: new Date(2025, 11, 31, 23, 55, 0).getTime() });
+	var { document, sandbox } = buildWorld();
+	var tr = buildTimeRange(document);
+	load(document, sandbox);
+
+	// Вкладка «открыта» 10 минут — достаточно, чтобы сутки сменились.
+	t.mock.timers.tick(10 * 60 * 1000);
+
+	var trigger = tr.root.querySelector(".dr-trigger");
+	dispatchClick(trigger);
+
+	var todayCell = tr.root.querySelector(".dr-today");
+	assert.ok(todayCell, "ячейка «сегодня» обязана найтись в открытом попапе");
+	assert.equal(todayCell.getAttribute("data-ymd"), "2026-01-01");
+});
+
+test("daterange: подсказка о часовом поясе видна в попапе, не только в aria-label полей", function () {
+	var { document, sandbox } = buildWorld();
+	var tr = buildTimeRange(document);
+	tr.root.setAttribute("data-l-utc-hint", "Время — по UTC (проверка)");
+	load(document, sandbox);
+
+	var trigger = tr.root.querySelector(".dr-trigger");
+	dispatchClick(trigger);
+
+	var hint = tr.root.querySelector(".dr-utc-hint");
+	assert.ok(hint, "попап обязан показывать видимую подсказку про UTC");
+	assert.equal(hint.textContent, "Время — по UTC (проверка)");
+});

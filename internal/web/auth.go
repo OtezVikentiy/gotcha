@@ -60,7 +60,7 @@ func (h *Handler) registerPage(w http.ResponseWriter, r *http.Request) {
 		_ = templates.RegisterStub("", h.RegistrationMode, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
-	_ = templates.RegisterForm("", h.inviteOnlyNotice(r, next), next, h.oauthButtons(r.Context())).Render(r.Context(), w)
+	_ = templates.RegisterForm("", h.inviteOnlyNotice(r, next), next, "", h.oauthButtons(r.Context())).Render(r.Context(), w)
 }
 
 func (h *Handler) inviteOnlyNotice(r *http.Request, next string) bool {
@@ -126,7 +126,7 @@ func (h *Handler) invitedByToken(w http.ResponseWriter, r *http.Request, next, e
 	if err != nil {
 		// Fail closed: не знаем, действительно ли приглашение — не заводим аккаунт.
 		slog.Error("register: invite lookup failed", "error", err)
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return false
 	}
 	if !strings.EqualFold(inv.Email, email) {
@@ -178,7 +178,7 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Fail closed: неизвестно, обязателен ли SSO для домена — не пускаем.
 		slog.Error("login: enforced SSO lookup failed", "error", err)
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if enforced {
@@ -196,7 +196,7 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 
 	token, err := h.Auth.CreateSession(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	auth.SetSessionCookie(w, token, h.Secure)
@@ -223,14 +223,14 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	if !h.ipLimiter.Allow(h.clientIP(r)) || !h.loginLimiter.Allow(h.rateLimitKey(r, email)) ||
 		!h.emailLimiter.Allow(limiterEmailKeyPart(email)) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		_ = templates.RegisterForm(i18n.T(r.Context(), "err.auth.rate_limited_register"), false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.RegisterForm(i18n.T(r.Context(), "err.auth.rate_limited_register"), h.inviteOnlyNotice(r, next), next, email, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
 	if h.RegistrationMode != "open" {
 		n, err := h.Auth.UserCount(r.Context())
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		if n > 0 && !h.invitedByToken(w, r, next, normalizeEmail(email)) {
@@ -240,7 +240,7 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 
 	if password != password2 {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.RegisterForm(i18n.T(r.Context(), "err.auth.passwords_differ"), false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.RegisterForm(i18n.T(r.Context(), "err.auth.passwords_differ"), h.inviteOnlyNotice(r, next), next, email, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
@@ -248,19 +248,19 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Fail closed: домен может требовать SSO — регистрацию паролем не даём.
 		slog.Error("register: enforced SSO lookup failed", "error", err)
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if enforced {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.RegisterForm(i18n.T(r.Context(), "err.auth.sso_required"), false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.RegisterForm(i18n.T(r.Context(), "err.auth.sso_required"), h.inviteOnlyNotice(r, next), next, email, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
 	uid, err := h.Auth.Register(r.Context(), email, password)
 	if err != nil {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_ = templates.RegisterForm(registerErrorMessage(r.Context(), err), false, next, h.oauthButtons(r.Context())).Render(r.Context(), w)
+		_ = templates.RegisterForm(registerErrorMessage(r.Context(), err), h.inviteOnlyNotice(r, next), next, email, h.oauthButtons(r.Context())).Render(r.Context(), w)
 		return
 	}
 
@@ -268,7 +268,7 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	// после входа — совпадения email с приглашением для этого недостаточно.
 	token, err := h.Auth.CreateSession(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	auth.SetSessionCookie(w, token, h.Secure)
@@ -326,7 +326,7 @@ func (h *Handler) ssoSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg, ok, err := h.Org.SSOByDomain(r.Context(), emailDomain(email))
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !ok {

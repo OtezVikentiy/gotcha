@@ -21,6 +21,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
+	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
@@ -556,6 +557,83 @@ func TestOverviewRangeToggleSelectsWindow(t *testing.T) {
 		if !strings.Contains(text, c.wantActive) {
 			t.Errorf("range=%q: missing active tab %q: %s", c.suffix, c.wantActive, text)
 		}
+	}
+}
+
+// 24ч и 7д обязаны давать РАЗНЫЙ процент (провал только 3 дня назад) — проверяется связь
+// подписи с данными, а не текст подписи сам по себе.
+func TestOverviewUptimeTileLabelMatchesWindowData(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+
+	authSvc := auth.NewService(pool)
+	orgSvc := org.NewService(pool, 1_000_000)
+	uptimeSvc := uptime.NewService(pool)
+	writer := uptime.NewResultWriter(ch)
+	go writer.Run()
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	h := web.New(authSvc, orgSvc, nil, nil, srv.URL)
+	h.Uptime = uptimeSvc
+	h.UptimeQuery = uptime.NewQuery(ch)
+	h.Register(mux)
+
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "uptime-window@example.com")
+	o, err := orgSvc.CreateOrg(ctx, "uptime-window-co", "Uptime Window Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := orgSvc.CreateProject(ctx, o.ID, "uptime-window-proj", "Uptime Window Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	mon := baseMonitor(project.ID, "site-window")
+	mon.Config = monHTTPConfig(t, "http://example.invalid")
+	created, err := uptimeSvc.Create(ctx, mon, []string{"local"}, nil)
+	if err != nil {
+		t.Fatalf("create monitor: %v", err)
+	}
+
+	// -time.Minute, не now: верхняя граница окна усекается ClickHouse до целой секунды, и запись
+	// с дробной секундой внутри той же секунды, что "to", не проходит сравнение "< to".
+	now := time.Now().UTC().Add(-time.Minute)
+	writer.Add(project.ID, created.ID, "local", now, uptime.Result{OK: true})
+	writer.Add(project.ID, created.ID, "local", now.Add(-72*time.Hour), uptime.Result{OK: false})
+	flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := writer.Close(flushCtx); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	resp24 := getWithCookie(t, srv, overviewPath(project.ID), ownerCookie)
+	body24, _ := io.ReadAll(resp24.Body)
+	resp24.Body.Close()
+	text24 := string(body24)
+	if !strings.Contains(text24, "Аптайм за 24 ч") {
+		t.Errorf("окно 24ч: подпись не называет своё окно: %s", text24)
+	}
+	if !strings.Contains(text24, "100.00%") {
+		t.Errorf("окно 24ч: провал трёхдневной давности не должен войти в процент: %s", text24)
+	}
+
+	resp7 := getWithCookie(t, srv, overviewPath(project.ID)+"?range=7d", ownerCookie)
+	body7, _ := io.ReadAll(resp7.Body)
+	resp7.Body.Close()
+	text7 := string(body7)
+	if !strings.Contains(text7, "Аптайм за 7 дн") {
+		t.Errorf("окно 7д: подпись не называет своё окно: %s", text7)
+	}
+	if !strings.Contains(text7, "50.00%") {
+		t.Errorf("окно 7д: процент должен учитывать провал трёхдневной давности: %s", text7)
+	}
+	if strings.Contains(text7, "100.00%") {
+		t.Errorf("окно 7д: показан процент окна 24ч, а не своего: %s", text7)
 	}
 }
 

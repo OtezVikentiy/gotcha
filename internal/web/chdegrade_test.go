@@ -131,7 +131,7 @@ func TestWebCHDownPagesDegrade(t *testing.T) {
 		{name: "profiles list", path: base + "/profiles", errText: "Не удалось загрузить профили", emptyState: true},
 		{name: "profile flame", path: base + "/profiles/flame?service=web&type=cpu", errText: "Не удалось загрузить профили", emptyState: true},
 		{name: "web vitals list", path: base + "/web-vitals", errText: "Не удалось загрузить Web Vitals", emptyState: true},
-		{name: "overview status line", path: base + "/overview", errText: ">недоступно<", keep: "Аптайм за окно"},
+		{name: "overview status line", path: base + "/overview", errText: ">недоступно<", keep: "Аптайм за 24 ч"},
 		{name: "issues list", path: base + "/issues", errText: "Графики частоты временно недоступны", keep: "NullPointerException"},
 		{name: "issue detail", path: issuePath, errText: "Не удалось загрузить события", emptyState: true, keep: "NullPointerException"},
 		{name: "monitor detail", path: monitorPath, errText: "Не удалось загрузить проверки", emptyState: true, keep: "site-main"},

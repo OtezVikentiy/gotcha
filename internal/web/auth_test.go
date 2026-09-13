@@ -157,6 +157,53 @@ func TestLoginBadCredentialsPreservesEmail(t *testing.T) {
 	}
 }
 
+func TestRegisterPasswordMismatchPreservesEmail(t *testing.T) {
+	s := newStack(t)
+
+	form := url.Values{
+		"email":     {"typed-register@example.com"},
+		"password":  {"correct-horse-battery"},
+		"password2": {"does-not-match"},
+	}
+	resp := postForm(t, s.srv, "/register", form, s.srv.URL, nil)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("password mismatch status = %d, want 422", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), `value="typed-register@example.com"`) {
+		t.Fatalf("register form after password mismatch должен вернуть введённый email: %s", body)
+	}
+	if strings.Contains(string(body), "correct-horse-battery") || strings.Contains(string(body), "does-not-match") {
+		t.Fatalf("register form после ошибки не должен возвращать пароль: %s", body)
+	}
+}
+
+// email не проходит проверку формата до возврата в форму (password-mismatch наступает раньше) —
+// доказываем, что возврат в value= держит экранирование движка шаблонов, а не ручную санитизацию.
+func TestRegisterPasswordMismatchEscapesEmail(t *testing.T) {
+	s := newStack(t)
+
+	payload := `"><script>alert(1)</script>`
+	form := url.Values{
+		"email":     {payload},
+		"password":  {"correct-horse-battery"},
+		"password2": {"does-not-match"},
+	}
+	resp := postForm(t, s.srv, "/register", form, s.srv.URL, nil)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("password mismatch status = %d, want 422", resp.StatusCode)
+	}
+	if strings.Contains(string(body), "<script>alert(1)</script>") {
+		t.Fatalf("email из формы пробил разметку: %s", body)
+	}
+	if strings.Contains(string(body), `"><script>`) {
+		t.Fatalf("email не экранирован в атрибуте value=: %s", body)
+	}
+}
+
 func TestWebAuthFlow(t *testing.T) {
 	s := newStack(t)
 

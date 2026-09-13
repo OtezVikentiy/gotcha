@@ -79,8 +79,12 @@ func (h *Handler) onboardingSubmit(w http.ResponseWriter, r *http.Request) {
 
 	// Оба slug'а валидируются до записи в БД: иначе невалидный project_slug оставит
 	// уже созданную org сиротой без возможности переиспользовать её slug.
-	if !org.ValidSlug(orgSlug) || !org.ValidSlug(projectSlug) {
-		renderInvalid(onboardingErrorMessage(r.Context(), org.ErrInvalidSlug))
+	if !org.ValidSlug(orgSlug) {
+		renderInvalid(i18n.T(r.Context(), "error.slug.invalid_org"))
+		return
+	}
+	if !org.ValidSlug(projectSlug) {
+		renderInvalid(i18n.T(r.Context(), "error.slug.invalid_project"))
 		return
 	}
 

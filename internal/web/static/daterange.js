@@ -75,6 +75,7 @@
 			dialog: root.dataset.lDialog || "Выбор диапазона",
 			prev: root.dataset.lPrev || "Предыдущий месяц",
 			next: root.dataset.lNext || "Следующий месяц",
+			utcHint: root.dataset.lUtcHint || "Время — по UTC",
 		};
 
 		// Активный произвольный диапазон переносится скрытыми cstart/cend,
@@ -146,6 +147,8 @@
 		footer.appendChild(applyBtn);
 
 		calWrap.appendChild(footer);
+		// Пояс виден только в aria-label нативных полей — в самом попапе не написан нигде.
+		calWrap.appendChild(el("p", "hint dr-utc-hint", L.utcHint));
 
 		popup.appendChild(presetCol);
 		popup.appendChild(calWrap);
@@ -332,6 +335,9 @@
 			if (refocus) trigger.focus();
 		}
 		function open() {
+			// Открытие может случиться часы спустя после enhance() — снимок "сейчас"
+			// с загрузки страницы устарел бы на весь простой вкладки.
+			now = new Date();
 			snapStart = selStart;
 			snapEnd = selEnd;
 			focusDay = startOfDay(selStart || now);

@@ -697,6 +697,75 @@ func TestWebIssuesFilteredEmptyState(t *testing.T) {
 	}
 }
 
+// Страница за пределами диапазона (после массового действия сдвинувшего total) не должна
+// показывать онбординговый текст «Проблем пока нет» — проект не пуст, пуста только страница.
+func TestWebIssuesPageOverrunEmptyState(t *testing.T) {
+	s := newIssuesStack(t)
+
+	ownerID, ownerCookie := registerAndLogin(t, s, "issues-pageoverrun@example.com")
+	project := createProject(t, s, ownerID, "issues-pageoverrun-org", "issues-pageoverrun-proj")
+
+	now := time.Now().UTC()
+	for i := 0; i < 26; i++ {
+		fp := "fp-overrun-" + strconv.Itoa(i)
+		if _, err := s.issues.Upsert(context.Background(), project.ID, fp, "Prod issue "+strconv.Itoa(i), "", "error", "prod", now); err != nil {
+			t.Fatalf("upsert %s: %v", fp, err)
+		}
+	}
+
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+	resp := getWithCookie(t, s.srv, issuesPath+"?page=5", ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s?page=5 status = %d, want 200: %s", issuesPath, resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "Проблем пока нет") || strings.Contains(string(body), "Подключите DSN") {
+		t.Fatalf("страница вне диапазона показала онбординговую пустоту вместо переполнения: %s", body)
+	}
+	if strings.Contains(string(body), "Ничего не подошло под фильтры") {
+		t.Fatalf("страница вне диапазона без фильтров показала filtered-текст: %s", body)
+	}
+	if !strings.Contains(string(body), "На этой странице пусто") {
+		t.Fatalf("нет текста переполнения страницы: %s", body)
+	}
+	if !strings.Contains(string(body), "На первую страницу") {
+		t.Fatalf("нет CTA возврата на первую страницу: %s", body)
+	}
+}
+
+// environment не проходит allowlist до попадания в issuesPageURL — доказываем, что
+// экранирование движка шаблонов (не ручная санитизация) держит инъекцию.
+func TestWebIssuesPageOverrunCTAEscapesFilterValue(t *testing.T) {
+	s := newIssuesStack(t)
+
+	ownerID, ownerCookie := registerAndLogin(t, s, "issues-pageoverrun-xss@example.com")
+	project := createProject(t, s, ownerID, "issues-pageoverrun-xss-org", "issues-pageoverrun-xss-proj")
+
+	now := time.Now().UTC()
+	for i := 0; i < 26; i++ {
+		fp := "fp-xss-" + strconv.Itoa(i)
+		if _, err := s.issues.Upsert(context.Background(), project.ID, fp, "Prod issue "+strconv.Itoa(i), "", "error", "prod", now); err != nil {
+			t.Fatalf("upsert %s: %v", fp, err)
+		}
+	}
+
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+	payload := `"><script>alert(1)</script>`
+	resp := getWithCookie(t, s.srv, issuesPath+"?page=5&environment="+url.QueryEscape(payload), ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200: %s", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "<script>alert(1)</script>") {
+		t.Fatalf("значение фильтра из адресной строки пробило разметку: %s", body)
+	}
+	if strings.Contains(string(body), `"><script>`) {
+		t.Fatalf("значение фильтра не экранировано в атрибуте: %s", body)
+	}
+}
+
 // Флаг живёт в профиле, не в cookie — переживает новый логин.
 func TestWebGettingStartedHide(t *testing.T) {
 	s := newIssuesStack(t)

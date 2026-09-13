@@ -29,7 +29,7 @@ func TestAuthPages(t *testing.T) {
 	if strings.Contains(loginXSS, "<script>") {
 		t.Error("email в форме логина должен быть экранирован, а не вставлен как HTML")
 	}
-	reg := renderTo(t, RegisterForm("", false, "", providers))
+	reg := renderTo(t, RegisterForm("", false, "", "", providers))
 	if !strings.Contains(reg, "GitHub") {
 		t.Error("регистрация должна показать OAuth-кнопки")
 	}

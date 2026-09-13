@@ -48,10 +48,10 @@ templ overviewRangeTabs(projectID int64, rangeKey string) {
 
 // .stat-tile — та же вёрстка, что у monitordetail/hostdetail/slodetail, но с ссылкой вместо числа.
 // .monitor-meta переиспользован как контейнер — своей сетки под три плитки не заводим.
-templ statusLine(projectID int64, sl StatusLine) {
+templ statusLine(projectID int64, rangeKey string, sl StatusLine) {
 	<div class="monitor-meta">
 		<a class="stat-tile" href={ templ.URL(monitorsPath(projectID)) }>
-			<div class="stat-label">{ i18n.T(ctx, "overview.status.uptime") }</div>
+			<div class="stat-label">{ i18n.Tf(ctx, "overview.status.uptime", "range", i18n.T(ctx, "range."+rangeKey)) }</div>
 			if sl.UptimeUnavailable {
 				<div class="stat-value">{ i18n.T(ctx, "overview.status.uptime_unavailable") }</div>
 			} else {
@@ -109,7 +109,7 @@ templ Overview(projectID int64, rangeKey string, openGroups []GroupCard, outOfGr
 		<div class="incident-feed">
 			<h1>{ i18n.T(ctx, "overview.title") }</h1>
 			<p class="hint">{ i18n.T(ctx, "feed.see_incidents_hint") }<a href={ templ.URL(incidentsPath(projectID)) }>{ i18n.T(ctx, "nav.incidents") }</a>{ i18n.T(ctx, "feed.see_incidents_hint_suffix") }</p>
-			@statusLine(projectID, sl)
+			@statusLine(projectID, rangeKey, sl)
 			@overviewDeploys(projectID, deploys)
 			@helpPanel("feed", "overview")
 			if empty {

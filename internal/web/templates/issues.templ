@@ -217,7 +217,11 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "issues.filter.apply") }</button>
 			</form>
 			<div id="issues-table">
-				if len(rows) == 0 && filter.Active {
+				if len(rows) == 0 && page > 1 {
+					// total=0 на странице вне диапазона (issue.Service.List) не отличить от «проект
+					// пуст» — решает номер страницы, а не total.
+					@emptyState("arrow-left", "issues.empty.pageOverrun.title", "issues.empty.pageOverrun.body", "issues.empty.pageOverrun.cta", issuesPageURL(projectID, filter, 1), 2)
+				} else if len(rows) == 0 && filter.Active {
 					@emptyState("filter", "issues.empty.filtered.title", "issues.empty.filtered.body", "issues.empty.filtered.cta", issuesPath(projectID), 2)
 				} else if len(rows) == 0 {
 					@emptyState("bug", "issues.empty.title", "issues.empty.body", "issues.empty.cta", projectSetupPath(projectID), 2)

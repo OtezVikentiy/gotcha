@@ -59,6 +59,9 @@ func TestWebOnboardingFlow(t *testing.T) {
 	if !strings.Contains(string(body), "<form") {
 		t.Fatalf("POST /onboarding (bad slug) body has no <form: %s", body)
 	}
+	if !strings.Contains(string(body), "Slug организации должен") {
+		t.Fatalf("POST /onboarding (bad org slug) сообщение не называет виновное поле: %s", body)
+	}
 
 	resp = postForm(t, s.srv, "/onboarding", badForm, "", cookie)
 	io.Copy(io.Discard, resp.Body)
@@ -254,6 +257,9 @@ func TestWebOnboardingFlow(t *testing.T) {
 	if !strings.Contains(string(body), `value="orphan-check"`) {
 		t.Fatalf("POST /onboarding (bad project slug) body does not preserve org_slug: %s", body)
 	}
+	if !strings.Contains(string(body), "Slug проекта должен") {
+		t.Fatalf("POST /onboarding (bad project slug) сообщение не называет виновное поле: %s", body)
+	}
 	var orphanCount int
 	if err := s.pool.QueryRow(context.Background(),
 		"SELECT count(*) FROM organizations WHERE slug = $1", "orphan-check").Scan(&orphanCount); err != nil {
@@ -378,6 +384,36 @@ func TestProjectSetupShowsSnippetsWithoutPlatformDSN(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "Настройки проекта") {
 		t.Errorf("GET %s: подсказка без ссылки «Настройки проекта»: %s", setupPath, body)
+	}
+	// Страница раньше рендерилась в @chromeless — без рейла и без выхода куда-либо, кроме
+	// хлебной крошки назад.
+	if !strings.Contains(string(body), `class="rail"`) {
+		t.Errorf("GET %s: страница вне навигации (нет rail)", setupPath)
+	}
+	// У js-proj DSN шапки пуст (браузерный ключ отозван) — кнопка копирования снипетов
+	// проверяется тут, а кнопка копирования DSN шапки — ниже, на проекте с живым ключом.
+	if !strings.Contains(string(body), `data-copy-target="setup-install-Go"`) || !strings.Contains(string(body), `data-copy-target="setup-init-Go"`) {
+		t.Errorf("GET %s: у сниппета Go нет кнопок копирования", setupPath)
+	}
+
+	goProject, err := s.h.Org.CreateProject(ctx, o.ID, "go-full-proj", "Go Full Proj", "go")
+	if err != nil {
+		t.Fatalf("create go project: %v", err)
+	}
+	if _, err := s.h.Org.CreateKeys(ctx, goProject.ID, org.KindServer); err != nil {
+		t.Fatalf("create go project key: %v", err)
+	}
+	goSetupPath := projectSetupPathForTest(goProject.ID)
+	goReq, _ := http.NewRequest(http.MethodGet, s.srv.URL+goSetupPath, nil)
+	goReq.AddCookie(cookie)
+	goResp, err := noRedirectClient().Do(goReq)
+	if err != nil {
+		t.Fatalf("get go setup: %v", err)
+	}
+	goBody, _ := io.ReadAll(goResp.Body)
+	goResp.Body.Close()
+	if !strings.Contains(string(goBody), `data-copy-target="setup-dsn"`) {
+		t.Errorf("GET %s: у DSN нет кнопки копирования: %s", goSetupPath, goBody)
 	}
 
 	project2, err := s.h.Org.CreateProject(ctx, o.ID, "js-proj-empty", "JS Proj Empty", "javascript")

@@ -29,8 +29,9 @@ templ Onboarding(errMsg, orgSlug, orgName, projectSlug, projectName, platform, u
 			<div class="field">
 				<label>
 					{ i18n.T(ctx, "onboarding.field.org_slug") }
-					<input type="text" name="org_slug" placeholder="my-team" autocomplete="off" required autofocus value={ orgSlug } class="input"/>
+					<input type="text" name="org_slug" placeholder="my-team" autocomplete="off" required autofocus pattern="[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?" maxlength="64" value={ orgSlug } class="input"/>
 				</label>
+				<p class="hint">{ i18n.T(ctx, "onboarding.slug_hint") }</p>
 			</div>
 			<div class="field">
 				<label>
@@ -41,8 +42,9 @@ templ Onboarding(errMsg, orgSlug, orgName, projectSlug, projectName, platform, u
 			<div class="field">
 				<label>
 					{ i18n.T(ctx, "onboarding.field.project_slug") }
-					<input type="text" name="project_slug" placeholder="backend" autocomplete="off" required value={ projectSlug } class="input"/>
+					<input type="text" name="project_slug" placeholder="backend" autocomplete="off" required pattern="[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?" maxlength="64" value={ projectSlug } class="input"/>
 				</label>
+				<p class="hint">{ i18n.T(ctx, "onboarding.slug_hint") }</p>
 			</div>
 			<div class="field">
 				<label>
@@ -68,7 +70,7 @@ templ Onboarding(errMsg, orgSlug, orgName, projectSlug, projectName, platform, u
 // missingPlatformKind непуст, когда снипет для платформы САМОГО проекта не попал в snippets.
 // иначе пользователь JS-проекта видел бы Go/PHP/Python и не понимал, куда делся его язык.
 templ ProjectSetup(project org.Project, dsn string, snippets []SetupSnippet, missingPlatformKind org.KeyKind, userEmail string) {
-	@chromeless(i18n.T(ctx, "project.setup.title")+" "+project.Name, userEmail) {
+	@layout(i18n.T(ctx, "project.setup.title")+" "+project.Name, userEmail) {
 		<div class="setup">
 			@breadcrumbBackTo(templ.URL(projectSettingsPath(project.ID)), i18n.T(ctx, "project.settings.title"))
 			<h1>{ project.Name }</h1>
@@ -80,7 +82,7 @@ templ ProjectSetup(project org.Project, dsn string, snippets []SetupSnippet, mis
 						<section class="card">
 							<h2 class="card-header">{ i18n.T(ctx, "project.setup.dsn.title") }</h2>
 							<p>{ i18n.T(ctx, "project.setup.dsn_label") }</p>
-							<pre>{ dsn }</pre>
+							@copyBlock("setup-dsn", "project.settings.dsn.copy", dsn)
 						</section>
 					}
 					if missingPlatformKind != "" {
@@ -98,9 +100,9 @@ templ ProjectSetup(project org.Project, dsn string, snippets []SetupSnippet, mis
 						<section class="panel">
 							<h2 class="card-header">{ sn.Lang }</h2>
 							<p class="hint">{ i18n.T(ctx, "project.setup.install") }</p>
-							<pre>{ sn.Install }</pre>
+							@copyBlock("setup-install-"+sn.Lang, "project.setup.copy_install", sn.Install)
 							<p class="hint">{ i18n.T(ctx, "project.setup.init") }</p>
-							<pre>{ sn.Code }</pre>
+							@copyBlock("setup-init-"+sn.Lang, "project.setup.copy_init", sn.Code)
 						</section>
 					}
 				</div>

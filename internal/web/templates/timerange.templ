@@ -74,6 +74,7 @@ templ timeRangeFields(r TimeRangeVM) {
 		data-l-dialog={ i18n.T(ctx, "range.picker.dialog") }
 		data-l-prev={ i18n.T(ctx, "range.picker.prev_month") }
 		data-l-next={ i18n.T(ctx, "range.picker.next_month") }
+		data-l-utc-hint={ i18n.T(ctx, "range.utc_hint") }
 	>
 		<select name="period" class="select" aria-label={ i18n.T(ctx, "filter.period") }>
 			if r.AllowAll {
@@ -110,6 +111,9 @@ templ timeRangeFields(r TimeRangeVM) {
 					<input type="hidden" name="cend" value={ r.End }/>
 				}
 			</span>
+			// "(UTC)" в aria-label полей (range.start/range.end) не видно на экране —
+			// пикер иначе принимают за локальное время браузера.
+			<p class="hint">{ i18n.T(ctx, "range.utc_hint") }</p>
 		</details>
 	</span>
 }

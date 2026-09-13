@@ -104,7 +104,7 @@ func registerLinkWithNext(next string) string {
 	return "/register?next=" + url.QueryEscape(next)
 }
 
-templ RegisterForm(errMsg string, inviteNote bool, next string, providers []OAuthButton) {
+templ RegisterForm(errMsg string, inviteNote bool, next, email string, providers []OAuthButton) {
 	@chromeless(i18n.T(ctx, "auth.register.title"), "") {
 		<form method="post" action="/register" class="auth-form">
 			<h1>{ i18n.T(ctx, "auth.register.title") }</h1>
@@ -120,19 +120,20 @@ templ RegisterForm(errMsg string, inviteNote bool, next string, providers []OAut
 			<div class="field">
 				<label>
 					{ i18n.T(ctx, "auth.email") }
-					<input type="email" name="email" autocomplete="email" required autofocus class="input"/>
+					<input type="email" name="email" autocomplete="email" required autofocus class="input" value={ email }/>
 				</label>
 			</div>
 			<div class="field">
 				<label>
 					{ i18n.T(ctx, "auth.password") }
-					<input type="password" name="password" autocomplete="new-password" required class="input"/>
+					<input type="password" name="password" autocomplete="new-password" required minlength="8" maxlength="512" class="input"/>
 				</label>
+				<p class="hint">{ i18n.T(ctx, "auth.password.hint") }</p>
 			</div>
 			<div class="field">
 				<label>
 					{ i18n.T(ctx, "auth.password2") }
-					<input type="password" name="password2" autocomplete="new-password" required class="input"/>
+					<input type="password" name="password2" autocomplete="new-password" required minlength="8" maxlength="512" class="input"/>
 				</label>
 			</div>
 			<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "auth.register.submit") }</button>
