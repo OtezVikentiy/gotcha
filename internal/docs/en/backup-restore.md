@@ -43,7 +43,13 @@ docker compose exec -T clickhouse clickhouse-client \
   --query "SHOW TABLES"
 ```
 
-Note that `SHOW TABLES` also returns **materialized views** (`transactions_5m`, `web_vitals_5m`). Do NOT dump or restore those: they are filled automatically when rows are inserted into the source tables, and restoring their contents alongside `transactions` doubles the aggregates — Performance would report twice the real throughput. The list of tables to dump is fixed and shown below.
+`SHOW TABLES` returns more rows than there are tables to dump — not every one needs its own explanation, but none of them should be a mystery either. Besides the seven tables below, you'll also see:
+
+- `transactions_5m`, `web_vitals_5m` — **materialized views**. Do NOT dump or restore those: they are filled automatically when rows are inserted into the source tables, and restoring their contents alongside `transactions` doubles the aggregates — Performance would report twice the real throughput.
+- `.inner_id.<uuid>` (one per materialized view, so two rows) — the view's own backing storage. ClickHouse creates and fills it automatically together with the view; it is not dumped or restored on its own and can't be (it's not a project table, it has no schema of its own to migrate).
+- `schema_migrations` — Gotcha's migration tool bookkeeping table, tracking which schema version was applied. It is not dumped: Gotcha restores the schema version itself during the `--migrate-only` step (see "Restore: PostgreSQL" below).
+
+That's 7 (the dump list) + 2 (views) + 2 (their backing storage) + 1 (`schema_migrations`) = 12 rows on the current schema. The list of tables to dump is fixed and shown below.
 
 Dump each of them:
 

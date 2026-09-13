@@ -458,6 +458,7 @@ func runServer(ctx context.Context, cfg Config, memLimitBytes int64) error {
 		emailSender = notify.NewEmailSender(notify.EmailConfig{
 			Host: cfg.SMTPHost, Port: cfg.SMTPPort,
 			User: cfg.SMTPUser, Password: cfg.SMTPPassword, From: cfg.SMTPFrom,
+			RequireTLS: cfg.SMTPRequireTLS,
 		})
 		outbox = notify.NewOutbox(pg)
 	}
@@ -500,6 +501,7 @@ func runServer(ctx context.Context, cfg Config, memLimitBytes int64) error {
 			emailSender = notify.NewEmailSender(notify.EmailConfig{
 				Host: cfg.SMTPHost, Port: cfg.SMTPPort,
 				User: cfg.SMTPUser, Password: cfg.SMTPPassword, From: cfg.SMTPFrom,
+				RequireTLS: cfg.SMTPRequireTLS,
 			})
 		}
 		uptimeNotifier = &uptime.OutboxNotifier{

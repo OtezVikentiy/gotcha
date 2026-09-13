@@ -14,28 +14,31 @@ import (
 )
 
 type EmailConfig struct {
-	Host     string
-	Port     int
-	User     string
-	Password string
-	From     string
+	Host       string
+	Port       int
+	User       string
+	Password   string
+	From       string
+	RequireTLS bool
 }
 
 type EmailSender struct {
-	Host     string
-	Port     int
-	User     string
-	Password string
-	From     string
+	Host       string
+	Port       int
+	User       string
+	Password   string
+	From       string
+	RequireTLS bool
 }
 
 func NewEmailSender(cfg EmailConfig) *EmailSender {
 	return &EmailSender{
-		Host:     cfg.Host,
-		Port:     cfg.Port,
-		User:     cfg.User,
-		Password: cfg.Password,
-		From:     cfg.From,
+		Host:       cfg.Host,
+		Port:       cfg.Port,
+		User:       cfg.User,
+		Password:   cfg.Password,
+		From:       cfg.From,
+		RequireTLS: cfg.RequireTLS,
 	}
 }
 
@@ -85,6 +88,10 @@ func (s *EmailSender) Send(ctx context.Context, t Target, payload map[string]any
 		if err := c.StartTLS(&tls.Config{ServerName: s.Host}); err != nil {
 			return fmt.Errorf("notify: smtp starttls: %w", err)
 		}
+	} else if s.RequireTLS {
+		// Сервер не предложил STARTTLS в EHLO — без этой проверки письмо (и, если
+		// задан пароль, PlainAuth) ушло бы открытым текстом при активной подмене ответа.
+		return fmt.Errorf("notify: smtp starttls required but not offered by server")
 	}
 
 	if s.Password != "" {

@@ -571,3 +571,102 @@ func TestBuildEmailRejectsHeaderInjection(t *testing.T) {
 		t.Errorf("Subject header line contains embedded CR/LF: %q", line)
 	}
 }
+
+// Behaves like a normal server willing to accept the whole transaction, but
+// never advertises STARTTLS — a stand-in for an active tamperer stripping it
+// out of the EHLO reply. mailReceived flips true only if Send goes past EHLO.
+func fakeNoTLSSMTP(t *testing.T, mailReceived *bool) (host string, port int) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		tp := textproto.NewConn(conn)
+		_ = tp.PrintfLine("220 fake.smtp ready")
+		for {
+			line, err := tp.ReadLine()
+			if err != nil {
+				return
+			}
+			switch {
+			case strings.HasPrefix(line, "EHLO"), strings.HasPrefix(line, "HELO"):
+				_ = tp.PrintfLine("250 fake.smtp")
+			case strings.HasPrefix(line, "MAIL FROM"):
+				*mailReceived = true
+				_ = tp.PrintfLine("250 OK")
+			case strings.HasPrefix(line, "RCPT TO"):
+				_ = tp.PrintfLine("250 OK")
+			case line == "DATA":
+				_ = tp.PrintfLine("354 go ahead")
+				// Body lines carry no commands of their own — drain them
+				// silently until the lone-dot terminator, then ack once.
+				for {
+					body, err := tp.ReadLine()
+					if err != nil {
+						return
+					}
+					if body == "." {
+						break
+					}
+				}
+				_ = tp.PrintfLine("250 OK")
+			case strings.HasPrefix(line, "QUIT"):
+				_ = tp.PrintfLine("221 bye")
+				return
+			default:
+				_ = tp.PrintfLine("250 OK")
+			}
+		}
+	}()
+
+	host, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split host port: %v", err)
+	}
+	port, err = strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse port: %v", err)
+	}
+	return host, port
+}
+
+func TestEmailSenderRequireTLSRefusesPlaintextServer(t *testing.T) {
+	var mailReceived bool
+	host, port := fakeNoTLSSMTP(t, &mailReceived)
+
+	s := notify.NewEmailSender(notify.EmailConfig{Host: host, Port: port, From: "alerts@gotcha.dev", RequireTLS: true})
+	target := notify.Target{Kind: "email", Target: "ops@example.com"}
+	payload := map[string]any{"subject": "boom", "body": "boom happened"}
+
+	err := s.Send(context.Background(), target, payload)
+	if err == nil {
+		t.Fatal("Send: want error when server does not offer STARTTLS and RequireTLS is set, got nil")
+	}
+	if mailReceived {
+		t.Error("Send: MAIL FROM was sent to a server without STARTTLS despite RequireTLS — message body left in the clear")
+	}
+}
+
+func TestEmailSenderNoRequireTLSSendsPlaintext(t *testing.T) {
+	var mailReceived bool
+	host, port := fakeNoTLSSMTP(t, &mailReceived)
+
+	s := notify.NewEmailSender(notify.EmailConfig{Host: host, Port: port, From: "alerts@gotcha.dev"})
+	target := notify.Target{Kind: "email", Target: "ops@example.com"}
+	payload := map[string]any{"subject": "boom", "body": "boom happened"}
+
+	if err := s.Send(context.Background(), target, payload); err != nil {
+		t.Fatalf("Send: unexpected error with RequireTLS unset: %v", err)
+	}
+	if !mailReceived {
+		t.Error("Send: MAIL FROM never reached the server — opportunistic (default) behaviour changed")
+	}
+}

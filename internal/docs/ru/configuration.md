@@ -25,7 +25,7 @@ nano .env
 GOTCHA_SECRET_KEY=случайная-строка-из-openssl-rand
 GOTCHA_BASE_URL=https://gotcha.example.com
 GOTCHA_SMTP_HOST=smtp.yandex.ru
-GOTCHA_SMTP_PORT=465
+GOTCHA_SMTP_PORT=587
 GOTCHA_SMTP_USER=noreply@example.com
 GOTCHA_SMTP_PASSWORD=пароль-приложения
 GOTCHA_SMTP_FROM=noreply@example.com
@@ -159,10 +159,11 @@ docker compose down && docker compose up -d
 | Переменная | По умолчанию | Описание |
 |---|---|---|
 | `GOTCHA_SMTP_HOST` | *(пусто)* | Адрес SMTP-сервера, например `smtp.yandex.ru`. Пока пусто — почта выключена. |
-| `GOTCHA_SMTP_PORT` | `587` | Порт SMTP. `587` (STARTTLS) — обычный выбор; некоторые провайдеры используют `465` (SMTPS). Допустимый диапазон — `1..65535`; значение вне него — отказ старта, а не отложенная ошибка при первой отправке письма. |
+| `GOTCHA_SMTP_PORT` | `587` | Порт SMTP. Клиент умеет только оппортунистический STARTTLS (`587` или `25`) — implicit TLS/SMTPS на порту `465` не поддержан: сервер начнёт TLS-хендшейк сразу, ответа на `EHLO` не будет, и отправка провиснет до таймаута. Допустимый диапазон — `1..65535`; значение вне него — отказ старта, а не отложенная ошибка при первой отправке письма. |
 | `GOTCHA_SMTP_USER` | *(пусто)* | Логин для авторизации на SMTP-сервере. |
 | `GOTCHA_SMTP_PASSWORD` | *(пусто)* | Пароль. Для сервисов вроде Яндекс/Gmail обычно нужен не пароль от аккаунта, а отдельный «пароль приложения». |
 | `GOTCHA_SMTP_FROM` | *(пусто)* | Адрес отправителя в заголовке `From:` писем. |
+| `GOTCHA_SMTP_REQUIRE_TLS` | `false` | `true` отказывает отправку письма, если сервер не предложил STARTTLS в ответе на `EHLO`, вместо того чтобы отправить его в открытом виде. Защищает от активной подмены ответа `EHLO`, вырезающей объявление STARTTLS. |
 
 ## Telegram
 

@@ -2395,3 +2395,23 @@ func TestTrustedRecipientsWhitespaceAndEmptyElements(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadConfig_SMTPRequireTLSDefaultsFalse(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SMTPRequireTLS {
+		t.Error("SMTPRequireTLS default = true, want false")
+	}
+}
+
+func TestLoadConfig_SMTPRequireTLSOverride(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_SMTP_REQUIRE_TLS": "true"}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !cfg.SMTPRequireTLS {
+		t.Error("SMTPRequireTLS = false, want true")
+	}
+}

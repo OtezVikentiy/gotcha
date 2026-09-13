@@ -329,6 +329,37 @@ docker compose --env-file .env run --rm --no-deps \
 built-in safety net literally, and the command applies migrations to
 whichever database you point it at, with no further confirmation.
 
+## What changes when upgrading from versions before 1.2.0: ingest answers `503` for a saturated buffer instead of `200`
+
+Before v1.2.0, ingest hitting a saturated internal buffer (the pipeline
+queue, the ClickHouse batcher, a specific writer's buffer for
+spans/metrics/logs/profiles) answered `200` and evicted the oldest
+not-yet-written item from that buffer to make room for the new one. Starting
+with v1.2.0, such a request answers `503` with a `Retry-After` header
+instead, accepting nothing at all — rather than accepting it and immediately
+losing something else. If your SDK or collector does not honor `Retry-After`
+and retry on `503`, some telemetry during a load spike will now be lost
+outright instead of arriving with eviction losses; check your client. A new
+`reason=overloaded` value on the `gotcha_ingest_rejected_total` metric counts
+these rejections separately from the older reasons (quota exceeded, invalid
+payload).
+
+v1.3.0 continues the same change: a request that got nothing at all queued
+(no room even for part of what it sent) now also answers `503` instead of
+`200`, and retrying it is safe — its quota charge is refunded automatically
+(quota is now charged only for items that actually made it into the write
+queue). A request whose envelope got partially queued still answers `200` —
+retrying that one is not safe, since there is no event-id deduplication and
+a retry would duplicate the part already accepted. Also as of v1.3.0, an
+envelope made up entirely of profiles now answers `429` instead of the
+previous silent-drop `200` once the profile quota is exhausted — profiles
+now get their own quota decision on equal footing with events and traces,
+instead of being handled only after those two.
+
+Update any integration that inspects the ingest response code: code that
+only expects `200`/`429`/`401`/`403`/`413` should also retry `503` after the
+`Retry-After` delay.
+
 ## Standard upgrade (single server, `--mode=all`)
 
 If you're using the stock `docker-compose.yml` as-is (a single app replica running `--mode=all`) — the common case for a self-hosted setup:

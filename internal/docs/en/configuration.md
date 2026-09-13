@@ -25,7 +25,7 @@ nano .env
 GOTCHA_SECRET_KEY=random-string-from-openssl-rand
 GOTCHA_BASE_URL=https://gotcha.example.com
 GOTCHA_SMTP_HOST=smtp.example.com
-GOTCHA_SMTP_PORT=465
+GOTCHA_SMTP_PORT=587
 GOTCHA_SMTP_USER=noreply@example.com
 GOTCHA_SMTP_PASSWORD=an-app-password
 GOTCHA_SMTP_FROM=noreply@example.com
@@ -159,10 +159,11 @@ Used for invite emails and the email alert channel. As long as `GOTCHA_SMTP_HOST
 | Variable | Default | Description |
 |---|---|---|
 | `GOTCHA_SMTP_HOST` | *(empty)* | The SMTP server address, e.g. `smtp.example.com`. Email is disabled while this is empty. |
-| `GOTCHA_SMTP_PORT` | `587` | SMTP port. `587` (STARTTLS) is the common choice; some providers use `465` (SMTPS). Valid range is `1..65535`; a value outside it refuses to start instead of failing later at the first send attempt. |
+| `GOTCHA_SMTP_PORT` | `587` | SMTP port. The client only ever does opportunistic STARTTLS (`587` or `25`) — implicit TLS/SMTPS on port `465` is not supported: the server starts the TLS handshake immediately, `EHLO` never gets a plaintext reply, and the send hangs until it times out. Valid range is `1..65535`; a value outside it refuses to start instead of failing later at the first send attempt. |
 | `GOTCHA_SMTP_USER` | *(empty)* | Login used to authenticate to the SMTP server. |
 | `GOTCHA_SMTP_PASSWORD` | *(empty)* | Password. Providers like Gmail/Yandex typically require a separate "app password" rather than your account password. |
 | `GOTCHA_SMTP_FROM` | *(empty)* | Sender address used in the `From:` header of emails. |
+| `GOTCHA_SMTP_REQUIRE_TLS` | `false` | `true` refuses to send the email if the server did not offer STARTTLS in its `EHLO` reply, instead of sending it in the clear. Protects against an active tamperer stripping the STARTTLS advertisement from `EHLO`. |
 
 ## Telegram
 

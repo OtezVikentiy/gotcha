@@ -78,6 +78,7 @@ var Known = map[string]bool{
 	"GOTCHA_SMTP_HOST":                        true,
 	"GOTCHA_SMTP_PASSWORD":                    true,
 	"GOTCHA_SMTP_PORT":                        true,
+	"GOTCHA_SMTP_REQUIRE_TLS":                 true,
 	"GOTCHA_SMTP_USER":                        true,
 	"GOTCHA_SPAN_RETENTION_DAYS":              true,
 	"GOTCHA_SSRF_ALLOW_PRIVATE":               true,

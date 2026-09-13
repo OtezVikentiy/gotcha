@@ -62,6 +62,9 @@ type Config struct {
 	SMTPUser      string
 	SMTPPassword  string
 	SMTPFrom      string
+	// STARTTLS остаётся оппортунистическим по умолчанию (offer/ack), как раньше;
+	// true отказывает отправку, если сервер не предложил STARTTLS в EHLO.
+	SMTPRequireTLS bool
 	// пусто — https://api.telegram.org, дефолт живёт в пакете notify
 	TelegramAPIBase string
 	// 0 = хранить вечно (TTL в ClickHouse снимается); исключение — OutboxRetentionDays,
@@ -459,6 +462,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		SMTPUser:                 str("GOTCHA_SMTP_USER", ""),
 		SMTPPassword:             str("GOTCHA_SMTP_PASSWORD", ""),
 		SMTPFrom:                 str("GOTCHA_SMTP_FROM", ""),
+		SMTPRequireTLS:           boolEnvDef("GOTCHA_SMTP_REQUIRE_TLS", false),
 		TelegramAPIBase:          str("GOTCHA_TELEGRAM_API_BASE", ""),
 		RetentionDays:            intNum("GOTCHA_EVENT_RETENTION_DAYS", 90),
 		SpanRetentionDays:        intNum("GOTCHA_SPAN_RETENTION_DAYS", 30),
