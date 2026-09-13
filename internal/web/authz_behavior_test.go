@@ -12,7 +12,6 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
-	"gitflic.ru/otezvikentiy/gotcha/internal/guards"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
@@ -39,14 +38,6 @@ func isStrangerScopedRoute(path string) bool {
 		}
 	}
 	return false
-}
-
-var leaveConfirmExemption = []guards.Exemption{
-	{
-		Value:   "POST /orgs/{id}/settings/leave",
-		Why:     "экран подтверждения общий для всех и не палит организацию; настоящая мутация (confirmed=yes) отдельно проверена на 404 ниже",
-		Finding: "B3",
-	},
 }
 
 type victimIDs struct {
@@ -181,9 +172,6 @@ func TestAuthzBehaviorStrangerRejectedOnScopedRoutes(t *testing.T) {
 		perfIssueID:  perfRes.Issue.ID,
 	}
 
-	exemptLeave := guards.ExemptedValues(leaveConfirmExemption)
-	seenLeave := make(map[string]bool)
-
 	tested := 0
 	for _, route := range s.h.RegisteredRoutes() {
 		method, path, ok := strings.Cut(route, " ")
@@ -205,18 +193,12 @@ func TestAuthzBehaviorStrangerRejectedOnScopedRoutes(t *testing.T) {
 		}
 		code := statusOf(t, resp)
 		if code != http.StatusNotFound && code != http.StatusForbidden {
-			if exemptLeave[route] {
-				seenLeave[route] = true
-				continue
-			}
 			t.Errorf("%s %s (чужак, valid-but-foreign id) статус = %d, ожидали 404 или 403 — ГЕЙТ ПРОПУСТИЛ ЧУЖАКА", method, concrete, code)
 		}
 	}
 	if tested == 0 {
 		t.Fatal("не найдено ни одного project/org-scoped маршрута — предикат isStrangerScopedRoute сломан?")
 	}
-	guards.CheckExemptions(t, "TestAuthzBehaviorStrangerRejectedOnScopedRoutes", leaveConfirmExemption, 1, seenLeave)
-
 	leavePath := "/orgs/" + strconv.FormatInt(v.orgID, 10) + "/settings/leave"
 	leaveResp := postForm(t, s.srv, leavePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, strangerCookie)
 	if code := statusOf(t, leaveResp); code != http.StatusNotFound {
