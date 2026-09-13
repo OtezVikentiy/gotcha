@@ -5,7 +5,6 @@ import (
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
-	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
@@ -40,7 +39,7 @@ func (h *Handler) profileRegressionsList(w http.ResponseWriter, r *http.Request)
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -49,13 +48,13 @@ func (h *Handler) profileRegressionsList(w http.ResponseWriter, r *http.Request)
 	}
 	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	filter := profileRegressionStatusFilter(r.URL.Query().Get("status"))
 	regs, err := h.ProfileRegressions.List(r.Context(), projectID, filter, 200)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	ackedByIDs := make([]int64, 0, len(regs))
@@ -66,7 +65,7 @@ func (h *Handler) profileRegressionsList(w http.ResponseWriter, r *http.Request)
 	}
 	ackedBy, err := h.ackedByEmails(r.Context(), ackedByIDs)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	_ = templates.ProfileRegressionsList(projectID, regs, filter, h.currentEmail(r), canOperate, ackedBy).Render(r.Context(), w)

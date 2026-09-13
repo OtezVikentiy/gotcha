@@ -49,7 +49,7 @@ func (h *Handler) forgotPasswordSubmit(w http.ResponseWriter, r *http.Request) {
 	token, found, err := h.Auth.RequestPasswordReset(r.Context(), email)
 	if err != nil {
 		slog.Error("forgotPasswordSubmit: request reset failed", "error", err)
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if found {
@@ -128,6 +128,6 @@ func (h *Handler) resetPasswordSubmit(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		_ = templates.ResetPassword(token, i18n.T(r.Context(), "err.profile.password_length"), true).Render(r.Context(), w)
 	default:
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 	}
 }

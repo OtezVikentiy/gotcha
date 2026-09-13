@@ -3,6 +3,7 @@ package templates
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -61,16 +62,18 @@ func checkStatusText(ctx context.Context, ok bool) string {
 	return i18n.T(ctx, "uptime.check.fail")
 }
 
-// Просроченный сертификат — отдельным словом, не «-3d left».
+// «Истёк» ставим по t.After(now), не по округлению дней — иначе первые сутки после
+// истечения дают 0. Дни — потолком, как алертинг (internal/uptime.daysLeftUntil).
 func sslExpiryText(ctx context.Context, t *time.Time) string {
 	if t == nil {
 		return "—"
 	}
 	date := t.Format("2006-01-02")
-	days := int(time.Until(*t).Hours() / 24)
-	if days < 0 {
+	now := time.Now()
+	if !t.After(now) {
 		return i18n.Tf(ctx, "uptime.ssl.expired", "date", date)
 	}
+	days := int(math.Ceil(t.Sub(now).Hours() / 24))
 	return i18n.Tf(ctx, "uptime.ssl.days_left", "days", strconv.Itoa(days), "date", date)
 }
 

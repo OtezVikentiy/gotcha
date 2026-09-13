@@ -100,10 +100,10 @@ func (h *Handler) projectOrgOr404(w http.ResponseWriter, r *http.Request, projec
 	orgID, err := h.Org.ProjectOrg(r.Context(), projectID)
 	if err != nil {
 		if errors.Is(err, org.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			h.renderError(w, r, http.StatusNotFound, "")
 			return 0, false
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return 0, false
 	}
 	return orgID, true
@@ -211,17 +211,17 @@ func (h *Handler) renderProjectSettings(w http.ResponseWriter, r *http.Request, 
 	// Отдельного метода get-по-id у org.Service нет — ищем проект в списке всех проектов организации.
 	projects, err := h.Org.ProjectsOf(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	project, ok := findProject(projects, projectID)
 	if !ok {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 		return
 	}
 	keys, err := h.Org.KeysForProject(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	views := make([]templates.ProjectKeyView, len(keys))
@@ -326,7 +326,7 @@ func (h *Handler) projectSettingsKeyCreate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if _, err := h.Org.CreateKeys(r.Context(), projectID, kind); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
@@ -360,11 +360,11 @@ func (h *Handler) projectSettingsKeyRevoke(w http.ResponseWriter, r *http.Reques
 	}
 	keys, err := h.Org.KeysForProject(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !keyBelongsToProject(keys, keyID) {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 		return
 	}
 	// Двухшаговое подтверждение: CSP (default-src 'self', без unsafe-inline) не исполняет
@@ -387,7 +387,7 @@ func (h *Handler) projectSettingsKeyRevoke(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := h.Org.RevokeKey(r.Context(), keyID); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
@@ -457,11 +457,11 @@ func (h *Handler) projectSettingsPerformance(w http.ResponseWriter, r *http.Requ
 		HTTPFloodMin:       httpFloodMin,
 	})
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if err := h.Org.UpdatePerfSettings(r.Context(), projectID, sampleRate, int32(apdexMS), string(cfgJSON)); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
@@ -573,11 +573,11 @@ func (h *Handler) projectSettingsRegressions(w http.ResponseWriter, r *http.Requ
 		SeasonalWeeks:   seasonalWeeks,
 	})
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if err := h.Org.UpdateRegressionConfig(r.Context(), projectID, string(cfgJSON)); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
@@ -611,10 +611,10 @@ func (h *Handler) projectSettingsDelete(w http.ResponseWriter, r *http.Request) 
 		p, err := h.Org.GetProject(r.Context(), projectID)
 		if err != nil {
 			if errors.Is(err, org.ErrNotFound) {
-				h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+				h.renderError(w, r, http.StatusNotFound, "")
 				return
 			}
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		h.renderConfirmf(w, r, "confirm.title", "confirm.project_delete.message", "project.settings.danger.delete_submit",
@@ -624,10 +624,10 @@ func (h *Handler) projectSettingsDelete(w http.ResponseWriter, r *http.Request) 
 	}
 	if err := h.Org.DeleteProject(r.Context(), projectID); err != nil {
 		if errors.Is(err, org.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			h.renderError(w, r, http.StatusNotFound, "")
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOK(w, "flash.project_delete_queued", 0)

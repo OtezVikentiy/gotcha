@@ -112,7 +112,7 @@ func (h *Handler) orgSettingsPage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) requireOrgOwner(w http.ResponseWriter, r *http.Request, orgID, uid int64) bool {
 	role, err := h.Org.Role(r.Context(), orgID, uid)
 	if err != nil || role != org.RoleOwner {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 		return false
 	}
 	return true
@@ -123,7 +123,7 @@ func (h *Handler) requireOrgOwner(w http.ResponseWriter, r *http.Request, orgID,
 func (h *Handler) requireInstanceAdminForSSO(w http.ResponseWriter, r *http.Request, uid int64) bool {
 	admin, err := h.Auth.UserIsInstanceAdmin(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return false
 	}
 	if !admin {
@@ -171,7 +171,7 @@ func (h *Handler) orgSettingsSSO(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, org.ErrInvalidSSO) || errors.Is(err, org.ErrInvalidRole):
 		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.sso_fields_required"), "", nil)
 	default:
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 	}
 }
 
@@ -207,7 +207,7 @@ func (h *Handler) orgSettingsSSODelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Org.DeleteSSO(r.Context(), orgID); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// Без сброса кеша отозванный IdP ещё до ssoCacheTTL выдавал бы логины и JIT-провижининг.
@@ -220,39 +220,39 @@ func (h *Handler) orgSettingsSSODelete(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) renderOrgSettings(w http.ResponseWriter, r *http.Request, status int, orgID, uid int64, errMsg, inviteLink string, inviteForm templates.FormState) {
 	o, err := h.Org.Get(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	members, err := h.Org.MembersOf(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// Ошибка чтения любого счётчика usage — 500, чтобы не показать частично-пустую картину лимитов.
 	now := time.Now()
 	usage, err := h.Org.Usage(r.Context(), orgID, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	txUsage, err := h.Org.TransactionUsage(r.Context(), orgID, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	metricUsage, err := h.Org.MetricUsage(r.Context(), orgID, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	profileUsage, err := h.Org.ProfileUsage(r.Context(), orgID, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	logUsage, err := h.Org.LogUsage(r.Context(), orgID, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	quotas := []templates.QuotaVM{
@@ -511,10 +511,10 @@ func (h *Handler) orgSettingsLeave(w http.ResponseWriter, r *http.Request) {
 	// чужой orgID, получал бы настоящее имя организации уже на неподтверждённом запросе.
 	if _, err := h.Org.Role(r.Context(), orgID, uid); err != nil {
 		if errors.Is(err, org.ErrNotMember) {
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			h.renderError(w, r, http.StatusNotFound, "")
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// CSP блокирует inline confirm().
@@ -531,7 +531,7 @@ func (h *Handler) orgSettingsLeave(w http.ResponseWriter, r *http.Request) {
 	// Сессии участника намеренно не инвалидируются: доступ проверяется на каждом запросе.
 	if err := h.Org.RemoveMember(r.Context(), orgID, uid); err != nil {
 		if errors.Is(err, org.ErrNotMember) {
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			h.renderError(w, r, http.StatusNotFound, "")
 			return
 		}
 		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "", nil)
@@ -726,10 +726,10 @@ func (h *Handler) orgSettingsDelete(w http.ResponseWriter, r *http.Request) {
 		o, err := h.Org.Get(r.Context(), orgID)
 		if err != nil {
 			if errors.Is(err, org.ErrNotFound) {
-				h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+				h.renderError(w, r, http.StatusNotFound, "")
 				return
 			}
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		h.renderConfirmf(w, r, "confirm.title", "confirm.org_delete.message", "org.danger.delete_org.button",
@@ -739,10 +739,10 @@ func (h *Handler) orgSettingsDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.Org.DeleteOrg(r.Context(), orgID); err != nil {
 		if errors.Is(err, org.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			h.renderError(w, r, http.StatusNotFound, "")
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOK(w, "flash.org_delete_queued", 0)
@@ -777,7 +777,7 @@ func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request
 	// Проект должен принадлежать этому оргу — иначе owner орга A мог бы чистить
 	// телеметрию проекта чужого орга по его id.
 	if pOrg, err := h.Org.ProjectOrg(r.Context(), projectID); err != nil || pOrg != orgID {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 		return
 	}
 	sub := telemetry.Subject{
@@ -833,7 +833,7 @@ func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request
 	res, err := h.Purger.PurgeSubject(r.Context(), projectID, sub)
 	if err != nil {
 		slog.Error("orgSettingsPurgeSubject: failed to purge subject data", "org_id", orgID, "project_id", projectID, "err", err)
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// Ноль строк — не ошибка, но при включённом скрубинге email/IP поиск по ним не
@@ -876,7 +876,7 @@ func (h *Handler) orgSettingsExportSubject(w http.ResponseWriter, r *http.Reques
 	// Проект должен принадлежать этому оргу — иначе owner орга A мог бы выгрузить
 	// телеметрию проекта чужого орга по его id.
 	if pOrg, err := h.Org.ProjectOrg(r.Context(), projectID); err != nil || pOrg != orgID {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 		return
 	}
 	sub := telemetry.Subject{
@@ -895,7 +895,7 @@ func (h *Handler) orgSettingsExportSubject(w http.ResponseWriter, r *http.Reques
 	export, err := h.Purger.ExportSubject(r.Context(), projectID, sub)
 	if err != nil {
 		slog.Error("orgSettingsExportSubject: failed to export subject data", "org_id", orgID, "project_id", projectID, "err", err)
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// Аудит: ФАКТ выгрузки, критерий и усечение, но НЕ значения ПДн — в лог уходит
@@ -955,7 +955,7 @@ func (h *Handler) inviteAcceptPage(w http.ResponseWriter, r *http.Request) {
 		// Fail closed: не знаем, действительно ли приглашение — не показываем
 		// его содержимое.
 		slog.Error("inviteAcceptPage: invite lookup failed", "err", err)
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if email == "" {

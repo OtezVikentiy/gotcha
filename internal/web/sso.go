@@ -131,13 +131,13 @@ func (h *Handler) ssoCallback(w http.ResponseWriter, r *http.Request, name strin
 	if uid, err := h.Auth.IdentityUser(r.Context(), name, id.Subject); err == nil {
 		_ = h.Auth.UpdateIdentityEmail(r.Context(), name, id.Subject, id.Email)
 		if err := h.Org.EnsureMember(r.Context(), sso.OrgID, uid, role); err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		h.oauthLogin(w, r, uid, "/")
 		return
 	} else if !errors.Is(err, auth.ErrNoIdentity) {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -147,20 +147,20 @@ func (h *Handler) ssoCallback(w http.ResponseWriter, r *http.Request, name strin
 	case errors.Is(err, auth.ErrUserNotFound):
 		uid, err = h.Auth.CreateOAuthUser(r.Context(), id.Email)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 	default:
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if err := h.Auth.LinkIdentity(r.Context(), uid, name, id.Subject, id.Email); err != nil &&
 		!errors.Is(err, auth.ErrAlreadyLinked) {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if err := h.Org.EnsureMember(r.Context(), sso.OrgID, uid, role); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.oauthLogin(w, r, uid, "/")

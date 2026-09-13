@@ -2415,6 +2415,19 @@ th {
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
+/* Имя и бейдж статуса не помещаются в одну строку на 360px (вложенные паддинги
+   .status-page/.card съедают больше половины ширины) — бейдж уходит на вторую строку,
+   имени достаётся вся ширина плашки вместо обрезки посередине FQDN. */
+@media (max-width: 560px) {
+	.status-tile-head {
+		flex-wrap: wrap;
+	}
+	.status-tile-name {
+		flex: 1 1 100%;
+		white-space: normal;
+		overflow-wrap: anywhere;
+	}
+}
 .status-tile-uptime {
 	color: var(--text-dim);
 	font-size: var(--fs-base);
@@ -2914,6 +2927,14 @@ form.inline {
 }
 .project-card .card-actions {
 	margin-top: 0;
+}
+/* .chip как flex-item колонки .project-card блокифицируется и растягивается на всю ширину
+   карточки (align-items: stretch) — таблетка с языком проекта читалась как пустое поле
+   ввода. Здесь чип не кликабелен, только подпись. */
+.project-card .chip {
+	align-self: flex-start;
+	width: fit-content;
+	cursor: default;
 }
 
 .about-list {
@@ -4510,9 +4531,11 @@ input[type="radio"]:focus-visible {
 		overflow: hidden;
 	}
 }
+/* Только animation-duration, не шорткат — шорткат сбросил бы animation-play-state в running
+   и снял бы паузу по :hover/:focus-within, объявленную выше по каскаду. */
 @media (prefers-reduced-motion: reduce) {
 	.js .flash {
-		animation: flash-dismiss 1ms linear 6s forwards;
+		animation-duration: 1ms;
 	}
 }
 /* Крестик — кнопка, не ссылка: href="#" сломал бы :target-модалки на той же странице;

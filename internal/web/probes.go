@@ -81,12 +81,12 @@ func (h *Handler) orgProbesPage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) renderProbes(w http.ResponseWriter, r *http.Request, status int, orgID int64, errMsg, rawToken string) {
 	o, err := h.Org.Get(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	probes, err := h.Uptime.Probes(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	now := time.Now()
@@ -142,7 +142,7 @@ func (h *Handler) orgProbesCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	_, token, err := h.Uptime.CreateProbe(r.Context(), orgID, region, name)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.renderProbes(w, r, http.StatusOK, orgID, "", token)
@@ -179,11 +179,11 @@ func (h *Handler) orgProbesRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	probes, err := h.Uptime.Probes(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !probeBelongsToOrg(probes, probeID) {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 		return
 	}
 	// CSP блокирует inline confirm() — первый POST рендерит страницу подтверждения.
@@ -206,7 +206,7 @@ func (h *Handler) orgProbesRevoke(w http.ResponseWriter, r *http.Request) {
 			h.renderProbes(w, r, http.StatusUnprocessableEntity, orgID, i18n.T(r.Context(), "err.probe.already_revoked"), "")
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, orgProbesPath(orgID), http.StatusSeeOther)

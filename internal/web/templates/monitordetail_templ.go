@@ -11,6 +11,7 @@ import templruntime "github.com/a-h/templ/runtime"
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -69,16 +70,18 @@ func checkStatusText(ctx context.Context, ok bool) string {
 	return i18n.T(ctx, "uptime.check.fail")
 }
 
-// Просроченный сертификат — отдельным словом, не «-3d left».
+// «Истёк» ставим по t.After(now), не по округлению дней — иначе первые сутки после
+// истечения дают 0. Дни — потолком, как алертинг (internal/uptime.daysLeftUntil).
 func sslExpiryText(ctx context.Context, t *time.Time) string {
 	if t == nil {
 		return "—"
 	}
 	date := t.Format("2006-01-02")
-	days := int(time.Until(*t).Hours() / 24)
-	if days < 0 {
+	now := time.Now()
+	if !t.After(now) {
 		return i18n.Tf(ctx, "uptime.ssl.expired", "date", date)
 	}
+	days := int(math.Ceil(t.Sub(now).Hours() / 24))
 	return i18n.Tf(ctx, "uptime.ssl.days_left", "days", strconv.Itoa(days), "date", date)
 }
 
@@ -198,7 +201,7 @@ func checkRow(c uptime.CheckRow) templ.Component {
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(c.Region)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 160, Col: 16}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 163, Col: 16}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
@@ -233,7 +236,7 @@ func checkRow(c uptime.CheckRow) templ.Component {
 		var templ_7745c5c3_Var5 string
 		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(checkStatusText(ctx, c.OK))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 161, Col: 78}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 164, Col: 78}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
@@ -246,7 +249,7 @@ func checkRow(c uptime.CheckRow) templ.Component {
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(int(c.StatusCode)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 162, Col: 51}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 165, Col: 51}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {
@@ -259,7 +262,7 @@ func checkRow(c uptime.CheckRow) templ.Component {
 		var templ_7745c5c3_Var7 string
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(c.Error)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 163, Col: 15}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 166, Col: 15}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 		if templ_7745c5c3_Err != nil {
@@ -272,7 +275,7 @@ func checkRow(c uptime.CheckRow) templ.Component {
 		var templ_7745c5c3_Var8 string
 		templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(int(c.TotalMs)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 164, Col: 48}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 167, Col: 48}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 		if templ_7745c5c3_Err != nil {
@@ -336,7 +339,7 @@ func incidentRow(inc uptime.Incident) templ.Component {
 		var templ_7745c5c3_Var12 string
 		templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, incidentStatusTextKey(inc)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 171, Col: 90}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 174, Col: 90}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 		if templ_7745c5c3_Err != nil {
@@ -354,7 +357,7 @@ func incidentRow(inc uptime.Incident) templ.Component {
 			var templ_7745c5c3_Var13 string
 			templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "incident.badge.suppressed_by_dep"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 173, Col: 73}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 176, Col: 73}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 			if templ_7745c5c3_Err != nil {
@@ -380,7 +383,7 @@ func incidentRow(inc uptime.Incident) templ.Component {
 		var templ_7745c5c3_Var14 string
 		templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(incidentDurationText(ctx, inc))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 177, Col: 38}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 180, Col: 38}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 		if templ_7745c5c3_Err != nil {
@@ -393,7 +396,7 @@ func incidentRow(inc uptime.Incident) templ.Component {
 		var templ_7745c5c3_Var15 string
 		templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(inc.Cause)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 178, Col: 17}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 181, Col: 17}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 		if templ_7745c5c3_Err != nil {
@@ -406,7 +409,7 @@ func incidentRow(inc uptime.Incident) templ.Component {
 		var templ_7745c5c3_Var16 string
 		templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(strings.Join(inc.Regions, ", "))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 179, Col: 39}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 182, Col: 39}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 		if templ_7745c5c3_Err != nil {
@@ -419,7 +422,7 @@ func incidentRow(inc uptime.Incident) templ.Component {
 		var templ_7745c5c3_Var17 string
 		templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(yesNo(ctx, inc.InMaintenance))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 180, Col: 37}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 183, Col: 37}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 		if templ_7745c5c3_Err != nil {
@@ -503,7 +506,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 			var templ_7745c5c3_Var20 string
 			templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinStringErrs(m.Name)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 210, Col: 15}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 213, Col: 15}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 			if templ_7745c5c3_Err != nil {
@@ -538,7 +541,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 			var templ_7745c5c3_Var23 string
 			templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, monitorStatusTextKey(status)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 211, Col: 94}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 214, Col: 94}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 			if templ_7745c5c3_Err != nil {
@@ -551,7 +554,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 			var templ_7745c5c3_Var24 string
 			templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.kind."+string(m.Kind)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 212, Col: 66}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 215, Col: 66}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 			if templ_7745c5c3_Err != nil {
@@ -569,7 +572,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var25 string
 				templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.last_beat"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 217, Col: 70}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 220, Col: 70}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 				if templ_7745c5c3_Err != nil {
@@ -588,7 +591,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var26 string
 					templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.last_beat_never"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 222, Col: 54}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 225, Col: 54}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 					if templ_7745c5c3_Err != nil {
@@ -602,7 +605,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var27 string
 				templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.grace"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 227, Col: 66}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 230, Col: 66}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 				if templ_7745c5c3_Err != nil {
@@ -615,7 +618,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var28 string
 				templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinStringErrs(heartbeatGraceText(ctx, heartbeatGrace(m)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 228, Col: 74}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 231, Col: 74}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 				if templ_7745c5c3_Err != nil {
@@ -628,7 +631,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var29 string
 				templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.expected_by"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 231, Col: 72}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 234, Col: 72}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 				if templ_7745c5c3_Err != nil {
@@ -641,7 +644,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var30 string
 				templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(heartbeatExpectedByText(ctx, m))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 232, Col: 63}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 235, Col: 63}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
 				if templ_7745c5c3_Err != nil {
@@ -659,7 +662,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var31 string
 				templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.uptime_24h"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 236, Col: 71}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 239, Col: 71}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 				if templ_7745c5c3_Err != nil {
@@ -677,7 +680,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var32 string
 					templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.uptime_unavailable"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 238, Col: 80}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 241, Col: 80}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
 					if templ_7745c5c3_Err != nil {
@@ -695,7 +698,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var33 string
 					templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.JoinStringErrs(uptimeStatTextCtx(ctx, uptime24h))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 240, Col: 66}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 243, Col: 66}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var33))
 					if templ_7745c5c3_Err != nil {
@@ -713,7 +716,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var34 string
 				templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.uptime_7d"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 244, Col: 70}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 247, Col: 70}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var34))
 				if templ_7745c5c3_Err != nil {
@@ -731,7 +734,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var35 string
 					templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.uptime_unavailable"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 246, Col: 80}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 249, Col: 80}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
 					if templ_7745c5c3_Err != nil {
@@ -749,7 +752,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var36 string
 					templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs(uptimeStatTextCtx(ctx, uptime7d))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 248, Col: 65}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 251, Col: 65}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
 					if templ_7745c5c3_Err != nil {
@@ -767,7 +770,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var37 string
 				templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.uptime_30d"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 252, Col: 71}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 255, Col: 71}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
 				if templ_7745c5c3_Err != nil {
@@ -785,7 +788,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var38 string
 					templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.uptime_unavailable"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 254, Col: 80}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 257, Col: 80}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 					if templ_7745c5c3_Err != nil {
@@ -803,7 +806,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var39 string
 					templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinStringErrs(uptimeStatTextCtx(ctx, uptime30d))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 256, Col: 66}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 259, Col: 66}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
 					if templ_7745c5c3_Err != nil {
@@ -827,7 +830,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var40 string
 				templ_7745c5c3_Var40, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.ssl"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 262, Col: 64}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 265, Col: 64}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var40))
 				if templ_7745c5c3_Err != nil {
@@ -840,7 +843,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var41 string
 				templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.JoinStringErrs(sslExpiryText(ctx, m.SSLExpiresAt))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 263, Col: 66}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 266, Col: 66}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var41))
 				if templ_7745c5c3_Err != nil {
@@ -863,7 +866,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var42 string
 				templ_7745c5c3_Var42, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.heartbeat_title"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 270, Col: 55}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 273, Col: 55}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var42))
 				if templ_7745c5c3_Err != nil {
@@ -881,7 +884,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var43 string
 					templ_7745c5c3_Var43, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.heartbeat_copy_now"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 272, Col: 73}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 275, Col: 73}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var43))
 					if templ_7745c5c3_Err != nil {
@@ -894,7 +897,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var44 string
 					templ_7745c5c3_Var44, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.heartbeat_url"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 273, Col: 53}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 276, Col: 53}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var44))
 					if templ_7745c5c3_Err != nil {
@@ -915,7 +918,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var45 string
 					templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.heartbeat_cron"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 275, Col: 54}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 278, Col: 54}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var45))
 					if templ_7745c5c3_Err != nil {
@@ -937,7 +940,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var46 string
 					templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.heartbeat_hidden"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 278, Col: 69}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 281, Col: 69}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var46))
 					if templ_7745c5c3_Err != nil {
@@ -955,7 +958,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var47 templ.SafeURL
 				templ_7745c5c3_Var47, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(monitorHeartbeatRegeneratePath(m.ID)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 280, Col: 81}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 283, Col: 81}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var47))
 				if templ_7745c5c3_Err != nil {
@@ -968,7 +971,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var48 string
 				templ_7745c5c3_Var48, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.heartbeat_regenerate"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 281, Col: 101}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 284, Col: 101}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var48))
 				if templ_7745c5c3_Err != nil {
@@ -987,7 +990,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var49 templ.SafeURL
 				templ_7745c5c3_Var49, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(monitorToggleAction(m)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 288, Col: 67}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 291, Col: 67}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var49))
 				if templ_7745c5c3_Err != nil {
@@ -1000,7 +1003,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var50 string
 				templ_7745c5c3_Var50, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, monitorToggleLabelKey(m)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 289, Col: 89}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 292, Col: 89}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var50))
 				if templ_7745c5c3_Err != nil {
@@ -1013,7 +1016,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var51 templ.SafeURL
 				templ_7745c5c3_Var51, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(monitorEditPath(m.ID)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 291, Col: 69}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 294, Col: 69}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var51))
 				if templ_7745c5c3_Err != nil {
@@ -1026,7 +1029,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var52 string
 				templ_7745c5c3_Var52, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.action_edit"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 291, Col: 114}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 294, Col: 114}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var52))
 				if templ_7745c5c3_Err != nil {
@@ -1039,7 +1042,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var53 templ.SafeURL
 				templ_7745c5c3_Var53, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(monitorDeletePath(m.ID)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 292, Col: 68}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 295, Col: 68}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var53))
 				if templ_7745c5c3_Err != nil {
@@ -1052,7 +1055,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var54 string
 				templ_7745c5c3_Var54, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.action_delete"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 293, Col: 95}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 296, Col: 95}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var54))
 				if templ_7745c5c3_Err != nil {
@@ -1076,7 +1079,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var55 string
 				templ_7745c5c3_Var55, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "uptime.detail.latency_title", "range", timeRangeLabelText(ctx, rng)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 301, Col: 92}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 304, Col: 92}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var55))
 				if templ_7745c5c3_Err != nil {
@@ -1089,7 +1092,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var56 templ.SafeURL
 				templ_7745c5c3_Var56, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(monitorDetailPath(m.ID)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 302, Col: 66}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 305, Col: 66}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var56))
 				if templ_7745c5c3_Err != nil {
@@ -1110,7 +1113,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var57 string
 				templ_7745c5c3_Var57, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "perf.filter.apply"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 304, Col: 85}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 307, Col: 85}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var57))
 				if templ_7745c5c3_Err != nil {
@@ -1123,7 +1126,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var58 string
 				templ_7745c5c3_Var58, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.latency_caption"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 306, Col: 75}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 309, Col: 75}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var58))
 				if templ_7745c5c3_Err != nil {
@@ -1144,7 +1147,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var59 string
 				templ_7745c5c3_Var59, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.checks_title"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 317, Col: 51}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 320, Col: 51}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var59))
 				if templ_7745c5c3_Err != nil {
@@ -1183,7 +1186,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 						var templ_7745c5c3_Var61 string
 						templ_7745c5c3_Var61, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.checks_table.when"))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 327, Col: 73}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 330, Col: 73}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var61))
 						if templ_7745c5c3_Err != nil {
@@ -1196,7 +1199,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 						var templ_7745c5c3_Var62 string
 						templ_7745c5c3_Var62, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.checks_table.region"))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 328, Col: 75}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 331, Col: 75}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var62))
 						if templ_7745c5c3_Err != nil {
@@ -1209,7 +1212,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 						var templ_7745c5c3_Var63 string
 						templ_7745c5c3_Var63, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.checks_table.status"))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 329, Col: 75}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 332, Col: 75}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var63))
 						if templ_7745c5c3_Err != nil {
@@ -1222,7 +1225,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 						var templ_7745c5c3_Var64 string
 						templ_7745c5c3_Var64, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.checks_table.code"))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 330, Col: 85}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 333, Col: 85}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var64))
 						if templ_7745c5c3_Err != nil {
@@ -1235,7 +1238,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 						var templ_7745c5c3_Var65 string
 						templ_7745c5c3_Var65, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.checks_table.error"))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 331, Col: 74}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 334, Col: 74}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var65))
 						if templ_7745c5c3_Err != nil {
@@ -1248,7 +1251,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 						var templ_7745c5c3_Var66 string
 						templ_7745c5c3_Var66, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.detail.checks_table.total"))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 332, Col: 86}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 335, Col: 86}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var66))
 						if templ_7745c5c3_Err != nil {
@@ -1283,7 +1286,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 			var templ_7745c5c3_Var67 string
 			templ_7745c5c3_Var67, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "nav.incidents"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 345, Col: 37}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 348, Col: 37}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var67))
 			if templ_7745c5c3_Err != nil {
@@ -1322,7 +1325,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var69 string
 					templ_7745c5c3_Var69, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.incidents.table.status"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 354, Col: 71}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 357, Col: 71}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var69))
 					if templ_7745c5c3_Err != nil {
@@ -1335,7 +1338,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var70 string
 					templ_7745c5c3_Var70, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.incidents.table.started"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 355, Col: 72}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 358, Col: 72}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var70))
 					if templ_7745c5c3_Err != nil {
@@ -1348,7 +1351,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var71 string
 					templ_7745c5c3_Var71, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.incidents.table.duration"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 356, Col: 73}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 359, Col: 73}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var71))
 					if templ_7745c5c3_Err != nil {
@@ -1361,7 +1364,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var72 string
 					templ_7745c5c3_Var72, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.incidents.table.cause"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 357, Col: 70}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 360, Col: 70}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var72))
 					if templ_7745c5c3_Err != nil {
@@ -1374,7 +1377,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var73 string
 					templ_7745c5c3_Var73, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.incidents.table.regions"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 358, Col: 72}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 361, Col: 72}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var73))
 					if templ_7745c5c3_Err != nil {
@@ -1387,7 +1390,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var74 string
 					templ_7745c5c3_Var74, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "uptime.incidents.table.maintenance"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 359, Col: 76}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 362, Col: 76}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var74))
 					if templ_7745c5c3_Err != nil {
@@ -1426,7 +1429,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 				var templ_7745c5c3_Var75 string
 				templ_7745c5c3_Var75, templ_7745c5c3_Err = templ.ResolveAttributeValue(i18n.T(ctx, "pagination.label"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 373, Col: 72}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 376, Col: 72}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var75)
 				if templ_7745c5c3_Err != nil {
@@ -1444,7 +1447,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var76 templ.SafeURL
 					templ_7745c5c3_Var76, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(monitorIncidentsPageURL(m.ID, pagerPrev(incPage, incTotal), rng)))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 375, Col: 91}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 378, Col: 91}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var76))
 					if templ_7745c5c3_Err != nil {
@@ -1457,7 +1460,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var77 string
 					templ_7745c5c3_Var77, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "pagination.prev"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 375, Col: 161}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 378, Col: 161}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var77))
 					if templ_7745c5c3_Err != nil {
@@ -1476,7 +1479,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var78 string
 					templ_7745c5c3_Var78, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(incPage))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 378, Col: 35}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 381, Col: 35}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var78))
 					if templ_7745c5c3_Err != nil {
@@ -1489,7 +1492,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var79 string
 					templ_7745c5c3_Var79, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatInt(monitorIncidentsTotalPages(incTotal), 10))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 378, Col: 101}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 381, Col: 101}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var79))
 					if templ_7745c5c3_Err != nil {
@@ -1508,7 +1511,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var80 templ.SafeURL
 					templ_7745c5c3_Var80, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(monitorIncidentsPageURL(m.ID, incPage+1, rng)))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 381, Col: 72}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 384, Col: 72}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var80))
 					if templ_7745c5c3_Err != nil {
@@ -1521,7 +1524,7 @@ func MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime3
 					var templ_7745c5c3_Var81 string
 					templ_7745c5c3_Var81, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "pagination.next"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 381, Col: 107}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/monitordetail.templ`, Line: 384, Col: 107}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var81))
 					if templ_7745c5c3_Err != nil {

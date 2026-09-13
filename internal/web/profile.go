@@ -28,7 +28,7 @@ func (h *Handler) profileDelete(w http.ResponseWriter, r *http.Request) {
 	if h.Org != nil {
 		owned, err := h.Org.SoleOwnedOrgNames(r.Context(), uid)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		if len(owned) > 0 {
@@ -59,7 +59,7 @@ func (h *Handler) profileDelete(w http.ResponseWriter, r *http.Request) {
 			h.renderError(w, r, http.StatusConflict, i18n.T(r.Context(), "profile.danger.delete_account.instance_admin"))
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if token, ok := auth.ReadSessionToken(r, h.Secure); ok {
@@ -92,22 +92,22 @@ func (h *Handler) profilePage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) renderProfile(w http.ResponseWriter, r *http.Request, status int, uid int64, errMsg, message string) {
 	email, err := h.Auth.UserEmail(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	hasPassword, err := h.Auth.HasPassword(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	ids, err := h.Auth.ListIdentities(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	isInstanceAdmin, err := h.Auth.UserIsInstanceAdmin(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	linked := make([]templates.LinkedIdentity, 0, len(ids))
@@ -162,12 +162,12 @@ func (h *Handler) profileIdentityUnlink(w http.ResponseWriter, r *http.Request) 
 
 	hasPassword, err := h.Auth.HasPassword(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	ids, err := h.Auth.ListIdentities(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// Без пароля и с единственной привязкой юзер лишился бы всякого доступа.
@@ -182,7 +182,7 @@ func (h *Handler) profileIdentityUnlink(w http.ResponseWriter, r *http.Request) 
 	case errors.Is(err, auth.ErrNoIdentity):
 		h.renderProfile(w, r, http.StatusUnprocessableEntity, uid, i18n.T(r.Context(), "err.profile.provider_not_linked"), "")
 	default:
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 	}
 }
 
@@ -218,7 +218,7 @@ func (h *Handler) profilePasswordSet(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, auth.ErrPasswordAlreadySet):
 		h.renderProfile(w, r, http.StatusUnprocessableEntity, uid, i18n.T(r.Context(), "err.profile.password_already_set"), "")
 	default:
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 	}
 }
 
@@ -259,7 +259,7 @@ func (h *Handler) profilePasswordSubmit(w http.ResponseWriter, r *http.Request) 
 
 	token, err := h.Auth.CreateSession(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	auth.SetSessionCookie(w, token, h.Secure)
@@ -294,7 +294,7 @@ func (h *Handler) profileSessionsRevoke(w http.ResponseWriter, r *http.Request) 
 	}
 	count, err := h.Auth.DestroyOtherSessions(r.Context(), uid, token)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.renderProfile(w, r, http.StatusOK, uid, "", revokedSessionsMessage(r.Context(), count))
@@ -345,6 +345,6 @@ func (h *Handler) profileInstanceAdminTransfer(w http.ResponseWriter, r *http.Re
 	case errors.Is(err, auth.ErrNotInstanceAdmin):
 		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "err.org.sso_admin_only"))
 	default:
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 	}
 }

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
-	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
@@ -49,7 +48,7 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -205,7 +204,7 @@ func (h *Handler) traceFlame(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {

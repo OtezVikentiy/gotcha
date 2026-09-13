@@ -143,7 +143,7 @@ func (h *Handler) exportsCreate(w http.ResponseWriter, r *http.Request) {
 	if scopeIssueID != 0 {
 		it, err := h.Issues.Get(r.Context(), scopeIssueID)
 		if err != nil && !errors.Is(err, issue.ErrNotFound) {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		if err != nil || it.ProjectID != projectID {
@@ -195,7 +195,7 @@ func (h *Handler) exportsCreate(w http.ResponseWriter, r *http.Request) {
 				i18n.T(r.Context(), "err.export.limit_reached"), exportCreateFormState(r))
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOK(w, "flash.export_requested", 0)
@@ -235,7 +235,7 @@ func (h *Handler) exportsDownload(w http.ResponseWriter, r *http.Request) {
 			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if job.ProjectID != projectID {
@@ -264,14 +264,14 @@ func (h *Handler) exportsDownload(w http.ResponseWriter, r *http.Request) {
 			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -333,7 +333,7 @@ func (h *Handler) exportsDelete(w http.ResponseWriter, r *http.Request) {
 			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if job.ProjectID != projectID {
@@ -366,7 +366,7 @@ func (h *Handler) exportsDelete(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("exportsDelete: failed to remove file", "job_id", job.ID, "path", path, "err", err)
 	}
 	if err := h.Exports.Delete(r.Context(), job.ID); err != nil && !errors.Is(err, export.ErrNotDeletable) {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOK(w, "flash.deleted", 0)
@@ -411,7 +411,7 @@ func (h *Handler) renderExportsPage(w http.ResponseWriter, r *http.Request, stat
 		jobs, err = h.Exports.ByProjectForUser(r.Context(), projectID, uid, exportsListLimit)
 	}
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -427,7 +427,7 @@ func (h *Handler) renderExportsPage(w http.ResponseWriter, r *http.Request, stat
 	}
 	authorEmails, err := h.Auth.UserEmails(r.Context(), authorIDs)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 

@@ -62,7 +62,7 @@ func (h *Handler) logFiltersGate(w http.ResponseWriter, r *http.Request) (projec
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return 0, 0, false
 	}
 	if !canAccess {
@@ -148,7 +148,7 @@ func (h *Handler) logFiltersUpdate(w http.ResponseWriter, r *http.Request) {
 			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -191,7 +191,7 @@ func (h *Handler) logFiltersDelete(w http.ResponseWriter, r *http.Request) {
 			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if existing.Shared() && !h.requireLogFilterOperator(w, r, projectID, uid) {
@@ -204,7 +204,7 @@ func (h *Handler) logFiltersDelete(w http.ResponseWriter, r *http.Request) {
 			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOK(w, "flash.log_filter_deleted", 0)
@@ -227,7 +227,7 @@ func (h *Handler) logFiltersSetDefault(w http.ResponseWriter, r *http.Request) {
 			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOK(w, "flash.log_filter_default_set", 0)
@@ -255,7 +255,7 @@ func (h *Handler) logFiltersHandleSaveError(w http.ResponseWriter, r *http.Reque
 		h.notFound(w, r)
 		return
 	}
-	h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+	h.renderError(w, r, http.StatusInternalServerError, "")
 }
 
 // nil-safe: без проводки сохранённых фильтров — пустая панель без похода в БД.

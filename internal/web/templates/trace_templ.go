@@ -35,7 +35,7 @@ type TraceWaterfallData struct {
 }
 
 func traceFlamePath(traceID string) string {
-	return "/traces/" + traceID + "/flame"
+	return "/traces/" + url.PathEscape(traceID) + "/flame"
 }
 
 // трейс открывают из трёх мест — без пометки крошка всегда вела бы в «Транзакции», не туда, откуда пришли.

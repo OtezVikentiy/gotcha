@@ -500,14 +500,14 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.HandleFunc("GET /agent/{file}", h.agentDistRateLimited(h.agentFile))
 
 	inner.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 	})
 
 	// h.pages остаётся *http.ServeMux (не recordingMux) — RoutePattern работает
 	// через h.pages.Handler и не должен зависеть от обёртки.
 	h.pages = inner.ServeMux
 	h.routes = inner.patterns
-	mux.Handle("/", h.securityHeaders(h.withLocale(h.withTheme(h.withFlash(h.withShell(inner))))))
+	mux.Handle("/", h.securityHeaders(h.withLocale(h.withTheme(h.withFlash(h.withShell(gzipSSR(inner)))))))
 }
 
 // хэш меняется при любом изменении ассета — браузеры не отдают старую версию
@@ -608,7 +608,7 @@ func (h *Handler) renderError(w http.ResponseWriter, r *http.Request, status int
 }
 
 func (h *Handler) notFound(w http.ResponseWriter, r *http.Request) {
-	h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+	h.renderError(w, r, http.StatusNotFound, "")
 }
 
 // двухшаговый POST — под CSP без unsafe-inline onclick="confirm()" не
@@ -642,13 +642,13 @@ func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
 	}
 	projects, err := h.Org.ProjectsForUser(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if len(projects) == 0 {
 		orgs, err := h.Org.OrgsOf(r.Context(), uid)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		if len(orgs) > 0 {
@@ -678,7 +678,7 @@ func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
 	}
 	orgs, err := h.Org.OrgsOf(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if len(orgs) == 0 {
@@ -781,10 +781,10 @@ func (h *Handler) requireOrgRole(w http.ResponseWriter, r *http.Request, orgID, 
 	role, err := h.Org.Role(r.Context(), orgID, userID)
 	if err != nil {
 		if errors.Is(err, org.ErrNotMember) {
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			h.renderError(w, r, http.StatusNotFound, "")
 			return "", false
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return "", false
 	}
 	// роли не хватает — 403: участник и так знает про организацию, «не найдено»

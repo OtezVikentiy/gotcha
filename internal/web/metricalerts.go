@@ -58,12 +58,12 @@ func metricRuleFormState(r *http.Request) templates.FormState {
 func (h *Handler) renderMetricAlerts(w http.ResponseWriter, r *http.Request, status int, projectID int64, form templates.FormState, errMsg string) {
 	rules, err := h.MetricRules.List(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	incidents, err := h.MetricIncidents.List(r.Context(), projectID, 100)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	ackedByIDs := make([]int64, 0, len(incidents))
@@ -74,7 +74,7 @@ func (h *Handler) renderMetricAlerts(w http.ResponseWriter, r *http.Request, sta
 	}
 	ackedBy, err := h.ackedByEmails(r.Context(), ackedByIDs)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	var known []string
@@ -128,7 +128,7 @@ func (h *Handler) metricAlertCreate(w http.ResponseWriter, r *http.Request) {
 			h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, form, i18n.T(r.Context(), "err.metricalert.invalid_rule"))
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, metricAlertsPath(projectID), http.StatusSeeOther)
@@ -229,7 +229,7 @@ func (h *Handler) metricAlertUpdate(w http.ResponseWriter, r *http.Request) {
 			h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, form, i18n.T(r.Context(), "err.metricalert.invalid_rule"))
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOK(w, "flash.saved", 0)
@@ -278,7 +278,7 @@ func (h *Handler) metricAlertDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.MetricRules.Delete(r.Context(), ruleID, projectID); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, metricAlertsPath(projectID), http.StatusSeeOther)

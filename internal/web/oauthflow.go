@@ -53,17 +53,17 @@ func (h *Handler) oauthStart(w http.ResponseWriter, r *http.Request) {
 	}
 	state, err := oauth.RandomToken()
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	nonce, err := oauth.RandomToken()
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	verifier, challenge, err := oauth.PKCE()
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	flow := oauthFlow{
@@ -72,7 +72,7 @@ func (h *Handler) oauthStart(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, err := signFlow([]byte(h.secret()), flow)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -152,7 +152,7 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		h.oauthLogin(w, r, uid, "/")
 		return
 	} else if !errors.Is(err, auth.ErrNoIdentity) {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -176,7 +176,7 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, auth.ErrAlreadyLinked):
 			http.Redirect(w, r, "/profile", http.StatusSeeOther)
 		default:
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 		}
 		return
 	}
@@ -193,14 +193,14 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := h.Auth.LinkIdentity(r.Context(), uid, name, id.Subject, id.Email); err != nil &&
 			!errors.Is(err, auth.ErrAlreadyLinked) {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		h.oauthLogin(w, r, uid, "/")
 	case errors.Is(err, auth.ErrUserNotFound):
 		h.oauthProvision(w, r, name, id)
 	default:
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 	}
 }
 
@@ -222,14 +222,14 @@ func (h *Handler) oauthProvision(w http.ResponseWriter, r *http.Request, provide
 	if h.RegistrationMode == "open" {
 		uid, err := h.Auth.CreateOAuthUser(r.Context(), id.Email)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		// Привязка identity обязана идти до принятия инвайта: сбой откатывает юзера,
 		// а accepted_at откат уже не вернёт — иначе приглашение сгорает.
 		if err := h.Auth.LinkIdentity(r.Context(), uid, provider, id.Subject, id.Email); err != nil {
 			_ = h.Auth.DeleteUser(r.Context(), uid)
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		if _, _, err := h.Org.AcceptPendingInviteByEmail(r.Context(), id.Email, uid); err != nil {
@@ -240,7 +240,7 @@ func (h *Handler) oauthProvision(w http.ResponseWriter, r *http.Request, provide
 	}
 	has, err := h.Org.HasPendingInvite(r.Context(), id.Email)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !has {
@@ -250,14 +250,14 @@ func (h *Handler) oauthProvision(w http.ResponseWriter, r *http.Request, provide
 	}
 	uid, err := h.Auth.CreateOAuthUser(r.Context(), id.Email)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// Привязка identity обязана идти до принятия инвайта: сбой откатывает юзера,
 	// а accepted_at откат уже не вернёт — иначе приглашение сгорает.
 	if err := h.Auth.LinkIdentity(r.Context(), uid, provider, id.Subject, id.Email); err != nil {
 		_ = h.Auth.DeleteUser(r.Context(), uid)
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if _, ok, err := h.Org.AcceptPendingInviteByEmail(r.Context(), id.Email, uid); err != nil || !ok {
@@ -273,7 +273,7 @@ func (h *Handler) oauthProvision(w http.ResponseWriter, r *http.Request, provide
 func (h *Handler) oauthLogin(w http.ResponseWriter, r *http.Request, uid int64, dest string) {
 	token, err := h.Auth.CreateSession(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	auth.SetSessionCookie(w, token, h.Secure)

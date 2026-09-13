@@ -23,7 +23,7 @@ func (h *Handler) onboardingPage(w http.ResponseWriter, r *http.Request) {
 	}
 	hasOrg, err := h.userHasProjects(r, uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if hasOrg {
@@ -54,7 +54,7 @@ func (h *Handler) onboardingSubmit(w http.ResponseWriter, r *http.Request) {
 	// POST повторяет проверку GET: без неё юзер с проектом мог циклически заводить orgs/ключи.
 	hasOrg, err := h.userHasProjects(r, uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if hasOrg {
@@ -102,7 +102,7 @@ func (h *Handler) onboardingSubmit(w http.ResponseWriter, r *http.Request) {
 	if h.Alerts != nil {
 		if err := h.Alerts.EnsureDefaultRules(r.Context(), p.ID); err != nil {
 			h.compensateOrgCreate(r, o.ID)
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 	}
@@ -110,7 +110,7 @@ func (h *Handler) onboardingSubmit(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.Org.CreateKeys(r.Context(), p.ID,
 		org.KindBrowser, org.KindServer, org.KindAgent); err != nil {
 		h.compensateOrgCreate(r, o.ID)
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -167,13 +167,13 @@ func (h *Handler) projectCreate(w http.ResponseWriter, r *http.Request) {
 
 	if h.Alerts != nil {
 		if err := h.Alerts.EnsureDefaultRules(r.Context(), p.ID); err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 	}
 	if _, err := h.Org.CreateKeys(r.Context(), p.ID,
 		org.KindBrowser, org.KindServer, org.KindAgent); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, projectSetupPath(p.ID), http.StatusSeeOther)
@@ -214,7 +214,7 @@ func (h *Handler) projectSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -226,7 +226,7 @@ func (h *Handler) projectSetup(w http.ResponseWriter, r *http.Request) {
 	// Данные проекта берём из общего списка ProjectsForUser — точечного Get-по-id в org.Service нет.
 	projects, err := h.Org.ProjectsForUser(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	project, ok := findProject(projects, projectID)
@@ -237,7 +237,7 @@ func (h *Handler) projectSetup(w http.ResponseWriter, r *http.Request) {
 
 	keys, err := h.Org.KeysForProject(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -408,7 +408,7 @@ func setupSnippets(platform, browserDSN, serverDSN string) []templates.SetupSnip
 func (h *Handler) renderProjectsList(w http.ResponseWriter, r *http.Request, status int, uid int64, form templates.FormState, errMsg string) {
 	projects, err := h.Org.ProjectsForUser(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	rolesByOrg := make(map[int64]org.Role, len(projects))
@@ -418,7 +418,7 @@ func (h *Handler) renderProjectsList(w http.ResponseWriter, r *http.Request, sta
 		if !ok {
 			role, err = h.Org.Role(r.Context(), p.OrgID, uid)
 			if err != nil && !errors.Is(err, org.ErrNotMember) {
-				h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+				h.renderError(w, r, http.StatusInternalServerError, "")
 				return
 			}
 			rolesByOrg[p.OrgID] = role
@@ -432,7 +432,7 @@ func (h *Handler) renderProjectsList(w http.ResponseWriter, r *http.Request, sta
 	// иначе пустая org не получит способа завести первый.
 	orgs, err := h.Org.OrgsOf(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	var canCreate []templates.OrgOption
@@ -441,7 +441,7 @@ func (h *Handler) renderProjectsList(w http.ResponseWriter, r *http.Request, sta
 		if !ok {
 			role, err = h.Org.Role(r.Context(), o.ID, uid)
 			if err != nil && !errors.Is(err, org.ErrNotMember) {
-				h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+				h.renderError(w, r, http.StatusInternalServerError, "")
 				return
 			}
 			rolesByOrg[o.ID] = role

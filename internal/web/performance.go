@@ -10,7 +10,6 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
-	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
@@ -63,7 +62,7 @@ func (h *Handler) performanceList(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -73,7 +72,7 @@ func (h *Handler) performanceList(w http.ResponseWriter, r *http.Request) {
 
 	project, err := h.Org.GetProject(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -188,7 +187,7 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -206,7 +205,7 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 
 	project, err := h.Org.GetProject(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -265,7 +264,7 @@ func (h *Handler) endpointDetail(w http.ResponseWriter, r *http.Request) {
 	if h.PerfIssues != nil {
 		perfIssues, err = h.PerfIssues.List(r.Context(), projectID, "", transaction, perfIssuesByCulpritLimit)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 	}

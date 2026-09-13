@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
-	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/recipes"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -74,7 +73,7 @@ func (h *Handler) recipesListPage(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -84,7 +83,7 @@ func (h *Handler) recipesListPage(w http.ResponseWriter, r *http.Request) {
 	// Один List на все рецепты: RuleStatuses — чистая функция над срезом, N+1 не возникает.
 	existing, err := h.MetricRules.List(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	all := recipes.All()
@@ -129,7 +128,7 @@ func (h *Handler) recipeDetailPage(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -138,14 +137,14 @@ func (h *Handler) recipeDetailPage(w http.ResponseWriter, r *http.Request) {
 	}
 	existing, err := h.MetricRules.List(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// Страница открыта любому с доступом, кнопка создания — только оператору (POST и так
 	// гейтится requireProjectOperator — это лишь честность разметки).
 	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	dataArrives := h.recipeDataArrives(r.Context(), projectID, rec)
@@ -212,7 +211,7 @@ func (h *Handler) recipeThresholdsCreate(w http.ResponseWriter, r *http.Request)
 	}
 	created, skipped, err := recipes.ApplyRules(r.Context(), h.MetricRules, projectID, rec)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOKPair(w, "flash.recipes_applied", created, skipped)

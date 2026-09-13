@@ -40,12 +40,12 @@ func (h *Handler) loadAccessibleIssue(w http.ResponseWriter, r *http.Request, ui
 			h.notFound(w, r)
 			return issue.Issue{}, false
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return issue.Issue{}, false
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, it.ProjectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return issue.Issue{}, false
 	}
 	if !canAccess {
@@ -68,12 +68,12 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 
 	orgID, err := h.Org.ProjectOrg(r.Context(), it.ProjectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	members, err := h.Org.MembersOf(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -153,7 +153,7 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 	// молча игнорируется на постановке.
 	role, err := h.Org.Role(r.Context(), orgID, uid)
 	if err != nil && !errors.Is(err, org.ErrNotMember) {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	canManagePII := role == org.RoleOwner || role == org.RoleAdmin
@@ -188,7 +188,7 @@ func (h *Handler) issueSetStatus(w http.ResponseWriter, r *http.Request) {
 			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOK(w, "flash.issue_status_saved", 0)
@@ -223,12 +223,12 @@ func (h *Handler) issueAssign(w http.ResponseWriter, r *http.Request) {
 		}
 		orgID, err := h.Org.ProjectOrg(r.Context(), it.ProjectID)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		members, err := h.Org.MembersOf(r.Context(), orgID)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		if !isOrgMember(members, id) {
@@ -243,7 +243,7 @@ func (h *Handler) issueAssign(w http.ResponseWriter, r *http.Request) {
 			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if assigneeID != nil {

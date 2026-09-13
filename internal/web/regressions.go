@@ -50,7 +50,7 @@ func (h *Handler) regressionsList(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -60,14 +60,14 @@ func (h *Handler) regressionsList(w http.ResponseWriter, r *http.Request) {
 	// Список открыт всем участникам проекта, ack-кнопка на открытой регрессии — только оператору.
 	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
 	filterName := regressionStatusFilter(r.URL.Query().Get("status"))
 	items, err := h.Regressions.List(r.Context(), projectID, filterName, regressionsListLimit)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -89,7 +89,7 @@ func (h *Handler) regressionsList(w http.ResponseWriter, r *http.Request) {
 	}
 	ackedBy, err := h.ackedByEmails(r.Context(), ackedByIDs)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 

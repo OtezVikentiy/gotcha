@@ -72,7 +72,7 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -95,7 +95,7 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 	// +1, чтобы отличить «влезло» от «есть ещё» (truncated ниже), не вычитывая весь реестр.
 	hosts, err := h.Hosts.ListFiltered(r.Context(), projectID, filter, hostsListLimit+1)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -103,13 +103,13 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 	// иначе выбор одного значения env убрал бы из сайдбара остальные значения env.
 	envValues, roleValues, err := h.Hosts.FacetValues(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
 	settings, settingsExist, err := h.HostSettings.GetWithExists(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -117,7 +117,7 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 	// статуса, и открытый инцидент мог не попасть в выборку среди закопившихся закрытых.
 	incidents, err := h.HostIncidents.ListOpenByProject(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	openKindsByHost := map[int64][]string{}
@@ -171,7 +171,7 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 		}
 		overrides, err = h.HostOverrides.GetForHosts(r.Context(), ids)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 	}
@@ -179,7 +179,7 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 	if h.GroupThresholds != nil {
 		groups, err = h.GroupThresholds.List(r.Context(), projectID)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 	}
@@ -644,7 +644,7 @@ func hostSettingsErrorMessage(ctx context.Context, err error) string {
 func (h *Handler) renderHostSettings(w http.ResponseWriter, r *http.Request, status int, projectID int64, form templates.FormState, errMsg string, groupForm templates.FormState, groupErrMsg string) {
 	settings, err := h.HostSettings.Get(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// nil-safe: main.go проводит их вместе с HostSettings, но тестовые Handler'ы иногда собраны
@@ -654,12 +654,12 @@ func (h *Handler) renderHostSettings(w http.ResponseWriter, r *http.Request, sta
 	if h.Hosts != nil && h.GroupThresholds != nil {
 		groups, err = h.GroupThresholds.List(r.Context(), projectID)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		envValues, roleValues, err = h.Hosts.FacetValues(r.Context(), projectID)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 	}
@@ -769,7 +769,7 @@ func (h *Handler) hostSettingsSave(w http.ResponseWriter, r *http.Request) {
 			h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, hostSettingsFormState(r), hostSettingsErrorMessage(r.Context(), err), nil, "")
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.resolveDisabledKindIncidents(r.Context(), projectID, settings)
@@ -832,7 +832,7 @@ func (h *Handler) hostGroupThresholdSave(w http.ResponseWriter, r *http.Request)
 				groupThresholdFormState(r), hostSettingsErrorMessage(r.Context(), err))
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOK(w, "flash.saved", 0)
@@ -880,7 +880,7 @@ func (h *Handler) hostGroupThresholdDelete(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := h.GroupThresholds.Delete(r.Context(), projectID, scope, label); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOK(w, "flash.deleted", 0)
@@ -1003,7 +1003,7 @@ func (h *Handler) hostDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -1013,7 +1013,7 @@ func (h *Handler) hostDetail(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	hst, found, err := h.Hosts.Get(r.Context(), projectID, name)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !found {
@@ -1030,7 +1030,7 @@ func (h *Handler) renderHostDetail(w http.ResponseWriter, r *http.Request, statu
 
 	projSettings, projExists, err := h.HostSettings.GetWithExists(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// nil-safe: пустой список групп резолвер трактует как «групповых порогов нет».
@@ -1038,13 +1038,13 @@ func (h *Handler) renderHostDetail(w http.ResponseWriter, r *http.Request, statu
 	if h.GroupThresholds != nil {
 		groups, err = h.GroupThresholds.List(r.Context(), projectID)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 	}
 	hostOverride, err := h.HostOverrides.Get(r.Context(), hst.ID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	eff := host.ThresholdResolver{
@@ -1060,12 +1060,12 @@ func (h *Handler) renderHostDetail(w http.ResponseWriter, r *http.Request, statu
 
 	openIncidents, err := h.HostIncidents.ListOpenByHost(r.Context(), hst.ID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	recentIncidents, err := h.hostRecentIncidents(r.Context(), hst.ID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	openKinds := make([]string, 0, len(openIncidents))
@@ -1098,7 +1098,7 @@ func (h *Handler) renderHostDetail(w http.ResponseWriter, r *http.Request, statu
 	// любой с доступом к проекту.
 	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -1119,7 +1119,7 @@ func (h *Handler) renderHostDetail(w http.ResponseWriter, r *http.Request, statu
 	}
 	ackedBy, err := h.ackedByEmails(r.Context(), ackedByIDs)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -1174,7 +1174,7 @@ func (h *Handler) hostThresholdsSave(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	hst, found, err := h.Hosts.Get(r.Context(), projectID, name)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !found {
@@ -1196,7 +1196,7 @@ func (h *Handler) hostThresholdsSave(w http.ResponseWriter, r *http.Request) {
 			h.renderHostDetail(w, r, http.StatusUnprocessableEntity, projectID, uid, hst, hostThresholdsFormState(r), hostSettingsErrorMessage(r.Context(), err))
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOK(w, "flash.saved", 0)
@@ -1243,7 +1243,7 @@ func (h *Handler) hostDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	deleted, err := h.Hosts.Delete(r.Context(), projectID, name)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if deleted && h.HostForget != nil {

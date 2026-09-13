@@ -69,7 +69,7 @@ func sloFormState(r *http.Request) templates.FormState {
 func (h *Handler) renderSLOs(w http.ResponseWriter, r *http.Request, status int, projectID int64, form templates.FormState, errMsg string) {
 	slos, err := h.SLO.List(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// Окна обслуживания — один раз на страницу, не в провайдере на каждую строку: sloRow отдаёт
@@ -272,7 +272,7 @@ func (h *Handler) sloCreate(w http.ResponseWriter, r *http.Request) {
 			fail("err.slo.too_many")
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, slosPath(projectID), http.StatusSeeOther)
@@ -343,7 +343,7 @@ func (h *Handler) sloDelete(w http.ResponseWriter, r *http.Request) {
 			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, slosPath(projectID), http.StatusSeeOther)

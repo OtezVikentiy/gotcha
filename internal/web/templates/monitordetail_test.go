@@ -2,9 +2,11 @@ package templates
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
@@ -30,6 +32,40 @@ func TestHeartbeatGraceText(t *testing.T) {
 				t.Fatalf("heartbeatGraceText(%s) = %q, want %q", c.d, got, c.want)
 			}
 		})
+	}
+}
+
+func TestSSLExpiryText(t *testing.T) {
+	ctx := ruCtx()
+	if got := sslExpiryText(ctx, nil); got != "—" {
+		t.Fatalf("sslExpiryText(nil) = %q, want —", got)
+	}
+
+	// Истёк 10 часов назад: int(-0.41)==0 раньше давал «осталось 0 дней» вместо «истёк».
+	expiredWord := i18n.T(ctx, "uptime.ssl.expired")
+	expiredWord = expiredWord[:strings.Index(expiredWord, "(")]
+	expiredRecently := time.Now().Add(-10 * time.Hour)
+	got := sslExpiryText(ctx, &expiredRecently)
+	if !strings.Contains(got, expiredWord) {
+		t.Fatalf("sslExpiryText(-10h) = %q, должен содержать %q", got, expiredWord)
+	}
+
+	// Истекает через 10 часов: усечение к нулю давало «0 дней», алертинг в это же время
+	// уже отправляет days_left=1 (потолок).
+	soon := time.Now().Add(10 * time.Hour)
+	got = sslExpiryText(ctx, &soon)
+	want := i18n.Tf(ctx, "uptime.ssl.days_left", "days", "1", "date", "")
+	want = want[:strings.Index(want, "(")]
+	if !strings.Contains(got, want) {
+		t.Fatalf("sslExpiryText(+10h) = %q, должен содержать %q (потолок должен дать 1 день, не 0)", got, want)
+	}
+
+	in30h := time.Now().Add(30 * time.Hour)
+	got = sslExpiryText(ctx, &in30h)
+	want = i18n.Tf(ctx, "uptime.ssl.days_left", "days", "2", "date", "")
+	want = want[:strings.Index(want, "(")]
+	if !strings.Contains(got, want) {
+		t.Fatalf("sslExpiryText(+30h) = %q, должен содержать %q", got, want)
 	}
 }
 

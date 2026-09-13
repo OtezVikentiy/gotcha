@@ -16,6 +16,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
 	"gitflic.ru/otezvikentiy/gotcha/internal/host"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/incidentgroup"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
@@ -273,10 +274,14 @@ func TestOverviewInvalidProjectID(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("invalid project id in path: status = %d, want 404: %s", resp.StatusCode, body)
 	}
-	// ErrorPage повторяет текст дважды (h1+p) сама по себе — если бы return после
-	// parsePathProjectID пропал, ручка отрендерила бы страницу дважды, и счёт стал бы 4.
-	if n := strings.Count(string(body), "Страница не найдена"); n != 2 {
-		t.Fatalf("404 body must render exactly once (return after parsePathProjectID failure), got %d occurrences of the message (want 2, one render): %s", n, body)
+	// Заголовок (h1) и пояснение (p, error.404.body) — из одного рендера; если бы return
+	// после parsePathProjectID пропал, ручка отрендерила бы страницу дважды, и счёт стал бы 2.
+	if n := strings.Count(string(body), "Страница не найдена"); n != 1 {
+		t.Fatalf("404 title must render exactly once (return after parsePathProjectID failure), got %d occurrences: %s", n, body)
+	}
+	explanation := i18n.T(context.Background(), "error.404.body")
+	if n := strings.Count(string(body), explanation); n != 1 {
+		t.Fatalf("404 explanation must render exactly once (return after parsePathProjectID failure), got %d occurrences: %s", n, body)
 	}
 }
 

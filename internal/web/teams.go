@@ -67,10 +67,10 @@ func (h *Handler) requireTeamRole(w http.ResponseWriter, r *http.Request, teamID
 	orgID, err := h.Org.TeamOrg(r.Context(), teamID)
 	if err != nil {
 		if errors.Is(err, org.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			h.renderError(w, r, http.StatusNotFound, "")
 			return 0, false
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return 0, false
 	}
 	if _, ok := h.requireOrgRole(w, r, orgID, userID); !ok {
@@ -115,12 +115,12 @@ func (h *Handler) teamsPage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) renderTeamsPage(w http.ResponseWriter, r *http.Request, status int, orgID int64, form templates.FormState, errMsg string) {
 	o, err := h.Org.Get(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	teams, err := h.Org.TeamsOf(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// участники и проекты всех команд — двумя запросами на страницу, не по
@@ -131,12 +131,12 @@ func (h *Handler) renderTeamsPage(w http.ResponseWriter, r *http.Request, status
 	}
 	membersByTeam, err := h.Org.TeamMembersOf(r.Context(), teamIDs)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	projectsByTeam, err := h.Org.TeamProjectsOf(r.Context(), teamIDs)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	views := make([]templates.TeamView, len(teams))
@@ -145,12 +145,12 @@ func (h *Handler) renderTeamsPage(w http.ResponseWriter, r *http.Request, status
 	}
 	orgMembers, err := h.Org.MembersOf(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	orgProjects, err := h.Org.ProjectsOf(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	w.WriteHeader(status)
@@ -217,7 +217,7 @@ func (h *Handler) teamRename(w http.ResponseWriter, r *http.Request) {
 	name := r.FormValue("name")
 	if err := h.Org.RenameTeam(r.Context(), orgID, teamID, name); err != nil {
 		if errors.Is(err, org.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			h.renderError(w, r, http.StatusNotFound, "")
 			return
 		}
 		h.renderTeamsPage(w, r, http.StatusUnprocessableEntity, orgID,
@@ -347,7 +347,7 @@ func (h *Handler) teamProjectsAttach(w http.ResponseWriter, r *http.Request) {
 			h.renderTeamsPage(w, r, http.StatusUnprocessableEntity, orgID, nil, teamsErrorMessage(r.Context(), errCrossOrgProject))
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if projectOrgID != orgID {
@@ -355,7 +355,7 @@ func (h *Handler) teamProjectsAttach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Org.AttachTeam(r.Context(), projectID, teamID); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, orgTeamsPath(orgID), http.StatusSeeOther)
@@ -403,7 +403,7 @@ func (h *Handler) teamProjectsDetach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Org.DetachTeam(r.Context(), projectID, teamID); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, orgTeamsPath(orgID), http.StatusSeeOther)
@@ -440,10 +440,10 @@ func (h *Handler) teamDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.Org.DeleteTeam(r.Context(), orgID, teamID); err != nil {
 		if errors.Is(err, org.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			h.renderError(w, r, http.StatusNotFound, "")
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOK(w, "flash.team_deleted", 0)

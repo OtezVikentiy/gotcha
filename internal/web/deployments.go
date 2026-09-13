@@ -5,7 +5,6 @@ import (
 	"net/url"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
-	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
@@ -44,7 +43,7 @@ func (h *Handler) deployments(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -54,7 +53,7 @@ func (h *Handler) deployments(w http.ResponseWriter, r *http.Request) {
 
 	deps, err := h.Deploy.Recent(r.Context(), projectID, deploymentsListLimit)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 

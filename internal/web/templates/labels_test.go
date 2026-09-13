@@ -212,9 +212,6 @@ func TestWindowScheduleText(t *testing.T) {
 }
 
 func TestPathHelpers(t *testing.T) {
-	if !strings.Contains(tracePath("abc123"), "abc123") {
-		t.Error("tracePath должен нести trace id")
-	}
 	if !strings.Contains(incidentsPath(7), "7") {
 		t.Error("incidentsPath должен нести project id")
 	}
