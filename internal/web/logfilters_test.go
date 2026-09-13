@@ -193,6 +193,41 @@ func TestPersonalFilterOfAnotherUserIsInvisible(t *testing.T) {
 	}
 }
 
+func TestLogFiltersCrossProjectUpdateAndDeleteRejected(t *testing.T) {
+	s := newFiltersStack(t)
+	_, ownerACookie, projectA := newLogsProject(t, s, "cross-a@example.com", "cross-a-org", "cross-a-proj")
+	_, ownerBCookie, projectB := newLogsProject(t, s, "cross-b@example.com", "cross-b-org", "cross-b-proj")
+
+	create := postForm(t, s.srv, logsBasePath(projectB.ID)+"/filters",
+		url.Values{"name": {"фильтр проекта B"}, "shared": {"1"}, "q_not": {"buffered"}}, s.srv.URL, ownerBCookie)
+	create.Body.Close()
+	if create.StatusCode != http.StatusSeeOther {
+		t.Fatalf("создание фильтра в проекте B: статус %d", create.StatusCode)
+	}
+	filterID := lastFilterID(t, s.pool, projectB.ID)
+
+	updatePath := fmt.Sprintf("%s/filters/%d/update", logsBasePath(projectA.ID), filterID)
+	update := postForm(t, s.srv, updatePath, url.Values{"name": {"угнанное имя"}, "shared": {"1"}}, s.srv.URL, ownerACookie)
+	update.Body.Close()
+	if update.StatusCode != http.StatusNotFound {
+		t.Errorf("update чужого фильтра под своим project_id в пути: статус %d, ожидали 404", update.StatusCode)
+	}
+
+	deletePath := fmt.Sprintf("%s/filters/%d/delete", logsBasePath(projectA.ID), filterID)
+	del := postForm(t, s.srv, deletePath, url.Values{}, s.srv.URL, ownerACookie)
+	del.Body.Close()
+	if del.StatusCode != http.StatusNotFound {
+		t.Errorf("delete чужого фильтра под своим project_id в пути: статус %d, ожидали 404", del.StatusCode)
+	}
+
+	if got := countFilters(t, s.pool, projectB.ID); got != 1 {
+		t.Errorf("фильтр проекта B пропал после чужих запросов: осталось %d", got)
+	}
+	if name := filterName(t, s.pool, filterID); name != "фильтр проекта B" {
+		t.Errorf("имя фильтра проекта B изменено чужим update: %q", name)
+	}
+}
+
 func TestLogFiltersUpdatePersonalRoundTrip(t *testing.T) {
 	s := newFiltersStack(t)
 	_, ownerCookie, project := newLogsProject(t, s, "update-personal@example.com", "up-org", "up-proj")

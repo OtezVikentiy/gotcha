@@ -465,8 +465,13 @@ func TestCreateChannelFromOtherProjectFails(t *testing.T) {
 	m := baseHTTPMonitor(pid)
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
 
-	if _, err := svc.Create(ctx, m, nil, []int64{foreignChannel}); !errors.Is(err, uptime.ErrInvalidMonitor) {
+	_, err := svc.Create(ctx, m, nil, []int64{foreignChannel})
+	if !errors.Is(err, uptime.ErrInvalidMonitor) {
 		t.Fatalf("Create with foreign channel: err = %v, want ErrInvalidMonitor", err)
+	}
+	var ve *uptime.ValidationError
+	if !errors.As(err, &ve) || ve.Code != "channel_foreign" {
+		t.Fatalf("Code = %v, want channel_foreign", ve)
 	}
 }
 
