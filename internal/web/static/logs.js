@@ -119,12 +119,15 @@
 			}, DEBOUNCE_MS);
 		});
 
-		// blur (mousedown уводит фокус ДО click) наступает раньше click по
-		// подсказке — задержка даёт клику отработать, пока список ещё в DOM.
-		input.addEventListener("blur", function () {
+		// focusout/focusin на root, не blur/focus на input: Tab уводит фокус на
+		// подсказку внутри списка, а не за пределы виджета.
+		root.addEventListener("focusout", function (ev) {
+			if (root.contains(ev.relatedTarget)) {
+				return;
+			}
 			hideTimer = window.setTimeout(hide, HIDE_DELAY_MS);
 		});
-		input.addEventListener("focus", function () {
+		root.addEventListener("focusin", function () {
 			window.clearTimeout(hideTimer);
 		});
 

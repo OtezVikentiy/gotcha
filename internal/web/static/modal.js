@@ -2,6 +2,7 @@
 	"use strict";
 
 	var opener = null;
+	var currentOpen = null;
 
 	function modalFromHash() {
 		var hash = window.location.hash;
@@ -20,7 +21,24 @@
 	}
 
 	function openModal() {
-		return modalFromHash() || document.querySelector(".modal.modal--open");
+		return modalFromHash() || currentOpen;
+	}
+
+	// Класс modal--open переживает закрытие (снимается только :target соседа) — без
+	// явной отметки openModal() продолжал бы находить давно скрытую модалку.
+	function markOpen(modal) {
+		if (currentOpen && currentOpen !== modal) {
+			currentOpen.classList.remove("modal--open");
+		}
+		currentOpen = modal;
+		focusHeading(modal);
+	}
+
+	function markClosed() {
+		if (currentOpen) {
+			currentOpen.classList.remove("modal--open");
+			currentOpen = null;
+		}
 	}
 
 	// Заголовок (tabindex=-1) и элементы, скрытые CSS (getClientRects пуст),
@@ -76,8 +94,7 @@
 		if (targeted) {
 			return targeted.id + "-close";
 		}
-		var served = document.querySelector(".modal.modal--open");
-		return served ? served.id + "-close" : "";
+		return currentOpen ? currentOpen.id + "-close" : "";
 	}
 
 	// Открыватель запоминается на click (capture), до навигации по якорю —
@@ -96,10 +113,13 @@
 	window.addEventListener("hashchange", function () {
 		var m = modalFromHash();
 		if (m) {
-			focusHeading(m);
-		} else if (opener) {
-			opener.focus();
-			opener = null;
+			markOpen(m);
+		} else {
+			markClosed();
+			if (opener) {
+				opener.focus();
+				opener = null;
+			}
 		}
 	});
 
@@ -124,6 +144,7 @@
 
 	var served = document.querySelector(".modal.modal--open");
 	if (served) {
+		currentOpen = served;
 		focusHeading(served);
 	}
 })();

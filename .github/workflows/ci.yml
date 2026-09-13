@@ -49,6 +49,15 @@ jobs:
           tar -xJf sc.tar.xz
           "./shellcheck-${SC_VER}/shellcheck" internal/web/install.sh
 
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+
+      # Клиентский JS без node_modules и без сборки: node:test гоняет static/*.js
+      # как есть через самодельный DOM-шим (internal/web/static/jstest).
+      - name: клиентский JS (node --check + node --test)
+        run: make test-js
+
       - name: go vet
         run: go vet ./...
 
