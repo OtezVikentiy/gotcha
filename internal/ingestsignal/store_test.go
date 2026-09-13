@@ -71,6 +71,148 @@ func TestStoreBumpUpsertsAndIgnoresUnknownProject(t *testing.T) {
 	}
 }
 
+func TestStoreBumpResetsHitsAfterResetWindow(t *testing.T) {
+	st, pid := setupProject(t)
+	ctx := context.Background()
+
+	t1 := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Microsecond)
+	if err := st.Bump(ctx, pid, ingestsignal.KindKeyInvalid, 10, t1); err != nil {
+		t.Fatalf("bump 1: %v", err)
+	}
+
+	// KindKeyInvalid: окно 1ч. t1+2ч — далеко за окном, счётчик обязан начать
+	// заново, а не прибавить к hits за прошлый эпизод.
+	t2 := t1.Add(2 * time.Hour)
+	if err := st.Bump(ctx, pid, ingestsignal.KindKeyInvalid, 3, t2); err != nil {
+		t.Fatalf("bump 2: %v", err)
+	}
+
+	got, err := st.ForProject(ctx, pid)
+	if err != nil {
+		t.Fatalf("for project: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("сигналов %d, want 1: %+v", len(got), got)
+	}
+	if got[0].Hits != 3 {
+		t.Errorf("hits = %d, want 3 (разрыв больше окна — старые 10 не в счёт)", got[0].Hits)
+	}
+	if !got[0].LastSeenAt.Equal(t2) {
+		t.Errorf("last_seen_at = %v, want %v", got[0].LastSeenAt, t2)
+	}
+}
+
+func TestStoreBumpSumsHitsWithinResetWindow(t *testing.T) {
+	st, pid := setupProject(t)
+	ctx := context.Background()
+
+	t1 := time.Now().Add(-59 * time.Minute).UTC().Truncate(time.Microsecond)
+	if err := st.Bump(ctx, pid, ingestsignal.KindKeyInvalid, 10, t1); err != nil {
+		t.Fatalf("bump 1: %v", err)
+	}
+
+	// Разрыв меньше окна 1ч у KindKeyInvalid — тот же эпизод, hits суммируются.
+	t2 := t1.Add(58 * time.Minute)
+	if err := st.Bump(ctx, pid, ingestsignal.KindKeyInvalid, 3, t2); err != nil {
+		t.Fatalf("bump 2: %v", err)
+	}
+
+	got, err := st.ForProject(ctx, pid)
+	if err != nil {
+		t.Fatalf("for project: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("сигналов %d, want 1: %+v", len(got), got)
+	}
+	if got[0].Hits != 13 {
+		t.Errorf("hits = %d, want 13 (разрыв внутри окна — сумма)", got[0].Hits)
+	}
+}
+
+func TestStoreBumpSumsHitsAtExactResetWindowBoundary(t *testing.T) {
+	st, pid := setupProject(t)
+	ctx := context.Background()
+
+	t1 := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Microsecond)
+	if err := st.Bump(ctx, pid, ingestsignal.KindKeyInvalid, 10, t1); err != nil {
+		t.Fatalf("bump 1: %v", err)
+	}
+
+	// Разрыв РОВНО в окно (1ч у KindKeyInvalid) — SQL сравнивает строгим "<",
+	// значит граница ещё не сброс, а сумма.
+	t2 := t1.Add(time.Hour)
+	if err := st.Bump(ctx, pid, ingestsignal.KindKeyInvalid, 3, t2); err != nil {
+		t.Fatalf("bump 2: %v", err)
+	}
+
+	got, err := st.ForProject(ctx, pid)
+	if err != nil {
+		t.Fatalf("for project: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("сигналов %d, want 1: %+v", len(got), got)
+	}
+	if got[0].Hits != 13 {
+		t.Errorf("hits = %d, want 13 (разрыв ровно в окно — ещё не сброс)", got[0].Hits)
+	}
+}
+
+func TestStoreBumpResetsHitsJustPastResetWindowBoundary(t *testing.T) {
+	st, pid := setupProject(t)
+	ctx := context.Background()
+
+	t1 := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Microsecond)
+	if err := st.Bump(ctx, pid, ingestsignal.KindKeyInvalid, 10, t1); err != nil {
+		t.Fatalf("bump 1: %v", err)
+	}
+
+	// Разрыв на 1с БОЛЬШЕ окна (1ч у KindKeyInvalid) — уже за границей, сброс.
+	t2 := t1.Add(time.Hour + time.Second)
+	if err := st.Bump(ctx, pid, ingestsignal.KindKeyInvalid, 3, t2); err != nil {
+		t.Fatalf("bump 2: %v", err)
+	}
+
+	got, err := st.ForProject(ctx, pid)
+	if err != nil {
+		t.Fatalf("for project: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("сигналов %d, want 1: %+v", len(got), got)
+	}
+	if got[0].Hits != 3 {
+		t.Errorf("hits = %d, want 3 (разрыв за окном — сброс, старые 10 не в счёт)", got[0].Hits)
+	}
+}
+
+func TestStoreBumpSumsHitsForKindWithoutResetWindow(t *testing.T) {
+	st, pid := setupProject(t)
+	ctx := context.Background()
+
+	const unknownKind = ingestsignal.Kind("no_such_kind")
+	t1 := time.Now().Add(-24 * time.Hour).UTC().Truncate(time.Microsecond)
+	if err := st.Bump(ctx, pid, unknownKind, 10, t1); err != nil {
+		t.Fatalf("bump 1: %v", err)
+	}
+
+	// Вид без записи в resetWindow — Bump обязан падать в ttlIndefinite и
+	// только накапливать, а не сбрасывать hits на первом же разрыве.
+	t2 := t1.Add(24 * time.Hour)
+	if err := st.Bump(ctx, pid, unknownKind, 3, t2); err != nil {
+		t.Fatalf("bump 2: %v", err)
+	}
+
+	got, err := st.ForProject(ctx, pid)
+	if err != nil {
+		t.Fatalf("for project: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("сигналов %d, want 1: %+v", len(got), got)
+	}
+	if got[0].Hits != 13 {
+		t.Errorf("hits = %d, want 13 (нет resetWindow — только накопление)", got[0].Hits)
+	}
+}
+
 func TestStoreForProjectOrdersByKind(t *testing.T) {
 	st, pid := setupProject(t)
 	ctx := context.Background()

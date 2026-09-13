@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"sync"
@@ -94,7 +95,13 @@ type Handler struct {
 	profileDecodeBudget *profileDecodeBudget
 
 	// Дешёвый per-DSN токен-бакет до quota-проверки; nil → лимит выключен.
-	rate *rateLimiter
+	rate *rateLimiter[int64]
+
+	// По client IP, до authenticate; nil → лимит выключен.
+	preAuth *rateLimiter[string]
+
+	// По IP, для touchUnverifiedSignal; много туже preAuth.
+	signalTouch *rateLimiter[string]
 
 	// Throttle лога overloaded: в отличие от rateLimited (бьёт один ключ),
 	// overloaded срабатывает на каждый запрос, пока просажен общий буфер.
@@ -182,7 +189,9 @@ func NewHandler(keys *KeyCache, quota QuotaChecker, pipeline *Pipeline, maxEvent
 		quota:       quota,
 		pipeline:    pipeline,
 		maxBytes:    maxEventBytes,
-		rate:        newRateLimiter(time.Now, defaultIngestRatePerSec, defaultIngestBurst),
+		rate:        newRateLimiter[int64](time.Now, defaultIngestRatePerSec, defaultIngestBurst),
+		preAuth:     newRateLimiter[string](time.Now, defaultPreAuthRatePerSec, defaultPreAuthBurst),
+		signalTouch: newRateLimiter[string](time.Now, defaultSignalTouchRatePerSec, defaultSignalTouchBurst),
 		keyRejected: newKeyRejectCounters(),
 		rejected:    newIngestRejectCounters(),
 
@@ -211,6 +220,14 @@ func (h *Handler) touchSignal(projectID int64, kind ingestsignal.Kind) {
 	}
 }
 
+// projectID из URL не проверен — гасит перебор чужих project_id по IP.
+func (h *Handler) touchUnverifiedSignal(r *http.Request, projectID int64, kind ingestsignal.Kind) {
+	if h.signalTouch != nil && !h.signalTouch.Allow(preAuthClientIP(r)) {
+		return
+	}
+	h.touchSignal(projectID, kind)
+}
+
 func (h *Handler) KeyRejectedBy(reason KeyRejectReason) int64 {
 	if c, ok := h.keyRejected[reason]; ok {
 		return c.Load()
@@ -223,7 +240,23 @@ func (h *Handler) SetRateLimit(now func() time.Time, ratePerSec, burst float64) 
 	if now == nil {
 		now = time.Now
 	}
-	h.rate = newRateLimiter(now, ratePerSec, burst)
+	h.rate = newRateLimiter[int64](now, ratePerSec, burst)
+}
+
+// ratePerSec<=0 выключает лимит; now==nil — используется time.Now.
+func (h *Handler) SetPreAuthRateLimit(now func() time.Time, ratePerSec, burst float64) {
+	if now == nil {
+		now = time.Now
+	}
+	h.preAuth = newRateLimiter[string](now, ratePerSec, burst)
+}
+
+// ratePerSec<=0 выключает лимит; now==nil — используется time.Now.
+func (h *Handler) SetSignalTouchRateLimit(now func() time.Time, ratePerSec, burst float64) {
+	if now == nil {
+		now = time.Now
+	}
+	h.signalTouch = newRateLimiter[string](now, ratePerSec, burst)
 }
 
 // Окно — доли секунды, не месяц, как у квоты. Вызывается после аутентификации
@@ -299,29 +332,31 @@ type muxRegistrar interface {
 }
 
 func (h *Handler) Register(mux muxRegistrar) {
+	// OPTIONS не заворачиваем в preAuthGate: preflight в БД не ходит.
+
 	// DSN (public key) не секрет — как у Sentry, разрешаем любой origin.
-	mux.HandleFunc("POST /api/{project}/envelope/{$}", cors(h.envelope))
+	mux.HandleFunc("POST /api/{project}/envelope/{$}", cors(h.preAuthGate(h.envelope)))
 	mux.HandleFunc("OPTIONS /api/{project}/envelope/{$}", corsPreflight)
-	mux.HandleFunc("POST /api/{project}/store/{$}", cors(h.store))
+	mux.HandleFunc("POST /api/{project}/store/{$}", cors(h.preAuthGate(h.store)))
 	mux.HandleFunc("OPTIONS /api/{project}/store/{$}", corsPreflight)
 	// Второй вход в тот же пайплайн: своей квоты, модели и таблиц у него нет.
-	mux.HandleFunc("POST /v1/traces", h.otlpTraces)
-	mux.HandleFunc("POST /v1/metrics", h.otlpMetrics)
+	mux.HandleFunc("POST /v1/traces", h.preAuthGate(h.otlpTraces))
+	mux.HandleFunc("POST /v1/metrics", h.preAuthGate(h.otlpMetrics))
 	// Свой минимальный эндпоинт (стандарта пуша pprof нет); канон — /api/v1/*,
 	// /profiles/pprof — алиас до 2.0.
-	mux.HandleFunc("POST /api/v1/profiles/pprof", h.pprofIngest)
-	mux.HandleFunc("POST /profiles/pprof", h.deprecatedAlias(DeprecatedProfilePprof, h.pprofIngest))
+	mux.HandleFunc("POST /api/v1/profiles/pprof", h.preAuthGate(h.pprofIngest))
+	mux.HandleFunc("POST /profiles/pprof", h.deprecatedAlias(DeprecatedProfilePprof, h.preAuthGate(h.pprofIngest)))
 	// /v1/logs — OTLP-стандарт, не переезжает; /api/v1/logs — наш NDJSON-канон,
 	// /logs — алиас до 2.0.
-	mux.HandleFunc("POST /v1/logs", h.otlpLogs)
-	mux.HandleFunc("POST /api/v1/logs", h.logsNDJSON)
-	mux.HandleFunc("POST /logs", h.deprecatedAlias(DeprecatedLogs, h.logsNDJSON))
+	mux.HandleFunc("POST /v1/logs", h.preAuthGate(h.otlpLogs))
+	mux.HandleFunc("POST /api/v1/logs", h.preAuthGate(h.logsNDJSON))
+	mux.HandleFunc("POST /logs", h.deprecatedAlias(DeprecatedLogs, h.preAuthGate(h.logsNDJSON)))
 	// Server-to-server вход из CI, без CORS/preflight. Обе формы канона
 	// регистрируются явно: CI-клиенты редиректы на POST не следуют.
-	mux.HandleFunc("POST /api/v1/{project}/deployments", h.deploymentsIngest)
-	mux.HandleFunc("POST /api/v1/{project}/deployments/{$}", h.deploymentsIngest)
+	mux.HandleFunc("POST /api/v1/{project}/deployments", h.preAuthGate(h.deploymentsIngest))
+	mux.HandleFunc("POST /api/v1/{project}/deployments/{$}", h.preAuthGate(h.deploymentsIngest))
 	mux.HandleFunc("POST /api/{project}/deployments/{$}",
-		h.deprecatedAlias(DeprecatedDeployments, h.deploymentsIngest))
+		h.deprecatedAlias(DeprecatedDeployments, h.preAuthGate(h.deploymentsIngest)))
 }
 
 // DSN публичен по замыслу — credentials не используются, поэтому
@@ -346,6 +381,26 @@ func corsPreflight(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// За реверс-прокси это адрес прокси — GOTCHA_TRUSTED_PROXIES здесь не читается.
+func preAuthClientIP(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+// До authenticate/otlpAuthenticate на каждом маршруте приёма.
+func (h *Handler) preAuthGate(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if h.preAuth != nil && !h.preAuth.Allow(preAuthClientIP(r)) {
+			w.Header().Set("Retry-After", "1")
+			writeJSONError(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		}
+		next(w, r)
+	}
+}
+
 // Считает отказ в обе self-метрики. 403, а не 401 (даже на OTLP): ключ
 // резолвится успешно, просто не для этого эндпоинта.
 func (h *Handler) scopeReject(w http.ResponseWriter, r *http.Request, signal IngestSignal, projectID int64) {
@@ -367,7 +422,7 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, signal In
 	if pub == "" {
 		h.countKeyReject(KeyRejectMissingKey, r.URL.Path)
 		h.countRejected(RejectKeyUnknown, signal)
-		h.touchSignal(projectID, ingestsignal.KindKeyInvalid)
+		h.touchUnverifiedSignal(r, projectID, ingestsignal.KindKeyInvalid)
 		writeJSONError(w, http.StatusUnauthorized, "missing sentry_key")
 		return org.Key{}, false
 	}
@@ -376,7 +431,7 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request, signal In
 	case errors.Is(err, org.ErrNotFound):
 		h.countKeyReject(KeyRejectInvalidKey, r.URL.Path)
 		h.countRejected(RejectKeyUnknown, signal)
-		h.touchSignal(projectID, ingestsignal.KindKeyInvalid)
+		h.touchUnverifiedSignal(r, projectID, ingestsignal.KindKeyInvalid)
 		writeJSONError(w, http.StatusForbidden, "invalid sentry_key")
 		return org.Key{}, false
 	case err != nil:
