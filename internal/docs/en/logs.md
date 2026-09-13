@@ -82,8 +82,61 @@ The value is `key:value`, split on the first `:` (the value itself may
 contain a colon, e.g. a URL: `attr=http.url:http://example.com/x`). To filter
 on a **resource** attribute (`resource_attrs`, not `log_attributes`), prefix
 with `res:`: `attr=res:host.name:web-01`. Multiple `attr` parameters narrow
-the result (logical AND). Only exact match is supported — regular
-expressions and "not equal" are out of scope for the MVP.
+the result (logical AND). Only exact match is supported — there's no regular
+expression matching; excluding a value ("not equal") is a separate
+mechanism, see ["Exclusion filters"](#exclusion-filters) below.
+
+The page's filters (exclusions and pinpoint `attr` included) are reflected in
+the page's own URL — handy for sharing a link to a slice or bookmarking it,
+but the shape and set of the interface's query parameters aren't part of the
+compatibility promise (see the [Versioning policy](/docs/versioning)) and can change in
+any release.
+
+### Exclusion filters
+
+Besides "keep only", the list can be narrowed the other way — "drop this
+value". Every value in the "Severity", "Service", "Environment", and
+"Attributes" facets has a separate "Exclude" action next to the regular
+click-to-filter one; the same action exists for severity, service, and
+attribute values right in an expanded log row (not for environment — it has
+no field of its own in the row, only in the facet). Each exclusion shows up
+as its own chip under the filter form, with its own removal cross,
+independent of the "keep" conditions.
+
+Exclusions have their own query parameters in the URL, one per dimension:
+`severity_not`, `service_not`, `environment_not`, `attr_not` (the same
+`key:value`/`res:key:value` format as `attr`), and `q_not` — excluding a
+substring in the record text. `q_not` has no button of its own in the UI: it
+can only be built by hand in the address bar.
+
+### Saved filters
+
+The "Saved filters" panel above the list (collapsible) stores the current
+filter's conditions (severity, service, environment, text search,
+`attr`/`res:`, and every exclusion — but not the selected time range) under a
+name, so a slice doesn't need to be rebuilt from scratch every time:
+
+- **"Mine"** — personal filters: only their creator can see or edit them.
+- **"Shared"** — filters shared with the whole project: anyone with project
+  access can see them, but only an organization owner or admin can create,
+  edit, or delete one (not just any project team member — a narrower right
+  than the "project operator" used elsewhere in the docs, see [Roles and
+  permissions](/docs/teams)); without that role, the "Make shared for the
+  project" checkbox simply doesn't appear, whether saving a new filter or
+  editing an existing personal one.
+- **"Make default"** — a personal setting of whoever turns it on (not
+  project-wide): the next time the logs screen is opened with no explicit
+  conditions in the URL, that filter is applied automatically, and the notice
+  about it carries a "Show all" link that clears the default for the current
+  view without touching the saved filter itself.
+- Up to 30 personal filters per user, up to 30 shared filters per project;
+  up to 20 conditions per filter, names up to 60 characters; reusing a name
+  within the same group ("Mine" for that user, or "Shared") is rejected with
+  its own error.
+- The "Filter format is outdated, can't be applied" note isn't about the
+  conditions themselves — it's about the version of their internal storage
+  format: a filter saved before an incompatible format change stays in the
+  list (and can still be deleted) but can no longer be applied as-is.
 
 ### Volume histogram
 
@@ -289,6 +342,13 @@ The raw `severity_number`/`severity_text` are kept alongside the canonical
   of ingest, `GOTCHA_MAX_EVENT_BYTES` (see [Configuration](/docs/configuration))
   — a body larger than the cap is rejected with `413`.
 - Exceeding the per-DSN rate limit, or running out of quota, returns `429`.
+- If the ClickHouse write buffer is 95% full or more, the whole request is
+  rejected with `503` and a `Retry-After` header — no line from the body is
+  accepted, and retrying doesn't create duplicates (see [Monitoring gotcha
+  itself](/docs/self-monitoring) — the `overloaded` reason). The quota isn't
+  charged on this kind of rejection either — the overload check runs before
+  it's deducted, so retrying is safe on that front too. Retrying after a
+  `503` is safe as long as you honor `Retry-After`.
 
 ## Ingest window
 

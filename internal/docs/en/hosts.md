@@ -79,6 +79,7 @@ journalctl -u gotcha-agent -n 50
 ```
 
 - a `401` in the log means the key in `/etc/gotcha-agent/gotcha-agent.env` is wrong (a revoked key, for instance): fix `GOTCHA_AGENT_INGEST_KEY` and run `sudo systemctl restart gotcha-agent`;
+- no errors in the log, the agent ships without failing, and the host's metric points show up on the general "Metrics" page — the key works but is the wrong type: `GOTCHA_AGENT_INGEST_KEY` holds a key from the project's DSN (`browser`/`server`) instead of an `agent`-type key. Ingest accepts that key for ordinary metrics but won't let it register a host — reissue or re-copy an `agent`-type key from the project settings (see "Connecting" above);
 - connection or TLS errors mean the instance isn't reachable from this host at `GOTCHA_AGENT_ENDPOINT` (see "Closed networks" above), or its certificate is self-signed (`GOTCHA_AGENT_CA_CERT`);
 - if the unit doesn't start at all, `journalctl -u gotcha-agent` says why: the agent validates its config at startup and names the offending variable;
 - the fastest way to check the config itself without touching the live process: `sudo systemd-run --quiet --wait --pipe -p EnvironmentFile=/etc/gotcha-agent/gotcha-agent.env /usr/local/bin/gotcha-agent --check` (the installer runs this same check itself).
@@ -88,7 +89,7 @@ journalctl -u gotcha-agent -n 50
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `GOTCHA_AGENT_ENDPOINT` | yes | — | The instance's base URL, without a path (same meaning as `endpoint` in the collector config). Must be an absolute `http(s)` URL with no query or fragment; a trailing slash is stripped automatically. |
-| `GOTCHA_AGENT_INGEST_KEY` | yes | — | The project's public key — the same one used in the DSN and in the collector config's `Authorization` header. |
+| `GOTCHA_AGENT_INGEST_KEY` | yes | — | The project's `agent`-type key (see "Connecting" above) — **not** the public key from the project's DSN: that one is typed `browser`/`server`, ingest accepts it with `200`, but the host never registers (see [Ingest keys](/docs/keys)). The same key also goes into the collector config's `Authorization` header below. |
 | `GOTCHA_AGENT_INTERVAL_SECONDS` | no | `30` | Collection and export interval, in whole seconds. Valid range **10–300**: lower risks self-DoS'ing ingest with your own key, higher causes false "Silence" threshold trips. |
 | `GOTCHA_AGENT_HOSTNAME` | no | the server's `os.Hostname()` | Overrides `host.name`, for when the system hostname isn't what you want on the card. |
 | `GOTCHA_AGENT_CA_CERT` | no | *(empty)* | Path to a PEM CA file — for instances with a self-signed TLS certificate. The recommended way to trust such an instance. |
@@ -170,7 +171,7 @@ service:
       exporters: [otlphttp]
 ```
 
-`endpoint` is the instance's **base** URL, without `/v1/metrics` — the `otlphttp` exporter appends the path itself. The key in the `Authorization` header is the same project public key used in the project's DSN (see [SDK & integrations](/docs/sdk)); the config carries the same visibility boundary as the DSN — available to anyone with access to the project.
+`endpoint` is the instance's **base** URL, without `/v1/metrics` — the `otlphttp` exporter appends the path itself. The key in the `Authorization` header is the project's `agent`-type key (see "Connecting" above and [Ingest keys](/docs/keys)), **not** the key from the project's DSN: that one is typed `browser`/`server`, and with it the host never registers — ingest responds `200`, the points land in the general "Metrics" page, but the host never shows up under `/projects/{id}/hosts`, with no error in the collector's log at all. The config carries the same visibility boundary as the DSN — available to anyone with access to the project.
 
 `system.cpu.logical.count` is enabled explicitly: without it there's nothing to divide load average by for the "per core" chart or threshold. `system.uptime` (the `system` scraper) is enabled explicitly for the uptime shown on the host's card — on its own it feeds no chart or threshold. The rest of each scraper's metrics are enabled by whatever default set ships with your `otelcol-contrib` version — only the ones the charts, thresholds, and card need directly are listed explicitly.
 
@@ -187,7 +188,7 @@ sudo systemctl status otelcol-contrib
 
 #### 4. Verify the host showed up
 
-With a 30-second collection interval plus network delivery, the first point usually reaches ingest within a minute of the collector starting — open `/projects/{id}/hosts` and refresh. If the host doesn't appear after a couple of minutes, `systemctl status otelcol-contrib` and `journalctl -u otelcol-contrib` will show whether export is happening at all (a wrong key makes ingest respond `401`, which the collector logs).
+With a 30-second collection interval plus network delivery, the first point usually reaches ingest within a minute of the collector starting — open `/projects/{id}/hosts` and refresh. If the host doesn't appear after a couple of minutes, `systemctl status otelcol-contrib` and `journalctl -u otelcol-contrib` will show whether export is happening at all (a wrong or revoked key makes ingest respond `401`, which the collector logs). If the collector's log is clean and the host's points do show up on the general "Metrics" page but not under "Hosts" — the key in the `Authorization` header works but isn't `agent`-typed: it's a key from the project's DSN (`browser`/`server`), which ingest accepts for metrics but can't use to register a host (see "Connecting" above).
 
 ## Charts and thresholds: which metrics they need
 

@@ -47,7 +47,12 @@ docker inspect --format '{{json .State.Health}}' gotcha-gotcha-1
 To make that state visible from the outside, don't watch the label — watch the
 service: point an uptime monitor at `/readyz` from another gotcha instance
 (uptime monitoring of an HTTP endpoint is exactly what the product does), or
-alert on the `gotcha_up` metric of your scraper.
+alert on your scraper's standard scrape metric — `up{job="gotcha"} == 0`. The
+name `up` and its labels (`job`, `instance`) are written by the scraper
+itself under the Prometheus format spec for EVERY target — it isn't one of
+gotcha's own self-metrics listed below, and there's no `.Add` call for it in
+its code; `job` comes from the scrape config's `job_name` (`gotcha` in the
+example below) — adjust the rule if you use a different name or relabel it.
 
 There is deliberately no auto-healer watching the Docker socket in the stock
 setup: access to the socket is root on the host, and shipping that would trade
