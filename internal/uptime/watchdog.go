@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
 // доля Interval, не меньше пола — иначе повисший запрос держит self-метрику
@@ -246,7 +248,7 @@ func (w *Watchdog) checkSSL(ctx context.Context) {
 			// this tick (or an earlier one) — do not notify.
 			continue
 		}
-		if err := w.Notifier.Notify(ctx, Event{Kind: "ssl_expiring", Monitor: m, DaysLeft: daysLeft}); err != nil {
+		if err := w.Notifier.Notify(ctx, Event{Kind: notify.KindSSLExpiring, Monitor: m, DaysLeft: daysLeft}); err != nil {
 			slog.Warn("uptime: watchdog: ssl notify failed after claim", "monitor_id", m.ID, "days", due, "error", err)
 		}
 	}
@@ -294,7 +296,7 @@ func (w *Watchdog) checkReminders(ctx context.Context) {
 		}
 		duration := int64(now.Sub(it.Incident.StartedAt).Seconds())
 		ev := Event{
-			Kind:            "reminder",
+			Kind:            notify.KindReminder,
 			Monitor:         it.Monitor,
 			Incident:        it.Incident,
 			Regions:         it.Incident.Regions,

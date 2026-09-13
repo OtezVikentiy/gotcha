@@ -62,7 +62,7 @@ func dispatchIssueAlertFixture(t *testing.T, allowsDetails bool) map[string]any 
 	}
 	in := escalation.DispatchInput{
 		ProjectID: fixtureProjectID,
-		Kind:      "new_issue",
+		Kind:      notify.KindNewIssue,
 		Subject: i18n.Tf(ctx, "notify.issue.subject",
 			"kind", i18n.T(ctx, "notify.issue.kind.new_issue"), "title", fixtureTitle),
 		Body: i18n.Tf(ctx, "notify.issue.body",

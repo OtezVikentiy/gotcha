@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
+	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
 type Event struct {
@@ -240,7 +241,7 @@ func (d *Detector) openIncident(ctx context.Context, m Monitor, states []State, 
 
 func downEvent(m Monitor, inc Incident, downRegions []string, cause string) Event {
 	return Event{
-		Kind:     "down",
+		Kind:     notify.KindDown,
 		Monitor:  m,
 		Incident: inc,
 		Regions:  downRegions,

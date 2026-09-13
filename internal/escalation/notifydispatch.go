@@ -93,6 +93,21 @@ type DispatchInput struct {
 	IdempotencyKeyPrefix string
 }
 
+// Имена базовых полей payload — тех, что Dispatch кладёт поверх Extra.
+var dispatchBaseKeys = []string{"kind", "project_id", "url", "subject", "body", "channel_kind", "target"}
+
+// collidedExtraKeys — ключи Extra, совпавшие с базовым полем; отправитель
+// сам не узнает об этом иначе, кроме как из журнала.
+func collidedExtraKeys(extra map[string]any) []string {
+	var collided []string
+	for _, k := range dispatchBaseKeys {
+		if _, ok := extra[k]; ok {
+			collided = append(collided, k)
+		}
+	}
+	return collided
+}
+
 // Возвращает ID каналов, в которые задача РЕАЛЬНО поставлена — логировать их
 // в incident_escalations или нет, решает вызывающая оркестрация, не Dispatch.
 func Dispatch(ctx context.Context, deps DispatchDeps, in DispatchInput) ([]int64, error) {
@@ -117,20 +132,24 @@ func Dispatch(ctx context.Context, deps DispatchDeps, in DispatchInput) ([]int64
 				"project_id", in.ProjectID, "channel_id", ch.ID)
 			continue
 		}
-		payload := map[string]any{
-			"kind":         in.Kind,
-			"project_id":   in.ProjectID,
-			"url":          in.URL,
-			"subject":      subject,
-			"body":         body,
-			"channel_kind": ch.Kind,
-			"target":       ch.Target,
-			// Секрета в payload нет намеренно: notify.Worker достаёт его
-			// по channel_id в момент отправки, иначе обесценил бы шифрование secret.
-		}
+		// Инвариант: базовые поля кладутся ПОСЛЕ Extra и потому всегда
+		// выигрывают — Extra не может подменить kind/project_id и другие маршрутные поля.
+		payload := make(map[string]any, len(in.Extra)+len(dispatchBaseKeys))
 		for k, v := range in.Extra {
 			payload[k] = v
 		}
+		for _, k := range collidedExtraKeys(in.Extra) {
+			slog.Warn(deps.LogTag+": notify: Extra key collides with a base payload field, base wins", "key", k)
+		}
+		payload["kind"] = in.Kind
+		payload["project_id"] = in.ProjectID
+		payload["url"] = in.URL
+		payload["subject"] = subject
+		payload["body"] = body
+		payload["channel_kind"] = ch.Kind
+		payload["target"] = ch.Target
+		// Секрета в payload нет намеренно: notify.Worker достаёт его по
+		// channel_id в момент отправки, иначе обесценил бы шифрование secret.
 		// Гейт трансграничной передачи: получателю вне контура оператора
 		// уходит обезличенный payload (см. notify.RedactExternalPayload).
 		if !ch.AllowsDetails {

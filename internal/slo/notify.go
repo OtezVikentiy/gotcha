@@ -116,9 +116,9 @@ func (n *SLOBurnNotifier) dispatch(ctx context.Context, ev SLOEvent, channelIDs 
 
 	// два kind вместо одного: поле "opened" уходит через Extra и вырезается на
 	// обезличенном пути — без разных kind получатель не отличил бы тревогу от отбоя.
-	kind := "slo_burn_open"
+	kind := notify.KindSLOBurnOpen
 	if !ev.Opened {
-		kind = "slo_burn_close"
+		kind = notify.KindSLOBurnClose
 	}
 
 	dchans := make([]escalation.DispatchChannel, 0, len(channels))

@@ -17,9 +17,9 @@ import (
 )
 
 const (
-	hostAlertOpenKind     = "host_alert_open"
-	hostAlertResolvedKind = "host_alert_resolved"
-	hostRetiredKind       = "host_retired"
+	hostAlertOpenKind     = notify.KindHostAlertOpen
+	hostAlertResolvedKind = notify.KindHostAlertResolved
+	hostRetiredKind       = notify.KindHostRetired
 )
 
 type depCounter interface {

@@ -43,41 +43,41 @@ var externalSafeKeys = map[string]struct{}{
 	"days_left":        {},
 }
 
-// Enum закрыт — сюда обязан попасть каждый kind каждого нотифаера
-// (см. TestRedactedKindLabelsCoverAllKinds).
+// Enum закрыт — сюда обязан попасть каждый kind реестра (kind.go), сверяет
+// internal/guards; ключи — те же константы реестра, не свои литералы.
 var redactedKindKeys = map[string]string{
 	// issue-алерты (alert.Evaluator)
-	"new_issue":  "notify.issue.kind.new_issue",
-	"regression": "notify.issue.kind.regression",
-	"spike":      "notify.issue.kind.spike",
+	KindNewIssue:   "notify.issue.kind.new_issue",
+	KindRegression: "notify.issue.kind.regression",
+	KindSpike:      "notify.issue.kind.spike",
 	// сводка подавленных уведомлений (alert.Digest)
-	"suppressed_digest": "notify.redacted.kind.suppressed_digest",
+	KindSuppressedDigest: "notify.redacted.kind.suppressed_digest",
 	// метрические алерты (metric.Notifier)
-	"metric_alert_open":     "notify.redacted.kind.metric_alert_open",
-	"metric_alert_resolved": "notify.redacted.kind.metric_alert_resolved",
+	KindMetricAlertOpen:     "notify.redacted.kind.metric_alert_open",
+	KindMetricAlertResolved: "notify.redacted.kind.metric_alert_resolved",
 	// perf-находки (trace.Notifier)
-	"n_plus_one":    "perf.issues.kind.n_plus_one",
-	"slow_db_query": "perf.issues.kind.slow_db_query",
-	"http_flood":    "perf.issues.kind.http_flood",
+	KindNPlusOne:    "perf.issues.kind.n_plus_one",
+	KindSlowDBQuery: "perf.issues.kind.slow_db_query",
+	KindHTTPFlood:   "perf.issues.kind.http_flood",
 	// регрессии латентности (trace.RegressionNotifier)
-	"regression_open":  "notify.redacted.kind.regression_open",
-	"regression_close": "notify.redacted.kind.regression_close",
+	KindRegressionOpen:  "notify.redacted.kind.regression_open",
+	KindRegressionClose: "notify.redacted.kind.regression_close",
 
-	"slo_burn_open":  "notify.redacted.kind.slo_burn_open",
-	"slo_burn_close": "notify.redacted.kind.slo_burn_close",
+	KindSLOBurnOpen:  "notify.redacted.kind.slo_burn_open",
+	KindSLOBurnClose: "notify.redacted.kind.slo_burn_close",
 	// регрессии профилей (profile.RegressionNotifier)
-	"profile_regression_open":     "notify.redacted.kind.profile_regression_open",
-	"profile_regression_resolved": "notify.redacted.kind.profile_regression_resolved",
+	KindProfileRegressionOpen:     "notify.redacted.kind.profile_regression_open",
+	KindProfileRegressionResolved: "notify.redacted.kind.profile_regression_resolved",
 	// аптайм (uptime.OutboxNotifier)
-	"down":         "notify.redacted.kind.down",
-	"up":           "notify.redacted.kind.up",
-	"ssl_expiring": "notify.redacted.kind.ssl_expiring",
-	"reminder":     "notify.redacted.kind.reminder",
+	KindDown:        "notify.redacted.kind.down",
+	KindUp:          "notify.redacted.kind.up",
+	KindSSLExpiring: "notify.redacted.kind.ssl_expiring",
+	KindReminder:    "notify.redacted.kind.reminder",
 	// встроенные инциденты хоста (host.HostNotifier)
-	"host_alert_open":     "notify.redacted.kind.host_alert_open",
-	"host_alert_resolved": "notify.redacted.kind.host_alert_resolved",
+	KindHostAlertOpen:     "notify.redacted.kind.host_alert_open",
+	KindHostAlertResolved: "notify.redacted.kind.host_alert_resolved",
 	// снятие хоста с наблюдения по ретенции (host.Retirer)
-	"host_retired": "notify.redacted.kind.host_retired",
+	KindHostRetired: "notify.redacted.kind.host_retired",
 }
 
 // Незнакомый вид уходит сырым enum'ом — честнее, чем прятать за пустой строкой.

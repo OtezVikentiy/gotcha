@@ -86,7 +86,7 @@ func (n *OutboxNotifier) NotifyRecovery(ctx context.Context, incidentID int64, c
 	if inc.ResolvedAt != nil {
 		duration = int64(inc.ResolvedAt.Sub(inc.StartedAt).Seconds())
 	}
-	ev := Event{Kind: "up", Monitor: mon, Incident: inc, DurationSeconds: duration}
+	ev := Event{Kind: notify.KindUp, Monitor: mon, Incident: inc, DurationSeconds: duration}
 	_, err = n.dispatch(ctx, ev, channelIDs, "")
 	return err
 }

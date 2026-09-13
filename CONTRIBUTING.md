@@ -104,13 +104,14 @@ and commit both the `.templ` source and the regenerated `*_templ.go` output.
 
 Gotcha serves a strict CSP (`default-src 'self'; base-uri 'none';
 form-action 'self'; frame-ancestors 'none'`) with no `unsafe-inline` and no
-inline `<script>`/`<style>` or `style="..."` attributes. All interactivity
-must be achieved with native HTML/CSS mechanisms — primarily `<details>`/
-`<summary>` for disclosure widgets and CSS `:target` for state that needs to
-survive without JavaScript — plus htmx for anything that genuinely needs a
-server round-trip. Do not introduce inline event handlers, inline styles, or
-new script sources; if a change seems to require one, look for a CSS-only or
-htmx-based way to achieve it first.
+inline `<script>`/`<style>` or `style="..."` attributes. Interactivity is
+achieved with native HTML/CSS mechanisms first — `<details>`/`<summary>` for
+disclosure widgets, CSS `:target` for state that needs to survive without
+JavaScript, and plain HTML forms with a full server round-trip for anything
+that changes data — plus a small amount of vanilla JavaScript under
+`internal/web/static/` (no framework) where that genuinely isn't enough. Do
+not introduce inline event handlers, inline styles, or new script sources; if
+a change seems to require one, look for a CSS-only way to achieve it first.
 
 ## i18n (RU/EN catalog parity)
 
@@ -121,6 +122,19 @@ locale will silently fall back to the raw key for the other). When adding or
 changing user-facing strings, update both `ru.json` and `en.json` in the same
 change.
 
+## CI
+
+`make check` catches most of what CI checks, but not all of it — CI (see
+`.github/workflows/ci.yml`) additionally runs `shellcheck` on `install.sh`,
+`node --test` on the plain-JS files under `internal/web/static/`,
+`govulncheck`, and fails if `go mod tidy`, `go mod vendor`, or
+`templ generate` produces any diff against what's committed. It then runs
+the full test suite (including integration tests against real
+PostgreSQL/ClickHouse containers) with `scripts/coverage.sh`, which enforces
+per-area and per-package coverage floors — **these floors are a ratchet: a
+PR that lowers coverage below the current floor fails CI**, even if the
+change itself isn't about tests.
+
 ## Commit / PR conventions
 
 - Keep commits focused; write commit messages that explain *why*, not just
@@ -128,7 +142,8 @@ change.
 - Prefer conventional prefixes where they fit (`feat:`, `fix:`, `docs:`,
   `refactor:`, `test:`) — see `git log` for existing style.
 - Run `make check` (or at minimum `gofmt`, `go vet ./...`, and the tests
-  relevant to your change) before opening a PR.
+  relevant to your change) before opening a PR — see [CI](#ci) above for what
+  else the pipeline checks.
 - If your change touches `.templ` files, make sure the regenerated
   `*_templ.go` files are included in the same commit.
 - If your change adds or changes user-facing text, update both i18n

@@ -14,14 +14,15 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/secretbox"
 )
 
 // Kinds правил — совпадают с CHECK-ограничением alert_rules.kind.
 const (
-	KindNewIssue   = "new_issue"
-	KindRegression = "regression"
-	KindSpike      = "spike"
+	KindNewIssue   = notify.KindNewIssue
+	KindRegression = notify.KindRegression
+	KindSpike      = notify.KindSpike
 )
 
 // Kinds каналов — совпадают с CHECK-ограничением alert_channels.kind.

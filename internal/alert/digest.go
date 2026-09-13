@@ -201,7 +201,7 @@ func (d *Digester) send(ctx context.Context, b SuppressedBatch) error {
 			continue
 		}
 		payload := map[string]any{
-			"kind":         "suppressed_digest",
+			"kind":         notify.KindSuppressedDigest,
 			"project_id":   b.ProjectID,
 			"count":        b.Suppressed,
 			"url":          url,

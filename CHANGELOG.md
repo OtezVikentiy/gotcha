@@ -15,6 +15,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   startup and exposed as the `gotcha_retention_days{dataset="…"}` metric,
   reflecting whichever replica last applied it — useful when replicas run
   with different `.env` files or with `GOTCHA_AUTO_MIGRATE_ENABLED=false`.
+- `GOTCHA_SMTP_REQUIRE_TLS` refuses to send an email if the server didn't
+  offer STARTTLS, instead of falling back to a plaintext connection. Default
+  is `false` (unchanged behavior); enable it if you need protection against
+  an active tamperer stripping STARTTLS from the server's `EHLO` reply.
+- A new `increase` aggregation for metric alert rules on monotonic counters
+  computes the actual increase over the rule's window, instead of the
+  average per-second rate the other aggregations give you — a threshold like
+  "10 errors in 5 minutes" now means that, rather than depending on how often
+  the metric happens to be scraped. Existing rules are unaffected; three
+  built-in service-recipe rules on counters now use it out of the box.
+- Startup now logs which endpoints serve without any authentication
+  (`/healthz`, `/readyz`, `/version`, `/metrics`) and points at the
+  [Hardening](internal/docs/en/hardening.md) guide for restricting them at
+  the network layer — the app has no way to tell whether its port is
+  actually reachable from outside, so this is logged unconditionally on
+  every start.
 
 ### Changed
 - Self-registration and email-based auto-linking through a generic OIDC
@@ -67,6 +83,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ticks could resolve an open burn-rate incident and send "SLO recovered"
   everywhere. A short evaluation window also no longer picks up a stale bucket
   whose interval merely overlaps it, as if it were current data.
+- An ingest request's quota was charged before its body was parsed, so a
+  malformed or oversized request cost quota without accepting anything. An
+  envelope made up entirely of profiles, on an instance with profile ingest
+  disabled, answered `200` and vanished without a trace — it's now counted as
+  dropped like any other disabled sink. A remote uptime probe result
+  submitted for a check whose lease had already expired or been re-issued to
+  another probe used to be counted as `accepted`; it now gets its own
+  `dropped` count, so the three counts in the response always add up to the
+  batch size.
+- The metric and profile writers now count the rows they drop when their
+  ClickHouse write buffer overflows and refund the ingest quota already
+  charged for them — the same drop accounting and quota refund the event and
+  transaction writers already had, now on all four. A trace page with no
+  spans no longer always blames the retention window for their absence; it
+  now says so only when the trace is actually old enough, and reports that
+  the spans didn't arrive otherwise (including when checking is itself
+  unavailable).
+- A suppressed-alerts digest whose delivery failed used to disappear for
+  good, because its counter had already been reset to zero before the send
+  was attempted; it's now restored and picked up by the next run. The digest
+  and spike-detection background loops now report their last-tick time and
+  duration like the other evaluators, so a stalled or dead loop is visible
+  instead of looking identical to "nothing to report". A delivery could
+  previously be marked as sent by a retry attempt that wasn't the one that
+  actually sent it, occasionally causing a duplicate email, webhook, or
+  Telegram message. The retention purge across ClickHouse's nine tables now
+  runs under the same lock as deletion processing, instead of every replica
+  running a redundant full pass at the same time. A degradation-alert
+  channel with a broken secret could hold its hourly notification slot
+  forever instead of releasing it for the next attempt.
+- The host, metric-rule, and SLO evaluators, and the escalation scheduler,
+  now resume where the previous tick left off instead of always starting
+  from the top of their list. Previously, once there was more to check than
+  fit in one tick's time budget, whatever came after the cut-off point was
+  never evaluated at all — and during an incident storm, the scheduler kept
+  re-escalating the same oldest incidents while newer ones waited
+  indefinitely. How much was skipped in the last tick is now visible as a
+  metric.
+- A host's recent-incidents list and a project's regression list only looked
+  at the last 500 database rows and filtered further in the application; on
+  an active project, those 500 rows could contain none of the ones actually
+  wanted, showing an empty or incomplete list even though matching data
+  existed.
+- The 256 MiB memory profile no longer hardcodes the ClickHouse writer
+  buffer size in its Docker Compose override — it's derived from the memory
+  limit again, the same way the heap ceiling already is; the hardcoded value
+  had pushed real buffer usage to about 70% of the heap ceiling instead of
+  the documented 60%. Warnings about the configuration logged at startup now
+  use the configured log level and format instead of always printing in the
+  default one before it took effect. The HTTPS-required warning for
+  `GOTCHA_HSTS_ENABLED` no longer fires on a default install using a local
+  base URL.
+- Two text/background color combinations (the warning banner and the
+  danger-outline button's hover state) fell slightly short of the contrast
+  ratio the product otherwise requires; both now use the token meant for
+  text on that background.
+- A modal closed by navigating to a server-rendered page could leave stale
+  open-state behind, permanently breaking keyboard navigation to the next
+  modal, or showing two modals open at once. Log-search suggestions could
+  disappear the instant a keyboard user reached them, because hiding them
+  was tied to the search field losing focus rather than to focus leaving the
+  widget entirely.
+- The SMTP configuration example used port `465` (implicit TLS), which this
+  client cannot speak at all: a server on that port never sends a plaintext
+  greeting, so the connection just hangs until it times out and no email is
+  delivered, with no error anywhere. The example now uses port `587`.
 
 ### Security
 - A metric value at the extreme edge of what `float64` can represent could
@@ -102,6 +184,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gigabytes of heap and multiple seconds of CPU time in one parse. Parsing
   that hits its budget now fails fast and is logged with the reason, rather
   than silently truncating or stalling.
+- No ingest route enforced any rate limit before authenticating the DSN key,
+  so a flood of requests carrying random keys reached the key cache and the
+  database — which has a small, instance-wide connection pool — before being
+  rejected. Every ingest route except the CORS preflight now rate-limits by
+  the client's connection IP address before authentication (configurable via
+  `GOTCHA_INGEST_PREAUTH_RATE_PER_SEC`). Separately, the "invalid key" signal
+  shown to a project's owner used to be recorded against whatever project id
+  appeared in the request URL, checked before the key itself was validated —
+  scanning project ids could show an owner an alert for an attempt that was
+  never actually theirs. That signal now has its own, much tighter rate
+  limit (`GOTCHA_INGEST_SIGNAL_RATE_PER_SEC`) that a real misconfigured
+  client won't hit but an enumeration attempt will.
 
 ## [1.3.1] - 2026-09-11
 

@@ -119,10 +119,15 @@ func (n *RegressionNotifier) dispatch(ctx context.Context, ev ProfileRegressionE
 		})
 	}
 
+	kind := notify.KindProfileRegressionResolved
+	if ev.Opened {
+		kind = notify.KindProfileRegressionOpen
+	}
+
 	return escalation.Dispatch(ctx,
 		escalation.DispatchDeps{Outbox: n.Outbox, EmailEnabled: n.EmailEnabled, Projects: n.Projects, LogTag: "profile"},
 		escalation.DispatchInput{
-			ProjectID: ev.ProjectID, Kind: regressionKind(ev), Subject: subject, Body: body,
+			ProjectID: ev.ProjectID, Kind: kind, Subject: subject, Body: body,
 			URL: url,
 			Extra: map[string]any{
 				"service":        ev.Service,
@@ -134,13 +139,6 @@ func (n *RegressionNotifier) dispatch(ctx context.Context, ev ProfileRegressionE
 			},
 			ChannelIDs: channelIDs, Channels: dchans,
 		})
-}
-
-func regressionKind(ev ProfileRegressionEvent) string {
-	if ev.Opened {
-		return "profile_regression_open"
-	}
-	return "profile_regression_resolved"
 }
 
 func regressionSubject(ctx context.Context, ev ProfileRegressionEvent) string {

@@ -205,6 +205,13 @@ Other event kinds send the same routing minimum (`kind`, `project_id`, `url`, `s
 
 - Suppressed alerts digest (`kind` = `suppressed_digest`) — `count`: how many notifications were suppressed since the last digest.
 - Performance regression (`kind` = `n_plus_one` / `slow_db_query` / `http_flood`) — `perf_issue_id`, `title`, `culprit`, `count`, `regression` (boolean: `true` means the regression closed, `false` means a new finding).
+- Metric threshold alert (`kind` = `metric_alert_open` / `metric_alert_resolved`) — `metric`, `aggregation`, `comparator`, `threshold`, `current_value`, `peak_value`.
+- Latency regression (`kind` = `regression_open` / `regression_close`) — `target_name`, `metric`, `baseline_value`, `current_value`, `pct_increase`.
+- SLO error-budget burn (`kind` = `slo_burn_open` / `slo_burn_close`) — `target_name`, `sli_kind`, `opened`, `attainment`, `budget_remaining`, `burn_rate`.
+- Profile regression (`kind` = `profile_regression_open` / `profile_regression_resolved`) — `service`, `profile_type`, `function`, `baseline_share`, `current_share`, `pct_increase`.
+- Uptime monitor (`kind` = `down` / `up` / `ssl_expiring` / `reminder`) — `monitor_id`, `monitor_name`, `regions`, `cause`, `duration_seconds`, `days_left`; only the fields that apply to that particular kind are populated.
+- Host incident (`kind` = `host_alert_open` / `host_alert_resolved`) — `host_id`, `host_name`, `host_kind`, `current_value`, `peak_value`, and `threshold`/`detail` when present.
+- Host retired from monitoring (`kind` = `host_retired`) — `host_id`, `host_name`, `host_kinds` (the kinds of incidents open on the host at the time it was retired).
 - Test notification (the channel's "Test" button) — `kind` = `channel_test`, no extra fields.
 
 ## See also

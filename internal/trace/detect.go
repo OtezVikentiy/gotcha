@@ -9,13 +9,15 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
 // Виды находок; те же значения лежат в колонке perf_issues.kind.
 const (
-	KindNPlusOne    = "n_plus_one"
-	KindSlowDBQuery = "slow_db_query"
-	KindHTTPFlood   = "http_flood"
+	KindNPlusOne    = notify.KindNPlusOne
+	KindSlowDBQuery = notify.KindSlowDBQuery
+	KindHTTPFlood   = notify.KindHTTPFlood
 )
 
 const (

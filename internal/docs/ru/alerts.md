@@ -205,6 +205,13 @@ GOTCHA_EXTERNAL_CHANNEL_DETAILS_ENABLED=true
 
 - Сводка подавленных уведомлений (`kind` = `suppressed_digest`) — `count`: сколько уведомлений подавлено с прошлой сводки.
 - Регрессия производительности (`kind` = `n_plus_one` / `slow_db_query` / `http_flood`) — `perf_issue_id`, `title`, `culprit`, `count`, `regression` (булево: `true` — регрессия закрылась, `false` — новая находка).
+- Пороговый алерт по метрике (`kind` = `metric_alert_open` / `metric_alert_resolved`) — `metric`, `aggregation`, `comparator`, `threshold`, `current_value`, `peak_value`.
+- Регрессия задержки (`kind` = `regression_open` / `regression_close`) — `target_name`, `metric`, `baseline_value`, `current_value`, `pct_increase`.
+- Прогорание бюджета ошибок SLO (`kind` = `slo_burn_open` / `slo_burn_close`) — `target_name`, `sli_kind`, `opened`, `attainment`, `budget_remaining`, `burn_rate`.
+- Регрессия профиля (`kind` = `profile_regression_open` / `profile_regression_resolved`) — `service`, `profile_type`, `function`, `baseline_share`, `current_share`, `pct_increase`.
+- Аптайм-монитор (`kind` = `down` / `up` / `ssl_expiring` / `reminder`) — `monitor_id`, `monitor_name`, `regions`, `cause`, `duration_seconds`, `days_left`; заполнены только поля, относящиеся к конкретному виду.
+- Инцидент хоста (`kind` = `host_alert_open` / `host_alert_resolved`) — `host_id`, `host_name`, `host_kind`, `current_value`, `peak_value`, при наличии — `threshold` и `detail`.
+- Хост снят с наблюдения (`kind` = `host_retired`) — `host_id`, `host_name`, `host_kinds` (виды открытых на момент снятия инцидентов хоста).
 - Тестовое уведомление (кнопка «Тест» у канала) — `kind` = `channel_test`, дополнительных полей нет.
 
 ## Смотрите также

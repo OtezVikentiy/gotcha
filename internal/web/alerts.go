@@ -428,7 +428,7 @@ func (h *Handler) alertsChannelTest(w http.ResponseWriter, r *http.Request) {
 	subject := i18n.T(lctx, "notify.test.subject")
 	body := i18n.Tf(lctx, "notify.test.body", "name", ch.Target, "url", url)
 	payload := map[string]any{
-		"kind":         "channel_test",
+		"kind":         notify.KindChannelTest,
 		"project_id":   projectID,
 		"url":          url,
 		"subject":      subject,

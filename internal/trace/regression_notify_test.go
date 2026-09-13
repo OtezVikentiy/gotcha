@@ -36,7 +36,7 @@ func TestRegressionNotifierEnqueuesPerChannel(t *testing.T) {
 
 	n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 	ev := trace.RegressionEvent{
-		Kind: "regression_open", ProjectID: pid, Target: "GET /api/users", Metric: "duration",
+		Kind: notify.KindRegressionOpen, ProjectID: pid, Target: "GET /api/users", Metric: "duration",
 		BaselineValue: 800, CurrentValue: 1200, PctIncrease: 0.5,
 	}
 	if err := n.Notify(ctx, ev); err != nil {
@@ -112,7 +112,7 @@ func TestRegressionNotifierCloseSubject(t *testing.T) {
 
 	n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 	ev := trace.RegressionEvent{
-		Kind: "regression_close", ProjectID: pid, Target: "LCP /", Metric: "lcp",
+		Kind: notify.KindRegressionClose, ProjectID: pid, Target: "LCP /", Metric: "lcp",
 		BaselineValue: 2000, CurrentValue: 2100, PctIncrease: 0.05, DurationSeconds: 3665,
 	}
 	if err := n.Notify(ctx, ev); err != nil {
@@ -156,7 +156,7 @@ func TestRegressionNotifierSkipsDisabledAndEmail(t *testing.T) {
 
 	n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", EmailEnabled: false, Details: alert.NewDetailPolicy("", nil, true)}
 	ev := trace.RegressionEvent{
-		Kind: "regression_open", ProjectID: pid, Target: "GET /x", Metric: "duration",
+		Kind: notify.KindRegressionOpen, ProjectID: pid, Target: "GET /x", Metric: "duration",
 		BaselineValue: 100, CurrentValue: 250, PctIncrease: 1.5,
 	}
 	if err := n.Notify(ctx, ev); err != nil {
@@ -179,7 +179,7 @@ func TestRegressionNotifierNoChannels(t *testing.T) {
 	pid := newPerfProject(t, pool, "regnotif3")
 	n := &trace.RegressionNotifier{Alerts: asvc, Outbox: ob, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
 	ev := trace.RegressionEvent{
-		Kind: "regression_open", ProjectID: pid, Target: "GET /none", Metric: "duration",
+		Kind: notify.KindRegressionOpen, ProjectID: pid, Target: "GET /none", Metric: "duration",
 		BaselineValue: 100, CurrentValue: 250, PctIncrease: 1.5,
 	}
 	if err := n.Notify(ctx, ev); err != nil {
@@ -204,7 +204,7 @@ func TestRegressionNotifierExternalDetailsGate(t *testing.T) {
 
 	newEv := func(pid int64) trace.RegressionEvent {
 		return trace.RegressionEvent{
-			Kind: "regression_open", ProjectID: pid, Target: "GET /api/users", Metric: "duration",
+			Kind: notify.KindRegressionOpen, ProjectID: pid, Target: "GET /api/users", Metric: "duration",
 			BaselineValue: 800, CurrentValue: 1200, PctIncrease: 0.5,
 		}
 	}
