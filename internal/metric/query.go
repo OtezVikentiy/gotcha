@@ -270,24 +270,7 @@ func (q *Query) rateSeries(ctx context.Context, projectID int64, name, environme
 	if err != nil {
 		return nil, err
 	}
-	if len(cum) < 2 {
-		return nil, nil
-	}
-	out := make([]Point, 0, len(cum)-1)
-	for i := 1; i < len(cum); i++ {
-		delta := cum[i].V - cum[i-1].V
-		if delta < 0 {
-			delta = 0
-		}
-		// Делим на реальный интервал между точками, не на ширину корзины: GROUP BY
-		// возвращает только непустые корзины — реже шага скрейп исказил бы скорость.
-		gapSec := cum[i].T.Sub(cum[i-1].T).Seconds()
-		if gapSec <= 0 {
-			gapSec = float64(stepSec)
-		}
-		out = append(out, Point{T: cum[i].T, V: delta / gapSec})
-	}
-	return out, nil
+	return rateFromCumulative(cum, stepSec), nil
 }
 
 // Сумма положительных разностей соседних точек за окно — прирост, не скорость.

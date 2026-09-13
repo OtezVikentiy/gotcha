@@ -270,6 +270,9 @@ func (e *Evaluator) Tick(ctx context.Context) error {
 	thresholdDone := len(hosts)
 	if e.Metrics != nil {
 		q := e.Metrics.WithTypeCache(metric.NewTypeCache())
+		// По (проект, вид метрики), не по хосту — так весь тик читает окно каждой
+		// метрики проекта один раз, а не по разу на каждый его хост.
+		metricCache := map[projMetricKey]hostMetricBatch{}
 		for i, h := range hosts {
 			if ctx.Err() != nil {
 				slog.Warn("host evaluator: tick budget exhausted during threshold pass",
@@ -282,13 +285,13 @@ func (e *Evaluator) Tick(ctx context.Context) error {
 				continue
 			}
 			e.evalOrCloseKind(ctx, h, "disk", eff.Settings.DiskEnabled, openKinds, func() {
-				e.evalDisk(ctx, q, h, eff.Settings, now)
+				e.evalDisk(ctx, metricCache, q, h, eff.Settings, now)
 			})
 			e.evalOrCloseKind(ctx, h, "memory", eff.Settings.MemoryEnabled, openKinds, func() {
-				e.evalMemory(ctx, q, h, eff.Settings, now)
+				e.evalMemory(ctx, metricCache, q, h, eff.Settings, now)
 			})
 			e.evalOrCloseKind(ctx, h, "load", eff.Settings.LoadEnabled, openKinds, func() {
-				e.evalLoad(ctx, q, h, eff.Settings, now)
+				e.evalLoad(ctx, metricCache, q, h, eff.Settings, now)
 			})
 		}
 	}
@@ -420,51 +423,77 @@ func warnHostQuery(ctx context.Context, msg string, h Host, err error) {
 	slog.Warn(msg, "host_id", h.ID, "error", err)
 }
 
-func (e *Evaluator) aggregate(ctx context.Context, q *metric.Query, projectID int64, name, host string, matchers []metric.LabelMatcher, agg string, now time.Time) (float64, bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, chQueryTimeout)
-	defer cancel()
-	return q.Aggregate(ctx, projectID, name, "", host, matchers, agg, now.Add(-aggregateWindow), now)
+// Ключ батча метрик хостов за один тик: одна и та же (проект, вид метрики) для всех хостов
+// проекта на этом тике — matchers/agg/name у каждого вида фиксированы вызывающим кодом.
+type projMetricKey struct {
+	projectID int64
+	kind      string
 }
 
-func (e *Evaluator) evalDisk(ctx context.Context, q *metric.Query, h Host, s Settings, now time.Time) {
-	current, ok, err := e.aggregate(ctx, q, h.ProjectID, hostmetric.FilesystemUtilization, h.Name, nil, "max", now)
-	if err != nil {
-		warnHostQuery(ctx, "host evaluator: disk aggregate failed", h, err)
+type hostMetricBatch struct {
+	values map[string]float64
+	ok     bool
+}
+
+// Один запрос на (проект, вид метрики) за тик вместо запроса на каждый хост (host вне ключа сортировки) —
+// заодно все хосты проекта видят один снимок данных, а не свой момент по ходу прохода, как было раньше.
+func (e *Evaluator) batchAggregate(ctx context.Context, cache map[projMetricKey]hostMetricBatch, q *metric.Query,
+	projectID int64, kind, name string, matchers []metric.LabelMatcher, agg string, now time.Time) hostMetricBatch {
+
+	key := projMetricKey{projectID, kind}
+	if b, ok := cache[key]; ok {
+		return b
+	}
+	qctx, cancel := context.WithTimeout(ctx, chQueryTimeout)
+	defer cancel()
+	values, err := q.AggregateByHost(qctx, projectID, name, "", matchers, agg, now.Add(-aggregateWindow), now)
+	if err != nil && ctx.Err() == nil {
+		slog.Warn("host evaluator: batch aggregate failed", "project_id", projectID, "kind", kind, "error", err)
+	}
+	b := hostMetricBatch{values: values, ok: err == nil}
+	cache[key] = b
+	return b
+}
+
+func (e *Evaluator) evalDisk(ctx context.Context, cache map[projMetricKey]hostMetricBatch, q *metric.Query, h Host, s Settings, now time.Time) {
+	b := e.batchAggregate(ctx, cache, q, h.ProjectID, "disk", hostmetric.FilesystemUtilization, nil, "max", now)
+	if !b.ok {
 		return
 	}
+	current, ok := b.values[h.Name]
 	if !ok {
 		return
 	}
 	e.applyDecision(ctx, q, h, s, "disk", current, s.DiskThreshold, now)
 }
 
-func (e *Evaluator) evalMemory(ctx context.Context, q *metric.Query, h Host, s Settings, now time.Time) {
+func (e *Evaluator) evalMemory(ctx context.Context, cache map[projMetricKey]hostMetricBatch, q *metric.Query, h Host, s Settings, now time.Time) {
 	matchers := []metric.LabelMatcher{{Key: hostmetric.AttrState, Value: "used"}}
-	current, ok, err := e.aggregate(ctx, q, h.ProjectID, hostmetric.MemoryUtilization, h.Name, matchers, "avg", now)
-	if err != nil {
-		warnHostQuery(ctx, "host evaluator: memory aggregate failed", h, err)
+	b := e.batchAggregate(ctx, cache, q, h.ProjectID, "memory", hostmetric.MemoryUtilization, matchers, "avg", now)
+	if !b.ok {
 		return
 	}
+	current, ok := b.values[h.Name]
 	if !ok {
 		return
 	}
 	e.applyDecision(ctx, q, h, s, "memory", current, s.MemoryThreshold, now)
 }
 
-func (e *Evaluator) evalLoad(ctx context.Context, q *metric.Query, h Host, s Settings, now time.Time) {
-	load, ok, err := e.aggregate(ctx, q, h.ProjectID, hostmetric.LoadAvg5m, h.Name, nil, "avg", now)
-	if err != nil {
-		warnHostQuery(ctx, "host evaluator: load aggregate failed", h, err)
+func (e *Evaluator) evalLoad(ctx context.Context, cache map[projMetricKey]hostMetricBatch, q *metric.Query, h Host, s Settings, now time.Time) {
+	loadBatch := e.batchAggregate(ctx, cache, q, h.ProjectID, "load", hostmetric.LoadAvg5m, nil, "avg", now)
+	if !loadBatch.ok {
 		return
 	}
+	load, ok := loadBatch.values[h.Name]
 	if !ok {
 		return
 	}
-	cores, coresOK, err := e.aggregate(ctx, q, h.ProjectID, hostmetric.CPULogicalCount, h.Name, nil, "last", now)
-	if err != nil {
-		warnHostQuery(ctx, "host evaluator: cores aggregate failed", h, err)
+	coresBatch := e.batchAggregate(ctx, cache, q, h.ProjectID, "cores", hostmetric.CPULogicalCount, nil, "last", now)
+	if !coresBatch.ok {
 		return
 	}
+	cores, coresOK := coresBatch.values[h.Name]
 	if !coresOK || cores <= 0 {
 		return
 	}
