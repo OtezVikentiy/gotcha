@@ -10,7 +10,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var ErrNotFound = errors.New("notify: not found")
+// Общий отказ и для несуществующего id, и для фенса по attempts: воркер, чья лиза
+// истекла, обязан узнать, что задачу уже перезабрали, а не затирать её финализацию.
+var ErrStaleClaim = errors.New("notify: stale claim")
 
 // Payload несёт данные для шаблона доставки; Kind/Subject/Body вычисляет
 // отправитель канала перед постановкой в очередь.
@@ -105,43 +107,46 @@ func (o *Outbox) Claim(ctx context.Context, limit int) ([]Job, error) {
 	return out, rows.Err()
 }
 
-func (o *Outbox) MarkSent(ctx context.Context, jobID int64) error {
+// attempt фенсит владение попыткой: если лиза истекла и задачу перезабрали, attempts
+// в базе уже другой, 0 затронутых строк — ErrStaleClaim, а не тихая перезапись чужого исхода.
+func (o *Outbox) MarkSent(ctx context.Context, jobID int64, attempt int) error {
 	tag, err := o.pool.Exec(ctx,
-		"UPDATE notification_outbox SET status = 'sent', sent_at = now() WHERE id = $1", jobID)
+		"UPDATE notification_outbox SET status = 'sent', sent_at = now() WHERE id = $1 AND attempts = $2",
+		jobID, attempt)
 	if err != nil {
 		return fmt.Errorf("notify: mark sent: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+		return ErrStaleClaim
 	}
 	return nil
 }
 
-func (o *Outbox) MarkRetry(ctx context.Context, jobID int64, sendErr error, retryIn time.Duration) error {
+func (o *Outbox) MarkRetry(ctx context.Context, jobID int64, attempt int, sendErr error, retryIn time.Duration) error {
 	// next_retry_at считается часами БАЗЫ (now() в SQL), не процесса — та же
 	// причина, что у claim-лизы (см. Claim).
 	tag, err := o.pool.Exec(ctx, `
 		UPDATE notification_outbox
 		SET status = 'pending', last_error = $2, next_retry_at = now() + $3::interval
-		WHERE id = $1`, jobID, errString(sendErr), retryIn.String())
+		WHERE id = $1 AND attempts = $4`, jobID, errString(sendErr), retryIn.String(), attempt)
 	if err != nil {
 		return fmt.Errorf("notify: mark retry: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+		return ErrStaleClaim
 	}
 	return nil
 }
 
-func (o *Outbox) MarkFailed(ctx context.Context, jobID int64, sendErr error) error {
+func (o *Outbox) MarkFailed(ctx context.Context, jobID int64, attempt int, sendErr error) error {
 	tag, err := o.pool.Exec(ctx, `
-		UPDATE notification_outbox SET status = 'failed', last_error = $2 WHERE id = $1`,
-		jobID, errString(sendErr))
+		UPDATE notification_outbox SET status = 'failed', last_error = $2 WHERE id = $1 AND attempts = $3`,
+		jobID, errString(sendErr), attempt)
 	if err != nil {
 		return fmt.Errorf("notify: mark failed: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+		return ErrStaleClaim
 	}
 	return nil
 }

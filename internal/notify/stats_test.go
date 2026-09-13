@@ -60,7 +60,7 @@ func TestQueueSnapshotCountsFailedSeparately(t *testing.T) {
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("Claim: %+v err=%v", jobs, err)
 	}
-	if err := ob.MarkFailed(ctx, jobs[0].ID, errors.New("smtp refused")); err != nil {
+	if err := ob.MarkFailed(ctx, jobs[0].ID, jobs[0].Attempts, errors.New("smtp refused")); err != nil {
 		t.Fatalf("MarkFailed: %v", err)
 	}
 

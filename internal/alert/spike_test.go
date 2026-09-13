@@ -176,3 +176,67 @@ func TestSpikeBelowThresholdSendsNothing(t *testing.T) {
 		t.Fatalf("outbox pending = %d, want 0 (below threshold)", n)
 	}
 }
+
+func TestSpikePublishesTickLiveness(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := alert.NewService(pool)
+	sp := &alert.Spike{Svc: svc, Interval: time.Hour}
+
+	if got := sp.LastTickUnix(); got != 0 {
+		t.Fatalf("LastTickUnix до первого тика = %d, want 0", got)
+	}
+
+	before := time.Now().Unix()
+	sp.Tick(context.Background())
+
+	if got := sp.LastTickUnix(); got < before {
+		t.Errorf("LastTickUnix = %d, want >= %d (момент завершения тика)", got, before)
+	}
+	if got := sp.LastTickSeconds(); got < 0 || got > 5 {
+		t.Errorf("LastTickSeconds = %v, want положительную длительность в разумных пределах", got)
+	}
+}
+
+// Без context.WithTimeout повисший SpikeRules держал бы цикл спайков
+// бесконечно вместо прерывания по бюджету (пол 10с).
+func TestSpikeTickBudgetAbortsHungTick(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := alert.NewService(pool)
+	sp := &alert.Spike{Svc: svc, Interval: time.Second}
+
+	lockConn, err := pool.Acquire(context.Background())
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer lockConn.Release()
+	tx, err := lockConn.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := tx.Exec(context.Background(), "LOCK TABLE alert_rules IN ACCESS EXCLUSIVE MODE"); err != nil {
+		t.Fatalf("lock alert_rules: %v", err)
+	}
+	defer tx.Rollback(context.Background())
+
+	started := time.Now()
+	done := make(chan struct{})
+	go func() {
+		sp.Tick(context.Background())
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("Tick не вернулся за 20s — SpikeRules не ограничен бюджетом")
+	}
+	if dur := time.Since(started); dur > 15*time.Second {
+		t.Errorf("Tick вернулся через %v, want ограничение бюджетом (пол 10с)", dur)
+	}
+	if got := sp.LastTickUnix(); got != 0 {
+		t.Errorf("LastTickUnix = %d после оборванного по бюджету тика, want 0", got)
+	}
+	if got := sp.LastTickSeconds(); got <= 0 {
+		t.Errorf("LastTickSeconds = %v, want положительную длительность даже у оборванного тика", got)
+	}
+}

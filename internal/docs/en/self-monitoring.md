@@ -373,6 +373,26 @@ live process means delivery is blocked on a channel — check
 rescheduled. **`gotcha_notify_queue_failed`** — how many of those given-up jobs sit
 in the queue right now.
 
+**`gotcha_alert_spike_last_tick_timestamp_seconds`** /
+**`gotcha_alert_spike_tick_duration_seconds`** — timestamp of the last
+completed `spike` rule evaluation pass across all projects, and its duration.
+The pass runs once a minute; the interval is not configurable. A dead or
+hung loop looks from the outside like "no spikes happened" — spike alerts
+simply stop arriving. Duration creeping up to a minute means ClickHouse is
+not keeping up.
+
+**`gotcha_alert_digest_last_tick_timestamp_seconds`** /
+**`gotcha_alert_digest_tick_duration_seconds`** — timestamp of the last
+completed pass sending digests of budget-suppressed alerts, and its
+duration. The pass runs every 5 minutes; the interval is not configurable.
+A dead or hung digester is indistinguishable from "nothing was suppressed" —
+the operator never learns that some notifications were eaten by the budget.
+
+**`gotcha_alert_digest_suppressed_lost_total`** — suppressed alerts whose
+digest summary could neither be delivered nor requeued for retry on the next
+pass. A nonzero value is a final, unrecoverable loss (both the channel and
+PostgreSQL were unavailable at the same time), not a deferred retry.
+
 **`gotcha_export_queue_depth`** / **`gotcha_export_queue_oldest_seconds`**
 — depth of the error/event export queue (requests in `queued` or `running`
 status) and the age of the oldest one. The age matters more than the depth —

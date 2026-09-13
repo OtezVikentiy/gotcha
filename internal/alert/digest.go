@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
@@ -13,10 +15,10 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
-// Интерфейс, не конкретный тип — тот же приём, что у escalation.Enqueuer:
-// тест может подставить фейк без похода в Postgres.
+// EnqueueIdempotent, не Enqueue: ретрай восстановленной сводки (см. Tick)
+// повторяет тот же канал — без дедупа по ключу тот получил бы её дважды.
 type Enqueuer interface {
-	Enqueue(ctx context.Context, channelID int64, payload map[string]any) error
+	EnqueueIdempotent(ctx context.Context, channelID int64, payload map[string]any, key string) (bool, error)
 }
 
 // Заметно чаще окна бюджета — сводка должна уйти вскоре после его закрытия,
@@ -24,6 +26,13 @@ type Enqueuer interface {
 const digestInterval = 5 * time.Minute
 
 const digestBatch = 50
+
+// Дедлайн тика — доля Interval, но не меньше пола: та же защита от
+// зависшего прохода, что у escalation.Scheduler.
+const (
+	digestTickBudgetShare = 0.8
+	minDigestTickBudget   = 10 * time.Second
+)
 
 // Живёт рядом с доставкой (гейт по Outbox, не по режиму процесса) — контур,
 // привязанный к режиму, молча не работает в части конфигураций.
@@ -47,14 +56,46 @@ type Digester struct {
 
 	// Период тика; 0 → digestInterval.
 	Interval time.Duration
+
+	lastTickUnix    atomic.Int64  // unix-время последнего завершённого тика
+	lastTickSeconds atomic.Uint64 // длительность последнего тика, math.Float64bits
+
+	// Подавленные, для которых и отправка, и восстановление счётчика
+	// отказали — безвозвратная потеря, а не отложенный ретрай.
+	lostSuppressed atomic.Int64
+}
+
+// Self-метрика живости: остановленный или зависший дайджестер снаружи
+// неотличим от «подавленных не было».
+func (d *Digester) LastTickUnix() int64 { return d.lastTickUnix.Load() }
+
+func (d *Digester) LastTickSeconds() float64 {
+	return math.Float64frombits(d.lastTickSeconds.Load())
+}
+
+// Число подавленных алертов, чью сводку не удалось ни доставить, ни вернуть
+// в счётчик для повторной попытки — оператор не узнает о них никак иначе.
+func (d *Digester) LostSuppressed() int64 { return d.lostSuppressed.Load() }
+
+func (d *Digester) effectiveInterval() time.Duration {
+	if d.Interval <= 0 {
+		return digestInterval
+	}
+	return d.Interval
+}
+
+// Считается от effectiveInterval, не от сырого Interval — иначе прод (Interval
+// не задан) получал бы minDigestTickBudget вместо ~4 минут.
+func (d *Digester) tickBudget() time.Duration {
+	budget := time.Duration(float64(d.effectiveInterval()) * digestTickBudgetShare)
+	if budget < minDigestTickBudget {
+		return minDigestTickBudget
+	}
+	return budget
 }
 
 func (d *Digester) Run(ctx context.Context) {
-	interval := d.Interval
-	if interval <= 0 {
-		interval = digestInterval
-	}
-	t := time.NewTicker(interval)
+	t := time.NewTicker(d.effectiveInterval())
 	defer t.Stop()
 	for {
 		select {
@@ -68,14 +109,37 @@ func (d *Digester) Run(ctx context.Context) {
 
 // Экспортирован ради теста — цикл Run проверять неудобно.
 func (d *Digester) Tick(ctx context.Context) {
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, d.tickBudget())
+	defer cancel()
+	defer func() {
+		d.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
+		if ctx.Err() != nil {
+			return
+		}
+		d.lastTickUnix.Store(time.Now().Unix())
+	}()
+
 	batches, err := d.Svc.ClaimSuppressed(ctx, digestBatch)
 	if err != nil {
 		slog.Error("alert: claim suppressed for digest failed", "error", err)
 		return
 	}
 	for _, b := range batches {
+		if ctx.Err() != nil {
+			slog.Warn("alert digest: tick budget exhausted, remaining batches skipped")
+			return
+		}
 		if err := d.send(ctx, b); err != nil {
-			slog.Error("alert: digest enqueue failed",
+			// claim уже необратимо обнулил счётчик — без возврата сводка
+			// потерялась бы навсегда, а не ушла на следующем тике.
+			if rerr := d.Svc.RestoreSuppressed(ctx, b.ProjectID, b.Suppressed); rerr != nil {
+				d.lostSuppressed.Add(int64(b.Suppressed))
+				slog.Error("alert: digest enqueue failed, suppressed count lost",
+					"project_id", b.ProjectID, "suppressed", b.Suppressed, "error", err, "restore_error", rerr)
+				continue
+			}
+			slog.Error("alert: digest enqueue failed, suppressed count restored for retry",
 				"project_id", b.ProjectID, "suppressed", b.Suppressed, "error", err)
 		}
 	}
@@ -121,7 +185,10 @@ func (d *Digester) send(ctx context.Context, b SuppressedBatch) error {
 		if !d.Details.AllowsDetails(ch) {
 			payload = notify.RedactExternalPayload(ctx, payload)
 		}
-		if err := d.Outbox.Enqueue(ctx, ch.ID, payload); err != nil {
+		// Ключ стабилен для одного и того же окна: ретрай после Tick.RestoreSuppressed
+		// не задвоит сводку каналу, уже получившему её в предыдущей попытке.
+		key := fmt.Sprintf("alert:digest:%d:%d", ch.ID, b.Since.Unix())
+		if _, err := d.Outbox.EnqueueIdempotent(ctx, ch.ID, payload, key); err != nil {
 			slog.Error("alert: digest: enqueue failed", "channel_id", ch.ID, "error", err)
 			errs = errors.Join(errs, fmt.Errorf("alert: digest enqueue channel %d: %w", ch.ID, err))
 			continue

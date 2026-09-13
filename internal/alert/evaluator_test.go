@@ -158,7 +158,7 @@ func TestEvaluatorOnIssue(t *testing.T) {
 			t.Fatalf("first call: jobs=%d err=%v, want 1", len(jobs), err)
 		}
 		for _, j := range jobs {
-			if err := ob.MarkSent(ctx, j.ID); err != nil {
+			if err := ob.MarkSent(ctx, j.ID, j.Attempts); err != nil {
 				t.Fatalf("MarkSent: %v", err)
 			}
 		}

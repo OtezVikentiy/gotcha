@@ -288,7 +288,7 @@ func TestWebAlertDeliveriesPageShowsFailedDeliveries(t *testing.T) {
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("claim: %+v err=%v", jobs, err)
 	}
-	if err := ob.MarkFailed(context.Background(), jobs[0].ID, errors.New("connection refused by hooks.example.com")); err != nil {
+	if err := ob.MarkFailed(context.Background(), jobs[0].ID, jobs[0].Attempts, errors.New("connection refused by hooks.example.com")); err != nil {
 		t.Fatalf("mark failed: %v", err)
 	}
 
@@ -689,7 +689,7 @@ func TestWebAlertsOperator(t *testing.T) {
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("claim: %+v err=%v", jobs, err)
 	}
-	if err := ob.MarkFailed(context.Background(), jobs[0].ID, errors.New("notify: smtp rcpt: 550 5.1.1 <ops@example.com>: Recipient address rejected")); err != nil {
+	if err := ob.MarkFailed(context.Background(), jobs[0].ID, jobs[0].Attempts, errors.New("notify: smtp rcpt: 550 5.1.1 <ops@example.com>: Recipient address rejected")); err != nil {
 		t.Fatalf("mark failed: %v", err)
 	}
 	resp = getWithCookie(t, s.srv, deliveriesPath, opCookie)

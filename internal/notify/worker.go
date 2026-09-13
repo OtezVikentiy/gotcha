@@ -21,9 +21,9 @@ const defaultSendTimeout = 30 * time.Second
 
 type outboxStore interface {
 	Claim(ctx context.Context, limit int) ([]Job, error)
-	MarkSent(ctx context.Context, jobID int64) error
-	MarkRetry(ctx context.Context, jobID int64, sendErr error, retryIn time.Duration) error
-	MarkFailed(ctx context.Context, jobID int64, sendErr error) error
+	MarkSent(ctx context.Context, jobID int64, attempt int) error
+	MarkRetry(ctx context.Context, jobID int64, attempt int, sendErr error, retryIn time.Duration) error
+	MarkFailed(ctx context.Context, jobID int64, attempt int, sendErr error) error
 }
 
 const markSentRetries = 3
@@ -146,7 +146,7 @@ func (w *Worker) markSent(ctx context.Context, job Job) {
 	var err error
 	for attempt := 1; attempt <= markSentRetries; attempt++ {
 		markCtx, cancel := finalizeCtx(ctx)
-		err = w.Outbox.MarkSent(markCtx, job.ID)
+		err = w.Outbox.MarkSent(markCtx, job.ID, job.Attempts)
 		cancel()
 		if err == nil {
 			w.count(func(s *Stats) { s.countSent() })
@@ -189,7 +189,7 @@ func (w *Worker) retryOrFail(ctx context.Context, job Job, sendErr error) {
 
 	delay := backoff(job.Attempts)
 	if delay == 0 {
-		if err := w.Outbox.MarkFailed(markCtx, job.ID, sendErr); err != nil {
+		if err := w.Outbox.MarkFailed(markCtx, job.ID, job.Attempts, sendErr); err != nil {
 			slog.Error("notify worker: mark failed error", "job_id", job.ID, "channel_id", job.ChannelID, "error", err)
 		}
 		w.count(func(s *Stats) { s.countFailed() })
@@ -198,7 +198,7 @@ func (w *Worker) retryOrFail(ctx context.Context, job Job, sendErr error) {
 		return
 	}
 
-	if err := w.Outbox.MarkRetry(markCtx, job.ID, sendErr, delay); err != nil {
+	if err := w.Outbox.MarkRetry(markCtx, job.ID, job.Attempts, sendErr, delay); err != nil {
 		slog.Error("notify worker: mark retry error", "job_id", job.ID, "channel_id", job.ChannelID, "error", err)
 	}
 	w.count(func(s *Stats) { s.countRetried() })

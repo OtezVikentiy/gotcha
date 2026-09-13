@@ -689,6 +689,15 @@ func run() error {
 				Locale:       i18n.Locale{Code: cfg.Locale},
 			}
 			go digester.Run(ctx)
+			selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_alert_digest_last_tick_timestamp_seconds",
+				"Unix time of the last completed suppressed-alert digest pass. Stale value means digest summaries are not being sent.",
+				nil, digester.LastTickUnix)
+			selfMetrics.Add(selfmetrics.Gauge, "gotcha_alert_digest_tick_duration_seconds",
+				"Duration of the last suppressed-alert digest pass. Approaching the interval means PostgreSQL or notification channels are not keeping up.",
+				nil, digester.LastTickSeconds)
+			selfMetrics.AddInt(selfmetrics.Counter, "gotcha_alert_digest_suppressed_lost_total",
+				"Suppressed alerts whose digest summary could neither be delivered nor requeued for retry — permanently lost.",
+				nil, digester.LostSuppressed)
 		}
 
 		// Доставленные/проваленные строки без ретенции копятся бесконечно.
@@ -890,6 +899,12 @@ func run() error {
 			Svc: alertSvc, Outbox: outbox, Issues: issueSvc, Events: event.NewQuery(ch), Evaluator: evaluator,
 		}
 		go spikeWorker.Run(ctx)
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_alert_spike_last_tick_timestamp_seconds",
+			"Unix time of the last completed spike-rule evaluation pass. Stale value means spike alerts are not being evaluated.",
+			nil, spikeWorker.LastTickUnix)
+		selfMetrics.Add(selfmetrics.Gauge, "gotcha_alert_spike_tick_duration_seconds",
+			"Duration of the last spike-rule evaluation pass. Approaching the interval means ClickHouse is not keeping up.",
+			nil, spikeWorker.LastTickSeconds)
 
 		// Один инстанс на процесс, тот же кеш, что читает transaction_sample_rate.
 		projectCache := ingest.NewProjectCache(orgSvc)

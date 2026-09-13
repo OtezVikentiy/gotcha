@@ -17,16 +17,16 @@ func (a *alwaysFailMarkSent) Claim(ctx context.Context, limit int) ([]Job, error
 	return nil, nil
 }
 
-func (a *alwaysFailMarkSent) MarkSent(ctx context.Context, jobID int64) error {
+func (a *alwaysFailMarkSent) MarkSent(ctx context.Context, jobID int64, attempt int) error {
 	a.markSentCalls++
 	return errors.New("persistent mark sent failure")
 }
 
-func (a *alwaysFailMarkSent) MarkRetry(ctx context.Context, jobID int64, sendErr error, retryIn time.Duration) error {
+func (a *alwaysFailMarkSent) MarkRetry(ctx context.Context, jobID int64, attempt int, sendErr error, retryIn time.Duration) error {
 	return nil
 }
 
-func (a *alwaysFailMarkSent) MarkFailed(ctx context.Context, jobID int64, sendErr error) error {
+func (a *alwaysFailMarkSent) MarkFailed(ctx context.Context, jobID int64, attempt int, sendErr error) error {
 	return nil
 }
 
@@ -70,13 +70,15 @@ type recordingStore struct {
 }
 
 func (r *recordingStore) Claim(ctx context.Context, limit int) ([]Job, error) { return nil, nil }
-func (r *recordingStore) MarkSent(ctx context.Context, jobID int64) error     { return nil }
-func (r *recordingStore) MarkRetry(ctx context.Context, jobID int64, sendErr error, retryIn time.Duration) error {
+func (r *recordingStore) MarkSent(ctx context.Context, jobID int64, attempt int) error {
+	return nil
+}
+func (r *recordingStore) MarkRetry(ctx context.Context, jobID int64, attempt int, sendErr error, retryIn time.Duration) error {
 	r.retryCalls++
 	r.lastRetryErr = ctx.Err()
 	return nil
 }
-func (r *recordingStore) MarkFailed(ctx context.Context, jobID int64, sendErr error) error {
+func (r *recordingStore) MarkFailed(ctx context.Context, jobID int64, attempt int, sendErr error) error {
 	return nil
 }
 

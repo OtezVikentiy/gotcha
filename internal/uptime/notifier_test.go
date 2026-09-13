@@ -248,7 +248,7 @@ func TestOutboxNotifierSubjectsPerKind(t *testing.T) {
 			if jobs[0].Payload["subject"] != tc.subject {
 				t.Errorf("subject = %v, want %q", jobs[0].Payload["subject"], tc.subject)
 			}
-			if err := ob.MarkSent(ctx, jobs[0].ID); err != nil {
+			if err := ob.MarkSent(ctx, jobs[0].ID, jobs[0].Attempts); err != nil {
 				t.Fatalf("MarkSent: %v", err)
 			}
 		})

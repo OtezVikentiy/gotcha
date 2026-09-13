@@ -41,6 +41,15 @@ type OutboxNotifier struct {
 	Locale i18n.Locale
 }
 
+// Общий предикат для предпроверки (клеймить ли слот) и цикла отправки — расхождение
+// между ними даёт занятый слот при нулевой фактической рассылке (см. Deliverable()).
+func (n *OutboxNotifier) channelDeliverableNow(ch alert.Channel) bool {
+	if !ch.Deliverable() {
+		return false
+	}
+	return ch.Kind != alert.ChannelEmail || n.EmailEnabled
+}
+
 // логика повторена в internal/web/templates/perfissues.templ — общего кода нет, чтобы не тянуть импорт web.
 func perfIssueNotifyTitle(ctx context.Context, iss PerfIssue) string {
 	param := iss.Description
@@ -76,10 +85,11 @@ func (n *OutboxNotifier) notify(ctx context.Context, projectID int64, iss PerfIs
 	if err != nil {
 		return fmt.Errorf("trace: notify: project channels: %w", err)
 	}
-	// каналы читаются до клейма слота: проект без включённых каналов не должен жечь часовой лимит.
+	// Тот же предикат, что и цикл отправки ниже — иначе SecretBroken проходит
+	// как доставляемый, и слот часового лимита занимается впустую.
 	deliverable := false
 	for _, ch := range channels {
-		if ch.Enabled && (ch.Kind != alert.ChannelEmail || n.EmailEnabled) {
+		if n.channelDeliverableNow(ch) {
 			deliverable = true
 			break
 		}
@@ -114,6 +124,10 @@ func (n *OutboxNotifier) notify(ctx context.Context, projectID int64, iss PerfIs
 	enqueued := 0
 	for _, ch := range channels {
 		if !ch.Deliverable() {
+			if ch.Enabled {
+				slog.Warn("trace: channel skipped, secret broken",
+					"project_id", projectID, "channel_id", ch.ID)
+			}
 			continue
 		}
 		if ch.Kind == alert.ChannelEmail && !n.EmailEnabled {
@@ -147,9 +161,9 @@ func (n *OutboxNotifier) notify(ctx context.Context, projectID int64, iss PerfIs
 		}
 		enqueued++
 	}
-	// слот занимается до Enqueue, чтобы воркеры не обошли лимит гонкой; если не встало
-	// ни одного сообщения — слот освобождается.
-	if enqueued == 0 && errs != nil {
+	// Слот занят до Enqueue против гонки воркеров; освобождаем при enqueued==0
+	// независимо от errs — пропуск по SecretBroken тоже не даёт ни одной ошибки.
+	if enqueued == 0 {
 		if err := n.releaseAlert(ctx, projectID); err != nil {
 			slog.Error("trace: notify: release throttle slot", "project_id", projectID, "error", err)
 		}
@@ -157,13 +171,13 @@ func (n *OutboxNotifier) notify(ctx context.Context, projectID int64, iss PerfIs
 	return errs
 }
 
-// best-effort: неудачный release просто теряет один слот из часового лимита, не ломает корректность.
+// best-effort: неудачный release теряет один слот, не ломает корректность.
+// Окно — часами БАЗЫ (now() в SQL), не процесса, как у notify.Outbox.Claim.
 func (n *OutboxNotifier) releaseAlert(ctx context.Context, projectID int64) error {
-	cutoff := time.Now().Add(-perfAlertWindow)
 	_, err := n.Pool.Exec(ctx, `
 		UPDATE perf_alert_throttle SET sent = sent - 1
-		WHERE project_id = $1 AND window_start > $2 AND sent > 0`,
-		projectID, cutoff)
+		WHERE project_id = $1 AND window_start > now() - $2::interval AND sent > 0`,
+		projectID, perfAlertWindow.String())
 	if err != nil {
 		return fmt.Errorf("trace: release perf alert slot: %w", err)
 	}
@@ -173,19 +187,18 @@ func (n *OutboxNotifier) releaseAlert(ctx context.Context, projectID int64) erro
 // ON CONFLICT берёт блокировку строки — параллельные клеймы одного проекта сериализуются,
 // лимит соблюдается точно, не приблизительно.
 func (n *OutboxNotifier) claimAlert(ctx context.Context, projectID int64) (bool, error) {
-	cutoff := time.Now().Add(-perfAlertWindow)
 	var sent int
 	err := n.Pool.QueryRow(ctx, `
 		INSERT INTO perf_alert_throttle (project_id, window_start, sent)
 		VALUES ($1, now(), 1)
 		ON CONFLICT (project_id) DO UPDATE SET
-			window_start = CASE WHEN perf_alert_throttle.window_start <= $2
+			window_start = CASE WHEN perf_alert_throttle.window_start <= now() - $2::interval
 			                    THEN now() ELSE perf_alert_throttle.window_start END,
-			sent         = CASE WHEN perf_alert_throttle.window_start <= $2
+			sent         = CASE WHEN perf_alert_throttle.window_start <= now() - $2::interval
 			                    THEN 1 ELSE perf_alert_throttle.sent + 1 END
-		WHERE perf_alert_throttle.window_start <= $2 OR perf_alert_throttle.sent < $3
+		WHERE perf_alert_throttle.window_start <= now() - $2::interval OR perf_alert_throttle.sent < $3
 		RETURNING sent`,
-		projectID, cutoff, MaxPerfAlertsPerHour).Scan(&sent)
+		projectID, perfAlertWindow.String(), MaxPerfAlertsPerHour).Scan(&sent)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil // лимит проекта на час выбран
