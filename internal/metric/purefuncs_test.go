@@ -80,3 +80,36 @@ func TestCompactMatchers(t *testing.T) {
 		t.Errorf("compactMatchers = %+v, want один матчер host", got)
 	}
 }
+
+func TestRotateRules(t *testing.T) {
+	rules := []Rule{{ID: 1}, {ID: 2}, {ID: 3}}
+
+	if got := rotateRules(nil, 0); got != nil {
+		t.Errorf("rotateRules(nil) = %v, want nil", got)
+	}
+
+	cases := []struct {
+		name   string
+		cursor int64
+		want   []int64
+	}{
+		{"курсор нулевой — обход с начала", 0, []int64{1, 2, 3}},
+		{"курсор на первом — начинаем со второго", 1, []int64{2, 3, 1}},
+		{"курсор на среднем", 2, []int64{3, 1, 2}},
+		{"курсор на последнем — полный круг", 3, []int64{1, 2, 3}},
+		{"курсор за пределами списка (правило удалено) — оборачиваем как после последнего", 99, []int64{1, 2, 3}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := rotateRules(rules, tc.cursor)
+			if len(got) != len(tc.want) {
+				t.Fatalf("len = %d, want %d", len(got), len(tc.want))
+			}
+			for i, id := range tc.want {
+				if got[i].ID != id {
+					t.Errorf("rotateRules(%v)[%d].ID = %d, want %d", tc.cursor, i, got[i].ID, id)
+				}
+			}
+		})
+	}
+}

@@ -748,6 +748,95 @@ func TestEvaluatorSilentEvaluatedWhileClickHouseHangs(t *testing.T) {
 	}
 }
 
+// projectStuckCH как stuckCH, но пишет project_id (первый аргумент запроса) —
+// так видно, какой хост (у каждого своя project_id) дошёл до ClickHouse.
+type projectStuckCH struct {
+	driver.Conn
+	mu       sync.Mutex
+	projects []int64
+}
+
+func (c *projectStuckCH) record(args []any) {
+	if len(args) == 0 {
+		return
+	}
+	pid, ok := args[0].(int64)
+	if !ok {
+		return
+	}
+	c.mu.Lock()
+	c.projects = append(c.projects, pid)
+	c.mu.Unlock()
+}
+
+func (c *projectStuckCH) QueryRow(ctx context.Context, _ string, args ...any) driver.Row {
+	c.record(args)
+	<-ctx.Done()
+	return stuckRow{err: ctx.Err()}
+}
+
+func (c *projectStuckCH) Query(ctx context.Context, _ string, args ...any) (driver.Rows, error) {
+	c.record(args)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (c *projectStuckCH) touchedProjects() []int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]int64(nil), c.projects...)
+}
+
+// Без ротации бюджет тика (пол 10с) всегда обрывается на одном и том же первом хосте.
+func TestEvaluatorRotatesThresholdPassAcrossTicks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires containers")
+	}
+	pool := testenv.MigratedPG(t)
+
+	var projectIDs []int64
+	for _, name := range []string{"rot-a", "rot-b", "rot-c"} {
+		pid := seedEvalProject(t, pool)
+		projectIDs = append(projectIDs, pid)
+		seedEvalHost(t, pool, pid, name)
+	}
+
+	stuck := &projectStuckCH{}
+	eval := newEvaluator(pool, nil, &fakeNotifier{})
+	eval.Metrics = metric.NewQuery(stuck)
+	eval.Interval = time.Second // budget: пол minTickBudget = 10с
+
+	firstTouched := func(tickNo int) int64 {
+		before := len(stuck.touchedProjects())
+		if err := eval.Tick(context.Background()); err != nil {
+			t.Fatalf("tick %d: %v", tickNo, err)
+		}
+		got := stuck.touchedProjects()[before:]
+		if len(got) == 0 {
+			t.Fatalf("tick %d: ClickHouse ни разу не запрошен — тест не проверяет то, что должен", tickNo)
+		}
+		first := got[0]
+		for _, pid := range got {
+			if pid != first {
+				t.Fatalf("tick %d: за один тик порогового прохода задет не один хост: %v", tickNo, got)
+			}
+		}
+		return first
+	}
+
+	// За 4 тика курсор обязан пройти все три хоста по кругу и вернуться к первому.
+	want := []int64{projectIDs[0], projectIDs[1], projectIDs[2], projectIDs[0]}
+	for i, w := range want {
+		got := firstTouched(i + 1)
+		if got != w {
+			t.Fatalf("тик %d: обработан хост проекта %d, want %d (порядок %v)", i+1, got, w, projectIDs)
+		}
+		if skipped := eval.LastTickSkippedHosts(); skipped != 2 {
+			t.Errorf("тик %d: LastTickSkippedHosts() = %d, want 2 (два хоста из трёх не влезли в бюджет)", i+1, skipped)
+		}
+	}
+}
+
 type countingCH struct {
 	driver.Conn
 	typeQueries atomic.Int64

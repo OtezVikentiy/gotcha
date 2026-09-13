@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"math"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -73,8 +74,29 @@ type Evaluator struct {
 	// ленивая инициализация в Tick: структуру собирают литералом без этого поля.
 	closeStreak map[int64]int
 
+	// cursor и skipped читаются и пишутся только из Tick, вызываемого
+	// последовательно из Run — конкурентной защиты не требуют.
+	cursor  int64
+	skipped atomic.Int64
+
 	lastTickUnix    atomic.Int64
 	lastTickSeconds atomic.Uint64 // math.Float64bits: atomic.Uint64 не хранит float64
+}
+
+// rotateSLOs возобновляет обход сразу после cursor (ORDER BY id) — иначе при
+// нехватке бюджета голодает всегда один и тот же хвост списка.
+func rotateSLOs(slos []SLO, cursor int64) []SLO {
+	if len(slos) == 0 {
+		return slos
+	}
+	idx := sort.Search(len(slos), func(i int) bool { return slos[i].ID > cursor })
+	if idx == 0 {
+		return slos
+	}
+	rotated := make([]SLO, 0, len(slos))
+	rotated = append(rotated, slos[idx:]...)
+	rotated = append(rotated, slos[:idx]...)
+	return rotated
 }
 
 func (e *Evaluator) Run(ctx context.Context) {
@@ -105,6 +127,8 @@ func (e *Evaluator) LastTickSeconds() float64 {
 	return math.Float64frombits(e.lastTickSeconds.Load())
 }
 
+func (e *Evaluator) LastTickSkippedSLOs() int64 { return e.skipped.Load() }
+
 func (e *Evaluator) tickBudget() time.Duration {
 	interval := e.Interval
 	if interval <= 0 {
@@ -129,12 +153,24 @@ func (e *Evaluator) Tick(ctx context.Context) (int, error) {
 		e.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
 		return 0, err
 	}
+	slos = rotateSLOs(slos, e.cursor)
 	now := time.Now().UTC()
 	transitions := 0
-	for _, s := range slos {
+	done := len(slos)
+	for i, s := range slos {
+		if ctx.Err() != nil {
+			slog.Warn("slo evaluator: tick budget exhausted, remaining slos skipped",
+				"skipped_slos", len(slos)-i, "budget", e.tickBudget())
+			done = i
+			break
+		}
 		if e.evalSLO(ctx, s, now) {
 			transitions++
 		}
+	}
+	e.skipped.Store(int64(len(slos) - done))
+	if done > 0 {
+		e.cursor = slos[done-1].ID
 	}
 	e.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
 	if ctx.Err() != nil {

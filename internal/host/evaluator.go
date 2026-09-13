@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -76,8 +77,43 @@ type Evaluator struct {
 
 	StartedAt time.Time
 
+	// cursor и skipped читаются и пишутся только из Tick, вызываемого
+	// последовательно из Run — конкурентной защиты не требуют.
+	cursor  hostKey
+	skipped atomic.Int64
+
 	lastTickUnix    atomic.Int64
 	lastTickSeconds atomic.Uint64
+}
+
+type hostKey struct {
+	ProjectID int64
+	Name      string
+}
+
+func hostKeyOf(h Host) hostKey { return hostKey{ProjectID: h.ProjectID, Name: h.Name} }
+
+func (k hostKey) less(o hostKey) bool {
+	if k.ProjectID != o.ProjectID {
+		return k.ProjectID < o.ProjectID
+	}
+	return k.Name < o.Name
+}
+
+// rotateHosts возобновляет обход сразу после cursor (ORDER BY project_id,
+// name) — без этого при нехватке бюджета голодает всегда один и тот же хвост.
+func rotateHosts(hosts []Host, cursor hostKey) []Host {
+	if len(hosts) == 0 {
+		return hosts
+	}
+	idx := sort.Search(len(hosts), func(i int) bool { return cursor.less(hostKeyOf(hosts[i])) })
+	if idx == 0 {
+		return hosts
+	}
+	rotated := make([]Host, 0, len(hosts))
+	rotated = append(rotated, hosts[idx:]...)
+	rotated = append(rotated, hosts[:idx]...)
+	return rotated
 }
 
 func (e *Evaluator) Run(ctx context.Context) {
@@ -116,6 +152,8 @@ func (e *Evaluator) LastTickSeconds() float64 {
 	return math.Float64frombits(e.lastTickSeconds.Load())
 }
 
+func (e *Evaluator) LastTickSkippedHosts() int64 { return e.skipped.Load() }
+
 func (e *Evaluator) Tick(ctx context.Context) error {
 	e.markStarted()
 	started := time.Now()
@@ -130,6 +168,7 @@ func (e *Evaluator) Tick(ctx context.Context) error {
 		slog.Warn("host evaluator: active host list truncated, tail projects are not evaluated",
 			"limit", MaxActiveHostsPerTick)
 	}
+	hosts = rotateHosts(hosts, e.cursor)
 	now := time.Now().UTC()
 
 	hostIDs := make([]int64, len(hosts))
@@ -211,10 +250,12 @@ func (e *Evaluator) Tick(ctx context.Context) error {
 	}
 
 	// Проходов два, порядок принципиален: тишина считается первой и целиком, слить нельзя.
+	silentDone := len(hosts)
 	for i, h := range hosts {
 		if ctx.Err() != nil {
 			slog.Warn("host evaluator: tick budget exhausted during silence pass",
 				"skipped_hosts", len(hosts)-i, "budget", e.tickBudget())
+			silentDone = i
 			break
 		}
 		eff, ok := effFor(h)
@@ -226,12 +267,14 @@ func (e *Evaluator) Tick(ctx context.Context) error {
 		})
 	}
 
+	thresholdDone := len(hosts)
 	if e.Metrics != nil {
 		q := e.Metrics.WithTypeCache(metric.NewTypeCache())
 		for i, h := range hosts {
 			if ctx.Err() != nil {
 				slog.Warn("host evaluator: tick budget exhausted during threshold pass",
 					"skipped_hosts", len(hosts)-i, "budget", e.tickBudget())
+				thresholdDone = i
 				break
 			}
 			eff, ok := effFor(h)
@@ -248,6 +291,16 @@ func (e *Evaluator) Tick(ctx context.Context) error {
 				e.evalLoad(ctx, q, h, eff.Settings, now)
 			})
 		}
+	}
+
+	// furthest — сколько хостов прошли ОБЕ врезки; следующий тик продолжает сразу за ним.
+	furthest := silentDone
+	if thresholdDone < furthest {
+		furthest = thresholdDone
+	}
+	e.skipped.Store(int64(len(hosts) - furthest))
+	if furthest > 0 {
+		e.cursor = hostKeyOf(hosts[furthest-1])
 	}
 
 	e.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))

@@ -1385,6 +1385,9 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 	selfMetrics.Add(selfmetrics.Gauge, "gotcha_metric_evaluator_tick_duration_seconds",
 		"Duration of the last metric threshold evaluation pass. Approaching the interval means the evaluator stops keeping up.",
 		nil, metricEval.LastTickSeconds)
+	selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_metric_evaluator_skipped_rules",
+		"Number of enabled rules skipped in the last tick because the tick budget ran out. Non-zero means the evaluator cannot keep up with the rule count.",
+		nil, metricEval.LastTickSkippedRules)
 	go metricEval.Run(ctx)
 
 	profileRegEval := &profile.RegressionEvaluator{
@@ -1455,6 +1458,9 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 	selfMetrics.Add(selfmetrics.Gauge, "gotcha_host_evaluator_tick_duration_seconds",
 		"Duration of the last host threshold evaluation pass. Approaching the interval means the evaluator stops keeping up.",
 		nil, hostEval.LastTickSeconds)
+	selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_host_evaluator_skipped_hosts",
+		"Number of active hosts skipped in the last tick because the tick budget ran out. Non-zero means the evaluator cannot keep up with the host count.",
+		nil, hostEval.LastTickSkippedHosts)
 	go hostEval.Run(ctx)
 
 	sloNotifier := &slo.SLOBurnNotifier{
@@ -1485,6 +1491,9 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 	selfMetrics.Add(selfmetrics.Gauge, "gotcha_slo_evaluator_tick_duration_seconds",
 		"Duration of the last SLO burn-rate evaluation pass. Approaching the interval means the evaluator stops keeping up.",
 		nil, sloEval.LastTickSeconds)
+	selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_slo_evaluator_skipped_slos",
+		"Number of enabled SLOs skipped in the last tick because the tick budget ran out. Non-zero means the evaluator cannot keep up with the SLO count.",
+		nil, sloEval.LastTickSkippedSLOs)
 	go sloEval.Run(ctx)
 
 	// uptime.Service.OpenUnacked не отдаёт планировщику инциденты на
@@ -1526,6 +1535,9 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 	selfMetrics.Add(selfmetrics.Gauge, "gotcha_escalation_scheduler_tick_duration_seconds",
 		"Duration of the last escalation scheduler pass. Approaching the interval means the scheduler stops keeping up.",
 		nil, sched.LastTickSeconds)
+	selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_escalation_scheduler_skipped_incidents",
+		"Number of open unacknowledged incidents skipped in the last tick because the tick budget ran out. Non-zero means the scheduler cannot keep up with the incident count.",
+		nil, sched.LastTickSkippedIncidents)
 	go sched.Run(ctx)
 
 	// 0 означает «хранить вечно» — janitor тогда не запускаем.

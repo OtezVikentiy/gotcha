@@ -217,6 +217,12 @@ func (n *fakeNotifier) last() fakeNotifyCall {
 	return n.calls[len(n.calls)-1]
 }
 
+func (n *fakeNotifier) allCalls() []fakeNotifyCall {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]fakeNotifyCall(nil), n.calls...)
+}
+
 func setLadder(t *testing.T, policy *escalation.PolicyStore, projectID int64, severity string, steps []escalation.Step) {
 	t.Helper()
 	if err := policy.SetLadder(context.Background(), projectID, severity, steps); err != nil {

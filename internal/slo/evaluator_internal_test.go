@@ -106,3 +106,36 @@ func TestSLOEvaluatorTickBudget(t *testing.T) {
 		})
 	}
 }
+
+func TestRotateSLOs(t *testing.T) {
+	slos := []SLO{{ID: 1}, {ID: 2}, {ID: 3}}
+
+	if got := rotateSLOs(nil, 0); got != nil {
+		t.Errorf("rotateSLOs(nil) = %v, want nil", got)
+	}
+
+	cases := []struct {
+		name   string
+		cursor int64
+		want   []int64
+	}{
+		{"курсор нулевой — обход с начала", 0, []int64{1, 2, 3}},
+		{"курсор на первом — начинаем со второго", 1, []int64{2, 3, 1}},
+		{"курсор на среднем", 2, []int64{3, 1, 2}},
+		{"курсор на последнем — полный круг", 3, []int64{1, 2, 3}},
+		{"курсор за пределами списка (SLO удалён) — оборачиваем как после последнего", 99, []int64{1, 2, 3}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := rotateSLOs(slos, tc.cursor)
+			if len(got) != len(tc.want) {
+				t.Fatalf("len = %d, want %d", len(got), len(tc.want))
+			}
+			for i, id := range tc.want {
+				if got[i].ID != id {
+					t.Errorf("rotateSLOs(%v)[%d].ID = %d, want %d", tc.cursor, i, got[i].ID, id)
+				}
+			}
+		})
+	}
+}

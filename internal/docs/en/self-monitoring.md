@@ -272,6 +272,13 @@ look perfectly healthy from here. The duration is always published: that's what
 makes hitting the budget visible. The reason shows up in the log as `tick did
 not finish within its budget`.
 
+**`gotcha_host_evaluator_skipped_hosts`** — how many active hosts missed
+evaluation in the last pass because the tick budget ran out. Normally 0. The
+walk over hosts rotates: the next tick resumes where the previous one gave up
+rather than restarting from the top, so a non-zero value does not mean the same
+tail of the fleet starves forever — it means the evaluator cannot get through
+the whole fleet in one tick.
+
 **`gotcha_slo_evaluator_last_tick_timestamp_seconds`** /
 **`gotcha_slo_evaluator_tick_duration_seconds`** — when the SLO burn-rate
 evaluator last completed a pass over every enabled SLO, and how long it took.
@@ -281,6 +288,11 @@ the timestamp noticeably larger than `GOTCHA_SLO_EVAL_INTERVAL_SECONDS` means bu
 are not being recomputed and error-budget incidents are neither opened nor
 closed; a duration approaching the interval means the evaluator is falling
 behind.
+
+**`gotcha_slo_evaluator_skipped_slos`** — how many enabled SLOs missed
+evaluation in the last pass because the tick budget ran out. Rotates the same
+way as the host evaluator: the next tick resumes where the previous one gave
+up.
 
 **`gotcha_trace_evaluator_last_tick_timestamp_seconds`** /
 **`gotcha_trace_evaluator_tick_duration_seconds`** — when the performance
@@ -298,6 +310,10 @@ took. Same blind spot again. A gap noticeably larger than
 `GOTCHA_METRIC_EVAL_INTERVAL_SECONDS` (default 60s) means metric-rule alerts are not
 being evaluated; a duration approaching the interval means the evaluator is
 falling behind.
+
+**`gotcha_metric_evaluator_skipped_rules`** — how many enabled rules missed
+evaluation in the last pass because the tick budget ran out. Rotates the same
+way as the host evaluator.
 
 **`gotcha_profile_evaluator_last_tick_timestamp_seconds`** /
 **`gotcha_profile_evaluator_tick_duration_seconds`** — when the profile
@@ -318,6 +334,14 @@ duration approaching the interval means PostgreSQL is not keeping up. A tick
 that runs out of budget partway through skips the remaining bindings for that
 pass rather than blocking the next one — check the log for `escalation
 scheduler: tick did not finish within its budget`.
+
+**`gotcha_escalation_scheduler_skipped_incidents`** — how many open
+unacknowledged incidents missed an escalation check in the last pass because
+the tick budget ran out (summed across all sources). Each source rotates its
+own walk independently: the next tick resumes where the previous one gave up
+rather than starting from the oldest incidents again — otherwise, during a
+storm, the scheduler would keep escalating the same old incidents and never
+reach the new ones.
 
 **`gotcha_uptime_scheduler_last_tick_timestamp_seconds`** /
 **`gotcha_uptime_scheduler_tick_duration_seconds`** — when the uptime check

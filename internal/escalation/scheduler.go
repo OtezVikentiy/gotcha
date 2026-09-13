@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"math"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -54,9 +55,40 @@ type Scheduler struct {
 	// В проде time.Now, в тестах фиксируется для детерминированного elapsed.
 	Now func() time.Time
 
+	// Пишутся только из Tick (вызывается последовательно из Run), ключ — имя источника.
+	cursor  map[string]int64
+	skipped atomic.Int64
+
 	lastTickUnix    atomic.Int64  // unix-время последнего завершённого тика
 	lastTickSeconds atomic.Uint64 // длительность последнего тика, math.Float64bits
 }
+
+// rotatePending возобновляет обход сразу после cursor (ORDER BY id) — иначе
+// при шторме планировщик вечно эскалирует только самые старые инциденты.
+func rotatePending(pending []PendingIncident, cursor int64) []PendingIncident {
+	if len(pending) == 0 {
+		return pending
+	}
+	idx := sort.Search(len(pending), func(i int) bool { return pending[i].ID > cursor })
+	if idx == 0 {
+		return pending
+	}
+	rotated := make([]PendingIncident, 0, len(pending))
+	rotated = append(rotated, pending[idx:]...)
+	rotated = append(rotated, pending[:idx]...)
+	return rotated
+}
+
+// maintenanceCache и ladderCache — память одного тика, ключ project_id[+severity]:
+// оба значения не зависят от конкретного инцидента.
+type maintenanceCache map[int64]bool
+
+type ladderKey struct {
+	projectID int64
+	severity  string
+}
+
+type ladderCache map[ladderKey]Ladder
 
 // Self-метрика живости: мёртвый или отставший планировщик снаружи выглядит
 // как «эскалировать нечего».
@@ -65,6 +97,8 @@ func (s *Scheduler) LastTickUnix() int64 { return s.lastTickUnix.Load() }
 func (s *Scheduler) LastTickSeconds() float64 {
 	return math.Float64frombits(s.lastTickSeconds.Load())
 }
+
+func (s *Scheduler) LastTickSkippedIncidents() int64 { return s.skipped.Load() }
 
 func (s *Scheduler) tickBudget() time.Duration {
 	budget := time.Duration(float64(s.Interval) * tickBudgetShare)
@@ -76,11 +110,17 @@ func (s *Scheduler) tickBudget() time.Duration {
 
 // Ошибка на одном инциденте логируется и не прерывает обработку остальных.
 func (s *Scheduler) Tick(ctx context.Context) {
+	if s.cursor == nil {
+		s.cursor = map[string]int64{}
+	}
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, s.tickBudget())
 	defer cancel()
 
 	now := s.Now()
+	maint := maintenanceCache{}
+	ladders := ladderCache{}
+	var skipped int64
 	for _, b := range s.Bindings {
 		if ctx.Err() != nil {
 			slog.Warn("escalation scheduler: tick budget exhausted, remaining bindings skipped",
@@ -93,10 +133,23 @@ func (s *Scheduler) Tick(ctx context.Context) {
 			slog.Error("escalation scheduler: open unacked failed", "source", b.Src.Name(), "error", err)
 			continue
 		}
-		for _, p := range pending {
-			s.tickOne(ctx, b, p, now)
+		pending = rotatePending(pending, s.cursor[b.Src.Name()])
+		done := len(pending)
+		for i, p := range pending {
+			if ctx.Err() != nil {
+				slog.Warn("escalation scheduler: tick budget exhausted, remaining incidents skipped",
+					"source", b.Src.Name(), "skipped_incidents", len(pending)-i, "budget", s.tickBudget())
+				done = i
+				break
+			}
+			s.tickOne(ctx, b, p, now, maint, ladders)
+		}
+		skipped += int64(len(pending) - done)
+		if done > 0 {
+			s.cursor[b.Src.Name()] = pending[done-1].ID
 		}
 	}
+	s.skipped.Store(skipped)
 
 	s.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
 	if ctx.Err() != nil {
@@ -140,13 +193,17 @@ func (s *Scheduler) releaseSuppressed(ctx context.Context, b Binding) {
 	}
 }
 
-func (s *Scheduler) tickOne(ctx context.Context, b Binding, p PendingIncident, now time.Time) {
-	// Fail-safe: ошибка проверки окна — не эскалируем, ложная эскалация хуже
-	// пропущенной ступени (её отправит следующий тик).
-	inMaint, err := s.Maint.InMaintenance(ctx, p.ProjectID, now)
-	if err != nil {
-		slog.Error("escalation scheduler: maintenance check failed", "source", b.Src.Name(), "incident_id", p.ID, "error", err)
-		return
+func (s *Scheduler) tickOne(ctx context.Context, b Binding, p PendingIncident, now time.Time, maint maintenanceCache, ladders ladderCache) {
+	// Fail-safe: ошибка проверки окна — не эскалируем, ложная эскалация хуже пропущенной ступени.
+	inMaint, cached := maint[p.ProjectID]
+	if !cached {
+		var err error
+		inMaint, err = s.Maint.InMaintenance(ctx, p.ProjectID, now)
+		if err != nil {
+			slog.Error("escalation scheduler: maintenance check failed", "source", b.Src.Name(), "incident_id", p.ID, "error", err)
+			return
+		}
+		maint[p.ProjectID] = inMaint
 	}
 	if inMaint {
 		return
@@ -179,14 +236,20 @@ func (s *Scheduler) tickOne(ctx context.Context, b Binding, p PendingIncident, n
 		}
 	}
 
-	ladder, err := s.Policy.Ladder(ctx, p.ProjectID, p.Severity)
-	if err != nil {
-		slog.Error("escalation scheduler: ladder resolve failed", "source", b.Src.Name(), "incident_id", p.ID, "error", err)
-		return
+	lkey := ladderKey{projectID: p.ProjectID, severity: p.Severity}
+	ladder, cached := ladders[lkey]
+	if !cached {
+		var err error
+		ladder, err = s.Policy.Ladder(ctx, p.ProjectID, p.Severity)
+		if err != nil {
+			slog.Error("escalation scheduler: ladder resolve failed", "source", b.Src.Name(), "incident_id", p.ID, "error", err)
+			return
+		}
+		ladders[lkey] = ladder
 	}
 
 	elapsed := now.Sub(p.StartedAt)
-	_, err = SendStepIfDue(ctx, ladder, b.Src.Name(), s.Pool, p.ID, p.EscalationLevel, elapsed,
+	_, err := SendStepIfDue(ctx, ladder, b.Src.Name(), s.Pool, p.ID, p.EscalationLevel, elapsed,
 		func(channelIDs []int64, step int) ([]int64, error) {
 			return b.Notifier.NotifyStep(ctx, p.ID, channelIDs, step)
 		},
