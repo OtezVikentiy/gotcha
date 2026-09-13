@@ -3,15 +3,18 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"gopkg.in/yaml.v3"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingestsignal"
@@ -182,6 +185,77 @@ func TestSetupLoggingWarningAliasSetsWarnLevel(t *testing.T) {
 	}
 }
 
+func TestLoadConfigWithLoggingAppliesFormatBeforeOwnWarnings(t *testing.T) {
+	prevDefault := slog.Default()
+	defer slog.SetDefault(prevDefault)
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	prevStderr := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = prevStderr }()
+	// база: как будто fix не отработал — уровень/формат по умолчанию (info, текст),
+	// хендлер строится ПОСЛЕ подмены os.Stderr, иначе пишет мимо перехваченного пайпа
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
+	_, loadErr := loadConfigWithLogging(getenvFrom(map[string]string{
+		"GOTCHA_LOGGING_FORMAT":            "json",
+		"GOTCHA_HSTS_ENABLED":              "true",
+		"GOTCHA_BASE_URL":                  "http://gotcha.example",
+		"GOTCHA_SECRET_KEY_ALLOW_INSECURE": "1",
+	}), environFrom(), nil)
+	w.Close()
+	if loadErr != nil {
+		t.Fatalf("loadConfigWithLogging: %v", loadErr)
+	}
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+
+	if !strings.Contains(buf.String(), `"msg":"GOTCHA_HSTS_ENABLED`) {
+		t.Errorf("предупреждение GOTCHA_HSTS_ENABLED не в JSON-формате (GOTCHA_LOGGING_FORMAT применён слишком поздно): %q", buf.String())
+	}
+}
+
+func TestLoadConfigWithLoggingAppliesLevelBeforeOwnWarnings(t *testing.T) {
+	prevDefault := slog.Default()
+	defer slog.SetDefault(prevDefault)
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	prevStderr := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = prevStderr }()
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
+	_, loadErr := loadConfigWithLogging(getenvFrom(map[string]string{
+		"GOTCHA_LOGGING_LEVEL":             "error",
+		"GOTCHA_HSTS_ENABLED":              "true",
+		"GOTCHA_BASE_URL":                  "http://gotcha.example",
+		"GOTCHA_SECRET_KEY_ALLOW_INSECURE": "1",
+	}), environFrom(), nil)
+	w.Close()
+	if loadErr != nil {
+		t.Fatalf("loadConfigWithLogging: %v", loadErr)
+	}
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+
+	if strings.Contains(buf.String(), "GOTCHA_HSTS_ENABLED") {
+		t.Errorf("GOTCHA_LOGGING_LEVEL=error не подавил собственное предупреждение loadConfig (уровень применён слишком поздно): %q", buf.String())
+	}
+}
+
+func TestLoadConfigWithLoggingPropagatesConfigError(t *testing.T) {
+	_, err := loadConfigWithLogging(getenvFrom(nil), environFrom(), []string{"--mode=bogus"})
+	if err == nil {
+		t.Fatal("loadConfigWithLogging с невалидным --mode вернул nil error, а не ошибку loadConfigChecked")
+	}
+}
+
 func TestAutoMaxBufferBytesSafeUnderHeapCeiling(t *testing.T) {
 	memLimit1g := int64(1024 << 20)
 	heapCeiling := int64(float64(memLimit1g) * 0.8) // как memlimit.heapTarget
@@ -258,6 +332,103 @@ func TestEffectiveMaxBufferBytesRespectsExplicitOverride(t *testing.T) {
 	}
 	if got := effectiveMaxBufferBytes(0, 0); got != 0 {
 		t.Errorf("effectiveMaxBufferBytes(0, 0) = %d, хочу 0 (flat-дефолт пакета, не регресс)", got)
+	}
+}
+
+func repoRootForTest(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("go.mod не найден ни в одном из родительских каталогов от %s", dir)
+		}
+		dir = parent
+	}
+}
+
+// "256m"/"1g" — формат Docker Compose byte-size, суффикс регистронезависим.
+func parseComposeMemLimit(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("пустое значение")
+	}
+	mult := int64(1)
+	numPart := s
+	switch s[len(s)-1] {
+	case 'k', 'K':
+		mult, numPart = 1<<10, s[:len(s)-1]
+	case 'm', 'M':
+		mult, numPart = 1<<20, s[:len(s)-1]
+	case 'g', 'G':
+		mult, numPart = 1<<30, s[:len(s)-1]
+	}
+	n, err := strconv.ParseInt(numPart, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	return n * mult, nil
+}
+
+type smallComposeService struct {
+	MemLimit    string            `yaml:"mem_limit"`
+	Environment map[string]string `yaml:"environment"`
+}
+
+type smallComposeFile struct {
+	Services map[string]smallComposeService `yaml:"services"`
+}
+
+// GOMEMLIMIT/GOTCHA_MAX_WRITER_BUFFER_BYTES не заданы для этого профиля —
+// потолок кучи и потолок буфера оба выводятся сами из mem_limit, тем же
+// способом (defaultRatio=0.8 в internal/memlimit). Явный оверрайд в
+// docker-compose.small.yml применяется одинаково ко всем autoBufferCapUnits
+// буферам и не обязан пересчитываться при смене mem_limit — что и произошло
+// однажды: 24 МиБ на буфер (150994944 суммарно) заняли 70% потолка кучи
+// вместо заявленных autoBufferSafeShare (60%).
+func TestSmallComposeWriterBufferStaysWithinHeapBudget(t *testing.T) {
+	root := repoRootForTest(t)
+	raw, err := os.ReadFile(filepath.Join(root, "docker-compose.small.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cf smallComposeFile
+	if err := yaml.Unmarshal(raw, &cf); err != nil {
+		t.Fatalf("разбор docker-compose.small.yml: %v", err)
+	}
+	gotcha, ok := cf.Services["gotcha"]
+	if !ok {
+		t.Fatal("docker-compose.small.yml: нет сервиса gotcha — сторож ослеп")
+	}
+	memLimitBytes, err := parseComposeMemLimit(gotcha.MemLimit)
+	if err != nil || memLimitBytes <= 0 {
+		t.Fatalf("mem_limit сервиса gotcha = %q: %v", gotcha.MemLimit, err)
+	}
+	const derivedHeapRatio = 0.8 // internal/memlimit.defaultRatio
+	heapCeiling := int64(float64(memLimitBytes) * derivedHeapRatio)
+
+	effective := autoMaxBufferBytes(heapCeiling)
+	if override, ok := gotcha.Environment["GOTCHA_MAX_WRITER_BUFFER_BYTES"]; ok {
+		v, err := strconv.ParseInt(strings.TrimSpace(fmt.Sprint(override)), 10, 64)
+		if err != nil {
+			t.Fatalf("GOTCHA_MAX_WRITER_BUFFER_BYTES = %q: %v", override, err)
+		}
+		effective = v
+	}
+
+	sum := effective * autoBufferCapUnits
+	budget := int64(float64(heapCeiling) * autoBufferSafeShare)
+	if sum > budget {
+		t.Errorf("docker-compose.small.yml: %d байт/буфер × %d единиц = %d, "+
+			"превышает %.0f%% потолка кучи (%d байт при mem_limit=%s, потолок кучи %d) — "+
+			"буферам писателя достаётся больше доли, чем оставляет HTTP-приёму и рантайму запас",
+			effective, autoBufferCapUnits, sum, autoBufferSafeShare*100, budget, gotcha.MemLimit, heapCeiling)
 	}
 }
 

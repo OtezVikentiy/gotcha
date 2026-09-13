@@ -306,16 +306,35 @@ func applyMemoryLimit() int64 {
 	return limit
 }
 
+// Лучшим усилием — невалидное значение здесь не отказ старта, ту же
+// переменную позже провалит validateLogging внутри loadConfigChecked.
+func earlyLogEnv(getenv func(string) string) (level, format string) {
+	return strings.ToLower(strings.TrimSpace(getenv("GOTCHA_LOGGING_LEVEL"))),
+		strings.ToLower(strings.TrimSpace(getenv("GOTCHA_LOGGING_FORMAT")))
+}
+
+// Применяет логирование ДО loadConfigChecked — она сама зовёт slog.Warn,
+// и эти предупреждения обязаны идти уже в выбранном формате/уровне.
+func loadConfigWithLogging(getenv func(string) string, environ func() []string, args []string) (Config, error) {
+	earlyLevel, earlyFormat := earlyLogEnv(getenv)
+	_ = setupLogging(earlyLevel, earlyFormat)
+	cfg, err := loadConfigChecked(getenv, environ, args)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := setupLogging(cfg.LogLevel, cfg.LogFormat); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
 func run() error {
 	if versionRequested(os.Args[1:]) {
 		fmt.Println("gotcha", version.String())
 		return nil
 	}
-	cfg, err := loadConfigChecked(os.Getenv, os.Environ, os.Args[1:])
+	cfg, err := loadConfigWithLogging(os.Getenv, os.Environ, os.Args[1:])
 	if err != nil {
-		return err
-	}
-	if err := setupLogging(cfg.LogLevel, cfg.LogFormat); err != nil {
 		return err
 	}
 	if cfg.MigrateForcePG >= 0 || cfg.MigrateForceCH >= 0 {

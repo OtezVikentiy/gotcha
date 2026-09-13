@@ -690,7 +690,8 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		}
 	}
 	if cfg.HSTSEnabled {
-		if hstsHeaderMattersFor(cfg.Mode) && !strings.HasPrefix(cfg.BaseURL, "https://") {
+		if hstsHeaderMattersFor(cfg.Mode) && !isLocalBaseURL(cfg.BaseURL) &&
+			!strings.HasPrefix(cfg.BaseURL, "https://") {
 			slog.Warn("GOTCHA_HSTS_ENABLED is on but GOTCHA_BASE_URL is not https:// — " +
 				"Strict-Transport-Security is never sent on a plain HTTP deploy")
 		}

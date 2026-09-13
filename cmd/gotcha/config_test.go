@@ -2039,8 +2039,15 @@ func TestLoadConfig_HSTSWarnings(t *testing.T) {
 		return false
 	}
 
-	if got := capture(t, map[string]string{"GOTCHA_HSTS_ENABLED": "true"}); !hasWarn(got, "GOTCHA_BASE_URL") {
+	if got := capture(t, map[string]string{
+		"GOTCHA_HSTS_ENABLED":              "true",
+		"GOTCHA_BASE_URL":                  "http://gotcha.example",
+		"GOTCHA_SECRET_KEY_ALLOW_INSECURE": "1",
+	}); !hasWarn(got, "GOTCHA_BASE_URL") {
 		t.Error("нет предупреждения о том, что HSTS включён при не-https GOTCHA_BASE_URL")
+	}
+	if got := capture(t, map[string]string{"GOTCHA_HSTS_ENABLED": "true"}); hasWarn(got, "GOTCHA_BASE_URL") {
+		t.Error("предупреждение выдано на дефолтном GOTCHA_BASE_URL=http://localhost:8080 (штатный квикстарт)")
 	}
 	if got := capture(t, map[string]string{
 		"GOTCHA_HSTS_ENABLED":            "false",
