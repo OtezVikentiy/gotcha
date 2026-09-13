@@ -155,3 +155,46 @@ func TestWriterBoundsBufferByBytes(t *testing.T) {
 		t.Fatalf("bufBytes = %d, фактический вес %d — учёт разъехался", bytes, want)
 	}
 }
+
+// Одиночный всплеск не должен доезжать до ClickHouse тиками по batchSize раз
+// в interval — успешный флаш с непустым остатком обязан кикнуть следующий сам.
+// Без Run()/тикера: вручную проигрываем то, что сделал бы Run(), читая kick.
+func TestWriterDrainsBurstWithoutWaitingForTick(t *testing.T) {
+	c := &fakeCHConn{}
+	w := NewWriter(c)
+	w.batchSize = 100
+
+	now := time.Now().UTC()
+	const burst = 2500
+	for i := 0; i < burst; i++ {
+		w.Add(1, Profile{Type: "cpu", Timestamp: now, Samples: []Sample{
+			{Stack: []Frame{{Function: "f"}}, Value: 1},
+		}})
+	}
+
+	ctx := context.Background()
+	flushes := 0
+drain:
+	for {
+		select {
+		case <-w.kick:
+			w.flush(ctx)
+			flushes++
+		default:
+			break drain
+		}
+	}
+
+	if got := w.buffered(); got != 0 {
+		t.Fatalf("buffered = %d после %d флашей — не самокикнулся до опустошения", got, flushes)
+	}
+	if want := burst / w.batchSize; flushes != want {
+		t.Fatalf("флашей = %d, want %d — на всплеск не хватило self-kick'ов", flushes, want)
+	}
+	c.mu.Lock()
+	rows := c.rows
+	c.mu.Unlock()
+	if rows != burst {
+		t.Fatalf("вставлено %d строк, want %d", rows, burst)
+	}
+}

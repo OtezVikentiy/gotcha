@@ -45,6 +45,9 @@ type txRow struct {
 }
 
 type spanRow struct {
+	// не пишется в CH — только для per-org атрибуции дропов spanBuf (см.
+	// SetSpanDropSink); 0 — атрибутировать некуда.
+	OrgID           int64
 	ProjectID       uint64
 	TraceID         string
 	SpanID          string
@@ -82,6 +85,10 @@ type SpanWriter struct {
 	// spanBuf в счётчик не идёт; заполняется под mu, сливается вне (emitDrops).
 	pendingDrops map[int64]int64
 	onDrop       func(orgID, n int64) // сток per-org дропов txBuf; nil — no-op. Под mu.
+	// дропы spanBuf: не квота (билится только транзакция), отдельный сток —
+	// чтобы не задваивать/не путать с dropped_transactions. Под mu.
+	pendingSpanDrops map[int64]int64
+	onSpanDrop       func(orgID, n int64)
 
 	maxBuf        int
 	maxSpanBuf    int
@@ -143,6 +150,7 @@ func (w *SpanWriter) Add(orgID, projectID int64, t Transaction) {
 
 	spans := make([]spanRow, 0, len(t.Spans)+1)
 	spans = append(spans, spanRow{
+		OrgID:           orgID,
 		ProjectID:       uint64(projectID),
 		TraceID:         t.TraceID,
 		SpanID:          t.SpanID,
@@ -159,6 +167,7 @@ func (w *SpanWriter) Add(orgID, projectID int64, t Transaction) {
 	})
 	for _, s := range t.Spans {
 		spans = append(spans, spanRow{
+			OrgID:           orgID,
 			ProjectID:       uint64(projectID),
 			TraceID:         t.TraceID,
 			SpanID:          s.SpanID,
@@ -200,8 +209,10 @@ func (w *SpanWriter) Add(orgID, projectID int64, t Transaction) {
 	}
 	// захватываем под mu, сливаем вне — сток берёт свой мьютекс.
 	drops, sink := w.takeDropsLocked()
+	spanDrops, spanSink := w.takeSpanDropsLocked()
 	w.mu.Unlock()
 	reportDrops(sink, drops)
+	reportDrops(spanSink, spanDrops)
 
 	if logDrop {
 		slog.Warn("trace buffer full, dropping oldest", "dropped_total", dropped)
@@ -235,6 +246,32 @@ func (w *SpanWriter) takeDropsLocked() (map[int64]int64, func(orgID, n int64)) {
 func (w *SpanWriter) emitDrops() {
 	w.mu.Lock()
 	drops, sink := w.takeDropsLocked()
+	w.mu.Unlock()
+	reportDrops(sink, drops)
+}
+
+// ставится один раз до горячего трафика; nil-сток — no-op. Отдельный от
+// SetDropSink: дроп спана не квота (билится только транзакция).
+func (w *SpanWriter) SetSpanDropSink(fn func(orgID, n int64)) {
+	w.mu.Lock()
+	w.onSpanDrop = fn
+	w.mu.Unlock()
+}
+
+// вызывающий обязан слить результат через reportDrops ПОСЛЕ разблокировки.
+func (w *SpanWriter) takeSpanDropsLocked() (map[int64]int64, func(orgID, n int64)) {
+	if len(w.pendingSpanDrops) == 0 {
+		return nil, w.onSpanDrop
+	}
+	m := w.pendingSpanDrops
+	w.pendingSpanDrops = nil
+	return m, w.onSpanDrop
+}
+
+// нужен в flush, где возврат неудачной пачки может переполнить spanBuf уже под mu.
+func (w *SpanWriter) emitSpanDrops() {
+	w.mu.Lock()
+	drops, sink := w.takeSpanDropsLocked()
 	w.mu.Unlock()
 	reportDrops(sink, drops)
 }
@@ -333,6 +370,14 @@ func (w *SpanWriter) trimSpansLocked() bool {
 	}
 	if drop <= 0 {
 		return false
+	}
+	for i := 0; i < drop; i++ {
+		if org := w.spanBuf[i].OrgID; org > 0 {
+			if w.pendingSpanDrops == nil {
+				w.pendingSpanDrops = make(map[int64]int64)
+			}
+			w.pendingSpanDrops[org]++
+		}
 	}
 	w.spanBuf = append(w.spanBuf[:0], w.spanBuf[drop:]...)
 	w.dropped += int64(drop)
@@ -539,6 +584,9 @@ func (w *SpanWriter) flushTx(ctx context.Context) {
 }
 
 func (w *SpanWriter) flushSpans(ctx context.Context) {
+	// возврат неудачной пачки может переполнить spanBuf и вызвать trimSpansLocked —
+	// сливаем per-org дропы после того, как секции отпустят mu.
+	defer w.emitSpanDrops()
 	w.mu.Lock()
 	n := min(len(w.spanBuf), w.spanBatchSize)
 	if n == 0 {
