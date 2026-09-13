@@ -140,6 +140,7 @@ nice -n 19 go test -p 1 -count=1 -timeout 40m -coverpkg="$PKGS_CSV" -coverprofil
 # Дедуп-aware разбор: с -coverpkg один и тот же блок появляется в профиле по
 # разу на тест-бинарь; берём максимум count по уникальному ключу блока (как
 # это делает `go tool cover`), затем суммируем строки по двум группам.
+gate_status=0
 awk -v front_min="$FRONT_MIN" -v back_min="$BACK_MIN" -v templ_min="$TEMPL_MIN" -v cmd_min="$CMD_MIN" -v pkg_min="$PKG_MIN" '
 NR==1 { next }                       # строка "mode:"
 {
@@ -230,10 +231,12 @@ END {
   }
   if (fail) exit 1
   print "OK: пороги соблюдены."
-}' "$PROFILE"
+}' "$PROFILE" || gate_status=$?
 
 if [[ "${1:-}" == "-html" ]]; then
   OUT=/tmp/gotcha-coverage.html
   go tool cover -html="$PROFILE" -o "$OUT"
   echo "HTML-отчёт: $OUT" >&2
 fi
+
+exit "$gate_status"
