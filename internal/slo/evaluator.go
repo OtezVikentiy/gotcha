@@ -153,6 +153,7 @@ func (e *Evaluator) Tick(ctx context.Context) (int, error) {
 		e.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
 		return 0, err
 	}
+	e.pruneCloseStreak(slos)
 	slos = rotateSLOs(slos, e.cursor)
 	now := time.Now().UTC()
 	transitions := 0
@@ -181,6 +182,23 @@ func (e *Evaluator) Tick(ctx context.Context) (int, error) {
 	}
 	e.lastTickUnix.Store(time.Now().Unix())
 	return transitions, nil
+}
+
+// SLO, выключенный или удалённый между тиками, не должен оставлять запись в
+// closeStreak навсегда — иначе счётчик растёт монотонно на весь срок жизни процесса.
+func (e *Evaluator) pruneCloseStreak(active []SLO) {
+	if len(e.closeStreak) == 0 {
+		return
+	}
+	keep := make(map[int64]bool, len(active))
+	for _, s := range active {
+		keep[s.ID] = true
+	}
+	for id := range e.closeStreak {
+		if !keep[id] {
+			delete(e.closeStreak, id)
+		}
+	}
 }
 
 func (e *Evaluator) evalSLO(ctx context.Context, s SLO, now time.Time) bool {

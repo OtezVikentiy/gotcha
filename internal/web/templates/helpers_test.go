@@ -357,7 +357,7 @@ func TestProfileWeightByType(t *testing.T) {
 		want   string
 	}{
 		{"cpu", 2_000_000_000, "2.00s"},
-		{"heap", 2 * 1024 * 1024, "2.0MB"},
+		{"heap", 2 * 1024 * 1024, "2.0MiB"},
 		{"samples", 42, "42"},
 	}
 	for _, c := range cases {

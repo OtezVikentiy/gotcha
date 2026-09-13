@@ -24,6 +24,12 @@ var ErrTooManySLOs = errors.New("slo: too many slos for project")
 // без неё «удалили ничего» неотличимо от успеха, и web-слой рапортует не туда.
 var ErrNotFound = errors.New("slo: not found")
 
+// availability/latency читают transactions_5m (5-минутная агрегация): окно короче
+// физически не даёт более частых точек, конфиг с ним был бы обманчив, не строг.
+var ErrBurnShortMinTooSmall = errors.New("slo: burn short window is below the SQL SLI's data granularity")
+
+const minBurnShortMinForSQLSLI = 5
+
 // не `cap`: шадовило бы builtin.
 func capStr(s string, n int) string {
 	r := []rune(s)
@@ -61,6 +67,10 @@ func (s *Store) Create(ctx context.Context, in SLO) (SLO, error) {
 	in.Name = capStr(in.Name, maxName)
 	in.Transaction = capStr(in.Transaction, maxName)
 	in.Environment = capStr(in.Environment, maxName)
+	if (in.Kind == SLIAvailability || in.Kind == SLILatency) &&
+		in.BurnShortMin > 0 && in.BurnShortMin < minBurnShortMinForSQLSLI {
+		return SLO{}, ErrBurnShortMinTooSmall
+	}
 	// при гонке на границе возможен небольшой перелёт — это ограничение
 	// blast-radius, не защита безопасности, точность до единицы не нужна.
 	var count int

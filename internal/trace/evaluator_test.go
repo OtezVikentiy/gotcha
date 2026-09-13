@@ -711,6 +711,35 @@ func TestEvaluatorReadsOpenRegressionsOnce(t *testing.T) {
 	}
 }
 
+// Синтаксически валидный, но не той формы JSON не должен включить пейджинг
+// проекту, явно ВЫКЛЮЧИВШЕМУ детектор, дефолтными порогами — тик его пропускает.
+func TestEvaluatorSkipsProjectWithUnparsableRegressionConfig(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	counting := &countingRegressions{RegressionService: NewRegressionService(pool)}
+	ev := &Evaluator{
+		Pool: pool, Query: NewQuery(conn), Regressions: counting,
+		TopK: 10, BaselineDays: 7,
+	}
+
+	pid := createEvalProject(t, pool, "eval-bad-config")
+	// Валидный JSON (jsonb-колонка его примет), но "enabled" не bool —
+	// json.Unmarshal провалится на типе поля, не на синтаксисе.
+	if _, err := pool.Exec(ctx,
+		`UPDATE projects SET perf_regression_config = '{"enabled":"not-a-bool"}' WHERE id = $1`, pid); err != nil {
+		t.Fatalf("seed broken config: %v", err)
+	}
+
+	ev.tick(ctx)
+
+	if got := counting.reads.Load(); got != 0 {
+		t.Fatalf("OpenForProject вызван %d раз для проекта с неразбираемым конфигом, want 0 (проект должен быть пропущен, не оценён на дефолтах)", got)
+	}
+}
+
 // Список проектов пуст — тику незачем ходить в ClickHouse вовсе, поэтому достаточно PG.
 func TestEvaluatorPublishesTickLiveness(t *testing.T) {
 	pool := testenv.MigratedPG(t)

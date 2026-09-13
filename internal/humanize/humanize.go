@@ -18,16 +18,35 @@ func CompactNumber(v float64) string {
 	case abs >= 1e12:
 		return compactMantissa(v/1e12) + "T"
 	case abs >= 1e9:
-		return compactMantissa(v/1e9) + "G"
+		if s, ok := capMantissa(v/1e9, "G"); ok {
+			return s
+		}
+		return compactMantissa(v/1e12) + "T"
 	case abs >= 1e6:
-		return compactMantissa(v/1e6) + "M"
+		if s, ok := capMantissa(v/1e6, "M"); ok {
+			return s
+		}
+		return compactMantissa(v/1e9) + "G"
 	case abs >= 1e3:
-		return compactMantissa(v/1e3) + "k"
+		if s, ok := capMantissa(v/1e3, "k"); ok {
+			return s
+		}
+		return compactMantissa(v/1e6) + "M"
 	case abs > 0 && abs < 0.001:
 		return strconv.FormatFloat(v, 'g', 3, 64)
 	default:
 		return compactMantissa(v)
 	}
+}
+
+// Округление у границы разряда (999950 -> "1000") на деле уже следующий
+// разряд (999500 -> "1M", не "1000k") — capMantissa ловит переход.
+func capMantissa(scaled float64, suffix string) (string, bool) {
+	s := compactMantissa(scaled)
+	if n, err := strconv.ParseFloat(s, 64); err == nil && math.Abs(n) >= 1000 {
+		return "", false
+	}
+	return s + suffix, true
 }
 
 func compactMantissa(v float64) string {
@@ -128,24 +147,38 @@ func MetricValue(ctx context.Context, metric string, v float64) string {
 	case "cls":
 		return strconv.FormatFloat(v, 'f', 2, 64)
 	case "duration":
-		switch {
-		case v < 1:
+		if v < 1 {
 			return strconv.FormatFloat(v*1000, 'f', 0, 64) + "µs"
-		case v < 1000:
-			return strconv.FormatFloat(v, 'f', 0, 64) + "ms"
-		default:
-			return strconv.FormatFloat(v/1000, 'f', 1, 64) + "s"
 		}
+		if v < 1000 {
+			if s, ok := capMS(v); ok {
+				return s
+			}
+		}
+		return strconv.FormatFloat(v/1000, 'f', 1, 64) + "s"
 	default: // lcp/inp/fcp/ttfb и неизвестные метрики — веб-виталы, как formatVitalMS
 		if v < 1000 {
-			return strconv.FormatFloat(v, 'f', 0, 64) + "ms"
+			if s, ok := capMS(v); ok {
+				return s
+			}
 		}
 		return strconv.FormatFloat(v/1000, 'f', 2, 64) + "s"
 	}
 }
 
+// Округление у границы (999.7 -> "1000") на деле уже секунды; вызывающий
+// сам считает v/1000 — форматы секунд у duration/веб-виталов различаются.
+func capMS(v float64) (string, bool) {
+	s := strconv.FormatFloat(v, 'f', 0, 64)
+	if s == "1000" {
+		return "", false
+	}
+	return s + "ms", true
+}
+
 // Единственная реализация в проекте — не копировать: разные копии одного форматирования разъезжались.
 // Не локализуется, отрицательное клэмпится к нулю — тот же приём, что у MetricValue/CompactNumber.
+// KiB/MiB/GiB, не KB/MB/GB: делим на 1024, не на 1000 — подпись обязана называть то, что считает код.
 func Bytes(b int64) string {
 	if b < 0 {
 		b = 0
@@ -153,12 +186,32 @@ func Bytes(b int64) string {
 	const unit = 1024
 	switch {
 	case b >= unit*unit*unit:
-		return strconv.FormatFloat(float64(b)/(unit*unit*unit), 'f', 2, 64) + "GB"
+		return capUnit(float64(b)/(unit*unit*unit), 2, "GiB")
 	case b >= unit*unit:
-		return strconv.FormatFloat(float64(b)/(unit*unit), 'f', 1, 64) + "MB"
+		if s, ok := capUnitOrPromote(float64(b)/(unit*unit), 1, "MiB"); ok {
+			return s
+		}
+		return capUnit(float64(b)/(unit*unit*unit), 2, "GiB")
 	case b >= unit:
-		return strconv.FormatFloat(float64(b)/unit, 'f', 1, 64) + "KB"
+		if s, ok := capUnitOrPromote(float64(b)/unit, 1, "KiB"); ok {
+			return s
+		}
+		return capUnit(float64(b)/(unit*unit), 1, "MiB")
 	default:
 		return strconv.FormatInt(b, 10) + "B"
 	}
+}
+
+func capUnit(v float64, prec int, suffix string) string {
+	return strconv.FormatFloat(v, 'f', prec, 64) + suffix
+}
+
+// Округление у самой границы разряда (1048575Б -> 1024.0КиБ) на деле уже
+// принадлежит следующему: та же поправка, что у capMS/capMantissa.
+func capUnitOrPromote(scaled float64, prec int, suffix string) (string, bool) {
+	s := strconv.FormatFloat(scaled, 'f', prec, 64)
+	if n, err := strconv.ParseFloat(s, 64); err == nil && n >= 1024 {
+		return "", false
+	}
+	return s + suffix, true
 }

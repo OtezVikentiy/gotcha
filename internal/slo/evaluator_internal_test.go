@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
@@ -137,5 +138,76 @@ func TestRotateSLOs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Сквозной вариант предыдущего теста: реальный Tick(), реальный удалённый SLO —
+// проверяет не только саму функцию, но и то, что Tick действительно её зовёт.
+func TestTickPrunesCloseStreakOfDeletedSLO(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+
+	var orgID, pid int64
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO organizations (slug, name, event_quota) VALUES ('slo-prune-test', 'SLO Prune Test', 0) RETURNING id").
+		Scan(&orgID); err != nil {
+		t.Fatalf("insert org: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO projects (org_id, slug, name) VALUES ($1, 'slo-prune-test', 'SLO Prune Test') RETURNING id", orgID).
+		Scan(&pid); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+
+	st := NewStore(pool)
+	kept, err := st.Create(ctx, SLO{
+		ProjectID: pid, Name: "kept", Kind: SLIAvailability, Target: 0.99, WindowDays: 30,
+		BurnThreshold: 14.4, BurnLongMin: 60, BurnShortMin: 5, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create kept SLO: %v", err)
+	}
+	deleted, err := st.Create(ctx, SLO{
+		ProjectID: pid, Name: "deleted", Kind: SLIAvailability, Target: 0.99, WindowDays: 30,
+		BurnThreshold: 14.4, BurnLongMin: 60, BurnShortMin: 5, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create deleted SLO: %v", err)
+	}
+
+	// Providers пуст, Tick() трогает только pruneCloseStreak — предзаполняем
+	// сами, как будто оба SLO уже копили счётчик остывания.
+	e := &Evaluator{Pool: pool, Store: st, Interval: time.Hour}
+	e.closeStreak = map[int64]int{kept.ID: 2, deleted.ID: 1}
+
+	if err := st.Delete(ctx, pid, deleted.ID); err != nil {
+		t.Fatalf("delete SLO: %v", err)
+	}
+
+	if _, err := e.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	if _, ok := e.closeStreak[deleted.ID]; ok {
+		t.Errorf("closeStreak[%d] пережил Tick после удаления SLO", deleted.ID)
+	}
+	if got := e.closeStreak[kept.ID]; got != 2 {
+		t.Errorf("closeStreak[%d] = %d, want 2 (живой SLO не должен терять счётчик)", kept.ID, got)
+	}
+}
+
+// Выключенный/удалённый SLO не должен оставлять запись в closeStreak навсегда.
+func TestPruneCloseStreakDropsInactiveSLOs(t *testing.T) {
+	e := &Evaluator{closeStreak: map[int64]int{1: 2, 2: 3, 3: 1}}
+	e.pruneCloseStreak([]SLO{{ID: 1}, {ID: 3}})
+
+	if _, ok := e.closeStreak[2]; ok {
+		t.Errorf("closeStreak[2] пережил pruneCloseStreak, хотя SLO 2 не в активном списке")
+	}
+	if got := e.closeStreak[1]; got != 2 {
+		t.Errorf("closeStreak[1] = %d, want 2 (активный SLO не должен терять счётчик)", got)
+	}
+	if got := e.closeStreak[3]; got != 1 {
+		t.Errorf("closeStreak[3] = %d, want 1 (активный SLO не должен терять счётчик)", got)
 	}
 }

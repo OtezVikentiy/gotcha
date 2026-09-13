@@ -52,13 +52,30 @@ func TestDurationLocalises(t *testing.T) {
 func TestMetricValueDurationSecondsThreshold(t *testing.T) {
 	ctx := testCtx(t)
 	cases := map[float64]string{
-		999:  "999ms",
-		1000: "1.0s",
-		1500: "1.5s",
+		999:   "999ms",
+		999.7: "1.0s", // округление до целых мс подняло бы до "1000ms" — граница пройдена ДО округления
+		1000:  "1.0s",
+		1500:  "1.5s",
 	}
 	for in, want := range cases {
 		if got := humanize.MetricValue(ctx, "duration", in); got != want {
 			t.Errorf("MetricValue(duration, %v) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Тот же capMS, что у duration, но в ветке по умолчанию (веб-виталы) — своя
+// точность секунд, граница должна ловиться и здесь, а не только у duration.
+func TestMetricValueVitalSecondsThreshold(t *testing.T) {
+	ctx := testCtx(t)
+	cases := map[float64]string{
+		999:   "999ms",
+		999.7: "1.00s",
+		1000:  "1.00s",
+	}
+	for in, want := range cases {
+		if got := humanize.MetricValue(ctx, "lcp", in); got != want {
+			t.Errorf("MetricValue(lcp, %v) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -215,6 +232,8 @@ func TestCompactNumber(t *testing.T) {
 		{0.25, "0.25"},
 		{999, "999"},
 		{1500, "1.5k"},
+		{999500, "1M"},    // округление мантиссы до "1000k" на деле уже "1M"
+		{999950000, "1G"}, // тот же переход разряда на границе M/G
 		{8e8, "800M"},
 		{9.1e8, "910M"},
 		{1.25e9, "1.25G"},
@@ -240,13 +259,14 @@ func TestBytes(t *testing.T) {
 		{-1 << 20, "0B"},
 		{1, "1B"},
 		{1023, "1023B"},
-		{1024, "1.0KB"},
-		{1536, "1.5KB"},
-		{1024*1024 - 1, "1024.0KB"},
-		{1024 * 1024, "1.0MB"},
-		{10 * 1024 * 1024, "10.0MB"},
-		{1024 * 1024 * 1024, "1.00GB"},
-		{5 * 1024 * 1024 * 1024, "5.00GB"},
+		{1024, "1.0KiB"},
+		{1536, "1.5KiB"},
+		{1024*1024 - 1, "1.0MiB"}, // 1023.999... КиБ округлилось бы до "1024.0KiB" — уже МиБ
+		{1024 * 1024, "1.0MiB"},
+		{10 * 1024 * 1024, "10.0MiB"},
+		{1024*1024*1024 - 1, "1.00GiB"}, // тот же переход разряда на границе МиБ/ГиБ
+		{1024 * 1024 * 1024, "1.00GiB"},
+		{5 * 1024 * 1024 * 1024, "5.00GiB"},
 	}
 	for _, c := range cases {
 		if got := humanize.Bytes(c.b); got != c.want {

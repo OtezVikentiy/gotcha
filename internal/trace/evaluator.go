@@ -148,7 +148,10 @@ func (e *Evaluator) tick(ctx context.Context) {
 	for _, p := range projects {
 		cfg, err := RegressionConfigFromJSON(p.raw)
 		if err != nil {
-			slog.Error("trace: evaluator: parse config failed, using defaults", "project_id", p.id, "error", err)
+			// Дефолт Enabled=true не годится: порча jsonb вернула бы пейджинг
+			// проекту, явно ВЫКЛЮЧИВШЕМУ детектор. Пропускаем тик, не включаем.
+			slog.Error("trace: evaluator: parse config failed, skipping project this tick", "project_id", p.id, "error", err)
+			continue
 		}
 		if !cfg.Enabled {
 			continue
