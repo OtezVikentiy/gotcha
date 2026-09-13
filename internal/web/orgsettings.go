@@ -197,8 +197,13 @@ func (h *Handler) orgSettingsSSODelete(w http.ResponseWriter, r *http.Request) {
 	}
 	// CSP блокирует inline confirm() — первый POST рендерит страницу подтверждения.
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.sso_delete.message", "confirm.delete",
-			orgSettingsPath(orgID), orgSettingsPath(orgID)+"/sso/delete", nil)
+		name := ""
+		if o, err := h.Org.Get(r.Context(), orgID); err == nil {
+			name = o.Name
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.sso_delete.message", "confirm.delete",
+			orgSettingsPath(orgID), orgSettingsPath(orgID)+"/sso/delete", nil,
+			"name", name)
 		return
 	}
 	if err := h.Org.DeleteSSO(r.Context(), orgID); err != nil {
@@ -310,7 +315,8 @@ func droppedBreakdown(ctx context.Context, d org.Dropped) string {
 	return i18n.Tf(ctx, "org.quota.dropped_breakdown", "parts", strings.Join(parts, ", "))
 }
 
-// nil — показывать нечего: без дропов за месяц, и лимит событий безлимитный либо использование <90%.
+// nil — показывать нечего: без дропов за месяц, и по всем видам телеметрии с лимитом
+// (0 = безлимит) использование <90%.
 func (h *Handler) quotaBanner(ctx context.Context, orgID int64, canManage bool) *templates.QuotaBanner {
 	href := orgSettingsPath(orgID)
 	if !canManage {
@@ -330,26 +336,40 @@ func (h *Handler) quotaBanner(ctx context.Context, orgID int64, canManage bool) 
 			Href:   href,
 		}
 	}
-	// Дропов нет — проверяем приближение к лимиту событий (0 = безлимит).
+	// Дропов нет — проверяем приближение к лимиту по каждому виду телеметрии, в том же
+	// фиксированном порядке, что и droppedBreakdown (раньше проверялись только события).
 	o, err := h.Org.Get(ctx, orgID)
 	if err != nil {
 		slog.Warn("quotaBanner: get org", "org_id", orgID, "err", err)
 		return nil
 	}
-	if o.EventQuota <= 0 {
-		return nil
-	}
-	usage, err := h.Org.Usage(ctx, orgID, now)
-	if err != nil {
-		slog.Warn("quotaBanner: usage", "org_id", orgID, "err", err)
-		return nil
-	}
-	// usage >= 90% лимита — целочисленно, без float: usage*10 >= quota*9.
-	if usage*10 >= o.EventQuota*9 {
-		return &templates.QuotaBanner{
-			Text: i18n.Tf(ctx, "org.quota.near_limit",
-				"used", strconv.FormatInt(usage, 10), "limit", strconv.FormatInt(o.EventQuota, 10)),
-			Href: href,
+	for _, kind := range []struct {
+		key   string
+		limit int64
+		usage func(context.Context, int64, time.Time) (int64, error)
+	}{
+		{org.QuotaKindEvents, o.EventQuota, h.Org.Usage},
+		{org.QuotaKindTransactions, o.TransactionQuota, h.Org.TransactionUsage},
+		{org.QuotaKindMetrics, o.MetricQuota, h.Org.MetricUsage},
+		{org.QuotaKindProfiles, o.ProfileQuota, h.Org.ProfileUsage},
+		{org.QuotaKindLogs, o.LogQuota, h.Org.LogUsage},
+	} {
+		if kind.limit <= 0 {
+			continue
+		}
+		usage, err := kind.usage(ctx, orgID, now)
+		if err != nil {
+			slog.Warn("quotaBanner: usage", "org_id", orgID, "kind", kind.key, "err", err)
+			return nil
+		}
+		// usage >= 90% лимита — целочисленно, без float: usage*10 >= limit*9.
+		if usage*10 >= kind.limit*9 {
+			return &templates.QuotaBanner{
+				Text: i18n.Tf(ctx, "org.quota.near_limit",
+					"kind", i18n.T(ctx, "org.quota.kind."+kind.key),
+					"used", strconv.FormatInt(usage, 10), "limit", strconv.FormatInt(kind.limit, 10)),
+				Href: href,
+			}
 		}
 	}
 	return nil
@@ -446,9 +466,19 @@ func (h *Handler) orgSettingsRemove(w http.ResponseWriter, r *http.Request) {
 	}
 	// Тот же TOCTOU-фикс, что у SetRoleAs; CSP блокирует inline confirm().
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.member_remove.message", "confirm.remove",
+		email := i18n.T(r.Context(), "confirm.member_remove.unknown_member")
+		if members, err := h.Org.MembersOf(r.Context(), orgID); err == nil {
+			for _, m := range members {
+				if m.UserID == targetID {
+					email = m.Email
+					break
+				}
+			}
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.member_remove.message", "confirm.remove",
 			orgSettingsPath(orgID), orgSettingsRemovePath(orgID),
-			[]templates.HiddenField{{Name: "user_id", Value: strconv.FormatInt(targetID, 10)}})
+			[]templates.HiddenField{{Name: "user_id", Value: strconv.FormatInt(targetID, 10)}},
+			"email", email)
 		return
 	}
 	if err := h.Org.RemoveMemberAs(r.Context(), orgID, uid, targetID); err != nil {
@@ -477,10 +507,25 @@ func (h *Handler) orgSettingsLeave(w http.ResponseWriter, r *http.Request) {
 	if !h.parseForm(w, r) {
 		return
 	}
+	// Членство проверяем до показа чего бы то ни было: без этого посторонний, подставив
+	// чужой orgID, получал бы настоящее имя организации уже на неподтверждённом запросе.
+	if _, err := h.Org.Role(r.Context(), orgID, uid); err != nil {
+		if errors.Is(err, org.ErrNotMember) {
+			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			return
+		}
+		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		return
+	}
 	// CSP блокирует inline confirm().
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.org_leave.message", "org.danger.leave_org.button",
-			orgSettingsPath(orgID), orgSettingsLeavePath(orgID), nil)
+		name := ""
+		if o, err := h.Org.Get(r.Context(), orgID); err == nil {
+			name = o.Name
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.org_leave.message", "org.danger.leave_org.button",
+			orgSettingsPath(orgID), orgSettingsLeavePath(orgID), nil,
+			"name", name)
 		return
 	}
 	// Сессии участника намеренно не инвалидируются: доступ проверяется на каждом запросе.

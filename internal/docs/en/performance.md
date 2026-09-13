@@ -92,7 +92,7 @@ The data comes from the browser SDK (`@sentry/browser`) with tracing enabled —
 
 ## Regressions
 
-A **performance regression** is a statistically significant degradation in an endpoint's p95 duration or a web vital's p75, relative to a rolling baseline, detected automatically — without hand-tuning a threshold "by eye" for every endpoint. The list lives in the **"Regressions"** subsection (`/projects/<id>/regressions`), with "Open / Resolved / All" tabs. The table shows: target (an endpoint or a link to Web Vitals), metric, percentage increase, "baseline → peak" range, status, when it started, and duration (or "ongoing" while the regression is open).
+A **performance regression** is a statistically significant degradation in an endpoint's p95 duration or a web vital's p75, relative to a rolling baseline, detected automatically — without hand-tuning a threshold "by eye" for every endpoint. The list lives in the **"Regressions"** subsection (`/projects/<id>/regressions`), with "Open / Resolved / All" tabs. The table shows: item (an endpoint or a link to Web Vitals), metric, percentage increase, "baseline → peak" range, status, when it started, and duration (or "ongoing" while the regression is open).
 
 ### How detection works (threshold + hysteresis)
 

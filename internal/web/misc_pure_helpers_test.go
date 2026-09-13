@@ -2,6 +2,7 @@ package web
 
 import (
 	"errors"
+	"net/url"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -9,6 +10,24 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
+
+func TestEnvironmentParamPrefersCanonicalOverLegacy(t *testing.T) {
+	cases := []struct {
+		name string
+		q    url.Values
+		want string
+	}{
+		{"canonical only", url.Values{"environment": {"prod"}}, "prod"},
+		{"legacy only", url.Values{"env": {"staging"}}, "staging"},
+		{"both set", url.Values{"environment": {"prod"}, "env": {"staging"}}, "prod"},
+		{"neither set", url.Values{}, ""},
+	}
+	for _, c := range cases {
+		if got := environmentParam(c.q); got != c.want {
+			t.Errorf("%s: environmentParam(%v) = %q, want %q", c.name, c.q, got, c.want)
+		}
+	}
+}
 
 func TestEscalationsErrorMessage(t *testing.T) {
 	ctx := ruTestCtx()

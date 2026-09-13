@@ -617,6 +617,15 @@ func (h *Handler) renderConfirm(w http.ResponseWriter, r *http.Request, titleKey
 	h.renderConfirmf(w, r, titleKey, messageKey, confirmLabelKey, cancelHref, action, hidden)
 }
 
+// `env` — устаревшее имя параметра фильтра окружения (issues, hosts); ссылки с ним уже
+// разошлись по закладкам и тикетам, поэтому принимается наравне с каноничным `environment`.
+func environmentParam(q url.Values) string {
+	if v := q.Get("environment"); v != "" {
+		return v
+	}
+	return q.Get("env")
+}
+
 func (h *Handler) renderConfirmf(w http.ResponseWriter, r *http.Request, titleKey, messageKey, confirmLabelKey, cancelHref, action string, hidden []templates.HiddenField, kv ...string) {
 	title := i18n.T(r.Context(), titleKey)
 	message := i18n.Tf(r.Context(), messageKey, kv...)

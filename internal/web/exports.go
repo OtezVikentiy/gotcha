@@ -355,8 +355,9 @@ func (h *Handler) exportsDelete(w http.ResponseWriter, r *http.Request) {
 	// CSP default-src 'self' без unsafe-inline не исполняет inline confirm() — двухшаговое
 	// подтверждение вместо него; jobID уже в пути, hidden-полей переносить не нужно.
 	if r.PostFormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.export_delete.message", "confirm.delete",
-			exportsPath(projectID), exportsPath(projectID)+"/"+strconv.FormatInt(job.ID, 10)+"/delete", nil)
+		h.renderConfirmf(w, r, "confirm.title", "confirm.export_delete.message", "confirm.delete",
+			exportsPath(projectID), exportsPath(projectID)+"/"+strconv.FormatInt(job.ID, 10)+"/delete", nil,
+			"kind", i18n.T(r.Context(), "exports.kind."+string(job.Kind)))
 		return
 	}
 

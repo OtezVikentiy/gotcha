@@ -102,6 +102,13 @@ func TestWebMetricAlerts(t *testing.T) {
 		t.Fatalf("no-origin status = %d, want 403", resp.StatusCode)
 	}
 
+	confirmResp := postForm(t, s.srv, base+"/delete", url.Values{"rule_id": {strconv.FormatInt(rules[0].ID, 10)}}, s.srv.URL, ownerCookie)
+	confirmBody, _ := io.ReadAll(confirmResp.Body)
+	confirmResp.Body.Close()
+	if confirmResp.StatusCode != http.StatusOK || !strings.Contains(string(confirmBody), "http.errors &gt; 100") {
+		t.Fatalf("подтверждение удаления правила не называет его: status=%d, %s", confirmResp.StatusCode, confirmBody)
+	}
+
 	del := url.Values{"confirmed": {"yes"}, "rule_id": {strconv.FormatInt(rules[0].ID, 10)}}
 	resp = postForm(t, s.srv, base+"/delete", del, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)

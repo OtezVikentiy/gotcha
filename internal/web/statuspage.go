@@ -687,8 +687,9 @@ func (h *Handler) statusPagesDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	// двухшаговое подтверждение вместо confirm() — CSP без unsafe-inline его не исполняет.
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.statuspage_delete.message", "confirm.delete",
-			statusPagesPath(sp.ProjectID), "/statuspages/"+strconv.FormatInt(sp.ID, 10)+"/delete", nil)
+		h.renderConfirmf(w, r, "confirm.title", "confirm.statuspage_delete.message", "confirm.delete",
+			statusPagesPath(sp.ProjectID), "/statuspages/"+strconv.FormatInt(sp.ID, 10)+"/delete", nil,
+			"name", sp.Title)
 		return
 	}
 	if err := h.Uptime.DeleteStatusPage(r.Context(), sp.ID); err != nil {

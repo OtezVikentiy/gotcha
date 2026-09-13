@@ -693,6 +693,10 @@ func TestProjectSettingsRevokeLastOfKindWarns(t *testing.T) {
 		!strings.Contains(string(body), "последний активный ключ") {
 		t.Fatalf("POST %s (sole agent key) missing last-of-kind warning: %s", revokePath, body)
 	}
+	soleMasked := soleKey.PublicKey[:6] + "…" + soleKey.PublicKey[len(soleKey.PublicKey)-4:]
+	if !strings.Contains(string(body), soleMasked) || !strings.Contains(string(body), "Агент") {
+		t.Fatalf("POST %s (sole agent key) не называет отзываемый ключ (%q, Агент): %s", revokePath, soleMasked, body)
+	}
 
 	pairKeys, err := orgSvc.CreateKeys(context.Background(), proj.ID, org.KindServer, org.KindServer)
 	if err != nil {
@@ -707,6 +711,10 @@ func TestProjectSettingsRevokeLastOfKindWarns(t *testing.T) {
 	if strings.Contains(string(body), "confirm.key_revoke.last_of_kind.message") ||
 		strings.Contains(string(body), "последний активный ключ") {
 		t.Fatalf("POST %s (paired server key) unexpectedly shows last-of-kind warning: %s", revokePath, body)
+	}
+	pairMasked := pairKeys[0].PublicKey[:6] + "…" + pairKeys[0].PublicKey[len(pairKeys[0].PublicKey)-4:]
+	if !strings.Contains(string(body), pairMasked) || !strings.Contains(string(body), "Сервер") {
+		t.Fatalf("POST %s (paired server key) не называет отзываемый ключ (%q, Сервер): %s", revokePath, pairMasked, body)
 	}
 }
 

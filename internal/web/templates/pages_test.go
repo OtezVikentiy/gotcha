@@ -90,7 +90,7 @@ func TestIssuesListFilterOrder(t *testing.T) {
 	if end := strings.Index(form, "</form>"); end >= 0 {
 		form = form[:end]
 	}
-	order := []string{`name="q"`, `name="status"`, `name="level"`, `name="env"`, `name="period"`, `name="sort"`, `type="submit"`}
+	order := []string{`name="q"`, `name="status"`, `name="level"`, `name="environment"`, `name="period"`, `name="sort"`, `type="submit"`}
 	prev := -1
 	for _, field := range order {
 		idx := strings.Index(form, field)
@@ -568,7 +568,7 @@ func TestProjectSettings(t *testing.T) {
 	keys := []ProjectKeyView{
 		{Key: org.Key{ID: 1, PublicKey: "pk_live", Kind: org.KindServer, Revoked: false}, DSN: "https://pk_live@dsn"},
 		{Key: org.Key{ID: 2, PublicKey: "pk_old", Kind: org.KindLegacy, Revoked: true}, DSN: "https://pk_old@dsn"},
-		// Kind=="" — строки без миграции типов; keyKindLabelKey должна показать «без типа», как и явный legacy.
+		// Kind=="" — строки без миграции типов; KeyKindLabelKey должна показать «без типа», как и явный legacy.
 		{Key: org.Key{ID: 3, PublicKey: "pk_untyped", Kind: "", Revoked: false}, DSN: "https://pk_untyped@dsn"},
 	}
 	perf := PerfSettingsForm{SampleRate: "1.0", ApdexMS: "500", NPlusOneMin: "5", SlowDBMs: "300"}

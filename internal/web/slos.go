@@ -326,9 +326,14 @@ func (h *Handler) sloDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.slo_delete.message", "confirm.delete",
+		name := ""
+		if s, ok, err := h.SLO.Get(r.Context(), projectID, sloID); err == nil && ok {
+			name = s.Name
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.slo_delete.message", "confirm.delete",
 			slosPath(projectID), slosPath(projectID)+"/"+strconv.FormatInt(sloID, 10)+"/delete",
-			[]templates.HiddenField{{Name: "slo_id", Value: strconv.FormatInt(sloID, 10)}})
+			[]templates.HiddenField{{Name: "slo_id", Value: strconv.FormatInt(sloID, 10)}},
+			"name", name)
 		return
 	}
 	if err := h.SLO.Delete(r.Context(), projectID, sloID); err != nil {

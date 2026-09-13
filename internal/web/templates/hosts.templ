@@ -141,7 +141,7 @@ func hostsNewFilterURL(projectID int64, filter HostsFilterVM) string {
 func hostsFilterURL(projectID int64, f HostsFilterVM) string {
 	q := url.Values{}
 	if f.Environment != "" {
-		q.Set("env", f.Environment)
+		q.Set("environment", f.Environment)
 	}
 	if f.Role != "" {
 		q.Set("role", f.Role)

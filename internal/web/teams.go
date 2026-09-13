@@ -291,9 +291,19 @@ func (h *Handler) teamMembersRemove(w http.ResponseWriter, r *http.Request) {
 	// CSP без unsafe-inline не исполняет inline confirm() — двухшаговое
 	// подтверждение вместо необратимого действия сразу.
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.team_member_remove.message", "confirm.remove",
+		email := i18n.T(r.Context(), "confirm.team_member_remove.unknown_member")
+		if members, err := h.Org.TeamMembers(r.Context(), teamID); err == nil {
+			for _, m := range members {
+				if m.UserID == targetID {
+					email = m.Email
+					break
+				}
+			}
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.team_member_remove.message", "confirm.remove",
 			orgTeamsPath(orgID), teamMembersRemovePath(teamID),
-			[]templates.HiddenField{{Name: "user_id", Value: strconv.FormatInt(targetID, 10)}})
+			[]templates.HiddenField{{Name: "user_id", Value: strconv.FormatInt(targetID, 10)}},
+			"email", email)
 		return
 	}
 	if err := h.Org.RemoveTeamMember(r.Context(), teamID, targetID); err != nil {

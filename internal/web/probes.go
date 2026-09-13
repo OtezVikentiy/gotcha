@@ -188,9 +188,17 @@ func (h *Handler) orgProbesRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	// CSP блокирует inline confirm() — первый POST рендерит страницу подтверждения.
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.probe_revoke.message", "confirm.revoke",
+		name := ""
+		for _, p := range probes {
+			if p.ID == probeID {
+				name = p.Name
+				break
+			}
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.probe_revoke.message", "confirm.revoke",
 			orgProbesPath(orgID), orgProbesPath(orgID)+"/revoke",
-			[]templates.HiddenField{{Name: "probe_id", Value: strconv.FormatInt(probeID, 10)}})
+			[]templates.HiddenField{{Name: "probe_id", Value: strconv.FormatInt(probeID, 10)}},
+			"name", name)
 		return
 	}
 	if err := h.Uptime.RevokeProbe(r.Context(), probeID); err != nil {

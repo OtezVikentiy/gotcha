@@ -765,6 +765,9 @@ func TestExportsDeleteRequiresConfirmation(t *testing.T) {
 	if !strings.Contains(body, `name="confirmed" value="yes"`) {
 		t.Errorf("на странице подтверждения нет скрытого поля confirmed=yes: %s", body)
 	}
+	if !strings.Contains(body, "Группы проблем") {
+		t.Errorf("страница подтверждения не называет вид выгружаемых данных: %s", body)
+	}
 	if _, err := os.Stat(filePath); err != nil {
 		t.Fatalf("файл снесён ДО подтверждения: %v", err)
 	}

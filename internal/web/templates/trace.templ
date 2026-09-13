@@ -47,7 +47,7 @@ templ TraceWaterfall(d TraceWaterfallData, userEmail string) {
 				case "perf-issue":
 					@breadcrumbBack(templ.URL(perfIssuePath(d.FromID)), i18n.T(ctx, "nav.perf_issues"))
 				case "issue":
-					@breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.errors"))
+					@breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.issues"))
 				case "endpoint":
 					@breadcrumbBack(templ.URL(endpointPath(d.ProjectID, d.FromTransaction)), i18n.T(ctx, "nav.transactions"))
 				default:
@@ -111,7 +111,7 @@ templ TraceExpired(d TraceExpiredData, userEmail string) {
 				case "perf-issue":
 					@breadcrumbBack(templ.URL(perfIssuePath(d.FromID)), i18n.T(ctx, "nav.perf_issues"))
 				case "issue":
-					@breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.errors"))
+					@breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.issues"))
 				case "endpoint":
 					@breadcrumbBack(templ.URL(endpointPath(d.ProjectID, d.FromTransaction)), i18n.T(ctx, "nav.transactions"))
 				default:
@@ -146,7 +146,7 @@ templ TraceUnavailable(d TraceExpiredData, userEmail string) {
 				case "perf-issue":
 					@breadcrumbBack(templ.URL(perfIssuePath(d.FromID)), i18n.T(ctx, "nav.perf_issues"))
 				case "issue":
-					@breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.errors"))
+					@breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.issues"))
 				case "endpoint":
 					if d.ProjectID != 0 {
 						@breadcrumbBack(templ.URL(endpointPath(d.ProjectID, d.FromTransaction)), i18n.T(ctx, "nav.transactions"))

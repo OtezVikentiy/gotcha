@@ -146,6 +146,26 @@ func keyBelongsToProject(keys []org.Key, keyID int64) bool {
 	return false
 }
 
+func findKey(keys []org.Key, keyID int64) (org.Key, bool) {
+	for _, k := range keys {
+		if k.ID == keyID {
+			return k, true
+		}
+	}
+	return org.Key{}, false
+}
+
+// то же усечение (голова 6 / хвост 4), что у keyDisplayID в списке ключей — иначе один
+// и тот же ключ выглядел бы на подтверждении и в списке по-разному.
+func maskKeyID(publicKey string) string {
+	const headRunes, tailRunes = 6, 4
+	r := []rune(publicKey)
+	if len(r) <= headRunes+tailRunes {
+		return publicKey
+	}
+	return string(r[:headRunes]) + "…" + string(r[len(r)-tailRunes:])
+}
+
 func lastLiveKeyOfKind(keys []org.Key, keyID int64) (org.KeyKind, bool) {
 	var kind org.KeyKind
 	found := false
@@ -352,11 +372,14 @@ func (h *Handler) projectSettingsKeyRevoke(w http.ResponseWriter, r *http.Reques
 	if r.FormValue("confirmed") != "yes" {
 		// Отзыв последнего живого ключа своего типа останавливает приём целого класса
 		// телеметрии — предупреждение должно называть это, а не просто спрашивать подтверждение.
+		revokedKey, _ := findKey(keys, keyID) // keyBelongsToProject выше уже подтвердила, что ключ найдётся
 		msgKey := "confirm.key_revoke.message"
-		var kv []string
-		if kind, last := lastLiveKeyOfKind(keys, keyID); last {
+		kv := []string{
+			"kind", i18n.T(r.Context(), templates.KeyKindLabelKey(revokedKey)),
+			"id", maskKeyID(revokedKey.PublicKey),
+		}
+		if _, last := lastLiveKeyOfKind(keys, keyID); last {
 			msgKey = "confirm.key_revoke.last_of_kind.message"
-			kv = []string{"kind", i18n.T(r.Context(), "project.settings.keys.kind."+string(kind))}
 		}
 		h.renderConfirmf(w, r, "confirm.title", msgKey, "project.settings.keys.revoke",
 			projectSettingsPath(projectID), projectSettingsKeysRevokePath(projectID),

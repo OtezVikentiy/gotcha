@@ -89,12 +89,12 @@ func rangePresetKeys() []string {
 	return out
 }
 
-// Базовые ключи (org.quota.kind.events и т.д.) сюда не входят — собираются литералом,
-// покрыты общим сканером каталога; здесь только реально конкатенируемая ".short".
+// Базовые ключи (org.quota.kind.events и т.д.) собираются и литералом (покрыто общим
+// сканером каталога), и конкатенацией в quotaBanner — оба варианта здесь, наравне с ".short".
 func quotaKindShortKeys() []string {
-	out := make([]string, 0, len(org.QuotaKinds))
+	out := make([]string, 0, len(org.QuotaKinds)*2)
 	for _, k := range org.QuotaKinds {
-		out = append(out, k+".short")
+		out = append(out, k, k+".short")
 	}
 	return out
 }

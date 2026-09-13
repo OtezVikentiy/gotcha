@@ -607,7 +607,9 @@ func TestWebIssuesPaginationPreservesFilters(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s?env=prod&period=24h status = %d, want 200: %s", issuesPath, resp.StatusCode, body)
 	}
-	if !strings.Contains(string(body), "env=prod") || !strings.Contains(string(body), "period=24h") {
+	// запрошено устаревшим именем env=, но собственная ссылка пагинации обязана
+	// нести канонический environment= — иначе следующая страница теряет фильтр.
+	if !strings.Contains(string(body), "environment=prod") || !strings.Contains(string(body), "period=24h") {
 		t.Fatalf("GET %s?env=prod&period=24h pagination link missing filters: %s", issuesPath, body)
 	}
 	if !strings.Contains(string(body), "page=2") {

@@ -588,7 +588,7 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 
 			<form method="get" action={ templ.URL(logsPath(projectID)) } class="logs-filters">
 				<fieldset class="logs-severity-filter">
-					<legend>{ i18n.T(ctx, "logs.filter.severity_all") }</legend>
+					<legend>{ i18n.T(ctx, "logs.facet.severity") }</legend>
 					for _, sev := range log.Severities {
 						<label class="checkbox-inline">
 							<input type="checkbox" name="severity" value={ sev } checked?={ severitySelected(filter.Severity, sev) }/>

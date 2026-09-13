@@ -9,6 +9,7 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -266,9 +267,14 @@ func (h *Handler) metricAlertDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	// CSP без unsafe-inline не исполняет inline confirm() — подтверждение отдельной страницей.
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.metric_rule_delete.message", "confirm.delete",
+		name := ""
+		if rule, ok, err := h.MetricRules.Get(r.Context(), ruleID); err == nil && ok && rule.ProjectID == projectID {
+			name = rule.MetricName + " " + comparatorSymbol(rule.Comparator) + " " + humanize.CompactNumber(rule.Threshold)
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.metric_rule_delete.message", "confirm.delete",
 			metricAlertsPath(projectID), metricAlertsPath(projectID)+"/delete",
-			[]templates.HiddenField{{Name: "rule_id", Value: strconv.FormatInt(ruleID, 10)}})
+			[]templates.HiddenField{{Name: "rule_id", Value: strconv.FormatInt(ruleID, 10)}},
+			"name", name)
 		return
 	}
 	if err := h.MetricRules.Delete(r.Context(), ruleID, projectID); err != nil {

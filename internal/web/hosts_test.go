@@ -453,7 +453,7 @@ func TestHostsListFiltersRendersChipsAndRows(t *testing.T) {
 	if !strings.Contains(html, `class="chip is-active"`) {
 		t.Errorf("нет активного чипа фасета: %s", html)
 	}
-	if !strings.Contains(html, "href=\"/projects/1/hosts?env=prod&amp;role=web\"") {
+	if !strings.Contains(html, "href=\"/projects/1/hosts?environment=prod&amp;role=web\"") {
 		t.Errorf("нет ссылки-тоггла на значение фасета role=web: %s", html)
 	}
 	wantNoneLabel := i18n.T(rctx, "hosts.label.none")

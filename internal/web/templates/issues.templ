@@ -129,7 +129,7 @@ func issuesPageURL(projectID int64, f IssuesFilter, page int) string {
 		q.Set("sort", f.Sort)
 	}
 	if f.Environment != "" {
-		q.Set("env", f.Environment)
+		q.Set("environment", f.Environment)
 	}
 	f.Range.apply(q)
 	if page > 1 {
@@ -177,11 +177,11 @@ templ environmentOption(value, label string, selected string) {
 // canOperate/canManagePII гейтят кнопки и галку PII экспорта — рисовать форму, ведущую на 404,
 // хуже, чем скрыть; sparklinesFailed — ClickHouse недоступен, колонка спарклайнов пустая.
 templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int, total int64, userEmail string, environments []string, banner *QuotaBanner, gs GettingStartedVM, canOperate bool, canManagePII bool, sparklinesFailed bool) {
-	@layout(i18n.T(ctx, "nav.errors"), userEmail) {
+	@layout(i18n.T(ctx, "nav.issues"), userEmail) {
 		<div class="issues">
 			@quotaBannerView(banner)
 			@gettingStartedChecklist(gs)
-			<h1>{ i18n.T(ctx, "nav.errors") }</h1>
+			<h1>{ i18n.T(ctx, "nav.issues") }</h1>
 			@helpPanel("issues", "issues")
 			if sparklinesFailed && len(rows) > 0 {
 				<p class="hint">{ i18n.T(ctx, "issues.sparklines.error") }</p>
@@ -202,7 +202,7 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 					@levelOption(issue.LevelError, i18n.T(ctx, "issues.level.error"), filter.Level)
 					@levelOption(issue.LevelFatal, i18n.T(ctx, "issues.level.fatal"), filter.Level)
 				</select>
-				<select name="env" class="select" aria-label={ i18n.T(ctx, "filter.environment") }>
+				<select name="environment" class="select" aria-label={ i18n.T(ctx, "filter.environment") }>
 					@environmentOption("", i18n.T(ctx, "issues.filter.env_all"), filter.Environment)
 					for _, env := range environments {
 						@environmentOption(env, env, filter.Environment)
@@ -274,7 +274,7 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 							}
 						</div>
 						<form method="post" action={ templ.URL(issuesBulkPath(projectID)) } id="issues-bulk">
-							@scrollRegion("table-scroll", "nav.errors") {
+							@scrollRegion("table-scroll", "nav.issues") {
 									<table class="data-table">
 										<thead>
 											<tr>

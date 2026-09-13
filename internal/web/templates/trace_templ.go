@@ -92,7 +92,7 @@ func TraceWaterfall(d TraceWaterfallData, userEmail string) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			case "issue":
-				templ_7745c5c3_Err = breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.errors")).Render(ctx, templ_7745c5c3_Buffer)
+				templ_7745c5c3_Err = breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.issues")).Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -383,7 +383,7 @@ func TraceExpired(d TraceExpiredData, userEmail string) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			case "issue":
-				templ_7745c5c3_Err = breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.errors")).Render(ctx, templ_7745c5c3_Buffer)
+				templ_7745c5c3_Err = breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.issues")).Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -570,7 +570,7 @@ func TraceUnavailable(d TraceExpiredData, userEmail string) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			case "issue":
-				templ_7745c5c3_Err = breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.errors")).Render(ctx, templ_7745c5c3_Buffer)
+				templ_7745c5c3_Err = breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.issues")).Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}

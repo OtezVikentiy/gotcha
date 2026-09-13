@@ -370,6 +370,13 @@ func TestWebMaintenanceDelete(t *testing.T) {
 	}
 
 	deletePath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/maintenance/delete"
+	confirmResp := postForm(t, s.srv, deletePath, url.Values{"window_id": {strconv.FormatInt(win.ID, 10)}}, s.srv.URL, ownerCookie)
+	confirmBody, _ := io.ReadAll(confirmResp.Body)
+	confirmResp.Body.Close()
+	if !strings.Contains(string(confirmBody), "To delete") {
+		t.Fatalf("страница подтверждения не называет удаляемое окно: %s", confirmBody)
+	}
+
 	resp := postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}, "window_id": {strconv.FormatInt(win.ID, 10)}}, s.srv.URL, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()

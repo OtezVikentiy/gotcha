@@ -72,7 +72,7 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 		Level:       q.Get("level"),
 		Query:       q.Get("q"),
 		Sort:        q.Get("sort"),
-		Environment: q.Get("env"),
+		Environment: environmentParam(q),
 		Since:       rng.From,
 		Until:       rng.To,
 		Page:        parsePage(q.Get("page")),

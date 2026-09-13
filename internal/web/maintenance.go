@@ -320,9 +320,17 @@ func (h *Handler) maintenanceDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	// CSP без unsafe-inline не исполняет inline confirm() — подтверждение отдельной страницей.
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.maintenance_delete.message", "confirm.delete",
+		name := ""
+		for _, win := range windows {
+			if win.ID == windowID {
+				name = win.Name
+				break
+			}
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.maintenance_delete.message", "confirm.delete",
 			maintenancePath(projectID), maintenanceDeletePath(projectID),
-			[]templates.HiddenField{{Name: "window_id", Value: strconv.FormatInt(windowID, 10)}})
+			[]templates.HiddenField{{Name: "window_id", Value: strconv.FormatInt(windowID, 10)}},
+			"name", name)
 		return
 	}
 	if err := h.Uptime.DeleteWindow(r.Context(), windowID, projectID); err != nil {

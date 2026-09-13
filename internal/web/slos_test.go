@@ -139,6 +139,9 @@ func TestWebSLOsList(t *testing.T) {
 	if !strings.Contains(string(confirmBody), `name="confirmed" value="yes"`) {
 		t.Fatalf("страница подтверждения без скрытого поля confirmed: %s", confirmBody)
 	}
+	if !strings.Contains(string(confirmBody), list[0].Name) {
+		t.Fatalf("страница подтверждения не называет удаляемое SLO %q: %s", list[0].Name, confirmBody)
+	}
 	if list1, _ := s.slo.List(ctx, project.ID); len(list1) != 2 {
 		t.Fatalf("SLO исчез после неподтверждённого удаления: %d, want 2", len(list1))
 	}

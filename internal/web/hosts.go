@@ -84,7 +84,7 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 	// усечённой лимитом выборки давал бы ложную пустоту вместо совпадений за её пределами.
 	q := r.URL.Query()
 	filter := host.HostFilter{
-		Environment: q.Get("env"),
+		Environment: environmentParam(q),
 		Role:        q.Get("role"),
 		NewOnly:     q.Get("new") == "1",
 	}
