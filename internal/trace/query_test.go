@@ -861,6 +861,27 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		}
 	})
 
+	t.Run("TransactionTimestamp", func(t *testing.T) {
+		ts, found, err := q.TransactionTimestamp(ctx, projectID, wfTrace)
+		if err != nil {
+			t.Fatalf("TransactionTimestamp: %v", err)
+		}
+		if !found {
+			t.Fatalf("found = false, want true")
+		}
+		if !ts.Equal(wfStart) {
+			t.Fatalf("TransactionTimestamp = %v, want %v", ts, wfStart)
+		}
+
+		_, found, err = q.TransactionTimestamp(ctx, projectID, "unknown-trace-id")
+		if err != nil {
+			t.Fatalf("TransactionTimestamp unknown: %v", err)
+		}
+		if found {
+			t.Fatalf("found = true for unknown trace")
+		}
+	})
+
 	t.Run("EndpointLatencyP95Index", func(t *testing.T) {
 		pts, err := q.EndpointLatency(ctx, projectID2, "GET /lat", from, to, 5*time.Minute, "production")
 		if err != nil {

@@ -433,13 +433,20 @@ type fakeDropCounter struct {
 	mu            sync.Mutex
 	events        map[int64]int64
 	transactions  map[int64]int64
+	metrics       map[int64]int64
+	profiles      map[int64]int64
 	metricsCalls  int
 	profilesCalls int
 	logsCalls     int
 }
 
 func newFakeDropCounter() *fakeDropCounter {
-	return &fakeDropCounter{events: map[int64]int64{}, transactions: map[int64]int64{}}
+	return &fakeDropCounter{
+		events:       map[int64]int64{},
+		transactions: map[int64]int64{},
+		metrics:      map[int64]int64{},
+		profiles:     map[int64]int64{},
+	}
 }
 
 // проверяет ctx.Err() первым, как реальный pgx-запрос с уже истёкшим ctx —
@@ -464,17 +471,25 @@ func (f *fakeDropCounter) IncDroppedTransactions(ctx context.Context, orgID int6
 	return nil
 }
 
-func (f *fakeDropCounter) IncDroppedMetrics(_ context.Context, _ int64, _ time.Time, _ int64) error {
+func (f *fakeDropCounter) IncDroppedMetrics(ctx context.Context, orgID int64, _ time.Time, n int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.metricsCalls++
+	f.metrics[orgID] += n
 	return nil
 }
 
-func (f *fakeDropCounter) IncDroppedProfiles(_ context.Context, _ int64, _ time.Time, _ int64) error {
+func (f *fakeDropCounter) IncDroppedProfiles(ctx context.Context, orgID int64, _ time.Time, n int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.profilesCalls++
+	f.profiles[orgID] += n
 	return nil
 }
 
@@ -495,6 +510,18 @@ func (f *fakeDropCounter) txFor(orgID int64) int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.transactions[orgID]
+}
+
+func (f *fakeDropCounter) metricsFor(orgID int64) int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.metrics[orgID]
+}
+
+func (f *fakeDropCounter) profilesFor(orgID int64) int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.profiles[orgID]
 }
 
 func TestPipelineFlushesDropsPerOrg(t *testing.T) {

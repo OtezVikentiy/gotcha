@@ -571,3 +571,56 @@ func TestWebTraceWaterfallExpiredSpans(t *testing.T) {
 		t.Fatalf("GET /traces/never-existed must show the generic 404, not trace.expired: %s", body)
 	}
 }
+
+// транзакция свежая (далеко внутри окна хранения спанов), но её спаны пропали —
+// это потеря на буфере писателя, не срок хранения; экран не должен путать их.
+func TestWebTraceWaterfallSpansLostNotExpired(t *testing.T) {
+	s := newTraceStack(t)
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "trace-lost-owner@example.com")
+
+	o, err := s.org.CreateOrg(context.Background(), "trace-lost-co", "Trace Lost Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := s.org.CreateProject(context.Background(), o.ID, "trace-lost-proj", "Trace Lost Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	const traceID = "lost-trace-01"
+	start := time.Now().UTC().Add(-time.Hour)
+	s.spans.Add(proj.ID, proj.ID, trace.Transaction{
+		TraceID:     traceID,
+		SpanID:      "lost-root",
+		Name:        "GET /api/fresh",
+		Op:          "http.server",
+		Status:      "ok",
+		Start:       start,
+		End:         start.Add(50 * time.Millisecond),
+		Environment: "production",
+	})
+	s.flush(t)
+
+	// реальный дроп на буфере воспроизводить недетерминированной гонкой не
+	// станем — имитируем его результат: у свежей транзакции нет ни одного спана.
+	if err := s.ch.Exec(context.Background(),
+		"ALTER TABLE spans DELETE WHERE trace_id = ? SETTINGS mutations_sync = 2", traceID); err != nil {
+		t.Fatalf("simulate buffer loss: %v", err)
+	}
+
+	tracePath := "/traces/" + traceID
+
+	s.h.SpanRetentionDays = 30
+	resp := getWithCookie(t, s.srv, tracePath, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET %s status = %d, want 404: %s", tracePath, resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "хранятся") || strings.Contains(string(body), "были удалены") {
+		t.Fatalf("GET %s must not blame retention/purge for a fresh transaction: %s", tracePath, body)
+	}
+	if !strings.Contains(string(body), "не доехали") {
+		t.Fatalf("GET %s missing the buffer-loss wording: %s", tracePath, body)
+	}
+}

@@ -734,6 +734,8 @@
     "trace.expired.title": "Trace details are unavailable",
     "trace.expired.body": "Trace spans are kept for {period}, and none remain for this trace. A transaction summary is still available on the endpoint page.",
     "trace.expired.body_purged": "This trace's spans were removed (a manual purge or a data-deletion request) and no longer exist. A transaction summary is still available on the endpoint page.",
+    "trace.dropped.title": "Trace spans were lost, not expired",
+    "trace.dropped.body": "This trace's spans never reached storage, most likely a brief ingestion buffer overload rather than the retention period — the transaction is still well within the span retention window. A transaction summary is still available on the endpoint page.",
     "trace.error.title": "Couldn't load the trace",
     "trace.error.body": "Trace storage is temporarily unavailable. Try again in a moment.",
     "uptime.monitors.new": "New monitor",

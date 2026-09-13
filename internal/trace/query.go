@@ -838,6 +838,22 @@ func (q *Query) ProjectForTrace(ctx context.Context, traceID string) (projectID 
 	return int64(pid), true, nil
 }
 
+// отличает настоящее истечение TTL спанов (транзакция ещё жива, её TTL длиннее)
+// от потери спанов на буфере писателя под нагрузкой — обе выглядят как spans==nil.
+func (q *Query) TransactionTimestamp(ctx context.Context, projectID int64, traceID string) (time.Time, bool, error) {
+	row := q.conn.QueryRow(ctx, `
+		SELECT timestamp FROM transactions WHERE project_id = ? AND trace_id = ? LIMIT 1`,
+		uint64(projectID), traceID)
+	var ts time.Time
+	if err := row.Scan(&ts); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return time.Time{}, false, nil
+		}
+		return time.Time{}, false, fmt.Errorf("trace: transaction timestamp: %w", err)
+	}
+	return ts.UTC(), true, nil
+}
+
 // в отличие от ProjectForTrace: project_id — префикс PK transactions, запрос
 // прунит гранулы до проекта вместо обхода партиций всех проектов.
 func (q *Query) TraceExistsInProject(ctx context.Context, projectID int64, traceID string) (bool, error) {

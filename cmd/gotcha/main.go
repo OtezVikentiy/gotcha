@@ -611,6 +611,7 @@ func run() error {
 	var metricWriter *metric.Writer
 	var profileWriter *profile.Writer
 	var logWriter *log.Writer
+	var writerDrops *ingest.WriterDropAttributor
 	// Объявлены здесь, а не через := в if-блоках ниже: newRootMux собирается
 	// один раз, после того как оба хендлера построены (или остались nil).
 	var ingestHandler *ingest.Handler
@@ -961,6 +962,17 @@ func run() error {
 		// тем же 60с-флашем в org_usage.dropped_*.
 		batcher.SetDropSink(pipeline.CountDroppedEvents)
 		spanWriter.SetDropSink(pipeline.CountDroppedTransactions)
+		// Спан не квота — задваивать dropped_transactions нельзя (см. SetDropSink
+		// выше); видимость только через журнал, своей колонки в org_usage у спанов нет.
+		spanWriter.SetSpanDropSink(func(orgID, n int64) {
+			slog.Warn("trace: spans dropped from buffer under load", "org_id", orgID, "n", n)
+		})
+		// Метрики/профили несут только project_id — резолв в org_id и запись в
+		// org_usage откладываются на собственный тикер, вне писательского mu.
+		writerDrops = ingest.NewWriterDropAttributor(projectCache, orgSvc, orgSvc)
+		go writerDrops.Run()
+		metricWriter.SetDropSink(writerDrops.CountDroppedMetrics)
+		profileWriter.SetDropSink(writerDrops.CountDroppedProfiles)
 		pipeline.Start()
 		ingestHandler = ingest.NewHandler(
 			ingest.NewKeyCache(orgSvc), ingest.NewOrgQuota(orgSvc), pipeline, cfg.MaxEventBytes)
@@ -1189,21 +1201,26 @@ func run() error {
 				}
 			})
 		}
-		if metricWriter != nil {
+		if metricWriter != nil || profileWriter != nil {
 			branches = append(branches, func() {
-				cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				if err := metricWriter.Close(cctx); err != nil {
-					slog.Error("metric writer drain failed", "error", err)
+				if metricWriter != nil {
+					cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					if err := metricWriter.Close(cctx); err != nil {
+						slog.Error("metric writer drain failed", "error", err)
+					}
+					cancel()
 				}
-			})
-		}
-		if profileWriter != nil {
-			branches = append(branches, func() {
-				cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				if err := profileWriter.Close(cctx); err != nil {
-					slog.Error("profile writer drain failed", "error", err)
+				if profileWriter != nil {
+					cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					if err := profileWriter.Close(cctx); err != nil {
+						slog.Error("profile writer drain failed", "error", err)
+					}
+					cancel()
+				}
+				// После Close писателей: последний emitDrops уже добавил в агрегат,
+				// закрытие сливает его в PG, а не роняет на выходе из процесса.
+				if writerDrops != nil {
+					writerDrops.Close()
 				}
 			})
 		}

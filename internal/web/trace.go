@@ -1,11 +1,13 @@
 package web
 
 import (
+	"context"
 	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
@@ -67,6 +69,7 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 			ProjectID:       projectID,
 			TraceID:         traceID,
 			RetentionDays:   h.SpanRetentionDays,
+			Dropped:         h.spansLookLost(r.Context(), projectID, traceID),
 			From:            origin,
 			FromID:          originID,
 			FromTransaction: originTransaction,
@@ -140,6 +143,25 @@ func (h *Handler) traceWaterfall(w http.ResponseWriter, r *http.Request) {
 	}
 	data.From, data.FromID, data.FromTransaction = origin, originID, originTransaction
 	_ = templates.TraceWaterfall(data, h.currentEmail(r)).Render(r.Context(), w)
+}
+
+// RetentionDays<=0 сюда не попадает (вечное хранение — body_purged). Иначе
+// default true: без доказательства реального возраста нечестно винить срок хранения.
+func (h *Handler) spansLookLost(ctx context.Context, projectID int64, traceID string) bool {
+	if h.SpanRetentionDays <= 0 {
+		return false
+	}
+	ts, found, err := h.Trace.TransactionTimestamp(ctx, projectID, traceID)
+	if err != nil {
+		slog.Warn("trace: transaction timestamp lookup failed, assuming buffer loss over expiry",
+			"project_id", projectID, "trace_id", traceID, "err", err)
+		return true
+	}
+	if !found {
+		return true
+	}
+	cutoff := time.Now().Add(-time.Duration(h.SpanRetentionDays) * 24 * time.Hour)
+	return !ts.Before(cutoff)
 }
 
 // 200, а не 500: единый приём для CH-страниц, 404 остаётся за «трейса нет».

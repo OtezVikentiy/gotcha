@@ -93,6 +93,10 @@ type TraceExpiredData struct {
 	// <=0 — TTL не задан (хранится вечно): текст про число дней был бы враньём.
 	RetentionDays int
 
+	// true — спаны не доехали (буфер писателя под нагрузкой), а не истёк TTL:
+	// транзакция моложе окна хранения спанов, объяснять её сроком хранения нечестно.
+	Dropped bool
+
 	// та же семантика, что в TraceWaterfallData — состояние одно и то же независимо от источника ссылки.
 	From            string
 	FromID          int64
@@ -115,12 +119,18 @@ templ TraceExpired(d TraceExpiredData, userEmail string) {
 			}
 			<h1>{ d.TraceID }</h1>
 			<div class="empty-state">
-				@icon("clock")
-				<h2 class="empty-title">{ i18n.T(ctx, "trace.expired.title") }</h2>
-				if d.RetentionDays > 0 {
-					<p>{ i18n.Tf(ctx, "trace.expired.body", "period", i18n.Tn(ctx, "unit.days", d.RetentionDays)) }</p>
+				if d.Dropped {
+					@icon("activity")
+					<h2 class="empty-title">{ i18n.T(ctx, "trace.dropped.title") }</h2>
+					<p>{ i18n.T(ctx, "trace.dropped.body") }</p>
 				} else {
-					<p>{ i18n.T(ctx, "trace.expired.body_purged") }</p>
+					@icon("clock")
+					<h2 class="empty-title">{ i18n.T(ctx, "trace.expired.title") }</h2>
+					if d.RetentionDays > 0 {
+						<p>{ i18n.Tf(ctx, "trace.expired.body", "period", i18n.Tn(ctx, "unit.days", d.RetentionDays)) }</p>
+					} else {
+						<p>{ i18n.T(ctx, "trace.expired.body_purged") }</p>
+					}
 				}
 			</div>
 		</div>
