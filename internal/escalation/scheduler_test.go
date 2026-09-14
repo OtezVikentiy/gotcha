@@ -15,14 +15,34 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
+// syncBuf — Write/String под мьютексом: логирующая горутина (janitor, scheduler)
+// и тестовая горутина, читающая buf.String() до её завершения, пишут/читают
+// один и тот же буфер конкурентно.
+type syncBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // Не вызывать из тестов с t.Parallel(): slog.Default глобален для процесса.
-func captureInfoLog(t *testing.T) *bytes.Buffer {
+func captureInfoLog(t *testing.T) *syncBuf {
 	t.Helper()
-	var buf bytes.Buffer
+	buf := &syncBuf{}
 	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
-	return &buf
+	return buf
 }
 
 type fakeSource struct {
