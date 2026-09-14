@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
@@ -586,5 +587,28 @@ func TestSSOSubmitIPLimiterBoundsLoginLimiterGrowth(t *testing.T) {
 	}
 	if got := h.loginLimiter.size(); got != ipLimit {
 		t.Errorf("loginLimiter.size() = %d, want %d — один IP не должен заводить в loginLimiter больше ключей через /sso, чем разрешает ipLimiter", got, ipLimit)
+	}
+}
+
+// oauthCallback обходится без publicRateLimited дороже, чем oauthStart, теряя всякую
+// подпись без сетевого вызова, — лимитер обязан резать его так же, как start.
+func TestOAuthCallbackRateLimited(t *testing.T) {
+	h := &Handler{
+		BaseURL:       "http://localhost",
+		publicLimiter: newRateLimiter(time.Now, 0, time.Minute, publicLimiterMaxKeys, "publicLimiter"),
+		OAuth:         oauth.NewRegistry(emptyAuthURLProvider{}),
+	}
+	mux := http.NewServeMux()
+	h.Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/auth/oauth/empty/callback")
+	if err != nil {
+		t.Fatalf("GET /auth/oauth/empty/callback: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("callback status = %d, want 429 (publicLimiter обязан резать callback так же, как start)", resp.StatusCode)
 	}
 }

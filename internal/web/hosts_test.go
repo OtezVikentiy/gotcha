@@ -434,6 +434,9 @@ func TestHostsOnboardingAgentInsecure(t *testing.T) {
 	if !strings.Contains(html, "otlphttp") {
 		t.Errorf("коллектор-альтернатива должна остаться заполненной: %s", html)
 	}
+	if !strings.Contains(html, "открытым текстом") {
+		t.Errorf("подсказка должна называть следствие: ключ коллектора уйдёт открытым текстом: %s", html)
+	}
 }
 
 func TestHostsListFiltersRendersChipsAndRows(t *testing.T) {

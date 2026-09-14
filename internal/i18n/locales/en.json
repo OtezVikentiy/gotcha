@@ -1876,7 +1876,7 @@
     "hosts.onboarding.no_key_link": "Project settings",
     "hosts.onboarding.agent_platforms": "Linux amd64/arm64 with systemd. On another platform, use the collector alternative below.",
     "hosts.onboarding.agent_unavailable": "Agent installation isn't available on this instance: binary distribution isn't configured. Connect the host via the collector below, or ask the instance administrator.",
-    "hosts.onboarding.agent_insecure": "Agent installation isn't available: this instance isn't served over HTTPS, and the install command runs as root. Enable HTTPS to install the agent, or connect the host via the collector below.",
+    "hosts.onboarding.agent_insecure": "Agent installation isn't available: this instance isn't served over HTTPS, and the install command runs as root. Enable HTTPS to install the agent, or connect the host via the collector below — note that its config sends the project key in the Authorization header in cleartext on every tick while the address has no HTTPS.",
     "hosts.onboarding.admin_only": "The install command and collector config carry the agent key, shared across the whole organization — only an owner/admin can see them. Ask them to send you the ready-made command.",
     "hosts.copy.button": "Copy config",
     "hosts.copy.command": "Copy command",

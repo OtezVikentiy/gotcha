@@ -50,8 +50,6 @@ func perfListSortURL(projectID int64, f PerfFilter, sort string) string {
 
 func formatDurationUS(us uint32) string {
 	switch {
-	case us == 0:
-		return "0"
 	case us < 1000:
 		return strconv.FormatUint(uint64(us), 10) + "µs"
 	case us < 1_000_000:

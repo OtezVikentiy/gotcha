@@ -289,7 +289,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	// открыты для анонимов; сессию для потока привязки проверяем внутри хендлера.
 	inner.HandleFunc("GET /auth/oauth/{provider}/start", h.publicRateLimited(h.oauthStart))
-	inner.HandleFunc("GET /auth/oauth/{provider}/callback", h.oauthCallback)
+	inner.HandleFunc("GET /auth/oauth/{provider}/callback", h.publicRateLimited(h.oauthCallback))
 
 	// анонимный POST — limitFormBody здесь навешан явно, а не только через requireUser.
 	inner.Handle("POST /settings/locale", h.limitFormBody(http.HandlerFunc(h.localeSwitch)))

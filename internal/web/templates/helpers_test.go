@@ -219,7 +219,7 @@ func TestFormatDurationUS(t *testing.T) {
 		us   uint32
 		want string
 	}{
-		{0, "0"},
+		{0, "0µs"},
 		{500, "500µs"},
 		{1500, "1.5ms"},
 		{2_500_000, "2.50s"},

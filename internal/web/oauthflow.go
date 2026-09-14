@@ -11,11 +11,15 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
 )
 
-func (h *Handler) secret() string {
-	if h.SecretKey != "" {
-		return h.SecretKey
+var errOAuthSecretUnset = errors.New("web: SecretKey is empty, refusing to sign oauth flow with a known default")
+
+// пустой SecretKey не должен превращаться в подпись публично известной константой:
+// вызывающий обязан явно задать ключ, иначе подписи не будет вовсе.
+func (h *Handler) secret() (string, error) {
+	if h.SecretKey == "" {
+		return "", errOAuthSecretUnset
 	}
-	return "insecure-dev-secret"
+	return h.SecretKey, nil
 }
 
 func (h *Handler) oauthRedirectURI(provider string) string {
@@ -70,7 +74,13 @@ func (h *Handler) oauthStart(w http.ResponseWriter, r *http.Request) {
 		Provider: name, State: state, Nonce: nonce, Verifier: verifier,
 		Link: link, UID: uid, IssuedAt: time.Now().Unix(),
 	}
-	raw, err := signFlow([]byte(h.secret()), flow)
+	secret, err := h.secret()
+	if err != nil {
+		slog.Error("oauth start: secret key not configured", "error", err)
+		h.renderError(w, r, http.StatusInternalServerError, "")
+		return
+	}
+	raw, err := signFlow([]byte(secret), flow)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
@@ -107,7 +117,13 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.oauth.session_expired"))
 		return
 	}
-	flow, err := parseFlow([]byte(h.secret()), c.Value, time.Now().Unix())
+	secret, err := h.secret()
+	if err != nil {
+		slog.Error("oauth callback: secret key not configured", "error", err)
+		h.renderError(w, r, http.StatusInternalServerError, "")
+		return
+	}
+	flow, err := parseFlow([]byte(secret), c.Value, time.Now().Unix())
 	if err != nil || flow.Provider != name {
 		h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.oauth.session_expired"))
 		return
