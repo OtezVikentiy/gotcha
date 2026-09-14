@@ -156,3 +156,51 @@ func TestStatusPageForRedirect(t *testing.T) {
 		t.Fatalf("StatusPageForRedirect(disabled) = (%q,%v), want (\"\",false)", publicID, ok)
 	}
 }
+
+// Единственный способ отозвать утёкший адрес: старый public_id перестаёт резолвиться,
+// новый ведёт на ту же страницу (те же мониторы, тот же заголовок), запись не создаётся заново.
+func TestRotateStatusPagePublicID(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := uptime.NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pid := newProject(t, pool)
+	mon := createMonitor(t, svc, pid, 3, 2)
+
+	sp, err := svc.CreateStatusPage(ctx, uptime.StatusPage{
+		ProjectID: pid, Title: "Rotate me", Enabled: true,
+	}, []uptime.StatusPageMonitor{{MonitorID: mon.ID, DisplayName: "API"}})
+	if err != nil {
+		t.Fatalf("CreateStatusPage: %v", err)
+	}
+	oldPublicID := sp.PublicID
+
+	newPublicID, err := svc.RotateStatusPagePublicID(ctx, sp.ID)
+	if err != nil {
+		t.Fatalf("RotateStatusPagePublicID: %v", err)
+	}
+	if newPublicID == oldPublicID {
+		t.Fatalf("RotateStatusPagePublicID did not change public_id: %q", newPublicID)
+	}
+	if !strings.HasPrefix(newPublicID, "p_") || len(newPublicID) != len("p_")+24 {
+		t.Fatalf("RotateStatusPagePublicID = %q, want p_-prefixed 24-hex-char id", newPublicID)
+	}
+
+	if _, _, err := svc.StatusPageByPublicID(ctx, oldPublicID); !errors.Is(err, uptime.ErrNotFound) {
+		t.Fatalf("StatusPageByPublicID(old) after rotate = %v, want ErrNotFound", err)
+	}
+	found, monitors, err := svc.StatusPageByPublicID(ctx, newPublicID)
+	if err != nil {
+		t.Fatalf("StatusPageByPublicID(new) after rotate: %v", err)
+	}
+	if found.ID != sp.ID || found.Title != "Rotate me" {
+		t.Fatalf("StatusPageByPublicID(new) = %+v, want id=%d title=%q", found, sp.ID, "Rotate me")
+	}
+	if len(monitors) != 1 || monitors[0].MonitorID != mon.ID {
+		t.Fatalf("StatusPageByPublicID(new) monitors = %+v", monitors)
+	}
+
+	if _, err := svc.RotateStatusPagePublicID(ctx, 9_999_999); !errors.Is(err, uptime.ErrNotFound) {
+		t.Fatalf("RotateStatusPagePublicID(unknown id) = %v, want ErrNotFound", err)
+	}
+}

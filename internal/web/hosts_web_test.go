@@ -1658,6 +1658,82 @@ func TestWebHostsListEmptyStateOnboardingConfig(t *testing.T) {
 	}
 }
 
+// Ключ типа agent жжёт квоту всей организации и регистрирует произвольные хосты — участник
+// без owner/admin не должен получить его через /hosts, ни в пустом состоянии, ни в списке.
+func TestWebHostsListAgentKeyHiddenFromMember(t *testing.T) {
+	s := newHostsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "hosts-keyhide-owner@example.com")
+	memberID, memberCookie := orgSettingsRegister(t, s.auth, "hosts-keyhide-member@example.com")
+	o, err := s.org.CreateOrg(ctx, "hkh-co", "HKH Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "hkh-proj", "HKH Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if err := s.org.AddMember(ctx, o.ID, memberID, org.RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	addTeamAccess(t, s.org, o.ID, project.ID, memberID, "hkh-team")
+	keys, err := s.org.CreateKeys(ctx, project.ID, org.KindAgent)
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+	key := keys[0]
+
+	base := "/projects/" + strconv.FormatInt(project.ID, 10) + "/hosts"
+
+	// Пустое состояние (нет ни одного хоста) — онбординг hostsOnboarding.
+	resp := getWithCookie(t, s.srv, base, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (owner, empty) status = %d, want 200: %s", base, resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), key.PublicKey) {
+		t.Errorf("GET %s (owner, empty) должен видеть ключ агента: %s", base, body)
+	}
+
+	resp = getWithCookie(t, s.srv, base, memberCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (member, empty) status = %d, want 200: %s", base, resp.StatusCode, body)
+	}
+	text := string(body)
+	if strings.Contains(text, key.PublicKey) {
+		t.Errorf("GET %s (member, empty) видит ключ агента: %s", base, text)
+	}
+	if !strings.Contains(text, "видит только owner/admin") {
+		t.Errorf("GET %s (member, empty) не показывает подсказку о скрытом ключе: %s", base, text)
+	}
+
+	// Непустое состояние (есть хост) — hostsCollectorConfigDetails.
+	if _, err := s.hosts.Upsert(ctx, project.ID, []host.TouchEntry{{Name: "keyhide-1"}}); err != nil {
+		t.Fatalf("upsert host: %v", err)
+	}
+
+	resp = getWithCookie(t, s.srv, base, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), key.PublicKey) {
+		t.Errorf("GET %s (owner, non-empty) должен видеть ключ агента: %s", base, body)
+	}
+
+	resp = getWithCookie(t, s.srv, base, memberCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	text = string(body)
+	if strings.Contains(text, key.PublicKey) {
+		t.Errorf("GET %s (member, non-empty) видит ключ агента: %s", base, text)
+	}
+	if !strings.Contains(text, "keyhide-1") {
+		t.Errorf("GET %s (member, non-empty) не видит сам список хостов: %s", base, text)
+	}
+}
+
 func TestWebHostDetail(t *testing.T) {
 	s := newHostsStack(t, true)
 	ctx := context.Background()

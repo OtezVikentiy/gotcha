@@ -56,6 +56,7 @@ var routeAuthz = map[string]string{
 	"POST /projects/{id}/statuspages":                          lvlOperator,
 	"POST /statuspages/{id}":                                   lvlOperator,
 	"POST /statuspages/{id}/delete":                            lvlOperator,
+	"POST /statuspages/{id}/rotate":                            lvlOperator,
 	"POST /projects/{id}/alerts/rules":                         lvlOperator,
 	"POST /projects/{id}/escalations":                          lvlOperator,
 	"POST /projects/{id}/alert-suppression":                    lvlOperator,

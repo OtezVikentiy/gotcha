@@ -703,3 +703,49 @@ func (h *Handler) statusPagesDelete(w http.ResponseWriter, r *http.Request) {
 	h.statusCache.invalidate(sp.PublicID)
 	http.Redirect(w, r, statusPagesPath(sp.ProjectID), http.StatusSeeOther)
 }
+
+// Перевыпуск публичного адреса — публикационное решение того же уровня, что включение
+// страницы: единственный способ отозвать утёкшую ссылку, не потеряв страницу.
+func (h *Handler) statusPagesRotate(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		h.denyCrossOrigin(w, r)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	if h.Uptime == nil { // стенд без мониторинга: 404, а не nil-разыменование
+		h.notFound(w, r)
+		return
+	}
+	sp, authz, ok := h.loadManagedStatusPage(w, r, uid)
+	if !ok {
+		return
+	}
+	if !authz.CanManage {
+		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.403.body"))
+		return
+	}
+	if !h.parseForm(w, r) {
+		return
+	}
+	// перевыпуск необратим: прежний адрес перестаёт открываться сразу, восстановить нельзя.
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirmf(w, r, "confirm.title", "confirm.statuspage_rotate.message", "confirm.statuspage_rotate.action",
+			statusPagesPath(sp.ProjectID), "/statuspages/"+strconv.FormatInt(sp.ID, 10)+"/rotate", nil,
+			"name", sp.Title)
+		return
+	}
+	if _, err := h.Uptime.RotateStatusPagePublicID(r.Context(), sp.ID); err != nil {
+		if errors.Is(err, uptime.ErrNotFound) {
+			h.renderError(w, r, http.StatusNotFound, "")
+			return
+		}
+		h.renderError(w, r, http.StatusInternalServerError, "")
+		return
+	}
+	h.statusCache.invalidate(sp.PublicID)
+	http.Redirect(w, r, statusPagesPath(sp.ProjectID), http.StatusSeeOther)
+}

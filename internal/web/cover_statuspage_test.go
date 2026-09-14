@@ -149,6 +149,72 @@ func TestWebStatusPageDeletePublicationGate(t *testing.T) {
 	}
 }
 
+// Перевыпуск адреса — единственный способ отозвать утёкшую ссылку без потери страницы;
+// как и публикация, доступен только owner/admin, не оператору.
+func TestWebStatusPageRotatePublicationGate(t *testing.T) {
+	s := newStatusPageStack(t)
+	proj, ownerCookie, memberCookie := statusPageProject(t, s, "sprot")
+	m := statusPageMonitor(t, s, proj.ID, "sprot-monitor", "https://example.com/sprot")
+
+	sp, err := s.uptime.CreateStatusPage(context.Background(), uptime.StatusPage{
+		ProjectID: proj.ID, Title: "Rotate", Enabled: true,
+	}, []uptime.StatusPageMonitor{{MonitorID: m.ID, DisplayName: "Service", Position: 0}})
+	if err != nil {
+		t.Fatalf("create status page: %v", err)
+	}
+	oldPublicID := sp.PublicID
+	rotatePath := "/statuspages/" + strconv.FormatInt(sp.ID, 10) + "/rotate"
+
+	resp := postForm(t, s.srv, rotatePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, memberCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST %s (operator) = %d, want 403: %s", rotatePath, resp.StatusCode, body)
+	}
+	if got, err := s.uptime.StatusPageByID(context.Background(), sp.ID); err != nil || got.PublicID != oldPublicID {
+		t.Fatalf("public_id must survive operator rotate attempt, got %+v, err = %v", got, err)
+	}
+
+	// Без confirmed=yes — страница подтверждения, не перевыпуск.
+	resp = postForm(t, s.srv, rotatePath, url.Values{}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST %s (admin, no confirm) = %d, want 200 (confirm page)", rotatePath, resp.StatusCode)
+	}
+	if got, err := s.uptime.StatusPageByID(context.Background(), sp.ID); err != nil || got.PublicID != oldPublicID {
+		t.Fatalf("public_id must survive unconfirmed rotate, got %+v, err = %v", got, err)
+	}
+
+	resp = postForm(t, s.srv, rotatePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST %s (admin, confirmed) = %d, want 303", rotatePath, resp.StatusCode)
+	}
+	got, err := s.uptime.StatusPageByID(context.Background(), sp.ID)
+	if err != nil {
+		t.Fatalf("status page by id after rotate: %v", err)
+	}
+	if got.PublicID == oldPublicID {
+		t.Fatalf("PublicID unchanged after admin rotate: %q", got.PublicID)
+	}
+	if _, _, err := s.uptime.StatusPageByPublicID(context.Background(), oldPublicID); !errors.Is(err, uptime.ErrNotFound) {
+		t.Fatalf("old public_id must stop resolving after rotate, err = %v", err)
+	}
+	if _, _, err := s.uptime.StatusPageByPublicID(context.Background(), got.PublicID); err != nil {
+		t.Fatalf("new public_id must resolve after rotate: %v", err)
+	}
+
+	_, strangerCookie := orgSettingsRegister(t, s.auth, "sprot-stranger@example.com")
+	resp = postForm(t, s.srv, rotatePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, strangerCookie)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST %s (stranger) = %d, want 404", rotatePath, resp.StatusCode)
+	}
+}
+
 func TestCoverStatusPageMajorOutage(t *testing.T) {
 	s := newStatusPageStack(t)
 	proj, _, _ := statusPageProject(t, s, "spmajor")

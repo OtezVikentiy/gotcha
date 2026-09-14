@@ -8,7 +8,7 @@ import (
 )
 
 // No-op when token is empty — an empty needle would otherwise match everywhere.
-// Shared by email.go/webhook.go and web.alertDeliveriesPage (second redaction pass).
+// Shared by email.go and webhook.go to strip a channel's secret from its own send error.
 func RedactToken(s, token string) string {
 	if token == "" {
 		return s

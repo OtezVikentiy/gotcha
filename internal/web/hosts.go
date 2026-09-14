@@ -70,13 +70,8 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
-	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, "")
-		return
-	}
-	if !canAccess {
-		h.notFound(w, r)
+	authz, ok := h.requireProjectOperator(w, r, projectID, uid)
+	if !ok {
 		return
 	}
 
@@ -235,7 +230,7 @@ func (h *Handler) hostsList(w http.ResponseWriter, r *http.Request) {
 	facets := templates.NewHostsFacets(r.Context(), projectID, filterVM, envValues, roleValues)
 	sections := groupHostRows(r.Context(), rows, group)
 
-	_ = templates.HostsList(projectID, rows, truncated, hostsListLimit, filterVM, facets, sections, installCmd, config, agentReason, h.currentEmail(r), metricsFailed).Render(r.Context(), w)
+	_ = templates.HostsList(projectID, rows, truncated, hostsListLimit, filterVM, facets, sections, installCmd, config, agentReason, h.currentEmail(r), metricsFailed, authz.CanManage).Render(r.Context(), w)
 }
 
 func normalizeHostGroup(v string) string {
@@ -641,7 +636,7 @@ func hostSettingsErrorMessage(ctx context.Context, err error) string {
 	}
 }
 
-func (h *Handler) renderHostSettings(w http.ResponseWriter, r *http.Request, status int, projectID int64, form templates.FormState, errMsg string, groupForm templates.FormState, groupErrMsg string) {
+func (h *Handler) renderHostSettings(w http.ResponseWriter, r *http.Request, status int, projectID int64, canManage bool, form templates.FormState, errMsg string, groupForm templates.FormState, groupErrMsg string) {
 	settings, err := h.HostSettings.Get(r.Context(), projectID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, "")
@@ -688,7 +683,7 @@ func (h *Handler) renderHostSettings(w http.ResponseWriter, r *http.Request, sta
 			Roles:  roleValues,
 			Form:   groupForm,
 			ErrMsg: groupErrMsg,
-		}, h.currentEmail(r)).Render(r.Context(), w)
+		}, h.currentEmail(r), canManage).Render(r.Context(), w)
 }
 
 func groupThresholdFormState(r *http.Request) templates.FormState {
@@ -726,10 +721,11 @@ func (h *Handler) hostSettingsPage(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
+	authz, ok := h.requireProjectOperator(w, r, projectID, uid)
+	if !ok {
 		return
 	}
-	h.renderHostSettings(w, r, http.StatusOK, projectID, nil, "", nil, "")
+	h.renderHostSettings(w, r, http.StatusOK, projectID, authz.CanManage, nil, "", nil, "")
 }
 
 func (h *Handler) hostSettingsSave(w http.ResponseWriter, r *http.Request) {
@@ -752,7 +748,8 @@ func (h *Handler) hostSettingsSave(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
+	authz, ok := h.requireProjectOperator(w, r, projectID, uid)
+	if !ok {
 		return
 	}
 	if !h.parseForm(w, r) {
@@ -760,13 +757,13 @@ func (h *Handler) hostSettingsSave(w http.ResponseWriter, r *http.Request) {
 	}
 	settings, err := parseHostSettingsForm(r)
 	if err != nil {
-		h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, hostSettingsFormState(r), hostSettingsErrorMessage(r.Context(), err), nil, "")
+		h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, authz.CanManage, hostSettingsFormState(r), hostSettingsErrorMessage(r.Context(), err), nil, "")
 		return
 	}
 	if err := h.HostSettings.Save(r.Context(), projectID, settings); err != nil {
 		if errors.Is(err, host.ErrInvalidDiskThreshold) || errors.Is(err, host.ErrInvalidMemoryThreshold) ||
 			errors.Is(err, host.ErrInvalidLoadThreshold) || errors.Is(err, host.ErrInvalidSilentAfter) {
-			h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, hostSettingsFormState(r), hostSettingsErrorMessage(r.Context(), err), nil, "")
+			h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, authz.CanManage, hostSettingsFormState(r), hostSettingsErrorMessage(r.Context(), err), nil, "")
 			return
 		}
 		h.renderError(w, r, http.StatusInternalServerError, "")
@@ -801,7 +798,8 @@ func (h *Handler) hostGroupThresholdSave(w http.ResponseWriter, r *http.Request)
 		h.notFound(w, r)
 		return
 	}
-	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
+	authz, ok := h.requireProjectOperator(w, r, projectID, uid)
+	if !ok {
 		return
 	}
 	if !h.parseForm(w, r) {
@@ -815,20 +813,20 @@ func (h *Handler) hostGroupThresholdSave(w http.ResponseWriter, r *http.Request)
 	// scope/label не проверяются на членство в FacetValues — метка могла исчезнуть между
 	// отрисовкой формы и отправкой; орфан-правило безвредно, резолвер просто не найдёт хостов.
 	if (scope != "env" && scope != "role") || label == "" || utf8.RuneCountInString(label) > maxGroupThresholdLabelLen {
-		h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, nil, "",
+		h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, authz.CanManage, nil, "",
 			groupThresholdFormState(r), i18n.T(r.Context(), "error.hostsettings.group_scope_label"))
 		return
 	}
 	ov, err := parseHostThresholdsForm(r)
 	if err != nil {
-		h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, nil, "",
+		h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, authz.CanManage, nil, "",
 			groupThresholdFormState(r), hostSettingsErrorMessage(r.Context(), err))
 		return
 	}
 	if err := h.GroupThresholds.Upsert(r.Context(), projectID, scope, label, ov); err != nil {
 		if errors.Is(err, host.ErrInvalidDiskThreshold) || errors.Is(err, host.ErrInvalidMemoryThreshold) ||
 			errors.Is(err, host.ErrInvalidLoadThreshold) || errors.Is(err, host.ErrInvalidSilentAfter) {
-			h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, nil, "",
+			h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, authz.CanManage, nil, "",
 				groupThresholdFormState(r), hostSettingsErrorMessage(r.Context(), err))
 			return
 		}
@@ -857,7 +855,8 @@ func (h *Handler) hostGroupThresholdDelete(w http.ResponseWriter, r *http.Reques
 		h.notFound(w, r)
 		return
 	}
-	if _, ok := h.requireProjectOperator(w, r, projectID, uid); !ok {
+	authz, ok := h.requireProjectOperator(w, r, projectID, uid)
+	if !ok {
 		return
 	}
 	if !h.parseForm(w, r) {
@@ -866,8 +865,8 @@ func (h *Handler) hostGroupThresholdDelete(w http.ResponseWriter, r *http.Reques
 	scope := r.FormValue("scope")
 	label := r.FormValue("label")
 	if (scope != "env" && scope != "role") || label == "" {
-		h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, nil,
-			i18n.T(r.Context(), "error.hostsettings.group_scope_label"), nil, "")
+		h.renderHostSettings(w, r, http.StatusUnprocessableEntity, projectID, authz.CanManage,
+			nil, i18n.T(r.Context(), "error.hostsettings.group_scope_label"), nil, "")
 		return
 	}
 	// CSP (default-src 'self', без unsafe-inline) не исполняет inline confirm() — поэтому

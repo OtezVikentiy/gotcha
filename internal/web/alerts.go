@@ -123,8 +123,9 @@ func (h *Handler) alertDeliveriesPage(w http.ResponseWriter, r *http.Request) {
 	}
 	if !authz.CanManage {
 		for i := range failed {
-			// Порядок важен: редактируем токен по сырому Target, следующая строка перезатирает его маской.
-			failed[i].LastError = notify.RedactToken(failed[i].LastError, failed[i].Target)
+			// Тело ответа цели (не только токен/путь) может нести данные внутренней сети при
+			// GOTCHA_SSRF_ALLOW_PRIVATE_WEBHOOK=1 — адрес задаёт admin, значит и ответ читает он же.
+			failed[i].LastError = i18n.T(r.Context(), "alerts.failed.error_hidden")
 			failed[i].Target = maskChannelTarget(failed[i].ChannelKind, failed[i].Target)
 		}
 	}

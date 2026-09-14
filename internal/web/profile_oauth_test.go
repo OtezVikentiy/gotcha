@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -22,6 +23,7 @@ type oauthProfileStack struct {
 	pool *pgxpool.Pool
 	srv  *httptest.Server
 	auth *auth.Service
+	org  *org.Service
 }
 
 func newOAuthProfileStack(t *testing.T, providers ...oauth.Provider) *oauthProfileStack {
@@ -41,7 +43,7 @@ func newOAuthProfileStack(t *testing.T, providers ...oauth.Provider) *oauthProfi
 		h.OAuth = oauth.NewRegistry(providers...)
 	}
 	h.Register(mux)
-	return &oauthProfileStack{pool: pool, srv: srv, auth: authSvc}
+	return &oauthProfileStack{pool: pool, srv: srv, auth: authSvc, org: orgSvc}
 }
 
 func loginCookie(t *testing.T, authSvc *auth.Service, uid int64) *http.Cookie {
@@ -188,5 +190,64 @@ func TestProfilePasswordSet(t *testing.T) {
 	}
 	if _, err := s.auth.Authenticate(ctx, "setpw@example.com", "password12"); err != nil {
 		t.Fatalf("Authenticate after set: %v", err)
+	}
+}
+
+// Единый вход резолвится по префиксу "sso-" и не сводится к h.OAuth.List() — без этой
+// кнопки владелец парольного аккаунта после включения SSO в организации упирался в
+// сообщение «привяжите в профиле», за которым ничего не стояло (см. error.oauth.sso_account_exists).
+func TestProfileShowsSSOLinkable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	s := newOAuthProfileStack(t)
+	ctx := context.Background()
+	uid, err := s.auth.Register(ctx, "member@corp.com", "password12")
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	o, err := s.org.CreateOrg(ctx, "ssoprof", "SSO Prof Co", uid)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if err := s.org.UpsertSSO(ctx, org.SSOConfig{
+		OrgID: o.ID, Issuer: "https://idp.example", ClientID: "c", ClientSecret: "s",
+		Domain: "corp.com", DefaultRole: "member", Enforced: false,
+	}); err != nil {
+		t.Fatalf("upsert sso: %v", err)
+	}
+	// Вторая организация того же пользователя БЕЗ настроенного SSO — не должна предлагать привязку.
+	noSSO, err := s.org.CreateOrg(ctx, "nossoprof", "No SSO Co", uid)
+	if err != nil {
+		t.Fatalf("create no-sso org: %v", err)
+	}
+	cookie := loginCookie(t, s.auth, uid)
+
+	resp := getWithCookie(t, s.srv, "/profile", cookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	bs := string(body)
+	wantHref := "/auth/oauth/sso-" + strconv.FormatInt(o.ID, 10) + "/start?link=1"
+	if !strings.Contains(bs, wantHref) {
+		t.Fatalf("profile missing SSO link href %q: %s", wantHref, bs)
+	}
+	if !strings.Contains(bs, "SSO Prof Co") {
+		t.Fatalf("profile missing org name in SSO link label: %s", bs)
+	}
+	noSSOHref := "/auth/oauth/sso-" + strconv.FormatInt(noSSO.ID, 10) + "/start?link=1"
+	if strings.Contains(bs, noSSOHref) {
+		t.Fatalf("profile offers to link SSO for an org that has none configured: %s", bs)
+	}
+
+	// Уже привязанная SSO-идентичность не предлагается для повторной привязки.
+	if err := s.auth.LinkIdentity(ctx, uid, "sso-"+strconv.FormatInt(o.ID, 10), "sub-1", "member@corp.com"); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	resp = getWithCookie(t, s.srv, "/profile", cookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	bs = string(body)
+	if strings.Contains(bs, wantHref) {
+		t.Fatalf("profile still offers to link an already-linked SSO identity: %s", bs)
 	}
 }

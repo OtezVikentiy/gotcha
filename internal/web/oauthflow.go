@@ -129,7 +129,7 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sso != nil {
-		h.ssoCallback(w, r, name, id, sso)
+		h.ssoCallback(w, r, name, id, sso, flow)
 		return
 	}
 

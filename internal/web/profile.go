@@ -131,6 +131,33 @@ func (h *Handler) renderProfile(w http.ResponseWriter, r *http.Request, status i
 			}
 		}
 	}
+	// Единый вход резолвится по префиксу "sso-", а не через h.OAuth — организации, где
+	// он настроен, не сводятся к списку env-провайдеров выше.
+	if h.Org != nil {
+		orgs, err := h.Org.OrgsOf(r.Context(), uid)
+		if err != nil {
+			h.renderError(w, r, http.StatusInternalServerError, "")
+			return
+		}
+		for _, o := range orgs {
+			_, ok, err := h.Org.SSOByOrg(r.Context(), o.ID)
+			if err != nil {
+				h.renderError(w, r, http.StatusInternalServerError, "")
+				return
+			}
+			if !ok {
+				continue
+			}
+			name := ssoProviderPrefix + strconv.FormatInt(o.ID, 10)
+			if linkedNames[name] {
+				continue
+			}
+			linkable = append(linkable, templates.LinkableProvider{
+				Name:        name,
+				DisplayName: i18n.Tf(r.Context(), "profile.linked.sso_name", "org", o.Name),
+			})
+		}
+	}
 	w.WriteHeader(status)
 	_ = templates.Profile(email, errMsg, message, hasPassword, linked, linkable, isInstanceAdmin, h.currentEmail(r)).Render(r.Context(), w)
 }

@@ -478,6 +478,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /projects/{id}/statuspages", h.requireUser(http.HandlerFunc(h.statusPagesCreate)))
 	inner.Handle("POST /statuspages/{id}", h.requireUser(http.HandlerFunc(h.statusPagesUpdate)))
 	inner.Handle("POST /statuspages/{id}/delete", h.requireUser(http.HandlerFunc(h.statusPagesDelete)))
+	inner.Handle("POST /statuspages/{id}/rotate", h.requireUser(http.HandlerFunc(h.statusPagesRotate)))
 
 	inner.Handle("GET /projects/{id}/maintenance", h.requireUser(http.HandlerFunc(h.maintenancePage)))
 	inner.Handle("POST /projects/{id}/maintenance", h.requireUser(http.HandlerFunc(h.maintenanceCreate)))
