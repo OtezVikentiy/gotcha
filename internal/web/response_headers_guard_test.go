@@ -21,13 +21,16 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-// /static/ отдаёт статические ассеты через cacheControl (web.go:308), который своим
-// Cache-Control перекрывает no-store из securityHeaders ниже по цепочке — версионированные
-// файлы обязаны кэшироваться, ПДн там нет.
+// /static/ получает остальные security-заголовки как все (securityHeaders её не
+// пропускает), но не no-store: cacheControl (web.go:308) идёт в цепочке ПОСЛЕ и своим
+// Set перекрывает Cache-Control на max-age — версионированные ассеты обязаны кэшироваться,
+// ПДн там нет. От gzipSSR она тоже фактически в стороне: Content-Type не text/html, поэтому
+// gzipCapture.Write (ssrgzip.go:42) уходит в passthrough и сжатие/заголовки отдаёт
+// serveGzip (staticgzip.go) — отдельный, файловый механизм.
 var cacheControlExemptions = []guards.Exemption{
 	{
 		Value:   "GET /static/",
-		Why:     "версионированная статика: cacheControl (web.go:308) намеренно ставит max-age вместо no-store",
+		Why:     "версионированная статика: cacheControl (web.go:308) идёт после securityHeaders и намеренно перекрывает Cache-Control на max-age; Content-Type не text/html, поэтому gzipSSR (ssrgzip.go:42) уходит в passthrough и сжатие отдано отдельному serveGzip (staticgzip.go)",
 		Finding: "T1",
 	},
 }
