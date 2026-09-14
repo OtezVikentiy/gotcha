@@ -129,7 +129,7 @@ var legitExemptions = []Exemption{
 	{Value: `return nil, fmt.Errorf("export: снятие зависших заявок: %w", err)`, Why: "SweepStale: та же категория, читает только worker.go (Tick → slog.Warn); RETURNING добавлен задачей 2 фикса P0 (письмо на зависших заявках), сигнатура сменилась на []Job — текст обёртки не изменился", Finding: "по замыслу"},
 	{Value: `return nil, fmt.Errorf("export: разбор зависшей заявки: %w", err)`, Why: "SweepStale: разбор строки RETURNING (scanJob) — та же категория, что и у остальных Store-методов со списком (см. DueForExpiry/ByProject выше)", Finding: "по замыслу"},
 	{Value: `return fmt.Errorf("export: отметка неудачи заявки %d: %w", id, err)`, Why: "Fail: ошибка САМОГО SQL UPDATE (не cause попытки) — читает worker.fail через slog.Warn, в письмо/last_error не попадает", Finding: "по замыслу"},
-	{Value: `return fmt.Errorf("export: завершение заявки %d: %w", id, err)`, Why: "Done: та же категория", Finding: "по замыслу"},
+	{Value: `return time.Time{}, fmt.Errorf("export: завершение заявки %d: %w", id, err)`, Why: "Done: та же категория (сигнатура сменилась на (time.Time, error) — RETURNING expires_at, единый источник срока с письмом)", Finding: "по замыслу"},
 	{Value: `return fmt.Errorf("export: постоянный отказ заявки %d: %w", id, err)`, Why: "FailPermanent: та же категория", Finding: "по замыслу"},
 	{Value: `return fmt.Errorf("export: возврат заявки %d в очередь: %w", id, err)`, Why: "Release: та же категория (P2-OPS-5) — ошибка САМОГО SQL UPDATE, читает worker.release через slog.Warn, автору письмо не идёт (release не отказ)", Finding: "по замыслу"},
 	{Value: `return fmt.Errorf("export: удаление заявки %d: %w", id, err)`, Why: "Delete: та же категория, web/exports.go — только errors.Is(ErrNotDeletable), иначе generic error.internal", Finding: "по замыслу"},
@@ -139,6 +139,7 @@ var legitExemptions = []Exemption{
 	{Value: `return total, fmt.Errorf("export: чистка старых заявок: %w", err)`, Why: "PurgeRows: та же категория, читает только Janitor", Finding: "по замыслу"},
 	{Value: `return "", fmt.Errorf("export: пользователь %d не найден", id)`, Why: "AuthorEmail: читает только notify.go, где ошибка ЛОГИРУЕТСЯ (slog.Warn) и письмо тихо не отправляется — текст в письмо не попадает никогда", Finding: "по замыслу"},
 	{Value: `return "", fmt.Errorf("export: адрес автора %d: %w", id, err)`, Why: "AuthorEmail: та же категория", Finding: "по замыслу"},
+	{Value: `return "", fmt.Errorf("export: локаль автора %d: %w", id, err)`, Why: "AuthorLocale: читает только notify.go, где ошибка МОЛЧА игнорируется (fallback на локаль инстанса) — не логируется и в письмо не попадает", Finding: "по замыслу"},
 	{Value: `return nil, fmt.Errorf("export: проверка существующих заявок: %w", err)`, Why: "ExistingIDs: та же категория, читает только Janitor.removeOrphans", Finding: "по замыслу"},
 	{Value: `return nil, fmt.Errorf("export: разбор существующих заявок: %w", err)`, Why: "ExistingIDs: та же категория", Finding: "по замыслу"},
 
@@ -178,7 +179,7 @@ var legitExemptions = []Exemption{
 	{Value: `panic("export: crypto/rand недоступен: " + err.Error())`, Why: "NewExportSalt: паника на отказе crypto/rand.Read — та же категория, что panic() в worker.go:init() (проверка инварианта), recover() в пакете нет, наружу как HTTP-ответ не идёт никогда", Finding: "по замыслу"},
 }
 
-const maxLegitExemptions = 107
+const maxLegitExemptions = 108
 
 // Список намеренно пуст и расти не должен: новая русская строка вне каталога
 // — это баг, а не кандидат сюда.

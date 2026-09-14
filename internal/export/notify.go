@@ -22,11 +22,18 @@ type Mailer interface {
 }
 
 // m == nil (почта не настроена) — тихо ничего не делать: файл уже на диске.
-// locale — локаль инстанса (GOTCHA_LOCALE), не связана с ctx фонового цикла у воркера.
-func NewMailNotifier(m Mailer, st *Store, baseURL string, locale i18n.Locale) func(context.Context, Job) {
+// instanceLocale — локаль инстанса (GOTCHA_LOCALE), фолбэк для тех, кто не выбирал
+// личную locale явно; за письмо отвечает получатель (job.CreatedBy), не ctx фонового цикла.
+func NewMailNotifier(m Mailer, st *Store, baseURL string, instanceLocale i18n.Locale) func(context.Context, Job) {
 	return func(ctx context.Context, job Job) {
 		if m == nil {
 			return
+		}
+		locale := instanceLocale
+		if code, err := st.AuthorLocale(ctx, job.CreatedBy); err == nil {
+			if l, ok := i18n.Parse(code); ok {
+				locale = l
+			}
 		}
 		ctx = i18n.WithLocale(ctx, locale)
 		payload, ok := mailPayload(ctx, job, baseURL)
@@ -60,6 +67,10 @@ func mailPayload(ctx context.Context, job Job, baseURL string) (map[string]any, 
 			"size", humanize.Bytes(job.Bytes))
 		if job.Truncated {
 			body += " " + i18n.T(ctx, "exports.mail.truncated_note")
+		}
+		if job.ExpiresAt != nil {
+			body += " " + i18n.Tf(ctx, "exports.mail.expires_note",
+				"expires", humanize.Duration(ctx, time.Until(*job.ExpiresAt)))
 		}
 		// Та же непереведённая строка, что несёт Meta.PseudonymNote — контент файла не локализуется.
 		meta := BuildMeta(job)

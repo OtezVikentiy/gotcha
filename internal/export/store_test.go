@@ -643,7 +643,8 @@ func TestDoneSetsExpiryFromFinish(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
-	if err := st.Done(ctx, id, claim.Attempts, 42, 4096, true, 48*time.Hour); err != nil {
+	returned, err := st.Done(ctx, id, claim.Attempts, 42, 4096, true, 48*time.Hour)
+	if err != nil {
 		t.Fatalf("Done: %v", err)
 	}
 	got, err := st.Get(ctx, id)
@@ -658,6 +659,11 @@ func TestDoneSetsExpiryFromFinish(t *testing.T) {
 	}
 	if d := got.ExpiresAt.Sub(*got.FinishedAt); d < 47*time.Hour || d > 49*time.Hour {
 		t.Errorf("срок хранения отсчитан не от завершения: разница %v", d)
+	}
+	// Один источник факта: возвращаемое значение обязано БЫТЬ записанным, не отдельным
+	// пересчётом по тому же ttl — иначе тексты письма и базы могут разойтись.
+	if !returned.Equal(*got.ExpiresAt) {
+		t.Errorf("Done вернул expires_at %v, в базе записано %v — не одно и то же значение", returned, *got.ExpiresAt)
 	}
 }
 
@@ -710,7 +716,7 @@ func TestDoneIgnoresAlreadyFinalizedJob(t *testing.T) {
 	if swept, err := st.SweepStale(ctx); err != nil || len(swept) != 1 {
 		t.Fatalf("SweepStale: len=%d err=%v", len(swept), err)
 	}
-	if err := st.Done(ctx, id, 3, 1, 1, false, time.Hour); !errors.Is(err, ErrStaleClaim) {
+	if _, err := st.Done(ctx, id, 3, 1, 1, false, time.Hour); !errors.Is(err, ErrStaleClaim) {
 		t.Fatalf("Done: err=%v, ожидали ErrStaleClaim", err)
 	}
 	got, err := st.Get(ctx, id)
@@ -732,7 +738,7 @@ func TestFailIgnoresAlreadyDoneJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
-	if err := st.Done(ctx, id, claim.Attempts, 1, 1, false, time.Hour); err != nil {
+	if _, err := st.Done(ctx, id, claim.Attempts, 1, 1, false, time.Hour); err != nil {
 		t.Fatalf("Done: %v", err)
 	}
 	if err := st.Fail(ctx, id, claim.Attempts, "запоздавшая ошибка зомби-воркера", reasonInternal); !errors.Is(err, ErrStaleClaim) {
@@ -770,7 +776,7 @@ func TestDoneRejectsStaleClaimAfterReclaim(t *testing.T) {
 		t.Fatalf("B перехватил заявку с attempts=%d, ожидали %d", claimB.Attempts, claimA.Attempts+1)
 	}
 
-	if err := st.Done(ctx, id, claimA.Attempts, 111, 222, false, time.Hour); !errors.Is(err, ErrStaleClaim) {
+	if _, err := st.Done(ctx, id, claimA.Attempts, 111, 222, false, time.Hour); !errors.Is(err, ErrStaleClaim) {
 		t.Fatalf("Done от A: err=%v, ожидали ErrStaleClaim", err)
 	}
 	afterA, err := st.Get(ctx, id)
@@ -781,7 +787,7 @@ func TestDoneRejectsStaleClaimAfterReclaim(t *testing.T) {
 		t.Fatalf("устаревший Done от A изменил заявку: %+v", afterA)
 	}
 
-	if err := st.Done(ctx, id, claimB.Attempts, 999, 888, true, time.Hour); err != nil {
+	if _, err := st.Done(ctx, id, claimB.Attempts, 999, 888, true, time.Hour); err != nil {
 		t.Fatalf("Done от B: %v", err)
 	}
 	final, err := st.Get(ctx, id)

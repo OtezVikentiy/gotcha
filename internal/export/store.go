@@ -298,20 +298,23 @@ func (s *Store) Fail(ctx context.Context, id int64, attempt int, cause, reasonKe
 }
 
 // Срок хранения — от завершения, не от постановки: очередь и мгновенная заявка хранятся одинаково.
-func (s *Store) Done(ctx context.Context, id int64, attempt int, rows, bytes int64, truncated bool, ttl time.Duration) error {
-	tag, err := s.pool.Exec(ctx, `
+// Возвращает записанный expires_at — единственный источник срока, письму пересчитывать не надо.
+func (s *Store) Done(ctx context.Context, id int64, attempt int, rows, bytes int64, truncated bool, ttl time.Duration) (time.Time, error) {
+	var expiresAt time.Time
+	err := s.pool.QueryRow(ctx, `
 		UPDATE export_jobs
 		SET status = 'done', rows_written = $2, bytes = $3, truncated = $4, last_error = '',
 		    finished_at = now(), expires_at = now() + $5::interval
-		WHERE id = $1 AND status = 'running' AND attempts = $6`,
-		id, rows, bytes, truncated, ttl.String(), attempt)
+		WHERE id = $1 AND status = 'running' AND attempts = $6
+		RETURNING expires_at`,
+		id, rows, bytes, truncated, ttl.String(), attempt).Scan(&expiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, ErrStaleClaim
+	}
 	if err != nil {
-		return fmt.Errorf("export: завершение заявки %d: %w", id, err)
+		return time.Time{}, fmt.Errorf("export: завершение заявки %d: %w", id, err)
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrStaleClaim
-	}
-	return nil
+	return expiresAt, nil
 }
 
 // Закрывает без права на повтор — для причин, которые повтор не устранит (диск, слишком много групп).
@@ -432,6 +435,16 @@ func (s *Store) AuthorEmail(ctx context.Context, id int64) (string, error) {
 		return "", fmt.Errorf("export: адрес автора %d: %w", id, err)
 	}
 	return email, nil
+}
+
+// "" — локаль не выбиралась явно; вызывающий обязан откатиться на локаль инстанса.
+func (s *Store) AuthorLocale(ctx context.Context, id int64) (string, error) {
+	var code string
+	err := s.pool.QueryRow(ctx, "SELECT locale FROM users WHERE id = $1", id).Scan(&code)
+	if err != nil {
+		return "", fmt.Errorf("export: локаль автора %d: %w", id, err)
+	}
+	return code, nil
 }
 
 // Использует джанитор, сверяя файлы каталога с базой, чтобы найти сирот (файл есть, строки нет).

@@ -1294,6 +1294,18 @@ func TestWorkerRunProcessesJobOnTicker(t *testing.T) {
 		if j.ID != id || j.Status != StatusDone || j.RowsWritten != 2 {
 			t.Fatalf("Notify получил неожиданный снимок заявки: %+v", j)
 		}
+		if j.ExpiresAt == nil {
+			t.Fatal("Notify получил заявку без ExpiresAt — письмо не сможет назвать срок удаления файла")
+		}
+		// Сверяем с ЗАПИСАННЫМ значением, не с диапазоном: независимый пересчёт по тому же
+		// TTL прошёл бы любую проверку "около часа", но разошёлся бы с базой на микросекунды.
+		got, err := st.Get(context.Background(), id)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.ExpiresAt == nil || !j.ExpiresAt.Equal(*got.ExpiresAt) {
+			t.Errorf("Notify получил ExpiresAt %v, в базе записано %v — не одно и то же значение", j.ExpiresAt, got.ExpiresAt)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run не обработал заявку по тикеру за отведённое время")
 	}
