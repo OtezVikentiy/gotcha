@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -132,52 +131,56 @@ func TestYAxisLabelSitesCovered(t *testing.T) {
 	}
 }
 
-// в CSS нет браузерного инструмента для замера кегля — эта проверка расчётная: она гарантирует
-// то же самое, что подтвердил бы замер на стенде на границе 700px.
-var chartVBTierFontRuleRe = regexp.MustCompile(`\.chart-vb(\d+) text \{ font-size: (\d+)px; \}`)
+var chartVBMinWidthRe = regexp.MustCompile(`^@media \(min-width: (\d+)px\)$`)
 
-// медиа-условие переиспользуется другими правилами в app.css — берём ПЕРВЫЙ его блок,
-// в котором нашлось нужное .chart-vbN правило, а не первое вхождение самого условия.
-func chartVBTierFontSize(t *testing.T, css, media string, vbW int) int {
-	t.Helper()
-	blockRe := regexp.MustCompile(`(?s)` + regexp.QuoteMeta(media) + ` \{(.*?)\n\}`)
-	blocks := blockRe.FindAllStringSubmatch(css, -1)
-	if blocks == nil {
-		t.Fatalf("в app.css нет блока %q", media)
-	}
-	for _, block := range blocks {
-		for _, m := range chartVBTierFontRuleRe.FindAllStringSubmatch(block[1], -1) {
-			w, _ := strconv.Atoi(m[1])
-			if w != vbW {
-				continue
-			}
-			font, _ := strconv.Atoi(m[2])
-			return font
-		}
-	}
-	t.Fatalf("ни в одном блоке %q нет правила .chart-vb%d text", media, vbW)
-	return 0
-}
+// @media (max-width: Nxpx), под которым живёт clamp min-width:480px — верхняя граница
+// мобильной компенсации кегля (issue-chart/endpoint-chart/metric-chart-wrap/slo-burndown/
+// waterfall). Именно она и обязана стыковаться с первым widescreen-тиром без разрыва.
+var mobileClampMediaRe = regexp.MustCompile(`(?s)@media \(max-width: (\d+)px\)\s*\{(.*?)\n\}`)
 
-// тир 561-699px обязан продолжать ближайший widescreen-тир (≥700px), а не рвать кегль
-// на его границе — критерий из спеки T4: фактический размер на 699px и на 700px не должен
-// отличаться скачком.
-func TestChartVBTierBoundaryContinuous(t *testing.T) {
+// находка N12: между верхней границей мобильной компенсации (≤560) и первым
+// widescreen-тиром .chart-vbN (было ≥700) оставался диапазон на безмедийной ступени —
+// её кегль вдвое крупнее любого соседа. Сторож ловит класс проблемы (разрыв между
+// границами), а не конкретные числа, поэтому переживёт сдвиг любого из брейкпоинтов.
+func TestChartVBTierStartsRightAfterMobileClamp(t *testing.T) {
 	css, err := readAppCSS()
 	if err != nil {
 		t.Fatalf("читаю app.css: %v", err)
 	}
 	css = cssCommentRe.ReplaceAllString(css, " ")
 
-	for _, w := range []int{720, 960, 1200} {
-		gapFont := chartVBTierFontSize(t, css, "@media (min-width: 561px) and (max-width: 699px)", w)
-		nextFont := chartVBTierFontSize(t, css, "@media (min-width: 700px)", w)
-
-		gapPx := float64(gapFont) * 699 / float64(w)
-		nextPx := float64(nextFont) * 700 / float64(w)
-		if diff := math.Abs(gapPx - nextPx); diff > 0.5 {
-			t.Errorf(".chart-vb%d text: на 699px кегль даёт %.2fpx, на 700px — %.2fpx (разница %.2f) — "+
-				"ступень 561-699px не гасит скачок на границе widescreen-тира", w, gapPx, nextPx, diff)
+	mobileMax := -1
+	for _, m := range mobileClampMediaRe.FindAllStringSubmatch(css, -1) {
+		if !strings.Contains(m[2], "min-width: 480px") {
+			continue
 		}
+		if w, err := strconv.Atoi(m[1]); err == nil && w > mobileMax {
+			mobileMax = w
+		}
+	}
+	if mobileMax < 0 {
+		t.Fatal("в app.css нет @media (max-width: NNNpx) с min-width:480px — clamp мобильной компенсации потерян")
+	}
+
+	tierMin := -1
+	for _, ctxs := range chartVBTextContexts(css) {
+		for c := range ctxs {
+			m := chartVBMinWidthRe.FindStringSubmatch(c)
+			if m == nil {
+				continue
+			}
+			if w, err := strconv.Atoi(m[1]); err == nil && (tierMin == -1 || w < tierMin) {
+				tierMin = w
+			}
+		}
+	}
+	if tierMin == -1 {
+		t.Fatal("нет ни одного min-width-тира .chart-vbN text")
+	}
+
+	if tierMin != mobileMax+1 {
+		t.Errorf("первый widescreen-тир .chart-vbN начинается с %dpx, мобильная компенсация действует до %dpx — "+
+			"диапазон %d-%dpx остаётся на безмедийной (базовой) ступени без компенсации",
+			tierMin, mobileMax, mobileMax+1, tierMin-1)
 	}
 }
