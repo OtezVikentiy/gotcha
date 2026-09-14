@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Interface pages open again instead of being downloaded as a file. In 1.4.0 a
+  compressed response was sent with an archive content type instead of HTML, and
+  a browser that is not allowed to guess the type from the body saved the page to
+  disk. Every page over a kilobyte was affected; stylesheets and scripts were served
+  correctly.
 - A project's notification budget and per-issue throttle are no longer spent
   when there is nowhere to deliver — a project with no notification channel,
   or only channels that are disabled or otherwise undeliverable, now leaves
