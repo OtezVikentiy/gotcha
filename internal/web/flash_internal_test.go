@@ -12,7 +12,7 @@ import (
 )
 
 func TestFlashRoundTrip(t *testing.T) {
-	h := &Handler{BaseURL: "https://gotcha.example"}
+	h := &Handler{BaseURL: "https://gotcha.example", Secure: true}
 
 	rec := httptest.NewRecorder()
 	h.flashOK(rec, "flash.saved", 0)
@@ -114,6 +114,22 @@ func TestFlashPairCarriesBothCounts(t *testing.T) {
 
 	if f := parseFlash("ok|flash.issues_resolved|5"); f == nil || f.Pair || f.N != 5 || f.M != 0 {
 		t.Errorf("старый формат сломан или ошибочно помечен Pair: %+v", f)
+	}
+}
+
+// h.Secure — единственный источник истины для флага Secure у cookie; пересчёт из
+// BaseURL заново дал бы второй источник, способный разойтись с первым.
+func TestFlashSecureFollowsHandlerSecureField(t *testing.T) {
+	h := &Handler{BaseURL: "https://gotcha.example", Secure: false}
+
+	rec := httptest.NewRecorder()
+	h.flashOK(rec, "flash.saved", 0)
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("cookie не поставлена: %+v", cookies)
+	}
+	if cookies[0].Secure {
+		t.Errorf("cookie.Secure = true при h.Secure=false: %+v", cookies[0])
 	}
 }
 

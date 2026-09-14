@@ -51,6 +51,14 @@ type Rule struct {
 	ThrottleMinutes int
 }
 
+// Единственный источник дефолтов для несохранённого правила: EnsureDefaultRules
+// и форма создания в web (несохранённый spike) обязаны согласовываться с ними.
+const (
+	DefaultThrottleMinutes    = 30
+	DefaultSpikeThreshold     = 10
+	DefaultSpikeWindowMinutes = 5
+)
+
 type Channel struct {
 	ID        int64
 	ProjectID int64
@@ -413,9 +421,9 @@ func (s *Service) DeleteChannel(ctx context.Context, projectID, channelID int64)
 func (s *Service) EnsureDefaultRules(ctx context.Context, projectID int64) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO alert_rules (project_id, kind, enabled, throttle_minutes)
-		VALUES ($1, $2, true, 30), ($1, $3, true, 30)
+		VALUES ($1, $2, true, $4), ($1, $3, true, $4)
 		ON CONFLICT (project_id, kind) DO NOTHING`,
-		projectID, KindNewIssue, KindRegression)
+		projectID, KindNewIssue, KindRegression, DefaultThrottleMinutes)
 	if err != nil {
 		return fmt.Errorf("alert: ensure default rules: %w", err)
 	}

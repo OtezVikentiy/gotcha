@@ -219,18 +219,21 @@ func TestCoverProfileIdentityUnlink(t *testing.T) {
 	if err := authSvc.LinkIdentity(ctx, pwUID, "oidc", "sub-pw", "profile-unlink@example.com"); err != nil {
 		t.Fatalf("link identity pw user: %v", err)
 	}
-	resp = postForm(t, s.srv, "/profile/identities/unlink", url.Values{"provider": {"nonexistent"}}, s.srv.URL, pwCookie)
+	resp = postForm(t, s.srv, "/profile/identities/unlink", url.Values{"provider": {"nonexistent"}, "confirmed": {"yes"}}, s.srv.URL, pwCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("POST unlink (not linked) status = %d, want 422", resp.StatusCode)
 	}
 
-	resp = postForm(t, s.srv, "/profile/identities/unlink", url.Values{"provider": {"oidc"}}, s.srv.URL, pwCookie)
+	resp = postForm(t, s.srv, "/profile/identities/unlink", url.Values{"provider": {"oidc"}, "confirmed": {"yes"}}, s.srv.URL, pwCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST unlink (success) status = %d, want 200", resp.StatusCode)
+	}
+	if _, err := authSvc.IdentityUser(ctx, "oidc", "sub-pw"); err != auth.ErrNoIdentity {
+		t.Fatalf("identity must be gone after confirmed unlink: %v", err)
 	}
 }
 

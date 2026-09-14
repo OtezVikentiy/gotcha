@@ -108,7 +108,7 @@ func TestMetricDetailPlain(t *testing.T) {
 func TestMonitorDetailPausedDisabled(t *testing.T) {
 	m := uptime.Monitor{ID: 9, Name: "paused-mon", Kind: uptime.KindTCP, Enabled: false, IntervalSeconds: 120}
 	stat := uptime.UptimeStat{}
-	out := renderTo(t, MonitorDetail(m, "paused", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, true, true, "https://x", "u@e.com", false))
+	out := renderTo(t, MonitorDetail(m, "paused", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, true, "https://x", "u@e.com", false))
 	if !strings.Contains(out, "paused-mon") {
 		t.Error("выключенный монитор должен отрендериться")
 	}

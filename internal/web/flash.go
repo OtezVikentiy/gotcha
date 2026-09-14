@@ -150,7 +150,7 @@ func (h *Handler) withFlash(next http.Handler) http.Handler {
 }
 
 func (h *Handler) secureCookies() bool {
-	return strings.HasPrefix(h.BaseURL, "https://")
+	return h.Secure
 }
 
 func (h *Handler) flashOK(w http.ResponseWriter, key string, n int) {

@@ -383,6 +383,18 @@ func TestWebMaintenanceDelete(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST %s status = %d, want 303: %s", deletePath, resp.StatusCode, body)
 	}
+	var flashCookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == "flash" {
+			flashCookie = c
+		}
+	}
+	if flashCookie == nil {
+		t.Fatal("delete не выставил flash-cookie")
+	}
+	if v, err := url.QueryUnescape(flashCookie.Value); err != nil || !strings.Contains(v, "flash.deleted") {
+		t.Errorf("flash-cookie не несёт ключ flash.deleted: %q (err=%v)", flashCookie.Value, err)
+	}
 
 	windows, err := s.uptime.Windows(context.Background(), proj.ID)
 	if err != nil {

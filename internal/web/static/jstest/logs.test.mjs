@@ -61,6 +61,22 @@ test("logs: фокус, ушедший из виджета целиком, вс�
 	assert.equal(ta.list.hidden, true, "уход фокуса за пределы виджета обязан скрыть список");
 });
 
+test("logs: keysURL кросс-происхождения не даёт виджету инициализироваться", async function () {
+	var called = false;
+	var spyFetch = function () {
+		called = true;
+		return fakeFetch([{ key: "http.method", count: 3 }])();
+	};
+	var { document, sandbox } = buildWorld({ fetch: spyFetch });
+	var ta = buildTypeahead(document, { keysURL: "https://evil.example/keys" });
+	loadScript(sandbox, LOGS_JS);
+
+	ta.input.focus();
+	await typeAndWaitForSuggestions(ta.input);
+
+	assert.equal(called, false, "keysURL с чужим origin не должен уходить в fetch");
+});
+
 test("logs: Escape скрывает список подсказок", async function () {
 	var { document, sandbox } = buildWorld({ fetch: fakeFetch([{ key: "http.method", count: 1 }]) });
 	var ta = buildTypeahead(document);

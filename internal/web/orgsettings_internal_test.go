@@ -246,3 +246,25 @@ func TestOrgSettingsInviteResponsePathQueriesIdenticalRegardlessOfRecipientRegis
 		t.Fatalf("последовательность запросов на пути ответа зависит от регистрации адресата:\nзарегистрирован:    %v\nне зарегистрирован: %v", registered, unregistered)
 	}
 }
+
+func TestQuotaNear90PercentDoesNotOverflow(t *testing.T) {
+	cases := []struct {
+		name         string
+		usage, limit int64
+		want         bool
+	}{
+		{"90 ровно", 90, 100, true},
+		{"чуть ниже 90%", 89, 100, false},
+		// usage*10 переполняет int64 и уходит в отрицательное — наивное сравнение
+		// ошибочно решает "рядом с лимитом", хотя usage < 10% от limit.
+		{"переполнение даёт ложный near-limit", 4912931603392816429, 7395542922096466175, false},
+		// limit*9 переполняет int64 — наивное сравнение ошибочно решает "далеко от
+		// лимита", хотя usage реально превышает 90% (и даже сам limit).
+		{"переполнение прячет реальный near-limit", 3502109416845026634, 2620907556354756382, true},
+	}
+	for _, c := range cases {
+		if got := quotaNear90Percent(c.usage, c.limit); got != c.want {
+			t.Errorf("%s: quotaNear90Percent(%d, %d) = %v, want %v", c.name, c.usage, c.limit, got, c.want)
+		}
+	}
+}

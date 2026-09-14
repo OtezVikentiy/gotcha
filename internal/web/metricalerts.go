@@ -281,5 +281,6 @@ func (h *Handler) metricAlertDelete(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
+	h.flashOK(w, "flash.deleted", 0)
 	http.Redirect(w, r, metricAlertsPath(projectID), http.StatusSeeOther)
 }

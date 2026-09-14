@@ -34,6 +34,28 @@ func TestFrameSourceLines(t *testing.T) {
 	}
 }
 
+func TestFrameSourceLinesMissingLineno(t *testing.T) {
+	// SDK прислал pre_context/post_context, но не прислал сам lineno (0-значение) —
+	// без якоря номера получились бы отрицательными ("-4, -3, …, 0, 1").
+	f := Frame{
+		ContextLine: "throw();",
+		PreContext:  []string{"a", "b", "c", "d"},
+		PostContext: []string{"e"},
+	}
+	lines := frameSourceLines(f)
+	if len(lines) != 1 {
+		t.Fatalf("строк = %d, want 1 (только текущая, без домыслов по номерам): %+v", len(lines), lines)
+	}
+	if !lines[0].Current || lines[0].Code != f.ContextLine {
+		t.Fatalf("единственная строка должна быть текущей ContextLine: %+v", lines[0])
+	}
+	for _, l := range lines {
+		if l.No < 0 {
+			t.Fatalf("отрицательный номер строки: %+v", l)
+		}
+	}
+}
+
 func TestFrameSourceLinesEmpty(t *testing.T) {
 	if got := frameSourceLines(Frame{Function: "f"}); got != nil {
 		t.Fatalf("без исходника ожидали nil, получили %v", got)

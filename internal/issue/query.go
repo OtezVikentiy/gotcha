@@ -66,7 +66,7 @@ var sortColumns = map[string]string{
 const defaultSort = "last_seen"
 
 const (
-	defaultPerPage = 25
+	DefaultPerPage = 25
 	maxPerPage     = 100
 )
 
@@ -146,7 +146,7 @@ func (s *Service) List(ctx context.Context, projectID int64, f Filter) ([]Issue,
 	}
 	perPage := f.PerPage
 	if perPage <= 0 {
-		perPage = defaultPerPage
+		perPage = DefaultPerPage
 	}
 	if perPage > maxPerPage {
 		perPage = maxPerPage

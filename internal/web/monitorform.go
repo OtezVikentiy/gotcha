@@ -508,7 +508,7 @@ func (h *Handler) monitorCreate(w http.ResponseWriter, r *http.Request) {
 	if created.Kind == uptime.KindHeartbeat && created.HeartbeatToken != "" {
 		// сырой токен доступен только сейчас (в БД — sha256): рендерим деталь с URL
 		// пинга один раз, а не редиректим — редирект потерял бы токен.
-		h.renderMonitorDetail(w, r, created, true, true)
+		h.renderMonitorDetail(w, r, created, true)
 		return
 	}
 	http.Redirect(w, r, monitorDetailPath(created.ID), http.StatusSeeOther)
@@ -564,7 +564,7 @@ func (h *Handler) monitorHeartbeatRegenerate(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	m.HeartbeatToken = token
-	h.renderMonitorDetail(w, r, m, canOperate, canOperate)
+	h.renderMonitorDetail(w, r, m, canOperate)
 }
 
 // kind и enabled берутся из уже сохранённого монитора (форма их не присылает/не может менять).

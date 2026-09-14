@@ -22,6 +22,18 @@ var logFilterParams = []string{
 	"q_not", "severity_not", "service_not", "environment_not", "attr_not",
 }
 
+// Тем же списком полей зеркалится confirm-форма удаления — подтверждение не должно
+// терять условия текущего вида, которые уже пришли в теле первого POST.
+func logFilterHiddenFieldsFromForm(r *http.Request) []templates.HiddenField {
+	var hidden []templates.HiddenField
+	for _, name := range logFilterParams {
+		for _, v := range r.PostForm[name] {
+			hidden = append(hidden, templates.HiddenField{Name: name, Value: v})
+		}
+	}
+	return hidden
+}
+
 // Тем же списком строятся и предикаты для сохранения, и адрес возврата — расхождение между
 // «что сохранили» и «куда вернулись» невозможно по построению.
 func logFilterFormParams(r *http.Request) url.Values {
@@ -197,7 +209,13 @@ func (h *Handler) logFiltersDelete(w http.ResponseWriter, r *http.Request) {
 	if existing.Shared() && !h.requireLogFilterOperator(w, r, projectID, uid) {
 		return
 	}
-
+	// CSP без unsafe-inline не исполняет inline confirm() — подтверждение отдельной страницей.
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirmf(w, r, "confirm.title", "confirm.log_filter_delete.message", "confirm.delete",
+			templates.LogsURLFromValues(projectID, logFilterFormParams(r)), r.URL.Path,
+			logFilterHiddenFieldsFromForm(r), "name", existing.Name)
+		return
+	}
 	// Умолчания на фильтр каскадом (ON DELETE CASCADE) — веб-слою ничего досоставлять не нужно.
 	if err := h.LogFilters.Delete(r.Context(), filterID); err != nil {
 		if errors.Is(err, logfilter.ErrNotFound) {

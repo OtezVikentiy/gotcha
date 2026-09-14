@@ -119,6 +119,9 @@ templ PerformanceList(projectID int64, rows []EndpointRow, total int, filter Per
 			<h1>{ i18n.T(ctx, "nav.transactions") }</h1>
 			@helpPanel("performance", "performance")
 			// предупреждение о кардинальности — здесь, не в логах: тут видно, что часть имён пропала.
+			if len(cardinality) > 0 {
+				@helpPanel("cardinality", "cardinality")
+			}
 			@cardinalityNoticeView(cardinality)
 			<form method="get" action={ templ.URL(performancePath(projectID)) } class="performance-filters">
 				<select name="environment" class="select" aria-label={ i18n.T(ctx, "filter.environment") }>

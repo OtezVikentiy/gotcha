@@ -137,7 +137,18 @@ func TestProfileUnlinkLastMethodBlocked(t *testing.T) {
 	if err := s.auth.SetPassword(ctx, uid, "newpassword12"); err != nil {
 		t.Fatalf("set password: %v", err)
 	}
+	// Без confirmed=yes — страница подтверждения, отвязки ещё не произошло.
 	resp = postForm(t, s.srv, "/profile/identities/unlink", url.Values{"provider": {"oidc"}}, s.srv.URL, cookie)
+	confirmBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(confirmBody), "OIDC") {
+		t.Fatalf("подтверждение отвязки не называет провайдера: status=%d, %s", resp.StatusCode, confirmBody)
+	}
+	if _, err := s.auth.IdentityUser(ctx, "oidc", "sub-1"); err != nil {
+		t.Fatalf("identity must remain before confirmation: %v", err)
+	}
+
+	resp = postForm(t, s.srv, "/profile/identities/unlink", url.Values{"provider": {"oidc"}, "confirmed": {"yes"}}, s.srv.URL, cookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

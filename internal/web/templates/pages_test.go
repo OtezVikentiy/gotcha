@@ -246,8 +246,16 @@ func TestPerformanceList(t *testing.T) {
 	if !strings.Contains(out, "/docs/cardinality") {
 		t.Error("предупреждение должно вести на страницу документации")
 	}
+	// help.cardinality.title/.body написаны в каталоге, но без этого вызова панель
+	// никогда не показывалась бы — справка до пользователя не доходила.
+	if !strings.Contains(out, "Кардинальность — число различных значений") {
+		t.Error("при кардинальности должна показываться справочная панель")
+	}
 
 	capped := renderTo(t, PerformanceList(7, rows, 1, PerfFilter{Range: TimeRangeVM{Key: "24h"}}, []string{"production"}, 500, nil, "u@e.com", false, true))
+	if strings.Contains(capped, "Кардинальность — число различных значений") {
+		t.Error("без кардинальности справочная панель не должна показываться")
+	}
 	if !strings.Contains(capped, "больше 20 000 разных эндпойнтов") {
 		t.Error("при capped=true должно показываться предупреждение об усечении окна CH-запросом")
 	}
@@ -303,14 +311,22 @@ func TestMonitorDetail(t *testing.T) {
 		{ID: 2, StartedAt: now.Add(-5 * time.Hour), ResolvedAt: ptrTime(now.Add(-4 * time.Hour)), Cause: "5xx"},
 	}
 	stat := uptime.UptimeStat{Total: 100, OK: 99}
-	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, checks, incidents, 1, int64(len(incidents)), true, true, "https://gotcha.example", "u@e.com", false))
+	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, checks, incidents, 1, int64(len(incidents)), true, "https://gotcha.example", "u@e.com", false))
 	if !strings.Contains(out, "api") || !strings.Contains(out, "badge-good") || !strings.Contains(out, "badge-danger") {
 		t.Error("деталь монитора должна показать имя и статусы проверок")
 	}
+	if !strings.Contains(out, "monitor-actions") {
+		t.Error("у оператора должен быть блок действий (пауза/правка/удаление)")
+	}
 
-	noManage := renderTo(t, MonitorDetail(m, "down", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, false, false, "https://x", "u@e.com", false))
+	noManage := renderTo(t, MonitorDetail(m, "down", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, false, "https://x", "u@e.com", false))
 	if !strings.Contains(noManage, "api") {
 		t.Error("монитор без прав всё равно рендерится")
+	}
+	// canOperate гейтит единственный уровень прав у этого блока (см. renderMonitorDetail) —
+	// участник без прав оператора не должен видеть паузу/удаление/перевыпуск токена.
+	if strings.Contains(noManage, "monitor-actions") {
+		t.Error("у участника без прав оператора не должно быть блока действий")
 	}
 }
 

@@ -116,6 +116,18 @@ func TestWebMetricAlerts(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("delete status = %d, want 303", resp.StatusCode)
 	}
+	var flashCookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == "flash" {
+			flashCookie = c
+		}
+	}
+	if flashCookie == nil {
+		t.Fatal("delete не выставил flash-cookie")
+	}
+	if v, err := url.QueryUnescape(flashCookie.Value); err != nil || !strings.Contains(v, "flash.deleted") {
+		t.Errorf("flash-cookie не несёт ключ flash.deleted: %q (err=%v)", flashCookie.Value, err)
+	}
 	if rules, _ := s.rules.List(ctx, project.ID); len(rules) != 0 {
 		t.Fatalf("rule not deleted")
 	}

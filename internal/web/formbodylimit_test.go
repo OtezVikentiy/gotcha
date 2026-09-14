@@ -32,7 +32,7 @@ func TestFormBodyWithinGeneralLimitParsesNormally(t *testing.T) {
 	authSvc := auth.NewService(s.pool)
 	_, cookie := orgSettingsRegister(t, authSvc, "formlimit-ok@example.com")
 
-	resp := postForm(t, s.srv, "/profile/identities/unlink", url.Values{"provider": {"nonexistent"}}, s.srv.URL, cookie)
+	resp := postForm(t, s.srv, "/profile/identities/unlink", url.Values{"provider": {"nonexistent"}, "confirmed": {"yes"}}, s.srv.URL, cookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {

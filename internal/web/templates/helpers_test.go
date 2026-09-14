@@ -380,10 +380,20 @@ func TestTotalPages(t *testing.T) {
 	if totalPages(1) != 1 {
 		t.Fatal("одна запись = 1 страница")
 	}
-	one := totalPages(int64(issuesPerPage))
-	two := totalPages(int64(issuesPerPage) + 1)
+	one := totalPages(int64(issue.DefaultPerPage))
+	two := totalPages(int64(issue.DefaultPerPage) + 1)
 	if two != one+1 {
 		t.Fatalf("округление вверх сломано: %d vs %d", one, two)
+	}
+}
+
+// totalPages обязан считать тем же размером страницы, что issue.Service.List;
+// умножение на 2 привязывает ожидание к значению константы, а не к совпадению округления.
+func TestTotalPagesUsesIssueDefaultPerPage(t *testing.T) {
+	perPage := int64(issue.DefaultPerPage)
+	total := perPage*2 + 1
+	if got := totalPages(total); got != 3 {
+		t.Fatalf("totalPages(%d) = %d, want 3 (issue.DefaultPerPage=%d)", total, got, issue.DefaultPerPage)
 	}
 }
 

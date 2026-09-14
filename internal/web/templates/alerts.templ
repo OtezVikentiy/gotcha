@@ -41,9 +41,9 @@ func ruleByKind(rules []alert.Rule, kind string) alert.Rule {
 		}
 	}
 	if kind == alert.KindSpike {
-		return alert.Rule{Kind: kind, Threshold: 10, WindowMinutes: 5, ThrottleMinutes: 30}
+		return alert.Rule{Kind: kind, Threshold: alert.DefaultSpikeThreshold, WindowMinutes: alert.DefaultSpikeWindowMinutes, ThrottleMinutes: alert.DefaultThrottleMinutes}
 	}
-	return alert.Rule{Kind: kind, ThrottleMinutes: 30}
+	return alert.Rule{Kind: kind, ThrottleMinutes: alert.DefaultThrottleMinutes}
 }
 
 templ simpleRuleFields(r alert.Rule, prefix, label string) {

@@ -784,7 +784,21 @@ func TestWebGettingStartedHide(t *testing.T) {
 		t.Fatalf("на чек-листе нет кнопки «Скрыть»: %s", body)
 	}
 
+	// Без confirmed=yes — страница подтверждения, чек-лист ещё не скрыт.
 	resp = postForm(t, s.srv, "/profile/getting-started/hide", url.Values{}, s.srv.URL, ownerCookie)
+	confirmBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(confirmBody), "Первые шаги") {
+		t.Fatalf("подтверждение скрытия чек-листа не называет его: status=%d, %s", resp.StatusCode, confirmBody)
+	}
+	resp = getWithCookie(t, s.srv, issuesPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "getting-started") {
+		t.Fatalf("чек-лист скрыт без подтверждения: %s", body)
+	}
+
+	resp = postForm(t, s.srv, "/profile/getting-started/hide", url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
@@ -796,6 +810,27 @@ func TestWebGettingStartedHide(t *testing.T) {
 	resp.Body.Close()
 	if strings.Contains(string(body), "getting-started") {
 		t.Fatalf("чек-лист виден после скрытия: %s", body)
+	}
+}
+
+// back в confirm-форме — значение от клиента (эхо первого шага), не источник истины;
+// redirectLocal обязан отбросить внешний адрес так же, как safeRedirect отбросил бы чужой Referer.
+func TestWebGettingStartedHideRejectsExternalBack(t *testing.T) {
+	s := newIssuesStack(t)
+	ownerID, ownerCookie := registerAndLogin(t, s, "gs-hide-evil-owner@example.com")
+	createProject(t, s, ownerID, "gs-hide-evil-org", "gs-hide-evil-proj")
+
+	for _, back := range []string{"https://evil.example", "//evil.example"} {
+		resp := postForm(t, s.srv, "/profile/getting-started/hide",
+			url.Values{"confirmed": {"yes"}, "back": {back}}, s.srv.URL, ownerCookie)
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusSeeOther {
+			t.Fatalf("back=%q: status = %d, want 303", back, resp.StatusCode)
+		}
+		if loc := resp.Header.Get("Location"); loc != "/" {
+			t.Errorf("back=%q: Location = %q, want \"/\" (внешний адрес не должен пройти)", back, loc)
+		}
 	}
 }
 
@@ -954,7 +989,7 @@ func TestWebIssuesEmptyStateShowsKeyRejectsAfterGettingStartedHidden(t *testing.
 	ownerID, ownerCookie := registerAndLogin(t, s, "kr-hidden-owner@example.com")
 	project := createProject(t, s, ownerID, "kr-hidden-org", "kr-hidden-proj")
 
-	resp := postForm(t, s.srv, "/profile/getting-started/hide", url.Values{}, s.srv.URL, ownerCookie)
+	resp := postForm(t, s.srv, "/profile/getting-started/hide", url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {

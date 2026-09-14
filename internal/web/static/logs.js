@@ -23,6 +23,14 @@
 		if (baseURL.origin !== window.location.origin) {
 			return;
 		}
+		// keysURL приходит из того же DOM-атрибута, что и baseHref — та же проверка.
+		try {
+			if (new URL(keysURL, window.location.origin).origin !== window.location.origin) {
+				return;
+			}
+		} catch (e) {
+			return;
+		}
 
 		var debounceTimer = null;
 		var hideTimer = null;

@@ -439,9 +439,20 @@ func TestLogFiltersDeleteOwnPersonal(t *testing.T) {
 	}
 	filterID := lastFilterID(t, s.pool, projectID)
 	before := countFilters(t, s.pool, projectID)
+	deletePath := fmt.Sprintf("%s/filters/%d/delete", logsBasePath(projectID), filterID)
 
-	del := postForm(t, s.srv, fmt.Sprintf("%s/filters/%d/delete", logsBasePath(projectID), filterID),
-		url.Values{}, s.srv.URL, ownerCookie)
+	// Без confirmed=yes — страница подтверждения, называющая фильтр, а не удаление.
+	unconfirmed := postForm(t, s.srv, deletePath, url.Values{}, s.srv.URL, ownerCookie)
+	confirmBody, _ := io.ReadAll(unconfirmed.Body)
+	unconfirmed.Body.Close()
+	if unconfirmed.StatusCode != http.StatusOK || !strings.Contains(string(confirmBody), "на удаление") {
+		t.Fatalf("подтверждение удаления фильтра не называет его: статус=%d, %s", unconfirmed.StatusCode, confirmBody)
+	}
+	if after := countFilters(t, s.pool, projectID); after != before {
+		t.Fatalf("фильтр удалён без подтверждения: было %d, стало %d", before, after)
+	}
+
+	del := postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	defer del.Body.Close()
 	if del.StatusCode != http.StatusSeeOther {
 		t.Fatalf("удаление личного фильтра владельцем: статус %d", del.StatusCode)
@@ -468,7 +479,7 @@ func TestLogFiltersDeleteSharedRequiresOperator(t *testing.T) {
 	before := countFilters(t, s.pool, projectID)
 	path := fmt.Sprintf("%s/filters/%d/delete", logsBasePath(projectID), filterID)
 
-	forbidden := postForm(t, s.srv, path, url.Values{}, s.srv.URL, memberCookie)
+	forbidden := postForm(t, s.srv, path, url.Values{"confirmed": {"yes"}}, s.srv.URL, memberCookie)
 	defer forbidden.Body.Close()
 	if forbidden.StatusCode != http.StatusForbidden {
 		t.Fatalf("рядовой участник удалил общий фильтр: статус %d", forbidden.StatusCode)
@@ -477,7 +488,7 @@ func TestLogFiltersDeleteSharedRequiresOperator(t *testing.T) {
 		t.Errorf("общий фильтр исчез после отказа: было %d, стало %d", before, after)
 	}
 
-	ok := postForm(t, s.srv, path, url.Values{}, s.srv.URL, ownerCookie)
+	ok := postForm(t, s.srv, path, url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	defer ok.Body.Close()
 	if ok.StatusCode != http.StatusSeeOther {
 		t.Fatalf("оператор не смог удалить общий фильтр: статус %d", ok.StatusCode)
@@ -603,6 +614,11 @@ func TestLogFiltersInapplicablePayloadShown(t *testing.T) {
 	}
 	if !strings.Contains(text, "Формат фильтра устарел") {
 		t.Errorf("пометка о неприменимости не показана: %s", text)
+	}
+	// Причина обязана быть частью видимого текста, не только атрибутом title —
+	// title недостижим с клавиатуры и с тача.
+	if strings.Contains(text, `title="Формат фильтра устарел`) {
+		t.Errorf("причина неприменимости доступна только через title: %s", text)
 	}
 }
 
@@ -841,8 +857,13 @@ func TestDefaultFilterNotApplicableSkipped(t *testing.T) {
 	}
 
 	html := fetchLogsBody(t, s, logsBasePath(projectID), cookie)
-	if strings.Contains(html, "logs-default-notice") {
-		t.Errorf("неприменимое умолчание всё равно показало плашку")
+	if strings.Contains(html, "Применён фильтр по умолчанию") {
+		t.Errorf("неприменимое умолчание показало плашку «умолчание применено», как будто применилось")
+	}
+	// Пропуск умолчания обязан быть виден в плашке над списком, не молчалив; тот же
+	// текст легитимно встречается и в панели фильтров — класс плашки их различает.
+	if !strings.Contains(html, `class="notice logs-default-notice">Формат фильтра устарел`) {
+		t.Errorf("неприменимое умолчание пропущено молча, без объяснения над списком: %s", html)
 	}
 	if !strings.Contains(html, noisyRowSummary) || !strings.Contains(html, usefulRowSummary) {
 		t.Errorf("неприменимое умолчание скрыло записи вместо игнорирования: %s", html)

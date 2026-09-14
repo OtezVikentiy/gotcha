@@ -387,7 +387,7 @@ func TestStatusPageIncidentDurationLocalised(t *testing.T) {
 func TestHeartbeatMonitorDetail(t *testing.T) {
 	m := uptime.Monitor{ID: 4, Name: "cron", Kind: uptime.KindHeartbeat, Enabled: false, IntervalSeconds: 3600, HeartbeatToken: "hbtok"}
 	stat := uptime.UptimeStat{Total: 10, OK: 10}
-	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, true, true, "https://gotcha.example", "u@e.com", false))
+	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, true, "https://gotcha.example", "u@e.com", false))
 	if !strings.Contains(out, "hbtok") {
 		t.Error("деталь heartbeat должна содержать токен пинга")
 	}

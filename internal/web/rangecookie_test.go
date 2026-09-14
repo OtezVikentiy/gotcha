@@ -19,6 +19,15 @@ func TestResolveTimeRange(t *testing.T) {
 		w := httptest.NewRecorder()
 		return h.resolveTimeRange(w, r, "24h"), w
 	}
+	resolveWithDef := func(target string, cookie string, def string) (TimeRange, *httptest.ResponseRecorder) {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodGet, target, nil)
+		if cookie != "" {
+			r.AddCookie(&http.Cookie{Name: rangeCookie, Value: cookie})
+		}
+		w := httptest.NewRecorder()
+		return h.resolveTimeRange(w, r, def), w
+	}
 	setCookieValue := func(w *httptest.ResponseRecorder) string {
 		for _, c := range w.Result().Cookies() {
 			if c.Name == rangeCookie {
@@ -58,6 +67,13 @@ func TestResolveTimeRange(t *testing.T) {
 	tr, w = resolve("/x?period=30d", "7d")
 	if tr.Key != "30d" || setCookieValue(w) != "30d" {
 		t.Errorf("query>cookie: Key=%q cookie=%q, want 30d/30d", tr.Key, setCookieValue(w))
+	}
+
+	// def=RangeAll — осознанный выбор вызывающего; пресет, оставленный cookie с другой
+	// страницы, не должен его подменять.
+	tr, _ = resolveWithDef("/x", "24h", RangeAll)
+	if tr.Key != RangeAll {
+		t.Errorf("def=all, cookie=24h: Key=%q, want all", tr.Key)
 	}
 
 	_, w = resolve("/x?period=7d", "")

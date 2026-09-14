@@ -45,6 +45,15 @@ func pluralLookupOwn(code, key, form string) (string, bool) {
 	return "", false
 }
 
+// CLDR отводит ru "other" только дробным числам; n здесь всегда целое, поэтому
+// "other" для ru недостижим в принципе.
+func reachablePluralForms(code string) map[string]bool {
+	if code == "ru" {
+		return map[string]bool{"one": true, "few": true, "many": true}
+	}
+	return map[string]bool{"one": true, "other": true}
+}
+
 func pluralForm(code string, n int) string {
 	if n < 0 {
 		n = -n

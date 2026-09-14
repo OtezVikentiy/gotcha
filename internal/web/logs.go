@@ -142,6 +142,7 @@ func (h *Handler) renderLogsPage(w http.ResponseWriter, r *http.Request, status 
 	defaultSuppressed := q.Get("nodefault") != ""
 	var defaultFilter *logfilter.Filter
 	var showAllHref string
+	var defaultInapplicable bool
 	if h.LogFilters != nil && !defaultSuppressed && !hasLogFilterParams(q) {
 		if def, ok, err := h.LogFilters.Default(r.Context(), projectID, uid); err != nil {
 			slog.Warn("logs: default filter unavailable", "project_id", projectID, "err", err)
@@ -156,6 +157,10 @@ func (h *Handler) renderLogsPage(w http.ResponseWriter, r *http.Request, status 
 			}
 			showAllQuery.Set("nodefault", "1")
 			showAllHref = templates.LogsURLFromValues(projectID, showAllQuery)
+		} else if ok {
+			// Умолчание есть, но устарело (Applicable=false) — раньше страница просто
+			// показывала нефильтрованные логи, никак не объясняя пропуск.
+			defaultInapplicable = true
 		}
 	}
 
@@ -190,13 +195,14 @@ func (h *Handler) renderLogsPage(w http.ResponseWriter, r *http.Request, status 
 		Range:       timeRangeVM(rng),
 		Active: len(f.Severity) > 0 || f.Service != "" || f.Environment != "" || f.Query != "" || len(f.Attrs) > 0 ||
 			f.TraceID != "" || len(f.Not) > 0 || rng.Key != "24h",
-		Facet:              q.Get("facet"),
-		RangeClamped:       rangeClamped,
-		AttrsRejected:      attrsRejected,
-		RetentionDays:      h.LogRetentionDays,
-		DefaultApplied:     defaultFilter,
-		DefaultShowAllHref: showAllHref,
-		DefaultSuppressed:  defaultSuppressed,
+		Facet:               q.Get("facet"),
+		RangeClamped:        rangeClamped,
+		AttrsRejected:       attrsRejected,
+		RetentionDays:       h.LogRetentionDays,
+		DefaultApplied:      defaultFilter,
+		DefaultShowAllHref:  showAllHref,
+		DefaultSuppressed:   defaultSuppressed,
+		DefaultInapplicable: defaultInapplicable,
 	}
 
 	var olderHref string

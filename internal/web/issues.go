@@ -235,11 +235,22 @@ func (h *Handler) gettingStartedHide(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
+	if !h.parseForm(w, r) {
+		return
+	}
+	// CSP без unsafe-inline не исполняет inline confirm(); back — из confirm-формы, не из
+	// Referer второго POST (им стала бы страница подтверждения), redirectLocal его перепроверяет.
+	if r.FormValue("confirmed") != "yes" {
+		back := safeRedirect(r, h.BaseURL)
+		h.renderConfirmf(w, r, "confirm.title", "confirm.getting_started_hide.message", "confirm.hide",
+			back, r.URL.Path, []templates.HiddenField{{Name: "back", Value: back}})
+		return
+	}
 	if err := h.Auth.SetHideGettingStarted(r.Context(), uid); err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
-	http.Redirect(w, r, safeRedirect(r, h.BaseURL), http.StatusSeeOther)
+	redirectLocal(w, r, r.FormValue("back"))
 }
 
 func (h *Handler) sparklinesFor(ctx context.Context, projectID int64, items []issue.Issue) (map[int64][]uint64, error) {

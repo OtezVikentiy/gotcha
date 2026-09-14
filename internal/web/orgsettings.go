@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math/bits"
 	"net/http"
 	"strconv"
 	"strings"
@@ -316,6 +317,17 @@ func droppedBreakdown(ctx context.Context, d org.Dropped) string {
 	return i18n.Tf(ctx, "org.quota.dropped_breakdown", "parts", strings.Join(parts, ", "))
 }
 
+// usage*10 >= limit*9, но через 128-битное произведение (bits.Mul64) — прямое int64
+// умножение переполняется и переворачивает знак у квоты, близкой к 2^63/9.
+func quotaNear90Percent(usage, limit int64) bool {
+	uHi, uLo := bits.Mul64(uint64(usage), 10)
+	lHi, lLo := bits.Mul64(uint64(limit), 9)
+	if uHi != lHi {
+		return uHi > lHi
+	}
+	return uLo >= lLo
+}
+
 // nil — показывать нечего: без дропов за месяц, и по всем видам телеметрии с лимитом
 // (0 = безлимит) использование <90%.
 func (h *Handler) quotaBanner(ctx context.Context, orgID int64, canManage bool) *templates.QuotaBanner {
@@ -364,7 +376,7 @@ func (h *Handler) quotaBanner(ctx context.Context, orgID int64, canManage bool) 
 			return nil
 		}
 		// usage >= 90% лимита — целочисленно, без float: usage*10 >= limit*9.
-		if usage*10 >= kind.limit*9 {
+		if quotaNear90Percent(usage, kind.limit) {
 			return &templates.QuotaBanner{
 				Text: i18n.Tf(ctx, "org.quota.near_limit",
 					"kind", i18n.T(ctx, "org.quota.kind."+kind.key),

@@ -176,6 +176,14 @@ func (h *Handler) profileIdentityUnlink(w http.ResponseWriter, r *http.Request) 
 			i18n.T(r.Context(), "err.profile.last_login_method"), "")
 		return
 	}
+	// CSP без unsafe-inline не исполняет inline confirm() — подтверждение отдельной страницей.
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirmf(w, r, "confirm.title", "confirm.identity_unlink.message", "confirm.remove",
+			"/profile", r.URL.Path,
+			[]templates.HiddenField{{Name: "provider", Value: provider}},
+			"provider", h.providerDisplayName(r.Context(), provider))
+		return
+	}
 	switch err := h.Auth.UnlinkIdentity(r.Context(), uid, provider); {
 	case err == nil:
 		h.renderProfile(w, r, http.StatusOK, uid, "", i18n.T(r.Context(), "msg.profile.provider_unlinked"))

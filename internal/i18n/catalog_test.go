@@ -47,6 +47,63 @@ func TestPluralFormsComplete(t *testing.T) {
 	}
 }
 
+// Долг: ключ/локаль несёт форму, которую pluralForm для неё никогда не вернёт.
+// Новых записей не добавлять — либо форма нужна (чинить pluralForm), либо мертва (чинить каталог).
+var deadPluralFormDebt = map[string]map[string][]string{
+	"ru": {
+		"chart.bar.transactions":       {"other"},
+		"chart.bar.events":             {"other"},
+		"issue.times_seen":             {"other"},
+		"time.ago.seconds":             {"other"},
+		"time.ago.minutes":             {"other"},
+		"time.ago.hours":               {"other"},
+		"time.ago.days":                {"other"},
+		"org.quota.dropped_banner":     {"other"},
+		"org.gdpr.purge.result":        {"other"},
+		"cardinality.notice.collapsed": {"other"},
+		"metrics.system.show_toggle":   {"other"},
+		"flash.issues_resolved":        {"other"},
+		"flash.issues_ignored":         {"other"},
+		"flash.issues_reopened":        {"other"},
+		"flash.subject_purged":         {"other"},
+		"unit.minutes":                 {"other"},
+		"unit.hours":                   {"other"},
+		"unit.days":                    {"other"},
+		"unit.seconds":                 {"other"},
+		"exports.mail.done.rows":       {"other"},
+	},
+	"en": {
+		"issue.times_seen": {"few", "many"},
+	},
+}
+
+// TestCatalogsHaveIdenticalKeys сверяет наборы ключей между локалями, не наборы форм
+// внутри ключа — этот тест ловит форму, недостижимую в рантайме, кроме учтённого долга.
+func TestNoUnreachablePluralForms(t *testing.T) {
+	for code, cat := range catalogs {
+		reachable := reachablePluralForms(code)
+		debt := deadPluralFormDebt[code]
+		for key, forms := range cat.Plurals {
+			for form := range forms {
+				if reachable[form] {
+					continue
+				}
+				dead := debt[key]
+				found := false
+				for _, d := range dead {
+					if d == form {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("%s.json: плюрал %q несёт недостижимую форму %q (не в deadPluralFormDebt)", code, key, form)
+				}
+			}
+		}
+	}
+}
+
 func TestNoEmptyMessages(t *testing.T) {
 	for code, c := range catalogs {
 		for k, v := range c.Messages {

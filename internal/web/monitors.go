@@ -259,12 +259,13 @@ func (h *Handler) monitorDetail(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
-	h.renderMonitorDetail(w, r, m, canOperate, canOperate)
+	h.renderMonitorDetail(w, r, m, canOperate)
 }
 
 // для показа heartbeat-URL один раз сразу после создания/ротации вызывающий выставляет
 // сырой токен в m.HeartbeatToken (в БД — только sha256); при обычном GET поле пустое.
-func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m uptime.Monitor, canManage, canOperate bool) {
+// Единственный уровень прав здесь — оператор; звать его canManage обещало бы уровень админа.
+func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m uptime.Monitor, canOperate bool) {
 	states, err := h.Uptime.States(r.Context(), m.ID)
 	if err != nil {
 		h.renderError(w, r, http.StatusInternalServerError, "")
@@ -335,7 +336,7 @@ func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m 
 		return
 	}
 
-	_ = templates.MonitorDetail(m, status, uptime24h, uptime7d, uptime30d, latencyChart, timeRangeVM(tr), checks, incidents, incPage, incTotal, canManage, canOperate, h.BaseURL, h.currentEmail(r), statsFailed).Render(r.Context(), w)
+	_ = templates.MonitorDetail(m, status, uptime24h, uptime7d, uptime30d, latencyChart, timeRangeVM(tr), checks, incidents, incPage, incTotal, canOperate, h.BaseURL, h.currentEmail(r), statsFailed).Render(r.Context(), w)
 }
 
 func (h *Handler) monitorSetEnabled(w http.ResponseWriter, r *http.Request, enabled bool) {

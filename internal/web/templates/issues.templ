@@ -9,8 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 )
 
-// Дублирует несэкспортированный issue.defaultPerPage — числа обязаны совпадать для totalPages.
-const issuesPerPage = 25
 
 // Sparkline строится в web/issues.go и передаётся готовым — иначе цикл импорта web->templates->web.
 type IssueRow struct {
@@ -103,7 +101,7 @@ func totalPages(total int64) int64 {
 	if total <= 0 {
 		return 1
 	}
-	return (total + issuesPerPage - 1) / issuesPerPage
+	return (total + issue.DefaultPerPage - 1) / issue.DefaultPerPage
 }
 
 // total=0 на out-of-range странице: считать «назад» не от чего, ведём сразу на первую страницу.

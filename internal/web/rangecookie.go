@@ -12,9 +12,13 @@ func (h *Handler) resolveTimeRange(w http.ResponseWriter, r *http.Request, def s
 	q := r.URL.Query()
 	explicit := q.Get("period") != "" || q.Get("start") != ""
 	if !explicit {
-		if c, err := r.Cookie(rangeCookie); err == nil {
-			if _, ok := TimeRangePresets[c.Value]; ok {
-				def = c.Value
+		// def == RangeAll — осознанный выбор вызывающего (issues.go: «за всё время»,
+		// иначе пуст список на здоровом проекте): пресет из cookie его не переопределяет.
+		if def != RangeAll {
+			if c, err := r.Cookie(rangeCookie); err == nil {
+				if _, ok := TimeRangePresets[c.Value]; ok {
+					def = c.Value
+				}
 			}
 		}
 		return parseTimeRange(q, def)
