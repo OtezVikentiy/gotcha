@@ -31,7 +31,7 @@ func (s *Service) RequestPasswordReset(ctx context.Context, email string) (token
 		return "", false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("auth: request password reset: %w", err)
+		return "", false, fmt.Errorf("auth: request password reset: lookup user: %w", err)
 	}
 
 	raw := make([]byte, 32)
@@ -42,22 +42,22 @@ func (s *Service) RequestPasswordReset(ctx context.Context, email string) (token
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return "", false, fmt.Errorf("auth: request password reset: %w", err)
+		return "", false, fmt.Errorf("auth: request password reset: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Один активный токен на пользователя: прошлые запросы гаснут сразу, не дожидаясь
 	// собственного TTL — иначе письма из старых запросов остаются рабочими ссылками.
 	if _, err := tx.Exec(ctx, "DELETE FROM password_resets WHERE user_id = $1", uid); err != nil {
-		return "", false, fmt.Errorf("auth: request password reset: %w", err)
+		return "", false, fmt.Errorf("auth: request password reset: clear previous: %w", err)
 	}
 	if _, err := tx.Exec(ctx,
 		"INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES ($1, $2, $3)",
 		uid, resetTokenHash(token), time.Now().Add(PasswordResetTTL)); err != nil {
-		return "", false, fmt.Errorf("auth: request password reset: %w", err)
+		return "", false, fmt.Errorf("auth: request password reset: insert: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return "", false, fmt.Errorf("auth: request password reset: %w", err)
+		return "", false, fmt.Errorf("auth: request password reset: commit: %w", err)
 	}
 	return token, true, nil
 }
@@ -81,7 +81,7 @@ func (s *Service) ResetPassword(ctx context.Context, token, newPassword string) 
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("auth: reset password: %w", err)
+		return fmt.Errorf("auth: reset password: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -95,7 +95,7 @@ func (s *Service) ResetPassword(ctx context.Context, token, newPassword string) 
 		return ErrResetTokenInvalid
 	}
 	if err != nil {
-		return fmt.Errorf("auth: reset password: %w", err)
+		return fmt.Errorf("auth: reset password: consume token: %w", err)
 	}
 
 	hash, err := HashPassword(newPassword)
@@ -103,10 +103,10 @@ func (s *Service) ResetPassword(ctx context.Context, token, newPassword string) 
 		return err
 	}
 	if err := setPasswordAndKillSessions(ctx, tx, userID, hash); err != nil {
-		return fmt.Errorf("auth: reset password: %w", err)
+		return fmt.Errorf("auth: reset password: apply password: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("auth: reset password: %w", err)
+		return fmt.Errorf("auth: reset password: commit: %w", err)
 	}
 	return nil
 }
@@ -136,14 +136,14 @@ func (s *Service) AdminSetPassword(ctx context.Context, email, newPassword strin
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("auth: admin set password: %w", err)
+		return fmt.Errorf("auth: admin set password: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if err := setPasswordAndKillSessions(ctx, tx, uid, hash); err != nil {
-		return fmt.Errorf("auth: admin set password: %w", err)
+		return fmt.Errorf("auth: admin set password: apply password: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("auth: admin set password: %w", err)
+		return fmt.Errorf("auth: admin set password: commit: %w", err)
 	}
 	return nil
 }
