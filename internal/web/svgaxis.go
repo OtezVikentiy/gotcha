@@ -27,7 +27,7 @@ func newChartGeom(w, h int, padL, padR, padT, padB float64) chartGeom {
 
 func (g chartGeom) xForIndex(i, n int) float64 {
 	if n <= 1 {
-		return g.x0
+		return (g.x0 + g.x1) / 2
 	}
 	return g.x0 + float64(i)/float64(n-1)*(g.x1-g.x0)
 }
@@ -48,7 +48,10 @@ type yScale struct {
 
 func newYScale(max uint64, targetLines int) yScale {
 	step := niceStep(max, targetLines)
-	return yScale{top: float64((max/step + 1) * step), step: float64(step)}
+	// (max/step+1)*step в uint64 переполняется у самой границы диапазона;
+	// умножение в float64 держит верх конечным там, где uint64 просто оборачивается.
+	top := (float64(max/step) + 1) * float64(step)
+	return yScale{top: top, step: float64(step)}
 }
 
 // потолок делений оси; targetLines обычно 3-4 — предохранитель от денормализованного

@@ -54,6 +54,7 @@ export function buildCopyWidget(doc) {
 	ta.setAttribute("id", "ta1");
 	ta.value = "payload";
 	ta.setAttribute("aria-hidden", "true");
+	ta.setAttribute("readonly", "");
 
 	var done = doc.createElement("span");
 	done.setAttribute("data-copy-done", "");

@@ -103,6 +103,22 @@ test("copy: успешное копирование не оставляет ви
 	assert.equal(w.failed.hidden, true, "успех не должен показывать сообщение об отказе");
 });
 
+test("copy: фолбэк снимает readonly перед execCommand и возвращает после (iOS Safari игнорирует select() на readonly textarea)", function () {
+	var { document, sandbox } = buildWorld({ navigator: { clipboard: undefined } });
+	var w = buildCopyWidget(document);
+	var readOnlyDuringExec = null;
+	document.execCommand = function (cmd) {
+		readOnlyDuringExec = w.textarea.hasAttribute("readonly");
+		return true;
+	};
+	loadScript(sandbox, COPY_JS);
+
+	dispatchClick(w.button);
+
+	assert.equal(readOnlyDuringExec, false, "во время execCommand readonly обязан быть снят");
+	assert.equal(w.textarea.hasAttribute("readonly"), true, "readonly обязан вернуться после копирования");
+});
+
 test("copy: клик мимо data-copy-format ничего не делает", function () {
 	var { document, sandbox } = buildWorld({ navigator: { clipboard: undefined } });
 	var w = buildCopyWidget(document);

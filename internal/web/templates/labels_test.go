@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
+	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
@@ -171,8 +172,15 @@ func TestProfileRegHelpers(t *testing.T) {
 	if profileRegIncreasePct(profile.Regression{}) != "—" {
 		t.Error("нулевая база даёт —")
 	}
-	if profileDisplayService("") != "(unknown)" || profileDisplayService("web") != "web" {
-		t.Error("отображаемое имя сервиса")
+	if got := profileDisplayService(ruCtx(), "web"); got != "web" {
+		t.Errorf("непустой сервис не должен подменяться: %q", got)
+	}
+	ru := profileDisplayService(ruCtx(), "")
+	if ru != "("+i18n.T(ruCtx(), "hosts.legend.unknown")+")" {
+		t.Errorf("русская локаль: profileDisplayService(\"\") = %q, ожидался перевод hosts.legend.unknown", ru)
+	}
+	if strings.Contains(ru, "unknown") {
+		t.Errorf("русская локаль напечатала английский литерал мимо каталога: %q", ru)
 	}
 }
 

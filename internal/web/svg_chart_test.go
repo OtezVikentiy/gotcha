@@ -277,3 +277,37 @@ func TestChartBarsDayLabelsShareXLabelPlacement(t *testing.T) {
 			rightFirst, leftSecond, x0, anchor0, x1, anchor1)
 	}
 }
+
+// инвариант обязан держаться на КАЖДОЙ длине 1..90 (90 дней — retention),
+// не в паре точек: у единого шага есть длины, куда не попасть без разрыва.
+func TestDayLabelIndicesNeverExceedsTargetAcrossAllLengths(t *testing.T) {
+	const target = 7
+	for n := 1; n <= 90; n++ {
+		got := dayLabelIndices(n, target)
+		if len(got) > target {
+			t.Errorf("dayLabelIndices(%d, %d) = %d меток, превышает цель %d", n, target, len(got), target)
+		}
+		seen := map[int]bool{}
+		for _, idx := range got {
+			if idx < 0 || idx >= n {
+				t.Fatalf("dayLabelIndices(%d, %d) вернул индекс %d вне [0,%d)", n, target, idx, n)
+			}
+			if seen[idx] {
+				t.Fatalf("dayLabelIndices(%d, %d) вернул повторяющийся индекс %d", n, target, idx)
+			}
+			seen[idx] = true
+		}
+	}
+}
+
+func TestDayLabelIndicesFixesOriginalUndercount(t *testing.T) {
+	// восьмидневное окно исходно давало 4 подписи вместо заявленных 7 —
+	// раскладка обязана вернуться близко к цели, не только не превысить её.
+	got := dayLabelIndices(8, 7)
+	if len(got) != 7 {
+		t.Errorf("dayLabelIndices(8, 7) = %d меток, want 7", len(got))
+	}
+	if got[0] != 0 || got[len(got)-1] != 7 {
+		t.Errorf("dayLabelIndices(8, 7) = %v, границы окна (0 и 7) обязаны быть в выборке", got)
+	}
+}

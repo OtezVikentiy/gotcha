@@ -27,7 +27,7 @@ templ oauthButtons(providers []OAuthButton) {
 templ Login(errMsg, next, email string, providers []OAuthButton) {
 	@chromeless(i18n.T(ctx, "auth.login.title"), "") {
 		<div class="auth-brand">
-			@brandMark()
+			@brandMark("brand-grad-auth")
 			<span class="auth-brand-word">Gotcha</span>
 			<p class="auth-tagline">{ i18n.T(ctx, "brand.tagline") }</p>
 		</div>

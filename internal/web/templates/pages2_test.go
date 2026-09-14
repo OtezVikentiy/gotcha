@@ -174,13 +174,31 @@ func TestProfileFlame(t *testing.T) {
 	if !strings.Contains(out, "web · cpu") || !strings.Contains(out, "· GET /") {
 		t.Errorf("при заполненных type/transaction разделители обязаны быть: %s", out)
 	}
-	// без параметров — «(unknown)» без висящего разделителя.
+	// без параметров — «(неизвестно)» из каталога, без висящего разделителя. Проверяем
+	// обе локали с разным текстом — иначе тест не отличил бы перевод от повезло-совпавшего литерала.
+	unknownRU := "(" + i18n.T(ruCtx(), "hosts.legend.unknown") + ")"
 	bare := renderTo(t, ProfileFlame(ProfileFlameVM{ProjectID: 7, Range: TimeRangeVM{Key: "24h"}, Chart: stub()}, "u@e.com"))
-	if !strings.Contains(bare, "(unknown)") {
-		t.Errorf("пустой сервис показывается как (unknown): %s", bare)
+	if !strings.Contains(bare, unknownRU) {
+		t.Errorf("пустой сервис показывается как %s: %s", unknownRU, bare)
 	}
-	if strings.Contains(bare, "(unknown) ·") || regexp.MustCompile(`\(unknown\)\s*·`).MatchString(bare) {
-		t.Errorf("пустые type/transaction не должны оставлять висящий разделитель после (unknown): %s", bare)
+	if strings.Contains(bare, unknownRU+" ·") || regexp.MustCompile(regexp.QuoteMeta(unknownRU)+`\s*·`).MatchString(bare) {
+		t.Errorf("пустые type/transaction не должны оставлять висящий разделитель после %s: %s", unknownRU, bare)
+	}
+
+	enCtx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
+	var enBuf strings.Builder
+	if err := ProfileFlame(ProfileFlameVM{ProjectID: 7, Range: TimeRangeVM{Key: "24h"}, Chart: stub()}, "u@e.com").Render(enCtx, &enBuf); err != nil {
+		t.Fatalf("render en: %v", err)
+	}
+	unknownEN := "(" + i18n.T(enCtx, "hosts.legend.unknown") + ")"
+	if !strings.Contains(enBuf.String(), unknownEN) {
+		t.Errorf("en-локаль: пустой сервис должен показываться как %s: %s", unknownEN, enBuf.String())
+	}
+	if unknownRU == unknownEN {
+		t.Fatalf("ru и en переводы hosts.legend.unknown совпали (%q) — тест не отличит перевод от хардкода английского литерала", unknownRU)
+	}
+	if strings.Contains(bare, unknownEN) {
+		t.Errorf("ru-рендер не должен содержать английский текст %s: %s", unknownEN, bare)
 	}
 }
 

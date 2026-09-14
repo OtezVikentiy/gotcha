@@ -123,6 +123,21 @@ func TestYScaleHeadroom(t *testing.T) {
 	}
 }
 
+func TestNewYScaleNearMaxUint64DoesNotOverflow(t *testing.T) {
+	max := uint64(math.MaxUint64) - 200
+	s := newYScale(max, 3)
+	if s.top <= float64(max) {
+		t.Fatalf("newYScale(MaxUint64-200): top = %v, ожидался запас над максимумом %v, а не переполнение в маленькое число", s.top, max)
+	}
+}
+
+func TestXForIndexSinglePointIsCentered(t *testing.T) {
+	g := chartGeom{x0: 100, x1: 300}
+	if x := g.xForIndex(0, 1); x != 200 {
+		t.Errorf("xForIndex(0, 1) = %v, ожидалась середина между x0 и x1 (200), а не прижим к оси Y", x)
+	}
+}
+
 // сценарий: ширины подписи хватает и на прижим к x=0, и на то, чтобы
 // остаться левее x0 — проверяются оба края.
 func TestWriteYGridClampsLongLabelToCanvas(t *testing.T) {

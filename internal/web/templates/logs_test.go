@@ -208,6 +208,22 @@ func TestLogsPageURLNoFacetWhenEmpty(t *testing.T) {
 	}
 }
 
+// GET-форма фильтра обязана переносить facet — иначе «Применить» при раскрытом
+// ключе атрибута схлопывает сайдбар, хотя все прочие скрытые поля пережили сабмит.
+func TestLogsScreenFormPreservesFacet(t *testing.T) {
+	out := renderTo(t, LogsScreen(7, nil, LogsFilter{Range: TimeRangeVM{Key: "24h"}, Facet: "http.method"}, false, "", LogsHistogram{Empty: true}, LogFacets{}, "u@e.com", LogSavedFiltersPanel{}, ""))
+	if !strings.Contains(out, `<input type="hidden" name="facet" value="http.method">`) {
+		t.Fatalf("форма фильтра логов не переносит facet скрытым полем: %s", out)
+	}
+}
+
+func TestLogsScreenFormOmitsFacetWhenEmpty(t *testing.T) {
+	out := renderTo(t, LogsScreen(7, nil, LogsFilter{Range: TimeRangeVM{Key: "24h"}}, false, "", LogsHistogram{Empty: true}, LogFacets{}, "u@e.com", LogSavedFiltersPanel{}, ""))
+	if strings.Contains(out, `name="facet"`) {
+		t.Fatalf("форма фильтра логов не должна печатать facet без Filter.Facet: %s", out)
+	}
+}
+
 func TestLogsPageURLCarriesDefaultSuppression(t *testing.T) {
 	f := LogsFilter{DefaultSuppressed: true}
 	got := LogsPageURL(1, f, time.UnixMilli(1000), 0)

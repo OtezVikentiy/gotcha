@@ -80,3 +80,37 @@ func TestWaterfallMarkupShortLabelKeepsFullText(t *testing.T) {
 		t.Fatalf("короткая подпись не должна усекаться: %s", out)
 	}
 }
+
+// span_id/parent_span_id крафтятся клиентом (Sentry-совместимый приём) —
+// кольцо без единого настоящего корня не должно опустошать вывод.
+func TestOrderSpanTreeBreaksRootlessCycle(t *testing.T) {
+	spans := []trace.SpanRow{
+		{SpanID: "a", ParentSpanID: "b", Op: "a"},
+		{SpanID: "b", ParentSpanID: "a", Op: "b"},
+	}
+	ordered := orderSpanTree(spans, waterfallMaxRows)
+	if len(ordered) != len(spans) {
+		t.Fatalf("orderSpanTree(кольцо a<->b) вернул %d узлов, ожидалось %d — кольцо без root не должно опустошать вывод", len(ordered), len(spans))
+	}
+	seen := map[string]bool{}
+	for _, o := range ordered {
+		seen[o.span.SpanID] = true
+	}
+	if !seen["a"] || !seen["b"] {
+		t.Fatalf("orderSpanTree(кольцо a<->b) = %+v, оба узла обязаны попасть в вывод", ordered)
+	}
+}
+
+func TestWaterfallMarkupRootlessCycleNotEmpty(t *testing.T) {
+	spans := []trace.SpanRow{
+		{SpanID: "a", ParentSpanID: "b", Op: "a", DurationUS: 100},
+		{SpanID: "b", ParentSpanID: "a", Op: "b", DurationUS: 100},
+	}
+	out := waterfallMarkup(context.Background(), spans, nil, 1000, waterfallWidth)
+	if out == "" {
+		t.Fatal("waterfallMarkup на кольце span_id/parent_span_id вернул пустую строку — страница трейса покажет пустое место")
+	}
+	if !strings.Contains(out, "<rect") {
+		t.Errorf("waterfallMarkup на кольце обязан нарисовать хотя бы один <rect>: %s", out)
+	}
+}

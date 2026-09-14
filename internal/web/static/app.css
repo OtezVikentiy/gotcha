@@ -126,7 +126,9 @@
 	--accent-ink: #1a4fc4;
 	/* Текст на собственном 16%-тинте темнее токена: тинт осветляет фон, значения ≥4.5:1 и на
 	   карточке, и на surface-2. */
-	--border-control: #7e8b9f;
+	/* 2.835:1 к --rail при #7e8b9f — ниже порога 3:1 (WCAG 1.4.11); #6d7c96 даёт 3.47:1 там
+	   и 3.76-4.22:1 на остальных подложках. */
+	--border-control: #6d7c96;
 	--good-ink: #166b2e;
 	--warn-ink: #7d5400;
 	--partial-ink: #7f5300;
@@ -178,7 +180,9 @@
 	--accent-ink: #1a4fc4;
 		/* Текст на собственном 16%-тинте темнее токена: тинт осветляет фон, значения ≥4.5:1 и на
 		   карточке, и на surface-2. */
-		--border-control: #7e8b9f;
+		/* 2.835:1 к --rail при #7e8b9f — ниже порога 3:1 (WCAG 1.4.11); #6d7c96 даёт 3.47:1 там
+		   и 3.76-4.22:1 на остальных подложках. */
+		--border-control: #6d7c96;
 		--good-ink: #166b2e;
 		--warn-ink: #7d5400;
 		--partial-ink: #7f5300;
@@ -317,14 +321,12 @@ a:hover {
 	line-height: 1.1;
 	letter-spacing: .2px;
 	text-align: center;
-	/* Мягкие переносы (U+00AD) убраны из каталога локалей — ломали Ctrl+F по ярлыку; полное имя
-	   доступно в title. */
-	hyphens: manual;
-	overflow-wrap: normal;
+	/* flex-item блокируется до block автоматически — max-width:100% берёт
+	   определённую ширину рейла, длинная подпись переносится на вторую строку
+	   вместо ellipsis: единственная из десяти, которой не хватало 87px. */
+	overflow-wrap: anywhere;
 	max-width: 100%;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+	white-space: normal;
 }
 .rail-spacer {
 	flex: 1;
@@ -1164,10 +1166,13 @@ th {
 	text-underline-offset: 2px;
 	cursor: help;
 }
+/* Текст цитирует сырое имя настройки в скобках — один длинный токен без пробелов
+   распирает узкую колонку формы (grid minmax(150px, 1fr)) без переноса. */
 .help-label {
 	text-decoration: underline dotted;
 	text-underline-offset: 3px;
 	cursor: help;
+	overflow-wrap: anywhere;
 }
 .vital-chart {
 	display: inline-block;
@@ -3532,6 +3537,12 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 	margin: 20px 0 8px;
 	font-size: 15px;
 	font-weight: 650;
+}
+/* Прозаический текст доков цитирует произвольные значения (имена переменных окружения,
+   токены) без backticks — без переноса они распирают страницу на узком экране. */
+.doc-content p,
+.doc-content li {
+	overflow-wrap: anywhere;
 }
 .doc-content p {
 	margin: 0 0 12px;

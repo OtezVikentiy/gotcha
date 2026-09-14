@@ -33,7 +33,9 @@
 	function ymd(d) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
 	function sameDay(a, b) { return a && b && ymd(a) === ymd(b); }
 	function startOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0); }
-	function endOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59); }
+	// начало СЛЕДУЮЩИХ суток, не 23:59: поле минутной точности не выразит 23:59:59,
+	// а "23:59" как значение теряет последнюю минуту дня на сервере.
+	function endOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 0, 0); }
 	function addMonths(d, n) { return new Date(d.getFullYear(), d.getMonth() + n, 1); }
 	function fmtHuman(d) { return fmtDate.format(d); }
 

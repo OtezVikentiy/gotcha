@@ -315,3 +315,42 @@ func TestContrastPairsMeetWCAG(t *testing.T) {
 		}
 	}
 }
+
+// --border-control используется как border у десятков контролов, а не в одном
+// селекторе — контраст токена сверяется напрямую, порог 3:1 (WCAG 1.4.11).
+func TestBorderControlTokenMeetsWCAG(t *testing.T) {
+	tree := Load(t)
+	dark, light := rootTokenBlocks(t, tree)
+	themes := []struct {
+		name   string
+		tokens map[string]string
+	}{
+		{"тёмная", dark},
+		{"светлая", light},
+	}
+	for _, theme := range themes {
+		borderColor, _, err := resolveColorToken(theme.tokens, "--border-control")
+		if err != nil {
+			t.Fatalf("[%s] --border-control: %v", theme.name, err)
+		}
+		for _, parentName := range canonicalParents {
+			parentColor, _, err := resolveColorToken(theme.tokens, parentName)
+			if err != nil {
+				t.Fatalf("[%s] подложка %s: %v", theme.name, parentName, err)
+			}
+			if ratio := contrastRatio(borderColor, parentColor); ratio < wcagNonTextMin {
+				t.Errorf("[%s] --border-control на %s даёт %.3f:1, порог %.1f:1 (WCAG 1.4.11)",
+					theme.name, parentName, ratio, wcagNonTextMin)
+			}
+		}
+		// --rail отдельно от canonicalParents — контролы вроде .dr-* стоят и на нём.
+		railColor, _, err := resolveColorToken(theme.tokens, "--rail")
+		if err != nil {
+			t.Fatalf("[%s] --rail: %v", theme.name, err)
+		}
+		if ratio := contrastRatio(borderColor, railColor); ratio < wcagNonTextMin {
+			t.Errorf("[%s] --border-control на --rail даёт %.3f:1, порог %.1f:1 (WCAG 1.4.11)",
+				theme.name, ratio, wcagNonTextMin)
+		}
+	}
+}

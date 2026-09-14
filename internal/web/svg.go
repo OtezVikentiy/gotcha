@@ -1104,6 +1104,41 @@ func niceStepFloat(max float64, targetLines int) float64 {
 	return 10 * mag
 }
 
+// не больше target равномерно распределённых позиций (включая первую и
+// последнюю) — у единого шага есть длины, где не попасть в target без разрыва.
+func dayLabelIndices(n, target int) []int {
+	if n <= 0 {
+		return nil
+	}
+	if target <= 0 {
+		target = 1
+	}
+	if n <= target {
+		out := make([]int, n)
+		for i := range out {
+			out[i] = i
+		}
+		return out
+	}
+	if target == 1 {
+		return []int{0}
+	}
+	out := make([]int, 0, target)
+	prev := -1
+	for i := 0; i < target; i++ {
+		pos := int(math.Round(float64(i) * float64(n-1) / float64(target-1)))
+		if pos <= prev {
+			pos = prev + 1
+		}
+		if pos > n-1 {
+			break
+		}
+		out = append(out, pos)
+		prev = pos
+	}
+	return out
+}
+
 func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 	x0, x1 := float64(chartPadL), float64(w-chartPadR)
 	y0, y1 := float64(chartPadT), float64(h-chartPadB)
@@ -1175,15 +1210,10 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 			dayIdx = append(dayIdx, i)
 		}
 	}
-	k := (len(dayIdx) + targetDayLabels - 1) / targetDayLabels
-	if k < 1 {
-		k = 1
-	}
+	selected := dayLabelIndices(len(dayIdx), targetDayLabels)
 	prevDayLabelRight := math.Inf(-1)
-	for j, idx := range dayIdx {
-		if j%k != 0 {
-			continue
-		}
+	for _, j := range selected {
+		idx := dayIdx[j]
 		x := x0 + float64(idx)*barW
 		if idx > 0 {
 			axisLine(&sb, x, y0, x, y1)
@@ -1326,8 +1356,14 @@ var availabilityBarLabelKey = map[string]string{
 
 // цвет — единственный сигнал состояния в SVG, без title screen reader/hover
 // ничего не получают; текст из каталога экранируется вызывающей стороной.
+// OK/Total добавлены, иначе соседние столбики одного класса неотличимы друг
+// от друга — дат тут нет, UptimeStat их не хранит.
 func availabilityBarLabel(ctx context.Context, b uptime.UptimeStat) string {
-	return i18n.T(ctx, availabilityBarLabelKey[availabilityBarClass(b)])
+	state := i18n.T(ctx, availabilityBarLabelKey[availabilityBarClass(b)])
+	if b.Total == 0 {
+		return state
+	}
+	return state + " — " + strconv.FormatUint(b.OK, 10) + "/" + strconv.FormatUint(b.Total, 10)
 }
 
 func availabilityEmptyBarsSVG(ctx context.Context, w, h int) string {
@@ -1453,7 +1489,7 @@ type orderedSpan struct {
 }
 
 // корни в исходном порядке (спаны уже отсортированы по времени), дети
-// рекурсивно; циклы обрезаются посещением.
+// рекурсивно; циклы обрезаются посещением, кольцо без root — вторым проходом.
 func orderSpanTree(spans []trace.SpanRow, max int) []orderedSpan {
 	if len(spans) == 0 {
 		return nil
@@ -1500,6 +1536,16 @@ func orderSpanTree(spans []trace.SpanRow, max int) []orderedSpan {
 			break
 		}
 		walk(r, 0)
+	}
+	// кольцо parent_span_id без выхода к root — заводим узлы корнями сами.
+	for _, s := range spans {
+		if len(out) >= max {
+			break
+		}
+		if s.SpanID == "" || visited[s.SpanID] {
+			continue
+		}
+		walk(s, 0)
 	}
 	return out
 }

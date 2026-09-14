@@ -12,10 +12,15 @@
 	function flashFailed(root) { flash(root, "[data-copy-failed]", 4000); }
 	function fallbackCopy(ta, root) {
 		ta.removeAttribute("aria-hidden");
+		// iOS Safari игнорирует select()/setSelectionRange на readonly textarea —
+		// снимаем атрибут на время копирования, иначе execCommand("copy") видит пустое выделение.
+		var wasReadOnly = ta.hasAttribute("readonly");
+		ta.removeAttribute("readonly");
 		ta.focus();
 		ta.select();
 		var ok = false;
 		try { ok = document.execCommand("copy"); } catch (e) {}
+		if (wasReadOnly) ta.setAttribute("readonly", "");
 		ta.setAttribute("aria-hidden", "true");
 		if (window.getSelection) window.getSelection().removeAllRanges();
 		if (ok) flashDone(root); else flashFailed(root);

@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"context"
 	"net/url"
 	"strconv"
 
@@ -65,7 +66,7 @@ templ ProfilesList(projectID int64, services []profile.ServiceInfo, rng TimeRang
 						<tbody>
 							for _, s := range services {
 								<tr>
-									<td><a href={ templ.URL(profileFlameLink(projectID, s, rng, environment)) }>{ profileDisplayService(s.Service) }</a></td>
+									<td><a href={ templ.URL(profileFlameLink(projectID, s, rng, environment)) }>{ profileDisplayService(ctx, s.Service) }</a></td>
 									<td>{ s.Type }</td>
 									<td>{ envList(s.Environments) }</td>
 									<td>{ s.Transaction }</td>
@@ -130,9 +131,9 @@ func formatProfileNanos(ns uint64) string {
 	}
 }
 
-func profileDisplayService(service string) string {
+func profileDisplayService(ctx context.Context, service string) string {
 	if service == "" {
-		return "(unknown)"
+		return "(" + i18n.T(ctx, "hosts.legend.unknown") + ")"
 	}
 	return service
 }
@@ -157,7 +158,7 @@ templ ProfileFlame(vm ProfileFlameVM, userEmail string) {
 			@breadcrumbBackTo(templ.URL(profilesBasePath(vm.ProjectID)), i18n.T(ctx, "nav.profiles"))
 			<h1>{ i18n.T(ctx, "profiles.flame.title") }</h1>
 			<p class="metric-meta">
-				{ profileDisplayService(vm.Service) }
+				{ profileDisplayService(ctx, vm.Service) }
 				if vm.Type != "" {
 					· { vm.Type }
 				}

@@ -94,7 +94,12 @@ test("daterange: выбор диапазона из двух дней и При�
 	dispatchClick(applyBtn);
 
 	assert.match(tr.start.value, /^\d{4}-\d{2}-\d{2}T00:00$/);
-	assert.match(tr.end.value, /^\d{4}-\d{2}-\d{2}T23:59$/);
+	// 00:00 СЛЕДУЮЩИХ суток, не 23:59 того же дня: сервер парсит поле минутной
+	// точности буквально, "23:59" молча теряет последнюю минуту дня из окна.
+	assert.match(tr.end.value, /^\d{4}-\d{2}-\d{2}T00:00$/);
+	var msPerDay = 24 * 60 * 60 * 1000;
+	var diff = Date.parse(tr.end.value) - Date.parse(tr.start.value);
+	assert.ok(diff > 0 && diff % msPerDay === 0, "конец обязан быть ровно кратен суткам от начала, иначе последняя минута суток потеряна: diff=" + diff);
 	assert.equal(tr.select.value, "custom");
 	assert.equal(submitted, 1);
 });

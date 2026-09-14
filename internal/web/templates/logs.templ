@@ -42,6 +42,9 @@ type LogsFilter struct {
 	// attr= в URL превысил потолок числа/суммарного размера условий — запрос к ClickHouse
 	// не выполнялся вовсе, а не тихо обрезался до первых N.
 	AttrsRejected bool
+	// Умолчание есть, но Applicable=false (устаревший формат) — раньше пропускалось молча,
+	// пользователь видел нефильтрованные логи без объяснения.
+	DefaultInapplicable bool
 }
 
 // Empty=true — данных нет: график не рисуется вовсе, не пустая шкала.
@@ -585,6 +588,9 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 					<a href={ templ.URL(filter.DefaultShowAllHref) }>{ i18n.T(ctx, "logs.default.show_all") }</a>
 				</p>
 			}
+			if filter.DefaultInapplicable {
+				<p class="notice logs-default-notice">{ i18n.T(ctx, "logs.savedfilters.not_applicable") }</p>
+			}
 
 			<form method="get" action={ templ.URL(logsPath(projectID)) } class="logs-filters">
 				<fieldset class="logs-severity-filter">
@@ -602,6 +608,9 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 				@timeRangeFields(filter.Range)
 				// attr/trace_id/исключения — вне видимых полей формы; сабмит обязан их сохранить, не обнулить.
 				@logFilterHiddenChipFields(filter)
+				if filter.Facet != "" {
+					<input type="hidden" name="facet" value={ filter.Facet }/>
+				}
 				if filter.DefaultSuppressed {
 					<input type="hidden" name="nodefault" value="1"/>
 				}
