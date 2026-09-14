@@ -88,6 +88,28 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 		}
 	}
 
+	channels, err := e.Svc.Channels(ctx, ev.ProjectID)
+	if err != nil {
+		slog.Error("alert: channels lookup failed", "project_id", ev.ProjectID, "error", err)
+		return
+	}
+
+	// Сколько каналов стоило слать (Deliverable + email-fallback) — если ни
+	// одного, throttle/budget не трогаем вовсе: списывать не за что.
+	deliverableCount := 0
+	for _, ch := range channels {
+		if !ch.Deliverable() {
+			continue
+		}
+		if ch.Kind == ChannelEmail && !e.EmailEnabled {
+			continue
+		}
+		deliverableCount++
+	}
+	if deliverableCount == 0 {
+		return // некуда доставлять: не жжём throttle/budget, не в suppressed-digest
+	}
+
 	claimed, err := e.claimThrottle(ctx, ev.IssueID, rule.ID, rule.ThrottleMinutes)
 	if err != nil {
 		slog.Error("alert: throttle claim failed", "issue_id", ev.IssueID, "rule_id", rule.ID, "error", err)
@@ -111,22 +133,6 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 		return
 	}
 
-	channels, err := e.Svc.Channels(ctx, ev.ProjectID)
-	if err != nil {
-		slog.Error("alert: channels lookup failed", "project_id", ev.ProjectID, "error", err)
-		// throttle и budget уже списаны, а отправка не состоялась и не
-		// повторится сама — без отката алерт молчит до конца ThrottleMinutes.
-		if err := e.releaseThrottle(ctx, ev.IssueID, rule.ID); err != nil {
-			slog.Error("alert: release throttle after channels lookup failure",
-				"issue_id", ev.IssueID, "rule_id", rule.ID, "error", err)
-		}
-		if err := e.Svc.refundBudget(ctx, ev.ProjectID); err != nil {
-			slog.Error("alert: refund budget after channels lookup failure",
-				"project_id", ev.ProjectID, "error", err)
-		}
-		return
-	}
-
 	// Язык инстанса (GOTCHA_LOCALE), не запроса — у внешнего получателя нет
 	// своей локали.
 	lctx := i18n.WithLocale(ctx, e.Locale)
@@ -136,19 +142,6 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 	body := i18n.Tf(lctx, "notify.issue.body",
 		"title", ev.Title, "culprit", ev.Culprit, "level", ev.Level,
 		"count", strconv.FormatInt(ev.TimesSeen, 10), "url", url)
-
-	// Сколько каналов стоило слать (Deliverable + email-fallback) — нужно
-	// только чтобы решить об откате claim'ов ниже при полном провале.
-	deliverableCount := 0
-	for _, ch := range channels {
-		if !ch.Deliverable() {
-			continue
-		}
-		if ch.Kind == ChannelEmail && !e.EmailEnabled {
-			continue
-		}
-		deliverableCount++
-	}
 
 	dchans := make([]escalation.DispatchChannel, 0, len(channels))
 	for _, ch := range channels {
@@ -182,9 +175,9 @@ func (e *Evaluator) OnIssue(ctx context.Context, ev Event) {
 	}
 	enqueued := len(enqueuedIDs)
 
-	// Откат — только при полном провале: частичный успех уже доставлен, а
-	// ноль deliverable-каналов — не сбой, а обычная тишина.
-	if deliverableCount > 0 && enqueued == 0 {
+	// Откат — только при полном провале доставки: частичный успех уже
+	// доставлен, откатывать нечего.
+	if enqueued == 0 {
 		if err := e.releaseThrottle(ctx, ev.IssueID, rule.ID); err != nil {
 			slog.Error("alert: release throttle after full enqueue failure",
 				"issue_id", ev.IssueID, "rule_id", rule.ID, "error", err)

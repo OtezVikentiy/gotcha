@@ -482,10 +482,9 @@ func TestEvaluatorFullEnqueueFailureReleasesThrottleAndBudget(t *testing.T) {
 	}
 }
 
-// Просадка PG ровно на шаге чтения каналов не должна молчать до конца
-// ThrottleMinutes: claim throttle/budget уже списаны, отправка не состоялась
-// и сама не повторится — без отката алерт по этой issue не уйдёт никогда.
-func TestEvaluatorChannelsLookupFailureReleasesThrottleAndBudget(t *testing.T) {
+// Channels() читается ДО claimThrottle/claimBudget — просадка PG на этом шаге
+// не должна списать ни троттл, ни бюджет: откатывать после неё нечего.
+func TestEvaluatorChannelsLookupFailureClaimsNothing(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	svc := alert.NewService(pool)
 	svc.SetBudget(time.Hour, 5)
@@ -505,8 +504,8 @@ func TestEvaluatorChannelsLookupFailureReleasesThrottleAndBudget(t *testing.T) {
 	}
 	issueID := newEvalIssue(t, pool, pid, "fp-1")
 
-	// Свежая просадка PG между claimBudget и Channels() смоделирована временной
-	// недоступностью самой таблицы: alert_throttle/alert_project_budget не задеты.
+	// Просадка PG на шаге Channels() смоделирована временной недоступностью
+	// самой таблицы.
 	if _, err := pool.Exec(ctx, "ALTER TABLE alert_channels RENAME TO alert_channels_down"); err != nil {
 		t.Fatalf("rename alert_channels: %v", err)
 	}
@@ -527,16 +526,27 @@ func TestEvaluatorChannelsLookupFailureReleasesThrottleAndBudget(t *testing.T) {
 		t.Fatalf("alert_project_budget: %v", err)
 	}
 	if sent != 0 {
-		t.Fatalf("alert_project_budget.sent = %d, want 0 (claim should have been refunded)", sent)
+		t.Fatalf("alert_project_budget.sent = %d, want 0 (Channels() failed before any claim)", sent)
 	}
 
+	var throttleRows int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM alert_throttle WHERE issue_id = $1", issueID).Scan(&throttleRows); err != nil {
+		t.Fatalf("count alert_throttle: %v", err)
+	}
+	if throttleRows != 0 {
+		t.Fatalf("alert_throttle rows = %d, want 0 (Channels() failed before any claim)", throttleRows)
+	}
+
+	// Троттл-окно не тронуто — повтор после восстановления таблицы проходит
+	// как обычная первая отправка.
 	e.OnIssue(ctx, ev)
 	jobs, err := ob.Claim(ctx, 10)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 	if len(jobs) != 1 {
-		t.Fatalf("after rollback: enqueued %d jobs, want 1 (throttle should have been released)", len(jobs))
+		t.Fatalf("after Channels() recovers: enqueued %d jobs, want 1", len(jobs))
 	}
 }
 
@@ -658,5 +668,218 @@ func TestEvaluatorMaintenanceSuppressesIssueAlert(t *testing.T) {
 	}
 	if throttleRows != 1 {
 		t.Errorf("alert_throttle rows for issue2 = %d, want 1 (normal send must claim throttle)", throttleRows)
+	}
+}
+
+// budget читает alert_project_budget.sent, допуская отсутствие строки
+// (claimBudget ни разу не вызван — ничего и не должно быть списано).
+func budgetSent(t *testing.T, ctx context.Context, pool *pgxpool.Pool, projectID int64) int {
+	t.Helper()
+	var sent int
+	err := pool.QueryRow(ctx,
+		"SELECT sent FROM alert_project_budget WHERE project_id = $1", projectID).Scan(&sent)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0
+		}
+		t.Fatalf("alert_project_budget: %v", err)
+	}
+	return sent
+}
+
+func throttleRowCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool, issueID int64) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM alert_throttle WHERE issue_id = $1", issueID).Scan(&n); err != nil {
+		t.Fatalf("count alert_throttle: %v", err)
+	}
+	return n
+}
+
+// claimBudget INSERT ... ON CONFLICT создаёт строку даже там, где refundBudget
+// потом лишь обнулит sent — count(*) ловит разницу, которую sent=0 не видит.
+func budgetRowCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool, projectID int64) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM alert_project_budget WHERE project_id = $1", projectID).Scan(&n); err != nil {
+		t.Fatalf("count alert_project_budget: %v", err)
+	}
+	return n
+}
+
+// Без доставляемых каналов претензии к троттлу нет: повторное событие по
+// тому же issue не должно быть придушено задним числом, когда канал появится.
+func TestEvaluatorNoChannelsClaimsNothingAndDoesNotThrottleFollowUp(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := alert.NewService(pool)
+	ob := notify.NewOutbox(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pid := newEvalProject(t, pool, "no-channels")
+	if _, err := svc.UpsertRule(ctx, alert.Rule{
+		ProjectID: pid, Kind: alert.KindNewIssue, Enabled: true, ThrottleMinutes: 30,
+	}); err != nil {
+		t.Fatalf("UpsertRule: %v", err)
+	}
+	issueID := newEvalIssue(t, pool, pid, "fp-1")
+	e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example"}
+	ev := alert.Event{ProjectID: pid, IssueID: issueID, Kind: alert.KindNewIssue, Title: "boom", Level: "error"}
+
+	e.OnIssue(ctx, ev)
+	jobs, err := ob.Claim(ctx, 10)
+	if err != nil || len(jobs) != 0 {
+		t.Fatalf("no channels: jobs=%d err=%v, want 0", len(jobs), err)
+	}
+	if n := throttleRowCount(t, ctx, pool, issueID); n != 0 {
+		t.Errorf("alert_throttle rows = %d, want 0 (nothing to deliver)", n)
+	}
+	if s := budgetSent(t, ctx, pool, pid); s != 0 {
+		t.Errorf("alert_project_budget.sent = %d, want 0 (nothing to deliver)", s)
+	}
+	if n := budgetRowCount(t, ctx, pool, pid); n != 0 {
+		t.Errorf("alert_project_budget rows = %d, want 0 (claimBudget must not run at all)", n)
+	}
+
+	// Канал появился уже после первого (пустого) события — второй заход по
+	// тому же issue обязан пройти как первая отправка, а не как повтор в
+	// троттл-окне.
+	ch, err := svc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	e.OnIssue(ctx, ev)
+	jobs2, err := ob.Claim(ctx, 10)
+	if err != nil || len(jobs2) != 1 || jobs2[0].ChannelID != ch {
+		t.Fatalf("follow-up after channel added: jobs=%+v err=%v, want exactly 1 job for channel %d", jobs2, err, ch)
+	}
+}
+
+// Каналы есть, но ни один не доставим (выключен / email без SMTP) — тот же
+// нулевой итог, что и вовсе без каналов.
+func TestEvaluatorUndeliverableChannelsClaimsNothing(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := alert.NewService(pool)
+	ob := notify.NewOutbox(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pid := newEvalProject(t, pool, "undeliverable")
+	if _, err := svc.UpsertRule(ctx, alert.Rule{
+		ProjectID: pid, Kind: alert.KindNewIssue, Enabled: true, ThrottleMinutes: 30,
+	}); err != nil {
+		t.Fatalf("UpsertRule: %v", err)
+	}
+	if _, err := svc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: false, Target: "https://example.com/hook",
+	}); err != nil {
+		t.Fatalf("CreateChannel webhook disabled: %v", err)
+	}
+	if _, err := svc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelEmail, Enabled: true, Target: "ops@example.com",
+	}); err != nil {
+		t.Fatalf("CreateChannel email: %v", err)
+	}
+	issueID := newEvalIssue(t, pool, pid, "fp-1")
+
+	e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example", EmailEnabled: false}
+	ev := alert.Event{ProjectID: pid, IssueID: issueID, Kind: alert.KindNewIssue, Title: "boom", Level: "error"}
+	e.OnIssue(ctx, ev)
+
+	jobs, err := ob.Claim(ctx, 10)
+	if err != nil || len(jobs) != 0 {
+		t.Fatalf("undeliverable channels: jobs=%d err=%v, want 0", len(jobs), err)
+	}
+	if n := throttleRowCount(t, ctx, pool, issueID); n != 0 {
+		t.Errorf("alert_throttle rows = %d, want 0 (nothing deliverable)", n)
+	}
+	if s := budgetSent(t, ctx, pool, pid); s != 0 {
+		t.Errorf("alert_project_budget.sent = %d, want 0 (nothing deliverable)", s)
+	}
+	if n := budgetRowCount(t, ctx, pool, pid); n != 0 {
+		t.Errorf("alert_project_budget rows = %d, want 0 (claimBudget must not run at all)", n)
+	}
+}
+
+// Доставка удалась — бюджет списан ровно один раз, не за каждый рассмотренный
+// канал и не дважды за одно событие.
+func TestEvaluatorSuccessfulDeliveryClaimsBudgetOnce(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := alert.NewService(pool)
+	ob := notify.NewOutbox(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pid := newEvalProject(t, pool, "budget-once")
+	if _, err := svc.UpsertRule(ctx, alert.Rule{
+		ProjectID: pid, Kind: alert.KindNewIssue, Enabled: true, ThrottleMinutes: 30,
+	}); err != nil {
+		t.Fatalf("UpsertRule: %v", err)
+	}
+	if _, err := svc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	}); err != nil {
+		t.Fatalf("CreateChannel webhook: %v", err)
+	}
+	if _, err := svc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelTelegram, Enabled: true, Target: "123", Secret: "tok",
+	}); err != nil {
+		t.Fatalf("CreateChannel telegram: %v", err)
+	}
+	issueID := newEvalIssue(t, pool, pid, "fp-1")
+
+	e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example"}
+	ev := alert.Event{ProjectID: pid, IssueID: issueID, Kind: alert.KindNewIssue, Title: "boom", Level: "error"}
+	e.OnIssue(ctx, ev)
+
+	jobs, err := ob.Claim(ctx, 10)
+	if err != nil || len(jobs) != 2 {
+		t.Fatalf("jobs=%d err=%v, want 2 (both channels deliverable)", len(jobs), err)
+	}
+	if s := budgetSent(t, ctx, pool, pid); s != 1 {
+		t.Errorf("alert_project_budget.sent = %d, want 1 (one event, not one per channel)", s)
+	}
+}
+
+// Digester рассылает "подавлено N уведомлений" по накопленному suppressed —
+// установке без каналов не о чем подавлять, счётчик не должен расти.
+func TestEvaluatorNoChannelsDoesNotAccumulateSuppressed(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := alert.NewService(pool)
+	svc.SetBudget(time.Hour, 1)
+	ob := notify.NewOutbox(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pid := newEvalProject(t, pool, "no-channels-suppressed")
+	if _, err := svc.UpsertRule(ctx, alert.Rule{
+		ProjectID: pid, Kind: alert.KindNewIssue, Enabled: true, ThrottleMinutes: 0,
+	}); err != nil {
+		t.Fatalf("UpsertRule: %v", err)
+	}
+	e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example"}
+
+	// Троттл нулевой и issue каждый раз новый — без фикса каждое событие
+	// дошло бы до claimBudget и после исчерпания лимита=1 растило бы suppressed.
+	for i := 0; i < 3; i++ {
+		issueID := newEvalIssue(t, pool, pid, "fp-"+strconv.Itoa(i))
+		e.OnIssue(ctx, alert.Event{ProjectID: pid, IssueID: issueID, Kind: alert.KindNewIssue, Title: "boom", Level: "error"})
+	}
+
+	var suppressed int
+	err := pool.QueryRow(ctx,
+		"SELECT suppressed FROM alert_project_budget WHERE project_id = $1", pid).Scan(&suppressed)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("alert_project_budget: %v", err)
+		}
+		return // строки нет вовсе — claimBudget ни разу не вызван, лучший исход
+	}
+	if suppressed != 0 {
+		t.Errorf("alert_project_budget.suppressed = %d, want 0 (nothing to suppress without channels)", suppressed)
 	}
 }

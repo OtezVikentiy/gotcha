@@ -67,8 +67,12 @@ func gzipSSR(next http.Handler) http.Handler {
 		}
 		body := cw.buf.Bytes()
 		ct := w.Header().Get("Content-Type")
-		if ct == "" {
+		if ct == "" && len(body) > 0 {
+			// Тип определяется по НЕСЖАТОМУ телу и записывается в заголовок: иначе
+			// net/http додумает его по gzip-байтам, отдаст application/x-gzip, и
+			// nosniff превратит страницу в скачиваемый файл.
 			ct = http.DetectContentType(body)
+			w.Header().Set("Content-Type", ct)
 		}
 		if w.Header().Get("Content-Encoding") != "" || !strings.HasPrefix(ct, "text/html") ||
 			len(body) < gzipMinBytes || !acceptsGzip(r.Header.Get("Accept-Encoding")) {
