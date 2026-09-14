@@ -15,10 +15,15 @@ import (
 
 const InviteTTL = 7 * 24 * time.Hour
 
+// Потолок непринятых приглашений на организацию — без него накопление неотозванных
+// приглашений не ограничено ничем, кроме частотного лимитера на вызывающей стороне.
+const maxPendingInvitesPerOrg = 200
+
 var (
-	ErrInvalidRole         = errors.New("org: invite role must be admin or member")
-	ErrInviteInvalid       = errors.New("org: invite is invalid, expired or already used")
-	ErrInviteEmailMismatch = errors.New("org: invite was issued for a different email")
+	ErrInvalidRole           = errors.New("org: invite role must be admin or member")
+	ErrInviteInvalid         = errors.New("org: invite is invalid, expired or already used")
+	ErrInviteEmailMismatch   = errors.New("org: invite was issued for a different email")
+	ErrTooManyPendingInvites = errors.New("org: too many pending invites")
 )
 
 func inviteTokenHash(token string) []byte {
@@ -29,6 +34,15 @@ func inviteTokenHash(token string) []byte {
 func (s *Service) Invite(ctx context.Context, orgID int64, email string, role Role) (string, error) {
 	if role != RoleAdmin && role != RoleMember {
 		return "", ErrInvalidRole
+	}
+	var pending int
+	if err := s.pool.QueryRow(ctx,
+		"SELECT count(*) FROM org_invites WHERE org_id = $1 AND accepted_at IS NULL AND expires_at > now()",
+		orgID).Scan(&pending); err != nil {
+		return "", fmt.Errorf("org: count pending invites: %w", err)
+	}
+	if pending >= maxPendingInvitesPerOrg {
+		return "", ErrTooManyPendingInvites
 	}
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {

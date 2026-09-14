@@ -200,7 +200,11 @@ type Handler struct {
 	// IP-лимитер общий для /forgot-password и /reset-password/{token}.
 	passwordResetEmailLimiter *rateLimiter
 	passwordResetIPLimiter    *rateLimiter
-	statusCache               statusCache
+	// без предела админ организации мог бы слать письма инстанса на произвольные
+	// адреса в любом количестве — усилитель рассылки на чужой репутации домена.
+	orgInviteOrgLimiter   *rateLimiter
+	orgInviteEmailLimiter *rateLimiter
+	statusCache           statusCache
 
 	crossOriginRejected atomic.Int64
 	coThrottle          coThrottle
@@ -224,6 +228,7 @@ const (
 	statusPageLimiterMaxKeys = 5000
 	exportLimiterMaxKeys     = 5000
 	passwordResetMaxKeys     = 20000
+	orgInviteLimiterMaxKeys  = 20000
 )
 
 func New(authSvc *auth.Service, orgSvc *org.Service, issueSvc *issue.Service, events *event.Query, baseURL string) *Handler {
@@ -245,6 +250,8 @@ func New(authSvc *auth.Service, orgSvc *org.Service, issueSvc *issue.Service, ev
 		exportLimiter:             newRateLimiter(time.Now, createRateLimit, createRateWindow, exportLimiterMaxKeys, "exportLimiter"),
 		passwordResetEmailLimiter: newRateLimiter(time.Now, 5, 15*time.Minute, passwordResetMaxKeys, "passwordResetEmailLimiter"),
 		passwordResetIPLimiter:    newRateLimiter(time.Now, 20, time.Minute, passwordResetMaxKeys, "passwordResetIPLimiter"),
+		orgInviteOrgLimiter:       newRateLimiter(time.Now, 60, time.Hour, orgInviteLimiterMaxKeys, "orgInviteOrgLimiter"),
+		orgInviteEmailLimiter:     newRateLimiter(time.Now, 3, time.Hour, orgInviteLimiterMaxKeys, "orgInviteEmailLimiter"),
 		attrKeysCache:             newAttrKeysCache(),
 	}
 }

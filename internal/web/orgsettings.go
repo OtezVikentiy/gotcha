@@ -80,6 +80,8 @@ func orgSettingsErrorMessage(ctx context.Context, err error) string {
 		return i18n.T(ctx, "error.org.owner_only")
 	case errors.Is(err, org.ErrInvalidQuota):
 		return i18n.T(ctx, "error.org.invalid_quota")
+	case errors.Is(err, org.ErrTooManyPendingInvites):
+		return i18n.T(ctx, "error.org.too_many_pending_invites")
 	default:
 		return i18n.T(ctx, "error.action_failed")
 	}
@@ -616,6 +618,11 @@ func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
 	inviteForm := templates.FormState{"email": email, "role": r.FormValue("role")}
 	if !validInviteEmail(email) {
 		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.invalid_email"), "", inviteForm)
+		return
+	}
+	orgKey := strconv.FormatInt(orgID, 10)
+	if !h.orgInviteOrgLimiter.Allow(orgKey) || !h.orgInviteEmailLimiter.Allow(limiterEmailKeyPart(email)) {
+		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.invite_rate_limited"), "", inviteForm)
 		return
 	}
 	role := org.Role(r.FormValue("role"))

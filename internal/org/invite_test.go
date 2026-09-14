@@ -3,6 +3,7 @@ package org_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -204,5 +205,68 @@ func TestHasPendingInvite(t *testing.T) {
 	}
 	if ok, err := svc.HasPendingInvite(ctx, "wanted@example.com"); err != nil || !ok {
 		t.Fatalf("pending = (%v,%v), want (true,nil)", ok, err)
+	}
+}
+
+func TestInvitePendingCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	ownerID := newUser(t, pool, "cap-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "cap-co", "Cap Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	for i := 0; i < 200; i++ {
+		if _, err := svc.Invite(ctx, o.ID, fmt.Sprintf("cap-invitee-%d@example.com", i), org.RoleMember); err != nil {
+			t.Fatalf("invite %d: %v", i, err)
+		}
+	}
+
+	if _, err := svc.Invite(ctx, o.ID, "cap-invitee-200@example.com", org.RoleMember); !errors.Is(err, org.ErrTooManyPendingInvites) {
+		t.Fatalf("201st invite: got %v, want ErrTooManyPendingInvites", err)
+	}
+}
+
+func TestInviteRevokeFreesSlot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := org.NewService(pool, 1_000_000)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	ownerID := newUser(t, pool, "freeslot-owner@example.com")
+	o, err := svc.CreateOrg(ctx, "freeslot-co", "Freeslot Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	for i := 0; i < 200; i++ {
+		if _, err := svc.Invite(ctx, o.ID, fmt.Sprintf("freeslot-invitee-%d@example.com", i), org.RoleMember); err != nil {
+			t.Fatalf("invite %d: %v", i, err)
+		}
+	}
+	if _, err := svc.Invite(ctx, o.ID, "freeslot-overflow@example.com", org.RoleMember); !errors.Is(err, org.ErrTooManyPendingInvites) {
+		t.Fatalf("invite at cap: got %v, want ErrTooManyPendingInvites", err)
+	}
+
+	pending, err := svc.PendingInvites(ctx, o.ID)
+	if err != nil || len(pending) == 0 {
+		t.Fatalf("pending invites: len=%d err=%v", len(pending), err)
+	}
+	if err := svc.RevokeInvite(ctx, o.ID, pending[0].ID); err != nil {
+		t.Fatalf("revoke invite: %v", err)
+	}
+
+	if _, err := svc.Invite(ctx, o.ID, "freeslot-overflow@example.com", org.RoleMember); err != nil {
+		t.Fatalf("invite after revoke: got %v, want nil (slot freed)", err)
 	}
 }

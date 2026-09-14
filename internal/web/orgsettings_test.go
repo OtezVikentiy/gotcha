@@ -3,6 +3,7 @@ package web_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -911,5 +912,56 @@ func TestOrgInviteEmailFallsBackToInviterLocaleForUnknownRecipient(t *testing.T)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("письмо не дошло до фейкового SMTP")
+	}
+}
+
+func TestOrgInviteRateLimitPerOrg(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "invite-rl-org-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "invite-rl-org-co", "Invite RL Org Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	invitePath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings/invite"
+	var last *http.Response
+	for i := 0; i < 61; i++ {
+		form := url.Values{"email": {fmt.Sprintf("invite-rl-org-%d@example.com", i)}, "role": {"member"}}
+		last = postForm(t, s.srv, invitePath, form, s.srv.URL, ownerCookie)
+		io.Copy(io.Discard, last.Body)
+		last.Body.Close()
+	}
+	if last.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("61-е приглашение в организацию за час: status = %d, want 422 (лимит на организацию)", last.StatusCode)
+	}
+}
+
+// Повторная отправка на один и тот же адрес — законный сценарий «письмо потерялось»,
+// поэтому предел (3/час) проверяется отдельно от предела на организацию (60/час).
+func TestOrgInviteRateLimitPerEmail(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "invite-rl-email-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "invite-rl-email-co", "Invite RL Email Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+
+	invitePath := "/orgs/" + strconv.FormatInt(o.ID, 10) + "/settings/invite"
+	const target = "invite-rl-target@example.com"
+	var last *http.Response
+	for i := 0; i < 4; i++ {
+		form := url.Values{"email": {target}, "role": {"member"}}
+		last = postForm(t, s.srv, invitePath, form, s.srv.URL, ownerCookie)
+		io.Copy(io.Discard, last.Body)
+		last.Body.Close()
+	}
+	if last.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("4-е приглашение на тот же адрес за час: status = %d, want 422 (лимит на адрес)", last.StatusCode)
 	}
 }

@@ -95,10 +95,12 @@ func TestOrgSettingsInviteRespondsWhileBackgroundEmailIsBlocked(t *testing.T) {
 
 	host, port := fakeHangingSMTP(t)
 	h := &Handler{
-		BaseURL: "http://gotcha.example",
-		Auth:    auth.NewService(authPool),
-		Org:     orgSvc,
-		Email:   notify.NewEmailSender(notify.EmailConfig{Host: host, Port: port, From: "noreply@gotcha.test"}),
+		BaseURL:               "http://gotcha.example",
+		Auth:                  auth.NewService(authPool),
+		Org:                   orgSvc,
+		Email:                 notify.NewEmailSender(notify.EmailConfig{Host: host, Port: port, From: "noreply@gotcha.test"}),
+		orgInviteOrgLimiter:   newRateLimiter(time.Now, 60, time.Hour, orgInviteLimiterMaxKeys, "orgInviteOrgLimiter"),
+		orgInviteEmailLimiter: newRateLimiter(time.Now, 3, time.Hour, orgInviteLimiterMaxKeys, "orgInviteEmailLimiter"),
 	}
 
 	// Одно из двух соединений держим занятым — оставшееся обслуживает и ответ (currentEmail),
@@ -216,7 +218,9 @@ func inviteResponsePathQuerySequence(t *testing.T, tag string, registerInvitee b
 		Org:     orgSvc,
 		// Порт 1 отказывает немедленно (connection refused) — фон уходит в лог warn, ответа
 		// это не касается: он уже отдан до того, как sendInviteEmail дозвонится до SMTP.
-		Email: notify.NewEmailSender(notify.EmailConfig{Host: "127.0.0.1", Port: 1, From: "noreply@gotcha.test"}),
+		Email:                 notify.NewEmailSender(notify.EmailConfig{Host: "127.0.0.1", Port: 1, From: "noreply@gotcha.test"}),
+		orgInviteOrgLimiter:   newRateLimiter(time.Now, 60, time.Hour, orgInviteLimiterMaxKeys, "orgInviteOrgLimiter"),
+		orgInviteEmailLimiter: newRateLimiter(time.Now, 3, time.Hour, orgInviteLimiterMaxKeys, "orgInviteEmailLimiter"),
 	}
 
 	body := "email=" + url.QueryEscape(inviteeEmail) + "&role=member"
