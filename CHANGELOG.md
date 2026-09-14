@@ -52,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A public status page's address can now be changed without deleting the
   page and losing its monitors and history along with it. Changing it asks
   for confirmation and says plainly that the old link stops working
-  immediately; a collision with an existing address gets three retries
+  immediately; a collision with an existing address gets three attempts
   before the change fails outright.
 
 ### Changed
@@ -177,10 +177,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   greeting, so the connection just hangs until it times out and no email is
   delivered, with no error anywhere. The example now uses port `587`.
 - Spans trimmed for space inside an over-long trace were counted as dropped
-  transactions instead of dropped spans, muddying both counters; span trims
-  now have their own counter and are attributed to the right project. The
-  metric write buffer's byte budget didn't account for per-attribute
-  overhead, letting the buffer grow past its configured memory limit under
+  transactions, muddying that count with an unrelated kind of loss; span
+  trims are now logged with the organization they belong to instead of
+  being folded into the transaction-drop count. The metric write buffer's
+  byte budget didn't account for per-attribute overhead, letting the
+  buffer grow past its configured memory limit under
   high-cardinality labels; the budget now includes it. A buffer that filled
   up during a burst waited for the next five-second tick to drain further
   even with data still queued; it now keeps draining immediately.
@@ -210,9 +211,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The "not found" and "internal error" pages never actually rendered their
   explanation text — the same string was substituted for both the heading
   and the explanation, so the explanation was silently dropped every time;
-  both now show what happened and what to do about it. Turning on "reduced
-  motion" didn't stop hover tooltips from popping in and out, because the
-  shorthand rule it used reset that paused state. A TLS certificate a few
+  both now show what happened and what to do about it. A self-dismissing
+  notification banner is supposed to pause its countdown while hovered or
+  focused, but under "reduced motion" the shorthand animation rule used for
+  that case reset the paused state, so hovering or focusing it no longer
+  stopped it from disappearing. A TLS certificate a few
   hours from expiring showed "expires in 0 days" instead of "expired". A
   trace id containing characters unsafe in a URL path produced a broken link
   to its flamegraph instead of opening it; it's now percent-encoded. Service
@@ -240,17 +243,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sorted.
 - Eleven confirmation dialogs now name the specific thing they're about to
   act on — export, maintenance window, status page, metric rule, SLO
-  target, probe, single sign-on, leaving an organization, removing a
-  member, revoking an ingest key (masked, as in the key list) — instead of
-  asking a bare "are you sure?"; the name is only looked up after the
-  permission check, so the confirmation page itself can't be used to learn
-  the name of an organization you don't have access to. Several terms that
-  meant the same thing were worded differently on neighboring screens —
-  severity/criticality, latency/delay, tolerance/window, target/object —
-  and are now consistent with whichever term already dominates the product
-  and its docs. The logs severity filter's label promised "all levels"
-  while only one was selected, and an escalation error message counted
-  steps from zero while the interface counts from one; both are fixed.
+  target, probe, single sign-on, leaving an organization, removing an
+  organization member, removing a team member, revoking an ingest key
+  (masked, as in the key list) — instead of asking a bare "are you sure?";
+  the name is only looked up after the permission check, so the
+  confirmation page itself can't be used to learn the name of an
+  organization you don't have access to. Several terms in the Russian
+  interface that meant the same thing were worded differently on
+  neighboring screens — severity/criticality, latency/delay,
+  tolerance/window, target/object — and are now consistent with whichever
+  term already dominates the product and its docs; the English interface
+  had one change of this kind, a regressions table column renamed from
+  "Target" to "Item". The logs severity filter's label promised "All
+  severities" while only one was selected, and an escalation error
+  message counted steps from zero while the interface counts from one;
+  both are fixed.
 - The environment filter's query parameter was `env` on the hosts and
   issues pages but `environment` everywhere else (logs, metrics,
   performance, profiles, web vitals); it's now `environment` on all of
@@ -373,10 +380,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now report drops per project the same way the other writers do.
 - A stack frame's own field separator wasn't escaped, unlike the other
   separators used in the same encoding, so a value that happened to contain
-  it could misalign the frame's fields on display. A service recipe's
-  mutual-lock-detection rule only looked at one of several configured
-  databases instead of all of them. A recipe rule created in a disabled
-  state was labeled "Created" as if it had already been turned on.
+  it could misalign the frame's fields on display. The PostgreSQL recipe's
+  deadlock threshold collected across every database on the server and
+  compared against the busiest bucket, so a deadlock spike in a small
+  database could be buried under a bigger database's own count and never
+  cross the threshold; the recipe now requires naming a single database,
+  with a separate copy of the recipe for each database that needs one. A
+  recipe rule created in a disabled state was labeled "Created" as if it
+  had already been turned on.
 - Three more irreversible actions — unlinking a login method, deleting a
   saved log filter, and dismissing the first-steps checklist — now ask for
   confirmation like the other twenty-five already did; the filter-deletion
@@ -407,8 +418,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it now also shows the success ratio. A cyclic segment tree produced no
   root at all, so the trace page showed empty space with no explanation
   instead of the flamegraph. Day-label thinning on an eight-day window
-  produced a quarter of the promised label count; labels are now chosen by
-  position, with "no more than seven" following from the number of
+  produced four labels where at most seven was promised; labels are now
+  chosen by position, with "no more than seven" following from the number of
   iterations rather than from step arithmetic. The end of a day in a date
   range picker was one minute before midnight, so events in a day's last
   minute fell outside the window; the boundary is now midnight itself, and
@@ -450,7 +461,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The self-monitoring guide suggested alerting on a metric this product
   doesn't have, so a rule built from the example would never fire; it now
   names the metric that actually confirms the instance is responding.
-- The webhook events reference documented 3 of the 23 event kinds a webhook
+- The webhook events reference documented 8 of the 23 event kinds a webhook
   channel can receive; all 23 are now documented, and a check now keeps the
   list from drifting out of sync with the code again.
 - The logs guide still called exclude filters and saved filters unreleased,
@@ -458,8 +469,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   who can see a personal versus a shared filter, the limits that apply,
   what a "deprecated format" notice means, and why not everyone who can use
   a filter can make it shared.
-- None of the five pages describing ingest warned that a saturated buffer
-  answers with a 503 asking the client to retry; all five now say so,
+- None of the four pages describing ingest warned that a saturated buffer
+  answers with a 503 asking the client to retry; all four now say so,
   together with the fact that a rejected request doesn't consume quota and
   retrying is safe.
 - The versioning policy didn't cover the remote probe's protocol at all,
@@ -523,7 +534,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   — could sign in as that address's existing account without ever knowing
   its password. Such a sign-in is now rejected outright; linking single
   sign-on to an account is a deliberate action its owner takes from their
-  own profile, while signed in with a password. Single sign-on providers
+  own profile, while signed in to that account. Single sign-on providers
   now appear there in the list of linkable logins — they used to be
   resolved separately by prefix, so the old rejection message pointed at a
   linking path the interface didn't actually offer. **This is a behavior
@@ -545,8 +556,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the key itself.
 - The OAuth/SSO callback that completes a sign-in wasn't rate-limited, even
   though starting one already was; both ends now share one public budget
-  keyed by client address, sized with room to spare for a dozen sign-ins
-  from the same office address. Separately, if the server ever ran with an
+  keyed by client address, sized with room to spare for sign-ins from a
+  single office address. Separately, if the server ever ran with an
   empty signing key for this flow's state parameter — unreachable in the
   distributed build, since the key is always supplied there, but possible
   for anyone building the exported handler type themselves — it silently
@@ -596,8 +607,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   protobuf hits a separate byte ceiling. The number of profile parses
   allowed to run at once is now also a memory-in-flight budget, taken as a
   share of the heap ceiling the same way write buffers already are, instead
-  of a raw count — under saturation, ingest now refuses immediately with a
-  retry hint rather than holding the connection open, and a truncated
+  of a raw count — under saturation, a request now waits for room in the
+  budget until its own deadline passes rather than being refused outright,
+  except when its own weight is larger than the entire budget, in which
+  case waiting is pointless and it's refused immediately. A truncated
   profile is now logged with its reason and counted per parser like an
   oversized one already was.
 - No ingest route enforced any rate limit before authenticating the DSN key,
