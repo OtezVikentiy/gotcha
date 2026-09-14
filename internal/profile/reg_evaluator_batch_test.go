@@ -81,13 +81,17 @@ func TestRegressionEvaluatorLooksUpOpenRegressionsOnce(t *testing.T) {
 		seedProfSample(t, ch, pid, "c", 80, ago)
 		seedProfSample(t, ch, pid, "other", 760, ago)
 	}
-	seedProfSample(t, ch, pid, "a", 40, 5*time.Minute)
-	seedProfSample(t, ch, pid, "b", 30, 5*time.Minute)
-	seedProfSample(t, ch, pid, "c", 30, 5*time.Minute)
+	// Те же доли 0.4/0.3/0.3, что и раньше, но масштаб поднят так, чтобы recentSamples
+	// каждой функции по отдельности проходил MinSamples (100), не только их сумма.
+	seedProfSample(t, ch, pid, "a", 160, 5*time.Minute)
+	seedProfSample(t, ch, pid, "b", 120, 5*time.Minute)
+	seedProfSample(t, ch, pid, "c", 120, 5*time.Minute)
 
 	eval.Tick(ctx)
-	if n := log.openLookups(); n != 1 {
-		t.Fatalf("open-regression SELECTs on the opening tick = %d, want 1 (one batched lookup per service)", n)
+	// 2 = 1 тиковый OpenServices (сервисы с открытыми регрессиями, добор к ActiveServices)
+	// + 1 батч OpenForService на единственный сервис проекта — не по одному на функцию.
+	if n := log.openLookups(); n != 2 {
+		t.Fatalf("open-regression SELECTs on the opening tick = %d, want 2 (one Tick-level + one batched per service)", n)
 	}
 	open, err := regressions.List(ctx, pid, "open", 10)
 	if err != nil || len(open) != 3 {
@@ -96,8 +100,8 @@ func TestRegressionEvaluatorLooksUpOpenRegressionsOnce(t *testing.T) {
 
 	log.reset()
 	eval.Tick(ctx)
-	if n := log.openLookups(); n != 1 {
-		t.Fatalf("open-regression SELECTs on the bump tick = %d, want 1", n)
+	if n := log.openLookups(); n != 2 {
+		t.Fatalf("open-regression SELECTs on the bump tick = %d, want 2", n)
 	}
 	open, err = regressions.List(ctx, pid, "open", 10)
 	if err != nil || len(open) != 3 {

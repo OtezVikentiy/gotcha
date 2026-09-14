@@ -43,12 +43,14 @@ func TestRegressionEvaluatorNilNotifier(t *testing.T) {
 		Interval: time.Hour, Config: cfg,
 	}
 
-	seedProfSample(t, ch, pid, "slow", 80, 5*time.Minute)
-	seedProfSample(t, ch, pid, "other", 20, 5*time.Minute)
-	seedProfSample(t, ch, pid, "slow", 30, 24*time.Hour)
-	seedProfSample(t, ch, pid, "other", 270, 24*time.Hour)
-	seedProfSample(t, ch, pid, "slow", 30, 48*time.Hour)
-	seedProfSample(t, ch, pid, "other", 270, 48*time.Hour)
+	// recentSamples("slow") сам по себе (150) обязан пройти MinSamples (100), не
+	// только в сумме с "other"; база (60+60=120) — тоже отдельно от recent.
+	seedProfSample(t, ch, pid, "slow", 150, 5*time.Minute)
+	seedProfSample(t, ch, pid, "other", 50, 5*time.Minute)
+	seedProfSample(t, ch, pid, "slow", 60, 24*time.Hour)
+	seedProfSample(t, ch, pid, "other", 540, 24*time.Hour)
+	seedProfSample(t, ch, pid, "slow", 60, 48*time.Hour)
+	seedProfSample(t, ch, pid, "other", 540, 48*time.Hour)
 
 	eval.Tick(ctx)
 

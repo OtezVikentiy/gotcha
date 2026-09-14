@@ -96,25 +96,44 @@ func (s *RegressionService) OpenFor(ctx context.Context, projectID int64, servic
 	return r, true, nil
 }
 
-func (s *RegressionService) OpenForFunctions(ctx context.Context, projectID int64, service, profileType string, functions []string) (map[string]Regression, error) {
-	out := make(map[string]Regression, len(functions))
-	if len(functions) == 0 {
-		return out, nil
-	}
+// Без фильтра по функциям: набор нужен целиком — часть его функций могла выпасть
+// из текущего top-K, и это единственный способ заметить и закрыть их регрессии.
+func (s *RegressionService) OpenForService(ctx context.Context, projectID int64, service, profileType string) (map[string]Regression, error) {
 	rows, err := s.pool.Query(ctx,
 		"SELECT "+regressionColumns+` FROM profile_regressions
-		 WHERE project_id=$1 AND service=$2 AND profile_type=$3 AND function = ANY($4) AND status='open'`,
-		projectID, service, profileType, functions)
+		 WHERE project_id=$1 AND service=$2 AND profile_type=$3 AND status='open'`,
+		projectID, service, profileType)
 	if err != nil {
-		return nil, fmt.Errorf("profile: open regressions for functions: %w", err)
+		return nil, fmt.Errorf("profile: open regressions for service: %w", err)
 	}
 	defer rows.Close()
+	out := make(map[string]Regression)
 	for rows.Next() {
 		r, err := scanRegression(rows)
 		if err != nil {
-			return nil, fmt.Errorf("profile: open regressions for functions scan: %w", err)
+			return nil, fmt.Errorf("profile: open regressions for service scan: %w", err)
 		}
 		out[r.Function] = r
+	}
+	return out, rows.Err()
+}
+
+// Дополняет ActiveServices: замолчавший сервис из неё пропадает, и без этого
+// списка его открытые регрессии никогда бы больше не оценивались.
+func (s *RegressionService) OpenServices(ctx context.Context) ([]ProjectService, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT project_id, service, profile_type FROM profile_regressions WHERE status='open'`)
+	if err != nil {
+		return nil, fmt.Errorf("profile: open services: %w", err)
+	}
+	defer rows.Close()
+	var out []ProjectService
+	for rows.Next() {
+		var ps ProjectService
+		if err := rows.Scan(&ps.ProjectID, &ps.Service, &ps.Type); err != nil {
+			return nil, fmt.Errorf("profile: open services scan: %w", err)
+		}
+		out = append(out, ps)
 	}
 	return out, rows.Err()
 }

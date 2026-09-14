@@ -50,12 +50,13 @@ func TestRegressionEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 		Maint: mockMaint(func(context.Context, int64, time.Time) (bool, error) { return true, nil }),
 	}
 
-	seedProfSample(t, ch, pid, "slow", 80, 5*time.Minute)
-	seedProfSample(t, ch, pid, "other", 20, 5*time.Minute)
-	seedProfSample(t, ch, pid, "slow", 30, 24*time.Hour)
-	seedProfSample(t, ch, pid, "other", 270, 24*time.Hour)
-	seedProfSample(t, ch, pid, "slow", 30, 48*time.Hour)
-	seedProfSample(t, ch, pid, "other", 270, 48*time.Hour)
+	// recentSamples("slow") сам по себе (150) обязан пройти MinSamples (100).
+	seedProfSample(t, ch, pid, "slow", 150, 5*time.Minute)
+	seedProfSample(t, ch, pid, "other", 50, 5*time.Minute)
+	seedProfSample(t, ch, pid, "slow", 60, 24*time.Hour)
+	seedProfSample(t, ch, pid, "other", 540, 24*time.Hour)
+	seedProfSample(t, ch, pid, "slow", 60, 48*time.Hour)
+	seedProfSample(t, ch, pid, "other", 540, 48*time.Hour)
 
 	eval.Tick(ctx)
 	rec, open, err := eval.Regressions.OpenFor(ctx, pid, "api", "cpu", "slow")
@@ -72,8 +73,8 @@ func TestRegressionEvaluatorMaintenanceSuppressesNotify(t *testing.T) {
 	if err := ch.Exec(ctx, "TRUNCATE TABLE profile_samples"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	seedProfSample(t, ch, pid, "slow", 5, 5*time.Minute)
-	seedProfSample(t, ch, pid, "other", 95, 5*time.Minute)
+	seedProfSample(t, ch, pid, "slow", 100, 5*time.Minute)
+	seedProfSample(t, ch, pid, "other", 2000, 5*time.Minute)
 	eval.Tick(ctx)
 	if _, open, _ := eval.Regressions.OpenFor(ctx, pid, "api", "cpu", "slow"); open {
 		t.Fatalf("regression must be resolved after recovery")
@@ -114,12 +115,13 @@ func TestRegressionEvaluatorMaintenanceFalseStillNotifies(t *testing.T) {
 		Maint: mockMaint(func(context.Context, int64, time.Time) (bool, error) { return false, nil }),
 	}
 
-	seedProfSample(t, ch, pid, "slow", 80, 5*time.Minute)
-	seedProfSample(t, ch, pid, "other", 20, 5*time.Minute)
-	seedProfSample(t, ch, pid, "slow", 30, 24*time.Hour)
-	seedProfSample(t, ch, pid, "other", 270, 24*time.Hour)
-	seedProfSample(t, ch, pid, "slow", 30, 48*time.Hour)
-	seedProfSample(t, ch, pid, "other", 270, 48*time.Hour)
+	// recentSamples("slow") сам по себе (150) обязан пройти MinSamples (100).
+	seedProfSample(t, ch, pid, "slow", 150, 5*time.Minute)
+	seedProfSample(t, ch, pid, "other", 50, 5*time.Minute)
+	seedProfSample(t, ch, pid, "slow", 60, 24*time.Hour)
+	seedProfSample(t, ch, pid, "other", 540, 24*time.Hour)
+	seedProfSample(t, ch, pid, "slow", 60, 48*time.Hour)
+	seedProfSample(t, ch, pid, "other", 540, 48*time.Hour)
 
 	eval.Tick(ctx)
 	rec, open, err := eval.Regressions.OpenFor(ctx, pid, "api", "cpu", "slow")
@@ -166,12 +168,13 @@ func TestRegressionEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *t
 		Maint: mockMaint(func(context.Context, int64, time.Time) (bool, error) { return inWindow, nil }),
 	}
 
-	seedProfSample(t, ch, pid, "slow", 80, 5*time.Minute)
-	seedProfSample(t, ch, pid, "other", 20, 5*time.Minute)
-	seedProfSample(t, ch, pid, "slow", 30, 24*time.Hour)
-	seedProfSample(t, ch, pid, "other", 270, 24*time.Hour)
-	seedProfSample(t, ch, pid, "slow", 30, 48*time.Hour)
-	seedProfSample(t, ch, pid, "other", 270, 48*time.Hour)
+	// recentSamples("slow") сам по себе (150) обязан пройти MinSamples (100).
+	seedProfSample(t, ch, pid, "slow", 150, 5*time.Minute)
+	seedProfSample(t, ch, pid, "other", 50, 5*time.Minute)
+	seedProfSample(t, ch, pid, "slow", 60, 24*time.Hour)
+	seedProfSample(t, ch, pid, "other", 540, 24*time.Hour)
+	seedProfSample(t, ch, pid, "slow", 60, 48*time.Hour)
+	seedProfSample(t, ch, pid, "other", 540, 48*time.Hour)
 
 	eval.Tick(ctx)
 	rec, open, err := eval.Regressions.OpenFor(ctx, pid, "api", "cpu", "slow")
@@ -190,8 +193,8 @@ func TestRegressionEvaluatorMaintenanceCloseSuppressedByFlagAfterWindowEnds(t *t
 	if err := ch.Exec(ctx, "TRUNCATE TABLE profile_samples"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	seedProfSample(t, ch, pid, "slow", 5, 5*time.Minute)
-	seedProfSample(t, ch, pid, "other", 95, 5*time.Minute)
+	seedProfSample(t, ch, pid, "slow", 100, 5*time.Minute)
+	seedProfSample(t, ch, pid, "other", 2000, 5*time.Minute)
 	eval.Tick(ctx)
 	if _, open, _ := eval.Regressions.OpenFor(ctx, pid, "api", "cpu", "slow"); open {
 		t.Fatalf("regression must be resolved after recovery")

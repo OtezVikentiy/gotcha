@@ -185,7 +185,7 @@ func TestRegressionOpenConcurrentOnlyOneWins(t *testing.T) {
 	}
 }
 
-func TestRegressionServiceOpenForFunctions(t *testing.T) {
+func TestRegressionServiceOpenForService(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres container")
 	}
@@ -216,15 +216,15 @@ func TestRegressionServiceOpenForFunctions(t *testing.T) {
 		t.Fatalf("resolve f4 = (%v,%v)", ok, err)
 	}
 
-	got, err := svc.OpenForFunctions(ctx, pid, "api", "cpu", []string{"f1", "f2", "f3", "f4", "f5"})
+	got, err := svc.OpenForService(ctx, pid, "api", "cpu")
 	if err != nil {
-		t.Fatalf("OpenForFunctions: %v", err)
+		t.Fatalf("OpenForService: %v", err)
 	}
 	if len(got) != 2 {
-		t.Fatalf("OpenForFunctions = %d entries (%v), want exactly f1 and f3", len(got), keysOf(got))
+		t.Fatalf("OpenForService = %d entries (%v), want exactly f1 and f3", len(got), keysOf(got))
 	}
 	if got["f1"].ID != f1.ID || got["f3"].ID != f3.ID {
-		t.Fatalf("OpenForFunctions ids = f1:%d f3:%d, want f1:%d f3:%d", got["f1"].ID, got["f3"].ID, f1.ID, f3.ID)
+		t.Fatalf("OpenForService ids = f1:%d f3:%d, want f1:%d f3:%d", got["f1"].ID, got["f3"].ID, f1.ID, f3.ID)
 	}
 	if _, ok := got["f4"]; ok {
 		t.Fatal("resolved regression f4 returned as open")
@@ -233,14 +233,57 @@ func TestRegressionServiceOpenForFunctions(t *testing.T) {
 		t.Fatal("regression of another service/type returned under our key")
 	}
 
-	got, err = svc.OpenForFunctions(ctx, pid, "api", "cpu", []string{"f3"})
-	if err != nil || len(got) != 1 || got["f3"].ID != f3.ID {
-		t.Fatalf("OpenForFunctions([f3]) = %v err=%v, want only f3", keysOf(got), err)
+	got, err = svc.OpenForService(ctx, pid, "web", "cpu")
+	if err != nil || len(got) != 1 {
+		t.Fatalf("OpenForService(web/cpu) = %v err=%v, want only f2", keysOf(got), err)
 	}
 
-	got, err = svc.OpenForFunctions(ctx, pid, "api", "cpu", nil)
+	got, err = svc.OpenForService(ctx, pid, "api", "gpu")
 	if err != nil || len(got) != 0 {
-		t.Fatalf("OpenForFunctions(nil) = %v err=%v, want empty", got, err)
+		t.Fatalf("OpenForService(api/gpu) = %v err=%v, want empty (no such profile type)", got, err)
+	}
+}
+
+func TestRegressionServiceOpenServices(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := profile.NewRegressionService(pool)
+	ctx := context.Background()
+	pid := seedProject(t, pool)
+
+	if _, _, err := svc.Open(ctx, pid, "api", "cpu", "f1", 0.1, 0.3, false); err != nil {
+		t.Fatalf("open f1: %v", err)
+	}
+	gone, _, err := svc.Open(ctx, pid, "web", "cpu", "f2", 0.1, 0.3, false)
+	if err != nil {
+		t.Fatalf("open f2/web: %v", err)
+	}
+
+	services, err := svc.OpenServices(ctx)
+	if err != nil {
+		t.Fatalf("OpenServices: %v", err)
+	}
+	want := map[profile.ProjectService]bool{
+		{ProjectID: pid, Service: "api", Type: "cpu"}: true,
+		{ProjectID: pid, Service: "web", Type: "cpu"}: true,
+	}
+	if len(services) != len(want) {
+		t.Fatalf("OpenServices = %v, want %v", services, want)
+	}
+	for _, ps := range services {
+		if !want[ps] {
+			t.Fatalf("OpenServices returned unexpected %+v", ps)
+		}
+	}
+
+	if ok, err := svc.Resolve(ctx, gone.ID, 0.1); err != nil || !ok {
+		t.Fatalf("resolve f2/web = (%v,%v)", ok, err)
+	}
+	services, err = svc.OpenServices(ctx)
+	if err != nil || len(services) != 1 || services[0].Service != "api" {
+		t.Fatalf("OpenServices после resolve = %v err=%v, want only api/cpu", services, err)
 	}
 }
 
