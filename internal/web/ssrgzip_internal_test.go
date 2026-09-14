@@ -196,3 +196,51 @@ func TestGzipSSRPassthroughBypassesBuffering(t *testing.T) {
 		t.Error("бинарное тело исказилось при проходе через gzipSSR")
 	}
 }
+
+func TestGzipSSRKeepsHTMLContentTypeOnCompressed(t *testing.T) {
+	body := []byte("<!DOCTYPE html><html><body>" + strings.Repeat("x", 2000) + "</body></html>")
+	h := gzipSSR(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(body)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if enc := rec.Header().Get("Content-Encoding"); enc != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", enc)
+	}
+	// Без явного заголовка тип додумывается по gzip-байтам и выходит application/x-gzip,
+	// а nosniff превращает страницу в скачиваемый файл.
+	if ct := rec.Result().Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html*", ct)
+	}
+}
+
+func TestGzipSSRRealServerDoesNotSniffGzipType(t *testing.T) {
+	body := []byte("<!DOCTYPE html><html><body>" + strings.Repeat("x", 2000) + "</body></html>")
+	srv := httptest.NewServer(gzipSSR(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(body)
+	})))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatalf("запрос: %v", err)
+	}
+	req.Header.Set("Accept-Encoding", "gzip")
+	// Transport сам не должен распаковывать — иначе заголовки ответа переписываются.
+	res, err := (&http.Transport{DisableCompression: true}).RoundTrip(req)
+	if err != nil {
+		t.Fatalf("запрос: %v", err)
+	}
+	defer res.Body.Close()
+
+	if enc := res.Header.Get("Content-Encoding"); enc != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", enc)
+	}
+	if ct := res.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html* (браузер скачает страницу файлом)", ct)
+	}
+}
