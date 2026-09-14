@@ -145,6 +145,94 @@ func TestSpanWriterFlushBySize(t *testing.T) {
 	_ = w.Close(context.Background())
 }
 
+// После всплеска txBuf обязан слить остаток самокиками, не дожидаясь
+// следующего 5с тика: Add() кикает только на переходе через batchSize.
+func TestSpanWriterDrainsTxBurstWithoutWaitingForTick(t *testing.T) {
+	c := &fakeCHConn{}
+	w := NewSpanWriter(c)
+	w.batchSize = 100
+	w.spanBatchSize = 1 << 30 // spanBuf не должен участвовать в этом тесте
+
+	const burst = 2500
+	for i := 0; i < burst; i++ {
+		w.Add(1, 1, sampleTx(0))
+	}
+
+	ctx := context.Background()
+	flushes := 0
+drain:
+	for {
+		select {
+		case <-w.kick:
+			w.flushTx(ctx)
+			flushes++
+		default:
+			break drain
+		}
+	}
+
+	w.mu.Lock()
+	txLeft := len(w.txBuf)
+	w.mu.Unlock()
+	if txLeft != 0 {
+		t.Fatalf("txBuf = %d после %d флашей — не самокикнулся до опустошения", txLeft, flushes)
+	}
+	if want := burst / w.batchSize; flushes != want {
+		t.Fatalf("флашей = %d, want %d — на всплеск не хватило self-kick'ов", flushes, want)
+	}
+	c.mu.Lock()
+	rows := c.txRows
+	c.mu.Unlock()
+	if rows != burst {
+		t.Fatalf("вставлено %d строк, want %d", rows, burst)
+	}
+}
+
+// Тот же самокик, что и у txBuf, но со стороны spanBuf: одна транзакция даёт
+// сразу пачку спанов, и это отдельный буфер с отдельным failStreak/self-kick.
+func TestSpanWriterDrainsSpanBurstWithoutWaitingForTick(t *testing.T) {
+	c := &fakeCHConn{}
+	w := NewSpanWriter(c)
+	w.batchSize = 1 << 30 // txBuf не должен участвовать в этом тесте
+	w.spanBatchSize = 100
+
+	const adds = 100
+	const spansPerTx = 24 // + корневой спан = 25 строк в spanBuf на каждый Add
+	for i := 0; i < adds; i++ {
+		w.Add(1, 1, sampleTx(spansPerTx))
+	}
+	const totalSpans = adds * (spansPerTx + 1)
+
+	ctx := context.Background()
+	flushes := 0
+drain:
+	for {
+		select {
+		case <-w.kick:
+			w.flushSpans(ctx)
+			flushes++
+		default:
+			break drain
+		}
+	}
+
+	w.mu.Lock()
+	spanLeft := len(w.spanBuf)
+	w.mu.Unlock()
+	if spanLeft != 0 {
+		t.Fatalf("spanBuf = %d после %d флашей — не самокикнулся до опустошения", spanLeft, flushes)
+	}
+	if want := totalSpans / w.spanBatchSize; flushes != want {
+		t.Fatalf("флашей = %d, want %d — на всплеск не хватило self-kick'ов", flushes, want)
+	}
+	c.mu.Lock()
+	rows := c.spanRows
+	c.mu.Unlock()
+	if rows != totalSpans {
+		t.Fatalf("вставлено %d строк, want %d", rows, totalSpans)
+	}
+}
+
 func TestSpanWriterRetryKeepsRows(t *testing.T) {
 	c := &fakeCHConn{failTx: true, failSpans: true}
 	w := NewSpanWriter(c)

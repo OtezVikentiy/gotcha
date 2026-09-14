@@ -364,7 +364,16 @@ func (b *Batcher) flush(ctx context.Context) {
 	}
 	b.mu.Lock()
 	b.failStreak = 0
+	more := len(b.buf) > 0
 	b.mu.Unlock()
+	// После всплеска остаток не должен ждать следующего 5с тика: Add() кикает
+	// только на переходе через batchSize, повторных киков на том же уровне не шлёт.
+	if more {
+		select {
+		case b.kick <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (b *Batcher) insert(ctx context.Context, events []Event) error {

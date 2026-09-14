@@ -309,6 +309,46 @@ func TestBatcherBoundsBufferByBytes(t *testing.T) {
 	}
 }
 
+// После всплеска Batcher обязан слить остаток самокиками, не дожидаясь
+// следующего 5с тика: Add() кикает только на переходе через batchSize.
+func TestBatcherDrainsBurstWithoutWaitingForTick(t *testing.T) {
+	c := &fakeConn{}
+	b := NewBatcher(c)
+	b.batchSize = 100
+
+	now := time.Now().UTC()
+	const burst = 2500
+	for i := 0; i < burst; i++ {
+		b.Add(Event{ID: "e", Timestamp: now})
+	}
+
+	ctx := context.Background()
+	flushes := 0
+drain:
+	for {
+		select {
+		case <-b.kick:
+			b.flush(ctx)
+			flushes++
+		default:
+			break drain
+		}
+	}
+
+	if got := b.Buffered(); got != 0 {
+		t.Fatalf("Buffered = %d после %d флашей — не самокикнулся до опустошения", got, flushes)
+	}
+	if want := burst / b.batchSize; flushes != want {
+		t.Fatalf("флашей = %d, want %d — на всплеск не хватило self-kick'ов", flushes, want)
+	}
+	c.mu.Lock()
+	rows := c.rows
+	c.mu.Unlock()
+	if rows != burst {
+		t.Fatalf("вставлено %d строк, want %d", rows, burst)
+	}
+}
+
 func TestBatcherByteAccountingSurvivesDrops(t *testing.T) {
 	b := NewBatcher(nil)
 	b.maxBuf = 5

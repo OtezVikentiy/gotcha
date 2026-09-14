@@ -580,7 +580,16 @@ func (w *SpanWriter) flushTx(ctx context.Context) {
 	}
 	w.mu.Lock()
 	w.txFailStreak = 0
+	more := len(w.txBuf) > 0
 	w.mu.Unlock()
+	// После всплеска остаток не должен ждать следующего 5с тика: Add() кикает
+	// только на переходе через batchSize, повторных киков на том же уровне не шлёт.
+	if more {
+		select {
+		case w.kick <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (w *SpanWriter) flushSpans(ctx context.Context) {
@@ -649,7 +658,16 @@ func (w *SpanWriter) flushSpans(ctx context.Context) {
 	}
 	w.mu.Lock()
 	w.spanFailStreak = 0
+	more := len(w.spanBuf) > 0
 	w.mu.Unlock()
+	// После всплеска остаток не должен ждать следующего 5с тика: Add() кикает
+	// только на переходе через batchSize, повторных киков на том же уровне не шлёт.
+	if more {
+		select {
+		case w.kick <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (w *SpanWriter) insertTx(ctx context.Context, rows []txRow) error {
