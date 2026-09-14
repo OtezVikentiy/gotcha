@@ -10,7 +10,6 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/deploy"
-	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -123,7 +122,7 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -133,13 +132,13 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 
 	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
 	monitors, err := h.Uptime.List(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -148,7 +147,7 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 
 	inMaintenance, err := h.Uptime.InMaintenance(r.Context(), projectID, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -159,7 +158,7 @@ func (h *Handler) monitorsList(w http.ResponseWriter, r *http.Request) {
 	// пакетные запросы по всему набору мониторов вместо N+1 в цикле.
 	statesByMon, err := h.Uptime.StatesBatch(r.Context(), ids)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// отказ CH не роняет список: строки со статусами показываем, колонки статистики — «нет данных».
@@ -218,12 +217,12 @@ func (h *Handler) loadAccessibleMonitor(w http.ResponseWriter, r *http.Request, 
 			h.notFound(w, r)
 			return uptime.Monitor{}, false
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return uptime.Monitor{}, false
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, m.ProjectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return uptime.Monitor{}, false
 	}
 	if !canAccess {
@@ -257,32 +256,33 @@ func (h *Handler) monitorDetail(w http.ResponseWriter, r *http.Request) {
 
 	canOperate, err := h.canOperateProject(r.Context(), m.ProjectID, uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
-	h.renderMonitorDetail(w, r, m, canOperate, canOperate)
+	h.renderMonitorDetail(w, r, m, canOperate)
 }
 
 // для показа heartbeat-URL один раз сразу после создания/ротации вызывающий выставляет
 // сырой токен в m.HeartbeatToken (в БД — только sha256); при обычном GET поле пустое.
-func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m uptime.Monitor, canManage, canOperate bool) {
+// Единственный уровень прав здесь — оператор; звать его canManage обещало бы уровень админа.
+func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m uptime.Monitor, canOperate bool) {
 	states, err := h.Uptime.States(r.Context(), m.ID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
 	now := time.Now().UTC()
 	inMaintenance, err := h.Uptime.InMaintenance(r.Context(), m.ProjectID, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	status := monitorStatus(m, states, inMaintenance)
 
 	windows, err := h.Uptime.Windows(r.Context(), m.ProjectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -332,11 +332,11 @@ func (h *Handler) renderMonitorDetail(w http.ResponseWriter, r *http.Request, m 
 	}
 	incidents, incTotal, err := h.Uptime.IncidentsForMonitorPaged(r.Context(), m.ID, monitorDetailIncidentsPerPage, (incPage-1)*monitorDetailIncidentsPerPage)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
-	_ = templates.MonitorDetail(m, status, uptime24h, uptime7d, uptime30d, latencyChart, timeRangeVM(tr), checks, incidents, incPage, incTotal, canManage, canOperate, h.BaseURL, h.currentEmail(r), statsFailed).Render(r.Context(), w)
+	_ = templates.MonitorDetail(m, status, uptime24h, uptime7d, uptime30d, latencyChart, timeRangeVM(tr), checks, incidents, incPage, incTotal, canOperate, h.BaseURL, h.currentEmail(r), statsFailed).Render(r.Context(), w)
 }
 
 func (h *Handler) monitorSetEnabled(w http.ResponseWriter, r *http.Request, enabled bool) {
@@ -361,7 +361,7 @@ func (h *Handler) monitorSetEnabled(w http.ResponseWriter, r *http.Request, enab
 		return
 	}
 	if err := h.Uptime.SetEnabled(r.Context(), m.ID, enabled); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if enabled {
@@ -412,7 +412,7 @@ func (h *Handler) monitorDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Uptime.Delete(r.Context(), m.ID); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, monitorsPath(m.ProjectID), http.StatusSeeOther)

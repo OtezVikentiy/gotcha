@@ -1,28 +1,33 @@
-/* copy.js — прогрессивное улучшение: копирование контекста ошибки в буфер.
- * Без JS кнопок нет (их рендерит шаблон рядом с textarea-источниками), базовая
- * страница не ломается. CSP строгий: внешний файл, слушатели через
- * addEventListener. navigator.clipboard есть только в secure-context (https/
- * localhost); на bare-HTTP LAN — фолбэк execCommand по выделенной textarea. */
+/* navigator.clipboard работает только в secure-context (https/localhost);
+ * на bare-HTTP — фолбэк execCommand по выделенной textarea. */
 (function () {
 	"use strict";
-	function flashDone(root) {
-		var m = root.querySelector("[data-copy-done]");
+	function flash(root, selector, ms) {
+		var m = root.querySelector(selector);
 		if (!m) return;
 		m.hidden = false;
-		setTimeout(function () { m.hidden = true; }, 1500);
+		setTimeout(function () { m.hidden = true; }, ms);
 	}
+	function flashDone(root) { flash(root, "[data-copy-done]", 1500); }
+	function flashFailed(root) { flash(root, "[data-copy-failed]", 4000); }
 	function fallbackCopy(ta, root) {
 		ta.removeAttribute("aria-hidden");
+		// iOS Safari игнорирует select()/setSelectionRange на readonly textarea —
+		// снимаем атрибут на время копирования, иначе execCommand("copy") видит пустое выделение.
+		var wasReadOnly = ta.hasAttribute("readonly");
+		ta.removeAttribute("readonly");
 		ta.focus();
 		ta.select();
-		try { if (document.execCommand("copy")) flashDone(root); } catch (e) {}
+		var ok = false;
+		try { ok = document.execCommand("copy"); } catch (e) {}
+		if (wasReadOnly) ta.setAttribute("readonly", "");
 		ta.setAttribute("aria-hidden", "true");
 		if (window.getSelection) window.getSelection().removeAllRanges();
+		if (ok) flashDone(root); else flashFailed(root);
 	}
 	function copyText(ta, root) {
-		// navigator.clipboard есть только в secure-context; вдобавок writeText может
-		// ОТКЛОНИТЬСЯ (нет фокуса/жеста, permissions-policy). Реджект тоже уводим в
-		// фолбэк execCommand — иначе кнопка молча ничего не делает (ни копии, ни тоста).
+		// writeText может отклониться без фокуса/жеста или по permissions-policy —
+		// реджект уходит в fallbackCopy, иначе кнопка молча ничего не делает.
 		if (navigator.clipboard && navigator.clipboard.writeText) {
 			navigator.clipboard.writeText(ta.value).then(
 				function () { flashDone(root); },

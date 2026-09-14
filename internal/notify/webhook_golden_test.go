@@ -38,6 +38,11 @@ func (o *capturingOutbox) Enqueue(_ context.Context, _ int64, payload map[string
 	return nil
 }
 
+func (o *capturingOutbox) EnqueueIdempotent(_ context.Context, _ int64, payload map[string]any, _ string) (bool, error) {
+	o.payload = payload
+	return true, nil
+}
+
 type fixedProjectNamer struct{ name string }
 
 func (f fixedProjectNamer) ProjectName(_ context.Context, _ int64) (string, error) {
@@ -57,7 +62,7 @@ func dispatchIssueAlertFixture(t *testing.T, allowsDetails bool) map[string]any 
 	}
 	in := escalation.DispatchInput{
 		ProjectID: fixtureProjectID,
-		Kind:      "new_issue",
+		Kind:      notify.KindNewIssue,
 		Subject: i18n.Tf(ctx, "notify.issue.subject",
 			"kind", i18n.T(ctx, "notify.issue.kind.new_issue"), "title", fixtureTitle),
 		Body: i18n.Tf(ctx, "notify.issue.body",

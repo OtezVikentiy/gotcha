@@ -40,12 +40,12 @@ func (h *Handler) loadAccessibleIssue(w http.ResponseWriter, r *http.Request, ui
 			h.notFound(w, r)
 			return issue.Issue{}, false
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return issue.Issue{}, false
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, it.ProjectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return issue.Issue{}, false
 	}
 	if !canAccess {
@@ -68,12 +68,12 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 
 	orgID, err := h.Org.ProjectOrg(r.Context(), it.ProjectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	members, err := h.Org.MembersOf(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -153,12 +153,12 @@ func (h *Handler) issueDetail(w http.ResponseWriter, r *http.Request) {
 	// молча игнорируется на постановке.
 	role, err := h.Org.Role(r.Context(), orgID, uid)
 	if err != nil && !errors.Is(err, org.ErrNotMember) {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	canManagePII := role == org.RoleOwner || role == org.RoleAdmin
 
-	_ = templates.IssueDetail(it, members, chart, timeRangeVM(tr), events, selectedID, selected, frames, h.currentEmail(r), hasTrace, showAllFrames, copyMD, copyTXT, exportsEnabled, canManagePII, loadFailed).Render(r.Context(), w)
+	_ = templates.IssueDetail(it, members, chart, timeRangeVM(tr), events, selectedID, selected, frames, h.currentEmail(r), hasTrace, showAllFrames, copyMD, copyTXT, exportsEnabled, canManagePII, loadFailed, h.RetentionDays).Render(r.Context(), w)
 }
 
 func (h *Handler) issueSetStatus(w http.ResponseWriter, r *http.Request) {
@@ -188,7 +188,7 @@ func (h *Handler) issueSetStatus(w http.ResponseWriter, r *http.Request) {
 			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOK(w, "flash.issue_status_saved", 0)
@@ -223,12 +223,12 @@ func (h *Handler) issueAssign(w http.ResponseWriter, r *http.Request) {
 		}
 		orgID, err := h.Org.ProjectOrg(r.Context(), it.ProjectID)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		members, err := h.Org.MembersOf(r.Context(), orgID)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		if !isOrgMember(members, id) {
@@ -243,7 +243,7 @@ func (h *Handler) issueAssign(w http.ResponseWriter, r *http.Request) {
 			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if assigneeID != nil {
@@ -290,8 +290,8 @@ type exceptionPayload struct {
 	Values []exceptionValue `json:"values"`
 }
 
-// Фреймы возвращаются в обратном порядке (новые/глубокие — сверху). Невалидный/пустой JSON —
-// nil, не ошибка: страница должна отрисоваться и без стектрейса.
+// Фреймы — в обратном порядке (новые сверху); `values` — от первопричины к внешнему исключению,
+// берём последний, как и internal/fingerprint/fingerprint.go. Пустой/невалидный JSON — nil, не ошибка.
 func parseStacktraceFrames(raw string) []templates.Frame {
 	if raw == "" {
 		return nil
@@ -300,7 +300,7 @@ func parseStacktraceFrames(raw string) []templates.Frame {
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil || len(payload.Values) == 0 {
 		return nil
 	}
-	frames := payload.Values[0].Stacktrace.Frames
+	frames := payload.Values[len(payload.Values)-1].Stacktrace.Frames
 	out := make([]templates.Frame, len(frames))
 	for i, f := range frames {
 		out[len(frames)-1-i] = templates.Frame{

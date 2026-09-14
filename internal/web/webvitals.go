@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
-	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
@@ -39,7 +39,7 @@ func (h *Handler) webVitalsList(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -49,7 +49,7 @@ func (h *Handler) webVitalsList(w http.ResponseWriter, r *http.Request) {
 
 	tr := h.resolveTimeRange(w, r, perfDefaultPeriod)
 	environment := r.URL.Query().Get("environment")
-	sortKey := r.URL.Query().Get("sort")
+	sortKey := canonicalPageVitalsSort(r.URL.Query().Get("sort"))
 
 	from, now := tr.From, tr.To
 
@@ -71,6 +71,16 @@ func (h *Handler) webVitalsList(w http.ResponseWriter, r *http.Request) {
 	filter := templates.PerfFilter{Range: timeRangeVM(tr), Environment: environment, Sort: sortKey}
 	_ = templates.WebVitalsList(projectID, pages, filter, environments, h.currentEmail(r), loadFailed).
 		Render(r.Context(), w)
+}
+
+// неизвестное значение схлопывается в "count" — реальный дефолт сортировки, а не
+// пропускается в шаблон сырым: иначе оно оседает в hidden-поле формы и ссылках пагинации.
+func canonicalPageVitalsSort(sortKey string) string {
+	switch sortKey {
+	case "name", "lcp", "inp", "cls":
+		return sortKey
+	}
+	return "count"
 }
 
 // дефолт даёт тот же порядок, что уже отдаёт WebVitalsPages, но пересортировка
@@ -112,15 +122,30 @@ func (h *Handler) vitalsPanel(r *http.Request, projectID int64, transaction stri
 	}
 
 	chartStep := perfBucketStep(window, perfVitalChartBuckets)
-	rows := make([]templates.VitalPanelRow, 0, len(webVitalsPanelNames))
+	// Пять независимых запросов к ClickHouse (по одному на vital) — параллельно,
+	// не по очереди: карточка ждёт самый медленный из них, а не их сумму.
+	series := make([][]trace.VitalPoint, len(webVitalsPanelNames))
+	errs := make([]error, len(webVitalsPanelNames))
+	var wg sync.WaitGroup
 	for i, name := range webVitalsPanelNames {
-		series, err := h.Trace.VitalSeries(r.Context(), projectID, transaction, name, from, now, chartStep, environment)
+		wg.Add(1)
+		go func(i int, name string) {
+			defer wg.Done()
+			series[i], errs[i] = h.Trace.VitalSeries(r.Context(), projectID, transaction, name, from, now, chartStep, environment)
+		}(i, name)
+	}
+	wg.Wait()
+	for _, err := range errs {
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	rows := make([]templates.VitalPanelRow, 0, len(webVitalsPanelNames))
+	for i, name := range webVitalsPanelNames {
 		rows = append(rows, templates.VitalPanelRow{
 			Vital: overall[i],
-			Chart: vitalSeriesSVG(r.Context(), series, perfVitalChartWidth, perfVitalChartHeight,
+			Chart: vitalSeriesSVG(r.Context(), series[i], perfVitalChartWidth, perfVitalChartHeight,
 				vitalValueFormatter(name)),
 		})
 	}

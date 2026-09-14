@@ -90,7 +90,7 @@ func TestIssuesListFilterOrder(t *testing.T) {
 	if end := strings.Index(form, "</form>"); end >= 0 {
 		form = form[:end]
 	}
-	order := []string{`name="q"`, `name="status"`, `name="level"`, `name="env"`, `name="period"`, `name="sort"`, `type="submit"`}
+	order := []string{`name="q"`, `name="status"`, `name="level"`, `name="environment"`, `name="period"`, `name="sort"`, `type="submit"`}
 	prev := -1
 	for _, field := range order {
 		idx := strings.Index(form, field)
@@ -179,12 +179,53 @@ func TestIssueDetail(t *testing.T) {
 	members := []org.Member{{UserID: 2, Email: "dev@x.io", Role: org.RoleAdmin}}
 	ev := event.Stored{ID: "ev1", Level: "error", ExceptionType: "NPE", ExceptionValue: "nil ptr", Environment: "production", Release: "1.2.3", TraceID: "abc", Tags: map[string]string{"k": "v"}}
 	frames := []Frame{{Function: "main", Module: "app", Filename: "main.go", Lineno: 10, InApp: true}}
-	out := renderTo(t, IssueDetail(it, members, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "ev1", &ev, frames, "u@e.com", true, true, "", "", true, true, false))
+	out := renderTo(t, IssueDetail(it, members, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "ev1", &ev, frames, "u@e.com", true, true, "", "", true, true, false, 90))
 	if !strings.Contains(out, "NPE") || !strings.Contains(out, "main.go:10") {
 		t.Error("деталь issue должна показать исключение и локацию кадра")
 	}
 	if !strings.Contains(out, "dev@x.io") {
 		t.Error("должен отрисоваться назначенный")
+	}
+}
+
+func TestIssueDetailTagsSortedByKey(t *testing.T) {
+	it := issue.Issue{ID: 5, Title: "NPE", Level: "error", Status: "unresolved"}
+	ev := event.Stored{ID: "ev1", Level: "error", Tags: map[string]string{"zebra": "1", "alpha": "2", "mango": "3"}}
+	out := renderTo(t, IssueDetail(it, nil, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "ev1", &ev, nil, "u@e.com", false, false, "", "", true, true, false, 90))
+	ia, im, iz := strings.Index(out, ">alpha<"), strings.Index(out, ">mango<"), strings.Index(out, ">zebra<")
+	if ia < 0 || im < 0 || iz < 0 {
+		t.Fatalf("не все теги отрисованы: %s", out)
+	}
+	if !(ia < im && im < iz) {
+		t.Errorf("теги не в алфавитном порядке: alpha@%d, mango@%d, zebra@%d", ia, im, iz)
+	}
+}
+
+func TestIssueDetailNoEventsShowsRetentionExplanation(t *testing.T) {
+	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+	it := issue.Issue{ID: 5, Title: "NPE", Level: "error", Status: "unresolved"}
+
+	out := renderTo(t, IssueDetail(it, nil, stub(), TimeRangeVM{Key: "24h"}, nil, "", nil, nil, "u@e.com", false, false, "", "", true, true, false, 90))
+	if strings.Contains(out, `class="issue-events data-table"`) {
+		t.Error("пустая таблица событий отрисована вместо пустого состояния")
+	}
+	if !strings.Contains(out, "90") {
+		t.Errorf("срок хранения не назван в пустом состоянии: %s", out)
+	}
+	wantPurgedBody := i18n.T(ctx, "issues.detail.events_empty.body_purged")
+	if strings.Contains(out, wantPurgedBody) {
+		t.Errorf("retention=90 не должен показывать текст про удаление по запросу: %s", out)
+	}
+
+	purged := renderTo(t, IssueDetail(it, nil, stub(), TimeRangeVM{Key: "24h"}, nil, "", nil, nil, "u@e.com", false, false, "", "", true, true, false, 0))
+	if strings.Contains(purged, `class="issue-events data-table"`) {
+		t.Error("пустая таблица событий отрисована вместо пустого состояния (retention=0)")
+	}
+	if !strings.Contains(purged, wantPurgedBody) {
+		t.Errorf("retention=0 должен показывать текст про удаление по запросу: %s", purged)
+	}
+	if strings.Contains(purged, "90") {
+		t.Errorf("retention=0 не должен называть срок хранения в днях: %s", purged)
 	}
 }
 
@@ -195,7 +236,7 @@ func TestPerformanceList(t *testing.T) {
 	out := renderTo(t, PerformanceList(7, rows, 1, PerfFilter{Range: TimeRangeVM{Key: "24h"}, Sort: "throughput"}, []string{"production"}, 500,
 		// без примеров человек не догадается, что в имя транзакции попал идентификатор.
 		[]CardinalityNotice{{Field: "transaction name", Limit: 10000, Collapsed: 47213,
-			Samples: []string{"GET /users/8812/profile", "GET /users/8813/profile"}}}, "u@e.com", false))
+			Samples: []string{"GET /users/8812/profile", "GET /users/8813/profile"}}}, "u@e.com", false, false))
 	if !strings.Contains(out, "GET /api") {
 		t.Error("список должен содержать транзакцию")
 	}
@@ -205,8 +246,21 @@ func TestPerformanceList(t *testing.T) {
 	if !strings.Contains(out, "/docs/cardinality") {
 		t.Error("предупреждение должно вести на страницу документации")
 	}
+	// help.cardinality.title/.body написаны в каталоге, но без этого вызова панель
+	// никогда не показывалась бы — справка до пользователя не доходила.
+	if !strings.Contains(out, "Кардинальность — число различных значений") {
+		t.Error("при кардинальности должна показываться справочная панель")
+	}
 
-	empty := renderTo(t, PerformanceList(7, nil, 0, PerfFilter{}, nil, 0, nil, "u@e.com", false))
+	capped := renderTo(t, PerformanceList(7, rows, 1, PerfFilter{Range: TimeRangeVM{Key: "24h"}}, []string{"production"}, 500, nil, "u@e.com", false, true))
+	if strings.Contains(capped, "Кардинальность — число различных значений") {
+		t.Error("без кардинальности справочная панель не должна показываться")
+	}
+	if !strings.Contains(capped, "больше 20 000 разных эндпойнтов") {
+		t.Error("при capped=true должно показываться предупреждение об усечении окна CH-запросом")
+	}
+
+	empty := renderTo(t, PerformanceList(7, nil, 0, PerfFilter{}, nil, 0, nil, "u@e.com", false, false))
 	if strings.Contains(empty, "GET /api") {
 		t.Error("пустой список не должен содержать транзакций")
 	}
@@ -257,14 +311,22 @@ func TestMonitorDetail(t *testing.T) {
 		{ID: 2, StartedAt: now.Add(-5 * time.Hour), ResolvedAt: ptrTime(now.Add(-4 * time.Hour)), Cause: "5xx"},
 	}
 	stat := uptime.UptimeStat{Total: 100, OK: 99}
-	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, checks, incidents, 1, int64(len(incidents)), true, true, "https://gotcha.example", "u@e.com", false))
+	out := renderTo(t, MonitorDetail(m, "up", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, checks, incidents, 1, int64(len(incidents)), true, "https://gotcha.example", "u@e.com", false))
 	if !strings.Contains(out, "api") || !strings.Contains(out, "badge-good") || !strings.Contains(out, "badge-danger") {
 		t.Error("деталь монитора должна показать имя и статусы проверок")
 	}
+	if !strings.Contains(out, "monitor-actions") {
+		t.Error("у оператора должен быть блок действий (пауза/правка/удаление)")
+	}
 
-	noManage := renderTo(t, MonitorDetail(m, "down", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, false, false, "https://x", "u@e.com", false))
+	noManage := renderTo(t, MonitorDetail(m, "down", stat, stat, stat, stub(), TimeRangeVM{Key: "24h"}, nil, nil, 1, 0, false, "https://x", "u@e.com", false))
 	if !strings.Contains(noManage, "api") {
 		t.Error("монитор без прав всё равно рендерится")
+	}
+	// canOperate гейтит единственный уровень прав у этого блока (см. renderMonitorDetail) —
+	// участник без прав оператора не должен видеть паузу/удаление/перевыпуск токена.
+	if strings.Contains(noManage, "monitor-actions") {
+		t.Error("у участника без прав оператора не должно быть блока действий")
 	}
 }
 
@@ -323,13 +385,28 @@ func TestAlerts(t *testing.T) {
 		{ID: 1, Kind: "email", Enabled: true, Target: "team@x.io"},
 		{ID: 2, Kind: "webhook", Enabled: false, Target: "https://hook"},
 	}
-	out := renderTo(t, Alerts(7, rules, channels, true, true, nil, "", "u@e.com"))
+	out := renderTo(t, Alerts(7, rules, channels, true, true, false, nil, "", "u@e.com"))
 	if !strings.Contains(out, "team@x.io") || !strings.Contains(out, "https://hook") {
 		t.Error("каналы должны отрендериться")
 	}
-	outErr := renderTo(t, Alerts(7, nil, nil, false, true, nil, "ошибка сохранения", "u@e.com"))
+	outErr := renderTo(t, Alerts(7, nil, nil, false, true, false, nil, "ошибка сохранения", "u@e.com"))
 	if !strings.Contains(outErr, "ошибка сохранения") {
 		t.Error("ошибка должна отрендериться")
+	}
+}
+
+func TestAlertsSecretKeyInsecureWarning(t *testing.T) {
+	channels := []alert.Channel{{ID: 1, Kind: "telegram", Enabled: true, Target: "@ch"}}
+	warnText := i18n.T(i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"}), "secret.insecure_warning")
+
+	insecure := renderTo(t, Alerts(7, nil, channels, true, true, true, nil, "", "u@e.com"))
+	if !strings.Contains(insecure, warnText) {
+		t.Error("на dev-ключе предупреждение о секретах отсутствует")
+	}
+
+	secure := renderTo(t, Alerts(7, nil, channels, true, true, false, nil, "", "u@e.com"))
+	if strings.Contains(secure, warnText) {
+		t.Error("на сильном ключе предупреждение о секретах не должно рендериться")
 	}
 }
 
@@ -355,6 +432,24 @@ func TestOrgSettings(t *testing.T) {
 	out2 := renderTo(t, OrgSettings(o, members, 2, quotas, false, "боом", "", SSOSettings{}, "admin@x.io", &QuotaBanner{Text: "лимит", Href: "/x"}, SubjectPurgeVM{}, nil, nil))
 	if !strings.Contains(out2, "боом") {
 		t.Error("ошибка орга должна отрендериться")
+	}
+}
+
+func TestOrgSettingsSecretKeyInsecureWarning(t *testing.T) {
+	o := org.Org{ID: 1, Slug: "acme", Name: "Acme"}
+	members := []org.Member{{UserID: 1, Email: "owner@x.io", Role: org.RoleOwner}}
+	warnText := i18n.T(i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"}), "secret.insecure_warning")
+
+	insecureSSO := SSOSettings{CanConfigure: true, SecretKeyInsecure: true}
+	insecure := renderTo(t, OrgSettings(o, members, 1, nil, true, "", "", insecureSSO, "owner@x.io", nil, SubjectPurgeVM{}, nil, nil))
+	if !strings.Contains(insecure, warnText) {
+		t.Error("на dev-ключе предупреждение о client_secret отсутствует")
+	}
+
+	secureSSO := SSOSettings{CanConfigure: true, SecretKeyInsecure: false}
+	secure := renderTo(t, OrgSettings(o, members, 1, nil, true, "", "", secureSSO, "owner@x.io", nil, SubjectPurgeVM{}, nil, nil))
+	if strings.Contains(secure, warnText) {
+		t.Error("на сильном ключе предупреждение о client_secret не должно рендериться")
 	}
 }
 
@@ -399,6 +494,21 @@ func TestProfileRegressionsList(t *testing.T) {
 	out := renderTo(t, ProfileRegressionsList(7, regs, "open", "u@e.com", true))
 	if !strings.Contains(out, "hot()") {
 		t.Error("регрессии профилей должны содержать функцию")
+	}
+}
+
+// Проект, где стоит только агент Gotcha, видит одни system.* метрики: пустой
+// список без единой видимой строки не должен выглядеть как поломка загрузки.
+func TestMetricsListAllSystemHiddenShowsEmptyState(t *testing.T) {
+	out := renderTo(t, MetricsList(7, nil, "", "u@e.com", false, 3, false))
+	if strings.Contains(out, `<table class="data-table">`) {
+		t.Errorf("пустая таблица отрисована при hiddenCount>0 и showSystem=false: %s", out)
+	}
+	if !strings.Contains(out, "empty-state") {
+		t.Errorf("нет пустого состояния при hiddenCount>0 и showSystem=false: %s", out)
+	}
+	if !strings.Contains(out, "3") {
+		t.Errorf("число скрытых системных метрик не названо: %s", out)
 	}
 }
 
@@ -530,7 +640,7 @@ func TestProjectSettings(t *testing.T) {
 	keys := []ProjectKeyView{
 		{Key: org.Key{ID: 1, PublicKey: "pk_live", Kind: org.KindServer, Revoked: false}, DSN: "https://pk_live@dsn"},
 		{Key: org.Key{ID: 2, PublicKey: "pk_old", Kind: org.KindLegacy, Revoked: true}, DSN: "https://pk_old@dsn"},
-		// Kind=="" — строки без миграции типов; keyKindLabelKey должна показать «без типа», как и явный legacy.
+		// Kind=="" — строки без миграции типов; KeyKindLabelKey должна показать «без типа», как и явный legacy.
 		{Key: org.Key{ID: 3, PublicKey: "pk_untyped", Kind: "", Revoked: false}, DSN: "https://pk_untyped@dsn"},
 	}
 	perf := PerfSettingsForm{SampleRate: "1.0", ApdexMS: "500", NPlusOneMin: "5", SlowDBMs: "300"}
@@ -693,7 +803,7 @@ func TestIssuesUntitledFallback(t *testing.T) {
 
 	it := issue.Issue{ID: 9, Title: "", Level: "error", Status: "unresolved", TimesSeen: 1, FirstSeen: now, LastSeen: now}
 	ev := event.Stored{ID: "ev1", Level: "error", Message: ""}
-	detail := renderTo(t, IssueDetail(it, nil, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "ev1", &ev, nil, "u@e.com", false, false, "", "", true, true, false))
+	detail := renderTo(t, IssueDetail(it, nil, stub(), TimeRangeVM{Key: "24h"}, []event.Stored{ev}, "ev1", &ev, nil, "u@e.com", false, false, "", "", true, true, false, 90))
 	if strings.Contains(detail, "<h1></h1>") {
 		t.Error("деталь: пустой <h1>")
 	}

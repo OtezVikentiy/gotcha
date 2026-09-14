@@ -91,8 +91,7 @@ func (h *Handler) probeLease(w http.ResponseWriter, r *http.Request) {
 	writeProbeJSON(w, http.StatusOK, resp)
 }
 
-// Центр пробе не доверяет: время результата ставит он сам. Отвергнутый результат — не
-// ошибка запроса, такие просто считаются в rejected, а пачка остаётся 200.
+// Центр пробе не доверяет: время результата ставит он сам, пачка всегда 200.
 func (h *Handler) probeResults(w http.ResponseWriter, r *http.Request) {
 	probe, ok := h.probeAuth(w, r)
 	if !ok {
@@ -150,11 +149,10 @@ func (h *Handler) probeResults(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if !claimed[res.QueueID] {
-			// Задание уже забрано: перевыдано после истечения lease, пока проба ходила по
-			// сети, либо тот же queue_id встретился в пачке дважды — не ошибка запроса.
+			// Перевыдано после lease либо queue_id продублирован в пачке — не приём.
 			slog.Info("uptime: ingest: job already claimed or re-leased, result dropped",
 				"monitor_id", job.MonitorID, "region", job.Region, "queue_id", job.QueueID)
-			resp.Accepted++
+			resp.Dropped++
 			continue
 		}
 		claimed[res.QueueID] = false

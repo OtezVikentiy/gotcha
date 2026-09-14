@@ -34,7 +34,9 @@ jobs:
             *) echo "::error::'$TAG' не похоже на тег версии (ожидается vX.Y.Z)" >&2; exit 1 ;;
           esac
 
-      - uses: actions/checkout@v7
+      # Тег действия мутабелен, а джоб держит RELEASE_PAT — в отличие от ci.yml (contents:
+      # read, без секретов), здесь пиним по digest, как остальные образы проекта.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag || github.ref_name }}
 

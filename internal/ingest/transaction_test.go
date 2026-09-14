@@ -258,6 +258,27 @@ func TestParseTransactionCapsUntrustedStrings(t *testing.T) {
 	}
 }
 
+// Многобайтовое описание каппится по БАЙТАМ: рунный кап пропустил бы
+// вчетверо больше входа в NormalizeSQL, чем предполагает maxSpanDescription.
+func TestParseTransactionCapsDescriptionByBytesNotRunes(t *testing.T) {
+	raw := fmt.Sprintf(`{"type":"transaction","transaction":"t",
+		"contexts":{"trace":{"trace_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"span_id":"bbbbbbbbbbbbbbbb","op":"http.server","status":"ok"}},
+		"spans":[{"span_id":"cccccccccccccccc","op":"db.sql.query","description":%q}]}`,
+		strings.Repeat("щ", 3000)) // 6000 байт, все двухбайтовые руны
+
+	tx, err := ingest.ParseTransaction([]byte(raw))
+	if err != nil {
+		t.Fatalf("ParseTransaction: %v", err)
+	}
+	if len(tx.Spans) != 1 {
+		t.Fatalf("spans = %d, want 1", len(tx.Spans))
+	}
+	if n := len(tx.Spans[0].Description); n > 2000 {
+		t.Errorf("len(span.Description) в байтах = %d, want <= 2000", n)
+	}
+}
+
 func TestParseTransactionCapsSpanCount(t *testing.T) {
 	base := txBase()
 	var spans []string

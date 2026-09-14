@@ -44,7 +44,7 @@ func (h *Handler) sloDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	s, found, err := h.SLO.Get(r.Context(), projectID, sloID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !found {

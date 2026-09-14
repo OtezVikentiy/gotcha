@@ -15,6 +15,7 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
+	"gitflic.ru/otezvikentiy/gotcha/internal/scrub"
 )
 
 type stubKeyResolver struct{ key org.Key }
@@ -33,7 +34,7 @@ func TestOTLPMetricsScrubAttributes(t *testing.T) {
 	sink := &collectMetricSink{}
 	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindLegacy}}), nil, nil, 1<<20)
 	h.Metrics = sink
-	h.Scrub = NewScrubber(true, false, []string{"token"})
+	h.Scrub = scrub.NewScrubber(true, false, []string{"token"})
 
 	md := &metricspb.MetricsData{ResourceMetrics: []*metricspb.ResourceMetrics{{
 		ScopeMetrics: []*metricspb.ScopeMetrics{{Metrics: []*metricspb.Metric{
@@ -67,8 +68,8 @@ func TestOTLPMetricsScrubAttributes(t *testing.T) {
 		t.Fatalf("принято точек = %d, want 1", len(sink.points))
 	}
 	got := sink.points[0]
-	if got.Attributes["token"] != scrubMask {
-		t.Errorf("attributes[token] = %q, want %q", got.Attributes["token"], scrubMask)
+	if got.Attributes["token"] != "[scrubbed]" {
+		t.Errorf("attributes[token] = %q, want %q", got.Attributes["token"], "[scrubbed]")
 	}
 	if got.Attributes["name"] != "cpu" {
 		t.Errorf("attributes[name] = %q, want не тронут", got.Attributes["name"])

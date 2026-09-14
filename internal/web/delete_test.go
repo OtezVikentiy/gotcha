@@ -3,6 +3,7 @@ package web_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -26,6 +27,7 @@ type fakePurger struct {
 	subjectErr error // если задан — PurgeSubject возвращает его
 	// нулевое значение поля — валидный результат «строк не нашлось», а не «не задано»
 	subjectResult telemetry.PurgeResult
+	exportResult  telemetry.SubjectExport
 }
 
 type purgeSubjectCall struct {
@@ -51,7 +53,7 @@ func (f *fakePurger) ExportSubject(_ context.Context, projectID int64, sub telem
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.exports = append(f.exports, purgeSubjectCall{projectID: projectID, sub: sub})
-	return telemetry.SubjectExport{}, nil
+	return f.exportResult, nil
 }
 
 func TestWebDeleteProject(t *testing.T) {
@@ -452,6 +454,15 @@ func TestWebExportSubject(t *testing.T) {
 		t.Fatalf("ExportSubject called on empty subject: %v", fp.exports)
 	}
 
+	// Усечение (Truncated/Counts) обязано доехать до тела ответа как есть —
+	// это единственный канал, которым субъект узнаёт о неполноте выгрузки.
+	fp.exportResult = telemetry.SubjectExport{
+		Truncated: true,
+		Counts: map[string]telemetry.SubjectExportCounts{
+			"events": {Returned: 10000, Total: 10050},
+		},
+	}
+
 	resp = postForm(t, s.srv, exportPath, form(), s.srv.URL, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -466,6 +477,16 @@ func TestWebExportSubject(t *testing.T) {
 	}
 	if len(body) == 0 {
 		t.Fatalf("POST %s (owner) empty body", exportPath)
+	}
+	var decoded telemetry.SubjectExport
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("POST %s (owner) decode body: %v", exportPath, err)
+	}
+	if !decoded.Truncated {
+		t.Fatalf("POST %s (owner) body.truncated=false, want true — усечение не доехало до ответа", exportPath)
+	}
+	if got := decoded.Counts["events"]; got.Returned != 10000 || got.Total != 10050 {
+		t.Fatalf("POST %s (owner) body.counts.events = %+v, want {Returned:10000 Total:10050}", exportPath, got)
 	}
 	if len(fp.exports) != 1 {
 		t.Fatalf("ExportSubject calls = %d, want 1", len(fp.exports))

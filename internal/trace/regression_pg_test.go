@@ -121,7 +121,7 @@ func TestRegressionAcknowledge(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 
-	list, err := svc.List(ctx, pid, 10)
+	list, err := svc.List(ctx, pid, "", 10)
 	if err != nil || len(list) != 1 || list[0].AcknowledgedAt != nil || list[0].AcknowledgedBy != nil {
 		t.Fatalf("до Acknowledge: list=%+v err=%v, want AcknowledgedAt/By nil", list, err)
 	}
@@ -131,7 +131,7 @@ func TestRegressionAcknowledge(t *testing.T) {
 		t.Fatalf("Acknowledge = (%v,%v), want (true,nil)", ok, err)
 	}
 
-	list, err = svc.List(ctx, pid, 10)
+	list, err = svc.List(ctx, pid, "", 10)
 	if err != nil || len(list) != 1 || list[0].AcknowledgedAt == nil {
 		t.Fatalf("после Acknowledge: list=%+v err=%v, want AcknowledgedAt заполнено", list, err)
 	}
@@ -181,7 +181,7 @@ func TestRegressionAcknowledgeForeignProject(t *testing.T) {
 		t.Fatalf("Acknowledge с чужим project_id = (%v,%v), want (false,nil)", ok, err)
 	}
 
-	list, err := svc.List(ctx, pid, 10)
+	list, err := svc.List(ctx, pid, "", 10)
 	if err != nil || len(list) != 1 || list[0].AcknowledgedAt != nil {
 		t.Fatalf("после чужого Acknowledge: list=%+v err=%v, want AcknowledgedAt nil", list, err)
 	}
@@ -383,11 +383,52 @@ func TestRegressionList(t *testing.T) {
 		t.Fatalf("Open 2: %v", err)
 	}
 
-	list, err := svc.List(ctx, pid, 10)
+	list, err := svc.List(ctx, pid, "", 10)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	if len(list) != 2 || list[0].ID != r2.ID || list[1].ID != r1.ID {
 		t.Fatalf("List = %+v, want [r2 r1] freshest first", list)
+	}
+}
+
+func TestRegressionListFiltersStatusInSQL(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := trace.NewRegressionService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newPerfProject(t, pool, "reg-status-sql")
+
+	older, _, err := svc.Open(ctx, pid, "endpoint_p95", "GET /open-older", "duration", 100, 150, false)
+	if err != nil {
+		t.Fatalf("Open older: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		"UPDATE perf_regressions SET started_at = started_at - interval '1 hour' WHERE id = $1", older.ID); err != nil {
+		t.Fatalf("age older regression: %v", err)
+	}
+	newer, _, err := svc.Open(ctx, pid, "endpoint_p95", "GET /open-newer", "duration", 100, 150, false)
+	if err != nil {
+		t.Fatalf("Open newer: %v", err)
+	}
+
+	resolvedTargets := []string{"GET /resolved-1", "GET /resolved-2", "GET /resolved-3"}
+	for _, tx := range resolvedTargets {
+		r, _, err := svc.Open(ctx, pid, "endpoint_p95", tx, "duration", 100, 150, false)
+		if err != nil {
+			t.Fatalf("Open %s: %v", tx, err)
+		}
+		if _, err := svc.Resolve(ctx, r.ID, 100); err != nil {
+			t.Fatalf("Resolve %s: %v", tx, err)
+		}
+	}
+
+	got, err := svc.List(ctx, pid, "open", 1)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != newer.ID {
+		t.Fatalf("List(status=open, limit=1) = %+v, want [newer %d]", got, newer.ID)
 	}
 }

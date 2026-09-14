@@ -332,6 +332,146 @@ func regressionInMaintenance(t *testing.T, ctx context.Context, pool *pgxpool.Po
 	return v
 }
 
+// Воспроизводит K17: эндпоинт, снятый с эксплуатации (трафика нет вовсе в новом
+// окне), обязан закрыть свою открытую регрессию, а не висеть открытым бессрочно.
+func TestEvaluatorClosesOrphanRegressionWhenTargetVanishes(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+
+	ev := &Evaluator{
+		Pool: pool, Query: NewQuery(conn), Regressions: NewRegressionService(pool),
+		TopK: 50, BaselineDays: 7,
+	}
+	pid := createEvalProject(t, pool, "eval-orphan-vanish")
+	cfg := DefaultRegressionConfig()
+	const target = "GET /retired"
+
+	now := time.Now().UTC()
+	w := NewSpanWriter(conn)
+	go w.Run()
+	for d := 1; d <= 6; d++ {
+		addEndpointTx(w, pid, target, now.Add(-time.Duration(d)*24*time.Hour), 800, 20, fmt.Sprintf("van-base-%d", d))
+	}
+	addEndpointTx(w, pid, target, now.Add(-2*time.Minute), 1200, 120, "van-spike")
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("seed close: %v", err)
+	}
+
+	ev.evalProject(ctx, pid, cfg, 50, 7, now)
+	if status, _, _ := incidentState(t, ctx, pool, pid, target, "duration"); status != "open" {
+		t.Fatalf("после скачка: status=%q, want open", status)
+	}
+
+	// Окно уезжает далеко вперёд — цель больше не видна вообще, ни в top-K, ни в
+	// сыром запросе окна: ушла из эксплуатации, а не просто вытеснена соседкой.
+	now2 := now.Add(65 * time.Minute)
+	ev.evalProject(ctx, pid, cfg, 50, 7, now2)
+	if status, _, _ := incidentState(t, ctx, pool, pid, target, "duration"); status != "resolved" {
+		t.Fatalf("после исчезновения цели: status=%q, want resolved (K17)", status)
+	}
+}
+
+// Воспроизводит вторую половину K17: эндпоинт, вытесненный из top-K более
+// трафикуемым соседом, обязан оцениваться по свежим данным, не игнорироваться.
+func TestEvaluatorClosesRegressionDisplacedByTopKOnRecovery(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+
+	ev := &Evaluator{
+		Pool: pool, Query: NewQuery(conn), Regressions: NewRegressionService(pool),
+		TopK: 50, BaselineDays: 7,
+	}
+	pid := createEvalProject(t, pool, "eval-orphan-displaced")
+	cfg := DefaultRegressionConfig()
+	const hiTarget = "GET /hi"
+	const loTarget = "GET /lo"
+
+	now := time.Now().UTC()
+	w := NewSpanWriter(conn)
+	go w.Run()
+	for d := 1; d <= 6; d++ {
+		addEndpointTx(w, pid, loTarget, now.Add(-time.Duration(d)*24*time.Hour), 800, 20, fmt.Sprintf("lo-base-%d", d))
+	}
+	addEndpointTx(w, pid, loTarget, now.Add(-2*time.Minute), 1200, 120, "lo-spike")
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("seed close: %v", err)
+	}
+
+	// TopK=2 достаточно, чтобы открыть регрессию по обеим целям с трафиком.
+	ev.evalProject(ctx, pid, cfg, 2, 7, now)
+	if status, _, _ := incidentState(t, ctx, pool, pid, loTarget, "duration"); status != "open" {
+		t.Fatalf("после скачка: status=%q, want open", status)
+	}
+
+	// Новое окно: lo честно восстановился (800мс), но hi доминирует трафиком
+	// настолько, что при TopK=1 lo в сырой top-K не попадёт вовсе.
+	now2 := now.Add(65 * time.Minute)
+	w2 := NewSpanWriter(conn)
+	go w2.Run()
+	addEndpointTx(w2, pid, hiTarget, now2.Add(-2*time.Minute), 800, 500, "hi-dominant")
+	addEndpointTx(w2, pid, loTarget, now2.Add(-2*time.Minute), 800, 150, "lo-recovered")
+	if err := w2.Close(ctx); err != nil {
+		t.Fatalf("seed recovery close: %v", err)
+	}
+
+	ev.evalProject(ctx, pid, cfg, 1, 7, now2)
+	if status, _, _ := incidentState(t, ctx, pool, pid, loTarget, "duration"); status != "resolved" {
+		t.Fatalf("lo восстановился, но вытеснен из TopK=1 и не переоценён: status=%q, want resolved (K17)", status)
+	}
+}
+
+// Воспроизводит K72 для trace (близнец профильного): скользящий base не должен
+// впитывать дни уже открытого инцидента, иначе регрессия "рассасывается" сама.
+func TestEvaluatorBaselineCutoffFreezesOnOpenIncident(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+
+	regressions := NewRegressionService(pool)
+	ev := &Evaluator{Pool: pool, Query: NewQuery(conn), Regressions: regressions}
+	pid := createEvalProject(t, pool, "eval-cutoff")
+	cfg := DefaultRegressionConfig()
+	const target = "GET /degraded"
+
+	now := time.Now().UTC()
+	startedAt := now.Add(-3 * 24 * time.Hour)
+
+	w := NewSpanWriter(conn)
+	go w.Run()
+	// Чистая база — 800мс, ЗАДОЛГО до открытия инцидента.
+	addEndpointTx(w, pid, target, now.Add(-6*24*time.Hour), 800, 60, "cut-clean-1")
+	addEndpointTx(w, pid, target, now.Add(-5*24*time.Hour), 800, 60, "cut-clean-2")
+	// Дни самого инцидента (после StartedAt) — держат повышенные 1200мс. Если
+	// база впитает их, инцидент "рассосётся" сам на честно продолжающейся деградации.
+	addEndpointTx(w, pid, target, now.Add(-3*24*time.Hour).Add(time.Hour), 1200, 60, "cut-inc-1")
+	addEndpointTx(w, pid, target, now.Add(-2*24*time.Hour), 1200, 60, "cut-inc-2")
+	addEndpointTx(w, pid, target, now.Add(-1*24*time.Hour), 1200, 60, "cut-inc-3")
+	// "Сегодня" (recent-окно) — та же деградация, ещё не восстановилось.
+	addEndpointTx(w, pid, target, now.Add(-2*time.Minute), 1200, 120, "cut-recent")
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("seed close: %v", err)
+	}
+
+	rec, created, err := regressions.Open(ctx, pid, "endpoint_p95", target, "duration", 800, 800, false)
+	if err != nil || !created {
+		t.Fatalf("seed open regression: created=%v err=%v", created, err)
+	}
+	if _, err := pool.Exec(ctx, "UPDATE perf_regressions SET started_at=$2 WHERE id=$1", rec.ID, startedAt); err != nil {
+		t.Fatalf("backdate started_at: %v", err)
+	}
+
+	ev.evalProject(ctx, pid, cfg, 50, 4, now)
+
+	if status, _, _ := incidentState(t, ctx, pool, pid, target, "duration"); status != "open" {
+		t.Fatalf("регрессия закрылась сама на честно продолжающейся деградации — база впитала дни инцидента (K72): status=%q", status)
+	}
+}
+
 // Открытие регрессии в окне обслуживания пишет инцидент с in_maintenance=true, но НЕ
 // уведомляет; закрытие того же инцидента (ещё внутри окна) тоже не уведомляет.
 func TestEvaluatorMaintenanceSuppressesRegressionNotify(t *testing.T) {
@@ -708,6 +848,35 @@ func TestEvaluatorReadsOpenRegressionsOnce(t *testing.T) {
 	}
 	if got := counting.reads.Load(); got != 1 {
 		t.Fatalf("запросов открытых регрессий за тик = %d, хотим 1 (независимо от числа целей — их %d)", got, len(targets))
+	}
+}
+
+// Синтаксически валидный, но не той формы JSON не должен включить пейджинг
+// проекту, явно ВЫКЛЮЧИВШЕМУ детектор, дефолтными порогами — тик его пропускает.
+func TestEvaluatorSkipsProjectWithUnparsableRegressionConfig(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	counting := &countingRegressions{RegressionService: NewRegressionService(pool)}
+	ev := &Evaluator{
+		Pool: pool, Query: NewQuery(conn), Regressions: counting,
+		TopK: 10, BaselineDays: 7,
+	}
+
+	pid := createEvalProject(t, pool, "eval-bad-config")
+	// Валидный JSON (jsonb-колонка его примет), но "enabled" не bool —
+	// json.Unmarshal провалится на типе поля, не на синтаксисе.
+	if _, err := pool.Exec(ctx,
+		`UPDATE projects SET perf_regression_config = '{"enabled":"not-a-bool"}' WHERE id = $1`, pid); err != nil {
+		t.Fatalf("seed broken config: %v", err)
+	}
+
+	ev.tick(ctx)
+
+	if got := counting.reads.Load(); got != 0 {
+		t.Fatalf("OpenForProject вызван %d раз для проекта с неразбираемым конфигом, want 0 (проект должен быть пропущен, не оценён на дефолтах)", got)
 	}
 }
 

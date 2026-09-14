@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
-	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 )
 
 func (h *Handler) canOperateProject(ctx context.Context, projectID, userID int64) (bool, error) {
@@ -26,18 +25,18 @@ func (h *Handler) requireProjectOperator(w http.ResponseWriter, r *http.Request,
 	}
 	canOperate, err := h.canOperateProject(r.Context(), projectID, userID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return projectAuthz{}, false
 	}
 	if !canOperate {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 		return projectAuthz{}, false
 	}
 	// CanManage считается безусловно, даже для вызовов, которым он не нужен —
 	// чтобы не раздваивать гейт ради редких путей.
 	canManage, err := h.canManageOrg(r.Context(), orgID, userID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return projectAuthz{}, false
 	}
 	return projectAuthz{OrgID: orgID, CanManage: canManage}, true

@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"math"
 	"strconv"
 	"strings"
 	"testing"
@@ -99,6 +100,36 @@ func TestRecipeChartsRedis(t *testing.T) {
 			t.Errorf("%s chart not Empty без данных", key)
 		}
 	}
+}
+
+// Субнормаль может оказаться в ClickHouse и минуя приёмный конвейер: рендер обязан
+// оставаться безопасным сам по себе, не только за счёт нормализации на приёме.
+func TestRecipeChartsSubnormalValueRenders(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	ch := testenv.MigratedCH(t)
+	h := &Handler{Metrics: metric.NewQuery(ch)}
+	ctx := context.Background()
+	const pid = int64(880065)
+
+	now := time.Now().UTC().Truncate(time.Minute)
+	from, to := now.Add(-10*time.Minute), now.Add(time.Minute)
+
+	seedRecipePoint(t, ch, pid, "redis.memory.used", "gauge", 0, "", now.Add(-2*time.Minute), math.SmallestNonzeroFloat64, nil)
+	seedRecipePoint(t, ch, pid, "redis.memory.used", "gauge", 0, "", now.Add(-time.Minute), math.SmallestNonzeroFloat64, nil)
+
+	rec, ok := recipes.ByID("redis")
+	if !ok {
+		t.Fatal("redis recipe not found")
+	}
+	runWithDeadline(t, 5*time.Second, func() {
+		vms := h.recipeCharts(ctx, pid, rec, from, to, time.Minute)
+		mem := chartByKey(t, vms, "memory")
+		if mem.Empty {
+			t.Error("memory chart Empty при засеянных точках")
+		}
+	})
 }
 
 // SeriesGroupedRate тестируем на синтетическом Chart, а не рецепте реестра — не зависим от

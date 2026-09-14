@@ -129,6 +129,13 @@ func TestWebProbes(t *testing.T) {
 		t.Fatalf("GET %s missing probe row: %s", probesPath, body)
 	}
 
+	confirmResp := postForm(t, s.srv, revokePath, url.Values{"probe_id": {strconv.FormatInt(p.ID, 10)}}, s.srv.URL, adminCookie)
+	confirmBody, _ := io.ReadAll(confirmResp.Body)
+	confirmResp.Body.Close()
+	if confirmResp.StatusCode != http.StatusOK || !strings.Contains(string(confirmBody), "Moscow probe") {
+		t.Fatalf("подтверждение отзыва пробы не называет её: status=%d, %s", confirmResp.StatusCode, confirmBody)
+	}
+
 	// ProbeByToken фильтрует revoked_at IS NULL — отозванная лизить больше не может.
 	resp = postForm(t, s.srv, revokePath, url.Values{"confirmed": {"yes"}, "probe_id": {strconv.FormatInt(p.ID, 10)}}, s.srv.URL, adminCookie)
 	io.Copy(io.Discard, resp.Body)

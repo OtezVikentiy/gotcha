@@ -3,10 +3,12 @@ package web_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -1182,5 +1184,40 @@ func TestLogRowAttrExcludeUsesExplicitOrigin(t *testing.T) {
 	}
 	if !strings.Contains(page, "attr_not=res%3Ahost.name%3Aweb-1") {
 		t.Errorf("настоящий атрибут ресурса host.name должен исключаться как resource_attr (res:host.name): %s", page)
+	}
+}
+
+// Превышение потолка attr= отказывает явно: страница не пытается выполнить запрос
+// к ClickHouse с сотнями условий, а показывает отказ. Данные не засеяны — если бы
+// запрос всё-таки ушёл, страница отдала бы «логов нет», а не карточку отказа.
+func TestWebLogsAttrsOverLimitRejectedWithoutQuery(t *testing.T) {
+	s := newLogsStack(t, true)
+	projectID, cookie, _ := newLogsProject(t, s, "attrlimit@example.com", "attrlimit-org", "attrlimit-proj")
+
+	q := url.Values{}
+	for i := 0; i < 21; i++ {
+		q.Add("attr", fmt.Sprintf("k%d:v", i))
+	}
+	resp := getWithCookie(t, s.srv, logsBasePath(projectID)+"?"+q.Encode(), cookie)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, body)
+	}
+	page := string(body)
+	if !strings.Contains(page, "Слишком много фильтров по атрибутам") {
+		t.Errorf("страница не показывает отказ по потолку attr=: %s", page)
+	}
+	if strings.Contains(page, "Ничего не подошло под фильтры") || strings.Contains(page, "По выбранным фильтрам") {
+		t.Errorf("страница показывает обычную пустую выборку вместо явного отказа: %s", page)
+	}
+	// Без ссылки назад отказ — тупик: URL с ?attr= остаётся в адресной строке и правится
+	// только руками. Ссылка должна вести на логи БЕЗ параметров attr, а не повторять текущий URL.
+	wantHref := `href="` + logsBasePath(projectID) + `"`
+	if !strings.Contains(page, wantHref) || !strings.Contains(page, "Сбросить фильтры") {
+		t.Errorf("карточка отказа не даёт выхода на %s без attr=: %s", wantHref, page)
 	}
 }

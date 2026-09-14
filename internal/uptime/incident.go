@@ -397,3 +397,36 @@ func (s *Service) ClearSuppressedByDep(ctx context.Context, incidentID int64) er
 	}
 	return nil
 }
+
+// escalation.SuppressedSource: снятие подавления не должно ждать нового
+// результата пробы — Detector.settleHeldIncident вызывается только из
+// OnResult, а регион мог замолчать навсегда (монитор на паузе, регион
+// удалён), и тогда реактивный путь не перезапустится никогда.
+func (s *Service) OpenSuppressed(ctx context.Context) ([]escalation.PendingIncident, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT i.id, m.project_id, i.started_at, i.severity, i.escalation_level
+		FROM incidents i
+		JOIN monitors m ON m.id = i.monitor_id
+		WHERE i.resolved_at IS NULL AND i.acknowledged_at IS NULL AND i.suppressed_by_dep = true
+		ORDER BY i.id`)
+	if err != nil {
+		return nil, fmt.Errorf("uptime: open suppressed incidents: %w", err)
+	}
+	defer rows.Close()
+	var out []escalation.PendingIncident
+	for rows.Next() {
+		var p escalation.PendingIncident
+		if err := rows.Scan(&p.ID, &p.ProjectID, &p.StartedAt, &p.Severity, &p.EscalationLevel); err != nil {
+			return nil, fmt.Errorf("uptime: open suppressed incidents scan: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// escalation.SuppressedSource: тот же эффект, что и ClearSuppressedByDep
+// (используется и реактивно, из Detector), просто под именем, которого
+// ждёт интерфейс Scheduler'а.
+func (s *Service) ClearSuppressed(ctx context.Context, incidentID int64) error {
+	return s.ClearSuppressedByDep(ctx, incidentID)
+}

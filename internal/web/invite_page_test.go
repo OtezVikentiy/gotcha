@@ -174,10 +174,19 @@ func TestInvitePageAuthenticatedShowsAcceptForm(t *testing.T) {
 	if strings.Contains(page, "/register?next=") {
 		t.Error("авторизованному не нужна ссылка на регистрацию")
 	}
+	// Ставится и авторизованному: если это чужой аккаунт, cookie переживёт логаут и
+	// вернёт после повторного входа (см. TestWebInviteEmailMismatch).
+	found := false
 	for _, c := range resp.Cookies() {
 		if c.Name == "invite_next" {
-			t.Error("авторизованному invite-cookie не нужна")
+			found = true
+			if c.Value != token {
+				t.Errorf("invite_next = %q, want %q", c.Value, token)
+			}
 		}
+	}
+	if !found {
+		t.Error("invite_next cookie не поставлена авторизованному держателю токена")
 	}
 }
 

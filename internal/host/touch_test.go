@@ -194,3 +194,34 @@ func TestToucherEvictsOldest(t *testing.T) {
 		t.Fatalf("upserts[a] = %d, want 2 (вытеснение должно снять троттлинг)", calls["a"])
 	}
 }
+
+// Порядок вставки и порядок активности могут расходиться: "a" вставлена раньше "b", но её
+// тронули позже — вытеснить обязана "b" как давно не трогавшуюся, а не "a" как вставленную первой.
+func TestToucherEvictsLeastRecentlyTouchedNotOldestInserted(t *testing.T) {
+	tc := NewToucher(nil, 2*time.Millisecond, 2)
+
+	tc.Touch(context.Background(), 1, entries("a"))
+	time.Sleep(5 * time.Millisecond)
+	tc.Touch(context.Background(), 1, entries("b"))
+	time.Sleep(5 * time.Millisecond)
+	tc.Touch(context.Background(), 1, entries("a")) // every истёк — обязано сдвинуть "a" в конец очереди
+	time.Sleep(time.Millisecond)
+	tc.Touch(context.Background(), 1, entries("c"))
+	tc.wait()
+
+	tc.mu.Lock()
+	_, hasA := tc.seen[touchKey{projectID: 1, name: "a"}]
+	_, hasB := tc.seen[touchKey{projectID: 1, name: "b"}]
+	_, hasC := tc.seen[touchKey{projectID: 1, name: "c"}]
+	tc.mu.Unlock()
+
+	if hasB {
+		t.Error("\"b\" обязана быть вытеснена: с момента вставки её не трогали, она самая давно не тронутая")
+	}
+	if !hasA {
+		t.Error("\"a\" не должна быть вытеснена: её тронули после \"b\", вытеснение по порядку ВСТАВКИ перепутало бы её с \"b\"")
+	}
+	if !hasC {
+		t.Error("\"c\" — новая запись, обязана попасть в карту")
+	}
+}

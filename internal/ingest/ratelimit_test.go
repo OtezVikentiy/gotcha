@@ -10,7 +10,7 @@ import (
 func TestRateLimiterTokenBucket(t *testing.T) {
 	now := time.Unix(0, 0)
 	clock := func() time.Time { return now }
-	rl := newRateLimiter(clock, 10, 3)
+	rl := newRateLimiter[int64](clock, 10, 3)
 	const key = int64(42)
 
 	for i := 0; i < 3; i++ {
@@ -35,13 +35,13 @@ func TestRateLimiterTokenBucket(t *testing.T) {
 }
 
 func TestRateLimiterDisabled(t *testing.T) {
-	rl := newRateLimiter(time.Now, 0, 0)
+	rl := newRateLimiter[int64](time.Now, 0, 0)
 	for i := 0; i < 100; i++ {
 		if !rl.Allow(1) {
 			t.Fatal("rate<=0 must allow everything")
 		}
 	}
-	var nilRL *rateLimiter
+	var nilRL *rateLimiter[int64]
 	if !nilRL.Allow(1) {
 		t.Fatal("nil limiter must allow everything")
 	}
@@ -57,9 +57,35 @@ func TestSetRateLimitZeroDisablesLimit(t *testing.T) {
 	}
 }
 
+func TestSetPreAuthRateLimitAppliesGivenParams(t *testing.T) {
+	h := NewHandler(nil, nil, nil, 0)
+	now := time.Unix(0, 0)
+	h.SetPreAuthRateLimit(func() time.Time { return now }, 1, 2) // rate=1/с, burst=2
+
+	if !h.preAuth.Allow("203.0.113.1") {
+		t.Fatal("1-й запрос отклонён, want allowed (burst)")
+	}
+	if !h.preAuth.Allow("203.0.113.1") {
+		t.Fatal("2-й запрос отклонён, want allowed (burst)")
+	}
+	if h.preAuth.Allow("203.0.113.1") {
+		t.Fatal("3-й запрос допущен, want denied (burst исчерпан)")
+	}
+}
+
+func TestSetPreAuthRateLimitZeroDisablesLimit(t *testing.T) {
+	h := NewHandler(nil, nil, nil, 0)
+	h.SetPreAuthRateLimit(nil, 0, 0)
+	for i := 0; i < 2000; i++ {
+		if !h.preAuth.Allow("203.0.113.1") {
+			t.Fatalf("request %d rejected with disabled limit", i)
+		}
+	}
+}
+
 func TestHandlerRateLimited(t *testing.T) {
 	h := &Handler{
-		rate:     newRateLimiter(func() time.Time { return time.Unix(0, 0) }, 1, 1),
+		rate:     newRateLimiter[int64](func() time.Time { return time.Unix(0, 0) }, 1, 1),
 		rejected: newIngestRejectCounters(),
 	}
 	beforeRejected := h.RejectedBy(RejectRateLimit, SignalEvent)
@@ -98,7 +124,7 @@ func TestHandlerRateLimited(t *testing.T) {
 func TestRateLimiterOverflowKeepsEnforcement(t *testing.T) {
 	now := time.Unix(0, 0)
 	clock := func() time.Time { return now }
-	rl := newRateLimiter(clock, 1, 1)
+	rl := newRateLimiter[int64](clock, 1, 1)
 
 	const filled = maxRateLimitKeys - 1
 	for k := int64(0); k < filled; k++ {

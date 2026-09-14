@@ -256,3 +256,34 @@ func TestWebTeamDeleteAndDetachConfirm(t *testing.T) {
 		t.Fatalf("повторный delete: status = %d, want 404", resp.StatusCode)
 	}
 }
+
+func TestWebTeamMemberRemoveConfirmShowsEmail(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "teammemrm-owner@example.com")
+	memberID, _ := orgSettingsRegister(t, authSvc, "teammemrm-member@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "teammemrm-co", "TeamMemRM Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if err := orgSvc.AddMember(context.Background(), o.ID, memberID, org.RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	team, err := orgSvc.CreateTeam(context.Background(), o.ID, "roster", "Roster Team")
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	if err := orgSvc.AddTeamMember(context.Background(), team.ID, memberID); err != nil {
+		t.Fatalf("add team member: %v", err)
+	}
+
+	removePath := "/teams/" + strconv.FormatInt(team.ID, 10) + "/members/remove"
+	resp := postForm(t, s.srv, removePath, url.Values{"user_id": {strconv.FormatInt(memberID, 10)}}, s.srv.URL, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "teammemrm-member@example.com") {
+		t.Fatalf("подтверждение удаления участника команды не называет email: status=%d, %s", resp.StatusCode, body)
+	}
+}

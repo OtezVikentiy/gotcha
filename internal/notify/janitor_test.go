@@ -119,10 +119,10 @@ func TestOutboxMarkErrorsCancelledCtx(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if err := ob.MarkRetry(ctx, 1, errors.New("smtp timeout"), time.Minute); err == nil {
+	if err := ob.MarkRetry(ctx, 1, 1, errors.New("smtp timeout"), time.Minute); err == nil {
 		t.Error("MarkRetry on cancelled ctx: got nil error, want DB error")
 	}
-	if err := ob.MarkFailed(ctx, 1, errors.New("giving up")); err == nil {
+	if err := ob.MarkFailed(ctx, 1, 1, errors.New("giving up")); err == nil {
 		t.Error("MarkFailed on cancelled ctx: got nil error, want DB error")
 	}
 }

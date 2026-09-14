@@ -12,15 +12,29 @@ const (
 	defaultIngestBurst      = 1000 // пиковый запас токенов
 )
 
+// Выше defaultIngestRatePerSec: один IP законно обслуживает несколько DSN
+// (общий сервер приложений на несколько проектов организации).
+const (
+	defaultPreAuthRatePerSec = 2000
+	defaultPreAuthBurst      = 4000
+)
+
+// Много туже preAuth: легитимный несовпадающий DSN бьёт повторно в свой же
+// project_id, а не перебирает чужие — редкие касания не должны упираться в лимит.
+const (
+	defaultSignalTouchRatePerSec = 2
+	defaultSignalTouchBurst      = 10
+)
+
 const maxRateLimitKeys = 10000
 
-// Дёшев (без похода в БД) — поэтому вызывается ДО проверки квоты.
-type rateLimiter struct {
+// Дёшев (без похода в БД) — вызывается ДО квоты; K — project_id или IP.
+type rateLimiter[K comparable] struct {
 	mu      sync.Mutex
 	rate    float64 // токенов в секунду
 	burst   float64 // максимум накопленных токенов
 	now     func() time.Time
-	buckets map[int64]*rateBucket
+	buckets map[K]*rateBucket
 }
 
 type rateBucket struct {
@@ -28,16 +42,16 @@ type rateBucket struct {
 	last   time.Time
 }
 
-func newRateLimiter(now func() time.Time, ratePerSec, burst float64) *rateLimiter {
-	return &rateLimiter{
+func newRateLimiter[K comparable](now func() time.Time, ratePerSec, burst float64) *rateLimiter[K] {
+	return &rateLimiter[K]{
 		rate:    ratePerSec,
 		burst:   burst,
 		now:     now,
-		buckets: make(map[int64]*rateBucket),
+		buckets: make(map[K]*rateBucket),
 	}
 }
 
-func (rl *rateLimiter) Allow(key int64) bool {
+func (rl *rateLimiter[K]) Allow(key K) bool {
 	if rl == nil || rl.rate <= 0 {
 		return true
 	}
@@ -67,7 +81,7 @@ func (rl *rateLimiter) Allow(key int64) bool {
 	return true
 }
 
-func (rl *rateLimiter) evict(now time.Time) {
+func (rl *rateLimiter[K]) evict(now time.Time) {
 	rl.sweep(now)
 	if len(rl.buckets) < maxRateLimitKeys {
 		return
@@ -94,7 +108,7 @@ func (rl *rateLimiter) evict(now time.Time) {
 	}
 }
 
-func (rl *rateLimiter) sweep(now time.Time) {
+func (rl *rateLimiter[K]) sweep(now time.Time) {
 	for key, b := range rl.buckets {
 		elapsed := now.Sub(b.last).Seconds()
 		if elapsed > 0 && math.Min(rl.burst, b.tokens+elapsed*rl.rate) >= rl.burst {

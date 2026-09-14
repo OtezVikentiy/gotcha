@@ -27,7 +27,7 @@ func TestOAuthInviteProvisioningStillWorks(t *testing.T) {
 	if _, err := s.org.Invite(ctx, o.ID, "oauth-newbie@corp.com", org.RoleAdmin); err != nil {
 		t.Fatalf("invite: %v", err)
 	}
-	s.mp.id = oauth.Identity{Subject: "sub-invite-regression", Email: "oauth-newbie@corp.com", EmailVerified: true}
+	s.mp.id = oauth.Identity{Subject: "sub-invite-regression", Email: "oauth-newbie@corp.com", EmailVerified: true, TrustedIssuer: true}
 
 	resp := s.doCallback(t, oauthFlow{})
 	defer resp.Body.Close()

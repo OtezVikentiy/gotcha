@@ -701,11 +701,13 @@ otlpSpans:
 			SpanID:       e.spanID,
 			ParentSpanID: e.parentID,
 			Op:           op,
-			Description:  capRunes(otlpDescription(e.span, op), maxSpanDescription),
-			Start:        start,
-			End:          end,
-			Status:       otlpStatus(e.span.GetStatus()),
-			Data:         otlpData(e.span),
+			// байтовый кап, не рунный: Description идёт в NormalizeSQL, чья
+			// цена зависит от длины в байтах (см. capBytes).
+			Description: capBytes(otlpDescription(e.span, op), maxSpanDescription),
+			Start:       start,
+			End:         end,
+			Status:      otlpStatus(e.span.GetStatus()),
+			Data:        otlpData(e.span),
 		})
 	}
 	return txs

@@ -7,10 +7,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
-func tracePath(traceID string) string {
-	return "/traces/" + traceID
-}
-
 func perfIssuePath(id int64) string {
 	return "/perf-issues/" + strconv.FormatInt(id, 10)
 }

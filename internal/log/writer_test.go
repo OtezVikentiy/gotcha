@@ -1,8 +1,10 @@
 package log
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -139,6 +141,46 @@ func TestWriterTransientFailureDropsNothing(t *testing.T) {
 	}
 }
 
+// После всплеска Writer обязан слить остаток самокиками, не дожидаясь
+// следующего 5с тика: Add() кикает только на переходе через batchSize.
+func TestWriterDrainsBurstWithoutWaitingForTick(t *testing.T) {
+	c := &fakeCHConn{}
+	w := NewWriter(c)
+	w.batchSize = 100
+
+	now := time.Now().UTC()
+	const burst = 2500
+	for i := 0; i < burst; i++ {
+		w.Add(1, LogRecord{Timestamp: now, ObservedTS: now, Severity: "info", Body: "line"})
+	}
+
+	ctx := context.Background()
+	flushes := 0
+drain:
+	for {
+		select {
+		case <-w.kick:
+			w.flush(ctx)
+			flushes++
+		default:
+			break drain
+		}
+	}
+
+	if got := w.Buffered(); got != 0 {
+		t.Fatalf("Buffered = %d после %d флашей — не самокикнулся до опустошения", got, flushes)
+	}
+	if want := burst / w.batchSize; flushes != want {
+		t.Fatalf("флашей = %d, want %d — на всплеск не хватило self-kick'ов", flushes, want)
+	}
+	c.mu.Lock()
+	rows := c.rows
+	c.mu.Unlock()
+	if rows != burst {
+		t.Fatalf("вставлено %d строк, want %d", rows, burst)
+	}
+}
+
 // Буфер был бы ограничен только ЧИСЛОМ строк, а размер строки задаёт клиент (body до 64 КиБ) —
 // maxBuf раздутых строк с большим body это гигабайты.
 func TestWriterBoundsBufferByBytes(t *testing.T) {
@@ -183,5 +225,40 @@ func TestLogRowBytesCountsBody(t *testing.T) {
 	b := logRowBytes(logRow{Severity: "info", Body: strings.Repeat("x", 1000)})
 	if b-a != 1000 {
 		t.Fatalf("body weight = %d, want 1000", b-a)
+	}
+}
+
+func captureWarnLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// Close молчал об итоговых потерях, в отличие от event/trace/uptime — на
+// выключенном инстансе self-метрику Dropped уже не снять, лог был единственным следом.
+func TestWriterCloseLogsFinalDrops(t *testing.T) {
+	buf := captureWarnLog(t)
+	c := &fakeCHConn{}
+	w := NewWriter(c)
+	w.maxBuf = 2
+	w.batchSize = 1 << 30 // не флашим по наполнению — дроп только от переполнения буфера
+
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		w.Add(1, LogRecord{Timestamp: now, ObservedTS: now, Severity: "info", Body: "x"})
+	}
+	if w.Dropped() == 0 {
+		t.Fatal("подготовка сценария сломана: дропов нет, Close нечего логировать")
+	}
+
+	go w.Run()
+	if err := w.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !strings.Contains(buf.String(), "dropped during lifetime") {
+		t.Errorf("Close не залогировал итоговые потери: %q", buf.String())
 	}
 }

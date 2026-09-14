@@ -50,8 +50,8 @@ func otlpLogsRequest(body io.Reader, contentType, contentEncoding string) *http.
 
 func TestIngestRejectionPairsContract(t *testing.T) {
 	pairs := IngestRejectionPairs()
-	if len(pairs) != 40 {
-		t.Fatalf("пар в наборе = %d, want 40 (29 старых + 5 overloaded + 6 key_scope)", len(pairs))
+	if len(pairs) != 41 {
+		t.Fatalf("пар в наборе = %d, want 41 (29 старых + 5 overloaded + 6 key_scope + 1 profile_decode_budget)", len(pairs))
 	}
 
 	poison := IngestRejectionKey{RejectKeyRevoked, SignalDeploy}

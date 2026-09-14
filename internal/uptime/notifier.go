@@ -43,14 +43,29 @@ type OutboxNotifier struct {
 // ошибка Enqueue по одному каналу не прерывает постановку остальных —
 // собирается через errors.Join в возвращаемое значение.
 func (n *OutboxNotifier) Notify(ctx context.Context, ev Event) error {
-	_, err := n.dispatch(ctx, ev, nil)
+	_, err := n.dispatch(ctx, ev, nil, "")
 	return err
+}
+
+// Резолвит, не отправляя — Detector клеймит результат в incident_escalations
+// до вызова NotifyOpenStep0.
+func (n *OutboxNotifier) OpenStep0Channels(ctx context.Context, ev Event) ([]int64, error) {
+	channels, err := n.resolveChannels(ctx, ev.Monitor.ID, ev.Monitor.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]int64, len(channels))
+	for i, ch := range channels {
+		ids[i] = ch.ID
+	}
+	return ids, nil
 }
 
 // возвращает РЕАЛЬНО заенкененные каналы — Detector сам логирует их как шаг 0
 // в incident_escalations, иначе recovery не найдёт адресатов.
-func (n *OutboxNotifier) NotifyOpenStep0(ctx context.Context, ev Event) ([]int64, error) {
-	return n.dispatch(ctx, ev, nil)
+func (n *OutboxNotifier) NotifyOpenStep0(ctx context.Context, ev Event, channelIDs []int64) ([]int64, error) {
+	// "open" — шаг 0 uptime; другой шаг с этим же префиксом схлопнул бы ключи.
+	return n.dispatch(ctx, ev, channelIDs, fmt.Sprintf("uptime:open:%d", ev.Incident.ID))
 }
 
 // инцидент/монитор грузятся заново по ID — вызывающий (Detector.resolveIncident)
@@ -71,8 +86,8 @@ func (n *OutboxNotifier) NotifyRecovery(ctx context.Context, incidentID int64, c
 	if inc.ResolvedAt != nil {
 		duration = int64(inc.ResolvedAt.Sub(inc.StartedAt).Seconds())
 	}
-	ev := Event{Kind: "up", Monitor: mon, Incident: inc, DurationSeconds: duration}
-	_, err = n.dispatch(ctx, ev, channelIDs)
+	ev := Event{Kind: notify.KindUp, Monitor: mon, Incident: inc, DurationSeconds: duration}
+	_, err = n.dispatch(ctx, ev, channelIDs, "")
 	return err
 }
 
@@ -91,19 +106,21 @@ func (n *OutboxNotifier) NotifyStep(ctx context.Context, incidentID int64, chann
 		return nil, fmt.Errorf("uptime: notify step: load monitor: %w", err)
 	}
 	ev := downEvent(mon, inc, inc.Regions, inc.Cause)
-	return n.dispatch(ctx, ev, channelIDs)
+	return n.dispatch(ctx, ev, channelIDs, "")
 }
 
 // возвращает каналы, реально поставленные в очередь — вызывающие решают,
 // логировать ли их.
-func (n *OutboxNotifier) dispatch(ctx context.Context, ev Event, channelIDs []int64) ([]int64, error) {
-	own, err := n.Uptime.MonitorChannelIDs(ctx, ev.Monitor.ID)
+// Общий для dispatch и OpenStep0Channels — оба обязаны видеть один список,
+// иначе клейм и отправка расходятся.
+func (n *OutboxNotifier) resolveChannels(ctx context.Context, monitorID, projectID int64) ([]alert.Channel, error) {
+	own, err := n.Uptime.MonitorChannelIDs(ctx, monitorID)
 	if err != nil {
 		return nil, fmt.Errorf("uptime: notify: monitor channels: %w", err)
 	}
 	// тела каналов всегда берём у alert.Service — только он держит мастер-ключ
 	// расшифровки и умеет пропустить канал с испорченным секретом.
-	channels, err := n.Alerts.Channels(ctx, ev.Monitor.ProjectID)
+	channels, err := n.Alerts.Channels(ctx, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("uptime: notify: project channels: %w", err)
 	}
@@ -121,6 +138,14 @@ func (n *OutboxNotifier) dispatch(ctx context.Context, ev Event, channelIDs []in
 			}
 		}
 		channels = filtered
+	}
+	return channels, nil
+}
+
+func (n *OutboxNotifier) dispatch(ctx context.Context, ev Event, channelIDs []int64, idempotencyKeyPrefix string) ([]int64, error) {
+	channels, err := n.resolveChannels(ctx, ev.Monitor.ID, ev.Monitor.ProjectID)
+	if err != nil {
+		return nil, err
 	}
 
 	ctx = i18n.WithLocale(ctx, n.Locale)
@@ -153,6 +178,7 @@ func (n *OutboxNotifier) dispatch(ctx context.Context, ev Event, channelIDs []in
 				"days_left":        ev.DaysLeft,
 			},
 			ChannelIDs: channelIDs, Channels: dchans,
+			IdempotencyKeyPrefix: idempotencyKeyPrefix,
 		})
 }
 

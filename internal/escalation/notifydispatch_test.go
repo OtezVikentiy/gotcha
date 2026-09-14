@@ -17,6 +17,10 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
+// Нарочно вне реестра видов — эти тесты проверяют Dispatch как механизм, не
+// привязаны к конкретному виду события.
+const testKind = "test_kind"
+
 // Конвертирует так же, как это делает каждый реальный вызывающий — тестируем
 // настоящий контракт Dispatch, а не самодельный шорткат.
 func dchanFrom(ch alert.Channel, emailEnabled bool, details alert.DetailPolicy) escalation.DispatchChannel {
@@ -76,7 +80,7 @@ func TestDispatchSkipsNonDeliverableChannel(t *testing.T) {
 	}
 
 	enqueued, err := escalation.Dispatch(ctx, testDeps(ob), escalation.DispatchInput{
-		ProjectID: pid, Kind: "test_kind", Subject: "s", Body: "b", URL: "https://x/y", Channels: channels,
+		ProjectID: pid, Kind: testKind, Subject: "s", Body: "b", URL: "https://x/y", Channels: channels,
 	})
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
@@ -114,7 +118,7 @@ func TestDispatchChannelIDsFiltersAfterDeliverable(t *testing.T) {
 	}
 
 	enqueued, err := escalation.Dispatch(ctx, testDeps(ob), escalation.DispatchInput{
-		ProjectID: pid, Kind: "test_kind", Subject: "s", Body: "b", URL: "https://x/y",
+		ProjectID: pid, Kind: testKind, Subject: "s", Body: "b", URL: "https://x/y",
 		ChannelIDs: []int64{c1, disabled}, Channels: channels,
 	})
 	if err != nil {
@@ -146,7 +150,7 @@ func TestDispatchEmailFallbackSkipsEmailWhenDisabled(t *testing.T) {
 	deps := testDeps(ob)
 	deps.EmailEnabled = false
 	enqueued, err := escalation.Dispatch(ctx, deps, escalation.DispatchInput{
-		ProjectID: pid, Kind: "test_kind", Subject: "s", Body: "b", URL: "https://x/y", Channels: channels,
+		ProjectID: pid, Kind: testKind, Subject: "s", Body: "b", URL: "https://x/y", Channels: channels,
 	})
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
@@ -182,7 +186,7 @@ func TestDispatchProjectNameInSubjectBodyAndPayload(t *testing.T) {
 	deps := testDeps(ob)
 	deps.Projects = stubProjectNamer{name: "Marketing Site"}
 	_, err := escalation.Dispatch(ctx, deps, escalation.DispatchInput{
-		ProjectID: pid, Kind: "test_kind", Subject: "[Gotcha] alert fired", Body: "details here", URL: "https://x/y", Channels: channels,
+		ProjectID: pid, Kind: testKind, Subject: "[Gotcha] alert fired", Body: "details here", URL: "https://x/y", Channels: channels,
 	})
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
@@ -219,7 +223,7 @@ func TestDispatchNoProjectsFieldOmitsProjectName(t *testing.T) {
 	channels := []escalation.DispatchChannel{dchanFrom(alert.Channel{ID: ch, Kind: alert.ChannelWebhook, Enabled: true}, true, details)}
 
 	_, err := escalation.Dispatch(ctx, testDeps(ob), escalation.DispatchInput{
-		ProjectID: pid, Kind: "test_kind", Subject: "plain subject", Body: "plain body", URL: "https://x/y", Channels: channels,
+		ProjectID: pid, Kind: testKind, Subject: "plain subject", Body: "plain body", URL: "https://x/y", Channels: channels,
 	})
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
@@ -255,7 +259,7 @@ func TestDispatchDegradesToNoProjectNameOnResolverError(t *testing.T) {
 	// "should-not-appear" утекло бы в subject/body/payload.
 	deps.Projects = stubProjectNamer{name: "should-not-appear", err: errors.New("project lookup boom")}
 	enqueued, err := escalation.Dispatch(ctx, deps, escalation.DispatchInput{
-		ProjectID: pid, Kind: "test_kind", Subject: "plain subject", Body: "plain body", URL: "https://x/y", Channels: channels,
+		ProjectID: pid, Kind: testKind, Subject: "plain subject", Body: "plain body", URL: "https://x/y", Channels: channels,
 	})
 	if err != nil {
 		t.Fatalf("Dispatch: %v (resolver error must not fail the whole dispatch)", err)
@@ -293,7 +297,7 @@ func TestDispatchRedactsExternalChannelButKeepsProjectName(t *testing.T) {
 	deps := testDeps(ob)
 	deps.Projects = stubProjectNamer{name: "Secret Corp"}
 	_, err := escalation.Dispatch(ctx, deps, escalation.DispatchInput{
-		ProjectID: pid, Kind: "host_alert_open", Subject: "leaky subject with hostname db-07", Body: "leaky body with IP 10.0.0.5",
+		ProjectID: pid, Kind: notify.KindHostAlertOpen, Subject: "leaky subject with hostname db-07", Body: "leaky body with IP 10.0.0.5",
 		URL: "https://gotcha.example/projects/1/hosts/db-07", Extra: map[string]any{"host_name": "db-07", "detail": "disk 95%"},
 		Channels: channels,
 	})
@@ -341,7 +345,7 @@ func TestDispatchRedactedURLOverridesURL(t *testing.T) {
 	channels := []escalation.DispatchChannel{{ID: ch, Kind: alert.ChannelTelegram, Target: "1", Deliverable: true, AllowsDetails: false}}
 
 	_, err := escalation.Dispatch(ctx, testDeps(ob), escalation.DispatchInput{
-		ProjectID: pid, Kind: "host_alert_open", Subject: "s", Body: "b",
+		ProjectID: pid, Kind: notify.KindHostAlertOpen, Subject: "s", Body: "b",
 		URL: "https://gotcha.example/projects/1/hosts/db-07", RedactedURL: "https://gotcha.example/projects/1/hosts",
 		Channels: channels,
 	})
@@ -375,7 +379,7 @@ func TestDispatchPartialEnqueueFailureIsAggregatedAndDoesNotBlockOthers(t *testi
 	}
 
 	enqueued, err := escalation.Dispatch(ctx, testDeps(ob), escalation.DispatchInput{
-		ProjectID: pid, Kind: "test_kind", Subject: "s", Body: "b", URL: "https://x/y", Channels: channels,
+		ProjectID: pid, Kind: testKind, Subject: "s", Body: "b", URL: "https://x/y", Channels: channels,
 	})
 	if err == nil {
 		t.Fatalf("Dispatch: want an error for the bogus channel, got nil")

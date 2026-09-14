@@ -117,7 +117,7 @@ templ deprecatedPathsCallout(paths []DeprecatedPathView) {
 }
 
 // legacy — «без типа»: с точки зрения пользователя это ключ до появления типов, не равноправный выбор.
-func keyKindLabelKey(k org.Key) string {
+func KeyKindLabelKey(k org.Key) string {
 	if k.Kind == org.KindLegacy || k.Kind == "" {
 		return "project.settings.keys.kind.legacy"
 	}
@@ -166,7 +166,7 @@ templ keyCard(projectID int64, v ProjectKeyView) {
 	<article class={ "key-card", templ.KV("key-card--revoked", v.Key.Revoked) }>
 		<div class="key-card-head">
 			<span class="key-card-id">{ keyDisplayID(v) }</span>
-			<span class={ keyKindBadgeClass(v.Key) }>{ i18n.T(ctx, keyKindLabelKey(v.Key)) }</span>
+			<span class={ keyKindBadgeClass(v.Key) }>{ i18n.T(ctx, KeyKindLabelKey(v.Key)) }</span>
 			<span class={ keyStatusBadgeClass(v.Key) }>{ i18n.T(ctx, keyStatusLabelKey(v.Key)) }</span>
 		</div>
 		if v.Key.Kind == org.KindLegacy || v.Key.Kind == "" {

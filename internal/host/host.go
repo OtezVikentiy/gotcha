@@ -140,6 +140,30 @@ func (s *Store) List(ctx context.Context, projectID int64, limit int) ([]Host, e
 	return out, rows.Err()
 }
 
+// Кисет-пагинация по имени, не OFFSET: страница за страницей до пустой — вызывающий не
+// зависит от MaxHostsPerProject как от потолка выборки.
+func (s *Store) ListPage(ctx context.Context, projectID int64, after string, limit int) ([]Host, error) {
+	if limit <= 0 {
+		limit = MaxHostsPerProject
+	}
+	rows, err := s.pool.Query(ctx,
+		"SELECT "+hostColumns+" FROM hosts WHERE project_id = $1 AND name > $2 ORDER BY name LIMIT $3",
+		projectID, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("host: list page: %w", err)
+	}
+	defer rows.Close()
+	var out []Host
+	for rows.Next() {
+		h, err := scanHost(rows)
+		if err != nil {
+			return nil, fmt.Errorf("host: list page scan: %w", err)
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
 const HostLabelNone = "__none__"
 
 type HostFilter struct {

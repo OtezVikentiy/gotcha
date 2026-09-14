@@ -47,7 +47,7 @@ func settingsMinutesDefault(d time.Duration) string {
 	return strconv.Itoa(int(d / time.Minute))
 }
 
-func HostSettings(projectID int64, s host.Settings, installCmd, config, agentReason string, form FormState, errMsg string, groups HostGroupThresholdsVM, userEmail string) templ.Component {
+func HostSettings(projectID int64, s host.Settings, installCmd, config, agentReason string, form FormState, errMsg string, groups HostGroupThresholdsVM, userEmail string, canManage bool) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -450,7 +450,7 @@ func HostSettings(projectID int64, s host.Settings, installCmd, config, agentRea
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = hostsCollectorConfigDetails("host-settings-collector-config", projectID, installCmd, config, agentReason).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = hostsCollectorConfigDetails("host-settings-collector-config", projectID, installCmd, config, agentReason, canManage).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

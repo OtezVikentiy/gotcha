@@ -37,7 +37,7 @@ func TestHeartbeatCronSnippetMatchesTemplateCopy(t *testing.T) {
 		templ.Raw("<svg data-guard-chart></svg>"),
 		templates.TimeRangeVM{Key: "24h"},
 		nil, nil, 1, 0,
-		true, true,
+		true,
 		baseURL, "u@example.com", false,
 	).Render(ctx, &sb)
 	if err != nil {

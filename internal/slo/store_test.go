@@ -275,3 +275,40 @@ func TestSLOStoreDeleteNotFound(t *testing.T) {
 		t.Fatalf("повторный Delete = %v, want ErrNotFound", err)
 	}
 }
+
+// availability/latency читают transactions_5m — окно короче 5 минут молча
+// вело бы себя как 5, оставляя оператора думать, что настроено на 1.
+func TestSLOStoreRejectsBurnShortMinBelowSQLGranularity(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx := context.Background()
+	pid := seedProject(t, pool)
+	st := slo.NewStore(pool)
+
+	for _, kind := range []slo.SLIKind{slo.SLIAvailability, slo.SLILatency} {
+		_, err := st.Create(ctx, slo.SLO{
+			ProjectID: pid, Name: "too short", Kind: kind, Target: 0.99, WindowDays: 30,
+			Transaction: "GET /", ThresholdMS: 500, BurnThreshold: 14.4, BurnLongMin: 60,
+			BurnShortMin: 1, Enabled: true,
+		})
+		if !errors.Is(err, slo.ErrBurnShortMinTooSmall) {
+			t.Errorf("Create(%s, BurnShortMin=1) = %v, want ErrBurnShortMinTooSmall", kind, err)
+		}
+	}
+
+	// uptime не читает transactions_5m — тот же короткий период должен пройти.
+	monID := seedGroupMonitor(t, pool, pid)
+	if _, err := st.Create(ctx, slo.SLO{
+		ProjectID: pid, Name: "uptime short ok", Kind: slo.SLIUptime, Target: 0.99, WindowDays: 30,
+		MonitorID: &monID, BurnThreshold: 14.4, BurnLongMin: 60, BurnShortMin: 1, Enabled: true,
+	}); err != nil {
+		t.Errorf("Create(uptime, BurnShortMin=1) = %v, want nil (uptime не завязан на 5-минутную витрину)", err)
+	}
+
+	// 0 — «не задано, использовать дефолт 5» — не должно отвергаться.
+	if _, err := st.Create(ctx, slo.SLO{
+		ProjectID: pid, Name: "unset ok", Kind: slo.SLIAvailability, Target: 0.99, WindowDays: 30,
+		Transaction: "GET /unset", BurnThreshold: 14.4, BurnLongMin: 60, BurnShortMin: 0, Enabled: true,
+	}); err != nil {
+		t.Errorf("Create(availability, BurnShortMin=0) = %v, want nil (0 значит дефолт)", err)
+	}
+}

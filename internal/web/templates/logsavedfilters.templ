@@ -113,7 +113,8 @@ templ logSavedFilterRow(projectID int64, filter LogsFilter, row LogSavedFilterRo
 			if row.Filter.Applicable {
 				<a href={ templ.URL(logSavedFilterApplyURL(projectID, row.Filter)) }>{ row.Filter.Name }</a>
 			} else {
-				<span class="logs-saved-filter-inapplicable" title={ i18n.T(ctx, "logs.savedfilters.not_applicable") }>{ row.Filter.Name }</span>
+				<span class="logs-saved-filter-inapplicable">{ row.Filter.Name }</span>
+				<span class="hint">{ i18n.T(ctx, "logs.savedfilters.not_applicable") }</span>
 			}
 			if row.IsDefault {
 				<span class="badge badge-neutral">{ i18n.T(ctx, "logs.savedfilters.default_badge") }</span>

@@ -14,10 +14,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
-// List не принимает статус, и open может быть пустым в начале ORDER BY started_at DESC —
-// берём с запасом, чтобы фильтр open не остался пустым из-за resolved.
-const regressionsPreFilterLimit = 500
-
 const regressionsListLimit = 100
 
 // Деплой старше окна с регрессией уже не связан — за неделю накатывается что угодно.
@@ -27,14 +23,14 @@ func regressionsPath(projectID int64) string {
 	return "/projects/" + strconv.FormatInt(projectID, 10) + "/regressions"
 }
 
-func regressionStatusFilter(v string) (name string, keep func(status string) bool) {
+func regressionStatusFilter(v string) string {
 	switch v {
 	case "resolved":
-		return "resolved", func(s string) bool { return s == "resolved" }
+		return "resolved"
 	case "all":
-		return "all", func(string) bool { return true }
+		return "all"
 	default:
-		return "open", func(s string) bool { return s == "open" }
+		return "open"
 	}
 }
 
@@ -54,7 +50,7 @@ func (h *Handler) regressionsList(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -64,24 +60,15 @@ func (h *Handler) regressionsList(w http.ResponseWriter, r *http.Request) {
 	// Список открыт всем участникам проекта, ack-кнопка на открытой регрессии — только оператору.
 	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
-	filterName, keep := regressionStatusFilter(r.URL.Query().Get("status"))
-	all, err := h.Regressions.List(r.Context(), projectID, regressionsPreFilterLimit)
+	filterName := regressionStatusFilter(r.URL.Query().Get("status"))
+	items, err := h.Regressions.List(r.Context(), projectID, filterName, regressionsListLimit)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
-	}
-	items := make([]trace.Regression, 0, len(all))
-	for _, reg := range all {
-		if keep(reg.Status) {
-			items = append(items, reg)
-			if len(items) >= regressionsListLimit {
-				break
-			}
-		}
 	}
 
 	deployAttr := regressionDeployAttribution(r.Context(), h.Deploy, projectID, items)
@@ -102,7 +89,7 @@ func (h *Handler) regressionsList(w http.ResponseWriter, r *http.Request) {
 	}
 	ackedBy, err := h.ackedByEmails(r.Context(), ackedByIDs)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 

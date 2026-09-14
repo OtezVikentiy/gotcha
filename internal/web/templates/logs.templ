@@ -39,6 +39,12 @@ type LogsFilter struct {
 	// Форма эхом переносит это скрытым полем — иначе сабмит без условий воскресил бы умолчание.
 	// hasLogFilterParams проверяет наличие ключа, не непустоту значения — учитывать при рефакторинге.
 	DefaultSuppressed bool
+	// attr= в URL превысил потолок числа/суммарного размера условий — запрос к ClickHouse
+	// не выполнялся вовсе, а не тихо обрезался до первых N.
+	AttrsRejected bool
+	// Умолчание есть, но Applicable=false (устаревший формат) — раньше пропускалось молча,
+	// пользователь видел нефильтрованные логи без объяснения.
+	DefaultInapplicable bool
 }
 
 // Empty=true — данных нет: график не рисуется вовсе, не пустая шкала.
@@ -582,10 +588,13 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 					<a href={ templ.URL(filter.DefaultShowAllHref) }>{ i18n.T(ctx, "logs.default.show_all") }</a>
 				</p>
 			}
+			if filter.DefaultInapplicable {
+				<p class="notice logs-default-notice">{ i18n.T(ctx, "logs.savedfilters.not_applicable") }</p>
+			}
 
 			<form method="get" action={ templ.URL(logsPath(projectID)) } class="logs-filters">
 				<fieldset class="logs-severity-filter">
-					<legend>{ i18n.T(ctx, "logs.filter.severity_all") }</legend>
+					<legend>{ i18n.T(ctx, "logs.facet.severity") }</legend>
 					for _, sev := range log.Severities {
 						<label class="checkbox-inline">
 							<input type="checkbox" name="severity" value={ sev } checked?={ severitySelected(filter.Severity, sev) }/>
@@ -599,6 +608,9 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 				@timeRangeFields(filter.Range)
 				// attr/trace_id/исключения — вне видимых полей формы; сабмит обязан их сохранить, не обнулить.
 				@logFilterHiddenChipFields(filter)
+				if filter.Facet != "" {
+					<input type="hidden" name="facet" value={ filter.Facet }/>
+				}
 				if filter.DefaultSuppressed {
 					<input type="hidden" name="nodefault" value="1"/>
 				}
@@ -641,6 +653,8 @@ templ LogsScreen(projectID int64, rows []LogRow, filter LogsFilter, loadFailed b
 				<div id="logs-table">
 					if loadFailed {
 						@emptyState("file-text", "logs.error.title", "logs.error.body", "", "", 2)
+					} else if filter.AttrsRejected {
+						@emptyState("file-text", "logs.attrs_limit.title", "logs.attrs_limit.body", "logs.empty.filter.cta", logsPath(projectID), 2)
 					} else if len(rows) == 0 && filter.Active {
 						@emptyState("file-text", "logs.empty.filter.title", "logs.empty.filter.body", "logs.empty.filter.cta", logsPath(projectID), 2)
 					} else if len(rows) == 0 {

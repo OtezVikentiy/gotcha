@@ -121,7 +121,11 @@ test-env-down: ## Remove the shared test containers (postgres+clickhouse)
 	@ids=$$(docker ps -aq --filter "name=^gotcha-test-"); \
 	  if [ -n "$$ids" ]; then docker rm -f $$ids; else echo "тестовых контейнеров нет"; fi
 
-check: fmt vet test-short ## fmt + vet + быстрые тесты (перед коммитом)
+test-js: ## Run static/*.js tests (node:test, без node_modules)
+	node --check internal/web/static/*.js
+	node --test internal/web/static/jstest/
+
+check: fmt vet test-short test-js ## fmt + vet + быстрые тесты + клиентский JS (перед коммитом)
 
 # Версию можно передать позиционно (`make release 0.1.0`) или как VERSION=0.1.0.
 # Лишние слова-«цели» после release гасим пустыми правилами — но ТОЛЬКО когда

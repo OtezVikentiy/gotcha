@@ -16,6 +16,7 @@ type OIDCConfig struct {
 	ClientSecret string
 	Scopes       string
 	DisplayName  string
+	TrustEmail   bool
 }
 
 const discoveryTTL = 15 * time.Minute
@@ -168,6 +169,7 @@ func (o *OIDC) Exchange(ctx context.Context, code, pkceVerifier, redirectURI, no
 		Subject:       asString(claims["sub"]),
 		Email:         asString(claims["email"]),
 		EmailVerified: claims["email_verified"] == true,
+		TrustedIssuer: o.cfg.TrustEmail,
 		DisplayName:   asString(claims["name"]),
 	}
 	if id.Subject == "" {

@@ -1082,19 +1082,61 @@ func niceStep(max uint64, targetLines int) uint64 {
 	return uint64(10 * mag)
 }
 
-// тот же ряд 1/2/5×10ⁿ, но без округления шага до целого.
+// тот же ряд 1/2/5×10ⁿ, но без округления шага до целого. Шаг всегда строго
+// положителен и конечен — на субнормалях raw/mag могут округлиться в 0.
 func niceStepFloat(max float64, targetLines int) float64 {
-	if max <= 0 || targetLines <= 0 {
+	if max <= 0 || math.IsNaN(max) || math.IsInf(max, 0) || targetLines <= 0 {
 		return 1
 	}
 	raw := max / float64(targetLines)
+	if raw <= 0 {
+		return max
+	}
 	mag := math.Pow(10, math.Floor(math.Log10(raw)))
+	if mag <= 0 {
+		return raw
+	}
 	for _, m := range []float64{1, 2, 5, 10} {
 		if step := m * mag; step >= raw {
 			return step
 		}
 	}
 	return 10 * mag
+}
+
+// не больше target равномерно распределённых позиций (включая первую и
+// последнюю) — у единого шага есть длины, где не попасть в target без разрыва.
+func dayLabelIndices(n, target int) []int {
+	if n <= 0 {
+		return nil
+	}
+	if target <= 0 {
+		target = 1
+	}
+	if n <= target {
+		out := make([]int, n)
+		for i := range out {
+			out[i] = i
+		}
+		return out
+	}
+	if target == 1 {
+		return []int{0}
+	}
+	out := make([]int, 0, target)
+	prev := -1
+	for i := 0; i < target; i++ {
+		pos := int(math.Round(float64(i) * float64(n-1) / float64(target-1)))
+		if pos <= prev {
+			pos = prev + 1
+		}
+		if pos > n-1 {
+			break
+		}
+		out = append(out, pos)
+		prev = pos
+	}
+	return out
 }
 
 func chartBars(ctx context.Context, points []event.Point, w, h int) string {
@@ -1168,15 +1210,10 @@ func chartBars(ctx context.Context, points []event.Point, w, h int) string {
 			dayIdx = append(dayIdx, i)
 		}
 	}
-	k := (len(dayIdx) + targetDayLabels - 1) / targetDayLabels
-	if k < 1 {
-		k = 1
-	}
+	selected := dayLabelIndices(len(dayIdx), targetDayLabels)
 	prevDayLabelRight := math.Inf(-1)
-	for j, idx := range dayIdx {
-		if j%k != 0 {
-			continue
-		}
+	for _, j := range selected {
+		idx := dayIdx[j]
 		x := x0 + float64(idx)*barW
 		if idx > 0 {
 			axisLine(&sb, x, y0, x, y1)
@@ -1319,8 +1356,14 @@ var availabilityBarLabelKey = map[string]string{
 
 // цвет — единственный сигнал состояния в SVG, без title screen reader/hover
 // ничего не получают; текст из каталога экранируется вызывающей стороной.
+// OK/Total добавлены, иначе соседние столбики одного класса неотличимы друг
+// от друга — дат тут нет, UptimeStat их не хранит.
 func availabilityBarLabel(ctx context.Context, b uptime.UptimeStat) string {
-	return i18n.T(ctx, availabilityBarLabelKey[availabilityBarClass(b)])
+	state := i18n.T(ctx, availabilityBarLabelKey[availabilityBarClass(b)])
+	if b.Total == 0 {
+		return state
+	}
+	return state + " — " + strconv.FormatUint(b.OK, 10) + "/" + strconv.FormatUint(b.Total, 10)
 }
 
 func availabilityEmptyBarsSVG(ctx context.Context, w, h int) string {
@@ -1405,6 +1448,7 @@ func waterfallMarkup(ctx context.Context, spans []trace.SpanRow, errIssues map[s
 			b.WriteString(`">`)
 		}
 
+		full := waterfallLabel(s)
 		b.WriteString(`<rect x="`)
 		b.WriteString(formatCoord(x))
 		b.WriteString(`" y="`)
@@ -1415,16 +1459,20 @@ func waterfallMarkup(ctx context.Context, spans []trace.SpanRow, errIssues map[s
 		b.WriteString(formatCoord(barH))
 		b.WriteString(`" class="`)
 		b.WriteString(cls)
-		b.WriteString(`"/>`)
+		b.WriteString(`"><title>`)
+		b.WriteString(html.EscapeString(full))
+		b.WriteString(`</title></rect>`)
 
 		labelX := waterfallPadX + os.depth*waterfallIndent
-		b.WriteString(`<text x="`)
-		b.WriteString(strconv.Itoa(labelX))
-		b.WriteString(`" y="`)
-		b.WriteString(formatCoord(y + float64(waterfallRowH) - 5))
-		b.WriteString(`" class="waterfall-label">`)
-		b.WriteString(templ.EscapeString(waterfallLabel(s)))
-		b.WriteString(`</text>`)
+		if label := fitWaterfallLabel(full, float64(waterfallLabelW-waterfallPadX-labelX)); label != "" {
+			b.WriteString(`<text x="`)
+			b.WriteString(strconv.Itoa(labelX))
+			b.WriteString(`" y="`)
+			b.WriteString(formatCoord(y + float64(waterfallRowH) - 5))
+			b.WriteString(`" class="waterfall-label">`)
+			b.WriteString(templ.EscapeString(label))
+			b.WriteString(`</text>`)
+		}
 
 		if isErr {
 			b.WriteString(`</a>`)
@@ -1441,7 +1489,7 @@ type orderedSpan struct {
 }
 
 // корни в исходном порядке (спаны уже отсортированы по времени), дети
-// рекурсивно; циклы обрезаются посещением.
+// рекурсивно; циклы обрезаются посещением, кольцо без root — вторым проходом.
 func orderSpanTree(spans []trace.SpanRow, max int) []orderedSpan {
 	if len(spans) == 0 {
 		return nil
@@ -1489,6 +1537,16 @@ func orderSpanTree(spans []trace.SpanRow, max int) []orderedSpan {
 		}
 		walk(r, 0)
 	}
+	// кольцо parent_span_id без выхода к root — заводим узлы корнями сами.
+	for _, s := range spans {
+		if len(out) >= max {
+			break
+		}
+		if s.SpanID == "" || visited[s.SpanID] {
+			continue
+		}
+		walk(s, 0)
+	}
 	return out
 }
 
@@ -1498,6 +1556,20 @@ func waterfallLabel(s trace.SpanRow) string {
 		op = s.Description
 	}
 	return op + " " + waterfallMS(s.DurationUS)
+}
+
+// .waterfall-label — фиксированный кегль (--fs-label, вне тиров chart-vbN),
+// та же ширина руны, что и у флеймграфа; полный текст остаётся в <title>.
+func fitWaterfallLabel(label string, avail float64) string {
+	fit := int(avail / flameCharWidthPx)
+	r := []rune(label)
+	if len(r) <= fit {
+		return label
+	}
+	if fit-1 < 3 {
+		return ""
+	}
+	return string(r[:fit-1]) + "…"
 }
 
 // как formatDurationUS в templates, но локально — svg.go в другом пакете.

@@ -11,7 +11,7 @@ import (
 
 func TestRedactExternalPayloadStripsDetails(t *testing.T) {
 	full := map[string]any{
-		"kind":          "new_issue",
+		"kind":          notify.KindNewIssue,
 		"project_id":    int64(7),
 		"issue_id":      int64(42),
 		"perf_issue_id": int64(42),
@@ -49,7 +49,7 @@ func TestRedactExternalPayloadStripsDetails(t *testing.T) {
 	if out["url"] != "https://gotcha.example/issues/42" {
 		t.Errorf("url lost: %+v", out)
 	}
-	if out["kind"] != "new_issue" {
+	if out["kind"] != notify.KindNewIssue {
 		t.Errorf("kind lost: %+v", out)
 	}
 	if out["channel_kind"] != "telegram" || out["target"] != "123" {
@@ -71,7 +71,7 @@ func TestRedactExternalPayloadStripsDetails(t *testing.T) {
 func TestRedactExternalPayloadLocalizedLabel(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	out := notify.RedactExternalPayload(ctx, map[string]any{
-		"kind": "down", "url": "https://gotcha.example/monitors/1",
+		"kind": notify.KindDown, "url": "https://gotcha.example/monitors/1",
 	})
 	if out["subject"] != "[Gotcha] Монитор недоступен" {
 		t.Errorf("subject = %v, want russian label", out["subject"])
@@ -80,6 +80,7 @@ func TestRedactExternalPayloadLocalizedLabel(t *testing.T) {
 
 func TestRedactExternalPayloadUnknownKind(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
+	// Нарочно вне реестра — тест проверяет поведение на незнакомом виде.
 	out := notify.RedactExternalPayload(ctx, map[string]any{
 		"kind": "mystery_kind", "url": "u",
 	})
@@ -91,7 +92,7 @@ func TestRedactExternalPayloadUnknownKind(t *testing.T) {
 func TestRedactExternalPayloadShortensURLWhenAsked(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
 	out := notify.RedactExternalPayload(ctx, map[string]any{
-		"kind":         "host_alert_open",
+		"kind":         notify.KindHostAlertOpen,
 		"url":          "https://gotcha.example/projects/7/hosts/web-01",
 		"url_redacted": "https://gotcha.example/projects/7/hosts",
 	})
@@ -109,7 +110,7 @@ func TestRedactExternalPayloadShortensURLWhenAsked(t *testing.T) {
 func TestRedactExternalPayloadKeepsURLWithoutDirective(t *testing.T) {
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
 	out := notify.RedactExternalPayload(ctx, map[string]any{
-		"kind": "metric_alert_open", "url": "https://gotcha.example/metrics/1",
+		"kind": notify.KindMetricAlertOpen, "url": "https://gotcha.example/metrics/1",
 	})
 	if out["url"] != "https://gotcha.example/metrics/1" {
 		t.Errorf("url = %v, want исходную ссылку", out["url"])
@@ -121,7 +122,7 @@ func TestRedactExternalPayloadKeepsURLWithoutDirective(t *testing.T) {
 
 func TestRedactExternalPayloadDoesNotMutateInput(t *testing.T) {
 	full := map[string]any{
-		"kind": "down", "title": "boom", "url": "u",
+		"kind": notify.KindDown, "title": "boom", "url": "u",
 		"channel_kind": "telegram", "target": "t", "secret": "s",
 	}
 	_ = notify.RedactExternalPayload(context.Background(), full)

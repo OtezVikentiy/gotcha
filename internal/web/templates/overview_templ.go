@@ -182,7 +182,7 @@ func overviewRangeTabs(projectID int64, rangeKey string) templ.Component {
 
 // .stat-tile — та же вёрстка, что у monitordetail/hostdetail/slodetail, но с ссылкой вместо числа.
 // .monitor-meta переиспользован как контейнер — своей сетки под три плитки не заводим.
-func statusLine(projectID int64, sl StatusLine) templ.Component {
+func statusLine(projectID int64, rangeKey string, sl StatusLine) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -221,9 +221,9 @@ func statusLine(projectID int64, sl StatusLine) templ.Component {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var10 string
-		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, "overview.status.uptime"))
+		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.Tf(ctx, "overview.status.uptime", "range", i18n.T(ctx, "range."+rangeKey)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 54, Col: 66}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/overview.templ`, Line: 54, Col: 108}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 		if templ_7745c5c3_Err != nil {
@@ -643,7 +643,7 @@ func Overview(projectID int64, rangeKey string, openGroups []GroupCard, outOfGro
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = statusLine(projectID, sl).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = statusLine(projectID, rangeKey, sl).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

@@ -9,6 +9,7 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/escalation"
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -57,12 +58,12 @@ func metricRuleFormState(r *http.Request) templates.FormState {
 func (h *Handler) renderMetricAlerts(w http.ResponseWriter, r *http.Request, status int, projectID int64, form templates.FormState, errMsg string) {
 	rules, err := h.MetricRules.List(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	incidents, err := h.MetricIncidents.List(r.Context(), projectID, 100)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	ackedByIDs := make([]int64, 0, len(incidents))
@@ -73,7 +74,7 @@ func (h *Handler) renderMetricAlerts(w http.ResponseWriter, r *http.Request, sta
 	}
 	ackedBy, err := h.ackedByEmails(r.Context(), ackedByIDs)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	var known []string
@@ -127,7 +128,7 @@ func (h *Handler) metricAlertCreate(w http.ResponseWriter, r *http.Request) {
 			h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, form, i18n.T(r.Context(), "err.metricalert.invalid_rule"))
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, metricAlertsPath(projectID), http.StatusSeeOther)
@@ -228,7 +229,7 @@ func (h *Handler) metricAlertUpdate(w http.ResponseWriter, r *http.Request) {
 			h.renderMetricAlerts(w, r, http.StatusUnprocessableEntity, projectID, form, i18n.T(r.Context(), "err.metricalert.invalid_rule"))
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOK(w, "flash.saved", 0)
@@ -266,14 +267,20 @@ func (h *Handler) metricAlertDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	// CSP без unsafe-inline не исполняет inline confirm() — подтверждение отдельной страницей.
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.metric_rule_delete.message", "confirm.delete",
+		name := ""
+		if rule, ok, err := h.MetricRules.Get(r.Context(), ruleID); err == nil && ok && rule.ProjectID == projectID {
+			name = rule.MetricName + " " + comparatorSymbol(rule.Comparator) + " " + humanize.CompactNumber(rule.Threshold)
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.metric_rule_delete.message", "confirm.delete",
 			metricAlertsPath(projectID), metricAlertsPath(projectID)+"/delete",
-			[]templates.HiddenField{{Name: "rule_id", Value: strconv.FormatInt(ruleID, 10)}})
+			[]templates.HiddenField{{Name: "rule_id", Value: strconv.FormatInt(ruleID, 10)}},
+			"name", name)
 		return
 	}
 	if err := h.MetricRules.Delete(r.Context(), ruleID, projectID); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
+	h.flashOK(w, "flash.deleted", 0)
 	http.Redirect(w, r, metricAlertsPath(projectID), http.StatusSeeOther)
 }

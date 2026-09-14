@@ -268,7 +268,8 @@ func (w *Worker) process(ctx, runCtx context.Context, job Job) {
 		doneCtx, cancel = detachTimeout(ctx)
 		defer cancel()
 	}
-	if err := w.Store.Done(doneCtx, job.ID, job.Attempts, res.rows, res.bytes, res.truncated, w.Cfg.TTL); err != nil {
+	expiresAt, err := w.Store.Done(doneCtx, job.ID, job.Attempts, res.rows, res.bytes, res.truncated, w.Cfg.TTL)
+	if err != nil {
 		// Файл убирается при ЛЮБОЙ ошибке Done, не только ErrStaleClaim — без 'done' статуса он недостижим
 		// для скачивания, и ничто его не подберёт без явного удаления (DueForExpiry берёт только done).
 		_ = os.Remove(finalPath)
@@ -282,6 +283,7 @@ func (w *Worker) process(ctx, runCtx context.Context, job Job) {
 		done := job
 		done.Status = StatusDone
 		done.RowsWritten, done.Bytes, done.Truncated = res.rows, res.bytes, res.truncated
+		done.ExpiresAt = &expiresAt
 		w.Notify(ctx, done)
 	}
 }

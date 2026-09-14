@@ -223,7 +223,7 @@ func deprecatedPathsCallout(paths []DeprecatedPathView) templ.Component {
 }
 
 // legacy — «без типа»: с точки зрения пользователя это ключ до появления типов, не равноправный выбор.
-func keyKindLabelKey(k org.Key) string {
+func KeyKindLabelKey(k org.Key) string {
 	if k.Kind == org.KindLegacy || k.Kind == "" {
 		return "project.settings.keys.kind.legacy"
 	}
@@ -347,7 +347,7 @@ func keyCard(projectID int64, v ProjectKeyView) templ.Component {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var14 string
-		templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, keyKindLabelKey(v.Key)))
+		templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(i18n.T(ctx, KeyKindLabelKey(v.Key)))
 		if templ_7745c5c3_Err != nil {
 			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/projsettings.templ`, Line: 169, Col: 81}
 		}

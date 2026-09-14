@@ -607,7 +607,9 @@ func TestWebIssuesPaginationPreservesFilters(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s?env=prod&period=24h status = %d, want 200: %s", issuesPath, resp.StatusCode, body)
 	}
-	if !strings.Contains(string(body), "env=prod") || !strings.Contains(string(body), "period=24h") {
+	// запрошено устаревшим именем env=, но собственная ссылка пагинации обязана
+	// нести канонический environment= — иначе следующая страница теряет фильтр.
+	if !strings.Contains(string(body), "environment=prod") || !strings.Contains(string(body), "period=24h") {
 		t.Fatalf("GET %s?env=prod&period=24h pagination link missing filters: %s", issuesPath, body)
 	}
 	if !strings.Contains(string(body), "page=2") {
@@ -695,6 +697,75 @@ func TestWebIssuesFilteredEmptyState(t *testing.T) {
 	}
 }
 
+// Страница за пределами диапазона (после массового действия сдвинувшего total) не должна
+// показывать онбординговый текст «Проблем пока нет» — проект не пуст, пуста только страница.
+func TestWebIssuesPageOverrunEmptyState(t *testing.T) {
+	s := newIssuesStack(t)
+
+	ownerID, ownerCookie := registerAndLogin(t, s, "issues-pageoverrun@example.com")
+	project := createProject(t, s, ownerID, "issues-pageoverrun-org", "issues-pageoverrun-proj")
+
+	now := time.Now().UTC()
+	for i := 0; i < 26; i++ {
+		fp := "fp-overrun-" + strconv.Itoa(i)
+		if _, err := s.issues.Upsert(context.Background(), project.ID, fp, "Prod issue "+strconv.Itoa(i), "", "error", "prod", now); err != nil {
+			t.Fatalf("upsert %s: %v", fp, err)
+		}
+	}
+
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+	resp := getWithCookie(t, s.srv, issuesPath+"?page=5", ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s?page=5 status = %d, want 200: %s", issuesPath, resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "Проблем пока нет") || strings.Contains(string(body), "Подключите DSN") {
+		t.Fatalf("страница вне диапазона показала онбординговую пустоту вместо переполнения: %s", body)
+	}
+	if strings.Contains(string(body), "Ничего не подошло под фильтры") {
+		t.Fatalf("страница вне диапазона без фильтров показала filtered-текст: %s", body)
+	}
+	if !strings.Contains(string(body), "На этой странице пусто") {
+		t.Fatalf("нет текста переполнения страницы: %s", body)
+	}
+	if !strings.Contains(string(body), "На первую страницу") {
+		t.Fatalf("нет CTA возврата на первую страницу: %s", body)
+	}
+}
+
+// environment не проходит allowlist до попадания в issuesPageURL — доказываем, что
+// экранирование движка шаблонов (не ручная санитизация) держит инъекцию.
+func TestWebIssuesPageOverrunCTAEscapesFilterValue(t *testing.T) {
+	s := newIssuesStack(t)
+
+	ownerID, ownerCookie := registerAndLogin(t, s, "issues-pageoverrun-xss@example.com")
+	project := createProject(t, s, ownerID, "issues-pageoverrun-xss-org", "issues-pageoverrun-xss-proj")
+
+	now := time.Now().UTC()
+	for i := 0; i < 26; i++ {
+		fp := "fp-xss-" + strconv.Itoa(i)
+		if _, err := s.issues.Upsert(context.Background(), project.ID, fp, "Prod issue "+strconv.Itoa(i), "", "error", "prod", now); err != nil {
+			t.Fatalf("upsert %s: %v", fp, err)
+		}
+	}
+
+	issuesPath := "/projects/" + strconv.FormatInt(project.ID, 10) + "/issues"
+	payload := `"><script>alert(1)</script>`
+	resp := getWithCookie(t, s.srv, issuesPath+"?page=5&environment="+url.QueryEscape(payload), ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200: %s", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "<script>alert(1)</script>") {
+		t.Fatalf("значение фильтра из адресной строки пробило разметку: %s", body)
+	}
+	if strings.Contains(string(body), `"><script>`) {
+		t.Fatalf("значение фильтра не экранировано в атрибуте: %s", body)
+	}
+}
+
 // Флаг живёт в профиле, не в cookie — переживает новый логин.
 func TestWebGettingStartedHide(t *testing.T) {
 	s := newIssuesStack(t)
@@ -713,7 +784,21 @@ func TestWebGettingStartedHide(t *testing.T) {
 		t.Fatalf("на чек-листе нет кнопки «Скрыть»: %s", body)
 	}
 
+	// Без confirmed=yes — страница подтверждения, чек-лист ещё не скрыт.
 	resp = postForm(t, s.srv, "/profile/getting-started/hide", url.Values{}, s.srv.URL, ownerCookie)
+	confirmBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(confirmBody), "Первые шаги") {
+		t.Fatalf("подтверждение скрытия чек-листа не называет его: status=%d, %s", resp.StatusCode, confirmBody)
+	}
+	resp = getWithCookie(t, s.srv, issuesPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "getting-started") {
+		t.Fatalf("чек-лист скрыт без подтверждения: %s", body)
+	}
+
+	resp = postForm(t, s.srv, "/profile/getting-started/hide", url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
@@ -725,6 +810,27 @@ func TestWebGettingStartedHide(t *testing.T) {
 	resp.Body.Close()
 	if strings.Contains(string(body), "getting-started") {
 		t.Fatalf("чек-лист виден после скрытия: %s", body)
+	}
+}
+
+// back в confirm-форме — значение от клиента (эхо первого шага), не источник истины;
+// redirectLocal обязан отбросить внешний адрес так же, как safeRedirect отбросил бы чужой Referer.
+func TestWebGettingStartedHideRejectsExternalBack(t *testing.T) {
+	s := newIssuesStack(t)
+	ownerID, ownerCookie := registerAndLogin(t, s, "gs-hide-evil-owner@example.com")
+	createProject(t, s, ownerID, "gs-hide-evil-org", "gs-hide-evil-proj")
+
+	for _, back := range []string{"https://evil.example", "//evil.example"} {
+		resp := postForm(t, s.srv, "/profile/getting-started/hide",
+			url.Values{"confirmed": {"yes"}, "back": {back}}, s.srv.URL, ownerCookie)
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusSeeOther {
+			t.Fatalf("back=%q: status = %d, want 303", back, resp.StatusCode)
+		}
+		if loc := resp.Header.Get("Location"); loc != "/" {
+			t.Errorf("back=%q: Location = %q, want \"/\" (внешний адрес не должен пройти)", back, loc)
+		}
 	}
 }
 
@@ -883,7 +989,7 @@ func TestWebIssuesEmptyStateShowsKeyRejectsAfterGettingStartedHidden(t *testing.
 	ownerID, ownerCookie := registerAndLogin(t, s, "kr-hidden-owner@example.com")
 	project := createProject(t, s, ownerID, "kr-hidden-org", "kr-hidden-proj")
 
-	resp := postForm(t, s.srv, "/profile/getting-started/hide", url.Values{}, s.srv.URL, ownerCookie)
+	resp := postForm(t, s.srv, "/profile/getting-started/hide", url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {

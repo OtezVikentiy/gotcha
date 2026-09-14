@@ -29,7 +29,13 @@ func hasLogsLinkWindow(body string) bool {
 	return logsLinkStartRe.MatchString(body) && logsLinkEndRe.MatchString(body)
 }
 
-const issueStacktrace = `{"values":[{"type":"NullPointerException","value":"boom","stacktrace":{"frames":[` +
+// Первый элемент — первопричина, последний — внешнее исключение NullPointerException/boom:
+// карточка обязана показывать кадры последнего.
+const issueStacktrace = `{"values":[` +
+	`{"type":"SQLException","value":"connection reset","stacktrace":{"frames":[` +
+	`{"function":"db.query","module":"db","filename":"db.go","lineno":7,"in_app":true}` +
+	`]}},` +
+	`{"type":"NullPointerException","value":"boom","stacktrace":{"frames":[` +
 	`{"function":"main.inner","module":"main","filename":"main.go","lineno":42,"in_app":true},` +
 	`{"function":"runtime.goexit","module":"runtime","filename":"runtime.go","lineno":1,"in_app":false}` +
 	`]}}]}`
@@ -120,6 +126,9 @@ func TestWebIssueDetail(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "runtime.goexit") {
 		t.Fatalf("GET %s?event=%s missing system frame function: %s", issuePath, ev2ID, body)
+	}
+	if strings.Contains(string(body), "db.query") {
+		t.Fatalf("GET %s?event=%s rendered root-cause frame instead of the titled exception: %s", issuePath, ev2ID, body)
 	}
 	if !strings.Contains(string(body), "in-app") {
 		t.Fatalf("GET %s?event=%s missing in-app class: %s", issuePath, ev2ID, body)

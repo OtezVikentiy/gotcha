@@ -288,7 +288,7 @@ func TestWebAlertDeliveriesPageShowsFailedDeliveries(t *testing.T) {
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("claim: %+v err=%v", jobs, err)
 	}
-	if err := ob.MarkFailed(context.Background(), jobs[0].ID, errors.New("connection refused by hooks.example.com")); err != nil {
+	if err := ob.MarkFailed(context.Background(), jobs[0].ID, jobs[0].Attempts, errors.New("connection refused by hooks.example.com")); err != nil {
 		t.Fatalf("mark failed: %v", err)
 	}
 
@@ -575,7 +575,7 @@ func TestWebAlertsOperator(t *testing.T) {
 	alertSvc := alert.NewService(s.pool)
 	ob := notify.NewOutbox(s.pool)
 
-	ownerID, _ := orgSettingsRegister(t, authSvc, "alertsop-owner@example.com")
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "alertsop-owner@example.com")
 	opID, opCookie := orgSettingsRegister(t, authSvc, "alertsop-operator@example.com")
 
 	o, err := orgSvc.CreateOrg(context.Background(), "alertsop-co", "AlertsOp Co", ownerID)
@@ -689,7 +689,7 @@ func TestWebAlertsOperator(t *testing.T) {
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("claim: %+v err=%v", jobs, err)
 	}
-	if err := ob.MarkFailed(context.Background(), jobs[0].ID, errors.New("notify: smtp rcpt: 550 5.1.1 <ops@example.com>: Recipient address rejected")); err != nil {
+	if err := ob.MarkFailed(context.Background(), jobs[0].ID, jobs[0].Attempts, errors.New("notify: smtp rcpt: 550 5.1.1 <ops@example.com>: Recipient address rejected")); err != nil {
 		t.Fatalf("mark failed: %v", err)
 	}
 	resp = getWithCookie(t, s.srv, deliveriesPath, opCookie)
@@ -704,5 +704,24 @@ func TestWebAlertsOperator(t *testing.T) {
 	}
 	if strings.Contains(bodyStr, "ops@example.com") {
 		t.Errorf("GET %s (operator) leaks raw target/last_error: %s", deliveriesPath, bodyStr)
+	}
+	// Тело ответа цели (SSRF-чтение внутренней сети при разрешённом приватном вебхуке) —
+	// не только токен/адрес — обязано быть скрыто целиком, не отредактировано частично.
+	if strings.Contains(bodyStr, "Recipient address rejected") || strings.Contains(bodyStr, "smtp rcpt") {
+		t.Errorf("GET %s (operator) leaks last_error body: %s", deliveriesPath, bodyStr)
+	}
+	if !strings.Contains(bodyStr, "Скрыто — видно owner/admin") {
+		t.Errorf("GET %s (operator) missing hidden-error hint: %s", deliveriesPath, bodyStr)
+	}
+
+	resp = getWithCookie(t, s.srv, deliveriesPath, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s (owner) status = %d, want 200: %s", deliveriesPath, resp.StatusCode, body)
+	}
+	bodyStr = string(body)
+	if !strings.Contains(bodyStr, "Recipient address rejected") {
+		t.Errorf("GET %s (owner) must still see the full delivery error: %s", deliveriesPath, bodyStr)
 	}
 }

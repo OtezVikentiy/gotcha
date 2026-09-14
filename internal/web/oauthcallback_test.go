@@ -146,18 +146,36 @@ func TestCallbackInviteProvisioning(t *testing.T) {
 	ownerID, _ := s.auth.Register(ctx, "owner@corp.com", "password12")
 	o, _ := s.org.CreateOrg(ctx, "cb-co", "CB Co", ownerID)
 	s.org.Invite(ctx, o.ID, "newbie@corp.com", org.RoleMember)
-	s.mp.id = oauth.Identity{Subject: "sub-3", Email: "newbie@corp.com", EmailVerified: true}
+	s.mp.id = oauth.Identity{Subject: "sub-3", Email: "newbie@corp.com", EmailVerified: true, TrustedIssuer: false}
+
+	resp := s.doCallback(t, oauthFlow{})
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusSeeOther {
+		t.Fatal("untrusted-issuer invite provisioning must NOT create an account (got 303)")
+	}
+	if _, err := s.auth.UserByEmail(ctx, "newbie@corp.com"); !errors.Is(err, auth.ErrUserNotFound) {
+		t.Fatal("account was created for an untrusted-issuer invite provisioning")
+	}
+}
+
+func TestCallbackInviteProvisioningTrustedIssuer(t *testing.T) {
+	s := newCallbackStack(t)
+	ctx := context.Background()
+	ownerID, _ := s.auth.Register(ctx, "owner-trusted@corp.com", "password12")
+	o, _ := s.org.CreateOrg(ctx, "cb-trusted-co", "CB Trusted Co", ownerID)
+	s.org.Invite(ctx, o.ID, "newbie-trusted@corp.com", org.RoleMember)
+	s.mp.id = oauth.Identity{Subject: "sub-3-trusted", Email: "newbie-trusted@corp.com", EmailVerified: true, TrustedIssuer: true}
 
 	resp := s.doCallback(t, oauthFlow{})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("invite provisioning status = %d, want 303", resp.StatusCode)
 	}
-	uid, err := s.auth.UserByEmail(ctx, "newbie@corp.com")
+	uid, err := s.auth.UserByEmail(ctx, "newbie-trusted@corp.com")
 	if err != nil {
 		t.Fatalf("provisioned user missing: %v", err)
 	}
-	if got, _ := s.auth.IdentityUser(ctx, "oidc", "sub-3"); got != uid {
+	if got, _ := s.auth.IdentityUser(ctx, "oidc", "sub-3-trusted"); got != uid {
 		t.Fatalf("identity not linked to provisioned user")
 	}
 }

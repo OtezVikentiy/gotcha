@@ -1,8 +1,10 @@
 package profile
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -153,5 +155,102 @@ func TestWriterBoundsBufferByBytes(t *testing.T) {
 	}
 	if bytes != want {
 		t.Fatalf("bufBytes = %d, фактический вес %d — учёт разъехался", bytes, want)
+	}
+}
+
+// Одиночный всплеск не должен доезжать до ClickHouse тиками по batchSize раз
+// в interval — успешный флаш с непустым остатком обязан кикнуть следующий сам.
+// Без Run()/тикера: вручную проигрываем то, что сделал бы Run(), читая kick.
+func TestWriterDrainsBurstWithoutWaitingForTick(t *testing.T) {
+	c := &fakeCHConn{}
+	w := NewWriter(c)
+	w.batchSize = 100
+
+	now := time.Now().UTC()
+	const burst = 2500
+	for i := 0; i < burst; i++ {
+		w.Add(1, Profile{Type: "cpu", Timestamp: now, Samples: []Sample{
+			{Stack: []Frame{{Function: "f"}}, Value: 1},
+		}})
+	}
+
+	ctx := context.Background()
+	flushes := 0
+drain:
+	for {
+		select {
+		case <-w.kick:
+			w.flush(ctx)
+			flushes++
+		default:
+			break drain
+		}
+	}
+
+	if got := w.buffered(); got != 0 {
+		t.Fatalf("buffered = %d после %d флашей — не самокикнулся до опустошения", got, flushes)
+	}
+	if want := burst / w.batchSize; flushes != want {
+		t.Fatalf("флашей = %d, want %d — на всплеск не хватило self-kick'ов", flushes, want)
+	}
+	c.mu.Lock()
+	rows := c.rows
+	c.mu.Unlock()
+	if rows != burst {
+		t.Fatalf("вставлено %d строк, want %d", rows, burst)
+	}
+}
+
+func captureWarnLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// Close молчал об итоговых потерях, в отличие от event/trace/uptime — на
+// выключенном инстансе self-метрику Dropped уже не снять, лог был единственным следом.
+func TestWriterCloseLogsFinalDrops(t *testing.T) {
+	buf := captureWarnLog(t)
+	c := &fakeCHConn{}
+	w := NewWriter(c)
+	w.maxBuf = 2
+	w.batchSize = 1 << 30 // не флашим по наполнению — дроп только от переполнения буфера
+
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		w.Add(1, Profile{Type: "cpu", Timestamp: now, Samples: []Sample{
+			{Stack: []Frame{{Function: "f"}}, Value: 1},
+		}})
+	}
+	if w.Dropped() == 0 {
+		t.Fatal("подготовка сценария сломана: дропов нет, Close нечего логировать")
+	}
+
+	go w.Run()
+	if err := w.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !strings.Contains(buf.String(), "dropped during lifetime") {
+		t.Errorf("Close не залогировал итоговые потери: %q", buf.String())
+	}
+}
+
+// Кадр с U+001F в имени не должен давать ключ агрегации, совпадающий с ключом
+// стека из двух обычных кадров, склеенных тем же разделителем stackSep.
+func TestFrameKeyEscapesStackSeparator(t *testing.T) {
+	twoFrames := strings.Join([]string{
+		FrameKey(Frame{Function: "f1"}),
+		FrameKey(Frame{Function: "f2"}),
+	}, stackSep)
+
+	oneFrameWithSepInName := strings.Join([]string{
+		FrameKey(Frame{Function: "f1" + stackSep + "f2"}),
+	}, stackSep)
+
+	if twoFrames == oneFrameWithSepInName {
+		t.Fatalf("ключи двух разных стеков совпали: %q — U+001F в имени кадра не экранирован", twoFrames)
 	}
 }

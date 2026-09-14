@@ -370,11 +370,30 @@ func TestWebMaintenanceDelete(t *testing.T) {
 	}
 
 	deletePath := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/maintenance/delete"
+	confirmResp := postForm(t, s.srv, deletePath, url.Values{"window_id": {strconv.FormatInt(win.ID, 10)}}, s.srv.URL, ownerCookie)
+	confirmBody, _ := io.ReadAll(confirmResp.Body)
+	confirmResp.Body.Close()
+	if !strings.Contains(string(confirmBody), "To delete") {
+		t.Fatalf("страница подтверждения не называет удаляемое окно: %s", confirmBody)
+	}
+
 	resp := postForm(t, s.srv, deletePath, url.Values{"confirmed": {"yes"}, "window_id": {strconv.FormatInt(win.ID, 10)}}, s.srv.URL, ownerCookie)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("POST %s status = %d, want 303: %s", deletePath, resp.StatusCode, body)
+	}
+	var flashCookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == "flash" {
+			flashCookie = c
+		}
+	}
+	if flashCookie == nil {
+		t.Fatal("delete не выставил flash-cookie")
+	}
+	if v, err := url.QueryUnescape(flashCookie.Value); err != nil || !strings.Contains(v, "flash.deleted") {
+		t.Errorf("flash-cookie не несёт ключ flash.deleted: %q (err=%v)", flashCookie.Value, err)
 	}
 
 	windows, err := s.uptime.Windows(context.Background(), proj.ID)

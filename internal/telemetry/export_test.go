@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/google/uuid"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/telemetry"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
@@ -164,6 +165,172 @@ func TestExportSubjectLogs(t *testing.T) {
 	}
 }
 
+func TestExportSubjectSpans(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	const p1 = int64(700)
+	const p2 = int64(701)
+	ts := time.Now().UTC()
+
+	// Чужой проект: тот же trace_id, тот же user_id — не должен быть затронут.
+	seedTransactionTrace(t, ctx, conn, p1, "victim", "tr-victim", ts)
+	seedSpanTrace(t, ctx, conn, p1, "tr-victim", ts)
+
+	seedTransactionTrace(t, ctx, conn, p2, "victim", "tr-victim", ts)
+	seedSpanTrace(t, ctx, conn, p2, "tr-victim", ts)
+	seedTransactionTrace(t, ctx, conn, p2, "other", "tr-other", ts)
+	seedSpanTrace(t, ctx, conn, p2, "tr-other", ts)
+	// Осиротевший спан без строки в transactions — вне охвата, как и у PurgeSubject.
+	seedSpanTrace(t, ctx, conn, p2, "tr-orphan", ts)
+
+	p := telemetry.NewPurger(conn)
+	exp, err := p.ExportSubject(ctx, p2, telemetry.Subject{UserID: "victim"})
+	if err != nil {
+		t.Fatalf("ExportSubject: %v", err)
+	}
+	if len(exp.Spans) != 1 {
+		t.Fatalf("spans: получили %d, ждали 1 (спан victim)", len(exp.Spans))
+	}
+	if exp.Spans[0].TraceID != "tr-victim" {
+		t.Errorf("spans[0].TraceID=%q, ждали tr-victim", exp.Spans[0].TraceID)
+	}
+	if got := exp.Counts["spans"]; got.Returned != 1 || got.Total != 1 {
+		t.Errorf("Counts[spans]=%+v, ждали {Returned:1 Total:1}", got)
+	}
+}
+
+func seedManySpans(t *testing.T, ctx context.Context, conn driver.Conn, projectID int64, traceID string, n int, ts time.Time) {
+	t.Helper()
+	batch, err := conn.PrepareBatch(ctx, "INSERT INTO spans (project_id, trace_id, timestamp)")
+	if err != nil {
+		t.Fatalf("prepare batch spans: %v", err)
+	}
+	for i := 0; i < n; i++ {
+		if err := batch.Append(uint64(projectID), traceID, ts.Add(time.Duration(i)*time.Millisecond)); err != nil {
+			t.Fatalf("append batch spans: %v", err)
+		}
+	}
+	if err := batch.Send(); err != nil {
+		t.Fatalf("send batch spans: %v", err)
+	}
+}
+
+// Симметрично TestExportSubjectTruncation, но для спанов — у exportSpansByTraceIDs
+// свой отдельный цикл по батчам, и без этого теста его усечение не исполнялось вовсе.
+func TestExportSubjectSpansTruncation(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	const p = int64(750)
+	const total = 10050
+	ts := time.Now().UTC()
+
+	seedTransactionTrace(t, ctx, conn, p, "victim", "tr-victim", ts)
+	seedManySpans(t, ctx, conn, p, "tr-victim", total, ts)
+
+	pg := telemetry.NewPurger(conn)
+	exp, err := pg.ExportSubject(ctx, p, telemetry.Subject{UserID: "victim"})
+	if err != nil {
+		t.Fatalf("ExportSubject: %v", err)
+	}
+
+	if len(exp.Spans) != 10000 {
+		t.Fatalf("spans: получили %d, ждали ровно потолок 10000", len(exp.Spans))
+	}
+	counts := exp.Counts["spans"]
+	if counts.Returned != 10000 || counts.Total != total {
+		t.Fatalf("Counts[spans]=%+v, ждали {Returned:10000 Total:%d}", counts, total)
+	}
+	if !exp.Truncated {
+		t.Errorf("exp.Truncated=false при отданных 10000 спанов из %d — молчаливое усечение", total)
+	}
+}
+
+func seedManyEvents(t *testing.T, ctx context.Context, conn driver.Conn, projectID int64, userID string, n int, ts time.Time) {
+	t.Helper()
+	batch, err := conn.PrepareBatch(ctx, "INSERT INTO events (event_id, project_id, timestamp, user_id)")
+	if err != nil {
+		t.Fatalf("prepare batch events: %v", err)
+	}
+	for i := 0; i < n; i++ {
+		if err := batch.Append(uuid.New(), uint64(projectID), ts.Add(time.Duration(i)*time.Millisecond), userID); err != nil {
+			t.Fatalf("append batch events: %v", err)
+		}
+	}
+	if err := batch.Send(); err != nil {
+		t.Fatalf("send batch events: %v", err)
+	}
+}
+
+// Выше exportRowLimit выгрузка обязана честно назвать «отдано/всего», а не молча
+// обрезать и выдать усечённые 10 000 строк за полный ответ субъекту.
+func TestExportSubjectTruncation(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	const p = int64(800)
+	const total = 10050
+	ts := time.Now().UTC()
+	seedManyEvents(t, ctx, conn, p, "victim", total, ts)
+
+	pg := telemetry.NewPurger(conn)
+	exp, err := pg.ExportSubject(ctx, p, telemetry.Subject{UserID: "victim"})
+	if err != nil {
+		t.Fatalf("ExportSubject: %v", err)
+	}
+
+	if len(exp.Events) != 10000 {
+		t.Fatalf("events: получили %d, ждали ровно потолок 10000", len(exp.Events))
+	}
+	counts := exp.Counts["events"]
+	if counts.Returned != 10000 || counts.Total != total {
+		t.Fatalf("Counts[events]=%+v, ждали {Returned:10000 Total:%d} — субъект должен узнать реальный объём", counts, total)
+	}
+	if !exp.Truncated {
+		t.Errorf("exp.Truncated=false при отданных 10000 из %d — молчаливое усечение", total)
+	}
+
+	// Ниже потолка — выгрузка полна, признака усечения нет.
+	exp2, err := pg.ExportSubject(ctx, p, telemetry.Subject{UserID: "does-not-exist"})
+	if err != nil {
+		t.Fatalf("ExportSubject (пустой субъект): %v", err)
+	}
+	if exp2.Truncated {
+		t.Errorf("exp2.Truncated=true без данных субъекта — ложное усечение")
+	}
+	if got := exp2.Counts["events"]; got.Returned != 0 || got.Total != 0 {
+		t.Errorf("Counts[events]=%+v для несуществующего субъекта, ждали {0 0}", got)
+	}
+}
+
+// IP-only субъект не даёт условий ни для одной таблицы кроме events — единственный
+// источник остальных ключей в Counts — предзаполнение по subjectTables, а не recordCount.
+func TestExportSubjectCountsFullKeysIPOnly(t *testing.T) {
+	conn := testenv.MigratedCH(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	p := telemetry.NewPurger(conn)
+	exp, err := p.ExportSubject(ctx, 850, telemetry.Subject{IP: "203.0.113.9"})
+	if err != nil {
+		t.Fatalf("ExportSubject by IP: %v", err)
+	}
+
+	want := []string{"events", "transactions", "spans", "metric_points", "logs"}
+	if len(exp.Counts) != len(want) {
+		t.Fatalf("Counts содержит %d ключей, ждали %d: %+v", len(exp.Counts), len(want), exp.Counts)
+	}
+	for _, table := range want {
+		if _, ok := exp.Counts[table]; !ok {
+			t.Errorf("Counts не содержит %q для субъекта, заданного только IP — таблица выпала из единого перечня", table)
+		}
+	}
+}
+
 var errAbortedCursor = errors.New("telemetry_test: simulated ClickHouse cursor abort")
 
 // После keep успешных Next() имитирует штатный конец (false), но Err() отдаёт
@@ -228,9 +395,11 @@ func TestExportSubjectRowsErrSurfaces(t *testing.T) {
 		k    int
 	}{
 		{"events", 1},
-		{"transactions", 2},
-		{"metric_points", 3},
-		{"logs", 4},
+		{"trace_ids", 2},
+		{"spans", 3},
+		{"transactions", 4},
+		{"metric_points", 5},
+		{"logs", 6},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

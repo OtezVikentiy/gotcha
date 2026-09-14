@@ -23,6 +23,7 @@ const (
 type profileQuery interface {
 	ActiveServices(ctx context.Context, from, to time.Time) ([]ProjectService, error)
 	TopFunctionShares(ctx context.Context, projectID int64, service, profileType string, from, to time.Time, k int) ([]FunctionShare, error)
+	FunctionSharesFor(ctx context.Context, projectID int64, service, profileType string, functions []string, from, to time.Time) (map[string]FunctionShare, error)
 	BaselineFunctionShares(ctx context.Context, projectID int64, service, profileType string, functions []string, baselineDays int, now time.Time) (map[string]BaselineShare, error)
 }
 
@@ -93,14 +94,36 @@ func (e *RegressionEvaluator) Tick(ctx context.Context) {
 		e.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
 		return
 	}
-	for _, ps := range services {
+
+	// Сервис, переставший слать профили, выпадает из ActiveServices — без этого
+	// добора его открытые регрессии больше никогда не оценивались бы.
+	merged := services
+	if e.Regressions != nil {
+		openServices, err := e.Regressions.OpenServices(ctx)
+		if err != nil {
+			slog.Error("profile evaluator: open services failed", "error", err)
+		} else if len(openServices) > 0 {
+			seen := make(map[ProjectService]bool, len(services))
+			for _, ps := range services {
+				seen[ps] = true
+			}
+			for _, ps := range openServices {
+				if !seen[ps] {
+					seen[ps] = true
+					merged = append(merged, ps)
+				}
+			}
+		}
+	}
+
+	for _, ps := range merged {
 		e.evalService(ctx, ps, recentFrom, now)
 	}
 
 	e.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
 	if ctx.Err() != nil {
 		slog.Warn("profile evaluator: tick did not finish within its budget",
-			"budget", e.tickBudget(), "services", len(services))
+			"budget", e.tickBudget(), "services", len(merged))
 		return
 	}
 	e.lastTickUnix.Store(time.Now().Unix())
@@ -114,32 +137,74 @@ func (e *RegressionEvaluator) evalService(ctx context.Context, ps ProjectService
 			"project_id", ps.ProjectID, "service", ps.Service, "error", err)
 		return
 	}
-	if len(shares) == 0 {
-		return
-	}
 
-	names := make([]string, 0, len(shares))
-	for _, sh := range shares {
-		names = append(names, sh.Function)
-	}
-	baselines, err := e.Query.BaselineFunctionShares(ctx, ps.ProjectID, ps.Service, ps.Type, names, cfg.BaselineDays, now)
+	opens, err := e.Regressions.OpenForService(ctx, ps.ProjectID, ps.Service, ps.Type)
 	if err != nil {
-		slog.Error("profile evaluator: baseline shares failed",
+		slog.Error("profile evaluator: open-for-service failed",
 			"project_id", ps.ProjectID, "service", ps.Service, "error", err)
 		return
 	}
 
-	opens, err := e.Regressions.OpenForFunctions(ctx, ps.ProjectID, ps.Service, ps.Type, names)
-	if err != nil {
-		slog.Error("profile evaluator: open-for failed",
-			"project_id", ps.ProjectID, "service", ps.Service, "error", err)
-		return
+	byName := make(map[string]FunctionShare, len(shares))
+	for _, sh := range shares {
+		byName[sh.Function] = sh
 	}
 
-	for _, sh := range shares {
-		base := baselines[sh.Function]
-		open, hasOpen := opens[sh.Function]
-		e.evalFunction(ctx, ps, sh, base.Share, base.Samples, open, hasOpen, now)
+	// Открытая, выпавшая из top-K, не закрывается вслепую по старому current —
+	// сначала добираем её АКТУАЛЬНУЮ долю отдельным запросом по имени.
+	var orphanNames []string
+	for fn := range opens {
+		if _, ok := byName[fn]; !ok {
+			orphanNames = append(orphanNames, fn)
+		}
+	}
+	if len(orphanNames) > 0 {
+		orphanShares, err := e.Query.FunctionSharesFor(ctx, ps.ProjectID, ps.Service, ps.Type, orphanNames, recentFrom, now)
+		if err != nil {
+			slog.Error("profile evaluator: orphan function shares failed",
+				"project_id", ps.ProjectID, "service", ps.Service, "error", err)
+		} else {
+			for fn, sh := range orphanShares {
+				byName[fn] = sh
+			}
+		}
+	}
+
+	if len(byName) > 0 {
+		names := make([]string, 0, len(byName))
+		for fn := range byName {
+			names = append(names, fn)
+		}
+
+		// База не должна расти поверх уже открытого инцидента — иначе устойчивая
+		// (многодневная) регрессия рассасывается в собственной базе.
+		cutoff := recentFrom
+		for _, r := range opens {
+			if _, ok := byName[r.Function]; ok && r.StartedAt.Before(cutoff) {
+				cutoff = r.StartedAt
+			}
+		}
+
+		baselines, err := e.Query.BaselineFunctionShares(ctx, ps.ProjectID, ps.Service, ps.Type, names, cfg.BaselineDays, cutoff)
+		if err != nil {
+			slog.Error("profile evaluator: baseline shares failed",
+				"project_id", ps.ProjectID, "service", ps.Service, "error", err)
+			return
+		}
+
+		for fn, sh := range byName {
+			base := baselines[fn]
+			open, hasOpen := opens[fn]
+			e.evalFunction(ctx, ps, sh, base.Share, base.Samples, open, hasOpen, now)
+		}
+	}
+
+	// Открытые без данных нигде (ни в top-K, ни по отдельному запросу): функция
+	// реально пропала. current не пересчитываем — свежих данных нет.
+	for fn, open := range opens {
+		if _, ok := byName[fn]; !ok {
+			e.closeRegression(ctx, open, open.CurrentShare)
+		}
 	}
 }
 
@@ -170,14 +235,18 @@ func (e *RegressionEvaluator) evalFunction(ctx context.Context, ps ProjectServic
 			slog.Error("profile evaluator: bump failed", "id", open.ID, "error", err)
 		}
 	case DecisionResolve:
-		closed, err := e.Regressions.Resolve(ctx, open.ID, recent)
-		if err != nil {
-			slog.Error("profile evaluator: resolve failed", "id", open.ID, "error", err)
-			return
-		}
-		if closed {
-			e.notifyClose(ctx, open)
-		}
+		e.closeRegression(ctx, open, recent)
+	}
+}
+
+func (e *RegressionEvaluator) closeRegression(ctx context.Context, open Regression, current float64) {
+	closed, err := e.Regressions.Resolve(ctx, open.ID, current)
+	if err != nil {
+		slog.Error("profile evaluator: resolve failed", "id", open.ID, "error", err)
+		return
+	}
+	if closed {
+		e.notifyClose(ctx, open)
 	}
 }
 

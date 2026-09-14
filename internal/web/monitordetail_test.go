@@ -231,7 +231,7 @@ func TestWebMonitorDetailHeartbeatTiles(t *testing.T) {
 	path := "/monitors/" + strconv.FormatInt(created.ID, 10)
 
 	body := monitorDetailGet(t, s, path, ownerCookie)
-	for _, want := range []string{"Последний маячок", "ещё не было", "Допуск", "15 мин", "Ожидается до", "Инцидентов не было"} {
+	for _, want := range []string{"Последний маячок", "ещё не было", "Окно ожидания", "15 мин", "Ожидается до", "Инцидентов не было"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("GET %s (no beat yet) missing %q: %s", path, want, body)
 		}
@@ -281,7 +281,7 @@ func TestWebMonitorDetailHeartbeatGraceCompound(t *testing.T) {
 	}
 	path := "/monitors/" + strconv.FormatInt(created.ID, 10)
 	body := monitorDetailGet(t, s, path, ownerCookie)
-	if !strings.Contains(body, `<div class="stat-label">Допуск</div><div class="stat-value">1 ч 30 мин</div>`) {
+	if !strings.Contains(body, `<div class="stat-label">Окно ожидания</div><div class="stat-value">1 ч 30 мин</div>`) {
 		t.Fatalf("GET %s missing grace '1 ч 30 мин': %s", path, body)
 	}
 }

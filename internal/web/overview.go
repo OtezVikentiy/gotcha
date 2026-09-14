@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
-	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/incidentgroup"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -133,7 +132,7 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -144,7 +143,7 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 	// metric/slo-инцидента, не саму ленту.
 	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -164,12 +163,12 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 	if h.IncidentGroups != nil {
 		open, err := h.IncidentGroups.OpenGroups(r.Context(), projectID)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		closedGroups, err := h.IncidentGroups.ClosedGroupsSince(r.Context(), projectID, since, overviewClosedGroupsLimit)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 
@@ -182,7 +181,7 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 		}
 		members, err := h.IncidentGroups.Compositions(r.Context(), projectID, groupIDs)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		groups := make([]templates.GroupCard, len(allGroups))
@@ -193,24 +192,24 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 
 		outOfGroup, err = h.IncidentGroups.OpenOutOfGroup(r.Context(), projectID)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		closed, err = h.IncidentGroups.ClosedSince(r.Context(), projectID, since, overviewClosedOutOfGroupLimit)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 	}
 
 	statusLine, err := h.overviewStatusLine(r.Context(), projectID, since, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	deploys, err := h.overviewDeployMarkers(r.Context(), projectID, since, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -231,7 +230,7 @@ func (h *Handler) incidentFeedRedirect(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {

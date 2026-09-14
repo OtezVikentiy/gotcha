@@ -95,7 +95,7 @@ func (h *Handler) renderAlerts(w http.ResponseWriter, r *http.Request, status in
 		return
 	}
 	w.WriteHeader(status)
-	_ = templates.Alerts(projectID, rules, channels, h.EmailEnabled, canManage, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
+	_ = templates.Alerts(projectID, rules, channels, h.EmailEnabled, canManage, h.SecretKeyInsecure, form, errMsg, h.currentEmail(r)).Render(r.Context(), w)
 }
 
 func (h *Handler) alertDeliveriesPage(w http.ResponseWriter, r *http.Request) {
@@ -123,8 +123,9 @@ func (h *Handler) alertDeliveriesPage(w http.ResponseWriter, r *http.Request) {
 	}
 	if !authz.CanManage {
 		for i := range failed {
-			// Порядок важен: редактируем токен по сырому Target, следующая строка перезатирает его маской.
-			failed[i].LastError = notify.RedactToken(failed[i].LastError, failed[i].Target)
+			// Тело ответа цели (не только токен/путь) может нести данные внутренней сети при
+			// GOTCHA_SSRF_ALLOW_PRIVATE_WEBHOOK=1 — адрес задаёт admin, значит и ответ читает он же.
+			failed[i].LastError = i18n.T(r.Context(), "alerts.failed.error_hidden")
 			failed[i].Target = maskChannelTarget(failed[i].ChannelKind, failed[i].Target)
 		}
 	}
@@ -428,7 +429,7 @@ func (h *Handler) alertsChannelTest(w http.ResponseWriter, r *http.Request) {
 	subject := i18n.T(lctx, "notify.test.subject")
 	body := i18n.Tf(lctx, "notify.test.body", "name", ch.Target, "url", url)
 	payload := map[string]any{
-		"kind":         "channel_test",
+		"kind":         notify.KindChannelTest,
 		"project_id":   projectID,
 		"url":          url,
 		"subject":      subject,

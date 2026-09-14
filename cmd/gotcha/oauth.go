@@ -9,6 +9,7 @@ func buildRegistry(cfg Config) *oauth.Registry {
 		providers = append(providers, oauth.NewOIDC(oauth.OIDCConfig{
 			Issuer: cfg.OIDCIssuer, ClientID: cfg.OIDCClientID,
 			ClientSecret: cfg.OIDCClientSecret, Scopes: cfg.OIDCScopes, DisplayName: cfg.OIDCName,
+			TrustEmail: cfg.OIDCTrustEmail,
 		}))
 	}
 	if cfg.YandexEnabled {

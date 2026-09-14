@@ -59,6 +59,10 @@ type Handler struct {
 	// пустое значение — дефолт из secret().
 	SecretKey string
 
+	// true, когда шифрование at-rest выключено (dev-ключ) — секреты форм ниже
+	// уходят в PG открытым текстом; тот же признак, что у gotcha_secret_key_insecure.
+	SecretKeyInsecure bool
+
 	// XFF доверяем только от пиров отсюда — иначе игнорируется, ключ лимитера RemoteAddr.
 	TrustedProxies []*net.IPNet
 
@@ -192,7 +196,11 @@ type Handler struct {
 	// лимит активных заявок не ловит того, кто ставит заявку и сразу удаляет —
 	// здесь ограничена частота тяжёлой выборки по ClickHouse.
 	exportLimiter *rateLimiter
-	statusCache   statusCache
+	// СВОИ, не emailLimiter/ipLimiter логина — общий ключ запирал бы жертву на её же входе.
+	// IP-лимитер общий для /forgot-password и /reset-password/{token}.
+	passwordResetEmailLimiter *rateLimiter
+	passwordResetIPLimiter    *rateLimiter
+	statusCache               statusCache
 
 	crossOriginRejected atomic.Int64
 	coThrottle          coThrottle
@@ -215,26 +223,29 @@ const (
 	agentLimiterMaxKeys      = 5000
 	statusPageLimiterMaxKeys = 5000
 	exportLimiterMaxKeys     = 5000
+	passwordResetMaxKeys     = 20000
 )
 
 func New(authSvc *auth.Service, orgSvc *org.Service, issueSvc *issue.Service, events *event.Query, baseURL string) *Handler {
 	return &Handler{
-		Auth:              authSvc,
-		Org:               orgSvc,
-		Issues:            issueSvc,
-		Events:            events,
-		BaseURL:           baseURL,
-		Secure:            strings.HasPrefix(baseURL, "https://"),
-		HSTSHeader:        "max-age=31536000",
-		RegistrationMode:  "open",
-		loginLimiter:      newRateLimiter(time.Now, 5, time.Minute, loginLimiterMaxKeys, "loginLimiter"),
-		ipLimiter:         newRateLimiter(time.Now, 20, time.Minute, ipLimiterMaxKeys, "ipLimiter"),
-		emailLimiter:      newRateLimiter(time.Now, 50, 15*time.Minute, emailLimiterMaxKeys, "emailLimiter"),
-		publicLimiter:     newRateLimiter(time.Now, 600, time.Minute, publicLimiterMaxKeys, "publicLimiter"),
-		agentLimiter:      newRateLimiter(time.Now, 10, time.Minute, agentLimiterMaxKeys, "agentLimiter"),
-		statusPageLimiter: newRateLimiter(time.Now, 12, time.Minute, statusPageLimiterMaxKeys, "statusPageLimiter"),
-		exportLimiter:     newRateLimiter(time.Now, createRateLimit, createRateWindow, exportLimiterMaxKeys, "exportLimiter"),
-		attrKeysCache:     newAttrKeysCache(),
+		Auth:                      authSvc,
+		Org:                       orgSvc,
+		Issues:                    issueSvc,
+		Events:                    events,
+		BaseURL:                   baseURL,
+		Secure:                    strings.HasPrefix(baseURL, "https://"),
+		HSTSHeader:                "max-age=31536000",
+		RegistrationMode:          "open",
+		loginLimiter:              newRateLimiter(time.Now, 5, time.Minute, loginLimiterMaxKeys, "loginLimiter"),
+		ipLimiter:                 newRateLimiter(time.Now, 20, time.Minute, ipLimiterMaxKeys, "ipLimiter"),
+		emailLimiter:              newRateLimiter(time.Now, 50, 15*time.Minute, emailLimiterMaxKeys, "emailLimiter"),
+		publicLimiter:             newRateLimiter(time.Now, 600, time.Minute, publicLimiterMaxKeys, "publicLimiter"),
+		agentLimiter:              newRateLimiter(time.Now, 10, time.Minute, agentLimiterMaxKeys, "agentLimiter"),
+		statusPageLimiter:         newRateLimiter(time.Now, 12, time.Minute, statusPageLimiterMaxKeys, "statusPageLimiter"),
+		exportLimiter:             newRateLimiter(time.Now, createRateLimit, createRateWindow, exportLimiterMaxKeys, "exportLimiter"),
+		passwordResetEmailLimiter: newRateLimiter(time.Now, 5, 15*time.Minute, passwordResetMaxKeys, "passwordResetEmailLimiter"),
+		passwordResetIPLimiter:    newRateLimiter(time.Now, 20, time.Minute, passwordResetMaxKeys, "passwordResetIPLimiter"),
+		attrKeysCache:             newAttrKeysCache(),
 	}
 }
 
@@ -267,6 +278,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.HandleFunc("POST /logout", h.logout)
 	inner.HandleFunc("GET /sso", h.ssoPage)
 	inner.HandleFunc("POST /sso", h.ssoSubmit)
+	inner.HandleFunc("GET /forgot-password", h.forgotPasswordPage)
+	inner.HandleFunc("POST /forgot-password", h.forgotPasswordSubmit)
+	inner.HandleFunc("GET /reset-password/{token}", h.resetPasswordPage)
+	inner.HandleFunc("POST /reset-password/{token}", h.resetPasswordSubmit)
 
 	// публичный: аноним по ссылке-приглашению должен видеть, куда его зовут,
 	// не теряя токен под requireUser. Само чтение (InviteByToken) его не гасит.
@@ -274,7 +289,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	// открыты для анонимов; сессию для потока привязки проверяем внутри хендлера.
 	inner.HandleFunc("GET /auth/oauth/{provider}/start", h.publicRateLimited(h.oauthStart))
-	inner.HandleFunc("GET /auth/oauth/{provider}/callback", h.oauthCallback)
+	inner.HandleFunc("GET /auth/oauth/{provider}/callback", h.publicRateLimited(h.oauthCallback))
 
 	// анонимный POST — limitFormBody здесь навешан явно, а не только через requireUser.
 	inner.Handle("POST /settings/locale", h.limitFormBody(http.HandlerFunc(h.localeSwitch)))
@@ -463,6 +478,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.Handle("POST /projects/{id}/statuspages", h.requireUser(http.HandlerFunc(h.statusPagesCreate)))
 	inner.Handle("POST /statuspages/{id}", h.requireUser(http.HandlerFunc(h.statusPagesUpdate)))
 	inner.Handle("POST /statuspages/{id}/delete", h.requireUser(http.HandlerFunc(h.statusPagesDelete)))
+	inner.Handle("POST /statuspages/{id}/rotate", h.requireUser(http.HandlerFunc(h.statusPagesRotate)))
 
 	inner.Handle("GET /projects/{id}/maintenance", h.requireUser(http.HandlerFunc(h.maintenancePage)))
 	inner.Handle("POST /projects/{id}/maintenance", h.requireUser(http.HandlerFunc(h.maintenanceCreate)))
@@ -485,14 +501,14 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	inner.HandleFunc("GET /agent/{file}", h.agentDistRateLimited(h.agentFile))
 
 	inner.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 	})
 
 	// h.pages остаётся *http.ServeMux (не recordingMux) — RoutePattern работает
 	// через h.pages.Handler и не должен зависеть от обёртки.
 	h.pages = inner.ServeMux
 	h.routes = inner.patterns
-	mux.Handle("/", h.securityHeaders(h.withLocale(h.withTheme(h.withFlash(h.withShell(inner))))))
+	mux.Handle("/", h.securityHeaders(h.withLocale(h.withTheme(h.withFlash(h.withShell(gzipSSR(inner)))))))
 }
 
 // хэш меняется при любом изменении ассета — браузеры не отдают старую версию
@@ -593,13 +609,22 @@ func (h *Handler) renderError(w http.ResponseWriter, r *http.Request, status int
 }
 
 func (h *Handler) notFound(w http.ResponseWriter, r *http.Request) {
-	h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+	h.renderError(w, r, http.StatusNotFound, "")
 }
 
 // двухшаговый POST — под CSP без unsafe-inline onclick="confirm()" не
 // исполняется, подтверждение обязано быть server-side.
 func (h *Handler) renderConfirm(w http.ResponseWriter, r *http.Request, titleKey, messageKey, confirmLabelKey, cancelHref, action string, hidden []templates.HiddenField) {
 	h.renderConfirmf(w, r, titleKey, messageKey, confirmLabelKey, cancelHref, action, hidden)
+}
+
+// `env` — устаревшее имя параметра фильтра окружения (issues, hosts); ссылки с ним уже
+// разошлись по закладкам и тикетам, поэтому принимается наравне с каноничным `environment`.
+func environmentParam(q url.Values) string {
+	if v := q.Get("environment"); v != "" {
+		return v
+	}
+	return q.Get("env")
 }
 
 func (h *Handler) renderConfirmf(w http.ResponseWriter, r *http.Request, titleKey, messageKey, confirmLabelKey, cancelHref, action string, hidden []templates.HiddenField, kv ...string) {
@@ -618,13 +643,13 @@ func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
 	}
 	projects, err := h.Org.ProjectsForUser(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if len(projects) == 0 {
 		orgs, err := h.Org.OrgsOf(r.Context(), uid)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		if len(orgs) > 0 {
@@ -654,7 +679,7 @@ func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
 	}
 	orgs, err := h.Org.OrgsOf(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if len(orgs) == 0 {
@@ -757,10 +782,10 @@ func (h *Handler) requireOrgRole(w http.ResponseWriter, r *http.Request, orgID, 
 	role, err := h.Org.Role(r.Context(), orgID, userID)
 	if err != nil {
 		if errors.Is(err, org.ErrNotMember) {
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			h.renderError(w, r, http.StatusNotFound, "")
 			return "", false
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return "", false
 	}
 	// роли не хватает — 403: участник и так знает про организацию, «не найдено»

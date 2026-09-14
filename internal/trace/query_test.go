@@ -98,6 +98,15 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		},
 	})
 
+	// та же строка trace_id в другом проекте, транзакция СВЕЖЕЕ: коллизия
+	// (случайная или подстроенная чужим отправителем) — ProjectsForTrace
+	// обязана вернуть оба, порядок — по свежести (это projectID2 первым).
+	wfCollisionStart := wfStart.Add(time.Minute)
+	w.Add(projectID2, projectID2, trace.Transaction{
+		TraceID: wfTrace, SpanID: "wf-collision-root", Name: "GET /other", Op: "http.server",
+		Status: "ok", Start: wfCollisionStart, End: wfCollisionStart.Add(100 * time.Millisecond), Environment: "production",
+	})
+
 	w.Add(projectID5, projectID5, trace.Transaction{
 		TraceID: "off-trace", SpanID: "off-root", Name: "POST /pay", Op: "http.server",
 		Status: "ok", Start: wfStart, End: wfStart.Add(950 * time.Millisecond), Environment: "production",
@@ -415,7 +424,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	q := trace.NewQuery(conn)
 
 	t.Run("Endpoints", func(t *testing.T) {
-		got, err := q.Endpoints(ctx, projectID, from, to, "production", 50)
+		got, _, err := q.Endpoints(ctx, projectID, from, to, "production", 50)
 		if err != nil {
 			t.Fatalf("Endpoints: %v", err)
 		}
@@ -446,7 +455,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("EndpointsEnvironmentFilter", func(t *testing.T) {
-		stg, err := q.Endpoints(ctx, projectID, from, to, "staging", 50)
+		stg, _, err := q.Endpoints(ctx, projectID, from, to, "staging", 50)
 		if err != nil {
 			t.Fatalf("Endpoints staging: %v", err)
 		}
@@ -454,7 +463,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 			t.Fatalf("staging endpoints = %+v, want single users with count 5", stg)
 		}
 
-		all, err := q.Endpoints(ctx, projectID, from, to, "", 50)
+		all, _, err := q.Endpoints(ctx, projectID, from, to, "", 50)
 		if err != nil {
 			t.Fatalf("Endpoints all: %v", err)
 		}
@@ -470,7 +479,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("EndpointsEmptyProject", func(t *testing.T) {
-		got, err := q.Endpoints(ctx, 999999, from, to, "", 50)
+		got, _, err := q.Endpoints(ctx, 999999, from, to, "", 50)
 		if err != nil {
 			t.Fatalf("Endpoints empty: %v", err)
 		}
@@ -843,18 +852,43 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 		}
 	})
 
-	t.Run("ProjectForTrace", func(t *testing.T) {
-		pid, found, err := q.ProjectForTrace(ctx, wfTrace)
+	t.Run("ProjectsForTrace", func(t *testing.T) {
+		pids, err := q.ProjectsForTrace(ctx, wfTrace)
 		if err != nil {
-			t.Fatalf("ProjectForTrace: %v", err)
+			t.Fatalf("ProjectsForTrace: %v", err)
 		}
-		if !found || pid != projectID {
-			t.Fatalf("ProjectForTrace = (%d, %v), want (%d, true)", pid, found, projectID)
+		// порядок не случаен: projectID2 обладает более свежей транзакцией по
+		// этому trace_id (wfCollisionStart = wfStart+1m) и обязан идти первым —
+		// если у пользователя есть доступ к обоим, он должен увидеть именно его.
+		want := []int64{projectID2, projectID}
+		if len(pids) != len(want) || pids[0] != want[0] || pids[1] != want[1] {
+			t.Fatalf("ProjectsForTrace = %v, want %v по убыванию свежести транзакции", pids, want)
 		}
 
-		_, found, err = q.ProjectForTrace(ctx, "unknown-trace-id")
+		none, err := q.ProjectsForTrace(ctx, "unknown-trace-id")
 		if err != nil {
-			t.Fatalf("ProjectForTrace unknown: %v", err)
+			t.Fatalf("ProjectsForTrace unknown: %v", err)
+		}
+		if len(none) != 0 {
+			t.Fatalf("ProjectsForTrace(unknown) = %v, want пусто", none)
+		}
+	})
+
+	t.Run("TransactionTimestamp", func(t *testing.T) {
+		ts, found, err := q.TransactionTimestamp(ctx, projectID, wfTrace)
+		if err != nil {
+			t.Fatalf("TransactionTimestamp: %v", err)
+		}
+		if !found {
+			t.Fatalf("found = false, want true")
+		}
+		if !ts.Equal(wfStart) {
+			t.Fatalf("TransactionTimestamp = %v, want %v", ts, wfStart)
+		}
+
+		_, found, err = q.TransactionTimestamp(ctx, projectID, "unknown-trace-id")
+		if err != nil {
+			t.Fatalf("TransactionTimestamp unknown: %v", err)
 		}
 		if found {
 			t.Fatalf("found = true for unknown trace")
@@ -881,7 +915,7 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 
 	t.Run("ApdexBoundary", func(t *testing.T) {
-		got, err := q.Endpoints(ctx, projectID2, from, to, "production", 50)
+		got, _, err := q.Endpoints(ctx, projectID2, from, to, "production", 50)
 		if err != nil {
 			t.Fatalf("Endpoints apdex: %v", err)
 		}

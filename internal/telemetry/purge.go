@@ -22,6 +22,23 @@ var projectTables = []string{
 	"web_vitals_5m",
 }
 
+// Единый охват PurgeSubject и ExportSubject: расхождение состава означало бы, что
+// субъекту стирают больше или меньше, чем ему показывают по запросу доступа.
+var subjectTables = []string{
+	"events",
+	"transactions",
+	"spans",
+	"metric_points",
+	"logs",
+}
+
+// CH-таблицы с прямой колонкой субъекта (user_id/user_email/user_ip). metric_points/logs
+// несут субъекта только в Map-атрибутах, а spans — косвенно через trace_id, поэтому не входят.
+var subjectColumnTables = []string{
+	"events",
+	"transactions",
+}
+
 type Subject struct {
 	Email  string
 	UserID string

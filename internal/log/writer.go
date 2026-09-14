@@ -49,6 +49,12 @@ type Writer struct {
 	insertFails int64 // накопительно: сколько флашей провалилось
 	failStreak  int
 	lastDropLog time.Time
+	// nil, пока дропов нет — не аллоцируется на горячем пути. Заполняется в
+	// trimLocked под mu, сливается в onDrop вне mu (emitDrops).
+	pendingDrops map[uint64]int64
+	// Сток per-project дропов буфера; nil — no-op (например, в тестах без пайплайна).
+	// Читается и пишется под mu.
+	onDrop func(projectID uint64, n int64)
 
 	maxBuf      int
 	maxBufBytes int64
@@ -111,7 +117,10 @@ func (w *Writer) Add(projectID int64, r LogRecord) {
 	} else {
 		logDrop = false
 	}
+	// захватываем под mu, сливаем вне — сток берёт свой мьютекс.
+	drops, sink := w.takeDropsLocked()
 	w.mu.Unlock()
+	reportDrops(sink, drops)
 
 	if logDrop {
 		slog.Warn("log buffer full, dropping oldest", "dropped_total", dropped)
@@ -121,6 +130,40 @@ func (w *Writer) Add(projectID int64, r LogRecord) {
 		case w.kick <- struct{}{}:
 		default:
 		}
+	}
+}
+
+// ставится один раз из main до горячего трафика; nil-сток — no-op.
+func (w *Writer) SetDropSink(fn func(projectID uint64, n int64)) {
+	w.mu.Lock()
+	w.onDrop = fn
+	w.mu.Unlock()
+}
+
+// вызывающий обязан слить результат через reportDrops ПОСЛЕ разблокировки.
+func (w *Writer) takeDropsLocked() (map[uint64]int64, func(projectID uint64, n int64)) {
+	if len(w.pendingDrops) == 0 {
+		return nil, w.onDrop
+	}
+	m := w.pendingDrops
+	w.pendingDrops = nil
+	return m, w.onDrop
+}
+
+// нужен в flush, где возврат неудачной пачки может переполнить buf уже под mu.
+func (w *Writer) emitDrops() {
+	w.mu.Lock()
+	drops, sink := w.takeDropsLocked()
+	w.mu.Unlock()
+	reportDrops(sink, drops)
+}
+
+func reportDrops(sink func(projectID uint64, n int64), drops map[uint64]int64) {
+	if sink == nil {
+		return
+	}
+	for projectID, n := range drops {
+		sink(projectID, n)
 	}
 }
 
@@ -162,6 +205,16 @@ func (w *Writer) trimLocked() bool {
 	}
 	if drop <= 0 {
 		return false
+	}
+	// без атрибуции по проекту потеря на буфере писателя невидима пользователю:
+	// org_usage.dropped_logs не растёт, хотя квота уже списана при приёме.
+	for i := 0; i < drop; i++ {
+		if p := w.buf[i].ProjectID; p > 0 {
+			if w.pendingDrops == nil {
+				w.pendingDrops = make(map[uint64]int64)
+			}
+			w.pendingDrops[p]++
+		}
 	}
 	w.buf = append(w.buf[:0], w.buf[drop:]...)
 	w.dropped += int64(drop)
@@ -250,6 +303,14 @@ func (w *Writer) Run() {
 func (w *Writer) Close(ctx context.Context) error {
 	w.stopOnce.Do(func() { close(w.stop) })
 	<-w.done
+	err := w.closeDrain(ctx)
+	if dropped := w.Dropped(); dropped > 0 {
+		slog.Warn("logs dropped during lifetime", "dropped_total", dropped)
+	}
+	return err
+}
+
+func (w *Writer) closeDrain(ctx context.Context) error {
 	for {
 		n := w.buffered()
 		if n == 0 {
@@ -271,6 +332,9 @@ func (w *Writer) Close(ctx context.Context) error {
 }
 
 func (w *Writer) flush(ctx context.Context) {
+	// возврат неудачной пачки может переполнить buf и вызвать trimLocked —
+	// сливаем per-project дропы после того, как секции отпустят mu.
+	defer w.emitDrops()
 	w.mu.Lock()
 	n := min(len(w.buf), w.batchSize)
 	if n == 0 {
@@ -333,7 +397,16 @@ func (w *Writer) flush(ctx context.Context) {
 	// Успех — сбрасываем счётчик подряд-фейлов.
 	w.mu.Lock()
 	w.failStreak = 0
+	more := len(w.buf) > 0
 	w.mu.Unlock()
+	// После всплеска остаток не должен ждать следующего 5с тика: Add() кикает
+	// только на переходе через batchSize, повторных киков на том же уровне не шлёт.
+	if more {
+		select {
+		case w.kick <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (w *Writer) insert(ctx context.Context, rows []logRow) error {

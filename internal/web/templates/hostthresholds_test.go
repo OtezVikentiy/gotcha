@@ -79,6 +79,14 @@ func TestHostThresholdsFormModes(t *testing.T) {
 	if !strings.Contains(out, `name="memory_value"`) || !strings.Contains(out, `value="90"`) {
 		t.Errorf("memory_value не предзаполнен эффективным значением (90): %s", out)
 	}
+	// settingsPercentDefault округляет до десятых — дробь ожидается, step="1" блокировал
+	// бы сабмит всей формы при дробном значении.
+	if !strings.Contains(out, `name="disk_value" min="1" max="99" step="0.1"`) {
+		t.Errorf("disk_value: step не допускает дробные проценты: %s", out)
+	}
+	if !strings.Contains(out, `name="memory_value" min="1" max="99" step="0.1"`) {
+		t.Errorf("memory_value: step не допускает дробные проценты: %s", out)
+	}
 }
 
 func TestHostThresholdsSourceLabels(t *testing.T) {

@@ -12,7 +12,6 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
-	"gitflic.ru/otezvikentiy/gotcha/internal/guards"
 	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
@@ -39,14 +38,6 @@ func isStrangerScopedRoute(path string) bool {
 		}
 	}
 	return false
-}
-
-var leaveConfirmExemption = []guards.Exemption{
-	{
-		Value:   "POST /orgs/{id}/settings/leave",
-		Why:     "экран подтверждения общий для всех и не палит организацию; настоящая мутация (confirmed=yes) отдельно проверена на 404 ниже",
-		Finding: "B3",
-	},
 }
 
 type victimIDs struct {
@@ -181,9 +172,6 @@ func TestAuthzBehaviorStrangerRejectedOnScopedRoutes(t *testing.T) {
 		perfIssueID:  perfRes.Issue.ID,
 	}
 
-	exemptLeave := guards.ExemptedValues(leaveConfirmExemption)
-	seenLeave := make(map[string]bool)
-
 	tested := 0
 	for _, route := range s.h.RegisteredRoutes() {
 		method, path, ok := strings.Cut(route, " ")
@@ -205,18 +193,12 @@ func TestAuthzBehaviorStrangerRejectedOnScopedRoutes(t *testing.T) {
 		}
 		code := statusOf(t, resp)
 		if code != http.StatusNotFound && code != http.StatusForbidden {
-			if exemptLeave[route] {
-				seenLeave[route] = true
-				continue
-			}
 			t.Errorf("%s %s (чужак, valid-but-foreign id) статус = %d, ожидали 404 или 403 — ГЕЙТ ПРОПУСТИЛ ЧУЖАКА", method, concrete, code)
 		}
 	}
 	if tested == 0 {
 		t.Fatal("не найдено ни одного project/org-scoped маршрута — предикат isStrangerScopedRoute сломан?")
 	}
-	guards.CheckExemptions(t, "TestAuthzBehaviorStrangerRejectedOnScopedRoutes", leaveConfirmExemption, 1, seenLeave)
-
 	leavePath := "/orgs/" + strconv.FormatInt(v.orgID, 10) + "/settings/leave"
 	leaveResp := postForm(t, s.srv, leavePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, strangerCookie)
 	if code := statusOf(t, leaveResp); code != http.StatusNotFound {
@@ -329,6 +311,76 @@ func TestAuthzBehaviorMemberRejectedOnAdminRoutes(t *testing.T) {
 	}
 	if tested == 0 {
 		t.Fatal("не найдено ни одного admin/owner/instance_admin маршрута с адресацией по id в routeAuthz — фильтр или карта сломаны?")
+	}
+}
+
+// admin проходит requireOrgRole (owner|admin), но обязан отваливаться на lvlOwner:
+// requireOrgOwner требует РОВНО owner, а не «owner или admin».
+func TestAuthzBehaviorAdminRejectedOnOwnerRoutes(t *testing.T) {
+	s := newUptimeStack(t)
+	s.h.Alerts = alert.NewService(s.pool)
+	s.h.Outbox = notify.NewOutbox(s.pool)
+
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+	ctx := context.Background()
+
+	orgSettingsRegister(t, authSvc, "k27-bootstrap-sink@example.com")
+
+	ownerID, _ := orgSettingsRegister(t, authSvc, "k27-owner@example.com")
+	victimOrg, err := orgSvc.CreateOrg(ctx, "k27-org", "K27 Org", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	victimProject, err := orgSvc.CreateProject(ctx, victimOrg.ID, "k27-proj", "K27 Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	adminID, adminCookie := orgSettingsRegister(t, authSvc, "k27-admin@example.com")
+	if err := orgSvc.AddMember(ctx, victimOrg.ID, adminID, org.RoleAdmin); err != nil {
+		t.Fatalf("add admin: %v", err)
+	}
+
+	v := victimIDs{orgID: victimOrg.ID, projectID: victimProject.ID}
+
+	tested := 0
+	for _, route := range s.h.RegisteredRoutes() {
+		method, path, ok := strings.Cut(route, " ")
+		if !ok || !isStrangerScopedRoute(path) {
+			continue
+		}
+		lvl, known := routeAuthz[route]
+		if !known || (lvl != lvlOwner && lvl != lvlInstanceAdmin) {
+			continue
+		}
+		tested++
+		concrete := concreteVictimPath(t, path, v)
+
+		var resp *http.Response
+		switch method {
+		case http.MethodGet:
+			resp = getWithCookie(t, s.srv, concrete, adminCookie)
+		case http.MethodPost:
+			resp = postForm(t, s.srv, concrete, url.Values{}, s.srv.URL, adminCookie)
+		default:
+			t.Fatalf("маршрут %q: неожиданный метод %q — обнови тест", route, method)
+			continue
+		}
+		code := statusOf(t, resp)
+		if code != http.StatusNotFound && code != http.StatusForbidden {
+			t.Errorf("%s %s (admin, роль недостаточна для owner/instance_admin) статус = %d, ожидали 404 или 403 — АДМИН ПОЛУЧИЛ ДОСТУП К OWNER-ДЕЙСТВИЮ", method, concrete, code)
+		}
+	}
+	if tested == 0 {
+		t.Fatal("не найдено ни одного owner/instance_admin маршрута с адресацией по id в routeAuthz — фильтр или карта сломаны?")
+	}
+
+	if got, err := orgSvc.Get(ctx, victimOrg.ID); err != nil || got.Name != victimOrg.Name {
+		t.Errorf("org удалена/изменена админом: got=%+v err=%v", got, err)
+	}
+	if got, err := orgSvc.GetProject(ctx, victimProject.ID); err != nil || got.Name != victimProject.Name {
+		t.Errorf("project удалён/изменён админом: got=%+v err=%v", got, err)
 	}
 }
 

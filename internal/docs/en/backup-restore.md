@@ -43,7 +43,13 @@ docker compose exec -T clickhouse clickhouse-client \
   --query "SHOW TABLES"
 ```
 
-Note that `SHOW TABLES` also returns **materialized views** (`transactions_5m`, `web_vitals_5m`). Do NOT dump or restore those: they are filled automatically when rows are inserted into the source tables, and restoring their contents alongside `transactions` doubles the aggregates — Performance would report twice the real throughput. The list of tables to dump is fixed and shown below.
+`SHOW TABLES` returns more rows than there are tables to dump — not every one needs its own explanation, but none of them should be a mystery either. Besides the seven tables below, you'll also see:
+
+- `transactions_5m`, `web_vitals_5m` — **materialized views**. Do NOT dump or restore those: they are filled automatically when rows are inserted into the source tables, and restoring their contents alongside `transactions` doubles the aggregates — Performance would report twice the real throughput.
+- `.inner_id.<uuid>` (one per materialized view, so two rows) — the view's own backing storage. ClickHouse creates and fills it automatically together with the view; it is not dumped or restored on its own and can't be (it's not a project table, it has no schema of its own to migrate).
+- `schema_migrations` — Gotcha's migration tool bookkeeping table, tracking which schema version was applied. It is not dumped: Gotcha restores the schema version itself during the `--migrate-only` step (see "Restore: PostgreSQL" below).
+
+That's 7 (the dump list) + 2 (views) + 2 (their backing storage) + 1 (`schema_migrations`) = 12 rows on the current schema. The list of tables to dump is fixed and shown below.
 
 Dump each of them:
 
@@ -105,6 +111,8 @@ default) — that is, it creates every table before opening its port — so a du
 loaded afterwards meets a schema that already exists.
 
 Restoring a full copy (both databases) is one continuous procedure, not two independent ones. The PostgreSQL dump carries its own schema (`CREATE TABLE` statements baked into the dump itself), but a ClickHouse `Native` dump is rows only — Gotcha's own migrations create the schema for it. Between restoring PostgreSQL and inserting into ClickHouse there's a mandatory step in between: apply migrations without starting the application, or ClickHouse has no tables yet to insert into:
+
+If the archive being restored is older than the current `*_RETENTION_DAYS`, step 4 applies the TTL before the rows exist, and after they're inserted in step 5 they only survive until ClickHouse's next background merge — regardless of what step 6's "success" looks like. The tell is a `retention: rows already older than the active window exist` warning in the log of the application's first start in step 6: if you see it, raise the relevant `*_RETENTION_DAYS` (or set it to `0` temporarily) before that start if you need the data for its full original age.
 
 ```bash
 # 1. Bring up ONLY the databases, without the application, or it creates the schema first.

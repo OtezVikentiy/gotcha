@@ -66,6 +66,8 @@ templ headTag(title string) {
 		<script src={ assetURL("/static/copy.js") } defer></script>
 		// Прогрессивное улучшение поиска атрибута логов; без скрипта — обычный текстовый инпут.
 		<script src={ assetURL("/static/logs.js") } defer></script>
+		// Прогрессивное улучшение выгрузки данных субъекта; без скрипта — обычное скачивание.
+		<script src={ assetURL("/static/export.js") } defer></script>
 	</head>
 }
 
@@ -93,7 +95,7 @@ templ layoutBody(title string, userEmail string) {
 		<div class="app-shell">
 			// <nav>, не <aside>: aside читается как «доп. контент» — меню не находилось через ориентиры.
 			<nav class="rail" aria-label={ i18n.T(ctx, "nav.primary") }>
-				<a class="rail-logo" href="/" title="Gotcha">@brandMark()</a>
+				<a class="rail-logo" href="/" title="Gotcha">@brandMark("brand-grad-rail")</a>
 				{{ spacerDone := false }}
 				if shell := nav.FromContext(ctx); len(shell.Projects) > 0 {
 					// Разделитель — перед «Оповещениями», отделяет алертинг от рабочих областей выше.
@@ -115,7 +117,7 @@ templ layoutBody(title string, userEmail string) {
 				if !spacerDone {
 					<div class="rail-spacer"></div>
 				}
-				<a class="avatar" href="/profile" title={ userEmail }>{ initials(userEmail) }</a>
+				<a class="avatar" href="/profile" title={ userEmail } aria-label={ i18n.T(ctx, "profile.title") + ": " + userEmail }>{ initials(userEmail) }</a>
 				<form method="post" action="/logout" class="rail-logout">
 					<button type="submit" class="rail-logout-btn" title={ i18n.T(ctx, "action.logout") } aria-label={ i18n.T(ctx, "action.logout") }>
 						@icon("log-out")
@@ -239,7 +241,7 @@ templ chromelessBody(title string, userEmail string) {
 	<body class="chromeless">
 		@iconSprite()
 		<header class="chromeless-top">
-			<a class="brand-lockup" href="/">@brandMark()<span class="brand-word">Gotcha</span></a>
+			<a class="brand-lockup" href="/">@brandMark("brand-grad-chromeless")<span class="brand-word">Gotcha</span></a>
 			<div class="topbar-spacer"></div>
 			@langSwitcher()
 			@themeToggle()

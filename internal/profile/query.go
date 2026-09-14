@@ -210,17 +210,17 @@ func (q *Query) ActiveServices(ctx context.Context, from, to time.Time) ([]Proje
 type FunctionShare struct {
 	Function string
 	Share    float64
-	// Число строк окна, не сумма value: единица value зависит от типа профиля.
+	// Число строк САМОЙ этой функции в recent-окне (не всего окна и не сумма value).
 	Samples uint64
 }
 
 func (q *Query) TopFunctionShares(ctx context.Context, projectID int64, service, profileType string, from, to time.Time, k int) ([]FunctionShare, error) {
 	rows, err := q.conn.Query(ctx, `
-		SELECT fn, self, total, total_samples FROM (
+		SELECT fn, self, total, samples FROM (
 			SELECT arrayElement(stack, -1) AS fn,
 			       sum(value) AS self,
 			       sum(sum(value)) OVER () AS total,
-			       sum(count()) OVER () AS total_samples
+			       count() AS samples
 			FROM profile_samples
 			WHERE project_id = ? AND service = ? AND profile_type = ? AND ts >= ? AND ts < ?
 			GROUP BY fn
@@ -236,21 +236,55 @@ func (q *Query) TopFunctionShares(ctx context.Context, projectID int64, service,
 	var out []FunctionShare
 	for rows.Next() {
 		var fn string
-		var self, total, totalSamples uint64
-		if err := rows.Scan(&fn, &self, &total, &totalSamples); err != nil {
+		var self, total, samples uint64
+		if err := rows.Scan(&fn, &self, &total, &samples); err != nil {
 			return nil, fmt.Errorf("profile: top function shares scan: %w", err)
 		}
 		if total == 0 {
 			continue
 		}
-		out = append(out, FunctionShare{Function: fn, Share: float64(self) / float64(total), Samples: totalSamples})
+		out = append(out, FunctionShare{Function: fn, Share: float64(self) / float64(total), Samples: samples})
+	}
+	return out, rows.Err()
+}
+
+// Тот же total, что в TopFunctionShares, но по конкретным именам, без ORDER BY/LIMIT.
+// Функция без единой строки в окне просто отсутствует в результате.
+func (q *Query) FunctionSharesFor(ctx context.Context, projectID int64, service, profileType string, functions []string, from, to time.Time) (map[string]FunctionShare, error) {
+	out := make(map[string]FunctionShare, len(functions))
+	if len(functions) == 0 {
+		return out, nil
+	}
+	rows, err := q.conn.Query(ctx, `
+		SELECT fn, self, total, samples FROM (
+			SELECT arrayElement(stack, -1) AS fn,
+			       sum(value) AS self,
+			       sum(sum(value)) OVER () AS total,
+			       count() AS samples
+			FROM profile_samples
+			WHERE project_id = ? AND service = ? AND profile_type = ? AND ts >= ? AND ts < ?
+			GROUP BY fn
+		)
+		WHERE fn IN ? AND total > 0`,
+		projectID, service, profileType, from, to, functions)
+	if err != nil {
+		return nil, fmt.Errorf("profile: function shares for: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var fn string
+		var self, total, samples uint64
+		if err := rows.Scan(&fn, &self, &total, &samples); err != nil {
+			return nil, fmt.Errorf("profile: function shares for scan: %w", err)
+		}
+		out[fn] = FunctionShare{Function: fn, Share: float64(self) / float64(total), Samples: samples}
 	}
 	return out, rows.Err()
 }
 
 type BaselineShare struct {
 	Share float64
-	// Число строк, не сумма value: единица value зависит от типа профиля.
+	// Число строк этой функции, СУММА по всем дням базового окна (не строк одного дня).
 	Samples uint64
 }
 

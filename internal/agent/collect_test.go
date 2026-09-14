@@ -106,6 +106,47 @@ func TestCollectCPUDelta(t *testing.T) {
 	}
 }
 
+func TestCollectCPUFrozenCounterYieldsNilNotNaN(t *testing.T) {
+	probes := fakeProbes()
+	probes.CPUTimes = func() (CPUTimes, error) {
+		return CPUTimes{User: 10, System: 5, Idle: 85}, nil // одно и то же чтение на каждом тике
+	}
+	c := NewCollector(probes)
+	if _, err := c.Collect(time.Unix(2000, 0)); err != nil {
+		t.Fatalf("первый Collect: %v", err)
+	}
+	s2, err := c.Collect(time.Unix(2010, 0))
+	if err != nil {
+		t.Fatalf("второй Collect: %v", err)
+	}
+	if s2.CPU != nil {
+		t.Fatalf("s2.CPU = %v, want nil (счётчик заморожен, total == 0)", s2.CPU)
+	}
+}
+
+func TestCollectCPUCounterResetYieldsNilNotNaN(t *testing.T) {
+	probes := fakeProbes()
+	tick := 0
+	probes.CPUTimes = func() (CPUTimes, error) {
+		tick++
+		if tick == 1 {
+			return CPUTimes{User: 100, System: 50, Idle: 850}, nil
+		}
+		return CPUTimes{User: 1, System: 1, Idle: 8}, nil // перезагрузка между тиками — счётчики меньше прежних
+	}
+	c := NewCollector(probes)
+	if _, err := c.Collect(time.Unix(2000, 0)); err != nil {
+		t.Fatalf("первый Collect: %v", err)
+	}
+	s2, err := c.Collect(time.Unix(2010, 0))
+	if err != nil {
+		t.Fatalf("второй Collect: %v", err)
+	}
+	if s2.CPU != nil {
+		t.Fatalf("s2.CPU = %v, want nil (счётчик прыгнул назад, total < 0)", s2.CPU)
+	}
+}
+
 func TestCollectFiltersFS(t *testing.T) {
 	c := NewCollector(fakeProbes())
 	s, err := c.Collect(time.Unix(2000, 0))

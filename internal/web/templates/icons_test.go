@@ -2,6 +2,7 @@ package templates
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -33,5 +34,29 @@ func TestIconSpriteContainsSymbols(t *testing.T) {
 	}
 	if strings.Contains(out, `style="display:none"`) {
 		t.Fatalf("sprite must not use inline style (CSP): %s", out)
+	}
+	for _, name := range []string{"search", "x", "arrow-up", "arrow-down", "play", "pause"} {
+		if strings.Contains(out, `id="i-`+name+`"`) {
+			t.Errorf("спрайт всё ещё содержит неиспользуемый символ i-%s — ~719 Б на каждый ответ впустую", name)
+		}
+	}
+}
+
+// /login рендерит и chromeless-шапку (brandMark в topbar), и свой auth-brand —
+// два brandMark() на одной странице обязаны получить разные id градиента.
+func TestLoginPageHasNoDuplicateBrandGradID(t *testing.T) {
+	out := renderTo(t, Login("", "", "", nil))
+	idRe := regexp.MustCompile(`id="(brand-grad[\w-]*)"`)
+	seen := map[string]int{}
+	for _, m := range idRe.FindAllStringSubmatch(out, -1) {
+		seen[m[1]]++
+	}
+	if len(seen) < 2 {
+		t.Fatalf("ожидались минимум два разных brand-grad* id (topbar + auth-brand), получено %v: %s", seen, out)
+	}
+	for id, n := range seen {
+		if n > 1 {
+			t.Errorf("id=%q встречается %d раз на /login — разметка невалидна", id, n)
+		}
 	}
 }

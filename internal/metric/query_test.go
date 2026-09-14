@@ -62,6 +62,51 @@ func seedGauge(t *testing.T, conn interface {
 	}
 }
 
+func TestNamesWithData(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires clickhouse container")
+	}
+	conn := testenv.MigratedCH(t)
+	q := NewQuery(conn)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Minute)
+	from, to := now.Add(-15*time.Minute), now
+
+	seedGauge(t, conn, 31, "cpu", "prod", now.Add(-time.Minute), 0.5, nil)
+	seedGauge(t, conn, 31, "mem", "prod", now.Add(-time.Minute), 100, nil)
+	// Ровно на границах, не рядом с ними — иначе тест не отличит "ts >= from" от "ts > from",
+	// а "ts < to" от "ts <= to".
+	seedGauge(t, conn, 31, "edge-from", "prod", from, 1, nil) // from включительно
+	seedGauge(t, conn, 31, "edge-to", "prod", to, 1, nil)     // to исключительно
+	// другой проект с тем же именем — не должен утечь в результат.
+	seedGauge(t, conn, 32, "disk", "prod", now.Add(-time.Minute), 1, nil)
+
+	got, err := q.NamesWithData(ctx, 31, []string{"cpu", "mem", "edge-from", "edge-to", "disk", "missing"}, from, to)
+	if err != nil {
+		t.Fatalf("NamesWithData: %v", err)
+	}
+	if !got["cpu"] || !got["mem"] {
+		t.Fatalf("NamesWithData = %v, want cpu и mem true", got)
+	}
+	if !got["edge-from"] {
+		t.Errorf("NamesWithData[edge-from] = false, want true: ts == from обязана попасть в [from, to)")
+	}
+	if got["edge-to"] {
+		t.Errorf("NamesWithData[edge-to] = true, want false: ts == to обязана остаться за пределами [from, to)")
+	}
+	for _, absent := range []string{"disk", "missing"} {
+		if got[absent] {
+			t.Errorf("NamesWithData[%q] = true, want false (чужой проект или несуществующее имя)", absent)
+		}
+	}
+
+	empty, err := q.NamesWithData(ctx, 31, nil, from, to)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("NamesWithData(nil) = %v, err=%v, want пустую карту без ошибки", empty, err)
+	}
+}
+
 func TestQueryHistogramSeries(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires clickhouse container")

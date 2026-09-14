@@ -65,13 +65,13 @@ func (h *Handler) alertSuppressionPage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) renderAlertSuppression(w http.ResponseWriter, r *http.Request, status int, projectID int64, form templates.FormState, errMsg string) {
 	edges, err := h.AlertDeps.List(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
 	hosts, monitors, err := h.suppressionNodes(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -457,7 +457,7 @@ func (h *Handler) alertSuppressionDelete(w http.ResponseWriter, r *http.Request)
 	if r.FormValue("confirmed") != "yes" {
 		parent, child, ok, err := h.suppressionEdgeLabels(r.Context(), projectID, depID)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		if !ok {
@@ -470,7 +470,7 @@ func (h *Handler) alertSuppressionDelete(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := h.AlertDeps.Delete(r.Context(), projectID, depID); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOK(w, "flash.deleted", 0)

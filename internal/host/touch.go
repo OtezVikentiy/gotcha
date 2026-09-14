@@ -1,6 +1,7 @@
 package host
 
 import (
+	"container/list"
 	"context"
 	"log/slog"
 	"sync"
@@ -22,11 +23,14 @@ type TouchEntry struct {
 	Role         string
 }
 
-// Потолок maxEntries с вытеснением старейшей — иначе кардинальный мусор растит карту без границы.
+// Потолок maxEntries с вытеснением по LRU — иначе кардинальный мусор растит карту без границы.
+// order/elems держат ту же очередь, что и seen, самый давно не трогавшийся ключ уходит за O(1).
 // Ошибки БД — только slog.Warn: Touch не должен блокировать или ронять путь приёма событий.
 type Toucher struct {
 	mu     sync.Mutex
 	seen   map[touchKey]time.Time
+	order  *list.List
+	elems  map[touchKey]*list.Element
 	every  time.Duration
 	max    int
 	upsert func(ctx context.Context, projectID int64, entries []TouchEntry) error
@@ -40,6 +44,8 @@ type Toucher struct {
 func NewToucher(store *Store, every time.Duration, maxEntries int) *Toucher {
 	t := &Toucher{
 		seen:  make(map[touchKey]time.Time),
+		order: list.New(),
+		elems: make(map[touchKey]*list.Element),
 		every: every,
 		max:   maxEntries,
 	}
@@ -90,8 +96,12 @@ func (t *Toucher) Touch(ctx context.Context, projectID int64, entries []TouchEnt
 			if now.Sub(last) < t.every {
 				continue
 			}
-		} else if len(t.seen) >= t.max {
-			t.evictOldestLocked()
+			t.order.MoveToBack(t.elems[key])
+		} else {
+			if len(t.seen) >= t.max {
+				t.evictOldestLocked()
+			}
+			t.elems[key] = t.order.PushBack(key)
 		}
 		t.seen[key] = now
 		due = append(due, e)
@@ -116,25 +126,27 @@ func (t *Toucher) Touch(ctx context.Context, projectID int64, entries []TouchEnt
 	}()
 }
 
-// Вызывающий обязан держать mu — сама функция не блокирует.
+// Вызывающий обязан держать mu — сама не блокирует. front — самый давно не трогавшийся ключ.
 func (t *Toucher) evictOldestLocked() {
-	var oldestKey touchKey
-	var oldestTime time.Time
-	first := true
-	for k, v := range t.seen {
-		if first || v.Before(oldestTime) {
-			oldestKey, oldestTime, first = k, v, false
-		}
+	front := t.order.Front()
+	if front == nil {
+		return
 	}
-	if !first {
-		delete(t.seen, oldestKey)
-	}
+	key := front.Value.(touchKey)
+	t.order.Remove(front)
+	delete(t.elems, key)
+	delete(t.seen, key)
 }
 
 // Нужен при удалении хоста — иначе троттлинг мешал бы ему появиться заново, даже реально ожив.
 func (t *Toucher) Forget(projectID int64, name string) {
 	t.mu.Lock()
-	delete(t.seen, touchKey{projectID: projectID, name: name})
+	key := touchKey{projectID: projectID, name: name}
+	if elem, ok := t.elems[key]; ok {
+		t.order.Remove(elem)
+		delete(t.elems, key)
+	}
+	delete(t.seen, key)
 	t.mu.Unlock()
 }
 

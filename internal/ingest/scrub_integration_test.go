@@ -10,6 +10,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/event"
 	"gitflic.ru/otezvikentiy/gotcha/internal/fingerprint"
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
+	"gitflic.ru/otezvikentiy/gotcha/internal/scrub"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
 
@@ -32,7 +33,7 @@ func TestPipelineScrubEvent(t *testing.T) {
 	p := &Pipeline{
 		issues:  &fakeIssueSvc{res: issue.UpsertResult{IssueID: 1}},
 		batcher: fb,
-		Scrub:   NewScrubber(true, false, []string{"password", "token", "api_key", "authorization", "cookie"}),
+		Scrub:   scrub.NewScrubber(true, false, []string{"password", "token", "api_key", "authorization", "cookie"}),
 	}
 
 	ev := &ParsedEvent{
@@ -64,8 +65,8 @@ func TestPipelineScrubEvent(t *testing.T) {
 	if got.UserEmail != "bob@example.com" {
 		t.Errorf("UserEmail = %q, want не тронут (ScrubEmail=false)", got.UserEmail)
 	}
-	if got.Tags["password"] != scrubMask {
-		t.Errorf("tags[password] = %q, want %q", got.Tags["password"], scrubMask)
+	if got.Tags["password"] != "[scrubbed]" {
+		t.Errorf("tags[password] = %q, want %q", got.Tags["password"], "[scrubbed]")
 	}
 	if got.Tags["user"] != "bob" {
 		t.Errorf("tags[user] = %q, want не тронут", got.Tags["user"])
@@ -76,8 +77,8 @@ func TestPipelineScrubEvent(t *testing.T) {
 		t.Fatalf("contexts не JSON: %v", err)
 	}
 	tr, _ := ctx["trace"].(map[string]any)
-	if tr["token"] != scrubMask {
-		t.Errorf("contexts.trace.token = %v, want %q", tr["token"], scrubMask)
+	if tr["token"] != "[scrubbed]" {
+		t.Errorf("contexts.trace.token = %v, want %q", tr["token"], "[scrubbed]")
 	}
 	if tr["ok"] == nil {
 		t.Errorf("contexts.trace.ok пропал — не-denylist поле не должно тереться")
@@ -96,15 +97,15 @@ func TestPipelineScrubEvent(t *testing.T) {
 	if got, want := req["data"], "username=bob&password=[scrubbed]"; got != want {
 		t.Errorf("request.data = %v, want %q (password в теле формы вычищен, username цел)", got, want)
 	}
-	if req["cookies"] != scrubMask {
-		t.Errorf("request.cookies = %v, want %q", req["cookies"], scrubMask)
+	if req["cookies"] != "[scrubbed]" {
+		t.Errorf("request.cookies = %v, want %q", req["cookies"], "[scrubbed]")
 	}
 	hdr, _ := req["headers"].(map[string]any)
-	if hdr["Authorization"] != scrubMask {
-		t.Errorf("headers.Authorization = %v, want %q", hdr["Authorization"], scrubMask)
+	if hdr["Authorization"] != "[scrubbed]" {
+		t.Errorf("headers.Authorization = %v, want %q", hdr["Authorization"], "[scrubbed]")
 	}
-	if hdr["X-Api-Key"] != scrubMask {
-		t.Errorf("headers.X-Api-Key = %v, want %q (дефисный ключ ловится нормализацией)", hdr["X-Api-Key"], scrubMask)
+	if hdr["X-Api-Key"] != "[scrubbed]" {
+		t.Errorf("headers.X-Api-Key = %v, want %q (дефисный ключ ловится нормализацией)", hdr["X-Api-Key"], "[scrubbed]")
 	}
 	if hdr["Accept"] != "*/*" {
 		t.Errorf("headers.Accept = %v, want не тронут", hdr["Accept"])
@@ -115,7 +116,7 @@ func TestPipelineScrubTransaction(t *testing.T) {
 	spans := &fakeSpanSink{}
 	p := &Pipeline{
 		Spans: spans,
-		Scrub: NewScrubber(true, false, []string{"authorization"}),
+		Scrub: scrub.NewScrubber(true, false, []string{"authorization"}),
 	}
 
 	start := time.Now().UTC()
@@ -135,8 +136,8 @@ func TestPipelineScrubTransaction(t *testing.T) {
 	}
 	got := spans.added[0]
 	d := got.Spans[0].Data
-	if d["http.authorization"] != scrubMask {
-		t.Errorf("span.Data[http.authorization] = %v, want %q", d["http.authorization"], scrubMask)
+	if d["http.authorization"] != "[scrubbed]" {
+		t.Errorf("span.Data[http.authorization] = %v, want %q", d["http.authorization"], "[scrubbed]")
 	}
 	if d["http.status_code"] != 200 {
 		t.Errorf("span.Data[http.status_code] = %v, want 200 (не тронут)", d["http.status_code"])
@@ -146,7 +147,7 @@ func TestPipelineScrubTransaction(t *testing.T) {
 func TestPipelineScrubFreeTextEvent(t *testing.T) {
 	makePipeline := func(freeText bool) (*Pipeline, *fakeBatcher) {
 		fb := &fakeBatcher{}
-		sc := NewScrubber(false, false, nil)
+		sc := scrub.NewScrubber(false, false, nil)
 		sc.ScrubFreeText = freeText
 		return &Pipeline{
 			issues:  &fakeIssueSvc{res: issue.UpsertResult{IssueID: 1}},
@@ -190,7 +191,7 @@ func TestPipelineScrubFreeTextEvent(t *testing.T) {
 func TestPipelineScrubTransactionName(t *testing.T) {
 	makePipeline := func(freeText bool) (*Pipeline, *fakeSpanSink) {
 		spans := &fakeSpanSink{}
-		sc := NewScrubber(false, false, nil)
+		sc := scrub.NewScrubber(false, false, nil)
 		sc.ScrubFreeText = freeText
 		return &Pipeline{Spans: spans, Scrub: sc}, spans
 	}
@@ -259,7 +260,7 @@ func TestPipelineScrubFreeTextTitleBeforeUpsert(t *testing.T) {
 	}
 
 	t.Run("on", func(t *testing.T) {
-		sc := NewScrubber(false, false, nil)
+		sc := scrub.NewScrubber(false, false, nil)
 		sc.ScrubFreeText = true
 		iss := &capturingIssueSvc{res: issue.UpsertResult{IssueID: 1, New: true}}
 		alerts := &capturingAlertSink{}
@@ -280,7 +281,7 @@ func TestPipelineScrubFreeTextTitleBeforeUpsert(t *testing.T) {
 	})
 
 	t.Run("off", func(t *testing.T) {
-		sc := NewScrubber(false, false, nil)
+		sc := scrub.NewScrubber(false, false, nil)
 		sc.ScrubFreeText = false
 		iss := &capturingIssueSvc{res: issue.UpsertResult{IssueID: 1, New: true}}
 		alerts := &capturingAlertSink{}
@@ -311,7 +312,7 @@ func TestScrubFreeTextDoesNotChangeFingerprint(t *testing.T) {
 
 func TestPipelineScrubFreeTextTransaction(t *testing.T) {
 	spans := &fakeSpanSink{}
-	sc := NewScrubber(false, false, nil)
+	sc := scrub.NewScrubber(false, false, nil)
 	sc.ScrubFreeText = true
 	p := &Pipeline{Spans: spans, Scrub: sc}
 
@@ -339,7 +340,7 @@ func TestPipelineScrubTransactionTags(t *testing.T) {
 	spans := &fakeSpanSink{}
 	p := &Pipeline{
 		Spans: spans,
-		Scrub: NewScrubber(true, false, []string{"authorization"}),
+		Scrub: scrub.NewScrubber(true, false, []string{"authorization"}),
 	}
 
 	start := time.Now().UTC()
@@ -355,8 +356,8 @@ func TestPipelineScrubTransactionTags(t *testing.T) {
 		t.Fatalf("транзакций записано = %d, want 1", spans.count())
 	}
 	got := spans.added[0]
-	if got.Tags["authorization"] != scrubMask {
-		t.Errorf("tags[authorization] = %q, want %q", got.Tags["authorization"], scrubMask)
+	if got.Tags["authorization"] != "[scrubbed]" {
+		t.Errorf("tags[authorization] = %q, want %q", got.Tags["authorization"], "[scrubbed]")
 	}
 	if got.Tags["service"] != "api" {
 		t.Errorf("tags[service] = %q, want не тронут", got.Tags["service"])

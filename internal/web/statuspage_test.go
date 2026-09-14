@@ -534,6 +534,13 @@ func TestWebStatusPagesSettingsCRUD(t *testing.T) {
 		t.Fatalf("public page after update = %d: %s", status, pub)
 	}
 
+	resp = postForm(t, s.srv, updatePath+"/delete", url.Values{}, s.srv.URL, ownerCookie)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "CRUD Status") {
+		t.Fatalf("подтверждение удаления статус-страницы не называет её: status=%d, %s", resp.StatusCode, body)
+	}
+
 	resp = postForm(t, s.srv, updatePath+"/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()

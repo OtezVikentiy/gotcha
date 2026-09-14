@@ -162,7 +162,7 @@ func maintenanceFormState(r *http.Request) templates.FormState {
 func (h *Handler) renderMaintenance(w http.ResponseWriter, r *http.Request, status int, projectID int64, form templates.FormState, errMsg string) {
 	windows, err := h.Uptime.Windows(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	w.WriteHeader(status)
@@ -208,7 +208,7 @@ func (h *Handler) maintenanceCreate(w http.ResponseWriter, r *http.Request) {
 				maintenanceErrorMessage(r.Context(), err))
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, maintenancePath(projectID), http.StatusSeeOther)
@@ -245,11 +245,11 @@ func (h *Handler) maintenanceUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	windows, err := h.Uptime.Windows(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !windowBelongsToProject(windows, windowID) {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 		return
 	}
 
@@ -269,10 +269,10 @@ func (h *Handler) maintenanceUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, uptime.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			h.renderError(w, r, http.StatusNotFound, "")
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOK(w, "flash.saved", 0)
@@ -311,23 +311,32 @@ func (h *Handler) maintenanceDelete(w http.ResponseWriter, r *http.Request) {
 
 	windows, err := h.Uptime.Windows(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !windowBelongsToProject(windows, windowID) {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 		return
 	}
 	// CSP без unsafe-inline не исполняет inline confirm() — подтверждение отдельной страницей.
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.maintenance_delete.message", "confirm.delete",
+		name := ""
+		for _, win := range windows {
+			if win.ID == windowID {
+				name = win.Name
+				break
+			}
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.maintenance_delete.message", "confirm.delete",
 			maintenancePath(projectID), maintenanceDeletePath(projectID),
-			[]templates.HiddenField{{Name: "window_id", Value: strconv.FormatInt(windowID, 10)}})
+			[]templates.HiddenField{{Name: "window_id", Value: strconv.FormatInt(windowID, 10)}},
+			"name", name)
 		return
 	}
 	if err := h.Uptime.DeleteWindow(r.Context(), windowID, projectID); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
+	h.flashOK(w, "flash.deleted", 0)
 	http.Redirect(w, r, maintenancePath(projectID), http.StatusSeeOther)
 }

@@ -70,15 +70,22 @@ type SpanRow struct {
 	DurationUS   uint32
 }
 
+// потолок против аномальной кардинальности transaction (CardinalityGuard даёт до
+// GOTCHA_CARDINALITY_LIMIT новых имён за окно, по умолчанию 10000/час, и сбрасывает счётчик
+// на границе часа — за широкое окно накопится больше). Превышение возвращается truncated=true,
+// а не тихим обрезанием: вызывающий обязан честно сообщить о неполноте, не выдать её за полный список.
+const endpointsRowCap = 20000
+
 // apdex считается отдельным запросом по сырым transactions — MV хранит только
 // квантили, не пороговые счётчики; apdexT<=0 — без Apdex.
-func (q *Query) Endpoints(ctx context.Context, projectID int64, from, to time.Time, environment string, apdexT int) ([]EndpointStat, error) {
+func (q *Query) Endpoints(ctx context.Context, projectID int64, from, to time.Time, environment string, apdexT int) ([]EndpointStat, bool, error) {
 	where := "project_id = ? AND bucket >= ? AND bucket < ?"
 	args := []any{uint64(projectID), from, to}
 	if environment != "" {
 		where += " AND environment = ?"
 		args = append(args, environment)
 	}
+	args = append(args, endpointsRowCap+1)
 
 	rows, err := q.conn.Query(ctx, `
 		SELECT transaction,
@@ -89,9 +96,11 @@ func (q *Query) Endpoints(ctx context.Context, projectID int64, from, to time.Ti
 		FROM transactions_5m
 		WHERE `+where+`
 		GROUP BY transaction
-		ORDER BY c DESC, transaction`, args...)
+		ORDER BY c DESC, transaction
+		LIMIT ?
+		SETTINGS max_execution_time = 10`, args...)
 	if err != nil {
-		return nil, fmt.Errorf("trace: endpoints: %w", err)
+		return nil, false, fmt.Errorf("trace: endpoints: %w", err)
 	}
 	defer rows.Close()
 
@@ -102,7 +111,7 @@ func (q *Query) Endpoints(ctx context.Context, projectID int64, from, to time.Ti
 		var failures uint64
 		var qs []float64
 		if err := rows.Scan(&s.Transaction, &s.Count, &failures, &qs, &s.Environments); err != nil {
-			return nil, fmt.Errorf("trace: endpoints: scan: %w", err)
+			return nil, false, fmt.Errorf("trace: endpoints: scan: %w", err)
 		}
 		if len(qs) == 4 {
 			s.P50 = usFromFloat(qs[0])
@@ -119,19 +128,28 @@ func (q *Query) Endpoints(ctx context.Context, projectID int64, from, to time.Ti
 		out = append(out, s)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("trace: endpoints: %w", err)
+		return nil, false, fmt.Errorf("trace: endpoints: %w", err)
+	}
+
+	truncated := len(out) > endpointsRowCap
+	if truncated {
+		out = out[:endpointsRowCap]
 	}
 
 	if apdexT > 0 {
-		apdex, err := q.apdexByTransaction(ctx, projectID, from, to, environment, apdexT)
+		transactions := make([]string, len(out))
+		for i, s := range out {
+			transactions[i] = s.Transaction
+		}
+		apdex, err := q.apdexByTransaction(ctx, projectID, from, to, environment, apdexT, transactions)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		for i := range out {
 			out[i].ApdexScore = apdex[out[i].Transaction]
 		}
 	}
-	return out, nil
+	return out, truncated, nil
 }
 
 type Dependency struct {
@@ -291,11 +309,17 @@ func apdexBoundsUS(apdexT int) (satUS, tolUS uint32) {
 }
 
 // apdex = (satisfied + tolerating/2) / total = (satisfied + within4T) / (2·total).
-func (q *Query) apdexByTransaction(ctx context.Context, projectID int64, from, to time.Time, environment string, apdexT int) (map[string]float64, error) {
+// transactions ограничивает GROUP BY именами, уже отобранными Endpoints — независимого
+// потолка кардинальности здесь не нужно, он унаследован от endpointsRowCap.
+func (q *Query) apdexByTransaction(ctx context.Context, projectID int64, from, to time.Time, environment string, apdexT int, transactions []string) (map[string]float64, error) {
+	out := make(map[string]float64)
+	if len(transactions) == 0 {
+		return out, nil
+	}
 	satUS, tolUS := apdexBoundsUS(apdexT)
 
-	where := "project_id = ? AND timestamp >= ? AND timestamp < ?"
-	args := []any{satUS, tolUS, uint64(projectID), from, to}
+	where := "project_id = ? AND transaction IN ? AND timestamp >= ? AND timestamp < ?"
+	args := []any{satUS, tolUS, uint64(projectID), transactions, from, to}
 	if environment != "" {
 		where += " AND environment = ?"
 		args = append(args, environment)
@@ -308,13 +332,13 @@ func (q *Query) apdexByTransaction(ctx context.Context, projectID int64, from, t
 			count() AS total
 		FROM transactions
 		WHERE `+where+`
-		GROUP BY transaction`, args...)
+		GROUP BY transaction
+		SETTINGS max_execution_time = 10`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("trace: apdex: %w", err)
 	}
 	defer rows.Close()
 
-	out := make(map[string]float64)
 	for rows.Next() {
 		var transaction string
 		var satisfied, within4t, total uint64
@@ -799,22 +823,53 @@ func (q *Query) Environments(ctx context.Context, projectID int64, from, to time
 	return out, nil
 }
 
-// при коллизии trace_id между проектами результат НЕДЕТЕРМИНИРОВАН (LIMIT 1 без
-// ORDER BY) — вызывающий обязан проверить доступ к возвращённому project_id.
-func (q *Query) ProjectForTrace(ctx context.Context, traceID string) (projectID int64, found bool, err error) {
-	row := q.conn.QueryRow(ctx, `
-		SELECT project_id FROM transactions WHERE trace_id = ? LIMIT 1`, traceID)
-	var pid uint64
-	if err := row.Scan(&pid); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, false, nil
-		}
-		return 0, false, fmt.Errorf("trace: project for trace: %w", err)
+// trace_id — клиентское значение и не скопирован от project_id: чужой проект
+// может прислать ту же строку, поэтому список отдаём целиком, а не первую
+// попавшуюся строку — выбор среди них остаётся за вызывающим (доступ пользователя).
+// Порядок ЗНАЧИМ, не порядок хранения: если trace_id совпал в нескольких
+// проектах, ДОСТУПНЫХ ОДНОМУ пользователю, resolveTraceProject (web/trace.go)
+// берёт первый доступный — здесь это проект с самой свежей транзакцией по
+// этому id, а не произвольная строка ClickHouse.
+func (q *Query) ProjectsForTrace(ctx context.Context, traceID string) ([]int64, error) {
+	rows, err := q.conn.Query(ctx, `
+		SELECT project_id FROM transactions WHERE trace_id = ?
+		GROUP BY project_id ORDER BY max(timestamp) DESC, project_id ASC`, traceID)
+	if err != nil {
+		return nil, fmt.Errorf("trace: projects for trace: %w", err)
 	}
-	return int64(pid), true, nil
+	defer rows.Close()
+
+	var out []int64
+	for rows.Next() {
+		var pid uint64
+		if err := rows.Scan(&pid); err != nil {
+			return nil, fmt.Errorf("trace: projects for trace: scan: %w", err)
+		}
+		out = append(out, int64(pid))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("trace: projects for trace: %w", err)
+	}
+	return out, nil
 }
 
-// в отличие от ProjectForTrace: project_id — префикс PK transactions, запрос
+// отличает настоящее истечение TTL спанов (транзакция ещё жива, её TTL длиннее)
+// от потери спанов на буфере писателя под нагрузкой — обе выглядят как spans==nil.
+func (q *Query) TransactionTimestamp(ctx context.Context, projectID int64, traceID string) (time.Time, bool, error) {
+	row := q.conn.QueryRow(ctx, `
+		SELECT timestamp FROM transactions WHERE project_id = ? AND trace_id = ? LIMIT 1`,
+		uint64(projectID), traceID)
+	var ts time.Time
+	if err := row.Scan(&ts); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return time.Time{}, false, nil
+		}
+		return time.Time{}, false, fmt.Errorf("trace: transaction timestamp: %w", err)
+	}
+	return ts.UTC(), true, nil
+}
+
+// в отличие от ProjectsForTrace: project_id — префикс PK transactions, запрос
 // прунит гранулы до проекта вместо обхода партиций всех проектов.
 func (q *Query) TraceExistsInProject(ctx context.Context, projectID int64, traceID string) (bool, error) {
 	row := q.conn.QueryRow(ctx, `

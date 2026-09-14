@@ -25,8 +25,10 @@ func TestRegressionEvaluatorThinBaselineDoesNotOpen(t *testing.T) {
 		Interval: time.Hour, Config: cfg,
 	}
 
-	seedProfSample(t, ch, pid, "slow", 10, 5*time.Minute)
-	seedProfSample(t, ch, pid, "other", 90, 5*time.Minute)
+	// recentSamples("slow") = 150 сам по себе проходит MinSamples (100) в обоих
+	// прогонах — различие только в базе (2 own samples за 7 дней vs 100).
+	seedProfSample(t, ch, pid, "slow", 150, 5*time.Minute)
+	seedProfSample(t, ch, pid, "other", 850, 5*time.Minute)
 	seedProfSample(t, ch, pid, "slow", 1, 24*time.Hour)
 	seedProfSample(t, ch, pid, "other", 99, 24*time.Hour)
 	seedProfSample(t, ch, pid, "slow", 1, 48*time.Hour)
@@ -34,14 +36,14 @@ func TestRegressionEvaluatorThinBaselineDoesNotOpen(t *testing.T) {
 
 	eval.Tick(ctx)
 	if _, open, err := regressions.OpenFor(ctx, pid, "api", "cpu", "slow"); err != nil || open {
-		t.Fatalf("regression opened on a thin baseline (12 samples of slow over the window): open=%v err=%v", open, err)
+		t.Fatalf("regression opened on a thin baseline (2 own samples of slow over 7 days): open=%v err=%v", open, err)
 	}
 
 	if err := ch.Exec(ctx, "TRUNCATE TABLE profile_samples"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	seedProfSample(t, ch, pid, "slow", 10, 5*time.Minute)
-	seedProfSample(t, ch, pid, "other", 90, 5*time.Minute)
+	seedProfSample(t, ch, pid, "slow", 150, 5*time.Minute)
+	seedProfSample(t, ch, pid, "other", 850, 5*time.Minute)
 	seedProfSample(t, ch, pid, "slow", 50, 24*time.Hour)
 	seedProfSample(t, ch, pid, "other", 1450, 24*time.Hour)
 	seedProfSample(t, ch, pid, "slow", 50, 48*time.Hour)
@@ -49,11 +51,11 @@ func TestRegressionEvaluatorThinBaselineDoesNotOpen(t *testing.T) {
 
 	eval.Tick(ctx)
 	if _, open, err := regressions.OpenFor(ctx, pid, "api", "cpu", "slow"); err != nil || !open {
-		t.Fatalf("regression must open on a solid baseline (110 samples of slow): open=%v err=%v", open, err)
+		t.Fatalf("regression must open on a solid baseline (100 own samples of slow over 7 days): open=%v err=%v", open, err)
 	}
 }
 
-func TestRegressionEvaluatorOpenForFunctionsErrorSkipsService(t *testing.T) {
+func TestRegressionEvaluatorOpenForServiceErrorSkipsService(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires containers")
 	}
@@ -72,6 +74,6 @@ func TestRegressionEvaluatorOpenForFunctionsErrorSkipsService(t *testing.T) {
 
 	eval.Tick(ctx)
 	if eval.LastTickUnix() == 0 {
-		t.Fatal("tick did not finish after OpenForFunctions failure — a dead PostgreSQL must skip the service, not the tick")
+		t.Fatal("tick did not finish after OpenForService failure — a dead PostgreSQL must skip the service, not the tick")
 	}
 }

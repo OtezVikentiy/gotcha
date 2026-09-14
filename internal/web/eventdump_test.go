@@ -18,9 +18,12 @@ func sampleEvent() event.Stored {
 		ExceptionType:  "TypeError",
 		ExceptionValue: "cannot read x",
 		Environment:    "production",
-		Stacktrace:     `{"values":[{"stacktrace":{"frames":[{"function":"main","filename":"a.go","lineno":10,"in_app":true}]}}]}`,
-		Request:        `{"method":"POST","url":"https://app/x","headers":{"Accept":"*/*"}}`,
-		Tags:           map[string]string{"server": "web1"},
+		Stacktrace: `{"values":[` +
+			`{"stacktrace":{"frames":[{"function":"cause","filename":"cause.go","lineno":5,"in_app":true}]}},` +
+			`{"stacktrace":{"frames":[{"function":"main","filename":"a.go","lineno":10,"in_app":true}]}}` +
+			`]}`,
+		Request: `{"method":"POST","url":"https://app/x","headers":{"Accept":"*/*"}}`,
+		Tags:    map[string]string{"server": "web1"},
 	}
 }
 
@@ -37,6 +40,23 @@ func TestRenderEventForLLM_Markdown(t *testing.T) {
 	}
 	if !strings.Contains(out, "```") {
 		t.Errorf("md dump has no code fences")
+	}
+	if strings.Contains(out, "cause.go") {
+		t.Errorf("md dump rendered root-cause frame instead of the titled exception\n%s", out)
+	}
+}
+
+func TestParseStacktraceFramesPicksLastException(t *testing.T) {
+	raw := `{"values":[` +
+		`{"stacktrace":{"frames":[{"function":"cause","filename":"cause.go","lineno":5,"in_app":true}]}},` +
+		`{"stacktrace":{"frames":[{"function":"main","filename":"a.go","lineno":10,"in_app":true}]}}` +
+		`]}`
+	frames := parseStacktraceFrames(raw)
+	if len(frames) != 1 {
+		t.Fatalf("frames = %d, want 1: %+v", len(frames), frames)
+	}
+	if frames[0].Filename != "a.go" || frames[0].Function != "main" {
+		t.Fatalf("frames = %+v, want frame from the last (outer) exception, not the root cause", frames)
 	}
 }
 

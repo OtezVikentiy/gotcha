@@ -219,7 +219,7 @@ func TestFormatDurationUS(t *testing.T) {
 		us   uint32
 		want string
 	}{
-		{0, "0"},
+		{0, "0µs"},
 		{500, "500µs"},
 		{1500, "1.5ms"},
 		{2_500_000, "2.50s"},
@@ -357,7 +357,7 @@ func TestProfileWeightByType(t *testing.T) {
 		want   string
 	}{
 		{"cpu", 2_000_000_000, "2.00s"},
-		{"heap", 2 * 1024 * 1024, "2.0MB"},
+		{"heap", 2 * 1024 * 1024, "2.0MiB"},
 		{"samples", 42, "42"},
 	}
 	for _, c := range cases {
@@ -380,10 +380,20 @@ func TestTotalPages(t *testing.T) {
 	if totalPages(1) != 1 {
 		t.Fatal("одна запись = 1 страница")
 	}
-	one := totalPages(int64(issuesPerPage))
-	two := totalPages(int64(issuesPerPage) + 1)
+	one := totalPages(int64(issue.DefaultPerPage))
+	two := totalPages(int64(issue.DefaultPerPage) + 1)
 	if two != one+1 {
 		t.Fatalf("округление вверх сломано: %d vs %d", one, two)
+	}
+}
+
+// totalPages обязан считать тем же размером страницы, что issue.Service.List;
+// умножение на 2 привязывает ожидание к значению константы, а не к совпадению округления.
+func TestTotalPagesUsesIssueDefaultPerPage(t *testing.T) {
+	perPage := int64(issue.DefaultPerPage)
+	total := perPage*2 + 1
+	if got := totalPages(total); got != 3 {
+		t.Fatalf("totalPages(%d) = %d, want 3 (issue.DefaultPerPage=%d)", total, got, issue.DefaultPerPage)
 	}
 }
 
@@ -393,7 +403,7 @@ func TestIssuesPageURL(t *testing.T) {
 	}
 	f := IssuesFilter{Status: "resolved", Level: "error", Query: "boom", Sort: "freq", Environment: "prod", Range: TimeRangeVM{Key: "7d"}}
 	got := issuesPageURL(7, f, 2)
-	for _, want := range []string{"status=resolved", "level=error", "q=boom", "sort=freq", "env=prod", "period=7d", "page=2"} {
+	for _, want := range []string{"status=resolved", "level=error", "q=boom", "sort=freq", "environment=prod", "period=7d", "page=2"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("issuesPageURL пропустил %q: %q", want, got)
 		}

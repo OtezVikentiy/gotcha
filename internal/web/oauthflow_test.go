@@ -30,6 +30,7 @@ func (s staticProvider) Exchange(_ context.Context, _, _, _, _ string) (oauth.Id
 
 func TestOAuthStartSetsCookieAndRedirects(t *testing.T) {
 	h := web.New(nil, nil, nil, nil, "http://localhost:8080")
+	h.SecretKey = "test-secret"
 	h.OAuth = oauth.NewRegistry(staticProvider{name: "oidc", authBase: "https://idp/authorize"})
 	mux := http.NewServeMux()
 	h.Register(mux)
@@ -63,6 +64,50 @@ func TestOAuthStartSetsCookieAndRedirects(t *testing.T) {
 		t.Fatalf("unknown provider status = %d, want 404", resp2.StatusCode)
 	}
 	resp2.Body.Close()
+}
+
+func TestOAuthStartFailsWithoutSecretKey(t *testing.T) {
+	h := web.New(nil, nil, nil, nil, "http://localhost:8080")
+	h.OAuth = oauth.NewRegistry(staticProvider{name: "oidc", authBase: "https://idp/authorize"})
+	mux := http.NewServeMux()
+	h.Register(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := c.Get(srv.URL + "/auth/oauth/oidc/start")
+	if err != nil {
+		t.Fatalf("GET start: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (empty SecretKey must never yield a signed flow cookie)", resp.StatusCode)
+	}
+	for _, ck := range resp.Cookies() {
+		if ck.Name == "gotcha_oauth" {
+			t.Fatal("flow cookie set despite missing SecretKey")
+		}
+	}
+}
+
+func TestOAuthCallbackFailsWithoutSecretKey(t *testing.T) {
+	h := web.New(nil, nil, nil, nil, "http://localhost:8080")
+	h.OAuth = oauth.NewRegistry(staticProvider{name: "oidc", authBase: "https://idp/authorize"})
+	mux := http.NewServeMux()
+	h.Register(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	req, _ := http.NewRequest("GET", srv.URL+"/auth/oauth/oidc/callback?state=STATE&code=CODE", nil)
+	req.AddCookie(&http.Cookie{Name: "gotcha_oauth", Value: "anything"})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET callback: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (empty SecretKey must never verify a flow cookie)", resp.StatusCode)
+	}
 }
 
 func TestLoginPageShowsProviderButtons(t *testing.T) {

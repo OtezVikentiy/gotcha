@@ -3,6 +3,7 @@ package templates
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -61,16 +62,18 @@ func checkStatusText(ctx context.Context, ok bool) string {
 	return i18n.T(ctx, "uptime.check.fail")
 }
 
-// Просроченный сертификат — отдельным словом, не «-3d left».
+// «Истёк» ставим по t.After(now), не по округлению дней — иначе первые сутки после
+// истечения дают 0. Дни — потолком, как алертинг (internal/uptime.daysLeftUntil).
 func sslExpiryText(ctx context.Context, t *time.Time) string {
 	if t == nil {
 		return "—"
 	}
 	date := t.Format("2006-01-02")
-	days := int(time.Until(*t).Hours() / 24)
-	if days < 0 {
+	now := time.Now()
+	if !t.After(now) {
 		return i18n.Tf(ctx, "uptime.ssl.expired", "date", date)
 	}
+	days := int(math.Ceil(t.Sub(now).Hours() / 24))
 	return i18n.Tf(ctx, "uptime.ssl.days_left", "days", strconv.Itoa(days), "date", date)
 }
 
@@ -203,7 +206,7 @@ func monitorIncidentsPageURL(monitorID int64, page int, rng TimeRangeVM) string 
 
 // ClickHouse не ответил: шапка/статус/инциденты на месте, плитки аптайма — «недоступно»
 // (не «нет данных»), вместо графика задержек и проверок — «данные временно недоступны».
-templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime30d uptime.UptimeStat, latencyChart templ.Component, rng TimeRangeVM, checks []uptime.CheckRow, incidents []uptime.Incident, incPage int, incTotal int64, canManage bool, canOperate bool, baseURL string, userEmail string, statsFailed bool) {
+templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime30d uptime.UptimeStat, latencyChart templ.Component, rng TimeRangeVM, checks []uptime.CheckRow, incidents []uptime.Incident, incPage int, incTotal int64, canOperate bool, baseURL string, userEmail string, statsFailed bool) {
 	@layout(m.Name, userEmail) {
 		<div class="monitor-detail">
 			@breadcrumbBackTo(templ.URL(monitorsPath(m.ProjectID)), i18n.T(ctx, "nav.monitors"))
@@ -283,7 +286,7 @@ templ MonitorDetail(m uptime.Monitor, status string, uptime24h, uptime7d, uptime
 				</div>
 			}
 
-			if canManage {
+			if canOperate {
 				<div class="monitor-actions">
 					<form method="post" action={ templ.URL(monitorToggleAction(m)) }>
 						<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, monitorToggleLabelKey(m)) }</button>

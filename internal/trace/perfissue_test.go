@@ -192,19 +192,63 @@ func TestIssueServiceRecordSeparatesFindingsAndProjects(t *testing.T) {
 		t.Errorf("other project count = %d, want 1", other.Count)
 	}
 
-	items, err := svc.List(ctx, pid1, "", 10)
+	items, err := svc.List(ctx, pid1, "", "", 10)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	if len(items) != 2 {
 		t.Fatalf("List(pid1) = %d rows, want 2", len(items))
 	}
-	items2, err := svc.List(ctx, pid2, "", 10)
+	items2, err := svc.List(ctx, pid2, "", "", 10)
 	if err != nil {
 		t.Fatalf("List(pid2): %v", err)
 	}
 	if len(items2) != 1 || items2[0].ProjectID != pid2 || items2[0].ID != other.ID {
 		t.Fatalf("List(pid2) = %+v, want 1 row of project %d", items2, pid2)
+	}
+}
+
+// culprit сужает выборку в SQL, а не выбирает из уже усечённых limit строк проекта:
+// цель вставлена первой (самый старый last_seen), шумные соседи — позже её и друг друга.
+// Если бы фильтр применялся в Go после LIMIT, limit=2 отдал бы два самых свежих шумных
+// issue и потерял бы цель.
+func TestIssueServiceListFiltersByCulpritInSQL(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := trace.NewIssueService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pid := newPerfProject(t, pool, "perfculprit")
+
+	target := trace.Finding{
+		Kind:        trace.KindNPlusOne,
+		Culprit:     "GET /api/quiet",
+		Fingerprint: "fp-quiet",
+		Description: "SELECT * FROM quiet",
+		Evidence:    map[string]any{"count": 1},
+	}
+	if _, err := svc.Record(ctx, pid, target, "t-quiet"); err != nil {
+		t.Fatalf("Record target: %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		noisy := trace.Finding{
+			Kind:        trace.KindSlowDBQuery,
+			Culprit:     "GET /api/noisy",
+			Fingerprint: "fp-noisy-" + strconv.Itoa(i),
+			Description: "SELECT " + strconv.Itoa(i),
+			Evidence:    map[string]any{"count": 1},
+		}
+		if _, err := svc.Record(ctx, pid, noisy, "t-noisy"); err != nil {
+			t.Fatalf("Record noisy %d: %v", i, err)
+		}
+	}
+
+	got, err := svc.List(ctx, pid, "", "GET /api/quiet", 2)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 || got[0].Culprit != "GET /api/quiet" {
+		t.Fatalf("List(culprit=quiet, limit=2) = %+v, want ровно target", got)
 	}
 }
 
@@ -232,14 +276,14 @@ func TestIssueServiceListFilterGetSetStatus(t *testing.T) {
 	if err := svc.SetStatus(ctx, pid, iss.ID, "resolved"); err != nil {
 		t.Fatalf("SetStatus: %v", err)
 	}
-	unresolved, err := svc.List(ctx, pid, "unresolved", 10)
+	unresolved, err := svc.List(ctx, pid, "unresolved", "", 10)
 	if err != nil {
 		t.Fatalf("List unresolved: %v", err)
 	}
 	if len(unresolved) != 0 {
 		t.Errorf("List(unresolved) = %d rows, want 0", len(unresolved))
 	}
-	resolved, err := svc.List(ctx, pid, "resolved", 10)
+	resolved, err := svc.List(ctx, pid, "resolved", "", 10)
 	if err != nil || len(resolved) != 1 || resolved[0].Status != "resolved" {
 		t.Fatalf("List(resolved) = %+v err=%v", resolved, err)
 	}

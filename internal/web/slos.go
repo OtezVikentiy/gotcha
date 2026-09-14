@@ -69,7 +69,7 @@ func sloFormState(r *http.Request) templates.FormState {
 func (h *Handler) renderSLOs(w http.ResponseWriter, r *http.Request, status int, projectID int64, form templates.FormState, errMsg string) {
 	slos, err := h.SLO.List(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// Окна обслуживания — один раз на страницу, не в провайдере на каждую строку: sloRow отдаёт
@@ -272,7 +272,7 @@ func (h *Handler) sloCreate(w http.ResponseWriter, r *http.Request) {
 			fail("err.slo.too_many")
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, slosPath(projectID), http.StatusSeeOther)
@@ -326,9 +326,14 @@ func (h *Handler) sloDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.slo_delete.message", "confirm.delete",
+		name := ""
+		if s, ok, err := h.SLO.Get(r.Context(), projectID, sloID); err == nil && ok {
+			name = s.Name
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.slo_delete.message", "confirm.delete",
 			slosPath(projectID), slosPath(projectID)+"/"+strconv.FormatInt(sloID, 10)+"/delete",
-			[]templates.HiddenField{{Name: "slo_id", Value: strconv.FormatInt(sloID, 10)}})
+			[]templates.HiddenField{{Name: "slo_id", Value: strconv.FormatInt(sloID, 10)}},
+			"name", name)
 		return
 	}
 	if err := h.SLO.Delete(r.Context(), projectID, sloID); err != nil {
@@ -338,7 +343,7 @@ func (h *Handler) sloDelete(w http.ResponseWriter, r *http.Request) {
 			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, slosPath(projectID), http.StatusSeeOther)

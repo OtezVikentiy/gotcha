@@ -44,10 +44,6 @@ templ iconSprite() {
 			<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
 			<circle cx="12" cy="12" r="3"></circle>
 		</symbol>
-		<symbol id="i-search" viewBox="0 0 24 24">
-			<circle cx="11" cy="11" r="8"></circle>
-			<path d="m21 21-4.3-4.3"></path>
-		</symbol>
 		<symbol id="i-filter" viewBox="0 0 24 24">
 			<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
 		</symbol>
@@ -65,10 +61,6 @@ templ iconSprite() {
 			<path d="M16 2v4"></path>
 			<rect width="18" height="18" x="3" y="4" rx="2"></rect>
 			<path d="M3 10h18"></path>
-		</symbol>
-		<symbol id="i-x" viewBox="0 0 24 24">
-			<path d="M18 6 6 18"></path>
-			<path d="m6 6 12 12"></path>
 		</symbol>
 		<symbol id="i-check" viewBox="0 0 24 24">
 			<path d="M20 6 9 17l-5-5"></path>
@@ -112,14 +104,6 @@ templ iconSprite() {
 		<symbol id="i-minus" viewBox="0 0 24 24">
 			<path d="M5 12h14"></path>
 		</symbol>
-		<symbol id="i-arrow-up" viewBox="0 0 24 24">
-			<path d="m5 12 7-7 7 7"></path>
-			<path d="M12 19V5"></path>
-		</symbol>
-		<symbol id="i-arrow-down" viewBox="0 0 24 24">
-			<path d="M12 5v14"></path>
-			<path d="m19 12-7 7-7-7"></path>
-		</symbol>
 		<symbol id="i-user" viewBox="0 0 24 24">
 			<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"></path>
 			<circle cx="12" cy="7" r="4"></circle>
@@ -141,13 +125,6 @@ templ iconSprite() {
 		<symbol id="i-clock" viewBox="0 0 24 24">
 			<circle cx="12" cy="12" r="10"></circle>
 			<polyline points="12 6 12 12 16 14"></polyline>
-		</symbol>
-		<symbol id="i-play" viewBox="0 0 24 24">
-			<polygon points="6 3 20 12 6 21 6 3"></polygon>
-		</symbol>
-		<symbol id="i-pause" viewBox="0 0 24 24">
-			<rect x="14" y="4" width="4" height="16" rx="1"></rect>
-			<rect x="6" y="4" width="4" height="16" rx="1"></rect>
 		</symbol>
 		<symbol id="i-globe" viewBox="0 0 24 24">
 			<circle cx="12" cy="12" r="10"></circle>
@@ -179,21 +156,23 @@ templ iconSprite() {
 	</svg>
 }
 
-templ brandMark() {
+// gradID — уникален на вызывающей странице: /login рендерит и chromeless-шапку,
+// и свой auth-brand в одном документе, id="brand-grad" на двоих сделал бы разметку невалидной.
+templ brandMark(gradID string) {
 	<svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
 		<defs>
-			<linearGradient id="brand-grad" x1="0" y1="0" x2="1" y2="1">
+			<linearGradient id={ gradID } x1="0" y1="0" x2="1" y2="1">
 				<stop offset="0" stop-color="#3d7bff"></stop>
 				<stop offset="1" stop-color="#7c5cff"></stop>
 			</linearGradient>
 		</defs>
-		<g fill="none" stroke="url(#brand-grad)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+		<g fill="none" stroke={ "url(#" + gradID + ")" } stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
 			<path d="M10 4 H4 V10"></path>
 			<path d="M22 4 H28 V10"></path>
 			<path d="M10 28 H4 V22"></path>
 			<path d="M22 28 H28 V22"></path>
 		</g>
-		<text x="16" y="21.5" text-anchor="middle" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="16" font-weight="700" fill="url(#brand-grad)">G</text>
+		<text x="16" y="21.5" text-anchor="middle" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="16" font-weight="700" fill={ "url(#" + gradID + ")" }>G</text>
 	</svg>
 }
 

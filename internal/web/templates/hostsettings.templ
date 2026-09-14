@@ -39,7 +39,7 @@ func settingsMinutesDefault(d time.Duration) string {
 	return strconv.Itoa(int(d / time.Minute))
 }
 
-templ HostSettings(projectID int64, s host.Settings, installCmd, config, agentReason string, form FormState, errMsg string, groups HostGroupThresholdsVM, userEmail string) {
+templ HostSettings(projectID int64, s host.Settings, installCmd, config, agentReason string, form FormState, errMsg string, groups HostGroupThresholdsVM, userEmail string, canManage bool) {
 	@layout(i18n.T(ctx, "nav.host_thresholds"), userEmail) {
 		<div class="host-settings">
 			<h1>{ i18n.T(ctx, "nav.host_thresholds") }</h1>
@@ -116,7 +116,7 @@ templ HostSettings(projectID int64, s host.Settings, installCmd, config, agentRe
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "hosts.settings.submit") }</button>
 			</form>
 			@hostGroupThresholdSection(projectID, s, groups)
-			@hostsCollectorConfigDetails("host-settings-collector-config", projectID, installCmd, config, agentReason)
+			@hostsCollectorConfigDetails("host-settings-collector-config", projectID, installCmd, config, agentReason, canManage)
 			<p class="hint"><a href="/docs/hosts">{ i18n.T(ctx, "hosts.settings.docs_link") }</a></p>
 		</div>
 	}

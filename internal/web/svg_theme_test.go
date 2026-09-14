@@ -91,6 +91,21 @@ func TestAvailabilityBarClassThresholds(t *testing.T) {
 	}
 }
 
+func TestAvailabilityBarLabelDistinguishesNeighbors(t *testing.T) {
+	ctx := context.Background()
+	a := availabilityBarLabel(ctx, uptime.UptimeStat{Total: 48, OK: 47})
+	b := availabilityBarLabel(ctx, uptime.UptimeStat{Total: 48, OK: 30})
+	if a == b {
+		t.Fatalf("два столбика одного класса (partial), но разного OK/Total получили одинаковую подпись %q — на полосе из 90 они неотличимы", a)
+	}
+	if !strings.Contains(a, "47") || !strings.Contains(a, "48") {
+		t.Errorf("availabilityBarLabel(48,47) = %q, ожидались числа OK и Total в тексте", a)
+	}
+	if empty := availabilityBarLabel(ctx, uptime.UptimeStat{}); strings.ContainsAny(empty, "0123456789") {
+		t.Errorf("пустая корзина (Total=0) не должна печатать 0/0: %q", empty)
+	}
+}
+
 // object-fit не работает на инлайновом корневом <svg> (не замещаемый элемент) —
 // растягивать обязан сам preserveAspectRatio="none" на этом графике.
 func TestAvailabilityBarsStretchToCardWidth(t *testing.T) {

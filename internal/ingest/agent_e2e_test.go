@@ -10,6 +10,7 @@ import (
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/agent"
 	"gitflic.ru/otezvikentiy/gotcha/internal/hostmetric"
+	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 )
 
@@ -38,7 +39,7 @@ func TestAgentExportEndToEnd(t *testing.T) {
 	h := NewHandler(NewKeyCache(stubKeyResolver{key: org.Key{ProjectID: 1, OrgID: 1, Kind: org.KindAgent}}), nil, nil, 1<<20)
 	h.Metrics = sink
 
-	md := agent.BuildExport("web-1", "", "", fakeAgentSample())
+	md := agent.BuildExport("web-1", "", "", fakeAgentSample(), 0, uint64(time.Now().Add(-time.Hour).UnixNano()))
 	body, err := agent.EncodeBody(md)
 	if err != nil {
 		t.Fatalf("EncodeBody: %v", err)
@@ -59,7 +60,8 @@ func TestAgentExportEndToEnd(t *testing.T) {
 	}
 
 	gotNames := map[string]bool{}
-	for _, p := range sink.points {
+	var dropped *metric.MetricPoint
+	for i, p := range sink.points {
 		gotNames[p.Name] = true
 		if p.Host != "web-1" {
 			t.Errorf("точка %q: Host = %q, want web-1 (host.name должен быть промоутирован)", p.Name, p.Host)
@@ -67,10 +69,25 @@ func TestAgentExportEndToEnd(t *testing.T) {
 		if _, leaked := p.Attributes[hostmetric.AgentVersionAttr]; leaked {
 			t.Errorf("точка %q: %s утёк в CH-атрибуты", p.Name, hostmetric.AgentVersionAttr)
 		}
+		if p.Name == agent.DroppedPointsMetric {
+			dropped = &sink.points[i]
+		}
 	}
 	for _, name := range hostmetric.AllMetrics() {
 		if !gotNames[name] {
 			t.Errorf("метрика %q из hostmetric.AllMetrics() не пришла в sink", name)
 		}
+	}
+
+	// Единственное место во всём дереве, где путь агента до сервера проверяется
+	// целиком — потеря обязана не только формироваться, но и доезжать.
+	if dropped == nil {
+		t.Fatalf("%s не пришла в sink — метрика потерь не доехала до сервера", agent.DroppedPointsMetric)
+	}
+	if dropped.Type != metric.TypeSum {
+		t.Errorf("%s: Type = %q, want %q", agent.DroppedPointsMetric, dropped.Type, metric.TypeSum)
+	}
+	if !dropped.Monotonic {
+		t.Errorf("%s: Monotonic = false, want true", agent.DroppedPointsMetric)
 	}
 }

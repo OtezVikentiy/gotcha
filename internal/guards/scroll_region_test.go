@@ -8,7 +8,7 @@ import (
 
 // литеральный скролл-класс мимо @scrollRegion теряет tabindex/role/aria-label —
 // клавиатура не прокрутит содержимое.
-var scrollClassRe = regexp.MustCompile(`class="[^"]*\b(table-scroll|scroll-list|endpoint-chart|metric-chart-wrap|flamegraph-wrap|trace-waterfall|trace-flame|issue-chart)\b[^"]*"`)
+var scrollClassRe = regexp.MustCompile(`class="[^"]*\b(table-scroll|scroll-list|endpoint-chart|metric-chart-wrap|flamegraph-wrap|trace-waterfall|trace-flame|issue-chart|slo-burndown-card)\b[^"]*"`)
 
 const minScrollRegionUses = 25
 

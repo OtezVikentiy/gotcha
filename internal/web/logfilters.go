@@ -22,6 +22,18 @@ var logFilterParams = []string{
 	"q_not", "severity_not", "service_not", "environment_not", "attr_not",
 }
 
+// Тем же списком полей зеркалится confirm-форма удаления — подтверждение не должно
+// терять условия текущего вида, которые уже пришли в теле первого POST.
+func logFilterHiddenFieldsFromForm(r *http.Request) []templates.HiddenField {
+	var hidden []templates.HiddenField
+	for _, name := range logFilterParams {
+		for _, v := range r.PostForm[name] {
+			hidden = append(hidden, templates.HiddenField{Name: name, Value: v})
+		}
+	}
+	return hidden
+}
+
 // Тем же списком строятся и предикаты для сохранения, и адрес возврата — расхождение между
 // «что сохранили» и «куда вернулись» невозможно по построению.
 func logFilterFormParams(r *http.Request) url.Values {
@@ -37,7 +49,7 @@ func logFilterFormParams(r *http.Request) url.Values {
 // TimeRange{} и retentionDays=0 не участвуют в результате: filterToPredicates не читает
 // From/To, сохранённый фильтр не несёт временное окно.
 func logFilterPredicatesFromForm(r *http.Request) []log.Predicate {
-	f, _ := parseLogFilter(logFilterFormParams(r), TimeRange{}, 0)
+	f, _, _ := parseLogFilter(logFilterFormParams(r), TimeRange{}, 0)
 	return filterToPredicates(f)
 }
 
@@ -62,7 +74,7 @@ func (h *Handler) logFiltersGate(w http.ResponseWriter, r *http.Request) (projec
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return 0, 0, false
 	}
 	if !canAccess {
@@ -148,7 +160,7 @@ func (h *Handler) logFiltersUpdate(w http.ResponseWriter, r *http.Request) {
 			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -191,20 +203,26 @@ func (h *Handler) logFiltersDelete(w http.ResponseWriter, r *http.Request) {
 			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if existing.Shared() && !h.requireLogFilterOperator(w, r, projectID, uid) {
 		return
 	}
-
+	// CSP без unsafe-inline не исполняет inline confirm() — подтверждение отдельной страницей.
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirmf(w, r, "confirm.title", "confirm.log_filter_delete.message", "confirm.delete",
+			templates.LogsURLFromValues(projectID, logFilterFormParams(r)), r.URL.Path,
+			logFilterHiddenFieldsFromForm(r), "name", existing.Name)
+		return
+	}
 	// Умолчания на фильтр каскадом (ON DELETE CASCADE) — веб-слою ничего досоставлять не нужно.
 	if err := h.LogFilters.Delete(r.Context(), filterID); err != nil {
 		if errors.Is(err, logfilter.ErrNotFound) {
 			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOK(w, "flash.log_filter_deleted", 0)
@@ -227,7 +245,7 @@ func (h *Handler) logFiltersSetDefault(w http.ResponseWriter, r *http.Request) {
 			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOK(w, "flash.log_filter_default_set", 0)
@@ -255,7 +273,7 @@ func (h *Handler) logFiltersHandleSaveError(w http.ResponseWriter, r *http.Reque
 		h.notFound(w, r)
 		return
 	}
-	h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+	h.renderError(w, r, http.StatusInternalServerError, "")
 }
 
 // nil-safe: без проводки сохранённых фильтров — пустая панель без похода в БД.

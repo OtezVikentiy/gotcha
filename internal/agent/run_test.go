@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/rand"
@@ -238,7 +239,7 @@ func TestRunnerDrainFailureBacksOff(t *testing.T) {
 	defer srv.Close()
 
 	r := newTestRunner(t, srv.URL)
-	r.buffer.Push([]byte("stale-batch")) // предзаполненный буфер — содержимое серверу не важно
+	r.buffer.Push([]byte("stale-batch"), 1) // предзаполненный буфер — содержимое серверу не важно
 
 	base := time.Unix(1000, 0)
 	r.tick(context.Background(), base)
@@ -322,7 +323,7 @@ func TestRunnerDrainCapsPerTick(t *testing.T) {
 	r := newTestRunner(t, srv.URL)
 	const prefilled = 20
 	for i := 0; i < prefilled; i++ {
-		r.buffer.Push([]byte("stale-batch"))
+		r.buffer.Push([]byte("stale-batch"), 1)
 	}
 
 	base := time.Unix(1000, 0)
@@ -392,6 +393,137 @@ func TestRunnerBufferingAndRecoveryLoggedOnTransition(t *testing.T) {
 	}
 	if got := strings.Count(logBuf.String(), "entering buffered mode"); got != 1 {
 		t.Fatalf("вхождений \"entering buffered mode\" после восстановления = %d, хочу по-прежнему 1 (не задвоилось)", got)
+	}
+}
+
+func TestRunnerOverflowDuringOutageIsNamedNotClaimedRecovered(t *testing.T) {
+	var healthy int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.LoadInt32(&healthy) == 0 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	r, logBuf := newTestRunnerWithLog(t, srv.URL)
+	r.buffer = NewBuffer(2, 10_000) // тесная вместимость по батчам — переполнение за считанные тики
+
+	base := time.Unix(1_000_000, 0)
+	const spacing = 11 * time.Minute // запас над бэкоффом за 4 отказа, как в соседних тестах outage
+	for i := 0; i < 4; i++ {
+		r.tick(context.Background(), base.Add(time.Duration(i)*spacing))
+	}
+	if got := r.buffer.Len(); got != 2 {
+		t.Fatalf("buffer.Len() после четырёх отказов = %d, хочу 2 (вместимость буфера)", got)
+	}
+	// fakeProbes даёт 14 точек за тик (CPU всегда nil — постоянные показания
+	// без дельты); две вытесненных батча = 28 точек, не 2 батча.
+	const pointsPerTick = 14
+	if got := r.dropped; got != 2*pointsPerTick {
+		t.Fatalf("r.dropped после четырёх отказов = %d, хочу %d (два вытесненных батча по %d точек)",
+			got, 2*pointsPerTick, pointsPerTick)
+	}
+	if got := strings.Count(logBuf.String(), "batch dropped, buffer full"); got != 2 {
+		t.Fatalf("вхождений \"batch dropped, buffer full\" = %d, хочу 2", got)
+	}
+
+	atomic.StoreInt32(&healthy, 1)
+	r.tick(context.Background(), base.Add(4*spacing))
+
+	if got := r.buffer.Len(); got != 0 {
+		t.Fatalf("buffer.Len() после дренажа = %d, хочу 0", got)
+	}
+	logs := logBuf.String()
+	if strings.Contains(logs, "delivery recovered") {
+		t.Fatal("\"delivery recovered\" не должно появляться — часть буфера была потеряна переполнением")
+	}
+	want := fmt.Sprintf(`msg="agent: buffer drained, delivery resumed with data loss" dropped_points=%d`, 2*pointsPerTick)
+	if !strings.Contains(logs, want) {
+		t.Fatalf("лог не содержит %q:\n%s", want, logs)
+	}
+}
+
+// Потеря должна доехать до сервера как обычная метрика, не только осесть
+// в журнале агента — иначе оператор её не увидит там, где смотрит.
+func TestRunnerDroppedPointsMetricSentOnRecovery(t *testing.T) {
+	var mu sync.Mutex
+	var reqs []*metricspb.MetricsData
+	var healthy int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		md := decodeExport(t, r)
+		mu.Lock()
+		reqs = append(reqs, md)
+		mu.Unlock()
+		if atomic.LoadInt32(&healthy) == 0 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	r := newTestRunner(t, srv.URL)
+	r.buffer = NewBuffer(2, 10_000) // тесная вместимость — переполнение за считанные тики
+
+	base := time.Unix(2_000_000, 0)
+	const spacing = 11 * time.Minute
+	const pointsPerTick = 14 // см. TestRunnerOverflowDuringOutageIsNamedNotClaimedRecovered
+	for i := 0; i < 4; i++ {
+		r.tick(context.Background(), base.Add(time.Duration(i)*spacing))
+	}
+	wantDropped := int64(2 * pointsPerTick)
+	if r.dropped != wantDropped {
+		t.Fatalf("r.dropped после четырёх отказов = %d, хочу %d", r.dropped, wantDropped)
+	}
+
+	atomic.StoreInt32(&healthy, 1)
+	mu.Lock()
+	reqs = nil // дальше смотрим только на экспорт ожившего тика
+	mu.Unlock()
+	r.tick(context.Background(), base.Add(4*spacing))
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(reqs) == 0 {
+		t.Fatal("сервер не получил ни одного экспорта на ожившем тике")
+	}
+	// Текущий (не буферизованный) экспорт тика восстановления идёт первым,
+	// до дренажа старых батчей — порядок как в TestRunnerBuffersOnOutage.
+	m := metricByName(reqs[0], DroppedPointsMetric)
+	if m == nil {
+		t.Fatal("gotcha.agent.metrics_dropped отсутствует в экспорте тика восстановления")
+	}
+	dps := m.GetSum().GetDataPoints()
+	if len(dps) != 1 || dps[0].GetAsInt() != wantDropped {
+		t.Fatalf("gotcha.agent.metrics_dropped datapoints = %v, хочу единственную точку со значением %d", dps, wantDropped)
+	}
+}
+
+// Батч крупнее maxBytes целиком (не вытеснение чужого) — тот же K24-дефект
+// на другом пути: должен быть назван, а не проглочен молча.
+func TestRunnerOversizedBatchDroppedIsNamed(t *testing.T) {
+	r, logBuf := newTestRunnerWithLog(t, "http://unused.invalid")
+	r.buffer = NewBuffer(120, 10) // maxBytes меньше любого реального батча
+	base := time.Unix(1000, 0)
+	r.notBefore = base.Add(time.Hour) // пол ещё не истёк — tick() зовёт pushBuffered, не sendCurrent
+
+	r.tick(context.Background(), base)
+
+	if got := r.buffer.Len(); got != 0 {
+		t.Fatalf("buffer.Len() = %d, хочу 0 (переполнивший батч не ложится в буфер)", got)
+	}
+	const pointsPerTick = 14 // см. TestRunnerOverflowDuringOutageIsNamedNotClaimedRecovered
+	if r.dropped != pointsPerTick {
+		t.Fatalf("r.dropped = %d, хочу %d", r.dropped, pointsPerTick)
+	}
+	if r.droppedUndrained != pointsPerTick {
+		t.Fatalf("r.droppedUndrained = %d, хочу %d", r.droppedUndrained, pointsPerTick)
+	}
+	want := fmt.Sprintf(`msg="agent: batch dropped, exceeds buffer size limit" points=%d`, pointsPerTick)
+	if !strings.Contains(logBuf.String(), want) {
+		t.Fatalf("лог не содержит %q:\n%s", want, logBuf.String())
 	}
 }
 

@@ -50,3 +50,33 @@ func TestStatusLayoutSystemThemeOmitsDataTheme(t *testing.T) {
 		t.Fatalf("statusLayout с темой system не должен печатать data-theme: %s", out)
 	}
 }
+
+// statusLayoutBody держит свой <head>, отдельный от layout.templ, — без своей
+// theme-color рамка браузера на телефоне остаётся светлой в тёмной теме.
+func TestStatusLayoutExplicitThemeHasThemeColor(t *testing.T) {
+	v := StatusPageView{Title: "S", Overall: "ok"}
+	for _, code := range []string{"dark", "light"} {
+		ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
+		ctx = theme.WithTheme(ctx, theme.Theme{Code: code})
+		var sb strings.Builder
+		if err := PublicStatusPage(v).Render(ctx, &sb); err != nil {
+			t.Fatalf("%s: render: %v", code, err)
+		}
+		out := sb.String()
+		want := `<meta name="theme-color" content="` + themeColor(code) + `">`
+		if !strings.Contains(out, want) {
+			t.Errorf("%s: нет %s в: %s", code, want, out)
+		}
+	}
+}
+
+func TestStatusLayoutSystemThemeHasThemeColor(t *testing.T) {
+	v := StatusPageView{Title: "S", Overall: "ok"}
+	out := renderTo(t, PublicStatusPage(v))
+	for code, media := range map[string]string{"dark": "(prefers-color-scheme: dark)", "light": "(prefers-color-scheme: light)"} {
+		want := `<meta name="theme-color" content="` + themeColor(code) + `" media="` + media + `">`
+		if !strings.Contains(out, want) {
+			t.Errorf("system: нет %s в: %s", want, out)
+		}
+	}
+}

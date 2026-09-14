@@ -35,7 +35,7 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -47,12 +47,12 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 	// org.ErrNotMember не роняет страницу: значит доступ был только через команду.
 	orgID, err := h.Org.ProjectOrg(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	role, err := h.Org.Role(r.Context(), orgID, uid)
 	if err != nil && !errors.Is(err, org.ErrNotMember) {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	canManage := role == org.RoleOwner || role == org.RoleAdmin
@@ -72,7 +72,7 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 		Level:       q.Get("level"),
 		Query:       q.Get("q"),
 		Sort:        q.Get("sort"),
-		Environment: q.Get("env"),
+		Environment: environmentParam(q),
 		Since:       rng.From,
 		Until:       rng.To,
 		Page:        parsePage(q.Get("page")),
@@ -80,13 +80,13 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 
 	items, total, err := h.Issues.List(r.Context(), projectID, filter)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
 	environments, err := h.Issues.Environments(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -131,7 +131,7 @@ func (h *Handler) issuesList(w http.ResponseWriter, r *http.Request) {
 	// при их расхождении CanOperate ниже обязана следовать сама, без правки этого места.
 	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	gs := h.gettingStarted(r.Context(), uid, projectID, orgID, canManage, canOperate)
@@ -235,11 +235,22 @@ func (h *Handler) gettingStartedHide(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	if err := h.Auth.SetHideGettingStarted(r.Context(), uid); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+	if !h.parseForm(w, r) {
 		return
 	}
-	http.Redirect(w, r, safeRedirect(r, h.BaseURL), http.StatusSeeOther)
+	// CSP без unsafe-inline не исполняет inline confirm(); back — из confirm-формы, не из
+	// Referer второго POST (им стала бы страница подтверждения), redirectLocal его перепроверяет.
+	if r.FormValue("confirmed") != "yes" {
+		back := safeRedirect(r, h.BaseURL)
+		h.renderConfirmf(w, r, "confirm.title", "confirm.getting_started_hide.message", "confirm.hide",
+			back, r.URL.Path, []templates.HiddenField{{Name: "back", Value: back}})
+		return
+	}
+	if err := h.Auth.SetHideGettingStarted(r.Context(), uid); err != nil {
+		h.renderError(w, r, http.StatusInternalServerError, "")
+		return
+	}
+	redirectLocal(w, r, r.FormValue("back"))
 }
 
 func (h *Handler) sparklinesFor(ctx context.Context, projectID int64, items []issue.Issue) (map[int64][]uint64, error) {
@@ -308,7 +319,7 @@ func (h *Handler) issuesBulk(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -332,7 +343,7 @@ func (h *Handler) issuesBulk(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := h.Issues.SetStatusBulk(r.Context(), projectID, ids, status)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// Число входит во flash-сообщение: без него нельзя понять, сработало ли и на скольких.

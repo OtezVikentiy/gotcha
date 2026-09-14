@@ -55,6 +55,10 @@ func (c *countingQuery) TopFunctionShares(context.Context, int64, string, string
 	return nil, nil
 }
 
+func (c *countingQuery) FunctionSharesFor(context.Context, int64, string, string, []string, time.Time, time.Time) (map[string]profile.FunctionShare, error) {
+	return nil, nil
+}
+
 func (c *countingQuery) BaselineFunctionShares(context.Context, int64, string, string, []string, int, time.Time) (map[string]profile.BaselineShare, error) {
 	return nil, nil
 }
@@ -138,12 +142,14 @@ func TestRegressionEvaluatorOpenCloseAlertOnce(t *testing.T) {
 		Interval: time.Hour, Config: cfg,
 	}
 
-	seedProfSample(t, ch, pid, "slow", 80, 5*time.Minute)
-	seedProfSample(t, ch, pid, "other", 20, 5*time.Minute)
-	seedProfSample(t, ch, pid, "slow", 30, 24*time.Hour)
-	seedProfSample(t, ch, pid, "other", 270, 24*time.Hour)
-	seedProfSample(t, ch, pid, "slow", 30, 48*time.Hour)
-	seedProfSample(t, ch, pid, "other", 270, 48*time.Hour)
+	// Recent-окно: 150 своих строк у "slow" — выше MinSamples (100) сам по себе,
+	// не только в сумме с "other" (иначе гейт на recentSamples ничего не гейтит).
+	seedProfSample(t, ch, pid, "slow", 150, 5*time.Minute)
+	seedProfSample(t, ch, pid, "other", 50, 5*time.Minute)
+	seedProfSample(t, ch, pid, "slow", 60, 24*time.Hour)
+	seedProfSample(t, ch, pid, "other", 540, 24*time.Hour)
+	seedProfSample(t, ch, pid, "slow", 60, 48*time.Hour)
+	seedProfSample(t, ch, pid, "other", 540, 48*time.Hour)
 
 	eval.Tick(ctx)
 	if _, open, _ := eval.Regressions.OpenFor(ctx, pid, "api", "cpu", "slow"); !open {
@@ -163,8 +169,10 @@ func TestRegressionEvaluatorOpenCloseAlertOnce(t *testing.T) {
 	if err := ch.Exec(ctx, "TRUNCATE TABLE profile_samples"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	seedProfSample(t, ch, pid, "slow", 5, 5*time.Minute)
-	seedProfSample(t, ch, pid, "other", 95, 5*time.Minute)
+	// recentSamples("slow") тоже обязан пройти MinSamples сам по себе; доля при этом
+	// далеко под ShareFloor (0.05) — база стёрта truncate'ом, решает ветка ShareFloor.
+	seedProfSample(t, ch, pid, "slow", 100, 5*time.Minute)
+	seedProfSample(t, ch, pid, "other", 2000, 5*time.Minute)
 	eval.Tick(ctx)
 	if _, open, _ := eval.Regressions.OpenFor(ctx, pid, "api", "cpu", "slow"); open {
 		t.Fatalf("regression must be resolved after recovery")
@@ -185,6 +193,10 @@ func (emptyQuery) TopFunctionShares(context.Context, int64, string, string, time
 	return nil, nil
 }
 
+func (emptyQuery) FunctionSharesFor(context.Context, int64, string, string, []string, time.Time, time.Time) (map[string]profile.FunctionShare, error) {
+	return nil, nil
+}
+
 func (emptyQuery) BaselineFunctionShares(context.Context, int64, string, string, []string, int, time.Time) (map[string]profile.BaselineShare, error) {
 	return nil, nil
 }
@@ -200,6 +212,10 @@ func (b *blockingQuery) ActiveServices(ctx context.Context, _, _ time.Time) ([]p
 }
 
 func (b *blockingQuery) TopFunctionShares(context.Context, int64, string, string, time.Time, time.Time, int) ([]profile.FunctionShare, error) {
+	return nil, nil
+}
+
+func (b *blockingQuery) FunctionSharesFor(context.Context, int64, string, string, []string, time.Time, time.Time) (map[string]profile.FunctionShare, error) {
 	return nil, nil
 }
 

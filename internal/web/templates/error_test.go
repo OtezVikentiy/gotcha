@@ -16,6 +16,26 @@ func TestErrorPageShowsGivenReason(t *testing.T) {
 	}
 }
 
+// Анонимному путь назад — «Войти», не «На главную»: анонимный не знает, что
+// «На главную» его туда и приведёт. Вошедшему, наоборот, нужна именно главная.
+func TestErrorPageOffersLoginOnlyWhenAnonymous(t *testing.T) {
+	anon := renderTo(t, ErrorPage(403, "", ""))
+	if !strings.Contains(anon, `<a class="btn btn-primary" href="/login">`) {
+		t.Errorf("анонимному не предложена ссылка на вход: %s", anon)
+	}
+	if strings.Contains(anon, `<a class="btn btn-primary" href="/">`) {
+		t.Errorf("анонимному предложена ссылка на главную вместо входа: %s", anon)
+	}
+
+	loggedIn := renderTo(t, ErrorPage(403, "", "u@e.com"))
+	if !strings.Contains(loggedIn, `<a class="btn btn-primary" href="/">`) {
+		t.Errorf("вошедшему не предложена ссылка на главную: %s", loggedIn)
+	}
+	if strings.Contains(loggedIn, `<a class="btn btn-primary" href="/login">`) {
+		t.Errorf("вошедшему предложена ссылка на вход вместо главной: %s", loggedIn)
+	}
+}
+
 // ожидаемое значение берётся из каталога, а не зашито литералом: перевод
 // текста — дело переводчика, а не повод для ложного красного здесь.
 func TestErrorPageWithoutReasonKeepsTemplateText(t *testing.T) {

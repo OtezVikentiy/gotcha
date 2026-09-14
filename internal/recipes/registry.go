@@ -10,14 +10,16 @@ import (
 // resourcedetection не ставим: host у точек пуст, страница рецепта работает без host-скоупа.
 
 // postgresql.deadlocks выключена в metadata.yaml — включаем явно, иначе critical-порог мёртв.
-// databases закомментирована нарочно: без неё ресивер берёт все базы, порог — по сумме/максимуму.
+// databases обязателен, не закомментирован: без него ресивер берёт все базы,
+// а порог по deadlocks считается max()-ом по бакету — всплеск в маленькой базе
+// тонет за счётчиком большой (для нескольких баз — отдельный рецепт на каждую).
 const postgresConfigTmpl = `receivers:
   postgresql:
     endpoint: localhost:5432
     transport: tcp
     username: CHANGE_ME
     password: CHANGE_ME
-    # databases: [CHANGE_ME]  # limit to a single database for a precise deadlock threshold
+    databases: [CHANGE_ME]
     tls:
       insecure: true
     collection_interval: 30s
@@ -168,8 +170,8 @@ var registry = []Recipe{
 				GroupKey: "state", Agg: "avg"},
 		},
 		Rules: []RuleSpec{
-			// sum по monotonic cumulative = прирост за окно: «новые дедлоки за 5 минут», не «всего».
-			{Metric: "postgresql.deadlocks", Agg: "sum", Comparator: "gt", Threshold: 0,
+			// increase — честный прирост за окно: «новые дедлоки за 5 минут», не «всего».
+			{Metric: "postgresql.deadlocks", Agg: "increase", Comparator: "gt", Threshold: 0,
 				WindowSeconds: 300, Severity: "critical", NoteKey: "deadlocks"},
 			// значение усреднено по базам и скрейпам — NoteKey просит подстроить под max_connections.
 			{Metric: "postgresql.backends", Agg: "avg", Comparator: "gt", Threshold: 80,
@@ -217,7 +219,7 @@ var registry = []Recipe{
 				WindowSeconds: 300, LabelKey: "kind", LabelValue: "connected", NoteKey: "threads_connected"},
 			// метрика default=off — сниппет включает её явно; warning, не critical:
 			// slow query — повод разобраться, не однозначная авария.
-			{Metric: "mysql.query.slow.count", Agg: "sum", Comparator: "gt", Threshold: 0,
+			{Metric: "mysql.query.slow.count", Agg: "increase", Comparator: "gt", Threshold: 0,
 				WindowSeconds: 300, NoteKey: "slow_queries"},
 		},
 		Config: func(baseURL, apiKey string) string {
@@ -276,7 +278,7 @@ var registry = []Recipe{
 		},
 		Rules: []RuleSpec{
 			// Прирост отказов за окно = упёрлись в maxclients.
-			{Metric: "redis.connections.rejected", Agg: "sum", Comparator: "gt", Threshold: 0,
+			{Metric: "redis.connections.rejected", Agg: "increase", Comparator: "gt", Threshold: 0,
 				WindowSeconds: 300, Severity: "critical", NoteKey: "rejected"},
 			{Metric: "redis.memory.fragmentation_ratio", Agg: "avg", Comparator: "gt", Threshold: 1.5,
 				WindowSeconds: 600, NoteKey: "fragmentation"},

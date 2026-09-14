@@ -115,9 +115,9 @@ func (h *Handler) enforcedSSO(ctx context.Context, domain string) (bool, error) 
 	return ok && cfg.Enforced, nil
 }
 
-// verified email обязателен, email обязан быть из домена организации (IdP может вернуть
-// чужой) — новый юзер провижинится с DefaultRole, существующий линкуется и получает членство.
-func (h *Handler) ssoCallback(w http.ResponseWriter, r *http.Request, name string, id oauth.Identity, sso *ssoMeta) {
+// verified email обязателен, домен обязан совпасть с sso.Domain. Существующий аккаунт с этим
+// email НЕ линкуется по одному совпадению — только с активной сессией (flow.Link), см. ниже.
+func (h *Handler) ssoCallback(w http.ResponseWriter, r *http.Request, name string, id oauth.Identity, sso *ssoMeta, flow oauthFlow) {
 	if !id.EmailVerified {
 		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.oauth.provider_no_email"))
 		return
@@ -128,39 +128,88 @@ func (h *Handler) ssoCallback(w http.ResponseWriter, r *http.Request, name strin
 	}
 	role := org.Role(sso.DefaultRole)
 
+	// Резолвится один раз для ОБЕИХ веток ниже (идентичность уже есть / её нет): иначе
+	// ветка «идентичность уже есть» логинила бы вызывающего под ЧУЖИМ uid, если чужая
+	// идентичность случайно (или намеренно, при контроле над IdP) всплыла в потоке привязки.
+	var sessionUID int64
+	if flow.Link {
+		uid, ok := h.sessionUID(r)
+		if !ok {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		if flow.UID != uid {
+			h.renderError(w, r, http.StatusBadRequest, i18n.T(r.Context(), "error.oauth.session_expired"))
+			return
+		}
+		sessionUID = uid
+	}
+
 	if uid, err := h.Auth.IdentityUser(r.Context(), name, id.Subject); err == nil {
+		if flow.Link && uid != sessionUID {
+			h.renderError(w, r, http.StatusConflict,
+				i18n.Tf(r.Context(), "error.oauth.already_linked", "provider", providerLabel(r.Context(), name, sso.Domain)))
+			return
+		}
 		_ = h.Auth.UpdateIdentityEmail(r.Context(), name, id.Subject, id.Email)
 		if err := h.Org.EnsureMember(r.Context(), sso.OrgID, uid, role); err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
+			return
+		}
+		if flow.Link {
+			http.Redirect(w, r, "/profile", http.StatusSeeOther)
 			return
 		}
 		h.oauthLogin(w, r, uid, "/")
 		return
 	} else if !errors.Is(err, auth.ErrNoIdentity) {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
+		return
+	}
+
+	if flow.Link {
+		switch err := h.Auth.LinkIdentity(r.Context(), sessionUID, name, id.Subject, id.Email); {
+		case err == nil, errors.Is(err, auth.ErrAlreadyLinked):
+		case errors.Is(err, auth.ErrIdentityTaken):
+			h.renderError(w, r, http.StatusConflict,
+				i18n.Tf(r.Context(), "error.oauth.already_linked", "provider", providerLabel(r.Context(), name, sso.Domain)))
+			return
+		default:
+			h.renderError(w, r, http.StatusInternalServerError, "")
+			return
+		}
+		if err := h.Org.EnsureMember(r.Context(), sso.OrgID, sessionUID, role); err != nil {
+			h.renderError(w, r, http.StatusInternalServerError, "")
+			return
+		}
+		http.Redirect(w, r, "/profile", http.StatusSeeOther)
 		return
 	}
 
 	uid, err := h.Auth.UserByEmail(r.Context(), id.Email)
 	switch {
 	case err == nil:
+		// Тот же захват, что generic-OIDC запрещает через TrustedIssuer: аккаунт уже есть,
+		// линковать его без активной сессии владельца нельзя.
+		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.oauth.sso_account_exists"))
+		return
 	case errors.Is(err, auth.ErrUserNotFound):
 		uid, err = h.Auth.CreateOAuthUser(r.Context(), id.Email)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 	default:
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if err := h.Auth.LinkIdentity(r.Context(), uid, name, id.Subject, id.Email); err != nil &&
 		!errors.Is(err, auth.ErrAlreadyLinked) {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if err := h.Org.EnsureMember(r.Context(), sso.OrgID, uid, role); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.oauthLogin(w, r, uid, "/")

@@ -1,7 +1,11 @@
 package alert_test
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -174,5 +178,159 @@ func TestSpikeBelowThresholdSendsNothing(t *testing.T) {
 
 	if n != 0 {
 		t.Fatalf("outbox pending = %d, want 0 (below threshold)", n)
+	}
+}
+
+func TestSpikePublishesTickLiveness(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := alert.NewService(pool)
+	sp := &alert.Spike{Svc: svc, Interval: time.Hour}
+
+	if got := sp.LastTickUnix(); got != 0 {
+		t.Fatalf("LastTickUnix до первого тика = %d, want 0", got)
+	}
+
+	before := time.Now().Unix()
+	sp.Tick(context.Background())
+
+	if got := sp.LastTickUnix(); got < before {
+		t.Errorf("LastTickUnix = %d, want >= %d (момент завершения тика)", got, before)
+	}
+	if got := sp.LastTickSeconds(); got < 0 || got > 5 {
+		t.Errorf("LastTickSeconds = %v, want положительную длительность в разумных пределах", got)
+	}
+}
+
+// Без context.WithTimeout повисший SpikeRules держал бы цикл спайков
+// бесконечно вместо прерывания по бюджету (пол 10с).
+func TestSpikeTickBudgetAbortsHungTick(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := alert.NewService(pool)
+	sp := &alert.Spike{Svc: svc, Interval: time.Second}
+
+	lockConn, err := pool.Acquire(context.Background())
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer lockConn.Release()
+	tx, err := lockConn.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := tx.Exec(context.Background(), "LOCK TABLE alert_rules IN ACCESS EXCLUSIVE MODE"); err != nil {
+		t.Fatalf("lock alert_rules: %v", err)
+	}
+	defer tx.Rollback(context.Background())
+
+	started := time.Now()
+	done := make(chan struct{})
+	go func() {
+		sp.Tick(context.Background())
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("Tick не вернулся за 20s — SpikeRules не ограничен бюджетом")
+	}
+	if dur := time.Since(started); dur > 15*time.Second {
+		t.Errorf("Tick вернулся через %v, want ограничение бюджетом (пол 10с)", dur)
+	}
+	if got := sp.LastTickUnix(); got != 0 {
+		t.Errorf("LastTickUnix = %d после оборванного по бюджету тика, want 0", got)
+	}
+	if got := sp.LastTickSeconds(); got <= 0 {
+		t.Errorf("LastTickSeconds = %v, want положительную длительность даже у оборванного тика", got)
+	}
+}
+
+// Блокирует Issues.ByIDs внутри цикла, не SpikeRules (как в
+// TestSpikeTickBudgetAbortsHungTick) — иначе ctx.Err() перед вторым правилом остался бы непроверенным.
+func TestSpikeTickBudgetSkipsRemainingRules(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ch := testenv.MigratedCH(t)
+	svc := alert.NewService(pool)
+	issueSvc := issue.NewService(pool)
+	eventQuery := event.NewQuery(ch)
+	ctx := context.Background()
+
+	b := event.NewBatcher(ch)
+	go b.Run()
+	now := time.Now().UTC()
+
+	for i := 0; i < 2; i++ {
+		pid := newEvalProject(t, pool, fmt.Sprintf("spike-budget-%d", i))
+		if _, err := svc.UpsertRule(ctx, alert.Rule{
+			ProjectID: pid, Kind: alert.KindSpike, Enabled: true, Threshold: 3, WindowMinutes: 10, ThrottleMinutes: 30,
+		}); err != nil {
+			t.Fatalf("UpsertRule: %v", err)
+		}
+		res, err := issueSvc.Upsert(ctx, pid, "fp-spike-budget", "spiking issue", "app.x", "error", "", now)
+		if err != nil {
+			t.Fatalf("issue upsert: %v", err)
+		}
+		for j := 0; j < 4; j++ {
+			b.Add(event.Event{
+				ID:        uuid.NewString(),
+				ProjectID: pid,
+				IssueID:   res.IssueID,
+				Timestamp: now.Add(-time.Duration(j) * time.Minute),
+				Level:     "error",
+				Message:   "boom",
+			})
+		}
+	}
+	if err := b.Close(ctx); err != nil {
+		t.Fatalf("batcher close: %v", err)
+	}
+
+	lockConn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer lockConn.Release()
+	tx, err := lockConn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := tx.Exec(ctx, "LOCK TABLE issues IN ACCESS EXCLUSIVE MODE"); err != nil {
+		t.Fatalf("lock issues: %v", err)
+	}
+	defer tx.Rollback(ctx)
+
+	e := &alert.Evaluator{Svc: svc, Outbox: notify.NewOutbox(pool), BaseURL: "https://gotcha.example"}
+	sp := &alert.Spike{Svc: svc, Issues: issueSvc, Events: eventQuery, Evaluator: e, Interval: time.Second}
+
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	started := time.Now()
+	done := make(chan struct{})
+	go func() {
+		sp.Tick(context.Background())
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("Tick не вернулся за 20s — Issues.ByIDs не ограничен бюджетом")
+	}
+	if dur := time.Since(started); dur > 15*time.Second {
+		t.Errorf("Tick вернулся через %v, want ограничение бюджетом (пол 10с)", dur)
+	}
+
+	if got := sp.LastTickSkippedRules(); got != 1 {
+		t.Errorf("LastTickSkippedRules() = %d, want 1 (второе правило пропущено по бюджету)", got)
+	}
+	if got := sp.LastTickUnix(); got != 0 {
+		t.Errorf("LastTickUnix = %d после оборванного по бюджету тика, want 0", got)
+	}
+	logs := logBuf.String()
+	if !strings.Contains(logs, "tick budget exhausted, remaining rules skipped") {
+		t.Errorf("лог не содержит явного пропуска по бюджету: %s", logs)
 	}
 }

@@ -12,9 +12,19 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
+	"gitflic.ru/otezvikentiy/gotcha/internal/secretbox"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 )
+
+func mustNotifyKeyring(t *testing.T, raw string) secretbox.Keyring {
+	t.Helper()
+	ring, err := secretbox.NewKeyring(raw, "")
+	if err != nil {
+		t.Fatalf("NewKeyring(%q): %v", raw, err)
+	}
+	return ring
+}
 
 func TestOutboxNotifierNotifyNewEnqueuesPerChannel(t *testing.T) {
 	pool := testenv.MigratedPG(t)
@@ -304,6 +314,112 @@ func TestOutboxNotifierReleasesSlotWhenEnqueueFails(t *testing.T) {
 	}
 	if sent != 0 {
 		t.Fatalf("sent = %d, want 0: слот часового лимита сгорел на несостоявшемся алерте", sent)
+	}
+}
+
+// Предпроверка deliverable раньше не смотрела SecretBroken — сломанный канал
+// занимал часовой слот, хотя разослать было некому.
+func TestOutboxNotifierSkipsThrottleClaimWhenOnlyChannelHasBrokenSecret(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	keyed := alert.NewService(pool)
+	keyed.SetKeyring(mustNotifyKeyring(t, "a-strong-master-key-for-perf-alerts"))
+	psvc := trace.NewIssueService(pool)
+	ob := notify.NewOutbox(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pid := newPerfProject(t, pool, "secret-broken")
+	if _, err := keyed.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelTelegram, Enabled: true, Target: "-100500", Secret: "real-bot-token",
+	}); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	// Тот же пул, без мастер-ключа — секрет канала нечитаем, Channels() отдаёт
+	// его SecretBroken=true (см. TestChannelEncryptedSecretWithoutMasterKey).
+	noKey := alert.NewService(pool)
+
+	rec, err := psvc.Record(ctx, pid, nPlusOneFinding(), "trace-a")
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	n := &trace.OutboxNotifier{Alerts: noKey, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example"}
+	if err := n.NotifyNew(ctx, pid, rec.Issue); err != nil {
+		t.Fatalf("NotifyNew: %v", err)
+	}
+
+	jobs, err := ob.Claim(ctx, 10)
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("jobs = %+v, want 0 — секрет сломан, отправлять некому", jobs)
+	}
+
+	var sent int
+	if err := pool.QueryRow(ctx,
+		"SELECT coalesce(sum(sent), 0) FROM perf_alert_throttle WHERE project_id = $1", pid).Scan(&sent); err != nil {
+		t.Fatalf("perf_alert_throttle: %v", err)
+	}
+	if sent != 0 {
+		t.Fatalf("sent = %d, want 0 — часовой слот сгорел на канале, которому нечем было доставить", sent)
+	}
+}
+
+// window_start обеих сторон (клейм и релиз) обязан сверяться с часами БАЗЫ,
+// не процесса — граница окна должна классифицироваться одинаково.
+func TestOutboxNotifierThrottleWindowUsesDatabaseClock(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	asvc := alert.NewService(pool)
+	psvc := trace.NewIssueService(pool)
+	ob := notify.NewOutbox(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pid := newPerfProject(t, pool, "clock-window")
+	if _, err := asvc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	}); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	// Окно свежее (59 минут < часа) и потолок исчерпан — тик обязан троттлить,
+	// сверяясь с now() базы, а не со временем процесса на момент запроса.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO perf_alert_throttle (project_id, window_start, sent)
+		VALUES ($1, now() - interval '59 minutes', $2)`,
+		pid, trace.MaxPerfAlertsPerHour); err != nil {
+		t.Fatalf("seed fresh window: %v", err)
+	}
+
+	n := &trace.OutboxNotifier{Alerts: asvc, Outbox: ob, Pool: pool, BaseURL: "https://gotcha.example", Details: alert.NewDetailPolicy("", nil, true)}
+	rec, err := psvc.Record(ctx, pid, nPlusOneFinding(), "trace-fresh")
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if err := n.NotifyNew(ctx, pid, rec.Issue); err != nil {
+		t.Fatalf("NotifyNew (окно ещё не истекло): %v", err)
+	}
+	if jobs, err := ob.Claim(ctx, 10); err != nil || len(jobs) != 0 {
+		t.Fatalf("jobs = %+v err=%v, want 0 — потолок часа исчерпан", jobs, err)
+	}
+
+	// Окно истекло (61 минута > часа) — троттл обязан сброситься и пропустить алерт.
+	if _, err := pool.Exec(ctx, `
+		UPDATE perf_alert_throttle SET window_start = now() - interval '61 minutes'
+		WHERE project_id = $1`, pid); err != nil {
+		t.Fatalf("age window: %v", err)
+	}
+	rec2, err := psvc.Record(ctx, pid, nPlusOneFinding(), "trace-expired")
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if err := n.NotifyNew(ctx, pid, rec2.Issue); err != nil {
+		t.Fatalf("NotifyNew (окно истекло): %v", err)
+	}
+	if jobs, err := ob.Claim(ctx, 10); err != nil || len(jobs) != 1 {
+		t.Fatalf("jobs = %+v err=%v, want 1 — истёкшее окно обязано сброситься", jobs, err)
 	}
 }
 

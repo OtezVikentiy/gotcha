@@ -228,7 +228,7 @@ func BackLabelKey(rawPath string) string {
 			case "overview", "incident-feed":
 				return "nav.overview"
 			case "issues":
-				return "nav.errors"
+				return "nav.issues"
 			case "exports":
 				return "nav.exports"
 			case "performance":
@@ -331,7 +331,7 @@ func Subsections(s Shell) []NavItem {
 		// Находки детекторов живут рядом со списком ошибок — все три читают один
 		// поток проблем проекта, различаясь источником детекции.
 		items = []NavItem{
-			{LabelKey: "nav.errors", Href: "/projects/" + effID + "/issues"},
+			{LabelKey: "nav.issues", Href: "/projects/" + effID + "/issues"},
 			{LabelKey: "nav.perf_issues", Href: "/projects/" + effID + "/perf-issues"},
 			{LabelKey: "nav.regressions", Href: "/projects/" + effID + "/regressions"},
 		}

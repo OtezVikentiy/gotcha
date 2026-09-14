@@ -41,3 +41,24 @@ func TestRecordRetentionReportsDisagreement(t *testing.T) {
 		t.Errorf("изменение = %+v, want previous=90 current=14", other[0])
 	}
 }
+
+func TestLoadRetentionReflectsRecorded(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if _, err := db.RecordRetention(ctx, pool, map[string]int{"events": 45, "spans": 0}); err != nil {
+		t.Fatalf("RecordRetention: %v", err)
+	}
+
+	loaded, err := db.LoadRetention(ctx, pool)
+	if err != nil {
+		t.Fatalf("LoadRetention: %v", err)
+	}
+	if loaded["events"] != 45 {
+		t.Errorf("LoadRetention()[events] = %d, want 45", loaded["events"])
+	}
+	if loaded["spans"] != 0 {
+		t.Errorf("LoadRetention()[spans] = %d, want 0 (forever)", loaded["spans"])
+	}
+}

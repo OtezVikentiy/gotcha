@@ -136,10 +136,15 @@ func (n *MetricNotifier) dispatch(ctx context.Context, ev MetricEvent, channelID
 		})
 	}
 
+	kind := notify.KindMetricAlertResolved
+	if ev.Opened {
+		kind = notify.KindMetricAlertOpen
+	}
+
 	return escalation.Dispatch(ctx,
 		escalation.DispatchDeps{Outbox: n.Outbox, EmailEnabled: n.EmailEnabled, Projects: n.Projects, LogTag: "metric"},
 		escalation.DispatchInput{
-			ProjectID: ev.ProjectID, Kind: metricEventKind(ev), Subject: subject, Body: body,
+			ProjectID: ev.ProjectID, Kind: kind, Subject: subject, Body: body,
 			URL: url,
 			Extra: map[string]any{
 				"metric":        ev.MetricName,
@@ -151,13 +156,6 @@ func (n *MetricNotifier) dispatch(ctx context.Context, ev MetricEvent, channelID
 			},
 			ChannelIDs: channelIDs, Channels: dchans,
 		})
-}
-
-func metricEventKind(ev MetricEvent) string {
-	if ev.Opened {
-		return "metric_alert_open"
-	}
-	return "metric_alert_resolved"
 }
 
 func metricSubject(ctx context.Context, ev MetricEvent) string {

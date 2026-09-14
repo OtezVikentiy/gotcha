@@ -18,6 +18,10 @@ func statusPageDeletePath(statusPageID int64) string {
 	return statusPageIDPath(statusPageID) + "/delete"
 }
 
+func statusPageRotatePath(statusPageID int64) string {
+	return statusPageIDPath(statusPageID) + "/rotate"
+}
+
 // публичный адрес — непрозрачный public_id, не slug (slug резолвится только через 301).
 func statusPagePublicURL(baseURL, publicID string) string {
 	return baseURL + "/status/" + publicID
@@ -162,6 +166,12 @@ templ statusPageFormBlock(projectID int64, baseURL string, f StatusPageForm, can
 					<button type="submit" form={ statusPageFormID(f) } class="btn btn-primary">
 						{ i18n.T(ctx, "uptime.statuspages.submit_save") }
 					</button>
+					// перевыпуск адреса — публикационное решение, как включение страницы: только canManage.
+					if canManage {
+						<form method="post" action={ templ.URL(statusPageRotatePath(f.ID)) }>
+							<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "uptime.statuspages.action_rotate") }</button>
+						</form>
+					}
 					// удаление опубликованной страницы — только canManage (сервер иначе вернёт 403 оператору).
 					// черновик (не enabled) оператор удаляет свободно.
 					if canManage || !f.Enabled {

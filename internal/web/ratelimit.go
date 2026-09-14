@@ -1,7 +1,7 @@
 package web
 
 import (
-	"log/slog"
+	"container/list"
 	"net"
 	"net/http"
 	"strings"
@@ -19,6 +19,11 @@ type rateLimiter struct {
 	window time.Duration
 	now    func() time.Time
 	hits   map[string][]time.Time
+
+	// order/elems держат порядок вставки ключей в hits, синхронно с ней (Allow добавляет в обе,
+	// sweepExpired убирает из обеих) — вытеснение на потолке берёт front за O(1), без обхода hits.
+	order *list.List
+	elems map[string]*list.Element
 
 	// Жёсткий потолок числа ключей, свой для каждого инстанса: у per-IP публичного лимитера и
 	// per-account лимитера логина разная ожидаемая кардинальность.
@@ -41,6 +46,8 @@ func newRateLimiter(now func() time.Time, limit int, window time.Duration, maxKe
 		maxKeys: maxKeys,
 		name:    name,
 		hits:    make(map[string][]time.Time),
+		order:   list.New(),
+		elems:   make(map[string]*list.Element),
 	}
 }
 
@@ -59,19 +66,18 @@ func (rl *rateLimiter) Allow(key string) bool {
 		rl.lastSweep = now
 	}
 
-	if _, exists := rl.hits[key]; !exists && len(rl.hits) >= rl.maxKeys {
+	_, existed := rl.hits[key]
+	if !existed && len(rl.hits) >= rl.maxKeys {
 		// Троттлинг здесь — тот же lastSweep/window, что и у фонового пути: без него уборка на
 		// каждом запросе поверх потолка возвращает O(n) под мьютексом, усиливая атаку, а не гася её.
 		if now.Sub(rl.lastSweep) >= rl.window {
 			rl.sweepExpired(now)
 			rl.lastSweep = now
 		}
-		if _, exists := rl.hits[key]; !exists && len(rl.hits) >= rl.maxKeys {
-			// При заполненной карте отказываем невиденному ключу, а не снимаем защиту молча —
-			// состояние рассосётся со следующим окном.
-			slog.Warn("rate limiter at capacity, denying unseen key",
-				"limiter", rl.name, "keys", len(rl.hits), "max_keys", rl.maxKeys)
-			return false
+		if _, existed = rl.hits[key]; !existed && len(rl.hits) >= rl.maxKeys {
+			// Вытесняем самый старый ключ и принимаем новый — отказ здесь клал бы логин и
+			// статус-страницы всем, у кого ключ ещё не засветился.
+			rl.evictOldestLocked()
 		}
 	}
 
@@ -83,11 +89,31 @@ func (rl *rateLimiter) Allow(key string) bool {
 		}
 	}
 	if len(fresh) >= rl.limit {
-		rl.hits[key] = fresh
+		rl.setLocked(key, fresh, existed)
 		return false
 	}
-	rl.hits[key] = append(fresh, now)
+	rl.setLocked(key, append(fresh, now), existed)
 	return true
+}
+
+// Пишет hits и, для впервые увиденного ключа, заводит его в конец очереди вставки.
+func (rl *rateLimiter) setLocked(key string, times []time.Time, existed bool) {
+	rl.hits[key] = times
+	if !existed {
+		rl.elems[key] = rl.order.PushBack(key)
+	}
+}
+
+// Вызывающий обязан держать rl.mu — сама не блокирует. front — самый старый по вставке ключ.
+func (rl *rateLimiter) evictOldestLocked() {
+	front := rl.order.Front()
+	if front == nil {
+		return
+	}
+	key := front.Value.(string)
+	rl.order.Remove(front)
+	delete(rl.elems, key)
+	delete(rl.hits, key)
 }
 
 // Вызывается с удержанным rl.mu — сама не блокирует.
@@ -103,6 +129,10 @@ func (rl *rateLimiter) sweepExpired(now time.Time) {
 		}
 		if len(fresh) == 0 {
 			delete(rl.hits, key)
+			if elem, ok := rl.elems[key]; ok {
+				rl.order.Remove(elem)
+				delete(rl.elems, key)
+			}
 		} else {
 			rl.hits[key] = fresh
 		}

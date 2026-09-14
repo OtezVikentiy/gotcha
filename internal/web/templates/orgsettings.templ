@@ -139,6 +139,9 @@ type SSOSettings struct {
 	DefaultRole string
 	Enforced    bool
 	RedirectURI string
+	// тот же признак, что у gotcha_secret_key_insecure — client_secret лежит
+	// в PG открытым текстом, пока он true.
+	SecretKeyInsecure bool
 }
 
 type QuotaVM struct {
@@ -276,7 +279,12 @@ templ OrgSettings(o org.Org, members []org.Member, uid int64, quotas []QuotaVM, 
 templ subjectExportSection(orgID int64, purge SubjectPurgeVM) {
 	<div class="gdpr-block">
 		<h3>{ i18n.T(ctx, "org.gdpr.export.title") }</h3>
-		<form method="post" action={ templ.URL(orgSettingsExportSubjectPath(orgID)) } class="subject-export-form">
+		// data-l-* — шаблон подсказки об усечении для JS (export.js); без JS не читаются,
+		// сам факт и числа усечения при этом уже честно лежат в самом скачанном файле.
+		<form method="post" action={ templ.URL(orgSettingsExportSubjectPath(orgID)) } class="subject-export-form"
+			data-export-form
+			data-l-export-truncated={ i18n.T(ctx, "org.gdpr.export.truncated") }
+			data-l-export-truncated-row={ i18n.T(ctx, "org.gdpr.export.truncated_row") }>
 			<div class="field">
 				<label>
 					{ i18n.T(ctx, "org.gdpr.field.project") }
@@ -313,6 +321,7 @@ templ subjectExportSection(orgID int64, purge SubjectPurgeVM) {
 				<p class="hint hint--warn">{ i18n.T(ctx, purge.InertKey()) }</p>
 			}
 			<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "org.gdpr.export.submit") }</button>
+			<p class="hint hint--warn" data-export-truncated hidden></p>
 		</form>
 	</div>
 }
@@ -426,6 +435,9 @@ templ ssoSection(orgID int64, sso SSOSettings) {
 						<input type="password" name="client_secret" required class="input" autocomplete="new-password" data-1p-ignore="true" data-lpignore="true" data-bwignore="true"/>
 					}
 				</label>
+				if sso.SecretKeyInsecure {
+					<p class="warning">{ i18n.T(ctx, "secret.insecure_warning") }</p>
+				}
 			</div>
 			<div class="field">
 				<label>
@@ -476,6 +488,16 @@ templ InviteAccept(token, errMsg, userEmail string, inv org.InviteInfo) {
 			<h1>{ i18n.T(ctx, "org.invite_accept.title") }</h1>
 			if errMsg != "" {
 				<p class="error">{ errMsg }</p>
+				if userEmail == "" {
+					<p class="auth-switch">
+						<a href={ templ.URL(loginLinkWithNext(inviteAcceptPath(token))) }>{ i18n.T(ctx, "org.invite.sign_in") }</a> ·
+						<a href={ templ.URL(registerLinkWithNext(inviteAcceptPath(token))) }>{ i18n.T(ctx, "org.invite.create_account") }</a>
+					</p>
+				} else {
+					<form method="post" action="/logout" class="auth-switch">
+						<button type="submit" class="btn btn-ghost">{ i18n.T(ctx, "org.invite.switch_account") }</button>
+					</form>
+				}
 			} else {
 				<p>{ i18n.Tf(ctx, "org.invite.you_are_invited", "org", inv.OrgName) }</p>
 				<p>{ i18n.Tf(ctx, "org.invite.role", "role", i18n.T(ctx, memberRoleLabelKey(inv.Role))) }</p>

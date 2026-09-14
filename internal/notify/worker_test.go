@@ -188,7 +188,7 @@ func (f *flakyMarkSentOutbox) Claim(ctx context.Context, limit int) ([]notify.Jo
 	}}, nil
 }
 
-func (f *flakyMarkSentOutbox) MarkSent(ctx context.Context, jobID int64) error {
+func (f *flakyMarkSentOutbox) MarkSent(ctx context.Context, jobID int64, attempt int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.markSentCalls++
@@ -199,14 +199,14 @@ func (f *flakyMarkSentOutbox) MarkSent(ctx context.Context, jobID int64) error {
 	return nil
 }
 
-func (f *flakyMarkSentOutbox) MarkRetry(ctx context.Context, jobID int64, sendErr error, retryIn time.Duration) error {
+func (f *flakyMarkSentOutbox) MarkRetry(ctx context.Context, jobID int64, attempt int, sendErr error, retryIn time.Duration) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.retryCalls++
 	return nil
 }
 
-func (f *flakyMarkSentOutbox) MarkFailed(ctx context.Context, jobID int64, sendErr error) error {
+func (f *flakyMarkSentOutbox) MarkFailed(ctx context.Context, jobID int64, attempt int, sendErr error) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.failCalls++

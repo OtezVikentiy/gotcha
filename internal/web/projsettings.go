@@ -13,7 +13,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
-	"gitflic.ru/otezvikentiy/gotcha/internal/ingestsignal"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -101,10 +100,10 @@ func (h *Handler) projectOrgOr404(w http.ResponseWriter, r *http.Request, projec
 	orgID, err := h.Org.ProjectOrg(r.Context(), projectID)
 	if err != nil {
 		if errors.Is(err, org.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			h.renderError(w, r, http.StatusNotFound, "")
 			return 0, false
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return 0, false
 	}
 	return orgID, true
@@ -145,6 +144,26 @@ func keyBelongsToProject(keys []org.Key, keyID int64) bool {
 		}
 	}
 	return false
+}
+
+func findKey(keys []org.Key, keyID int64) (org.Key, bool) {
+	for _, k := range keys {
+		if k.ID == keyID {
+			return k, true
+		}
+	}
+	return org.Key{}, false
+}
+
+// то же усечение (голова 6 / хвост 4), что у keyDisplayID в списке ключей — иначе один
+// и тот же ключ выглядел бы на подтверждении и в списке по-разному.
+func maskKeyID(publicKey string) string {
+	const headRunes, tailRunes = 6, 4
+	r := []rune(publicKey)
+	if len(r) <= headRunes+tailRunes {
+		return publicKey
+	}
+	return string(r[:headRunes]) + "…" + string(r[len(r)-tailRunes:])
 }
 
 func lastLiveKeyOfKind(keys []org.Key, keyID int64) (org.KeyKind, bool) {
@@ -192,17 +211,17 @@ func (h *Handler) renderProjectSettings(w http.ResponseWriter, r *http.Request, 
 	// Отдельного метода get-по-id у org.Service нет — ищем проект в списке всех проектов организации.
 	projects, err := h.Org.ProjectsOf(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	project, ok := findProject(projects, projectID)
 	if !ok {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 		return
 	}
 	keys, err := h.Org.KeysForProject(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	views := make([]templates.ProjectKeyView, len(keys))
@@ -226,14 +245,6 @@ func (h *Handler) renderProjectSettings(w http.ResponseWriter, r *http.Request, 
 // пропасть из виду, если заглянули на следующий день.
 const deprecatedIngestPathWindow = 7 * 24 * time.Hour
 
-// Обратное соответствие ingest.deprecatedKinds: держим его здесь, а не в ingest, чтобы не
-// заводить обратную зависимость ingest → web ради одного потребителя.
-var deprecatedPathByKind = map[ingestsignal.Kind]ingest.DeprecatedPath{
-	ingestsignal.KindDeprecatedLogs:        ingest.DeprecatedLogs,
-	ingestsignal.KindDeprecatedPprof:       ingest.DeprecatedProfilePprof,
-	ingestsignal.KindDeprecatedDeployments: ingest.DeprecatedDeployments,
-}
-
 func (h *Handler) deprecatedPathsView(ctx context.Context, projectID int64) []templates.DeprecatedPathView {
 	if h.Signals == nil {
 		return nil
@@ -246,11 +257,11 @@ func (h *Handler) deprecatedPathsView(ctx context.Context, projectID int64) []te
 	cutoff := time.Now().Add(-deprecatedIngestPathWindow)
 	var out []templates.DeprecatedPathView
 	for _, sig := range signals {
-		path, ok := deprecatedPathByKind[sig.Kind]
+		path, ok := ingest.PathForDeprecatedKind(sig.Kind)
 		if !ok || sig.LastSeenAt.Before(cutoff) {
 			continue
 		}
-		// docs всегда найдётся: путь из deprecatedPathByKind всегда покрыт ingest.DocsPath.
+		// docs всегда найдётся: путь из PathForDeprecatedKind всегда покрыт ingest.DocsPath.
 		docs, _ := ingest.DocsPath(path)
 		out = append(out, templates.DeprecatedPathView{Path: string(path), LastSeenAt: sig.LastSeenAt, Hits: sig.Hits, Docs: docs})
 	}
@@ -315,7 +326,7 @@ func (h *Handler) projectSettingsKeyCreate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if _, err := h.Org.CreateKeys(r.Context(), projectID, kind); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
@@ -349,11 +360,11 @@ func (h *Handler) projectSettingsKeyRevoke(w http.ResponseWriter, r *http.Reques
 	}
 	keys, err := h.Org.KeysForProject(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !keyBelongsToProject(keys, keyID) {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 		return
 	}
 	// Двухшаговое подтверждение: CSP (default-src 'self', без unsafe-inline) не исполняет
@@ -361,11 +372,14 @@ func (h *Handler) projectSettingsKeyRevoke(w http.ResponseWriter, r *http.Reques
 	if r.FormValue("confirmed") != "yes" {
 		// Отзыв последнего живого ключа своего типа останавливает приём целого класса
 		// телеметрии — предупреждение должно называть это, а не просто спрашивать подтверждение.
+		revokedKey, _ := findKey(keys, keyID) // keyBelongsToProject выше уже подтвердила, что ключ найдётся
 		msgKey := "confirm.key_revoke.message"
-		var kv []string
-		if kind, last := lastLiveKeyOfKind(keys, keyID); last {
+		kv := []string{
+			"kind", i18n.T(r.Context(), templates.KeyKindLabelKey(revokedKey)),
+			"id", maskKeyID(revokedKey.PublicKey),
+		}
+		if _, last := lastLiveKeyOfKind(keys, keyID); last {
 			msgKey = "confirm.key_revoke.last_of_kind.message"
-			kv = []string{"kind", i18n.T(r.Context(), "project.settings.keys.kind."+string(kind))}
 		}
 		h.renderConfirmf(w, r, "confirm.title", msgKey, "project.settings.keys.revoke",
 			projectSettingsPath(projectID), projectSettingsKeysRevokePath(projectID),
@@ -373,7 +387,7 @@ func (h *Handler) projectSettingsKeyRevoke(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := h.Org.RevokeKey(r.Context(), keyID); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
@@ -443,11 +457,11 @@ func (h *Handler) projectSettingsPerformance(w http.ResponseWriter, r *http.Requ
 		HTTPFloodMin:       httpFloodMin,
 	})
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if err := h.Org.UpdatePerfSettings(r.Context(), projectID, sampleRate, int32(apdexMS), string(cfgJSON)); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
@@ -559,11 +573,11 @@ func (h *Handler) projectSettingsRegressions(w http.ResponseWriter, r *http.Requ
 		SeasonalWeeks:   seasonalWeeks,
 	})
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if err := h.Org.UpdateRegressionConfig(r.Context(), projectID, string(cfgJSON)); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, projectSettingsPath(projectID), http.StatusSeeOther)
@@ -597,10 +611,10 @@ func (h *Handler) projectSettingsDelete(w http.ResponseWriter, r *http.Request) 
 		p, err := h.Org.GetProject(r.Context(), projectID)
 		if err != nil {
 			if errors.Is(err, org.ErrNotFound) {
-				h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+				h.renderError(w, r, http.StatusNotFound, "")
 				return
 			}
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		h.renderConfirmf(w, r, "confirm.title", "confirm.project_delete.message", "project.settings.danger.delete_submit",
@@ -610,10 +624,10 @@ func (h *Handler) projectSettingsDelete(w http.ResponseWriter, r *http.Request) 
 	}
 	if err := h.Org.DeleteProject(r.Context(), projectID); err != nil {
 		if errors.Is(err, org.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			h.renderError(w, r, http.StatusNotFound, "")
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOK(w, "flash.project_delete_queued", 0)

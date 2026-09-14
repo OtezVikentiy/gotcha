@@ -154,6 +154,40 @@ func (s *Service) UpdateStatusPage(ctx context.Context, sp StatusPage, monitors 
 	return nil
 }
 
+// Единственный способ отозвать утёкший публичный адрес без потери страницы как сущности
+// (мониторов, истории, заголовка) — иначе owner мог только снять публикацию или удалить страницу.
+func (s *Service) RotateStatusPagePublicID(ctx context.Context, id int64) (string, error) {
+	const maxPublicIDAttempts = 3
+	var err error
+	for attempt := 1; attempt <= maxPublicIDAttempts; attempt++ {
+		var publicID string
+		publicID, err = s.rotateStatusPagePublicIDAttempt(ctx, id)
+		if err == nil {
+			return publicID, nil
+		}
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.ConstraintName != statusPagePublicIDConstraint {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("uptime: rotate status page public id: collision after %d attempts: %w", maxPublicIDAttempts, err)
+}
+
+func (s *Service) rotateStatusPagePublicIDAttempt(ctx context.Context, id int64) (string, error) {
+	publicID, err := newStatusPagePublicID()
+	if err != nil {
+		return "", err
+	}
+	tag, err := s.pool.Exec(ctx, "UPDATE status_pages SET public_id = $2 WHERE id = $1", id, publicID)
+	if err != nil {
+		return "", fmt.Errorf("uptime: rotate status page public id: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return "", ErrNotFound
+	}
+	return publicID, nil
+}
+
 func (s *Service) DeleteStatusPage(ctx context.Context, id int64) error {
 	tag, err := s.pool.Exec(ctx, "DELETE FROM status_pages WHERE id = $1", id)
 	if err != nil {

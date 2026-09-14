@@ -54,13 +54,13 @@ func (h *Handler) escalationsPage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) renderEscalations(w http.ResponseWriter, r *http.Request, status int, projectID int64, canManage bool, failedSeverity, errMsg string) {
 	ladders, err := h.EscalationPolicy.Ladders(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// channelsForView маскирует Target/зануляет Secret для не-admin до попадания в шаблон.
 	channels, err := h.channelsForView(r.Context(), projectID, canManage)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -182,7 +182,7 @@ func (h *Handler) escalationsSave(w http.ResponseWriter, r *http.Request) {
 	// канал B, и уведомления A ушли бы получателю B.
 	channels, err := h.channelsForView(r.Context(), projectID, authz.CanManage)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	valid := make(map[int64]bool, len(channels))

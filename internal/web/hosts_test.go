@@ -345,7 +345,7 @@ func renderHostsListOnboarding(t *testing.T, installCmd, config, agentReason str
 	t.Helper()
 	ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	var sb strings.Builder
-	if err := templates.HostsList(1, nil, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, installCmd, config, agentReason, "", false).Render(ctx, &sb); err != nil {
+	if err := templates.HostsList(1, nil, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, installCmd, config, agentReason, "", false, true).Render(ctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	return sb.String()
@@ -434,6 +434,9 @@ func TestHostsOnboardingAgentInsecure(t *testing.T) {
 	if !strings.Contains(html, "otlphttp") {
 		t.Errorf("коллектор-альтернатива должна остаться заполненной: %s", html)
 	}
+	if !strings.Contains(html, "открытым текстом") {
+		t.Errorf("подсказка должна называть следствие: ключ коллектора уйдёт открытым текстом: %s", html)
+	}
 }
 
 func TestHostsListFiltersRendersChipsAndRows(t *testing.T) {
@@ -445,7 +448,7 @@ func TestHostsListFiltersRendersChipsAndRows(t *testing.T) {
 	facets := templates.NewHostsFacets(rctx, 1, filter, []string{"prod", "staging"}, []string{"web", "db"})
 
 	var sb strings.Builder
-	if err := templates.HostsList(1, rows, false, hostsListLimit, filter, facets, nil, "", "", "", "", false).Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, rows, false, hostsListLimit, filter, facets, nil, "", "", "", "", false, true).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()
@@ -453,7 +456,7 @@ func TestHostsListFiltersRendersChipsAndRows(t *testing.T) {
 	if !strings.Contains(html, `class="chip is-active"`) {
 		t.Errorf("нет активного чипа фасета: %s", html)
 	}
-	if !strings.Contains(html, "href=\"/projects/1/hosts?env=prod&amp;role=web\"") {
+	if !strings.Contains(html, "href=\"/projects/1/hosts?environment=prod&amp;role=web\"") {
 		t.Errorf("нет ссылки-тоггла на значение фасета role=web: %s", html)
 	}
 	wantNoneLabel := i18n.T(rctx, "hosts.label.none")
@@ -491,7 +494,7 @@ func TestHostNewBadgeBoundary(t *testing.T) {
 		{Name: "web-3", StatusKind: "ok", IsNew: now.Sub(now.Add(-24*time.Hour)) < hostNewWindow},
 	}
 	var sb strings.Builder
-	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", "", "", "", false).Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", "", "", "", false, true).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()
@@ -515,7 +518,7 @@ func TestHostsListFilterEmptyShowsResetNotOnboarding(t *testing.T) {
 	facets := templates.NewHostsFacets(rctx, 1, filter, []string{"prod"}, []string{"web"})
 
 	var sb strings.Builder
-	if err := templates.HostsList(1, nil, false, hostsListLimit, filter, facets, nil, "", "", "", "", false).Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, nil, false, hostsListLimit, filter, facets, nil, "", "", "", "", false, true).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()
@@ -576,7 +579,7 @@ func TestHostsListGroupRendersSections(t *testing.T) {
 	sections := groupHostRows(rctx, rows, "env")
 
 	var sb strings.Builder
-	if err := templates.HostsList(1, rows, false, hostsListLimit, filter, facets, sections, "", "", "", "", false).Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, rows, false, hostsListLimit, filter, facets, sections, "", "", "", "", false, true).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()
@@ -611,7 +614,7 @@ func renderHostSettingsPage(t *testing.T, installCmd, config, agentReason string
 	t.Helper()
 	rctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	var sb strings.Builder
-	if err := templates.HostSettings(1, host.DefaultSettings(), installCmd, config, agentReason, nil, "", templates.HostGroupThresholdsVM{}, "").Render(rctx, &sb); err != nil {
+	if err := templates.HostSettings(1, host.DefaultSettings(), installCmd, config, agentReason, nil, "", templates.HostGroupThresholdsVM{}, "", true).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	return sb.String()
@@ -625,7 +628,7 @@ func TestHostsTableStatusKinds(t *testing.T) {
 		{Name: "o-1", StatusKind: "ok"},
 	}
 	var sb strings.Builder
-	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", "", "", "", false).Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", "", "", "", false, true).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()
@@ -655,7 +658,7 @@ func TestHostsTableMetricsValues(t *testing.T) {
 		{Name: "web-1", StatusKind: "ok", CPU: &cpu, Mem: &mem, Disk: &disk, LoadPerCore: &load},
 	}
 	var sb strings.Builder
-	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", "", "", "", false).Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", "", "", "", false, true).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()
@@ -673,7 +676,7 @@ func TestHostsFilterBarNewOnlyAndGroupRole(t *testing.T) {
 	facets := templates.NewHostsFacets(rctx, 1, filter, []string{"prod"}, []string{"web"})
 
 	var sb strings.Builder
-	if err := templates.HostsList(1, rows, false, hostsListLimit, filter, facets, nil, "", "", "", "", false).Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, rows, false, hostsListLimit, filter, facets, nil, "", "", "", "", false, true).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()
@@ -695,7 +698,7 @@ func TestHostsListCollectorConfigDetailsInstallCmd(t *testing.T) {
 	config := collectorConfig("https://g.example", "pk_x")
 
 	var sb strings.Builder
-	if err := templates.HostsList(1, rows, true, 1, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, installCmd, config, "", "", false).Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, rows, true, 1, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, installCmd, config, "", "", false, true).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()
@@ -718,7 +721,7 @@ func TestHostsListCollectorConfigDetailsDist(t *testing.T) {
 	config := collectorConfig("https://g.example", "pk_x")
 
 	var sb strings.Builder
-	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", config, "dist", "", false).Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", config, "dist", "", false, true).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()
@@ -734,7 +737,7 @@ func TestHostsListCollectorConfigDetailsInsecure(t *testing.T) {
 	config := collectorConfig("http://gotcha.example", "pk_x")
 
 	var sb strings.Builder
-	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", config, "insecure", "", false).Render(rctx, &sb); err != nil {
+	if err := templates.HostsList(1, rows, false, hostsListLimit, templates.HostsFilterVM{}, templates.HostsFacets{}, nil, "", config, "insecure", "", false, true).Render(rctx, &sb); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := sb.String()

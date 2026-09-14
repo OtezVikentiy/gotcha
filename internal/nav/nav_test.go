@@ -63,7 +63,7 @@ func TestBackLabelKey(t *testing.T) {
 		{"/projects/7/overview", "nav.overview"},
 		{"/projects/7/overview?range=7d", "nav.overview"},
 		{"/projects/7/incident-feed", "nav.overview"},
-		{"/projects/7/issues?status=resolved", "nav.errors"},
+		{"/projects/7/issues?status=resolved", "nav.issues"},
 		{"/projects/7/exports", "nav.exports"},
 		{"/issues/9", "nav.issues"},
 		{"/projects/7/web-vitals", "nav.webvitals"},
@@ -627,7 +627,7 @@ func TestSubsectionsTargetLayout(t *testing.T) {
 		want []string // пары "ключ_группы|ключ_пункта"
 	}{
 		{"проблемы: участник", base, "issues", []string{
-			"|nav.errors", "|nav.perf_issues", "|nav.regressions",
+			"|nav.issues", "|nav.perf_issues", "|nav.regressions",
 		}},
 		{"аптайм: инциденты переименованы", base, "uptime", []string{
 			"|nav.monitors", "|nav.incidents",

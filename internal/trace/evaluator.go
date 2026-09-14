@@ -148,7 +148,10 @@ func (e *Evaluator) tick(ctx context.Context) {
 	for _, p := range projects {
 		cfg, err := RegressionConfigFromJSON(p.raw)
 		if err != nil {
-			slog.Error("trace: evaluator: parse config failed, using defaults", "project_id", p.id, "error", err)
+			// Дефолт Enabled=true не годится: порча jsonb вернула бы пейджинг
+			// проекту, явно ВЫКЛЮЧИВШЕМУ детектор. Пропускаем тик, не включаем.
+			slog.Error("trace: evaluator: parse config failed, skipping project this tick", "project_id", p.id, "error", err)
+			continue
 		}
 		if !cfg.Enabled {
 			continue
@@ -200,27 +203,49 @@ func (e *Evaluator) evalProject(ctx context.Context, projectID int64, cfg Regres
 	if err != nil {
 		slog.Error("trace: evaluator: top endpoints failed", "project_id", projectID, "error", err)
 	}
-	if len(endpoints) > 0 {
-		recents, err := e.Query.RecentEndpointP95s(ctx, projectID, endpoints, recentFrom, now)
+	// Цель с уже открытой регрессией держим в оценке, даже выпав из top-K —
+	// иначе снятый/переименованный/вытесненный трафиком target не закрылся бы.
+	evalEndpoints := endpoints
+	haveEndpoint := make(map[string]bool, len(endpoints))
+	for _, t := range endpoints {
+		haveEndpoint[t] = true
+	}
+	for key := range openRegs {
+		if key.Metric != metricDuration || haveEndpoint[key.Target] {
+			continue
+		}
+		haveEndpoint[key.Target] = true
+		evalEndpoints = append(evalEndpoints, key.Target)
+	}
+	if len(evalEndpoints) > 0 {
+		recents, err := e.Query.RecentEndpointP95s(ctx, projectID, evalEndpoints, recentFrom, now)
 		if err != nil {
 			slog.Error("trace: evaluator: recent endpoint p95s failed", "project_id", projectID, "error", err)
 			recents = nil
 		}
+		// Скользящий base не должен расти поверх уже открытого инцидента — иначе
+		// устойчивая (многодневная) регрессия рассасывается в собственной базе.
+		rollingCutoff := recentFrom
+		for _, target := range evalEndpoints {
+			if r, ok := openRegs[RegressionKey{Target: target, Metric: metricDuration}]; ok && r.StartedAt.Before(rollingCutoff) {
+				rollingCutoff = r.StartedAt
+			}
+		}
 		var bases map[string]RegressionSample
 		if cfg.SeasonalEnabled {
 			// Сезонный base: то же окно того же дня недели за прошлые недели.
-			bases, err = e.Query.SeasonalBaselineEndpointP95s(ctx, projectID, endpoints, cfg.WindowMinutes, cfg.SeasonalWeeks, now)
+			bases, err = e.Query.SeasonalBaselineEndpointP95s(ctx, projectID, evalEndpoints, cfg.WindowMinutes, cfg.SeasonalWeeks, now)
 			if err == nil {
 				// Цели с недобором сезонной истории добираем скользящим base — иначе новая
 				// цель без прошлых недель молчала бы.
 				var undershoot []string
-				for _, tx := range endpoints {
+				for _, tx := range evalEndpoints {
 					if bases[tx].Samples < cfg.MinSamples {
 						undershoot = append(undershoot, tx)
 					}
 				}
 				if len(undershoot) > 0 {
-					rolling, rerr := e.Query.BaselineEndpointP95s(ctx, projectID, undershoot, baselineDays, now)
+					rolling, rerr := e.Query.BaselineEndpointP95s(ctx, projectID, undershoot, baselineDays, rollingCutoff)
 					if rerr != nil {
 						// Добор не удался — оставляем сезонные (недобранные)
 						// значения: мало сэмплов → Decide вернёт None, не паника.
@@ -233,19 +258,24 @@ func (e *Evaluator) evalProject(ctx context.Context, projectID int64, cfg Regres
 				}
 			}
 		} else {
-			bases, err = e.Query.BaselineEndpointP95s(ctx, projectID, endpoints, baselineDays, now)
+			bases, err = e.Query.BaselineEndpointP95s(ctx, projectID, evalEndpoints, baselineDays, rollingCutoff)
 		}
 		if err != nil {
 			slog.Error("trace: evaluator: baseline endpoint p95s failed", "project_id", projectID, "error", err)
 			bases = nil
 		}
 		if recents != nil && bases != nil {
-			for _, target := range endpoints {
+			for _, target := range evalEndpoints {
+				open, hasOpen := openRegs[RegressionKey{Target: target, Metric: metricDuration}]
 				recent, ok := recents[target]
 				if !ok {
+					// Ни одной записи в окне: цель реально пропала, не просто вытеснена
+					// (ту вернул бы evalEndpoints). current не пересчитываем — данных нет.
+					if hasOpen {
+						e.closeRegression(ctx, open, open.CurrentValue)
+					}
 					continue
 				}
-				open, hasOpen := openRegs[RegressionKey{Target: target, Metric: metricDuration}]
 				e.evalTarget(ctx, projectID, "endpoint_p95", target, metricDuration, bases[target], recent, cfg, now, open, hasOpen)
 			}
 		}
@@ -255,23 +285,49 @@ func (e *Evaluator) evalProject(ctx context.Context, projectID int64, cfg Regres
 	if err != nil {
 		slog.Error("trace: evaluator: top vital pages failed", "project_id", projectID, "error", err)
 	}
-	if len(pages) == 0 {
+	// Та же защита от вечно висящего инцидента, что у endpoint_p95 выше.
+	evalPages := pages
+	havePage := make(map[string]bool, len(pages))
+	for _, t := range pages {
+		havePage[t] = true
+	}
+	isVitalMetric := make(map[string]bool, len(evaluatorVitalMetrics))
+	for _, m := range evaluatorVitalMetrics {
+		isVitalMetric[m] = true
+	}
+	for key := range openRegs {
+		if !isVitalMetric[key.Metric] || havePage[key.Target] {
+			continue
+		}
+		havePage[key.Target] = true
+		evalPages = append(evalPages, key.Target)
+	}
+	if len(evalPages) == 0 {
 		return
 	}
-	vitalRecents, err := e.Query.RecentVitalP75s(ctx, projectID, pages, evaluatorVitalMetrics, recentFrom, now)
+	vitalRecents, err := e.Query.RecentVitalP75s(ctx, projectID, evalPages, evaluatorVitalMetrics, recentFrom, now)
 	if err != nil {
 		slog.Error("trace: evaluator: recent vital p75s failed", "project_id", projectID, "error", err)
 		return
 	}
+	// см. rollingCutoff у endpoint_p95 выше.
+	vitalRollingCutoff := recentFrom
+	for _, target := range evalPages {
+		for _, m := range evaluatorVitalMetrics {
+			if r, ok := openRegs[RegressionKey{Target: target, Metric: m}]; ok && r.StartedAt.Before(vitalRollingCutoff) {
+				vitalRollingCutoff = r.StartedAt
+			}
+		}
+	}
 	var vitalBases map[VitalKey]RegressionSample
 	if cfg.SeasonalEnabled {
-		vitalBases, err = e.Query.SeasonalBaselineVitalP75s(ctx, projectID, pages, evaluatorVitalMetrics, cfg.WindowMinutes, cfg.SeasonalWeeks, now)
+		vitalBases, err = e.Query.SeasonalBaselineVitalP75s(ctx, projectID, evalPages, evaluatorVitalMetrics, cfg.WindowMinutes, cfg.SeasonalWeeks, now)
 		if err == nil {
 			// BaselineVitalP75s декартова (страница×метрика), подмножество пар одним запросом
 			// не добрать — собираем страницы целиком и переопределяем лишь недобравшие ключи.
 			var undershootPages []string
 			seen := make(map[string]bool)
-			for _, page := range pages {
+			for _, page := range evalPages {
 				for _, m := range evaluatorVitalMetrics {
 					if vitalBases[VitalKey{Transaction: page, Metric: m}].Samples < cfg.MinSamples {
 						if !seen[page] {
@@ -283,7 +339,7 @@ func (e *Evaluator) evalProject(ctx context.Context, projectID int64, cfg Regres
 				}
 			}
 			if len(undershootPages) > 0 {
-				rolling, rerr := e.Query.BaselineVitalP75s(ctx, projectID, undershootPages, evaluatorVitalMetrics, baselineDays, now)
+				rolling, rerr := e.Query.BaselineVitalP75s(ctx, projectID, undershootPages, evaluatorVitalMetrics, baselineDays, vitalRollingCutoff)
 				if rerr != nil {
 					slog.Error("trace: evaluator: rolling fallback vital p75s failed", "project_id", projectID, "error", rerr)
 				} else {
@@ -299,20 +355,23 @@ func (e *Evaluator) evalProject(ctx context.Context, projectID int64, cfg Regres
 			}
 		}
 	} else {
-		vitalBases, err = e.Query.BaselineVitalP75s(ctx, projectID, pages, evaluatorVitalMetrics, baselineDays, now)
+		vitalBases, err = e.Query.BaselineVitalP75s(ctx, projectID, evalPages, evaluatorVitalMetrics, baselineDays, vitalRollingCutoff)
 	}
 	if err != nil {
 		slog.Error("trace: evaluator: baseline vital p75s failed", "project_id", projectID, "error", err)
 		return
 	}
-	for _, target := range pages {
+	for _, target := range evalPages {
 		for _, metric := range evaluatorVitalMetrics {
 			key := VitalKey{Transaction: target, Metric: metric}
+			open, hasOpen := openRegs[RegressionKey{Target: target, Metric: metric}]
 			recent, ok := vitalRecents[key]
 			if !ok {
+				if hasOpen {
+					e.closeRegression(ctx, open, open.CurrentValue)
+				}
 				continue
 			}
-			open, hasOpen := openRegs[RegressionKey{Target: target, Metric: metric}]
 			e.evalTarget(ctx, projectID, "webvital_p75", target, metric, vitalBases[key], recent, cfg, now, open, hasOpen)
 		}
 	}
@@ -342,14 +401,7 @@ func (e *Evaluator) evalTarget(ctx context.Context, projectID int64, targetKind,
 		}
 
 	case DecisionResolve:
-		closed, err := e.Regressions.Resolve(ctx, open.ID, recent.Value)
-		if err != nil {
-			slog.Error("trace: evaluator: resolve regression failed", "id", open.ID, "error", err)
-			return
-		}
-		if closed {
-			e.notifyClose(ctx, open)
-		}
+		e.closeRegression(ctx, open, recent.Value)
 
 	case DecisionNone:
 		// Порог пробит, но не восстановился до recovery — освежаем current/peak.
@@ -382,6 +434,17 @@ func (e *Evaluator) notifyOpen(ctx context.Context, projectID int64, rec Regress
 		if err := e.Regressions.MarkNotified(ctx, rec.ID, true); err != nil {
 			slog.Error("trace: evaluator: mark notified open failed", "id", rec.ID, "error", err)
 		}
+	}
+}
+
+func (e *Evaluator) closeRegression(ctx context.Context, open Regression, current float64) {
+	closed, err := e.Regressions.Resolve(ctx, open.ID, current)
+	if err != nil {
+		slog.Error("trace: evaluator: resolve regression failed", "id", open.ID, "error", err)
+		return
+	}
+	if closed {
+		e.notifyClose(ctx, open)
 	}
 }
 

@@ -25,6 +25,7 @@ func TestSendClassification(t *testing.T) {
 	}{
 		{"успех", 200, "", SendOK, 0, ""},
 		{"5xx — ретрай", 502, "", SendRetry, 0, "502"},
+		{"backpressure собственного сервера", 503, "5", SendRetry, 5 * time.Second, "503"},
 		{"rate-limit", 429, "1", SendRetry, time.Second, "429"},
 		{"месячная квота", 429, "2592000", SendRetry, time.Hour, "429"}, // кап 1ч
 		{"отозванный ключ", 401, "", SendDrop, 0, "401"},

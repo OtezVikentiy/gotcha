@@ -152,6 +152,20 @@ func (s *Service) ClaimSuppressed(ctx context.Context, limit int) ([]SuppressedB
 	return out, rows.Err()
 }
 
+// Прибавляет, не перезаписывает: между claim и восстановлением могли
+// накопиться новые подавления. Нет строки (проект удалён) — не ошибка.
+func (s *Service) RestoreSuppressed(ctx context.Context, projectID int64, count int) error {
+	if count <= 0 {
+		return nil
+	}
+	if _, err := s.pool.Exec(ctx,
+		"UPDATE alert_project_budget SET suppressed = suppressed + $2 WHERE project_id = $1",
+		projectID, count); err != nil {
+		return fmt.Errorf("alert: restore suppressed: %w", err)
+	}
+	return nil
+}
+
 // Для тестов и диагностики.
 func (s *Service) budgetOf(ctx context.Context, projectID int64) (sent, suppressed int, err error) {
 	err = s.pool.QueryRow(ctx,

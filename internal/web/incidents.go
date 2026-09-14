@@ -5,7 +5,6 @@ import (
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
-	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
 
@@ -32,7 +31,7 @@ func (h *Handler) incidentsList(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -44,7 +43,7 @@ func (h *Handler) incidentsList(w http.ResponseWriter, r *http.Request) {
 	// к проекту, отказ не должен ронять страницу 404.
 	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -54,14 +53,14 @@ func (h *Handler) incidentsList(w http.ResponseWriter, r *http.Request) {
 	}
 	incidents, total, err := h.Uptime.IncidentsPaged(r.Context(), projectID, incidentsPerPage, (page-1)*incidentsPerPage)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
 	// Инцидент хранит только monitor_id — имя достаём из List проекта, не Get на каждый.
 	monitors, err := h.Uptime.List(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	names := make(map[int64]string, len(monitors))
@@ -77,7 +76,7 @@ func (h *Handler) incidentsList(w http.ResponseWriter, r *http.Request) {
 	}
 	ackedBy, err := h.ackedByEmails(r.Context(), ackedByIDs)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 

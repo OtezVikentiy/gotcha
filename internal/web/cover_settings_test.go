@@ -53,6 +53,13 @@ func TestCoverOrgSettingsInvalidPathAndForm(t *testing.T) {
 		t.Fatalf("POST remove (bad user_id) status = %d, want 400", resp.StatusCode)
 	}
 
+	resp = postForm(t, s.srv, base+"/remove", url.Values{"user_id": {strconv.FormatInt(adminID, 10)}}, s.srv.URL, ownerCookie)
+	removeBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(removeBody), "cover-org-admin@example.com") {
+		t.Fatalf("подтверждение исключения участника не называет email: status=%d, %s", resp.StatusCode, removeBody)
+	}
+
 	resp = postForm(t, s.srv, base+"/sso", url.Values{"issuer": {"x"}}, "", ownerCookie)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -88,6 +95,13 @@ func TestCoverOrgSettingsInvalidPathAndForm(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("POST sso/delete (non-instance-admin) status = %d, want 403", resp.StatusCode)
+	}
+
+	resp = postForm(t, s.srv, base+"/sso/delete", url.Values{}, s.srv.URL, ownerCookie)
+	ssoConfirmBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(ssoConfirmBody), "Cover Org") {
+		t.Fatalf("подтверждение удаления SSO не называет организацию: status=%d, %s", resp.StatusCode, ssoConfirmBody)
 	}
 
 	resp = postForm(t, s.srv, base+"/sso/delete", url.Values{"confirmed": {"yes"}}, s.srv.URL, ownerCookie)
@@ -138,10 +152,25 @@ func TestCoverOrgSettingsLeave(t *testing.T) {
 	}
 
 	resp = postForm(t, s.srv, leavePath, url.Values{}, s.srv.URL, memberCookie)
-	io.Copy(io.Discard, resp.Body)
+	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST leave (unconfirmed) status = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "Leave Co") {
+		t.Fatalf("подтверждение выхода из организации не называет её: %s", body)
+	}
+
+	// Посторонний не должен получить название организации даже на неподтверждённом
+	// запросе — иначе подстановкой чужого orgID можно было бы узнавать чужие имена.
+	resp = postForm(t, s.srv, leavePath, url.Values{}, s.srv.URL, strangerCookie)
+	strangerBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST leave (stranger, unconfirmed) status = %d, want 404", resp.StatusCode)
+	}
+	if strings.Contains(string(strangerBody), "Leave Co") {
+		t.Fatalf("подтверждение выхода утекло постороннему название организации: %s", strangerBody)
 	}
 
 	resp = postForm(t, s.srv, leavePath, url.Values{"confirmed": {"yes"}}, s.srv.URL, strangerCookie)
@@ -188,10 +217,46 @@ func TestCoverQuotaBannerNearLimit(t *testing.T) {
 		}
 	}
 	resp := getWithCookie(t, s.srv, "/orgs/"+strconv.FormatInt(o.ID, 10)+"/settings", ownerCookie)
-	io.Copy(io.Discard, resp.Body)
+	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET settings (near limit) status = %d, want 200", resp.StatusCode)
+	}
+	html := string(body)
+	if !containsAll(html, "События", "9", "10") {
+		t.Fatalf("баннер приближения к лимиту не показывает вид/использование для событий: %s", html)
+	}
+}
+
+// Раньше баннер приближения к лимиту проверял только квоту событий — транзакции,
+// метрики, профили и логи отбрасывались молча, без единого предупреждения.
+func TestCoverQuotaBannerNearLimitOtherKind(t *testing.T) {
+	s := newStack(t)
+	authSvc := auth.NewService(s.pool)
+	orgSvc := org.NewService(s.pool, 1_000_000)
+
+	ownerID, ownerCookie := orgSettingsRegister(t, authSvc, "banner-tx-owner@example.com")
+	o, err := orgSvc.CreateOrg(context.Background(), "banner-tx-co", "Banner Tx Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if err := orgSvc.SetTransactionQuota(context.Background(), o.ID, 10); err != nil {
+		t.Fatalf("set transaction quota: %v", err)
+	}
+	for i := 0; i < 9; i++ {
+		if _, err := orgSvc.IncTransactionUsage(context.Background(), o.ID, time.Now()); err != nil {
+			t.Fatalf("inc transaction usage: %v", err)
+		}
+	}
+	resp := getWithCookie(t, s.srv, "/orgs/"+strconv.FormatInt(o.ID, 10)+"/settings", ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET settings (tx near limit) status = %d, want 200", resp.StatusCode)
+	}
+	html := string(body)
+	if !containsAll(html, "Транзакции", "9", "10") {
+		t.Fatalf("баннер приближения к лимиту не сработал для транзакций: %s", html)
 	}
 }
 

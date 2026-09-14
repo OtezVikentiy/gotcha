@@ -35,7 +35,7 @@ gzip -c cpu.pprof | curl -X POST \
   --data-binary @-
 ```
 
-A successful submission returns `202 Accepted`. If profiling is disabled on the instance, the write is silently skipped but the response is still `202`. If the organization's profile quota is exhausted, ingestion returns `429`.
+A successful submission returns `202 Accepted`. If profiling is disabled on the instance, the write is silently skipped but the response is still `202`. If the organization's profile quota is exhausted, ingestion returns `429`. Separately from the quota, an overloaded ClickHouse write buffer makes ingest return `503` with a `Retry-After` header — the body isn't accepted at all, and retrying doesn't create duplicates (see [Monitoring gotcha itself](/docs/self-monitoring) — the `overloaded` reason); this kind of rejection doesn't charge the quota either — the overload check runs before it's deducted, so retrying is safe on that front too.
 
 > **Migrating from `/profiles/pprof`.** The pprof intake used to live at the
 > root, at `POST /profiles/pprof`. That path still works and behaves

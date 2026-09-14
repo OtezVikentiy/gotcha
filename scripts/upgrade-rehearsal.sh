@@ -87,10 +87,20 @@ cmd_compare() {
   grep -v -P '^pg\t(schema|compat)\t' "$a" > "$fa" || true
   grep -v -P '^pg\t(schema|compat)\t' "$b" > "$fb" || true
   if [ -n "$allow" ] && [ -s "$allow" ]; then
+    local ca cb
     while read -r pat; do
       case "$pat" in ''|\#*) continue ;; esac
-      grep -Fv "$pat" "$fa" > "$fa.tmp" || true; mv "$fa.tmp" "$fa"
-      grep -Fv "$pat" "$fb" > "$fb.tmp" || true; mv "$fb.tmp" "$fb"
+      # Якорь на начало строки и не больше 1 совпадения на файл: иначе
+      # опечатка вида одной буквы стирает весь снимок, а гейт молчит.
+      ca=$(awk -v p="$pat" 'index($0,p)==1' "$fa" | wc -l)
+      cb=$(awk -v p="$pat" 'index($0,p)==1' "$fb" | wc -l)
+      if [ "$ca" -gt 1 ] || [ "$cb" -gt 1 ]; then
+        echo "ОСЛЕПЛЕНИЕ: аллоу-паттерн '$pat' матчит $ca/$cb строк вместо одной — сузьте паттерн." >&2
+        rm -f "$fa" "$fb"
+        return 1
+      fi
+      awk -v p="$pat" 'index($0,p)!=1' "$fa" > "$fa.tmp"; mv "$fa.tmp" "$fa"
+      awk -v p="$pat" 'index($0,p)!=1' "$fb" > "$fb.tmp"; mv "$fb.tmp" "$fb"
     done < "$allow"
   fi
   diff_out=$(diff "$fa" "$fb" || true)
@@ -148,12 +158,13 @@ cmd_rollback() {
     if [ "$state" = "exited" ] || [ "$state" = "restarting" ]; then
       status=$(dc ps -a --format '{{.Status}}' gotcha 2>/dev/null | head -1)
       echo "ОТКАЗАЛ: $tag не смог стартовать на текущей схеме ($status). Хвост журнала:"
-      dc logs --tail=30 gotcha; return 0
+      dc logs --tail=30 gotcha; return 1
     fi
     i=$((i+1)); sleep 1
   done
   echo "НЕЯСНО: $tag за 60 с не вышел и не открыл порт — контейнер висит. Хвост журнала:"
   dc logs --tail=30 gotcha
+  return 2
 }
 
 case "${1:-}" in

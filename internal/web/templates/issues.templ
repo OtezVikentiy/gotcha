@@ -9,8 +9,6 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
 )
 
-// Дублирует несэкспортированный issue.defaultPerPage — числа обязаны совпадать для totalPages.
-const issuesPerPage = 25
 
 // Sparkline строится в web/issues.go и передаётся готовым — иначе цикл импорта web->templates->web.
 type IssueRow struct {
@@ -103,7 +101,7 @@ func totalPages(total int64) int64 {
 	if total <= 0 {
 		return 1
 	}
-	return (total + issuesPerPage - 1) / issuesPerPage
+	return (total + issue.DefaultPerPage - 1) / issue.DefaultPerPage
 }
 
 // total=0 на out-of-range странице: считать «назад» не от чего, ведём сразу на первую страницу.
@@ -129,7 +127,7 @@ func issuesPageURL(projectID int64, f IssuesFilter, page int) string {
 		q.Set("sort", f.Sort)
 	}
 	if f.Environment != "" {
-		q.Set("env", f.Environment)
+		q.Set("environment", f.Environment)
 	}
 	f.Range.apply(q)
 	if page > 1 {
@@ -177,11 +175,11 @@ templ environmentOption(value, label string, selected string) {
 // canOperate/canManagePII гейтят кнопки и галку PII экспорта — рисовать форму, ведущую на 404,
 // хуже, чем скрыть; sparklinesFailed — ClickHouse недоступен, колонка спарклайнов пустая.
 templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int, total int64, userEmail string, environments []string, banner *QuotaBanner, gs GettingStartedVM, canOperate bool, canManagePII bool, sparklinesFailed bool) {
-	@layout(i18n.T(ctx, "nav.errors"), userEmail) {
+	@layout(i18n.T(ctx, "nav.issues"), userEmail) {
 		<div class="issues">
 			@quotaBannerView(banner)
 			@gettingStartedChecklist(gs)
-			<h1>{ i18n.T(ctx, "nav.errors") }</h1>
+			<h1>{ i18n.T(ctx, "nav.issues") }</h1>
 			@helpPanel("issues", "issues")
 			if sparklinesFailed && len(rows) > 0 {
 				<p class="hint">{ i18n.T(ctx, "issues.sparklines.error") }</p>
@@ -202,7 +200,7 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 					@levelOption(issue.LevelError, i18n.T(ctx, "issues.level.error"), filter.Level)
 					@levelOption(issue.LevelFatal, i18n.T(ctx, "issues.level.fatal"), filter.Level)
 				</select>
-				<select name="env" class="select" aria-label={ i18n.T(ctx, "filter.environment") }>
+				<select name="environment" class="select" aria-label={ i18n.T(ctx, "filter.environment") }>
 					@environmentOption("", i18n.T(ctx, "issues.filter.env_all"), filter.Environment)
 					for _, env := range environments {
 						@environmentOption(env, env, filter.Environment)
@@ -217,7 +215,11 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 				<button type="submit" class="btn btn-primary">{ i18n.T(ctx, "issues.filter.apply") }</button>
 			</form>
 			<div id="issues-table">
-				if len(rows) == 0 && filter.Active {
+				if len(rows) == 0 && page > 1 {
+					// total=0 на странице вне диапазона (issue.Service.List) не отличить от «проект
+					// пуст» — решает номер страницы, а не total.
+					@emptyState("arrow-left", "issues.empty.pageOverrun.title", "issues.empty.pageOverrun.body", "issues.empty.pageOverrun.cta", issuesPageURL(projectID, filter, 1), 2)
+				} else if len(rows) == 0 && filter.Active {
 					@emptyState("filter", "issues.empty.filtered.title", "issues.empty.filtered.body", "issues.empty.filtered.cta", issuesPath(projectID), 2)
 				} else if len(rows) == 0 {
 					@emptyState("bug", "issues.empty.title", "issues.empty.body", "issues.empty.cta", projectSetupPath(projectID), 2)
@@ -274,7 +276,7 @@ templ IssuesList(projectID int64, rows []IssueRow, filter IssuesFilter, page int
 							}
 						</div>
 						<form method="post" action={ templ.URL(issuesBulkPath(projectID)) } id="issues-bulk">
-							@scrollRegion("table-scroll", "nav.errors") {
+							@scrollRegion("table-scroll", "nav.issues") {
 									<table class="data-table">
 										<thead>
 											<tr>

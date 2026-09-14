@@ -549,6 +549,49 @@ func TestIssueListSameResultWithoutWindowCount(t *testing.T) {
 	}
 }
 
+// два соседних дневных окна ([d-1,d) и [d,d+1)) не должны оба захватить запись
+// ровно на границе полуночи — Until обязана быть исключающей.
+func TestAdjacentWindowsDoNotDoubleCountBoundary(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	svc := issue.NewService(pool)
+	pid := newProject(t, pool)
+
+	midnight := time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)
+	boundaryID := mustUpsert(t, svc, pid, "on-boundary", midnight)
+
+	dayBefore := issue.Filter{Since: midnight.Add(-24 * time.Hour), Until: midnight}
+	dayAfter := issue.Filter{Since: midnight, Until: midnight.Add(24 * time.Hour)}
+
+	_, totalBefore, err := svc.List(ctx, pid, dayBefore)
+	if err != nil {
+		t.Fatalf("list day before: %v", err)
+	}
+	if totalBefore != 0 {
+		t.Errorf("окно [d-1,d) не должно включать запись ровно на d (Until обязана быть исключающей): total=%d", totalBefore)
+	}
+
+	itemsAfter, totalAfter, err := svc.List(ctx, pid, dayAfter)
+	if err != nil {
+		t.Fatalf("list day after: %v", err)
+	}
+	if totalAfter != 1 || len(itemsAfter) != 1 || itemsAfter[0].ID != boundaryID {
+		t.Fatalf("окно [d,d+1) должно нести ровно запись на границе: total=%d items=%+v", totalAfter, itemsAfter)
+	}
+
+	idsBefore, _, err := svc.IDsForFilter(ctx, pid, dayBefore, 100)
+	if err != nil {
+		t.Fatalf("ids day before: %v", err)
+	}
+	idsAfter, _, err := svc.IDsForFilter(ctx, pid, dayAfter, 100)
+	if err != nil {
+		t.Fatalf("ids day after: %v", err)
+	}
+	if len(idsBefore) != 0 || len(idsAfter) != 1 {
+		t.Fatalf("IDsForFilter двоит запись на границе: before=%v after=%v", idsBefore, idsAfter)
+	}
+}
+
 func mustUpsert(t *testing.T, svc *issue.Service, projectID int64, fingerprint string, seenAt time.Time) int64 {
 	t.Helper()
 	r, err := svc.Upsert(context.Background(), projectID, fingerprint, "t", "c", "error", "", seenAt)

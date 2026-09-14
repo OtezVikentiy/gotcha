@@ -64,13 +64,20 @@ func EmbeddedCompatCH() (map[uint]bool, error) { return embeddedCompat(chMigrati
 
 // Идемпотентна (ON CONFLICT DO NOTHING), но не перезаписывает — строка отражает то, что реально
 // применили к базе, а не то, что в файлах текущего бинаря.
+// Версии обходятся по возрастанию — иначе номер в ошибке при отказе одной из вставок
+// зависит от порядка обхода Go-карты и меняется от рестарта к рестарту.
 func recordCompat(ctx context.Context, pool *pgxpool.Pool, target string, compat map[uint]bool) error {
-	for version, compatible := range compat {
+	versions := make([]uint, 0, len(compat))
+	for version := range compat {
+		versions = append(versions, version)
+	}
+	sort.Slice(versions, func(i, j int) bool { return versions[i] < versions[j] })
+	for _, version := range versions {
 		if _, err := pool.Exec(ctx,
 			`INSERT INTO schema_compat (target, version, backward_compatible)
 			 VALUES ($1, $2, $3)
 			 ON CONFLICT (target, version) DO NOTHING`,
-			target, int64(version), compatible); err != nil {
+			target, int64(version), compat[version]); err != nil {
 			return fmt.Errorf("schema compat: record %s/%d: %w", target, version, err)
 		}
 	}

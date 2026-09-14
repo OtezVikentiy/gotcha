@@ -171,6 +171,7 @@ func TestRecipeDetailThresholdStatuses(t *testing.T) {
 	statuses := recipes.RuleStatuses(nil, rec)
 	for i := range statuses {
 		statuses[i].Exists = true
+		statuses[i].Enabled = true
 	}
 	done := renderTo(t, RecipeDetail(RecipeDetailVM{
 		ProjectID:  7,
@@ -187,6 +188,26 @@ func TestRecipeDetailThresholdStatuses(t *testing.T) {
 	}
 	if strings.Contains(done, `action="/projects/7/recipes/redis/thresholds"`) {
 		t.Error("когда создавать нечего, формы POST быть не должно")
+	}
+
+	// Exists=true, Enabled=false: правило есть, но выключено — бейдж не должен
+	// молчать об этом под тем же «Создан», что и активное правило.
+	disabledStatuses := recipes.RuleStatuses(nil, rec)
+	for i := range disabledStatuses {
+		disabledStatuses[i].Exists = true
+	}
+	disabled := renderTo(t, RecipeDetail(RecipeDetailVM{
+		ProjectID:  7,
+		Recipe:     rec,
+		Config:     "receivers: {}",
+		Statuses:   disabledStatuses,
+		CanOperate: true,
+	}, "u@e.com"))
+	if strings.Contains(disabled, "Создан<") {
+		t.Error("выключенное правило не должно показывать бейдж «Создан» как у активного")
+	}
+	if got := strings.Count(disabled, "badge-warn\">Создан, выключен<"); got != len(rec.Rules) {
+		t.Errorf("бейджей «Создан, выключен» = %d, want %d", got, len(rec.Rules))
 	}
 }
 

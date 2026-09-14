@@ -52,6 +52,11 @@ func (j *Janitor) tick(ctx context.Context) {
 	} else {
 		slog.Debug("auth janitor: deleted expired sessions", "count", n)
 	}
+	if m, err := j.Svc.PurgeExpiredPasswordResets(ctx); err != nil {
+		slog.Error("auth janitor: purge expired password resets failed", "error", err)
+	} else {
+		slog.Debug("auth janitor: purged expired password resets", "count", m)
+	}
 	for _, c := range j.Extra {
 		m, err := c.Fn(ctx)
 		if err != nil {

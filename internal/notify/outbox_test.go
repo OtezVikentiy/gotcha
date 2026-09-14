@@ -77,11 +77,11 @@ func TestOutboxLifecycle(t *testing.T) {
 		t.Fatalf("Claim (already claimed): %+v err=%v, want 0", jobs, err)
 	}
 
-	if err := ob.MarkSent(ctx, job.ID); err != nil {
+	if err := ob.MarkSent(ctx, job.ID, job.Attempts); err != nil {
 		t.Fatalf("MarkSent: %v", err)
 	}
-	if err := ob.MarkSent(ctx, 999999); !errors.Is(err, notify.ErrNotFound) {
-		t.Fatalf("MarkSent (missing): got %v, want ErrNotFound", err)
+	if err := ob.MarkSent(ctx, 999999, 1); !errors.Is(err, notify.ErrStaleClaim) {
+		t.Fatalf("MarkSent (missing): got %v, want ErrStaleClaim", err)
 	}
 
 	var status string
@@ -111,7 +111,7 @@ func TestOutboxRetryAndFailed(t *testing.T) {
 	}
 	job := jobs[0]
 
-	if err := ob.MarkRetry(ctx, job.ID, errors.New("smtp timeout"), time.Hour); err != nil {
+	if err := ob.MarkRetry(ctx, job.ID, job.Attempts, errors.New("smtp timeout"), time.Hour); err != nil {
 		t.Fatalf("MarkRetry: %v", err)
 	}
 	// next_retry_at в будущем — не должна быть заклеймлена снова.
@@ -129,7 +129,7 @@ func TestOutboxRetryAndFailed(t *testing.T) {
 		t.Errorf("after MarkRetry: status=%q last_error=%q", status, lastErr)
 	}
 
-	if err := ob.MarkFailed(ctx, job.ID, errors.New("giving up")); err != nil {
+	if err := ob.MarkFailed(ctx, job.ID, job.Attempts, errors.New("giving up")); err != nil {
 		t.Fatalf("MarkFailed: %v", err)
 	}
 	if err := pool.QueryRow(ctx,
@@ -224,7 +224,7 @@ func TestOutboxFailedForProject(t *testing.T) {
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("claim email job: %+v err=%v", jobs, err)
 	}
-	if err := ob.MarkFailed(ctx, jobs[0].ID, errors.New("smtp: connection refused")); err != nil {
+	if err := ob.MarkFailed(ctx, jobs[0].ID, jobs[0].Attempts, errors.New("smtp: connection refused")); err != nil {
 		t.Fatalf("mark failed email: %v", err)
 	}
 
@@ -243,18 +243,18 @@ func TestOutboxFailedForProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claim other project job: %v", err)
 	}
-	var otherJobID int64
+	var otherJob notify.Job
 	found := false
 	for _, j := range claimed {
 		if j.ChannelID == otherChID {
-			otherJobID = j.ID
+			otherJob = j
 			found = true
 		}
 	}
 	if !found {
 		t.Fatalf("claimed jobs %+v did not include the other-project job (channel %d)", claimed, otherChID)
 	}
-	if err := ob.MarkFailed(ctx, otherJobID, errors.New("other project failure")); err != nil {
+	if err := ob.MarkFailed(ctx, otherJob.ID, otherJob.Attempts, errors.New("other project failure")); err != nil {
 		t.Fatalf("mark failed other project: %v", err)
 	}
 
@@ -317,5 +317,115 @@ func TestOutboxPurgeOld(t *testing.T) {
 	}
 	if remaining != 2 {
 		t.Fatalf("remaining = %d, want 2 (pending + fresh sent)", remaining)
+	}
+}
+
+func TestEnqueueIdempotent(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ob := notify.NewOutbox(pool)
+	ctx := context.Background()
+	channelID := newChannel(t, pool)
+
+	t.Run("empty key behaves like Enqueue", func(t *testing.T) {
+		enqueued, err := ob.EnqueueIdempotent(ctx, channelID, map[string]any{"n": 1}, "")
+		if err != nil {
+			t.Fatalf("EnqueueIdempotent: %v", err)
+		}
+		if !enqueued {
+			t.Fatalf("enqueued = false, want true")
+		}
+		enqueued2, err := ob.EnqueueIdempotent(ctx, channelID, map[string]any{"n": 2}, "")
+		if err != nil {
+			t.Fatalf("EnqueueIdempotent: %v", err)
+		}
+		if !enqueued2 {
+			t.Fatalf("second empty-key call: enqueued = false, want true (без ключа дедупа нет)")
+		}
+	})
+
+	t.Run("conflicting key gives enqueued=false without error", func(t *testing.T) {
+		key := "test:dup:1"
+		enqueued, err := ob.EnqueueIdempotent(ctx, channelID, map[string]any{"n": 1}, key)
+		if err != nil {
+			t.Fatalf("first EnqueueIdempotent: %v", err)
+		}
+		if !enqueued {
+			t.Fatalf("first call: enqueued = false, want true")
+		}
+		enqueued2, err := ob.EnqueueIdempotent(ctx, channelID, map[string]any{"n": 2}, key)
+		if err != nil {
+			t.Fatalf("second EnqueueIdempotent (same key): %v", err)
+		}
+		if enqueued2 {
+			t.Fatalf("second call with same key: enqueued = true, want false")
+		}
+		var count int
+		if err := pool.QueryRow(ctx,
+			"SELECT count(*) FROM notification_outbox WHERE idempotency_key = $1", key).Scan(&count); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		if count != 1 {
+			t.Fatalf("rows with key %q = %d, want 1", key, count)
+		}
+	})
+
+	t.Run("db error propagates", func(t *testing.T) {
+		const bogusChannel = int64(999_999_999)
+		if _, err := ob.EnqueueIdempotent(ctx, bogusChannel, map[string]any{"n": 1}, "test:err:1"); err == nil {
+			t.Fatalf("EnqueueIdempotent с несуществующим channel_id: want error, got nil")
+		}
+	})
+}
+
+// Воркер A задержался дольше лизы, воркер B перезабрал и отправил (MarkSent);
+// запоздалый MarkRetry воркера A обязан отхватить ErrStaleClaim, не воскрешать.
+func TestMarkRetryDoesNotResurrectAlreadySentJob(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	ob := notify.NewOutbox(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	chID := newChannel(t, pool)
+
+	if err := ob.Enqueue(ctx, chID, map[string]any{"a": "b"}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	jobs, err := ob.Claim(ctx, 10)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("Claim (worker A): %+v err=%v", jobs, err)
+	}
+	staleJob := jobs[0]
+
+	// Лиза воркера A истекла — задачу перезабирает воркер B.
+	if _, err := pool.Exec(ctx,
+		"UPDATE notification_outbox SET next_retry_at = now() - interval '1 second' WHERE id = $1", staleJob.ID); err != nil {
+		t.Fatalf("force lease expiry: %v", err)
+	}
+	jobs, err = ob.Claim(ctx, 10)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("Claim (worker B): %+v err=%v", jobs, err)
+	}
+	freshJob := jobs[0]
+	if freshJob.Attempts != staleJob.Attempts+1 {
+		t.Fatalf("attempts после повторного захвата = %d, want %d", freshJob.Attempts, staleJob.Attempts+1)
+	}
+
+	if err := ob.MarkSent(ctx, freshJob.ID, freshJob.Attempts); err != nil {
+		t.Fatalf("MarkSent (worker B): %v", err)
+	}
+
+	// Воркер A запоздало решает, что отправка провалилась, и зовёт MarkRetry со
+	// своим устаревшим номером попытки.
+	err = ob.MarkRetry(ctx, staleJob.ID, staleJob.Attempts, errors.New("timeout"), time.Hour)
+	if !errors.Is(err, notify.ErrStaleClaim) {
+		t.Fatalf("MarkRetry (stale worker A): got %v, want ErrStaleClaim", err)
+	}
+
+	var status string
+	if err := pool.QueryRow(ctx,
+		"SELECT status FROM notification_outbox WHERE id = $1", staleJob.ID).Scan(&status); err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	if status != "sent" {
+		t.Errorf("status = %q после запоздалого MarkRetry, want sent — сообщение уйдёт повторно", status)
 	}
 }

@@ -2,6 +2,7 @@ package depsuppress_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/depsuppress"
@@ -110,6 +111,39 @@ func TestCheckIncidentHostVanished(t *testing.T) {
 	}
 }
 
+// Мониторный аналог TestCheckIncidentHostSource: escalation.Scheduler держит
+// один DepChecker на все source, и "uptime" обязан резолвиться так же честно,
+// как "host" — иначе периодическое снятие подавления для uptime молчаливо
+// решило бы «родителя нет» и снимало бы подавление сразу же на каждом тике.
+func TestCheckIncidentUptimeSource(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	pid, hostID, monID := seedProjectHostMonitor(t, pool)
+	if _, err := depsuppress.NewStore(pool).Create(context.Background(), depsuppress.Edge{
+		ProjectID: pid, ParentHostID: &hostID, ChildMonitorID: &monID}); err != nil {
+		t.Fatalf("create edge: %v", err)
+	}
+	seedSilentIncident(t, pool, pid, hostID) // родительский host — down
+
+	var incID int64
+	mustScan(t, pool, &incID,
+		`INSERT INTO incidents (monitor_id, started_at) VALUES ($1, now()) RETURNING id`, monID)
+
+	sup := depsuppress.NewSuppressor(pool)
+	ctx := context.Background()
+	if hasParent, parentDown, err := sup.CheckIncident(ctx, "uptime", incID); err != nil || !hasParent || !parentDown {
+		t.Fatalf("CheckIncident(uptime,%d) = %v/%v/%v, want true/true/nil", incID, hasParent, parentDown, err)
+	}
+}
+
+func TestCheckIncidentUptimeVanished(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	sup := depsuppress.NewSuppressor(pool)
+	ctx := context.Background()
+	if hasParent, parentDown, err := sup.CheckIncident(ctx, "uptime", 987654321); err != nil || hasParent || parentDown {
+		t.Fatalf("CheckIncident для несуществующего uptime-инцидента = %v/%v/%v, want false/false/nil", hasParent, parentDown, err)
+	}
+}
+
 func TestMarkSuppressed(t *testing.T) {
 	pool := testenv.MigratedPG(t)
 	pid, hostID, _ := seedProjectHostMonitor(t, pool)
@@ -172,7 +206,9 @@ func TestCheckIncidentHostSource(t *testing.T) {
 	if hasParent, parentDown, err := sup.CheckIncident(ctx, "host", incID); err != nil || !hasParent || !parentDown {
 		t.Fatalf("CheckIncident(host,%d) = %v/%v/%v, want true/true/nil", incID, hasParent, parentDown, err)
 	}
-	if hasParent, parentDown, err := sup.CheckIncident(ctx, "monitor", 999999); err != nil || hasParent || parentDown {
-		t.Fatalf("CheckIncident(monitor,...) = %v/%v/%v, want false/false/nil", hasParent, parentDown, err)
+	// "monitor" — не зарегистрированный source (это kind, не source): список
+	// источников не закрыт, незнакомый обязан быть ошибкой, не тихим false.
+	if hasParent, parentDown, err := sup.CheckIncident(ctx, "monitor", 999999); !errors.Is(err, depsuppress.ErrUnknownSource) || hasParent || parentDown {
+		t.Fatalf("CheckIncident(monitor,...) = %v/%v/%v, want false/false/ErrUnknownSource", hasParent, parentDown, err)
 	}
 }

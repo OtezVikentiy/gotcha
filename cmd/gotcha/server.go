@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -26,6 +27,11 @@ func newRootMux(deps rootDeps) *http.ServeMux {
 
 	// Без авторизации, без обращения к БД — отвечает и когда БД лежит.
 	mux.HandleFunc("GET /metrics", deps.selfMetrics.Handler())
+
+	// GOTCHA_COMPOSE_BIND до процесса не доходит — знать, публичен ли хост-порт,
+	// он не может, поэтому предупреждение безусловное, на каждый старт.
+	slog.Info("/healthz, /readyz, /version and /metrics serve without authentication; " +
+		"restrict them to trusted networks with a reverse proxy or firewall (see /docs/hardening)")
 
 	if deps.ingestHandler != nil {
 		deps.ingestHandler.Register(mux)

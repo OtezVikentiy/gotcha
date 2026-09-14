@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"math"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -56,8 +57,29 @@ type Evaluator struct {
 	// только при «не maintenance И не grouped» (порядок проверок не важен). Nil-совместимо, как Maint.
 	IncidentGroups metricGroupHook
 
+	// cursor и skipped читаются и пишутся только из Tick, вызываемого
+	// последовательно из Run — конкурентной защиты не требуют.
+	cursor  int64
+	skipped atomic.Int64
+
 	lastTickUnix    atomic.Int64  // unix-время последнего завершённого тика
 	lastTickSeconds atomic.Uint64 // длительность последнего тика, math.Float64bits
+}
+
+// rotateRules возобновляет обход сразу после cursor (ORDER BY id) — иначе при
+// нехватке бюджета голодает всегда один и тот же хвост списка.
+func rotateRules(rules []Rule, cursor int64) []Rule {
+	if len(rules) == 0 {
+		return rules
+	}
+	idx := sort.Search(len(rules), func(i int) bool { return rules[i].ID > cursor })
+	if idx == 0 {
+		return rules
+	}
+	rotated := make([]Rule, 0, len(rules))
+	rotated = append(rotated, rules[idx:]...)
+	rotated = append(rotated, rules[:idx]...)
+	return rotated
 }
 
 func (e *Evaluator) Run(ctx context.Context) {
@@ -97,6 +119,8 @@ func (e *Evaluator) LastTickSeconds() float64 {
 	return math.Float64frombits(e.lastTickSeconds.Load())
 }
 
+func (e *Evaluator) LastTickSkippedRules() int64 { return e.skipped.Load() }
+
 // Ошибка по одному правилу не роняет остальные (error-isolation). Тик ограничен дедлайном: Query берёт
 // голый CH-запрос без своего таймаута — без внешнего дедлайна повисший запрос держал бы тик бесконечно.
 func (e *Evaluator) Tick(ctx context.Context) {
@@ -110,9 +134,21 @@ func (e *Evaluator) Tick(ctx context.Context) {
 		e.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))
 		return
 	}
+	rules = rotateRules(rules, e.cursor)
 	now := time.Now().UTC()
-	for _, r := range rules {
+	done := len(rules)
+	for i, r := range rules {
+		if ctx.Err() != nil {
+			slog.Warn("metric evaluator: tick budget exhausted, remaining rules skipped",
+				"skipped_rules", len(rules)-i, "budget", e.tickBudget())
+			done = i
+			break
+		}
 		e.evalRule(ctx, r, now)
+	}
+	e.skipped.Store(int64(len(rules) - done))
+	if done > 0 {
+		e.cursor = rules[done-1].ID
 	}
 
 	e.lastTickSeconds.Store(math.Float64bits(time.Since(started).Seconds()))

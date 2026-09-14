@@ -131,7 +131,7 @@ Below the chart is the list of known labels; clicking a label value reopens the 
 
 ## Settings and quotas
 
-There's currently no dedicated per-project metrics settings page (unlike, say, span retention under Performance) — metrics are retained under the instance-wide policy. Metric ingest counts against the organization's monthly quota; the operator sets the default via `GOTCHA_DEFAULT_METRIC_QUOTA` (see [Configuration](/docs/configuration)) and it can be fine-tuned under "Organization settings → Usage & rate limits". Once the quota is exhausted, `/v1/metrics` returns `429`; already-ingested points are not deleted.
+There's currently no dedicated per-project metrics settings page (unlike, say, span retention under Performance) — metrics are retained under the instance-wide policy. Metric ingest counts against the organization's monthly quota; the operator sets the default via `GOTCHA_DEFAULT_METRIC_QUOTA` (see [Configuration](/docs/configuration)) and it can be fine-tuned under "Organization settings → Usage & rate limits". Once the quota is exhausted, `/v1/metrics` returns `429`; already-ingested points are not deleted. Separately from the quota and the per-DSN rate limit, an overloaded ClickHouse write buffer makes `/v1/metrics` return `503` with a `Retry-After` header — no point from the body is accepted, and retrying doesn't create duplicates (see [Monitoring gotcha itself](/docs/self-monitoring) — the `overloaded` reason); this kind of rejection doesn't charge the quota either — the overload check runs before it's deducted, so retrying is safe on that front too.
 
 ## Alerts on metrics
 

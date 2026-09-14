@@ -33,7 +33,11 @@ func (n *countingNotifier) Notify(_ context.Context, ev Event) error {
 }
 
 // не участвуют в SSL/reminder гонках — только чтобы удовлетворить интерфейс Notifier.
-func (n *countingNotifier) NotifyOpenStep0(_ context.Context, ev Event) ([]int64, error) {
+func (n *countingNotifier) OpenStep0Channels(context.Context, Event) ([]int64, error) {
+	return nil, nil
+}
+
+func (n *countingNotifier) NotifyOpenStep0(_ context.Context, ev Event, _ []int64) ([]int64, error) {
 	if err := n.Notify(context.Background(), ev); err != nil {
 		return nil, err
 	}
@@ -85,6 +89,77 @@ func concurrencyTestHTTPMonitor(projectID int64) Monitor {
 		Consensus:         ConsensusMajority,
 		SSLAlertDays:      14,
 		Config:            json.RawMessage(`{"method":"GET","url":"https://example.com/health"}`),
+	}
+}
+
+func concurrencyTestHeartbeatMonitor(projectID int64) Monitor {
+	return Monitor{
+		ProjectID:         projectID,
+		Name:              "concurrency-heartbeat",
+		Kind:              KindHeartbeat,
+		Enabled:           true,
+		IntervalSeconds:   60,
+		TimeoutSeconds:    10,
+		FailThreshold:     1,
+		RecoveryThreshold: 1,
+		Consensus:         ConsensusMajority,
+		Config:            json.RawMessage(`{"grace_seconds":60}`),
+	}
+}
+
+// ApplyResult отсекает только СТАРШИЙ результат, не одновременный — без
+// клейма перед ним consecutive_fails инкрементился бы дважды за один пропуск.
+func TestCheckHeartbeatsConcurrentTicksApplyExactlyOnce(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := NewService(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := newConcurrencyTestProject(t, pool)
+	created, err := svc.Create(ctx, concurrencyTestHeartbeatMonitor(pid), []string{"local"}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		"UPDATE monitors SET last_beat_at = now() - interval '5 minutes' WHERE id = $1", created.ID); err != nil {
+		t.Fatalf("backdate last_beat_at: %v", err)
+	}
+
+	notifier := &countingNotifier{}
+	d := &Detector{Svc: svc, Notifier: notifier, Pool: pool}
+	// Interval полноразмерный, не мс — debounce от него должен заведомо
+	// перекрывать разброс между 20 конкурентными раундтрипами, иначе флейк.
+	wd := &Watchdog{Svc: svc, Detector: d, Notifier: notifier, Region: "local", Interval: time.Minute}
+
+	const n = 20
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			wd.checkHeartbeats(ctx)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	states, err := svc.States(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("States: %v", err)
+	}
+	if len(states) != 1 {
+		t.Fatalf("states = %+v, want ровно одно состояние региона", states)
+	}
+	if states[0].ConsecutiveFails != 1 {
+		t.Fatalf("ConsecutiveFails = %d, want 1 (20 конкурентных вызовов одного пропуска не должны сложиться)", states[0].ConsecutiveFails)
+	}
+	if states[0].Status != "down" {
+		t.Fatalf("Status = %q, want down", states[0].Status)
+	}
+	if got := notifier.count("down"); got != 1 {
+		t.Fatalf("down notifications = %d, want exactly 1 (гонка реплик на одном пропуске heartbeat)", got)
 	}
 }
 

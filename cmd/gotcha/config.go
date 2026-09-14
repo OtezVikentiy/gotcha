@@ -17,7 +17,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/db"
 	"gitflic.ru/otezvikentiy/gotcha/internal/envcontract"
 	"gitflic.ru/otezvikentiy/gotcha/internal/export"
-	"gitflic.ru/otezvikentiy/gotcha/internal/ingest"
+	"gitflic.ru/otezvikentiy/gotcha/internal/scrub"
 )
 
 // переводит имена полей структуры (MaxRows, MaxBytes...) в имена переменных окружения:
@@ -62,6 +62,9 @@ type Config struct {
 	SMTPUser      string
 	SMTPPassword  string
 	SMTPFrom      string
+	// STARTTLS остаётся оппортунистическим по умолчанию (offer/ack), как раньше;
+	// true отказывает отправку, если сервер не предложил STARTTLS в EHLO.
+	SMTPRequireTLS bool
 	// пусто — https://api.telegram.org, дефолт живёт в пакете notify
 	TelegramAPIBase string
 	// 0 = хранить вечно (TTL в ClickHouse снимается); исключение — OutboxRetentionDays,
@@ -91,6 +94,10 @@ type Config struct {
 	// per-DSN токен-бакет, запросов/с на project id; burst = 2×лимит, 0 выключает;
 	// срабатывает после аутентификации ключа и до квоты, ответ 429
 	IngestRateLimit int
+	// по клиентскому IP, до аутентификации DSN; burst = 2×лимит, 0 выключает
+	PreAuthRateLimit int
+	// по клиентскому IP, только touchUnverifiedSignal; burst = 5×лимит, 0 выключает
+	SignalTouchRateLimit int
 	// незаданная (0) — дефолт пакета (64 МиБ); явный 0 или отрицательное — ошибка конфигурации
 	MaxQueueBytes int64
 	// пер-проектный потолок уведомлений; 0 у лимита выключает ограничение
@@ -189,6 +196,7 @@ type Config struct {
 	OIDCClientSecret   string
 	OIDCScopes         string
 	OIDCName           string
+	OIDCTrustEmail     bool
 	YandexEnabled      bool
 	YandexClientID     string
 	YandexClientSecret string
@@ -201,10 +209,10 @@ var validModes = map[string]bool{
 	"ingest": true, "web": true, "uptime": true, "probe": true, "all": true,
 }
 
-// список живёт в internal/ingest: та же маска применяется в internal/export к
+// список живёт в internal/scrub: та же маска применяется в internal/export к
 // выгрузкам, и два независимых списка разъехались бы при первой же правке одного
 func defaultScrubKeys() []string {
-	return ingest.DefaultDenyKeys()
+	return scrub.DefaultDenyKeys()
 }
 
 func isLocalBaseURL(baseURL string) bool {
@@ -454,6 +462,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		SMTPUser:                 str("GOTCHA_SMTP_USER", ""),
 		SMTPPassword:             str("GOTCHA_SMTP_PASSWORD", ""),
 		SMTPFrom:                 str("GOTCHA_SMTP_FROM", ""),
+		SMTPRequireTLS:           boolEnvDef("GOTCHA_SMTP_REQUIRE_TLS", false),
 		TelegramAPIBase:          str("GOTCHA_TELEGRAM_API_BASE", ""),
 		RetentionDays:            intNum("GOTCHA_EVENT_RETENTION_DAYS", 90),
 		SpanRetentionDays:        intNum("GOTCHA_SPAN_RETENTION_DAYS", 30),
@@ -470,6 +479,8 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		DefaultLogQuota:          num("GOTCHA_DEFAULT_LOG_QUOTA", defQuota),
 		MaxEventBytes:            num("GOTCHA_MAX_EVENT_BYTES", 1<<20),
 		IngestRateLimit:          intNum("GOTCHA_INGEST_RATE_PER_SEC", 500),
+		PreAuthRateLimit:         intNum("GOTCHA_INGEST_PREAUTH_RATE_PER_SEC", 2000),
+		SignalTouchRateLimit:     intNum("GOTCHA_INGEST_SIGNAL_RATE_PER_SEC", 2),
 		MaxBufferBytes:           maxBufferBytes,
 		MaxQueueBytes:            maxQueueBytes,
 		AlertBudgetWindowSeconds: intNum("GOTCHA_ALERT_BUDGET_WINDOW_SECONDS", 3600),
@@ -537,6 +548,7 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	cfg.OIDCClientSecret = str("GOTCHA_OIDC_CLIENT_SECRET", "")
 	cfg.OIDCScopes = str("GOTCHA_OIDC_SCOPES", "")
 	cfg.OIDCName = str("GOTCHA_OIDC_DISPLAY_NAME", "")
+	cfg.OIDCTrustEmail = boolEnv("GOTCHA_OIDC_TRUST_EMAIL")
 	cfg.YandexEnabled = boolEnv("GOTCHA_YANDEX_ENABLED")
 	cfg.YandexClientID = str("GOTCHA_YANDEX_CLIENT_ID", "")
 	cfg.YandexClientSecret = str("GOTCHA_YANDEX_CLIENT_SECRET", "")
@@ -688,7 +700,8 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 		}
 	}
 	if cfg.HSTSEnabled {
-		if hstsHeaderMattersFor(cfg.Mode) && !strings.HasPrefix(cfg.BaseURL, "https://") {
+		if hstsHeaderMattersFor(cfg.Mode) && !isLocalBaseURL(cfg.BaseURL) &&
+			!strings.HasPrefix(cfg.BaseURL, "https://") {
 			slog.Warn("GOTCHA_HSTS_ENABLED is on but GOTCHA_BASE_URL is not https:// — " +
 				"Strict-Transport-Security is never sent on a plain HTTP deploy")
 		}
@@ -743,6 +756,12 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 	}
 	if cfg.IngestRateLimit < 0 {
 		errs = append(errs, fmt.Errorf("GOTCHA_INGEST_RATE_PER_SEC must be >= 0 (0 disables the limit), got %d", cfg.IngestRateLimit))
+	}
+	if cfg.PreAuthRateLimit < 0 {
+		errs = append(errs, fmt.Errorf("GOTCHA_INGEST_PREAUTH_RATE_PER_SEC must be >= 0 (0 disables the limit), got %d", cfg.PreAuthRateLimit))
+	}
+	if cfg.SignalTouchRateLimit < 0 {
+		errs = append(errs, fmt.Errorf("GOTCHA_INGEST_SIGNAL_RATE_PER_SEC must be >= 0 (0 disables the limit), got %d", cfg.SignalTouchRateLimit))
 	}
 	if cfg.CardinalityLimit < 0 {
 		errs = append(errs, fmt.Errorf("GOTCHA_CARDINALITY_LIMIT must be >= 0 (0 disables the limit), got %d", cfg.CardinalityLimit))
@@ -856,6 +875,11 @@ func loadConfig(getenv func(string) string, args []string) (Config, error) {
 
 	if cfg.OIDCEnabled && (cfg.OIDCIssuer == "" || cfg.OIDCClientID == "" || cfg.OIDCClientSecret == "") {
 		errs = append(errs, fmt.Errorf("GOTCHA_OIDC_ENABLED requires GOTCHA_OIDC_ISSUER, _CLIENT_ID and _CLIENT_SECRET"))
+	}
+	if cfg.OIDCEnabled && !cfg.OIDCTrustEmail {
+		slog.Warn("GOTCHA_OIDC_ENABLED is on but GOTCHA_OIDC_TRUST_EMAIL is not — " +
+			"self-registration and account auto-linking by email via this OIDC provider are disabled; " +
+			"set GOTCHA_OIDC_TRUST_EMAIL=true only if this IdP is single-tenant and you control who can sign up on it")
 	}
 	if cfg.YandexEnabled && (cfg.YandexClientID == "" || cfg.YandexClientSecret == "") {
 		errs = append(errs, fmt.Errorf("GOTCHA_YANDEX_ENABLED requires GOTCHA_YANDEX_CLIENT_ID and _CLIENT_SECRET"))

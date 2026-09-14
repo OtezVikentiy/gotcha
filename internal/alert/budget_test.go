@@ -288,3 +288,34 @@ func TestDigesterRunStops(t *testing.T) {
 		t.Fatal("Run не завершился по отмене контекста")
 	}
 }
+
+func TestRestoreSuppressedNoopOnZeroOrNegative(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres container")
+	}
+	pool := testenv.MigratedPG(t)
+	svc := alert.NewService(pool)
+	ctx := context.Background()
+	pid := newEvalProject(t, pool, "restore-noop")
+
+	if _, err := pool.Exec(ctx,
+		"INSERT INTO alert_project_budget (project_id, suppressed) VALUES ($1, 5)", pid); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := svc.RestoreSuppressed(ctx, pid, 0); err != nil {
+		t.Fatalf("RestoreSuppressed(0): %v", err)
+	}
+	if err := svc.RestoreSuppressed(ctx, pid, -3); err != nil {
+		t.Fatalf("RestoreSuppressed(-3): %v", err)
+	}
+
+	var suppressed int
+	if err := pool.QueryRow(ctx,
+		"SELECT suppressed FROM alert_project_budget WHERE project_id = $1", pid).Scan(&suppressed); err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	if suppressed != 5 {
+		t.Errorf("suppressed = %d, want 5 — восстановление нулём/отрицательным не должно трогать счётчик", suppressed)
+	}
+}

@@ -424,6 +424,107 @@ func TestProbeResultsRejectsExpiredLease(t *testing.T) {
 	}
 }
 
+// Второе вхождение того же queue_id в пачке обязано уйти в dropped, не accepted.
+func TestProbeResultsDropsDuplicateQueueIDInSameBatch(t *testing.T) {
+	s := newProbeStack(t)
+	ctx := context.Background()
+	orgID, pid := newOrgProject(t, s.pool)
+
+	_, token, err := s.uptime.CreateProbe(ctx, orgID, "eu-west", "Probe 1")
+	if err != nil {
+		t.Fatalf("CreateProbe: %v", err)
+	}
+	if _, err := s.uptime.Create(ctx, probeHTTPMonitor(t, pid), []string{"eu-west"}, nil); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := s.uptime.Schedule(ctx); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+
+	resp := probePost(t, s, "/probe/lease", token, nil)
+	var lease uptime.LeaseResponse
+	decodeJSON(t, resp, &lease)
+	if len(lease.Jobs) != 1 {
+		t.Fatalf("lease.Jobs = %d, want 1", len(lease.Jobs))
+	}
+	queueID := lease.Jobs[0].QueueID
+
+	dup := uptime.ResultDTO{QueueID: queueID, OK: true}
+	rresp := probePost(t, s, "/probe/results", token, uptime.ResultsRequest{
+		Results: []uptime.ResultDTO{dup, dup},
+	})
+	if rresp.StatusCode != http.StatusOK {
+		drain(rresp)
+		t.Fatalf("status = %d, want 200", rresp.StatusCode)
+	}
+	var out uptime.ResultsResponse
+	decodeJSON(t, rresp, &out)
+	if out.Accepted != 1 || out.Rejected != 0 || out.Dropped != 1 {
+		t.Fatalf("results = %+v, want accepted 1 rejected 0 dropped 1", out)
+	}
+
+	pending, err := s.uptime.PendingCount(ctx)
+	if err != nil {
+		t.Fatalf("PendingCount: %v", err)
+	}
+	if pending != 0 {
+		t.Fatalf("PendingCount() = %d, want 0 (first copy must complete the job)", pending)
+	}
+}
+
+// accepted+rejected+dropped обязано покрывать ВЕСЬ запрос, любую ветку ответа.
+func TestProbeResultsAccountingCoversWholeBatch(t *testing.T) {
+	s := newProbeStack(t)
+	ctx := context.Background()
+	orgID, pid := newOrgProject(t, s.pool)
+
+	_, token, err := s.uptime.CreateProbe(ctx, orgID, "eu-west", "Probe 1")
+	if err != nil {
+		t.Fatalf("CreateProbe: %v", err)
+	}
+	if _, err := s.uptime.Create(ctx, probeHTTPMonitor(t, pid), []string{"eu-west"}, nil); err != nil {
+		t.Fatalf("Create monitor 1: %v", err)
+	}
+	if _, err := s.uptime.Create(ctx, probeHTTPMonitor(t, pid), []string{"eu-west"}, nil); err != nil {
+		t.Fatalf("Create monitor 2: %v", err)
+	}
+	if _, err := s.uptime.Schedule(ctx); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+
+	resp := probePost(t, s, "/probe/lease", token, nil)
+	var lease uptime.LeaseResponse
+	decodeJSON(t, resp, &lease)
+	if len(lease.Jobs) != 2 {
+		t.Fatalf("lease.Jobs = %d, want 2", len(lease.Jobs))
+	}
+	accept, expire := lease.Jobs[0].QueueID, lease.Jobs[1].QueueID
+
+	if _, err := s.pool.Exec(ctx,
+		"UPDATE check_queue SET lease_until = now() - interval '1 minute' WHERE id = $1", expire); err != nil {
+		t.Fatalf("expire lease: %v", err)
+	}
+
+	req := uptime.ResultsRequest{Results: []uptime.ResultDTO{
+		{QueueID: accept, OK: true}, // accepted
+		{QueueID: accept, OK: true}, // dropped: тот же queue_id уже заклеймлен выше
+		{QueueID: expire, OK: true}, // rejected: lease истёк
+	}}
+	rresp := probePost(t, s, "/probe/results", token, req)
+	if rresp.StatusCode != http.StatusOK {
+		drain(rresp)
+		t.Fatalf("status = %d, want 200", rresp.StatusCode)
+	}
+	var out uptime.ResultsResponse
+	decodeJSON(t, rresp, &out)
+	if sum := out.Accepted + out.Rejected + out.Dropped; sum != len(req.Results) {
+		t.Fatalf("accepted+rejected+dropped = %d, want %d (весь батч): %+v", sum, len(req.Results), out)
+	}
+	if out.Accepted != 1 || out.Rejected != 1 || out.Dropped != 1 {
+		t.Fatalf("results = %+v, want accepted 1 rejected 1 dropped 1", out)
+	}
+}
+
 func TestProbeResultsTooManyResultsReturns400(t *testing.T) {
 	s := newProbeStack(t)
 	ctx := context.Background()

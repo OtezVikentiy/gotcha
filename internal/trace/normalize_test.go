@@ -1,8 +1,11 @@
 package trace
 
 import (
+	"fmt"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNormalizeSQL(t *testing.T) {
@@ -450,6 +453,71 @@ func TestNormalizeDescriptionCaps(t *testing.T) {
 	got = NormalizeDescription("http.client", longURL)
 	if n := len([]rune(got)); n > maxNormalizedDescription {
 		t.Fatalf("длина результата = %d, want <= %d", n, maxNormalizedDescription)
+	}
+}
+
+// Строит запрос из n литералов 'x\', каждый закрыт кавычкой перед нечётным
+// числом слешей — форсирует closedByEscapedQuote → oddQuotesFrom на каждом.
+func ambiguousLiterals(n int) string {
+	var b strings.Builder
+	b.WriteString("SELECT * FROM t WHERE ")
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteString(" AND ")
+		}
+		fmt.Fprintf(&b, "c%d = 'x\\' AND d%d = 'y'", i, i)
+	}
+	return b.String()
+}
+
+// Порог 8x при росте входа в 4x — с запасом ниже квадратичных ~16x и выше
+// линейных ~4x; база поднята на порядок над паузой GC, медиана гасит выброс.
+func TestNormalizeSQLQuoteCheckIsLinearNotQuadratic(t *testing.T) {
+	timeIt := func(q string) time.Duration {
+		const rounds = 5
+		durs := make([]time.Duration, rounds)
+		for r := 0; r < rounds; r++ {
+			best := time.Hour
+			for i := 0; i < 5; i++ {
+				start := time.Now()
+				_ = NormalizeSQL(q)
+				if d := time.Since(start); d < best {
+					best = d
+				}
+			}
+			durs[r] = best
+		}
+		sort.Slice(durs, func(i, j int) bool { return durs[i] < durs[j] })
+		return durs[len(durs)/2]
+	}
+
+	small := timeIt(ambiguousLiterals(32000))
+	big := timeIt(ambiguousLiterals(128000)) // 4x вход
+	if big > small*8 {
+		t.Fatalf("время выросло в %.1fx при росте входа в 4x (small=%v, big=%v) — похоже на квадратичную ветку",
+			float64(big)/float64(small), small, big)
+	}
+}
+
+// Детерминированный близнец теста по времени: buildQuotePrefix обязан звать
+// себя ровно один раз за вызов NormalizeSQL, независимо от числа литералов.
+func TestNormalizeSQLBuildsQuotePrefixOnce(t *testing.T) {
+	var calls int
+	buildQuotePrefixFn = func(q string) []int32 {
+		calls++
+		return buildQuotePrefix(q)
+	}
+	defer func() { buildQuotePrefixFn = buildQuotePrefix }()
+
+	NormalizeSQL(ambiguousLiterals(500))
+	if calls != 1 {
+		t.Fatalf("buildQuotePrefix вызвана %d раз на 500 литералов, want 1", calls)
+	}
+
+	calls = 0
+	NormalizeSQL(ambiguousLiterals(50000))
+	if calls != 1 {
+		t.Fatalf("buildQuotePrefix вызвана %d раз на 50000 литералов, want 1", calls)
 	}
 }
 

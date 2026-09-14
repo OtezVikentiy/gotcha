@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
 // доля Interval, не меньше пола — иначе повисший запрос держит self-метрику
@@ -141,6 +143,8 @@ func (w *Watchdog) tick(ctx context.Context) {
 
 // пропущенный удар проходит через Detector.OnResult как обычный отказ —
 // fail_threshold/consensus/инциденты ведут себя одинаково для тишины и провала.
+// Клейм перед ApplyResult: его предикат отсекает только СТАРШИЙ результат,
+// не одновременный, иначе вторая реплика применит тот же пропуск повторно.
 func (w *Watchdog) checkHeartbeats(ctx context.Context) {
 	monitors, err := w.Svc.StaleHeartbeats(ctx)
 	if err != nil {
@@ -149,7 +153,20 @@ func (w *Watchdog) checkHeartbeats(ctx context.Context) {
 	}
 	region := w.region()
 	at := time.Now().UTC()
+	debounce := w.Interval
+	if debounce <= 0 {
+		debounce = time.Minute
+	}
 	for _, m := range monitors {
+		won, err := w.Svc.ClaimHeartbeatMiss(ctx, m.ID, region, debounce, at)
+		if err != nil {
+			slog.Error("uptime: watchdog: claim heartbeat miss failed", "monitor_id", m.ID, "error", err)
+			continue
+		}
+		if !won {
+			// Другая реплика уже применила пропуск этого heartbeat-тика.
+			continue
+		}
 		st, err := w.Svc.ApplyResult(ctx, m.ID, region, false, heartbeatMissedError, at)
 		if err != nil {
 			slog.Error("uptime: watchdog: apply heartbeat miss failed", "monitor_id", m.ID, "error", err)
@@ -231,7 +248,7 @@ func (w *Watchdog) checkSSL(ctx context.Context) {
 			// this tick (or an earlier one) — do not notify.
 			continue
 		}
-		if err := w.Notifier.Notify(ctx, Event{Kind: "ssl_expiring", Monitor: m, DaysLeft: daysLeft}); err != nil {
+		if err := w.Notifier.Notify(ctx, Event{Kind: notify.KindSSLExpiring, Monitor: m, DaysLeft: daysLeft}); err != nil {
 			slog.Warn("uptime: watchdog: ssl notify failed after claim", "monitor_id", m.ID, "days", due, "error", err)
 		}
 	}
@@ -279,7 +296,7 @@ func (w *Watchdog) checkReminders(ctx context.Context) {
 		}
 		duration := int64(now.Sub(it.Incident.StartedAt).Seconds())
 		ev := Event{
-			Kind:            "reminder",
+			Kind:            notify.KindReminder,
 			Monitor:         it.Monitor,
 			Incident:        it.Incident,
 			Regions:         it.Incident.Regions,
@@ -361,6 +378,29 @@ func (s *Service) SSLCandidates(ctx context.Context) ([]Monitor, error) {
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// Клеймит только вызов, чей at не моложе debounce от предыдущего
+// last_checked_at — won=false значит пропуск уже применён другим вызовом.
+func (s *Service) ClaimHeartbeatMiss(ctx context.Context, monitorID int64, region string, debounce time.Duration, at time.Time) (bool, error) {
+	var id int64
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO monitor_state (monitor_id, region, status, consecutive_fails, consecutive_oks, last_checked_at, last_error)
+		VALUES ($1, $2, 'unknown', 0, 0, $4, '')
+		ON CONFLICT (monitor_id, region) DO UPDATE
+		SET last_checked_at = $4
+		WHERE monitor_state.last_checked_at IS NULL
+		   OR monitor_state.last_checked_at + make_interval(secs => $3) <= $4
+		RETURNING monitor_id`,
+		monitorID, region, debounce.Seconds(), at,
+	).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("uptime: claim heartbeat miss: %w", err)
+	}
+	return true, nil
 }
 
 // один UPDATE, не read-then-write — из гонки реплик побеждает ровно одна;

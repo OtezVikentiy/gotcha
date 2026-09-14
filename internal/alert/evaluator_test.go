@@ -158,7 +158,7 @@ func TestEvaluatorOnIssue(t *testing.T) {
 			t.Fatalf("first call: jobs=%d err=%v, want 1", len(jobs), err)
 		}
 		for _, j := range jobs {
-			if err := ob.MarkSent(ctx, j.ID); err != nil {
+			if err := ob.MarkSent(ctx, j.ID, j.Attempts); err != nil {
 				t.Fatalf("MarkSent: %v", err)
 			}
 		}
@@ -479,6 +479,64 @@ func TestEvaluatorFullEnqueueFailureReleasesThrottleAndBudget(t *testing.T) {
 	}
 	if len(jobs) != 2 {
 		t.Fatalf("after rollback: enqueued %d jobs, want 2 (throttle should have been released)", len(jobs))
+	}
+}
+
+// Просадка PG ровно на шаге чтения каналов не должна молчать до конца
+// ThrottleMinutes: claim throttle/budget уже списаны, отправка не состоялась
+// и сама не повторится — без отката алерт по этой issue не уйдёт никогда.
+func TestEvaluatorChannelsLookupFailureReleasesThrottleAndBudget(t *testing.T) {
+	pool := testenv.MigratedPG(t)
+	svc := alert.NewService(pool)
+	svc.SetBudget(time.Hour, 5)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pid := newEvalProject(t, pool, "channels-lookup-fail")
+	if _, err := svc.UpsertRule(ctx, alert.Rule{
+		ProjectID: pid, Kind: alert.KindNewIssue, Enabled: true, ThrottleMinutes: 30,
+	}); err != nil {
+		t.Fatalf("UpsertRule: %v", err)
+	}
+	if _, err := svc.CreateChannel(ctx, alert.Channel{
+		ProjectID: pid, Kind: alert.ChannelWebhook, Enabled: true, Target: "https://example.com/hook",
+	}); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	issueID := newEvalIssue(t, pool, pid, "fp-1")
+
+	// Свежая просадка PG между claimBudget и Channels() смоделирована временной
+	// недоступностью самой таблицы: alert_throttle/alert_project_budget не задеты.
+	if _, err := pool.Exec(ctx, "ALTER TABLE alert_channels RENAME TO alert_channels_down"); err != nil {
+		t.Fatalf("rename alert_channels: %v", err)
+	}
+
+	ob := notify.NewOutbox(pool)
+	e := &alert.Evaluator{Svc: svc, Outbox: ob, BaseURL: "https://gotcha.example"}
+	ev := alert.Event{ProjectID: pid, IssueID: issueID, Kind: alert.KindNewIssue, Title: "boom", Level: "error"}
+	e.OnIssue(ctx, ev)
+
+	if _, err := pool.Exec(ctx, "ALTER TABLE alert_channels_down RENAME TO alert_channels"); err != nil {
+		t.Fatalf("restore alert_channels: %v", err)
+	}
+
+	var sent int
+	err := pool.QueryRow(ctx,
+		"SELECT sent FROM alert_project_budget WHERE project_id = $1", pid).Scan(&sent)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("alert_project_budget: %v", err)
+	}
+	if sent != 0 {
+		t.Fatalf("alert_project_budget.sent = %d, want 0 (claim should have been refunded)", sent)
+	}
+
+	e.OnIssue(ctx, ev)
+	jobs, err := ob.Claim(ctx, 10)
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("after rollback: enqueued %d jobs, want 1 (throttle should have been released)", len(jobs))
 	}
 }
 

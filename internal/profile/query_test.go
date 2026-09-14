@@ -346,11 +346,11 @@ func TestTopFunctionSharesShareByWeightSamplesByCount(t *testing.T) {
 		t.Fatalf("b.Share = %v, want ~0.0385 (self/total по весу, не 8/10 по числу строк)", b.Share)
 	}
 
-	if a.Samples != 10 {
-		t.Fatalf("a.Samples = %d, want 10 (число строк окна, не вес 208)", a.Samples)
+	if a.Samples != 2 {
+		t.Fatalf("a.Samples = %d, want 2 (число строк САМОЙ 'a', не всего окна (10) и не вес)", a.Samples)
 	}
-	if b.Samples != 10 {
-		t.Fatalf("b.Samples = %d, want 10 (число строк окна, не вес 208)", b.Samples)
+	if b.Samples != 8 {
+		t.Fatalf("b.Samples = %d, want 8 (число строк САМОЙ 'b', не всего окна (10) и не вес)", b.Samples)
 	}
 }
 
@@ -407,7 +407,7 @@ func TestTopFunctionSharesEmptyFunctionExcludedButWeighsIn(t *testing.T) {
 	if b.Share < 0.008 || b.Share > 0.02 {
 		t.Fatalf("b.Share = %v, want ~0.0113 (self/(named+unnamed)=8/708, не 8/208)", b.Share)
 	}
-	if a.Samples != 15 || b.Samples != 15 {
-		t.Fatalf("Samples = a:%d b:%d, want 15 for both (2 именованных + 8 + 5 безымянных строк)", a.Samples, b.Samples)
+	if a.Samples != 2 || b.Samples != 8 {
+		t.Fatalf("Samples = a:%d b:%d, want a=2 b=8 (строки САМОЙ функции; безымянные весят в total, но не считаются как чьи-то строки)", a.Samples, b.Samples)
 	}
 }

@@ -206,8 +206,8 @@ func TestEnsureDefaultRules(t *testing.T) {
 	}
 	for _, kind := range []string{alert.KindNewIssue, alert.KindRegression} {
 		r, ok := byKind[kind]
-		if !ok || !r.Enabled || r.ThrottleMinutes != 30 {
-			t.Errorf("default rule %s = %+v (ok=%v), want enabled throttle=30", kind, r, ok)
+		if !ok || !r.Enabled || r.ThrottleMinutes != alert.DefaultThrottleMinutes {
+			t.Errorf("default rule %s = %+v (ok=%v), want enabled throttle=%d", kind, r, ok, alert.DefaultThrottleMinutes)
 		}
 	}
 

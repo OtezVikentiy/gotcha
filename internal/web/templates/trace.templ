@@ -27,7 +27,7 @@ type TraceWaterfallData struct {
 }
 
 func traceFlamePath(traceID string) string {
-	return "/traces/" + traceID + "/flame"
+	return "/traces/" + url.PathEscape(traceID) + "/flame"
 }
 
 // трейс открывают из трёх мест — без пометки крошка всегда вела бы в «Транзакции», не туда, откуда пришли.
@@ -47,7 +47,7 @@ templ TraceWaterfall(d TraceWaterfallData, userEmail string) {
 				case "perf-issue":
 					@breadcrumbBack(templ.URL(perfIssuePath(d.FromID)), i18n.T(ctx, "nav.perf_issues"))
 				case "issue":
-					@breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.errors"))
+					@breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.issues"))
 				case "endpoint":
 					@breadcrumbBack(templ.URL(endpointPath(d.ProjectID, d.FromTransaction)), i18n.T(ctx, "nav.transactions"))
 				default:
@@ -93,6 +93,10 @@ type TraceExpiredData struct {
 	// <=0 — TTL не задан (хранится вечно): текст про число дней был бы враньём.
 	RetentionDays int
 
+	// true — спаны не доехали (буфер писателя под нагрузкой), а не истёк TTL:
+	// транзакция моложе окна хранения спанов, объяснять её сроком хранения нечестно.
+	Dropped bool
+
 	// та же семантика, что в TraceWaterfallData — состояние одно и то же независимо от источника ссылки.
 	From            string
 	FromID          int64
@@ -107,7 +111,7 @@ templ TraceExpired(d TraceExpiredData, userEmail string) {
 				case "perf-issue":
 					@breadcrumbBack(templ.URL(perfIssuePath(d.FromID)), i18n.T(ctx, "nav.perf_issues"))
 				case "issue":
-					@breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.errors"))
+					@breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.issues"))
 				case "endpoint":
 					@breadcrumbBack(templ.URL(endpointPath(d.ProjectID, d.FromTransaction)), i18n.T(ctx, "nav.transactions"))
 				default:
@@ -115,12 +119,18 @@ templ TraceExpired(d TraceExpiredData, userEmail string) {
 			}
 			<h1>{ d.TraceID }</h1>
 			<div class="empty-state">
-				@icon("clock")
-				<h2 class="empty-title">{ i18n.T(ctx, "trace.expired.title") }</h2>
-				if d.RetentionDays > 0 {
-					<p>{ i18n.Tf(ctx, "trace.expired.body", "period", i18n.Tn(ctx, "unit.days", d.RetentionDays)) }</p>
+				if d.Dropped {
+					@icon("activity")
+					<h2 class="empty-title">{ i18n.T(ctx, "trace.dropped.title") }</h2>
+					<p>{ i18n.T(ctx, "trace.dropped.body") }</p>
 				} else {
-					<p>{ i18n.T(ctx, "trace.expired.body_purged") }</p>
+					@icon("clock")
+					<h2 class="empty-title">{ i18n.T(ctx, "trace.expired.title") }</h2>
+					if d.RetentionDays > 0 {
+						<p>{ i18n.Tf(ctx, "trace.expired.body", "period", i18n.Tn(ctx, "unit.days", d.RetentionDays)) }</p>
+					} else {
+						<p>{ i18n.T(ctx, "trace.expired.body_purged") }</p>
+					}
 				}
 			</div>
 		</div>
@@ -136,7 +146,7 @@ templ TraceUnavailable(d TraceExpiredData, userEmail string) {
 				case "perf-issue":
 					@breadcrumbBack(templ.URL(perfIssuePath(d.FromID)), i18n.T(ctx, "nav.perf_issues"))
 				case "issue":
-					@breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.errors"))
+					@breadcrumbBack(templ.URL(issueDetailPath(d.FromID)), i18n.T(ctx, "nav.issues"))
 				case "endpoint":
 					if d.ProjectID != 0 {
 						@breadcrumbBack(templ.URL(endpointPath(d.ProjectID, d.FromTransaction)), i18n.T(ctx, "nav.transactions"))

@@ -39,6 +39,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/profile"
+	"gitflic.ru/otezvikentiy/gotcha/internal/scrub"
 	"gitflic.ru/otezvikentiy/gotcha/internal/secretbox"
 	"gitflic.ru/otezvikentiy/gotcha/internal/selfmetrics"
 	"gitflic.ru/otezvikentiy/gotcha/internal/slo"
@@ -59,6 +60,9 @@ func main() {
 	// спрашивает уже работающий процесс.
 	if url, ok := healthcheckRequested(os.Args[1:], os.Getenv); ok {
 		os.Exit(runHealthcheck(url))
+	}
+	if code, ok := dispatchSubcommand(os.Args[1:], os.Getenv); ok {
+		os.Exit(code)
 	}
 	if err := run(); err != nil {
 		slog.Error("gotcha failed", "error", err)
@@ -120,6 +124,25 @@ func registerWriterMetrics(r *selfmetrics.Registry, name string, w writerStats) 
 		"Failed batch inserts. The batch is retried, so this is not data loss by itself.", lbl, w.InsertFailures)
 }
 
+// Единственный источник истины для gotcha_secret_key_insecure и Handler.SecretKeyInsecure:
+// повторять сравнение на своей стороне нельзя, метрика и предупреждение разойдутся.
+func secretKeyInsecure(secretKey string) bool {
+	return secretKey == devSecretKey
+}
+
+func registerSecretKeyMetric(r *selfmetrics.Registry, secretKey string) {
+	r.AddInt(selfmetrics.Gauge, "gotcha_secret_key_insecure",
+		"1 when GOTCHA_SECRET_KEY is unset (the public dev default): channel secrets, "+
+			"SSO client_secret and monitor headers are stored in PostgreSQL as plaintext "+
+			"in modes that touch them.",
+		nil, func() int64 {
+			if secretKeyInsecure(secretKey) {
+				return 1
+			}
+			return 0
+		})
+}
+
 // Доля потолка кучи, отдаваемая СУММЕ писательских буферов; остаток — на
 // HTTP-приём, разбор JSON, клиент PostgreSQL, сам рантайм поверх GC-паузы.
 const autoBufferSafeShare = 0.6
@@ -135,6 +158,23 @@ func autoMaxBufferBytes(heapLimitBytes int64) int64 {
 		return 0
 	}
 	return int64(float64(heapLimitBytes) * autoBufferSafeShare / autoBufferCapUnits)
+}
+
+// Доля ОСТАТКА кучи сверх писательских буферов (1-autoBufferSafeShare), отданная
+// суммарному весу одновременных разборов профиля (см. ingest.Handler.
+// SetProfileDecodeBudgetBytes) — тот же порядок допущения, что и у самих
+// буферов, не отдельная система координат. Остаток остатка — HTTP-приём,
+// разбор JSON, клиент PostgreSQL, рантайм.
+const profileDecodeBudgetShareOfResidual = 0.3
+
+// 0, если heapLimitBytes <= 0 — бюджет остаётся неограниченным, как и у
+// autoMaxBufferBytes в этом случае.
+func autoProfileDecodeBudgetBytes(heapLimitBytes int64) int64 {
+	if heapLimitBytes <= 0 {
+		return 0
+	}
+	residual := float64(heapLimitBytes) * (1 - autoBufferSafeShare)
+	return int64(residual * profileDecodeBudgetShareOfResidual)
 }
 
 // Явный GOTCHA_MAX_WRITER_BUFFER_BYTES всегда побеждает автодефолт от потолка кучи.
@@ -270,16 +310,35 @@ func applyMemoryLimit() int64 {
 	return limit
 }
 
+// Лучшим усилием — невалидное значение здесь не отказ старта, ту же
+// переменную позже провалит validateLogging внутри loadConfigChecked.
+func earlyLogEnv(getenv func(string) string) (level, format string) {
+	return strings.ToLower(strings.TrimSpace(getenv("GOTCHA_LOGGING_LEVEL"))),
+		strings.ToLower(strings.TrimSpace(getenv("GOTCHA_LOGGING_FORMAT")))
+}
+
+// Применяет логирование ДО loadConfigChecked — она сама зовёт slog.Warn,
+// и эти предупреждения обязаны идти уже в выбранном формате/уровне.
+func loadConfigWithLogging(getenv func(string) string, environ func() []string, args []string) (Config, error) {
+	earlyLevel, earlyFormat := earlyLogEnv(getenv)
+	_ = setupLogging(earlyLevel, earlyFormat)
+	cfg, err := loadConfigChecked(getenv, environ, args)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := setupLogging(cfg.LogLevel, cfg.LogFormat); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
 func run() error {
 	if versionRequested(os.Args[1:]) {
 		fmt.Println("gotcha", version.String())
 		return nil
 	}
-	cfg, err := loadConfigChecked(os.Getenv, os.Environ, os.Args[1:])
+	cfg, err := loadConfigWithLogging(os.Getenv, os.Environ, os.Args[1:])
 	if err != nil {
-		return err
-	}
-	if err := setupLogging(cfg.LogLevel, cfg.LogFormat); err != nil {
 		return err
 	}
 	if cfg.MigrateForcePG >= 0 || cfg.MigrateForceCH >= 0 {
@@ -324,6 +383,12 @@ func run() error {
 		return nil
 	}
 
+	return runServer(ctx, cfg, memLimitBytes)
+}
+
+// Отделена от run(): построение процесса по cfg.Mode и его штатное завершение
+// проверяются тестами напрямую, без сигналов ОС и разбора os.Args/os.Environ.
+func runServer(ctx context.Context, cfg Config, memLimitBytes int64) error {
 	logDetailPolicy(cfg)
 
 	pg, err := db.NewPostgres(ctx, cfg.PostgresDSN)
@@ -338,7 +403,8 @@ func run() error {
 	}
 	defer ch.Close()
 
-	if err := applyMigrations(ctx, cfg, pg, ch); err != nil {
+	retention, err := applyMigrations(ctx, cfg, pg, ch)
+	if err != nil {
 		return err
 	}
 
@@ -363,6 +429,8 @@ func run() error {
 			"stamped": strconv.FormatBool(version.Stamped()),
 		},
 		func() float64 { return 1 })
+	registerSecretKeyMetric(&selfMetrics, cfg.SecretKey)
+	registerRetentionMetrics(&selfMetrics, retention)
 	// Не зависит от cfg.Mode: i18n.T зовётся и из web, и из notify независимо
 	// от режима процесса.
 	for _, locale := range i18n.SupportedLocales() {
@@ -394,6 +462,7 @@ func run() error {
 		emailSender = notify.NewEmailSender(notify.EmailConfig{
 			Host: cfg.SMTPHost, Port: cfg.SMTPPort,
 			User: cfg.SMTPUser, Password: cfg.SMTPPassword, From: cfg.SMTPFrom,
+			RequireTLS: cfg.SMTPRequireTLS,
 		})
 		outbox = notify.NewOutbox(pg)
 	}
@@ -436,6 +505,7 @@ func run() error {
 			emailSender = notify.NewEmailSender(notify.EmailConfig{
 				Host: cfg.SMTPHost, Port: cfg.SMTPPort,
 				User: cfg.SMTPUser, Password: cfg.SMTPPassword, From: cfg.SMTPFrom,
+				RequireTLS: cfg.SMTPRequireTLS,
 			})
 		}
 		uptimeNotifier = &uptime.OutboxNotifier{
@@ -553,6 +623,7 @@ func run() error {
 	var metricWriter *metric.Writer
 	var profileWriter *profile.Writer
 	var logWriter *log.Writer
+	var writerDrops *ingest.WriterDropAttributor
 	// Объявлены здесь, а не через := в if-блоках ниже: newRootMux собирается
 	// один раз, после того как оба хендлера построены (или остались nil).
 	var ingestHandler *ingest.Handler
@@ -631,6 +702,18 @@ func run() error {
 				Locale:       i18n.Locale{Code: cfg.Locale},
 			}
 			go digester.Run(ctx)
+			selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_alert_digest_last_tick_timestamp_seconds",
+				"Unix time of the last completed suppressed-alert digest pass. Stale value means digest summaries are not being sent.",
+				nil, digester.LastTickUnix)
+			selfMetrics.Add(selfmetrics.Gauge, "gotcha_alert_digest_tick_duration_seconds",
+				"Duration of the last suppressed-alert digest pass. Approaching the interval means PostgreSQL or notification channels are not keeping up.",
+				nil, digester.LastTickSeconds)
+			selfMetrics.AddInt(selfmetrics.Counter, "gotcha_alert_digest_suppressed_lost_total",
+				"Suppressed alerts whose digest summary could neither be delivered nor requeued for retry — permanently lost.",
+				nil, digester.LostSuppressed)
+			selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_alert_digest_skipped_batches",
+				"Number of suppressed-alert batches skipped in the last tick because the tick budget ran out. Non-zero means the digester cannot keep up with the batch count.",
+				nil, digester.LastTickSkippedBatches)
 		}
 
 		// Доставленные/проваленные строки без ретенции копятся бесконечно.
@@ -832,6 +915,15 @@ func run() error {
 			Svc: alertSvc, Outbox: outbox, Issues: issueSvc, Events: event.NewQuery(ch), Evaluator: evaluator,
 		}
 		go spikeWorker.Run(ctx)
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_alert_spike_last_tick_timestamp_seconds",
+			"Unix time of the last completed spike-rule evaluation pass. Stale value means spike alerts are not being evaluated.",
+			nil, spikeWorker.LastTickUnix)
+		selfMetrics.Add(selfmetrics.Gauge, "gotcha_alert_spike_tick_duration_seconds",
+			"Duration of the last spike-rule evaluation pass. Approaching the interval means ClickHouse is not keeping up.",
+			nil, spikeWorker.LastTickSeconds)
+		selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_alert_spike_skipped_rules",
+			"Number of enabled spike rules skipped in the last tick because the tick budget ran out. Non-zero means the worker cannot keep up with the rule count.",
+			nil, spikeWorker.LastTickSkippedRules)
 
 		// Один инстанс на процесс, тот же кеш, что читает transaction_sample_rate.
 		projectCache := ingest.NewProjectCache(orgSvc)
@@ -877,7 +969,7 @@ func run() error {
 		// perf_issues продолжает работать как обычно.
 		pipeline.Maint = uptime.NewService(pg)
 		pipeline.Projects = projectCache
-		scrubber := ingest.NewScrubber(cfg.ScrubIP, cfg.ScrubEmail, cfg.ScrubKeys)
+		scrubber := scrub.NewScrubber(cfg.ScrubIP, cfg.ScrubEmail, cfg.ScrubKeys)
 		scrubber.ScrubFreeText = cfg.ScrubFreeText // opt-in маскирование email в свободном тексте
 		scrubber.SetAllowKeys(cfg.ScrubAllowKeys)  // явные исключения из fail-closed denylist
 		pipeline.Scrub = scrubber
@@ -888,12 +980,29 @@ func run() error {
 		// тем же 60с-флашем в org_usage.dropped_*.
 		batcher.SetDropSink(pipeline.CountDroppedEvents)
 		spanWriter.SetDropSink(pipeline.CountDroppedTransactions)
+		// Спан не квота — задваивать dropped_transactions нельзя (см. SetDropSink
+		// выше); видимость только через журнал, своей колонки в org_usage у спанов нет.
+		spanWriter.SetSpanDropSink(func(orgID, n int64) {
+			slog.Warn("trace: spans dropped from buffer under load", "org_id", orgID, "n", n)
+		})
+		// Метрики/профили/логи несут только project_id — резолв в org_id и запись
+		// в org_usage откладываются на собственный тикер, вне писательского mu.
+		writerDrops = ingest.NewWriterDropAttributor(projectCache, orgSvc, orgSvc)
+		go writerDrops.Run()
+		metricWriter.SetDropSink(writerDrops.CountDroppedMetrics)
+		profileWriter.SetDropSink(writerDrops.CountDroppedProfiles)
+		logWriter.SetDropSink(writerDrops.CountDroppedLogs)
 		pipeline.Start()
 		ingestHandler = ingest.NewHandler(
 			ingest.NewKeyCache(orgSvc), ingest.NewOrgQuota(orgSvc), pipeline, cfg.MaxEventBytes)
 		// burst = 2×лимит — та же пропорция, что у прежней захардкоженной пары
 		// 500/1000. 0 выключает.
 		ingestHandler.SetRateLimit(time.Now, float64(cfg.IngestRateLimit), 2*float64(cfg.IngestRateLimit))
+		// По клиентскому IP, до аутентификации DSN; burst = 2×лимит, как у дефолтной пары 2000/4000.
+		ingestHandler.SetPreAuthRateLimit(time.Now, float64(cfg.PreAuthRateLimit), 2*float64(cfg.PreAuthRateLimit))
+		// Только touchUnverifiedSignal; burst = 5×лимит, как у дефолтной пары 2/10.
+		ingestHandler.SetSignalTouchRateLimit(time.Now, float64(cfg.SignalTouchRateLimit), 5*float64(cfg.SignalTouchRateLimit))
+		ingestHandler.SetProfileDecodeBudgetBytes(autoProfileDecodeBudgetBytes(memLimitBytes))
 		// Отдельный счётчик от org_usage.transactions_count: исчерпанный бюджет
 		// транзакций не закрывает приём ошибок и наоборот.
 		ingestHandler.TxQuota = ingest.NewOrgTransactionQuota(orgSvc)
@@ -934,6 +1043,14 @@ func run() error {
 				"Ingest requests rejected, by broad reason and telemetry signal. reason=\"key_revoked\" is reserved for future use (see ingest.IngestRejectReason) and never appears here today.",
 				map[string]string{"reason": string(p.Reason), "signal": string(p.Signal)},
 				func() int64 { return ingestHandler.RejectedBy(p.Reason, p.Signal) })
+		}
+		// Профиль принят (200/202), не отвергнут — parser говорит, какой из двух
+		// декодеров срезал часть сэмплов/кадров по капу.
+		for _, p := range ingest.ProfileParsers() {
+			selfMetrics.AddInt(selfmetrics.Counter, "gotcha_ingest_profile_truncated_total",
+				"Profiles accepted but truncated by a decode-time cap; parser says which path. Reason lives only in the warn-level log line, not in this metric.",
+				map[string]string{"parser": string(p)},
+				func() int64 { return ingestHandler.ProfileTruncatedBy(p) })
 		}
 		// ВРЕМЕННАЯ: исчезает вместе с алиасами в 2.0 — задокументировано в
 		// self-monitoring и CHANGELOG, удалять без релиза-предупреждения нельзя.
@@ -1025,6 +1142,7 @@ func run() error {
 		webHandler.ProfileRegressions = profile.NewRegressionService(pg)
 		webHandler.OAuth = buildRegistry(cfg)
 		webHandler.SecretKey = deriveCookieKey(cfg.SecretKey)
+		webHandler.SecretKeyInsecure = secretKeyInsecure(cfg.SecretKey)
 		webHandler.TrustedProxies = cfg.TrustedProxies
 		webHandler.RegistrationMode = cfg.RegistrationMode
 		webHandler.HSTSHeader = web.HSTSHeaderValue(
@@ -1106,21 +1224,26 @@ func run() error {
 				}
 			})
 		}
-		if metricWriter != nil {
+		if metricWriter != nil || profileWriter != nil {
 			branches = append(branches, func() {
-				cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				if err := metricWriter.Close(cctx); err != nil {
-					slog.Error("metric writer drain failed", "error", err)
+				if metricWriter != nil {
+					cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					if err := metricWriter.Close(cctx); err != nil {
+						slog.Error("metric writer drain failed", "error", err)
+					}
+					cancel()
 				}
-			})
-		}
-		if profileWriter != nil {
-			branches = append(branches, func() {
-				cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				if err := profileWriter.Close(cctx); err != nil {
-					slog.Error("profile writer drain failed", "error", err)
+				if profileWriter != nil {
+					cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					if err := profileWriter.Close(cctx); err != nil {
+						slog.Error("profile writer drain failed", "error", err)
+					}
+					cancel()
+				}
+				// После Close писателей: последний emitDrops уже добавил в агрегат,
+				// закрытие сливает его в PG, а не роняет на выходе из процесса.
+				if writerDrops != nil {
+					writerDrops.Close()
 				}
 			})
 		}
@@ -1302,6 +1425,9 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 	selfMetrics.Add(selfmetrics.Gauge, "gotcha_metric_evaluator_tick_duration_seconds",
 		"Duration of the last metric threshold evaluation pass. Approaching the interval means the evaluator stops keeping up.",
 		nil, metricEval.LastTickSeconds)
+	selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_metric_evaluator_skipped_rules",
+		"Number of enabled rules skipped in the last tick because the tick budget ran out. Non-zero means the evaluator cannot keep up with the rule count.",
+		nil, metricEval.LastTickSkippedRules)
 	go metricEval.Run(ctx)
 
 	profileRegEval := &profile.RegressionEvaluator{
@@ -1356,6 +1482,8 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 			Incidents: host.NewIncidentService(pg),
 			Hosts:     host.NewStore(pg),
 			Settings:  host.NewSettingsService(pg),
+			Overrides: host.NewHostOverrideService(pg),
+			Groups:    host.NewGroupThresholdService(pg),
 			Pool:      pg,
 			// У Retirer-экземпляра (entityJanitor) поле остаётся nil намеренно —
 			// он шлёт только retire/close.
@@ -1370,6 +1498,9 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 	selfMetrics.Add(selfmetrics.Gauge, "gotcha_host_evaluator_tick_duration_seconds",
 		"Duration of the last host threshold evaluation pass. Approaching the interval means the evaluator stops keeping up.",
 		nil, hostEval.LastTickSeconds)
+	selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_host_evaluator_skipped_hosts",
+		"Number of active hosts skipped in the last tick because the tick budget ran out. Non-zero means the evaluator cannot keep up with the host count.",
+		nil, hostEval.LastTickSkippedHosts)
 	go hostEval.Run(ctx)
 
 	sloNotifier := &slo.SLOBurnNotifier{
@@ -1400,6 +1531,9 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 	selfMetrics.Add(selfmetrics.Gauge, "gotcha_slo_evaluator_tick_duration_seconds",
 		"Duration of the last SLO burn-rate evaluation pass. Approaching the interval means the evaluator stops keeping up.",
 		nil, sloEval.LastTickSeconds)
+	selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_slo_evaluator_skipped_slos",
+		"Number of enabled SLOs skipped in the last tick because the tick budget ran out. Non-zero means the evaluator cannot keep up with the SLO count.",
+		nil, sloEval.LastTickSkippedSLOs)
 	go sloEval.Run(ctx)
 
 	// uptime.Service.OpenUnacked не отдаёт планировщику инциденты на
@@ -1441,6 +1575,9 @@ func startEvaluators(ctx context.Context, cfg Config, pg *pgxpool.Pool, ch drive
 	selfMetrics.Add(selfmetrics.Gauge, "gotcha_escalation_scheduler_tick_duration_seconds",
 		"Duration of the last escalation scheduler pass. Approaching the interval means the scheduler stops keeping up.",
 		nil, sched.LastTickSeconds)
+	selfMetrics.AddInt(selfmetrics.Gauge, "gotcha_escalation_scheduler_skipped_incidents",
+		"Number of open unacknowledged incidents skipped in the last tick because the tick budget ran out. Non-zero means the scheduler cannot keep up with the incident count.",
+		nil, sched.LastTickSkippedIncidents)
 	go sched.Run(ctx)
 
 	// 0 означает «хранить вечно» — janitor тогда не запускаем.

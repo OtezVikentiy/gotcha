@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -57,6 +58,22 @@ func capRunes(s string, n int) string {
 		return s
 	}
 	return string(r[:n])
+}
+
+// Кап по БАЙТАМ, не рунам: цена NormalizeSQL зависит от длины в байтах —
+// рунный кап на многобайтовом описании пропустил бы вчетверо больше байт.
+func capBytes(s string, n int) string {
+	if strings.IndexByte(s, 0) >= 0 {
+		s = strings.ReplaceAll(s, "\x00", "")
+	}
+	if len(s) <= n {
+		return s
+	}
+	// не резать многобайтовую руну пополам — иначе на конце останется битый UTF-8.
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // Не защищает от размножения issue: троттлинг алертов ключуется (issue_id,

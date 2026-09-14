@@ -151,8 +151,9 @@ type ResultsRequest struct {
 	Results []ResultDTO `json:"results"`
 }
 
-// Rejected — задание чужое, lease истёк или уже выполнено.
+// Dropped — задание валидно, но применить успел кто-то другой раньше.
 type ResultsResponse struct {
 	Accepted int `json:"accepted"`
 	Rejected int `json:"rejected"`
+	Dropped  int `json:"dropped"`
 }

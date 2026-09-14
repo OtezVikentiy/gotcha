@@ -21,8 +21,15 @@ import (
 
 const logsListLimit = 100
 
-// положительные параметры лимита не имеют — иначе он сломал бы уже разосланные ссылки.
 const maxNegativeConditions = 20
+
+// зеркало maxNegativeConditions для позитивных `attr=`: без потолка URL с десятками тысяч
+// повторов параметра собирает WHERE на столько же конъюнктов. maxAttrFilterBytes — суммарная
+// длина значений, отдельно от их числа (несколько предельно длинных значений тоже дорогой WHERE).
+const (
+	maxAttrConditions  = 20
+	maxAttrFilterBytes = 4096
+)
 
 const logsHistogramBuckets = 48
 
@@ -106,7 +113,7 @@ func (h *Handler) logsList(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -128,13 +135,14 @@ func (h *Handler) renderLogsPage(w http.ResponseWriter, r *http.Request, status 
 	// (h.LogRetentionDays) — иначе запрос уйдёт в партиции ClickHouse, которых уже нет.
 	rng := h.resolveTimeRange(w, r, "24h")
 	q := params
-	f, rangeClamped := parseLogFilter(q, rng, h.LogRetentionDays)
+	f, rangeClamped, attrsRejected := parseLogFilter(q, rng, h.LogRetentionDays)
 
 	// nodefault — отдельный признак подавления умолчания (не пустой URL, который
 	// включил бы его снова); эхом идёт в форму скрытым полем DefaultSuppressed.
 	defaultSuppressed := q.Get("nodefault") != ""
 	var defaultFilter *logfilter.Filter
 	var showAllHref string
+	var defaultInapplicable bool
 	if h.LogFilters != nil && !defaultSuppressed && !hasLogFilterParams(q) {
 		if def, ok, err := h.LogFilters.Default(r.Context(), projectID, uid); err != nil {
 			slog.Warn("logs: default filter unavailable", "project_id", projectID, "err", err)
@@ -149,15 +157,26 @@ func (h *Handler) renderLogsPage(w http.ResponseWriter, r *http.Request, status 
 			}
 			showAllQuery.Set("nodefault", "1")
 			showAllHref = templates.LogsURLFromValues(projectID, showAllQuery)
+		} else if ok {
+			// Умолчание есть, но устарело (Applicable=false) — раньше страница просто
+			// показывала нефильтрованные логи, никак не объясняя пропуск.
+			defaultInapplicable = true
 		}
 	}
 
-	rows, listErr := h.LogQuery.List(r.Context(), projectID, f)
-	// Ошибка ClickHouse — не 500: список остаётся видимым (фильтры не пропадают), просто пуст.
-	loadFailed := listErr != nil
-	if loadFailed {
-		slog.Warn("logs: list failed", "project_id", projectID, "err", listErr)
-		rows = nil
+	// attrsRejected: запрос к ClickHouse не уходит вовсе — отказ явный, а не догадка,
+	// какие из превышающих потолок условий сохранить.
+	var rows []log.LogRow
+	var loadFailed bool
+	if !attrsRejected {
+		var listErr error
+		rows, listErr = h.LogQuery.List(r.Context(), projectID, f)
+		// Ошибка ClickHouse — не 500: список остаётся видимым (фильтры не пропадают), просто пуст.
+		loadFailed = listErr != nil
+		if loadFailed {
+			slog.Warn("logs: list failed", "project_id", projectID, "err", listErr)
+			rows = nil
+		}
 	}
 
 	vmRows := make([]templates.LogRow, len(rows))
@@ -176,12 +195,14 @@ func (h *Handler) renderLogsPage(w http.ResponseWriter, r *http.Request, status 
 		Range:       timeRangeVM(rng),
 		Active: len(f.Severity) > 0 || f.Service != "" || f.Environment != "" || f.Query != "" || len(f.Attrs) > 0 ||
 			f.TraceID != "" || len(f.Not) > 0 || rng.Key != "24h",
-		Facet:              q.Get("facet"),
-		RangeClamped:       rangeClamped,
-		RetentionDays:      h.LogRetentionDays,
-		DefaultApplied:     defaultFilter,
-		DefaultShowAllHref: showAllHref,
-		DefaultSuppressed:  defaultSuppressed,
+		Facet:               q.Get("facet"),
+		RangeClamped:        rangeClamped,
+		AttrsRejected:       attrsRejected,
+		RetentionDays:       h.LogRetentionDays,
+		DefaultApplied:      defaultFilter,
+		DefaultShowAllHref:  showAllHref,
+		DefaultSuppressed:   defaultSuppressed,
+		DefaultInapplicable: defaultInapplicable,
 	}
 
 	var olderHref string
@@ -191,7 +212,7 @@ func (h *Handler) renderLogsPage(w http.ResponseWriter, r *http.Request, status 
 
 	var histogram templates.LogsHistogram
 	var facets templates.LogFacets
-	if loadFailed {
+	if loadFailed || attrsRejected {
 		histogram = templates.LogsHistogram{Empty: true}
 		facets = templates.LogFacets{
 			Severity:    templates.LogFacet{TooMuchData: true},
@@ -363,7 +384,7 @@ func clampLogRetention(from time.Time, retentionDays int) (clampedFrom time.Time
 	return from, false
 }
 
-func parseLogFilter(q url.Values, rng TimeRange, retentionDays int) (f log.ListFilter, clamped bool) {
+func parseLogFilter(q url.Values, rng TimeRange, retentionDays int) (f log.ListFilter, clamped, attrsRejected bool) {
 	from, clamped := clampLogRetention(rng.From, retentionDays)
 
 	f = log.ListFilter{
@@ -382,9 +403,12 @@ func parseLogFilter(q url.Values, rng TimeRange, retentionDays int) (f log.ListF
 		}
 	}
 
-	for _, raw := range q["attr"] {
-		if af, ok := parseLogAttrFilter(raw); ok {
-			f.Attrs = append(f.Attrs, af)
+	attrsRejected = attrConditionsOverLimit(q["attr"])
+	if !attrsRejected {
+		for _, raw := range q["attr"] {
+			if af, ok := parseLogAttrFilter(raw); ok {
+				f.Attrs = append(f.Attrs, af)
+			}
 		}
 	}
 
@@ -428,7 +452,18 @@ func parseLogFilter(q url.Values, rng TimeRange, retentionDays int) (f log.ListF
 	}
 	f.Not = not
 
-	return f, clamped
+	return f, clamped, attrsRejected
+}
+
+func attrConditionsOverLimit(raw []string) bool {
+	if len(raw) > maxAttrConditions {
+		return true
+	}
+	total := 0
+	for _, v := range raw {
+		total += len(v)
+	}
+	return total > maxAttrFilterBytes
 }
 
 // остаток делится по ПЕРВОМУ ":" на ключ/значение — значение само может содержать

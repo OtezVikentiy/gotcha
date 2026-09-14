@@ -22,6 +22,7 @@ func capRunes(s string, n int) string {
 func NormalizeSQL(q string) string {
 	var b strings.Builder
 	b.Grow(len(q))
+	quotePfx := buildQuotePrefixFn(q)
 
 	pendingSpace := false
 	sep := func() {
@@ -59,7 +60,7 @@ func NormalizeSQL(q string) string {
 
 		// 'строковый литерал' -> ?
 		case c == '\'':
-			i = skipSQLString(q, i)
+			i = skipSQLString(q, i, quotePfx)
 			sep()
 			b.WriteByte('?')
 
@@ -106,7 +107,7 @@ func NormalizeSQL(q string) string {
 			}
 			word := q[i:j]
 			if j < len(q) && q[j] == '\'' && isStringPrefix(word) {
-				i = skipSQLString(q, j)
+				i = skipSQLString(q, j, quotePfx)
 				sep()
 				b.WriteByte('?')
 				continue
@@ -135,12 +136,13 @@ func collapseINList(q string) string {
 
 // Стандартная семантика (слеш — обычный символ) пробуется первой: считать `\` экранирующим
 // значило бы, что `'C:\'` съедает свою кавычку и в вывод вываливается СОСЕДНИЙ литерал.
-func skipSQLString(q string, i int) int {
+// quotePfx — см. buildQuotePrefix.
+func skipSQLString(q string, i int, quotePfx []int32) int {
 	end, closed := skipStandardString(q, i)
 	if !closed || !closedByEscapedQuote(q, i, end) {
 		return end
 	}
-	if !hasOddQuotes(q[end:]) {
+	if !oddQuotesFrom(quotePfx, end) {
 		return end
 	}
 	if alt, altClosed := skipBackslashString(q, i); altClosed {
@@ -198,9 +200,29 @@ func closedByEscapedQuote(q string, start, end int) bool {
 	return n%2 == 1
 }
 
-// Непарное число кавычек в остатке — при стандартном чтении литерал остался бы незакрытым.
-func hasOddQuotes(rest string) bool {
-	return strings.Count(rest, "'")%2 == 1
+// Через переменную, не напрямую: тест на TestNormalizeSQLBuildsQuotePrefixOnce
+// подменяет её счётчиком, чтобы проверить кратность вызова без замера времени.
+var buildQuotePrefixFn = buildQuotePrefix
+
+// quotePfx[k] = число ' в q[:k]; строится один раз в NormalizeSQL (O(len(q))),
+// а не на каждый литерал — иначе транзакция с O(n) литералами сканировалась бы O(n²).
+func buildQuotePrefix(q string) []int32 {
+	pfx := make([]int32, len(q)+1)
+	var n int32
+	for i := 0; i < len(q); i++ {
+		if q[i] == '\'' {
+			n++
+		}
+		pfx[i+1] = n
+	}
+	return pfx
+}
+
+// Нечётность числа кавычек в q[from:] — O(1) по префиксным суммам вместо
+// strings.Count по остатку строки.
+func oddQuotesFrom(quotePfx []int32, from int) bool {
+	total := quotePfx[len(quotePfx)-1]
+	return (total-quotePfx[from])%2 == 1
 }
 
 func skipQuoted(q string, i int, quote byte) int {

@@ -399,6 +399,28 @@ func TestRegisterInviteModeRejectsUninvited(t *testing.T) {
 	}
 }
 
+// Лимитер срабатывает раньше проверки токена приглашения (см. registerSubmit) — форма,
+// возвращаемая на этой ветке, обязана нести ту же invite-only врезку, что и обычный GET.
+func TestRegisterRateLimitedKeepsInviteNote(t *testing.T) {
+	s := newInviteModeStack(t)
+	seedOrgWithInvite(t, s, "somebody@example.com", org.RoleMember)
+
+	var last *http.Response
+	var lastBody string
+	for i := 0; i < 6; i++ {
+		resp := postForm(t, s.srv, "/register", registerForm("stranger@example.com", ""), s.srv.URL, nil)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		last, lastBody = resp, string(body)
+	}
+	if last.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("6-я попытка регистрации status = %d, want 429: %s", last.StatusCode, lastBody)
+	}
+	if !strings.Contains(lastBody, "Регистрация на этом инстансе — только по приглашению") {
+		t.Fatalf("форма после рейт-лимита потеряла invite-only врезку: %s", lastBody)
+	}
+}
+
 func TestRegisterClosedModeRejectsEvenInvited(t *testing.T) {
 	s := newInviteModeStack(t)
 	s.h.RegistrationMode = "closed"

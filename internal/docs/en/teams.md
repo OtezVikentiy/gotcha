@@ -26,7 +26,20 @@ The instance administrator configures and removes [SSO](/docs/sso) for organizat
 
 Transfer the role from the "Instance admin" section on `/profile`: enter the email of an existing instance user and confirm the transfer. Once confirmed, the role moves to the recipient immediately, and the previous administrator loses access to SSO configuration and the ability to transfer the role again.
 
-**Recovery** if access to the instance administrator's account is lost: if only the password is forgotten, a regular password reset restores access — the administrator's account still cannot be deleted while other users exist on the instance. If the account is completely unreachable, an operator with access to the instance database assigns a new administrator directly, in one transaction — `BEGIN`/`COMMIT` are required: `psql` autocommits by default, and without them a typo in the email after the first `UPDATE` silently leaves the instance with no administrator at all:
+**Recovery** if access to the instance administrator's account is lost: the administrator's account still cannot be deleted while other users exist on the instance — but the password can be recovered if that's all that's missing.
+
+If only the password is forgotten, two paths:
+
+- **Self-service**, when the instance has outgoing email configured (`GOTCHA_SMTP_*`): the `/forgot-password` page ("Forgot password?" on `/login`) emails a link to set a new password to the given address. The link is valid for an hour and single-use; setting a new password through it ends every existing session for that account.
+- **Through an operator**, when email isn't configured (in that case `/forgot-password` says so plainly instead of showing a form that would silently do nothing) or the mailbox itself is also unreachable: the `gotcha set-password --email=<address>` subcommand sets a new password directly in the database. The password is read from standard input, not a command-line argument — an argument would end up in shell history and the process list. Don't type the password as a literal in the command either (that also lands in history) — use `read -s` so it's neither echoed nor saved:
+
+  ```bash
+  read -rs -p 'New password: ' PW && printf '%s\n' "$PW" | gotcha set-password --email=admin@example.com; unset PW
+  ```
+
+  The subcommand itself doesn't mask input — typing the password directly at its own prompt, bypassing `read -s`, echoes it to the screen.
+
+If the account is completely unreachable (no way to recover or reset the password — the email itself is gone too, say), an operator with access to the instance database assigns a new administrator directly, in one transaction — `BEGIN`/`COMMIT` are required: `psql` autocommits by default, and without them a typo in the email after the first `UPDATE` silently leaves the instance with no administrator at all:
 
 ```sql
 BEGIN;
@@ -36,6 +49,35 @@ COMMIT;
 ```
 
 Before `COMMIT`, verify each `UPDATE` reported `UPDATE 1` — `UPDATE 0` on the second command means a typo in the email, and committing in that state leaves the instance with no administrator. The partial unique index `one_instance_admin` prevents two users from ending up as administrator at once.
+
+## Ending someone else's session
+
+There's no button, for an owner or admin, that ends another member's active
+login session directly — signing out of other devices is self-service only,
+from the "Sessions" section on `/profile` ("Sign out of all other devices"
+ends every session on that account except the one used to click it).
+
+If a member's device is lost or compromised and you need to act without
+them, what actually ends every one of their sessions is a password change on
+that account: it deletes every session row for that user immediately, the
+same mechanism the recovery paths above rely on. The member can do this
+themselves once they're on a device they trust; if they can't, an operator
+with access to the instance's server can force it with `gotcha
+set-password --email=<address>` (see above) — an admin or owner without
+server access has no way to do this through the web app.
+
+Two more actions address a related but different risk, worth doing alongside it:
+
+- **Revoke the project's ingest keys** the device had access to, from
+  project settings — this doesn't touch a login session at all, but it does
+  stop a key stored on that device from still sending telemetry (allow up to
+  30 seconds for the revocation to take effect, see [Ingest
+  keys](/docs/keys)).
+- **Remove the member from the organization** ("Settings" → "Organization" →
+  "Members") if they shouldn't have access at all: membership is checked on
+  every request, not cached, so this cuts off every project's data
+  immediately — even though, if their login session is still valid, they
+  could still sign in to an account that now sees no organization.
 
 ## Inviting members
 

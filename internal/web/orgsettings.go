@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math/bits"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/humanize"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
@@ -112,7 +114,7 @@ func (h *Handler) orgSettingsPage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) requireOrgOwner(w http.ResponseWriter, r *http.Request, orgID, uid int64) bool {
 	role, err := h.Org.Role(r.Context(), orgID, uid)
 	if err != nil || role != org.RoleOwner {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 		return false
 	}
 	return true
@@ -123,7 +125,7 @@ func (h *Handler) requireOrgOwner(w http.ResponseWriter, r *http.Request, orgID,
 func (h *Handler) requireInstanceAdminForSSO(w http.ResponseWriter, r *http.Request, uid int64) bool {
 	admin, err := h.Auth.UserIsInstanceAdmin(r.Context(), uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return false
 	}
 	if !admin {
@@ -171,7 +173,7 @@ func (h *Handler) orgSettingsSSO(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, org.ErrInvalidSSO) || errors.Is(err, org.ErrInvalidRole):
 		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, i18n.T(r.Context(), "err.org.sso_fields_required"), "", nil)
 	default:
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 	}
 }
 
@@ -197,12 +199,17 @@ func (h *Handler) orgSettingsSSODelete(w http.ResponseWriter, r *http.Request) {
 	}
 	// CSP блокирует inline confirm() — первый POST рендерит страницу подтверждения.
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.sso_delete.message", "confirm.delete",
-			orgSettingsPath(orgID), orgSettingsPath(orgID)+"/sso/delete", nil)
+		name := ""
+		if o, err := h.Org.Get(r.Context(), orgID); err == nil {
+			name = o.Name
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.sso_delete.message", "confirm.delete",
+			orgSettingsPath(orgID), orgSettingsPath(orgID)+"/sso/delete", nil,
+			"name", name)
 		return
 	}
 	if err := h.Org.DeleteSSO(r.Context(), orgID); err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// Без сброса кеша отозванный IdP ещё до ssoCacheTTL выдавал бы логины и JIT-провижининг.
@@ -215,39 +222,39 @@ func (h *Handler) orgSettingsSSODelete(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) renderOrgSettings(w http.ResponseWriter, r *http.Request, status int, orgID, uid int64, errMsg, inviteLink string, inviteForm templates.FormState) {
 	o, err := h.Org.Get(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	members, err := h.Org.MembersOf(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// Ошибка чтения любого счётчика usage — 500, чтобы не показать частично-пустую картину лимитов.
 	now := time.Now()
 	usage, err := h.Org.Usage(r.Context(), orgID, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	txUsage, err := h.Org.TransactionUsage(r.Context(), orgID, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	metricUsage, err := h.Org.MetricUsage(r.Context(), orgID, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	profileUsage, err := h.Org.ProfileUsage(r.Context(), orgID, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	logUsage, err := h.Org.LogUsage(r.Context(), orgID, now)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	quotas := []templates.QuotaVM{
@@ -310,7 +317,19 @@ func droppedBreakdown(ctx context.Context, d org.Dropped) string {
 	return i18n.Tf(ctx, "org.quota.dropped_breakdown", "parts", strings.Join(parts, ", "))
 }
 
-// nil — показывать нечего: без дропов за месяц, и лимит событий безлимитный либо использование <90%.
+// usage*10 >= limit*9, но через 128-битное произведение (bits.Mul64) — прямое int64
+// умножение переполняется и переворачивает знак у квоты, близкой к 2^63/9.
+func quotaNear90Percent(usage, limit int64) bool {
+	uHi, uLo := bits.Mul64(uint64(usage), 10)
+	lHi, lLo := bits.Mul64(uint64(limit), 9)
+	if uHi != lHi {
+		return uHi > lHi
+	}
+	return uLo >= lLo
+}
+
+// nil — показывать нечего: без дропов за месяц, и по всем видам телеметрии с лимитом
+// (0 = безлимит) использование <90%.
 func (h *Handler) quotaBanner(ctx context.Context, orgID int64, canManage bool) *templates.QuotaBanner {
 	href := orgSettingsPath(orgID)
 	if !canManage {
@@ -330,26 +349,40 @@ func (h *Handler) quotaBanner(ctx context.Context, orgID int64, canManage bool) 
 			Href:   href,
 		}
 	}
-	// Дропов нет — проверяем приближение к лимиту событий (0 = безлимит).
+	// Дропов нет — проверяем приближение к лимиту по каждому виду телеметрии, в том же
+	// фиксированном порядке, что и droppedBreakdown (раньше проверялись только события).
 	o, err := h.Org.Get(ctx, orgID)
 	if err != nil {
 		slog.Warn("quotaBanner: get org", "org_id", orgID, "err", err)
 		return nil
 	}
-	if o.EventQuota <= 0 {
-		return nil
-	}
-	usage, err := h.Org.Usage(ctx, orgID, now)
-	if err != nil {
-		slog.Warn("quotaBanner: usage", "org_id", orgID, "err", err)
-		return nil
-	}
-	// usage >= 90% лимита — целочисленно, без float: usage*10 >= quota*9.
-	if usage*10 >= o.EventQuota*9 {
-		return &templates.QuotaBanner{
-			Text: i18n.Tf(ctx, "org.quota.near_limit",
-				"used", strconv.FormatInt(usage, 10), "limit", strconv.FormatInt(o.EventQuota, 10)),
-			Href: href,
+	for _, kind := range []struct {
+		key   string
+		limit int64
+		usage func(context.Context, int64, time.Time) (int64, error)
+	}{
+		{org.QuotaKindEvents, o.EventQuota, h.Org.Usage},
+		{org.QuotaKindTransactions, o.TransactionQuota, h.Org.TransactionUsage},
+		{org.QuotaKindMetrics, o.MetricQuota, h.Org.MetricUsage},
+		{org.QuotaKindProfiles, o.ProfileQuota, h.Org.ProfileUsage},
+		{org.QuotaKindLogs, o.LogQuota, h.Org.LogUsage},
+	} {
+		if kind.limit <= 0 {
+			continue
+		}
+		usage, err := kind.usage(ctx, orgID, now)
+		if err != nil {
+			slog.Warn("quotaBanner: usage", "org_id", orgID, "kind", kind.key, "err", err)
+			return nil
+		}
+		// usage >= 90% лимита — целочисленно, без float: usage*10 >= limit*9.
+		if quotaNear90Percent(usage, kind.limit) {
+			return &templates.QuotaBanner{
+				Text: i18n.Tf(ctx, "org.quota.near_limit",
+					"kind", i18n.T(ctx, "org.quota.kind."+kind.key),
+					"used", strconv.FormatInt(usage, 10), "limit", strconv.FormatInt(kind.limit, 10)),
+				Href: href,
+			}
 		}
 	}
 	return nil
@@ -358,7 +391,8 @@ func (h *Handler) quotaBanner(ctx context.Context, orgID int64, canManage bool) 
 // client_secret обратно не отдаём — показываем только «настроено».
 func (h *Handler) ssoSettingsVM(r *http.Request, orgID, uid int64) templates.SSOSettings {
 	vm := templates.SSOSettings{
-		RedirectURI: h.BaseURL + "/auth/oauth/" + ssoProviderPrefix + strconv.FormatInt(orgID, 10) + "/callback",
+		RedirectURI:       h.BaseURL + "/auth/oauth/" + ssoProviderPrefix + strconv.FormatInt(orgID, 10) + "/callback",
+		SecretKeyInsecure: h.SecretKeyInsecure,
 	}
 	if role, err := h.Org.Role(r.Context(), orgID, uid); err == nil && role == org.RoleOwner {
 		vm.IsOwner = true
@@ -445,9 +479,19 @@ func (h *Handler) orgSettingsRemove(w http.ResponseWriter, r *http.Request) {
 	}
 	// Тот же TOCTOU-фикс, что у SetRoleAs; CSP блокирует inline confirm().
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.member_remove.message", "confirm.remove",
+		email := i18n.T(r.Context(), "confirm.member_remove.unknown_member")
+		if members, err := h.Org.MembersOf(r.Context(), orgID); err == nil {
+			for _, m := range members {
+				if m.UserID == targetID {
+					email = m.Email
+					break
+				}
+			}
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.member_remove.message", "confirm.remove",
 			orgSettingsPath(orgID), orgSettingsRemovePath(orgID),
-			[]templates.HiddenField{{Name: "user_id", Value: strconv.FormatInt(targetID, 10)}})
+			[]templates.HiddenField{{Name: "user_id", Value: strconv.FormatInt(targetID, 10)}},
+			"email", email)
 		return
 	}
 	if err := h.Org.RemoveMemberAs(r.Context(), orgID, uid, targetID); err != nil {
@@ -476,22 +520,76 @@ func (h *Handler) orgSettingsLeave(w http.ResponseWriter, r *http.Request) {
 	if !h.parseForm(w, r) {
 		return
 	}
+	// Членство проверяем до показа чего бы то ни было: без этого посторонний, подставив
+	// чужой orgID, получал бы настоящее имя организации уже на неподтверждённом запросе.
+	if _, err := h.Org.Role(r.Context(), orgID, uid); err != nil {
+		if errors.Is(err, org.ErrNotMember) {
+			h.renderError(w, r, http.StatusNotFound, "")
+			return
+		}
+		h.renderError(w, r, http.StatusInternalServerError, "")
+		return
+	}
 	// CSP блокирует inline confirm().
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.org_leave.message", "org.danger.leave_org.button",
-			orgSettingsPath(orgID), orgSettingsLeavePath(orgID), nil)
+		name := ""
+		if o, err := h.Org.Get(r.Context(), orgID); err == nil {
+			name = o.Name
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.org_leave.message", "org.danger.leave_org.button",
+			orgSettingsPath(orgID), orgSettingsLeavePath(orgID), nil,
+			"name", name)
 		return
 	}
 	// Сессии участника намеренно не инвалидируются: доступ проверяется на каждом запросе.
 	if err := h.Org.RemoveMember(r.Context(), orgID, uid); err != nil {
 		if errors.Is(err, org.ErrNotMember) {
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			h.renderError(w, r, http.StatusNotFound, "")
 			return
 		}
 		h.renderOrgSettings(w, r, http.StatusUnprocessableEntity, orgID, uid, orgSettingsErrorMessage(r.Context(), err), "", nil)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// ctx уже несёт нужную locale — свою у адресата, если он зарегистрирован, иначе приглашающего.
+func inviteEmailPayload(ctx context.Context, orgName, inviter, link string) map[string]any {
+	return map[string]any{
+		"subject": i18n.Tf(ctx, "org.invite.email_subject", "org", orgName),
+		"body": i18n.Tf(ctx, "org.invite.email_body",
+			"org", orgName, "inviter", inviter, "link", link,
+			"expires", humanize.Duration(ctx, org.InviteTTL)),
+	}
+}
+
+const inviteEmailTimeout = 30 * time.Second
+
+// Фон, вне пути ответа: собственный ctx, не r.Context() — тот к этому моменту уже завершится.
+// requestLocale — фолбэк приглашающего, снятый с запроса ДО ухода в фон.
+func (h *Handler) sendInviteEmail(orgID, uid int64, email, link string, requestLocale i18n.Locale) {
+	if h.Email == nil || !h.Email.Configured() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), inviteEmailTimeout)
+	defer cancel()
+	orgName := ""
+	if o, err := h.Org.Get(ctx, orgID); err == nil {
+		orgName = o.Name
+	} else {
+		slog.Warn("orgSettingsInvite: org lookup for email failed", "org_id", orgID, "err", err)
+	}
+	inviter, err := h.Auth.UserEmail(ctx, uid)
+	if err != nil {
+		slog.Warn("orgSettingsInvite: inviter lookup for email failed", "org_id", orgID, "err", err)
+	}
+	// Незарегистрированный или без явного выбора — фолбэк на locale приглашающего, как раньше;
+	// поиск best-effort, ошибка БД на письмо не влияет.
+	locale := h.recipientLocale(ctx, email, requestLocale)
+	payload := inviteEmailPayload(i18n.WithLocale(ctx, locale), orgName, inviter, link)
+	if err := h.Email.Send(ctx, notify.Target{Kind: "email", Target: email}, payload); err != nil {
+		slog.Warn("orgSettingsInvite: failed to send invite email", "org_id", orgID, "err", err)
+	}
 }
 
 func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
@@ -528,29 +626,9 @@ func (h *Handler) orgSettingsInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	inviteLink := h.BaseURL + inviteAcceptPath(token)
 
-	// Письмо шлётся синхронно best-effort: сбой SMTP не роняет POST — ссылка-приглашение
-	// всё равно показана в UI ниже.
-	if h.Email != nil && h.Email.Configured() {
-		orgName := ""
-		if o, err := h.Org.Get(r.Context(), orgID); err == nil {
-			orgName = o.Name
-		} else {
-			slog.Warn("orgSettingsInvite: org lookup for email failed", "org_id", orgID, "err", err)
-		}
-		inviter, err := h.Auth.UserEmail(r.Context(), uid)
-		if err != nil {
-			slog.Warn("orgSettingsInvite: inviter lookup for email failed", "org_id", orgID, "err", err)
-		}
-		// Письмо уходит на языке приглашающего: локаль адресата ещё неизвестна — он не зарегистрирован.
-		payload := map[string]any{
-			"subject": i18n.Tf(r.Context(), "org.invite.email_subject", "org", orgName),
-			"body": i18n.Tf(r.Context(), "org.invite.email_body",
-				"org", orgName, "inviter", inviter, "link", inviteLink),
-		}
-		if err := h.Email.Send(r.Context(), notify.Target{Kind: "email", Target: email}, payload); err != nil {
-			slog.Warn("orgSettingsInvite: failed to send invite email", "org_id", orgID, "err", err)
-		}
-	}
+	// Письмо целиком в фоне: и поиск локали, и SMTP-сессия зависят от того, зарегистрирован
+	// ли адрес, а на пути ответа такой зависимости быть не должно.
+	go h.sendInviteEmail(orgID, uid, email, inviteLink, i18n.FromContext(r.Context()))
 
 	h.renderOrgSettings(w, r, http.StatusOK, orgID, uid, "", inviteLink, nil)
 }
@@ -680,10 +758,10 @@ func (h *Handler) orgSettingsDelete(w http.ResponseWriter, r *http.Request) {
 		o, err := h.Org.Get(r.Context(), orgID)
 		if err != nil {
 			if errors.Is(err, org.ErrNotFound) {
-				h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+				h.renderError(w, r, http.StatusNotFound, "")
 				return
 			}
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		h.renderConfirmf(w, r, "confirm.title", "confirm.org_delete.message", "org.danger.delete_org.button",
@@ -693,10 +771,10 @@ func (h *Handler) orgSettingsDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.Org.DeleteOrg(r.Context(), orgID); err != nil {
 		if errors.Is(err, org.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			h.renderError(w, r, http.StatusNotFound, "")
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOK(w, "flash.org_delete_queued", 0)
@@ -731,7 +809,7 @@ func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request
 	// Проект должен принадлежать этому оргу — иначе owner орга A мог бы чистить
 	// телеметрию проекта чужого орга по его id.
 	if pOrg, err := h.Org.ProjectOrg(r.Context(), projectID); err != nil || pOrg != orgID {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 		return
 	}
 	sub := telemetry.Subject{
@@ -787,7 +865,7 @@ func (h *Handler) orgSettingsPurgeSubject(w http.ResponseWriter, r *http.Request
 	res, err := h.Purger.PurgeSubject(r.Context(), projectID, sub)
 	if err != nil {
 		slog.Error("orgSettingsPurgeSubject: failed to purge subject data", "org_id", orgID, "project_id", projectID, "err", err)
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// Ноль строк — не ошибка, но при включённом скрубинге email/IP поиск по ним не
@@ -830,7 +908,7 @@ func (h *Handler) orgSettingsExportSubject(w http.ResponseWriter, r *http.Reques
 	// Проект должен принадлежать этому оргу — иначе owner орга A мог бы выгрузить
 	// телеметрию проекта чужого орга по его id.
 	if pOrg, err := h.Org.ProjectOrg(r.Context(), projectID); err != nil || pOrg != orgID {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 		return
 	}
 	sub := telemetry.Subject{
@@ -849,12 +927,13 @@ func (h *Handler) orgSettingsExportSubject(w http.ResponseWriter, r *http.Reques
 	export, err := h.Purger.ExportSubject(r.Context(), projectID, sub)
 	if err != nil {
 		slog.Error("orgSettingsExportSubject: failed to export subject data", "org_id", orgID, "project_id", projectID, "err", err)
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
-	// Аудит: фиксируем ФАКТ выгрузки и её критерий, но НЕ значения ПДн — в лог
-	// уходит только вид использованного идентификатора.
-	slog.Info("subject data export", "org_id", orgID, "project_id", projectID, "criteria", subjectCriteria(sub))
+	// Аудит: ФАКТ выгрузки, критерий и усечение, но НЕ значения ПДн — в лог уходит
+	// только вид идентификатора; сами числа усечения субъект видит в файле (Counts).
+	slog.Info("subject data export", "org_id", orgID, "project_id", projectID,
+		"criteria", subjectCriteria(sub), "truncated", export.Truncated)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", `attachment; filename="subject-export.json"`)
 	if err := json.NewEncoder(w).Encode(export); err != nil {
@@ -908,14 +987,12 @@ func (h *Handler) inviteAcceptPage(w http.ResponseWriter, r *http.Request) {
 		// Fail closed: не знаем, действительно ли приглашение — не показываем
 		// его содержимое.
 		slog.Error("inviteAcceptPage: invite lookup failed", "err", err)
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
-	if email == "" {
-		// Токен едет в HttpOnly cookie, а не в next= query — его читает resolveAuthNext
-		// на GET /login и /register.
-		h.setInviteNextCookie(w, token)
-	}
+	// Ставится и под уже вошедшим: чужой аккаунт может выйти и вернуться сюда же —
+	// без cookie логаут терял приглашение (resolveAuthNext на GET /login и /register).
+	h.setInviteNextCookie(w, token)
 	_ = templates.InviteAccept(token, "", email, inv).Render(r.Context(), w)
 }
 
@@ -935,6 +1012,9 @@ func (h *Handler) inviteAcceptSubmit(w http.ResponseWriter, r *http.Request) {
 		msg := i18n.T(r.Context(), "err.org.invite_invalid")
 		if errors.Is(err, org.ErrInviteEmailMismatch) {
 			msg = i18n.T(r.Context(), "err.org.invite_other_email")
+			// Cookie могла истечь (TTL 600с) между GET и этим POST — без неё
+			// логаут-и-перевход потеряет приглашение так же, как на GET.
+			h.setInviteNextCookie(w, token)
 		}
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		// Нулевой InviteInfo{}: шаблон его не использует, когда errMsg != "".

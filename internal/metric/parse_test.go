@@ -112,6 +112,61 @@ func TestMapOTLPDropsNaN(t *testing.T) {
 	}
 }
 
+// Субнормаль — не NaN/Inf, прошла бы дальше без изменений и могла зациклить расчёт
+// шкалы графика на отрисовке, поэтому нормализуется в 0 уже на приёме.
+func TestMapOTLPNormalizesSubnormalToZero(t *testing.T) {
+	rm := []*metricspb.ResourceMetrics{{
+		ScopeMetrics: []*metricspb.ScopeMetrics{{Metrics: []*metricspb.Metric{
+			gaugeMetric("subnormal", "1", math.SmallestNonzeroFloat64),
+			gaugeMetric("negative_subnormal", "1", -math.SmallestNonzeroFloat64),
+			gaugeMetric("normal", "1", 1.0),
+		}}},
+	}}
+	points := MapOTLP(rm, time.Now())
+	if len(points) != 3 {
+		t.Fatalf("points = %d, want 3 (субнормаль нормализуется в 0, не отбраковывается)", len(points))
+	}
+	byName := map[string]MetricPoint{}
+	for _, p := range points {
+		byName[p.Name] = p
+	}
+	if v := byName["subnormal"].Value; v != 0 {
+		t.Errorf("subnormal.Value = %v, want 0", v)
+	}
+	if v := byName["negative_subnormal"].Value; v != 0 {
+		t.Errorf("negative_subnormal.Value = %v, want 0", v)
+	}
+	if v := byName["normal"].Value; v != 1.0 {
+		t.Errorf("normal.Value = %v, want 1", v)
+	}
+}
+
+// Значение около math.MaxFloat64 конечно (не NaN/Inf), но переполняет накопительный
+// цикл расчёта шкалы на отрисовке — отбрасывается тем же путём, а не клампится.
+func TestMapOTLPDropsInsaneMagnitude(t *testing.T) {
+	rm := []*metricspb.ResourceMetrics{{
+		ScopeMetrics: []*metricspb.ScopeMetrics{{Metrics: []*metricspb.Metric{
+			gaugeMetric("huge", "1", math.MaxFloat64),
+			gaugeMetric("huge_negative", "1", -1.7e308),
+			gaugeMetric("at_threshold", "1", 1e300),
+			gaugeMetric("large_but_sane", "1", 1e18),
+		}}},
+	}}
+	points := MapOTLP(rm, time.Now())
+	byName := map[string]MetricPoint{}
+	for _, p := range points {
+		byName[p.Name] = p
+	}
+	for _, name := range []string{"huge", "huge_negative", "at_threshold"} {
+		if _, ok := byName[name]; ok {
+			t.Errorf("%s: не отброшено, want dropped (|v| >= 1e300)", name)
+		}
+	}
+	if v, ok := byName["large_but_sane"]; !ok || v.Value != 1e18 {
+		t.Errorf("large_but_sane = %+v, ok=%v, want Value=1e18", v, ok)
+	}
+}
+
 func TestMapOTLPSkipsUnsupported(t *testing.T) {
 	rm := []*metricspb.ResourceMetrics{{
 		ScopeMetrics: []*metricspb.ScopeMetrics{{Metrics: []*metricspb.Metric{

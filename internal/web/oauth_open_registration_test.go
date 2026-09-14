@@ -13,7 +13,7 @@ func TestOAuthOpenModeProvisionsWithoutInvite(t *testing.T) {
 	s := newCallbackStack(t)
 	ctx := context.Background()
 	s.h.RegistrationMode = "open"
-	s.mp.id = oauth.Identity{Subject: "sub-open-noinv", Email: "open-noinv@corp.com", EmailVerified: true}
+	s.mp.id = oauth.Identity{Subject: "sub-open-noinv", Email: "open-noinv@corp.com", EmailVerified: true, TrustedIssuer: true}
 
 	resp := s.doCallback(t, oauthFlow{})
 	defer resp.Body.Close()
@@ -49,7 +49,7 @@ func TestOAuthOpenModeAcceptsPendingInvite(t *testing.T) {
 	if _, err := s.org.Invite(ctx, o.ID, "open-inv@corp.com", org.RoleAdmin); err != nil {
 		t.Fatalf("invite: %v", err)
 	}
-	s.mp.id = oauth.Identity{Subject: "sub-open-inv", Email: "open-inv@corp.com", EmailVerified: true}
+	s.mp.id = oauth.Identity{Subject: "sub-open-inv", Email: "open-inv@corp.com", EmailVerified: true, TrustedIssuer: true}
 
 	resp := s.doCallback(t, oauthFlow{})
 	defer resp.Body.Close()
@@ -72,5 +72,21 @@ func TestOAuthOpenModeAcceptsPendingInvite(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("pending invite was not accepted on open provisioning")
+	}
+}
+
+func TestOAuthOpenModeUntrustedIssuerRefused(t *testing.T) {
+	s := newCallbackStack(t)
+	ctx := context.Background()
+	s.h.RegistrationMode = "open"
+	s.mp.id = oauth.Identity{Subject: "sub-open-untrusted", Email: "open-untrusted@corp.com", EmailVerified: true}
+
+	resp := s.doCallback(t, oauthFlow{})
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusSeeOther {
+		t.Fatal("untrusted-issuer open registration must NOT create an account (got 303)")
+	}
+	if _, err := s.auth.UserByEmail(ctx, "open-untrusted@corp.com"); err == nil {
+		t.Fatal("account was created for an untrusted-issuer open registration")
 	}
 }

@@ -141,7 +141,7 @@ func hostsNewFilterURL(projectID int64, filter HostsFilterVM) string {
 func hostsFilterURL(projectID int64, f HostsFilterVM) string {
 	q := url.Values{}
 	if f.Environment != "" {
-		q.Set("env", f.Environment)
+		q.Set("environment", f.Environment)
 	}
 	if f.Role != "" {
 		q.Set("role", f.Role)
@@ -247,14 +247,14 @@ templ hostsTable(projectID int64, rows []HostRowVM) {
 
 // limit не вписан в перевод подсказки усечения: смена hostsListLimit не
 // должна молча разъехаться с текстом.
-templ HostsList(projectID int64, rows []HostRowVM, truncated bool, limit int, filter HostsFilterVM, facets HostsFacets, sections []HostSection, installCmd, config, agentReason, userEmail string, metricsFailed bool) {
+templ HostsList(projectID int64, rows []HostRowVM, truncated bool, limit int, filter HostsFilterVM, facets HostsFacets, sections []HostSection, installCmd, config, agentReason, userEmail string, metricsFailed, canManage bool) {
 	@layout(i18n.T(ctx, "nav.hosts"), userEmail) {
 		<div class="hosts">
 			<h1>{ i18n.T(ctx, "nav.hosts") }</h1>
 			@helpPanel("hosts", "hosts")
 			if len(rows) == 0 && !filter.Active {
 				@emptyState("server", "hosts.empty.title", "hosts.empty.body", "", "", 2)
-				@hostsOnboarding(projectID, installCmd, config, agentReason)
+				@hostsOnboarding(projectID, installCmd, config, agentReason, canManage)
 			} else {
 				@hostsFilterBar(projectID, filter, facets)
 				if metricsFailed {
@@ -271,7 +271,7 @@ templ HostsList(projectID int64, rows []HostRowVM, truncated bool, limit int, fi
 						@hostsTable(projectID, rows)
 					}
 					</div>
-					@hostsCollectorConfigDetails("hosts-collector-config", projectID, installCmd, config, agentReason)
+					@hostsCollectorConfigDetails("hosts-collector-config", projectID, installCmd, config, agentReason, canManage)
 				} else {
 					for _, sec := range sections {
 						<div class="card hosts-section">
@@ -281,7 +281,7 @@ templ HostsList(projectID int64, rows []HostRowVM, truncated bool, limit int, fi
 							}
 						</div>
 					}
-					@hostsCollectorConfigDetails("hosts-collector-config", projectID, installCmd, config, agentReason)
+					@hostsCollectorConfigDetails("hosts-collector-config", projectID, installCmd, config, agentReason, canManage)
 				}
 			}
 		</div>
@@ -320,8 +320,12 @@ templ hostsFilterBar(projectID int64, filter HostsFilterVM, facets HostsFacets) 
 
 // id — id скрытой textarea copyBlock конфига, обязан быть уникален в
 // документе; блок команды агента получает id+"-agent-cmd".
-templ hostsCollectorConfigDetails(id string, projectID int64, installCmd, config, agentReason string) {
-	if installCmd != "" {
+// canManage=false прячет и команду, и конфиг: оба несут ключ типа agent, который жжёт
+// квоту всей организации — зрителю проекта они не показываются вовсе.
+templ hostsCollectorConfigDetails(id string, projectID int64, installCmd, config, agentReason string, canManage bool) {
+	if !canManage {
+		<p class="hint">{ i18n.T(ctx, "hosts.onboarding.admin_only") }</p>
+	} else if installCmd != "" {
 		<details>
 			<summary>{ i18n.T(ctx, "hosts.settings.agent_install_howto") }</summary>
 			@copyBlock(id+"-agent-cmd", "hosts.copy.command", installCmd)
@@ -331,28 +335,33 @@ templ hostsCollectorConfigDetails(id string, projectID int64, installCmd, config
 	} else if agentReason == "insecure" {
 		<p class="hint">{ i18n.T(ctx, "hosts.onboarding.agent_insecure") }</p>
 	}
-	<details>
-		<summary>{ i18n.T(ctx, "hosts.settings.show_config") }</summary>
-		if config != "" {
-			@copyBlock(id, "hosts.copy.button", config)
-		} else {
-			<p class="hint">
-				{ i18n.T(ctx, "hosts.onboarding.no_key") }
-				<a href={ templ.URL(projectSettingsPath(projectID)) }>{ i18n.T(ctx, "hosts.onboarding.no_key_link") }</a>
-			</p>
-		}
-	</details>
+	if canManage {
+		<details>
+			<summary>{ i18n.T(ctx, "hosts.settings.show_config") }</summary>
+			if config != "" {
+				@copyBlock(id, "hosts.copy.button", config)
+			} else {
+				<p class="hint">
+					{ i18n.T(ctx, "hosts.onboarding.no_key") }
+					<a href={ templ.URL(projectSettingsPath(projectID)) }>{ i18n.T(ctx, "hosts.onboarding.no_key_link") }</a>
+				</p>
+			}
+		</details>
+	}
 }
 
 // installCmd и collectorCfg пустые одновременно — ключа agent в проекте нет
 // вовсе; если только installCmd пуст, agentReason объясняет, почему путь агента недоступен.
-templ hostsOnboarding(projectID int64, installCmd, collectorCfg, agentReason string) {
+// canManage=false прячет обе ветки по той же причине, что hostsCollectorConfigDetails.
+templ hostsOnboarding(projectID int64, installCmd, collectorCfg, agentReason string, canManage bool) {
 	<section class="card">
 		<h2 class="card-header">{ i18n.T(ctx, "hosts.onboarding.title") }</h2>
 		<ol>
 			<li>
 				<p>{ i18n.T(ctx, "hosts.onboarding.agent_title") }</p>
-				if installCmd != "" {
+				if !canManage {
+					<p class="hint">{ i18n.T(ctx, "hosts.onboarding.admin_only") }</p>
+				} else if installCmd != "" {
 					@copyBlock("hosts-onboarding-agent-cmd", "hosts.copy.command", installCmd)
 					<p class="hint">{ i18n.T(ctx, "hosts.onboarding.agent_update_note") }</p>
 				} else if agentReason == "dist" {
@@ -374,28 +383,30 @@ templ hostsOnboarding(projectID int64, installCmd, collectorCfg, agentReason str
 				</p>
 			</li>
 		</ol>
-		<details>
-			<summary>{ i18n.T(ctx, "hosts.onboarding.collector_alt") }</summary>
-			<ol>
-				<li>
-					<p>{ i18n.T(ctx, "hosts.onboarding.step1") } <a href="/docs/hosts">{ i18n.T(ctx, "hosts.onboarding.docs_link") }</a></p>
-				</li>
-				<li>
-					<p>{ i18n.T(ctx, "hosts.onboarding.step2") }</p>
-					if collectorCfg != "" {
-						@copyBlock("hosts-onboarding-collector-config", "hosts.copy.button", collectorCfg)
-					} else {
-						<p class="hint">
-							{ i18n.T(ctx, "hosts.onboarding.no_key") }
-							<a href={ templ.URL(projectSettingsPath(projectID)) }>{ i18n.T(ctx, "hosts.onboarding.no_key_link") }</a>
-						</p>
-					}
-				</li>
-				<li>
-					<p>{ i18n.T(ctx, "hosts.onboarding.step3") }</p>
-					<pre>sudo systemctl enable --now otelcol-contrib</pre>
-				</li>
-			</ol>
-		</details>
+		if canManage {
+			<details>
+				<summary>{ i18n.T(ctx, "hosts.onboarding.collector_alt") }</summary>
+				<ol>
+					<li>
+						<p>{ i18n.T(ctx, "hosts.onboarding.step1") } <a href="/docs/hosts">{ i18n.T(ctx, "hosts.onboarding.docs_link") }</a></p>
+					</li>
+					<li>
+						<p>{ i18n.T(ctx, "hosts.onboarding.step2") }</p>
+						if collectorCfg != "" {
+							@copyBlock("hosts-onboarding-collector-config", "hosts.copy.button", collectorCfg)
+						} else {
+							<p class="hint">
+								{ i18n.T(ctx, "hosts.onboarding.no_key") }
+								<a href={ templ.URL(projectSettingsPath(projectID)) }>{ i18n.T(ctx, "hosts.onboarding.no_key_link") }</a>
+							</p>
+						}
+					</li>
+					<li>
+						<p>{ i18n.T(ctx, "hosts.onboarding.step3") }</p>
+						<pre>sudo systemctl enable --now otelcol-contrib</pre>
+					</li>
+				</ol>
+			</details>
+		}
 	</section>
 }

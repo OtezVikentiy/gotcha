@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
-	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/recipes"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
@@ -36,6 +35,26 @@ func (h *Handler) recipeDataArrives(ctx context.Context, projectID int64, rec re
 	return ok
 }
 
+// Список рецептов проверяет ВСЕ сигнатуры разом — один запрос вместо recipeDataArrives
+// на каждый рецепт (тот тянет ещё metricType и, для monotonic-счётчиков, второй запрос
+// на rate); страница деталей одного рецепта продолжает использовать recipeDataArrives.
+func (h *Handler) recipeSignaturesWithData(ctx context.Context, projectID int64, all []recipes.Recipe) map[string]bool {
+	if h.Metrics == nil {
+		return nil
+	}
+	signatures := make([]string, len(all))
+	for i, rec := range all {
+		signatures[i] = rec.Signature
+	}
+	now := time.Now()
+	arrived, err := h.Metrics.NamesWithData(ctx, projectID, signatures, now.Add(-recipeDetectWindow), now)
+	if err != nil {
+		slog.Warn("recipes: signature detection failed", "project_id", projectID, "error", err)
+		return nil
+	}
+	return arrived
+}
+
 func (h *Handler) recipesListPage(w http.ResponseWriter, r *http.Request) {
 	uid, ok := auth.UserID(r.Context())
 	if !ok {
@@ -54,7 +73,7 @@ func (h *Handler) recipesListPage(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -64,10 +83,11 @@ func (h *Handler) recipesListPage(w http.ResponseWriter, r *http.Request) {
 	// Один List на все рецепты: RuleStatuses — чистая функция над срезом, N+1 не возникает.
 	existing, err := h.MetricRules.List(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	all := recipes.All()
+	arrived := h.recipeSignaturesWithData(r.Context(), projectID, all)
 	cards := make([]templates.RecipeCardVM, 0, len(all))
 	for _, rec := range all {
 		created := 0
@@ -79,7 +99,7 @@ func (h *Handler) recipesListPage(w http.ResponseWriter, r *http.Request) {
 		}
 		cards = append(cards, templates.RecipeCardVM{
 			ID:           rec.ID,
-			DataArrives:  h.recipeDataArrives(r.Context(), projectID, rec),
+			DataArrives:  arrived[rec.Signature],
 			CreatedRules: created,
 			TotalRules:   len(statuses),
 		})
@@ -108,7 +128,7 @@ func (h *Handler) recipeDetailPage(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -117,14 +137,14 @@ func (h *Handler) recipeDetailPage(w http.ResponseWriter, r *http.Request) {
 	}
 	existing, err := h.MetricRules.List(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// Страница открыта любому с доступом, кнопка создания — только оператору (POST и так
 	// гейтится requireProjectOperator — это лишь честность разметки).
 	canOperate, err := h.canOperateProject(r.Context(), projectID, uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	dataArrives := h.recipeDataArrives(r.Context(), projectID, rec)
@@ -191,7 +211,7 @@ func (h *Handler) recipeThresholdsCreate(w http.ResponseWriter, r *http.Request)
 	}
 	created, skipped, err := recipes.ApplyRules(r.Context(), h.MetricRules, projectID, rec)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.flashOKPair(w, "flash.recipes_applied", created, skipped)

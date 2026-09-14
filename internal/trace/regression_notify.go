@@ -89,7 +89,7 @@ func (n *RegressionNotifier) NotifyRecovery(ctx context.Context, incidentID int6
 // PctIncrease пересчитывается из baseline/current, не хранится в таблице.
 func regressionOpenEvent(r Regression) RegressionEvent {
 	return RegressionEvent{
-		Kind:          "regression_open",
+		Kind:          notify.KindRegressionOpen,
 		ProjectID:     r.ProjectID,
 		Target:        r.Target,
 		Metric:        r.Metric,
@@ -111,7 +111,7 @@ func regressionCloseEvent(r Regression, now time.Time) RegressionEvent {
 		d = 0
 	}
 	return RegressionEvent{
-		Kind:            "regression_close",
+		Kind:            notify.KindRegressionClose,
 		ProjectID:       r.ProjectID,
 		Target:          r.Target,
 		Metric:          r.Metric,

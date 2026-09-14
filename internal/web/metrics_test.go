@@ -162,6 +162,37 @@ func TestWebMetricsListSystemFilter(t *testing.T) {
 	}
 }
 
+// Проект, где стоит только агент Gotcha, видит одни system.* метрики — таблица
+// без единой строки не должна выглядеть как поломка загрузки.
+func TestWebMetricsListAllSystemShowsEmptyState(t *testing.T) {
+	s := newMetricsStack(t, true)
+	ctx := context.Background()
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "metrics-allsys-owner@example.com")
+	o, err := s.org.CreateOrg(ctx, "mas-co", "MAS Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	project, err := s.org.CreateProject(ctx, o.ID, "mas-proj", "MAS Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	s.seedGauge(t, project.ID, "system.cpu.utilization", "prod", 0.3, nil)
+
+	base := "/projects/" + strconv.FormatInt(project.ID, 10) + "/metrics"
+	resp := getWithCookie(t, s.srv, base, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200", base, resp.StatusCode)
+	}
+	if strings.Contains(string(body), `<table class="data-table">`) {
+		t.Errorf("пустая таблица отрисована вместо пустого состояния: %s", body)
+	}
+	if !strings.Contains(string(body), "empty-state") {
+		t.Errorf("нет пустого состояния при единственной system-метрике: %s", body)
+	}
+}
+
 func TestWebMetricsNilService(t *testing.T) {
 	s := newMetricsStack(t, false)
 	ctx := context.Background()

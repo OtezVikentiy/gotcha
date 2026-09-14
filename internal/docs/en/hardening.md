@@ -49,6 +49,11 @@ exact version narrows an attacker's search to the vulnerabilities fixed in exact
 release, instead of a blind guess. Full detail on these endpoints and what they expose —
 [Monitoring gotcha itself](/docs/self-monitoring).
 
+The app has no way to tell whether its port is published externally (`GOTCHA_COMPOSE_BIND`
+is a Docker Compose variable that never reaches the process), so it logs a warning about
+these four endpoints on every startup unconditionally, even once you've locked them down.
+It's not a diagnostic of a problem — it's a nudge to check the configuration below.
+
 ```nginx
 location ~ ^/(metrics|version|healthz|readyz)$ {
     allow 10.0.0.0/8;

@@ -47,7 +47,12 @@ docker inspect --format '{{json .State.Health}}' gotcha-gotcha-1
 To make that state visible from the outside, don't watch the label — watch the
 service: point an uptime monitor at `/readyz` from another gotcha instance
 (uptime monitoring of an HTTP endpoint is exactly what the product does), or
-alert on the `gotcha_up` metric of your scraper.
+alert on your scraper's standard scrape metric — `up{job="gotcha"} == 0`. The
+name `up` and its labels (`job`, `instance`) are written by the scraper
+itself under the Prometheus format spec for EVERY target — it isn't one of
+gotcha's own self-metrics listed below, and there's no `.Add` call for it in
+its code; `job` comes from the scrape config's `job_name` (`gotcha` in the
+example below) — adjust the rule if you use a different name or relabel it.
 
 There is deliberately no auto-healer watching the Docker socket in the stock
 setup: access to the socket is root on the host, and shipping that would trade
@@ -177,6 +182,25 @@ this page, its name is deliberately excluded from the frozen observability
 contract, precisely because the metric is temporary and disappears together
 with the aliases in 2.0.
 
+**`gotcha_ingest_profile_truncated_total{parser="…"}`** — pprof/Sentry profiles
+that ingest ACCEPTED (200/202) but the decoder trimmed against one of its
+internal caps (sample count, frame count per stack, the byte budget for
+unrolling frames). The `parser` label is `pprof` or `sentry` — each has its own
+decoder and its own caps, cutting independently of the other. This is not a
+rejection — it never shows up in `gotcha_ingest_rejected_total` above; that
+metric's `too_large` means the request was refused BEFORE decoding, based on
+element counts, while this one means the profile was accepted but did not fit
+its budget in full.
+
+A non-zero value means a project's profiler data is incomplete: part of the
+samples or part of one stack's frames were silently dropped for the client —
+the response was a success and its body does not show this. The metric itself
+does not carry which specific cap fired; that reason lives in the warn-level
+log line next to the same event. The occasional hit on a very deep stack or a
+very hot profiler is normal; a sustained rise means the sender's profiler is
+configured for more depth/frequency than ingest can accept in full, and that
+project's data should be treated as a partial sample until it is retuned.
+
 **`gotcha_metric_points_clock_skew_total`** — metric points that arrived with a
 timestamp from the future and were clamped to the receive time. To charts and
 threshold rules a point from the future is otherwise as good as lost — a host
@@ -253,6 +277,13 @@ look perfectly healthy from here. The duration is always published: that's what
 makes hitting the budget visible. The reason shows up in the log as `tick did
 not finish within its budget`.
 
+**`gotcha_host_evaluator_skipped_hosts`** — how many active hosts missed
+evaluation in the last pass because the tick budget ran out. Normally 0. The
+walk over hosts rotates: the next tick resumes where the previous one gave up
+rather than restarting from the top, so a non-zero value does not mean the same
+tail of the fleet starves forever — it means the evaluator cannot get through
+the whole fleet in one tick.
+
 **`gotcha_slo_evaluator_last_tick_timestamp_seconds`** /
 **`gotcha_slo_evaluator_tick_duration_seconds`** — when the SLO burn-rate
 evaluator last completed a pass over every enabled SLO, and how long it took.
@@ -262,6 +293,11 @@ the timestamp noticeably larger than `GOTCHA_SLO_EVAL_INTERVAL_SECONDS` means bu
 are not being recomputed and error-budget incidents are neither opened nor
 closed; a duration approaching the interval means the evaluator is falling
 behind.
+
+**`gotcha_slo_evaluator_skipped_slos`** — how many enabled SLOs missed
+evaluation in the last pass because the tick budget ran out. Rotates the same
+way as the host evaluator: the next tick resumes where the previous one gave
+up.
 
 **`gotcha_trace_evaluator_last_tick_timestamp_seconds`** /
 **`gotcha_trace_evaluator_tick_duration_seconds`** — when the performance
@@ -279,6 +315,10 @@ took. Same blind spot again. A gap noticeably larger than
 `GOTCHA_METRIC_EVAL_INTERVAL_SECONDS` (default 60s) means metric-rule alerts are not
 being evaluated; a duration approaching the interval means the evaluator is
 falling behind.
+
+**`gotcha_metric_evaluator_skipped_rules`** — how many enabled rules missed
+evaluation in the last pass because the tick budget ran out. Rotates the same
+way as the host evaluator.
 
 **`gotcha_profile_evaluator_last_tick_timestamp_seconds`** /
 **`gotcha_profile_evaluator_tick_duration_seconds`** — when the profile
@@ -299,6 +339,14 @@ duration approaching the interval means PostgreSQL is not keeping up. A tick
 that runs out of budget partway through skips the remaining bindings for that
 pass rather than blocking the next one — check the log for `escalation
 scheduler: tick did not finish within its budget`.
+
+**`gotcha_escalation_scheduler_skipped_incidents`** — how many open
+unacknowledged incidents missed an escalation check in the last pass because
+the tick budget ran out (summed across all sources). Each source rotates its
+own walk independently: the next tick resumes where the previous one gave up
+rather than starting from the oldest incidents again — otherwise, during a
+storm, the scheduler would keep escalating the same old incidents and never
+reach the new ones.
 
 **`gotcha_uptime_scheduler_last_tick_timestamp_seconds`** /
 **`gotcha_uptime_scheduler_tick_duration_seconds`** — when the uptime check
@@ -354,6 +402,37 @@ live process means delivery is blocked on a channel — check
 rescheduled. **`gotcha_notify_queue_failed`** — how many of those given-up jobs sit
 in the queue right now.
 
+**`gotcha_alert_spike_last_tick_timestamp_seconds`** /
+**`gotcha_alert_spike_tick_duration_seconds`** — timestamp of the last
+completed `spike` rule evaluation pass across all projects, and its duration.
+The pass runs once a minute; the interval is not configurable. A dead or
+hung loop looks from the outside like "no spikes happened" — spike alerts
+simply stop arriving. Duration creeping up to a minute means ClickHouse is
+not keeping up.
+
+**`gotcha_alert_spike_skipped_rules`** — number of enabled `spike` rules
+skipped in the last pass because the tick budget ran out. The scan is not
+rotated — the rule list is rebuilt from the start every tick, so a
+persistent budget crunch keeps starving the same tail of rules.
+
+**`gotcha_alert_digest_last_tick_timestamp_seconds`** /
+**`gotcha_alert_digest_tick_duration_seconds`** — timestamp of the last
+completed pass sending digests of budget-suppressed alerts, and its
+duration. The pass runs every 5 minutes; the interval is not configurable.
+A dead or hung digester is indistinguishable from "nothing was suppressed" —
+the operator never learns that some notifications were eaten by the budget.
+
+**`gotcha_alert_digest_skipped_batches`** — number of suppressed-alert
+batches that did not get their digest sent in the last pass because the
+tick budget ran out. Their suppressed count was already cleared by the
+claim; the skip restores it for the next pass, and a failed restore counts
+into `gotcha_alert_digest_suppressed_lost_total` instead.
+
+**`gotcha_alert_digest_suppressed_lost_total`** — suppressed alerts whose
+digest summary could neither be delivered nor requeued for retry on the next
+pass. A nonzero value is a final, unrecoverable loss (both the channel and
+PostgreSQL were unavailable at the same time), not a deferred retry.
+
 **`gotcha_export_queue_depth`** / **`gotcha_export_queue_oldest_seconds`**
 — depth of the error/event export queue (requests in `queued` or `running`
 status) and the age of the oldest one. The age matters more than the depth —
@@ -387,6 +466,12 @@ memory limit (80% of it). Zero means there is no limit: buffers will grow until
 the HOST runs out of memory, and the kernel's OOM killer gets there first — it
 throws away everything buffered, not just the excess. If this reads zero, set
 `mem_limit` on the container or `GOMEMLIMIT` by hand.
+
+**`gotcha_retention_days{dataset="…"}`** — the retention window actually applied
+in ClickHouse (`events`, `spans`, `metrics`, `profiles`, `logs`), not what this
+particular replica's `.env` asks for: with auto-migration disabled they can drift
+apart. `0` means "kept forever", not "disabled" — read the number literally. The
+value is fixed at startup and does not change until the next restart.
 
 **`gotcha_entities_purged_total`** — rows deleted from PostgreSQL once they
 outlived `GOTCHA_EVENT_RETENTION_DAYS`: issues, closed incidents, regressions. This is
@@ -456,6 +541,15 @@ it to confirm what is actually deployed. The `stamped` label says whether the
 build carries git metadata: `stamped="false"` means the image was built outside
 `make`, its version string is the source default, and "deployed exactly what
 you think" cannot be verified from it.
+
+**`gotcha_secret_key_insecure`** — 1 while `GOTCHA_SECRET_KEY` is unset (the
+built-in dev default): alert channel secrets, SSO `client_secret` and uptime
+HTTP monitor headers are stored in PostgreSQL as plaintext. Doesn't depend on
+`GOTCHA_BASE_URL` — stays at 1 regardless of which address the instance is
+given, unlike the startup refusal (see
+[Privacy and personal data](/docs/privacy)), which only fires for a
+non-local `GOTCHA_BASE_URL`. The only sign of this state that survives the
+container's log rotation — the startup `slog.Warn` doesn't.
 
 **`gotcha_uptime_heartbeat_ignored_total{reason="…"}`** — pings on
 `/uptime/hb/{token}` that were received but NOT counted as a sign of monitor

@@ -612,6 +612,84 @@ func TestLoadConfigOAuthProviders(t *testing.T) {
 	}
 }
 
+func TestLoadConfigOIDCTrustEmailDefaultsFalse(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_OIDC_ENABLED":       "true",
+		"GOTCHA_OIDC_ISSUER":        "https://idp.example",
+		"GOTCHA_OIDC_CLIENT_ID":     "cid",
+		"GOTCHA_OIDC_CLIENT_SECRET": "sec",
+	}
+	cfg, err := loadConfig(getenvFrom(env), []string{"--mode=web"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.OIDCTrustEmail {
+		t.Fatal("GOTCHA_OIDC_TRUST_EMAIL must default to false (fail-closed)")
+	}
+}
+
+func TestLoadConfigOIDCTrustEmailEnabled(t *testing.T) {
+	env := map[string]string{
+		"GOTCHA_OIDC_ENABLED":       "true",
+		"GOTCHA_OIDC_ISSUER":        "https://idp.example",
+		"GOTCHA_OIDC_CLIENT_ID":     "cid",
+		"GOTCHA_OIDC_CLIENT_SECRET": "sec",
+		"GOTCHA_OIDC_TRUST_EMAIL":   "true",
+	}
+	cfg, err := loadConfig(getenvFrom(env), []string{"--mode=web"})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !cfg.OIDCTrustEmail {
+		t.Fatal("GOTCHA_OIDC_TRUST_EMAIL=true must set cfg.OIDCTrustEmail")
+	}
+}
+
+func TestLoadConfigOIDCTrustEmailWarnsWhenUntrusted(t *testing.T) {
+	baseEnv := map[string]string{
+		"GOTCHA_OIDC_ENABLED":       "true",
+		"GOTCHA_OIDC_ISSUER":        "https://idp.example",
+		"GOTCHA_OIDC_CLIENT_ID":     "cid",
+		"GOTCHA_OIDC_CLIENT_SECRET": "sec",
+	}
+	hasWarn := func(records []slog.Record) bool {
+		for _, r := range records {
+			if r.Level == slog.LevelWarn && strings.Contains(r.Message, "GOTCHA_OIDC_TRUST_EMAIL") {
+				return true
+			}
+		}
+		return false
+	}
+
+	var records []slog.Record
+	prev := slog.Default()
+	slog.SetDefault(slog.New(capturingLogHandler{records: &records}))
+	if _, err := loadConfig(getenvFrom(baseEnv), []string{"--mode=web"}); err != nil {
+		slog.SetDefault(prev)
+		t.Fatalf("loadConfig: %v", err)
+	}
+	slog.SetDefault(prev)
+	if !hasWarn(records) {
+		t.Error("нет предупреждения о GOTCHA_OIDC_TRUST_EMAIL при включённом OIDC без доверия")
+	}
+
+	trustedEnv := map[string]string{}
+	for k, v := range baseEnv {
+		trustedEnv[k] = v
+	}
+	trustedEnv["GOTCHA_OIDC_TRUST_EMAIL"] = "true"
+	records = nil
+	slog.SetDefault(slog.New(capturingLogHandler{records: &records}))
+	if _, err := loadConfig(getenvFrom(trustedEnv), []string{"--mode=web"}); err != nil {
+		slog.SetDefault(prev)
+		t.Fatalf("loadConfig: %v", err)
+	}
+	slog.SetDefault(prev)
+	if hasWarn(records) {
+		t.Error("предупреждение о GOTCHA_OIDC_TRUST_EMAIL выдано, хотя доверие включено")
+	}
+}
+
 func TestLoadConfigOAuthMissingSecretFails(t *testing.T) {
 	env := map[string]string{
 		"GOTCHA_OIDC_ENABLED":   "true",
@@ -653,6 +731,46 @@ func TestLoadConfigIngestRateLimit(t *testing.T) {
 	}
 	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_INGEST_RATE_PER_SEC": "-1"}), nil); err == nil {
 		t.Fatal("GOTCHA_INGEST_RATE_PER_SEC=-1: want error, got nil")
+	}
+}
+
+func TestLoadConfigPreAuthRateLimit(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.PreAuthRateLimit != 2000 {
+		t.Fatalf("default PreAuthRateLimit = %d, want 2000", cfg.PreAuthRateLimit)
+	}
+	cfg, err = loadConfig(getenvFrom(map[string]string{"GOTCHA_INGEST_PREAUTH_RATE_PER_SEC": "0"}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig with 0: %v", err)
+	}
+	if cfg.PreAuthRateLimit != 0 {
+		t.Fatalf("PreAuthRateLimit = %d, want 0", cfg.PreAuthRateLimit)
+	}
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_INGEST_PREAUTH_RATE_PER_SEC": "-1"}), nil); err == nil {
+		t.Fatal("GOTCHA_INGEST_PREAUTH_RATE_PER_SEC=-1: want error, got nil")
+	}
+}
+
+func TestLoadConfigSignalTouchRateLimit(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SignalTouchRateLimit != 2 {
+		t.Fatalf("default SignalTouchRateLimit = %d, want 2", cfg.SignalTouchRateLimit)
+	}
+	cfg, err = loadConfig(getenvFrom(map[string]string{"GOTCHA_INGEST_SIGNAL_RATE_PER_SEC": "0"}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig with 0: %v", err)
+	}
+	if cfg.SignalTouchRateLimit != 0 {
+		t.Fatalf("SignalTouchRateLimit = %d, want 0", cfg.SignalTouchRateLimit)
+	}
+	if _, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_INGEST_SIGNAL_RATE_PER_SEC": "-1"}), nil); err == nil {
+		t.Fatal("GOTCHA_INGEST_SIGNAL_RATE_PER_SEC=-1: want error, got nil")
 	}
 }
 
@@ -1961,8 +2079,15 @@ func TestLoadConfig_HSTSWarnings(t *testing.T) {
 		return false
 	}
 
-	if got := capture(t, map[string]string{"GOTCHA_HSTS_ENABLED": "true"}); !hasWarn(got, "GOTCHA_BASE_URL") {
+	if got := capture(t, map[string]string{
+		"GOTCHA_HSTS_ENABLED":              "true",
+		"GOTCHA_BASE_URL":                  "http://gotcha.example",
+		"GOTCHA_SECRET_KEY_ALLOW_INSECURE": "1",
+	}); !hasWarn(got, "GOTCHA_BASE_URL") {
 		t.Error("нет предупреждения о том, что HSTS включён при не-https GOTCHA_BASE_URL")
+	}
+	if got := capture(t, map[string]string{"GOTCHA_HSTS_ENABLED": "true"}); hasWarn(got, "GOTCHA_BASE_URL") {
+		t.Error("предупреждение выдано на дефолтном GOTCHA_BASE_URL=http://localhost:8080 (штатный квикстарт)")
 	}
 	if got := capture(t, map[string]string{
 		"GOTCHA_HSTS_ENABLED":            "false",
@@ -2268,5 +2393,25 @@ func TestTrustedRecipientsWhitespaceAndEmptyElements(t *testing.T) {
 		if cfg.TrustedRecipients[i] != w {
 			t.Errorf("TrustedRecipients[%d] = %q, want %q", i, cfg.TrustedRecipients[i], w)
 		}
+	}
+}
+
+func TestLoadConfig_SMTPRequireTLSDefaultsFalse(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(nil), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.SMTPRequireTLS {
+		t.Error("SMTPRequireTLS default = true, want false")
+	}
+}
+
+func TestLoadConfig_SMTPRequireTLSOverride(t *testing.T) {
+	cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_SMTP_REQUIRE_TLS": "true"}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if !cfg.SMTPRequireTLS {
+		t.Error("SMTPRequireTLS = false, want true")
 	}
 }

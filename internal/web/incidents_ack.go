@@ -79,7 +79,7 @@ func (h *Handler) incidentAck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, safeRedirect(r, h.BaseURL), http.StatusSeeOther)

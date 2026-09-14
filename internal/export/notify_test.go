@@ -346,3 +346,74 @@ func TestMailNotifierOmitsPseudonymNoteWhenNotMasked(t *testing.T) {
 		}
 	}
 }
+
+func TestMailNotifierUsesAuthorLocaleOverInstance(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+	if _, err := pool.Exec(ctx, "UPDATE users SET locale = 'en' WHERE id = $1", userID); err != nil {
+		t.Fatalf("set locale: %v", err)
+	}
+
+	sent := &fakeMailer{}
+	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
+	notifyFn(ctx, Job{ID: 20, ProjectID: projectID, CreatedBy: userID, Status: StatusDone})
+
+	if len(sent.calls) != 1 {
+		t.Fatalf("отправлено писем: %d, ожидали 1", len(sent.calls))
+	}
+	subject := fmt.Sprint(sent.calls[0].payload["subject"])
+	if subject != "[Gotcha] Export is ready" {
+		t.Errorf("тема письма = %q, want английскую (locale автора), инстанс сконфигурирован на ru", subject)
+	}
+}
+
+func TestMailNotifierFallsBackToInstanceLocaleWhenAuthorLocaleUnset(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+
+	sent := &fakeMailer{}
+	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "en"})
+	notifyFn(ctx, Job{ID: 21, ProjectID: projectID, CreatedBy: userID, Status: StatusDone})
+
+	subject := fmt.Sprint(sent.calls[0].payload["subject"])
+	if subject != "[Gotcha] Export is ready" {
+		t.Errorf("тема письма = %q, want фолбэк на локаль инстанса (en) — у автора locale не выбрана", subject)
+	}
+}
+
+func TestMailNotifierMentionsExpiry(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+
+	sent := &fakeMailer{}
+	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
+	expiresAt := time.Now().Add(73 * time.Hour)
+	notifyFn(ctx, Job{ID: 22, ProjectID: projectID, CreatedBy: userID, Status: StatusDone, ExpiresAt: &expiresAt})
+
+	body := mailBody(sent.calls[0])
+	if !strings.Contains(body, "3 дня") {
+		t.Errorf("в письме нет срока удаления файла: %q", body)
+	}
+}
+
+func TestMailNotifierOmitsExpiryWhenNotSet(t *testing.T) {
+	ctx := context.Background()
+	pool := testenv.MigratedPG(t)
+	st := NewStore(pool)
+	projectID, userID := seedProjectAndUser(t, pool)
+
+	sent := &fakeMailer{}
+	notifyFn := NewMailNotifier(sent, st, "https://gotcha.example", i18n.Locale{Code: "ru"})
+	notifyFn(ctx, Job{ID: 23, ProjectID: projectID, CreatedBy: userID, Status: StatusDone})
+
+	body := mailBody(sent.calls[0])
+	if strings.Contains(body, "будет удалён") {
+		t.Errorf("ExpiresAt не задан, но письмо упоминает срок удаления: %q", body)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 )
@@ -112,12 +113,22 @@ func ParseSentry(raw []byte, now time.Time) (Profile, error) {
 
 	budget := maxStackBytes
 	var samples []Sample
+	var truncReason string
 	for _, stackID := range ordered {
 		value := counts[stackID]
 		if stackID < 0 || stackID >= len(it.Profile.Stacks) {
 			continue
 		}
-		if len(samples) >= maxStacks || budget <= 0 {
+		if len(samples) >= maxStacks {
+			if truncReason == "" {
+				truncReason = "sample_count"
+			}
+			break
+		}
+		if budget <= 0 {
+			if truncReason == "" {
+				truncReason = "stack_byte_budget"
+			}
 			break
 		}
 		idxs := it.Profile.Stacks[stackID]
@@ -125,7 +136,16 @@ func ParseSentry(raw []byte, now time.Time) (Profile, error) {
 		// недоверенной длине до того, как сработает кап числа кадров.
 		stack := make([]Frame, 0, min(len(idxs), maxFrames))
 		for i := len(idxs) - 1; i >= 0; i-- {
-			if len(stack) >= maxFrames || budget <= 0 {
+			if len(stack) >= maxFrames {
+				if truncReason == "" {
+					truncReason = "frame_count"
+				}
+				break
+			}
+			if budget <= 0 {
+				if truncReason == "" {
+					truncReason = "stack_byte_budget"
+				}
 				break
 			}
 			fi := idxs[i]
@@ -143,6 +163,9 @@ func ParseSentry(raw []byte, now time.Time) (Profile, error) {
 		}
 		samples = append(samples, Sample{Stack: stack, Value: value})
 	}
+	if truncReason != "" {
+		slog.Warn("profile truncated on accept", "parser", "sentry", "reason", truncReason)
+	}
 
 	return Profile{
 		Environment: capRunes(it.Environment, maxMetaField),
@@ -154,5 +177,6 @@ func ParseSentry(raw []byte, now time.Time) (Profile, error) {
 		TraceID:   capRunes(traceID, maxMetaField),
 		Timestamp: now,
 		Samples:   samples,
+		Truncated: truncReason != "",
 	}, nil
 }

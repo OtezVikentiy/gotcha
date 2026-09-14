@@ -253,3 +253,46 @@ func TestWebVitalsPageHasNavLink(t *testing.T) {
 		t.Fatalf("GET %s missing web-vitals nav link %q: %s", perfPath, wvPath, body)
 	}
 }
+
+func TestWebVitalsListUnknownSortCanonicalized(t *testing.T) {
+	s := newPerfStack(t)
+	ownerID, ownerCookie := orgSettingsRegister(t, s.auth, "wvsort-owner@example.com")
+	o, err := s.org.CreateOrg(context.Background(), "wvsort-co", "WVSort Co", ownerID)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	proj, err := s.org.CreateProject(context.Background(), o.ID, "wvsort-proj", "WVSort Proj", "go")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	at := time.Now().UTC().Add(-time.Minute)
+	s.writer.Add(proj.ID, proj.ID, trace.Transaction{
+		TraceID:      "wvsort-home",
+		SpanID:       "wvsort-homespan",
+		Name:         "GET /home",
+		Op:           "pageload",
+		Status:       "ok",
+		Start:        at,
+		End:          at.Add(time.Second),
+		Environment:  "production",
+		Measurements: map[string]float64{"lcp": 2500, "cls": 0.05},
+	})
+	s.flush(t)
+
+	path := "/projects/" + strconv.FormatInt(proj.ID, 10) + "/web-vitals?sort=bogus"
+	resp := getWithCookie(t, s.srv, path, ownerCookie)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200: %s", path, resp.StatusCode, body)
+	}
+	// Неизвестный sort сворачивается в реальный дефолт ("count"), а не течёт сырым в
+	// hidden-поле и в aria-sort заголовков — иначе ни один заголовок не считался бы активным.
+	if strings.Contains(string(body), `value="bogus"`) {
+		t.Fatalf("GET %s: сырой sort=bogus просочился в hidden-поле: %s", path, body)
+	}
+	if !strings.Contains(string(body), `aria-sort="descending"`) {
+		t.Fatalf("GET %s: ни один заголовок не помечен активным (aria-sort) при неизвестном sort: %s", path, body)
+	}
+}

@@ -104,6 +104,16 @@ revoke the old one (steps above). This is deliberate: a key's type is cached
 together with the key for 30 seconds, and making the type unchangeable
 removes the question of what to do with an already-cached grant.
 
+## Revoking a key isn't instant
+
+Revoking a key in the project settings marks it revoked right away, but a
+request already using that key can keep being accepted for up to 30 seconds
+afterward — key lookups use the same cache mentioned above, and a key
+resolved just before revocation stays valid in the cache until its entry
+expires. If you're revoking a key because it leaked, expect telemetry sent
+with it to keep going through for up to half a minute; that's the cache
+catching up, not the revocation failing.
+
 ## What a rejection looks like
 
 A request made with the wrong type of key is rejected with **HTTP 403** (not

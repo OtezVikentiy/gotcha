@@ -185,55 +185,63 @@ func (w *PurgeWorker) Tick(ctx context.Context) (int, error) {
 		slog.Warn("telemetry: purge worker: stats failed", "error", err)
 	}
 
+	var done int
+	_, err := w.withPurgeLock(ctx, func(ctx context.Context) error {
+		for {
+			projectID, ok, err := w.Queue.Claim(ctx)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil
+			}
+			if err := w.Purger.PurgeProject(ctx, projectID); err != nil {
+				// Прерываем проход, не берём следующую заявку: отказ почти всегда общий.
+				// Отдельный контекст: ctx мог быть уже отменён, а причина обязана записаться.
+				failCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				ferr := w.Queue.Fail(failCtx, projectID, err)
+				cancel()
+				if ferr != nil {
+					slog.Error("telemetry: purge worker: failure not recorded",
+						"project_id", projectID, "error", ferr)
+				}
+				return fmt.Errorf("telemetry: purge worker: project %d: %w", projectID, err)
+			}
+			if err := w.Queue.Done(ctx, projectID); err != nil {
+				return err
+			}
+			w.purged.Add(1)
+			done++
+			slog.Info("telemetry: purge worker: project telemetry removed", "project_id", projectID)
+		}
+	})
+	return done, err
+}
+
+// Тот же лок, что и Tick: обе операции — тяжёлая работа над ClickHouse, которую
+// реплики обязаны не дублировать, а не только сериализовать между собой заявки PG.
+func (w *PurgeWorker) withPurgeLock(ctx context.Context, fn func(ctx context.Context) error) (bool, error) {
 	conn, err := w.Queue.pool.Acquire(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("telemetry: purge worker: acquire: %w", err)
+		return false, fmt.Errorf("telemetry: purge worker: acquire: %w", err)
 	}
 	defer conn.Release()
 
 	// Advisory-лок сессионный: берётся на одном соединении и держится до его освобождения.
 	var locked bool
 	if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", int64(purgeWorkerLockID)).Scan(&locked); err != nil {
-		return 0, fmt.Errorf("telemetry: purge worker: lock: %w", err)
+		return false, fmt.Errorf("telemetry: purge worker: lock: %w", err)
 	}
 	if !locked {
 		// Проход идёт на другой реплике. Это нормальная работа, не сбой.
-		return 0, nil
+		return false, nil
 	}
 	defer func() {
 		if _, err := conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", int64(purgeWorkerLockID)); err != nil {
 			slog.Warn("telemetry: purge worker: unlock failed", "error", err)
 		}
 	}()
-
-	var done int
-	for {
-		projectID, ok, err := w.Queue.Claim(ctx)
-		if err != nil {
-			return done, err
-		}
-		if !ok {
-			return done, nil
-		}
-		if err := w.Purger.PurgeProject(ctx, projectID); err != nil {
-			// Прерываем проход, не берём следующую заявку: отказ почти всегда общий.
-			// Отдельный контекст: ctx мог быть уже отменён, а причина обязана записаться.
-			failCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			ferr := w.Queue.Fail(failCtx, projectID, err)
-			cancel()
-			if ferr != nil {
-				slog.Error("telemetry: purge worker: failure not recorded",
-					"project_id", projectID, "error", ferr)
-			}
-			return done, fmt.Errorf("telemetry: purge worker: project %d: %w", projectID, err)
-		}
-		if err := w.Queue.Done(ctx, projectID); err != nil {
-			return done, err
-		}
-		w.purged.Add(1)
-		done++
-		slog.Info("telemetry: purge worker: project telemetry removed", "project_id", projectID)
-	}
+	return true, fn(ctx)
 }
 
 // Только ставит заявки, никогда не удаляет сама. Порядок шагов обязателен: id из ClickHouse
@@ -242,6 +250,16 @@ func (w *PurgeWorker) Reconcile(ctx context.Context) (int, error) {
 	if w.Conn == nil || w.Queue == nil {
 		return 0, nil
 	}
+	var orphans int
+	_, err := w.withPurgeLock(ctx, func(ctx context.Context) error {
+		n, err := w.reconcileLocked(ctx)
+		orphans = n
+		return err
+	})
+	return orphans, err
+}
+
+func (w *PurgeWorker) reconcileLocked(ctx context.Context) (int, error) {
 	seen := map[int64]struct{}{}
 	for _, table := range projectTables {
 		rows, err := w.Conn.Query(ctx, "SELECT DISTINCT project_id FROM "+table)

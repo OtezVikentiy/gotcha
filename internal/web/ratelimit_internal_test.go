@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
+	"gitflic.ru/otezvikentiy/gotcha/internal/oauth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 )
 
@@ -121,11 +122,13 @@ func authTestHandler(t *testing.T) *Handler {
 	t.Helper()
 	pool := testenv.MigratedPG(t)
 	return &Handler{
-		BaseURL:      "http://gotcha.example",
-		Auth:         auth.NewService(pool),
-		loginLimiter: newRateLimiter(time.Now, 5, time.Minute, loginLimiterMaxKeys, "loginLimiter"),
-		ipLimiter:    newRateLimiter(time.Now, 20, time.Minute, ipLimiterMaxKeys, "ipLimiter"),
-		emailLimiter: newRateLimiter(time.Now, 50, 15*time.Minute, emailLimiterMaxKeys, "emailLimiter"),
+		BaseURL:                   "http://gotcha.example",
+		Auth:                      auth.NewService(pool),
+		loginLimiter:              newRateLimiter(time.Now, 5, time.Minute, loginLimiterMaxKeys, "loginLimiter"),
+		ipLimiter:                 newRateLimiter(time.Now, 20, time.Minute, ipLimiterMaxKeys, "ipLimiter"),
+		emailLimiter:              newRateLimiter(time.Now, 50, 15*time.Minute, emailLimiterMaxKeys, "emailLimiter"),
+		passwordResetIPLimiter:    newRateLimiter(time.Now, 20, time.Minute, passwordResetMaxKeys, "passwordResetIPLimiter"),
+		passwordResetEmailLimiter: newRateLimiter(time.Now, 5, 15*time.Minute, passwordResetMaxKeys, "passwordResetEmailLimiter"),
 	}
 }
 
@@ -221,7 +224,9 @@ func TestLimiterEmailKeyPartNormalUnchanged(t *testing.T) {
 	}
 }
 
-func TestRateLimiterCapDeniesNewKeysAtCapacity(t *testing.T) {
+// Атака на произвольные ключи не должна класть логин/статус-страницы для остальных: на
+// потолке новый ключ вытесняет самый старый, а не получает отказ (K11).
+func TestRateLimiterCapEvictsOldestForNewKeys(t *testing.T) {
 	now := time.Now()
 	const capacity = 5
 	rl := newRateLimiter(func() time.Time { return now }, 5, time.Minute, capacity, "test")
@@ -238,12 +243,12 @@ func TestRateLimiterCapDeniesNewKeysAtCapacity(t *testing.T) {
 
 	for i := capacity; i < capacity+50; i++ {
 		key := fmt.Sprintf("203.0.113.%d:%d", i, i)
-		if rl.Allow(key) {
-			t.Errorf("ключ %d сверх потолка: want false (потолок исчерпан)", i)
+		if !rl.Allow(key) {
+			t.Errorf("ключ %d сверх потолка: want true — переполнение обязано вытеснять старейший ключ, а не отказывать новому", i)
 		}
 	}
 	if got := rl.size(); got != capacity {
-		t.Errorf("size() после потока лишних ключей = %d, want %d (потолок не должен пробиваться)", got, capacity)
+		t.Errorf("size() после потока лишних ключей = %d, want %d (потолок не пробивается вверх, но и не отказывает)", got, capacity)
 	}
 }
 
@@ -272,11 +277,93 @@ func TestRateLimiterCapAllowsExistingKeysAtCapacity(t *testing.T) {
 		t.Errorf("k2 после исчерпания limit=%d: want false (обычный лимит, не потолок карты)", limit)
 	}
 
-	if rl.Allow("k4") {
-		t.Errorf("k4 (невиданный ключ на заполненной карте): want false — потолок обязан отказать")
+	// k1 вставлен первым из троих — он старейший по очереди вставки и обязан уступить место k4.
+	if !rl.Allow("k4") {
+		t.Errorf("k4 (невиданный ключ на заполненной карте): want true — переполнение вытесняет k1, не отказывает")
 	}
 	if got := rl.size(); got != capacity {
-		t.Errorf("size() = %d, want %d — ни повтор k2, ни отказанный k4 не должны были менять число ключей", got, capacity)
+		t.Errorf("size() = %d, want %d — вытеснение k1 держит размер на потолке", got, capacity)
+	}
+	if !rl.Allow("k1") {
+		t.Errorf("k1 после вытеснения: want true — вытесненный ключ начинает с чистого счётчика")
+	}
+	if got := rl.size(); got != capacity {
+		t.Errorf("size() после возврата k1 = %d, want %d — k1 вернулся вытеснив k2 или k3, размер не растёт", got, capacity)
+	}
+}
+
+// Вытеснить КОНКРЕТНЫЙ ключ нельзя одним лишним запросом: очередь вставки отдаёт под
+// вытеснение переднего (самого старого), а не атакуемого — иначе сброс счётчика жертвы стоил
+// бы одного запроса и обход лимита был бы бесплатным.
+func TestRateLimiterEvictionIsFIFONotTargeted(t *testing.T) {
+	now := time.Now()
+	const capacity = 10
+	rl := newRateLimiter(func() time.Time { return now }, 100, time.Minute, capacity, "test")
+
+	for i := 0; i < capacity-1; i++ {
+		if !rl.Allow(fmt.Sprintf("filler%d", i)) {
+			t.Fatalf("filler%d: want true", i)
+		}
+	}
+	if !rl.Allow("target") {
+		t.Fatalf("target: want true")
+	}
+	if got := rl.size(); got != capacity {
+		t.Fatalf("тестовая заготовка: size() = %d, want %d", got, capacity)
+	}
+
+	if !rl.Allow("attacker0") {
+		t.Fatalf("attacker0: want true")
+	}
+	hitsBefore := len(rl.hits["target"])
+	if hitsBefore == 0 {
+		t.Fatalf("тестовая заготовка: у target нет истории после одного лишнего ключа")
+	}
+	if !rl.Allow("target") {
+		t.Fatalf("target ещё раз: want true")
+	}
+	if got := len(rl.hits["target"]); got != hitsBefore+1 {
+		t.Errorf("счётчик target = %d после одного лишнего ключа, want %d — вытеснен был filler0, не target (сброс счётчика жертвы одним запросом недопустим)", got, hitsBefore+1)
+	}
+
+	// Проталкиваем через очередь оставшийся потолок новых ключей — только теперь target
+	// доходит до фронта и вытесняется. Цена такая же, как у самого переполнения карты.
+	for i := 1; i < capacity; i++ {
+		rl.Allow(fmt.Sprintf("attacker%d", i))
+	}
+	if got := len(rl.hits["target"]); got != 0 {
+		t.Errorf("после протолкнутого потолка новых ключей target обязан быть вытеснен, got len=%d", got)
+	}
+}
+
+// sweepExpired обязана чистить order/elems вместе с hits — иначе очередь вставки переживает
+// hits, а evictOldestLocked начинает гонять мёртвые записи вместо освобождения ёмкости.
+func TestRateLimiterSweepKeepsOrderConsistentWithHits(t *testing.T) {
+	now := time.Now()
+	clock := &now
+	const capacity = 5
+	rl := newRateLimiter(func() time.Time { return *clock }, 5, time.Second, capacity, "test")
+
+	for i := 0; i < capacity; i++ {
+		if !rl.Allow(fmt.Sprintf("stale%d", i)) {
+			t.Fatalf("заполнение потолка, ключ %d: want true", i)
+		}
+	}
+
+	*clock = clock.Add(2 * time.Second) // все hits старше window — sweepExpired обязана их убрать целиком
+
+	if !rl.Allow("fresh") {
+		t.Fatalf("fresh (принудительный свип на потолке): want true")
+	}
+
+	if got := rl.size(); got != 1 {
+		t.Fatalf("size() = %d, want 1 — старые ключи должны были уйти свипом целиком", got)
+	}
+	if got := rl.order.Len(); got != rl.size() {
+		t.Errorf("order.Len() = %d, want %d — очередь вставки обязана усохнуть вместе с hits", got, rl.size())
+	}
+	if got := len(rl.elems); got != rl.size() {
+		t.Errorf("len(elems) = %d, want %d — elems обязана усохнуть вместе с hits", got, rl.size())
 	}
 }
 
@@ -302,7 +389,7 @@ func TestRateLimiterForcedSweepAtCapacityThrottled(t *testing.T) {
 }
 
 // maxKeys здесь заведомо больше вставляемых ключей — тест изолирует троттлинг фоновой уборки
-// от принудительной уборки на потолке (см. TestRateLimiterCapDeniesNewKeysAtCapacity).
+// от принудительной уборки на потолке (см. TestRateLimiterCapEvictsOldestForNewKeys).
 func TestRateLimiterSweepThrottledByInterval(t *testing.T) {
 	now := time.Now()
 	rl := newRateLimiter(func() time.Time { return now }, 5, time.Minute, 50000, "test")
@@ -373,6 +460,70 @@ func TestRateLimiterNormalUsageUnaffectedByCap(t *testing.T) {
 	}
 }
 
+// Атака, забивающая карту ipLimiter выдуманными адресами, не должна класть логин для
+// остальных: новый IP обязан дойти до Authenticate (и получить обычный отказ по паролю),
+// а не 429 только из-за переполнения карты чужими ключами.
+func TestLoginSubmitSurvivesIPLimiterMapOverflow(t *testing.T) {
+	h := authTestHandler(t)
+	const capacity = 5
+	h.ipLimiter = newRateLimiter(time.Now, 20, time.Minute, capacity, "ipLimiter")
+
+	post := func(remoteAddr string) int {
+		body := "email=nobody@x.com&password=wrong"
+		r := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.Header.Set("Origin", h.BaseURL)
+		r.RemoteAddr = remoteAddr
+		rec := httptest.NewRecorder()
+		h.loginSubmit(rec, r)
+		return rec.Code
+	}
+
+	for i := 0; i < capacity+30; i++ {
+		if code := post(fmt.Sprintf("203.0.113.%d:1", i%250)); code == http.StatusTooManyRequests {
+			t.Fatalf("запрос %d при заполнении карты: status = 429 — переполнение чужими IP не должно класть логин", i)
+		}
+	}
+	if got := h.ipLimiter.size(); got != capacity {
+		t.Fatalf("тестовая заготовка: ipLimiter.size() = %d, want %d (карта на потолке)", got, capacity)
+	}
+
+	if code := post("198.51.100.9:1"); code != http.StatusUnprocessableEntity {
+		t.Errorf("новый IP на заполненной карте ipLimiter: status = %d, want %d (неверный пароль, а не 429 из-за переполнения)", code, http.StatusUnprocessableEntity)
+	}
+}
+
+// publicRateLimited закрывает публичную статус-страницу — та же переполненная чужими IP
+// карта не должна прятать её от новых анонимных посетителей ровно во время аварии.
+func TestPublicRateLimitedSurvivesMapOverflow(t *testing.T) {
+	const capacity = 5
+	h := &Handler{publicLimiter: newRateLimiter(time.Now, 12, time.Minute, capacity, "publicLimiter")}
+	guarded := h.publicRateLimited(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	get := func(remoteAddr string) int {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/status/x", nil)
+		req.RemoteAddr = remoteAddr
+		guarded(rec, req)
+		return rec.Code
+	}
+
+	for i := 0; i < capacity+30; i++ {
+		if code := get(fmt.Sprintf("203.0.113.%d:1", i%250)); code == http.StatusTooManyRequests {
+			t.Fatalf("запрос %d при заполнении карты: status = 429 — переполнение чужими IP не должно класть статус-страницу", i)
+		}
+	}
+	if got := h.publicLimiter.size(); got != capacity {
+		t.Fatalf("тестовая заготовка: publicLimiter.size() = %d, want %d (карта на потолке)", got, capacity)
+	}
+
+	if code := get("198.51.100.9:1"); code != http.StatusOK {
+		t.Errorf("новый анонимный посетитель на заполненной карте: status = %d, want 200 — статус-страница обязана открыться, а не 429", code)
+	}
+}
+
 // ipLimiter проверяется раньше per-account loginLimiter: иначе один IP потоком выдуманных
 // email раздувает карту loginLimiter быстрее, чем успевает сработать ipLimiter.
 func TestLoginSubmitIPLimiterBoundsLoginLimiterGrowth(t *testing.T) {
@@ -436,5 +587,28 @@ func TestSSOSubmitIPLimiterBoundsLoginLimiterGrowth(t *testing.T) {
 	}
 	if got := h.loginLimiter.size(); got != ipLimit {
 		t.Errorf("loginLimiter.size() = %d, want %d — один IP не должен заводить в loginLimiter больше ключей через /sso, чем разрешает ipLimiter", got, ipLimit)
+	}
+}
+
+// oauthCallback обходится без publicRateLimited дороже, чем oauthStart, теряя всякую
+// подпись без сетевого вызова, — лимитер обязан резать его так же, как start.
+func TestOAuthCallbackRateLimited(t *testing.T) {
+	h := &Handler{
+		BaseURL:       "http://localhost",
+		publicLimiter: newRateLimiter(time.Now, 0, time.Minute, publicLimiterMaxKeys, "publicLimiter"),
+		OAuth:         oauth.NewRegistry(emptyAuthURLProvider{}),
+	}
+	mux := http.NewServeMux()
+	h.Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/auth/oauth/empty/callback")
+	if err != nil {
+		t.Fatalf("GET /auth/oauth/empty/callback: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("callback status = %d, want 429 (publicLimiter обязан резать callback так же, как start)", resp.StatusCode)
 	}
 }

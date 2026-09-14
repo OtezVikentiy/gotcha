@@ -7,9 +7,9 @@
 Gotcha is a self-hosted observability platform: error tracking, performance
 tracing, metrics, uptime monitoring, and profiling in one Go binary backed by
 PostgreSQL and ClickHouse. It accepts data via the Sentry SDK ingestion
-protocol and via OTLP (metrics), so it interoperates with the existing Sentry
-SDK ecosystem — point an official Sentry SDK at a Gotcha project DSN and it
-works.
+protocol and via OTLP (traces, metrics, and logs), so it interoperates with
+the existing Sentry SDK ecosystem — point an official Sentry SDK at a Gotcha
+project DSN and it works.
 
 ## Features
 
@@ -38,14 +38,12 @@ works.
 
 ## Versioning and stability
 
-Before 1.0, gotcha's contract can change between releases without notice —
-see the CHANGELOG and the [Upgrade](internal/docs/en/upgrade.md) guide for
-what moved release to release. Starting at 1.0, part of that contract will
-freeze: environment variable names, ingest endpoints and request body
-formats, the migration schema, and the backup format will only change in a
+Since 1.0, part of gotcha's contract is frozen: environment variable names,
+ingest endpoints and request body formats, the migration schema, the backup
+format, self-metric names, and the outgoing webhook body only change in a
 backward-compatible way, or with a major version. See the
 [Versioning policy](internal/docs/en/versioning.md) for the full promise and
-what stays out of it.
+what stays out of it, and the CHANGELOG for what changed release to release.
 
 ## Architecture
 
@@ -56,7 +54,7 @@ Hosts above) — it's served by the instance itself and installed with one
 command, no manual build needed:
 
 - `--mode=ingest` — HTTP ingestion (Sentry envelope endpoints, OTLP metrics), event/span/metric/profile batching, alert evaluation on ingested data.
-- `--mode=web` — the SSR web UI (templ + htmx), auth, org/project administration, dashboards, public status pages.
+- `--mode=web` — the SSR web UI (templ), auth, org/project administration, dashboards, public status pages.
 - `--mode=uptime` — the uptime check runner, incident watchdog, performance-regression and metric-threshold evaluators.
 - `--mode=probe` — a remote uptime probe: talks only to a central Gotcha instance over HTTP, no direct database access.
 - `--mode=all` (default) — everything above in a single process; the natural mode for a small/self-hosted install.
@@ -142,7 +140,7 @@ Gotcha is configured entirely through `GOTCHA_*` environment variables (see
 | `GOTCHA_INCIDENT_RETENTION_DAYS` | `90` | Retention for resolved uptime incidents in PostgreSQL. Separate from the others because an incident has no telemetry of its own and the public status page shows 90 days of history. |
 | `GOTCHA_PROJECT_PURGE_RECONCILE_HOURS` | `24` | How often to look for ClickHouse telemetry of projects that no longer exist and queue it for deletion. Deleting a project queues that work in the same transaction; this check covers the case where no request was ever queued. `0` turns it off. |
 | `GOTCHA_EDITION` | `oss` | `oss` or `saas`. Controls the default for the quota variables below (`oss` → 0/unlimited, `saas` → 1,000,000/month). |
-| `GOTCHA_DEFAULT_EVENT_QUOTA` / `_TRANSACTION_QUOTA` / `_METRIC_QUOTA` / `_PROFILE_QUOTA` | `0` in `oss` (unlimited) | Default monthly ingest quota assigned to new organizations. **If you expose a project DSN publicly, set these to a real cap** — `oss` defaults to unlimited. |
+| `GOTCHA_DEFAULT_EVENT_QUOTA` / `_TRANSACTION_QUOTA` / `_METRIC_QUOTA` / `_PROFILE_QUOTA` / `_LOG_QUOTA` | `0` in `oss` (unlimited) | Default monthly ingest quota assigned to new organizations. **If you expose a project DSN publicly, set these to a real cap** — `oss` defaults to unlimited. |
 | `GOTCHA_REGISTRATION_MODE` | `invite` | `open` (anyone can self-register), `invite` (self-registration closed except invite links), or `closed` (no self-registration at all). The very first user always succeeds regardless of this setting (instance-admin bootstrap). |
 | `GOTCHA_SCRUB_IP` / `GOTCHA_SCRUB_EMAIL` | `true` / `true` | Zero out the reporting user's IP/email server-side before storage. On by default. |
 | `GOTCHA_SCRUB_DENY_KEYS` | built-in denylist (`password`, `token`, `secret`, `authorization`, `cookie`, `api_key`, `access_token`, `refresh_token`, `session`, `credit_card`, `card_number`, `cvv`, …) | Comma-separated key names redacted from tags/contexts/stack traces/span data. This variable extends the built-in list (use `GOTCHA_SCRUB_KEEP_KEYS` to drop a specific built-in key). |

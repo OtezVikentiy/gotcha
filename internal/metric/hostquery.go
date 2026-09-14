@@ -82,6 +82,207 @@ func (q *Query) LatestByHost(ctx context.Context, projectID int64, name string,
 	return out, rows.Err()
 }
 
+// Батчевый двойник Aggregate: одним проходом по гранулам — результат для КАЖДОГО хоста проекта,
+// а не для одного (host вне ORDER BY). Хост без данных в карте отсутствует (как cnt==0 там же).
+func (q *Query) AggregateByHost(ctx context.Context, projectID int64, name, environment string,
+	matchers []LabelMatcher, agg string, from, to time.Time) (map[string]float64, error) {
+
+	matchers = compactMatchers(matchers)
+	typ, monotonic, temporality, err := q.metricType(ctx, projectID, name, from, to)
+	if err != nil {
+		return nil, err
+	}
+	if typ == "sum" && monotonic && temporality == "cumulative" {
+		if agg == "increase" {
+			return q.aggregateIncreaseByHost(ctx, projectID, name, environment, matchers, from, to)
+		}
+		return q.aggregateRateByHost(ctx, projectID, name, environment, matchers, agg, from, to)
+	}
+	if typ == "histogram" && isPercentile(agg) {
+		return q.aggregateHistogramByHost(ctx, projectID, name, environment, matchers, agg, from, to)
+	}
+	return q.aggregateScalarByHost(ctx, projectID, name, environment, matchers, typ, agg, from, to)
+}
+
+// agg=avg: ClickHouse не гарантирует тот же порядок суммирования, что у точечного Aggregate — на
+// плотных рядах (тысячи точек на хост) расходится в младших разрядах; max/min/last — точны всегда.
+func (q *Query) aggregateScalarByHost(ctx context.Context, projectID int64, name, environment string,
+	matchers []LabelMatcher, typ, agg string, from, to time.Time) (map[string]float64, error) {
+
+	sqlText := fmt.Sprintf(`
+		SELECT host, %s FROM metric_points
+		WHERE project_id = ? AND name = ? AND ts >= ? AND ts < ?
+		  AND (? = '' OR environment = ?) AND host != '' %s
+		GROUP BY host`, scalarAggExpr(typ, agg), matchersClause(matchers))
+	args := []any{projectID, name, from, to, environment, environment}
+	args = appendMatchersArgs(args, matchers)
+
+	rows, err := q.conn.Query(ctx, sqlText, args...)
+	if err != nil {
+		return nil, fmt.Errorf("metric: aggregate scalar by host: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]float64{}
+	for rows.Next() {
+		var host string
+		var v float64
+		if err := rows.Scan(&host, &v); err != nil {
+			return nil, fmt.Errorf("metric: aggregate scalar by host scan: %w", err)
+		}
+		out[host] = v
+	}
+	return out, rows.Err()
+}
+
+func (q *Query) aggregateHistogramByHost(ctx context.Context, projectID int64, name, environment string,
+	matchers []LabelMatcher, agg string, from, to time.Time) (map[string]float64, error) {
+
+	sqlText := fmt.Sprintf(`
+		SELECT host, sumForEach(bucket_counts), any(explicit_bounds), sum(count) FROM metric_points
+		WHERE project_id = ? AND name = ? AND ts >= ? AND ts < ?
+		  AND (? = '' OR environment = ?) AND host != '' %s
+		GROUP BY host`, matchersClause(matchers))
+	args := []any{projectID, name, from, to, environment, environment}
+	args = appendMatchersArgs(args, matchers)
+
+	rows, err := q.conn.Query(ctx, sqlText, args...)
+	if err != nil {
+		return nil, fmt.Errorf("metric: aggregate histogram by host: %w", err)
+	}
+	defer rows.Close()
+	p := percentileValue(agg)
+	out := map[string]float64{}
+	for rows.Next() {
+		var host string
+		var bc []uint64
+		var eb []float64
+		var cnt uint64
+		if err := rows.Scan(&host, &bc, &eb, &cnt); err != nil {
+			return nil, fmt.Errorf("metric: aggregate histogram by host scan: %w", err)
+		}
+		if cnt == 0 {
+			continue
+		}
+		out[host] = histogramQuantile(bc, eb, p)
+	}
+	return out, rows.Err()
+}
+
+// Как aggregateRate (query.go), но бакеты идут по (host, b) — один проход считает дельты СВОЕГО хоста
+// для всех хостов проекта разом, порядок ORDER BY host, b даёт их подряд для группировки в Go.
+func (q *Query) aggregateRateByHost(ctx context.Context, projectID int64, name, environment string,
+	matchers []LabelMatcher, agg string, from, to time.Time) (map[string]float64, error) {
+
+	stepSec := int64(to.Sub(from).Seconds()) / aggregateRateBuckets
+	if stepSec < 1 {
+		stepSec = 1
+	}
+	sqlText := fmt.Sprintf(`
+		SELECT host, toStartOfInterval(ts, INTERVAL %d second) AS b, max(value) AS v
+		FROM metric_points
+		WHERE project_id = ? AND name = ? AND ts >= ? AND ts < ?
+		  AND (? = '' OR environment = ?) AND host != '' %s
+		GROUP BY host, b ORDER BY host, b`, stepSec, matchersClause(matchers))
+	args := []any{projectID, name, from, to, environment, environment}
+	args = appendMatchersArgs(args, matchers)
+
+	rows, err := q.conn.Query(ctx, sqlText, args...)
+	if err != nil {
+		return nil, fmt.Errorf("metric: aggregate rate by host: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]float64{}
+	var curHost string
+	var cum []Point
+	started := false
+	flush := func() {
+		pts := rateFromCumulative(cum, stepSec)
+		if len(pts) > 0 {
+			out[curHost] = aggregatePoints(pts, agg)
+		}
+	}
+	for rows.Next() {
+		var host string
+		var p Point
+		if err := rows.Scan(&host, &p.T, &p.V); err != nil {
+			return nil, fmt.Errorf("metric: aggregate rate by host scan: %w", err)
+		}
+		if !started || host != curHost {
+			if started {
+				flush()
+			}
+			curHost, cum, started = host, nil, true
+		}
+		cum = append(cum, p)
+	}
+	if started {
+		flush()
+	}
+	return out, rows.Err()
+}
+
+// Разность соседних кумулятивных бакетов / реальный интервал между ними — общая часть rateSeries
+// (query.go) и aggregateRateByHost, здесь гоняемая по хосту, а не по одной серии.
+func rateFromCumulative(cum []Point, stepSec int64) []Point {
+	if len(cum) < 2 {
+		return nil
+	}
+	out := make([]Point, 0, len(cum)-1)
+	for i := 1; i < len(cum); i++ {
+		delta := cum[i].V - cum[i-1].V
+		if delta < 0 {
+			delta = 0
+		}
+		gapSec := cum[i].T.Sub(cum[i-1].T).Seconds()
+		if gapSec <= 0 {
+			gapSec = float64(stepSec)
+		}
+		out = append(out, Point{T: cum[i].T, V: delta / gapSec})
+	}
+	return out
+}
+
+// Как aggregateIncrease (query.go), но lagInFrame — ВНУТРИ окна каждого хоста (PARTITION BY host),
+// иначе дельта первой точки одного хоста легла бы от последней точки предыдущего.
+func (q *Query) aggregateIncreaseByHost(ctx context.Context, projectID int64, name, environment string,
+	matchers []LabelMatcher, from, to time.Time) (map[string]float64, error) {
+
+	sqlText := fmt.Sprintf(`
+		SELECT host, count(), sum(d) FROM (
+			SELECT host, greatest(value - lagInFrame(value, 1, value) OVER (PARTITION BY host ORDER BY b), 0) AS d
+			FROM (
+				SELECT host, toStartOfInterval(ts, INTERVAL 1 second) AS b, max(value) AS value
+				FROM metric_points
+				WHERE project_id = ? AND name = ? AND ts >= ? AND ts < ?
+				  AND (? = '' OR environment = ?) AND host != '' %s
+				GROUP BY host, b
+			)
+		) GROUP BY host`, matchersClause(matchers))
+	args := []any{projectID, name, from, to, environment, environment}
+	args = appendMatchersArgs(args, matchers)
+
+	rows, err := q.conn.Query(ctx, sqlText, args...)
+	if err != nil {
+		return nil, fmt.Errorf("metric: aggregate increase by host: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]float64{}
+	for rows.Next() {
+		var host string
+		var cnt uint64
+		var total float64
+		if err := rows.Scan(&host, &cnt, &total); err != nil {
+			return nil, fmt.Errorf("metric: aggregate increase by host scan: %w", err)
+		}
+		if cnt < 2 {
+			continue
+		}
+		out[host] = total
+	}
+	return out, rows.Err()
+}
+
 // Временной ряд одной группы (значения атрибута groupKey) для мульти-линейного графика карточки хоста.
 type GroupedSeries struct {
 	Key    string

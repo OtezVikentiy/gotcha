@@ -20,8 +20,13 @@ func TestMonitorRegionMustBeAvailable(t *testing.T) {
 	m := baseHTTPMonitor(pid)
 	m.Config = httpConfig(t, uptime.HTTPConfig{Method: "GET", URL: "https://example.com/health"})
 
-	if _, err := svc.Create(ctx, m, []string{"no-such-region"}, nil); !errors.Is(err, uptime.ErrInvalidMonitor) {
+	_, err := svc.Create(ctx, m, []string{"no-such-region"}, nil)
+	if !errors.Is(err, uptime.ErrInvalidMonitor) {
 		t.Fatalf("Create с несуществующим регионом: err = %v, want ErrInvalidMonitor", err)
+	}
+	var ve *uptime.ValidationError
+	if !errors.As(err, &ve) || ve.Code != "region_unavailable" {
+		t.Fatalf("Code = %v, want region_unavailable", ve)
 	}
 
 	created, err := svc.Create(ctx, m, []string{"local"}, nil)

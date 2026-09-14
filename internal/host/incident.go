@@ -158,6 +158,21 @@ func (s *IncidentService) ResolveOpenByHostKind(ctx context.Context, hostID int6
 	return tag.RowsAffected(), nil
 }
 
+// Один UPDATE на весь список хостов — вызывающий группирует по kind сам,
+// не гонит round-trip на каждую пару «хост × вид».
+func (s *IncidentService) ResolveOpenByHostsKind(ctx context.Context, hostIDs []int64, kind string) (int64, error) {
+	if len(hostIDs) == 0 {
+		return 0, nil
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE host_incidents SET status = 'resolved', resolved_at = now()
+		WHERE host_id = ANY($1) AND kind = $2 AND status = 'open'`, hostIDs, kind)
+	if err != nil {
+		return 0, fmt.Errorf("host: resolve open incidents by hosts kind: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 func (s *IncidentService) ListOpenKindsForHosts(ctx context.Context, hostIDs []int64) (map[int64]map[string]bool, error) {
 	out := make(map[int64]map[string]bool, len(hostIDs))
 	if len(hostIDs) == 0 {
@@ -329,6 +344,28 @@ func (s *IncidentService) ListOpenByProject(ctx context.Context, projectID int64
 		in, err := scanIncident(rows)
 		if err != nil {
 			return nil, fmt.Errorf("host: list open incidents by project scan: %w", err)
+		}
+		out = append(out, in)
+	}
+	return out, rows.Err()
+}
+
+func (s *IncidentService) ListRecentByHost(ctx context.Context, hostID int64, limit int) ([]Incident, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx,
+		"SELECT "+incidentColumns+" FROM host_incidents WHERE host_id = $1 ORDER BY started_at DESC LIMIT $2",
+		hostID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("host: list recent incidents by host: %w", err)
+	}
+	defer rows.Close()
+	var out []Incident
+	for rows.Next() {
+		in, err := scanIncident(rows)
+		if err != nil {
+			return nil, fmt.Errorf("host: list recent incidents by host scan: %w", err)
 		}
 		out = append(out, in)
 	}

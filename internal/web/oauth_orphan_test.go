@@ -41,7 +41,7 @@ func TestOAuthOpenProvisionRollsBackOrphanOnLinkIdentityFailure(t *testing.T) {
 	}
 
 	const newEmail = "orphan-open@corp.com"
-	id := oauth.Identity{Subject: "sub-taken-open", Email: newEmail, EmailVerified: true}
+	id := oauth.Identity{Subject: "sub-taken-open", Email: newEmail, EmailVerified: true, TrustedIssuer: true}
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/auth/oauth/oidc/callback", nil)
@@ -81,7 +81,7 @@ func TestOAuthInviteProvisionRollsBackOrphanOnLinkIdentityFailure(t *testing.T) 
 		t.Fatalf("pre-link identity: %v", err)
 	}
 
-	id := oauth.Identity{Subject: "sub-taken-invite", Email: newEmail, EmailVerified: true}
+	id := oauth.Identity{Subject: "sub-taken-invite", Email: newEmail, EmailVerified: true, TrustedIssuer: true}
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/auth/oauth/oidc/callback", nil)

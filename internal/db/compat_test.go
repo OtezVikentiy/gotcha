@@ -105,6 +105,27 @@ func TestRecordSchemaCompatWritesBothSchemas(t *testing.T) {
 	}
 }
 
+// Без таблицы schema_compat каждая вставка проваливается — сообщение обязано называть
+// один и тот же номер версии из раза в раз, а не зависеть от обхода Go-карты.
+func TestRecordSchemaCompatFailureNamesVersionDeterministically(t *testing.T) {
+	pool, err := db.NewPostgres(context.Background(), testenv.PostgresDSN(t))
+	if err != nil {
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	defer pool.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	first := db.RecordSchemaCompatPG(ctx, pool)
+	second := db.RecordSchemaCompatPG(ctx, pool)
+	if first == nil || second == nil {
+		t.Fatalf("RecordSchemaCompatPG на немигрированной базе должен провалиться: first=%v second=%v", first, second)
+	}
+	if first.Error() != second.Error() {
+		t.Errorf("сообщение об ошибке меняется между вызовами:\n1: %s\n2: %s", first.Error(), second.Error())
+	}
+}
+
 func TestSchemaGateAllowsRollbackThroughAdditiveMigration(t *testing.T) {
 	pool, dsn := migratedWithDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

@@ -400,17 +400,18 @@ func (h *Handler) renderMonitorForm(w http.ResponseWriter, r *http.Request, stat
 	}
 	regions, err := h.Uptime.Regions(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	channels, err := h.channelsForView(r.Context(), data.ProjectID, canManage)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	data.AllRegions = regions
 	data.AllChannels = channels
 	data.CanManage = canManage
+	data.SecretKeyInsecure = h.SecretKeyInsecure
 	w.WriteHeader(status)
 	_ = templates.MonitorForm(data, userEmail).Render(r.Context(), w)
 }
@@ -501,13 +502,13 @@ func (h *Handler) monitorCreate(w http.ResponseWriter, r *http.Request) {
 			h.renderMonitorForm(w, r, http.StatusUnprocessableEntity, authz.OrgID, authz.CanManage, data, h.currentEmail(r))
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if created.Kind == uptime.KindHeartbeat && created.HeartbeatToken != "" {
 		// сырой токен доступен только сейчас (в БД — sha256): рендерим деталь с URL
 		// пинга один раз, а не редиректим — редирект потерял бы токен.
-		h.renderMonitorDetail(w, r, created, true, true)
+		h.renderMonitorDetail(w, r, created, true)
 		return
 	}
 	http.Redirect(w, r, monitorDetailPath(created.ID), http.StatusSeeOther)
@@ -534,7 +535,7 @@ func (h *Handler) monitorHeartbeatRegenerate(w http.ResponseWriter, r *http.Requ
 	}
 	canOperate, err := h.canOperateProject(r.Context(), m.ProjectID, uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// монитор зрителю уже доступен — нехватка прав оператора это честный 403, не 404
@@ -559,11 +560,11 @@ func (h *Handler) monitorHeartbeatRegenerate(w http.ResponseWriter, r *http.Requ
 	}
 	token, err := h.Uptime.RotateHeartbeatToken(r.Context(), m.ID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	m.HeartbeatToken = token
-	h.renderMonitorDetail(w, r, m, canOperate, canOperate)
+	h.renderMonitorDetail(w, r, m, canOperate)
 }
 
 // kind и enabled берутся из уже сохранённого монитора (форма их не присылает/не может менять).
@@ -617,7 +618,7 @@ func (h *Handler) monitorUpdate(w http.ResponseWriter, r *http.Request) {
 		submitted.Headers = mergeKeptHeaders(submitted.Headers, stored.Headers)
 		merged, err := json.Marshal(submitted)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		upd.Config = merged
@@ -625,7 +626,7 @@ func (h *Handler) monitorUpdate(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.Uptime.Update(r.Context(), upd, regions, channelIDs); err != nil {
 		if errors.Is(err, uptime.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			h.renderError(w, r, http.StatusNotFound, "")
 			return
 		}
 		if errors.Is(err, uptime.ErrInvalidMonitor) {
@@ -634,7 +635,7 @@ func (h *Handler) monitorUpdate(w http.ResponseWriter, r *http.Request) {
 			h.renderMonitorForm(w, r, http.StatusUnprocessableEntity, authz.OrgID, authz.CanManage, data, h.currentEmail(r))
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, monitorDetailPath(m.ID), http.StatusSeeOther)

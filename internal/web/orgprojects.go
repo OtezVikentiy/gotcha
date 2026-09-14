@@ -5,7 +5,6 @@ import (
 	"strconv"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
-	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
 	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web/templates"
 )
@@ -30,17 +29,17 @@ func (h *Handler) orgProjectsPage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) renderOrgProjects(w http.ResponseWriter, r *http.Request, status int, uid, orgID int64, form templates.FormState, errMsg string) {
 	role, err := h.Org.Role(r.Context(), orgID, uid)
 	if err != nil {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 		return
 	}
 	o, err := h.Org.Get(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	projects, err := h.Org.ProjectsForUserInOrg(r.Context(), uid, orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	var canCreate []templates.OrgOption
@@ -68,7 +67,7 @@ func (h *Handler) projectsRedirect(w http.ResponseWriter, r *http.Request) {
 	if orgID == 0 {
 		orgs, err := h.Org.OrgsOf(r.Context(), uid)
 		if err != nil {
-			h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+			h.renderError(w, r, http.StatusInternalServerError, "")
 			return
 		}
 		if len(orgs) == 0 {

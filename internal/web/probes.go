@@ -81,12 +81,12 @@ func (h *Handler) orgProbesPage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) renderProbes(w http.ResponseWriter, r *http.Request, status int, orgID int64, errMsg, rawToken string) {
 	o, err := h.Org.Get(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	probes, err := h.Uptime.Probes(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	now := time.Now()
@@ -142,7 +142,7 @@ func (h *Handler) orgProbesCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	_, token, err := h.Uptime.CreateProbe(r.Context(), orgID, region, name)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.renderProbes(w, r, http.StatusOK, orgID, "", token)
@@ -179,18 +179,26 @@ func (h *Handler) orgProbesRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	probes, err := h.Uptime.Probes(r.Context(), orgID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !probeBelongsToOrg(probes, probeID) {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 		return
 	}
 	// CSP блокирует inline confirm() — первый POST рендерит страницу подтверждения.
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.probe_revoke.message", "confirm.revoke",
+		name := ""
+		for _, p := range probes {
+			if p.ID == probeID {
+				name = p.Name
+				break
+			}
+		}
+		h.renderConfirmf(w, r, "confirm.title", "confirm.probe_revoke.message", "confirm.revoke",
 			orgProbesPath(orgID), orgProbesPath(orgID)+"/revoke",
-			[]templates.HiddenField{{Name: "probe_id", Value: strconv.FormatInt(probeID, 10)}})
+			[]templates.HiddenField{{Name: "probe_id", Value: strconv.FormatInt(probeID, 10)}},
+			"name", name)
 		return
 	}
 	if err := h.Uptime.RevokeProbe(r.Context(), probeID); err != nil {
@@ -198,7 +206,7 @@ func (h *Handler) orgProbesRevoke(w http.ResponseWriter, r *http.Request) {
 			h.renderProbes(w, r, http.StatusUnprocessableEntity, orgID, i18n.T(r.Context(), "err.probe.already_revoked"), "")
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, orgProbesPath(orgID), http.StatusSeeOther)

@@ -16,12 +16,14 @@ const (
 )
 
 var routeAuthz = map[string]string{
-	"POST /login":           lvlPublic,
-	"POST /register":        lvlPublic,
-	"POST /logout":          lvlPublic,
-	"POST /sso":             lvlPublic,
-	"POST /settings/locale": lvlPublic,
-	"POST /settings/theme":  lvlPublic,
+	"POST /login":                  lvlPublic,
+	"POST /register":               lvlPublic,
+	"POST /logout":                 lvlPublic,
+	"POST /sso":                    lvlPublic,
+	"POST /forgot-password":        lvlPublic,
+	"POST /reset-password/{token}": lvlPublic,
+	"POST /settings/locale":        lvlPublic,
+	"POST /settings/theme":         lvlPublic,
 
 	"POST /uptime/hb/{token}": lvlPublic,
 	"POST /probe/lease":       lvlPublic,
@@ -54,6 +56,7 @@ var routeAuthz = map[string]string{
 	"POST /projects/{id}/statuspages":                          lvlOperator,
 	"POST /statuspages/{id}":                                   lvlOperator,
 	"POST /statuspages/{id}/delete":                            lvlOperator,
+	"POST /statuspages/{id}/rotate":                            lvlOperator,
 	"POST /projects/{id}/alerts/rules":                         lvlOperator,
 	"POST /projects/{id}/escalations":                          lvlOperator,
 	"POST /projects/{id}/alert-suppression":                    lvlOperator,
@@ -111,6 +114,8 @@ var routeAuthz = map[string]string{
 	"GET /login":                          lvlPublic,
 	"GET /register":                       lvlPublic,
 	"GET /sso":                            lvlPublic,
+	"GET /forgot-password":                lvlPublic,
+	"GET /reset-password/{token}":         lvlPublic,
 	"GET /invite/{token}":                 lvlPublic,
 	"GET /auth/oauth/{provider}/start":    lvlPublic,
 	"GET /auth/oauth/{provider}/callback": lvlPublic,

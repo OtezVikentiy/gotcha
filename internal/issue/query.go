@@ -66,7 +66,7 @@ var sortColumns = map[string]string{
 const defaultSort = "last_seen"
 
 const (
-	defaultPerPage = 25
+	DefaultPerPage = 25
 	maxPerPage     = 100
 )
 
@@ -76,7 +76,8 @@ type Filter struct {
 	Query       string // подстрока в title/culprit (ILIKE)
 	Sort        string // last_seen (default) | first_seen | times_seen
 	Environment string // "" = все окружения; иначе EXISTS по issue_environments
-	// Since/Until — границы окна по last_seen; нулевое значение = без границы.
+	// Since/Until — полуинтервал [Since, Until) по last_seen, нулевое значение = без
+	// границы; Until исключающая — иначе соседние дневные окна делят полночь.
 	Since   time.Time
 	Until   time.Time
 	Page    int
@@ -131,7 +132,7 @@ func buildIssueFilter(projectID int64, f Filter) (string, []any) {
 	}
 	if !f.Until.IsZero() {
 		args = append(args, f.Until)
-		fmt.Fprintf(&sb, " AND issues.last_seen <= $%d", len(args))
+		fmt.Fprintf(&sb, " AND issues.last_seen < $%d", len(args))
 	}
 	return sb.String(), args
 }
@@ -145,7 +146,7 @@ func (s *Service) List(ctx context.Context, projectID int64, f Filter) ([]Issue,
 	}
 	perPage := f.PerPage
 	if perPage <= 0 {
-		perPage = defaultPerPage
+		perPage = DefaultPerPage
 	}
 	if perPage > maxPerPage {
 		perPage = maxPerPage

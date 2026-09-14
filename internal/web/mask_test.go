@@ -71,19 +71,22 @@ func TestMaskChannelTargetDisambiguatesSameHost(t *testing.T) {
 	}
 }
 
-func TestAlertDeliveriesRedactionOrderMatters(t *testing.T) {
+// RedactToken matches the token as an exact substring: it needs the RAW value, not
+// one already run through maskChannelTarget — redacting the masked form leaves the
+// raw target sitting in the text untouched.
+func TestRedactTokenRequiresRawInputNotMasked(t *testing.T) {
 	const rawTarget = "https://hooks.example.com/T000/B000/order-pin-secret"
 	lastErr := "upstream rejected POST to " + rawTarget + ": connection reset"
 
 	redacted := notify.RedactToken(lastErr, rawTarget)
 	if strings.Contains(redacted, rawTarget) {
-		t.Fatalf("correct order (redact-then-mask) left target in LastError: %q", redacted)
+		t.Fatalf("RedactToken(text, rawTarget) left the target in place: %q", redacted)
 	}
 
 	masked := maskChannelTarget(alert.ChannelWebhook, rawTarget)
 	reversed := notify.RedactToken(lastErr, masked)
 	if !strings.Contains(reversed, rawTarget) {
-		t.Fatalf("test invalid: reversed order (mask-then-redact) unexpectedly stripped the target too — order is no longer distinguishable by this test, adjust fixtures")
+		t.Fatalf("test invalid: redacting the masked form unexpectedly stripped the raw target too — fixtures no longer distinguish the two, adjust them")
 	}
 }
 

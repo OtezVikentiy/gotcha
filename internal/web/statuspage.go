@@ -153,14 +153,14 @@ func (h *Handler) statusPage(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				slog.Error("statusPage: redirect lookup failed", "error", rerr)
-				h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+				h.renderError(w, r, http.StatusInternalServerError, "")
 				return
 			}
 			if found {
 				http.Redirect(w, r, "/status/"+pubID, http.StatusMovedPermanently)
 				return
 			}
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			h.renderError(w, r, http.StatusNotFound, "")
 			return
 		}
 		if r.Context().Err() != nil {
@@ -169,7 +169,7 @@ func (h *Handler) statusPage(w http.ResponseWriter, r *http.Request) {
 		}
 		// CH-отказ здесь сознательно 500, не деградация с заглушкой: страницу опрашивают поллеры,
 		// закешированная заглушка выдавала бы отказ за «сервис в порядке» ещё 30с.
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.renderStatusPage(w, r, view)
@@ -397,12 +397,12 @@ func (h *Handler) renderStatusPages(w http.ResponseWriter, r *http.Request, stat
 	}
 	monitors, err := h.Uptime.List(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	pages, err := h.Uptime.StatusPagesOf(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -413,7 +413,7 @@ func (h *Handler) renderStatusPages(w http.ResponseWriter, r *http.Request, stat
 	}
 	selectedByPage, err := h.Uptime.StatusPageMonitorsOf(r.Context(), pageIDs)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	newForm := templates.StatusPageForm{Enabled: true, Monitors: statusPageFormMonitors(monitors, nil)}
@@ -559,7 +559,7 @@ func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	projectMonitors, err := h.Uptime.List(r.Context(), projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	sp, monitors := parseStatusPageForm(r, projectID, projectMonitors)
@@ -574,7 +574,7 @@ func (h *Handler) statusPagesCreate(w http.ResponseWriter, r *http.Request) {
 			h.renderStatusPages(w, r, http.StatusUnprocessableEntity, projectID, authz.CanManage, statusPageErrorMessage(r.Context(), err), &form)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, statusPagesPath(projectID), http.StatusSeeOther)
@@ -591,10 +591,10 @@ func (h *Handler) loadManagedStatusPage(w http.ResponseWriter, r *http.Request, 
 	sp, err := h.Uptime.StatusPageByID(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, uptime.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			h.renderError(w, r, http.StatusNotFound, "")
 			return uptime.StatusPage{}, projectAuthz{}, false
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return uptime.StatusPage{}, projectAuthz{}, false
 	}
 	authz, ok := h.requireProjectOperator(w, r, sp.ProjectID, uid)
@@ -629,7 +629,7 @@ func (h *Handler) statusPagesUpdate(w http.ResponseWriter, r *http.Request) {
 
 	projectMonitors, err := h.Uptime.List(r.Context(), existing.ProjectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	sp, monitors := parseStatusPageForm(r, existing.ProjectID, projectMonitors)
@@ -646,10 +646,10 @@ func (h *Handler) statusPagesUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, uptime.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			h.renderError(w, r, http.StatusNotFound, "")
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	// инвалидация по public_id — тому же ключу, по которому резолвится
@@ -687,16 +687,63 @@ func (h *Handler) statusPagesDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	// двухшаговое подтверждение вместо confirm() — CSP без unsafe-inline его не исполняет.
 	if r.FormValue("confirmed") != "yes" {
-		h.renderConfirm(w, r, "confirm.title", "confirm.statuspage_delete.message", "confirm.delete",
-			statusPagesPath(sp.ProjectID), "/statuspages/"+strconv.FormatInt(sp.ID, 10)+"/delete", nil)
+		h.renderConfirmf(w, r, "confirm.title", "confirm.statuspage_delete.message", "confirm.delete",
+			statusPagesPath(sp.ProjectID), "/statuspages/"+strconv.FormatInt(sp.ID, 10)+"/delete", nil,
+			"name", sp.Title)
 		return
 	}
 	if err := h.Uptime.DeleteStatusPage(r.Context(), sp.ID); err != nil {
 		if errors.Is(err, uptime.ErrNotFound) {
-			h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+			h.renderError(w, r, http.StatusNotFound, "")
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
+		return
+	}
+	h.statusCache.invalidate(sp.PublicID)
+	http.Redirect(w, r, statusPagesPath(sp.ProjectID), http.StatusSeeOther)
+}
+
+// Перевыпуск публичного адреса — публикационное решение того же уровня, что включение
+// страницы: единственный способ отозвать утёкшую ссылку, не потеряв страницу.
+func (h *Handler) statusPagesRotate(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, h.BaseURL) {
+		h.denyCrossOrigin(w, r)
+		return
+	}
+	uid, ok := auth.UserID(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	if h.Uptime == nil { // стенд без мониторинга: 404, а не nil-разыменование
+		h.notFound(w, r)
+		return
+	}
+	sp, authz, ok := h.loadManagedStatusPage(w, r, uid)
+	if !ok {
+		return
+	}
+	if !authz.CanManage {
+		h.renderError(w, r, http.StatusForbidden, i18n.T(r.Context(), "error.403.body"))
+		return
+	}
+	if !h.parseForm(w, r) {
+		return
+	}
+	// перевыпуск необратим: прежний адрес перестаёт открываться сразу, восстановить нельзя.
+	if r.FormValue("confirmed") != "yes" {
+		h.renderConfirmf(w, r, "confirm.title", "confirm.statuspage_rotate.message", "confirm.statuspage_rotate.action",
+			statusPagesPath(sp.ProjectID), "/statuspages/"+strconv.FormatInt(sp.ID, 10)+"/rotate", nil,
+			"name", sp.Title)
+		return
+	}
+	if _, err := h.Uptime.RotateStatusPagePublicID(r.Context(), sp.ID); err != nil {
+		if errors.Is(err, uptime.ErrNotFound) {
+			h.renderError(w, r, http.StatusNotFound, "")
+			return
+		}
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	h.statusCache.invalidate(sp.PublicID)

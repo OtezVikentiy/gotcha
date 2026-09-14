@@ -7,6 +7,7 @@ import (
 	"unicode"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
+	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 )
 
 // здесь (package trace), не в regression_notify_test.go — regressionSubject
@@ -14,7 +15,7 @@ import (
 func TestRegressionNotifyDurationIsNotInflated(t *testing.T) {
 	ctx := context.Background()
 	ev := RegressionEvent{
-		Kind: "regression_open", Target: "GET /api/items", Metric: "duration",
+		Kind: notify.KindRegressionOpen, Target: "GET /api/items", Metric: "duration",
 		BaselineValue: 400, CurrentValue: 640, PctIncrease: 0.6,
 	}
 	subj := regressionSubject(ctx, ev)
@@ -30,11 +31,11 @@ func TestRegressionNotifyLocale(t *testing.T) {
 	ru := i18n.WithLocale(context.Background(), i18n.Locale{Code: "ru"})
 	en := i18n.WithLocale(context.Background(), i18n.Locale{Code: "en"})
 	open := RegressionEvent{
-		Kind: "regression_open", Target: "GET /api/items", Metric: "duration",
+		Kind: notify.KindRegressionOpen, Target: "GET /api/items", Metric: "duration",
 		BaselineValue: 400, CurrentValue: 640, PctIncrease: 0.6,
 	}
 	closed := RegressionEvent{
-		Kind: "regression_close", Target: "GET /api/items", Metric: "duration",
+		Kind: notify.KindRegressionClose, Target: "GET /api/items", Metric: "duration",
 		BaselineValue: 640, CurrentValue: 400, DurationSeconds: 125,
 	}
 	const url = "https://gotcha.example/projects/1/regressions"

@@ -51,7 +51,7 @@ func (h *Handler) perfIssuesList(w http.ResponseWriter, r *http.Request) {
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
@@ -60,9 +60,9 @@ func (h *Handler) perfIssuesList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status, filterName := perfIssueStatusFilter(r.URL.Query().Get("status"))
-	items, err := h.PerfIssues.List(r.Context(), projectID, status, perfIssuesListLimit)
+	items, err := h.PerfIssues.List(r.Context(), projectID, status, "", perfIssuesListLimit)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 
@@ -81,7 +81,7 @@ func (h *Handler) loadAccessiblePerfIssue(w http.ResponseWriter, r *http.Request
 	}
 	projectID, found, err := h.PerfIssues.ProjectOf(r.Context(), id)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return trace.PerfIssue{}, false
 	}
 	if !found {
@@ -90,7 +90,7 @@ func (h *Handler) loadAccessiblePerfIssue(w http.ResponseWriter, r *http.Request
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return trace.PerfIssue{}, false
 	}
 	if !canAccess {
@@ -103,7 +103,7 @@ func (h *Handler) loadAccessiblePerfIssue(w http.ResponseWriter, r *http.Request
 			h.notFound(w, r)
 			return trace.PerfIssue{}, false
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return trace.PerfIssue{}, false
 	}
 	return iss, true
@@ -210,27 +210,27 @@ func (h *Handler) perfIssueSetStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 		return
 	}
 	// Резолвим проект ДО проверки доступа: несуществующая проблема должна давать тот же
 	// 404, что и чужая — иначе разные тела ответов выдавали бы существование id.
 	projectID, found, err := h.PerfIssues.ProjectOf(r.Context(), id)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !found {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 		return
 	}
 	canAccess, err := h.Org.CanAccessProject(r.Context(), uid, projectID)
 	if err != nil {
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	if !canAccess {
-		h.renderError(w, r, http.StatusNotFound, i18n.T(r.Context(), "error.not_found"))
+		h.renderError(w, r, http.StatusNotFound, "")
 		return
 	}
 	if !h.parseForm(w, r) {
@@ -246,7 +246,7 @@ func (h *Handler) perfIssueSetStatus(w http.ResponseWriter, r *http.Request) {
 			h.notFound(w, r)
 			return
 		}
-		h.renderError(w, r, http.StatusInternalServerError, i18n.T(r.Context(), "error.internal"))
+		h.renderError(w, r, http.StatusInternalServerError, "")
 		return
 	}
 	http.Redirect(w, r, perfIssueDetailPath(id), http.StatusSeeOther)
