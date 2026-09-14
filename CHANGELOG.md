@@ -24,13 +24,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   average per-second rate the other aggregations give you — a threshold like
   "10 errors in 5 minutes" now means that, rather than depending on how often
   the metric happens to be scraped. Existing rules are unaffected; three
-  built-in service-recipe rules on counters now use it out of the box.
+  built-in service-recipe rules on counters now use it out of the box. A
+  counter resetting to zero when its exporter restarts no longer shows up as
+  a negative increase or as a spike equal to the whole pre-reset value —
+  only the one second the reset happened in is lost. The rule form now
+  labels the unit honestly: for an ever-growing counter, every aggregation
+  but `increase` is the average per-second rate between scrapes.
 - Startup now logs which endpoints serve without any authentication
   (`/healthz`, `/readyz`, `/version`, `/metrics`) and points at the
   [Hardening](internal/docs/en/hardening.md) guide for restricting them at
   the network layer — the app has no way to tell whether its port is
   actually reachable from outside, so this is logged unconditionally on
   every start.
+- A `/forgot-password` page lets a user set a new password on their own,
+  without operator help: it emails a one-hour, single-use link to the
+  account's address, and setting the new password ends every one of that
+  account's existing sessions. The page has its own rate limit, separate
+  from sign-in and sign-up, so someone who only knows another user's email
+  address can't lock them out by spamming reset requests; the response
+  doesn't reveal whether the address exists, and the email is sent in the
+  background so response time can't be used to tell the two cases apart
+  either. On an instance without SMTP configured, the page says so honestly
+  instead of showing a form that would silently do nothing. For operators: a
+  new `gotcha set-password --email=<address>` subcommand sets a password
+  directly, reading it from standard input rather than a command-line
+  argument, so it never lands in shell history or a process listing.
+- A public status page's address can now be changed without deleting the
+  page and losing its monitors and history along with it. Changing it asks
+  for confirmation and says plainly that the old link stops working
+  immediately; a collision with an existing address gets three retries
+  before the change fails outright.
 
 ### Changed
 - Self-registration and email-based auto-linking through a generic OIDC
@@ -120,7 +143,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never evaluated at all — and during an incident storm, the scheduler kept
   re-escalating the same oldest incidents while newer ones waited
   indefinitely. How much was skipped in the last tick is now visible as a
-  metric.
+  metric. The escalation scheduler's per-tick maintenance-window and
+  escalation-ladder lookups are now cached in memory instead of hitting the
+  database again for every open incident, but only once they succeed — a
+  single failed lookup no longer freezes the rest of the project's incidents
+  for the remainder of the pass.
 - A host's recent-incidents list and a project's regression list only looked
   at the last 500 database rows and filtered further in the application; on
   an active project, those 500 rows could contain none of the ones actually
@@ -149,8 +176,383 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   client cannot speak at all: a server on that port never sends a plaintext
   greeting, so the connection just hangs until it times out and no email is
   delivered, with no error anywhere. The example now uses port `587`.
+- Spans trimmed for space inside an over-long trace were counted as dropped
+  transactions instead of dropped spans, muddying both counters; span trims
+  now have their own counter and are attributed to the right project. The
+  metric write buffer's byte budget didn't account for per-attribute
+  overhead, letting the buffer grow past its configured memory limit under
+  high-cardinality labels; the budget now includes it. A buffer that filled
+  up during a burst waited for the next five-second tick to drain further
+  even with data still queued; it now keeps draining immediately.
+- A webhook (or other channel) payload's routing fields — event kind,
+  project id, target, channel kind — could be silently overwritten by a
+  same-named field in the event-specific extra data merged into it, since
+  the extra fields were merged in last. The base fields now always win, and
+  a same-named extra field is logged instead of silently overriding
+  anything.
+- The registration form cleared the email address and lost the "invite
+  only" notice on any rejection — someone who only mistyped their password
+  confirmation had to retype everything and lost the explanation of why
+  they were blocked; both now survive. Password and short-name (slug) rules
+  were enforced only on the server, so the form gave no hint of the
+  required length or allowed characters, and a rejected organization or
+  project name didn't say which of the two fields was invalid; the form now
+  shows the same rules the server enforces, and the error names the field.
+  A project's issue list past the end of the available data showed the
+  "connect your SDK" empty state as if there were no data at all; it now
+  offers to go back to page one, keeping the active filters. Time windows
+  are computed in UTC, which was never stated; and "today" in a date picker
+  used to be computed once when the page loaded, so a tab left open for a
+  day or more kept showing yesterday as "today" until refreshed — both are
+  fixed. The uptime tile on the overview screen captioned itself with a
+  fixed period even though it reflects whichever window the tabs above it
+  select; the caption now follows the window.
+- The "not found" and "internal error" pages never actually rendered their
+  explanation text — the same string was substituted for both the heading
+  and the explanation, so the explanation was silently dropped every time;
+  both now show what happened and what to do about it. Turning on "reduced
+  motion" didn't stop hover tooltips from popping in and out, because the
+  shorthand rule it used reset that paused state. A TLS certificate a few
+  hours from expiring showed "expires in 0 days" instead of "expired". A
+  trace id containing characters unsafe in a URL path produced a broken link
+  to its flamegraph instead of opening it; it's now percent-encoded. Service
+  names on the public status page were truncated on narrow phone screens,
+  and a project card's platform badge stretched across the full width of
+  its row and looked clickable without being one.
+- Several empty and error screens now explain themselves instead of just
+  showing nothing: the metrics list says why when every metric is hidden by
+  a filter, an issue's event list says why when its events have aged out of
+  retention, and an error page shown to a signed-out visitor now links to
+  sign-in directly instead of to the home page (which just redirects to
+  sign-in anyway). An invitation link opened while signed into a different
+  account is no longer lost — accepting it used to require signing out
+  first, and signing out cleared the pending invite; the page now also
+  links directly to switching accounts. The profile page's linked-logins
+  section no longer offers to link an OAuth provider that isn't configured
+  on this instance. A long value like a token or URL could run off the
+  right edge of the page instead of wrapping, because the wrapping rule was
+  a list of per-usage exceptions rather than a property of the shared
+  element itself; it's now on the element, so every place that reuses it
+  wraps, including new ones. A failed clipboard copy — the browser refused
+  permission, and the fallback method also failed — used to fail silently;
+  both the failure and, for screen readers, a successful copy are now
+  announced. Event labels rendered in an unpredictable order; they're now
+  sorted.
+- Eleven confirmation dialogs now name the specific thing they're about to
+  act on — export, maintenance window, status page, metric rule, SLO
+  target, probe, single sign-on, leaving an organization, removing a
+  member, revoking an ingest key (masked, as in the key list) — instead of
+  asking a bare "are you sure?"; the name is only looked up after the
+  permission check, so the confirmation page itself can't be used to learn
+  the name of an organization you don't have access to. Several terms that
+  meant the same thing were worded differently on neighboring screens —
+  severity/criticality, latency/delay, tolerance/window, target/object —
+  and are now consistent with whichever term already dominates the product
+  and its docs. The logs severity filter's label promised "all levels"
+  while only one was selected, and an escalation error message counted
+  steps from zero while the interface counts from one; both are fixed.
+- The environment filter's query parameter was `env` on the hosts and
+  issues pages but `environment` everywhere else (logs, metrics,
+  performance, profiles, web vitals); it's now `environment` on all of
+  them, and `env` is still accepted on hosts and issues so existing links
+  and bookmarks keep working.
+- The warning that a project is approaching its quota used to appear only
+  for events; it now appears for all five kinds of ingested data (events,
+  transactions, metrics, profiles, logs), so running low on any of them is
+  no longer a surprise at the hard limit.
+- The Y-axis label width on charts was estimated from a larger screen size
+  than the one actually rendering, so on a narrow screen the widest label's
+  left edge ran past the image and its number could be clipped by nearly
+  half; the estimate now always comes from the size step with the largest
+  labels, on every screen width. The error-budget burn chart didn't get a
+  minimum width when scrolled and could show overlapping axis labels at
+  in-between widths; it's now keyboard-scrollable and sized like the charts
+  next to it. A waterfall label rendered at the size meant for a desktop
+  screen even on a phone, larger than the surrounding text; a long one is
+  now truncated, with the full text available on hover.
+- When the suppressed-alerts digest's scan ran out of its per-tick time
+  budget partway through, projects it had already claimed but not yet
+  reached were dropped instead of deferred — their suppressed count had
+  already been reset to zero for the send that never happened. Unprocessed
+  projects are now returned for the next run instead (bounded by their own
+  timeout, so a stuck database doesn't stretch one tick indefinitely); a
+  return that itself fails is now counted as a loss rather than
+  disappearing unnoticed. Both the suppressed-digest and spike-detection
+  loops also now publish how many they didn't get to in the last tick, the
+  same way the other evaluators do.
+- Profile weights, export sizes, and export-ready emails now label sizes over
+  1024 bytes as `KiB`/`MiB`/`GiB`, not `KB`/`MB`/`GB` — the value was always
+  computed by dividing by 1024, the label just claimed the decimal unit.
+- A zero duration in the performance tables printed with no unit at all,
+  the only branch of duration formatting that didn't include one.
+- When an error was a chained exception (a wrapped error, or one re-raised
+  from a handler), the issue card's heading, culprit, and grouping
+  fingerprint were taken from the outermost exception while the stack
+  trace shown was the innermost (root) one — nothing on screen said these
+  were two different exceptions. The same mismatched pairing went into the
+  event's exported copy. Both now show the frames of the same exception
+  named in the heading.
+- Password-reset and invitation emails were sent in the language of
+  whoever clicked the button rather than the recipient's. Both now use the
+  recipient's own language when they have an account with one explicitly
+  set; otherwise, invitations fall back to the language of whoever sent
+  the invite, and password-reset emails fall back to the instance's
+  configured language (`GOTCHA_LOCALE`), since an anonymous reset request
+  has no language of its own to fall back to. The export-ready and
+  invitation emails now quote the link's actual lifetime instead of a
+  separately maintained number that could drift from it. The export-ready
+  email had the same problem on its own: it was sent in the instance's
+  configured language instead of the requester's; it now follows the same
+  recipient-language rule as the other two.
+- A regression whose target — an endpoint, or a profiled function — stopped
+  appearing in the traffic sample (decommissioned, renamed, or simply
+  crowded out by a busier neighbor) was never evaluated again: its incident
+  stayed open forever, and the escalation ladder kept sending steps for a
+  target that no longer exists. A target with an open incident is now
+  looked up by name even after it falls out of the sample, and is only
+  closed once it's genuinely absent from both the sample and that lookup —
+  a displaced target that's still degrading stays open instead of being
+  reported as recovered. Separately, the baseline window used to detect a
+  regression could reach into days an incident was already open for,
+  teaching the baseline the degradation itself instead of normal behavior.
+  The minimum-observations check also compared a noisy snapshot's total row
+  count against the whole evaluation window rather than against that
+  target's own count in it, so a single busy snapshot could pass the check
+  for a target that appeared in it only once, while a target with rare but
+  steady occurrences could never trigger it at all.
+- An SLO burn-rate window shorter than five minutes silently behaved like
+  five minutes, because the rollup it's computed from is aggregated at
+  that step; creating one is now rejected, and existing targets below the
+  floor were raised to it by migration so the stored value matches what's
+  actually applied. A corrupted regression-detector project setting fell
+  back to defaults with the detector enabled, so a project that had
+  deliberately turned it off could start paging again on a bad read; a
+  parse error now skips the project for that evaluation pass instead of
+  falling back to the default. Rounding a size or duration crossed a unit
+  boundary before the unit was chosen, so a value could print as `1000k`
+  next to `1M`, or `1000ms` instead of `1.0s`; the unit is now chosen after
+  rounding.
+- The "issues" navigation section briefly showed the raw translation key
+  instead of its label, in both the side rail and the breadcrumb, after
+  the catalog key it referred to was renamed elsewhere.
+- After a burst filled a buffer to exactly one full batch, the event
+  pipeline and the trace writer both waited for the next five-second tick
+  to send the remainder, even though it could go out immediately — delaying
+  an event's or a span's appearance right when it's most wanted during an
+  incident. A flush that leaves a tail behind now triggers the next one
+  itself.
+- A trace id is supplied by the client in full, so two different projects
+  could send the same one; which project it resolved to was
+  non-deterministic, so a project that guessed or copied another project's
+  trace id could end up shadowing that project's own trace. Resolution is
+  now deterministic and no longer depends on which project wrote to it
+  last.
+- An alert's throttle claim and its rate budget are charged before the
+  delivery channels are looked up, so a lookup that failed outright — a
+  database error, not a rule with no channels configured, which is ordinary
+  quiet — left both spent although delivery was never even attempted: the
+  project's alert budget shrank silently, and that issue could not alert
+  again until the throttle window ran out. A failed lookup now releases the
+  throttle claim and refunds the budget.
+- An uptime monitor suppressed because its dependency was down stayed
+  suppressed until its own next check ran, even after the dependency had
+  recovered — unlike host suppression, which already releases on its own
+  once the dependency is healthy again. Uptime dependency suppression now
+  releases the same way.
+- Ingest split one time budget between writing an event and evaluating its
+  alert rules; a slow write could leave the alert step only milliseconds,
+  so an alert silently never fired even though its event had already been
+  saved. Alert evaluation now has its own budget, separate from the write.
+- A loss that happened in the last seconds of a month could be attributed
+  to the following month instead, because the month was read when the loss
+  counters were flushed rather than when the loss actually occurred; this
+  affected both places that tally losses per project. Losses on the log
+  writer's ClickHouse buffer weren't attributed to a project at all, unlike
+  the metric and profile writers — on an instance that had already lost
+  logs to a full buffer, there was no way to find out how many; log writes
+  now report drops per project the same way the other writers do.
+- A stack frame's own field separator wasn't escaped, unlike the other
+  separators used in the same encoding, so a value that happened to contain
+  it could misalign the frame's fields on display. A service recipe's
+  mutual-lock-detection rule only looked at one of several configured
+  databases instead of all of them. A recipe rule created in a disabled
+  state was labeled "Created" as if it had already been turned on.
+- Three more irreversible actions — unlinking a login method, deleting a
+  saved log filter, and dismissing the first-steps checklist — now ask for
+  confirmation like the other twenty-five already did; the filter-deletion
+  confirmation preserves the current view's filters, so confirming doesn't
+  reset the list back to unfiltered. The "90% of quota used" check
+  multiplied two large numbers and could overflow, flipping the result so
+  a project near its limit could look far from it and vice versa; the
+  comparison no longer overflows.
+- A log-search filter value that came from clicking an attribute key
+  skipped the origin check a neighboring value from the same attribute
+  already had. An unrecognized web vitals sort order was passed into the
+  template raw, so no column header was ever marked as sortable for it; the
+  web vitals card's several storage queries, previously made one after
+  another, are now made together. Deleting a metric rule or a maintenance
+  window returned to the list with no success message, unlike three
+  neighboring kinds of deletion — indistinguishable from a stuck button on
+  a slow connection. The profile link in the side rail was read by screen
+  readers as its initials instead of its name. Why a saved log filter
+  couldn't be applied was visible only as a hover tooltip, and that same
+  filter, when set as the default, silently wasn't applied at all. The
+  cardinality-limit help text existed but was never wired up to show
+  anywhere. A stack frame with no line number of its own gave the frames
+  next to it negative line numbers.
+- A single-point metric series was drawn flush against the axis, and the
+  vertical scale could overflow on values near the top of its range. The
+  public status page's uptime bar tooltip named only the state, so on a
+  busy status page ninety neighboring bars had indistinguishable tooltips;
+  it now also shows the success ratio. A cyclic segment tree produced no
+  root at all, so the trace page showed empty space with no explanation
+  instead of the flamegraph. Day-label thinning on an eight-day window
+  produced a quarter of the promised label count; labels are now chosen by
+  position, with "no more than seven" following from the number of
+  iterations rather than from step arithmetic. The end of a day in a date
+  range picker was one minute before midnight, so events in a day's last
+  minute fell outside the window; the boundary is now midnight itself, and
+  the issue list's upper bound is now exclusive so a record exactly on the
+  boundary doesn't land in two neighboring windows at once.
+- The public status page didn't set a browser theme color, unlike every
+  other page since a light strip became visible on it in dark mode. The
+  logs filter lost an expanded attribute key when "Apply" was pressed. The
+  clipboard fallback copy method didn't work on a phone, because the field
+  it used was read-only and mobile browsers won't select read-only text.
+  The flamegraph's title showed an English placeholder in a Russian
+  interface. A light-theme control border color fell slightly short of the
+  contrast ratio it exists for. Long unbroken values ran off the edge in
+  the documentation, the side rail's captions, and settings explanations.
+
+### Performance
+- Pages are now served gzip-compressed when the browser supports it. Only
+  HTML markup goes through the compressor; export downloads and agent
+  binary distribution stream past it untouched, so partial downloads,
+  resuming, and range requests still work exactly as before.
+- The host evaluator queried each threshold metric once per host; a host
+  isn't part of the storage table's sort key and the host filter applies
+  after reading its granules, so five hundred hosts meant five hundred
+  queries each scanning the whole project's window — one five-hundredth of
+  what was read was actually useful. It's now one grouped query per
+  project per threshold kind: measured against a live query log at five
+  hundred hosts, 500 queries and 750,000 rows read became 1 query and
+  1,500 rows. Every host now also sees the same data snapshot for a given
+  pass instead of whatever was current when its own turn came up during
+  the sweep.
+
+### Documentation
+- The hosts guide twice recommended taking the ingest key for host
+  registration from a project's connection string — that key works for
+  metrics but not for registering the host itself: points get written, the
+  request succeeds, and the host simply never appears, with no error
+  anywhere. Both instances are corrected, and this case is now in the
+  troubleshooting section alongside the access-denied one.
+- The self-monitoring guide suggested alerting on a metric this product
+  doesn't have, so a rule built from the example would never fire; it now
+  names the metric that actually confirms the instance is responding.
+- The webhook events reference documented 3 of the 23 event kinds a webhook
+  channel can receive; all 23 are now documented, and a check now keeps the
+  list from drifting out of sync with the code again.
+- The logs guide still called exclude filters and saved filters unreleased,
+  though they've shipped since 1.1.0; both are now documented, along with
+  who can see a personal versus a shared filter, the limits that apply,
+  what a "deprecated format" notice means, and why not everyone who can use
+  a filter can make it shared.
+- None of the five pages describing ingest warned that a saturated buffer
+  answers with a 503 asking the client to retry; all five now say so,
+  together with the fact that a rejected request doesn't consume quota and
+  retrying is safe.
+- The versioning policy didn't cover the remote probe's protocol at all,
+  though the agent's environment variables have been covered for a while;
+  the `GOTCHA_PROBE_*` contract (`/probe/lease`, `/probe/results`) is now
+  named alongside it.
+- The process-modes guide described splitting into roles as a way to run
+  multiple replicas without saying which roles actually tolerate it. It now
+  says so directly: the scheduler, check runner, and watchdog do (queuing
+  is idempotent, execution and claims split fairly across replicas), while
+  the six evaluators don't share their candidate set between replicas — a
+  second `uptime`/`all` replica only doubles their database load without
+  adding throughput.
+- The ingest rate limit and the cardinality guard were documented as
+  project-wide, but each is tracked in a single ingest replica's own
+  memory, unsynchronized with the others. Both are now described
+  correctly, including why the same value can end up both collapsed and
+  intact in the data when more than one ingest replica is running.
+- The restore guide explained 2 of the 12 rows ClickHouse's `SHOW TABLES`
+  lists for this schema, leaving an operator mid-incident unsure whether
+  the rest were safe to ignore; all 12 are now explained, along with what
+  to do with each. The upgrade guide never mentioned that ingest now
+  answers `503` (asking for a retry) instead of `200` on a saturated
+  buffer; a new section covers both versions this changed in and what to
+  check on an existing integration.
+- The single sign-on login page (`/sso`) was described only in general
+  terms. The docs now explain how it differs from the ordinary login page,
+  what fields its setup form needs, exactly what turning on `enforced`
+  breaks for a domain's members, and why an existing member's role doesn't
+  change on a repeat sign-in through it.
+- Revoking an ingest key doesn't take effect immediately — key resolution
+  is cached for about thirty seconds, so a revoked key keeps being
+  accepted briefly — and this wasn't documented anywhere; someone who
+  revoked a key and then saw telemetry keep arriving could reasonably
+  conclude the revocation hadn't worked. The docs now name the delay and
+  its cause. Ending another user's session from the interface was never
+  possible — the "sign out everywhere" button only ever affects your own
+  account — and this limitation wasn't named either; it's now documented
+  alongside what actually accomplishes each related goal: changing a
+  password ends all of that account's sessions, removing a member cuts
+  off project access immediately, and revoking keys stops telemetry but
+  doesn't touch an existing login session.
+- The "new issue" rule card was renamed in the interface a while ago;
+  three Russian documentation pages (rule listings, the rules table, and
+  the permissions table) still quoted its old name, sending a reader
+  looking for a caption that's no longer on screen. The regression row in
+  the rules table is now also quoted exactly rather than abbreviated.
+  English pages were unaffected — their caption never changed.
+- The agent install hint shown for an address without HTTPS suggested
+  routing through the collector as a workaround without naming its cost:
+  its config carries the project's ingest key in an `Authorization` header
+  and sends it in plain text on every tick. The hint now names that cost,
+  in both locales — the trade-off is still the installer's call, but no
+  longer a blind one.
 
 ### Security
+- **Signing in through an organization's single sign-on no longer auto-links
+  to an existing password account by matching email address.** Previously,
+  anyone who came to own an address in the organization's domain — a
+  freshly created mailbox, or one reassigned after its previous owner left
+  — could sign in as that address's existing account without ever knowing
+  its password. Such a sign-in is now rejected outright; linking single
+  sign-on to an account is a deliberate action its owner takes from their
+  own profile, while signed in with a password. Single sign-on providers
+  now appear there in the list of linkable logins — they used to be
+  resolved separately by prefix, so the old rejection message pointed at a
+  linking path the interface didn't actually offer. **This is a behavior
+  change on existing installs**: anyone who used to get in with a single
+  click now needs to sign in with a password once and link single sign-on
+  by hand afterward.
+- A failed notification's delivery-log entry showed the target's full error
+  response to anyone who can see the delivery log — not just the address
+  and token, which were already redacted, but anything else the target
+  service happened to return, including internal-network details when a
+  webhook to a private address is allowed via
+  `GOTCHA_SSRF_ALLOW_PRIVATE_WEBHOOK`. Someone without permission to manage
+  channels now sees a note that the error is visible to the owner and
+  administrator, instead of the error itself.
+- The ingest-key hint on the hosts page — shown both with and without hosts
+  registered — grants registering arbitrary hosts against the whole
+  organization's shared quota, so it's now shown only to roles that can
+  manage hosts; other project members keep the rest of the page, just not
+  the key itself.
+- The OAuth/SSO callback that completes a sign-in wasn't rate-limited, even
+  though starting one already was; both ends now share one public budget
+  keyed by client address, sized with room to spare for a dozen sign-ins
+  from the same office address. Separately, if the server ever ran with an
+  empty signing key for this flow's state parameter — unreachable in the
+  distributed build, since the key is always supplied there, but possible
+  for anyone building the exported handler type themselves — it silently
+  fell back to a literal built into the source instead of refusing; it now
+  refuses outright, and an unconfigured key shows up in the log rather than
+  as a working sign-in.
 - A metric value at the extreme edge of what `float64` can represent could
   hang the handler rendering its chart forever — burning a CPU core per open
   page until the process was restarted — while a value near the opposite edge
@@ -183,7 +585,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exhaust server memory, inflating a few kilobytes of input to several
   gigabytes of heap and multiple seconds of CPU time in one parse. Parsing
   that hits its budget now fails fast and is logged with the reason, rather
-  than silently truncating or stalling.
+  than silently truncating or stalling. That budget covered stacks and
+  frames but not two other ways to inflate a parse: the older text-based
+  profile format the same library also accepts (31 MB of text produced a
+  gigabyte of heap), and a valid protobuf profile with a single inflated
+  sub-message — a packed list of millions of elements inside one sample,
+  with a top-level count of one. A parse now makes one linear pass over the
+  input before decoding, counting nested sub-messages and packed lists
+  together with a depth cap, and input whose shape isn't confirmed as
+  protobuf hits a separate byte ceiling. The number of profile parses
+  allowed to run at once is now also a memory-in-flight budget, taken as a
+  share of the heap ceiling the same way write buffers already are, instead
+  of a raw count — under saturation, ingest now refuses immediately with a
+  retry hint rather than holding the connection open, and a truncated
+  profile is now logged with its reason and counted per parser like an
+  oversized one already was.
 - No ingest route enforced any rate limit before authenticating the DSN key,
   so a flood of requests carrying random keys reached the key cache and the
   database — which has a small, instance-wide connection pool — before being
@@ -196,6 +612,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never actually theirs. That signal now has its own, much tighter rate
   limit (`GOTCHA_INGEST_SIGNAL_RATE_PER_SEC`) that a real misconfigured
   client won't hit but an enumeration attempt will.
+- The "invalid key" signal's trigger count accumulated for the entire life
+  of a project, while the screen shows it next to the time of the last
+  trigger and filters by recency — so it could read "triggered N times,
+  last time just now" where N was mostly a year old. The count now resets
+  when more time has passed between triggers than the window the signal is
+  shown for.
+- The password-reset request's response time used to depend on whether the
+  address belonged to a registered account: an existing address ran a
+  full delete-then-insert transaction to issue the token, while a
+  nonexistent one did nothing beyond the one lookup query that found no
+  match — and looking up the recipient's language (see Fixed, above)
+  added yet another query, but only on the existing-address path,
+  widening that gap further. The response is now produced before any of
+  that address-dependent work runs, with the rest deferred to the
+  background — and the same guard now covers the organization invitation
+  email, which had no address-dependent database work at all until the
+  language lookup introduced some.
 
 ## [1.3.1] - 2026-09-11
 
