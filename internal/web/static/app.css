@@ -3669,6 +3669,18 @@ a:focus-visible, button:focus-visible, .btn:focus-visible, summary:focus-visible
 .chart-vb960 text { font-size: 45px; }
 .chart-vb1200 text { font-size: 57px; }
 
+/* 561-699px не попадает ни под мобильную компенсацию (≤560), ни под первый widescreen-тир
+   (≥700) — без этого блока тут держится базовая ступень, и на границе 700px кегль скачком
+   падает более чем вдвое. Значения совпадают с тиром ≥700, а не с мобильным (40/32/30):
+   контейнер на 699px почти не отличается от контейнера на 700px, поэтому непрерывность
+   кегля требует тех же единиц viewBox, что у следующего тира, а не единиц, откалиброванных
+   под мобильный clamp min-width:480px. Проверяется TestChartVBTierBoundaryContinuous. */
+@media (min-width: 561px) and (max-width: 699px) {
+	.chart-vb720 text { font-size: 15px; }
+	.chart-vb960 text { font-size: 20px; }
+	.chart-vb1200 text { font-size: 25px; }
+}
+
 @media (min-width: 700px) {
 	.chart-vb720 text { font-size: 15px; }
 	.chart-vb960 text { font-size: 20px; }
