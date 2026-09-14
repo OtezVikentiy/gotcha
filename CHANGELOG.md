@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- A project's notification budget and per-issue throttle are no longer spent
+  when there is nowhere to deliver — a project with no notification channel,
+  or only channels that are disabled or otherwise undeliverable, now leaves
+  the budget and throttle untouched instead of quietly burning through them
+  on every alert-worthy event.
+
 ## [1.4.0] - 2026-09-14
 
 ### Added
