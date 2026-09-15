@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Organization invitations are now rate-limited and capped: 60 per hour per
+  organization, 3 per hour per destination address, and at most 200 pending
+  invitations per organization (revoking one frees a slot). Without a limit an
+  organization admin could send instance email to arbitrary outside addresses in
+  any quantity — a mail amplifier running on the instance owner's domain
+  reputation, and a cheap way to probe which addresses already have an account.
+
+### Fixed
+- The escalation log of an open incident is no longer purged out from under it.
+  Retention removed rows from `incident_escalations` by record age alone, so a
+  long-running incident lost the history of its own escalation steps while it was
+  still open. A row is now removed once its incident is closed and was closed
+  before the cutoff, or once the incident is gone from its table entirely; the
+  number of rows kept because their incident is still open is reported in the
+  janitor's tick log.
+- Chart axis labels no longer jump in size when the window crosses 700px. Between
+  561 and 699px they stayed on the base tier intended for phones but without the
+  compensation phones get, so the labels there were more than twice the size of
+  those just past the boundary.
+
 ## [1.4.1] - 2026-09-14
 
 ### Fixed
