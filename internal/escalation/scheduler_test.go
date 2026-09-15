@@ -585,12 +585,12 @@ func TestPurgeOldEscalations(t *testing.T) {
 		t.Fatalf("LogStep fresh: %v", err)
 	}
 
-	n, err := escalation.PurgeOldEscalations(ctx, pool, 90*24*time.Hour)
+	res, err := escalation.PurgeOldEscalations(ctx, pool, 90*24*time.Hour)
 	if err != nil {
 		t.Fatalf("PurgeOldEscalations: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("purged = %d, want 1", n)
+	if res.Deleted != 1 {
+		t.Fatalf("purged = %d, want 1", res.Deleted)
 	}
 
 	var oldCount, freshCount int
