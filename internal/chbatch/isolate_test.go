@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+
+	"gitflic.ru/otezvikentiy/gotcha/internal/db"
 )
 
 func alwaysPoison(error) bool { return true }
@@ -46,6 +49,43 @@ func TestIsolatePoison_AllGood(t *testing.T) {
 	d, u := IsolatePoison(context.Background(), []int{1, 2, 3}, insert, alwaysPoison)
 	if d != 0 || len(u) != 0 {
 		t.Fatalf("want 0 dropped / 0 unresolved, got %d / %d", d, len(u))
+	}
+}
+
+// db.BatchContext (реальный вызывающий) не отменяем — Err() всегда nil даже после истечения
+// дедлайна, поэтому лимитер рекурсии обязан смотреть на Deadline(), а не на Err().
+func TestIsolatePoison_ExpiredDeadlineSkipsSplit(t *testing.T) {
+	ctx := db.BatchContext(context.Background(), -time.Second)
+	if ctx.Err() != nil {
+		t.Fatalf("BatchContext.Err() = %v, want nil — тест иначе не отличает старую проверку от новой", ctx.Err())
+	}
+	insert := func(_ context.Context, rows []int) error { return errors.New("must not be called") }
+	dropped, unresolved := IsolatePoison(ctx, []int{1, 2, 3}, insert, alwaysPoison)
+	if dropped != 0 {
+		t.Fatalf("want 0 dropped, got %d", dropped)
+	}
+	if len(unresolved) != 3 {
+		t.Fatalf("want 3 unresolved (rows returned as-is), got %d (%v)", len(unresolved), unresolved)
+	}
+}
+
+func TestIsolatePoison_FutureDeadlineSplitsNormally(t *testing.T) {
+	ctx := db.BatchContext(context.Background(), time.Hour)
+	insert := func(_ context.Context, rows []int) error {
+		if len(rows) == 1 {
+			if rows[0] == 2 {
+				return errors.New("bad row 2")
+			}
+			return nil
+		}
+		return errors.New("split me")
+	}
+	dropped, unresolved := IsolatePoison(ctx, []int{1, 2, 3}, insert, alwaysPoison)
+	if dropped != 1 {
+		t.Fatalf("want 1 dropped, got %d", dropped)
+	}
+	if len(unresolved) != 0 {
+		t.Fatalf("want 0 unresolved, got %d (%v)", len(unresolved), unresolved)
 	}
 }
 

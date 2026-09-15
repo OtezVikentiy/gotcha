@@ -3,6 +3,7 @@ package chbatch
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 )
@@ -13,8 +14,9 @@ func IsolatePoison[T any](ctx context.Context, rows []T, insert func(context.Con
 	if len(rows) == 0 {
 		return 0, nil
 	}
-	// Контекст уже исчерпан — дробить бессмысленно и вредно.
-	if ctx.Err() != nil {
+	// Контекст уже исчерпан — дробить бессмысленно и вредно. ctx.Err() здесь не годится: контекст
+	// батча (db.BatchContext) не отменяем и Err() всегда nil, дедлайн — единственный сигнал.
+	if dl, ok := ctx.Deadline(); ok && !time.Now().Before(dl) {
 		return 0, rows
 	}
 	err := insert(ctx, rows)

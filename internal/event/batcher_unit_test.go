@@ -18,6 +18,7 @@ type fakeConn struct {
 	rows   int
 	fail   bool
 	sends  int
+	badCtx bool                        // BatchContext не пришёл: Done() != nil или Deadline() не взведён
 	poison func(projectID uint64) bool // если задан и в батче есть ядовитый ряд — Send падает
 }
 
@@ -62,9 +63,12 @@ func (b *fakeBatch) Send() error {
 	return nil
 }
 
-func (c *fakeConn) PrepareBatch(_ context.Context, _ string, _ ...driver.PrepareBatchOption) (driver.Batch, error) {
+func (c *fakeConn) PrepareBatch(ctx context.Context, _ string, _ ...driver.PrepareBatchOption) (driver.Batch, error) {
 	c.mu.Lock()
 	c.sends++
+	if _, ok := ctx.Deadline(); ctx.Done() != nil || !ok {
+		c.badCtx = true
+	}
 	c.mu.Unlock()
 	return &fakeBatch{conn: c}, nil
 }
@@ -346,6 +350,46 @@ drain:
 	c.mu.Unlock()
 	if rows != burst {
 		t.Fatalf("вставлено %d строк, want %d", rows, burst)
+	}
+}
+
+// flushDetached обязан заворачивать ctx в db.BatchContext и на тике Run, и на закрытии — Done()
+// == nil одного Background() мало (тавтология): проверяем ещё и взведённый Deadline().
+func TestFlushDetachedContextNotCancelableViaRun(t *testing.T) {
+	c := &fakeConn{}
+	b := NewBatcher(c)
+	b.interval = 20 * time.Millisecond
+	go b.Run()
+	b.Add(Event{ID: "a"})
+	waitFor(t, func() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.sends > 0 })
+	_ = b.Close(context.Background())
+
+	c.mu.Lock()
+	sawBadCtx := c.badCtx
+	c.mu.Unlock()
+	if sawBadCtx {
+		t.Fatal("PrepareBatch увидел не-BatchContext через тик Run (Done() != nil либо Deadline() не взведён)")
+	}
+}
+
+func TestFlushDetachedContextNotCancelableViaClose(t *testing.T) {
+	c := &fakeConn{}
+	b := NewBatcher(c)
+	b.interval = time.Hour
+	go b.Run()
+	b.Add(Event{ID: "a"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := b.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	c.mu.Lock()
+	sawBadCtx := c.badCtx
+	c.mu.Unlock()
+	if sawBadCtx {
+		t.Fatal("PrepareBatch увидел не-BatchContext через Close/closeDrain (Done() != nil либо Deadline() не взведён)")
 	}
 }
 

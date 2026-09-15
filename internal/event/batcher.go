@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/chbatch"
+	"gitflic.ru/otezvikentiy/gotcha/internal/db"
 )
 
 // Столько подряд-фейлов вставки одного батча терпим, прежде чем перейти к
@@ -170,12 +171,10 @@ func bufSaturation(num, den int64) float64 {
 	return float64(num) / float64(den)
 }
 
-// Даже без собственного дедлайна у parent ctx: сетевой чёрный дыр в
-// PrepareBatch/Send не должен вешать Run/Close навсегда.
-func (b *Batcher) flushWithTimeout(parent context.Context) {
-	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
-	defer cancel()
-	b.flush(ctx)
+// Бюджет флаша — db.WriteBudget: дедлайн ctx, ReadTimeout и max_execution_time писательского
+// соединения. Ctx всё равно не отменяем — иначе сторож batch.Send() рвёт сокет мимо пула.
+func (b *Batcher) flushDetached(parent context.Context) {
+	b.flush(db.BatchContext(parent, db.WriteBudget))
 }
 
 // Запускать горутиной; завершается через Close.
@@ -188,9 +187,9 @@ func (b *Batcher) Run() {
 		case <-b.stop:
 			return
 		case <-ticker.C:
-			b.flushWithTimeout(context.Background())
+			b.flushDetached(context.Background())
 		case <-b.kick:
-			b.flushWithTimeout(context.Background())
+			b.flushDetached(context.Background())
 		}
 	}
 }
@@ -215,7 +214,12 @@ func (b *Batcher) closeDrain(ctx context.Context) error {
 		if n == 0 {
 			return nil
 		}
-		b.flushWithTimeout(ctx)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		b.flushDetached(ctx)
 		b.mu.Lock()
 		left := len(b.buf)
 		b.mu.Unlock()

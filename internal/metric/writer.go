@@ -9,6 +9,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/chbatch"
+	"gitflic.ru/otezvikentiy/gotcha/internal/db"
 )
 
 type CHConn interface {
@@ -287,10 +288,10 @@ func (w *Writer) buffered() int {
 	return len(w.buf)
 }
 
-func (w *Writer) flushWithTimeout(parent context.Context) {
-	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
-	defer cancel()
-	w.flush(ctx)
+// Бюджет флаша — db.WriteBudget: дедлайн ctx, ReadTimeout и max_execution_time писательского
+// соединения. Ctx всё равно не отменяем — иначе сторож batch.Send() рвёт сокет мимо пула.
+func (w *Writer) flushDetached(parent context.Context) {
+	w.flush(db.BatchContext(parent, db.WriteBudget))
 }
 
 // Запускать горутиной; завершается через Close.
@@ -303,9 +304,9 @@ func (w *Writer) Run() {
 		case <-w.stop:
 			return
 		case <-ticker.C:
-			w.flushWithTimeout(context.Background())
+			w.flushDetached(context.Background())
 		case <-w.kick:
-			w.flushWithTimeout(context.Background())
+			w.flushDetached(context.Background())
 		}
 	}
 }
@@ -327,7 +328,12 @@ func (w *Writer) closeDrain(ctx context.Context) error {
 		if n == 0 {
 			return nil
 		}
-		w.flushWithTimeout(ctx)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		w.flushDetached(ctx)
 		left := w.buffered()
 		if left == 0 {
 			return nil
