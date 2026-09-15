@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- A rare ClickHouse query failure (`use of closed network connection`) under concurrent
+  telemetry writes. On batch context cancellation the ClickHouse client tears down the socket
+  directly, bypassing the pool: by then the connection is back in the pool and may belong to an
+  unrelated query, which is what failed. The writers' flush context is no longer cancellable, and
+  the flush budget is held by the timeouts of a separate writer connection.
+- The troubleshooting section of the installation docs no longer blames
+  `exec /usr/local/bin/gotcha: operation not permitted` on Docker installed from snap.
+  That explanation shipped in 1.3.1 on circumstantial evidence and a direct probe did
+  not confirm it: on a host where the symptom reproduces, a container with
+  `no-new-privileges` starts fine. Instead of naming a cause, the section now gives two
+  probes that separate "the container restrictions are refused" from "the image or the
+  binary is broken"; the same claim is gone from the `docker-compose.yml` and
+  `.env.example` comments.
+
 ## [1.5.0] - 2026-09-15
 
 ### Security
