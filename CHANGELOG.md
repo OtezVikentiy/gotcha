@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-15
+
 ### Security
 - Organization invitations are now rate-limited and capped: 60 per hour per
   organization, 3 per hour per destination address, and at most 200 pending
