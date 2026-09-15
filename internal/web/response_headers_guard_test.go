@@ -17,6 +17,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/auth"
 	"gitflic.ru/otezvikentiy/gotcha/internal/depsuppress"
 	"gitflic.ru/otezvikentiy/gotcha/internal/guards"
+	"gitflic.ru/otezvikentiy/gotcha/internal/notify"
 	"gitflic.ru/otezvikentiy/gotcha/internal/testenv"
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
@@ -344,6 +345,36 @@ func TestInlineErrorPagesKeepHTMLType(t *testing.T) {
 			t.Errorf("%s: Content-Type = %q, ожидался text/html", route, ct)
 		}
 	}
+
+	// Отлуп лимитера приглашений (3 на адрес назначения в час, web.go: orgInviteEmailLimiter) —
+	// отдельная ветка инлайн-рендера 422, недостижимая пустой формой выше: сначала три валидных
+	// приглашения на один адрес проходят (200), четвёртое упирается в лимитер.
+	s.h.Email = notify.NewEmailSender(notify.EmailConfig{Host: "127.0.0.1", Port: 1, From: "noreply@gotcha.test"})
+	invitePath := paths["POST /orgs/{id}/settings/invite"]
+	const rateLimitedInvitee = "inline-rate-limited-invitee@example.com"
+	for i := 0; i < 3; i++ {
+		resp := postForm(t, s.srv, invitePath, url.Values{"email": {rateLimitedInvitee}, "role": {"member"}}, s.srv.URL, cookie)
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("invite rate limit warmup %d: статус = %d, ожидался 200", i+1, resp.StatusCode)
+		}
+	}
+	resp := postForm(t, s.srv, invitePath, url.Values{"email": {rateLimitedInvitee}, "role": {"member"}}, s.srv.URL, cookie)
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("invite rate limit: read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("invite rate limit: статус = %d, ожидался 422: %s", resp.StatusCode, body)
+	}
+	if len(body) <= 1024 {
+		t.Errorf("invite rate limit: тело = %d байт, ожидалось больше 1024", len(body))
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("invite rate limit: Content-Type = %q, ожидался text/html", ct)
+	}
 }
 
 // Полнота POST-стороны закрывается не динамическим перебором (среди 92 POST-маршрутов
@@ -370,8 +401,8 @@ func TestInlineUnprocessableEntityCountMatchesSource(t *testing.T) {
 	}
 
 	// Снято прогоном на момент написания (grep -rn StatusUnprocessableEntity internal/web/*.go,
-	// без _test.go): 97 вхождений в 21 файле.
-	const wantInlineUnprocessableEntity = 97
+	// без _test.go): 98 вхождений в 21 файле.
+	const wantInlineUnprocessableEntity = 98
 	if total != wantInlineUnprocessableEntity {
 		t.Errorf("StatusUnprocessableEntity встречается %d раз в internal/web/*.go (без тестов), ожидалось %d — "+
 			"новый инлайн-рендер 422 не учтён сторожем: покройте маршрут динамически в TestInlineErrorPagesKeepHTMLType "+
