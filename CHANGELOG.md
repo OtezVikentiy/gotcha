@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-09-15
+
 ### Fixed
 - A rare ClickHouse query failure (`use of closed network connection`) under concurrent
   telemetry writes. On batch context cancellation the ClickHouse client tears down the socket
