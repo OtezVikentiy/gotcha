@@ -403,6 +403,12 @@ func runServer(ctx context.Context, cfg Config, memLimitBytes int64) error {
 	}
 	defer ch.Close()
 
+	chWrite, err := db.NewClickHouseWriter(ctx, cfg.ClickHouseDSN)
+	if err != nil {
+		return err
+	}
+	defer chWrite.Close()
+
 	retention, err := applyMigrations(ctx, cfg, pg, ch)
 	if err != nil {
 		return err
@@ -488,7 +494,7 @@ func runServer(ctx context.Context, cfg Config, memLimitBytes int64) error {
 		// Обязано совпадать с регионом, который лизит Runner ниже, иначе монитор
 		// попал бы в регион, который не проверяет никто.
 		uptimeSvc.LocalRegion = cfg.LocalRegion
-		uptimeWriter = uptime.NewResultWriter(ch)
+		uptimeWriter = uptime.NewResultWriter(chWrite)
 		registerWriterMetrics(&selfMetrics, "uptime_results", uptimeWriter)
 		go uptimeWriter.Run()
 
@@ -874,17 +880,17 @@ func runServer(ctx context.Context, cfg Config, memLimitBytes int64) error {
 				"bytes", maxBufBytes, "heap_ceiling_bytes", memLimitBytes)
 		}
 
-		batcher = event.NewBatcher(ch)
+		batcher = event.NewBatcher(chWrite)
 		batcher.SetMaxBufferBytes(maxBufBytes)
 		registerWriterMetrics(&selfMetrics, "events", batcher)
 		go batcher.Run()
 
-		spanWriter = trace.NewSpanWriter(ch)
+		spanWriter = trace.NewSpanWriter(chWrite)
 		spanWriter.SetMaxBufferBytes(maxBufBytes)
 		registerWriterMetrics(&selfMetrics, "spans", spanWriter)
 		go spanWriter.Run()
 
-		metricWriter = metric.NewWriter(ch)
+		metricWriter = metric.NewWriter(chWrite)
 		metricWriter.SetMaxBufferBytes(maxBufBytes)
 		registerWriterMetrics(&selfMetrics, "metrics", metricWriter)
 		// Имя хоста — в логе, не в метке (кардинальность).
@@ -893,12 +899,12 @@ func runServer(ctx context.Context, cfg Config, memLimitBytes int64) error {
 			nil, metric.ClockSkewPoints)
 		go metricWriter.Run()
 
-		profileWriter = profile.NewWriter(ch)
+		profileWriter = profile.NewWriter(chWrite)
 		profileWriter.SetMaxBufferBytes(maxBufBytes)
 		registerWriterMetrics(&selfMetrics, "profiles", profileWriter)
 		go profileWriter.Run()
 
-		logWriter = log.NewWriter(ch)
+		logWriter = log.NewWriter(chWrite)
 		logWriter.SetMaxBufferBytes(maxBufBytes)
 		registerWriterMetrics(&selfMetrics, "logs", logWriter)
 		go logWriter.Run()

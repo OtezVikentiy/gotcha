@@ -21,6 +21,7 @@ type fakeCHConn struct {
 	rows   int
 	sends  int
 	fail   bool                          // если true — Send падает транзиентной (не серверной) ошибкой
+	badCtx bool                          // BatchContext не пришёл: Done() != nil или Deadline() не взведён
 	poison func(profileType string) bool // если задан и в батче есть ядовитый ряд — Send падает
 }
 
@@ -65,11 +66,70 @@ func (b *fakeCHBatch) Send() error {
 	return nil
 }
 
-func (c *fakeCHConn) PrepareBatch(_ context.Context, _ string, _ ...driver.PrepareBatchOption) (driver.Batch, error) {
+func (c *fakeCHConn) PrepareBatch(ctx context.Context, _ string, _ ...driver.PrepareBatchOption) (driver.Batch, error) {
 	c.mu.Lock()
 	c.sends++
+	if _, ok := ctx.Deadline(); ctx.Done() != nil || !ok {
+		c.badCtx = true
+	}
 	c.mu.Unlock()
 	return &fakeCHBatch{conn: c}, nil
+}
+
+// flushDetached обязан заворачивать ctx в db.BatchContext и на тике Run, и на закрытии — Done()
+// == nil одного Background() мало (тавтология): проверяем ещё и взведённый Deadline().
+func TestFlushDetachedContextNotCancelableViaRun(t *testing.T) {
+	c := &fakeCHConn{}
+	w := NewWriter(c)
+	w.interval = 20 * time.Millisecond
+	go w.Run()
+	now := time.Now().UTC()
+	w.Add(1, Profile{Type: "cpu", Timestamp: now, Samples: []Sample{
+		{Stack: []Frame{{Function: "ok"}}, Value: 1},
+	}})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		sends := c.sends
+		c.mu.Unlock()
+		if sends > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = w.Close(context.Background())
+
+	c.mu.Lock()
+	sawBadCtx := c.badCtx
+	c.mu.Unlock()
+	if sawBadCtx {
+		t.Fatal("PrepareBatch увидел не-BatchContext через тик Run (Done() != nil либо Deadline() не взведён)")
+	}
+}
+
+func TestFlushDetachedContextNotCancelableViaClose(t *testing.T) {
+	c := &fakeCHConn{}
+	w := NewWriter(c)
+	w.interval = time.Hour
+	go w.Run()
+	now := time.Now().UTC()
+	w.Add(1, Profile{Type: "cpu", Timestamp: now, Samples: []Sample{
+		{Stack: []Frame{{Function: "ok"}}, Value: 1},
+	}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	c.mu.Lock()
+	sawBadCtx := c.badCtx
+	c.mu.Unlock()
+	if sawBadCtx {
+		t.Fatal("PrepareBatch увидел не-BatchContext через Close/closeDrain (Done() != nil либо Deadline() не взведён)")
+	}
 }
 
 func TestWriterIsolatesPoisonRowAfterThreshold(t *testing.T) {

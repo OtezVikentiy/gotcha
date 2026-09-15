@@ -10,6 +10,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/chbatch"
+	"gitflic.ru/otezvikentiy/gotcha/internal/db"
 )
 
 // сколько подряд-фейлов транзиентных сбоев терпим, прежде чем перейти к
@@ -446,12 +447,10 @@ func (w *SpanWriter) InsertFailures() int64 {
 	return w.insertFails
 }
 
-// ограничивает попытку, даже если у parent ctx нет своего дедлайна — сетевая
-// чёрная дыра в PrepareBatch/Send не должна вешать Run/Close навсегда.
-func (w *SpanWriter) flushWithTimeout(parent context.Context) {
-	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
-	defer cancel()
-	w.flush(ctx)
+// Бюджет флаша — db.WriteBudget: дедлайн ctx, ReadTimeout и max_execution_time писательского
+// соединения. Ctx всё равно не отменяем — иначе сторож batch.Send() рвёт сокет мимо пула.
+func (w *SpanWriter) flushDetached(parent context.Context) {
+	w.flush(db.BatchContext(parent, db.WriteBudget))
 }
 
 func (w *SpanWriter) Run() {
@@ -463,9 +462,9 @@ func (w *SpanWriter) Run() {
 		case <-w.stop:
 			return
 		case <-ticker.C:
-			w.flushWithTimeout(context.Background())
+			w.flushDetached(context.Background())
 		case <-w.kick:
-			w.flushWithTimeout(context.Background())
+			w.flushDetached(context.Background())
 		}
 	}
 }
@@ -488,7 +487,12 @@ func (w *SpanWriter) closeDrain(ctx context.Context) error {
 		if n == 0 {
 			return nil
 		}
-		w.flushWithTimeout(ctx)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		w.flushDetached(ctx)
 		left := w.buffered()
 		if left == 0 {
 			return nil

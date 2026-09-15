@@ -9,6 +9,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
 	"gitflic.ru/otezvikentiy/gotcha/internal/chbatch"
+	"gitflic.ru/otezvikentiy/gotcha/internal/db"
 )
 
 // столько подряд-фейлов вставки одного батча терпим, прежде чем перейти
@@ -112,11 +113,10 @@ func (w *ResultWriter) InsertFailures() int64 {
 	return w.insertFails
 }
 
-// сетевой чёрный дыр в PrepareBatch/Send не должен вешать Run/Close навсегда.
-func (w *ResultWriter) flushWithTimeout(parent context.Context) {
-	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
-	defer cancel()
-	w.flush(ctx)
+// Бюджет флаша — db.WriteBudget: дедлайн ctx, ReadTimeout и max_execution_time писательского
+// соединения. Ctx всё равно не отменяем — иначе сторож batch.Send() рвёт сокет мимо пула.
+func (w *ResultWriter) flushDetached(parent context.Context) {
+	w.flush(db.BatchContext(parent, db.WriteBudget))
 }
 
 func (w *ResultWriter) Run() {
@@ -128,9 +128,9 @@ func (w *ResultWriter) Run() {
 		case <-w.stop:
 			return
 		case <-ticker.C:
-			w.flushWithTimeout(context.Background())
+			w.flushDetached(context.Background())
 		case <-w.kick:
-			w.flushWithTimeout(context.Background())
+			w.flushDetached(context.Background())
 		}
 	}
 }
@@ -155,7 +155,12 @@ func (w *ResultWriter) closeDrain(ctx context.Context) error {
 		if n == 0 {
 			return nil
 		}
-		w.flushWithTimeout(ctx)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		w.flushDetached(ctx)
 		w.mu.Lock()
 		left := len(w.buf)
 		w.mu.Unlock()

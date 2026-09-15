@@ -23,6 +23,7 @@ type fakeCHConn struct {
 	spanSends int
 	failTx    bool
 	failSpans bool
+	badCtx    bool // BatchContext не пришёл: Done() != nil или Deadline() не взведён
 	// если заданы, Send падает при наличии хотя бы одного такого ряда в батче;
 	// одиночная вставка ядовитого ряда падает всегда.
 	poisonTx    func(args []any) bool
@@ -86,7 +87,7 @@ func (b *fakeCHBatch) Send() error {
 	return nil
 }
 
-func (c *fakeCHConn) PrepareBatch(_ context.Context, query string, _ ...driver.PrepareBatchOption) (driver.Batch, error) {
+func (c *fakeCHConn) PrepareBatch(ctx context.Context, query string, _ ...driver.PrepareBatchOption) (driver.Batch, error) {
 	spans := strings.Contains(query, "INTO spans")
 	c.mu.Lock()
 	if spans {
@@ -94,8 +95,52 @@ func (c *fakeCHConn) PrepareBatch(_ context.Context, query string, _ ...driver.P
 	} else {
 		c.txSends++
 	}
+	if _, ok := ctx.Deadline(); ctx.Done() != nil || !ok {
+		c.badCtx = true
+	}
 	c.mu.Unlock()
 	return &fakeCHBatch{conn: c, spans: spans}, nil
+}
+
+// flushDetached обязан заворачивать ctx в db.BatchContext и на тике Run, и на закрытии — Done()
+// == nil одного Background() мало (тавтология): проверяем ещё и взведённый Deadline().
+func TestFlushDetachedContextNotCancelableViaRun(t *testing.T) {
+	c := &fakeCHConn{}
+	w := NewSpanWriter(c)
+	w.interval = 20 * time.Millisecond
+	go w.Run()
+	w.Add(1, 1, sampleTx(1))
+
+	waitForCH(t, func() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.txSends > 0 })
+	_ = w.Close(context.Background())
+
+	c.mu.Lock()
+	sawBadCtx := c.badCtx
+	c.mu.Unlock()
+	if sawBadCtx {
+		t.Fatal("PrepareBatch увидел не-BatchContext через тик Run (Done() != nil либо Deadline() не взведён)")
+	}
+}
+
+func TestFlushDetachedContextNotCancelableViaClose(t *testing.T) {
+	c := &fakeCHConn{}
+	w := NewSpanWriter(c)
+	w.interval = time.Hour
+	go w.Run()
+	w.Add(1, 1, sampleTx(1))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	c.mu.Lock()
+	sawBadCtx := c.badCtx
+	c.mu.Unlock()
+	if sawBadCtx {
+		t.Fatal("PrepareBatch увидел не-BatchContext через Close/closeDrain (Done() != nil либо Deadline() не взведён)")
+	}
 }
 
 func sampleTx(children int) Transaction {
