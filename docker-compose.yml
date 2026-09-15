@@ -43,10 +43,8 @@ services:
     # Приложению не нужны capabilities и запись в свою ФС (логи в stderr, состояние
     # в базах). Ужимаем поверхность для чужого кода. tmpfs /tmp — на случай рантайма.
     security_opt:
-      # Дефолт — включено. Docker из snap работает под своим AppArmor-профилем, и ядро
-      # отказывает контейнеру в NO_NEW_PRIVS с «operation not permitted» на exec —
-      # выглядит как битый образ. Обход: GOTCHA_COMPOSE_NO_NEW_PRIVS=false в .env
-      # (остальная изоляция — non-root, cap_drop ALL, read_only — остаётся).
+      # Отказ хоста в NO_NEW_PRIVS выглядит как «operation not permitted» на exec, будто
+      # битый образ; обход — GOTCHA_COMPOSE_NO_NEW_PRIVS=false в .env, см. /docs/installation.
       - "no-new-privileges:${GOTCHA_COMPOSE_NO_NEW_PRIVS:-true}"
     cap_drop:
       - ALL

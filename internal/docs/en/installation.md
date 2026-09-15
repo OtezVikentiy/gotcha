@@ -299,26 +299,31 @@ docker compose logs -f clickhouse
 A common cause is a configuration error message (e.g. the requirement to set `GOTCHA_SECRET_KEY`, see step 5) right there in the `gotcha` log.
 
 **`gotcha` dies with `exec /usr/local/bin/gotcha: operation not permitted` while `postgres` and `clickhouse` stay `Up`.**
-The image is not at fault: that line is printed by Docker, not by the app — the process never got to start. It is how an AppArmor refusal looks on a host where `dockerd` itself runs under a security profile, i.e. **Docker was installed from snap**. The kernel forbids such a `dockerd` from switching a container into another profile while the container has `no-new-privileges` set, and that flag is on the `gotcha` service alone — which is why the databases come up fine.
+That line is printed by Docker, not by the app — the process never got to start. The image is not at fault: what matters is how the host accepts the container's restrictions. Unlike the databases, the `gotcha` service runs as an unprivileged user (uid 10001), with no capabilities at all, a read-only filesystem, `no-new-privileges` and a process-count limit. One of those restrictions is refused by the host — two probes tell you which.
 
-One command checks it, with Gotcha out of the picture:
+**1. Every restriction at once, on an unrelated image.**
 ```bash
-docker run --rm --security-opt no-new-privileges:true alpine:3.21 echo ok
-snap list docker      # tells you whether Docker came from snap
+docker run --rm --security-opt no-new-privileges:true --cap-drop ALL \
+  --read-only --user 10001:10001 --pids-limit 512 alpine:3.21 echo ok
 ```
-If it prints `exec /bin/echo: operation not permitted` instead of `ok`, this is your cause.
-
-The fix is to reinstall Docker from the official source instead of snap. Be aware that **`snap remove docker` also deletes every image, container and volume the snap Docker created** — save anything valuable first.
-```bash
-sudo snap remove docker
-curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker $USER     # then log out and back in
-```
-If changing the Docker installation is not an option, drop the flag in `.env` and bring the stack back up:
+If the same refusal comes back instead of `ok`, the restrictions are to blame, not Gotcha. Drop them from the command one at a time until the probe passes: the one removed last is your cause. Starting with `no-new-privileges` is the easiest — it is switched off in `.env`, with no edits to the compose file:
 ```env
 GOTCHA_COMPOSE_NO_NEW_PRIVS=false
 ```
 This weakens one layer out of several: the container still runs as an unprivileged user, with no capabilities at all and a read-only filesystem.
+
+**2. Our image with every restriction, but a shell instead of the app.**
+```bash
+docker compose run --rm --no-deps --entrypoint /bin/sh gotcha \
+  -c 'ls -l /usr/local/bin/gotcha; /usr/local/bin/gotcha --version'
+```
+Worth running once the first probe prints `ok`. A refusal on `/bin/sh` itself means the image is at fault — rebuild it from scratch (`docker compose build --no-cache gotcha`). If the shell starts but `--version` does not run, the binary itself is at fault, and the `ls -l` in the same output shows its permissions and size.
+
+Whatever the probes say, the host is worth a look:
+```bash
+docker info --format '{{.SecurityOptions}}'
+sudo dmesg | grep -iE 'apparmor|audit' | tail -10
+```
 
 **Port already in use** (`bind: address already in use`).
 Something on the server is already listening on 59080. Pick a different host port via `.env`:
