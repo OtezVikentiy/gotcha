@@ -143,3 +143,40 @@ func TestCatalogKeysAreReferenced(t *testing.T) {
 	}
 	CheckExemptions(t, "i18n-orphan-keys", orphanKeyExemptions, maxOrphanExemptions, seen)
 }
+
+const maxDynamicPrefixExemptions = 1
+
+var dynamicPrefixExemptions = []Exemption{
+	{
+		Value:   "resource.",
+		Finding: "ключ атрибута лога, не i18n",
+		Why:     "logs.templ строит им имя атрибута записи лога, а сканер обходит всё дерево, а не вызовы i18n.T",
+	},
+}
+
+func TestEveryDynamicPrefixHasFamily(t *testing.T) {
+	tree := Load(t)
+	_, prefixes := collectLiteralsAndPrefixes(referenceBodies(tree))
+	known := familyPrefixes(families(t, tree))
+	exempt := ExemptedValues(dynamicPrefixExemptions)
+
+	seen := map[string]bool{}
+	var missing []string
+	for p := range prefixes {
+		if known[p] {
+			continue
+		}
+		if exempt[p] {
+			seen[p] = true
+			continue
+		}
+		missing = append(missing, p)
+	}
+
+	sort.Strings(missing)
+	for _, p := range missing {
+		t.Errorf("динамический префикс %q собирается в коде, но не описан в карте семейств "+
+			"(i18n_families_test.go): опишите семейство или внесите префикс в исключения с причиной", p)
+	}
+	CheckExemptions(t, "dynamicPrefixExemptions", dynamicPrefixExemptions, maxDynamicPrefixExemptions, seen)
+}
