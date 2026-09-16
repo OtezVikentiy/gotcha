@@ -59,7 +59,6 @@ var deadPluralFormDebt = map[string]map[string][]string{
 		"time.ago.hours":               {"other"},
 		"time.ago.days":                {"other"},
 		"org.quota.dropped_banner":     {"other"},
-		"org.gdpr.purge.result":        {"other"},
 		"cardinality.notice.collapsed": {"other"},
 		"metrics.system.show_toggle":   {"other"},
 		"flash.issues_resolved":        {"other"},

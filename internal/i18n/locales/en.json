@@ -194,10 +194,6 @@
     "issues.sort.first_seen": "First seen",
     "issues.sort.times_seen": "Times seen",
     "issues.filter.env_all": "All environments",
-    "issues.filter.period_all": "All time",
-    "issues.filter.period_24h": "Last 24h",
-    "issues.filter.period_7d": "Last 7 days",
-    "issues.filter.period_30d": "Last 30 days",
     "issues.filter.apply": "Apply",
     "issues.table.select": "Select",
     "issues.table.level": "Level",
@@ -1016,7 +1012,6 @@
     "org.invite.switch_account": "Sign in with a different account",
     "org.gdpr.title": "Subject data (GDPR)",
     "org.gdpr.export.title": "Export subject data",
-    "org.gdpr.field.project_id": "Project ID",
     "org.gdpr.field.email": "End-user email",
     "org.gdpr.field.user_id": "End-user identifier from your application",
     "org.gdpr.field.ip": "End-user IP address",
@@ -1331,9 +1326,7 @@
     "status.monitor.maintenance": "Maintenance",
     "status.monitor.unknown": "Unknown",
     "status.timezone_note": "All times on this page are shown in UTC.",
-    "status.uptime_90d": "Availability (90 days): {value}",
     "status.monitors.empty": "No services configured.",
-    "status.incidents.title": "Incidents in the last 90 days",
     "status.incidents.empty": "No incidents.",
     "status.incident.ongoing": "ongoing",
     "status.maintenance.title": "Upcoming maintenance",
@@ -1536,7 +1529,6 @@
     "region.deps.map": "Dependency map",
     "region.status.incidents": "Incidents table",
     "region.status.maintenance": "Maintenance windows table",
-    "org.gdpr.purge.result_none": "No records matched the criteria — there was nothing to delete.",
     "org.gdpr.purge.inert": "This instance scrubs email and IP on ingest, so searching by them will match nothing. Use user_id instead.",
     "org.gdpr.purge.inert_email": "This instance scrubs email on ingest, so searching by it will match nothing. Use user_id instead.",
     "org.gdpr.purge.inert_ip": "This instance scrubs IP on ingest, so searching by it will match nothing. Use user_id instead.",
@@ -2048,10 +2040,6 @@
     "org.quota.dropped_banner": {
       "one": "Event ingestion is limited: {n} item was dropped this month",
       "other": "Event ingestion is limited: {n} items were dropped this month"
-    },
-    "org.gdpr.purge.result": {
-      "one": "Deleted {n} record for the subject.",
-      "other": "Deleted {n} records for the subject."
     },
     "cardinality.notice.collapsed": {
       "one": "{n} value was grouped in the current window.",
