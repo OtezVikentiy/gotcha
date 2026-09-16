@@ -180,3 +180,55 @@ func TestEveryDynamicPrefixHasFamily(t *testing.T) {
 	}
 	CheckExemptions(t, "dynamicPrefixExemptions", dynamicPrefixExemptions, maxDynamicPrefixExemptions, seen)
 }
+
+const maxFamilyPrefixExemptions = 0
+
+var familyPrefixExemptions = []Exemption{}
+
+// Идентификатор записи, а не только префикс: project.settings.keys.kind.
+// живёт в карте двумя записями с разными суффиксами.
+func familyRecordID(f family) string {
+	return f.prefix + "\x00" + strings.Join(f.suffixes, ",")
+}
+
+// Префикс подтверждает запись целиком: код строит ключ конкатенацией, и достижимо
+// любое значение источника. Без префикса литерал обязан быть у каждого ключа.
+func TestEveryFamilyEntryIsConfirmed(t *testing.T) {
+	tree := Load(t)
+	literals, prefixes := collectLiteralsAndPrefixes(referenceBodies(tree))
+	fams := families(t, tree)
+	exempt := ExemptedValues(familyPrefixExemptions)
+
+	seen := map[string]bool{}
+	for _, f := range fams {
+		if prefixes[f.prefix] {
+			continue
+		}
+		keys := familyKeys(f)
+		var missing []string
+		for _, k := range keys {
+			if !literals[k] {
+				missing = append(missing, k)
+			}
+		}
+		if len(missing) == 0 {
+			continue
+		}
+		id := familyRecordID(f)
+		if exempt[id] {
+			seen[id] = true
+			continue
+		}
+		sort.Strings(missing)
+		if len(missing) == len(keys) {
+			t.Errorf("запись карты семейств (префикс %s, суффиксы %s) не подтверждена кодом ни префиксом, ни литералом ни одного "+
+				"раскрытого ключа (i18n_families_test.go): удалите запись или найдите, почему семейство перестало использоваться",
+				f.prefix, strings.Join(f.suffixes, ","))
+		} else {
+			t.Errorf("запись карты семейств (префикс %s, суффиксы %s) строится не конкатенацией, и часть её ключей не встречается "+
+				"литералом в коде (i18n_families_test.go): %s",
+				f.prefix, strings.Join(f.suffixes, ","), strings.Join(missing, ", "))
+		}
+	}
+	CheckExemptions(t, "familyPrefixExemptions", familyPrefixExemptions, maxFamilyPrefixExemptions, seen)
+}
