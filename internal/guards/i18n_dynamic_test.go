@@ -103,11 +103,15 @@ func checkInValues(t *testing.T, body, column string) []string {
 	return out
 }
 
+// Ниже прежнего значения — сканер ослеп на одном из маркеров вызова, а не
+// областей помощи стало меньше в шаблонах.
+const minHelpAreas = 28
+
 func TestHelpPanelKeysResolve(t *testing.T) {
 	tree := Load(t)
 	areas := helpAreasInTemplates(t, tree)
-	if len(areas) < 10 {
-		t.Fatalf("найдено %d областей помощи — сканер сломан", len(areas))
+	if len(areas) < minHelpAreas {
+		t.Fatalf("сканер ослеп: найдено %d областей помощи, ожидалось не меньше %d", len(areas), minHelpAreas)
 	}
 	for _, lang := range []string{"ru", "en"} {
 		ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: lang})
@@ -125,21 +129,25 @@ func TestHelpPanelKeysResolve(t *testing.T) {
 func helpAreasInTemplates(t *testing.T, tree *Tree) []string {
 	t.Helper()
 	seen := map[string]bool{}
-	const marker = `helpPanel("`
+	// Область, переданная переменной вместо строкового литерала, сканеру не
+	// видна — это ограничивает minHelpAreas, а не повод городить парсер.
+	markers := []string{`helpPanel("`, `helpPanelWith("`}
 	for _, f := range tree.Templates {
 		data := f.Body
-		for i := 0; ; {
-			j := strings.Index(data[i:], marker)
-			if j < 0 {
-				break
+		for _, marker := range markers {
+			for i := 0; ; {
+				j := strings.Index(data[i:], marker)
+				if j < 0 {
+					break
+				}
+				start := i + j + len(marker)
+				end := strings.Index(data[start:], `"`)
+				if end < 0 {
+					break
+				}
+				seen[data[start:start+end]] = true
+				i = start + end
 			}
-			start := i + j + len(marker)
-			end := strings.Index(data[start:], `"`)
-			if end < 0 {
-				break
-			}
-			seen[data[start:start+end]] = true
-			i = start + end
 		}
 	}
 	out := make([]string, 0, len(seen))
