@@ -15,7 +15,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-const minFamilies = 31
+const minFamilies = 37
 
 type family struct {
 	prefix   string
@@ -25,6 +25,7 @@ type family struct {
 
 func families(t *testing.T, tree *Tree) []family {
 	t.Helper()
+	perfKinds := []string{trace.KindNPlusOne, trace.KindSlowDBQuery, trace.KindHTTPFlood}
 	return []family{
 		{prefix: "issues.status.", values: issuesStatusValues(t, tree)},
 		{prefix: "issues.level.", values: issue.Levels},
@@ -42,8 +43,16 @@ func families(t *testing.T, tree *Tree) []family {
 		{prefix: "error.logfilter.", values: logfilterErrorCodes(t, tree)},
 		{prefix: "host.threshold.scope.", values: checkInValues(t, migrationBody(t, tree, "0075_host_group_thresholds.up.sql"), "scope")},
 		{prefix: "host.threshold.effective_from.", values: []string{string(host.LevelHost), string(host.LevelRole), string(host.LevelEnv), string(host.LevelProject), string(host.LevelDefault)}},
+		{prefix: "host.threshold.", values: hostThresholdKinds(t, tree)},
 		{prefix: "project.settings.keys.kind.", values: []string{string(org.KindBrowser), string(org.KindServer), string(org.KindAgent), string(org.KindLegacy)}},
-		{prefix: "perf.title.", values: []string{trace.KindNPlusOne, trace.KindSlowDBQuery, trace.KindHTTPFlood}},
+		// KindLegacy сознательно не входит: цикл, конкатенирующий .hint
+		// (projsettings.templ:382-384), перечисляет только Browser/Server/Agent.
+		{prefix: "project.settings.keys.kind.", values: []string{string(org.KindBrowser), string(org.KindServer), string(org.KindAgent)}, suffixes: []string{".hint"}},
+		{prefix: "perf.title.", values: perfKinds},
+		{prefix: "perf.kind.explain.", values: perfKinds},
+		{prefix: "perf.kind.fix.", values: perfKinds},
+		{prefix: "deps.direction.", values: depsDirectionValues(t, tree)},
+		{prefix: "oauth.provider.", values: oauthProviderValues(t, tree)},
 		{prefix: "exports.status.", values: []string{string(export.StatusQueued), string(export.StatusRunning), string(export.StatusDone), string(export.StatusFailed), string(export.StatusExpired)}},
 		{prefix: "exports.kind.", values: []string{string(export.KindIssues), string(export.KindEvents)}},
 		{prefix: "exports.format.", values: []string{string(export.FormatCSV), string(export.FormatJSON), string(export.FormatNDJSON)}},
@@ -143,14 +152,14 @@ func TestFamilyEntriesAreUnique(t *testing.T) {
 
 func TestFamilyLongestPrefixWins(t *testing.T) {
 	fams := families(t, Load(t))
+	short := familiesByPrefix(fams, "host.threshold.")
 	scope := familiesByPrefix(fams, "host.threshold.scope.")
 	effectiveFrom := familiesByPrefix(fams, "host.threshold.effective_from.")
-	if len(scope) == 0 || len(effectiveFrom) == 0 {
-		t.Fatalf("не нашли записи host.threshold.scope. (%d) или host.threshold.effective_from. (%d)", len(scope), len(effectiveFrom))
+	if len(short) == 0 || len(scope) == 0 || len(effectiveFrom) == 0 {
+		t.Fatalf("не нашли записи host.threshold. (%d), host.threshold.scope. (%d) или host.threshold.effective_from. (%d)", len(short), len(scope), len(effectiveFrom))
 	}
-	// Короткий префикс host.threshold. здесь синтетический — реального источника
-	// с таким префиксом в карте пока нет, но отбор по длине обязан работать и на нём.
-	pool := append([]family{{prefix: "host.threshold.", values: []string{"warning"}}}, scope...)
+	pool := append([]family{}, short...)
+	pool = append(pool, scope...)
 	pool = append(pool, effectiveFrom...)
 
 	got := longestPrefixMatch("host.threshold.scope.warning", pool)

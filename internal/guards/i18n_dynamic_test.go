@@ -297,3 +297,99 @@ func hostChartKeys(t *testing.T, tree *Tree) []string {
 	}
 	return out
 }
+
+// "none" — literal-ветка default в depDirectionKey, не входит в case и
+// добавляется вручную.
+var depDirectionCaseRe = regexp.MustCompile(`func depDirectionKey\(dir string\) string \{\s*switch dir \{\s*case\s+([^:]+):`)
+
+func depsDirectionValues(t *testing.T, tree *Tree) []string {
+	t.Helper()
+	for _, f := range tree.Templates {
+		if f.Path != "internal/web/templates/dependencies.templ" {
+			continue
+		}
+		m := depDirectionCaseRe.FindStringSubmatch(f.Body)
+		if m == nil {
+			t.Fatalf("dependencies.templ: не нашли case-перечисление в depDirectionKey — разметка изменилась")
+		}
+		var out []string
+		for _, q := range quotedLiteralRe.FindAllStringSubmatch(m[1], -1) {
+			out = append(out, q[1])
+		}
+		if len(out) < 3 {
+			t.Fatalf("нашли %d значений case в depDirectionKey, ожидалось не меньше 3 — сканер ослеп", len(out))
+		}
+		return append(out, "none")
+	}
+	t.Fatalf("не нашли internal/web/templates/dependencies.templ в дереве")
+	return nil
+}
+
+// oauth.Registry заполняется условно по фичефлагам в cmd/gotcha/oauth.go и
+// тесту недоступен — источник истины: метод Name() string, обязательный интерфейсом.
+var oauthNameRe = regexp.MustCompile(`(?s)func \([^)]*\)\s+Name\(\)\s+string\s*\{\s*return\s+"([^"]+)"`)
+
+const maxOAuthProviderExemptions = 1
+
+// providerLabel (internal/web/auth.go) при промахе перевода отдаёт DisplayName() —
+// для OIDC это кастомное имя администратора; перевод навсегда перекрыл бы его.
+var oauthProviderExemptions = []Exemption{
+	{Value: "oidc", Finding: "oauth.provider.oidc без перевода", Why: "OIDC — конфигурируемый провайдер, DisplayName() отдаёт кастомное имя администратора вместо бренда; перевод перекрыл бы его"},
+}
+
+func oauthProviderValues(t *testing.T, tree *Tree) []string {
+	t.Helper()
+	seen := map[string]bool{}
+	for _, f := range tree.GoFiles {
+		if f.Generated || !strings.HasPrefix(f.Path, "internal/oauth/") || strings.HasSuffix(f.Path, "_test.go") {
+			continue
+		}
+		for _, m := range oauthNameRe.FindAllStringSubmatch(f.Body, -1) {
+			seen[m[1]] = true
+		}
+	}
+	if len(seen) < 3 {
+		t.Fatalf("нашли %d провайдеров oauth, ожидалось не меньше 3 — сканер ослеп", len(seen))
+	}
+	CheckExemptions(t, "oauth-provider-i18n", oauthProviderExemptions, maxOAuthProviderExemptions, seen)
+	exempted := ExemptedValues(oauthProviderExemptions)
+	out := make([]string, 0, len(seen))
+	for p := range seen {
+		if exempted[p] {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// Третье семейство порогов хоста помимо .scope. и .effective_from.: enum'а нет,
+// значения — литералы hostsettings.templ (аргументы groupKindPart и вызов для "silent").
+var hostThresholdKindArgRe = regexp.MustCompile(`groupKindPart\(ctx,\s*"(\w+)"`)
+var hostThresholdSilentRe = regexp.MustCompile(`i18n\.T\(ctx,\s*"host\.threshold\.silent"\)`)
+
+func hostThresholdKinds(t *testing.T, tree *Tree) []string {
+	t.Helper()
+	for _, f := range tree.Templates {
+		if f.Path != "internal/web/templates/hostsettings.templ" {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, m := range hostThresholdKindArgRe.FindAllStringSubmatch(f.Body, -1) {
+			seen[m[1]] = true
+		}
+		if hostThresholdSilentRe.MatchString(f.Body) {
+			seen["silent"] = true
+		}
+		out := make([]string, 0, len(seen))
+		for k := range seen {
+			out = append(out, k)
+		}
+		if len(out) < 4 {
+			t.Fatalf("нашли %d видов порога хоста в hostsettings.templ, ожидалось не меньше 4", len(out))
+		}
+		return out
+	}
+	t.Fatalf("не нашли internal/web/templates/hostsettings.templ в дереве")
+	return nil
+}
