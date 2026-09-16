@@ -33,7 +33,7 @@ BACK_MIN=${BACK_MIN:-$BACK_FLOOR}
 # гейт мерил бы стоимость теста, а не качество кода.
 TEMPL_MIN=${TEMPL_MIN:-$TEMPL_FLOOR}
 # CMD_MIN — пол точки входа (health-ручки, разбор конфига, healthcheck-подкоманда).
-CMD_FLOOR=53.0
+CMD_FLOOR=84.0
 CMD_MIN=${CMD_MIN:-$CMD_FLOOR}
 
 # Формат порога: число (с необязательной дробной частью). Проверяется ДО
