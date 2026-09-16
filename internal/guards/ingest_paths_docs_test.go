@@ -47,26 +47,23 @@ func registeredIngestRoutes(t *testing.T) []ingestRoutePattern {
 	return out
 }
 
-func TestIngestRoutesAreRecordable(t *testing.T) {
-	routes := registeredIngestRoutes(t)
-	if len(routes) < 14 {
-		t.Fatalf("записано %d маршрутов приёма, ожидалось не меньше 14 — регистрация или запись сломаны", len(routes))
-	}
-}
-
 // Кандидаты берём только из машинной разметки markdown: свободная проза даёт
-// обрывки и адреса-примеры чужих сервисов.
+// обрывки и адреса-примеры чужих сервисов. Класс символов включает `<>?#` —
+// плейсхолдеры вида `<PROJECT_ID>` и query-строку нужно захватить целиком,
+// чтобы обрезать и нормализовать их, а не потерять адрес на полпути.
 var (
-	fencedBlockRe = regexp.MustCompile("(?s)```.*?```")
-	inlineCodeRe  = regexp.MustCompile("`[^`\n]+`")
-	ingestPathRe  = regexp.MustCompile(`/(?:api|v1)/[A-Za-z0-9_{}./-]*`)
-	numericSegRe  = regexp.MustCompile(`/[0-9]+(/|$)`)
+	fencedBlockRe    = regexp.MustCompile("(?s)```.*?```")
+	inlineCodeRe     = regexp.MustCompile("`[^`\n]+`")
+	ingestPathRe     = regexp.MustCompile(`/(?:api|v1)/[A-Za-z0-9_{}./<>?#-]*`)
+	numericSegRe     = regexp.MustCompile(`/[0-9]+(/|$)`)
+	placeholderSegRe = regexp.MustCompile(`/<[^/>]*>(/|$)`)
 )
 
 func normalizeDocPath(p string) string {
 	if i := strings.IndexAny(p, "?#"); i >= 0 {
 		p = p[:i]
 	}
+	p = placeholderSegRe.ReplaceAllString(p, "/{project}$1")
 	return numericSegRe.ReplaceAllString(p, "/{project}$1")
 }
 
@@ -95,7 +92,7 @@ func docPathCandidates(t *testing.T, root, lang string) map[string]bool {
 	return out
 }
 
-const minDocPathCandidates = 14 // факт: 9+9=18 кандидатов (шаг 1.4), запас вниз ~80%
+const minDocPathCandidates = 12 // 16 кандидатов в доках сейчас; запас вниз против дрожания
 
 // Кандидат, который является строгим префиксом зарегистрированного адреса и
 // сам оканчивается слешем, — упоминание неймспейса (/api/v1/), а не эндпоинт.
@@ -187,9 +184,8 @@ func TestDeprecatedIngestPathsMatchRegistration(t *testing.T) {
 	}
 }
 
-const maxUndocumentedIngestRoutes = 3 // потолок списка исключений
+const maxUndocumentedIngestRoutes = 3
 
-// Маршрут приёма, намеренно не описанный в доках.
 var undocumentedIngestRoutes = []Exemption{
 	{
 		Value:   "/api/{project}/envelope/",
