@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-09-16
+
 ### Changed
 - Installation docs now state the disk headroom a source build needs on top of the
   running set, with the actual image sizes, and how to reclaim the build cache
