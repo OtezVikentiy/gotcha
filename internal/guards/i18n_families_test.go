@@ -15,7 +15,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 )
 
-const minFamilies = 29
+const minFamilies = 31
 
 type family struct {
 	prefix   string
@@ -57,6 +57,8 @@ func families(t *testing.T, tree *Tree) []family {
 		{prefix: "hosts.scraper_hint.", values: hostChartKeys(t, tree)},
 		{prefix: "notify.issue.kind.", values: []string{alert.KindNewIssue, alert.KindRegression, alert.KindSpike}},
 		{prefix: "alerts.channels.kind.", values: []string{alert.ChannelEmail, alert.ChannelWebhook, alert.ChannelTelegram}},
+		{prefix: "help.", values: helpAreasInTemplates(t, tree), suffixes: []string{".title", ".body"}},
+		{prefix: "error.monitor.", values: monitorErrorCodes(t, tree)},
 	}
 }
 

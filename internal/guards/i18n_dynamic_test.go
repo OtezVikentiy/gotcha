@@ -109,20 +109,13 @@ const minHelpAreas = 28
 
 func TestHelpPanelKeysResolve(t *testing.T) {
 	tree := Load(t)
-	areas := helpAreasInTemplates(t, tree)
+	fams := familiesByPrefix(families(t, tree), "help.")
+	if len(fams) != 1 {
+		t.Fatalf("ожидали ровно одну запись help. в карте, нашли %d", len(fams))
+	}
+	areas := fams[0].values
 	if len(areas) < minHelpAreas {
 		t.Fatalf("сканер ослеп: найдено %d областей помощи, ожидалось не меньше %d", len(areas), minHelpAreas)
-	}
-	for _, lang := range []string{"ru", "en"} {
-		ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: lang})
-		for _, area := range areas {
-			for _, suffix := range []string{".title", ".body"} {
-				key := "help." + area + suffix
-				if got := i18n.T(ctx, key); got == key {
-					t.Errorf("[%s] панель помощи раздела %q без ключа %q", lang, area, key)
-				}
-			}
-		}
 	}
 }
 
@@ -159,18 +152,13 @@ func helpAreasInTemplates(t *testing.T, tree *Tree) []string {
 
 func TestMonitorErrorCodesResolve(t *testing.T) {
 	tree := Load(t)
-	codes := monitorErrorCodes(t, tree)
+	fams := familiesByPrefix(families(t, tree), "error.monitor.")
+	if len(fams) != 1 {
+		t.Fatalf("ожидали ровно одну запись error.monitor. в карте, нашли %d", len(fams))
+	}
+	codes := fams[0].values
 	if len(codes) < 20 {
 		t.Fatalf("найдено %d кодов — сканер сломан", len(codes))
-	}
-	for _, lang := range []string{"ru", "en"} {
-		ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: lang})
-		for _, code := range codes {
-			key := "error.monitor." + code
-			if got := i18n.T(ctx, key); got == key {
-				t.Errorf("[%s] код валидации %q без сообщения (%s)", lang, code, key)
-			}
-		}
 	}
 }
 
