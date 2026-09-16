@@ -226,7 +226,7 @@ func TestIngestRoutesAreDocumented(t *testing.T) {
 			if exempted[r.path] {
 				continue
 			}
-			t.Errorf("маршрут приёма %q не упомянут в internal/docs/%s", r.path, lang)
+			t.Errorf("маршрут приёма %q не упомянут в internal/docs/%s: опишите его в доках обеих локалей либо, если документировать нечего, добавьте в undocumentedIngestRoutes с причиной", r.path, lang)
 		}
 	}
 	CheckExemptions(t, "undocumented-ingest-routes", undocumentedIngestRoutes, maxUndocumentedIngestRoutes, seen)
