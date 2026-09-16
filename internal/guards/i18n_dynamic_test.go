@@ -6,17 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/export"
-	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
-	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
-	"gitflic.ru/otezvikentiy/gotcha/internal/log"
-	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
-	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/recipes"
-	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
-	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
@@ -24,52 +16,19 @@ import (
 // (internal/i18n/catalog_test.go), но забытый в обоих — только этим тестом.
 func TestDynamicKeysResolve(t *testing.T) {
 	tree := Load(t)
+	fams := families(t, tree)
 
-	groups := map[string][]string{
-		"issues.status.":                 issuesStatusValues(t, tree),
-		"issues.level.":                  issue.Levels,
-		"probe.status.":                  uptime.ProbeStatuses,
-		"range.":                         rangePresetKeys(),
-		"org.quota.kind.":                quotaKindShortKeys(),
-		"uptime.consensus.":              {string(uptime.ConsensusAny), string(uptime.ConsensusMajority), string(uptime.ConsensusAll)},
-		"platform.":                      org.Platforms,
-		"uptime.kind.":                   uptime.Kinds,
-		"metrics.aggregation.":           metric.Aggregations,
-		"metrics.type.":                  metric.MetricTypes,
-		"hosts.kind.":                    host.Kinds,
-		"logs.severity.":                 log.Severities,
-		"recipes.":                       recipeDynamicKeys(),
-		"error.logfilter.":               logfilterErrorCodes(t, tree),
-		"host.threshold.scope.":          checkInValues(t, migrationBody(t, tree, "0075_host_group_thresholds.up.sql"), "scope"),
-		"host.threshold.effective_from.": {string(host.LevelHost), string(host.LevelRole), string(host.LevelEnv), string(host.LevelProject), string(host.LevelDefault)},
-		"project.settings.keys.kind.":    {string(org.KindBrowser), string(org.KindServer), string(org.KindAgent), string(org.KindLegacy)},
-		"perf.title.":                    {trace.KindNPlusOne, trace.KindSlowDBQuery, trace.KindHTTPFlood},
-		"exports.status.":                {string(export.StatusQueued), string(export.StatusRunning), string(export.StatusDone), string(export.StatusFailed), string(export.StatusExpired)},
-		"exports.kind.":                  {string(export.KindIssues), string(export.KindEvents)},
-		"exports.format.":                {string(export.FormatCSV), string(export.FormatJSON), string(export.FormatNDJSON)},
-		// Источник — literal-результаты multiIf в internal/trace/query.go (AS kind,
-		// строки ~225-227); значения меняют оба места разом, из Go их не перечислить.
-		"deps.kind.":            {"database", "cache", "http"},
-		"feed.source.":          feedSourceValues(t, tree),
-		"feed.group.root.":      checkInValues(t, migrationBody(t, tree, "0079_incident_groups.up.sql"), "root_source"),
-		"hosts.group.":          hostsGroupValues(t, tree),
-		"hosts.chart.":          hostChartKeys(t, tree),
-		"hosts.scraper_hint.":   hostChartKeys(t, tree),
-		"notify.issue.kind.":    {alert.KindNewIssue, alert.KindRegression, alert.KindSpike},
-		"alerts.channels.kind.": {alert.ChannelEmail, alert.ChannelWebhook, alert.ChannelTelegram},
-	}
 	// Пустая группа — сигнал, что сборка самой группы сломана, а не что в
 	// каталоге всё в порядке: пустой срез не даст ни одной находки.
-	for prefix, values := range groups {
-		if len(values) == 0 {
-			t.Fatalf("группа %q пуста — сборка множества значений сломана, а не каталог", prefix)
+	for _, f := range fams {
+		if len(f.values) == 0 {
+			t.Fatalf("группа %q пуста — сборка множества значений сломана, а не каталог", f.prefix)
 		}
 	}
 	for _, lang := range []string{"ru", "en"} {
 		ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: lang})
-		for prefix, values := range groups {
-			for _, v := range values {
-				key := prefix + v
+		for _, f := range fams {
+			for _, key := range familyKeys(f) {
 				if got := i18n.T(ctx, key); got == key {
 					t.Errorf("[%s] ключ %q собирается в коде, но перевода нет — на странице будет сырой ключ", lang, key)
 				}
@@ -85,16 +44,6 @@ func rangePresetKeys() []string {
 	out = append(out, web.RangeAll)
 	for k := range web.TimeRangePresets {
 		out = append(out, k)
-	}
-	return out
-}
-
-// Базовые ключи (org.quota.kind.events и т.д.) собираются и литералом (покрыто общим
-// сканером каталога), и конкатенацией в quotaBanner — оба варианта здесь, наравне с ".short".
-func quotaKindShortKeys() []string {
-	out := make([]string, 0, len(org.QuotaKinds)*2)
-	for _, k := range org.QuotaKinds {
-		out = append(out, k, k+".short")
 	}
 	return out
 }
@@ -154,43 +103,44 @@ func checkInValues(t *testing.T, body, column string) []string {
 	return out
 }
 
+// Ниже прежнего значения — сканер ослеп на одном из маркеров вызова, а не
+// областей помощи стало меньше в шаблонах.
+const minHelpAreas = 28
+
 func TestHelpPanelKeysResolve(t *testing.T) {
 	tree := Load(t)
-	areas := helpAreasInTemplates(t, tree)
-	if len(areas) < 10 {
-		t.Fatalf("найдено %d областей помощи — сканер сломан", len(areas))
+	fams := familiesByPrefix(families(t, tree), "help.")
+	if len(fams) != 1 {
+		t.Fatalf("ожидали ровно одну запись help. в карте, нашли %d", len(fams))
 	}
-	for _, lang := range []string{"ru", "en"} {
-		ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: lang})
-		for _, area := range areas {
-			for _, suffix := range []string{".title", ".body"} {
-				key := "help." + area + suffix
-				if got := i18n.T(ctx, key); got == key {
-					t.Errorf("[%s] панель помощи раздела %q без ключа %q", lang, area, key)
-				}
-			}
-		}
+	areas := fams[0].values
+	if len(areas) < minHelpAreas {
+		t.Fatalf("сканер ослеп: найдено %d областей помощи, ожидалось не меньше %d", len(areas), minHelpAreas)
 	}
 }
 
 func helpAreasInTemplates(t *testing.T, tree *Tree) []string {
 	t.Helper()
 	seen := map[string]bool{}
-	const marker = `helpPanel("`
+	// Область, переданная переменной вместо строкового литерала, сканеру не
+	// видна — это ограничивает minHelpAreas, а не повод городить парсер.
+	markers := []string{`helpPanel("`, `helpPanelWith("`}
 	for _, f := range tree.Templates {
 		data := f.Body
-		for i := 0; ; {
-			j := strings.Index(data[i:], marker)
-			if j < 0 {
-				break
+		for _, marker := range markers {
+			for i := 0; ; {
+				j := strings.Index(data[i:], marker)
+				if j < 0 {
+					break
+				}
+				start := i + j + len(marker)
+				end := strings.Index(data[start:], `"`)
+				if end < 0 {
+					break
+				}
+				seen[data[start:start+end]] = true
+				i = start + end
 			}
-			start := i + j + len(marker)
-			end := strings.Index(data[start:], `"`)
-			if end < 0 {
-				break
-			}
-			seen[data[start:start+end]] = true
-			i = start + end
 		}
 	}
 	out := make([]string, 0, len(seen))
@@ -202,18 +152,13 @@ func helpAreasInTemplates(t *testing.T, tree *Tree) []string {
 
 func TestMonitorErrorCodesResolve(t *testing.T) {
 	tree := Load(t)
-	codes := monitorErrorCodes(t, tree)
+	fams := familiesByPrefix(families(t, tree), "error.monitor.")
+	if len(fams) != 1 {
+		t.Fatalf("ожидали ровно одну запись error.monitor. в карте, нашли %d", len(fams))
+	}
+	codes := fams[0].values
 	if len(codes) < 20 {
 		t.Fatalf("найдено %d кодов — сканер сломан", len(codes))
-	}
-	for _, lang := range []string{"ru", "en"} {
-		ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: lang})
-		for _, code := range codes {
-			key := "error.monitor." + code
-			if got := i18n.T(ctx, key); got == key {
-				t.Errorf("[%s] код валидации %q без сообщения (%s)", lang, code, key)
-			}
-		}
 	}
 }
 
@@ -351,4 +296,100 @@ func hostChartKeys(t *testing.T, tree *Tree) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// "none" — literal-ветка default в depDirectionKey, не входит в case и
+// добавляется вручную.
+var depDirectionCaseRe = regexp.MustCompile(`func depDirectionKey\(dir string\) string \{\s*switch dir \{\s*case\s+([^:]+):`)
+
+func depsDirectionValues(t *testing.T, tree *Tree) []string {
+	t.Helper()
+	for _, f := range tree.Templates {
+		if f.Path != "internal/web/templates/dependencies.templ" {
+			continue
+		}
+		m := depDirectionCaseRe.FindStringSubmatch(f.Body)
+		if m == nil {
+			t.Fatalf("dependencies.templ: не нашли case-перечисление в depDirectionKey — разметка изменилась")
+		}
+		var out []string
+		for _, q := range quotedLiteralRe.FindAllStringSubmatch(m[1], -1) {
+			out = append(out, q[1])
+		}
+		if len(out) < 3 {
+			t.Fatalf("нашли %d значений case в depDirectionKey, ожидалось не меньше 3 — сканер ослеп", len(out))
+		}
+		return append(out, "none")
+	}
+	t.Fatalf("не нашли internal/web/templates/dependencies.templ в дереве")
+	return nil
+}
+
+// oauth.Registry заполняется условно по фичефлагам в cmd/gotcha/oauth.go и
+// тесту недоступен — источник истины: метод Name() string, обязательный интерфейсом.
+var oauthNameRe = regexp.MustCompile(`(?s)func \([^)]*\)\s+Name\(\)\s+string\s*\{\s*return\s+"([^"]+)"`)
+
+const maxOAuthProviderExemptions = 1
+
+// providerLabel (internal/web/auth.go) при промахе перевода отдаёт DisplayName() —
+// для OIDC это кастомное имя администратора; перевод навсегда перекрыл бы его.
+var oauthProviderExemptions = []Exemption{
+	{Value: "oidc", Finding: "oauth.provider.oidc без перевода", Why: "OIDC — конфигурируемый провайдер, DisplayName() отдаёт кастомное имя администратора вместо бренда; перевод перекрыл бы его"},
+}
+
+func oauthProviderValues(t *testing.T, tree *Tree) []string {
+	t.Helper()
+	seen := map[string]bool{}
+	for _, f := range tree.GoFiles {
+		if f.Generated || !strings.HasPrefix(f.Path, "internal/oauth/") || strings.HasSuffix(f.Path, "_test.go") {
+			continue
+		}
+		for _, m := range oauthNameRe.FindAllStringSubmatch(f.Body, -1) {
+			seen[m[1]] = true
+		}
+	}
+	if len(seen) < 3 {
+		t.Fatalf("нашли %d провайдеров oauth, ожидалось не меньше 3 — сканер ослеп", len(seen))
+	}
+	CheckExemptions(t, "oauth-provider-i18n", oauthProviderExemptions, maxOAuthProviderExemptions, seen)
+	exempted := ExemptedValues(oauthProviderExemptions)
+	out := make([]string, 0, len(seen))
+	for p := range seen {
+		if exempted[p] {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// Третье семейство порогов хоста помимо .scope. и .effective_from.: enum'а нет,
+// значения — литералы hostsettings.templ (аргументы groupKindPart и вызов для "silent").
+var hostThresholdKindArgRe = regexp.MustCompile(`groupKindPart\(ctx,\s*"(\w+)"`)
+var hostThresholdSilentRe = regexp.MustCompile(`i18n\.T\(ctx,\s*"host\.threshold\.silent"\)`)
+
+func hostThresholdKinds(t *testing.T, tree *Tree) []string {
+	t.Helper()
+	for _, f := range tree.Templates {
+		if f.Path != "internal/web/templates/hostsettings.templ" {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, m := range hostThresholdKindArgRe.FindAllStringSubmatch(f.Body, -1) {
+			seen[m[1]] = true
+		}
+		if hostThresholdSilentRe.MatchString(f.Body) {
+			seen["silent"] = true
+		}
+		out := make([]string, 0, len(seen))
+		for k := range seen {
+			out = append(out, k)
+		}
+		if len(out) < 4 {
+			t.Fatalf("нашли %d видов порога хоста в hostsettings.templ, ожидалось не меньше 4", len(out))
+		}
+		return out
+	}
+	t.Fatalf("не нашли internal/web/templates/hostsettings.templ в дереве")
+	return nil
 }

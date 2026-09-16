@@ -15,8 +15,6 @@ templ helpPanel(area, guideSlug string) {
 	}
 }
 
-// TestHelpPanelKeysResolve сканирует исходники на вызовы helpPanel с
-// литеральной областью и не матчит helpPanelWith — здесь .body не обязателен.
 templ helpPanelWith(area, guideSlug string) {
 	<details class="help-panel">
 		<summary>

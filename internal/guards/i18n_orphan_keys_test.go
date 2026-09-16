@@ -78,22 +78,10 @@ func collectLiteralsAndPrefixes(bodies []string) (literals, prefixes map[string]
 	return literals, prefixes
 }
 
-func hasDynamicPrefix(key string, prefixes map[string]bool) bool {
-	for p := range prefixes {
-		if strings.HasPrefix(key, p) {
-			return true
-		}
-	}
-	return false
-}
-
 const (
 	minLiteralReferencedKeys = 390
 	minDynamicPrefixes       = 32
-	// Потолок ограничивает рост неаудируемой зоны, но не ловит широкий префикс поверх
-	// уже используемых ключей — те отдаются более ранним категориям раньше амнистии.
-	maxPrefixAmnestiedKeys = 260
-	maxOrphanExemptions    = 1
+	maxOrphanExemptions      = 1
 )
 
 // Ключ в каталоге, который сканер доказать не может, но он жив: каждая запись
@@ -110,6 +98,7 @@ func TestCatalogKeysAreReferenced(t *testing.T) {
 	tree := Load(t)
 	messageKeys, pluralKeys := collectI18nKeys(t, tree)
 	literals, prefixes := collectLiteralsAndPrefixes(referenceBodies(tree))
+	fams := familyKeySet(t, tree)
 
 	catalog := map[string]bool{}
 	for k := range tree.Catalogs["ru"] {
@@ -119,7 +108,7 @@ func TestCatalogKeysAreReferenced(t *testing.T) {
 		catalog[k] = true
 	}
 
-	literalHits, amnestied := 0, 0
+	literalHits := 0
 	seen := map[string]bool{}
 	exempted := ExemptedValues(orphanKeyExemptions)
 	var orphans []string
@@ -131,8 +120,7 @@ func TestCatalogKeysAreReferenced(t *testing.T) {
 			literalHits++
 			continue
 		}
-		if hasDynamicPrefix(k, prefixes) {
-			amnestied++
+		if fams[k] {
 			continue
 		}
 		seen[k] = true
@@ -148,14 +136,99 @@ func TestCatalogKeysAreReferenced(t *testing.T) {
 	if len(prefixes) < minDynamicPrefixes {
 		t.Fatalf("извлечено %d динамических префиксов при пороге %d — сломан сбор префиксов", len(prefixes), minDynamicPrefixes)
 	}
-	if amnestied > maxPrefixAmnestiedKeys {
-		t.Fatalf("префиксами амнистировано %d ключей при потолке %d — в каталоге завелись новые ключи, не используемые кодом, и их накрыл динамический префикс; либо это мёртвые ключи и их надо убрать, либо амнистия выросла законно (новый рецепт, новый раздел) и потолок поднимают осознанно",
-			amnestied, maxPrefixAmnestiedKeys)
-	}
 
 	sort.Strings(orphans)
 	if len(orphans) > 0 {
 		t.Errorf("ключи есть в каталоге, но не используются (%d):\n  %s", len(orphans), strings.Join(orphans, "\n  "))
 	}
 	CheckExemptions(t, "i18n-orphan-keys", orphanKeyExemptions, maxOrphanExemptions, seen)
+}
+
+const maxDynamicPrefixExemptions = 1
+
+var dynamicPrefixExemptions = []Exemption{
+	{
+		Value:   "resource.",
+		Finding: "ключ атрибута лога, не i18n",
+		Why:     "logs.templ строит им имя атрибута записи лога, а сканер обходит всё дерево, а не вызовы i18n.T",
+	},
+}
+
+func TestEveryDynamicPrefixHasFamily(t *testing.T) {
+	tree := Load(t)
+	_, prefixes := collectLiteralsAndPrefixes(referenceBodies(tree))
+	known := familyPrefixes(families(t, tree))
+	exempt := ExemptedValues(dynamicPrefixExemptions)
+
+	seen := map[string]bool{}
+	var missing []string
+	for p := range prefixes {
+		if known[p] {
+			continue
+		}
+		if exempt[p] {
+			seen[p] = true
+			continue
+		}
+		missing = append(missing, p)
+	}
+
+	sort.Strings(missing)
+	for _, p := range missing {
+		t.Errorf("динамический префикс %q собирается в коде, но не описан в карте семейств "+
+			"(i18n_families_test.go): опишите семейство или внесите префикс в исключения с причиной", p)
+	}
+	CheckExemptions(t, "dynamicPrefixExemptions", dynamicPrefixExemptions, maxDynamicPrefixExemptions, seen)
+}
+
+const maxFamilyPrefixExemptions = 0
+
+var familyPrefixExemptions = []Exemption{}
+
+// Идентификатор записи, а не только префикс: project.settings.keys.kind.
+// живёт в карте двумя записями с разными суффиксами.
+func familyRecordID(f family) string {
+	return f.prefix + "\x00" + strings.Join(f.suffixes, ",")
+}
+
+// Префикс подтверждает запись целиком: код строит ключ конкатенацией, и достижимо
+// любое значение источника. Без префикса литерал обязан быть у каждого ключа.
+func TestEveryFamilyEntryIsConfirmed(t *testing.T) {
+	tree := Load(t)
+	literals, prefixes := collectLiteralsAndPrefixes(referenceBodies(tree))
+	fams := families(t, tree)
+	exempt := ExemptedValues(familyPrefixExemptions)
+
+	seen := map[string]bool{}
+	for _, f := range fams {
+		if prefixes[f.prefix] {
+			continue
+		}
+		keys := familyKeys(f)
+		var missing []string
+		for _, k := range keys {
+			if !literals[k] {
+				missing = append(missing, k)
+			}
+		}
+		if len(missing) == 0 {
+			continue
+		}
+		id := familyRecordID(f)
+		if exempt[id] {
+			seen[id] = true
+			continue
+		}
+		sort.Strings(missing)
+		if len(missing) == len(keys) {
+			t.Errorf("запись карты семейств (префикс %s, суффиксы %s) не подтверждена кодом ни префиксом, ни литералом ни одного "+
+				"раскрытого ключа (i18n_families_test.go): удалите запись или найдите, почему семейство перестало использоваться",
+				f.prefix, strings.Join(f.suffixes, ","))
+		} else {
+			t.Errorf("запись карты семейств (префикс %s, суффиксы %s) строится не конкатенацией, и часть её ключей не встречается "+
+				"литералом в коде (i18n_families_test.go): %s",
+				f.prefix, strings.Join(f.suffixes, ","), strings.Join(missing, ", "))
+		}
+	}
+	CheckExemptions(t, "familyPrefixExemptions", familyPrefixExemptions, maxFamilyPrefixExemptions, seen)
 }
