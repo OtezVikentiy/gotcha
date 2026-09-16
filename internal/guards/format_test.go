@@ -36,6 +36,7 @@ var permanentFormatExemptions = []Exemption{
 	{Value: ContentAnchor("internal/uptime/window_dst_test.go", "TestAutumnWindowCoversFirstPass", `ivs[0].To.In(berlin).Format("15:04 MST"))`), Why: `ivs[0].To.In(berlin).Format("15:04 MST") — тот же вызов t.Fatalf, последнее значение`, Finding: "по замыслу"},
 
 	{Value: ContentAnchor("internal/ingest/otlp.go", "otlpData", `e["timestamp"] = ts.Format(time.RFC3339Nano)`), Why: `e["timestamp"] = ts.Format(time.RFC3339Nano) — поле экспортируемого OTLP JSON-события, машинный формат для API`, Finding: "по замыслу"},
+	{Value: ContentAnchor("cmd/gotcha/health.go", "healthProbe.snapshot", `out["checked_at"] = p.checkedAt.Format(time.RFC3339)`), Why: `out["checked_at"] = p.checkedAt.Format(time.RFC3339) — поле JSON-тела /healthz и /readyz, машинный формат для API-клиента и мониторинга, не для показа человеку`, Finding: "по замыслу"},
 	{Value: ContentAnchor("internal/ingest/sentry_test.go", "TestParseEventMessageOnly", "}`, want.Format(time.RFC3339Nano))"), Why: `want.Format(time.RFC3339Nano) — тестовый payload в формате Sentry API (TestParseEventMessageOnly)`, Finding: "по замыслу"},
 	{Value: ContentAnchor("internal/ingest/sentry_test.go", "TestParseEventClampsTimestampToWindow", `now.Add(-200*24*time.Hour).Format(time.RFC3339Nano)), now.Add(-maxTimestampAge)},`), Why: `now.Add(-200*24*time.Hour).Format(time.RFC3339Nano) — тестовый payload в формате Sentry API (TestParseEventClampsTimestampToWindow)`, Finding: "по замыслу"},
 	{Value: ContentAnchor("internal/ingest/sentry_test.go", "TestParseEventClampsTimestampToWindow", `inWindow.Format(time.RFC3339Nano))))`), Why: `inWindow.Format(time.RFC3339Nano) — тестовый payload в формате Sentry API`, Finding: "по замыслу"},
@@ -67,7 +68,7 @@ var permanentFormatExemptions = []Exemption{
 	{Value: ContentAnchor("internal/event/query_test.go", "TestStreamForExportOrdersByIssueThenTime", `fmt.Sprintf("%d@%s", issue2, t1.Format(time.RFC3339)),`), Why: `t1.Format(time.RFC3339) — тот же ключ сравнения в срезе want, четвёртая строка`, Finding: "по замыслу"},
 }
 
-const maxPermanentFormatExemptions = 36
+const maxPermanentFormatExemptions = 37
 
 var debtFormatExemptions = []Exemption{
 	{Value: ContentAnchor("internal/web/svg.go", "metricTimeLabel", `return t.Format("02.01")`), Why: `return t.Format("02.01") — подпись оси X (короткая дата)`, Finding: "TBD (подпроект C, задача C8 «формат дат и окно правила»)"},

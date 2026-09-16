@@ -21,8 +21,9 @@ type rootDeps struct {
 
 func newRootMux(deps rootDeps) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", livenessHandler(deps.pg, deps.ch))
-	mux.HandleFunc("GET /readyz", readinessHandler(deps.pg, deps.ch))
+	probe := newHealthProbe(deps.pg, deps.ch)
+	mux.HandleFunc("GET /healthz", livenessHandler(probe))
+	mux.HandleFunc("GET /readyz", readinessHandler(probe))
 	mux.HandleFunc("GET /version", versionHandler())
 
 	// Без авторизации, без обращения к БД — отвечает и когда БД лежит.

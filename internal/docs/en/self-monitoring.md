@@ -13,6 +13,11 @@ data.
 | `/readyz` | Readiness: the same fields plus `status`, but 503 while PostgreSQL or ClickHouse is unreachable. Put readiness probes and the container healthcheck here. |
 | `/version` | Build metadata: `version`, `commit`, `date`, `go` (the Go runtime the binary was built with) and `stamped` — whether git metadata was baked into the build. `stamped: false` means the image was built outside `make` and the version is the source default, not a verified release. Reveals the exact version to anyone, unauthenticated — worth closing off just like `/metrics` ([Hardening your install](/docs/hardening)). |
 
+Both endpoints share one cached probe: PostgreSQL and ClickHouse are pinged at
+most once every 5 seconds, not on every request. The body's `checked_at` field
+gives the RFC3339 timestamp of that measurement, so a caller always knows how
+stale the state is.
+
 The split matters: a liveness probe on an endpoint that fails during a storage
 outage restarts a healthy process, and every restart throws away the buffers —
 the very telemetry they were holding while waiting for storage to come back.
