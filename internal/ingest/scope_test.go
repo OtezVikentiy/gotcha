@@ -66,6 +66,24 @@ func TestScopeAllowsRoute(t *testing.T) {
 	}
 }
 
+// Список зафиксирован буквально, а не через envelopeAlsoSignals: иначе правка
+// envelopeAlsoSignals меняла бы и ожидание, и проверяемое значение разом.
+func TestScopeAllowsRouteCoversAllEnvelopeSignals(t *testing.T) {
+	envelopeSignals := []IngestSignal{SignalEvent, SignalTransaction, SignalProfile}
+	for kind := range keyScopeMatrix {
+		want := false
+		for _, s := range envelopeSignals {
+			if scopeAllows(kind, s) {
+				want = true
+				break
+			}
+		}
+		if got := scopeAllowsRoute(kind, SignalEvent, envelopeAlsoSignals); got != want {
+			t.Errorf("scopeAllowsRoute(%q, event, also) = %v, ожидалось %v (по допускам %v в матрице)", kind, got, want, envelopeSignals)
+		}
+	}
+}
+
 func TestKeyScopeRejectionPairsCoverMatrix(t *testing.T) {
 	got := map[IngestSignal]bool{}
 	for _, p := range keyScopeRejectionPairs() {
