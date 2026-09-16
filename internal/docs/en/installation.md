@@ -169,7 +169,7 @@ What this does:
 
 1. Docker builds the Gotcha application image (compiles the Go program inside a container — the first run can take a couple of minutes).
 2. Three containers come up:
-   - **`gotcha`** — the app itself: HTTP server, web UI, event ingestion from SDKs, database schema migrations on startup.
+   - **`gotcha`** (built with Go 1.26) — the app itself: HTTP server, web UI, event ingestion from SDKs, database schema migrations on startup.
    - **`postgres`** (PostgreSQL 17) — stores "regular" state: users, organizations, projects, alert rules, incidents.
    - **`clickhouse`** (ClickHouse 25.3) — stores high-volume telemetry: the error events themselves, traces, metrics, profiles, uptime check results.
 3. The `-d` flag ("detached") means "run in the background and give the terminal back" — the containers keep running after you close your SSH session.

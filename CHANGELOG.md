@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- The installation guide now names the Go version the application image is built with,
+  next to the PostgreSQL and ClickHouse versions it already named.
+
 ## [1.5.2] - 2026-09-16
 
 ### Changed

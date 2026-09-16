@@ -72,19 +72,22 @@ func loadCodeVersions(t *testing.T, root string) codeVersions {
 }
 
 type docTarget struct {
-	label  string
-	path   string
-	locale string
+	label   string
+	path    string
+	require []string
 }
 
-// README.md/README.ru.md — пара переводов, как CHANGELOG: у README нет
-// локаль-нейтрального варианта, английский файл сам является локалью en.
+// CONTRIBUTING говорит только о сборке из исходников: баз там нет, и требовать
+// их версии значило бы заставлять док сказать то, чего он не говорит.
 func docVersionTargets(root string) []docTarget {
+	all := []string{"Go", "PostgreSQL", "ClickHouse"}
 	return []docTarget{
-		{"README.md", filepath.Join(root, "README.md"), "en"},
-		{"README.ru.md", filepath.Join(root, "README.ru.md"), "ru"},
-		{"internal/docs/en/installation.md", filepath.Join(root, "internal", "docs", "en", "installation.md"), "en"},
-		{"internal/docs/ru/installation.md", filepath.Join(root, "internal", "docs", "ru", "installation.md"), "ru"},
+		{"README.md", filepath.Join(root, "README.md"), all},
+		{"README.ru.md", filepath.Join(root, "README.ru.md"), all},
+		{"internal/docs/en/installation.md", filepath.Join(root, "internal", "docs", "en", "installation.md"), all},
+		{"internal/docs/ru/installation.md", filepath.Join(root, "internal", "docs", "ru", "installation.md"), all},
+		{"CONTRIBUTING.md", filepath.Join(root, "CONTRIBUTING.md"), []string{"Go"}},
+		{"CONTRIBUTING.ru.md", filepath.Join(root, "CONTRIBUTING.ru.md"), []string{"Go"}},
 	}
 }
 
@@ -96,24 +99,13 @@ type versionSpec struct {
 
 var versionSpecs = []versionSpec{
 	{"Go", regexp.MustCompile(`Go (\d+\.\d+(?:\.\d+)?)\+?`), func(c codeVersions) string { return c.goVersion }},
-	{"PostgreSQL", regexp.MustCompile(`PostgreSQL (\d+)`), func(c codeVersions) string { return c.pgVersion }},
+	{"PostgreSQL", regexp.MustCompile(`Postgre(?:s|SQL) (\d+)`), func(c codeVersions) string { return c.pgVersion }},
 	{"ClickHouse", regexp.MustCompile(`ClickHouse (\d+\.\d+)`), func(c codeVersions) string { return c.chVersion }},
 }
 
 type requiredMention struct {
 	system string
-	locale string
-}
-
-// Список зафиксирован по факту сканирования доков, а не выводится программно:
-// каждая из трёх систем названа хотя бы раз в каждой локали.
-var requiredVersionMentions = []requiredMention{
-	{"Go", "en"},
-	{"Go", "ru"},
-	{"PostgreSQL", "en"},
-	{"PostgreSQL", "ru"},
-	{"ClickHouse", "en"},
-	{"ClickHouse", "ru"},
+	file   string
 }
 
 func TestDocVersionsMatchCode(t *testing.T) {
@@ -128,7 +120,7 @@ func TestDocVersionsMatchCode(t *testing.T) {
 			if len(matches) == 0 {
 				continue
 			}
-			mentioned[requiredMention{spec.system, target.locale}] = true
+			mentioned[requiredMention{spec.system, target.label}] = true
 			want := spec.code(code)
 			for _, m := range matches {
 				got := normalizeVersion(m[1])
@@ -139,9 +131,21 @@ func TestDocVersionsMatchCode(t *testing.T) {
 		}
 	}
 
-	for _, req := range requiredVersionMentions {
-		if !mentioned[req] {
-			t.Errorf("%s (%s): версия не найдена ни в одном доке этой локали, хотя по замеру должна упоминаться", req.system, req.locale)
+	known := map[string]bool{}
+	for _, spec := range versionSpecs {
+		known[spec.system] = true
+	}
+	for _, target := range docVersionTargets(tree.Root) {
+		if len(target.require) == 0 {
+			t.Fatalf("%s: пустой require — цель молча выпала бы из проверки целиком", target.label)
+		}
+		for _, system := range target.require {
+			if !known[system] {
+				t.Fatalf("%s: требование на систему %q, которой нет среди versionSpecs — опечатка делает требование пустым", target.label, system)
+			}
+			if !mentioned[requiredMention{system, target.label}] {
+				t.Errorf("%s: версия %s не названа — требование по паре «система × файл», ссылки на соседний файл не засчитываются", target.label, system)
+			}
 		}
 	}
 }
