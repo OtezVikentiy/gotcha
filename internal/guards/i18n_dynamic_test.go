@@ -6,17 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"gitflic.ru/otezvikentiy/gotcha/internal/alert"
 	"gitflic.ru/otezvikentiy/gotcha/internal/export"
-	"gitflic.ru/otezvikentiy/gotcha/internal/host"
 	"gitflic.ru/otezvikentiy/gotcha/internal/i18n"
-	"gitflic.ru/otezvikentiy/gotcha/internal/issue"
-	"gitflic.ru/otezvikentiy/gotcha/internal/log"
-	"gitflic.ru/otezvikentiy/gotcha/internal/metric"
-	"gitflic.ru/otezvikentiy/gotcha/internal/org"
 	"gitflic.ru/otezvikentiy/gotcha/internal/recipes"
-	"gitflic.ru/otezvikentiy/gotcha/internal/trace"
-	"gitflic.ru/otezvikentiy/gotcha/internal/uptime"
 	"gitflic.ru/otezvikentiy/gotcha/internal/web"
 )
 
@@ -24,52 +16,19 @@ import (
 // (internal/i18n/catalog_test.go), но забытый в обоих — только этим тестом.
 func TestDynamicKeysResolve(t *testing.T) {
 	tree := Load(t)
+	fams := families(t, tree)
 
-	groups := map[string][]string{
-		"issues.status.":                 issuesStatusValues(t, tree),
-		"issues.level.":                  issue.Levels,
-		"probe.status.":                  uptime.ProbeStatuses,
-		"range.":                         rangePresetKeys(),
-		"org.quota.kind.":                quotaKindShortKeys(),
-		"uptime.consensus.":              {string(uptime.ConsensusAny), string(uptime.ConsensusMajority), string(uptime.ConsensusAll)},
-		"platform.":                      org.Platforms,
-		"uptime.kind.":                   uptime.Kinds,
-		"metrics.aggregation.":           metric.Aggregations,
-		"metrics.type.":                  metric.MetricTypes,
-		"hosts.kind.":                    host.Kinds,
-		"logs.severity.":                 log.Severities,
-		"recipes.":                       recipeDynamicKeys(),
-		"error.logfilter.":               logfilterErrorCodes(t, tree),
-		"host.threshold.scope.":          checkInValues(t, migrationBody(t, tree, "0075_host_group_thresholds.up.sql"), "scope"),
-		"host.threshold.effective_from.": {string(host.LevelHost), string(host.LevelRole), string(host.LevelEnv), string(host.LevelProject), string(host.LevelDefault)},
-		"project.settings.keys.kind.":    {string(org.KindBrowser), string(org.KindServer), string(org.KindAgent), string(org.KindLegacy)},
-		"perf.title.":                    {trace.KindNPlusOne, trace.KindSlowDBQuery, trace.KindHTTPFlood},
-		"exports.status.":                {string(export.StatusQueued), string(export.StatusRunning), string(export.StatusDone), string(export.StatusFailed), string(export.StatusExpired)},
-		"exports.kind.":                  {string(export.KindIssues), string(export.KindEvents)},
-		"exports.format.":                {string(export.FormatCSV), string(export.FormatJSON), string(export.FormatNDJSON)},
-		// Источник — literal-результаты multiIf в internal/trace/query.go (AS kind,
-		// строки ~225-227); значения меняют оба места разом, из Go их не перечислить.
-		"deps.kind.":            {"database", "cache", "http"},
-		"feed.source.":          feedSourceValues(t, tree),
-		"feed.group.root.":      checkInValues(t, migrationBody(t, tree, "0079_incident_groups.up.sql"), "root_source"),
-		"hosts.group.":          hostsGroupValues(t, tree),
-		"hosts.chart.":          hostChartKeys(t, tree),
-		"hosts.scraper_hint.":   hostChartKeys(t, tree),
-		"notify.issue.kind.":    {alert.KindNewIssue, alert.KindRegression, alert.KindSpike},
-		"alerts.channels.kind.": {alert.ChannelEmail, alert.ChannelWebhook, alert.ChannelTelegram},
-	}
 	// Пустая группа — сигнал, что сборка самой группы сломана, а не что в
 	// каталоге всё в порядке: пустой срез не даст ни одной находки.
-	for prefix, values := range groups {
-		if len(values) == 0 {
-			t.Fatalf("группа %q пуста — сборка множества значений сломана, а не каталог", prefix)
+	for _, f := range fams {
+		if len(f.values) == 0 {
+			t.Fatalf("группа %q пуста — сборка множества значений сломана, а не каталог", f.prefix)
 		}
 	}
 	for _, lang := range []string{"ru", "en"} {
 		ctx := i18n.WithLocale(context.Background(), i18n.Locale{Code: lang})
-		for prefix, values := range groups {
-			for _, v := range values {
-				key := prefix + v
+		for _, f := range fams {
+			for _, key := range familyKeys(f) {
 				if got := i18n.T(ctx, key); got == key {
 					t.Errorf("[%s] ключ %q собирается в коде, но перевода нет — на странице будет сырой ключ", lang, key)
 				}
@@ -85,16 +44,6 @@ func rangePresetKeys() []string {
 	out = append(out, web.RangeAll)
 	for k := range web.TimeRangePresets {
 		out = append(out, k)
-	}
-	return out
-}
-
-// Базовые ключи (org.quota.kind.events и т.д.) собираются и литералом (покрыто общим
-// сканером каталога), и конкатенацией в quotaBanner — оба варианта здесь, наравне с ".short".
-func quotaKindShortKeys() []string {
-	out := make([]string, 0, len(org.QuotaKinds)*2)
-	for _, k := range org.QuotaKinds {
-		out = append(out, k, k+".short")
 	}
 	return out
 }
