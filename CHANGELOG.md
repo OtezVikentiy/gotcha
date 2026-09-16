@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Installation docs now state the disk headroom a source build needs on top of the
+  running set, with the actual image sizes, and how to reclaim the build cache
+  afterwards. Troubleshooting gained the case where ClickHouse fails its health check
+  and the app never starts: it points at memory and disk first, because the kernel's
+  out-of-memory kill can leave nothing useful in ClickHouse's own log. The
+  `operation not permitted` section now says what to do when both probes pass — the
+  image itself was faulty and a clean rebuild clears it.
+
 ## [1.5.1] - 2026-09-15
 
 ### Fixed
