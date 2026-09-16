@@ -22,6 +22,7 @@ Gotcha runs three processes on a single server: the app itself (Go), PostgreSQL,
 - **OS:** Ubuntu 22.04/24.04, Debian 12, or a RedHat-family distribution (AlmaLinux 9/10, Rocky Linux 9/10, RHEL 9/10), x86-64 (amd64) architecture. Gotcha runs in Docker, so the distribution barely matters — the differences are only in how you install Docker/git and in the firewall, and they are called out along the way.
 - **RAM.** 2 GB is a workable minimum for getting started and light load (personal projects, staging). For production with a real stream of events, budget 4 GB and up: under load ClickHouse is more stable the more memory it has.
 - **Disk.** Grows with the volume of telemetry and how long you retain it. 20 GB is enough to start; with noticeable traffic or long retention, plan for more and keep an eye on free space — for how, see [Monitoring gotcha itself](/docs/self-monitoring). Use an SSD — both ClickHouse and PostgreSQL are sensitive to disk latency.
+- **Disk for building.** The application image is built on the server itself, so the disk needs headroom beyond the figures above: during a build, the Go compiler image and the compilation cache are added to the running set — on the order of a gigabyte that is no longer needed once the build finishes. Free it with `docker builder prune -f` (this removes only the build cache; images and data are untouched). The images required to run take about 1.3 GB: ClickHouse ~780 MB, PostgreSQL ~420 MB, the application ~110 MB.
 - **CPU.** Two cores are enough; extra cores speed up ingesting bursts of events and ClickHouse queries.
 - **Network.** Only a single application port is published to the host (59080 by default), but by default it only listens on loopback (`127.0.0.1`) — unreachable from outside the server until you explicitly open it (see step 4). PostgreSQL and ClickHouse aren't exposed at all — they're reachable only inside the docker network.
 
@@ -155,6 +156,14 @@ make up-rebuild
 (`make` computes the git version and stamps it into the build — `/version` and the About page will name the exact release. If `make` isn't installed, `docker compose up -d` works too, but the instance will report "no build metadata" instead of a verifiable version.)
 
 Dependencies are vendored (a `vendor/` directory in the repository), so building the image **does not reach the internet** for Go modules — it works in closed networks with no outbound access. If a build fails with `go mod download ... proxy.golang.org ... no route to host`, you're on an older, un-vendored version or a custom Dockerfile — update the repository to the current release.
+
+The compilation cache stays on disk after the build. On a server with a small disk that is noticeable — you can free it right after a successful start:
+
+```bash
+docker builder prune -f
+```
+
+The command removes only the build cache: images, containers and data are untouched. The next rebuild will take as long as the first one, because it starts from scratch.
 
 What this does:
 
@@ -325,6 +334,14 @@ docker info --format '{{.SecurityOptions}}'
 sudo dmesg | grep -iE 'apparmor|audit' | tail -10
 ```
 
+If both probes pass (`ok` from the first, the application version from the second) and the failure happened before them, the defect was in the image itself: a clean rebuild clears it.
+
+```bash
+docker compose build --no-cache gotcha
+```
+
+Check free space before rebuilding (`df -h`): a build needs headroom beyond the running set, see "System requirements".
+
 **Port already in use** (`bind: address already in use`).
 Something on the server is already listening on 59080. Pick a different host port via `.env`:
 ```env
@@ -343,6 +360,17 @@ Gotcha protects POST requests with an origin check: the request's `Origin`/`Refe
 
 **`/readyz` returns `503` with `unavailable` for postgres/clickhouse.**
 The app is alive (`/healthz` returns 200) but can't reach one of the databases. This usually means the database hasn't finished starting yet (ClickHouse's first boot can take up to a minute) — wait and retry. If it persists, check `docker compose logs postgres` / `docker compose logs clickhouse`.
+
+
+**`dependency failed to start: container gotcha-clickhouse-1 is unhealthy`.**
+ClickHouse failed its health check, and the application did not start because of it. Start with resources, not logs:
+
+```bash
+free -m
+df -h
+```
+
+The usual cause is not enough memory. The minimum for Gotcha is 2 GB; below that ClickHouse does not come up, and its own logs may hold nothing useful — the kernel kills the process for running out of memory. On a server with exactly 2 GB, start with the overlay for small machines — see "If your server is at the minimum". If memory is sufficient, the reason for the failure will be in `docker compose logs clickhouse`.
 
 ## What's next
 
