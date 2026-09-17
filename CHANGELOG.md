@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- The installation docs now say what "light load" means as a number, and the figures for
+  the small-hardware overlay were re-measured on the current release. Both had been taken
+  on an early version, before log ingestion and host metrics existed. The requirements now
+  name the stream the 2 GB minimum was verified against — 10,000 events, 200,000 log lines
+  and 5,000 traces per day, four hours of continuous load with no rejected requests — along
+  with the memory each of the three containers takes and the share of the disk the data
+  itself occupies.
+
 ## [1.6.0] - 2026-09-17
 
 ### Changed
