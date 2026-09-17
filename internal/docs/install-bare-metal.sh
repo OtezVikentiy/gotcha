@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# gotcha bare-metal installer (Debian/Ubuntu family). Source-safe: sourcing this
-# file (see the bottom guard) must not run anything, so tests can load the
-# pure functions without invoking main.
+# gotcha bare-metal installer (Debian/Ubuntu family, systemd).
 
 GOTCHA_INSTALL_DEFAULT_VERSION="dev"
 GOTCHA_INSTALL_DEFAULT_DOWNLOAD_BASE="https://github.com/OtezVikentiy/gotcha/releases/download"
@@ -36,8 +34,8 @@ Usage: install-bare-metal.sh [flags]
 EOF
 }
 
-# detect_distro решает по ID/ID_LIKE из /etc/os-release, не читая файл сама —
-# preflight передаёт значения, чтобы функция оставалась чистой и тестируемой.
+# Принимает ID/ID_LIKE как аргументы, а не читает /etc/os-release сама —
+# так функция остаётся чистой и тестируемой, преflight передаёт значения.
 detect_distro() {
     local id="$1" id_like="${2:-}"
     case "$id" in
@@ -57,8 +55,8 @@ detect_arch() {
     esac
 }
 
-# version_ge сравнивает X.Y.Z по числовым сегментам — лексикографическое
-# сравнение здесь неверно (1.10.0 < 1.9.0 посимвольно, хотя 1.10.0 новее).
+# Сравнение по числовым сегментам X.Y.Z — лексикографическое здесь неверно
+# (1.10.0 < 1.9.0 посимвольно, хотя 1.10.0 новее).
 version_ge() {
     local a="$1" b="$2"
     local -a av bv
@@ -78,10 +76,8 @@ version_ge() {
     return 0
 }
 
-# parse_args пишет разбор в глобальные ARG_*, а не возвращает структуру — так
-# main и preflight читают их напрямую без второго прохода разбора. Каждый
-# вызов сбрасывает ARG_* к дефолтам, поэтому функция остаётся идемпотентной
-# для тест-раннера, вызывающего её много раз в одном процессе.
+# Глобальные ARG_* вместо структуры — main/preflight читают их напрямую.
+# Каждый вызов сбрасывает их к дефолтам для повторных вызовов тест-раннера.
 parse_args() {
     ARG_VERSION="$GOTCHA_INSTALL_DEFAULT_VERSION"
     ARG_FROM_TARBALL=""
@@ -208,9 +204,8 @@ parse_args() {
     return "$EXIT_OK"
 }
 
-# choose_base_url реализует приоритет §4.3: явный --base-url; иначе домен по
-# HTTPS; иначе IP хоста по HTTP. Интерактивный вопрос и предупреждение при
-# --yes без домена — забота вызывающего кода, не этой чистой функции.
+# Порядок приоритета §4.3: --base-url, иначе --domain (HTTPS), иначе IP хоста
+# (HTTP). Интерактивный вопрос и --yes-предупреждение — в determine_base_url.
 choose_base_url() {
     local base_url_flag="$1" domain_flag="$2" host_ip="$3"
     if [ -n "$base_url_flag" ]; then
@@ -222,10 +217,8 @@ choose_base_url() {
     fi
 }
 
-# determine_base_url добавляет к choose_base_url недостающую часть §4.3 шага
-# 2: без --base-url/--domain выбор осознанный — вопрос в интерактиве, громкое
-# предупреждение при --yes. Побочные эффекты (stdin/stderr) держат её вне
-# чистых функций, проверяемых юнит-тестами.
+# §4.3 шаг 2 без --base-url/--domain: интерактивный вопрос, либо (--yes)
+# громкое предупреждение. Побочные эффекты — вне чистых функций теста.
 determine_base_url() {
     local base_url_flag="$1" domain_flag="$2" host_ip="$3" yes="$4"
     if [ -n "$base_url_flag" ] || [ -n "$domain_flag" ]; then
@@ -246,25 +239,15 @@ determine_base_url() {
     fi
 }
 
-# compute_memlimit держится тех же двух профилей, что и docker-compose.yml/
-# docker-compose.small.yml (граница 4 ГБ уже используется для 10-small.xml):
-# < 4 ГБ — профиль стеснённой машины (mem_limit: 256m), иначе — обычный
-# (mem_limit: 1g). GOMEMLIMIT — 0.8 от MemoryMax, тот же запас, что и
-# internal/memlimit.defaultRatio.
+# MemoryMax паритетно compose (mem_limit: 1g) независимо от RAM хоста —
+# преflight и так отсекает хосты младше 2 ГБ. 0.8 — тот же запас, что defaultRatio.
 compute_memlimit() {
-    local ram_mb="$1" mem_max gomemlimit
-    if [ "$ram_mb" -lt 4096 ]; then
-        mem_max=256
-    else
-        mem_max=1024
-    fi
-    gomemlimit=$((mem_max * 8 / 10))
-    printf '%sM %sMiB\n' "$mem_max" "$gomemlimit"
+    local mem_max=1024
+    printf '%sM %sMiB\n' "$mem_max" "$((mem_max * 8 / 10))"
 }
 
-# render_unit — паритет с compose построчно (спека §5), плюс усиление сверх
-# паритета. MemoryDenyWriteExecute намеренно не выставлена: не подтверждена
-# на всей матрице e2e.
+# Паритет с compose построчно (спека §5) плюс усиление сверх него.
+# MemoryDenyWriteExecute не выставлена: не подтверждена на всей матрице e2e.
 render_unit() {
     local memory_max="$1"
     cat <<EOF
@@ -356,8 +339,8 @@ effective_io_concurrency = 200
 EOF
 }
 
-# dist_url — единственное место, знающее форму адреса релизного ассета;
-# тег совпадает с scripts/release.sh (TAG="v$VERSION").
+# Единственное место, знающее форму адреса релизного ассета; тег совпадает
+# со scripts/release.sh (TAG="v$VERSION").
 dist_url() {
     local base="$1" version="$2" arch="$3"
     printf '%s/v%s/gotcha-%s-linux-%s.tar.gz\n' "${base%/}" "$version" "$version" "$arch"
@@ -394,9 +377,8 @@ cleanup_tmp_dirs() {
     done
 }
 
-# preflight — единственное место, читающее реальное состояние хоста
-# (os-release, uname, порты, RAM, диск); всё остальное принимает решения на
-# основе чистых функций выше.
+# Единственное место, читающее реальное состояние хоста (os-release, uname,
+# порты, RAM, диск) — остальные решения идут через чистые функции выше.
 preflight() {
     [ "$(id -u)" = 0 ] || fail "$EXIT_PREFLIGHT" "must run as root"
     [ -d /run/systemd/system ] || fail "$EXIT_PREFLIGHT" "systemd is required (PID 1 is not systemd)"
@@ -442,9 +424,8 @@ preflight() {
     [ "$disk_gb" -ge 20 ] || fail "$EXIT_PREFLIGHT" "at least 20 GB free disk required (found ${disk_gb} GB)"
 }
 
-# fetch_tarball — шаг 1 спеки: взять тарбол (скачать или --from-tarball),
-# сверить sha256, распаковать в mktemp -d, сверить VERSION внутри. Печатает
-# путь к распакованному корневому каталогу в stdout.
+# Возвращает путь к распакованному каталогу через stdout; временные
+# каталоги регистрируются в TMP_DIRS, чтобы EXIT-трап их удалил.
 fetch_tarball() {
     local version="$1" arch="$2" download_base="$3" from_tarball="$4"
     local tarball sums_file
@@ -493,9 +474,8 @@ main() {
     trap on_err ERR
     trap cleanup_tmp_dirs EXIT
 
-    # Не local: fail()/exit внутри вложенных функций рвут цепочку динамических
-    # областей видимости bash до срабатывания EXIT/ERR-трапов, и локальные
-    # массивы здесь трап увидел бы уже пустыми.
+    # Не local: exit() во вложенных функциях рвёт цепочку динамических областей
+    # видимости раньше, чем сработает EXIT/ERR-трап, и он увидел бы их пустыми.
     INSTALL_LOG=()
     TMP_DIRS=()
 
@@ -509,15 +489,14 @@ main() {
     local tarball_root
     tarball_root=$(fetch_tarball "$ARG_VERSION" "$HOST_ARCH" "$ARG_DOWNLOAD_BASE" "$ARG_FROM_TARBALL")
 
-    local ram_mb mem_max gomemlimit
-    ram_mb=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
+    local mem_max gomemlimit
     if [ -n "$ARG_MEM_LIMIT" ]; then
         mem_max="${ARG_MEM_LIMIT}M"
         gomemlimit="$((ARG_MEM_LIMIT * 8 / 10))MiB"
     else
         # IFS=' ': main() выше сузила глобальный IFS до "\n\t", и обычный
         # read больше не бьёт по пробелу, разбирая обе колонки в mem_max целиком.
-        IFS=' ' read -r mem_max gomemlimit <<<"$(compute_memlimit "$ram_mb")"
+        IFS=' ' read -r mem_max gomemlimit <<<"$(compute_memlimit)"
     fi
 
     local host_ip base_url

@@ -110,12 +110,15 @@ assert_eq "choose_base_url falls back to --domain" "https://domain.example" "$ou
 out=$(choose_base_url "" "" "10.0.0.1")
 assert_eq "choose_base_url falls back to host IP" "http://10.0.0.1" "$out"
 
-# compute_memlimit
+# compute_memlimit — константа, паритетная compose (mem_limit: 1g), одна и
+# та же независимо от RAM хоста (преflight и так отсекает хосты младше 2 ГБ).
 
 out=$(compute_memlimit 2048)
-assert_eq "compute_memlimit at 2 GB RAM" "256M 204MiB" "$out"
+assert_eq "compute_memlimit at 2 GB RAM" "1024M 819MiB" "$out"
 out=$(compute_memlimit 8192)
 assert_eq "compute_memlimit at 8 GB RAM" "1024M 819MiB" "$out"
+out=$(compute_memlimit)
+assert_eq "compute_memlimit with no RAM argument" "1024M 819MiB" "$out"
 
 # render_unit — presence of every parity directive from spec §5, as a whole
 # list, not a single membership check.
