@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-09-17
+
 ### Changed
 - The installation docs now say what "light load" means as a number, and the figures for
   the small-hardware overlay were re-measured on the current release. Both had been taken
