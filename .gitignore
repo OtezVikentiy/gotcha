@@ -2,6 +2,7 @@
 /gotcha
 /gotcha-agent
 /devseed
+/dist
 
 # Go artifacts
 *.test
