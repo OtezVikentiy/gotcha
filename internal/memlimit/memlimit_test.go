@@ -2,6 +2,8 @@ package memlimit
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -89,6 +91,69 @@ func TestDecideEmptyEnvIsNotExplicit(t *testing.T) {
 	}
 	if !apply {
 		t.Errorf("пустой GOMEMLIMIT принят за явное решение оператора")
+	}
+}
+
+func TestSelfCgroupPath(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+		ok   bool
+	}{
+		{"systemd unit", "0::/system.slice/gotcha.service\n", "/system.slice/gotcha.service", true},
+		{"root", "0::/\n", "/", true},
+		{"v1 only", "11:memory:/docker/abc\n", "", false},
+		{"empty", "", "", false},
+	}
+	for _, c := range cases {
+		got, ok := selfCgroupPath(c.raw)
+		if got != c.want || ok != c.ok {
+			t.Errorf("%s: selfCgroupPath = %q,%v, want %q,%v", c.name, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+// systemd кладёт юнит в собственный слайс — лимит корня дерева принадлежит другому cgroup и не должен
+// побеждать лимит юнита.
+func TestContainerLimitPrefersOwnCgroup(t *testing.T) {
+	root := t.TempDir()
+	unit := filepath.Join(root, "system.slice", "gotcha.service")
+	if err := os.MkdirAll(unit, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFile(t, filepath.Join(unit, "memory.max"), "1073741824\n")
+	writeFile(t, filepath.Join(root, "memory.max"), "4294967296\n")
+	proc := filepath.Join(root, "self-cgroup")
+	writeFile(t, proc, "0::/system.slice/gotcha.service\n")
+
+	restore := swapPaths(root, proc)
+	defer restore()
+
+	got, err := containerLimit()
+	if err != nil {
+		t.Fatalf("containerLimit: %v", err)
+	}
+	if got != 1073741824 {
+		t.Fatalf("containerLimit = %d, want 1073741824 (лимит юнита, не корня)", got)
+	}
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func swapPaths(root, proc string) func() {
+	prevRoot, prevProc := cgroupRoot, procSelfCgroupPath
+	cgroupRoot, procSelfCgroupPath = root, proc
+	return func() {
+		cgroupRoot, procSelfCgroupPath = prevRoot, prevProc
 	}
 }
 

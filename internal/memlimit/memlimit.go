@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -13,10 +14,11 @@ import (
 // при подготовке стеснённого профиля docker-compose.small.yml.
 const defaultRatio = 0.8
 
-// cgroup v2 и v1 — файлы, в которых лежит лимит памяти.
-const (
-	cgroupV2Path = "/sys/fs/cgroup/memory.max"
-	cgroupV1Path = "/sys/fs/cgroup/memory/memory.limit_in_bytes"
+// Переменные, а не константы: тесты подставляют временный каталог вместо корня cgroup.
+var (
+	cgroupRoot         = "/sys/fs/cgroup"
+	procSelfCgroupPath = "/proc/self/cgroup"
+	cgroupV1Path       = "/sys/fs/cgroup/memory/memory.limit_in_bytes"
 )
 
 // Лимит не задан: процесс не в контейнере либо контейнер без ограничения памяти. Не ошибка сама по себе.
@@ -59,9 +61,10 @@ func heapTarget(limit int64) int64 {
 	return int64(float64(limit) * defaultRatio)
 }
 
-// Сперва v2, затем v1.
+// Сперва собственный cgroup процесса (systemd кладёт юнит не в корень дерева, а в свой слайс),
+// затем корень v2 (докер монтирует лимит контейнера прямо туда), затем v1.
 func containerLimit() (int64, error) {
-	for _, path := range []string{cgroupV2Path, cgroupV1Path} {
+	for _, path := range candidateLimitPaths() {
 		limit, err := readLimitFile(path)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
@@ -72,6 +75,29 @@ func containerLimit() (int64, error) {
 		return limit, nil
 	}
 	return 0, ErrNoLimit
+}
+
+func candidateLimitPaths() []string {
+	paths := make([]string, 0, 3)
+	if raw, err := os.ReadFile(procSelfCgroupPath); err == nil {
+		if rel, ok := selfCgroupPath(string(raw)); ok && rel != "/" {
+			paths = append(paths, filepath.Join(cgroupRoot, rel, "memory.max"))
+		}
+	}
+	return append(paths, filepath.Join(cgroupRoot, "memory.max"), cgroupV1Path)
+}
+
+// Разбирает /proc/self/cgroup. Распознаёт только unified-иерархию v2 (строка "0::<путь>");
+// v1-строки вида "11:memory:/docker/abc" здесь не нужны — лимит v1 читается по фиксированному пути.
+func selfCgroupPath(raw string) (string, bool) {
+	for _, line := range strings.Split(raw, "\n") {
+		rel, ok := strings.CutPrefix(line, "0::")
+		if !ok || rel == "" {
+			continue
+		}
+		return rel, true
+	}
+	return "", false
 }
 
 // "max" (v2) и заведомо огромное число (v1 пишет ~2^63-1, округлённое до страницы) означают «ограничения нет».
