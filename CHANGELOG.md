@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `/healthz` and `/readyz` no longer ping PostgreSQL and ClickHouse on every request.
+  Both endpoints now share one probe whose result is reused for up to five seconds, so
+  an unauthenticated request to either no longer costs two round trips to the databases.
+  The response body gained `checked_at`, the RFC3339 time of the measurement it carries,
+  so a caller can tell how fresh the reported state is. Response codes and the meaning of
+  both endpoints are unchanged.
+
 ## [1.5.3] - 2026-09-16
 
 ### Changed
