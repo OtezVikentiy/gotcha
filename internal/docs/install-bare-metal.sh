@@ -24,7 +24,7 @@ Usage: install-bare-metal.sh [flags]
   --skip-databases         do not install PostgreSQL/ClickHouse, use --pg-dsn/--ch-dsn
   --pg-dsn DSN            external PostgreSQL DSN
   --ch-dsn DSN            external ClickHouse DSN
-  --mem-limit N           MemoryMax/GOMEMLIMIT in MiB (default: derived from host RAM)
+  --mem-limit N           MemoryMax/GOMEMLIMIT in MiB (default: 1G, same as the app's docker-compose mem_limit)
   --dry-run                print every command and full file contents, change nothing
   --yes                    do not prompt (CI and automation)
   --no-backup              skip the pre-migration pg_dump on upgrade
@@ -35,7 +35,7 @@ EOF
 }
 
 # Принимает ID/ID_LIKE как аргументы, а не читает /etc/os-release сама —
-# так функция остаётся чистой и тестируемой, преflight передаёт значения.
+# так функция остаётся чистой и тестируемой, preflight передаёт значения.
 detect_distro() {
     local id="$1" id_like="${2:-}"
     case "$id" in
@@ -240,10 +240,21 @@ determine_base_url() {
 }
 
 # MemoryMax паритетно compose (mem_limit: 1g) независимо от RAM хоста —
-# преflight и так отсекает хосты младше 2 ГБ. 0.8 — тот же запас, что defaultRatio.
+# preflight и так отсекает хосты младше 2 ГБ. 0.8 — тот же запас, что defaultRatio.
 compute_memlimit() {
     local mem_max=1024
     printf '%sM %sMiB\n' "$mem_max" "$((mem_max * 8 / 10))"
+}
+
+# Сводит --mem-limit и дефолт compute_memlimit в одну проверяемую точку,
+# которую main вызывает без ветвления.
+resolve_memlimit() {
+    local mem_limit_arg="$1"
+    if [ -n "$mem_limit_arg" ]; then
+        printf '%sM %sMiB\n' "$mem_limit_arg" "$((mem_limit_arg * 8 / 10))"
+        return
+    fi
+    compute_memlimit
 }
 
 # Паритет с compose построчно (спека §5) плюс усиление сверх него.
@@ -490,14 +501,9 @@ main() {
     tarball_root=$(fetch_tarball "$ARG_VERSION" "$HOST_ARCH" "$ARG_DOWNLOAD_BASE" "$ARG_FROM_TARBALL")
 
     local mem_max gomemlimit
-    if [ -n "$ARG_MEM_LIMIT" ]; then
-        mem_max="${ARG_MEM_LIMIT}M"
-        gomemlimit="$((ARG_MEM_LIMIT * 8 / 10))MiB"
-    else
-        # IFS=' ': main() выше сузила глобальный IFS до "\n\t", и обычный
-        # read больше не бьёт по пробелу, разбирая обе колонки в mem_max целиком.
-        IFS=' ' read -r mem_max gomemlimit <<<"$(compute_memlimit)"
-    fi
+    # IFS=' ': main() выше сузила глобальный IFS до "\n\t", и обычный read
+    # больше не бьёт по пробелу, разбирая обе колонки в mem_max целиком.
+    IFS=' ' read -r mem_max gomemlimit <<<"$(resolve_memlimit "$ARG_MEM_LIMIT")"
 
     local host_ip base_url
     host_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
@@ -528,4 +534,6 @@ main() {
     fail "$EXIT_OTHER" "tarball verified at $tarball_root, but installation steps beyond preflight and download are not built into this copy of the script yet"
 }
 
+# Guards main() from running on source — the test runner sources this file
+# to reach the pure functions above without executing anything.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi

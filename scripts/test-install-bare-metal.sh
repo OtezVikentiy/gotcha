@@ -111,7 +111,7 @@ out=$(choose_base_url "" "" "10.0.0.1")
 assert_eq "choose_base_url falls back to host IP" "http://10.0.0.1" "$out"
 
 # compute_memlimit — константа, паритетная compose (mem_limit: 1g), одна и
-# та же независимо от RAM хоста (преflight и так отсекает хосты младше 2 ГБ).
+# та же независимо от RAM хоста (preflight и так отсекает хосты младше 2 ГБ).
 
 out=$(compute_memlimit 2048)
 assert_eq "compute_memlimit at 2 GB RAM" "1024M 819MiB" "$out"
@@ -119,6 +119,19 @@ out=$(compute_memlimit 8192)
 assert_eq "compute_memlimit at 8 GB RAM" "1024M 819MiB" "$out"
 out=$(compute_memlimit)
 assert_eq "compute_memlimit with no RAM argument" "1024M 819MiB" "$out"
+
+# resolve_memlimit — что main() реально вызывает: --mem-limit override или
+# дефолт из compute_memlimit.
+
+out=$(resolve_memlimit "")
+assert_eq "resolve_memlimit falls back to compute_memlimit without --mem-limit" "1024M 819MiB" "$out"
+out=$(resolve_memlimit 512)
+assert_eq "resolve_memlimit honors an explicit --mem-limit" "512M 409MiB" "$out"
+
+unit=$(render_unit "512M")
+assert_contains "render_unit picks up a --mem-limit override" "$unit" "MemoryMax=512M"
+env_file=$(render_env_file "pg" "ch" "secret" "https://x.example" "/opt/gotcha/agent-dist" "409MiB" "127.0.0.1:8080")
+assert_contains "render_env_file picks up a --mem-limit override" "$env_file" "GOMEMLIMIT=409MiB"
 
 # render_unit — presence of every parity directive from spec §5, as a whole
 # list, not a single membership check.
