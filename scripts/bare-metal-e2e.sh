@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Прогоняет install-bare-metal.sh НА ЭТОЙ МАШИНЕ и проверяет реальное состояние
-# системы после установки: пакеты, юниты, порты, конфиги. Не собирает тарбол —
-# ночная матрица гоняет этот скрипт в debian:12/ubuntu:26.04, где нет Go.
+# Прогоняет install-bare-metal.sh НА ЭТОЙ МАШИНЕ и проверяет пакеты/юниты/порты/
+# конфиги. Тарбол не собирает — ночная матрица гоняет его без Go.
 set -uo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -96,9 +95,8 @@ unit_active() {
     systemctl is-active --quiet "$1"
 }
 
-# ss формат Local Address:Port — "127.0.0.1:5432" или "[::1]:5432". Публикация
-# наружу (0.0.0.0/*, реальный IP) — регресс относительно compose, где эти три
-# порта вообще не публикуются.
+# ss отдаёт Local Address:Port как "127.0.0.1:5432"/"[::1]:5432". Публикация
+# наружу — регресс: в compose эти порты вообще не выставлены.
 port_loopback_only() {
     local port="$1" addrs addr
     addrs=$(ss -ltn 2>/dev/null | awk -v p=":${1}\$" '$4 ~ p {print $4}')
@@ -153,10 +151,8 @@ ch_gotcha_database_exists() {
     [ "$(clickhouse-client --query "EXISTS DATABASE gotcha" 2>/dev/null)" = "1" ]
 }
 
-# fetch_tarball требует SHA256SUMS.txt рядом с тарболом; release.sh пока не
-# публикует такой файл (появится с релизным воркфлоу), а исходный каталог с
-# тарболом нередко смонтирован read-only. Харнесс копирует тарбол в свой
-# рабочий каталог и считает сумму сам, как это будет делать релиз.
+# fetch_tarball требует SHA256SUMS.txt рядом с тарболом; release.sh её пока не
+# публикует, а каталог тарбола часто read-only — считаем сумму в своей копии.
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK_DIR"' EXIT
 cp "$TARBALL" "$WORK_DIR/"
@@ -173,9 +169,8 @@ fi
 
 printf 'bare-metal-e2e: running install-bare-metal.sh --version %s --from-tarball %s --yes --no-proxy\n' \
     "$tarball_version" "$WORK_TARBALL"
-# Не implemented-до-конца шаги (приложение, nginx) сегодня доводят main() до
-# намеренного отказа после установки баз — это ожидаемо до задач 5-7, поэтому
-# код возврата здесь не проверяется, только реальное состояние системы ниже.
+# main() сегодня намеренно завершается отказом после баз (шагов 5-7 ещё нет) —
+# код возврата не проверяем, только реальное состояние системы ниже.
 bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes --no-proxy
 installer_rc=$?
 printf 'bare-metal-e2e: install-bare-metal.sh exited %d\n' "$installer_rc"

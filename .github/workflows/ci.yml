@@ -187,9 +187,8 @@ jobs:
       - name: собрать тарбол поставки
         run: bash scripts/build-dist.sh --version 0.0.0 --arch ${{ matrix.arch }} --out dist
 
-      # Раннер — заготовленный образ, не одноразовый контейнер: postgresql
-      # может быть предустановлен (не запущен). Гасим заранее, иначе preflight
-      # откажет по занятому порту 5432 ещё до начала теста.
+      # Раннер несёт предустановленный (не запущенный) postgresql — гасим заранее,
+      # иначе preflight откажет по занятому порту 5432.
       - name: погасить предустановленные СУБД раннера
         run: sudo systemctl stop postgresql clickhouse-server 2>/dev/null || true
 

@@ -441,9 +441,8 @@ preflight() {
         fi
     done
 
-    # 1900, не 2048: облачные образы на "2 ГБ" нередко отдают в MemTotal
-    # немного меньше номинала (память под firmware/hypervisor). Не local:
-    # install_clickhouse ниже переиспользует то же значение для 10-small.xml.
+    # 1900, не 2048: облачные "2 ГБ" урезают MemTotal под firmware/hypervisor.
+    # Не local — install_clickhouse переиспользует значение для 10-small.xml.
     HOST_RAM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
     [ "$HOST_RAM_MB" -ge 1900 ] || fail "$EXIT_PREFLIGHT" "at least 2 GB RAM required (found ${HOST_RAM_MB} MB)"
 
@@ -518,9 +517,8 @@ native_pg_major() {
     apt-cache policy postgresql 2>/dev/null | awk '/Candidate:/{print $2}' | grep -oE '^[0-9]+'
 }
 
-# Возвращает через stdout DSN на 127.0.0.1; ставит пакет, роль и базу gotcha,
-# conf.d/10-gotcha.conf. Код 3 — только для решения по мажору ниже (брифу
-# важно не спутать его с прочими отказами шага, код которых — 5).
+# Возвращает через stdout DSN на 127.0.0.1; ставит пакет, роль и базу gotcha.
+# Код 3 — только для решения по мажору ниже, прочие отказы шага — код 5.
 install_postgresql() {
     local codename="$1" package="postgresql-$PG_MAJOR"
 
