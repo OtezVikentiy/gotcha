@@ -741,8 +741,8 @@ start_app() {
     log_step "gotcha service started and healthy"
 }
 
-# Отключает штатный дефолтный сайт пакета (конфликтовал бы default_server'ом на
-# 80); существующий чужой конфиг сайта копируется рядом, а не теряется молча.
+# Снимает штатный дефолтный сайт (конфликтовал бы default_server'ом на 80);
+# существующий чужой конфиг сайта копируется рядом перед перезаписью.
 install_nginx() {
     local domain="$1"
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nginx >/dev/null \

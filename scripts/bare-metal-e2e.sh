@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Прогоняет install-bare-metal.sh НА ЭТОЙ МАШИНЕ и проверяет пакеты/юниты/порты/
-# конфиги. Тарбол не собирает — ночная матрица гоняет его без Go.
+# Прогоняет install-bare-metal.sh НА ЭТОЙ МАШИНЕ и проверяет пакеты/юниты/порты/конфиги; тарбол не собирает — ночная матрица гоняет его без Go.
 set -uo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -45,8 +44,7 @@ done
 [ -f "$TARBALL" ] || { printf 'bare-metal-e2e: tarball not found: %s\n' "$TARBALL" >&2; exit 2; }
 [ -f "$INSTALLER" ] || { printf 'bare-metal-e2e: installer not found: %s\n' "$INSTALLER" >&2; exit 1; }
 
-# Источник PG_MAJOR/CH_VERSION для ассертов ниже — та же переменная, что
-# ставит install-bare-metal.sh, а не отдельно вписанное число.
+# Источник PG_MAJOR/CH_VERSION для ассертов ниже — та же переменная, что ставит install-bare-metal.sh, а не отдельно вписанное число.
 # shellcheck source=/dev/null
 . "$INSTALLER"
 
