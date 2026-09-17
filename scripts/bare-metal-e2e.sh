@@ -204,15 +204,21 @@ dir_secured() {
     [ "$owner" = "gotcha" ] || { printf '%s owner is %s, want gotcha\n' "$dir" "$owner" >&2; return 1; }
 }
 
-# StateDirectory=gotcha сам создаёт /var/lib/gotcha по StateDirectoryMode; каталог
-# выгрузок внутри него app пересоздаёт с фиксированным 0700 своим MkdirAll и от
-# этой директивы не зависит — оба каталога проверяются, не только один из двух.
+# StateDirectoryMode юнита задаёт режим только /var/lib/gotcha — каталог выгрузок
+# app пересоздаёт сам с фиксированным 0700, поэтому проверяются оба каталога.
 state_dir_secured() {
     dir_secured /var/lib/gotcha
 }
 
 exports_dir_secured() {
     dir_secured /var/lib/gotcha/exports
+}
+
+env_file_secured() {
+    local file=/etc/gotcha/gotcha.env got
+    [ -f "$file" ] || { printf 'missing %s\n' "$file" >&2; return 1; }
+    got=$(stat -c '%U:%G %a' "$file")
+    [ "$got" = "root:gotcha 640" ] || { printf '%s is %s, want root:gotcha 640\n' "$file" "$got" >&2; return 1; }
 }
 
 # SHA256SUMS вида "хэш  имя_файла" (sha256sum build-dist.sh) — сверяется имя,
@@ -253,12 +259,8 @@ survives_postgresql_restart() {
     done
 }
 
-# Регистрация первого пользователя (получает права инстанс-администратора),
-# онбординг, чтение выпущенного ключа из PostgreSQL и приём события по нему —
-# путь, которым реально пользуется живой инстанс, не только systemctl/ss.
-# app слушает 127.0.0.1:8080 напрямую (--no-proxy: nginx на GOTCHA_BASE_URL
-# ещё нет); Origin шлётся равным GOTCHA_BASE_URL — sameOrigin сверяет заголовок
-# со значением конфига, а не с адресом, на который реально пришёл запрос.
+# Регистрация, онбординг и приём события — путь живого инстанса, не только systemctl/ss.
+# App слушает 127.0.0.1:8080 напрямую; Origin шлём равным GOTCHA_BASE_URL, не адресу запроса.
 e2e_ingest_roundtrip() {
     local app=http://127.0.0.1:8080 origin jar msg key project_id tries
     origin=$(sed -n 's/^GOTCHA_BASE_URL=//p' /etc/gotcha/gotcha.env)
@@ -321,6 +323,7 @@ run_assertions() {
     assert "gotcha /readyz responds 200" readyz_ok
     assert "state directory is 0700 and owned by gotcha" state_dir_secured
     assert "exports directory is 0700 and owned by gotcha" exports_dir_secured
+    assert "gotcha.env is root:gotcha 640" env_file_secured
     assert "agent binary downloads and matches SHA256SUMS" agent_binary_download_matches_sums
     assert "gotcha unit hardening directives in effect" unit_hardening_directives
     assert "gotcha survives a postgresql restart" survives_postgresql_restart

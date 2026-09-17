@@ -684,9 +684,8 @@ install_app_files() {
     log_step "gotcha binary and agent distribution installed"
 }
 
-# Пишется один раз: повторный запуск на существующем файле — no-op, пароли и
-# GOTCHA_SECRET_KEY не перевыпускаются. Временный файл + mv — правами и
-# владельцем управляет сам скрипт, не глобальный umask процесса.
+# Пишется один раз: повторный запуск не перевыпускает пароли и GOTCHA_SECRET_KEY.
+# Временный файл + mv: точные права ставит скрипт, не умask процесса.
 write_env_file() {
     local pg_dsn="$1" ch_dsn="$2" base_url="$3" gomemlimit="$4" env_file="$5"
     if [ -f "$env_file" ]; then
@@ -714,9 +713,8 @@ install_unit() {
     log_step "systemd unit installed"
 }
 
-# systemd-run --wait пробрасывает код возврата самого gotcha, а не только
-# факта запуска юнита; --collect убирает транзитный юнит сразу же, так что
-# повторный запуск инсталлятора не натыкается на имя занятого юнита.
+# --wait пробрасывает код возврата самого gotcha, не только факт запуска юнита;
+# --collect убирает транзитный юнит, чтобы повторный запуск не наткнулся на имя.
 run_migrations() {
     local env_file="$1"
     systemd-run --quiet --pipe --wait --collect \
