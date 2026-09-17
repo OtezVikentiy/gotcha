@@ -139,6 +139,45 @@ func TestContainerLimitPrefersOwnCgroup(t *testing.T) {
 	}
 }
 
+// 0::/ (докер) — собственный cgroup процесса совпадает с корнем дерева; кандидат «свой cgroup»
+// пропускается, но результат не должен зависеть от пропуска — берём его из корневого кандидата.
+func TestContainerLimitDockerRoot(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "memory.max"), "1073741824\n")
+	proc := filepath.Join(root, "self-cgroup")
+	writeFile(t, proc, "0::/\n")
+
+	restore := swapPaths(root, proc)
+	defer restore()
+
+	got, err := containerLimit()
+	if err != nil {
+		t.Fatalf("containerLimit: %v", err)
+	}
+	if got != 1073741824 {
+		t.Fatalf("containerLimit = %d, want 1073741824", got)
+	}
+}
+
+// /proc/self/cgroup недоступен (например, платформа без cgroup v2) — падать на этом нельзя,
+// поиск лимита продолжается с корневого и v1-кандидатов.
+func TestContainerLimitWithoutProcCgroupFile(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "memory.max"), "1073741824\n")
+	proc := filepath.Join(root, "no-such-file")
+
+	restore := swapPaths(root, proc)
+	defer restore()
+
+	got, err := containerLimit()
+	if err != nil {
+		t.Fatalf("containerLimit: %v", err)
+	}
+	if got != 1073741824 {
+		t.Fatalf("containerLimit = %d, want 1073741824", got)
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
