@@ -15,9 +15,8 @@ DATE        ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 VPKG        := gitflic.ru/otezvikentiy/gotcha/internal/version
 LDFLAGS     := -X $(VPKG).version=$(GIT_VERSION) -X $(VPKG).commit=$(COMMIT) -X $(VPKG).date=$(DATE)
 
-# Версия тарболов поставки — X.Y.Z из internal/version, не GIT_VERSION выше:
-# build-dist.sh требует строгий X.Y.Z, а `git describe` даёт его только на
-# самом релизном теге.
+# Не GIT_VERSION выше: build-dist.sh требует строгий X.Y.Z, `git describe`
+# даёт его только на самом релизном теге.
 DIST_VERSION := $(shell sed -nE 's/^const base = "([0-9]+\.[0-9]+\.[0-9]+)"/\1/p' internal/version/version.go)
 
 # Проброс метаданных версии в docker-сборку: compose подставляет эти env в
