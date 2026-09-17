@@ -173,9 +173,8 @@ nginx_site_backed_up() {
         || { printf 'backup does not preserve the original foreign content: %s\n' "$backup" >&2; return 1; }
 }
 
-# Порт 80 проверяется в preflight до любых побочных эффектов — тем же кодом 3,
-# что и остальной preflight — так что запускать installer можно с реальными
-# флагами: он не успевает тронуть ни nginx, ни СУБД.
+# Порт 80 проверяется в preflight до любых побочных эффектов (код 3, как и
+# весь preflight), поэтому installer можно звать реальными флагами безопасно.
 port80_busy_blocks_preflight() {
     command -v python3 >/dev/null 2>&1 || {
         apt-get update -qq >/dev/null
