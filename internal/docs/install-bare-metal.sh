@@ -20,6 +20,7 @@ EXIT_USAGE=2
 EXIT_PREFLIGHT=3
 EXIT_DOWNLOAD=4
 EXIT_DATABASE=5
+EXIT_APP=6
 
 usage() {
     cat <<'EOF'
@@ -269,7 +270,6 @@ resolve_memlimit() {
 }
 
 # Паритет с compose построчно (спека §5) плюс усиление сверх него.
-# MemoryDenyWriteExecute не выставлена: не подтверждена на всей матрице e2e.
 render_unit() {
     local memory_max="$1"
     cat <<EOF
@@ -312,6 +312,7 @@ UMask=0077
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
+MemoryDenyWriteExecute=yes
 
 TasksMax=512
 MemoryAccounting=yes
@@ -533,9 +534,9 @@ install_postgresql() {
         gpg --dearmor <"$tmp/pgdg.asc" >"$keyring"
         printf 'deb [signed-by=%s] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' \
             "$keyring" "$codename" >/etc/apt/sources.list.d/gotcha-pgdg.list
-        apt-get update -qq || fail "$EXIT_DATABASE" "apt-get update failed after adding the PGDG repository"
+        apt-get update -qq >/dev/null || fail "$EXIT_DATABASE" "apt-get update failed after adding the PGDG repository"
     else
-        apt-get update -qq || fail "$EXIT_DATABASE" "apt-get update failed"
+        apt-get update -qq >/dev/null || fail "$EXIT_DATABASE" "apt-get update failed"
         local native
         native=$(native_pg_major)
         [ "$native" = "$PG_MAJOR" ] \
@@ -543,7 +544,9 @@ install_postgresql() {
         package="postgresql"
     fi
 
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$package" \
+    # >/dev/null: stdout — единственный канал возврата DSN из этой функции, и
+    # dpkg's "(Reading database ... )" под -qq в него всё равно просачивается.
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$package" >/dev/null \
         || fail "$EXIT_DATABASE" "failed to install $package"
 
     local conf_dir
@@ -598,7 +601,7 @@ install_clickhouse() {
     gpg --dearmor <"$tmp/clickhouse.asc" >"$keyring"
     printf 'deb [signed-by=%s] https://packages.clickhouse.com/deb stable main\n' "$keyring" \
         >/etc/apt/sources.list.d/gotcha-clickhouse.list
-    apt-get update -qq || fail "$EXIT_DATABASE" "apt-get update failed after adding the ClickHouse repository"
+    apt-get update -qq >/dev/null || fail "$EXIT_DATABASE" "apt-get update failed after adding the ClickHouse repository"
 
     local version
     version=$(clickhouse_package_version)
@@ -608,6 +611,7 @@ install_clickhouse() {
     # последний мажор из репозитория и ловит конфликт зависимостей.
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
         "clickhouse-server=$version" "clickhouse-client=$version" "clickhouse-common-static=$version" \
+        >/dev/null \
         || fail "$EXIT_DATABASE" "failed to install clickhouse-server $version"
 
     mkdir -p /etc/clickhouse-server/config.d
@@ -661,6 +665,82 @@ EOF
 
     log_step "ClickHouse $CH_VERSION installed and configured"
     printf 'clickhouse://gotcha:%s@127.0.0.1:9000/gotcha\n' "$password"
+}
+
+create_app_user() {
+    id -u gotcha >/dev/null 2>&1 && return 0
+    useradd --system --no-create-home --shell /usr/sbin/nologin gotcha \
+        || fail "$EXIT_OTHER" "failed to create the gotcha system user"
+    log_step "system user gotcha created"
+}
+
+install_app_files() {
+    local tarball_root="$1"
+    install -m 0755 -o root -g root "$tarball_root/gotcha" /usr/local/bin/gotcha \
+        || fail "$EXIT_OTHER" "failed to install /usr/local/bin/gotcha"
+    mkdir -p /opt/gotcha/agent-dist || fail "$EXIT_OTHER" "failed to create /opt/gotcha/agent-dist"
+    cp -a "$tarball_root/agent-dist/." /opt/gotcha/agent-dist/ \
+        || fail "$EXIT_OTHER" "failed to install the agent distribution"
+    log_step "gotcha binary and agent distribution installed"
+}
+
+# Пишется один раз: повторный запуск на существующем файле — no-op, пароли и
+# GOTCHA_SECRET_KEY не перевыпускаются. Временный файл + mv — правами и
+# владельцем управляет сам скрипт, не глобальный umask процесса.
+write_env_file() {
+    local pg_dsn="$1" ch_dsn="$2" base_url="$3" gomemlimit="$4" env_file="$5"
+    if [ -f "$env_file" ]; then
+        log_step "config file already present, left untouched: $env_file"
+        return 0
+    fi
+    mkdir -p /etc/gotcha || fail "$EXIT_OTHER" "failed to create /etc/gotcha"
+    local tmp secret_key
+    tmp=$(mktemp /etc/gotcha/.gotcha.env.XXXXXX) || fail "$EXIT_OTHER" "failed to create a temp file in /etc/gotcha"
+    secret_key=$(openssl rand -base64 48)
+    render_env_file "$pg_dsn" "$ch_dsn" "$secret_key" "$base_url" \
+        /opt/gotcha/agent-dist "$gomemlimit" 127.0.0.1:8080 >"$tmp" \
+        || { rm -f "$tmp"; fail "$EXIT_OTHER" "failed to render $env_file"; }
+    chown root:gotcha "$tmp" && chmod 0640 "$tmp" \
+        || { rm -f "$tmp"; fail "$EXIT_OTHER" "failed to set ownership/permissions on $env_file"; }
+    mv "$tmp" "$env_file" || fail "$EXIT_OTHER" "failed to install $env_file"
+    log_step "config file created: $env_file"
+}
+
+install_unit() {
+    local memory_max="$1"
+    render_unit "$memory_max" >/etc/systemd/system/gotcha.service \
+        || fail "$EXIT_OTHER" "failed to write /etc/systemd/system/gotcha.service"
+    systemctl daemon-reload || fail "$EXIT_OTHER" "systemctl daemon-reload failed"
+    log_step "systemd unit installed"
+}
+
+# systemd-run --wait пробрасывает код возврата самого gotcha, а не только
+# факта запуска юнита; --collect убирает транзитный юнит сразу же, так что
+# повторный запуск инсталлятора не натыкается на имя занятого юнита.
+run_migrations() {
+    local env_file="$1"
+    systemd-run --quiet --pipe --wait --collect \
+        --uid=gotcha --gid=gotcha \
+        --property="EnvironmentFile=$env_file" \
+        /usr/local/bin/gotcha --migrate-only \
+        || fail "$EXIT_APP" "database migrations failed"
+    log_step "database migrations applied"
+}
+
+start_app() {
+    systemctl enable --now gotcha || fail "$EXIT_APP" "failed to enable/start the gotcha service"
+
+    local tries=0
+    until /usr/local/bin/gotcha --healthcheck >/dev/null 2>&1; do
+        tries=$((tries + 1))
+        if [ "$tries" -ge 30 ]; then
+            printf 'install-bare-metal: gotcha did not become ready; recent journal:\n' >&2
+            journalctl -u gotcha --no-pager -n 50 >&2
+            fail "$EXIT_APP" "gotcha did not pass its healthcheck"
+        fi
+        sleep 1
+    done
+    log_step "gotcha service started and healthy"
 }
 
 main() {
@@ -720,7 +800,15 @@ main() {
         ARG_CH_DSN=$(install_clickhouse "$HOST_RAM_MB" "$tarball_root")
     fi
 
-    fail "$EXIT_OTHER" "databases ready, but application and reverse-proxy steps are not built into this copy of the script yet"
+    local env_file=/etc/gotcha/gotcha.env
+    create_app_user
+    install_app_files "$tarball_root"
+    write_env_file "$ARG_PG_DSN" "$ARG_CH_DSN" "$base_url" "$gomemlimit" "$env_file"
+    install_unit "$mem_max"
+    run_migrations "$env_file"
+    start_app
+
+    # nginx/certbot: следующий шаг спеки, не в этой копии скрипта.
 }
 
 # Guards main() from running on source — the test runner sources this file
