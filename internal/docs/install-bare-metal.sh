@@ -685,7 +685,7 @@ install_app_files() {
 }
 
 # Пишется один раз: повторный запуск не перевыпускает пароли и GOTCHA_SECRET_KEY.
-# Временный файл + mv: точные права ставит скрипт, не умask процесса.
+# Временный файл + mv: точные права ставит скрипт, не umask процесса.
 write_env_file() {
     local pg_dsn="$1" ch_dsn="$2" base_url="$3" gomemlimit="$4" env_file="$5"
     if [ -f "$env_file" ]; then
@@ -739,6 +739,46 @@ start_app() {
         sleep 1
     done
     log_step "gotcha service started and healthy"
+}
+
+# Отключает штатный дефолтный сайт пакета (он бы конфликтовал default_server'ом
+# на 80) и включает свой; существующий чужой конфиг сайта копируется рядом
+# перед перезаписью, а не теряется молча.
+install_nginx() {
+    local domain="$1"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nginx >/dev/null \
+        || fail "$EXIT_OTHER" "failed to install nginx"
+
+    rm -f /etc/nginx/sites-enabled/default
+
+    local site=/etc/nginx/sites-available/gotcha
+    if [ -f "$site" ]; then
+        cp "$site" "$site.bak-$(date +%s)" || fail "$EXIT_OTHER" "failed to back up existing $site"
+    fi
+    render_nginx_site "$domain" >"$site" || fail "$EXIT_OTHER" "failed to render $site"
+    ln -sf ../sites-available/gotcha /etc/nginx/sites-enabled/gotcha \
+        || fail "$EXIT_OTHER" "failed to enable $site"
+
+    nginx -t || fail "$EXIT_OTHER" "nginx configuration test failed"
+    systemctl enable --now nginx || fail "$EXIT_OTHER" "failed to start nginx"
+    systemctl reload nginx || fail "$EXIT_OTHER" "failed to reload nginx"
+
+    log_step "nginx installed, proxying to gotcha for $domain"
+}
+
+# Отказ certbot не откатывает установку: HTTP-стенд остаётся рабочим, скрипт
+# лишь печатает команду для повтора и возвращается с кодом 0.
+install_certificate() {
+    local domain="$1" email="$2"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot python3-certbot-nginx >/dev/null \
+        || fail "$EXIT_OTHER" "failed to install certbot"
+
+    if certbot --nginx -d "$domain" -m "$email" --agree-tos --non-interactive --redirect >/dev/null 2>&1; then
+        log_step "TLS certificate issued for $domain"
+    else
+        printf 'install-bare-metal: certbot failed to obtain a certificate for %s; HTTP on port 80 still works, retry later with:\n' "$domain" >&2
+        printf '  certbot --nginx -d %s -m %s --agree-tos --redirect\n' "$domain" "$email" >&2
+    fi
 }
 
 main() {
@@ -806,7 +846,12 @@ main() {
     run_migrations "$env_file"
     start_app
 
-    # nginx/certbot: следующий шаг спеки, не в этой копии скрипта.
+    if [ -z "$ARG_NO_PROXY" ]; then
+        install_nginx "${ARG_DOMAIN:-$host_ip}"
+        if [ -n "$ARG_DOMAIN" ] && [ -n "$ARG_EMAIL" ]; then
+            install_certificate "$ARG_DOMAIN" "$ARG_EMAIL"
+        fi
+    fi
 }
 
 # Guards main() from running on source — the test runner sources this file

@@ -151,6 +151,69 @@ ch_gotcha_database_exists() {
     [ "$(clickhouse-client --query "EXISTS DATABASE gotcha" 2>/dev/null)" = "1" ]
 }
 
+readyz_via_nginx() {
+    [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:80/readyz)" = "200" ]
+}
+
+nginx_site_config_ok() {
+    local conf=/etc/nginx/sites-available/gotcha
+    [ -f "$conf" ] || { printf 'missing %s\n' "$conf" >&2; return 1; }
+    grep -qF 'proxy_pass http://127.0.0.1:8080' "$conf" || { printf 'proxy_pass missing in %s\n' "$conf" >&2; return 1; }
+    grep -qF 'proxy_set_header Host' "$conf" || { printf 'Host forwarding missing in %s\n' "$conf" >&2; return 1; }
+    grep -qF 'X-Forwarded-For' "$conf" || { printf 'X-Forwarded-For missing in %s\n' "$conf" >&2; return 1; }
+    grep -qF 'X-Forwarded-Proto' "$conf" || { printf 'X-Forwarded-Proto missing in %s\n' "$conf" >&2; return 1; }
+    grep -qF 'client_max_body_size' "$conf" || { printf 'client_max_body_size missing in %s\n' "$conf" >&2; return 1; }
+}
+
+nginx_site_backed_up() {
+    local backup
+    backup=$(find /etc/nginx/sites-available -maxdepth 1 -name 'gotcha.bak-*' -print -quit 2>/dev/null)
+    [ -n "$backup" ] || { printf 'no gotcha.bak-* found in /etc/nginx/sites-available\n' >&2; return 1; }
+    grep -qF 'pre-existing site placed by someone else' "$backup" \
+        || { printf 'backup does not preserve the original foreign content: %s\n' "$backup" >&2; return 1; }
+}
+
+# Порт 80 проверяется в preflight до любых побочных эффектов — тем же кодом 3,
+# что и остальной preflight — так что запускать installer можно с реальными
+# флагами: он не успевает тронуть ни nginx, ни СУБД.
+port80_busy_blocks_preflight() {
+    command -v python3 >/dev/null 2>&1 || {
+        apt-get update -qq >/dev/null
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-minimal >/dev/null
+    }
+
+    python3 -c '
+import socket, time
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("0.0.0.0", 80))
+s.listen(1)
+time.sleep(30)
+' &
+    local listener_pid=$!
+
+    local tries=0
+    until ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ':80$'; do
+        tries=$((tries + 1))
+        if [ "$tries" -ge 10 ]; then
+            printf 'dummy listener on port 80 never came up\n' >&2
+            kill "$listener_pid" 2>/dev/null
+            return 1
+        fi
+        sleep 1
+    done
+
+    local output rc
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
+    rc=$?
+    kill "$listener_pid" 2>/dev/null
+    wait "$listener_pid" 2>/dev/null
+
+    [ "$rc" -eq 3 ] || { printf 'expected exit 3 with port 80 busy, got %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    printf '%s\n' "$output" | grep -q 'port 80 is already in use' \
+        || { printf 'missing "port 80 is already in use" in output:\n%s\n' "$output" >&2; return 1; }
+}
+
 # fetch_tarball требует SHA256SUMS.txt рядом с тарболом; release.sh её пока не
 # публикует, а каталог тарбола часто read-only — считаем сумму в своей копии.
 WORK_DIR=$(mktemp -d)
@@ -181,9 +244,16 @@ if [ -z "$tarball_version" ] || [ "$tarball_version" = "$(basename "$WORK_TARBAL
     exit 2
 fi
 
-printf 'bare-metal-e2e: running install-bare-metal.sh --version %s --from-tarball %s --yes --no-proxy\n' \
+assert "a busy port 80 blocks preflight before anything is installed" port80_busy_blocks_preflight
+
+# Симулирует чужой конфиг сайта, уже лежащий на месте нашего: install_nginx
+# обязан унести его в *.bak-<метка времени>, а не переписать без следа.
+mkdir -p /etc/nginx/sites-available
+printf '# pre-existing site placed by someone else\n' >/etc/nginx/sites-available/gotcha
+
+printf 'bare-metal-e2e: running install-bare-metal.sh --version %s --from-tarball %s --yes\n' \
     "$tarball_version" "$WORK_TARBALL"
-bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes --no-proxy
+bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes
 installer_rc=$?
 printf 'bare-metal-e2e: install-bare-metal.sh exited %d\n' "$installer_rc"
 
@@ -329,8 +399,13 @@ run_assertions() {
     assert "gotcha survives a postgresql restart" survives_postgresql_restart
     assert "register+onboarding+ingest round trip is visible" e2e_ingest_roundtrip
 
-    # Задачи 6-7 добавляют сюда: nginx (сайт, certbot), снятие установки
-    # (--uninstall, --purge).
+    assert "nginx package installed" pkg_installed nginx
+    assert "nginx unit active" unit_active nginx
+    assert "nginx site config proxies to gotcha with required headers" nginx_site_config_ok
+    assert "pre-existing nginx site config was backed up, not clobbered" nginx_site_backed_up
+    assert "gotcha /readyz responds 200 via nginx on :80" readyz_via_nginx
+
+    # Задача 7 добавляет сюда снятие установки (--uninstall, --purge).
 }
 
 run_assertions
