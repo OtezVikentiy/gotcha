@@ -4,11 +4,22 @@
 GOTCHA_INSTALL_DEFAULT_VERSION="dev"
 GOTCHA_INSTALL_DEFAULT_DOWNLOAD_BASE="https://github.com/OtezVikentiy/gotcha/releases/download"
 
+# Источник истины — docker-compose.yml (postgres:17-alpine,
+# clickhouse-server:25.3-alpine); сверяет internal/guards/docs_versions_test.go.
+PG_MAJOR="17"
+CH_VERSION="25.3"
+
+# Отпечатки подписывающих ключей вендоров, тот же принцип, что и digest баз в
+# Dockerfile: значение фиксируется руками, не берётся с сервера доверчиво.
+PGDG_KEY_FINGERPRINT="B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
+CLICKHOUSE_KEY_FINGERPRINT="3A9EA1193A97B548BE1457D48919F6BD2B48D754"
+
 EXIT_OK=0
 EXIT_OTHER=1
 EXIT_USAGE=2
 EXIT_PREFLIGHT=3
 EXIT_DOWNLOAD=4
+EXIT_DATABASE=5
 
 usage() {
     cat <<'EOF'
@@ -409,6 +420,12 @@ preflight() {
     HOST_ARCH=$(detect_arch "$(uname -m)") \
         || fail "$EXIT_PREFLIGHT" "unsupported architecture: $(uname -m) (amd64/arm64 only)"
 
+    HOST_CODENAME=$(
+        # shellcheck source=/dev/null
+        . /etc/os-release
+        printf '%s\n' "${VERSION_CODENAME:-}"
+    )
+
     local cmd
     for cmd in curl tar gpg openssl sha256sum; do
         command -v "$cmd" >/dev/null 2>&1 || fail "$EXIT_PREFLIGHT" "$cmd is required"
@@ -425,10 +442,10 @@ preflight() {
     done
 
     # 1900, не 2048: облачные образы на "2 ГБ" нередко отдают в MemTotal
-    # немного меньше номинала (память под firmware/hypervisor).
-    local ram_mb
-    ram_mb=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
-    [ "$ram_mb" -ge 1900 ] || fail "$EXIT_PREFLIGHT" "at least 2 GB RAM required (found ${ram_mb} MB)"
+    # немного меньше номинала (память под firmware/hypervisor). Не local:
+    # install_clickhouse ниже переиспользует то же значение для 10-small.xml.
+    HOST_RAM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
+    [ "$HOST_RAM_MB" -ge 1900 ] || fail "$EXIT_PREFLIGHT" "at least 2 GB RAM required (found ${HOST_RAM_MB} MB)"
 
     local disk_gb
     disk_gb=$(($(df --output=avail -k / | tail -n1) / 1024 / 1024))
@@ -477,6 +494,175 @@ fetch_tarball() {
 
     log_step "tarball fetched and verified: version $version, arch $arch"
     printf '%s\n' "$root"
+}
+
+# gpg --with-colons: формат вывода стабилен для парсинга скриптом, в отличие
+# от --fingerprint, рассчитанного на человека.
+verify_key_fingerprint() {
+    local keyfile="$1" expected="$2" got
+    got=$(gpg --with-colons --import-options show-only --import "$keyfile" 2>/dev/null \
+        | awk -F: '/^fpr:/{print $10; exit}')
+    [ "$got" = "$expected" ] \
+        || fail "$EXIT_DATABASE" "signing key fingerprint mismatch: got '$got', expected '$expected'"
+}
+
+# PGDG публикует Release-манифест только для codename, которые поддерживает —
+# его отсутствие и есть сигнал "ещё не добавлен", без парсинга HTML/API.
+pgdg_has_codename() {
+    curl -fsSL -o /dev/null "https://apt.postgresql.org/pub/repos/apt/dists/${1}-pgdg/Release"
+}
+
+# Требует apt-get update по репозиториям дистрибутива (без PGDG) до вызова —
+# гарантирует install_postgresql.
+native_pg_major() {
+    apt-cache policy postgresql 2>/dev/null | awk '/Candidate:/{print $2}' | grep -oE '^[0-9]+'
+}
+
+# Возвращает через stdout DSN на 127.0.0.1; ставит пакет, роль и базу gotcha,
+# conf.d/10-gotcha.conf. Код 3 — только для решения по мажору ниже (брифу
+# важно не спутать его с прочими отказами шага, код которых — 5).
+install_postgresql() {
+    local codename="$1" package="postgresql-$PG_MAJOR"
+
+    if pgdg_has_codename "$codename"; then
+        local tmp keyring
+        tmp=$(mktemp -d)
+        TMP_DIRS+=("$tmp")
+        curl -fsSL -o "$tmp/pgdg.asc" https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            || fail "$EXIT_DATABASE" "failed to download the PGDG signing key"
+        verify_key_fingerprint "$tmp/pgdg.asc" "$PGDG_KEY_FINGERPRINT"
+        keyring=/usr/share/keyrings/gotcha-pgdg.gpg
+        gpg --dearmor <"$tmp/pgdg.asc" >"$keyring"
+        printf 'deb [signed-by=%s] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' \
+            "$keyring" "$codename" >/etc/apt/sources.list.d/gotcha-pgdg.list
+        apt-get update -qq || fail "$EXIT_DATABASE" "apt-get update failed after adding the PGDG repository"
+    else
+        apt-get update -qq || fail "$EXIT_DATABASE" "apt-get update failed"
+        local native
+        native=$(native_pg_major)
+        [ "$native" = "$PG_MAJOR" ] \
+            || fail "$EXIT_PREFLIGHT" "PGDG has no packages for $codename yet and the distribution ships PostgreSQL $native, not $PG_MAJOR; wait for PGDG to add this codename or install PostgreSQL $PG_MAJOR by hand"
+        package="postgresql"
+    fi
+
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$package" \
+        || fail "$EXIT_DATABASE" "failed to install $package"
+
+    local conf_dir
+    conf_dir=$(find /etc/postgresql -mindepth 2 -maxdepth 2 -type d -name main 2>/dev/null | head -n1)
+    [ -n "$conf_dir" ] || fail "$EXIT_DATABASE" "PostgreSQL installed but /etc/postgresql/*/main is missing"
+    mkdir -p "$conf_dir/conf.d" || fail "$EXIT_DATABASE" "failed to create $conf_dir/conf.d"
+    render_pg_conf >"$conf_dir/conf.d/10-gotcha.conf"
+
+    # policy-rc.d в контейнерных образах блокирует автозапуск postinst-скрипта
+    # пакета — сервер поднимает явный systemctl, а не установка сама по себе.
+    systemctl restart postgresql || fail "$EXIT_DATABASE" "failed to start postgresql"
+
+    local password
+    password=$(openssl rand -hex 24)
+    if ! sudo -u postgres psql -v ON_ERROR_STOP=1 -q >/dev/null <<SQL
+DO \$\$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'gotcha') THEN
+    CREATE ROLE gotcha LOGIN PASSWORD '$password';
+  ELSE
+    ALTER ROLE gotcha PASSWORD '$password';
+  END IF;
+END \$\$;
+SELECT 'CREATE DATABASE gotcha OWNER gotcha'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'gotcha')\gexec
+SQL
+    then
+        fail "$EXIT_DATABASE" "failed to create the gotcha role/database in PostgreSQL"
+    fi
+
+    log_step "PostgreSQL $PG_MAJOR installed and configured"
+    printf 'postgres://gotcha:%s@127.0.0.1:5432/gotcha?sslmode=disable\n' "$password"
+}
+
+# ClickHouse не публикует пакет без патч-версии в номере — apt-cache madison
+# находит конкретный патч для мажора.минора из CH_VERSION.
+clickhouse_package_version() {
+    apt-cache madison clickhouse-server 2>/dev/null \
+        | awk -F'|' -v v="$CH_VERSION." '{gsub(/^[ \t]+|[ \t]+$/, "", $2)} $2 ~ ("^" v) {print $2; exit}'
+}
+
+# Возвращает через stdout DSN на 127.0.0.1; ставит пакет, конфиги из тарбола,
+# пользователя gotcha и лимит файловых дескрипторов. Отказ любого шага — код 5.
+install_clickhouse() {
+    local ram_mb="$1" tarball_root="$2"
+    local tmp keyring
+    tmp=$(mktemp -d)
+    TMP_DIRS+=("$tmp")
+    curl -fsSL -o "$tmp/clickhouse.asc" https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key \
+        || fail "$EXIT_DATABASE" "failed to download the ClickHouse signing key"
+    verify_key_fingerprint "$tmp/clickhouse.asc" "$CLICKHOUSE_KEY_FINGERPRINT"
+    keyring=/usr/share/keyrings/gotcha-clickhouse.gpg
+    gpg --dearmor <"$tmp/clickhouse.asc" >"$keyring"
+    printf 'deb [signed-by=%s] https://packages.clickhouse.com/deb stable main\n' "$keyring" \
+        >/etc/apt/sources.list.d/gotcha-clickhouse.list
+    apt-get update -qq || fail "$EXIT_DATABASE" "apt-get update failed after adding the ClickHouse repository"
+
+    local version
+    version=$(clickhouse_package_version)
+    [ -n "$version" ] || fail "$EXIT_DATABASE" "no clickhouse-server package matches version $CH_VERSION"
+
+    # clickhouse-common-static нужен явной версией: без него apt подтягивает
+    # последний мажор из репозитория и ловит конфликт зависимостей.
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+        "clickhouse-server=$version" "clickhouse-client=$version" "clickhouse-common-static=$version" \
+        || fail "$EXIT_DATABASE" "failed to install clickhouse-server $version"
+
+    mkdir -p /etc/clickhouse-server/config.d
+    cp "$tarball_root/clickhouse/00-common.xml" /etc/clickhouse-server/config.d/00-common.xml \
+        || fail "$EXIT_DATABASE" "failed to install 00-common.xml"
+    if [ "$ram_mb" -lt 4096 ]; then
+        cp "$tarball_root/clickhouse/10-small.xml" /etc/clickhouse-server/config.d/10-small.xml \
+            || fail "$EXIT_DATABASE" "failed to install 10-small.xml"
+    fi
+
+    local password hash
+    password=$(openssl rand -hex 24)
+    hash=$(printf '%s' "$password" | sha256sum | awk '{print $1}')
+    mkdir -p /etc/clickhouse-server/users.d
+    cat >/etc/clickhouse-server/users.d/10-gotcha.xml <<EOF || fail "$EXIT_DATABASE" "failed to write 10-gotcha.xml"
+<clickhouse>
+    <users>
+        <gotcha>
+            <password_sha256_hex>$hash</password_sha256_hex>
+            <networks>
+                <ip>::1</ip>
+                <ip>127.0.0.1</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+            <default_database>gotcha</default_database>
+            <access_management>0</access_management>
+        </gotcha>
+    </users>
+</clickhouse>
+EOF
+
+    mkdir -p /etc/systemd/system/clickhouse-server.service.d
+    cat >/etc/systemd/system/clickhouse-server.service.d/override.conf <<'EOF' || fail "$EXIT_DATABASE" "failed to write the LimitNOFILE override"
+[Service]
+LimitNOFILE=262144
+EOF
+    systemctl daemon-reload || fail "$EXIT_DATABASE" "systemctl daemon-reload failed"
+    systemctl enable clickhouse-server >/dev/null 2>&1 || true
+    systemctl restart clickhouse-server || fail "$EXIT_DATABASE" "failed to start clickhouse-server"
+
+    local tries=0
+    until curl -fsS -o /dev/null http://127.0.0.1:8123/ping 2>/dev/null; do
+        tries=$((tries + 1))
+        [ "$tries" -lt 30 ] || fail "$EXIT_DATABASE" "clickhouse-server did not become ready on 127.0.0.1:8123"
+        sleep 1
+    done
+
+    clickhouse-client --query "CREATE DATABASE IF NOT EXISTS gotcha" \
+        || fail "$EXIT_DATABASE" "failed to create the gotcha database in ClickHouse"
+
+    log_step "ClickHouse $CH_VERSION installed and configured"
+    printf 'clickhouse://gotcha:%s@127.0.0.1:9000/gotcha\n' "$password"
 }
 
 main() {
@@ -531,7 +717,12 @@ main() {
         exit "$EXIT_OK"
     fi
 
-    fail "$EXIT_OTHER" "tarball verified at $tarball_root, but installation steps beyond preflight and download are not built into this copy of the script yet"
+    if [ -z "$ARG_SKIP_DATABASES" ]; then
+        ARG_PG_DSN=$(install_postgresql "$HOST_CODENAME")
+        ARG_CH_DSN=$(install_clickhouse "$HOST_RAM_MB" "$tarball_root")
+    fi
+
+    fail "$EXIT_OTHER" "databases ready, but application and reverse-proxy steps are not built into this copy of the script yet"
 }
 
 # Guards main() from running on source — the test runner sources this file
