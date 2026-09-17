@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-17
+
 ### Changed
 - `/healthz` and `/readyz` no longer ping PostgreSQL and ClickHouse on every request.
   Both endpoints now share one probe whose result is reused for up to five seconds, so
