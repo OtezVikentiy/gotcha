@@ -36,7 +36,7 @@
 
 ```bash
 apt-get update
-apt-get install -y curl tar gnupg openssl coreutils sudo iproute2
+DEBIAN_FRONTEND=noninteractive apt-get install -y curl tar gnupg openssl coreutils sudo iproute2
 ```
 
 `sudo` и `iproute2` (команда `ss`) нужны и дальше по шагам, и скрипту: без первого не
@@ -65,7 +65,7 @@ REPO=https://apt.postgresql.org/pub/repos/apt
 printf 'deb [signed-by=%s] %s %s-pgdg main\n' "$KEY" "$REPO" "$CODENAME" \
   >/etc/apt/sources.list.d/gotcha-pgdg.list
 apt-get update
-apt-get install -y postgresql-17
+DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql-17
 ```
 
 Отпечаток ключа PGDG — `B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8`; сверьте его перед импортом (`gpg --with-colons --import-options show-only --import /tmp/pgdg.asc`), не доверяя загрузке вслепую.
@@ -114,11 +114,13 @@ ClickHouse не публикует пакет без точного патча �
 ```bash
 CH_PKG_VERSION=$(apt-cache madison clickhouse-server \
   | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$2)} $2~/^25\.3\./{print $2; exit}')
-apt-get install -y \
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
   "clickhouse-server=$CH_PKG_VERSION" \
   "clickhouse-client=$CH_PKG_VERSION" \
   "clickhouse-common-static=$CH_PKG_VERSION"
 ```
+
+`DEBIAN_FRONTEND=noninteractive` здесь не ради тишины в логе: постинстал `clickhouse-server` на живом терминале спрашивает пароль для пользователя `default`, и любой заданный там пароль ломает создание базы двумя шагами ниже. Скрипт ставит пакеты так же.
 
 Скопируйте тюнинг-конфиги из тарбола релиза (тот же архив, откуда взят бинарь на шаге 5):
 
@@ -156,7 +158,10 @@ cat >/etc/clickhouse-server/users.d/10-gotcha.xml <<EOF
     </users>
 </clickhouse>
 EOF
+printf 'ClickHouse, пароль пользователя gotcha: %s\n' "$CH_PASSWORD"
 ```
+
+Запишите напечатанный пароль: в конфиге ClickHouse лежит только SHA-256, исходный пароль из него не восстанавливается, а на шаге 6 он нужен в DSN. Потеряли — не страшно, но придётся выпускать новый (рецепт в «Типичных ошибках» ниже).
 
 Поднимите лимит открытых файлов (заводской слишком мал под нагрузку ClickHouse) и запустите:
 
@@ -226,6 +231,8 @@ EOF
 chown root:gotcha /etc/gotcha/gotcha.env
 chmod 0640 /etc/gotcha/gotcha.env
 ```
+
+Если шаг 3 выполнялся в этом же сеансе шелла, вместо `<пароль-из-шага-3>` можно подставить `$CH_PASSWORD` — переменная ещё жива, и heredoc её раскроет.
 
 Про `GOTCHA_BASE_URL` см. предупреждение о 403 в разделе «Типичные ошибки» ниже — задайте его сразу верным адресом, включая схему. Про `GOTCHA_LISTEN_ADDR=127.0.0.1:8080` — то же, что loopback-бинд у Docker-пути: без обратного прокси порт наружу не торчит. `GOMEMLIMIT=819MiB` — 80% от `MemoryMax=1024M` из юнита ниже; если меняете лимит памяти, пересчитайте оба значения синхронно (`--mem-limit` у скрипта делает это за вас).
 
@@ -308,7 +315,7 @@ journalctl -u gotcha -f
 Пропустите этот шаг, если публикуете инстанс за уже существующим прокси или обращаетесь к нему только через SSH-туннель на `127.0.0.1:8080`.
 
 ```bash
-apt-get install -y nginx
+DEBIAN_FRONTEND=noninteractive apt-get install -y nginx
 rm -f /etc/nginx/sites-enabled/default
 cat >/etc/nginx/sites-available/gotcha <<'EOF'
 # gotcha site: install-bare-metal.sh keeps local edits below on re-run
@@ -353,7 +360,7 @@ systemctl reload nginx
 Это базовая сборка — nginx на 80 плюс сертификат от Let's Encrypt. Тонкая настройка TLS (протоколы, шифры), HSTS и rate-limit на прокси — за пределами этого шага, их настраивает оператор под свои требования.
 
 ```bash
-apt-get install -y certbot python3-certbot-nginx
+DEBIAN_FRONTEND=noninteractive apt-get install -y certbot python3-certbot-nginx
 certbot --nginx -d gotcha.example.com -m you@example.com --agree-tos --non-interactive --redirect
 ```
 
@@ -419,6 +426,20 @@ curl -fsSI http://127.0.0.1:8080/agent/gotcha-agent-linux-amd64
 **Регистрация или любая форма отвечает `403`.** Это защита от подделки происхождения запроса: `Origin`/`Referer` должен совпадать с `GOTCHA_BASE_URL`. Если в `/etc/gotcha/gotcha.env` указан не тот адрес, по которому вы на самом деле открываете интерфейс (например, забыли схему, домен без `www` вместо с `www`, или зашли по IP, когда `GOTCHA_BASE_URL` — домен), первый же POST — включая самую первую регистрацию — отклоняется `403`. Поправьте `GOTCHA_BASE_URL` в файле окружения и перезапустите: `systemctl restart gotcha`.
 
 **Первый пользователь.** На чистом инстансе первый, кто зарегистрируется, получает права инстанс-администратора автоматически — независимо от режима самостоятельной регистрации. Все следующие регистрации уже подчиняются `GOTCHA_REGISTRATION_MODE` (см. [Конфигурацию](/docs/configuration)).
+
+**`clickhouse-client` отвечает `Code: 516 … default: Authentication failed`.** У пользователя `default` в ClickHouse задан пароль: либо на вопрос постинстала пакета (он появляется, если ставить пакеты без `DEBIAN_FRONTEND=noninteractive`), либо ClickHouse стоял на этом хосте раньше. Базу можно создать и с паролем — `clickhouse-client --password --query "CREATE DATABASE IF NOT EXISTS gotcha"`. Если пароль неизвестен и пользователь `default` вам не нужен, снимите пароль: `rm -f /etc/clickhouse-server/users.d/default-password.xml && systemctl restart clickhouse-server`. На приложении это не сказывается никак — в ClickHouse оно ходит пользователем `gotcha`.
+
+**Приложение не стартует: `clickhouse ping: code: 516 … gotcha: Authentication failed`.** Пароль в `GOTCHA_CH_DSN` не совпадает с паролем пользователя `gotcha`. После установки скриптом действующий пароль лежит в самом `/etc/gotcha/gotcha.env` — правьте DSN по нему. После ручной установки восстановить пароль неоткуда (в `users.d/10-gotcha.xml` только SHA-256) — выпустите новый:
+
+```bash
+CH_PASSWORD=$(openssl rand -hex 24)
+CH_PASSWORD_HASH=$(printf '%s' "$CH_PASSWORD" | sha256sum | awk '{print $1}')
+sed -i "s#<password_sha256_hex>[a-f0-9]*</password_sha256_hex>#<password_sha256_hex>$CH_PASSWORD_HASH</password_sha256_hex>#" \
+  /etc/clickhouse-server/users.d/10-gotcha.xml
+systemctl restart clickhouse-server
+sed -i "s#^GOTCHA_CH_DSN=.*#GOTCHA_CH_DSN=clickhouse://gotcha:$CH_PASSWORD@127.0.0.1:9000/gotcha#" /etc/gotcha/gotcha.env
+systemctl restart gotcha
+```
 
 **Установка обрывается с кодом 5 и текстом `port 5432 listens on 0.0.0.0:5432, not loopback only`** (то же про 8123 и 9000). После установки баз скрипт проверяет, на каких адресах они на самом деле слушают, и отказывается идти дальше, если это не `127.0.0.1`/`::1`. Отказ означает ровно одно: на хосте уже был PostgreSQL или ClickHouse, настроенный на все интерфейсы, и скрипт его переиспользовал — а значит обещание «базы наружу не торчат» для этой установки неверно. Проверка нужна именно потому, что молча получить базу на публичном адресе хуже, чем оборванную установку.
 

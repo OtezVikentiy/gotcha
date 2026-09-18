@@ -786,8 +786,10 @@ EOF
         sleep 1
     done
 
+    # От пользователя gotcha база не создаётся: он не подключится, пока не существует
+    # его default_database, то есть та самая база. Отсюда default и подсказка про пароль.
     clickhouse-client --query "CREATE DATABASE IF NOT EXISTS gotcha" \
-        || fail "$EXIT_DATABASE" "failed to create the gotcha database in ClickHouse"
+        || fail "$EXIT_DATABASE" "failed to create the gotcha database in ClickHouse (if the ClickHouse default user has a password, create the database manually and re-run)"
 
     log_step "ClickHouse $CH_VERSION installed and configured"
     printf 'clickhouse://gotcha:%s@127.0.0.1:9000/gotcha\n' "$password"
@@ -998,7 +1000,7 @@ SQL
     fi
     if command -v clickhouse-client >/dev/null 2>&1; then
         clickhouse-client --query "DROP DATABASE IF EXISTS gotcha" \
-            || fail "$EXIT_DATABASE" "failed to drop the gotcha database in ClickHouse"
+            || fail "$EXIT_DATABASE" "failed to drop the gotcha database in ClickHouse (if the ClickHouse default user has a password, drop the database manually)"
         # Пароль пользователя живёт в этом файле, не в СУБД как роль Postgres —
         # без удаления следующая установка сочла бы пользователя уже настроенным.
         rm -f /etc/clickhouse-server/users.d/10-gotcha.xml

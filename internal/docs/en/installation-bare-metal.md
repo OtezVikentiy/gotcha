@@ -36,7 +36,7 @@ Each step here is exactly what the `install-bare-metal.sh` script does, run by h
 
 ```bash
 apt-get update
-apt-get install -y curl tar gnupg openssl coreutils sudo iproute2
+DEBIAN_FRONTEND=noninteractive apt-get install -y curl tar gnupg openssl coreutils sudo iproute2
 ```
 
 `sudo` and `iproute2` (the `ss` command) are needed by the steps below and by the script:
@@ -65,7 +65,7 @@ REPO=https://apt.postgresql.org/pub/repos/apt
 printf 'deb [signed-by=%s] %s %s-pgdg main\n' "$KEY" "$REPO" "$CODENAME" \
   >/etc/apt/sources.list.d/gotcha-pgdg.list
 apt-get update
-apt-get install -y postgresql-17
+DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql-17
 ```
 
 The PGDG signing key fingerprint is `B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8` — verify it before importing (`gpg --with-colons --import-options show-only --import /tmp/pgdg.asc`) rather than trusting the download blindly.
@@ -114,11 +114,13 @@ ClickHouse doesn't publish a package without an exact patch number, so find the 
 ```bash
 CH_PKG_VERSION=$(apt-cache madison clickhouse-server \
   | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$2)} $2~/^25\.3\./{print $2; exit}')
-apt-get install -y \
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
   "clickhouse-server=$CH_PKG_VERSION" \
   "clickhouse-client=$CH_PKG_VERSION" \
   "clickhouse-common-static=$CH_PKG_VERSION"
 ```
+
+`DEBIAN_FRONTEND=noninteractive` is not about a quiet log here: on a live terminal the `clickhouse-server` post-install script asks for a password for the `default` user, and any password set there breaks the database creation two steps below. The script installs the packages the same way.
 
 Copy the tuning configs from the release tarball (the same archive the binary comes from in step 5):
 
@@ -156,7 +158,10 @@ cat >/etc/clickhouse-server/users.d/10-gotcha.xml <<EOF
     </users>
 </clickhouse>
 EOF
+printf 'ClickHouse, password of the gotcha user: %s\n' "$CH_PASSWORD"
 ```
+
+Write the printed password down: the ClickHouse config holds only the SHA-256 hash, the password itself cannot be recovered from it, and step 6 needs it for the DSN. Losing it is not fatal, but you will have to issue a new one (recipe in "Common issues" below).
 
 Raise the open-files limit (the stock one is too small under ClickHouse's load) and start the service:
 
@@ -226,6 +231,8 @@ EOF
 chown root:gotcha /etc/gotcha/gotcha.env
 chmod 0640 /etc/gotcha/gotcha.env
 ```
+
+If step 3 ran in this same shell session, you can put `$CH_PASSWORD` in place of `<password-from-step-3>` — the variable is still set and the heredoc expands it.
 
 See the 403 warning in "Common issues" below about `GOTCHA_BASE_URL` — set it to the right address, scheme included, from the start. `GOTCHA_LISTEN_ADDR=127.0.0.1:8080` plays the same role as the loopback bind on the Docker path: without a reverse proxy, the port isn't reachable from outside. `GOMEMLIMIT=819MiB` is 80% of the unit's `MemoryMax=1024M` below; if you change the memory limit, recompute both together (the script's `--mem-limit` does this for you).
 
@@ -308,7 +315,7 @@ journalctl -u gotcha -f
 Skip this step if you're publishing the instance behind an existing proxy, or only reaching it through an SSH tunnel on `127.0.0.1:8080`.
 
 ```bash
-apt-get install -y nginx
+DEBIAN_FRONTEND=noninteractive apt-get install -y nginx
 rm -f /etc/nginx/sites-enabled/default
 cat >/etc/nginx/sites-available/gotcha <<'EOF'
 # gotcha site: install-bare-metal.sh keeps local edits below on re-run
@@ -353,7 +360,7 @@ next to it), and the certificate is issued again after that.
 This is a basic setup — nginx on port 80 plus a Let's Encrypt certificate. Fine-tuning TLS (protocols, ciphers), HSTS, and rate-limiting at the proxy are beyond this step; that's on the operator to configure for their own requirements.
 
 ```bash
-apt-get install -y certbot python3-certbot-nginx
+DEBIAN_FRONTEND=noninteractive apt-get install -y certbot python3-certbot-nginx
 certbot --nginx -d gotcha.example.com -m you@example.com --agree-tos --non-interactive --redirect
 ```
 
@@ -419,6 +426,20 @@ Expect `200 OK`. Log into the UI, create an organization and a project, and send
 **Registration or any form returns `403`.** This is the origin-forgery check: `Origin`/`Referer` must match `GOTCHA_BASE_URL`. If `/etc/gotcha/gotcha.env` has an address that doesn't match how you actually open the UI (a missing scheme, `www` vs. no `www`, or reaching it by IP when `GOTCHA_BASE_URL` is a domain), the very first POST — including the first registration — is rejected with `403`. Fix `GOTCHA_BASE_URL` in the environment file and restart: `systemctl restart gotcha`.
 
 **The first user.** On a fresh instance, whoever registers first is automatically granted instance-admin rights, regardless of the self-registration mode. Every later signup is governed by `GOTCHA_REGISTRATION_MODE` (see [Configuration](/docs/configuration)).
+
+**`clickhouse-client` answers `Code: 516 … default: Authentication failed`.** The ClickHouse `default` user has a password: either you answered the package post-install prompt (it appears when the packages are installed without `DEBIAN_FRONTEND=noninteractive`), or ClickHouse was already on this host. You can create the database with that password — `clickhouse-client --password --query "CREATE DATABASE IF NOT EXISTS gotcha"`. If the password is unknown and you have no use for the `default` user, drop it: `rm -f /etc/clickhouse-server/users.d/default-password.xml && systemctl restart clickhouse-server`. None of this affects the application — it connects to ClickHouse as the `gotcha` user.
+
+**The application won't start: `clickhouse ping: code: 516 … gotcha: Authentication failed`.** The password in `GOTCHA_CH_DSN` doesn't match the one set for the `gotcha` user. After a script install the working password is in `/etc/gotcha/gotcha.env` itself — fix the DSN from it. After a manual install there is nowhere to recover it from (`users.d/10-gotcha.xml` holds only the SHA-256 hash), so issue a new one:
+
+```bash
+CH_PASSWORD=$(openssl rand -hex 24)
+CH_PASSWORD_HASH=$(printf '%s' "$CH_PASSWORD" | sha256sum | awk '{print $1}')
+sed -i "s#<password_sha256_hex>[a-f0-9]*</password_sha256_hex>#<password_sha256_hex>$CH_PASSWORD_HASH</password_sha256_hex>#" \
+  /etc/clickhouse-server/users.d/10-gotcha.xml
+systemctl restart clickhouse-server
+sed -i "s#^GOTCHA_CH_DSN=.*#GOTCHA_CH_DSN=clickhouse://gotcha:$CH_PASSWORD@127.0.0.1:9000/gotcha#" /etc/gotcha/gotcha.env
+systemctl restart gotcha
+```
 
 **The install stops with exit code 5 and `port 5432 listens on 0.0.0.0:5432, not loopback only`** (same for 8123 and 9000). After installing the databases the script checks which addresses they actually listen on and refuses to go further unless that is `127.0.0.1`/`::1`. The refusal means exactly one thing: the host already had a PostgreSQL or ClickHouse configured for all interfaces, and the script reused it — so the promise that the databases are not exposed does not hold for this install. The check exists because silently ending up with a database on a public address is worse than an interrupted install.
 
