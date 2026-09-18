@@ -70,3 +70,46 @@ jobs:
       - name: снять контейнер
         if: always()
         run: docker rm -f bm || true
+
+  runner-matrix:
+    # §2 спеки заявляет arm64 для Ubuntu 24.04 и по тегу, и в ночном прогоне;
+    # ci.yml/bare-metal триггерится только на PR и его не покрывает.
+    name: bare-metal установка на раннере (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: собрать тарболы поставки (старая + новая версия)
+        run: |
+          bash scripts/build-dist.sh --version 0.0.0 --arch ${{ matrix.arch }} --out dist
+          bash scripts/build-dist.sh --version 0.0.1 --arch ${{ matrix.arch }} --out dist
+
+      # Раннер несёт предустановленный (не запущенный) postgresql — гасим заранее,
+      # иначе preflight откажет по занятому порту 5432.
+      - name: погасить предустановленные СУБД раннера
+        run: sudo systemctl stop postgresql clickhouse-server 2>/dev/null || true
+
+      - name: install-bare-metal.sh на раннере
+        run: |
+          sudo -E bash scripts/bare-metal-e2e.sh \
+            --tarball "dist/gotcha-0.0.1-linux-${{ matrix.arch }}.tar.gz" \
+            --upgrade-from "dist/gotcha-0.0.0-linux-${{ matrix.arch }}.tar.gz"
+
+      - name: логи сервисов при отказе
+        if: failure()
+        run: |
+          sudo journalctl -u gotcha -u postgresql -u clickhouse-server --no-pager -n 200 || true
