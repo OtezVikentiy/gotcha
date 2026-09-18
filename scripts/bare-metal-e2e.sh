@@ -269,7 +269,28 @@ if [ -n "$WORK_UPGRADE_TARBALL" ]; then
     fi
 fi
 
+# §4.6: отказ на середине обязан напечатать код выхода, шаги и подсказку.
+# --skip-databases с нерабочими DSN бьёт по run_migrations, не трогая настоящие СУБД.
+policy_failure_reports_steps_and_hint() {
+    rm -f /etc/gotcha/gotcha.env
+    local output rc
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" \
+        --skip-databases --pg-dsn 'postgres://nobody:nobody@127.0.0.1:1/nope?sslmode=disable' \
+        --ch-dsn 'clickhouse://nobody:nobody@127.0.0.1:2/nope' --yes 2>&1)
+    rc=$?
+    rm -f /etc/gotcha/gotcha.env
+
+    [ "$rc" -eq 6 ] || { printf 'expected exit 6 (EXIT_APP) from a broken DB step, got %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    printf '%s\n' "$output" | grep -q 'FAILED (exit 6)' \
+        || { printf 'missing "FAILED (exit 6)" in output:\n%s\n' "$output" >&2; return 1; }
+    printf '%s\n' "$output" | grep -q 'completed steps so far' \
+        || { printf 'missing the completed-steps list in output:\n%s\n' "$output" >&2; return 1; }
+    printf '%s\n' "$output" | grep -q -- '--uninstall' \
+        || { printf 'missing the --uninstall hint in output:\n%s\n' "$output" >&2; return 1; }
+}
+
 assert "a busy port 80 blocks preflight before anything is installed" port80_busy_blocks_preflight
+assert "a mid-install failure reports the exit code, completed steps and a hint" policy_failure_reports_steps_and_hint
 
 # Симулирует чужой конфиг сайта, уже лежащий на месте нашего: install_nginx
 # обязан унести его в *.bak-<метка времени>, а не переписать без следа.
@@ -446,6 +467,27 @@ survives_idempotent_rerun() {
     done
 }
 
+# Роль/пользователь — наши; потерянный gotcha.env не повод падать на аутентификации,
+# install_postgresql/install_clickhouse обязаны сами перевыпустить пароль.
+recovers_after_env_file_lost() {
+    rm -f /etc/gotcha/gotcha.env
+
+    local output rc
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf 'recovering from a lost env file exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    printf '%s\n' "$output" | grep -qi 'regenerating' \
+        || { printf 'missing a loud password-regeneration notice in output:\n%s\n' "$output" >&2; return 1; }
+
+    unit_active gotcha || { printf 'gotcha unit not active after env recovery\n' >&2; return 1; }
+    local tries=0
+    until readyz_ok; do
+        tries=$((tries + 1))
+        [ "$tries" -lt 30 ] || { printf '/readyz did not recover after env recovery\n' >&2; return 1; }
+        sleep 1
+    done
+}
+
 # Действие и проверка вместе: --uninstall снимает только юнит и бинарь, данные,
 # базы, пакеты и apt-репозитории остаются (§4.5/§4.6 — на хосте ими может пользоваться что-то ещё).
 uninstall_removes_unit_and_binary_keeps_data() {
@@ -476,8 +518,17 @@ reinstall_after_uninstall_succeeds() {
 
 # --purge дополнительно снимает наши базы/роли/данные/системного пользователя,
 # но так же не трогает пакеты и apt-репозитории — только --uninstall уже проверил это.
+purge_without_confirmation_refuses() {
+    local output rc
+    output=$(bash "$INSTALLER" --uninstall --purge </dev/null 2>&1)
+    rc=$?
+    [ "$rc" -eq "$EXIT_USAGE" ] \
+        || { printf 'expected exit %d refusing an unconfirmed --purge, got %d:\n%s\n' "$EXIT_USAGE" "$rc" "$output" >&2; return 1; }
+    pg_role_exists || { printf 'postgresql role gotcha gone after a refused --purge\n' >&2; return 1; }
+}
+
 purge_removes_data_and_databases_keeps_packages() {
-    bash "$INSTALLER" --uninstall --purge
+    bash "$INSTALLER" --uninstall --purge --yes
     local rc=$?
     [ "$rc" -eq 0 ] || { printf '--uninstall --purge exited %d\n' "$rc" >&2; return 1; }
 
@@ -540,8 +591,10 @@ run_assertions() {
     assert "gotcha /readyz responds 200 via nginx on :80" readyz_via_nginx
 
     assert "re-running the installer with the same version is idempotent (unit alive, env untouched, /readyz ok)" survives_idempotent_rerun
+    assert "a lost gotcha.env is recovered by regenerating the PostgreSQL/ClickHouse passwords" recovers_after_env_file_lost
 
     assert "--uninstall removes the unit and binary, keeps data/databases/packages/repos" uninstall_removes_unit_and_binary_keeps_data
+    assert "--purge without confirmation and without --yes refuses" purge_without_confirmation_refuses
     assert "re-installing after --uninstall succeeds" reinstall_after_uninstall_succeeds
     assert "--purge removes data/databases/system user, keeps packages/repos" purge_removes_data_and_databases_keeps_packages
 }

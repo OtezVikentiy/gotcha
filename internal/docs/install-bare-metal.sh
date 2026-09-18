@@ -42,7 +42,7 @@ Usage: install-bare-metal.sh [flags]
   --no-backup              skip the pre-migration pg_dump on upgrade
   --force-version          allow installing a version older than this script
   --uninstall               remove the installation (data and databases are kept)
-  --purge                   with --uninstall, also remove data and databases
+  --purge                   with --uninstall, also remove data and databases (prompts unless --yes)
 EOF
 }
 
@@ -388,14 +388,26 @@ log_step() {
     printf '%s %s\n' "$(date -u +%FT%TZ)" "$1" >>/var/log/gotcha-install.log 2>/dev/null || true
 }
 
-on_err() {
+# ERR не годится: без errtrace он не наследуется функциями, а fail() выходит
+# обычным exit — EXIT срабатывает на любом коде, это единственное надёжное место.
+on_exit() {
     local code=$?
-    printf 'install-bare-metal: FAILED (exit %d)\n' "$code" >&2
-    if [ "${#INSTALL_LOG[@]}" -gt 0 ]; then
-        printf 'install-bare-metal: completed steps so far:\n' >&2
-        printf '  - %s\n' "${INSTALL_LOG[@]}" >&2
-        printf 'install-bare-metal: re-run to retry (idempotent) or pass --uninstall to remove what was done\n' >&2
-    fi
+    cleanup_tmp_dirs
+    [ "$code" -eq 0 ] && return 0
+
+    local report
+    report=$(
+        printf 'install-bare-metal: FAILED (exit %d)\n' "$code"
+        if [ "${#INSTALL_LOG[@]}" -gt 0 ]; then
+            printf 'install-bare-metal: completed steps so far:\n'
+            printf '  - %s\n' "${INSTALL_LOG[@]}"
+        else
+            printf 'install-bare-metal: no steps completed yet\n'
+        fi
+        printf 'install-bare-metal: re-run to retry (idempotent) or pass --uninstall to remove what was done\n'
+    )
+    printf '%s\n' "$report" >&2
+    printf '%s\n' "$report" >>/var/log/gotcha-install.log 2>/dev/null || true
 }
 
 cleanup_tmp_dirs() {
@@ -534,7 +546,7 @@ native_pg_major() {
 # Возвращает через stdout DSN на 127.0.0.1; ставит пакет, роль и базу gotcha.
 # Код 3 — только для решения по мажору ниже, прочие отказы шага — код 5.
 install_postgresql() {
-    local codename="$1" package="postgresql-$PG_MAJOR"
+    local codename="$1" env_file="$2" package="postgresql-$PG_MAJOR"
 
     if pgdg_has_codename "$codename"; then
         local tmp keyring
@@ -572,23 +584,34 @@ install_postgresql() {
     # пакета — сервер поднимает явный systemctl, а не установка сама по себе.
     systemctl restart postgresql || fail "$EXIT_DATABASE" "failed to start postgresql"
 
-    # Пароль генерируется только при первом создании роли — иначе повторный
-    # запуск рассинхронизирует его с уже сохранённым в gotcha.env.
-    local password=""
-    if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'gotcha'" 2>/dev/null | grep -q '^1$'; then
+    # Пароль перевыпускается, только если роли ещё нет, либо она есть, а
+    # gotcha.env — нет: тогда старый пароль всё равно потерян и никого не сломает.
+    local password="" role_exists=""
+    role_exists=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'gotcha'" 2>/dev/null)
+    if [ "$role_exists" != "1" ]; then
         password=$(openssl rand -hex 24)
+    elif [ ! -f "$env_file" ]; then
+        password=$(openssl rand -hex 24)
+        log_step "WARNING: gotcha role exists but $env_file is missing — regenerating its PostgreSQL password"
     fi
-    if ! sudo -u postgres psql -v ON_ERROR_STOP=1 -q >/dev/null <<SQL
+    if [ -n "$password" ] && ! sudo -u postgres psql -v ON_ERROR_STOP=1 -q >/dev/null <<SQL
 DO \$\$ BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'gotcha') THEN
     CREATE ROLE gotcha LOGIN PASSWORD '$password';
+  ELSE
+    ALTER ROLE gotcha PASSWORD '$password';
   END IF;
 END \$\$;
+SQL
+    then
+        fail "$EXIT_DATABASE" "failed to create/reset the gotcha role in PostgreSQL"
+    fi
+    if ! sudo -u postgres psql -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL'
 SELECT 'CREATE DATABASE gotcha OWNER gotcha'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'gotcha')\gexec
 SQL
     then
-        fail "$EXIT_DATABASE" "failed to create the gotcha role/database in PostgreSQL"
+        fail "$EXIT_DATABASE" "failed to create the gotcha database in PostgreSQL"
     fi
 
     log_step "PostgreSQL $PG_MAJOR installed and configured"
@@ -605,7 +628,7 @@ clickhouse_package_version() {
 # Возвращает через stdout DSN на 127.0.0.1; ставит пакет, конфиги из тарбола,
 # пользователя gotcha и лимит файловых дескрипторов. Отказ любого шага — код 5.
 install_clickhouse() {
-    local ram_mb="$1" tarball_root="$2"
+    local ram_mb="$1" tarball_root="$2" env_file="$3"
     local tmp keyring
     tmp=$(mktemp -d)
     TMP_DIRS+=("$tmp")
@@ -637,10 +660,13 @@ install_clickhouse() {
             || fail "$EXIT_DATABASE" "failed to install 10-small.xml"
     fi
 
-    # Пароль и users.d генерируются только при первом запуске — повторный не
-    # рассинхронизирует его с уже сохранённым в gotcha.env.
+    # Пароль и users.d перевыпускаются, только если файла ещё нет, либо он есть,
+    # а gotcha.env — нет: старый пароль в этом случае всё равно потерян.
     local password="" hash
-    if [ ! -f /etc/clickhouse-server/users.d/10-gotcha.xml ]; then
+    if [ ! -f /etc/clickhouse-server/users.d/10-gotcha.xml ] || [ ! -f "$env_file" ]; then
+        if [ -f /etc/clickhouse-server/users.d/10-gotcha.xml ]; then
+            log_step "WARNING: clickhouse user gotcha exists but $env_file is missing — regenerating its password"
+        fi
         password=$(openssl rand -hex 24)
         hash=$(printf '%s' "$password" | sha256sum | awk '{print $1}')
         mkdir -p /etc/clickhouse-server/users.d
@@ -866,11 +892,10 @@ SQL
 main() {
     set -euo pipefail
     IFS=$'\n\t'
-    trap on_err ERR
-    trap cleanup_tmp_dirs EXIT
+    trap on_exit EXIT
 
     # Не local: exit() во вложенных функциях рвёт цепочку динамических областей
-    # видимости раньше, чем сработает EXIT/ERR-трап, и он увидел бы их пустыми.
+    # видимости раньше, чем сработает EXIT-трап, и он увидел бы их пустыми.
     INSTALL_LOG=()
     TMP_DIRS=()
 
@@ -880,6 +905,16 @@ main() {
     fi
     if [ -n "$ARG_UNINSTALL" ]; then
         [ "$(id -u)" = 0 ] || fail "$EXIT_PREFLIGHT" "must run as root"
+        if [ -n "$ARG_PURGE" ] && [ -z "$ARG_YES" ]; then
+            local purge_answer=""
+            # read возвращает ненулевой статус на EOF (закрытый stdin) — под set -e
+            # это уронило бы скрипт кодом 1 раньше, чем сработал бы case ниже.
+            read -r -p "This deletes gotcha's data and databases permanently. Continue? [y/N] " purge_answer || true
+            case "$purge_answer" in
+                y | Y | yes | YES) ;;
+                *) fail "$EXIT_USAGE" "purge cancelled (confirm with 'y' or pass --yes)" ;;
+            esac
+        fi
         uninstall_app "$ARG_PURGE"
         exit "$EXIT_OK"
     fi
@@ -931,12 +966,15 @@ main() {
         exit "$EXIT_OK"
     fi
 
+    local env_file=/etc/gotcha/gotcha.env
+    # Без env-файла install_postgresql/install_clickhouse ниже могут перевыпустить
+    # пароль под уже работающим сервисом — останавливаем его первым, пока не поздно.
+    [ -f "$env_file" ] || systemctl stop gotcha 2>/dev/null || true
     if [ -z "$ARG_SKIP_DATABASES" ]; then
-        ARG_PG_DSN=$(install_postgresql "$HOST_CODENAME")
-        ARG_CH_DSN=$(install_clickhouse "$HOST_RAM_MB" "$tarball_root")
+        ARG_PG_DSN=$(install_postgresql "$HOST_CODENAME" "$env_file")
+        ARG_CH_DSN=$(install_clickhouse "$HOST_RAM_MB" "$tarball_root" "$env_file")
     fi
 
-    local env_file=/etc/gotcha/gotcha.env
     create_app_user
 
     if [ -n "$need_upgrade" ]; then
