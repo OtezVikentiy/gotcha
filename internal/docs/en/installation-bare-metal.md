@@ -55,7 +55,9 @@ Find the distribution's codename and add the official PGDG repository:
 CODENAME=$(. /etc/os-release && printf '%s\n' "$VERSION_CODENAME")
 curl -fsSL -o /tmp/pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
 gpg --dearmor </tmp/pgdg.asc >/usr/share/keyrings/gotcha-pgdg.gpg
-printf 'deb [signed-by=/usr/share/keyrings/gotcha-pgdg.gpg] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' "$CODENAME" \
+KEY=/usr/share/keyrings/gotcha-pgdg.gpg
+REPO=https://apt.postgresql.org/pub/repos/apt
+printf 'deb [signed-by=%s] %s %s-pgdg main\n' "$KEY" "$REPO" "$CODENAME" \
   >/etc/apt/sources.list.d/gotcha-pgdg.list
 apt-get update
 apt-get install -y postgresql-17
@@ -93,7 +95,9 @@ Add the ClickHouse repository:
 ```bash
 curl -fsSL -o /tmp/clickhouse.asc https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key
 gpg --dearmor </tmp/clickhouse.asc >/usr/share/keyrings/gotcha-clickhouse.gpg
-printf 'deb [signed-by=/usr/share/keyrings/gotcha-clickhouse.gpg] https://packages.clickhouse.com/deb stable main\n' \
+KEY=/usr/share/keyrings/gotcha-clickhouse.gpg
+REPO=https://packages.clickhouse.com/deb
+printf 'deb [signed-by=%s] %s stable main\n' "$KEY" "$REPO" \
   >/etc/apt/sources.list.d/gotcha-clickhouse.list
 apt-get update
 ```
