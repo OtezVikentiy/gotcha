@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- The manual (script-free) bare-metal installation no longer breaks on a package
+  prompt. On a live terminal the `clickhouse-server` post-install script asks for
+  a password for the `default` user, and any password set there made the very
+  next documented step — creating the database — fail with
+  `516 AUTHENTICATION_FAILED`. The page now installs packages non-interactively,
+  the way the installer script already did. The generated password of the
+  ClickHouse `gotcha` user is printed during the same step, since the config
+  keeps only its SHA-256 hash and the password cannot be recovered afterwards,
+  and the troubleshooting section now covers both authentication failures and
+  how to issue a new password.
+
 ## [1.7.0] - 2026-09-18
 
 ### Added
