@@ -384,8 +384,8 @@ make up-rebuild
 Если Gotcha установлен скриптом `install-bare-metal.sh` ([Установка без Docker](/docs/installation-bare-metal)), обновление — тот же скрипт, запущенный ещё раз со свежей версией:
 
 ```bash
-curl -fsSL -o install-bare-metal.sh \
-  https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z/install-bare-metal.sh
+URL="https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z"
+curl -fsSL -o install-bare-metal.sh "$URL/install-bare-metal.sh"
 chmod +x install-bare-metal.sh
 sudo ./install-bare-metal.sh --version X.Y.Z --domain gotcha.example.com --email you@example.com
 ```

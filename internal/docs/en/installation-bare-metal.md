@@ -179,8 +179,9 @@ No home directory and no interactive shell — the process runs as this user, no
 Get the release tarball from GitHub (replace `X.Y.Z` and `<arch>` with amd64 or arm64):
 
 ```bash
-curl -fsSL -o gotcha.tar.gz "https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z/gotcha-X.Y.Z-linux-<arch>.tar.gz"
-curl -fsSL -o SHA256SUMS.txt "https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z/SHA256SUMS.txt"
+URL="https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z"
+curl -fsSL -o gotcha.tar.gz "$URL/gotcha-X.Y.Z-linux-<arch>.tar.gz"
+curl -fsSL -o SHA256SUMS.txt "$URL/SHA256SUMS.txt"
 grep " gotcha.tar.gz\$" SHA256SUMS.txt | sha256sum -c -
 tar xzf gotcha.tar.gz
 cd gotcha-X.Y.Z-linux-<arch>
@@ -343,8 +344,8 @@ A certbot failure doesn't break the HTTP setup already running on port 80 — th
 The script is attached to every release as a standalone file:
 
 ```bash
-curl -fsSL -o install-bare-metal.sh \
-  https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z/install-bare-metal.sh
+URL="https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z"
+curl -fsSL -o install-bare-metal.sh "$URL/install-bare-metal.sh"
 chmod +x install-bare-metal.sh
 sudo ./install-bare-metal.sh --version X.Y.Z --domain gotcha.example.com --email you@example.com
 ```

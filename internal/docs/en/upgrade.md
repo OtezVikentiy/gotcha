@@ -386,8 +386,8 @@ If you only want to update the image without rebuilding from source (e.g. you're
 If Gotcha is installed with `install-bare-metal.sh` ([Installation without Docker](/docs/installation-bare-metal)), upgrading is the same script, run again with the new version:
 
 ```bash
-curl -fsSL -o install-bare-metal.sh \
-  https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z/install-bare-metal.sh
+URL="https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z"
+curl -fsSL -o install-bare-metal.sh "$URL/install-bare-metal.sh"
 chmod +x install-bare-metal.sh
 sudo ./install-bare-metal.sh --version X.Y.Z --domain gotcha.example.com --email you@example.com
 ```

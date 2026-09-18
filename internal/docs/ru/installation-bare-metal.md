@@ -179,8 +179,9 @@ useradd --system --no-create-home --shell /usr/sbin/nologin gotcha
 Возьмите тарбол релиза с GitHub (замените `X.Y.Z` и `<arch>` на amd64 или arm64):
 
 ```bash
-curl -fsSL -o gotcha.tar.gz "https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z/gotcha-X.Y.Z-linux-<arch>.tar.gz"
-curl -fsSL -o SHA256SUMS.txt "https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z/SHA256SUMS.txt"
+URL="https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z"
+curl -fsSL -o gotcha.tar.gz "$URL/gotcha-X.Y.Z-linux-<arch>.tar.gz"
+curl -fsSL -o SHA256SUMS.txt "$URL/SHA256SUMS.txt"
 grep " gotcha.tar.gz\$" SHA256SUMS.txt | sha256sum -c -
 tar xzf gotcha.tar.gz
 cd gotcha-X.Y.Z-linux-<arch>
@@ -343,8 +344,8 @@ certbot --nginx -d gotcha.example.com -m you@example.com --agree-tos --non-inter
 Скрипт прикладывается к каждому релизу отдельным файлом:
 
 ```bash
-curl -fsSL -o install-bare-metal.sh \
-  https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z/install-bare-metal.sh
+URL="https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z"
+curl -fsSL -o install-bare-metal.sh "$URL/install-bare-metal.sh"
 chmod +x install-bare-metal.sh
 sudo ./install-bare-metal.sh --version X.Y.Z --domain gotcha.example.com --email you@example.com
 ```
