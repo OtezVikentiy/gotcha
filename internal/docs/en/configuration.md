@@ -57,15 +57,41 @@ services:
 
 After changing any variable, run `docker compose up -d` to apply it — Docker Compose detects that the container's configuration changed and recreates it.
 
+## How to set environment variables on bare metal
+
+On a Docker-free install ([Installation without Docker](/docs/installation-bare-metal)), variables don't live in an `.env` next to `docker-compose.yml` — they live in the systemd unit's own environment file, `/etc/gotcha/gotcha.env`:
+
+```bash
+nano /etc/gotcha/gotcha.env
+```
+
+```env
+GOTCHA_SECRET_KEY=random-string-from-openssl-rand
+GOTCHA_BASE_URL=https://gotcha.example.com
+GOTCHA_SMTP_HOST=smtp.example.com
+GOTCHA_SMTP_PORT=587
+GOTCHA_SMTP_USER=noreply@example.com
+GOTCHA_SMTP_PASSWORD=an-app-password
+GOTCHA_SMTP_FROM=noreply@example.com
+```
+
+Apply the changes:
+
+```bash
+systemctl restart gotcha
+```
+
+The installer creates this file owned by `root:gotcha` with mode `0640` — keep that after a manual edit (`chown root:gotcha /etc/gotcha/gotcha.env && chmod 0640 /etc/gotcha/gotcha.env`); it holds both databases' passwords and the master encryption key. The equivalent of Docker Compose's `environment:` block — overriding a variable directly on the unit (`systemctl edit gotcha`, `[Service]` section, `Environment=NAME=value`) — also works, but for most edits it's simpler to edit `gotcha.env` itself.
+
 ---
 
 ## Core
 
 | Variable | Default | Description |
 |---|---|---|
-| `GOTCHA_LISTEN_ADDR` | `:8080` | The address and port the HTTP server listens on **inside the container**. You normally don't need to change this — the port is published to the host via `docker-compose.yml`/`GOTCHA_COMPOSE_PORT` instead (see [Installation](/docs/installation)), not via this variable. |
+| `GOTCHA_LISTEN_ADDR` | `:8080` | The address and port the HTTP server listens on **inside the container**. You normally don't need to change this — the port is published to the host via `docker-compose.yml`/`GOTCHA_COMPOSE_PORT` instead (see [Installation](/docs/installation)), not via this variable. On bare metal there's no container at all — it's simply the address the process itself listens on: `install-bare-metal.sh` sets it explicitly to `127.0.0.1:8080`, and the port is published by the nginx it installs alongside (see [Installation without Docker](/docs/installation-bare-metal)). |
 | `GOTCHA_BASE_URL` | `http://localhost:8080` | The public address of your instance — how users and SDKs actually reach it. Used to build project DSNs, links in invite emails, and incident links in alerts (Telegram/webhook/email). Must **exactly match** the scheme+host+port the instance is really reachable at. If it's not `localhost`/`127.0.0.1`, the app requires a non-default `GOTCHA_SECRET_KEY` in the `web`, `all`, `ingest`, and `uptime` modes (everywhere except `probe`) — see the Security section below. If it doesn't start with `https://` and isn't local, a warning is logged (session cookies travel in plain text). |
-| `GOMEMLIMIT` | *(derived from cgroup)* | The standard (no `GOTCHA_` prefix) Go runtime variable — the heap ceiling. Left unset, `internal/memlimit` reads it directly and derives it itself from the container's cgroup limit (see "Compose-only variables" below, `GOTCHA_COMPOSE_MEM_LIMIT`); set it by hand only on bare metal with no cgroup, or to override the derived value. |
+| `GOMEMLIMIT` | *(derived from cgroup)* | The standard (no `GOTCHA_` prefix) Go runtime variable — the heap ceiling. Left unset, `internal/memlimit` reads it directly and derives it itself from the container's cgroup limit (see "Compose-only variables" below, `GOTCHA_COMPOSE_MEM_LIMIT`); set it by hand only on bare metal with no cgroup, or to override the derived value. On a bare-metal install, `install-bare-metal.sh` does this derivation itself: it computes the value from the `--mem-limit` flag (default 819MiB — 80% of the unit's `MemoryMax=1024M`) and writes it straight into `gotcha.env`; setting it by hand is only needed to change the limit without reinstalling. |
 
 ## Database
 
@@ -76,7 +102,7 @@ After changing any variable, run `docker compose up -d` to apply it — Docker C
 
 ### Compose-only variables (database containers)
 
-These four are **Docker Compose substitution variables**, not configuration of the gotcha process: the app never reads them. Compose substitutes them into the database containers' settings and into the DSNs above.
+These four are **Docker Compose substitution variables**, not configuration of the gotcha process: the app never reads them. Compose substitutes them into the database containers' settings and into the DSNs above. Bare metal has no such layer: `install-bare-metal.sh` generates both database passwords itself (`openssl rand -hex 24`) and writes them straight into `GOTCHA_PG_DSN`/`GOTCHA_CH_DSN` inside `/etc/gotcha/gotcha.env` — there's no separate password variable to set.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -89,11 +115,39 @@ These four are **Docker Compose substitution variables**, not configuration of t
 
 1. Change the password in the database itself:
    ```bash
-   docker compose exec postgres psql -U gotcha -d gotcha -c "ALTER USER gotcha WITH PASSWORD 'new-password'"
-   docker compose exec clickhouse clickhouse-client --user gotcha --password 'old-password' -q "ALTER USER gotcha IDENTIFIED BY 'new-password'"
+   docker compose exec postgres psql -U gotcha -d gotcha \
+     -c "ALTER USER gotcha WITH PASSWORD 'new-password'"
+   docker compose exec clickhouse clickhouse-client --user gotcha \
+     --password 'old-password' -q "ALTER USER gotcha IDENTIFIED BY 'new-password'"
    ```
 2. Set `GOTCHA_COMPOSE_PG_PASSWORD`/`GOTCHA_COMPOSE_CH_PASSWORD` in `.env`.
 3. `docker compose up -d` — the app container is recreated with the new DSN.
+
+**Changing a database password on bare metal.** Same order, minus the substitution
+variables — the DSN is edited in `gotcha.env` directly. In PostgreSQL the password is
+changed with a query; in ClickHouse it is not: the `gotcha` user is defined by
+`users.d/10-gotcha.xml` with `access_management=0`, so `ALTER USER` on it fails with
+`Not enough privileges (ACCESS_DENIED)`. There you edit the file itself — it holds the
+SHA-256 of the password, not the password.
+
+1. Change the password in PostgreSQL:
+   ```bash
+   sudo -u postgres psql -d gotcha -c "ALTER USER gotcha WITH PASSWORD 'new-password'"
+   ```
+2. Change the password in ClickHouse — compute the hash, put it into
+   `<password_sha256_hex>` in `/etc/clickhouse-server/users.d/10-gotcha.xml`
+   and restart the server:
+   ```bash
+   printf '%s' 'new-password' | sha256sum | awk '{print $1}'
+   # put the hash you got into <password_sha256_hex> of
+   # /etc/clickhouse-server/users.d/10-gotcha.xml
+   systemctl restart clickhouse-server
+   ```
+3. Update the password inside the `GOTCHA_PG_DSN`/`GOTCHA_CH_DSN` lines of `/etc/gotcha/gotcha.env` — here it's part of the DSN itself, not a separate variable.
+4. `systemctl restart gotcha`.
+
+A later `install-bare-metal.sh` run keeps the change: passwords are only reissued when
+`gotcha.env` itself went missing (see [Installation without Docker](/docs/installation-bare-metal)).
 
 ### Compose-only variables (the app container)
 
@@ -105,6 +159,17 @@ These four are **Docker Compose substitution variables**, not configuration of t
 | `GOTCHA_COMPOSE_PORT` | `59080` | Host port the app container is published on (the container's own port, `8080`, doesn't change). Change it if `59080` on the host is already taken by another service. |
 | `GOTCHA_COMPOSE_NO_NEW_PRIVS` | `true` | The `no-new-privileges` flag on the app container. Setting it to `false` makes sense in exactly one situation: the container dies at startup with `exec /usr/local/bin/gotcha: operation not permitted` while `postgres` and `clickhouse` are healthy. That is an AppArmor refusal on a host where `dockerd` itself is confined (Docker from snap), not a broken image — the walkthrough and the one-line check are under "Troubleshooting" in [Installation](/docs/installation). The proper fix is Docker not from snap; this switch gets you running until then. The rest of the container's isolation (non-root user, `cap_drop: ALL`, `read_only`) is unchanged. |
 
+Bare metal has none of this layer — the `GOTCHA_COMPOSE_*` variables are Docker Compose's
+own substitutions, and `install-bare-metal.sh` neither reads nor writes them. The direct
+equivalents: the memory ceiling is set by the installer's `--mem-limit` flag (which keeps
+the unit's `MemoryMax` and `GOMEMLIMIT` in `gotcha.env` in sync, see above); the listen
+address and port are just `GOTCHA_LISTEN_ADDR` in `gotcha.env` (`127.0.0.1:8080` by
+default, with the installer's own nginx publishing the port — see [Installation without
+Docker](/docs/installation-bare-metal)), not separate bind/port variables; MTU is a
+property of the host's own network interface, with no container network layer to tune;
+`NoNewPrivileges=yes` in the unit is unconditional — no switch, and none of the
+AppArmor/snap caveat that only applies to Docker.
+
 ### Build-only variables (`Makefile` build-args)
 
 These three are substitution variables too, but not Docker Compose's — `Makefile`'s: it forwards them into `docker compose build` as image build-args (`DOCKER_BUILD_ENV`, see `Dockerfile`). No gotcha process reads them; `make` sets them itself (`git describe`/commit/date) — you only need these if you build the image with `docker compose build` directly, bypassing `make`.
@@ -114,6 +179,10 @@ These three are substitution variables too, but not Docker Compose's — `Makefi
 | `GOTCHA_BUILD_VERSION` | `dev` | Version the binary prints in `/healthz` and the startup log. `make` sets it itself from `git describe --tags`. |
 | `GOTCHA_BUILD_COMMIT` | *(empty)* | Commit hash baked into the binary the same way. |
 | `GOTCHA_BUILD_DATE` | *(empty)* | Build date baked into the binary the same way. |
+
+Bare metal never builds an image at all — the version and commit are baked into the
+binary by `scripts/build-dist.sh` when the release tarball is built; a bare-metal install
+never touches these three variables.
 
 **Start with the symptom, not the numbers.** Docker gives container networks an MTU of 1500 without looking at the host's uplink, and a VPS behind a tunnel (GRE, VXLAN, OpenVZ) commonly has 1450. The mismatch itself is everywhere, and most installations live with it and never notice.
 
@@ -362,6 +431,7 @@ Step-by-step setup for each provider is in [SSO](/docs/sso).
 ## What's next
 
 - [Installation](/docs/installation) — getting started on a fresh server.
+- [Installation without Docker](/docs/installation-bare-metal) — same variable contract, a different way to set it.
 - [Backup & Restore](/docs/backup-restore).
 - [Upgrade](/docs/upgrade).
 - [SSO](/docs/sso).

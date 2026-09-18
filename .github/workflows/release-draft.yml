@@ -9,6 +9,10 @@ on:
       tag:
         description: 'Тег, для которого собрать черновик (например v1.3.1)'
         required: true
+      force_upload:
+        description: 'Перезаписать ассеты уже опубликованного релиза этим тегом'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -115,3 +119,93 @@ jobs:
           else
             echo "::notice::Релиз $TAG уже опубликован - тело не трогаю"
           fi
+
+  dist:
+    name: артефакты релиза
+    needs: draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      # Джоба тоже несёт RELEASE_PAT (см. пин checkout выше в draft) — оба
+      # действия здесь пинуются по digest тем же принципом.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build the delivery tarballs (amd64, arm64)
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          bash scripts/build-dist.sh --version "$version" --arch amd64 --out dist
+          bash scripts/build-dist.sh --version "$version" --arch arm64 --out dist
+
+      - name: Standalone installer with the release version baked in
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          cp internal/docs/install-bare-metal.sh dist/install-bare-metal.sh
+          sed -i "s/^GOTCHA_INSTALL_DEFAULT_VERSION=\"dev\"\$/GOTCHA_INSTALL_DEFAULT_VERSION=\"$version\"/" dist/install-bare-metal.sh
+          grep -q "GOTCHA_INSTALL_DEFAULT_VERSION=\"$version\"" dist/install-bare-metal.sh \
+            || { echo "::error::sed didn't patch GOTCHA_INSTALL_DEFAULT_VERSION in dist/install-bare-metal.sh" >&2; exit 1; }
+
+      # pandoc/latex не несёт fvextra/hyphen-russian/DejaVu/poppler-utils.
+      # Пакеты из CTAN не пиновать: tlmgr отдаёт только актуальные версии.
+      - name: Build the PDF bundle (pandoc/xelatex in a container)
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          docker run --rm -v "$PWD":/work -w /work --entrypoint sh \
+            pandoc/latex@sha256:cdbf139f607237498b412b3aa051008311d69b88006ab47550efba357af3b277 \
+            -c "apk add --no-cache font-dejavu poppler-utils fontconfig bash python3 grep && tlmgr install fvextra hyphen-russian && bash scripts/docs-pdf.sh --version $version --out dist"
+
+      - name: SHA256SUMS.txt over every uploaded asset
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          (cd dist && sha256sum \
+            "gotcha-$version-linux-amd64.tar.gz" \
+            "gotcha-$version-linux-arm64.tar.gz" \
+            install-bare-metal.sh \
+            "gotcha-bare-metal-ru-$version.pdf" \
+            "gotcha-bare-metal-en-$version.pdf" \
+            > SHA256SUMS.txt)
+
+      - name: Upload assets to the draft
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || github.token }}
+          FORCE_UPLOAD: ${{ inputs.force_upload == true }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::релиз $TAG не найден - ожидается, что его уже создала джоба draft" >&2
+            exit 1
+          fi
+
+          # Отдельно от значения isDraft: сбой самой команды (протухший токен,
+          # сеть, API) не должен выглядеть штатным пропуском "уже опубликован".
+          is_draft=$(gh release view "$TAG" --json isDraft -q .isDraft) \
+            || { echo "::error::gh release view $TAG не смог отдать состояние релиза" >&2; exit 1; }
+
+          # Симметрично draft: перезаписывать ассеты опубликованного релиза
+          # молча нельзя — только осознанным workflow_dispatch с force_upload.
+          if [ "$is_draft" != "true" ] && [ "$FORCE_UPLOAD" != "true" ]; then
+            echo "::notice::Релиз $TAG уже опубликован - ассеты не трогаю (нужен запуск workflow_dispatch с force_upload)"
+            exit 0
+          fi
+
+          gh release upload "$TAG" --clobber \
+            "dist/gotcha-$version-linux-amd64.tar.gz" \
+            "dist/gotcha-$version-linux-arm64.tar.gz" \
+            dist/install-bare-metal.sh \
+            "dist/gotcha-bare-metal-ru-$version.pdf" \
+            "dist/gotcha-bare-metal-en-$version.pdf" \
+            dist/SHA256SUMS.txt

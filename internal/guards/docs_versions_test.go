@@ -15,10 +15,12 @@ type codeVersions struct {
 }
 
 var (
-	goModVersionRe     = regexp.MustCompile(`(?m)^go (\d+\.\d+(?:\.\d+)?)`)
-	dockerGoVersionRe  = regexp.MustCompile(`golang:(\d+\.\d+(?:\.\d+)?)-alpine@sha256:`)
-	composePGVersionRe = regexp.MustCompile(`postgres:(\d+)-alpine@sha256:`)
-	composeCHVersionRe = regexp.MustCompile(`clickhouse-server:(\d+\.\d+)-alpine@sha256:`)
+	goModVersionRe       = regexp.MustCompile(`(?m)^go (\d+\.\d+(?:\.\d+)?)`)
+	dockerGoVersionRe    = regexp.MustCompile(`golang:(\d+\.\d+(?:\.\d+)?)-alpine@sha256:`)
+	composePGVersionRe   = regexp.MustCompile(`postgres:(\d+)-alpine@sha256:`)
+	composeCHVersionRe   = regexp.MustCompile(`clickhouse-server:(\d+\.\d+)-alpine@sha256:`)
+	installerPGVersionRe = regexp.MustCompile(`(?m)^PG_MAJOR="(\d+)"`)
+	installerCHVersionRe = regexp.MustCompile(`(?m)^CH_VERSION="(\d+\.\d+)"`)
 )
 
 var versionDigitsRe = regexp.MustCompile(`\d+(?:\.\d+)*`)
@@ -86,6 +88,8 @@ func docVersionTargets(root string) []docTarget {
 		{"README.ru.md", filepath.Join(root, "README.ru.md"), all},
 		{"internal/docs/en/installation.md", filepath.Join(root, "internal", "docs", "en", "installation.md"), all},
 		{"internal/docs/ru/installation.md", filepath.Join(root, "internal", "docs", "ru", "installation.md"), all},
+		{"internal/docs/en/installation-bare-metal.md", filepath.Join(root, "internal", "docs", "en", "installation-bare-metal.md"), all},
+		{"internal/docs/ru/installation-bare-metal.md", filepath.Join(root, "internal", "docs", "ru", "installation-bare-metal.md"), all},
 		{"CONTRIBUTING.md", filepath.Join(root, "CONTRIBUTING.md"), []string{"Go"}},
 		{"CONTRIBUTING.ru.md", filepath.Join(root, "CONTRIBUTING.ru.md"), []string{"Go"}},
 	}
@@ -147,6 +151,22 @@ func TestDocVersionsMatchCode(t *testing.T) {
 				t.Errorf("%s: версия %s не названа — требование по паре «система × файл», ссылки на соседний файл не засчитываются", target.label, system)
 			}
 		}
+	}
+}
+
+func TestInstallerVersionsMatchCode(t *testing.T) {
+	tree := Load(t)
+	code := loadCodeVersions(t, tree.Root)
+	installer := readDocFile(t, filepath.Join(tree.Root, "internal", "docs", "install-bare-metal.sh"))
+
+	pgMajor := extractVersion(t, installerPGVersionRe, installer, "install-bare-metal.sh (PG_MAJOR)")
+	if pgMajor != code.pgVersion {
+		t.Errorf("install-bare-metal.sh: PG_MAJOR=%s, docker-compose.yml postgres:%s-alpine", pgMajor, code.pgVersion)
+	}
+
+	chVersion := extractVersion(t, installerCHVersionRe, installer, "install-bare-metal.sh (CH_VERSION)")
+	if chVersion != code.chVersion {
+		t.Errorf("install-bare-metal.sh: CH_VERSION=%s, docker-compose.yml clickhouse-server:%s-alpine", chVersion, code.chVersion)
 	}
 }
 

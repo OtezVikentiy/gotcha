@@ -2,6 +2,8 @@
 
 This guide assumes you've never deployed a Docker application or administered a Linux server before. Every command below is ready to copy and paste.
 
+Would rather not install Docker? There's a path without it — [Bare-metal install (without Docker)](/docs/installation-bare-metal).
+
 ## What you need
 
 - **A Linux server** (VPS/dedicated) — Ubuntu 22.04/24.04, Debian 12, or a RedHat-family distribution (AlmaLinux 9/10, Rocky Linux 9/10, RHEL 9/10) all work. CPU/RAM/disk requirements are in the table below.

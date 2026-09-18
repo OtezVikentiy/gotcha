@@ -34,6 +34,7 @@ var registry = []struct{ Slug, Group string }{
 	{"glossary", "docs.group.start"},
 	{"time-range", "docs.group.start"},
 	{"installation", "docs.group.deploy"},
+	{"installation-bare-metal", "docs.group.deploy"},
 	{"configuration", "docs.group.deploy"},
 	{"hardening", "docs.group.deploy"},
 	{"backup-restore", "docs.group.deploy"},

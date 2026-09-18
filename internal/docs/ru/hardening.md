@@ -73,6 +73,19 @@ handle @internal {
 Замените `10.0.0.0/8` на диапазон, из которого реально приходят ваши пробы (оркестратор,
 Prometheus, ваша сеть) — открытый по умолчанию диапазон бессмысленен как ограничение.
 
+Bare-metal сайт nginx, который ставит `install-bare-metal.sh`, закрывает `/metrics` и
+`/version` этим же способом по умолчанию: снаружи оба отвечают 403, открыт только loopback
+(`127.0.0.1`/`::1`) — см. [Установку без Docker](/docs/installation-bare-metal). `/healthz`
+и `/readyz` умышленно оставлены открытыми — это единственные две ручки, которым нужно
+отвечать наружу, ради внешних проверок доступности самого инстанса. Цена этого решения —
+ровно та, что названа выше: обе пробы анонимно отдают поле `version`, то есть точную
+версию сборки. Если для вашей установки это неприемлемо, допишите `healthz|readyz` в тот
+же `location`-блок сайта (`location ~ ^/(metrics|version|healthz|readyz)$`) и пустите
+внешнюю проверку доступности на обычную страницу вместо пробы. Чтобы пустить к
+`/metrics` свой сборщик метрик, добавьте его подсеть строкой `allow ...;` перед `deny all;`
+в блоке `location ~ ^/(metrics|version)$` файла `/etc/nginx/sites-available/gotcha` и
+перезагрузите конфиг (`nginx -t && systemctl reload nginx`).
+
 То же относится к базам. Штатный `docker-compose.yml` не публикует порты PostgreSQL и
 ClickHouse на хост — до них добираются только контейнеры той же docker-сети, — но пароль
 у обеих по умолчанию `gotcha` / `gotcha`, и он одинаков у каждой установки в мире. Смените
@@ -81,7 +94,10 @@ ClickHouse на хост — до них добираются только ко�
 установке — сначала `ALTER USER` в самой базе, потом переменная; команды — в
 [Конфигурации](/docs/configuration#peremennye-tolko-dlya-compose-konteynery-baz). И не
 добавляйте базам `ports:` «для удобства»: с дефолтным паролем это открытая база на публичном
-адресе.
+адресе. На bare-metal этой дыры нет по конструкции: `install-bare-metal.sh` генерирует
+случайный пароль каждой базе при первой установке (`openssl rand -hex 24`), общего для всех
+инсталляций пароля там не существует — PostgreSQL и ClickHouse к тому же слушают только
+`127.0.0.1`, порты наружу не открыты вовсе, если не задавать их вручную.
 
 ## TLS и HSTS
 
@@ -123,6 +139,51 @@ Preload — билет в один конец: попав в список пре
 Выключенный HSTS пин сам по себе **не снимает** — он лишь перестаёт продлеваться, поэтому
 шаг 4 без шагов 1–3 не отменяет аварию, а замораживает её на срок ранее выданного max-age.
 
+## Bare-metal: юнит systemd вместо рантайма контейнера
+
+На установке без Docker ([Установка без Docker](/docs/installation-bare-metal)) то же
+усиление процесса, которое в Docker-пути даёт рантайм контейнера, обеспечивает
+systemd-юнит `/etc/systemd/system/gotcha.service`, который пишет `install-bare-metal.sh`.
+Паритет построчно:
+
+| Docker Compose | systemd-юнит |
+|---|---|
+| `read_only: true` | `ProtectSystem=strict` (запись разрешена только в `StateDirectory=`) |
+| `tmpfs: [/tmp]` | `PrivateTmp=yes` |
+| `cap_drop: [ALL]` | `CapabilityBoundingSet=` и `AmbientCapabilities=` (пустые) |
+| `no-new-privileges` | `NoNewPrivileges=yes` |
+| `pids_limit: 512` | `TasksMax=512` |
+| `mem_limit: 1g` | `MemoryMax=` + `MemoryAccounting=yes` + явный `GOMEMLIMIT` в `gotcha.env` |
+| `stop_grace_period: 90s` | `TimeoutStopSec=90` |
+| `restart: unless-stopped` | `Restart=always`, `RestartSec=5` |
+| том выгрузок | `StateDirectory=gotcha`, `StateDirectoryMode=0700` |
+| `logging: json-file` | journald (`journalctl -u gotcha`) |
+| `depends_on: service_healthy` | `After=postgresql.service clickhouse-server.service network-online.target` |
+
+Юнит идёт дальше паритета: `ProtectHome`, `PrivateDevices`, `ProtectKernelTunables`,
+`ProtectKernelModules`, `ProtectKernelLogs`, `ProtectControlGroups`, `ProtectClock`,
+`ProtectHostname`, `ProtectProc=invisible`, `RestrictNamespaces`, `RestrictRealtime`,
+`RestrictSUIDSGID`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `LockPersonality`,
+`SystemCallFilter=@system-service`, `SystemCallArchitectures=native`, `UMask=0077` и
+`MemoryDenyWriteExecute=yes` — этих ограничений у контейнерного рантайма попросту нет, они
+специфичны для systemd.
+
+`After=` без `Requires=` — намеренно: перезапуск PostgreSQL или ClickHouse не должен тянуть
+за собой перезапуск приложения, оно переживает временную недоступность базы и само
+восстановится через `Restart=always`, когда база вернётся, — то же поведение, что и в
+Docker-пути.
+
+Проверьте фактически применённые ограничения после установки:
+
+```bash
+systemctl show gotcha.service -p MemoryDenyWriteExecute,ProtectSystem,NoNewPrivileges
+systemd-analyze security gotcha.service
+```
+
+`systemd-analyze security` печатает по каждой директиве, что она даёт, и итоговую оценку —
+это тот же по духу инструмент, что `docker inspect` для контейнерного рантайма, только
+для юнита.
+
 ## security.txt
 
 Приложение не отдаёт `/.well-known/security.txt` само — это осознанное решение, не
@@ -144,21 +205,22 @@ location = /.well-known/security.txt {
 
 ```bash
 # security-заголовки приложения на странице входа
-curl -sI https://gotcha.example/login | grep -Ei 'content-security-policy|x-frame-options|strict-transport'
+curl -sI https://gotcha.example/login \
+  | grep -Ei 'content-security-policy|x-frame-options|strict-transport'
 
 # HSTS есть на https-инстансе...
 curl -sI https://gotcha.example/login | grep -i strict-transport
 # ...и его нет на голом http-деплое, независимо от конфига
 # (пусто, если только ваш прокси сам не вешает HSTS на редиректе http->https —
 # рекомендуемая топология выше это допускает; тогда заголовок на 301 ожидаем)
-curl -sI http://gotcha.example/login | grep -i strict-transport   # ожидается: пусто
+curl -sI http://gotcha.example/login | grep -i strict-transport # ожидается: пусто
 
 # служебные пути закрыты прокси
-curl -s -o /dev/null -w '%{http_code}\n' https://gotcha.example/metrics   # ожидается 403
-curl -s -o /dev/null -w '%{http_code}\n' https://gotcha.example/version  # ожидается 403
+curl -s -o /dev/null -w '%{http_code}\n' https://gotcha.example/metrics # ожидается 403
+curl -s -o /dev/null -w '%{http_code}\n' https://gotcha.example/version # ожидается 403
 
 # TRACE не обслуживается
-curl -s -o /dev/null -w '%{http_code}\n' -X TRACE https://gotcha.example/login  # ожидается 404
+curl -s -o /dev/null -w '%{http_code}\n' -X TRACE https://gotcha.example/login # ожидается 404
 ```
 
 Про TRACE отдельно: ожидается именно **404, а не 405**. Веб-слой перехватывает любой метод

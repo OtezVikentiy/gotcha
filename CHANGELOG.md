@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- An alternative to Docker Compose: a bash installer
+  (`install-bare-metal.sh`, downloaded from the release page) that sets up
+  PostgreSQL, ClickHouse, and the application as a systemd service on a plain
+  Debian or Ubuntu host, plus a documentation page with the same steps run by
+  hand for anyone who wants to skip the script. Releases now also ship
+  per-architecture binary tarballs and, alongside the existing HTML docs, a
+  PDF bundle of the operational pages (installation, configuration,
+  hardening, backup/restore, upgrade) in each locale.
+
 ## [1.6.1] - 2026-09-17
 
 ### Changed

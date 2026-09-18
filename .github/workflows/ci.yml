@@ -21,7 +21,9 @@ jobs:
   quick:
     name: fmt + vet + unit + race
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Вхолодную здесь собираются сервер и оба агента (проверка раскладки тарбола),
+    # а не только гоняются тесты — 20 минут стали тесными.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -47,7 +49,15 @@ jobs:
           curl -fsSL -o sc.tar.xz "https://github.com/koalaman/shellcheck/releases/download/${SC_VER}/shellcheck-${SC_VER}.linux.x86_64.tar.xz"
           echo "${SC_SHA256}  sc.tar.xz" | sha256sum -c -
           tar -xJf sc.tar.xz
-          "./shellcheck-${SC_VER}/shellcheck" internal/web/install.sh
+          "./shellcheck-${SC_VER}/shellcheck" internal/web/install.sh internal/docs/install-bare-metal.sh scripts/bare-metal-e2e.sh scripts/docs-pdf.sh
+
+      - name: install-bare-metal.sh unit tests
+        run: bash scripts/test-install-bare-metal.sh
+
+      # Единственная проверка раскладки релизного тарбола: релизная джоба грузит его
+      # без неё, и выпавший файл (агент под arm64) прошёл бы все остальные гейты.
+      - name: dist tarball layout
+        run: bash scripts/test-build-dist.sh
 
       - uses: actions/setup-node@v5
         with:
@@ -160,6 +170,44 @@ jobs:
       - name: снос стека
         if: always()
         run: docker compose down -v
+
+  bare-metal:
+    name: bare-metal установка (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    # Прогон ставит обе СУБД и запускает инсталлятор шесть раз; на медленном зеркале
+    # пакетов он доходил до 25 минут, и 30 оказывалось впритык.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: собрать тарбол поставки
+        run: bash scripts/build-dist.sh --version 0.0.0 --arch ${{ matrix.arch }} --out dist
+
+      # Раннер несёт предустановленный (не запущенный) postgresql — гасим заранее,
+      # иначе preflight откажет по занятому порту 5432.
+      - name: погасить предустановленные СУБД раннера
+        run: sudo systemctl stop postgresql clickhouse-server 2>/dev/null || true
+
+      - name: install-bare-metal.sh на раннере
+        run: sudo -E bash scripts/bare-metal-e2e.sh --tarball "dist/gotcha-0.0.0-linux-${{ matrix.arch }}.tar.gz"
+
+      - name: логи сервисов при отказе
+        if: failure()
+        run: |
+          sudo journalctl -u gotcha -u postgresql -u clickhouse-server --no-pager -n 200 || true
 
   race-integration:
     name: гонки на интеграционных
