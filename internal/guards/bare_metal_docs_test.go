@@ -196,3 +196,29 @@ func sortedKeys(m map[string]bool) []string {
 	sort.Strings(out)
 	return out
 }
+
+// Постинстал clickhouse-server на живом терминале спрашивает пароль пользователя
+// default, и заданный там пароль ломает создание базы следующим шагом. Скрипт
+// ставит пакеты неинтерактивно — ручной путь в доке обязан делать то же.
+func TestBareMetalAptInstallsAreNonInteractive(t *testing.T) {
+	tree := Load(t)
+
+	sources := bareMetalDocPaths(tree.Root)
+	sources["installer"] = filepath.Join(tree.Root, "internal", "docs", "install-bare-metal.sh")
+
+	for name, path := range sources {
+		seen := 0
+		for _, line := range strings.Split(readDocFile(t, path), "\n") {
+			if !strings.Contains(line, "apt-get install") {
+				continue
+			}
+			seen++
+			if !strings.HasPrefix(strings.TrimSpace(line), "DEBIAN_FRONTEND=noninteractive apt-get install") {
+				t.Errorf("%s: apt-get install без DEBIAN_FRONTEND=noninteractive: %q", name, strings.TrimSpace(line))
+			}
+		}
+		if seen == 0 {
+			t.Errorf("%s: ни одной установки пакетов не найдено — сторож смотрит мимо файла", name)
+		}
+	}
+}
