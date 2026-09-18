@@ -420,6 +420,13 @@ Expect `200 OK`. Log into the UI, create an organization and a project, and send
 
 **The first user.** On a fresh instance, whoever registers first is automatically granted instance-admin rights, regardless of the self-registration mode. Every later signup is governed by `GOTCHA_REGISTRATION_MODE` (see [Configuration](/docs/configuration)).
 
+**The install stops with exit code 5 and `port 5432 listens on 0.0.0.0:5432, not loopback only`** (same for 8123 and 9000). After installing the databases the script checks which addresses they actually listen on and refuses to go further unless that is `127.0.0.1`/`::1`. The refusal means exactly one thing: the host already had a PostgreSQL or ClickHouse configured for all interfaces, and the script reused it — so the promise that the databases are not exposed does not hold for this install. The check exists because silently ending up with a database on a public address is worse than an interrupted install.
+
+Two ways out:
+
+- put the database back on loopback and run the script again (it is idempotent): for PostgreSQL that is `listen_addresses = 'localhost'` in `postgresql.conf` (or in your own file under `conf.d/`) plus `systemctl restart postgresql`; for ClickHouse it is `<listen_host>` under `/etc/clickhouse-server/config.d/` plus `systemctl restart clickhouse-server`;
+- if external access to that database is deliberate and it isn't "ours", install with `--skip-databases` and your own `--pg-dsn`/`--ch-dsn` — the script then neither touches nor checks the databases, and their availability and configuration stay with the operator.
+
 ## Diagnostics
 
 Three log sources:
