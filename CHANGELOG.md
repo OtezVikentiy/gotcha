@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-09-18
+
 ### Fixed
 - The manual (script-free) bare-metal installation no longer breaks on a package
   prompt. On a live terminal the `clickhouse-server` post-install script asks for
