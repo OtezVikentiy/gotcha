@@ -21,7 +21,9 @@ jobs:
   quick:
     name: fmt + vet + unit + race
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Вхолодную здесь собираются сервер и оба агента (проверка раскладки тарбола),
+    # а не только гоняются тесты — 20 минут стали тесными.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
