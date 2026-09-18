@@ -92,6 +92,9 @@ dist: ## Собрать тарболы поставки в ./dist
 	./scripts/build-dist.sh --version $(DIST_VERSION) --arch amd64 --out ./dist
 	./scripts/build-dist.sh --version $(DIST_VERSION) --arch arm64 --out ./dist
 
+docs-pdf: ## Собрать PDF-комплект bare-metal документации в ./dist (нужны pandoc/xelatex)
+	./scripts/docs-pdf.sh --version $(DIST_VERSION) --out ./dist
+
 templ: ## Regenerate templ templates (*_templ.go)
 	go run github.com/a-h/templ/cmd/templ@$$(go list -m -f '{{.Version}}' github.com/a-h/templ) generate
 
