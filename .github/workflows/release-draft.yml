@@ -9,6 +9,10 @@ on:
       tag:
         description: 'Тег, для которого собрать черновик (например v1.3.1)'
         required: true
+      force_upload:
+        description: 'Перезаписать ассеты уже опубликованного релиза этим тегом'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -176,9 +180,18 @@ jobs:
       - name: Upload assets to the draft
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT || github.token }}
+          FORCE_UPLOAD: ${{ inputs.force_upload == true }}
         run: |
           set -euo pipefail
           version="${TAG#v}"
+
+          # Симметрично draft: перезаписывать ассеты опубликованного релиза
+          # молча нельзя — только осознанным workflow_dispatch с force_upload.
+          if [ "$(gh release view "$TAG" --json isDraft -q .isDraft)" != "true" ] && [ "$FORCE_UPLOAD" != "true" ]; then
+            echo "::notice::Релиз $TAG уже опубликован - ассеты не трогаю (нужен запуск workflow_dispatch с force_upload)"
+            exit 0
+          fi
+
           gh release upload "$TAG" --clobber \
             "dist/gotcha-$version-linux-amd64.tar.gz" \
             "dist/gotcha-$version-linux-arm64.tar.gz" \
