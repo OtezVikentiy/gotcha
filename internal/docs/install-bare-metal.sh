@@ -67,21 +67,39 @@ detect_arch() {
     esac
 }
 
+# "v0.2.0-5-gabcdef-dirty" от локально собранного бинаря — такой же законный вход,
+# как "1.6.1": ведущий v и всё после первого дефиса/плюса к сравнению не относятся.
+normalize_version() {
+    local v="${1#v}"
+    v="${v%%-*}"
+    printf '%s\n' "${v%%+*}"
+}
+
+is_semver() {
+    [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
 # Сравнение по числовым сегментам X.Y.Z — лексикографическое здесь неверно
 # (1.10.0 < 1.9.0 посимвольно, хотя 1.10.0 новее).
 version_ge() {
-    local a="$1" b="$2"
+    local a b
+    a=$(normalize_version "$1")
+    b=$(normalize_version "$2")
     local -a av bv
     IFS=. read -r -a av <<<"$a"
     IFS=. read -r -a bv <<<"$b"
     local i x y
     for i in 0 1 2; do
+        # Сегмент режется до ведущих цифр: под set -u нечисловой остаток уронил бы
+        # (( )) кодом 1 вместо контрактного отказа.
         x="${av[i]:-0}"
+        x="${x%%[!0-9]*}"
         y="${bv[i]:-0}"
-        if ((10#$x > 10#$y)); then
+        y="${y%%[!0-9]*}"
+        if ((10#${x:-0} > 10#${y:-0})); then
             return 0
         fi
-        if ((10#$x < 10#$y)); then
+        if ((10#${x:-0} < 10#${y:-0})); then
             return 1
         fi
     done
@@ -199,9 +217,17 @@ parse_args() {
         printf 'install-bare-metal: --skip-databases requires --pg-dsn and --ch-dsn\n' >&2
         return "$EXIT_USAGE"
     fi
+    if [ -n "$ARG_MEM_LIMIT" ] && [[ ! "$ARG_MEM_LIMIT" =~ ^[0-9]+$ ]]; then
+        printf 'install-bare-metal: --mem-limit must be a whole number of MiB (got: %s)\n' "$ARG_MEM_LIMIT" >&2
+        return "$EXIT_USAGE"
+    fi
     # --uninstall/--purge take no version at all — the checks below are about
     # what to install, not relevant to removing what is already there.
     if [ -z "$ARG_UNINSTALL" ]; then
+        if [ "$ARG_VERSION" != "dev" ] && ! is_semver "$ARG_VERSION"; then
+            printf 'install-bare-metal: --version must be X.Y.Z without a suffix (got: %s)\n' "$ARG_VERSION" >&2
+            return "$EXIT_USAGE"
+        fi
         if [ "$ARG_VERSION" = "dev" ] && [ -z "$ARG_FROM_TARBALL" ]; then
             printf 'install-bare-metal: this is a repository copy (version "dev"); pass --version X.Y.Z or --from-tarball, or download the script from a release instead\n' >&2
             return "$EXIT_USAGE"
@@ -339,9 +365,12 @@ GOTCHA_LISTEN_ADDR=$listen_addr
 EOF
 }
 
+NGINX_SITE_MARKER="# gotcha site: install-bare-metal.sh keeps local edits below on re-run"
+
 render_nginx_site() {
     local domain="$1"
     cat <<EOF
+$NGINX_SITE_MARKER
 server {
     listen 80;
     server_name $domain;
@@ -390,14 +419,31 @@ fail() {
     exit "$code"
 }
 
+INSTALL_JOURNAL=/var/log/gotcha-install.log
+
 log_step() {
     INSTALL_LOG+=("$1")
     # stderr, не stdout: шаги (fetch_tarball и далее) отдают в stdout свой
     # результат, и лог прогресса не должен в него подмешиваться.
     printf 'install-bare-metal: %s\n' "$1" >&2
-    # Переживает завершение процесса — §4.6 требует его для диагностики после
-    # обрыва; append, не truncate, чтобы история копилась через перезапуски.
-    printf '%s %s\n' "$(date -u +%FT%TZ)" "$1" >>/var/log/gotcha-install.log 2>/dev/null || true
+    # Переживает обрыв процесса (§4.6), append вместо truncate; 2>/dev/null раньше
+    # >>: отказ самого перенаправления печатает bash, мимо перенаправленного stderr.
+    printf '%s [%s] %s\n' "$(date -u +%FT%TZ)" "${INSTALL_RUN_ID:-?}" "$1" \
+        2>/dev/null >>"$INSTALL_JOURNAL" || true
+}
+
+# fetch_tarball/install_postgresql/install_clickhouse возвращают значение через $( ),
+# и их log_step наполняют INSTALL_LOG подоболочки — до трапа доживает только журнал.
+completed_steps() {
+    local -a from_file=()
+    if [ -r "$INSTALL_JOURNAL" ] && [ -n "${INSTALL_RUN_ID:-}" ]; then
+        mapfile -t from_file < <(sed -n "s/^[^ ]* \[$INSTALL_RUN_ID\] //p" "$INSTALL_JOURNAL" 2>/dev/null)
+    fi
+    if [ "${#from_file[@]}" -gt 0 ]; then
+        printf '%s\n' "${from_file[@]}"
+    elif [ "${#INSTALL_LOG[@]}" -gt 0 ]; then
+        printf '%s\n' "${INSTALL_LOG[@]}"
+    fi
 }
 
 # ERR не годится: без errtrace он не наследуется функциями, а fail() выходит
@@ -407,19 +453,22 @@ on_exit() {
     cleanup_tmp_dirs
     [ "$code" -eq 0 ] && return 0
 
+    local -a steps=()
+    mapfile -t steps < <(completed_steps)
+
     local report
     report=$(
         printf 'install-bare-metal: FAILED (exit %d)\n' "$code"
-        if [ "${#INSTALL_LOG[@]}" -gt 0 ]; then
+        if [ "${#steps[@]}" -gt 0 ]; then
             printf 'install-bare-metal: completed steps so far:\n'
-            printf '  - %s\n' "${INSTALL_LOG[@]}"
+            printf '  - %s\n' "${steps[@]}"
         else
             printf 'install-bare-metal: no steps completed yet\n'
         fi
         printf 'install-bare-metal: re-run to retry (idempotent) or pass --uninstall to remove what was done\n'
     )
     printf '%s\n' "$report" >&2
-    printf '%s\n' "$report" >>/var/log/gotcha-install.log 2>/dev/null || true
+    printf '%s\n' "$report" 2>/dev/null >>"$INSTALL_JOURNAL" || true
 }
 
 cleanup_tmp_dirs() {
@@ -456,9 +505,19 @@ preflight() {
         printf '%s\n' "${VERSION_CODENAME:-}"
     )
 
+    # Пакеты в сообщении не украшение: на минимальном Debian нет ни ss, ни sudo,
+    # и без подсказки отказ выглядит как поломка скрипта.
+    local -A package_of=(
+        [curl]=curl [tar]=tar [gpg]=gnupg [openssl]=openssl
+        [sha256sum]=coreutils [ss]=iproute2 [sudo]=sudo
+    )
+    local -a required=(curl tar gpg openssl sha256sum ss)
+    # sudo нужен только своим СУБД: psql от пользователя postgres и pg_dump перед обновлением.
+    [ -n "$ARG_SKIP_DATABASES" ] || required+=(sudo)
     local cmd
-    for cmd in curl tar gpg openssl sha256sum; do
-        command -v "$cmd" >/dev/null 2>&1 || fail "$EXIT_PREFLIGHT" "$cmd is required"
+    for cmd in "${required[@]}"; do
+        command -v "$cmd" >/dev/null 2>&1 \
+            || fail "$EXIT_PREFLIGHT" "$cmd is required (Debian/Ubuntu package: ${package_of[$cmd]})"
     done
 
     local -a ports=(8080)
@@ -724,6 +783,28 @@ EOF
     printf 'clickhouse://gotcha:%s@127.0.0.1:9000/gotcha\n' "$password"
 }
 
+# Фактический bind, а не дефолт пакета: уже настроенный на 0.0.0.0 PostgreSQL
+# инсталлятор переиспользует, и обещание доки «только 127.0.0.1» станет ложным.
+verify_loopback_only() {
+    local port addrs addr
+    for port in "$@"; do
+        addrs=$(ss -ltn 2>/dev/null | awk -v p=":${port}\$" '$4 ~ p {print $4}')
+        [ -n "$addrs" ] \
+            || fail "$EXIT_DATABASE" "nothing listens on port $port after installing the databases"
+        while IFS= read -r addr; do
+            case "$addr" in
+                127.0.0.1:"$port" | \[::1\]:"$port") ;;
+                *) fail "$EXIT_DATABASE" "port $port listens on $addr, not loopback only — gotcha's databases must not be reachable from outside the host; fix listen_addresses/listen_host and re-run" ;;
+            esac
+        done <<<"$addrs"
+    done
+    local checked=""
+    for port in "$@"; do
+        checked="${checked:+$checked, }$port"
+    done
+    log_step "databases listen on loopback only: $checked"
+}
+
 create_app_user() {
     id -u gotcha >/dev/null 2>&1 && return 0
     useradd --system --no-create-home --shell /usr/sbin/nologin gotcha \
@@ -841,9 +922,18 @@ install_nginx() {
     rm -f /etc/nginx/sites-enabled/default
 
     rendered=$(render_nginx_site "$domain")
-    if [ ! -f "$site" ] || [ "$(cat "$site")" != "$rendered" ]; then
-        [ ! -f "$site" ] || cp "$site" "$site.bak-$(date +%s)" || fail "$EXIT_OTHER" "failed to back up existing $site"
+    if [ ! -f "$site" ]; then
         printf '%s\n' "$rendered" >"$site" || fail "$EXIT_OTHER" "failed to render $site"
+    elif [ "$(cat "$site")" != "$rendered" ]; then
+        # Местные правки нашего файла — это TLS-блок certbot, перезапись вернула бы
+        # хост на голый HTTP. Сменившийся домен — другое дело, сайт рендерится заново.
+        if grep -qF "$NGINX_SITE_MARKER" "$site" \
+            && grep -qE "^[[:space:]]*server_name[[:space:]]+$domain;" "$site"; then
+            log_step "nginx site kept as it is — it is ours and has local edits (certbot TLS, most likely): $site"
+        else
+            cp "$site" "$site.bak-$(date +%s)" || fail "$EXIT_OTHER" "failed to back up existing $site"
+            printf '%s\n' "$rendered" >"$site" || fail "$EXIT_OTHER" "failed to render $site"
+        fi
     fi
     ln -sf ../sites-available/gotcha /etc/nginx/sites-enabled/gotcha \
         || fail "$EXIT_OTHER" "failed to enable $site"
@@ -880,6 +970,14 @@ uninstall_app() {
     rm -f /usr/local/bin/gotcha
     log_step "gotcha unit and binary removed"
 
+    # Включённый сайт без бэкенда — 502 на всё: sites-enabled/default скрипт снял при
+    # установке. Сам sites-available остаётся, в нём TLS-блок certbot.
+    if [ -L /etc/nginx/sites-enabled/gotcha ] || [ -e /etc/nginx/sites-enabled/gotcha ]; then
+        rm -f /etc/nginx/sites-enabled/gotcha
+        systemctl reload nginx >/dev/null 2>&1 || true
+        log_step "nginx site disabled (the file in sites-available is kept)"
+    fi
+
     [ -n "$purge" ] || return 0
 
     if id -u postgres >/dev/null 2>&1; then
@@ -896,22 +994,36 @@ SQL
         rm -f /etc/clickhouse-server/users.d/10-gotcha.xml
     fi
 
+    # Наши файлы в каталогах чужих пакетов: сами пакеты остаются, дропины уезжают.
+    # Перезапуск СУБД не делается намеренно — это чужие сервисы, их время выбирает оператор.
+    local pg_conf_dir
+    pg_conf_dir=$(find /etc/postgresql -mindepth 2 -maxdepth 2 -type d -name main 2>/dev/null | head -n1)
+    [ -z "$pg_conf_dir" ] || rm -f "$pg_conf_dir/conf.d/10-gotcha.conf"
+    rm -f /etc/clickhouse-server/config.d/00-common.xml /etc/clickhouse-server/config.d/10-small.xml
+    rm -f /etc/systemd/system/clickhouse-server.service.d/override.conf
+    rmdir /etc/systemd/system/clickhouse-server.service.d 2>/dev/null || true
+    systemctl daemon-reload || true
+
     rm -rf /var/lib/gotcha /opt/gotcha /etc/gotcha
     if id -u gotcha >/dev/null 2>&1; then
         userdel gotcha 2>/dev/null || true
     fi
-    log_step "gotcha data, databases and system user removed (--purge)"
+    log_step "gotcha data, databases, drop-in configs and system user removed (--purge)"
+    rm -f "$INSTALL_JOURNAL"
 }
 
 main() {
     set -euo pipefail
     IFS=$'\n\t'
-    trap on_exit EXIT
 
     # Не local: exit() во вложенных функциях рвёт цепочку динамических областей
     # видимости раньше, чем сработает EXIT-трап, и он увидел бы их пустыми.
     INSTALL_LOG=()
     TMP_DIRS=()
+    # Метка запуска: по ней on_exit отбирает из общего журнала шаги текущего
+    # запуска, включая записанные подоболочками.
+    INSTALL_RUN_ID="$$-$(date -u +%s)"
+    trap on_exit EXIT
 
     parse_args "$@"
     if [ -n "$ARG_HELP" ]; then
@@ -987,6 +1099,7 @@ main() {
     if [ -z "$ARG_SKIP_DATABASES" ]; then
         ARG_PG_DSN=$(install_postgresql "$HOST_CODENAME" "$env_file")
         ARG_CH_DSN=$(install_clickhouse "$HOST_RAM_MB" "$tarball_root" "$env_file")
+        verify_loopback_only 5432 8123 9000
     fi
 
     create_app_user

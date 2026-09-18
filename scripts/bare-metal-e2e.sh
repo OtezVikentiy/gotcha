@@ -234,7 +234,7 @@ time.sleep(30)
     wait "$listener_pid" 2>/dev/null
 
     [ "$rc" -eq 3 ] || { printf 'expected exit 3 with port 80 busy, got %d:\n%s\n' "$rc" "$output" >&2; return 1; }
-    printf '%s\n' "$output" | grep -q 'port 80 is already in use' \
+    grep -q 'port 80 is already in use' <<<"$output" \
         || { printf 'missing "port 80 is already in use" in output:\n%s\n' "$output" >&2; return 1; }
 }
 
@@ -298,15 +298,34 @@ policy_failure_reports_steps_and_hint() {
     rm -f /etc/gotcha/gotcha.env
 
     [ "$rc" -eq 6 ] || { printf 'expected exit 6 (EXIT_APP) from a broken DB step, got %d:\n%s\n' "$rc" "$output" >&2; return 1; }
-    printf '%s\n' "$output" | grep -q 'FAILED (exit 6)' \
+    grep -q 'FAILED (exit 6)' <<<"$output" \
         || { printf 'missing "FAILED (exit 6)" in output:\n%s\n' "$output" >&2; return 1; }
-    printf '%s\n' "$output" | grep -q 'completed steps so far' \
+    grep -q 'completed steps so far' <<<"$output" \
         || { printf 'missing the completed-steps list in output:\n%s\n' "$output" >&2; return 1; }
-    printf '%s\n' "$output" | grep -q -- '--uninstall' \
+    grep -q -- '--uninstall' <<<"$output" \
         || { printf 'missing the --uninstall hint in output:\n%s\n' "$output" >&2; return 1; }
 }
 
+# Прячется сам файл, а не каталог в PATH: `command -v` находит команду по любому
+# каталогу PATH, и вычёркивание одного из них увело бы отказ на соседнюю команду.
+preflight_requires_command() {
+    local cmd="$1" path hidden output rc
+    path=$(command -v "$cmd") || { printf '%s is not installed here, cannot check\n' "$cmd" >&2; return 1; }
+    hidden="$path.hidden-by-e2e"
+    mv "$path" "$hidden" || { printf 'failed to hide %s\n' "$path" >&2; return 1; }
+
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
+    rc=$?
+    mv "$hidden" "$path" || { printf 'FAILED TO RESTORE %s — the host is now missing %s\n' "$hidden" "$cmd" >&2; return 1; }
+
+    [ "$rc" -eq 3 ] || { printf 'expected exit 3 without %s, got %d:\n%s\n' "$cmd" "$rc" "$output" >&2; return 1; }
+    grep -q "$cmd is required" <<<"$output" \
+        || { printf 'missing "%s is required" in output:\n%s\n' "$cmd" "$output" >&2; return 1; }
+}
+
 assert "a busy port 80 blocks preflight before anything is installed" port80_busy_blocks_preflight
+assert "preflight refuses without ss, which the port check needs" preflight_requires_command ss
+assert "preflight refuses without sudo, which the database steps need" preflight_requires_command sudo
 assert "a mid-install failure reports the exit code, completed steps and a hint" policy_failure_reports_steps_and_hint
 
 # Симулирует чужой конфиг сайта, уже лежащий на месте нашего: install_nginx
@@ -400,10 +419,10 @@ unit_hardening_directives() {
         || { printf 'systemctl show gotcha failed:\n%s\n' "$out" >&2; return 1; }
     local directive
     for directive in NoNewPrivileges=yes ProtectSystem=strict TasksMax=512 CapabilityBoundingSet= 'TimeoutStopUSec=1min 30s'; do
-        printf '%s\n' "$out" | grep -qx "$directive" \
+        grep -qx "$directive" <<<"$out" \
             || { printf 'missing %s in:\n%s\n' "$directive" "$out" >&2; return 1; }
     done
-    printf '%s\n' "$out" | grep -qE '^MemoryMax=[1-9][0-9]*$' \
+    grep -qE '^MemoryMax=[1-9][0-9]*$' <<<"$out" \
         || { printf 'MemoryMax is not a positive byte count:\n%s\n' "$out" >&2; return 1; }
 }
 
@@ -459,6 +478,104 @@ e2e_ingest_roundtrip() {
     done
 }
 
+# Пароль ClickHouse живёт только в DSN внутри gotcha.env — в users.d лежит его sha256.
+# Проверяется ровно то извлечение, которое печатает backup-restore.md.
+ch_password_from_env_file_works() {
+    local password
+    password=$(sed -n 's#^GOTCHA_CH_DSN=clickhouse://gotcha:\([^@]*\)@.*#\1#p' /etc/gotcha/gotcha.env)
+    [ -n "$password" ] || { printf 'no password inside GOTCHA_CH_DSN in gotcha.env\n' >&2; return 1; }
+    [ "$(clickhouse-client --user gotcha --password "$password" --query 'SELECT 1' 2>&1)" = "1" ] \
+        || { printf 'the password taken from gotcha.env does not authenticate against ClickHouse\n' >&2; return 1; }
+}
+
+# ALTER USER для gotcha невозможен (пользователь описан в XML с access_management=0),
+# поэтому configuration.md описывает правку password_sha256_hex — она и проверяется.
+documented_ch_password_change_works() {
+    local users_file=/etc/clickhouse-server/users.d/10-gotcha.xml new_password hash tries
+    new_password="e2e-$(openssl rand -hex 12)"
+    hash=$(printf '%s' "$new_password" | sha256sum | awk '{print $1}')
+
+    sed -i "s#<password_sha256_hex>[0-9a-f]*</password_sha256_hex>#<password_sha256_hex>$hash</password_sha256_hex>#" \
+        "$users_file" || { printf 'failed to rewrite %s\n' "$users_file" >&2; return 1; }
+    grep -qF "$hash" "$users_file" || { printf 'the new hash did not land in %s\n' "$users_file" >&2; return 1; }
+    systemctl restart clickhouse-server || { printf 'clickhouse-server restart failed\n' >&2; return 1; }
+
+    tries=0
+    until curl -fsS -o /dev/null http://127.0.0.1:8123/ping 2>/dev/null; do
+        tries=$((tries + 1))
+        [ "$tries" -lt 30 ] || { printf 'clickhouse-server did not come back after the restart\n' >&2; return 1; }
+        sleep 1
+    done
+    [ "$(clickhouse-client --user gotcha --password "$new_password" --query 'SELECT 1' 2>&1)" = "1" ] \
+        || { printf 'the new password does not authenticate after editing users.d and restarting\n' >&2; return 1; }
+
+    sed -i "s#^GOTCHA_CH_DSN=clickhouse://gotcha:[^@]*@#GOTCHA_CH_DSN=clickhouse://gotcha:$new_password@#" \
+        /etc/gotcha/gotcha.env || { printf 'failed to update GOTCHA_CH_DSN\n' >&2; return 1; }
+    systemctl restart gotcha || { printf 'gotcha restart failed\n' >&2; return 1; }
+
+    tries=0
+    until readyz_ok; do
+        tries=$((tries + 1))
+        [ "$tries" -lt 30 ] || { printf '/readyz did not recover after the documented password change\n' >&2; return 1; }
+        sleep 1
+    done
+}
+
+# certbot правит ровно тот файл, который рендерит install_nginx. В контейнере его не
+# выпустить, поэтому результат имитируется своим сертификатом.
+certbot_edits_survive_a_rerun() {
+    local site=/etc/nginx/sites-available/gotcha crt=/etc/ssl/gotcha-e2e.crt key=/etc/ssl/gotcha-e2e.key
+    local bak_before bak_after output rc
+    openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=localhost' \
+        -keyout "$key" -out "$crt" >/dev/null 2>&1 \
+        || { printf 'failed to generate a self-signed certificate\n' >&2; return 1; }
+
+    sed -i "\$i\\    listen 443 ssl;" "$site"
+    sed -i "\$i\\    ssl_certificate $crt;" "$site"
+    sed -i "\$i\\    ssl_certificate_key $key;" "$site"
+    nginx -t >/dev/null 2>&1 || { printf 'the planted TLS block does not pass nginx -t\n' >&2; return 1; }
+    systemctl reload nginx || { printf 'nginx reload failed after planting the TLS block\n' >&2; return 1; }
+
+    bak_before=$(find /etc/nginx/sites-available -maxdepth 1 -name 'gotcha.bak-*' | wc -l)
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf 'a re-run over a certbot-edited site exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+
+    grep -qF 'listen 443 ssl;' "$site" \
+        || { printf 'the TLS block is gone from %s after a re-run — the host fell back to plain HTTP\n' "$site" >&2; return 1; }
+    bak_after=$(find /etc/nginx/sites-available -maxdepth 1 -name 'gotcha.bak-*' | wc -l)
+    [ "$bak_after" -eq "$bak_before" ] \
+        || { printf 'the site was backed up and re-rendered on a re-run (count %s -> %s)\n' "$bak_before" "$bak_after" >&2; return 1; }
+    [ "$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:443/readyz)" = "200" ] \
+        || { printf 'HTTPS stopped answering after the re-run\n' >&2; return 1; }
+}
+
+# Шаги СУБД возвращают DSN через $( ), их log_step наполняет INSTALL_LOG подоболочки.
+# Ломается install_unit уже после обеих СУБД: отчёт обязан назвать их шаги.
+failure_report_lists_database_steps() {
+    local unit=/etc/systemd/system/gotcha.service output rc
+    rm -f "$unit"
+    mkdir -p "$unit" || { printf 'failed to plant a directory at %s\n' "$unit" >&2; return 1; }
+
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
+    rc=$?
+    rmdir "$unit" || { printf 'FAILED TO REMOVE the planted directory %s\n' "$unit" >&2; return 1; }
+
+    [ "$rc" -ne 0 ] || { printf 'expected a non-zero exit with the unit path blocked:\n%s\n' "$output" >&2; return 1; }
+
+    # Только отчёт: те же шаги log_step печатает и по ходу установки, и ассерт по
+    # всему выводу был бы зелёным даже с потерянным списком.
+    local report
+    report=$(sed -n '/^install-bare-metal: FAILED (exit /,$p' <<<"$output")
+    [ -n "$report" ] || { printf 'no failure report in output:\n%s\n' "$output" >&2; return 1; }
+    grep -q 'completed steps so far' <<<"$report" \
+        || { printf 'missing the completed-steps list:\n%s\n' "$report" >&2; return 1; }
+    grep -qx "  - PostgreSQL $PG_MAJOR installed and configured" <<<"$report" \
+        || { printf 'the PostgreSQL step is missing from the failure report:\n%s\n' "$report" >&2; return 1; }
+    grep -qx "  - ClickHouse $CH_VERSION installed and configured" <<<"$report" \
+        || { printf 'the ClickHouse step is missing from the failure report:\n%s\n' "$report" >&2; return 1; }
+}
+
 # Действие и проверка вместе, как survives_postgresql_restart выше: §4.4 требует
 # юнит/конфиги/права привести к целевому состоянию заново, но не трогать env/пароли/данные.
 survives_idempotent_rerun() {
@@ -495,7 +612,7 @@ recovers_after_env_file_lost() {
     output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
     rc=$?
     [ "$rc" -eq 0 ] || { printf 'recovering from a lost env file exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
-    printf '%s\n' "$output" | grep -qi 'regenerating' \
+    grep -qi 'regenerating' <<<"$output" \
         || { printf 'missing a loud password-regeneration notice in output:\n%s\n' "$output" >&2; return 1; }
 
     unit_active gotcha || { printf 'gotcha unit not active after env recovery\n' >&2; return 1; }
@@ -517,6 +634,22 @@ uninstall_removes_unit_and_binary_keeps_data() {
     [ ! -f /etc/systemd/system/gotcha.service ] || { printf 'gotcha.service still present after --uninstall\n' >&2; return 1; }
     [ ! -f /usr/local/bin/gotcha ] || { printf '/usr/local/bin/gotcha still present after --uninstall\n' >&2; return 1; }
     [ -d /var/lib/gotcha ] || { printf '/var/lib/gotcha missing after --uninstall\n' >&2; return 1; }
+
+    # Оставленный включённым сайт — это 502 на всё, что приходит на хост:
+    # sites-enabled/default инсталлятор снял при установке и не вернёт.
+    [ ! -e /etc/nginx/sites-enabled/gotcha ] \
+        || { printf 'the nginx site is still enabled after --uninstall\n' >&2; return 1; }
+    [ -f /etc/nginx/sites-available/gotcha ] \
+        || { printf 'sites-available/gotcha removed by --uninstall (the certbot TLS block lives there)\n' >&2; return 1; }
+    # Перезагрузка nginx асинхронна: старые воркеры доживают свои соединения, и первые
+    # доли секунды хост ещё отвечает 502 — ждём, а не меряем один раз.
+    local tries=0 code
+    until code=$(curl -s -o /dev/null -w '%{http_code}' "http://$(external_ip):80/readyz"); [ "$code" != "502" ]; do
+        tries=$((tries + 1))
+        [ "$tries" -lt 15 ] || { printf 'nginx still answers 502 %s s after --uninstall\n' "$tries" >&2; return 1; }
+        sleep 1
+    done
+
     pg_role_exists || { printf 'postgresql role gotcha missing after --uninstall\n' >&2; return 1; }
     pg_database_exists || { printf 'postgresql database gotcha missing after --uninstall\n' >&2; return 1; }
     ch_gotcha_database_exists || { printf 'clickhouse database gotcha missing after --uninstall\n' >&2; return 1; }
@@ -558,6 +691,19 @@ purge_removes_data_and_databases_keeps_packages() {
     ! pg_database_exists || { printf 'postgresql database gotcha still exists after --purge\n' >&2; return 1; }
     ! ch_gotcha_database_exists || { printf 'clickhouse database gotcha still exists after --purge\n' >&2; return 1; }
     ! id -u gotcha >/dev/null 2>&1 || { printf 'system user gotcha still exists after --purge\n' >&2; return 1; }
+
+    # Наши дропины в каталогах чужих пакетов: пакеты остаются, конфиги уходят.
+    local pg_conf
+    pg_conf="$(pg_conf_dir)/conf.d/10-gotcha.conf"
+    [ ! -f "$pg_conf" ] || { printf '%s still present after --purge\n' "$pg_conf" >&2; return 1; }
+    [ ! -f /etc/clickhouse-server/config.d/00-common.xml ] \
+        || { printf 'clickhouse config.d/00-common.xml still present after --purge\n' >&2; return 1; }
+    [ ! -f /etc/clickhouse-server/config.d/10-small.xml ] \
+        || { printf 'clickhouse config.d/10-small.xml still present after --purge\n' >&2; return 1; }
+    [ ! -f /etc/systemd/system/clickhouse-server.service.d/override.conf ] \
+        || { printf 'the clickhouse-server systemd override still present after --purge\n' >&2; return 1; }
+    [ ! -f /var/log/gotcha-install.log ] \
+        || { printf '/var/log/gotcha-install.log still present after --purge\n' >&2; return 1; }
     pkg_installed "postgresql-$PG_MAJOR" || { printf 'postgresql package removed by --purge\n' >&2; return 1; }
     pkg_installed clickhouse-server || { printf 'clickhouse-server package removed by --purge\n' >&2; return 1; }
     pkg_installed nginx || { printf 'nginx package removed by --purge\n' >&2; return 1; }
@@ -602,6 +748,8 @@ run_assertions() {
     assert "gotcha unit hardening directives in effect" unit_hardening_directives
     assert "gotcha survives a postgresql restart" survives_postgresql_restart
     assert "register+onboarding+ingest round trip is visible" e2e_ingest_roundtrip
+    assert "the ClickHouse password from gotcha.env authenticates (the documented backup path)" ch_password_from_env_file_works
+    assert "the documented ClickHouse password change (users.d + restart) works" documented_ch_password_change_works
 
     assert "nginx package installed" pkg_installed nginx
     assert "nginx unit active" unit_active nginx
@@ -611,6 +759,8 @@ run_assertions() {
     assert "gotcha /metrics responds 403 via nginx on :80" metrics_blocked_via_nginx
     assert "gotcha /version responds 403 via nginx on :80" version_blocked_via_nginx
 
+    assert "a certbot-edited nginx site survives a re-run, TLS included" certbot_edits_survive_a_rerun
+    assert "a failure after the database steps lists them in the report" failure_report_lists_database_steps
     assert "re-running the installer with the same version is idempotent (unit alive, env untouched, /readyz ok)" survives_idempotent_rerun
     assert "a lost gotcha.env is recovered by regenerating the PostgreSQL/ClickHouse passwords" recovers_after_env_file_lost
 

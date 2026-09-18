@@ -56,6 +56,28 @@ assert_eq "detect_arch aarch64 value" arm64 "$out"
 detect_arch armv7l >/dev/null
 assert_eq "detect_arch armv7l rejected" 1 $?
 
+# normalize_version
+
+out=$(normalize_version 1.6.1)
+assert_eq "normalize_version leaves a clean X.Y.Z alone" "1.6.1" "$out"
+out=$(normalize_version v0.2.0-5-gabcdef-dirty)
+assert_eq "normalize_version strips the leading v and the git describe suffix" "0.2.0" "$out"
+out=$(normalize_version 1.7.0-rc1)
+assert_eq "normalize_version strips a pre-release suffix" "1.7.0" "$out"
+out=$(normalize_version 1.7.0+build5)
+assert_eq "normalize_version strips a build suffix" "1.7.0" "$out"
+
+# is_semver
+
+is_semver 1.6.1
+assert_eq "is_semver accepts X.Y.Z" 0 $?
+is_semver 1.7.0-rc1
+assert_eq "is_semver rejects a pre-release suffix" 1 $?
+is_semver abc
+assert_eq "is_semver rejects a non-version" 1 $?
+is_semver 1.6
+assert_eq "is_semver rejects a two-segment version" 1 $?
+
 # version_ge
 
 version_ge 1.10.0 1.9.0
@@ -64,6 +86,18 @@ version_ge 1.9.0 1.10.0
 assert_eq "version_ge 1.9.0 >= 1.10.0 is false" 1 $?
 version_ge 1.6.1 1.6.1
 assert_eq "version_ge 1.6.1 >= 1.6.1 (equal is ge)" 0 $?
+# Версия уже установленного бинаря приходит из `gotcha --version`, а у собранного
+# локально бинаря она выглядит именно так — под set -u это роняло (( )) кодом 1.
+out=$(
+    version_ge v0.2.0-5-gabcdef-dirty 0.2.0 2>&1
+    printf 'rc=%d' $?
+)
+assert_eq "version_ge survives a git-describe version and compares its numbers" "rc=0" "$out"
+out=$(
+    version_ge 1.7.0-rc1 1.7.0 2>&1
+    printf 'rc=%d' $?
+)
+assert_eq "version_ge survives a pre-release suffix" "rc=0" "$out"
 
 # parse_args
 
@@ -94,12 +128,51 @@ assert_eq "parse_args --skip-databases without DSNs rejected" 2 $?
 parse_args --skip-databases --pg-dsn pg://x --ch-dsn ch://x --from-tarball /tmp/x.tar.gz >/dev/null 2>&1
 assert_eq "parse_args --skip-databases with both DSNs accepted" 0 $?
 
+parse_args --version 1.7.0-rc1 >/dev/null 2>&1
+assert_eq "parse_args rejects a --version with a suffix instead of dying inside version_ge" 2 $?
+
+parse_args --version abc >/dev/null 2>&1
+assert_eq "parse_args rejects a non-version --version" 2 $?
+
+parse_args --mem-limit abc --from-tarball /tmp/x.tar.gz >/dev/null 2>&1
+assert_eq "parse_args rejects a non-numeric --mem-limit" 2 $?
+
+parse_args --mem-limit 512 --from-tarball /tmp/x.tar.gz >/dev/null 2>&1
+assert_eq "parse_args accepts a numeric --mem-limit" 0 $?
+
 parse_args --domain example.com --email a@b.example --version 9.9.9 --dry-run >/dev/null 2>&1
 assert_eq "parse_args accepts a full example" 0 $?
 assert_eq "parse_args sets ARG_DOMAIN" example.com "$ARG_DOMAIN"
 assert_eq "parse_args sets ARG_EMAIL" a@b.example "$ARG_EMAIL"
 assert_eq "parse_args sets ARG_VERSION" 9.9.9 "$ARG_VERSION"
 assert_eq "parse_args sets ARG_DRY_RUN" 1 "$ARG_DRY_RUN"
+
+# В дереве GOTCHA_INSTALL_DEFAULT_VERSION="dev", и §4.7 не исполняется ни в одном
+# прогоне — проверяется на копии, какую кладёт в релиз джоба dist.
+
+PATCHED=$(mktemp)
+sed 's/^GOTCHA_INSTALL_DEFAULT_VERSION="dev"$/GOTCHA_INSTALL_DEFAULT_VERSION="1.6.1"/' "$INSTALLER" >"$PATCHED"
+if ! grep -q '^GOTCHA_INSTALL_DEFAULT_VERSION="1.6.1"$' "$PATCHED"; then
+    printf 'FAIL: could not patch GOTCHA_INSTALL_DEFAULT_VERSION — the test below would check nothing\n' >&2
+    FAILURES=$((FAILURES + 1))
+fi
+
+# shellcheck source=/dev/null
+(. "$PATCHED" && parse_args --version 1.5.0) >/dev/null 2>&1
+assert_eq "released copy refuses a version older than itself" 2 $?
+# shellcheck source=/dev/null
+(. "$PATCHED" && parse_args --version 1.7.0) >/dev/null 2>&1
+assert_eq "released copy accepts a newer version" 0 $?
+# shellcheck source=/dev/null
+(. "$PATCHED" && parse_args --version 1.5.0 --force-version) >/dev/null 2>&1
+assert_eq "released copy accepts an older version with --force-version" 0 $?
+# shellcheck source=/dev/null
+(. "$PATCHED" && parse_args) >/dev/null 2>&1
+assert_eq "released copy runs without --version at all (its own version is the default)" 0 $?
+# shellcheck source=/dev/null
+(. "$PATCHED" && parse_args --version 1.7.0-rc1) >/dev/null 2>&1
+assert_eq "released copy rejects a suffixed version with the usage code, not a bash error" 2 $?
+rm -f "$PATCHED"
 
 # choose_base_url
 
@@ -155,6 +228,31 @@ for directive in \
     assert_contains "render_unit contains $directive" "$unit" "$directive"
 done
 
+# Директивы сверх паритета: hardening.md перечисляет каждую как поставленную, и до
+# этого списка их удаление из render_unit не ловил ни один прогон.
+
+for directive in \
+    "ProtectHome=yes" \
+    "PrivateDevices=yes" \
+    "ProtectKernelTunables=yes" \
+    "ProtectKernelModules=yes" \
+    "ProtectKernelLogs=yes" \
+    "ProtectControlGroups=yes" \
+    "ProtectClock=yes" \
+    "ProtectHostname=yes" \
+    "ProtectProc=invisible" \
+    "RestrictNamespaces=yes" \
+    "RestrictRealtime=yes" \
+    "RestrictSUIDSGID=yes" \
+    "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX" \
+    "LockPersonality=yes" \
+    "SystemCallFilter=@system-service" \
+    "SystemCallArchitectures=native" \
+    "UMask=0077" \
+    "MemoryDenyWriteExecute=yes"; do
+    assert_contains "render_unit contains beyond-parity $directive" "$unit" "$directive"
+done
+
 # render_env_file
 
 env_file=$(render_env_file "pg-dsn" "ch-dsn" "secret" "https://x.example" \
@@ -181,6 +279,45 @@ for directive in \
     "deny all;"; do
     assert_contains "render_nginx_site restricts /metrics and /version to loopback ($directive)" "$site" "$directive"
 done
+
+assert_contains "render_nginx_site marks the file as ours" "$site" "$NGINX_SITE_MARKER"
+
+# verify_loopback_only — ветка отказа на живом хосте не воспроизводится, поэтому
+# ss подменяется функцией; фактический bind проверяет e2e.
+
+ss() { printf '%s\n' "$SS_STUB_OUT"; }
+
+SS_STUB_OUT='LISTEN 0 244 127.0.0.1:5432 0.0.0.0:*'
+(verify_loopback_only 5432) >/dev/null 2>&1
+assert_eq "verify_loopback_only accepts a loopback bind" 0 $?
+
+SS_STUB_OUT='LISTEN 0 244 [::1]:8123 [::]:*'
+(verify_loopback_only 8123) >/dev/null 2>&1
+assert_eq "verify_loopback_only accepts an IPv6 loopback bind" 0 $?
+
+SS_STUB_OUT='LISTEN 0 244 0.0.0.0:5432 0.0.0.0:*'
+out=$( (verify_loopback_only 5432) 2>&1 )
+rc=$?
+assert_eq "verify_loopback_only refuses a wildcard bind with the database exit code" 5 "$rc"
+assert_contains "verify_loopback_only names the port and the address it found" "$out" \
+    "port 5432 listens on 0.0.0.0:5432, not loopback only"
+
+# main() сужает IFS до "\n\t", и "$*" склеил бы порты переводами строк: запись в
+# журнале стала бы многострочной, а в отчёт о провале попала бы только первая строка.
+SS_STUB_OUT='LISTEN 0 244 127.0.0.1:5432 0.0.0.0:*
+LISTEN 0 244 127.0.0.1:8123 0.0.0.0:*
+LISTEN 0 244 [::1]:9000 [::]:*'
+out=$( (IFS=$'\n\t'; verify_loopback_only 5432 8123 9000) 2>&1 )
+assert_eq "verify_loopback_only logs a single-line step under main's IFS" \
+    "install-bare-metal: databases listen on loopback only: 5432, 8123, 9000" "$out"
+
+SS_STUB_OUT=''
+out=$( (verify_loopback_only 9000) 2>&1 )
+rc=$?
+assert_eq "verify_loopback_only refuses when nothing listens at all" 5 "$rc"
+assert_contains "verify_loopback_only says nothing listens" "$out" "nothing listens on port 9000"
+
+unset -f ss
 
 # render_pg_conf
 
