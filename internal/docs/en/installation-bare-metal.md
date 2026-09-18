@@ -24,7 +24,7 @@ Installed either by the `install-bare-metal.sh` script (see "Installing via the 
 
 The requirements are the same as the Docker path, and for the same reason: the main resource consumer is ClickHouse, not the delivery method. The script's preflight check accepts 1900 MB of RAM and up (not 2048) — some cloud "2 GB" plans never report a full 2048 MB of `MemTotal`, because part of the memory is reserved for firmware/hypervisor before the OS even starts.
 
-Peak memory use on this path was measured separately from Docker (carrying over the Docker figure without measuring it here would be dishonest): across installer acceptance runs, the three processes (PostgreSQL, ClickHouse, the application) together peaked at 886–982 MB, typically around 920 MB — comparable to the 1006 MB measured for Docker on release 1.6.1. The 2 GB minimum holds on both delivery paths.
+Peak memory use on this path was measured separately from Docker (carrying over the Docker figure without measuring it here would be dishonest): across installer acceptance runs, the three processes (PostgreSQL, ClickHouse, the application) together peaked at 886–982 MB — treat the upper end of that range as the conservative figure to plan around. The measurement was taken in a container on a developer machine, not on a CI runner; if a CI run later shows a different peak, this number will need updating. Even the upper end is comparable to the 1006 MB measured for Docker on release 1.6.1 — the 2 GB minimum holds on both delivery paths.
 
 The versions this path installs are pinned in the script and match the Docker delivery: PostgreSQL 17, ClickHouse 25.3, and the application itself is built with Go 1.26.
 
