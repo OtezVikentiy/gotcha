@@ -174,6 +174,13 @@ assert_contains "render_nginx_site forwards Host" "$site" 'proxy_set_header Host
 assert_contains "render_nginx_site forwards X-Forwarded-For" "$site" "X-Forwarded-For"
 assert_contains "render_nginx_site forwards X-Forwarded-Proto" "$site" "X-Forwarded-Proto"
 assert_contains "render_nginx_site sets client_max_body_size" "$site" "client_max_body_size"
+for directive in \
+    "location ~ ^/(metrics|version)$ {" \
+    "allow 127.0.0.1;" \
+    "allow ::1;" \
+    "deny all;"; do
+    assert_contains "render_nginx_site restricts /metrics and /version to loopback ($directive)" "$site" "$directive"
+done
 
 # render_pg_conf
 

@@ -75,13 +75,14 @@ handle @internal {
 Replace `10.0.0.0/8` with the range your probes actually come from (orchestrator, Prometheus,
 your own network) — the default-open range is meaningless as a restriction.
 
-On bare metal, the nginx site `install-bare-metal.sh` installs doesn't include this
-restriction by default — it proxies all of `/` without distinguishing paths (see
-[Installation without Docker](/docs/installation-bare-metal)). Add a `location` block for
-`/metrics`/`/version`/`/healthz`/`/readyz` from the example above to
-`/etc/nginx/sites-available/gotcha` by hand and reload the config (`nginx -t &&
-systemctl reload nginx`) — otherwise these four endpoints are open to the whole internet,
-same as with no proxy at all.
+On bare metal, the nginx site `install-bare-metal.sh` installs applies this same restriction
+to `/metrics` and `/version` by default: both answer 403 from the outside, open only to
+loopback (`127.0.0.1`/`::1`) — see [Installation without Docker](/docs/installation-bare-metal).
+`/healthz` and `/readyz` are deliberately left open — they're the only two endpoints that need
+to answer from the outside, for external checks of the instance's own availability. To let
+your own metrics collector reach `/metrics`, add its subnet as an `allow ...;` line before
+`deny all;` in the `location ~ ^/(metrics|version)$` block of
+`/etc/nginx/sites-available/gotcha` and reload the config (`nginx -t && systemctl reload nginx`).
 
 The same goes for the databases. The stock `docker-compose.yml` doesn't publish the PostgreSQL
 and ClickHouse ports on the host — only containers on the same docker network can reach them

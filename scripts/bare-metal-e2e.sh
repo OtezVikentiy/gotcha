@@ -163,6 +163,20 @@ readyz_via_nginx() {
     [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:80/readyz)" = "200" ]
 }
 
+# 127.0.0.1 is on nginx's own allowlist, so curling it can't tell an open path
+# from a blocked one; the host's own routable IP is treated as external.
+external_ip() {
+    hostname -I 2>/dev/null | awk '{print $1}'
+}
+
+metrics_blocked_via_nginx() {
+    [ "$(curl -s -o /dev/null -w '%{http_code}' "http://$(external_ip):80/metrics")" = "403" ]
+}
+
+version_blocked_via_nginx() {
+    [ "$(curl -s -o /dev/null -w '%{http_code}' "http://$(external_ip):80/version")" = "403" ]
+}
+
 nginx_site_config_ok() {
     local conf=/etc/nginx/sites-available/gotcha
     [ -f "$conf" ] || { printf 'missing %s\n' "$conf" >&2; return 1; }
@@ -171,6 +185,9 @@ nginx_site_config_ok() {
     grep -qF 'X-Forwarded-For' "$conf" || { printf 'X-Forwarded-For missing in %s\n' "$conf" >&2; return 1; }
     grep -qF 'X-Forwarded-Proto' "$conf" || { printf 'X-Forwarded-Proto missing in %s\n' "$conf" >&2; return 1; }
     grep -qF 'client_max_body_size' "$conf" || { printf 'client_max_body_size missing in %s\n' "$conf" >&2; return 1; }
+    for directive in 'location ~ ^/(metrics|version)$ {' 'allow 127.0.0.1;' 'allow ::1;' 'deny all;'; do
+        grep -qF "$directive" "$conf" || { printf '%s missing in %s\n' "$directive" "$conf" >&2; return 1; }
+    done
 }
 
 nginx_site_backed_up() {
@@ -591,6 +608,8 @@ run_assertions() {
     assert "nginx site config proxies to gotcha with required headers" nginx_site_config_ok
     assert "pre-existing nginx site config was backed up, not clobbered" nginx_site_backed_up
     assert "gotcha /readyz responds 200 via nginx on :80" readyz_via_nginx
+    assert "gotcha /metrics responds 403 via nginx on :80" metrics_blocked_via_nginx
+    assert "gotcha /version responds 403 via nginx on :80" version_blocked_via_nginx
 
     assert "re-running the installer with the same version is idempotent (unit alive, env untouched, /readyz ok)" survives_idempotent_rerun
     assert "a lost gotcha.env is recovered by regenerating the PostgreSQL/ClickHouse passwords" recovers_after_env_file_lost

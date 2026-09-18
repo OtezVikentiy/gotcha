@@ -347,6 +347,18 @@ server {
     server_name $domain;
     client_max_body_size 64m;
 
+    # /healthz, /readyz stay open below for external uptime checks;
+    # /metrics and /version leak internal/build detail, loopback-only.
+    location ~ ^/(metrics|version)$ {
+        allow 127.0.0.1;
+        allow ::1;
+        deny all;
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
     location / {
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host \$host;
