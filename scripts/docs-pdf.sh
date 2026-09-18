@@ -110,6 +110,11 @@ LOCAL_ANCHOR_RE = re.compile(r"\[([^\]\[]*)\]\(#([a-z0-9-]+)\)")
 # internal/uptime/queue.go) может перенестись в узкой колонке таблицы.
 BREAK_AFTER = set("_-./=:|,")
 ZWSP = "​"
+TOKEN_SPLIT_RE = re.compile(r"[\s_\-./=:|,]+")
+
+# Калибровано подбором: сплошной прогон без разделителей рвётся ровно на
+# 87 символах текущей ширины страницы/шрифта — 70 оставляет запас.
+MAX_TOKEN_LEN = 70
 
 
 def slugify(text):
@@ -242,6 +247,30 @@ def add_soft_breaks(lines):
     return out
 
 
+def check_tagged_code_blocks(path, lines):
+    in_fence = False
+    lang = ""
+    for i, line in enumerate(lines, start=1):
+        if FENCE_RE.match(line):
+            in_fence = not in_fence
+            lang = line.strip().lstrip("`").strip() if in_fence else ""
+            continue
+        if not in_fence or not lang:
+            continue
+        for tok in TOKEN_SPLIT_RE.split(line):
+            if len(tok) > MAX_TOKEN_LEN:
+                sys.stderr.write(
+                    f"docs-pdf: {path}:{i}: unbroken token of {len(tok)} chars in "
+                    f"a tagged code block exceeds the {MAX_TOKEN_LEN}-char safe width — "
+                    "pandoc's syntax highlighting can't wrap inside a single token, "
+                    "and the tail is silently cut from the PDF.\n"
+                    f"  token: {tok}\n"
+                    "  fix: break the line, or add a separator "
+                    "(space, /, -, _, ., :, |, ,) inside the token.\n"
+                )
+                sys.exit(1)
+
+
 def main():
     locale, docs_dir, work_dir = sys.argv[1], sys.argv[2], sys.argv[3]
     bundle = sys.argv[4:]
@@ -254,6 +283,7 @@ def main():
         path = os.path.join(docs_dir, locale, slug + ".md")
         with open(path, encoding="utf-8") as fh:
             lines = fh.read().split("\n")
+        check_tagged_code_blocks(path, lines)
         out, ids, top_id, top_text = inject_heading_ids(slug, lines)
         raw[slug] = out
         bundle_ids[slug] = ids
@@ -367,8 +397,26 @@ self_test_untagged_code_block() {
         || { echo "docs-pdf.sh: regression check: untagged code block truncated in the text layer, expected: $token" >&2; return 1; }
 }
 
+self_test_long_token_refused() {
+    local token log
+    token="$(printf 'x%.0s' $(seq 1 100))"
+    local src="$WORK/selftest-src3" outdir="$WORK/selftest-out3"
+    log="$WORK/selftest3.log"
+    mkdir -p "$src/ru" "$outdir"
+    # shellcheck disable=SC2016
+    printf '# T\n\n```bash\n%s\n```\n' "$token" >"$src/ru/longtok.md"
+
+    if python3 "$WORK/preprocess.py" ru "$src" "$outdir" longtok >"$log" 2>&1; then
+        echo "docs-pdf.sh: regression check: an unbroken 100-char token in a tagged code block was not refused" >&2
+        return 1
+    fi
+    grep -qF "longtok.md" "$log" \
+        || { echo "docs-pdf.sh: regression check: refusal message doesn't name the file:" >&2; cat "$log" >&2; return 1; }
+}
+
 self_test_special_chars
 self_test_untagged_code_block
+self_test_long_token_refused
 
 for locale in "${LOCALES[@]}"; do
     loc_work="$WORK/$locale"
