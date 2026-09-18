@@ -433,11 +433,13 @@ Expect `200 OK`. Log into the UI, create an organization and a project, and send
 
 ```bash
 CH_PASSWORD=$(openssl rand -hex 24)
-CH_PASSWORD_HASH=$(printf '%s' "$CH_PASSWORD" | sha256sum | awk '{print $1}')
-sed -i "s#<password_sha256_hex>[a-f0-9]*</password_sha256_hex>#<password_sha256_hex>$CH_PASSWORD_HASH</password_sha256_hex>#" \
+HASH=$(printf '%s' "$CH_PASSWORD" | sha256sum | awk '{print $1}')
+TAG=password_sha256_hex
+DSN="clickhouse://gotcha:$CH_PASSWORD@127.0.0.1:9000/gotcha"
+sed -i "s#<$TAG>[a-f0-9]*</$TAG>#<$TAG>$HASH</$TAG>#" \
   /etc/clickhouse-server/users.d/10-gotcha.xml
 systemctl restart clickhouse-server
-sed -i "s#^GOTCHA_CH_DSN=.*#GOTCHA_CH_DSN=clickhouse://gotcha:$CH_PASSWORD@127.0.0.1:9000/gotcha#" /etc/gotcha/gotcha.env
+sed -i "s#^GOTCHA_CH_DSN=.*#GOTCHA_CH_DSN=$DSN#" /etc/gotcha/gotcha.env
 systemctl restart gotcha
 ```
 
