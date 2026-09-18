@@ -443,7 +443,7 @@ If the process is killed **while** a migration is running (power loss, `docker k
 
 ```bash
 docker compose logs gotcha
-# ... база в состоянии dirty на версии N ...
+# ... database is in a dirty state at version N ...
 ```
 
 First look at what migration N actually did to the schema (the migration files live in `internal/db/migrations/` in the repository, numbered). Then clear the flag with the version that matches reality:

@@ -64,9 +64,6 @@ done
 kpsewhich fvextra.sty >/dev/null 2>&1 \
     || { echo "docs-pdf.sh: LaTeX package 'fvextra' not found (needed to wrap long code lines) — install it, e.g. 'tlmgr install fvextra'" >&2; exit 1; }
 
-kpsewhich seqsplit.sty >/dev/null 2>&1 \
-    || { echo "docs-pdf.sh: LaTeX package 'seqsplit' not found (needed so long inline code doesn't overrun table cells) — install it, e.g. 'tlmgr install seqsplit'" >&2; exit 1; }
-
 kpsewhich hyph-ru.tex >/dev/null 2>&1 \
     || { echo "docs-pdf.sh: Russian hyphenation patterns not found (long Cyrillic words overrun table cells without them) — install them, e.g. 'tlmgr install hyphen-russian'" >&2; exit 1; }
 
@@ -85,10 +82,6 @@ trap 'rm -rf "$WORK"' EXIT
 cat >"$WORK/preamble.tex" <<'EOF'
 \usepackage{fvextra}
 \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
-% Код без пробелов не переносится сам и в узких колонках таблиц наезжает
-% на соседнюю — seqsplit даёт ему точки разрыва.
-\usepackage{seqsplit}
-\DeclareRobustCommand{\texttt}[1]{\seqsplit{#1}}
 EOF
 
 # Портирует internal/docs/anchors.go (транслитерация + дедуп якорей) на Python:
@@ -111,6 +104,11 @@ FENCE_RE = re.compile(r"^\s*```")
 CODE_SPAN_RE = re.compile(r"`([^`]*)`")
 LINK_RE = re.compile(r"\[([^\]\[]*)\]\(/docs/([a-z0-9-]+)(#[a-z0-9-]+)?\)")
 LOCAL_ANCHOR_RE = re.compile(r"\[([^\]\[]*)\]\(#([a-z0-9-]+)\)")
+
+# Знаки, после которых код без пробелов (GOTCHA_LONG_NAME=value,
+# internal/uptime/queue.go) может перенестись в узкой колонке таблицы.
+BREAK_AFTER = set("_-./=:|,")
+ZWSP = "​"
 
 
 def slugify(text):
@@ -223,6 +221,26 @@ def rewrite_links(current_slug, lines, bundle_ids, bundle_top):
     return out
 
 
+def add_soft_breaks(lines):
+    def repl(m):
+        chars = []
+        for ch in m.group(1):
+            chars.append(ch)
+            if ch in BREAK_AFTER:
+                chars.append(ZWSP)
+        return "`" + "".join(chars) + "`"
+
+    out = []
+    in_fence = False
+    for line in lines:
+        if FENCE_RE.match(line):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        out.append(line if in_fence else CODE_SPAN_RE.sub(repl, line))
+    return out
+
+
 def main():
     locale, docs_dir, work_dir = sys.argv[1], sys.argv[2], sys.argv[3]
     bundle = sys.argv[4:]
@@ -244,6 +262,7 @@ def main():
     manifest_lines = []
     for i, slug in enumerate(bundle):
         lines = rewrite_links(slug, raw[slug], bundle_ids, bundle_top)
+        lines = add_soft_breaks(lines)
         if i > 0:
             lines = ["\\newpage", ""] + lines
         with open(os.path.join(work_dir, slug + ".md"), "w", encoding="utf-8") as fh:
@@ -291,6 +310,35 @@ verify_pdf() {
             || { echo "docs-pdf.sh: no Cyrillic found in the Russian build: $pdf" >&2; return 1; }
     fi
 }
+
+self_test_special_chars() {
+    # Литеральные $/`/# ниже не должны раскрываться шеллом.
+    # shellcheck disable=SC2016
+    local sample='a_b^c#d&e%f\g{h}i$j~k|l,m.n/o-p_q=r:s'
+    local src="$WORK/selftest-src" outdir="$WORK/selftest-out" log="$WORK/selftest.log"
+    mkdir -p "$src/ru" "$outdir"
+    # shellcheck disable=SC2016
+    printf '# T\n\nCode: `%s`.\n' "$sample" >"$src/ru/torture.md"
+    python3 "$WORK/preprocess.py" ru "$src" "$outdir" torture
+
+    if ! pandoc "$outdir/torture.md" -o "$outdir/torture.pdf" \
+        -f 'markdown-raw_html+raw_tex' --pdf-engine=xelatex \
+        --include-in-header="$WORK/preamble.tex" \
+        -V mainfont="DejaVu Sans" -V monofont="DejaVu Sans Mono" >"$log" 2>&1
+    then
+        echo "docs-pdf.sh: regression check failed — LaTeX chokes on a special character in inline code, fragment: $sample" >&2
+        tail -15 "$log" >&2
+        return 1
+    fi
+
+    local text
+    text="$(pdftotext "$outdir/torture.pdf" - 2>/dev/null)" \
+        || { echo "docs-pdf.sh: regression check: pdftotext failed on the special-character sample" >&2; return 1; }
+    grep -qF "$sample" <<<"$text" \
+        || { echo "docs-pdf.sh: regression check: special characters missing from rendered text: $sample" >&2; return 1; }
+}
+
+self_test_special_chars
 
 for locale in "${LOCALES[@]}"; do
     loc_work="$WORK/$locale"
