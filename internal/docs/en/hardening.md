@@ -75,6 +75,14 @@ handle @internal {
 Replace `10.0.0.0/8` with the range your probes actually come from (orchestrator, Prometheus,
 your own network) — the default-open range is meaningless as a restriction.
 
+On bare metal, the nginx site `install-bare-metal.sh` installs doesn't include this
+restriction by default — it proxies all of `/` without distinguishing paths (see
+[Installation without Docker](/docs/installation-bare-metal)). Add a `location` block for
+`/metrics`/`/version`/`/healthz`/`/readyz` from the example above to
+`/etc/nginx/sites-available/gotcha` by hand and reload the config (`nginx -t &&
+systemctl reload nginx`) — otherwise these four endpoints are open to the whole internet,
+same as with no proxy at all.
+
 The same goes for the databases. The stock `docker-compose.yml` doesn't publish the PostgreSQL
 and ClickHouse ports on the host — only containers on the same docker network can reach them
 — but both ship with the default password `gotcha` / `gotcha`, identical on every install in
@@ -83,7 +91,11 @@ the first start** (once the volume is initialized, the variable alone changes no
 a running install run `ALTER USER` inside the database first, then set the variable; the
 commands are in [Configuration](/docs/configuration#compose-only-variables-database-containers).
 And don't add `ports:` to the databases "for convenience": with the default password that is
-an open database on a public address.
+an open database on a public address. Bare metal has no such hole by construction:
+`install-bare-metal.sh` generates a random password for each database on first install
+(`openssl rand -hex 24`), so there's no password shared across every install in the world
+— and PostgreSQL and ClickHouse only listen on `127.0.0.1` to begin with, with no port
+published externally unless you set one up by hand.
 
 ## TLS and HSTS
 
@@ -126,6 +138,50 @@ because config validation requires at least a year of max-age while `PRELOAD=tru
 Turning HSTS off by itself does **not** un-pin — it just stops renewing the pin, so step 4
 without steps 1-3 doesn't end the emergency, it freezes it for the duration of the previously
 sent max-age.
+
+## Bare metal: a systemd unit instead of the container runtime
+
+On a Docker-free install ([Installation without Docker](/docs/installation-bare-metal)),
+the same process hardening the container runtime provides on the Docker path comes from
+the systemd unit `/etc/systemd/system/gotcha.service`, written by
+`install-bare-metal.sh`. Line-by-line parity:
+
+| Docker Compose | systemd unit |
+|---|---|
+| `read_only: true` | `ProtectSystem=strict` (writes allowed only into `StateDirectory=`) |
+| `tmpfs: [/tmp]` | `PrivateTmp=yes` |
+| `cap_drop: [ALL]` | `CapabilityBoundingSet=` and `AmbientCapabilities=` (both empty) |
+| `no-new-privileges` | `NoNewPrivileges=yes` |
+| `pids_limit: 512` | `TasksMax=512` |
+| `mem_limit: 1g` | `MemoryMax=` + `MemoryAccounting=yes` + an explicit `GOMEMLIMIT` in `gotcha.env` |
+| `stop_grace_period: 90s` | `TimeoutStopSec=90` |
+| `restart: unless-stopped` | `Restart=always`, `RestartSec=5` |
+| the exports volume | `StateDirectory=gotcha`, `StateDirectoryMode=0700` |
+| `logging: json-file` | journald (`journalctl -u gotcha`) |
+| `depends_on: service_healthy` | `After=postgresql.service clickhouse-server.service network-online.target` |
+
+The unit goes beyond parity: `ProtectHome`, `PrivateDevices`, `ProtectKernelTunables`,
+`ProtectKernelModules`, `ProtectKernelLogs`, `ProtectControlGroups`, `ProtectClock`,
+`ProtectHostname`, `ProtectProc=invisible`, `RestrictNamespaces`, `RestrictRealtime`,
+`RestrictSUIDSGID`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`,
+`LockPersonality`, `SystemCallFilter=@system-service`, `SystemCallArchitectures=native`,
+`UMask=0077`, and `MemoryDenyWriteExecute=yes` — the container runtime simply has no
+equivalent for these, they're specific to systemd.
+
+`After=` without `Requires=` is deliberate: restarting PostgreSQL or ClickHouse shouldn't
+drag the app down with it — it survives the database being briefly unreachable and
+recovers on its own via `Restart=always` once the database is back, the same behavior as
+on the Docker path.
+
+Check what actually got applied after installing:
+
+```bash
+systemctl show gotcha.service -p MemoryDenyWriteExecute,ProtectSystem,NoNewPrivileges
+systemd-analyze security gotcha.service
+```
+
+`systemd-analyze security` prints what each directive buys you and an overall score — the
+same kind of tool as `docker inspect` for the container runtime, just for a unit.
 
 ## security.txt
 

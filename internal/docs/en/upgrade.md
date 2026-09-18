@@ -4,6 +4,8 @@
 
 An upgrade applies database schema migrations — this is not reversible automatically (nobody runs a "just in case" down-migration for you). Before upgrading, back up both PostgreSQL and ClickHouse — see [Backup & Restore](/docs/backup-restore). Don't skip this even if the upgrade looks minor.
 
+On a Docker-free install ([Installation without Docker](/docs/installation-bare-metal)), `install-bare-metal.sh` does this step itself on every upgrade it detects — you only need to take a manual backup if you're using external PostgreSQL/ClickHouse (`--skip-databases`) or passed `--no-backup` explicitly; details are in "Upgrading a bare-metal install" below.
+
 
 ## What changes when upgrading from versions before 0.4.2: details no longer reach everyone
 
@@ -379,6 +381,42 @@ Build through `make`, not through a bare `docker compose build`: only `make` com
 
 If you only want to update the image without rebuilding from source (e.g. you're pulling a pre-built image from a registry rather than building from `git`), use `docker compose pull` + `docker compose up -d` instead.
 
+## Upgrading a bare-metal install
+
+If Gotcha is installed with `install-bare-metal.sh` ([Installation without Docker](/docs/installation-bare-metal)), upgrading is the same script, run again with the new version:
+
+```bash
+curl -fsSL -o install-bare-metal.sh \
+  https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z/install-bare-metal.sh
+chmod +x install-bare-metal.sh
+sudo ./install-bare-metal.sh --version X.Y.Z --domain gotcha.example.com --email you@example.com
+```
+
+Pass the same flags you used for the original install (domain, `--no-proxy`,
+`--mem-limit`, and so on) — otherwise the script falls back to their defaults instead of
+your current setting. The script detects an upgrade itself by comparing the already
+installed binary's version (`/usr/local/bin/gotcha --version`) against `--version`, and
+then does, with no extra flags, exactly what "Before you start" above asks you to do by
+hand:
+
+1. dumps PostgreSQL (`pg_dump`) to
+   `/var/lib/gotcha/backup/postgres-<version>-<date>.sql.gz` before migrations — skipped
+   only with an explicit `--no-backup`, and skipped by design with `--skip-databases`
+   (external PostgreSQL/ClickHouse): dumping someone else's database isn't the script's
+   to do, that's on the operator of the external database;
+2. stops the `gotcha` service;
+3. saves the previous binary to `/opt/gotcha/backup/gotcha-<version>` — the only rollback
+   path, described under "Rolling back" below;
+4. installs the new binary and the agent distribution;
+5. applies schema migrations with the same `--migrate-only` flag the Docker path uses,
+   just through `systemd-run` instead of `docker compose run`;
+6. starts the service and waits for `--healthcheck` to pass.
+
+Like the initial install, the upgrade's progress is logged to
+`/var/log/gotcha-install.log`; on failure the script prints the steps already completed
+and its exit code, and a re-run with the same flags is idempotent — it doesn't redo what
+already succeeded and picks up from the step that failed.
+
 ## What automatic migrations mean
 
 By default (`GOTCHA_AUTO_MIGRATE_ENABLED=true`), on every start the app checks the schema version in the database and, if it's behind the version baked into the binary, applies the missing migrations automatically before opening its port. This is convenient for the typical "single server, single process" setup — an upgrade boils down to the three commands above.
@@ -420,7 +458,17 @@ docker compose run --rm gotcha --migrate-force=N-1
 
 For the ClickHouse schema the flag is `--migrate-force-ch=N`; the startup error says which database is stuck. Only these two targets are accepted — anything else is treated as a typo, because it would silently shift the starting point of every future migration.
 
-**`--migrate-force` does not finish the migration** — it only clears the "unfinished" marker. If migration N half-applied and you clear the flag at N without checking, the next start will happily run against a schema missing half of migration N, and every insert into the missing part will fail. Verify the schema first, then clear the flag, then `docker compose up -d` — the app will apply the remaining migrations (N+1 and up) itself.
+On bare metal the same investigation works with `journalctl -u gotcha --no-pager -n 100`
+instead of `docker compose logs gotcha`, and the flag goes through the same `systemd-run`
+that ordinary migrations use:
+
+```bash
+systemd-run --pipe --wait --collect --uid=gotcha --gid=gotcha \
+  --property="EnvironmentFile=/etc/gotcha/gotcha.env" \
+  /usr/local/bin/gotcha --migrate-force=N
+```
+
+**`--migrate-force` does not finish the migration** — it only clears the "unfinished" marker. If migration N half-applied and you clear the flag at N without checking, the next start will happily run against a schema missing half of migration N, and every insert into the missing part will fail. Verify the schema first, then clear the flag, then `docker compose up -d` (on bare metal, `systemctl start gotcha`) — the app will apply the remaining migrations (N+1 and up) itself.
 
 ## Rolling back
 
@@ -443,11 +491,21 @@ What to do:
    - `GOTCHA_ADDR` → `GOTCHA_LISTEN_ADDR` — the listen address reverts to its default.
 
    The full list across all three renaming waves (v0.23.0, v0.34.0, and the agent/compose variables) lives in `internal/envcontract/renamed.go` in the repository.
-2. **Roll the application back** — switch to the previous commit/tag and rebuild:
-   ```bash
-   git checkout <previous-tag-or-commit>
-   make up-rebuild
-   ```
+2. **Roll the application back**:
+   - Docker: switch to the previous commit/tag and rebuild:
+     ```bash
+     git checkout <previous-tag-or-commit>
+     make up-rebuild
+     ```
+   - Bare metal: restore the saved previous binary and restart the service:
+     ```bash
+     systemctl stop gotcha
+     cp -a /opt/gotcha/backup/gotcha-<previous-version> /usr/local/bin/gotcha
+     systemctl start gotcha
+     ```
+     The installer puts this file there before every upgrade (see "Upgrading a
+     bare-metal install" above) — one file per version you upgraded from; the installer
+     never cleans up old ones under `/opt/gotcha/backup/`.
 3. **Read the startup log.** A line like "schema version N is ahead of the built-in M; version … is marked backward-compatible, running against it" means the rollback worked and the instance is running against a newer schema. That is a supported state, but a temporary one: finish the job — either go back to the new version, or restore the backup taken before the upgrade.
 4. **If startup is refused** with an incompatible-schema message, rolling the binary back is not possible: **restore the backup** taken before the upgrade (see [Backup & Restore](/docs/backup-restore)) and bring up the previous version against it.
 
@@ -478,8 +536,19 @@ docker compose logs --tail=100 gotcha
 
 A line reading `applying migrations` not followed by an error message means migrations succeeded. Then open the UI in a browser and confirm you can see your organizations, projects, and data.
 
+On a bare-metal install, the same checks without Docker Compose:
+
+```bash
+systemctl status gotcha
+curl -sf http://127.0.0.1:8080/readyz
+journalctl -u gotcha --no-pager -n 100
+```
+
+`systemctl status gotcha` should show `active (running)`. An `applying migrations` line in the journal with no error after it means the same thing as on the Docker path.
+
 ## What's next
 
 - [Backup & Restore](/docs/backup-restore).
 - [Configuration](/docs/configuration) — the full variable reference, including `GOTCHA_AUTO_MIGRATE_ENABLED`.
 - [Installation](/docs/installation).
+- [Installation without Docker](/docs/installation-bare-metal).

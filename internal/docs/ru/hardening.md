@@ -73,6 +73,14 @@ handle @internal {
 Замените `10.0.0.0/8` на диапазон, из которого реально приходят ваши пробы (оркестратор,
 Prometheus, ваша сеть) — открытый по умолчанию диапазон бессмысленен как ограничение.
 
+На bare-metal сайт nginx, который ставит `install-bare-metal.sh`, этого ограничения по
+умолчанию не содержит — он проксирует весь `/` без разбора путей (см.
+[Установку без Docker](/docs/installation-bare-metal)). Добавьте `location`-блок для
+`/metrics`/`/version`/`/healthz`/`/readyz` из примера выше в
+`/etc/nginx/sites-available/gotcha` вручную и перезагрузите конфиг (`nginx -t &&
+systemctl reload nginx`) — иначе эти четыре ручки открыты всему интернету так же, как без
+любого прокси вообще.
+
 То же относится к базам. Штатный `docker-compose.yml` не публикует порты PostgreSQL и
 ClickHouse на хост — до них добираются только контейнеры той же docker-сети, — но пароль
 у обеих по умолчанию `gotcha` / `gotcha`, и он одинаков у каждой установки в мире. Смените
@@ -81,7 +89,10 @@ ClickHouse на хост — до них добираются только ко�
 установке — сначала `ALTER USER` в самой базе, потом переменная; команды — в
 [Конфигурации](/docs/configuration#peremennye-tolko-dlya-compose-konteynery-baz). И не
 добавляйте базам `ports:` «для удобства»: с дефолтным паролем это открытая база на публичном
-адресе.
+адресе. На bare-metal этой дыры нет по конструкции: `install-bare-metal.sh` генерирует
+случайный пароль каждой базе при первой установке (`openssl rand -hex 24`), общего для всех
+инсталляций пароля там не существует — PostgreSQL и ClickHouse к тому же слушают только
+`127.0.0.1`, порты наружу не открыты вовсе, если не задавать их вручную.
 
 ## TLS и HSTS
 
@@ -122,6 +133,51 @@ Preload — билет в один конец: попав в список пре
 
 Выключенный HSTS пин сам по себе **не снимает** — он лишь перестаёт продлеваться, поэтому
 шаг 4 без шагов 1–3 не отменяет аварию, а замораживает её на срок ранее выданного max-age.
+
+## Bare-metal: юнит systemd вместо рантайма контейнера
+
+На установке без Docker ([Установка без Docker](/docs/installation-bare-metal)) то же
+усиление процесса, которое в Docker-пути даёт рантайм контейнера, обеспечивает
+systemd-юнит `/etc/systemd/system/gotcha.service`, который пишет `install-bare-metal.sh`.
+Паритет построчно:
+
+| Docker Compose | systemd-юнит |
+|---|---|
+| `read_only: true` | `ProtectSystem=strict` (запись разрешена только в `StateDirectory=`) |
+| `tmpfs: [/tmp]` | `PrivateTmp=yes` |
+| `cap_drop: [ALL]` | `CapabilityBoundingSet=` и `AmbientCapabilities=` (пустые) |
+| `no-new-privileges` | `NoNewPrivileges=yes` |
+| `pids_limit: 512` | `TasksMax=512` |
+| `mem_limit: 1g` | `MemoryMax=` + `MemoryAccounting=yes` + явный `GOMEMLIMIT` в `gotcha.env` |
+| `stop_grace_period: 90s` | `TimeoutStopSec=90` |
+| `restart: unless-stopped` | `Restart=always`, `RestartSec=5` |
+| том выгрузок | `StateDirectory=gotcha`, `StateDirectoryMode=0700` |
+| `logging: json-file` | journald (`journalctl -u gotcha`) |
+| `depends_on: service_healthy` | `After=postgresql.service clickhouse-server.service network-online.target` |
+
+Юнит идёт дальше паритета: `ProtectHome`, `PrivateDevices`, `ProtectKernelTunables`,
+`ProtectKernelModules`, `ProtectKernelLogs`, `ProtectControlGroups`, `ProtectClock`,
+`ProtectHostname`, `ProtectProc=invisible`, `RestrictNamespaces`, `RestrictRealtime`,
+`RestrictSUIDSGID`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `LockPersonality`,
+`SystemCallFilter=@system-service`, `SystemCallArchitectures=native`, `UMask=0077` и
+`MemoryDenyWriteExecute=yes` — этих ограничений у контейнерного рантайма попросту нет, они
+специфичны для systemd.
+
+`After=` без `Requires=` — намеренно: перезапуск PostgreSQL или ClickHouse не должен тянуть
+за собой перезапуск приложения, оно переживает временную недоступность базы и само
+восстановится через `Restart=always`, когда база вернётся, — то же поведение, что и в
+Docker-пути.
+
+Проверьте фактически применённые ограничения после установки:
+
+```bash
+systemctl show gotcha.service -p MemoryDenyWriteExecute,ProtectSystem,NoNewPrivileges
+systemd-analyze security gotcha.service
+```
+
+`systemd-analyze security` печатает по каждой директиве, что она даёт, и итоговую оценку —
+это тот же по духу инструмент, что `docker inspect` для контейнерного рантайма, только
+для юнита.
 
 ## security.txt
 

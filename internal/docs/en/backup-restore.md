@@ -9,7 +9,7 @@ Gotcha keeps data in two separate databases, and both matter equally — you mus
 
 Restoring only one of the two either breaks the UI (a project exists but has zero events for it) or, the other way around, loses your actual configuration (alerts, members, DSN keys) even if the telemetry is intact.
 
-Every command below is run **from the repository directory** (`gotcha/`, the same place as `docker-compose.yml`) and uses `docker compose exec` — running a command inside an already-running container, without needing to publish the database ports to the host (they aren't published — see [Installation](/docs/installation)).
+Every command below is run **from the repository directory** (`gotcha/`, the same place as `docker-compose.yml`) and uses `docker compose exec` — running a command inside an already-running container, without needing to publish the database ports to the host (they aren't published — see [Installation](/docs/installation)). This is for the Docker install; for a Docker-free install, see "Bare metal: the same thing without Docker" at the end of this page.
 
 ## Backup: PostgreSQL
 
@@ -250,8 +250,113 @@ done
 
 Remember to make the script executable (`chmod +x backup.sh`), and — importantly — copy the `backup/` directory's contents **off this same server** (a different disk, S3-compatible storage, another server). A local-only copy won't help if the server itself fails.
 
+## Bare metal: the same thing without Docker
+
+If Gotcha is installed with `install-bare-metal.sh` ([Installation without Docker](/docs/installation-bare-metal)), PostgreSQL and ClickHouse are system services, not containers: `docker compose exec` is replaced with a direct call to `pg_dump`/`psql`/`clickhouse-client` as a system user, and Docker's named volumes become package paths on disk (`/var/lib/postgresql`, `/var/lib/clickhouse`).
+
+### Backup: PostgreSQL
+
+The installer itself runs exactly this command, automatically, before every upgrade (see [Upgrade](/docs/upgrade), the "Upgrading a bare-metal install" section):
+
+```bash
+mkdir -p /var/lib/gotcha/backup && chmod 700 /var/lib/gotcha/backup
+sudo -u postgres pg_dump -d gotcha | gzip > /var/lib/gotcha/backup/postgres-$(date +%F).sql.gz
+chmod 600 /var/lib/gotcha/backup/postgres-$(date +%F).sql.gz
+```
+
+### Backup: ClickHouse
+
+Same seven tables, same caveat about the materialized views (`transactions_5m`, `web_vitals_5m`) and `schema_migrations` as in the Docker section above — only the `clickhouse-client` invocation changes, no `docker compose exec`, with the password from `/etc/clickhouse-server/users.d/10-gotcha.xml` (the same one baked into `GOTCHA_CH_DSN`):
+
+```bash
+mkdir -p /var/lib/gotcha/backup/clickhouse
+for t in events transactions spans metric_points profile_samples check_results logs; do
+  clickhouse-client --user gotcha --password "$CH_PASSWORD" --database gotcha \
+    --query "SELECT * FROM $t FORMAT Native" \
+    > /var/lib/gotcha/backup/clickhouse/$t-$(date +%F).native
+done
+```
+
+A filesystem snapshot with services stopped, using the same paths the packages themselves create instead of Docker's named volumes:
+
+```bash
+systemctl stop gotcha postgresql clickhouse-server
+tar czf /var/lib/gotcha/backup/volumes-$(date +%F).tar.gz \
+  /var/lib/postgresql /var/lib/clickhouse
+systemctl start postgresql clickhouse-server gotcha
+```
+
+Don't forget `/etc/gotcha/gotcha.env` either — the `GOTCHA_SECRET_KEY` warning from "Back up `.env` too" above applies literally, just at a different path:
+
+```bash
+cp /etc/gotcha/gotcha.env "/var/lib/gotcha/backup/env-$(date +%F)"
+chmod 600 "/var/lib/gotcha/backup/env-$(date +%F)"
+```
+
+### Restore: PostgreSQL
+
+The same order of steps as the Docker section above (PostgreSQL first, then migrations without starting the app, then ClickHouse, then the app as a whole) — services are managed with `systemctl`, not `docker compose`:
+
+```bash
+# 1. Stop the app, leave PostgreSQL/ClickHouse running.
+systemctl stop gotcha
+
+# 2. Recreate the PostgreSQL database from scratch.
+sudo -u postgres psql -d postgres \
+  -c 'DROP DATABASE IF EXISTS gotcha' -c 'CREATE DATABASE gotcha OWNER gotcha'
+
+# 3. Load the dump, stopping at the first error.
+gunzip -c /var/lib/gotcha/backup/postgres-2026-07-01.sql.gz \
+  | sudo -u postgres psql -v ON_ERROR_STOP=1 --single-transaction -d gotcha
+
+# 4. Apply migrations without starting the app — this creates the ClickHouse schema.
+systemd-run --pipe --wait --collect --uid=gotcha --gid=gotcha \
+  --property="EnvironmentFile=/etc/gotcha/gotcha.env" \
+  /usr/local/bin/gotcha --migrate-only
+
+# 5. Restore ClickHouse — see "Restore: ClickHouse" below.
+
+# 6. Start the app.
+systemctl start gotcha
+```
+
+`ON_ERROR_STOP=1` and `--single-transaction` are load-bearing for the same reason as in the Docker section above — without them a partially failed restore looks like a success.
+
+### Restore: ClickHouse
+
+```bash
+cat /var/lib/gotcha/backup/clickhouse/events-2026-07-01.native | \
+  clickhouse-client --user gotcha --password "$CH_PASSWORD" --database gotcha \
+    --query "INSERT INTO events FORMAT Native"
+```
+
+Repeat for each table. The same caveat about clearing `transactions_5m`/`web_vitals_5m` **before** inserting, when restoring a second time into a non-empty database — with the same `clickhouse-client`, no `docker compose exec`.
+
+### Restore from a filesystem snapshot
+
+```bash
+systemctl stop gotcha postgresql clickhouse-server
+rm -rf /var/lib/postgresql/17/main/* /var/lib/clickhouse/*
+tar xzf /var/lib/gotcha/backup/volumes-2026-07-01.tar.gz -C /
+systemctl start postgresql clickhouse-server gotcha
+```
+
+`/var/lib/postgresql/17/main` and `/var/lib/clickhouse` are the standard data directories of the `postgresql-17`/`clickhouse-server` packages on Debian/Ubuntu. **This is a destructive operation**, the same caveat as in the Docker section: make sure it's the right archive before running it.
+
+### Verify and cron
+
+Post-restore verification is the same as in the Docker section above, just without `docker compose exec`:
+
+```bash
+/usr/local/bin/gotcha --healthcheck
+curl -sf http://127.0.0.1:8080/readyz
+```
+
+The cron job has the same shape as the example above — the commands inside `backup.sh` become `sudo -u postgres pg_dump`/`clickhouse-client` without `docker compose exec`, and the backup directory is `/var/lib/gotcha/backup` instead of `backup/` inside the repository checkout.
+
 ## What's next
 
 - [Installation](/docs/installation).
+- [Installation without Docker](/docs/installation-bare-metal).
 - [Upgrade](/docs/upgrade) — take a backup before every upgrade.
 - [Configuration](/docs/configuration) — the `GOTCHA_*_RETENTION_DAYS` variables that control how much data accumulates in ClickHouse in the first place.
