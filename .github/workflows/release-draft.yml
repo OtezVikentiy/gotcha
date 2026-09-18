@@ -185,9 +185,19 @@ jobs:
           set -euo pipefail
           version="${TAG#v}"
 
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::релиз $TAG не найден - ожидается, что его уже создала джоба draft" >&2
+            exit 1
+          fi
+
+          # Отдельно от значения isDraft: сбой самой команды (протухший токен,
+          # сеть, API) не должен выглядеть штатным пропуском "уже опубликован".
+          is_draft=$(gh release view "$TAG" --json isDraft -q .isDraft) \
+            || { echo "::error::gh release view $TAG не смог отдать состояние релиза" >&2; exit 1; }
+
           # Симметрично draft: перезаписывать ассеты опубликованного релиза
           # молча нельзя — только осознанным workflow_dispatch с force_upload.
-          if [ "$(gh release view "$TAG" --json isDraft -q .isDraft)" != "true" ] && [ "$FORCE_UPLOAD" != "true" ]; then
+          if [ "$is_draft" != "true" ] && [ "$FORCE_UPLOAD" != "true" ]; then
             echo "::notice::Релиз $TAG уже опубликован - ассеты не трогаю (нужен запуск workflow_dispatch с force_upload)"
             exit 0
           fi
