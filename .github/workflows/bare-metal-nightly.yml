@@ -1,0 +1,72 @@
+# Дистрибутивы без своего GitHub-раннера (задача 4 гоняет Ubuntu 24.04 на PR):
+# systemd в образе отсутствует, поднимаем его разовым слоем и уже внутри — /sbin/init.
+name: bare-metal ночной прогон
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bare-metal-nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  matrix:
+    name: bare-metal установка (${{ matrix.image }})
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [debian:12, debian:13, ubuntu:24.04, ubuntu:26.04]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Две версии: --upgrade-from проверяет апгрейд поверх уже установленной
+      # старой версии, а не только свежую установку.
+      - name: собрать тарболы поставки (старая + новая версия)
+        run: |
+          bash scripts/build-dist.sh --version 0.0.0 --arch amd64 --out dist
+          bash scripts/build-dist.sh --version 0.0.1 --arch amd64 --out dist
+
+      - name: собрать образ с systemd поверх ${{ matrix.image }}
+        run: |
+          cat >Dockerfile.bare-metal-systemd <<EOF
+          FROM ${{ matrix.image }}
+          RUN apt-get update && apt-get install -y systemd systemd-sysv dbus curl gpg iproute2 sudo procps \
+              && apt-get clean
+          EOF
+          docker build -t bare-metal-systemd -f Dockerfile.bare-metal-systemd .
+
+      - name: запустить контейнер с /sbin/init
+        run: |
+          docker run -d --name bm --privileged --cgroupns=host \
+            -v "$PWD/dist:/dist:ro" \
+            -v "$PWD/scripts:/scripts:ro" \
+            -v "$PWD/internal/docs:/internal/docs:ro" \
+            bare-metal-systemd /sbin/init
+
+      - name: install-bare-metal.sh в контейнере (${{ matrix.image }})
+        run: |
+          docker exec bm bash -lc \
+            'CI=true bash /scripts/bare-metal-e2e.sh --tarball /dist/gotcha-0.0.1-linux-amd64.tar.gz --upgrade-from /dist/gotcha-0.0.0-linux-amd64.tar.gz'
+
+      - name: логи сервисов при отказе
+        if: failure()
+        run: docker exec bm journalctl -u gotcha -u postgresql -u clickhouse-server --no-pager -n 200 || true
+
+      - name: снять контейнер
+        if: always()
+        run: docker rm -f bm || true
