@@ -19,6 +19,7 @@ var (
 	manualFetchRe   = regexp.MustCompile(`(?m)^curl -fsSL -o "\$TARBALL" "\$URL/\$TARBALL"$`)
 	manualSumRe     = regexp.MustCompile(`(?m)^grep " ([^"\\]+)\\\$" SHA256SUMS\.txt \| sha256sum -c -$`)
 	manualExtractRe = regexp.MustCompile(`(?m)^tar xzf "\$TARBALL"$`)
+	distURLRe       = regexp.MustCompile(`(?s)dist_url\(\) \{.*?printf '([^']*)\\n' (.*?)\n\}`)
 )
 
 func bareMetalDocPaths(root string) map[string]string {
@@ -106,10 +107,42 @@ func TestBareMetalDocClaimsOnlyTestedDistros(t *testing.T) {
 	}
 }
 
+// Образец берётся из dist_url — единственного места, знающего форму имени ассета:
+// литерал рядом с ним сверял бы копию с копией, а не с истиной.
+func releaseTarballName(t *testing.T, installer string) string {
+	t.Helper()
+	m := distURLRe.FindStringSubmatch(installer)
+	if m == nil {
+		t.Fatalf("install-bare-metal.sh: printf в dist_url не разобран — сторож смотрит мимо функции")
+	}
+	placeholder := map[string]string{
+		`"${base%/}"`: "BASE",
+		`"$version"`:  "X.Y.Z",
+		`"$arch"`:     "<arch>",
+	}
+	url := m[1]
+	for _, arg := range strings.Fields(m[2]) {
+		value, known := placeholder[arg]
+		if !known {
+			t.Fatalf("dist_url: незнакомый аргумент printf %q — образец имени собрался бы неверно", arg)
+		}
+		i := strings.Index(url, "%s")
+		if i < 0 {
+			t.Fatalf("dist_url: аргументов printf больше, чем %%s в формате %q", m[1])
+		}
+		url = url[:i] + value + url[i+2:]
+	}
+	if strings.Contains(url, "%s") {
+		t.Fatalf("dist_url: в формате %q остались %%s без аргументов", m[1])
+	}
+	return url[strings.LastIndex(url, "/")+1:]
+}
+
 // Тарбол сохранялся под именем gotcha.tar.gz, а SHA256SUMS.txt называет его полным
 // именем релиза: `sha256sum -c` не находил ни одной строки и падал всегда.
 func TestManualInstallChecksumNamesMatch(t *testing.T) {
 	tree := Load(t)
+	want := releaseTarballName(t, installerBody(t, tree.Root))
 
 	for locale, path := range bareMetalDocPaths(tree.Root) {
 		body := readDocFile(t, path)
@@ -117,8 +150,8 @@ func TestManualInstallChecksumNamesMatch(t *testing.T) {
 		if name == nil {
 			t.Fatalf("%s: имя тарбола в ручном пути не найдено — сторож смотрит мимо страницы", locale)
 		}
-		if name[1] != "gotcha-X.Y.Z-linux-<arch>.tar.gz" {
-			t.Errorf("%s: имя тарбола %q не совпадает с раскладкой релиза, которую печатает dist_url", locale, name[1])
+		if name[1] != want {
+			t.Errorf("%s: имя тарбола %q, а dist_url печатает %q", locale, name[1], want)
 		}
 		if !manualFetchRe.MatchString(body) {
 			t.Errorf("%s: тарбол качается не под тем же именем, под которым сохраняется", locale)

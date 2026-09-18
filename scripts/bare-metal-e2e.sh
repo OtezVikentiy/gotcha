@@ -217,7 +217,7 @@ time.sleep(30)
     local listener_pid=$!
 
     local tries=0
-    until ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ':80$'; do
+    until grep -q ':80$' <<<"$(ss -ltn 2>/dev/null | awk '{print $4}')"; do
         tries=$((tries + 1))
         if [ "$tries" -ge 10 ]; then
             printf 'dummy listener on port 80 never came up\n' >&2
@@ -471,7 +471,7 @@ e2e_ingest_roundtrip() {
         --data "{\"message\":\"$msg\"}" || { printf 'event submission to /api/%s/store/ failed\n' "$project_id" >&2; return 1; }
 
     tries=0
-    until curl -fsS -c "$jar" -b "$jar" "$app/projects/$project_id/issues" | grep -qF "$msg"; do
+    until grep -qF "$msg" <<<"$(curl -fsS -c "$jar" -b "$jar" "$app/projects/$project_id/issues")"; do
         tries=$((tries + 1))
         [ "$tries" -lt 15 ] || { printf 'event never appeared in the issues list\n' >&2; return 1; }
         sleep 1
