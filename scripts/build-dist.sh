@@ -61,7 +61,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMMIT="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 VPKG="gitflic.ru/otezvikentiy/gotcha/internal/version"
-LDFLAGS="-X $VPKG.version=$VERSION -X $VPKG.commit=$COMMIT -X $VPKG.date=$DATE"
+# "v" в ldflags — паритет с Docker (git describe --tags отдаёт тот же префикс);
+# DISTNAME/VERSION ниже сознательно без него — они в адресах скачивания и раскладке.
+LDFLAGS="-X $VPKG.version=v$VERSION -X $VPKG.commit=$COMMIT -X $VPKG.date=$DATE"
 
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"

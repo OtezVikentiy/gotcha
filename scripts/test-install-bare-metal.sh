@@ -78,6 +78,23 @@ assert_eq "is_semver rejects a non-version" 1 $?
 is_semver 1.6
 assert_eq "is_semver rejects a two-segment version" 1 $?
 
+# installed_version
+
+fake_bin=$(mktemp)
+printf '#!/usr/bin/env bash\necho "gotcha v1.6.1 (abc123, 2026-09-01T00:00:00Z)"\n' >"$fake_bin"
+chmod +x "$fake_bin"
+out=$(installed_version "$fake_bin")
+assert_eq "installed_version strips the leading v from a Docker-style binary" "1.6.1" "$out"
+
+printf '#!/usr/bin/env bash\necho "gotcha 1.6.1 (abc123, 2026-09-01T00:00:00Z)"\n' >"$fake_bin"
+chmod +x "$fake_bin"
+out=$(installed_version "$fake_bin")
+assert_eq "installed_version leaves an old bare-metal-style binary (no v) alone" "1.6.1" "$out"
+rm -f "$fake_bin"
+
+out=$(installed_version /nonexistent/gotcha)
+assert_eq "installed_version returns empty when the binary is missing" "" "$out"
+
 # version_ge
 
 version_ge 1.10.0 1.9.0
@@ -98,6 +115,17 @@ out=$(
     printf 'rc=%d' $?
 )
 assert_eq "version_ge survives a pre-release suffix" "rc=0" "$out"
+
+# Ровно вход main(): prev_version из installed_version (может быть в обоих
+# форматах — старый тарбол без "v", новый с ним), ARG_VERSION всегда X.Y.Z.
+version_ge 1.6.1 1.7.0
+assert_eq "version_ge false: unprefixed previous version older than the target" 1 $?
+version_ge v1.6.1 1.7.0
+assert_eq "version_ge false: v-prefixed previous version older than the target" 1 $?
+version_ge 1.7.0 1.6.1
+assert_eq "version_ge true: unprefixed previous version newer than the target" 0 $?
+version_ge v1.7.0 1.6.1
+assert_eq "version_ge true: v-prefixed previous version newer than the target" 0 $?
 
 # parse_args
 

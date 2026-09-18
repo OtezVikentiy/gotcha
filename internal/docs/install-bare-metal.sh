@@ -79,6 +79,16 @@ is_semver() {
     [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
 }
 
+# Путь параметром — тестируемость, тот же принцип, что у detect_distro. Тарболы до
+# этой правки несли версию без "v", новые — с ним; снимаем префикс ради одного формата.
+installed_version() {
+    local binary="$1"
+    [ -x "$binary" ] || return 0
+    local out
+    out=$("$binary" --version 2>/dev/null | awk '{print $2}')
+    printf '%s\n' "${out#v}"
+}
+
 # Сравнение по числовым сегментам X.Y.Z — лексикографическое здесь неверно
 # (1.10.0 < 1.9.0 посимвольно, хотя 1.10.0 новее).
 version_ge() {
@@ -1052,10 +1062,8 @@ main() {
 
     # Версия уже установленного бинаря, не версия этого скрипта (GOTCHA_INSTALL_DEFAULT_VERSION):
     # решает, идёт ли речь об обновлении (§4.5) или об идемпотентном повторе/первой установке.
-    local prev_version=""
-    if [ -x /usr/local/bin/gotcha ]; then
-        prev_version=$(/usr/local/bin/gotcha --version 2>/dev/null | awk '{print $2}')
-    fi
+    local prev_version
+    prev_version=$(installed_version /usr/local/bin/gotcha)
     local need_upgrade=""
     if [ -n "$prev_version" ] && ! version_ge "$prev_version" "$ARG_VERSION"; then
         need_upgrade=1

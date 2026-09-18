@@ -69,8 +69,8 @@ assert_eq "$VERSION" "$got_version" "VERSION file contents"
 
 got_version_out=$("$DIST/gotcha" version)
 case "$got_version_out" in
-    *"$VERSION"*) ;;
-    *) assert_eq "contains $VERSION" "$got_version_out" "gotcha version output" ;;
+    *"v$VERSION"*) ;;
+    *) assert_eq "contains v$VERSION" "$got_version_out" "gotcha version output carries the Docker-parity v prefix" ;;
 esac
 
 if ! (cd "$DIST/agent-dist" && sha256sum -c SHA256SUMS >/dev/null 2>&1); then
