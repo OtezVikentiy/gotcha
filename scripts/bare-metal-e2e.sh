@@ -426,8 +426,10 @@ e2e_ingest_roundtrip() {
 
     key=$(sudo -u postgres psql -d gotcha -tAc "SELECT public_key FROM project_keys ORDER BY id LIMIT 1")
     project_id=$(sudo -u postgres psql -d gotcha -tAc "SELECT project_id FROM project_keys ORDER BY id LIMIT 1")
-    [ -n "$key" ] && [ -n "$project_id" ] \
-        || { printf 'could not read a project key out of PostgreSQL\n' >&2; return 1; }
+    if [ -z "$key" ] || [ -z "$project_id" ]; then
+        printf 'could not read a project key out of PostgreSQL\n' >&2
+        return 1
+    fi
 
     curl -fsS -o /dev/null "$app/api/$project_id/store/?sentry_key=$key" \
         --data "{\"message\":\"$msg\"}" || { printf 'event submission to /api/%s/store/ failed\n' "$project_id" >&2; return 1; }

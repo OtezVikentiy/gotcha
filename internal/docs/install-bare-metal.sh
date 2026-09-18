@@ -741,9 +741,11 @@ backup_before_upgrade() {
         log_step "pre-upgrade backup skipped (--skip-databases, database is not ours to dump)"
         return 0
     fi
-    mkdir -p /var/lib/gotcha/backup && chmod 700 /var/lib/gotcha/backup \
-        || fail "$EXIT_DATABASE" "failed to create /var/lib/gotcha/backup"
-    local dump="/var/lib/gotcha/backup/postgres-${from_version}-$(date -u +%Y%m%dT%H%M%SZ).sql.gz"
+    mkdir -p /var/lib/gotcha/backup || fail "$EXIT_DATABASE" "failed to create /var/lib/gotcha/backup"
+    chmod 700 /var/lib/gotcha/backup || fail "$EXIT_DATABASE" "failed to create /var/lib/gotcha/backup"
+    local dump
+    dump="/var/lib/gotcha/backup/postgres-${from_version}-$(date -u +%Y%m%dT%H%M%SZ).sql.gz" \
+        || fail "$EXIT_DATABASE" "failed to build backup file name"
     sudo -u postgres pg_dump -d gotcha | gzip >"$dump" || fail "$EXIT_DATABASE" "pre-upgrade pg_dump failed"
     # Дамп несёт те же секреты (схема, данные), что и gotcha.env — не мирочитаем.
     chmod 600 "$dump" || fail "$EXIT_DATABASE" "failed to secure $dump"
@@ -775,8 +777,8 @@ write_env_file() {
     render_env_file "$pg_dsn" "$ch_dsn" "$secret_key" "$base_url" \
         /opt/gotcha/agent-dist "$gomemlimit" 127.0.0.1:8080 >"$tmp" \
         || { rm -f "$tmp"; fail "$EXIT_OTHER" "failed to render $env_file"; }
-    chown root:gotcha "$tmp" && chmod 0640 "$tmp" \
-        || { rm -f "$tmp"; fail "$EXIT_OTHER" "failed to set ownership/permissions on $env_file"; }
+    chown root:gotcha "$tmp" || { rm -f "$tmp"; fail "$EXIT_OTHER" "failed to set ownership/permissions on $env_file"; }
+    chmod 0640 "$tmp" || { rm -f "$tmp"; fail "$EXIT_OTHER" "failed to set ownership/permissions on $env_file"; }
     mv "$tmp" "$env_file" || fail "$EXIT_OTHER" "failed to install $env_file"
     log_step "config file created: $env_file"
 }
