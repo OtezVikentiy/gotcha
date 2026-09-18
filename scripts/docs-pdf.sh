@@ -51,6 +51,10 @@ OUT="${OUT:-$ROOT/dist}"
 BUNDLE=(installation-bare-metal configuration hardening backup-restore upgrade)
 LOCALES=(ru en)
 
+# Используется и в настоящей сборке, и в самопроверках ниже — иначе
+# самопроверка меряет перенос в другой колонке, а не в той, что уйдёт в PDF.
+PAGE_MARGIN="1.5cm"
+
 # Число отдельно от массива: иначе самопроверка ниже сверяла бы PDF с тем
 # же урезанным списком и не заметила бы пропавшую страницу.
 [ "${#BUNDLE[@]}" -eq 5 ] \
@@ -79,12 +83,12 @@ OUT="$(cd "$OUT" && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# \scriptsize вместо основного шрифта — иначе безопасная ширина строки
+# \footnotesize вместо основного шрифта — иначе безопасная ширина строки
 # код-блока (MAX_LINE_LEN ниже) не вмещает реальные команды комплекта.
 cat >"$WORK/preamble.tex" <<'EOF'
 \usepackage{fvextra}
-\DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\},fontsize=\scriptsize}
-\DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere,fontsize=\scriptsize}
+\DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\},fontsize=\footnotesize}
+\DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere,fontsize=\footnotesize}
 EOF
 
 # Портирует internal/docs/anchors.go (транслитерация + дедуп якорей) на Python:
@@ -113,8 +117,8 @@ LOCAL_ANCHOR_RE = re.compile(r"\[([^\]\[]*)\]\(#([a-z0-9-]+)\)")
 BREAK_AFTER = set("_-./=:|,")
 ZWSP = "​"
 
-# Порог измерен бинарным поиском при текущих \scriptsize/2.5cm — без
-# переноса умещается до 112 символов, 100 оставляет запас.
+# Порог измерен бинарным поиском при текущих \footnotesize/PAGE_MARGIN —
+# без переноса умещается до 109 символов, 100 оставляет запас.
 MAX_LINE_LEN = 100
 
 
@@ -388,7 +392,8 @@ build_raw_block() {
     pandoc "$outdir/raw.md" -o "$outdir/raw.pdf" \
         -f 'markdown-raw_html+raw_tex' --pdf-engine=xelatex \
         --include-in-header="$WORK/preamble.tex" \
-        -V mainfont="DejaVu Sans" -V monofont="DejaVu Sans Mono" >"$outdir/raw.log" 2>&1
+        -V mainfont="DejaVu Sans" -V monofont="DejaVu Sans Mono" \
+        -V "geometry:margin=$PAGE_MARGIN" >"$outdir/raw.log" 2>&1
 }
 
 self_test_wrap_truncates_tagged() {
@@ -455,13 +460,18 @@ self_test_over_length_line_refused() {
 }
 
 self_test_max_length_line_survives() {
-    # Ровно 100 символов (MAX_LINE_LEN), смешанный контент — не переносится
-    # вовсе и обязан дойти до текстового слоя посимвольно, пробелы включая.
+    # Ровно 100 символов (MAX_LINE_LEN) — «не переносится» проверяем значком
+    # переноса в сыром тексте, а не склейкой: та может восстановиться сама.
     local line="echo \"gotcha bare-metal install, padded with spaces to exactly one hundred chars xxxxxxxxxxxxxxxxxx\""
-    local outdir="$WORK/selftest-maxlen" cleaned
+    local outdir="$WORK/selftest-maxlen" raw cleaned
     if ! build_raw_block "$line" "bash" "$outdir"; then
         echo "docs-pdf.sh: regression check failed — a 100-char tagged code block did not build" >&2
         tail -15 "$outdir/raw.log" >&2
+        return 1
+    fi
+    raw="$(pdftotext "$outdir/raw.pdf" - 2>/dev/null)"
+    if grep -qF '⌋' <<<"$raw" || grep -qF '↪' <<<"$raw"; then
+        echo "docs-pdf.sh: regression check: a $(printf '%s' "$line" | wc -c)-char line at the safe width still wrapped (continuation marker in the text layer) — MAX_LINE_LEN/font/margin are out of sync, recalibrate" >&2
         return 1
     fi
     cleaned="$(clean_text_layer "$outdir/raw.pdf")"
@@ -494,7 +504,7 @@ for locale in "${LOCALES[@]}"; do
         --include-in-header="$WORK/preamble.tex" \
         -V mainfont="DejaVu Sans" \
         -V monofont="DejaVu Sans Mono" \
-        -V geometry:margin=2.5cm \
+        -V "geometry:margin=$PAGE_MARGIN" \
         -V lang="$locale" \
         -V colorlinks=true -V linkcolor=blue -V urlcolor=blue \
         --toc --toc-depth=2 \
