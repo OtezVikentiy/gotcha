@@ -124,16 +124,29 @@ systemctl restart gotcha
 3. `docker compose up -d` — контейнер приложения пересоздаётся с новым DSN.
 
 **Смена пароля базы на bare-metal.** Тот же порядок, но без переменных подстановки —
-DSN правится в `gotcha.env` напрямую:
+DSN правится в `gotcha.env` напрямую. В PostgreSQL пароль меняется запросом, в ClickHouse —
+нет: пользователь `gotcha` описан файлом `users.d/10-gotcha.xml` с `access_management=0`,
+и `ALTER USER` для него отказывает с `Not enough privileges (ACCESS_DENIED)`. Там меняется
+сам файл — в нём лежит SHA-256 пароля, а не пароль.
 
-1. Сменить пароль в самой базе:
+1. Сменить пароль в PostgreSQL:
    ```bash
    sudo -u postgres psql -d gotcha -c "ALTER USER gotcha WITH PASSWORD 'новый-пароль'"
-   clickhouse-client --user gotcha --password 'старый-пароль' \
-     -q "ALTER USER gotcha IDENTIFIED BY 'новый-пароль'"
    ```
-2. Поправить пароль в строках `GOTCHA_PG_DSN`/`GOTCHA_CH_DSN` файла `/etc/gotcha/gotcha.env` — здесь это часть самого DSN, а не отдельная переменная.
-3. `systemctl restart gotcha`.
+2. Сменить пароль в ClickHouse — посчитать хэш, вписать его в
+   `<password_sha256_hex>` файла `/etc/clickhouse-server/users.d/10-gotcha.xml`
+   и перезапустить сервер:
+   ```bash
+   printf '%s' 'новый-пароль' | sha256sum | awk '{print $1}'
+   # вписать полученный хэш в <password_sha256_hex> файла
+   # /etc/clickhouse-server/users.d/10-gotcha.xml
+   systemctl restart clickhouse-server
+   ```
+3. Поправить пароль в строках `GOTCHA_PG_DSN`/`GOTCHA_CH_DSN` файла `/etc/gotcha/gotcha.env` — здесь это часть самого DSN, а не отдельная переменная.
+4. `systemctl restart gotcha`.
+
+Повторный запуск `install-bare-metal.sh` смену переживает: пароли перевыпускаются, только
+если пропал сам `gotcha.env` (см. [Установку без Docker](/docs/installation-bare-metal)).
 
 ### Переменные только для Compose (контейнер приложения)
 

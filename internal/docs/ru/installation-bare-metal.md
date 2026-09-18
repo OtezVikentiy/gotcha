@@ -8,7 +8,7 @@
 
 ## Что понадобится
 
-- **Linux-сервер** семейства Debian/Ubuntu — official Ubuntu (22.04/24.04/26.04) или Debian (12/13), либо любой дистрибутив, унаследованный от них (`ID_LIKE` содержит `debian` или `ubuntu`). RedHat-семейство (AlmaLinux, Rocky, RHEL) на этом пути не поддерживается — для них см. [Docker-установку](/docs/installation), которая работает на любом дистрибутиве с Docker. В CI этот путь прогоняется на Ubuntu 24.04 (amd64 и arm64).
+- **Linux-сервер** семейства Debian/Ubuntu. Заявлены ровно те дистрибутивы, на которых установка прогоняется в CI на каждый релиз: Ubuntu 24.04, Ubuntu 26.04, Debian 12, Debian 13 (Ubuntu 24.04 — на amd64 и arm64, остальные — на amd64). Дистрибутивы, унаследованные от них (`ID_LIKE` содержит `debian` или `ubuntu`), скрипт тоже принимает, и они, скорее всего, работают, — но мы их не гоняем и потому не заявляем. RedHat-семейство (AlmaLinux, Rocky, RHEL) на этом пути не поддерживается — для них см. [Docker-установку](/docs/installation), которая работает на любом дистрибутиве с Docker.
 - **Архитектура** amd64 или arm64.
 - **systemd** — практически любой современный сервер уже под ним; проверить: `[ -d /run/systemd/system ] && echo ok`.
 - **root-доступ** по SSH — установщик пишет в `/etc`, `/opt`, `/usr/local/bin`, `/var/lib` и ставит системные пакеты.
@@ -36,8 +36,13 @@
 
 ```bash
 apt-get update
-apt-get install -y curl tar gnupg openssl coreutils
+apt-get install -y curl tar gnupg openssl coreutils sudo iproute2
 ```
+
+`sudo` и `iproute2` (команда `ss`) нужны и дальше по шагам, и скрипту: без первого не
+создать роль в PostgreSQL от пользователя `postgres`, без второго нечем проверить порты.
+На минимальном образе Debian/Ubuntu ни того, ни другого нет — преflight скрипта
+отказывает с кодом 3 и называет недостающий пакет.
 
 Проверьте порты, которые понадобятся: 8080 (приложение), 80 (если ставите nginx), 5432/8123/9000 (если ставите PostgreSQL/ClickHouse этим же способом).
 
@@ -188,10 +193,11 @@ useradd --system --no-create-home --shell /usr/sbin/nologin gotcha
 
 ```bash
 URL="https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z"
-curl -fsSL -o gotcha.tar.gz "$URL/gotcha-X.Y.Z-linux-<arch>.tar.gz"
+TARBALL="gotcha-X.Y.Z-linux-<arch>.tar.gz"
+curl -fsSL -o "$TARBALL" "$URL/$TARBALL"
 curl -fsSL -o SHA256SUMS.txt "$URL/SHA256SUMS.txt"
-grep " gotcha.tar.gz\$" SHA256SUMS.txt | sha256sum -c -
-tar xzf gotcha.tar.gz
+grep " $TARBALL\$" SHA256SUMS.txt | sha256sum -c -
+tar xzf "$TARBALL"
 cd gotcha-X.Y.Z-linux-<arch>
 ```
 
@@ -305,6 +311,7 @@ journalctl -u gotcha -f
 apt-get install -y nginx
 rm -f /etc/nginx/sites-enabled/default
 cat >/etc/nginx/sites-available/gotcha <<'EOF'
+# gotcha site: install-bare-metal.sh keeps local edits below on re-run
 server {
     listen 80;
     server_name gotcha.example.com;
@@ -333,6 +340,13 @@ nginx -t
 systemctl enable --now nginx
 systemctl reload nginx
 ```
+
+Первая строка файла — метка для скрипта: увидев её, повторный запуск
+`install-bare-metal.sh` не перерисовывает сайт, а оставляет как есть, пока в нём
+стоит тот же `server_name`. Именно так переживает обновление TLS-блок, который
+дописывает certbot на шаге 10. Если сайт нужно перерисовать с нуля — удалите или
+переименуйте файл и запустите скрипт снова; смена `--domain` тоже перерисовывает его
+(со снимком старого рядом, `gotcha.bak-<метка>`), и сертификат после неё выпускается заново.
 
 ### 10. Получите TLS-сертификат
 
@@ -388,7 +402,9 @@ sudo ./install-bare-metal.sh --version X.Y.Z --domain gotcha.example.com --email
 curl -sf http://127.0.0.1:8080/readyz
 ```
 
-Ответ `/readyz` вида `{"status":"ready","clickhouse":"ok","postgres":"ok"}` означает, что приложение видит обе базы. Если ставили nginx — то же самое, но через домен: `curl -sf https://gotcha.example.com/readyz`.
+Ответ `/readyz` вида `{"clickhouse":"ok","postgres":"ok","status":"ready","version":"X.Y.Z"}` означает, что приложение видит обе базы. Если ставили nginx — то же самое, но через домен: `curl -sf https://gotcha.example.com/readyz`.
+
+Поле `version` в ответе — точная версия сборки, и `/healthz` с `/readyz` отдают её без аутентификации. Сайт nginx, который ставит скрипт, оставляет эти две ручки открытыми наружу намеренно: ими пользуются внешние проверки доступности самого инстанса. `/metrics` и `/version` закрыты, снаружи оба отвечают 403. Если раскрывать версию наружу не хотите — закройте и пробы, см. [Усиление установки](/docs/hardening).
 
 Проверьте, что раздача бинаря агента работает (без этого подключение хостов из UI не заработает, см. [Хосты](/docs/hosts)):
 
@@ -424,7 +440,11 @@ journalctl -u clickhouse-server --no-pager -n 50
 sudo ./install-bare-metal.sh --uninstall
 ```
 
-Снимает юнит и бинарь `gotcha`, PostgreSQL и ClickHouse и данные в них не трогает. Чтобы снести и их: `--uninstall --purge` — необратимо удаляет роль и базу `gotcha` в PostgreSQL, базу `gotcha` в ClickHouse, системного пользователя `gotcha` и каталоги `/var/lib/gotcha`, `/opt/gotcha`, `/etc/gotcha`. Пакеты СУБД и nginx как таковые не удаляются — на хосте ими может пользоваться что-то ещё.
+Снимает юнит и бинарь `gotcha` и выключает сайт nginx (`/etc/nginx/sites-enabled/gotcha`), перезагружая конфиг: иначе хост отвечал бы 502 на всё, ведь дефолтный сайт nginx скрипт при установке снял. Сам файл `/etc/nginx/sites-available/gotcha` остаётся — в нём лежит TLS-блок certbot, который пригодится при возврате. PostgreSQL и ClickHouse и данные в них не трогаются.
+
+Чтобы снести и их: `--uninstall --purge` — необратимо удаляет роль и базу `gotcha` в PostgreSQL, базу `gotcha` в ClickHouse, системного пользователя `gotcha`, каталоги `/var/lib/gotcha`, `/opt/gotcha`, `/etc/gotcha`, журнал установки `/var/log/gotcha-install.log`, а также конфиги, которые скрипт положил в каталоги чужих пакетов: `conf.d/10-gotcha.conf` у PostgreSQL, `config.d/00-common.xml` и `config.d/10-small.xml` у ClickHouse, systemd-override `clickhouse-server.service.d/override.conf`. СУБД при этом не перезапускаются — выбор момента за оператором, и до перезапуска они продолжают работать со старыми настройками.
+
+Что остаётся намеренно: пакеты СУБД и nginx (на хосте ими может пользоваться что-то ещё), apt-репозитории PGDG и ClickHouse вместе со своими keyring-файлами (снять только keyring значило бы сломать `apt-get update`), файл сайта в `sites-available` и каталоги данных самих СУБД.
 
 ## Что дальше
 

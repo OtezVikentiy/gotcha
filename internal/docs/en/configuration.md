@@ -124,16 +124,30 @@ These four are **Docker Compose substitution variables**, not configuration of t
 3. `docker compose up -d` — the app container is recreated with the new DSN.
 
 **Changing a database password on bare metal.** Same order, minus the substitution
-variables — the DSN is edited in `gotcha.env` directly:
+variables — the DSN is edited in `gotcha.env` directly. In PostgreSQL the password is
+changed with a query; in ClickHouse it is not: the `gotcha` user is defined by
+`users.d/10-gotcha.xml` with `access_management=0`, so `ALTER USER` on it fails with
+`Not enough privileges (ACCESS_DENIED)`. There you edit the file itself — it holds the
+SHA-256 of the password, not the password.
 
-1. Change the password in the database itself:
+1. Change the password in PostgreSQL:
    ```bash
    sudo -u postgres psql -d gotcha -c "ALTER USER gotcha WITH PASSWORD 'new-password'"
-   clickhouse-client --user gotcha --password 'old-password' \
-     -q "ALTER USER gotcha IDENTIFIED BY 'new-password'"
    ```
-2. Update the password inside the `GOTCHA_PG_DSN`/`GOTCHA_CH_DSN` lines of `/etc/gotcha/gotcha.env` — here it's part of the DSN itself, not a separate variable.
-3. `systemctl restart gotcha`.
+2. Change the password in ClickHouse — compute the hash, put it into
+   `<password_sha256_hex>` in `/etc/clickhouse-server/users.d/10-gotcha.xml`
+   and restart the server:
+   ```bash
+   printf '%s' 'new-password' | sha256sum | awk '{print $1}'
+   # put the hash you got into <password_sha256_hex> of
+   # /etc/clickhouse-server/users.d/10-gotcha.xml
+   systemctl restart clickhouse-server
+   ```
+3. Update the password inside the `GOTCHA_PG_DSN`/`GOTCHA_CH_DSN` lines of `/etc/gotcha/gotcha.env` — here it's part of the DSN itself, not a separate variable.
+4. `systemctl restart gotcha`.
+
+A later `install-bare-metal.sh` run keeps the change: passwords are only reissued when
+`gotcha.env` itself went missing (see [Installation without Docker](/docs/installation-bare-metal)).
 
 ### Compose-only variables (the app container)
 

@@ -412,8 +412,15 @@ hand:
    just through `systemd-run` instead of `docker compose run`;
 6. starts the service and waits for `--healthcheck` to pass.
 
+An upgrade leaves the nginx config alone: seeing its own marker and the same
+`server_name` in `/etc/nginx/sites-available/gotcha`, the script keeps the file as it is
+— TLS block certbot added to it included. The site is re-rendered only when `--domain`
+changes (keeping a copy of the old one next to it) or when you delete the file by hand;
+the certificate is then issued again, which needs `--email`.
+
 Like the initial install, the upgrade's progress is logged to
 `/var/log/gotcha-install.log`; on failure the script prints the steps already completed
+(taken from that same journal, so the database installation steps are in the list too)
 and its exit code, and a re-run with the same flags is idempotent — it doesn't redo what
 already succeeded and picks up from the step that failed.
 

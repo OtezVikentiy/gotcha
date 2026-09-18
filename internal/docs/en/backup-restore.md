@@ -266,9 +266,13 @@ chmod 600 /var/lib/gotcha/backup/postgres-$(date +%F).sql.gz
 
 ### Backup: ClickHouse
 
-Same seven tables, same caveat about the materialized views (`transactions_5m`, `web_vitals_5m`) and `schema_migrations` as in the Docker section above — only the `clickhouse-client` invocation changes, no `docker compose exec`, with the password from `/etc/clickhouse-server/users.d/10-gotcha.xml` (the same one baked into `GOTCHA_CH_DSN`):
+Same seven tables, same caveat about the materialized views (`transactions_5m`, `web_vitals_5m`) and `schema_migrations` as in the Docker section above — only the `clickhouse-client` invocation changes, no `docker compose exec`.
+
+The password lives in exactly one place — `GOTCHA_CH_DSN` inside `/etc/gotcha/gotcha.env`; `/etc/clickhouse-server/users.d/10-gotcha.xml` only stores its `password_sha256_hex`, which the password cannot be recovered from:
 
 ```bash
+CH_PASSWORD=$(sed -n 's#^GOTCHA_CH_DSN=clickhouse://gotcha:\([^@]*\)@.*#\1#p' \
+  /etc/gotcha/gotcha.env)
 mkdir -p /var/lib/gotcha/backup/clickhouse
 for t in events transactions spans metric_points profile_samples check_results logs; do
   clickhouse-client --user gotcha --password "$CH_PASSWORD" --database gotcha \

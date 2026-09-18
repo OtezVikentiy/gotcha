@@ -8,7 +8,7 @@ Installed either by the `install-bare-metal.sh` script (see "Installing via the 
 
 ## What you need
 
-- **A Debian/Ubuntu-family Linux server** — official Ubuntu (22.04/24.04/26.04) or Debian (12/13), or any distribution derived from them (`ID_LIKE` contains `debian` or `ubuntu`). RedHat-family distributions (AlmaLinux, Rocky, RHEL) aren't supported on this path — for those, use the [Docker install](/docs/installation), which works on any distribution that has Docker. CI runs this path on Ubuntu 24.04 (amd64 and arm64).
+- **A Debian/Ubuntu-family Linux server.** The list claims exactly what CI installs on for every release: Ubuntu 24.04, Ubuntu 26.04, Debian 12, Debian 13 (Ubuntu 24.04 on amd64 and arm64, the rest on amd64). Distributions derived from them (`ID_LIKE` contains `debian` or `ubuntu`) are accepted by the script too and most likely work — but we don't run them, so we don't claim them. RedHat-family distributions (AlmaLinux, Rocky, RHEL) aren't supported on this path — for those, use the [Docker install](/docs/installation), which works on any distribution that has Docker.
 - **Architecture:** amd64 or arm64.
 - **systemd** — practically any current server already has it; check with `[ -d /run/systemd/system ] && echo ok`.
 - **Root access** over SSH — the installer writes to `/etc`, `/opt`, `/usr/local/bin`, `/var/lib` and installs system packages.
@@ -36,8 +36,13 @@ Each step here is exactly what the `install-bare-metal.sh` script does, run by h
 
 ```bash
 apt-get update
-apt-get install -y curl tar gnupg openssl coreutils
+apt-get install -y curl tar gnupg openssl coreutils sudo iproute2
 ```
+
+`sudo` and `iproute2` (the `ss` command) are needed by the steps below and by the script:
+without the first there's no way to create the PostgreSQL role as the `postgres` user,
+without the second no way to check the ports. A minimal Debian/Ubuntu image has neither —
+the script's preflight refuses with exit code 3 and names the missing package.
 
 Check the ports you'll need: 8080 (the app), 80 (if you're installing nginx), 5432/8123/9000 (if you're installing PostgreSQL/ClickHouse this way).
 
@@ -188,10 +193,11 @@ Get the release tarball from GitHub (replace `X.Y.Z` and `<arch>` with amd64 or 
 
 ```bash
 URL="https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z"
-curl -fsSL -o gotcha.tar.gz "$URL/gotcha-X.Y.Z-linux-<arch>.tar.gz"
+TARBALL="gotcha-X.Y.Z-linux-<arch>.tar.gz"
+curl -fsSL -o "$TARBALL" "$URL/$TARBALL"
 curl -fsSL -o SHA256SUMS.txt "$URL/SHA256SUMS.txt"
-grep " gotcha.tar.gz\$" SHA256SUMS.txt | sha256sum -c -
-tar xzf gotcha.tar.gz
+grep " $TARBALL\$" SHA256SUMS.txt | sha256sum -c -
+tar xzf "$TARBALL"
 cd gotcha-X.Y.Z-linux-<arch>
 ```
 
@@ -305,6 +311,7 @@ Skip this step if you're publishing the instance behind an existing proxy, or on
 apt-get install -y nginx
 rm -f /etc/nginx/sites-enabled/default
 cat >/etc/nginx/sites-available/gotcha <<'EOF'
+# gotcha site: install-bare-metal.sh keeps local edits below on re-run
 server {
     listen 80;
     server_name gotcha.example.com;
@@ -333,6 +340,13 @@ nginx -t
 systemctl enable --now nginx
 systemctl reload nginx
 ```
+
+The first line of the file is a marker for the script: seeing it, a re-run of
+`install-bare-metal.sh` leaves the site alone instead of re-rendering it, as long as the
+`server_name` is still the same. That is how the TLS block certbot adds in step 10
+survives an upgrade. To get a freshly rendered site, delete or rename the file and run the
+script again; changing `--domain` re-renders it too (keeping a `gotcha.bak-<stamp>` copy
+next to it), and the certificate is issued again after that.
 
 ### 10. Get a TLS certificate
 
@@ -388,7 +402,9 @@ After installing (via the script or by hand), verify everything came up:
 curl -sf http://127.0.0.1:8080/readyz
 ```
 
-A `/readyz` response like `{"status":"ready","clickhouse":"ok","postgres":"ok"}` means the app can see both databases. If you installed nginx, do the same through the domain instead: `curl -sf https://gotcha.example.com/readyz`.
+A `/readyz` response like `{"clickhouse":"ok","postgres":"ok","status":"ready","version":"X.Y.Z"}` means the app can see both databases. If you installed nginx, do the same through the domain instead: `curl -sf https://gotcha.example.com/readyz`.
+
+The `version` field in that body is the exact build version, and both `/healthz` and `/readyz` hand it out without authentication. The nginx site the script installs leaves those two open on purpose: external availability checks of the instance itself use them. `/metrics` and `/version` are closed — both answer 403 from outside. If you would rather not expose the version, close the probes as well, see [Hardening](/docs/hardening).
 
 Check that agent binary serving works (without this, connecting hosts from the UI won't work, see [Hosts](/docs/hosts)):
 
@@ -424,7 +440,11 @@ If the installer fails, it prints the list of steps already completed and the ex
 sudo ./install-bare-metal.sh --uninstall
 ```
 
-Removes the `gotcha` unit and binary; leaves PostgreSQL, ClickHouse, and their data untouched. To remove those too: `--uninstall --purge` — irreversibly drops the `gotcha` role and database in PostgreSQL, the `gotcha` database in ClickHouse, the `gotcha` system user, and the `/var/lib/gotcha`, `/opt/gotcha`, `/etc/gotcha` directories. The database and nginx packages themselves aren't removed — something else on the host might be using them.
+Removes the `gotcha` unit and binary, and disables the nginx site (`/etc/nginx/sites-enabled/gotcha`) with a config reload: otherwise the host would answer 502 to everything, since the installer removed the default nginx site. The file itself, `/etc/nginx/sites-available/gotcha`, is kept — it holds the certbot TLS block, which is useful if you come back. PostgreSQL, ClickHouse and their data are left untouched.
+
+To remove those too: `--uninstall --purge` — irreversibly drops the `gotcha` role and database in PostgreSQL, the `gotcha` database in ClickHouse, the `gotcha` system user, the `/var/lib/gotcha`, `/opt/gotcha`, `/etc/gotcha` directories, the install journal `/var/log/gotcha-install.log`, and the configs the script dropped into other packages' directories: `conf.d/10-gotcha.conf` for PostgreSQL, `config.d/00-common.xml` and `config.d/10-small.xml` for ClickHouse, and the `clickhouse-server.service.d/override.conf` systemd override. The databases are not restarted — that moment is the operator's to pick, and until they are, they keep running with the old settings.
+
+Kept on purpose: the database and nginx packages (something else on the host might be using them), the PGDG and ClickHouse apt repositories together with their keyrings (removing only a keyring would break `apt-get update`), the site file in `sites-available`, and the databases' own data directories.
 
 ## What's next
 
