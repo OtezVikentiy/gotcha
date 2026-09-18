@@ -52,6 +52,11 @@ jobs:
       - name: install-bare-metal.sh unit tests
         run: bash scripts/test-install-bare-metal.sh
 
+      # Единственная проверка раскладки релизного тарбола: релизная джоба грузит его
+      # без неё, и выпавший файл (агент под arm64) прошёл бы все остальные гейты.
+      - name: dist tarball layout
+        run: bash scripts/test-build-dist.sh
+
       - uses: actions/setup-node@v5
         with:
           node-version-file: .nvmrc
@@ -175,7 +180,9 @@ jobs:
           - runner: ubuntu-24.04-arm
             arch: arm64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    # Прогон ставит обе СУБД и запускает инсталлятор шесть раз; на медленном зеркале
+    # пакетов он доходил до 25 минут, и 30 оказывалось впритык.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
