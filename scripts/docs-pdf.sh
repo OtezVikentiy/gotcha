@@ -79,10 +79,12 @@ OUT="$(cd "$OUT" && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+# \scriptsize вместо основного шрифта — иначе безопасная ширина строки
+# код-блока (MAX_LINE_LEN ниже) не вмещает реальные команды комплекта.
 cat >"$WORK/preamble.tex" <<'EOF'
 \usepackage{fvextra}
-\DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
-\DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
+\DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\},fontsize=\scriptsize}
+\DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere,fontsize=\scriptsize}
 EOF
 
 # Портирует internal/docs/anchors.go (транслитерация + дедуп якорей) на Python:
@@ -110,11 +112,10 @@ LOCAL_ANCHOR_RE = re.compile(r"\[([^\]\[]*)\]\(#([a-z0-9-]+)\)")
 # internal/uptime/queue.go) может перенестись в узкой колонке таблицы.
 BREAK_AFTER = set("_-./=:|,")
 ZWSP = "​"
-TOKEN_SPLIT_RE = re.compile(r"[\s_\-./=:|,]+")
 
-# Калибровано подбором: сплошной прогон без разделителей рвётся ровно на
-# 87 символах текущей ширины страницы/шрифта — 70 оставляет запас.
-MAX_TOKEN_LEN = 70
+# Порог измерен бинарным поиском при текущих \scriptsize/2.5cm — без
+# переноса умещается до 112 символов, 100 оставляет запас.
+MAX_LINE_LEN = 100
 
 
 def slugify(text):
@@ -247,28 +248,25 @@ def add_soft_breaks(lines):
     return out
 
 
-def check_tagged_code_blocks(path, lines):
+def check_code_block_lines(path, lines):
     in_fence = False
-    lang = ""
     for i, line in enumerate(lines, start=1):
         if FENCE_RE.match(line):
             in_fence = not in_fence
-            lang = line.strip().lstrip("`").strip() if in_fence else ""
             continue
-        if not in_fence or not lang:
+        if not in_fence:
             continue
-        for tok in TOKEN_SPLIT_RE.split(line):
-            if len(tok) > MAX_TOKEN_LEN:
-                sys.stderr.write(
-                    f"docs-pdf: {path}:{i}: unbroken token of {len(tok)} chars in "
-                    f"a tagged code block exceeds the {MAX_TOKEN_LEN}-char safe width — "
-                    "pandoc's syntax highlighting can't wrap inside a single token, "
-                    "and the tail is silently cut from the PDF.\n"
-                    f"  token: {tok}\n"
-                    "  fix: break the line, or add a separator "
-                    "(space, /, -, _, ., :, |, ,) inside the token.\n"
-                )
-                sys.exit(1)
+        if len(line) > MAX_LINE_LEN:
+            sys.stderr.write(
+                f"docs-pdf: {path}:{i}: code block line is {len(line)} chars, "
+                f"over the {MAX_LINE_LEN}-char safe width — pandoc has to wrap it, "
+                "and a wrapped code-block line silently loses or gains a character "
+                "in the PDF text layer (truncation or an inserted space).\n"
+                f"  line: {line}\n"
+                "  fix: break the line yourself (e.g. a shell '\\' continuation) "
+                "or shorten it (hoist a long value into a variable).\n"
+            )
+            sys.exit(1)
 
 
 def main():
@@ -283,7 +281,7 @@ def main():
         path = os.path.join(docs_dir, locale, slug + ".md")
         with open(path, encoding="utf-8") as fh:
             lines = fh.read().split("\n")
-        check_tagged_code_blocks(path, lines)
+        check_code_block_lines(path, lines)
         out, ids, top_id, top_text = inject_heading_ids(slug, lines)
         raw[slug] = out
         bundle_ids[slug] = ids
@@ -342,6 +340,17 @@ verify_pdf() {
     fi
 }
 
+# Убирает декоративные значки fvextra (⌋/↪), футер-нумерацию, form feed
+# и пустые строки — остальные пробелы не трогает, иначе не поймать вставленный.
+clean_text_layer() {
+    pdftotext "$1" - 2>/dev/null | python3 -c '
+import sys
+text = sys.stdin.read().replace("⌋", "").replace("↪", "").replace("\x0c", "")
+noise = {"", "T", "1"}
+sys.stdout.write("".join(l for l in text.split("\n") if l not in noise))
+'
+}
+
 self_test_special_chars() {
     # Литеральные $/`/# ниже не должны раскрываться шеллом.
     # shellcheck disable=SC2016
@@ -369,54 +378,102 @@ self_test_special_chars() {
         || { echo "docs-pdf.sh: regression check: special characters missing from rendered text: $sample" >&2; return 1; }
 }
 
-self_test_untagged_code_block() {
-    local token="thisisaveryveryverylongtokenwithoutanyspacesorpunctuationatallabcdefghijklmnopqrstuvwxyz0123456789"
-    local src="$WORK/selftest-src2" outdir="$WORK/selftest-out2" log="$WORK/selftest2.log"
-    mkdir -p "$src/ru" "$outdir"
+# Строит PDF из код-блока в обход preprocess.py — сам guard отказал бы
+# строке длиннее MAX_LINE_LEN, а тут нужно увидеть, что сделает pandoc/xelatex.
+build_raw_block() {
+    local content="$1" lang="$2" outdir="$3"
+    mkdir -p "$outdir"
     # shellcheck disable=SC2016
-    printf '# T\n\n```\n%s\n```\n' "$token" >"$src/ru/plain.md"
-    python3 "$WORK/preprocess.py" ru "$src" "$outdir" plain
-
-    if ! pandoc "$outdir/plain.md" -o "$outdir/plain.pdf" \
+    printf '# T\n\n```%s\n%s\n```\n' "$lang" "$content" >"$outdir/raw.md"
+    pandoc "$outdir/raw.md" -o "$outdir/raw.pdf" \
         -f 'markdown-raw_html+raw_tex' --pdf-engine=xelatex \
         --include-in-header="$WORK/preamble.tex" \
-        -V mainfont="DejaVu Sans" -V monofont="DejaVu Sans Mono" >"$log" 2>&1
-    then
-        echo "docs-pdf.sh: regression check failed — an untagged code block did not build, fragment: $token" >&2
-        tail -15 "$log" >&2
-        return 1
-    fi
-
-    # Перенос строки может воткнуть свой значок между кусками — сверяем
-    # только буквы/цифры, иначе честный перенос выглядел бы как обрезание.
-    local text alnum
-    text="$(pdftotext "$outdir/plain.pdf" - 2>/dev/null)" \
-        || { echo "docs-pdf.sh: regression check: pdftotext failed on the untagged-code-block sample" >&2; return 1; }
-    alnum="$(tr -cd 'a-z0-9' <<<"$text")"
-    grep -qF "$token" <<<"$alnum" \
-        || { echo "docs-pdf.sh: regression check: untagged code block truncated in the text layer, expected: $token" >&2; return 1; }
+        -V mainfont="DejaVu Sans" -V monofont="DejaVu Sans Mono" >"$outdir/raw.log" 2>&1
 }
 
-self_test_long_token_refused() {
-    local token log
-    token="$(printf 'x%.0s' $(seq 1 100))"
-    local src="$WORK/selftest-src3" outdir="$WORK/selftest-out3"
-    log="$WORK/selftest3.log"
-    mkdir -p "$src/ru" "$outdir"
-    # shellcheck disable=SC2016
-    printf '# T\n\n```bash\n%s\n```\n' "$token" >"$src/ru/longtok.md"
-
-    if python3 "$WORK/preprocess.py" ru "$src" "$outdir" longtok >"$log" 2>&1; then
-        echo "docs-pdf.sh: regression check: an unbroken 100-char token in a tagged code block was not refused" >&2
+self_test_wrap_truncates_tagged() {
+    # 140-символьный сплошной токен (без пробелов/пунктуации) в тегированном
+    # блоке — далеко за MAX_LINE_LEN=100.
+    local token outdir="$WORK/selftest-wrap-tagged" cleaned
+    token="$(python3 -c "import string; print((string.ascii_lowercase+string.digits)*6)" | cut -c1-140)"
+    if ! build_raw_block "$token" "bash" "$outdir"; then
+        echo "docs-pdf.sh: regression check failed — a 140-char tagged code block did not build" >&2
+        tail -15 "$outdir/raw.log" >&2
         return 1
     fi
-    grep -qF "longtok.md" "$log" \
+    cleaned="$(clean_text_layer "$outdir/raw.pdf")"
+    [ "$cleaned" != "$token" ] \
+        || { echo "docs-pdf.sh: regression check: expected a wrapped tagged line to corrupt the text layer, but it matched exactly — MAX_LINE_LEN may be stale, recalibrate before trusting it" >&2; return 1; }
+}
+
+self_test_wrap_inserts_space_untagged() {
+    # Тот же токен, нетегированный блок: перенос вставляет ЛИШНИЙ пробел
+    # посреди токена вместо обрезания — другой механизм порчи текста.
+    local token outdir="$WORK/selftest-wrap-untagged" cleaned
+    token="$(python3 -c "import string; print((string.ascii_lowercase+string.digits)*6)" | cut -c1-140)"
+    if ! build_raw_block "$token" "" "$outdir"; then
+        echo "docs-pdf.sh: regression check failed — a 140-char untagged code block did not build" >&2
+        tail -15 "$outdir/raw.log" >&2
+        return 1
+    fi
+    cleaned="$(clean_text_layer "$outdir/raw.pdf")"
+    [ "$cleaned" != "$token" ] \
+        || { echo "docs-pdf.sh: regression check: expected a wrapped untagged line to corrupt the text layer, but it matched exactly — MAX_LINE_LEN may be stale, recalibrate before trusting it" >&2; return 1; }
+    local no_space_cleaned="${cleaned// /}"
+    [ "$no_space_cleaned" = "$token" ] \
+        || { echo "docs-pdf.sh: regression check: untagged wrap corruption changed shape — expected exactly one inserted space, got: $cleaned" >&2; return 1; }
+}
+
+self_test_over_length_line_refused() {
+    # 101 символ — на 1 больше MAX_LINE_LEN. Гоняем оба вида блока (со
+    # словами и пробелами, сплошным токеном) — не только частный случай.
+    local mixed="echo \"gotcha bare-metal install, padded with spaces to exactly one hundred chars xxxxxxxxxxxxxxxxxxx\""
+    local solid src outdir log
+    solid="$(python3 -c "import string; print((string.ascii_lowercase+string.digits)*4)" | cut -c1-101)"
+
+    src="$WORK/selftest-refuse-tagged" outdir="$WORK/selftest-refuse-tagged-out" log="$WORK/selftest-refuse-tagged.log"
+    mkdir -p "$src/ru" "$outdir"
+    # shellcheck disable=SC2016
+    printf '# T\n\n```bash\n%s\n```\n' "$mixed" >"$src/ru/overlen.md"
+    if python3 "$WORK/preprocess.py" ru "$src" "$outdir" overlen >"$log" 2>&1; then
+        echo "docs-pdf.sh: regression check: a 101-char tagged code line (with spaces) was not refused" >&2
+        return 1
+    fi
+    grep -qF "overlen.md" "$log" \
+        || { echo "docs-pdf.sh: regression check: refusal message doesn't name the file:" >&2; cat "$log" >&2; return 1; }
+
+    src="$WORK/selftest-refuse-untagged" outdir="$WORK/selftest-refuse-untagged-out" log="$WORK/selftest-refuse-untagged.log"
+    mkdir -p "$src/ru" "$outdir"
+    # shellcheck disable=SC2016
+    printf '# T\n\n```\n%s\n```\n' "$solid" >"$src/ru/overlen.md"
+    if python3 "$WORK/preprocess.py" ru "$src" "$outdir" overlen >"$log" 2>&1; then
+        echo "docs-pdf.sh: regression check: a 101-char untagged code line (solid token) was not refused" >&2
+        return 1
+    fi
+    grep -qF "overlen.md" "$log" \
         || { echo "docs-pdf.sh: regression check: refusal message doesn't name the file:" >&2; cat "$log" >&2; return 1; }
 }
 
+self_test_max_length_line_survives() {
+    # Ровно 100 символов (MAX_LINE_LEN), смешанный контент — не переносится
+    # вовсе и обязан дойти до текстового слоя посимвольно, пробелы включая.
+    local line="echo \"gotcha bare-metal install, padded with spaces to exactly one hundred chars xxxxxxxxxxxxxxxxxx\""
+    local outdir="$WORK/selftest-maxlen" cleaned
+    if ! build_raw_block "$line" "bash" "$outdir"; then
+        echo "docs-pdf.sh: regression check failed — a 100-char tagged code block did not build" >&2
+        tail -15 "$outdir/raw.log" >&2
+        return 1
+    fi
+    cleaned="$(clean_text_layer "$outdir/raw.pdf")"
+    [ "$cleaned" = "$line" ] \
+        || { echo "docs-pdf.sh: regression check: a $(printf '%s' "$line" | wc -c)-char line at the safe width was altered in the text layer, expected: $line got: $cleaned" >&2; return 1; }
+}
+
 self_test_special_chars
-self_test_untagged_code_block
-self_test_long_token_refused
+self_test_wrap_truncates_tagged
+self_test_wrap_inserts_space_untagged
+self_test_over_length_line_refused
+self_test_max_length_line_survives
 
 for locale in "${LOCALES[@]}"; do
     loc_work="$WORK/$locale"

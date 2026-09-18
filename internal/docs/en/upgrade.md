@@ -367,7 +367,7 @@ only expects `200`/`429`/`401`/`403`/`413` should also retry `503` after the
 If you're using the stock `docker-compose.yml` as-is (a single app replica running `--mode=all`) — the common case for a self-hosted setup:
 
 ```bash
-cd gotcha   # the directory with docker-compose.yml
+cd gotcha # the directory with docker-compose.yml
 git pull
 make up-rebuild
 ```

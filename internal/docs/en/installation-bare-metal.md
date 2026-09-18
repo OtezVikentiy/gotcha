@@ -107,8 +107,12 @@ The ClickHouse signing key fingerprint is `3A9EA1193A97B548BE1457D48919F6BD2B48D
 ClickHouse doesn't publish a package without an exact patch number, so find the patch for the major.minor you need and install all three packages pinned to it (otherwise apt pulls `clickhouse-common-static` at the latest major and hits a dependency conflict):
 
 ```bash
-CH_PKG_VERSION=$(apt-cache madison clickhouse-server | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$2)} $2 ~ /^25\.3\./{print $2; exit}')
-apt-get install -y "clickhouse-server=$CH_PKG_VERSION" "clickhouse-client=$CH_PKG_VERSION" "clickhouse-common-static=$CH_PKG_VERSION"
+CH_PKG_VERSION=$(apt-cache madison clickhouse-server \
+  | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$2)} $2~/^25\.3\./{print $2; exit}')
+apt-get install -y \
+  "clickhouse-server=$CH_PKG_VERSION" \
+  "clickhouse-client=$CH_PKG_VERSION" \
+  "clickhouse-common-static=$CH_PKG_VERSION"
 ```
 
 Copy the tuning configs from the release tarball (the same archive the binary comes from in step 5):

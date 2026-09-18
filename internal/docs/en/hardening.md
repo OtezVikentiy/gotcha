@@ -206,21 +206,22 @@ commands:
 
 ```bash
 # app security headers on the login page
-curl -sI https://gotcha.example/login | grep -Ei 'content-security-policy|x-frame-options|strict-transport'
+curl -sI https://gotcha.example/login \
+  | grep -Ei 'content-security-policy|x-frame-options|strict-transport'
 
 # HSTS is present on the https instance...
 curl -sI https://gotcha.example/login | grep -i strict-transport
 # ...and absent on a plain-http deploy, regardless of config
 # (empty unless your proxy itself adds HSTS on the http->https redirect —
 # the recommended topology above allows that; then the header on the 301 is expected)
-curl -sI http://gotcha.example/login | grep -i strict-transport   # expected: empty
+curl -sI http://gotcha.example/login | grep -i strict-transport # expected: empty
 
 # service paths are closed at the proxy
-curl -s -o /dev/null -w '%{http_code}\n' https://gotcha.example/metrics   # expected 403
-curl -s -o /dev/null -w '%{http_code}\n' https://gotcha.example/version  # expected 403
+curl -s -o /dev/null -w '%{http_code}\n' https://gotcha.example/metrics # expected 403
+curl -s -o /dev/null -w '%{http_code}\n' https://gotcha.example/version # expected 403
 
 # TRACE is never served
-curl -s -o /dev/null -w '%{http_code}\n' -X TRACE https://gotcha.example/login  # expected 404
+curl -s -o /dev/null -w '%{http_code}\n' -X TRACE https://gotcha.example/login # expected 404
 ```
 
 A note on TRACE specifically: expect exactly **404, not 405**. The web layer intercepts every

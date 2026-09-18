@@ -107,8 +107,12 @@ apt-get update
 ClickHouse не публикует пакет без точного патча в номере версии — найдите патч для нужного мажора.минора и поставьте пакеты этой версией, все три сразу (иначе apt подтянет `clickhouse-common-static` последним мажором и упрётся в конфликт зависимостей):
 
 ```bash
-CH_PKG_VERSION=$(apt-cache madison clickhouse-server | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$2)} $2 ~ /^25\.3\./{print $2; exit}')
-apt-get install -y "clickhouse-server=$CH_PKG_VERSION" "clickhouse-client=$CH_PKG_VERSION" "clickhouse-common-static=$CH_PKG_VERSION"
+CH_PKG_VERSION=$(apt-cache madison clickhouse-server \
+  | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/,"",$2)} $2~/^25\.3\./{print $2; exit}')
+apt-get install -y \
+  "clickhouse-server=$CH_PKG_VERSION" \
+  "clickhouse-client=$CH_PKG_VERSION" \
+  "clickhouse-common-static=$CH_PKG_VERSION"
 ```
 
 Скопируйте тюнинг-конфиги из тарбола релиза (тот же архив, откуда взят бинарь на шаге 5):

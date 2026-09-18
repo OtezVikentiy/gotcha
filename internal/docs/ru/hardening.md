@@ -201,21 +201,22 @@ location = /.well-known/security.txt {
 
 ```bash
 # security-заголовки приложения на странице входа
-curl -sI https://gotcha.example/login | grep -Ei 'content-security-policy|x-frame-options|strict-transport'
+curl -sI https://gotcha.example/login \
+  | grep -Ei 'content-security-policy|x-frame-options|strict-transport'
 
 # HSTS есть на https-инстансе...
 curl -sI https://gotcha.example/login | grep -i strict-transport
 # ...и его нет на голом http-деплое, независимо от конфига
 # (пусто, если только ваш прокси сам не вешает HSTS на редиректе http->https —
 # рекомендуемая топология выше это допускает; тогда заголовок на 301 ожидаем)
-curl -sI http://gotcha.example/login | grep -i strict-transport   # ожидается: пусто
+curl -sI http://gotcha.example/login | grep -i strict-transport # ожидается: пусто
 
 # служебные пути закрыты прокси
-curl -s -o /dev/null -w '%{http_code}\n' https://gotcha.example/metrics   # ожидается 403
-curl -s -o /dev/null -w '%{http_code}\n' https://gotcha.example/version  # ожидается 403
+curl -s -o /dev/null -w '%{http_code}\n' https://gotcha.example/metrics # ожидается 403
+curl -s -o /dev/null -w '%{http_code}\n' https://gotcha.example/version # ожидается 403
 
 # TRACE не обслуживается
-curl -s -o /dev/null -w '%{http_code}\n' -X TRACE https://gotcha.example/login  # ожидается 404
+curl -s -o /dev/null -w '%{http_code}\n' -X TRACE https://gotcha.example/login # ожидается 404
 ```
 
 Про TRACE отдельно: ожидается именно **404, а не 405**. Веб-слой перехватывает любой метод

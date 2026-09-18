@@ -365,7 +365,7 @@ event-id нет, и повтор задвоит уже принятую част
 Если вы используете штатный `docker-compose.yml` как есть (одна реплика приложения, `--mode=all`) — это самый частый случай для self-hosted установки:
 
 ```bash
-cd gotcha   # папка с docker-compose.yml
+cd gotcha # папка с docker-compose.yml
 git pull
 make up-rebuild
 ```

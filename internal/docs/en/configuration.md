@@ -115,8 +115,10 @@ These four are **Docker Compose substitution variables**, not configuration of t
 
 1. Change the password in the database itself:
    ```bash
-   docker compose exec postgres psql -U gotcha -d gotcha -c "ALTER USER gotcha WITH PASSWORD 'new-password'"
-   docker compose exec clickhouse clickhouse-client --user gotcha --password 'old-password' -q "ALTER USER gotcha IDENTIFIED BY 'new-password'"
+   docker compose exec postgres psql -U gotcha -d gotcha \
+     -c "ALTER USER gotcha WITH PASSWORD 'new-password'"
+   docker compose exec clickhouse clickhouse-client --user gotcha \
+     --password 'old-password' -q "ALTER USER gotcha IDENTIFIED BY 'new-password'"
    ```
 2. Set `GOTCHA_COMPOSE_PG_PASSWORD`/`GOTCHA_COMPOSE_CH_PASSWORD` in `.env`.
 3. `docker compose up -d` — the app container is recreated with the new DSN.
@@ -127,7 +129,8 @@ variables — the DSN is edited in `gotcha.env` directly:
 1. Change the password in the database itself:
    ```bash
    sudo -u postgres psql -d gotcha -c "ALTER USER gotcha WITH PASSWORD 'new-password'"
-   clickhouse-client --user gotcha --password 'old-password' -q "ALTER USER gotcha IDENTIFIED BY 'new-password'"
+   clickhouse-client --user gotcha --password 'old-password' \
+     -q "ALTER USER gotcha IDENTIFIED BY 'new-password'"
    ```
 2. Update the password inside the `GOTCHA_PG_DSN`/`GOTCHA_CH_DSN` lines of `/etc/gotcha/gotcha.env` — here it's part of the DSN itself, not a separate variable.
 3. `systemctl restart gotcha`.

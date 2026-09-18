@@ -115,8 +115,10 @@ systemctl restart gotcha
 
 1. Сменить пароль в самой базе:
    ```bash
-   docker compose exec postgres psql -U gotcha -d gotcha -c "ALTER USER gotcha WITH PASSWORD 'новый-пароль'"
-   docker compose exec clickhouse clickhouse-client --user gotcha --password 'старый-пароль' -q "ALTER USER gotcha IDENTIFIED BY 'новый-пароль'"
+   docker compose exec postgres psql -U gotcha -d gotcha \
+     -c "ALTER USER gotcha WITH PASSWORD 'новый-пароль'"
+   docker compose exec clickhouse clickhouse-client --user gotcha \
+     --password 'старый-пароль' -q "ALTER USER gotcha IDENTIFIED BY 'новый-пароль'"
    ```
 2. Задать `GOTCHA_COMPOSE_PG_PASSWORD`/`GOTCHA_COMPOSE_CH_PASSWORD` в `.env`.
 3. `docker compose up -d` — контейнер приложения пересоздаётся с новым DSN.
@@ -127,7 +129,8 @@ DSN правится в `gotcha.env` напрямую:
 1. Сменить пароль в самой базе:
    ```bash
    sudo -u postgres psql -d gotcha -c "ALTER USER gotcha WITH PASSWORD 'новый-пароль'"
-   clickhouse-client --user gotcha --password 'старый-пароль' -q "ALTER USER gotcha IDENTIFIED BY 'новый-пароль'"
+   clickhouse-client --user gotcha --password 'старый-пароль' \
+     -q "ALTER USER gotcha IDENTIFIED BY 'новый-пароль'"
    ```
 2. Поправить пароль в строках `GOTCHA_PG_DSN`/`GOTCHA_CH_DSN` файла `/etc/gotcha/gotcha.env` — здесь это часть самого DSN, а не отдельная переменная.
 3. `systemctl restart gotcha`.
