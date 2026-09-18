@@ -240,7 +240,9 @@ time.sleep(30)
 
 # fetch_tarball требует SHA256SUMS.txt рядом с тарболом; release.sh её пока не
 # публикует, а каталог тарбола часто read-only — считаем сумму в своей копии.
-WORK_DIR=$(mktemp -d)
+# /var/tmp, не /tmp: на свежезагруженном systemd-контейнере правила tmpfiles
+# могут пересоздать /tmp уже после того, как мы сюда что-то положили.
+WORK_DIR=$(mktemp -d -p /var/tmp)
 cp "$TARBALL" "$WORK_DIR/"
 WORK_TARBALL="$WORK_DIR/$(basename "$TARBALL")"
 (cd "$WORK_DIR" && sha256sum "$(basename "$WORK_TARBALL")") >"$WORK_DIR/SHA256SUMS.txt"

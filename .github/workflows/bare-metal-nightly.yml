@@ -58,6 +58,27 @@ jobs:
             -v "$PWD/internal/docs:/internal/docs:ro" \
             bare-metal-systemd /sbin/init
 
+      - name: дождаться готовности systemd в контейнере
+        run: |
+          # Сразу после старта контейнера шина ещё не поднята, поэтому
+          # `is-system-running --wait` может упасть мгновенно вместо ожидания — опрашиваем сами.
+          deadline=$((SECONDS + 60))
+          state=""
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            state=$(docker exec bm systemctl is-system-running 2>/dev/null || true)
+            case "$state" in
+              running | degraded) break ;;
+            esac
+            sleep 1
+          done
+          case "$state" in
+            running | degraded) ;;
+            *)
+              echo "::error::systemd в контейнере не поднялся за 60с (последнее состояние: '$state')"
+              exit 1
+              ;;
+          esac
+
       - name: install-bare-metal.sh в контейнере (${{ matrix.image }})
         run: |
           docker exec bm bash -lc \
