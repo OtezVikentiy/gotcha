@@ -9,6 +9,8 @@
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-09-18
+
 ### Добавлено
 - Альтернатива Docker Compose: bash-инсталлер (`install-bare-metal.sh`,
   скачивается со страницы релиза), который ставит PostgreSQL, ClickHouse и

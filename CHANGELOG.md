@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-09-18
+
 ### Added
 - An alternative to Docker Compose: a bash installer
   (`install-bare-metal.sh`, downloaded from the release page) that sets up
