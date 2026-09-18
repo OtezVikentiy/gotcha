@@ -82,6 +82,7 @@ trap 'rm -rf "$WORK"' EXIT
 cat >"$WORK/preamble.tex" <<'EOF'
 \usepackage{fvextra}
 \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
+\DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
 EOF
 
 # Портирует internal/docs/anchors.go (транслитерация + дедуп якорей) на Python:
@@ -338,7 +339,36 @@ self_test_special_chars() {
         || { echo "docs-pdf.sh: regression check: special characters missing from rendered text: $sample" >&2; return 1; }
 }
 
+self_test_untagged_code_block() {
+    local token="thisisaveryveryverylongtokenwithoutanyspacesorpunctuationatallabcdefghijklmnopqrstuvwxyz0123456789"
+    local src="$WORK/selftest-src2" outdir="$WORK/selftest-out2" log="$WORK/selftest2.log"
+    mkdir -p "$src/ru" "$outdir"
+    # shellcheck disable=SC2016
+    printf '# T\n\n```\n%s\n```\n' "$token" >"$src/ru/plain.md"
+    python3 "$WORK/preprocess.py" ru "$src" "$outdir" plain
+
+    if ! pandoc "$outdir/plain.md" -o "$outdir/plain.pdf" \
+        -f 'markdown-raw_html+raw_tex' --pdf-engine=xelatex \
+        --include-in-header="$WORK/preamble.tex" \
+        -V mainfont="DejaVu Sans" -V monofont="DejaVu Sans Mono" >"$log" 2>&1
+    then
+        echo "docs-pdf.sh: regression check failed — an untagged code block did not build, fragment: $token" >&2
+        tail -15 "$log" >&2
+        return 1
+    fi
+
+    # Перенос строки может воткнуть свой значок между кусками — сверяем
+    # только буквы/цифры, иначе честный перенос выглядел бы как обрезание.
+    local text alnum
+    text="$(pdftotext "$outdir/plain.pdf" - 2>/dev/null)" \
+        || { echo "docs-pdf.sh: regression check: pdftotext failed on the untagged-code-block sample" >&2; return 1; }
+    alnum="$(tr -cd 'a-z0-9' <<<"$text")"
+    grep -qF "$token" <<<"$alnum" \
+        || { echo "docs-pdf.sh: regression check: untagged code block truncated in the text layer, expected: $token" >&2; return 1; }
+}
+
 self_test_special_chars
+self_test_untagged_code_block
 
 for locale in "${LOCALES[@]}"; do
     loc_work="$WORK/$locale"
