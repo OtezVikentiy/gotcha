@@ -6,15 +6,20 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 INSTALLER="$SCRIPT_DIR/../internal/docs/install-bare-metal.sh"
 
 TARBALL=""
+UPGRADE_FROM=""
 FORCE=""
 
 usage() {
     cat <<'EOF'
-Usage: bare-metal-e2e.sh --tarball PATH [--i-know-this-wipes-the-host]
+Usage: bare-metal-e2e.sh --tarball PATH [--upgrade-from PATH] [--i-know-this-wipes-the-host]
 
 Installs PostgreSQL, ClickHouse and gotcha on THIS host via
 install-bare-metal.sh and asserts the result against the real system.
 Destructive: only run inside a disposable container or in CI.
+
+--upgrade-from PATH is a tarball for a version older than --tarball: when
+given, it is installed first and the upgrade path (backup, binary swap,
+migrations) is asserted on top of it. Omit it to skip that coverage.
 EOF
 }
 
@@ -22,6 +27,10 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --tarball)
             TARBALL="${2:-}"
+            shift 2
+            ;;
+        --upgrade-from)
+            UPGRADE_FROM="${2:-}"
             shift 2
             ;;
         --i-know-this-wipes-the-host)
@@ -42,6 +51,7 @@ done
 
 [ -n "$TARBALL" ] || { printf 'bare-metal-e2e: --tarball is required\n' >&2; exit 2; }
 [ -f "$TARBALL" ] || { printf 'bare-metal-e2e: tarball not found: %s\n' "$TARBALL" >&2; exit 2; }
+[ -z "$UPGRADE_FROM" ] || [ -f "$UPGRADE_FROM" ] || { printf 'bare-metal-e2e: --upgrade-from tarball not found: %s\n' "$UPGRADE_FROM" >&2; exit 2; }
 [ -f "$INSTALLER" ] || { printf 'bare-metal-e2e: installer not found: %s\n' "$INSTALLER" >&2; exit 1; }
 
 # Источник PG_MAJOR/CH_VERSION для ассертов ниже — та же переменная, что ставит install-bare-metal.sh, а не отдельно вписанное число.
@@ -218,6 +228,15 @@ cp "$TARBALL" "$WORK_DIR/"
 WORK_TARBALL="$WORK_DIR/$(basename "$TARBALL")"
 (cd "$WORK_DIR" && sha256sum "$(basename "$WORK_TARBALL")") >"$WORK_DIR/SHA256SUMS.txt"
 
+# Оба тарбола делят один WORK_DIR/SHA256SUMS.txt — fetch_tarball ищет свою строку
+# по имени файла, порядок строк в файле не важен.
+WORK_UPGRADE_TARBALL=""
+if [ -n "$UPGRADE_FROM" ]; then
+    cp "$UPGRADE_FROM" "$WORK_DIR/"
+    WORK_UPGRADE_TARBALL="$WORK_DIR/$(basename "$UPGRADE_FROM")"
+    (cd "$WORK_DIR" && sha256sum "$(basename "$WORK_UPGRADE_TARBALL")") >>"$WORK_DIR/SHA256SUMS.txt"
+fi
+
 # Отдельный процесс, не подоболочка текущего: значение переживает его и
 # читается после завершения install-bare-metal.sh и всех проверок.
 RSS_PEAK_FILE="$WORK_DIR/rss_peak_kb"
@@ -241,12 +260,31 @@ if [ -z "$tarball_version" ] || [ "$tarball_version" = "$(basename "$WORK_TARBAL
     exit 2
 fi
 
+upgrade_from_version=""
+if [ -n "$WORK_UPGRADE_TARBALL" ]; then
+    upgrade_from_version=$(basename "$WORK_UPGRADE_TARBALL" | sed -E 's/^gotcha-(.+)-linux-[^-]+\.tar\.gz$/\1/')
+    if [ -z "$upgrade_from_version" ] || [ "$upgrade_from_version" = "$(basename "$WORK_UPGRADE_TARBALL")" ]; then
+        printf 'bare-metal-e2e: cannot parse version out of --upgrade-from tarball name: %s\n' "$WORK_UPGRADE_TARBALL" >&2
+        exit 2
+    fi
+fi
+
 assert "a busy port 80 blocks preflight before anything is installed" port80_busy_blocks_preflight
 
 # Симулирует чужой конфиг сайта, уже лежащий на месте нашего: install_nginx
 # обязан унести его в *.bak-<метка времени>, а не переписать без следа.
 mkdir -p /etc/nginx/sites-available
 printf '# pre-existing site placed by someone else\n' >/etc/nginx/sites-available/gotcha
+
+# Ставит более старую версию первой, чтобы запуск ниже был обновлением (§4.5), а не
+# свежей установкой — "старая" версия детектится только по уже установленному бинарю.
+if [ -n "$WORK_UPGRADE_TARBALL" ]; then
+    printf 'bare-metal-e2e: running install-bare-metal.sh --version %s --from-tarball %s --yes (upgrade baseline)\n' \
+        "$upgrade_from_version" "$WORK_UPGRADE_TARBALL"
+    bash "$INSTALLER" --version "$upgrade_from_version" --from-tarball "$WORK_UPGRADE_TARBALL" --yes
+    baseline_rc=$?
+    printf 'bare-metal-e2e: upgrade baseline install exited %d\n' "$baseline_rc"
+fi
 
 printf 'bare-metal-e2e: running install-bare-metal.sh --version %s --from-tarball %s --yes\n' \
     "$tarball_version" "$WORK_TARBALL"
@@ -256,6 +294,21 @@ printf 'bare-metal-e2e: install-bare-metal.sh exited %d\n' "$installer_rc"
 
 installer_succeeded() {
     [ "$installer_rc" -eq 0 ]
+}
+
+baseline_install_succeeded() {
+    [ "$baseline_rc" -eq 0 ]
+}
+
+upgrade_took_backup() {
+    local found
+    found=$(find /var/lib/gotcha/backup -maxdepth 1 -name 'postgres-*.sql.gz' -print -quit 2>/dev/null)
+    [ -n "$found" ] || { printf 'no postgres-*.sql.gz found in /var/lib/gotcha/backup\n' >&2; return 1; }
+}
+
+upgrade_kept_previous_binary() {
+    [ -f "/opt/gotcha/backup/gotcha-$upgrade_from_version" ] \
+        || { printf 'missing /opt/gotcha/backup/gotcha-%s\n' "$upgrade_from_version" >&2; return 1; }
 }
 
 readyz_ok() {
@@ -366,8 +419,92 @@ e2e_ingest_roundtrip() {
     done
 }
 
+# Действие и проверка вместе, как survives_postgresql_restart выше: §4.4 требует
+# юнит/конфиги/права привести к целевому состоянию заново, но не трогать env/пароли/данные.
+survives_idempotent_rerun() {
+    local env_before="$WORK_DIR/gotcha.env.before-rerun" bak_before bak_after output rc
+    cp /etc/gotcha/gotcha.env "$env_before" || { printf 'failed to snapshot gotcha.env\n' >&2; return 1; }
+    bak_before=$(find /etc/nginx/sites-available -maxdepth 1 -name 'gotcha.bak-*' | wc -l)
+
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf 'idempotent re-run exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+
+    unit_active gotcha || { printf 'gotcha unit not active after an idempotent re-run\n' >&2; return 1; }
+    cmp -s "$env_before" /etc/gotcha/gotcha.env \
+        || { printf 'gotcha.env changed after an idempotent re-run\n' >&2; return 1; }
+
+    bak_after=$(find /etc/nginx/sites-available -maxdepth 1 -name 'gotcha.bak-*' | wc -l)
+    [ "$bak_after" -eq "$bak_before" ] \
+        || { printf 'nginx config re-backed-up on an idempotent re-run (count %s -> %s)\n' "$bak_before" "$bak_after" >&2; return 1; }
+
+    local tries=0
+    until readyz_ok; do
+        tries=$((tries + 1))
+        [ "$tries" -lt 30 ] || { printf '/readyz did not recover after an idempotent re-run\n' >&2; return 1; }
+        sleep 1
+    done
+}
+
+# Действие и проверка вместе: --uninstall снимает только юнит и бинарь, данные,
+# базы, пакеты и apt-репозитории остаются (§4.5/§4.6 — на хосте ими может пользоваться что-то ещё).
+uninstall_removes_unit_and_binary_keeps_data() {
+    bash "$INSTALLER" --uninstall
+    local rc=$?
+    [ "$rc" -eq 0 ] || { printf '--uninstall exited %d\n' "$rc" >&2; return 1; }
+
+    [ ! -f /etc/systemd/system/gotcha.service ] || { printf 'gotcha.service still present after --uninstall\n' >&2; return 1; }
+    [ ! -f /usr/local/bin/gotcha ] || { printf '/usr/local/bin/gotcha still present after --uninstall\n' >&2; return 1; }
+    [ -d /var/lib/gotcha ] || { printf '/var/lib/gotcha missing after --uninstall\n' >&2; return 1; }
+    pg_role_exists || { printf 'postgresql role gotcha missing after --uninstall\n' >&2; return 1; }
+    pg_database_exists || { printf 'postgresql database gotcha missing after --uninstall\n' >&2; return 1; }
+    ch_gotcha_database_exists || { printf 'clickhouse database gotcha missing after --uninstall\n' >&2; return 1; }
+    pkg_installed "postgresql-$PG_MAJOR" || { printf 'postgresql package removed by --uninstall\n' >&2; return 1; }
+    pkg_installed clickhouse-server || { printf 'clickhouse-server package removed by --uninstall\n' >&2; return 1; }
+    pkg_installed nginx || { printf 'nginx package removed by --uninstall\n' >&2; return 1; }
+    [ -f /etc/apt/sources.list.d/gotcha-pgdg.list ] || { printf 'PGDG apt repository removed by --uninstall\n' >&2; return 1; }
+    [ -f /etc/apt/sources.list.d/gotcha-clickhouse.list ] || { printf 'ClickHouse apt repository removed by --uninstall\n' >&2; return 1; }
+}
+
+reinstall_after_uninstall_succeeds() {
+    bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes
+    local rc=$?
+    [ "$rc" -eq 0 ] || { printf 're-install after --uninstall exited %d\n' "$rc" >&2; return 1; }
+    unit_active gotcha || { printf 'gotcha unit not active after re-install\n' >&2; return 1; }
+    readyz_ok || { printf '/readyz not ok after re-install\n' >&2; return 1; }
+}
+
+# --purge дополнительно снимает наши базы/роли/данные/системного пользователя,
+# но так же не трогает пакеты и apt-репозитории — только --uninstall уже проверил это.
+purge_removes_data_and_databases_keeps_packages() {
+    bash "$INSTALLER" --uninstall --purge
+    local rc=$?
+    [ "$rc" -eq 0 ] || { printf '--uninstall --purge exited %d\n' "$rc" >&2; return 1; }
+
+    [ ! -d /var/lib/gotcha ] || { printf '/var/lib/gotcha still present after --purge\n' >&2; return 1; }
+    [ ! -d /opt/gotcha ] || { printf '/opt/gotcha still present after --purge\n' >&2; return 1; }
+    [ ! -e /etc/gotcha ] || { printf '/etc/gotcha still present after --purge\n' >&2; return 1; }
+    ! pg_role_exists || { printf 'postgresql role gotcha still exists after --purge\n' >&2; return 1; }
+    ! pg_database_exists || { printf 'postgresql database gotcha still exists after --purge\n' >&2; return 1; }
+    ! ch_gotcha_database_exists || { printf 'clickhouse database gotcha still exists after --purge\n' >&2; return 1; }
+    ! id -u gotcha >/dev/null 2>&1 || { printf 'system user gotcha still exists after --purge\n' >&2; return 1; }
+    pkg_installed "postgresql-$PG_MAJOR" || { printf 'postgresql package removed by --purge\n' >&2; return 1; }
+    pkg_installed clickhouse-server || { printf 'clickhouse-server package removed by --purge\n' >&2; return 1; }
+    pkg_installed nginx || { printf 'nginx package removed by --purge\n' >&2; return 1; }
+    [ -f /etc/apt/sources.list.d/gotcha-pgdg.list ] || { printf 'PGDG apt repository removed by --purge\n' >&2; return 1; }
+    [ -f /etc/apt/sources.list.d/gotcha-clickhouse.list ] || { printf 'ClickHouse apt repository removed by --purge\n' >&2; return 1; }
+}
+
 run_assertions() {
     assert "install-bare-metal.sh exited 0" installer_succeeded
+
+    if [ -n "$WORK_UPGRADE_TARBALL" ]; then
+        assert "upgrade baseline install (older version) exited 0" baseline_install_succeeded
+        assert "upgrade took a pre-migration pg_dump backup" upgrade_took_backup
+        assert "upgrade kept the previous binary in /opt/gotcha/backup" upgrade_kept_previous_binary
+    else
+        printf 'note: --upgrade-from not given, skipping upgrade-path assertions\n'
+    fi
 
     assert "postgresql package installed" pkg_installed "postgresql-$PG_MAJOR"
     assert "postgresql unit active" unit_active postgresql
@@ -402,7 +539,11 @@ run_assertions() {
     assert "pre-existing nginx site config was backed up, not clobbered" nginx_site_backed_up
     assert "gotcha /readyz responds 200 via nginx on :80" readyz_via_nginx
 
-    # Задача 7 добавляет сюда снятие установки (--uninstall, --purge).
+    assert "re-running the installer with the same version is idempotent (unit alive, env untouched, /readyz ok)" survives_idempotent_rerun
+
+    assert "--uninstall removes the unit and binary, keeps data/databases/packages/repos" uninstall_removes_unit_and_binary_keeps_data
+    assert "re-installing after --uninstall succeeds" reinstall_after_uninstall_succeeds
+    assert "--purge removes data/databases/system user, keeps packages/repos" purge_removes_data_and_databases_keeps_packages
 }
 
 run_assertions

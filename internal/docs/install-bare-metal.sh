@@ -135,8 +135,6 @@ parse_args() {
                 continue
                 ;;
             --no-backup)
-                # Consumed by the upgrade step's pre-migration pg_dump, not read elsewhere in this file.
-                # shellcheck disable=SC2034
                 ARG_NO_BACKUP=1
                 shift
                 continue
@@ -201,15 +199,19 @@ parse_args() {
         printf 'install-bare-metal: --skip-databases requires --pg-dsn and --ch-dsn\n' >&2
         return "$EXIT_USAGE"
     fi
-    if [ "$ARG_VERSION" = "dev" ] && [ -z "$ARG_FROM_TARBALL" ]; then
-        printf 'install-bare-metal: this is a repository copy (version "dev"); pass --version X.Y.Z or --from-tarball, or download the script from a release instead\n' >&2
-        return "$EXIT_USAGE"
-    fi
-    if [ "$GOTCHA_INSTALL_DEFAULT_VERSION" != "dev" ] && [ -z "$ARG_FORCE_VERSION" ]; then
-        if ! version_ge "$ARG_VERSION" "$GOTCHA_INSTALL_DEFAULT_VERSION"; then
-            printf 'install-bare-metal: refusing to install %s, older than this script (%s); pass --force-version to override\n' \
-                "$ARG_VERSION" "$GOTCHA_INSTALL_DEFAULT_VERSION" >&2
+    # --uninstall/--purge take no version at all — the checks below are about
+    # what to install, not relevant to removing what is already there.
+    if [ -z "$ARG_UNINSTALL" ]; then
+        if [ "$ARG_VERSION" = "dev" ] && [ -z "$ARG_FROM_TARBALL" ]; then
+            printf 'install-bare-metal: this is a repository copy (version "dev"); pass --version X.Y.Z or --from-tarball, or download the script from a release instead\n' >&2
             return "$EXIT_USAGE"
+        fi
+        if [ "$GOTCHA_INSTALL_DEFAULT_VERSION" != "dev" ] && [ -z "$ARG_FORCE_VERSION" ]; then
+            if ! version_ge "$ARG_VERSION" "$GOTCHA_INSTALL_DEFAULT_VERSION"; then
+                printf 'install-bare-metal: refusing to install %s, older than this script (%s); pass --force-version to override\n' \
+                    "$ARG_VERSION" "$GOTCHA_INSTALL_DEFAULT_VERSION" >&2
+                return "$EXIT_USAGE"
+            fi
         fi
     fi
 
@@ -381,6 +383,9 @@ log_step() {
     # stderr, не stdout: шаги (fetch_tarball и далее) отдают в stdout свой
     # результат, и лог прогресса не должен в него подмешиваться.
     printf 'install-bare-metal: %s\n' "$1" >&2
+    # Переживает завершение процесса — §4.6 требует его для диагностики после
+    # обрыва; append, не truncate, чтобы история копилась через перезапуски.
+    printf '%s %s\n' "$(date -u +%FT%TZ)" "$1" >>/var/log/gotcha-install.log 2>/dev/null || true
 }
 
 on_err() {
@@ -435,11 +440,19 @@ preflight() {
     local -a ports=(8080)
     [ -n "$ARG_NO_PROXY" ] || ports+=(80)
     [ -n "$ARG_SKIP_DATABASES" ] || ports+=(5432 8123 9000)
-    local port
+    local port owner_unit
     for port in "${ports[@]}"; do
-        if ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":${port}\$"; then
-            fail "$EXIT_PREFLIGHT" "port $port is already in use"
-        fi
+        ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":${port}\$" || continue
+        # Занятый порт — отказ, только если это не наш же юнит с прошлого запуска;
+        # иначе идемпотентный повторный запуск (§4.4) не проходил бы преflight.
+        case "$port" in
+            8080) owner_unit=gotcha ;;
+            80) owner_unit=nginx ;;
+            5432) owner_unit=postgresql ;;
+            *) owner_unit=clickhouse-server ;;
+        esac
+        systemctl is-active --quiet "$owner_unit" \
+            || fail "$EXIT_PREFLIGHT" "port $port is already in use"
     done
 
     # 1900, не 2048: облачные "2 ГБ" урезают MemTotal под firmware/hypervisor.
@@ -559,14 +572,16 @@ install_postgresql() {
     # пакета — сервер поднимает явный systemctl, а не установка сама по себе.
     systemctl restart postgresql || fail "$EXIT_DATABASE" "failed to start postgresql"
 
-    local password
-    password=$(openssl rand -hex 24)
+    # Пароль генерируется только при первом создании роли — иначе повторный
+    # запуск рассинхронизирует его с уже сохранённым в gotcha.env.
+    local password=""
+    if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'gotcha'" 2>/dev/null | grep -q '^1$'; then
+        password=$(openssl rand -hex 24)
+    fi
     if ! sudo -u postgres psql -v ON_ERROR_STOP=1 -q >/dev/null <<SQL
 DO \$\$ BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'gotcha') THEN
     CREATE ROLE gotcha LOGIN PASSWORD '$password';
-  ELSE
-    ALTER ROLE gotcha PASSWORD '$password';
   END IF;
 END \$\$;
 SELECT 'CREATE DATABASE gotcha OWNER gotcha'
@@ -622,11 +637,14 @@ install_clickhouse() {
             || fail "$EXIT_DATABASE" "failed to install 10-small.xml"
     fi
 
-    local password hash
-    password=$(openssl rand -hex 24)
-    hash=$(printf '%s' "$password" | sha256sum | awk '{print $1}')
-    mkdir -p /etc/clickhouse-server/users.d
-    cat >/etc/clickhouse-server/users.d/10-gotcha.xml <<EOF || fail "$EXIT_DATABASE" "failed to write 10-gotcha.xml"
+    # Пароль и users.d генерируются только при первом запуске — повторный не
+    # рассинхронизирует его с уже сохранённым в gotcha.env.
+    local password="" hash
+    if [ ! -f /etc/clickhouse-server/users.d/10-gotcha.xml ]; then
+        password=$(openssl rand -hex 24)
+        hash=$(printf '%s' "$password" | sha256sum | awk '{print $1}')
+        mkdir -p /etc/clickhouse-server/users.d
+        cat >/etc/clickhouse-server/users.d/10-gotcha.xml <<EOF || fail "$EXIT_DATABASE" "failed to write 10-gotcha.xml"
 <clickhouse>
     <users>
         <gotcha>
@@ -643,6 +661,7 @@ install_clickhouse() {
     </users>
 </clickhouse>
 EOF
+    fi
 
     mkdir -p /etc/systemd/system/clickhouse-server.service.d
     cat >/etc/systemd/system/clickhouse-server.service.d/override.conf <<'EOF' || fail "$EXIT_DATABASE" "failed to write the LimitNOFILE override"
@@ -682,6 +701,37 @@ install_app_files() {
     cp -a "$tarball_root/agent-dist/." /opt/gotcha/agent-dist/ \
         || fail "$EXIT_OTHER" "failed to install the agent distribution"
     log_step "gotcha binary and agent distribution installed"
+}
+
+# upgrade.md требует бэкап перед форвард-онли миграциями, обход — только --no-backup.
+# Без своей СУБД (--skip-databases) дамп снять нечем — бэкап там на операторе.
+backup_before_upgrade() {
+    local from_version="$1" no_backup="$2" skip_databases="$3"
+    if [ -n "$no_backup" ]; then
+        log_step "pre-upgrade backup skipped (--no-backup)"
+        return 0
+    fi
+    if [ -n "$skip_databases" ]; then
+        log_step "pre-upgrade backup skipped (--skip-databases, database is not ours to dump)"
+        return 0
+    fi
+    mkdir -p /var/lib/gotcha/backup && chmod 700 /var/lib/gotcha/backup \
+        || fail "$EXIT_DATABASE" "failed to create /var/lib/gotcha/backup"
+    local dump="/var/lib/gotcha/backup/postgres-${from_version}-$(date -u +%Y%m%dT%H%M%SZ).sql.gz"
+    sudo -u postgres pg_dump -d gotcha | gzip >"$dump" || fail "$EXIT_DATABASE" "pre-upgrade pg_dump failed"
+    # Дамп несёт те же секреты (схема, данные), что и gotcha.env — не мирочитаем.
+    chmod 600 "$dump" || fail "$EXIT_DATABASE" "failed to secure $dump"
+    log_step "pre-upgrade backup: $dump"
+}
+
+# Снимок ДО перезаписи install_app_files — единственный путь отката на предыдущий
+# бинарь, который описывает upgrade.md ("Rolling back").
+backup_previous_binary() {
+    local from_version="$1"
+    mkdir -p /opt/gotcha/backup || fail "$EXIT_OTHER" "failed to create /opt/gotcha/backup"
+    cp -a /usr/local/bin/gotcha "/opt/gotcha/backup/gotcha-$from_version" \
+        || fail "$EXIT_OTHER" "failed to back up the previous gotcha binary"
+    log_step "previous binary backed up: /opt/gotcha/backup/gotcha-$from_version"
 }
 
 # Пишется один раз: повторный запуск не перевыпускает пароли и GOTCHA_SECRET_KEY.
@@ -741,20 +791,20 @@ start_app() {
     log_step "gotcha service started and healthy"
 }
 
-# Снимает штатный дефолтный сайт (конфликтовал бы default_server'ом на 80);
-# существующий чужой конфиг сайта копируется рядом перед перезаписью.
+# Снимает штатный дефолтный сайт (конфликтовал бы default_server'ом на 80). Копия
+# делается ДО перезаписи; при точном совпадении с прошлым рендером — не бэкапится вовсе.
 install_nginx() {
-    local domain="$1"
+    local domain="$1" site=/etc/nginx/sites-available/gotcha rendered
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nginx >/dev/null \
         || fail "$EXIT_OTHER" "failed to install nginx"
 
     rm -f /etc/nginx/sites-enabled/default
 
-    local site=/etc/nginx/sites-available/gotcha
-    if [ -f "$site" ]; then
-        cp "$site" "$site.bak-$(date +%s)" || fail "$EXIT_OTHER" "failed to back up existing $site"
+    rendered=$(render_nginx_site "$domain")
+    if [ ! -f "$site" ] || [ "$(cat "$site")" != "$rendered" ]; then
+        [ ! -f "$site" ] || cp "$site" "$site.bak-$(date +%s)" || fail "$EXIT_OTHER" "failed to back up existing $site"
+        printf '%s\n' "$rendered" >"$site" || fail "$EXIT_OTHER" "failed to render $site"
     fi
-    render_nginx_site "$domain" >"$site" || fail "$EXIT_OTHER" "failed to render $site"
     ln -sf ../sites-available/gotcha /etc/nginx/sites-enabled/gotcha \
         || fail "$EXIT_OTHER" "failed to enable $site"
 
@@ -780,6 +830,39 @@ install_certificate() {
     fi
 }
 
+# Не трогает пакеты СУБД/nginx и apt-репозитории — на хосте ими может пользоваться
+# что-то ещё. --purge снимает только объекты, которые этот скрипт сам и создал.
+uninstall_app() {
+    local purge="$1"
+    systemctl disable --now gotcha >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/gotcha.service
+    systemctl daemon-reload || true
+    rm -f /usr/local/bin/gotcha
+    log_step "gotcha unit and binary removed"
+
+    [ -n "$purge" ] || return 0
+
+    if id -u postgres >/dev/null 2>&1; then
+        sudo -u postgres psql -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL' || fail "$EXIT_DATABASE" "failed to drop the gotcha role/database in PostgreSQL"
+DROP DATABASE IF EXISTS gotcha;
+DROP ROLE IF EXISTS gotcha;
+SQL
+    fi
+    if command -v clickhouse-client >/dev/null 2>&1; then
+        clickhouse-client --query "DROP DATABASE IF EXISTS gotcha" \
+            || fail "$EXIT_DATABASE" "failed to drop the gotcha database in ClickHouse"
+        # Пароль пользователя живёт в этом файле, не в СУБД как роль Postgres —
+        # без удаления следующая установка сочла бы пользователя уже настроенным.
+        rm -f /etc/clickhouse-server/users.d/10-gotcha.xml
+    fi
+
+    rm -rf /var/lib/gotcha /opt/gotcha /etc/gotcha
+    if id -u gotcha >/dev/null 2>&1; then
+        userdel gotcha 2>/dev/null || true
+    fi
+    log_step "gotcha data, databases and system user removed (--purge)"
+}
+
 main() {
     set -euo pipefail
     IFS=$'\n\t'
@@ -795,11 +878,27 @@ main() {
     if [ -n "$ARG_HELP" ]; then
         exit "$EXIT_OK"
     fi
+    if [ -n "$ARG_UNINSTALL" ]; then
+        [ "$(id -u)" = 0 ] || fail "$EXIT_PREFLIGHT" "must run as root"
+        uninstall_app "$ARG_PURGE"
+        exit "$EXIT_OK"
+    fi
 
     preflight
 
     local tarball_root
     tarball_root=$(fetch_tarball "$ARG_VERSION" "$HOST_ARCH" "$ARG_DOWNLOAD_BASE" "$ARG_FROM_TARBALL")
+
+    # Версия уже установленного бинаря, не версия этого скрипта (GOTCHA_INSTALL_DEFAULT_VERSION):
+    # решает, идёт ли речь об обновлении (§4.5) или об идемпотентном повторе/первой установке.
+    local prev_version=""
+    if [ -x /usr/local/bin/gotcha ]; then
+        prev_version=$(/usr/local/bin/gotcha --version 2>/dev/null | awk '{print $2}')
+    fi
+    local need_upgrade=""
+    if [ -n "$prev_version" ] && ! version_ge "$prev_version" "$ARG_VERSION"; then
+        need_upgrade=1
+    fi
 
     local mem_max gomemlimit
     # IFS=' ': main() выше сузила глобальный IFS до "\n\t", и обычный read
@@ -839,6 +938,13 @@ main() {
 
     local env_file=/etc/gotcha/gotcha.env
     create_app_user
+
+    if [ -n "$need_upgrade" ]; then
+        backup_before_upgrade "$prev_version" "$ARG_NO_BACKUP" "$ARG_SKIP_DATABASES"
+        systemctl stop gotcha 2>/dev/null || true
+        backup_previous_binary "$prev_version"
+    fi
+
     install_app_files "$tarball_root"
     write_env_file "$ARG_PG_DSN" "$ARG_CH_DSN" "$base_url" "$gomemlimit" "$env_file"
     install_unit "$mem_max"
