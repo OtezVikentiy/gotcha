@@ -88,6 +88,8 @@ func docVersionTargets(root string) []docTarget {
 		{"README.ru.md", filepath.Join(root, "README.ru.md"), all},
 		{"internal/docs/en/installation.md", filepath.Join(root, "internal", "docs", "en", "installation.md"), all},
 		{"internal/docs/ru/installation.md", filepath.Join(root, "internal", "docs", "ru", "installation.md"), all},
+		{"internal/docs/en/installation-bare-metal.md", filepath.Join(root, "internal", "docs", "en", "installation-bare-metal.md"), all},
+		{"internal/docs/ru/installation-bare-metal.md", filepath.Join(root, "internal", "docs", "ru", "installation-bare-metal.md"), all},
 		{"CONTRIBUTING.md", filepath.Join(root, "CONTRIBUTING.md"), []string{"Go"}},
 		{"CONTRIBUTING.ru.md", filepath.Join(root, "CONTRIBUTING.ru.md"), []string{"Go"}},
 	}
