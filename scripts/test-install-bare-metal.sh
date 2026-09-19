@@ -125,6 +125,39 @@ assert_eq "debian port 5432 owner" "postgresql" "$(port_owner_units 5432)"
 assert_eq "debian port 80 owners" "nginx
 angie" "$(port_owner_units 80)"
 
+# required_commands
+
+assert_eq "debian required commands" "curl
+tar
+gpg
+openssl
+sha256sum
+ss
+sudo" "$(required_commands debian "")"
+assert_eq "debian required commands, --skip-databases" "curl
+tar
+gpg
+openssl
+sha256sum
+ss" "$(required_commands debian 1)"
+assert_eq "rhel required commands" "curl
+tar
+gpg
+openssl
+sha256sum
+ss
+rpm
+dnf
+sudo" "$(required_commands rhel "")"
+assert_eq "rhel required commands, --skip-databases" "curl
+tar
+gpg
+openssl
+sha256sum
+ss
+rpm
+dnf" "$(required_commands rhel 1)"
+
 # detect_arch
 
 out=$(detect_arch x86_64)

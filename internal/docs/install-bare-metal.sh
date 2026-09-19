@@ -599,6 +599,19 @@ cleanup_tmp_dirs() {
     done
 }
 
+required_commands() {
+    local family="$1" skip_databases="$2" cmd
+    for cmd in curl tar gpg openssl sha256sum ss; do
+        printf '%s\n' "$cmd"
+    done
+    if [ "$family" = rhel ]; then
+        printf 'rpm\n'
+        printf 'dnf\n'
+    fi
+    # sudo нужен только своим СУБД: psql от пользователя postgres и pg_dump перед обновлением.
+    [ -n "$skip_databases" ] || printf 'sudo\n'
+}
+
 port_owner_units() {
     case "$1" in
         8080) printf 'gotcha\n' ;;
@@ -621,15 +634,11 @@ preflight() {
 
     # Пакеты в сообщении не украшение: на минимальном Debian нет ни ss, ни sudo,
     # и без подсказки отказ выглядит как поломка скрипта.
-    local -a required=(curl tar gpg openssl sha256sum ss)
-    [ "$HOST_FAMILY" != rhel ] || required+=(rpm dnf)
-    # sudo нужен только своим СУБД: psql от пользователя postgres и pg_dump перед обновлением.
-    [ -n "$ARG_SKIP_DATABASES" ] || required+=(sudo)
     local cmd
-    for cmd in "${required[@]}"; do
+    while IFS= read -r cmd; do
         command -v "$cmd" >/dev/null 2>&1 \
             || fail "$EXIT_PREFLIGHT" "$cmd is required ($PKG_HINT_LABEL: ${PKG_HINTS[$cmd]})"
-    done
+    done < <(required_commands "$HOST_FAMILY" "$ARG_SKIP_DATABASES")
 
     local -a ports=(8080)
     [ -n "$ARG_NO_PROXY" ] || ports+=(80)
