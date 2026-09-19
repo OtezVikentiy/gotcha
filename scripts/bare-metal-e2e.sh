@@ -707,7 +707,7 @@ purge_removes_data_and_databases_keeps_packages() {
 
     # Наши дропины в каталогах чужих пакетов: пакеты остаются, конфиги уходят.
     local pg_conf
-    pg_conf="$(pg_conf_dir)/conf.d/10-gotcha.conf"
+    pg_conf="$(pg_conf_dir_resolve)/conf.d/10-gotcha.conf"
     [ ! -f "$pg_conf" ] || { printf '%s still present after --purge\n' "$pg_conf" >&2; return 1; }
     [ ! -f /etc/clickhouse-server/config.d/00-common.xml ] \
         || { printf 'clickhouse config.d/00-common.xml still present after --purge\n' >&2; return 1; }
