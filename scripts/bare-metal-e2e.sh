@@ -118,6 +118,14 @@ pgdg_repo_file_present() {
     [ -f "$REPO_DIR/gotcha-pgdg.list" ]
 }
 
+clickhouse_repo_file_present() {
+    if [ "$HOST_FAMILY" = rhel ]; then
+        [ -f "$REPO_DIR/gotcha-clickhouse.repo" ]
+        return $?
+    fi
+    [ -f "$REPO_DIR/gotcha-clickhouse.list" ]
+}
+
 # ss отдаёт Local Address:Port как "127.0.0.1:5432"/"[::1]:5432". Публикация
 # наружу — регресс: в compose эти порты вообще не выставлены.
 port_loopback_only() {
@@ -142,6 +150,27 @@ pg_gotcha_conf_present() {
     [ -f "$conf" ] || { printf 'missing %s\n' "$conf" >&2; return 1; }
     grep -qE '^random_page_cost = 1\.1$' "$conf" || { printf 'random_page_cost missing in %s\n' "$conf" >&2; return 1; }
     grep -qE '^effective_io_concurrency = 200$' "$conf" || { printf 'effective_io_concurrency missing in %s\n' "$conf" >&2; return 1; }
+}
+
+# На EL postgresql.conf.sample несёт include_dir закомментированной, и
+# ensure_include_dir дописывает строку: два подряд запуска не должны продублировать её.
+pg_include_dir_set_once() {
+    local conf_dir
+    conf_dir=$(pg_conf_dir_resolve)
+    [ "$(grep -c "^include_dir = 'conf.d'" "$conf_dir/postgresql.conf" 2>/dev/null)" = "1" ] \
+        || { printf "include_dir = 'conf.d' does not appear exactly once in %s/postgresql.conf\n" "$conf_dir" >&2; return 1; }
+}
+
+# install_postgresql перенаправляет болтливость dnf/apt в /dev/null именно затем,
+# чтобы она не подмешалась в DSN, возвращаемый через stdout.
+gotcha_env_pg_dsn_clean() {
+    local dsn
+    dsn=$(grep '^GOTCHA_PG_DSN=' /etc/gotcha/gotcha.env | cut -d= -f2-)
+    case "$dsn" in
+        postgres://*) return 0 ;;
+    esac
+    printf 'GOTCHA_PG_DSN in gotcha.env does not start with postgres://: %s\n' "$dsn" >&2
+    return 1
 }
 
 pg_role_exists() {
@@ -188,8 +217,18 @@ version_blocked_via_nginx() {
     [ "$(curl -s -o /dev/null -w '%{http_code}' "http://$(external_ip):80/version")" = "403" ]
 }
 
+# Запрос по IP попадает в gotcha, а не на приветственную страницу nginx — на EL
+# это следствие порядка include в штатном nginx.conf, а не нашей правки.
+ip_request_reaches_gotcha() {
+    local body
+    body=$(curl -fsS "http://$(external_ip)/readyz") || return 1
+    case "$body" in *ok*) return 0 ;; esac
+    printf 'GET / by IP did not reach gotcha: %s\n' "$body" >&2
+    return 1
+}
+
 nginx_site_config_ok() {
-    local conf=/etc/nginx/sites-available/gotcha
+    local conf="$NGINX_SITE"
     [ -f "$conf" ] || { printf 'missing %s\n' "$conf" >&2; return 1; }
     grep -qF 'proxy_pass http://127.0.0.1:8080' "$conf" || { printf 'proxy_pass missing in %s\n' "$conf" >&2; return 1; }
     grep -qF 'proxy_set_header Host' "$conf" || { printf 'Host forwarding missing in %s\n' "$conf" >&2; return 1; }
@@ -202,9 +241,10 @@ nginx_site_config_ok() {
 }
 
 nginx_site_backed_up() {
-    local backup
-    backup=$(find /etc/nginx/sites-available -maxdepth 1 -name 'gotcha.bak-*' -print -quit 2>/dev/null)
-    [ -n "$backup" ] || { printf 'no gotcha.bak-* found in /etc/nginx/sites-available\n' >&2; return 1; }
+    local dir backup
+    dir=$(dirname "$NGINX_SITE")
+    backup=$(find "$dir" -maxdepth 1 -name 'gotcha*.bak-*' -print -quit 2>/dev/null)
+    [ -n "$backup" ] || { printf 'no gotcha*.bak-* found in %s\n' "$dir" >&2; return 1; }
     grep -qF 'pre-existing site placed by someone else' "$backup" \
         || { printf 'backup does not preserve the original foreign content: %s\n' "$backup" >&2; return 1; }
 }
@@ -213,8 +253,8 @@ nginx_site_backed_up() {
 # весь preflight), поэтому installer можно звать реальными флагами безопасно.
 port80_busy_blocks_preflight() {
     command -v python3 >/dev/null 2>&1 || {
-        apt-get update -qq >/dev/null
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-minimal >/dev/null
+        pkg_refresh
+        pkg_install python3
     }
 
     python3 -c '
@@ -339,12 +379,16 @@ preflight_requires_command() {
 assert "a busy port 80 blocks preflight before anything is installed" port80_busy_blocks_preflight
 assert "preflight refuses without ss, which the port check needs" preflight_requires_command ss
 assert "preflight refuses without sudo, which the database steps need" preflight_requires_command sudo
+if [ "$HOST_FAMILY" = rhel ]; then
+    assert "preflight refuses without rpm, which package queries need" preflight_requires_command rpm
+    assert "preflight refuses without dnf, which package installs need" preflight_requires_command dnf
+fi
 assert "a mid-install failure reports the exit code, completed steps and a hint" policy_failure_reports_steps_and_hint
 
 # Симулирует чужой конфиг сайта, уже лежащий на месте нашего: install_nginx
 # обязан унести его в *.bak-<метка времени>, а не переписать без следа.
-mkdir -p /etc/nginx/sites-available
-printf '# pre-existing site placed by someone else\n' >/etc/nginx/sites-available/gotcha
+mkdir -p "$(dirname "$NGINX_SITE")"
+printf '# pre-existing site placed by someone else\n' >"$NGINX_SITE"
 
 # Ставит более старую версию первой, чтобы запуск ниже был обновлением (§4.5), а не
 # свежей установкой — "старая" версия детектится только по уже установленному бинарю.
@@ -459,11 +503,24 @@ e2e_ingest_roundtrip() {
     : >"$jar"
     msg="bare-metal-e2e-probe-$$"
 
-    curl -fsS -c "$jar" -b "$jar" -o /dev/null -H "Origin: $origin" \
-        --data-urlencode "email=e2e-$$@example.invalid" \
+    # /readyz кэширует пинг на healthProbeTTL (5с) и проверяет только одно соединение
+    # из пула; сразу после survives_postgresql_restart в пуле могут остаться другие,
+    # ещё не переиспользованные соединения со старым сервером — первый настоящий
+    # запрос на запись иногда ловит именно такое соединение. Повтор здесь ничем не
+    # отличается от повтора живым пользователем, у которого не открылась страница.
+    tries=0
+    # Email с номером попытки: если ответ 500 достиг клиента после того, как
+    # запись всё же закоммитилась, повтор с тем же адресом упёрся бы в "уже занят"
+    # вместо восстановления после разрыва соединения.
+    until curl -fsS -c "$jar" -b "$jar" -o /dev/null -H "Origin: $origin" \
+        --data-urlencode "email=e2e-$$-$tries@example.invalid" \
         --data-urlencode "password=Str0ng-Passw0rd" \
         --data-urlencode "password2=Str0ng-Passw0rd" \
-        "$app/register" || { printf 'POST /register failed\n' >&2; return 1; }
+        "$app/register"; do
+        tries=$((tries + 1))
+        [ "$tries" -lt 10 ] || { printf 'POST /register failed\n' >&2; return 1; }
+        sleep 1
+    done
 
     curl -fsS -c "$jar" -b "$jar" -o /dev/null -H "Origin: $origin" \
         --data-urlencode "org_slug=e2e-org" \
@@ -537,7 +594,7 @@ documented_ch_password_change_works() {
 # certbot правит ровно тот файл, который рендерит install_nginx. В контейнере его не
 # выпустить, поэтому результат имитируется своим сертификатом.
 certbot_edits_survive_a_rerun() {
-    local site=/etc/nginx/sites-available/gotcha crt=/etc/ssl/gotcha-e2e.crt key=/etc/ssl/gotcha-e2e.key
+    local site="$NGINX_SITE" crt=/etc/ssl/gotcha-e2e.crt key=/etc/ssl/gotcha-e2e.key
     local bak_before bak_after output rc
     openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=localhost' \
         -keyout "$key" -out "$crt" >/dev/null 2>&1 \
@@ -549,14 +606,14 @@ certbot_edits_survive_a_rerun() {
     nginx -t >/dev/null 2>&1 || { printf 'the planted TLS block does not pass nginx -t\n' >&2; return 1; }
     systemctl reload nginx || { printf 'nginx reload failed after planting the TLS block\n' >&2; return 1; }
 
-    bak_before=$(find /etc/nginx/sites-available -maxdepth 1 -name 'gotcha.bak-*' | wc -l)
+    bak_before=$(find "$(dirname "$NGINX_SITE")" -maxdepth 1 -name 'gotcha*.bak-*' | wc -l)
     output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
     rc=$?
     [ "$rc" -eq 0 ] || { printf 'a re-run over a certbot-edited site exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
 
     grep -qF 'listen 443 ssl;' "$site" \
         || { printf 'the TLS block is gone from %s after a re-run — the host fell back to plain HTTP\n' "$site" >&2; return 1; }
-    bak_after=$(find /etc/nginx/sites-available -maxdepth 1 -name 'gotcha.bak-*' | wc -l)
+    bak_after=$(find "$(dirname "$NGINX_SITE")" -maxdepth 1 -name 'gotcha*.bak-*' | wc -l)
     [ "$bak_after" -eq "$bak_before" ] \
         || { printf 'the site was backed up and re-rendered on a re-run (count %s -> %s)\n' "$bak_before" "$bak_after" >&2; return 1; }
     [ "$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:443/readyz)" = "200" ] \
@@ -594,17 +651,19 @@ failure_report_lists_database_steps() {
 survives_idempotent_rerun() {
     local env_before="$WORK_DIR/gotcha.env.before-rerun" bak_before bak_after output rc
     cp /etc/gotcha/gotcha.env "$env_before" || { printf 'failed to snapshot gotcha.env\n' >&2; return 1; }
-    bak_before=$(find /etc/nginx/sites-available -maxdepth 1 -name 'gotcha.bak-*' | wc -l)
+    bak_before=$(find "$(dirname "$NGINX_SITE")" -maxdepth 1 -name 'gotcha*.bak-*' | wc -l)
 
     output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
     rc=$?
     [ "$rc" -eq 0 ] || { printf 'idempotent re-run exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
 
     unit_active gotcha || { printf 'gotcha unit not active after an idempotent re-run\n' >&2; return 1; }
-    cmp -s "$env_before" /etc/gotcha/gotcha.env \
+    # sha256sum, не cmp/diff: diffutils не входит в required_commands и не
+    # гарантирован на минимальном EL-хосте, sha256sum — гарантирован преflight'ом.
+    [ "$(sha256sum <"$env_before")" = "$(sha256sum </etc/gotcha/gotcha.env)" ] \
         || { printf 'gotcha.env changed after an idempotent re-run\n' >&2; return 1; }
 
-    bak_after=$(find /etc/nginx/sites-available -maxdepth 1 -name 'gotcha.bak-*' | wc -l)
+    bak_after=$(find "$(dirname "$NGINX_SITE")" -maxdepth 1 -name 'gotcha*.bak-*' | wc -l)
     [ "$bak_after" -eq "$bak_before" ] \
         || { printf 'nginx config re-backed-up on an idempotent re-run (count %s -> %s)\n' "$bak_before" "$bak_after" >&2; return 1; }
 
@@ -648,12 +707,21 @@ uninstall_removes_unit_and_binary_keeps_data() {
     [ ! -f /usr/local/bin/gotcha ] || { printf '/usr/local/bin/gotcha still present after --uninstall\n' >&2; return 1; }
     [ -d /var/lib/gotcha ] || { printf '/var/lib/gotcha missing after --uninstall\n' >&2; return 1; }
 
-    # Оставленный включённым сайт — это 502 на всё, что приходит на хост:
-    # sites-enabled/default инсталлятор снял при установке и не вернёт.
-    [ ! -e /etc/nginx/sites-enabled/gotcha ] \
-        || { printf 'the nginx site is still enabled after --uninstall\n' >&2; return 1; }
-    [ -f /etc/nginx/sites-available/gotcha ] \
-        || { printf 'sites-available/gotcha removed by --uninstall (the certbot TLS block lives there)\n' >&2; return 1; }
+    # Оставленный включённым сайт — это 502 на всё, что приходит на хост. На EL сайт —
+    # единственный файл в conf.d: снятие переименовывает его в .disabled, а не удаляет
+    # символическую ссылку, как на Debian, где файл в sites-available остаётся под своим
+    # именем (в нём TLS-блок certbot).
+    if [ "$HOST_FAMILY" = rhel ]; then
+        [ ! -e "$NGINX_SITE" ] \
+            || { printf 'the nginx site is still enabled after --uninstall\n' >&2; return 1; }
+        [ -f "$(nginx_site_disabled_path)" ] \
+            || { printf '%s missing after --uninstall (the certbot TLS block lives there)\n' "$(nginx_site_disabled_path)" >&2; return 1; }
+    else
+        [ ! -e /etc/nginx/sites-enabled/gotcha ] \
+            || { printf 'the nginx site is still enabled after --uninstall\n' >&2; return 1; }
+        [ -f "$NGINX_SITE" ] \
+            || { printf '%s removed by --uninstall (the certbot TLS block lives there)\n' "$NGINX_SITE" >&2; return 1; }
+    fi
     # Перезагрузка nginx асинхронна: старые воркеры доживают свои соединения, и первые
     # доли секунды хост ещё отвечает 502 — ждём, а не меряем один раз.
     local tries=0 code
@@ -670,7 +738,15 @@ uninstall_removes_unit_and_binary_keeps_data() {
     pkg_installed clickhouse-server || { printf 'clickhouse-server package removed by --uninstall\n' >&2; return 1; }
     pkg_installed nginx || { printf 'nginx package removed by --uninstall\n' >&2; return 1; }
     pgdg_repo_file_present || { printf 'PGDG repository removed by --uninstall\n' >&2; return 1; }
-    [ -f /etc/apt/sources.list.d/gotcha-clickhouse.list ] || { printf 'ClickHouse apt repository removed by --uninstall\n' >&2; return 1; }
+    clickhouse_repo_file_present || { printf 'ClickHouse repository removed by --uninstall\n' >&2; return 1; }
+}
+
+# Ассерт на решение "переименование при снятии, а не удаление": TLS-блок certbot
+# в файле сайта обязан пережить полный цикл установка -> --uninstall -> установка
+# на обоих семействах, не только на Debian, где файл и так не трогается снятием.
+certbot_site_survives_uninstall_reinstall() {
+    grep -qF 'listen 443 ssl;' "$NGINX_SITE" \
+        || { printf 'TLS block missing from %s after --uninstall + reinstall\n' "$NGINX_SITE" >&2; return 1; }
 }
 
 reinstall_after_uninstall_succeeds() {
@@ -721,7 +797,7 @@ purge_removes_data_and_databases_keeps_packages() {
     pkg_installed clickhouse-server || { printf 'clickhouse-server package removed by --purge\n' >&2; return 1; }
     pkg_installed nginx || { printf 'nginx package removed by --purge\n' >&2; return 1; }
     pgdg_repo_file_present || { printf 'PGDG repository removed by --purge\n' >&2; return 1; }
-    [ -f /etc/apt/sources.list.d/gotcha-clickhouse.list ] || { printf 'ClickHouse apt repository removed by --purge\n' >&2; return 1; }
+    clickhouse_repo_file_present || { printf 'ClickHouse repository removed by --purge\n' >&2; return 1; }
 }
 
 run_assertions() {
@@ -747,6 +823,7 @@ run_assertions() {
     assert "postgresql role gotcha exists" pg_role_exists
     assert "postgresql database gotcha exists" pg_database_exists
     assert "postgresql conf.d/10-gotcha.conf present and tuned" pg_gotcha_conf_present
+    assert "gotcha.env GOTCHA_PG_DSN carries no dnf/apt install chatter" gotcha_env_pg_dsn_clean
 
     assert "clickhouse config.d/00-common.xml present" ch_common_config_present
     assert "clickhouse-server LimitNOFILE=262144" ch_limit_nofile
@@ -771,15 +848,20 @@ run_assertions() {
     assert "gotcha /readyz responds 200 via nginx on :80" readyz_via_nginx
     assert "gotcha /metrics responds 403 via nginx on :80" metrics_blocked_via_nginx
     assert "gotcha /version responds 403 via nginx on :80" version_blocked_via_nginx
+    assert "a request by IP reaches gotcha, not the nginx welcome page" ip_request_reaches_gotcha
 
     assert "a certbot-edited nginx site survives a re-run, TLS included" certbot_edits_survive_a_rerun
     assert "a failure after the database steps lists them in the report" failure_report_lists_database_steps
     assert "re-running the installer with the same version is idempotent (unit alive, env untouched, /readyz ok)" survives_idempotent_rerun
+    if [ "$HOST_FAMILY" = rhel ]; then
+        assert "include_dir 'conf.d' appears exactly once after two installer runs" pg_include_dir_set_once
+    fi
     assert "a lost gotcha.env is recovered by regenerating the PostgreSQL/ClickHouse passwords" recovers_after_env_file_lost
 
     assert "--uninstall removes the unit and binary, keeps data/databases/packages/repos" uninstall_removes_unit_and_binary_keeps_data
     assert "--purge without confirmation and without --yes refuses" purge_without_confirmation_refuses
     assert "re-installing after --uninstall succeeds" reinstall_after_uninstall_succeeds
+    assert "a certbot-edited nginx site survives --uninstall and a reinstall" certbot_site_survives_uninstall_reinstall
     assert "--purge removes data/databases/system user, keeps packages/repos" purge_removes_data_and_databases_keeps_packages
 }
 

@@ -365,7 +365,7 @@ for directive in \
     "RestartSec=5" \
     "StateDirectory=gotcha" \
     "StateDirectoryMode=0700" \
-    "After=postgresql.service clickhouse-server.service network-online.target"; do
+    "After=postgresql.service postgresql-17.service clickhouse-server.service network-online.target"; do
     assert_contains "render_unit contains $directive" "$unit" "$directive"
 done
 
@@ -486,6 +486,59 @@ assert_contains "pgdg repo verifies metadata" "$out" "repo_gpgcheck=1"
 assert_contains "pgdg repo trusts a local key file" "$out" "gpgkey=file:///etc/pki/rpm-gpg/gotcha-pgdg.asc"
 out=$(render_pgdg_repo 10)
 assert_contains "pgdg repo for EL10" "$out" "redhat/rhel-10-\$basearch"
+
+# render_clickhouse_repo
+
+# shellcheck disable=SC2034 # прочитана apply_platform_paths, определённой в сорсимом файле
+HOST_FAMILY=rhel
+# shellcheck disable=SC2034 # прочитана apply_platform_paths, определённой в сорсимом файле
+EL_MAJOR=9
+apply_platform_paths
+out=$(render_clickhouse_repo)
+assert_contains "clickhouse repo baseurl" "$out" "https://packages.clickhouse.com/rpm/stable/"
+# gpgcheck=0: пакеты ClickHouse не подписаны индивидуально, как и в их собственном
+# packages.clickhouse.com/rpm/clickhouse.repo — доверие даёт repo_gpgcheck ниже.
+assert_contains "clickhouse repo does not require per-package signatures" "$out" $'\ngpgcheck=0\n'
+assert_contains "clickhouse repo verifies metadata" "$out" "repo_gpgcheck=1"
+assert_contains "clickhouse repo trusts a local key file" "$out" \
+    "gpgkey=file:///etc/pki/rpm-gpg/gotcha-clickhouse.asc"
+
+# clickhouse_version_from_dnf_list
+
+out=$(printf '%s\n' \
+    'clickhouse-server.noarch    25.8.1.1-1    gotcha-clickhouse' \
+    'clickhouse-server.noarch    25.3.14.14-1    gotcha-clickhouse' \
+    'clickhouse-server.noarch    25.3.9.1-1    gotcha-clickhouse' \
+    | clickhouse_version_from_dnf_list)
+assert_eq "dnf list picks the newest 25.3 patch" "25.3.14.14-1" "$out"
+
+# dnf переносит длинные строки: версия оказывается на следующей строке с отступом
+out=$(printf '%s\n' \
+    'clickhouse-server.noarch' \
+    '                            25.3.14.14-1    gotcha-clickhouse' \
+    | clickhouse_version_from_dnf_list)
+assert_eq "dnf list wrapped line parsed" "25.3.14.14-1" "$out"
+
+out=$(printf '%s\n' 'clickhouse-server.noarch    24.8.1.1-1    gotcha-clickhouse' \
+    | clickhouse_version_from_dnf_list)
+assert_eq "dnf list without a matching major returns empty" "" "$out"
+
+# nginx_site_disabled_path
+
+# shellcheck disable=SC2034 # прочитана apply_platform_paths, определённой в сорсимом файле
+HOST_FAMILY=rhel
+# shellcheck disable=SC2034 # прочитана apply_platform_paths, определённой в сорсимом файле
+EL_MAJOR=9
+apply_platform_paths
+assert_eq "rhel nginx disabled-site path" "/etc/nginx/conf.d/gotcha.conf.disabled" \
+    "$(nginx_site_disabled_path)"
+# shellcheck disable=SC2034 # прочитана apply_platform_paths, определённой в сорсимом файле
+HOST_FAMILY=debian
+# shellcheck disable=SC2034 # прочитана apply_platform_paths, определённой в сорсимом файле
+EL_MAJOR=""
+apply_platform_paths
+assert_eq "debian nginx disabled-site path" "/etc/nginx/sites-available/gotcha.disabled" \
+    "$(nginx_site_disabled_path)"
 
 # pg_hba_host_method_is_password
 

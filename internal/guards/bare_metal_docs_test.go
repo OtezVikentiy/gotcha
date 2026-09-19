@@ -44,8 +44,9 @@ func TestDocUnitMatchesRenderUnit(t *testing.T) {
 		t.Fatalf("install-bare-metal.sh: тело render_unit не найдено — сторож смотрит мимо функции")
 	}
 	want := strings.ReplaceAll(m[1], "MemoryMax=$memory_max", "MemoryMax=1024M")
-	if strings.Contains(want, "$memory_max") {
-		t.Fatalf("render_unit: подстановка $memory_max не разобрана — сравнение шло бы с шаблоном")
+	want = strings.ReplaceAll(want, "postgresql-$PG_MAJOR.service", "postgresql-17.service")
+	if strings.Contains(want, "$") {
+		t.Fatalf("render_unit: в эталоне осталась неразобранная подстановка:\n%s", want)
 	}
 
 	for locale, path := range bareMetalDocPaths(tree.Root) {

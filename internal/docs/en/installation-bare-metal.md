@@ -244,7 +244,7 @@ This file holds secrets (the encryption master key, both database passwords) —
 cat >/etc/systemd/system/gotcha.service <<'EOF'
 [Unit]
 Description=gotcha monitoring server
-After=postgresql.service clickhouse-server.service network-online.target
+After=postgresql.service postgresql-17.service clickhouse-server.service network-online.target
 
 [Service]
 Type=simple

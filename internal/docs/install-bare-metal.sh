@@ -19,6 +19,7 @@ CLICKHOUSE_KEY_FINGERPRINT="3A9EA1193A97B548BE1457D48919F6BD2B48D754"
 
 PGDG_RPM_KEY_URL="https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL"
 PGDG_RPM_KEY_PATH=/etc/pki/rpm-gpg/gotcha-pgdg.asc
+CLICKHOUSE_RPM_KEY_PATH=/etc/pki/rpm-gpg/gotcha-clickhouse.asc
 PG_INCLUDE_MARKER="# gotcha: conf.d include"
 
 EXIT_OK=0
@@ -428,7 +429,7 @@ render_unit() {
     cat <<EOF
 [Unit]
 Description=gotcha monitoring server
-After=postgresql.service clickhouse-server.service network-online.target
+After=postgresql.service postgresql-$PG_MAJOR.service clickhouse-server.service network-online.target
 
 [Service]
 Type=simple
@@ -491,6 +492,10 @@ EOF
 }
 
 NGINX_SITE_MARKER="# gotcha site: install-bare-metal.sh keeps local edits below on re-run"
+
+nginx_site_disabled_path() {
+    printf '%s.disabled\n' "$NGINX_SITE"
+}
 
 render_nginx_site() {
     local domain="$1"
@@ -837,7 +842,14 @@ install_postgresql() {
         dnf -qy module disable postgresql >/dev/null
     fi
 
-    pkg_install "$package" || fail "$EXIT_DATABASE" "failed to install $package"
+    if [ "$HOST_FAMILY" = rhel ] && [ "$repo_result" != "native" ]; then
+        # citext (migrations/pg) живёт в отдельном PGDG-пакете на EL — на Debian он
+        # уже внутри postgresql-$PG_MAJOR, здесь без него миграции падают на CREATE EXTENSION.
+        pkg_install "$package" "postgresql${PG_MAJOR}-contrib" \
+            || fail "$EXIT_DATABASE" "failed to install $package"
+    else
+        pkg_install "$package" || fail "$EXIT_DATABASE" "failed to install $package"
+    fi
 
     local conf_dir
     conf_dir=$(pg_conf_dir_resolve)
@@ -898,9 +910,72 @@ SQL
     printf 'postgres://gotcha:%s@127.0.0.1:5432/gotcha?sslmode=disable\n' "$password"
 }
 
-# ClickHouse не публикует пакет без патч-версии в номере — apt-cache madison
-# находит конкретный патч для мажора.минора из CH_VERSION.
+# gpgcheck=0: пакеты ClickHouse не подписаны индивидуально (сверено с
+# packages.clickhouse.com/rpm/clickhouse.repo — их собственный .repo несёт то же
+# значение), gpgcheck=1 здесь роняет установку "Package ... is not signed" на живом
+# EL. Доверие даёт repo_gpgcheck=1: метаданные репозитория подписаны, и dnf сверяет
+# пакеты с их контрольными суммами внутри уже проверенных метаданных.
+render_clickhouse_repo() {
+    cat <<EOF
+[gotcha-clickhouse]
+name=ClickHouse
+baseurl=https://packages.clickhouse.com/rpm/stable/
+enabled=1
+gpgcheck=0
+repo_gpgcheck=1
+gpgkey=file://$CLICKHOUSE_RPM_KEY_PATH
+EOF
+}
+
+# rpm/stable и deb-ветка ниже качают ключ с разных путей одного вендора, но файл
+# побайтово равен уже используемому rpm/lts — отпечаток один, CLICKHOUSE_KEY_FINGERPRINT.
+repo_add_clickhouse() {
+    local tmp
+    tmp=$(mktemp -d)
+    TMP_DIRS+=("$tmp")
+
+    if [ "$HOST_FAMILY" = rhel ]; then
+        curl -fsSL -o "$tmp/clickhouse.asc" https://packages.clickhouse.com/rpm/stable/repodata/repomd.xml.key \
+            || fail "$EXIT_DATABASE" "failed to download the ClickHouse signing key"
+        verify_key_fingerprint "$tmp/clickhouse.asc" "$CLICKHOUSE_KEY_FINGERPRINT"
+        mkdir -p "$(dirname "$CLICKHOUSE_RPM_KEY_PATH")"
+        cp "$tmp/clickhouse.asc" "$CLICKHOUSE_RPM_KEY_PATH"
+        rpm --import "$CLICKHOUSE_RPM_KEY_PATH" >/dev/null
+        render_clickhouse_repo >"$REPO_DIR/gotcha-clickhouse.repo"
+        return 0
+    fi
+
+    curl -fsSL -o "$tmp/clickhouse.asc" https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key \
+        || fail "$EXIT_DATABASE" "failed to download the ClickHouse signing key"
+    verify_key_fingerprint "$tmp/clickhouse.asc" "$CLICKHOUSE_KEY_FINGERPRINT"
+    local keyring=/usr/share/keyrings/gotcha-clickhouse.gpg
+    gpg --dearmor <"$tmp/clickhouse.asc" >"$keyring"
+    printf 'deb [signed-by=%s] https://packages.clickhouse.com/deb stable main\n' "$keyring" \
+        >"$REPO_DIR/gotcha-clickhouse.list"
+    pkg_refresh || fail "$EXIT_DATABASE" "apt-get update failed after adding the ClickHouse repository"
+}
+
+# dnf переносит длинные строки построчно: версия оказывается на следующей строке
+# отдельным полем — поле, несущее версию, определяется по СОСЕДНЕЙ позиции, не
+# фиксированным $2, иначе перенос строки терялся бы молча.
+clickhouse_version_from_dnf_list() {
+    awk -v v="$CH_VERSION." '
+        function is_arch(s) { return s ~ /\.(noarch|x86_64|aarch64)$/ }
+        NF >= 2 && is_arch($1) { if ($2 ~ ("^" v)) print $2; next }
+        NF >= 1 && !is_arch($1) { if ($1 ~ ("^" v)) print $1 }
+    ' | sort -V | tail -n1
+}
+
+# ClickHouse не публикует пакет без патч-версии в номере — apt-cache madison/dnf list
+# находят конкретный патч для мажора.минора из CH_VERSION.
 clickhouse_package_version() {
+    if [ "$HOST_FAMILY" = rhel ]; then
+        # -y: repo_gpgcheck заставляет dnf на первом обращении к репозиторию спросить
+        # подтверждение ключа отдельно от нашего rpm --import; без -y на неинтерактивном
+        # stdin это молчаливое "нет", список пуст, и версия не находится вовсе.
+        dnf -qy --showduplicates list clickhouse-server 2>/dev/null | clickhouse_version_from_dnf_list
+        return 0
+    fi
     apt-cache madison clickhouse-server 2>/dev/null \
         | awk -F'|' -v v="$CH_VERSION." '{gsub(/^[ \t]+|[ \t]+$/, "", $2)} $2 ~ ("^" v) {print $2; exit}'
 }
@@ -909,27 +984,23 @@ clickhouse_package_version() {
 # пользователя gotcha и лимит файловых дескрипторов. Отказ любого шага — код 5.
 install_clickhouse() {
     local ram_mb="$1" tarball_root="$2" env_file="$3"
-    local tmp keyring
-    tmp=$(mktemp -d)
-    TMP_DIRS+=("$tmp")
-    curl -fsSL -o "$tmp/clickhouse.asc" https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key \
-        || fail "$EXIT_DATABASE" "failed to download the ClickHouse signing key"
-    verify_key_fingerprint "$tmp/clickhouse.asc" "$CLICKHOUSE_KEY_FINGERPRINT"
-    keyring=/usr/share/keyrings/gotcha-clickhouse.gpg
-    gpg --dearmor <"$tmp/clickhouse.asc" >"$keyring"
-    printf 'deb [signed-by=%s] https://packages.clickhouse.com/deb stable main\n' "$keyring" \
-        >/etc/apt/sources.list.d/gotcha-clickhouse.list
-    pkg_refresh || fail "$EXIT_DATABASE" "apt-get update failed after adding the ClickHouse repository"
+    repo_add_clickhouse
 
     local version
     version=$(clickhouse_package_version)
     [ -n "$version" ] || fail "$EXIT_DATABASE" "no clickhouse-server package matches version $CH_VERSION"
 
-    # clickhouse-common-static нужен явной версией: без него apt подтягивает
-    # последний мажор из репозитория и ловит конфликт зависимостей.
-    pkg_install \
-        "clickhouse-server=$version" "clickhouse-client=$version" "clickhouse-common-static=$version" \
-        || fail "$EXIT_DATABASE" "failed to install clickhouse-server $version"
+    if [ "$HOST_FAMILY" = rhel ]; then
+        pkg_install \
+            "clickhouse-server-$version" "clickhouse-client-$version" "clickhouse-common-static-$version" \
+            || fail "$EXIT_DATABASE" "failed to install clickhouse-server $version"
+    else
+        # clickhouse-common-static нужен явной версией: без него apt подтягивает
+        # последний мажор из репозитория и ловит конфликт зависимостей.
+        pkg_install \
+            "clickhouse-server=$version" "clickhouse-client=$version" "clickhouse-common-static=$version" \
+            || fail "$EXIT_DATABASE" "failed to install clickhouse-server $version"
+    fi
 
     mkdir -p /etc/clickhouse-server/config.d
     cp "$tarball_root/clickhouse/00-common.xml" /etc/clickhouse-server/config.d/00-common.xml \
@@ -1125,10 +1196,17 @@ start_app() {
 # Снимает штатный дефолтный сайт (конфликтовал бы default_server'ом на 80). Копия
 # делается ДО перезаписи; при точном совпадении с прошлым рендером — не бэкапится вовсе.
 install_nginx() {
-    local domain="$1" site="$NGINX_SITE" rendered
+    local domain="$1" site="$NGINX_SITE" rendered disabled
     pkg_install nginx || fail "$EXIT_OTHER" "failed to install nginx"
 
-    rm -f /etc/nginx/sites-enabled/default
+    # Восстановление ДО проверки "файла нет": на EL --uninstall переименовывает
+    # сайт в .disabled, а не удаляет символическую ссылку, как на Debian — без
+    # этого повторная установка сочла бы, что сайта ещё не было, и стёрла бы
+    # локальные правки (TLS-блок certbot) свежим рендером.
+    disabled=$(nginx_site_disabled_path)
+    if [ ! -e "$site" ] && [ -e "$disabled" ]; then
+        mv "$disabled" "$site" || fail "$EXIT_OTHER" "failed to restore $disabled as $site"
+    fi
 
     rendered=$(render_nginx_site "$domain")
     if [ ! -f "$site" ]; then
@@ -1144,8 +1222,11 @@ install_nginx() {
             printf '%s\n' "$rendered" >"$site" || fail "$EXIT_OTHER" "failed to render $site"
         fi
     fi
-    ln -sf ../sites-available/gotcha /etc/nginx/sites-enabled/gotcha \
-        || fail "$EXIT_OTHER" "failed to enable $site"
+    if [ "$HOST_FAMILY" != rhel ]; then
+        rm -f /etc/nginx/sites-enabled/default
+        ln -sf ../sites-available/gotcha /etc/nginx/sites-enabled/gotcha \
+            || fail "$EXIT_OTHER" "failed to enable $site"
+    fi
 
     nginx -t || fail "$EXIT_OTHER" "nginx configuration test failed"
     systemctl enable --now nginx || fail "$EXIT_OTHER" "failed to start nginx"
@@ -1178,9 +1259,16 @@ uninstall_app() {
     rm -f /usr/local/bin/gotcha
     log_step "gotcha unit and binary removed"
 
-    # Включённый сайт без бэкенда — 502 на всё: sites-enabled/default скрипт снял при
-    # установке. Сам sites-available остаётся, в нём TLS-блок certbot.
-    if [ -L /etc/nginx/sites-enabled/gotcha ] || [ -e /etc/nginx/sites-enabled/gotcha ]; then
+    # Включённый сайт без бэкенда — 502 на всё. На EL сайт — единственный файл в
+    # conf.d, без раздельных sites-available/sites-enabled: снятием служит
+    # переименование в .disabled, install_nginx возвращает его на переустановке.
+    if [ "$HOST_FAMILY" = rhel ]; then
+        if [ -e "$NGINX_SITE" ]; then
+            mv "$NGINX_SITE" "$(nginx_site_disabled_path)"
+            systemctl reload nginx >/dev/null 2>&1 || true
+            log_step "nginx site disabled (kept as $(nginx_site_disabled_path))"
+        fi
+    elif [ -L /etc/nginx/sites-enabled/gotcha ] || [ -e /etc/nginx/sites-enabled/gotcha ]; then
         rm -f /etc/nginx/sites-enabled/gotcha
         systemctl reload nginx >/dev/null 2>&1 || true
         log_step "nginx site disabled (the file in sites-available is kept)"
