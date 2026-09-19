@@ -207,11 +207,8 @@ epel_absent_without_domain() {
 
 # .invalid: certbot гарантированно не выпустит сертификат — тот же прогон
 # проверяет, что этот отказ не откатывает установку и не роняет юнит gotcha.
-epel_enabled_with_domain() {
-    [ "$HOST_FAMILY" = rhel ] || return 0
-    local output rc site_before
-    site_before=$(cat "$NGINX_SITE" 2>/dev/null)
-
+epel_enabled_with_domain_run() {
+    local output rc
     output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" \
         --domain gotcha-e2e.invalid --email admin@gotcha-e2e.invalid --yes 2>&1)
     rc=$?
@@ -229,15 +226,31 @@ epel_enabled_with_domain() {
     [ "$rc" -eq 0 ] || { printf 'reverting the --domain install exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
     readyz_via_nginx \
         || { printf 'readyz via nginx did not recover after reverting the --domain install\n' >&2; return 1; }
+}
 
-    # The domain detour re-renders the site twice, wiping the TLS block a later
-    # assertion needs — put the exact pre-detour bytes back, not just a matching render.
+# Restores $NGINX_SITE on every exit of the check above, success or not — an early
+# failure must not also leave the domain detour's TLS-wiping render for later asserts.
+epel_enabled_with_domain() {
+    [ "$HOST_FAMILY" = rhel ] || return 0
+    local site_before rc baks_before baks_new
+    site_before=$(cat "$NGINX_SITE" 2>/dev/null)
+    baks_before=$(find "$(dirname "$NGINX_SITE")" -maxdepth 1 -name 'gotcha*.bak-*' | sort)
+
+    epel_enabled_with_domain_run
+    rc=$?
+
     if [ -n "$site_before" ]; then
         if ! printf '%s\n' "$site_before" >"$NGINX_SITE" || ! nginx -t >/dev/null 2>&1 || ! systemctl reload nginx; then
             printf 'failed to restore %s to its pre-detour content\n' "$NGINX_SITE" >&2
-            return 1
+            [ "$rc" -eq 0 ] && rc=1
         fi
     fi
+    # The domain detour's own re-renders back up $NGINX_SITE twice; those backups are
+    # noise certbot_edits_survive_a_rerun never asked for, so remove exactly the new ones.
+    baks_new=$(comm -13 <(printf '%s\n' "$baks_before") \
+        <(find "$(dirname "$NGINX_SITE")" -maxdepth 1 -name 'gotcha*.bak-*' | sort))
+    [ -z "$baks_new" ] || xargs -r rm -f <<<"$baks_new"
+    return "$rc"
 }
 
 readyz_via_nginx() {
