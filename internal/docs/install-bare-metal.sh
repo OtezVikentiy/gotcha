@@ -1229,11 +1229,30 @@ install_nginx() {
     log_step "nginx installed, proxying to gotcha for $domain"
 }
 
-# Отказ certbot не откатывает установку: HTTP-стенд остаётся рабочим, скрипт
-# лишь печатает команду для повтора и возвращается с кодом 0.
+# Отказ certbot, а на EL и отказ EPEL/пакета сами, не откатывают установку:
+# HTTP-стенд остаётся рабочим, скрипт печатает причину и команду для повтора.
 install_certificate() {
     local domain="$1" email="$2"
-    pkg_install certbot python3-certbot-nginx || fail "$EXIT_OTHER" "failed to install certbot"
+
+    if [ "$HOST_FAMILY" = rhel ]; then
+        if ! dnf -q repolist enabled 2>/dev/null | grep -qi '^epel'; then
+            if ! dnf -qy install \
+                "https://dl.fedoraproject.org/pub/epel/epel-release-latest-$EL_MAJOR.noarch.rpm" >/dev/null 2>&1; then
+                printf 'install-bare-metal: could not enable EPEL, so certbot was not installed; HTTP on port 80 still works, retry later with:\n' >&2
+                printf '  dnf -y install epel-release && dnf -y install certbot python3-certbot-nginx && certbot --nginx -d %s -m %s --agree-tos --redirect\n' \
+                    "$domain" "$email" >&2
+                return 0
+            fi
+        fi
+        if ! pkg_install certbot python3-certbot-nginx; then
+            printf 'install-bare-metal: could not install certbot, so no TLS certificate was issued; HTTP on port 80 still works, retry later with:\n' >&2
+            printf '  dnf -y install certbot python3-certbot-nginx && certbot --nginx -d %s -m %s --agree-tos --redirect\n' \
+                "$domain" "$email" >&2
+            return 0
+        fi
+    else
+        pkg_install certbot python3-certbot-nginx || fail "$EXIT_OTHER" "failed to install certbot"
+    fi
 
     if certbot --nginx -d "$domain" -m "$email" --agree-tos --non-interactive --redirect >/dev/null 2>&1; then
         log_step "TLS certificate issued for $domain"

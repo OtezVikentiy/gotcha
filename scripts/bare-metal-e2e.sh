@@ -199,6 +199,47 @@ ch_gotcha_database_exists() {
     [ "$(clickhouse-client --query "EXISTS DATABASE gotcha" 2>/dev/null)" = "1" ]
 }
 
+epel_absent_without_domain() {
+    [ "$HOST_FAMILY" = rhel ] || return 0
+    ! dnf -q repolist enabled 2>/dev/null | grep -qi '^epel' \
+        || { printf 'EPEL enabled although --domain was not given\n' >&2; return 1; }
+}
+
+# .invalid: certbot гарантированно не выпустит сертификат — тот же прогон
+# проверяет, что этот отказ не откатывает установку и не роняет юнит gotcha.
+epel_enabled_with_domain() {
+    [ "$HOST_FAMILY" = rhel ] || return 0
+    local output rc site_before
+    site_before=$(cat "$NGINX_SITE" 2>/dev/null)
+
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" \
+        --domain gotcha-e2e.invalid --email admin@gotcha-e2e.invalid --yes 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf 'install with --domain exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+
+    dnf -q repolist enabled 2>/dev/null | grep -qi '^epel' \
+        || { printf 'EPEL not enabled although --domain was given\n' >&2; return 1; }
+    command -v certbot >/dev/null 2>&1 \
+        || { printf 'certbot not installed although --domain was given\n' >&2; return 1; }
+    unit_active gotcha \
+        || { printf 'gotcha unit is down after a certbot failure — the install must not roll back\n' >&2; return 1; }
+
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf 'reverting the --domain install exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    readyz_via_nginx \
+        || { printf 'readyz via nginx did not recover after reverting the --domain install\n' >&2; return 1; }
+
+    # The domain detour re-renders the site twice, wiping the TLS block a later
+    # assertion needs — put the exact pre-detour bytes back, not just a matching render.
+    if [ -n "$site_before" ]; then
+        if ! printf '%s\n' "$site_before" >"$NGINX_SITE" || ! nginx -t >/dev/null 2>&1 || ! systemctl reload nginx; then
+            printf 'failed to restore %s to its pre-detour content\n' "$NGINX_SITE" >&2
+            return 1
+        fi
+    fi
+}
+
 readyz_via_nginx() {
     [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:80/readyz)" = "200" ]
 }
@@ -822,6 +863,7 @@ run_assertions() {
     assert "clickhouse-server LimitNOFILE=262144" ch_limit_nofile
     assert "clickhouse user gotcha configured" ch_gotcha_user_configured
     assert "clickhouse database gotcha exists" ch_gotcha_database_exists
+    assert "EPEL is not enabled when --domain was not given" epel_absent_without_domain
 
     assert "gotcha /readyz responds 200" readyz_ok
     assert "state directory is 0700 and owned by gotcha" state_dir_secured
@@ -850,6 +892,7 @@ run_assertions() {
         assert "include_dir 'conf.d' appears exactly once after two installer runs" pg_include_dir_set_once
     fi
     assert "a lost gotcha.env is recovered by regenerating the PostgreSQL/ClickHouse passwords" recovers_after_env_file_lost
+    assert "EPEL and certbot are installed when --domain is given, without rolling back on a certbot failure" epel_enabled_with_domain
 
     assert "--uninstall removes the unit and binary, keeps data/databases/packages/repos" uninstall_removes_unit_and_binary_keeps_data
     assert "--purge without confirmation and without --yes refuses" purge_without_confirmation_refuses
