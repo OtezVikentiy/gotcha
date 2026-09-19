@@ -11,8 +11,15 @@ CH_VERSION="25.3"
 
 # Отпечатки подписывающих ключей вендоров, тот же принцип, что и digest баз в
 # Dockerfile: значение фиксируется руками, не берётся с сервера доверчиво.
+# PGDG_RPM_KEY_FINGERPRINT — другой ключ, чем PGDG_KEY_FINGERPRINT: rpm и apt
+# репозитории PGDG подписаны разными ключами.
 PGDG_KEY_FINGERPRINT="B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
+PGDG_RPM_KEY_FINGERPRINT="D4BF08AE67A0B4C7A1DBCCD240BCA2B408B40D20"
 CLICKHOUSE_KEY_FINGERPRINT="3A9EA1193A97B548BE1457D48919F6BD2B48D754"
+
+PGDG_RPM_KEY_URL="https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL"
+PGDG_RPM_KEY_PATH=/etc/pki/rpm-gpg/gotcha-pgdg.asc
+PG_INCLUDE_MARKER="# gotcha: conf.d include"
 
 EXIT_OK=0
 EXIT_OTHER=1
@@ -97,12 +104,9 @@ apply_platform_paths() {
         return 0
     fi
     PG_UNIT=postgresql
-    # shellcheck disable=SC2034 # PG_PACKAGE читают шаги установки СУБД, ещё не написанные
     PG_PACKAGE="postgresql-$PG_MAJOR"
-    # shellcheck disable=SC2034 # PG_BIN_DIR читают шаги установки СУБД, ещё не написанные
     PG_BIN_DIR=/usr/bin
     NGINX_SITE=/etc/nginx/sites-available/gotcha
-    # shellcheck disable=SC2034 # REPO_DIR читают шаги подключения репозиториев, ещё не написанные
     REPO_DIR=/etc/apt/sources.list.d
     PKG_HINT_LABEL="Debian/Ubuntu package"
     PKG_HINTS[gpg]=gnupg
@@ -714,11 +718,17 @@ fetch_tarball() {
 }
 
 # gpg --with-colons: формат вывода стабилен для парсинга скриптом, в отличие
-# от --fingerprint, рассчитанного на человека.
+# от --fingerprint, рассчитанного на человека. Подключи остаются принятыми по
+# самоподписи основного ключа намеренно: пин подключей ронял бы установку при
+# их штатной ротации вендором.
 verify_key_fingerprint() {
-    local keyfile="$1" expected="$2" got
-    got=$(gpg --with-colons --import-options show-only --import "$keyfile" 2>/dev/null \
-        | awk -F: '/^fpr:/{print $10; exit}')
+    local keyfile="$1" expected="$2" got pubs
+    local colons
+    colons=$(gpg --with-colons --import-options show-only --import "$keyfile" 2>/dev/null)
+    pubs=$(printf '%s\n' "$colons" | grep -c '^pub:')
+    [ "$pubs" = 1 ] \
+        || fail "$EXIT_DATABASE" "signing key file must contain exactly one primary key, found $pubs"
+    got=$(printf '%s\n' "$colons" | awk -F: '/^pub:/{p=1; next} p && /^fpr:/{print $10; exit}')
     [ "$got" = "$expected" ] \
         || fail "$EXIT_DATABASE" "signing key fingerprint mismatch: got '$got', expected '$expected'"
 }
@@ -735,10 +745,45 @@ native_pg_major() {
     apt-cache policy postgresql 2>/dev/null | awk '/Candidate:/{print $2}' | grep -oE '^[0-9]+'
 }
 
-# Возвращает через stdout DSN на 127.0.0.1; ставит пакет, роль и базу gotcha.
-# Код 3 — только для решения по мажору ниже, прочие отказы шага — код 5.
-install_postgresql() {
-    local codename="$1" env_file="$2" package="postgresql-$PG_MAJOR"
+# $basearch/$releasever в файле остаются литералами для dnf/yum — экранируем
+# в heredoc.
+render_pgdg_repo() {
+    cat <<EOF
+[pgdg-common]
+name=PostgreSQL common RPMs for RHEL \$releasever - \$basearch
+baseurl=https://download.postgresql.org/pub/repos/yum/common/redhat/rhel-$1-\$basearch
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=file://$PGDG_RPM_KEY_PATH
+
+[pgdg$PG_MAJOR]
+name=PostgreSQL $PG_MAJOR for RHEL \$releasever - \$basearch
+baseurl=https://download.postgresql.org/pub/repos/yum/$PG_MAJOR/redhat/rhel-$1-\$basearch
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=file://$PGDG_RPM_KEY_PATH
+EOF
+}
+
+# deb-ветка не подставляет нативный мажор молча: PGDG публикует EL9/EL10 всегда,
+# и штатный AppStream мажора 17 не содержит.
+repo_add_pgdg() {
+    local codename="$1"
+    if [ "$HOST_FAMILY" = rhel ]; then
+        local tmp
+        tmp=$(mktemp -d)
+        TMP_DIRS+=("$tmp")
+        curl -fsSL -o "$tmp/pgdg.asc" "$PGDG_RPM_KEY_URL" \
+            || fail "$EXIT_DATABASE" "failed to download the PGDG signing key from $PGDG_RPM_KEY_URL"
+        verify_key_fingerprint "$tmp/pgdg.asc" "$PGDG_RPM_KEY_FINGERPRINT"
+        mkdir -p "$(dirname "$PGDG_RPM_KEY_PATH")"
+        cp "$tmp/pgdg.asc" "$PGDG_RPM_KEY_PATH"
+        rpm --import "$PGDG_RPM_KEY_PATH" >/dev/null
+        render_pgdg_repo "$EL_MAJOR" >"$REPO_DIR/gotcha-pgdg.repo"
+        return 0
+    fi
 
     if pgdg_has_codename "$codename"; then
         local tmp keyring
@@ -750,40 +795,86 @@ install_postgresql() {
         keyring=/usr/share/keyrings/gotcha-pgdg.gpg
         gpg --dearmor <"$tmp/pgdg.asc" >"$keyring"
         printf 'deb [signed-by=%s] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' \
-            "$keyring" "$codename" >/etc/apt/sources.list.d/gotcha-pgdg.list
+            "$keyring" "$codename" >"$REPO_DIR/gotcha-pgdg.list"
         pkg_refresh || fail "$EXIT_DATABASE" "apt-get update failed after adding the PGDG repository"
-    else
-        pkg_refresh || fail "$EXIT_DATABASE" "apt-get update failed"
-        local native
-        native=$(native_pg_major)
-        [ "$native" = "$PG_MAJOR" ] \
-            || fail "$EXIT_PREFLIGHT" "PGDG has no packages for $codename yet and the distribution ships PostgreSQL $native, not $PG_MAJOR; wait for PGDG to add this codename or install PostgreSQL $PG_MAJOR by hand"
-        package="postgresql"
+        return 0
+    fi
+
+    pkg_refresh || fail "$EXIT_DATABASE" "apt-get update failed"
+    local native
+    native=$(native_pg_major)
+    [ "$native" = "$PG_MAJOR" ] \
+        || fail "$EXIT_PREFLIGHT" "PGDG has no packages for $codename yet and the distribution ships PostgreSQL $native, not $PG_MAJOR; wait for PGDG to add this codename or install PostgreSQL $PG_MAJOR by hand"
+    printf 'native\n'
+}
+
+# stdin: строка pg_hba.conf для 127.0.0.1/32. rc 0 — метод требует пароль
+# (scram-sha-256/md5), rc 1 — нет (ident/peer/reject/закомментировано/другой хост).
+pg_hba_host_method_is_password() {
+    awk '
+        $1 == "host" && $4 == "127.0.0.1/32" && ($5 == "scram-sha-256" || $5 == "md5") { found=1 }
+        END { exit found ? 0 : 1 }
+    '
+}
+
+# postgresql.conf.sample несёт include_dir закомментированной — initdb копирует
+# её как есть, и дропин сам по себе не подхватится.
+ensure_include_dir() {
+    grep -qF "$PG_INCLUDE_MARKER" "$1" && return 0
+    printf '%s\ninclude_dir = %s\n' "$PG_INCLUDE_MARKER" "'conf.d'" >>"$1"
+}
+
+# Возвращает через stdout DSN на 127.0.0.1; ставит пакет, роль и базу gotcha.
+# Код 3 — только для решения по мажору ниже, прочие отказы шага — код 5.
+install_postgresql() {
+    local env_file="$1" package="$PG_PACKAGE"
+
+    local repo_result
+    repo_result=$(repo_add_pgdg "$HOST_CODENAME")
+    [ "$repo_result" != "native" ] || package="postgresql"
+
+    if [ "$HOST_FAMILY" = rhel ] && [ "$EL_MAJOR" = 9 ]; then
+        dnf -qy module disable postgresql >/dev/null
     fi
 
     pkg_install "$package" || fail "$EXIT_DATABASE" "failed to install $package"
 
     local conf_dir
     conf_dir=$(pg_conf_dir_resolve)
-    [ -n "$conf_dir" ] || fail "$EXIT_DATABASE" "PostgreSQL installed but /etc/postgresql/*/main is missing"
+    [ -n "$conf_dir" ] || fail "$EXIT_DATABASE" "PostgreSQL installed but $(pg_conf_dir_label) is missing"
+
+    if [ "$HOST_FAMILY" = rhel ] && [ -z "$(ls -A "$conf_dir" 2>/dev/null)" ]; then
+        "$PG_BIN_DIR/postgresql-$PG_MAJOR-setup" initdb >/dev/null \
+            || fail "$EXIT_DATABASE" "postgresql-$PG_MAJOR-setup initdb failed"
+    fi
+
     mkdir -p "$conf_dir/conf.d" || fail "$EXIT_DATABASE" "failed to create $conf_dir/conf.d"
     render_pg_conf >"$conf_dir/conf.d/10-gotcha.conf"
 
-    # policy-rc.d в контейнерных образах блокирует автозапуск postinst-скрипта
-    # пакета — сервер поднимает явный systemctl, а не установка сама по себе.
-    systemctl restart postgresql || fail "$EXIT_DATABASE" "failed to start postgresql"
+    if [ "$HOST_FAMILY" = rhel ]; then
+        ensure_include_dir "$conf_dir/postgresql.conf"
+        if ! pg_hba_host_method_is_password <"$conf_dir/pg_hba.conf"; then
+            printf '%s\nhost all all 127.0.0.1/32 scram-sha-256\n' \
+                "$PG_INCLUDE_MARKER" >>"$conf_dir/pg_hba.conf"
+        fi
+        systemctl enable --now "$PG_UNIT" || fail "$EXIT_DATABASE" "failed to start $PG_UNIT"
+    else
+        # policy-rc.d в контейнерных образах блокирует автозапуск postinst-скрипта
+        # пакета — сервер поднимает явный systemctl, а не установка сама по себе.
+        systemctl restart "$PG_UNIT" || fail "$EXIT_DATABASE" "failed to start $PG_UNIT"
+    fi
 
     # Пароль перевыпускается, только если роли ещё нет, либо она есть, а
     # gotcha.env — нет: тогда старый пароль всё равно потерян и никого не сломает.
     local password="" role_exists=""
-    role_exists=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'gotcha'" 2>/dev/null)
+    role_exists=$(sudo -u postgres "$PG_BIN_DIR/psql" -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'gotcha'" 2>/dev/null)
     if [ "$role_exists" != "1" ]; then
         password=$(openssl rand -hex 24)
     elif [ ! -f "$env_file" ]; then
         password=$(openssl rand -hex 24)
         log_step "WARNING: gotcha role exists but $env_file is missing — regenerating its PostgreSQL password"
     fi
-    if [ -n "$password" ] && ! sudo -u postgres psql -v ON_ERROR_STOP=1 -q >/dev/null <<SQL
+    if [ -n "$password" ] && ! sudo -u postgres "$PG_BIN_DIR/psql" -v ON_ERROR_STOP=1 -q >/dev/null <<SQL
 DO \$\$ BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'gotcha') THEN
     CREATE ROLE gotcha LOGIN PASSWORD '$password';
@@ -795,7 +886,7 @@ SQL
     then
         fail "$EXIT_DATABASE" "failed to create/reset the gotcha role in PostgreSQL"
     fi
-    if ! sudo -u postgres psql -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL'
+    if ! sudo -u postgres "$PG_BIN_DIR/psql" -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL'
 SELECT 'CREATE DATABASE gotcha OWNER gotcha'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'gotcha')\gexec
 SQL
@@ -958,7 +1049,7 @@ backup_before_upgrade() {
     local dump
     dump="/var/lib/gotcha/backup/postgres-${from_version}-$(date -u +%Y%m%dT%H%M%SZ).sql.gz" \
         || fail "$EXIT_DATABASE" "failed to build backup file name"
-    sudo -u postgres pg_dump -d gotcha | gzip >"$dump" || fail "$EXIT_DATABASE" "pre-upgrade pg_dump failed"
+    sudo -u postgres "$PG_BIN_DIR/pg_dump" -d gotcha | gzip >"$dump" || fail "$EXIT_DATABASE" "pre-upgrade pg_dump failed"
     # Дамп несёт те же секреты (схема, данные), что и gotcha.env — не мирочитаем.
     chmod 600 "$dump" || fail "$EXIT_DATABASE" "failed to secure $dump"
     log_step "pre-upgrade backup: $dump"
@@ -1098,7 +1189,7 @@ uninstall_app() {
     [ -n "$purge" ] || return 0
 
     if id -u postgres >/dev/null 2>&1; then
-        sudo -u postgres psql -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL' || fail "$EXIT_DATABASE" "failed to drop the gotcha role/database in PostgreSQL"
+        sudo -u postgres "$PG_BIN_DIR/psql" -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL' || fail "$EXIT_DATABASE" "failed to drop the gotcha role/database in PostgreSQL"
 DROP DATABASE IF EXISTS gotcha;
 DROP ROLE IF EXISTS gotcha;
 SQL
@@ -1213,7 +1304,7 @@ main() {
     # пароль под уже работающим сервисом — останавливаем его первым, пока не поздно.
     [ -f "$env_file" ] || systemctl stop gotcha 2>/dev/null || true
     if [ -z "$ARG_SKIP_DATABASES" ]; then
-        ARG_PG_DSN=$(install_postgresql "$HOST_CODENAME" "$env_file")
+        ARG_PG_DSN=$(install_postgresql "$env_file")
         ARG_CH_DSN=$(install_clickhouse "$HOST_RAM_MB" "$tarball_root" "$env_file")
         verify_loopback_only 5432 8123 9000
     fi

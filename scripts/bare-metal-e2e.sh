@@ -99,11 +99,23 @@ assert() {
 }
 
 pkg_installed() {
+    if [ "$HOST_FAMILY" = rhel ]; then
+        rpm -q "$1" >/dev/null 2>&1
+        return $?
+    fi
     dpkg -s "$1" >/dev/null 2>&1
 }
 
 unit_active() {
     systemctl is-active --quiet "$1"
+}
+
+pgdg_repo_file_present() {
+    if [ "$HOST_FAMILY" = rhel ]; then
+        [ -f "$REPO_DIR/gotcha-pgdg.repo" ]
+        return $?
+    fi
+    [ -f "$REPO_DIR/gotcha-pgdg.list" ]
 }
 
 # ss отдаёт Local Address:Port как "127.0.0.1:5432"/"[::1]:5432". Публикация
@@ -123,13 +135,9 @@ port_loopback_only() {
     done <<<"$addrs"
 }
 
-pg_conf_dir() {
-    find /etc/postgresql -mindepth 2 -maxdepth 2 -type d -name main 2>/dev/null | head -n1
-}
-
 pg_gotcha_conf_present() {
     local dir conf
-    dir=$(pg_conf_dir)
+    dir=$(pg_conf_dir_resolve)
     conf="$dir/conf.d/10-gotcha.conf"
     [ -f "$conf" ] || { printf 'missing %s\n' "$conf" >&2; return 1; }
     grep -qE '^random_page_cost = 1\.1$' "$conf" || { printf 'random_page_cost missing in %s\n' "$conf" >&2; return 1; }
@@ -137,11 +145,11 @@ pg_gotcha_conf_present() {
 }
 
 pg_role_exists() {
-    [ "$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'gotcha'" 2>/dev/null)" = "1" ]
+    [ "$(sudo -u postgres "$PG_BIN_DIR/psql" -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'gotcha'" 2>/dev/null)" = "1" ]
 }
 
 pg_database_exists() {
-    [ "$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname = 'gotcha'" 2>/dev/null)" = "1" ]
+    [ "$(sudo -u postgres "$PG_BIN_DIR/psql" -tAc "SELECT 1 FROM pg_database WHERE datname = 'gotcha'" 2>/dev/null)" = "1" ]
 }
 
 ch_common_config_present() {
@@ -432,7 +440,7 @@ unit_hardening_directives() {
 }
 
 survives_postgresql_restart() {
-    systemctl restart postgresql || { printf 'systemctl restart postgresql failed\n' >&2; return 1; }
+    systemctl restart "$PG_UNIT" || { printf 'systemctl restart %s failed\n' "$PG_UNIT" >&2; return 1; }
     local tries=0
     until readyz_ok; do
         tries=$((tries + 1))
@@ -465,8 +473,8 @@ e2e_ingest_roundtrip() {
         --data-urlencode "platform=go" \
         "$app/onboarding" || { printf 'POST /onboarding failed\n' >&2; return 1; }
 
-    key=$(sudo -u postgres psql -d gotcha -tAc "SELECT public_key FROM project_keys ORDER BY id LIMIT 1")
-    project_id=$(sudo -u postgres psql -d gotcha -tAc "SELECT project_id FROM project_keys ORDER BY id LIMIT 1")
+    key=$(sudo -u postgres "$PG_BIN_DIR/psql" -d gotcha -tAc "SELECT public_key FROM project_keys ORDER BY id LIMIT 1")
+    project_id=$(sudo -u postgres "$PG_BIN_DIR/psql" -d gotcha -tAc "SELECT project_id FROM project_keys ORDER BY id LIMIT 1")
     if [ -z "$key" ] || [ -z "$project_id" ]; then
         printf 'could not read a project key out of PostgreSQL\n' >&2
         return 1
@@ -658,10 +666,10 @@ uninstall_removes_unit_and_binary_keeps_data() {
     pg_role_exists || { printf 'postgresql role gotcha missing after --uninstall\n' >&2; return 1; }
     pg_database_exists || { printf 'postgresql database gotcha missing after --uninstall\n' >&2; return 1; }
     ch_gotcha_database_exists || { printf 'clickhouse database gotcha missing after --uninstall\n' >&2; return 1; }
-    pkg_installed "postgresql-$PG_MAJOR" || { printf 'postgresql package removed by --uninstall\n' >&2; return 1; }
+    pkg_installed "$PG_PACKAGE" || { printf 'postgresql package removed by --uninstall\n' >&2; return 1; }
     pkg_installed clickhouse-server || { printf 'clickhouse-server package removed by --uninstall\n' >&2; return 1; }
     pkg_installed nginx || { printf 'nginx package removed by --uninstall\n' >&2; return 1; }
-    [ -f /etc/apt/sources.list.d/gotcha-pgdg.list ] || { printf 'PGDG apt repository removed by --uninstall\n' >&2; return 1; }
+    pgdg_repo_file_present || { printf 'PGDG repository removed by --uninstall\n' >&2; return 1; }
     [ -f /etc/apt/sources.list.d/gotcha-clickhouse.list ] || { printf 'ClickHouse apt repository removed by --uninstall\n' >&2; return 1; }
 }
 
@@ -709,10 +717,10 @@ purge_removes_data_and_databases_keeps_packages() {
         || { printf 'the clickhouse-server systemd override still present after --purge\n' >&2; return 1; }
     [ ! -f /var/log/gotcha-install.log ] \
         || { printf '/var/log/gotcha-install.log still present after --purge\n' >&2; return 1; }
-    pkg_installed "postgresql-$PG_MAJOR" || { printf 'postgresql package removed by --purge\n' >&2; return 1; }
+    pkg_installed "$PG_PACKAGE" || { printf 'postgresql package removed by --purge\n' >&2; return 1; }
     pkg_installed clickhouse-server || { printf 'clickhouse-server package removed by --purge\n' >&2; return 1; }
     pkg_installed nginx || { printf 'nginx package removed by --purge\n' >&2; return 1; }
-    [ -f /etc/apt/sources.list.d/gotcha-pgdg.list ] || { printf 'PGDG apt repository removed by --purge\n' >&2; return 1; }
+    pgdg_repo_file_present || { printf 'PGDG repository removed by --purge\n' >&2; return 1; }
     [ -f /etc/apt/sources.list.d/gotcha-clickhouse.list ] || { printf 'ClickHouse apt repository removed by --purge\n' >&2; return 1; }
 }
 
@@ -727,8 +735,8 @@ run_assertions() {
         printf 'note: --upgrade-from not given, skipping upgrade-path assertions\n'
     fi
 
-    assert "postgresql package installed" pkg_installed "postgresql-$PG_MAJOR"
-    assert "postgresql unit active" unit_active postgresql
+    assert "postgresql package installed" pkg_installed "$PG_PACKAGE"
+    assert "postgresql unit active" unit_active "$PG_UNIT"
     assert "clickhouse-server package installed" pkg_installed clickhouse-server
     assert "clickhouse-server unit active" unit_active clickhouse-server
 

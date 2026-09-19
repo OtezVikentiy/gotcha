@@ -467,6 +467,57 @@ pg_conf=$(render_pg_conf)
 assert_contains "render_pg_conf random_page_cost" "$pg_conf" "random_page_cost = 1.1"
 assert_contains "render_pg_conf effective_io_concurrency" "$pg_conf" "effective_io_concurrency = 200"
 
+# render_pgdg_repo
+
+# shellcheck disable=SC2034 # прочитана apply_platform_paths, определённой в сорсимом файле
+HOST_FAMILY=rhel
+# shellcheck disable=SC2034 # прочитана apply_platform_paths, определённой в сорсимом файле
+EL_MAJOR=9
+apply_platform_paths
+out=$(render_pgdg_repo 9)
+assert_contains "pgdg repo has pgdg-common section" "$out" "[pgdg-common]"
+assert_contains "pgdg repo has the major section" "$out" "[pgdg$PG_MAJOR]"
+assert_contains "pgdg repo common baseurl" "$out" \
+    "https://download.postgresql.org/pub/repos/yum/common/redhat/rhel-9-\$basearch"
+assert_contains "pgdg repo major baseurl" "$out" \
+    "https://download.postgresql.org/pub/repos/yum/$PG_MAJOR/redhat/rhel-9-\$basearch"
+assert_contains "pgdg repo verifies packages" "$out" "gpgcheck=1"
+assert_contains "pgdg repo verifies metadata" "$out" "repo_gpgcheck=1"
+assert_contains "pgdg repo trusts a local key file" "$out" "gpgkey=file:///etc/pki/rpm-gpg/gotcha-pgdg.asc"
+out=$(render_pgdg_repo 10)
+assert_contains "pgdg repo for EL10" "$out" "redhat/rhel-10-\$basearch"
+
+# pg_hba_host_method_is_password
+
+printf 'host all all 127.0.0.1/32 scram-sha-256\n' | pg_hba_host_method_is_password
+assert_eq "pg_hba scram is a password method" 0 $?
+printf 'host all all 127.0.0.1/32 md5\n' | pg_hba_host_method_is_password
+assert_eq "pg_hba md5 is a password method" 0 $?
+printf 'host all all 127.0.0.1/32 ident\n' | pg_hba_host_method_is_password
+assert_eq "pg_hba ident is not a password method" 1 $?
+printf 'host all all 127.0.0.1/32 reject\n' | pg_hba_host_method_is_password
+assert_eq "pg_hba reject is not a password method" 1 $?
+printf '# host all all 127.0.0.1/32 scram-sha-256\n' | pg_hba_host_method_is_password
+assert_eq "pg_hba commented line does not count" 1 $?
+printf 'host all all ::1/128 scram-sha-256\n' | pg_hba_host_method_is_password
+assert_eq "pg_hba ipv6-only line does not count for 127.0.0.1" 1 $?
+
+# ensure_include_dir — идемпотентная дописка
+
+tmpconf=$(mktemp)
+printf "#include_dir = 'conf.d'\n" >"$tmpconf"
+ensure_include_dir "$tmpconf"
+ensure_include_dir "$tmpconf"
+assert_eq "include_dir appended exactly once" 1 "$(grep -c "^include_dir = 'conf.d'" "$tmpconf")"
+assert_eq "include_dir marker present" 1 "$(grep -cF "$PG_INCLUDE_MARKER" "$tmpconf")"
+rm -f "$tmpconf"
+
+# verify_key_fingerprint отвергает файл с двумя основными ключами
+
+out=$( (verify_key_fingerprint "$SCRIPT_DIR/testdata/two-pub-keys.asc" DEADBEEF) 2>&1 )
+assert_eq "two primary keys rejected" "$EXIT_DATABASE" $?
+assert_contains "two primary keys message" "$out" "exactly one primary key"
+
 # dist_url
 
 out=$(dist_url "https://github.com/OtezVikentiy/gotcha/releases/download" "1.6.1" "amd64")
