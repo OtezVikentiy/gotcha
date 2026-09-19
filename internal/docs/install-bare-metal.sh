@@ -910,11 +910,8 @@ SQL
     printf 'postgres://gotcha:%s@127.0.0.1:5432/gotcha?sslmode=disable\n' "$password"
 }
 
-# gpgcheck=0: пакеты ClickHouse не подписаны индивидуально (сверено с
-# packages.clickhouse.com/rpm/clickhouse.repo — их собственный .repo несёт то же
-# значение), gpgcheck=1 здесь роняет установку "Package ... is not signed" на живом
-# EL. Доверие даёт repo_gpgcheck=1: метаданные репозитория подписаны, и dnf сверяет
-# пакеты с их контрольными суммами внутри уже проверенных метаданных.
+# gpgcheck=0: пакеты ClickHouse не подписаны индивидуально, как и в их собственном
+# packages.clickhouse.com/rpm/clickhouse.repo — доверие даёт repo_gpgcheck=1.
 render_clickhouse_repo() {
     cat <<EOF
 [gotcha-clickhouse]
@@ -955,14 +952,14 @@ repo_add_clickhouse() {
     pkg_refresh || fail "$EXIT_DATABASE" "apt-get update failed after adding the ClickHouse repository"
 }
 
-# dnf переносит длинные строки построчно: версия оказывается на следующей строке
-# отдельным полем — поле, несущее версию, определяется по СОСЕДНЕЙ позиции, не
-# фиксированным $2, иначе перенос строки терялся бы молча.
+# dnf переносит длинные строки: версия может оказаться на следующей строке отдельным
+# полем — поле определяется по позиции, не фиксированным $2.
 clickhouse_version_from_dnf_list() {
     awk -v v="$CH_VERSION." '
         function is_arch(s) { return s ~ /\.(noarch|x86_64|aarch64)$/ }
-        NF >= 2 && is_arch($1) { if ($2 ~ ("^" v)) print $2; next }
-        NF >= 1 && !is_arch($1) { if ($1 ~ ("^" v)) print $1 }
+        function has_prefix(s) { return substr(s, 1, length(v)) == v }
+        NF >= 2 && is_arch($1) { if (has_prefix($2)) print $2; next }
+        NF >= 1 && !is_arch($1) { if (has_prefix($1)) print $1 }
     ' | sort -V | tail -n1
 }
 
@@ -970,9 +967,8 @@ clickhouse_version_from_dnf_list() {
 # находят конкретный патч для мажора.минора из CH_VERSION.
 clickhouse_package_version() {
     if [ "$HOST_FAMILY" = rhel ]; then
-        # -y: repo_gpgcheck заставляет dnf на первом обращении к репозиторию спросить
-        # подтверждение ключа отдельно от нашего rpm --import; без -y на неинтерактивном
-        # stdin это молчаливое "нет", список пуст, и версия не находится вовсе.
+        # -y: без него dnf на первом обращении к репозиторию молча отказывает в
+        # неинтерактивном подтверждении ключа, список выходит пустым.
         dnf -qy --showduplicates list clickhouse-server 2>/dev/null | clickhouse_version_from_dnf_list
         return 0
     fi
@@ -1200,9 +1196,7 @@ install_nginx() {
     pkg_install nginx || fail "$EXIT_OTHER" "failed to install nginx"
 
     # Восстановление ДО проверки "файла нет": на EL --uninstall переименовывает
-    # сайт в .disabled, а не удаляет символическую ссылку, как на Debian — без
-    # этого повторная установка сочла бы, что сайта ещё не было, и стёрла бы
-    # локальные правки (TLS-блок certbot) свежим рендером.
+    # сайт в .disabled вместо удаления симлинка, как на Debian.
     disabled=$(nginx_site_disabled_path)
     if [ ! -e "$site" ] && [ -e "$disabled" ]; then
         mv "$disabled" "$site" || fail "$EXIT_OTHER" "failed to restore $disabled as $site"
@@ -1259,9 +1253,8 @@ uninstall_app() {
     rm -f /usr/local/bin/gotcha
     log_step "gotcha unit and binary removed"
 
-    # Включённый сайт без бэкенда — 502 на всё. На EL сайт — единственный файл в
-    # conf.d, без раздельных sites-available/sites-enabled: снятием служит
-    # переименование в .disabled, install_nginx возвращает его на переустановке.
+    # Включённый сайт без бэкенда — 502 на всё. На EL сайт — единственный файл
+    # в conf.d: снятием служит переименование в .disabled, не симлинк.
     if [ "$HOST_FAMILY" = rhel ]; then
         if [ -e "$NGINX_SITE" ]; then
             mv "$NGINX_SITE" "$(nginx_site_disabled_path)"

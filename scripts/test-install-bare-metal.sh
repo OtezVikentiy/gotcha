@@ -509,8 +509,11 @@ out=$(printf '%s\n' \
     'clickhouse-server.noarch    25.8.1.1-1    gotcha-clickhouse' \
     'clickhouse-server.noarch    25.3.14.14-1    gotcha-clickhouse' \
     'clickhouse-server.noarch    25.3.9.1-1    gotcha-clickhouse' \
+    'clickhouse-server.noarch    125.3.1.1-1    gotcha-clickhouse' \
+    'clickhouse-server.noarch    25.30.1.1-1    gotcha-clickhouse' \
     | clickhouse_version_from_dnf_list)
-assert_eq "dnf list picks the newest 25.3 patch" "25.3.14.14-1" "$out"
+assert_eq "dnf list picks the newest 25.3 patch, not a decoy that merely contains 25.3." \
+    "25.3.14.14-1" "$out"
 
 # dnf переносит длинные строки: версия оказывается на следующей строке с отступом
 out=$(printf '%s\n' \
@@ -522,6 +525,14 @@ assert_eq "dnf list wrapped line parsed" "25.3.14.14-1" "$out"
 out=$(printf '%s\n' 'clickhouse-server.noarch    24.8.1.1-1    gotcha-clickhouse' \
     | clickhouse_version_from_dnf_list)
 assert_eq "dnf list without a matching major returns empty" "" "$out"
+
+# 125.3.1.1-1 содержит "25.3." не с начала, 25.30.1.1-1 — с другим минором:
+# обе строки не версия 25.3.x, только похожи на неё как подстрока.
+out=$(printf '%s\n' \
+    'clickhouse-server.noarch    125.3.1.1-1    gotcha-clickhouse' \
+    'clickhouse-server.noarch    25.30.1.1-1    gotcha-clickhouse' \
+    | clickhouse_version_from_dnf_list)
+assert_eq "dnf list rejects versions that only contain 25.3. as a substring" "" "$out"
 
 # nginx_site_disabled_path
 

@@ -503,22 +503,20 @@ e2e_ingest_roundtrip() {
     : >"$jar"
     msg="bare-metal-e2e-probe-$$"
 
-    # /readyz кэширует пинг на healthProbeTTL (5с) и проверяет только одно соединение
-    # из пула; сразу после survives_postgresql_restart в пуле могут остаться другие,
-    # ещё не переиспользованные соединения со старым сервером — первый настоящий
-    # запрос на запись иногда ловит именно такое соединение. Повтор здесь ничем не
-    # отличается от повтора живым пользователем, у которого не открылась страница.
+    # Сразу после survives_postgresql_restart в пуле может остаться стухшее соединение.
+    # Успех — 303 (redirectLocal); повтор только на 500, другой код падает сразу.
     tries=0
-    # Email с номером попытки: если ответ 500 достиг клиента после того, как
-    # запись всё же закоммитилась, повтор с тем же адресом упёрся бы в "уже занят"
-    # вместо восстановления после разрыва соединения.
-    until curl -fsS -c "$jar" -b "$jar" -o /dev/null -H "Origin: $origin" \
-        --data-urlencode "email=e2e-$$-$tries@example.invalid" \
-        --data-urlencode "password=Str0ng-Passw0rd" \
-        --data-urlencode "password2=Str0ng-Passw0rd" \
-        "$app/register"; do
+    local code
+    while :; do
+        code=$(curl -s -o /dev/null -w '%{http_code}' -c "$jar" -b "$jar" -H "Origin: $origin" \
+            --data-urlencode "email=e2e-$$-$tries@example.invalid" \
+            --data-urlencode "password=Str0ng-Passw0rd" \
+            --data-urlencode "password2=Str0ng-Passw0rd" \
+            "$app/register")
+        [ "$code" = 303 ] && break
+        [ "$code" = 500 ] || { printf 'POST /register failed with HTTP %s\n' "$code" >&2; return 1; }
         tries=$((tries + 1))
-        [ "$tries" -lt 10 ] || { printf 'POST /register failed\n' >&2; return 1; }
+        [ "$tries" -lt 10 ] || { printf 'POST /register kept returning 500 after %d tries\n' "$tries" >&2; return 1; }
         sleep 1
     done
 
@@ -707,10 +705,8 @@ uninstall_removes_unit_and_binary_keeps_data() {
     [ ! -f /usr/local/bin/gotcha ] || { printf '/usr/local/bin/gotcha still present after --uninstall\n' >&2; return 1; }
     [ -d /var/lib/gotcha ] || { printf '/var/lib/gotcha missing after --uninstall\n' >&2; return 1; }
 
-    # Оставленный включённым сайт — это 502 на всё, что приходит на хост. На EL сайт —
-    # единственный файл в conf.d: снятие переименовывает его в .disabled, а не удаляет
-    # символическую ссылку, как на Debian, где файл в sites-available остаётся под своим
-    # именем (в нём TLS-блок certbot).
+    # Оставленный включённым сайт — 502 на всё. На EL это переименование в .disabled,
+    # на Debian — снятие симлинка (файл в sites-available остаётся под своим именем).
     if [ "$HOST_FAMILY" = rhel ]; then
         [ ! -e "$NGINX_SITE" ] \
             || { printf 'the nginx site is still enabled after --uninstall\n' >&2; return 1; }
@@ -741,9 +737,6 @@ uninstall_removes_unit_and_binary_keeps_data() {
     clickhouse_repo_file_present || { printf 'ClickHouse repository removed by --uninstall\n' >&2; return 1; }
 }
 
-# Ассерт на решение "переименование при снятии, а не удаление": TLS-блок certbot
-# в файле сайта обязан пережить полный цикл установка -> --uninstall -> установка
-# на обоих семействах, не только на Debian, где файл и так не трогается снятием.
 certbot_site_survives_uninstall_reinstall() {
     grep -qF 'listen 443 ssl;' "$NGINX_SITE" \
         || { printf 'TLS block missing from %s after --uninstall + reinstall\n' "$NGINX_SITE" >&2; return 1; }
