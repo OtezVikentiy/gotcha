@@ -47,14 +47,23 @@ EOF
 }
 
 # Принимает ID/ID_LIKE как аргументы, а не читает /etc/os-release сама —
-# так функция остаётся чистой и тестируемой, preflight передаёт значения.
+# так функция остаётся чистой и тестируемой, detect_platform передаёт значения.
 detect_distro() {
     local id="$1" id_like="${2:-}"
     case "$id" in
-        ubuntu | debian) return 0 ;;
+        ubuntu | debian) printf 'debian\n'; return 0 ;;
+        almalinux | rocky | rhel | centos) printf 'rhel\n'; return 0 ;;
     esac
     case " $id_like " in
-        *" debian "* | *" ubuntu "*) return 0 ;;
+        *" debian "* | *" ubuntu "*) printf 'debian\n'; return 0 ;;
+        *" rhel "* | *" fedora "*) printf 'rhel\n'; return 0 ;;
+    esac
+    return 1
+}
+
+detect_el_major() {
+    case "${1%%.*}" in
+        9 | 10) printf '%s\n' "${1%%.*}"; return 0 ;;
     esac
     return 1
 }
@@ -65,6 +74,106 @@ detect_arch() {
         aarch64) printf 'arm64\n' ;;
         *) return 1 ;;
     esac
+}
+
+# Внутренняя часть detect_platform, выставляющая пути по уже известным
+# HOST_FAMILY/EL_MAJOR — тестируется отдельно, detect_platform целиком читает
+# /etc/os-release и на машине разработчика всегда дала бы debian.
+# shellcheck disable=SC2034 # переменные ниже читают другие шаги установки/снятия, не эта функция
+apply_platform_paths() {
+    declare -gA PKG_HINTS=(
+        [curl]=curl [tar]=tar [openssl]=openssl [sha256sum]=coreutils [sudo]=sudo
+    )
+    if [ "$HOST_FAMILY" = rhel ]; then
+        PG_UNIT="postgresql-$PG_MAJOR"
+        PG_PACKAGE="postgresql${PG_MAJOR}-server"
+        PG_BIN_DIR="/usr/pgsql-$PG_MAJOR/bin"
+        NGINX_SITE=/etc/nginx/conf.d/gotcha.conf
+        REPO_DIR=/etc/yum.repos.d
+        PKG_HINT_LABEL="RHEL-family package"
+        PKG_HINTS[gpg]=gnupg2
+        PKG_HINTS[ss]=iproute
+        PKG_HINTS[rpm]=rpm
+        PKG_HINTS[dnf]=dnf
+        return 0
+    fi
+    PG_UNIT=postgresql
+    PG_PACKAGE="postgresql-$PG_MAJOR"
+    PG_BIN_DIR=/usr/bin
+    NGINX_SITE=/etc/nginx/sites-available/gotcha
+    REPO_DIR=/etc/apt/sources.list.d
+    PKG_HINT_LABEL="Debian/Ubuntu package"
+    PKG_HINTS[gpg]=gnupg
+    PKG_HINTS[ss]=iproute2
+}
+
+# Единственное место, читающее /etc/os-release во всём скрипте.
+detect_platform() {
+    [ -r /etc/os-release ] || fail "$EXIT_PREFLIGHT" "cannot read /etc/os-release"
+    local id id_like version_id
+    # Поля разделены переводом строки, не пробелом: ID_LIKE на EL — это
+    # "rhel centos fedora", и чтение трёх полей через IFS=' ' склеило бы их.
+    IFS=$'\n' read -r -d '' id id_like version_id < <(
+        # shellcheck source=/dev/null
+        . /etc/os-release
+        printf '%s\n%s\n%s\0' "$ID" "${ID_LIKE:-}" "${VERSION_ID:-}"
+    ) || true
+
+    HOST_FAMILY=$(detect_distro "$id" "$id_like") \
+        || fail "$EXIT_PREFLIGHT" "unsupported distribution: $id (Debian/Ubuntu or AlmaLinux/Rocky/RHEL family required)"
+
+    EL_MAJOR=""
+    HOST_CODENAME=""
+    if [ "$HOST_FAMILY" = rhel ]; then
+        # shellcheck disable=SC2034 # EL_MAJOR — часть интерфейса платформы для остальных шагов установки
+        EL_MAJOR=$(detect_el_major "$version_id") || {
+            case "${version_id%%.*}" in
+                8) fail "$EXIT_PREFLIGHT" "AlmaLinux/Rocky/RHEL 8 is not supported, 9 or 10 required" ;;
+                *) fail "$EXIT_PREFLIGHT" "unsupported $id release: $version_id (9 or 10 required)" ;;
+            esac
+        }
+    else
+        HOST_CODENAME=$(
+            # shellcheck source=/dev/null
+            . /etc/os-release
+            printf '%s\n' "${VERSION_CODENAME:-}"
+        )
+    fi
+    apply_platform_paths
+}
+
+pg_conf_dir_resolve() {
+    if [ "$HOST_FAMILY" = rhel ]; then
+        printf '%s\n' "/var/lib/pgsql/$PG_MAJOR/data"
+        return 0
+    fi
+    find /etc/postgresql -mindepth 2 -maxdepth 2 -type d -name main 2>/dev/null | head -n1
+}
+
+pg_conf_dir_label() {
+    if [ "$HOST_FAMILY" = rhel ]; then
+        printf '%s\n' "/var/lib/pgsql/$PG_MAJOR/data"
+        return 0
+    fi
+    printf '%s\n' '/etc/postgresql/*/main'
+}
+
+pkg_refresh() {
+    if [ "$HOST_FAMILY" = rhel ]; then
+        dnf -qy makecache >/dev/null
+        return $?
+    fi
+    apt-get update -qq >/dev/null
+}
+
+# >/dev/null обязателен в обеих функциях: install_postgresql возвращает DSN
+# через stdout, и болтливость dnf/dpkg подставилась бы в GOTCHA_PG_DSN.
+pkg_install() {
+    if [ "$HOST_FAMILY" = rhel ]; then
+        dnf -qy install "$@" >/dev/null
+        return $?
+    fi
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@" >/dev/null
 }
 
 # "v0.2.0-5-gabcdef-dirty" от локально собранного бинаря — такой же законный вход,
@@ -488,32 +597,14 @@ cleanup_tmp_dirs() {
     done
 }
 
-# Единственное место, читающее реальное состояние хоста (os-release, uname,
-# порты, RAM, диск) — остальные решения идут через чистые функции выше.
+# Читает реальное состояние хоста (uname, порты, RAM, диск) — платформа уже
+# определена detect_platform, остальные решения идут через чистые функции выше.
 preflight() {
     [ "$(id -u)" = 0 ] || fail "$EXIT_PREFLIGHT" "must run as root"
     [ -d /run/systemd/system ] || fail "$EXIT_PREFLIGHT" "systemd is required (PID 1 is not systemd)"
 
-    [ -r /etc/os-release ] || fail "$EXIT_PREFLIGHT" "cannot read /etc/os-release"
-    local os_id os_id_like
-    # IFS=' ': main() сузила глобальный IFS до "\n\t", обычный read по
-    # пробелу здесь бы не разбил строку на два поля.
-    IFS=' ' read -r os_id os_id_like < <(
-        # shellcheck source=/dev/null
-        . /etc/os-release
-        printf '%s %s\n' "$ID" "${ID_LIKE:-}"
-    )
-    detect_distro "$os_id" "$os_id_like" \
-        || fail "$EXIT_PREFLIGHT" "unsupported distribution: $os_id (Debian/Ubuntu family required)"
-
     HOST_ARCH=$(detect_arch "$(uname -m)") \
         || fail "$EXIT_PREFLIGHT" "unsupported architecture: $(uname -m) (amd64/arm64 only)"
-
-    HOST_CODENAME=$(
-        # shellcheck source=/dev/null
-        . /etc/os-release
-        printf '%s\n' "${VERSION_CODENAME:-}"
-    )
 
     # Пакеты в сообщении не украшение: на минимальном Debian нет ни ss, ни sudo,
     # и без подсказки отказ выглядит как поломка скрипта.
@@ -640,9 +731,9 @@ install_postgresql() {
         gpg --dearmor <"$tmp/pgdg.asc" >"$keyring"
         printf 'deb [signed-by=%s] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' \
             "$keyring" "$codename" >/etc/apt/sources.list.d/gotcha-pgdg.list
-        apt-get update -qq >/dev/null || fail "$EXIT_DATABASE" "apt-get update failed after adding the PGDG repository"
+        pkg_refresh || fail "$EXIT_DATABASE" "apt-get update failed after adding the PGDG repository"
     else
-        apt-get update -qq >/dev/null || fail "$EXIT_DATABASE" "apt-get update failed"
+        pkg_refresh || fail "$EXIT_DATABASE" "apt-get update failed"
         local native
         native=$(native_pg_major)
         [ "$native" = "$PG_MAJOR" ] \
@@ -650,13 +741,10 @@ install_postgresql() {
         package="postgresql"
     fi
 
-    # >/dev/null: stdout — единственный канал возврата DSN из этой функции, и
-    # dpkg's "(Reading database ... )" под -qq в него всё равно просачивается.
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$package" >/dev/null \
-        || fail "$EXIT_DATABASE" "failed to install $package"
+    pkg_install "$package" || fail "$EXIT_DATABASE" "failed to install $package"
 
     local conf_dir
-    conf_dir=$(find /etc/postgresql -mindepth 2 -maxdepth 2 -type d -name main 2>/dev/null | head -n1)
+    conf_dir=$(pg_conf_dir_resolve)
     [ -n "$conf_dir" ] || fail "$EXIT_DATABASE" "PostgreSQL installed but /etc/postgresql/*/main is missing"
     mkdir -p "$conf_dir/conf.d" || fail "$EXIT_DATABASE" "failed to create $conf_dir/conf.d"
     render_pg_conf >"$conf_dir/conf.d/10-gotcha.conf"
@@ -720,7 +808,7 @@ install_clickhouse() {
     gpg --dearmor <"$tmp/clickhouse.asc" >"$keyring"
     printf 'deb [signed-by=%s] https://packages.clickhouse.com/deb stable main\n' "$keyring" \
         >/etc/apt/sources.list.d/gotcha-clickhouse.list
-    apt-get update -qq >/dev/null || fail "$EXIT_DATABASE" "apt-get update failed after adding the ClickHouse repository"
+    pkg_refresh || fail "$EXIT_DATABASE" "apt-get update failed after adding the ClickHouse repository"
 
     local version
     version=$(clickhouse_package_version)
@@ -728,9 +816,8 @@ install_clickhouse() {
 
     # clickhouse-common-static нужен явной версией: без него apt подтягивает
     # последний мажор из репозитория и ловит конфликт зависимостей.
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+    pkg_install \
         "clickhouse-server=$version" "clickhouse-client=$version" "clickhouse-common-static=$version" \
-        >/dev/null \
         || fail "$EXIT_DATABASE" "failed to install clickhouse-server $version"
 
     mkdir -p /etc/clickhouse-server/config.d
@@ -927,9 +1014,8 @@ start_app() {
 # Снимает штатный дефолтный сайт (конфликтовал бы default_server'ом на 80). Копия
 # делается ДО перезаписи; при точном совпадении с прошлым рендером — не бэкапится вовсе.
 install_nginx() {
-    local domain="$1" site=/etc/nginx/sites-available/gotcha rendered
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nginx >/dev/null \
-        || fail "$EXIT_OTHER" "failed to install nginx"
+    local domain="$1" site="$NGINX_SITE" rendered
+    pkg_install nginx || fail "$EXIT_OTHER" "failed to install nginx"
 
     rm -f /etc/nginx/sites-enabled/default
 
@@ -961,8 +1047,7 @@ install_nginx() {
 # лишь печатает команду для повтора и возвращается с кодом 0.
 install_certificate() {
     local domain="$1" email="$2"
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot python3-certbot-nginx >/dev/null \
-        || fail "$EXIT_OTHER" "failed to install certbot"
+    pkg_install certbot python3-certbot-nginx || fail "$EXIT_OTHER" "failed to install certbot"
 
     if certbot --nginx -d "$domain" -m "$email" --agree-tos --non-interactive --redirect >/dev/null 2>&1; then
         log_step "TLS certificate issued for $domain"
@@ -1009,7 +1094,7 @@ SQL
     # Наши файлы в каталогах чужих пакетов: сами пакеты остаются, дропины уезжают.
     # Перезапуск СУБД не делается намеренно — это чужие сервисы, их время выбирает оператор.
     local pg_conf_dir
-    pg_conf_dir=$(find /etc/postgresql -mindepth 2 -maxdepth 2 -type d -name main 2>/dev/null | head -n1)
+    pg_conf_dir=$(pg_conf_dir_resolve)
     [ -z "$pg_conf_dir" ] || rm -f "$pg_conf_dir/conf.d/10-gotcha.conf"
     rm -f /etc/clickhouse-server/config.d/00-common.xml /etc/clickhouse-server/config.d/10-small.xml
     rm -f /etc/systemd/system/clickhouse-server.service.d/override.conf
@@ -1041,6 +1126,7 @@ main() {
     if [ -n "$ARG_HELP" ]; then
         exit "$EXIT_OK"
     fi
+    detect_platform
     if [ -n "$ARG_UNINSTALL" ]; then
         [ "$(id -u)" = 0 ] || fail "$EXIT_PREFLIGHT" "must run as root"
         if [ -n "$ARG_PURGE" ] && [ -z "$ARG_YES" ]; then

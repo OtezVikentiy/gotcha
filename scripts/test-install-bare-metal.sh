@@ -36,14 +36,74 @@ assert_contains() {
 
 # detect_distro
 
-detect_distro ubuntu ""
-assert_eq "detect_distro ID=ubuntu accepted" 0 $?
-detect_distro debian ""
-assert_eq "detect_distro ID=debian accepted" 0 $?
-detect_distro linuxmint ubuntu
-assert_eq "detect_distro ID=linuxmint ID_LIKE=ubuntu accepted" 0 $?
-detect_distro fedora ""
-assert_eq "detect_distro ID=fedora rejected" 1 $?
+out=$(detect_distro ubuntu "")
+assert_eq "detect_distro ID=ubuntu rc" 0 $?
+assert_eq "detect_distro ID=ubuntu family" debian "$out"
+out=$(detect_distro debian "")
+assert_eq "detect_distro ID=debian family" debian "$out"
+out=$(detect_distro linuxmint ubuntu)
+assert_eq "detect_distro ID=linuxmint ID_LIKE=ubuntu family" debian "$out"
+out=$(detect_distro almalinux "")
+assert_eq "detect_distro ID=almalinux family" rhel "$out"
+out=$(detect_distro rocky "")
+assert_eq "detect_distro ID=rocky family" rhel "$out"
+out=$(detect_distro rhel "")
+assert_eq "detect_distro ID=rhel family" rhel "$out"
+out=$(detect_distro centos "rhel fedora")
+assert_eq "detect_distro ID=centos ID_LIKE='rhel fedora' family" rhel "$out"
+out=$(detect_distro someel "rhel")
+assert_eq "detect_distro unknown ID with ID_LIKE=rhel family" rhel "$out"
+detect_distro arch "" >/dev/null
+assert_eq "detect_distro ID=arch rejected" 1 $?
+detect_distro "" "" >/dev/null
+assert_eq "detect_distro empty ID rejected" 1 $?
+
+# detect_el_major
+
+out=$(detect_el_major 9)
+assert_eq "detect_el_major 9 value" 9 "$out"
+out=$(detect_el_major "9.4")
+assert_eq "detect_el_major 9.4 value" 9 "$out"
+out=$(detect_el_major 10)
+assert_eq "detect_el_major 10 value" 10 "$out"
+detect_el_major 8 >/dev/null
+assert_eq "detect_el_major 8 rejected" 1 $?
+detect_el_major "8.10" >/dev/null
+assert_eq "detect_el_major 8.10 rejected" 1 $?
+detect_el_major "" >/dev/null
+assert_eq "detect_el_major empty rejected" 1 $?
+
+# платформенные пути
+
+# Real assignments, not a command prefix: apply_platform_paths only reads
+# HOST_FAMILY/EL_MAJOR, so a prefix would not survive past this call, and
+# pg_conf_dir_label/pg_conf_dir_resolve below read them directly too.
+HOST_FAMILY=debian
+EL_MAJOR=""
+apply_platform_paths
+assert_eq "debian PG_UNIT" "postgresql" "$PG_UNIT"
+# shellcheck disable=SC2153 # PG_MAJOR — константа из сорсимого файла, не опечатка EL_MAJOR
+assert_eq "debian PG_PACKAGE" "postgresql-$PG_MAJOR" "$PG_PACKAGE"
+assert_eq "debian PG_BIN_DIR" "/usr/bin" "$PG_BIN_DIR"
+assert_eq "debian NGINX_SITE" "/etc/nginx/sites-available/gotcha" "$NGINX_SITE"
+assert_eq "debian REPO_DIR" "/etc/apt/sources.list.d" "$REPO_DIR"
+assert_eq "debian pg_conf_dir_label" "/etc/postgresql/*/main" "$(pg_conf_dir_label)"
+assert_eq "debian gpg package hint" "gnupg" "${PKG_HINTS[gpg]}"
+
+# shellcheck disable=SC2034 # прочитаны apply_platform_paths/pg_conf_dir_resolve, определёнными в сорсимом файле
+HOST_FAMILY=rhel
+# shellcheck disable=SC2034 # прочитан apply_platform_paths, определённой в сорсимом файле
+EL_MAJOR=9
+apply_platform_paths
+assert_eq "rhel PG_UNIT" "postgresql-$PG_MAJOR" "$PG_UNIT"
+assert_eq "rhel PG_PACKAGE" "postgresql${PG_MAJOR}-server" "$PG_PACKAGE"
+assert_eq "rhel PG_BIN_DIR" "/usr/pgsql-$PG_MAJOR/bin" "$PG_BIN_DIR"
+assert_eq "rhel NGINX_SITE" "/etc/nginx/conf.d/gotcha.conf" "$NGINX_SITE"
+assert_eq "rhel REPO_DIR" "/etc/yum.repos.d" "$REPO_DIR"
+assert_eq "rhel pg_conf_dir_label" "/var/lib/pgsql/$PG_MAJOR/data" "$(pg_conf_dir_label)"
+assert_eq "rhel pg_conf_dir_resolve" "/var/lib/pgsql/$PG_MAJOR/data" "$(pg_conf_dir_resolve)"
+assert_eq "rhel gpg package hint" "gnupg2" "${PKG_HINTS[gpg]}"
+assert_eq "rhel ss package hint" "iproute" "${PKG_HINTS[ss]}"
 
 # detect_arch
 
@@ -313,6 +373,7 @@ assert_contains "render_nginx_site marks the file as ours" "$site" "$NGINX_SITE_
 # verify_loopback_only — ветка отказа на живом хосте не воспроизводится, поэтому
 # ss подменяется функцией; фактический bind проверяет e2e.
 
+# shellcheck disable=SC2317 # вызывается сорсимым файлом как внешняя команда ss, а не отсюда
 ss() { printf '%s\n' "$SS_STUB_OUT"; }
 
 SS_STUB_OUT='LISTEN 0 244 127.0.0.1:5432 0.0.0.0:*'
