@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gotcha bare-metal installer (Debian/Ubuntu family, systemd).
+# gotcha bare-metal installer (Debian/Ubuntu and RHEL families, systemd).
 
 GOTCHA_INSTALL_DEFAULT_VERSION="dev"
 GOTCHA_INSTALL_DEFAULT_DOWNLOAD_BASE="https://github.com/OtezVikentiy/gotcha/releases/download"
@@ -79,7 +79,6 @@ detect_arch() {
 # Внутренняя часть detect_platform, выставляющая пути по уже известным
 # HOST_FAMILY/EL_MAJOR — тестируется отдельно, detect_platform целиком читает
 # /etc/os-release и на машине разработчика всегда дала бы debian.
-# shellcheck disable=SC2034 # переменные ниже читают другие шаги установки/снятия, не эта функция
 apply_platform_paths() {
     declare -gA PKG_HINTS=(
         [curl]=curl [tar]=tar [openssl]=openssl [sha256sum]=coreutils [sudo]=sudo
@@ -98,9 +97,12 @@ apply_platform_paths() {
         return 0
     fi
     PG_UNIT=postgresql
+    # shellcheck disable=SC2034 # PG_PACKAGE читают шаги установки СУБД, ещё не написанные
     PG_PACKAGE="postgresql-$PG_MAJOR"
+    # shellcheck disable=SC2034 # PG_BIN_DIR читают шаги установки СУБД, ещё не написанные
     PG_BIN_DIR=/usr/bin
     NGINX_SITE=/etc/nginx/sites-available/gotcha
+    # shellcheck disable=SC2034 # REPO_DIR читают шаги подключения репозиториев, ещё не написанные
     REPO_DIR=/etc/apt/sources.list.d
     PKG_HINT_LABEL="Debian/Ubuntu package"
     PKG_HINTS[gpg]=gnupg
@@ -597,6 +599,17 @@ cleanup_tmp_dirs() {
     done
 }
 
+port_owner_units() {
+    case "$1" in
+        8080) printf 'gotcha\n' ;;
+        # angie: на части хостов штатный веб-сервер — он, и отказ по занятому
+        # 80 порту там был бы отказом установке на исправном хосте.
+        80) printf 'nginx\nangie\n' ;;
+        5432) printf '%s\n' "$PG_UNIT" ;;
+        *) printf 'clickhouse-server\n' ;;
+    esac
+}
+
 # Читает реальное состояние хоста (uname, порты, RAM, диск) — платформа уже
 # определена detect_platform, остальные решения идут через чистые функции выше.
 preflight() {
@@ -608,35 +621,33 @@ preflight() {
 
     # Пакеты в сообщении не украшение: на минимальном Debian нет ни ss, ни sudo,
     # и без подсказки отказ выглядит как поломка скрипта.
-    local -A package_of=(
-        [curl]=curl [tar]=tar [gpg]=gnupg [openssl]=openssl
-        [sha256sum]=coreutils [ss]=iproute2 [sudo]=sudo
-    )
     local -a required=(curl tar gpg openssl sha256sum ss)
+    [ "$HOST_FAMILY" != rhel ] || required+=(rpm dnf)
     # sudo нужен только своим СУБД: psql от пользователя postgres и pg_dump перед обновлением.
     [ -n "$ARG_SKIP_DATABASES" ] || required+=(sudo)
     local cmd
     for cmd in "${required[@]}"; do
         command -v "$cmd" >/dev/null 2>&1 \
-            || fail "$EXIT_PREFLIGHT" "$cmd is required (Debian/Ubuntu package: ${package_of[$cmd]})"
+            || fail "$EXIT_PREFLIGHT" "$cmd is required ($PKG_HINT_LABEL: ${PKG_HINTS[$cmd]})"
     done
 
     local -a ports=(8080)
     [ -n "$ARG_NO_PROXY" ] || ports+=(80)
     [ -n "$ARG_SKIP_DATABASES" ] || ports+=(5432 8123 9000)
-    local port owner_unit
+    local port owner owned
     for port in "${ports[@]}"; do
         ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":${port}\$" || continue
         # Занятый порт — отказ, только если это не наш же юнит с прошлого запуска;
         # иначе идемпотентный повторный запуск (§4.4) не проходил бы преflight.
-        case "$port" in
-            8080) owner_unit=gotcha ;;
-            80) owner_unit=nginx ;;
-            5432) owner_unit=postgresql ;;
-            *) owner_unit=clickhouse-server ;;
-        esac
-        systemctl is-active --quiet "$owner_unit" \
-            || fail "$EXIT_PREFLIGHT" "port $port is already in use"
+        owned=""
+        while IFS= read -r owner; do
+            systemctl is-active --quiet "$owner" && { owned=1; break; }
+        done < <(port_owner_units "$port")
+        [ -n "$owned" ] && continue
+        if [ "$port" = 80 ]; then
+            fail "$EXIT_PREFLIGHT" "port 80 is already in use by something that is not nginx or angie (pass --no-proxy to keep your own web server)"
+        fi
+        fail "$EXIT_PREFLIGHT" "port $port is already in use"
     done
 
     # 1900, не 2048: облачные "2 ГБ" урезают MemTotal под firmware/hypervisor.

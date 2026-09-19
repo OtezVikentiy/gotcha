@@ -105,6 +105,26 @@ assert_eq "rhel pg_conf_dir_resolve" "/var/lib/pgsql/$PG_MAJOR/data" "$(pg_conf_
 assert_eq "rhel gpg package hint" "gnupg2" "${PKG_HINTS[gpg]}"
 assert_eq "rhel ss package hint" "iproute" "${PKG_HINTS[ss]}"
 
+# port_owner_units
+
+HOST_FAMILY=rhel
+EL_MAJOR=9
+apply_platform_paths
+assert_eq "rhel port 5432 owner" "postgresql-$PG_MAJOR" "$(port_owner_units 5432)"
+assert_eq "rhel port 80 owners" "nginx
+angie" "$(port_owner_units 80)"
+assert_eq "rhel port 8080 owner" "gotcha" "$(port_owner_units 8080)"
+assert_eq "rhel port 9000 owner" "clickhouse-server" "$(port_owner_units 9000)"
+
+# shellcheck disable=SC2034 # прочитаны apply_platform_paths, определённой в сорсимом файле
+HOST_FAMILY=debian
+# shellcheck disable=SC2034 # прочитан apply_platform_paths, определённой в сорсимом файле
+EL_MAJOR=""
+apply_platform_paths
+assert_eq "debian port 5432 owner" "postgresql" "$(port_owner_units 5432)"
+assert_eq "debian port 80 owners" "nginx
+angie" "$(port_owner_units 80)"
+
 # detect_arch
 
 out=$(detect_arch x86_64)
