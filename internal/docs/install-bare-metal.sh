@@ -41,6 +41,7 @@ Usage: install-bare-metal.sh [flags]
   --domain D              put nginx in front of this domain
   --email E                contact for certbot (requires --domain)
   --no-proxy               do not install or touch nginx
+  --no-firewall            do not touch firewalld (EL family)
   --skip-databases         do not install PostgreSQL/ClickHouse, use --pg-dsn/--ch-dsn
   --pg-dsn DSN            external PostgreSQL DSN
   --ch-dsn DSN            external ClickHouse DSN
@@ -242,6 +243,7 @@ parse_args() {
     ARG_DOMAIN=""
     ARG_EMAIL=""
     ARG_NO_PROXY=""
+    ARG_NO_FIREWALL=""
     ARG_SKIP_DATABASES=""
     ARG_PG_DSN=""
     ARG_CH_DSN=""
@@ -260,6 +262,11 @@ parse_args() {
         case "$key" in
             --no-proxy)
                 ARG_NO_PROXY=1
+                shift
+                continue
+                ;;
+            --no-firewall)
+                ARG_NO_FIREWALL=1
                 shift
                 continue
                 ;;
@@ -630,6 +637,22 @@ port_owner_units() {
         5432) printf '%s\n' "$PG_UNIT" ;;
         *) printf 'clickhouse-server\n' ;;
     esac
+}
+
+selinux_needs_boolean() {
+    [ -z "$2" ] || return 1
+    [ "$1" = Enforcing ] || return 1
+    return 0
+}
+
+firewall_decision() {
+    local state="$1" no_firewall="$2" yes="$3" no_proxy="$4"
+    if [ -n "$no_firewall" ] || [ -n "$no_proxy" ] || [ "$state" != running ]; then
+        printf 'skip\n'
+        return 0
+    fi
+    [ -n "$yes" ] && { printf 'open\n'; return 0; }
+    printf 'ask\n'
 }
 
 # Читает реальное состояние хоста (uname, порты, RAM, диск) — платформа уже
@@ -1280,6 +1303,8 @@ uninstall_app() {
             systemctl reload nginx >/dev/null 2>&1 || true
             log_step "nginx site disabled (kept as $(nginx_site_disabled_path))"
         fi
+        # Оба глобальные, на них может опираться другой сервис хоста — снятие их не трогает.
+        log_step "SELinux boolean httpd_can_network_connect and firewalld services http/https, if this install set them, are left as they are (revert: setsebool -P httpd_can_network_connect 0; firewall-cmd --permanent --remove-service=http --remove-service=https && firewall-cmd --reload)"
     elif [ -L /etc/nginx/sites-enabled/gotcha ] || [ -e /etc/nginx/sites-enabled/gotcha ]; then
         rm -f /etc/nginx/sites-enabled/gotcha
         systemctl reload nginx >/dev/null 2>&1 || true
@@ -1425,6 +1450,32 @@ main() {
 
     if [ -z "$ARG_NO_PROXY" ]; then
         install_nginx "${ARG_DOMAIN:-$host_ip}"
+        if [ "$HOST_FAMILY" = rhel ]; then
+            local selinux_state=""
+            command -v getenforce >/dev/null 2>&1 && selinux_state=$(getenforce 2>/dev/null)
+            if selinux_needs_boolean "$selinux_state" "$ARG_NO_PROXY"; then
+                setsebool -P httpd_can_network_connect 1 \
+                    || fail "$EXIT_OTHER" "failed to allow nginx to reach gotcha (setsebool httpd_can_network_connect)"
+                log_step "SELinux: httpd_can_network_connect set to 1 (revert with: setsebool -P httpd_can_network_connect 0)"
+            fi
+
+            local fw_state="" fw_decision
+            command -v firewall-cmd >/dev/null 2>&1 && fw_state=$(firewall-cmd --state 2>/dev/null)
+            fw_decision=$(firewall_decision "$fw_state" "$ARG_NO_FIREWALL" "$ARG_YES" "$ARG_NO_PROXY")
+            if [ "$fw_decision" = ask ]; then
+                local fw_answer=""
+                read -r -p "Open ports 80 and 443 in firewalld? [y/N] " fw_answer || true
+                case "$fw_answer" in y | Y | yes | YES) fw_decision=open ;; *) fw_decision=skip ;; esac
+            fi
+            if [ "$fw_decision" = open ]; then
+                if firewall-cmd --permanent --add-service=http --add-service=https >/dev/null \
+                    && firewall-cmd --reload >/dev/null; then
+                    log_step "firewalld: services http and https opened permanently (revert with: firewall-cmd --permanent --remove-service=http --remove-service=https && firewall-cmd --reload)"
+                else
+                    fail "$EXIT_OTHER" "failed to open ports 80/443 in firewalld"
+                fi
+            fi
+        fi
         if [ -n "$ARG_DOMAIN" ] && [ -n "$ARG_EMAIL" ]; then
             install_certificate "$ARG_DOMAIN" "$ARG_EMAIL"
         fi

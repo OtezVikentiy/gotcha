@@ -253,6 +253,48 @@ epel_enabled_with_domain() {
     return "$rc"
 }
 
+firewall_untouched_with_flag() {
+    [ "$HOST_FAMILY" = rhel ] || return 0
+    local stub=/tmp/fwstub log=/tmp/fw-calls.log
+    mkdir -p "$stub"; : >"$log"
+    # shellcheck disable=SC2016 # literal $@ for the stub script, not expanded here
+    printf '#!/bin/sh\necho "$@" >>%s\n[ "$1" = --state ] && { echo running; exit 0; }\nexit 0\n' "$log" >"$stub/firewall-cmd"
+    chmod +x "$stub/firewall-cmd"
+    PATH="$stub:$PATH" bash "$INSTALLER" --version "$tarball_version" \
+        --from-tarball "$WORK_TARBALL" --yes --no-firewall >/dev/null 2>&1
+    ! grep -q -- '--add-service' "$log" \
+        || { printf 'firewall-cmd --add-service called although --no-firewall was given\n' >&2; return 1; }
+}
+
+firewall_opened_without_flag() {
+    [ "$HOST_FAMILY" = rhel ] || return 0
+    local stub=/tmp/fwstub log=/tmp/fw-calls-positive.log
+    mkdir -p "$stub"; : >"$log"
+    # shellcheck disable=SC2016 # literal $@ for the stub script, not expanded here
+    printf '#!/bin/sh\necho "$@" >>%s\n[ "$1" = --state ] && { echo running; exit 0; }\nexit 0\n' "$log" >"$stub/firewall-cmd"
+    chmod +x "$stub/firewall-cmd"
+    PATH="$stub:$PATH" bash "$INSTALLER" --version "$tarball_version" \
+        --from-tarball "$WORK_TARBALL" --yes >/dev/null 2>&1
+    grep -q -- '--add-service=http' "$log" \
+        || { printf 'firewall-cmd --add-service=http not called although firewalld reports running\n' >&2; return 1; }
+    grep -q -- '--reload' "$log" \
+        || { printf 'firewall-cmd --reload not called, the rules would not apply until reboot\n' >&2; return 1; }
+}
+
+# Enforcing только под ручным прогоном на VM (задача 10) — здесь фиксируется пропуск,
+# а не тишина, если SELinux в этом контейнере не enforcing.
+selinux_boolean_set_when_enforcing() {
+    [ "$HOST_FAMILY" = rhel ] || return 0
+    local state=""
+    command -v getenforce >/dev/null 2>&1 && state=$(getenforce 2>/dev/null)
+    if [ "$state" != Enforcing ]; then
+        printf 'note: SELinux is not enforcing here, the boolean branch was not exercised\n'
+        return 0
+    fi
+    getsebool httpd_can_network_connect 2>/dev/null | grep -q -- '--> on$' \
+        || { printf 'httpd_can_network_connect is not on although SELinux is Enforcing\n' >&2; return 1; }
+}
+
 readyz_via_nginx() {
     [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:80/readyz)" = "200" ]
 }
@@ -905,6 +947,9 @@ run_assertions() {
         assert "include_dir 'conf.d' appears exactly once after two installer runs" pg_include_dir_set_once
     fi
     assert "a lost gotcha.env is recovered by regenerating the PostgreSQL/ClickHouse passwords" recovers_after_env_file_lost
+    assert "firewall-cmd is not called to open ports when --no-firewall is given" firewall_untouched_with_flag
+    assert "firewall-cmd opens http/https and reloads when firewalld reports running" firewall_opened_without_flag
+    assert "SELinux httpd_can_network_connect is on when SELinux is Enforcing" selinux_boolean_set_when_enforcing
     assert "EPEL and certbot are installed when --domain is given, without rolling back on a certbot failure" epel_enabled_with_domain
 
     assert "--uninstall removes the unit and binary, keeps data/databases/packages/repos" uninstall_removes_unit_and_binary_keeps_data

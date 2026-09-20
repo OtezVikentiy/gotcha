@@ -594,6 +594,29 @@ out=$(dist_url "https://mirror.example/base/" "2.0.0" "amd64")
 assert_eq "dist_url honors --download-base (trailing slash stripped)" \
     "https://mirror.example/base/v2.0.0/gotcha-2.0.0-linux-amd64.tar.gz" "$out"
 
+# selinux_needs_boolean
+
+selinux_needs_boolean Enforcing ""
+assert_eq "selinux enforcing without --no-proxy needs the boolean" 0 $?
+selinux_needs_boolean Enforcing 1
+assert_eq "selinux enforcing with --no-proxy skips the boolean" 1 $?
+selinux_needs_boolean Permissive ""
+assert_eq "selinux permissive skips the boolean" 1 $?
+selinux_needs_boolean Disabled ""
+assert_eq "selinux disabled skips the boolean" 1 $?
+selinux_needs_boolean "" ""
+assert_eq "selinux utilities missing skips the boolean" 1 $?
+
+# firewall_decision
+
+assert_eq "firewalld running, --yes opens" open "$(firewall_decision running "" 1 "")"
+assert_eq "firewalld running, interactive asks" ask "$(firewall_decision running "" "" "")"
+assert_eq "firewalld running, --no-firewall skips" skip "$(firewall_decision running 1 "" "")"
+assert_eq "--no-firewall beats --yes" skip "$(firewall_decision running 1 1 "")"
+assert_eq "firewalld running, --no-proxy skips" skip "$(firewall_decision running "" 1 1)"
+assert_eq "firewalld not running skips" skip "$(firewall_decision "not running" "" 1 "")"
+assert_eq "firewall-cmd missing skips" skip "$(firewall_decision "" "" 1 "")"
+
 if [ "$FAILURES" -gt 0 ]; then
     printf '%d assertion(s) failed\n' "$FAILURES" >&2
     exit 1
