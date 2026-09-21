@@ -295,6 +295,21 @@ selinux_boolean_set_when_enforcing() {
         || { printf 'httpd_can_network_connect is not on although SELinux is Enforcing\n' >&2; return 1; }
 }
 
+# Образы ночной матрицы (almalinux:9/10, rockylinux:9/10) не ставят firewalld —
+# значит основной прогон install-bare-metal.sh каждую ночь реально идёт по ветке
+# "не обнаружен", а не только через стаб firewall_opened_without_flag выше.
+firewalld_skip_notice_shown_when_absent() {
+    [ "$HOST_FAMILY" = rhel ] || return 0
+    local state=""
+    command -v firewall-cmd >/dev/null 2>&1 && state=$(firewall-cmd --state 2>/dev/null)
+    if [ "$state" = running ]; then
+        printf 'note: firewalld is running here, the not-detected branch was not exercised\n'
+        return 0
+    fi
+    grep -qF 'firewalld: not detected or not running' /var/log/gotcha-install.log \
+        || { printf 'firewalld skip notice missing from /var/log/gotcha-install.log although firewalld is not running\n' >&2; return 1; }
+}
+
 readyz_via_nginx() {
     [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:80/readyz)" = "200" ]
 }
@@ -1015,6 +1030,7 @@ run_assertions() {
     assert "firewall-cmd is not called to open ports when --no-firewall is given" firewall_untouched_with_flag
     assert "firewall-cmd opens http/https and reloads when firewalld reports running" firewall_opened_without_flag
     assert "SELinux httpd_can_network_connect is on when SELinux is Enforcing" selinux_boolean_set_when_enforcing
+    assert "the primary install run notes the firewalld skip when it is not running here" firewalld_skip_notice_shown_when_absent
     assert "EPEL and certbot are installed when --domain is given, without rolling back on a certbot failure" epel_enabled_with_domain
 
     assert "--uninstall removes the unit and binary, keeps data/databases/packages/repos" uninstall_removes_unit_and_binary_keeps_data

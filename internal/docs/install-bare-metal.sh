@@ -645,6 +645,20 @@ selinux_needs_boolean() {
     return 0
 }
 
+# Отдельно от firewall_skip_notice: тишина оправдана только когда SELinux
+# действительно не enforcing (Permissive/Disabled/утилит нет и в ядре тоже
+# выключен) — тогда пропуск булева безвреден. Но если утилит нет, а ядро
+# всё равно enforcing (/sys/fs/selinux/enforce = 1, встречается на хостах без
+# policycoreutils), пропуск молча оставит nginx получать 502 без единой
+# подсказки — это хуже, чем незакрытый порт firewalld, поэтому здесь нужно
+# явное предупреждение, а не то же по умолчанию.
+selinux_tooling_missing_notice() {
+    local getenforce_present="$1" kernel_enforcing="$2"
+    [ -z "$getenforce_present" ] || return 1
+    [ "$kernel_enforcing" = 1 ] || return 1
+    printf 'SELinux: kernel policy is Enforcing but SELinux userspace tools (getenforce/setsebool) are missing — httpd_can_network_connect was left untouched, nginx may not be able to reach gotcha (502); install policycoreutils and run: setsebool -P httpd_can_network_connect 1\n'
+}
+
 firewall_decision() {
     local state="$1" no_firewall="$2" yes="$3" no_proxy="$4"
     if [ -n "$no_firewall" ] || [ -n "$no_proxy" ] || [ "$state" != running ]; then
@@ -1492,12 +1506,21 @@ main() {
     if [ -z "$ARG_NO_PROXY" ]; then
         install_nginx "${ARG_DOMAIN:-$host_ip}"
         if [ "$HOST_FAMILY" = rhel ]; then
-            local selinux_state=""
-            command -v getenforce >/dev/null 2>&1 && selinux_state=$(getenforce 2>/dev/null)
+            local selinux_state="" getenforce_present=""
+            if command -v getenforce >/dev/null 2>&1; then
+                getenforce_present=1
+                selinux_state=$(getenforce 2>/dev/null)
+            fi
             if selinux_needs_boolean "$selinux_state" "$ARG_NO_PROXY"; then
                 setsebool -P httpd_can_network_connect 1 \
                     || fail "$EXIT_OTHER" "failed to allow nginx to reach gotcha (setsebool httpd_can_network_connect)"
                 log_step "SELinux: httpd_can_network_connect set to 1 (revert with: setsebool -P httpd_can_network_connect 0)"
+            else
+                local kernel_enforcing="" sel_notice
+                [ -r /sys/fs/selinux/enforce ] \
+                    && [ "$(cat /sys/fs/selinux/enforce 2>/dev/null)" = 1 ] \
+                    && kernel_enforcing=1
+                sel_notice=$(selinux_tooling_missing_notice "$getenforce_present" "$kernel_enforcing") && log_step "$sel_notice"
             fi
 
             local fw_state="" fw_decision

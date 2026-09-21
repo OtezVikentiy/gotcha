@@ -777,6 +777,21 @@ assert_eq "selinux disabled skips the boolean" 1 $?
 selinux_needs_boolean "" ""
 assert_eq "selinux utilities missing skips the boolean" 1 $?
 
+# selinux_tooling_missing_notice
+
+out=$(selinux_tooling_missing_notice "" 1)
+assert_eq "tools missing, kernel enforcing prints a notice" \
+    "SELinux: kernel policy is Enforcing but SELinux userspace tools (getenforce/setsebool) are missing — httpd_can_network_connect was left untouched, nginx may not be able to reach gotcha (502); install policycoreutils and run: setsebool -P httpd_can_network_connect 1" \
+    "$out"
+out=$(selinux_tooling_missing_notice "" "")
+rc=$?
+assert_eq "tools missing, kernel not enforcing prints nothing" "" "$out"
+assert_eq "tools missing, kernel not enforcing reports failure" 1 "$rc"
+out=$(selinux_tooling_missing_notice 1 1)
+rc=$?
+assert_eq "tools present prints nothing even if kernel enforcing" "" "$out"
+assert_eq "tools present reports failure" 1 "$rc"
+
 # firewall_decision
 
 assert_eq "firewalld running, --yes opens" open "$(firewall_decision running "" 1 "")"
