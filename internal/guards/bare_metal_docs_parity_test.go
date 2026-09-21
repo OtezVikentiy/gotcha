@@ -158,8 +158,12 @@ func TestBareMetalManualBashBlocksMatchAcrossLocales(t *testing.T) {
 			continue
 		}
 		for j := range ru[i] {
-			if normalizeBashLine(ru[i][j], true) != normalizeBashLine(en[i][j], false) {
-				t.Errorf("блок %d строка %d: ru=%q, en=%q", i, j, ru[i][j], en[i][j])
+			// Сырые строки бывают побайтово равны при расхождении нормализованных
+			// форм — печатаем обе, иначе «ru==en» в сообщении не объяснит красный тест.
+			normRu, normEn := normalizeBashLine(ru[i][j], true), normalizeBashLine(en[i][j], false)
+			if normRu != normEn {
+				t.Errorf("блок %d строка %d: ru=%q (норм. %q), en=%q (норм. %q)",
+					i, j, ru[i][j], normRu, en[i][j], normEn)
 			}
 		}
 	}
@@ -186,9 +190,8 @@ func normalizeMadisonVersion(raw string) string {
 	return strings.TrimRight(strings.ReplaceAll(raw, `\`, ""), ".")
 }
 
-// Истина — PG_MAJOR/CH_VERSION в install-bare-metal.sh; дока сверяется с
-// ними, а не локали между собой. Список источников мажора — не регэксп общего
-// вида, а перечисленные формы, в которых он реально встречается в тексте.
+// Истина — PG_MAJOR/CH_VERSION в install-bare-metal.sh, дока сверяется с ними,
+// а не локали между собой; источники мажора перечислены явно, а не общим regex.
 func TestBareMetalDocPackageVersionsMatchScript(t *testing.T) {
 	tree := Load(t)
 	installer := installerBody(t, tree.Root)
