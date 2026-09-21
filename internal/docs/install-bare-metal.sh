@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gotcha bare-metal installer (Debian/Ubuntu family, systemd).
+# gotcha bare-metal installer (Debian/Ubuntu and RHEL families, systemd).
 
 GOTCHA_INSTALL_DEFAULT_VERSION="dev"
 GOTCHA_INSTALL_DEFAULT_DOWNLOAD_BASE="https://github.com/OtezVikentiy/gotcha/releases/download"
@@ -11,8 +11,16 @@ CH_VERSION="25.3"
 
 # Отпечатки подписывающих ключей вендоров, тот же принцип, что и digest баз в
 # Dockerfile: значение фиксируется руками, не берётся с сервера доверчиво.
+# PGDG_RPM_KEY_FINGERPRINT — другой ключ, чем PGDG_KEY_FINGERPRINT: rpm и apt
+# репозитории PGDG подписаны разными ключами.
 PGDG_KEY_FINGERPRINT="B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
+PGDG_RPM_KEY_FINGERPRINT="D4BF08AE67A0B4C7A1DBCCD240BCA2B408B40D20"
 CLICKHOUSE_KEY_FINGERPRINT="3A9EA1193A97B548BE1457D48919F6BD2B48D754"
+
+PGDG_RPM_KEY_URL="https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL"
+PGDG_RPM_KEY_PATH=/etc/pki/rpm-gpg/gotcha-pgdg.asc
+CLICKHOUSE_RPM_KEY_PATH=/etc/pki/rpm-gpg/gotcha-clickhouse.asc
+PG_INCLUDE_MARKER="# gotcha: conf.d include"
 
 EXIT_OK=0
 EXIT_OTHER=1
@@ -33,6 +41,7 @@ Usage: install-bare-metal.sh [flags]
   --domain D              put nginx in front of this domain
   --email E                contact for certbot (requires --domain)
   --no-proxy               do not install or touch nginx
+  --no-firewall            do not touch firewalld (EL family)
   --skip-databases         do not install PostgreSQL/ClickHouse, use --pg-dsn/--ch-dsn
   --pg-dsn DSN            external PostgreSQL DSN
   --ch-dsn DSN            external ClickHouse DSN
@@ -47,14 +56,23 @@ EOF
 }
 
 # Принимает ID/ID_LIKE как аргументы, а не читает /etc/os-release сама —
-# так функция остаётся чистой и тестируемой, preflight передаёт значения.
+# так функция остаётся чистой и тестируемой, detect_platform передаёт значения.
 detect_distro() {
     local id="$1" id_like="${2:-}"
     case "$id" in
-        ubuntu | debian) return 0 ;;
+        ubuntu | debian) printf 'debian\n'; return 0 ;;
+        almalinux | rocky | rhel | centos) printf 'rhel\n'; return 0 ;;
     esac
     case " $id_like " in
-        *" debian "* | *" ubuntu "*) return 0 ;;
+        *" debian "* | *" ubuntu "*) printf 'debian\n'; return 0 ;;
+        *" rhel "* | *" fedora "*) printf 'rhel\n'; return 0 ;;
+    esac
+    return 1
+}
+
+detect_el_major() {
+    case "${1%%.*}" in
+        9 | 10) printf '%s\n' "${1%%.*}"; return 0 ;;
     esac
     return 1
 }
@@ -65,6 +83,104 @@ detect_arch() {
         aarch64) printf 'arm64\n' ;;
         *) return 1 ;;
     esac
+}
+
+# Внутренняя часть detect_platform по уже известным HOST_FAMILY/EL_MAJOR —
+# тестируется отдельно, целиком detect_platform читает /etc/os-release.
+apply_platform_paths() {
+    declare -gA PKG_HINTS=(
+        [curl]=curl [tar]=tar [openssl]=openssl [sha256sum]=coreutils [sudo]=sudo
+    )
+    if [ "$HOST_FAMILY" = rhel ]; then
+        PG_UNIT="postgresql-$PG_MAJOR"
+        PG_PACKAGE="postgresql${PG_MAJOR}-server"
+        PG_BIN_DIR="/usr/pgsql-$PG_MAJOR/bin"
+        NGINX_SITE=/etc/nginx/conf.d/gotcha.conf
+        REPO_DIR=/etc/yum.repos.d
+        PKG_HINT_LABEL="RHEL-family package"
+        PKG_HINTS[gpg]=gnupg2
+        PKG_HINTS[ss]=iproute
+        PKG_HINTS[rpm]=rpm
+        PKG_HINTS[dnf]=dnf
+        return 0
+    fi
+    PG_UNIT=postgresql
+    PG_PACKAGE="postgresql-$PG_MAJOR"
+    PG_BIN_DIR=/usr/bin
+    NGINX_SITE=/etc/nginx/sites-available/gotcha
+    REPO_DIR=/etc/apt/sources.list.d
+    PKG_HINT_LABEL="Debian/Ubuntu package"
+    PKG_HINTS[gpg]=gnupg
+    PKG_HINTS[ss]=iproute2
+}
+
+# Единственное место, читающее /etc/os-release во всём скрипте.
+detect_platform() {
+    [ -r /etc/os-release ] || fail "$EXIT_PREFLIGHT" "cannot read /etc/os-release"
+    local id id_like version_id
+    # Поля разделены переводом строки, не пробелом: ID_LIKE на EL — это
+    # "rhel centos fedora", и чтение трёх полей через IFS=' ' склеило бы их.
+    IFS=$'\n' read -r -d '' id id_like version_id < <(
+        # shellcheck source=/dev/null
+        . /etc/os-release
+        printf '%s\n%s\n%s\0' "$ID" "${ID_LIKE:-}" "${VERSION_ID:-}"
+    ) || true
+
+    HOST_FAMILY=$(detect_distro "$id" "$id_like") \
+        || fail "$EXIT_PREFLIGHT" "unsupported distribution: $id (Debian/Ubuntu or AlmaLinux/Rocky/RHEL family required)"
+
+    EL_MAJOR=""
+    HOST_CODENAME=""
+    if [ "$HOST_FAMILY" = rhel ]; then
+        # shellcheck disable=SC2034 # EL_MAJOR — часть интерфейса платформы для остальных шагов установки
+        EL_MAJOR=$(detect_el_major "$version_id") || {
+            case "${version_id%%.*}" in
+                8) fail "$EXIT_PREFLIGHT" "AlmaLinux/Rocky/RHEL 8 is not supported, 9 or 10 required" ;;
+                *) fail "$EXIT_PREFLIGHT" "unsupported $id release: $version_id (9 or 10 required)" ;;
+            esac
+        }
+    else
+        HOST_CODENAME=$(
+            # shellcheck source=/dev/null
+            . /etc/os-release
+            printf '%s\n' "${VERSION_CODENAME:-}"
+        )
+    fi
+    apply_platform_paths
+}
+
+pg_conf_dir_resolve() {
+    if [ "$HOST_FAMILY" = rhel ]; then
+        printf '%s\n' "/var/lib/pgsql/$PG_MAJOR/data"
+        return 0
+    fi
+    find /etc/postgresql -mindepth 2 -maxdepth 2 -type d -name main 2>/dev/null | head -n1
+}
+
+pg_conf_dir_label() {
+    if [ "$HOST_FAMILY" = rhel ]; then
+        printf '%s\n' "/var/lib/pgsql/$PG_MAJOR/data"
+        return 0
+    fi
+    printf '%s\n' '/etc/postgresql/*/main'
+}
+
+pkg_refresh() {
+    if [ "$HOST_FAMILY" = rhel ]; then
+        dnf -qy makecache >/dev/null
+        return $?
+    fi
+    apt-get update -qq >/dev/null
+}
+
+# >/dev/null обязателен в обеих функциях: install_postgresql возвращает DSN
+# через stdout, и болтливость dnf/dpkg подставилась бы в GOTCHA_PG_DSN.
+pkg_install() {
+    if [ "$HOST_FAMILY" = rhel ]; then
+        dnf -qy install "$@" >/dev/null
+        return $?
+    fi
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@" >/dev/null
 }
 
 # "v0.2.0-5-gabcdef-dirty" от локально собранного бинаря — такой же законный вход,
@@ -126,6 +242,7 @@ parse_args() {
     ARG_DOMAIN=""
     ARG_EMAIL=""
     ARG_NO_PROXY=""
+    ARG_NO_FIREWALL=""
     ARG_SKIP_DATABASES=""
     ARG_PG_DSN=""
     ARG_CH_DSN=""
@@ -144,6 +261,11 @@ parse_args() {
         case "$key" in
             --no-proxy)
                 ARG_NO_PROXY=1
+                shift
+                continue
+                ;;
+            --no-firewall)
+                ARG_NO_FIREWALL=1
                 shift
                 continue
                 ;;
@@ -313,7 +435,7 @@ render_unit() {
     cat <<EOF
 [Unit]
 Description=gotcha monitoring server
-After=postgresql.service clickhouse-server.service network-online.target
+After=postgresql.service postgresql-$PG_MAJOR.service clickhouse-server.service network-online.target
 
 [Service]
 Type=simple
@@ -376,6 +498,10 @@ EOF
 }
 
 NGINX_SITE_MARKER="# gotcha site: install-bare-metal.sh keeps local edits below on re-run"
+
+nginx_site_disabled_path() {
+    printf '%s.disabled\n' "$NGINX_SITE"
+}
 
 render_nginx_site() {
     local domain="$1"
@@ -488,64 +614,102 @@ cleanup_tmp_dirs() {
     done
 }
 
-# Единственное место, читающее реальное состояние хоста (os-release, uname,
-# порты, RAM, диск) — остальные решения идут через чистые функции выше.
+required_commands() {
+    local family="$1" skip_databases="$2" cmd
+    for cmd in curl tar gpg openssl sha256sum ss; do
+        printf '%s\n' "$cmd"
+    done
+    if [ "$family" = rhel ]; then
+        printf 'rpm\n'
+        printf 'dnf\n'
+    fi
+    # sudo нужен только своим СУБД: psql от пользователя postgres и pg_dump перед обновлением.
+    [ -n "$skip_databases" ] || printf 'sudo\n'
+}
+
+port_owner_units() {
+    case "$1" in
+        8080) printf 'gotcha\n' ;;
+        # angie: на части хостов штатный веб-сервер — он, и отказ по занятому
+        # 80 порту там был бы отказом установке на исправном хосте.
+        80) printf 'nginx\nangie\n' ;;
+        5432) printf '%s\n' "$PG_UNIT" ;;
+        *) printf 'clickhouse-server\n' ;;
+    esac
+}
+
+selinux_needs_boolean() {
+    [ -z "$2" ] || return 1
+    [ "$1" = Enforcing ] || return 1
+    return 0
+}
+
+# Тишина оправдана, только если ядро тоже не enforcing — иначе setsebool
+# молча не вызывается, и nginx получает 502 без единой подсказки.
+selinux_tooling_missing_notice() {
+    local getenforce_present="$1" kernel_enforcing="$2"
+    [ -z "$getenforce_present" ] || return 1
+    [ "$kernel_enforcing" = 1 ] || return 1
+    printf 'SELinux: kernel policy is Enforcing but SELinux userspace tools (getenforce/setsebool) are missing — httpd_can_network_connect was left untouched, nginx may not be able to reach gotcha (502); install policycoreutils and run: setsebool -P httpd_can_network_connect 1\n'
+}
+
+firewall_decision() {
+    local state="$1" no_firewall="$2" yes="$3" no_proxy="$4"
+    if [ -n "$no_firewall" ] || [ -n "$no_proxy" ] || [ "$state" != running ]; then
+        printf 'skip\n'
+        return 0
+    fi
+    [ -n "$yes" ] && { printf 'open\n'; return 0; }
+    printf 'ask\n'
+}
+
+# declined различает «не обнаружен» от «работает, но оператор отказался на
+# запросе» — иначе первое сообщение было бы прямой ложью во втором случае.
+firewall_skip_notice() {
+    local state="$1" no_firewall="$2" declined="$3"
+    [ -z "$no_firewall" ] || return 1
+    if [ -n "$declined" ]; then
+        printf 'firewalld: left closed at your request — ports 80 and 443 were not opened, open them yourself: firewall-cmd --permanent --add-service=http --add-service=https && firewall-cmd --reload\n'
+        return 0
+    fi
+    [ "$state" != running ] || return 1
+    printf 'firewalld: not detected or not running — ports 80 and 443 were left untouched, open them yourself if this host uses a firewall\n'
+}
+
+# Читает реальное состояние хоста (uname, порты, RAM, диск) — платформа уже
+# определена detect_platform, остальные решения идут через чистые функции выше.
 preflight() {
     [ "$(id -u)" = 0 ] || fail "$EXIT_PREFLIGHT" "must run as root"
     [ -d /run/systemd/system ] || fail "$EXIT_PREFLIGHT" "systemd is required (PID 1 is not systemd)"
 
-    [ -r /etc/os-release ] || fail "$EXIT_PREFLIGHT" "cannot read /etc/os-release"
-    local os_id os_id_like
-    # IFS=' ': main() сузила глобальный IFS до "\n\t", обычный read по
-    # пробелу здесь бы не разбил строку на два поля.
-    IFS=' ' read -r os_id os_id_like < <(
-        # shellcheck source=/dev/null
-        . /etc/os-release
-        printf '%s %s\n' "$ID" "${ID_LIKE:-}"
-    )
-    detect_distro "$os_id" "$os_id_like" \
-        || fail "$EXIT_PREFLIGHT" "unsupported distribution: $os_id (Debian/Ubuntu family required)"
-
     HOST_ARCH=$(detect_arch "$(uname -m)") \
         || fail "$EXIT_PREFLIGHT" "unsupported architecture: $(uname -m) (amd64/arm64 only)"
 
-    HOST_CODENAME=$(
-        # shellcheck source=/dev/null
-        . /etc/os-release
-        printf '%s\n' "${VERSION_CODENAME:-}"
-    )
-
     # Пакеты в сообщении не украшение: на минимальном Debian нет ни ss, ни sudo,
     # и без подсказки отказ выглядит как поломка скрипта.
-    local -A package_of=(
-        [curl]=curl [tar]=tar [gpg]=gnupg [openssl]=openssl
-        [sha256sum]=coreutils [ss]=iproute2 [sudo]=sudo
-    )
-    local -a required=(curl tar gpg openssl sha256sum ss)
-    # sudo нужен только своим СУБД: psql от пользователя postgres и pg_dump перед обновлением.
-    [ -n "$ARG_SKIP_DATABASES" ] || required+=(sudo)
     local cmd
-    for cmd in "${required[@]}"; do
+    while IFS= read -r cmd; do
         command -v "$cmd" >/dev/null 2>&1 \
-            || fail "$EXIT_PREFLIGHT" "$cmd is required (Debian/Ubuntu package: ${package_of[$cmd]})"
-    done
+            || fail "$EXIT_PREFLIGHT" "$cmd is required ($PKG_HINT_LABEL: ${PKG_HINTS[$cmd]})"
+    done < <(required_commands "$HOST_FAMILY" "$ARG_SKIP_DATABASES")
 
     local -a ports=(8080)
     [ -n "$ARG_NO_PROXY" ] || ports+=(80)
     [ -n "$ARG_SKIP_DATABASES" ] || ports+=(5432 8123 9000)
-    local port owner_unit
+    local port owner owned
     for port in "${ports[@]}"; do
         ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":${port}\$" || continue
         # Занятый порт — отказ, только если это не наш же юнит с прошлого запуска;
         # иначе идемпотентный повторный запуск (§4.4) не проходил бы преflight.
-        case "$port" in
-            8080) owner_unit=gotcha ;;
-            80) owner_unit=nginx ;;
-            5432) owner_unit=postgresql ;;
-            *) owner_unit=clickhouse-server ;;
-        esac
-        systemctl is-active --quiet "$owner_unit" \
-            || fail "$EXIT_PREFLIGHT" "port $port is already in use"
+        owned=""
+        while IFS= read -r owner; do
+            systemctl is-active --quiet "$owner" && { owned=1; break; }
+        done < <(port_owner_units "$port")
+        [ -n "$owned" ] && continue
+        if [ "$port" = 80 ]; then
+            fail "$EXIT_PREFLIGHT" "port 80 is already in use by something that is not nginx or angie (pass --no-proxy to keep your own web server)"
+        fi
+        fail "$EXIT_PREFLIGHT" "port $port is already in use"
     done
 
     # 1900, не 2048: облачные "2 ГБ" урезают MemTotal под firmware/hypervisor.
@@ -603,11 +767,17 @@ fetch_tarball() {
 }
 
 # gpg --with-colons: формат вывода стабилен для парсинга скриптом, в отличие
-# от --fingerprint, рассчитанного на человека.
+# от --fingerprint, рассчитанного на человека. Подключи остаются принятыми по
+# самоподписи основного ключа намеренно: пин подключей ронял бы установку при
+# их штатной ротации вендором.
 verify_key_fingerprint() {
-    local keyfile="$1" expected="$2" got
-    got=$(gpg --with-colons --import-options show-only --import "$keyfile" 2>/dev/null \
-        | awk -F: '/^fpr:/{print $10; exit}')
+    local keyfile="$1" expected="$2" got pubs
+    local colons
+    colons=$(gpg --with-colons --import-options show-only --import "$keyfile" 2>/dev/null)
+    pubs=$(printf '%s\n' "$colons" | grep -c '^pub:')
+    [ "$pubs" = 1 ] \
+        || fail "$EXIT_DATABASE" "signing key file must contain exactly one primary key, found $pubs"
+    got=$(printf '%s\n' "$colons" | awk -F: '/^pub:/{p=1; next} p && /^fpr:/{print $10; exit}')
     [ "$got" = "$expected" ] \
         || fail "$EXIT_DATABASE" "signing key fingerprint mismatch: got '$got', expected '$expected'"
 }
@@ -624,10 +794,45 @@ native_pg_major() {
     apt-cache policy postgresql 2>/dev/null | awk '/Candidate:/{print $2}' | grep -oE '^[0-9]+'
 }
 
-# Возвращает через stdout DSN на 127.0.0.1; ставит пакет, роль и базу gotcha.
-# Код 3 — только для решения по мажору ниже, прочие отказы шага — код 5.
-install_postgresql() {
-    local codename="$1" env_file="$2" package="postgresql-$PG_MAJOR"
+# $basearch/$releasever в файле остаются литералами для dnf/yum — экранируем
+# в heredoc.
+render_pgdg_repo() {
+    cat <<EOF
+[pgdg-common]
+name=PostgreSQL common RPMs for RHEL \$releasever - \$basearch
+baseurl=https://download.postgresql.org/pub/repos/yum/common/redhat/rhel-$1-\$basearch
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=file://$PGDG_RPM_KEY_PATH
+
+[pgdg$PG_MAJOR]
+name=PostgreSQL $PG_MAJOR for RHEL \$releasever - \$basearch
+baseurl=https://download.postgresql.org/pub/repos/yum/$PG_MAJOR/redhat/rhel-$1-\$basearch
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=file://$PGDG_RPM_KEY_PATH
+EOF
+}
+
+# deb-ветка не подставляет нативный мажор молча: PGDG публикует EL9/EL10 всегда,
+# и штатный AppStream мажора 17 не содержит.
+repo_add_pgdg() {
+    local codename="$1"
+    if [ "$HOST_FAMILY" = rhel ]; then
+        local tmp
+        tmp=$(mktemp -d)
+        TMP_DIRS+=("$tmp")
+        curl -fsSL -o "$tmp/pgdg.asc" "$PGDG_RPM_KEY_URL" \
+            || fail "$EXIT_DATABASE" "failed to download the PGDG signing key from $PGDG_RPM_KEY_URL"
+        verify_key_fingerprint "$tmp/pgdg.asc" "$PGDG_RPM_KEY_FINGERPRINT"
+        mkdir -p "$(dirname "$PGDG_RPM_KEY_PATH")"
+        cp "$tmp/pgdg.asc" "$PGDG_RPM_KEY_PATH"
+        rpm --import "$PGDG_RPM_KEY_PATH" >/dev/null
+        render_pgdg_repo "$EL_MAJOR" >"$REPO_DIR/gotcha-pgdg.repo"
+        return 0
+    fi
 
     if pgdg_has_codename "$codename"; then
         local tmp keyring
@@ -639,43 +844,114 @@ install_postgresql() {
         keyring=/usr/share/keyrings/gotcha-pgdg.gpg
         gpg --dearmor <"$tmp/pgdg.asc" >"$keyring"
         printf 'deb [signed-by=%s] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' \
-            "$keyring" "$codename" >/etc/apt/sources.list.d/gotcha-pgdg.list
-        apt-get update -qq >/dev/null || fail "$EXIT_DATABASE" "apt-get update failed after adding the PGDG repository"
-    else
-        apt-get update -qq >/dev/null || fail "$EXIT_DATABASE" "apt-get update failed"
-        local native
-        native=$(native_pg_major)
-        [ "$native" = "$PG_MAJOR" ] \
-            || fail "$EXIT_PREFLIGHT" "PGDG has no packages for $codename yet and the distribution ships PostgreSQL $native, not $PG_MAJOR; wait for PGDG to add this codename or install PostgreSQL $PG_MAJOR by hand"
-        package="postgresql"
+            "$keyring" "$codename" >"$REPO_DIR/gotcha-pgdg.list"
+        pkg_refresh || fail "$EXIT_DATABASE" "apt-get update failed after adding the PGDG repository"
+        return 0
     fi
 
-    # >/dev/null: stdout — единственный канал возврата DSN из этой функции, и
-    # dpkg's "(Reading database ... )" под -qq в него всё равно просачивается.
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$package" >/dev/null \
-        || fail "$EXIT_DATABASE" "failed to install $package"
+    pkg_refresh || fail "$EXIT_DATABASE" "apt-get update failed"
+    local native
+    native=$(native_pg_major)
+    [ "$native" = "$PG_MAJOR" ] \
+        || fail "$EXIT_PREFLIGHT" "PGDG has no packages for $codename yet and the distribution ships PostgreSQL $native, not $PG_MAJOR; wait for PGDG to add this codename or install PostgreSQL $PG_MAJOR by hand"
+    printf 'native\n'
+}
+
+# stdin: строка pg_hba.conf для 127.0.0.1/32. rc 0 — метод требует пароль
+# (scram-sha-256/md5), rc 1 — нет (ident/peer/reject/закомментировано/другой хост).
+pg_hba_host_method_is_password() {
+    awk '
+        $1 == "host" && $4 == "127.0.0.1/32" && ($5 == "scram-sha-256" || $5 == "md5") { found=1 }
+        END { exit found ? 0 : 1 }
+    '
+}
+
+# postgresql.conf.sample несёт include_dir закомментированной — initdb копирует
+# её как есть, и дропин сам по себе не подхватится.
+ensure_include_dir() {
+    grep -qF "$PG_INCLUDE_MARKER" "$1" && return 0
+    printf '%s\ninclude_dir = %s\n' "$PG_INCLUDE_MARKER" "'conf.d'" >>"$1"
+}
+
+# Снимает marker+payload по содержимому маркера. readlink -f обязателен: cp -a на
+# симлинк $file дал бы tmp-симлинк на тот же таргет, усекаемый раньше, чем прочитает awk.
+remove_marker_block() {
+    local marker="$1" file="$2" real tmp
+    [ -f "$file" ] || return 0
+    grep -qF "$marker" "$file" || return 0
+    real=$(readlink -f "$file") || return 1
+    tmp="$real.gotcha-tmp"
+    cp -a "$real" "$tmp" || return 1
+    if awk -v m="$marker" '
+        $0 == m { skip = 1; next }
+        skip > 0 { skip--; next }
+        { print }
+    ' "$real" >"$tmp"; then
+        mv "$tmp" "$real"
+    else
+        rm -f "$tmp"
+        return 1
+    fi
+}
+
+# Возвращает через stdout DSN на 127.0.0.1; ставит пакет, роль и базу gotcha.
+# Код 3 — только для решения по мажору ниже, прочие отказы шага — код 5.
+install_postgresql() {
+    local env_file="$1" package="$PG_PACKAGE"
+
+    local repo_result
+    repo_result=$(repo_add_pgdg "$HOST_CODENAME")
+    [ "$repo_result" != "native" ] || package="postgresql"
+
+    if [ "$HOST_FAMILY" = rhel ] && [ "$EL_MAJOR" = 9 ]; then
+        dnf -qy module disable postgresql >/dev/null
+    fi
+
+    if [ "$HOST_FAMILY" = rhel ] && [ "$repo_result" != "native" ]; then
+        # citext (migrations/pg) живёт в отдельном PGDG-пакете на EL — на Debian он
+        # уже внутри postgresql-$PG_MAJOR, здесь без него миграции падают на CREATE EXTENSION.
+        pkg_install "$package" "postgresql${PG_MAJOR}-contrib" \
+            || fail "$EXIT_DATABASE" "failed to install $package"
+    else
+        pkg_install "$package" || fail "$EXIT_DATABASE" "failed to install $package"
+    fi
 
     local conf_dir
-    conf_dir=$(find /etc/postgresql -mindepth 2 -maxdepth 2 -type d -name main 2>/dev/null | head -n1)
-    [ -n "$conf_dir" ] || fail "$EXIT_DATABASE" "PostgreSQL installed but /etc/postgresql/*/main is missing"
+    conf_dir=$(pg_conf_dir_resolve)
+    [ -n "$conf_dir" ] || fail "$EXIT_DATABASE" "PostgreSQL installed but $(pg_conf_dir_label) is missing"
+
+    if [ "$HOST_FAMILY" = rhel ] && [ -z "$(ls -A "$conf_dir" 2>/dev/null)" ]; then
+        "$PG_BIN_DIR/postgresql-$PG_MAJOR-setup" initdb >/dev/null \
+            || fail "$EXIT_DATABASE" "postgresql-$PG_MAJOR-setup initdb failed"
+    fi
+
     mkdir -p "$conf_dir/conf.d" || fail "$EXIT_DATABASE" "failed to create $conf_dir/conf.d"
     render_pg_conf >"$conf_dir/conf.d/10-gotcha.conf"
 
-    # policy-rc.d в контейнерных образах блокирует автозапуск postinst-скрипта
-    # пакета — сервер поднимает явный systemctl, а не установка сама по себе.
-    systemctl restart postgresql || fail "$EXIT_DATABASE" "failed to start postgresql"
+    if [ "$HOST_FAMILY" = rhel ]; then
+        ensure_include_dir "$conf_dir/postgresql.conf"
+        if ! pg_hba_host_method_is_password <"$conf_dir/pg_hba.conf"; then
+            printf '%s\nhost all all 127.0.0.1/32 scram-sha-256\n' \
+                "$PG_INCLUDE_MARKER" >>"$conf_dir/pg_hba.conf"
+        fi
+        systemctl enable --now "$PG_UNIT" || fail "$EXIT_DATABASE" "failed to start $PG_UNIT"
+    else
+        # policy-rc.d в контейнерных образах блокирует автозапуск postinst-скрипта
+        # пакета — сервер поднимает явный systemctl, а не установка сама по себе.
+        systemctl restart "$PG_UNIT" || fail "$EXIT_DATABASE" "failed to start $PG_UNIT"
+    fi
 
     # Пароль перевыпускается, только если роли ещё нет, либо она есть, а
     # gotcha.env — нет: тогда старый пароль всё равно потерян и никого не сломает.
     local password="" role_exists=""
-    role_exists=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'gotcha'" 2>/dev/null)
+    role_exists=$(sudo -u postgres "$PG_BIN_DIR/psql" -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'gotcha'" 2>/dev/null)
     if [ "$role_exists" != "1" ]; then
         password=$(openssl rand -hex 24)
     elif [ ! -f "$env_file" ]; then
         password=$(openssl rand -hex 24)
         log_step "WARNING: gotcha role exists but $env_file is missing — regenerating its PostgreSQL password"
     fi
-    if [ -n "$password" ] && ! sudo -u postgres psql -v ON_ERROR_STOP=1 -q >/dev/null <<SQL
+    if [ -n "$password" ] && ! sudo -u postgres "$PG_BIN_DIR/psql" -v ON_ERROR_STOP=1 -q >/dev/null <<SQL
 DO \$\$ BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'gotcha') THEN
     CREATE ROLE gotcha LOGIN PASSWORD '$password';
@@ -687,7 +963,7 @@ SQL
     then
         fail "$EXIT_DATABASE" "failed to create/reset the gotcha role in PostgreSQL"
     fi
-    if ! sudo -u postgres psql -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL'
+    if ! sudo -u postgres "$PG_BIN_DIR/psql" -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL'
 SELECT 'CREATE DATABASE gotcha OWNER gotcha'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'gotcha')\gexec
 SQL
@@ -699,9 +975,68 @@ SQL
     printf 'postgres://gotcha:%s@127.0.0.1:5432/gotcha?sslmode=disable\n' "$password"
 }
 
-# ClickHouse не публикует пакет без патч-версии в номере — apt-cache madison
-# находит конкретный патч для мажора.минора из CH_VERSION.
+# gpgcheck=0: пакеты ClickHouse не подписаны индивидуально, как и в их собственном
+# packages.clickhouse.com/rpm/clickhouse.repo — доверие даёт repo_gpgcheck=1.
+render_clickhouse_repo() {
+    cat <<EOF
+[gotcha-clickhouse]
+name=ClickHouse
+baseurl=https://packages.clickhouse.com/rpm/stable/
+enabled=1
+gpgcheck=0
+repo_gpgcheck=1
+gpgkey=file://$CLICKHOUSE_RPM_KEY_PATH
+EOF
+}
+
+# rpm/stable и deb-ветка ниже качают ключ с разных путей одного вендора, но файл
+# побайтово равен уже используемому rpm/lts — отпечаток один, CLICKHOUSE_KEY_FINGERPRINT.
+repo_add_clickhouse() {
+    local tmp
+    tmp=$(mktemp -d)
+    TMP_DIRS+=("$tmp")
+
+    if [ "$HOST_FAMILY" = rhel ]; then
+        curl -fsSL -o "$tmp/clickhouse.asc" https://packages.clickhouse.com/rpm/stable/repodata/repomd.xml.key \
+            || fail "$EXIT_DATABASE" "failed to download the ClickHouse signing key"
+        verify_key_fingerprint "$tmp/clickhouse.asc" "$CLICKHOUSE_KEY_FINGERPRINT"
+        mkdir -p "$(dirname "$CLICKHOUSE_RPM_KEY_PATH")"
+        cp "$tmp/clickhouse.asc" "$CLICKHOUSE_RPM_KEY_PATH"
+        rpm --import "$CLICKHOUSE_RPM_KEY_PATH" >/dev/null
+        render_clickhouse_repo >"$REPO_DIR/gotcha-clickhouse.repo"
+        return 0
+    fi
+
+    curl -fsSL -o "$tmp/clickhouse.asc" https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key \
+        || fail "$EXIT_DATABASE" "failed to download the ClickHouse signing key"
+    verify_key_fingerprint "$tmp/clickhouse.asc" "$CLICKHOUSE_KEY_FINGERPRINT"
+    local keyring=/usr/share/keyrings/gotcha-clickhouse.gpg
+    gpg --dearmor <"$tmp/clickhouse.asc" >"$keyring"
+    printf 'deb [signed-by=%s] https://packages.clickhouse.com/deb stable main\n' "$keyring" \
+        >"$REPO_DIR/gotcha-clickhouse.list"
+    pkg_refresh || fail "$EXIT_DATABASE" "apt-get update failed after adding the ClickHouse repository"
+}
+
+# dnf переносит длинные строки: версия может оказаться на следующей строке отдельным
+# полем — поле определяется по позиции, не фиксированным $2.
+clickhouse_version_from_dnf_list() {
+    awk -v v="$CH_VERSION." '
+        function is_arch(s) { return s ~ /\.(noarch|x86_64|aarch64)$/ }
+        function has_prefix(s) { return substr(s, 1, length(v)) == v }
+        NF >= 2 && is_arch($1) { if (has_prefix($2)) print $2; next }
+        NF >= 1 && !is_arch($1) { if (has_prefix($1)) print $1 }
+    ' | sort -V | tail -n1
+}
+
+# ClickHouse не публикует пакет без патч-версии в номере — apt-cache madison/dnf list
+# находят конкретный патч для мажора.минора из CH_VERSION.
 clickhouse_package_version() {
+    if [ "$HOST_FAMILY" = rhel ]; then
+        # -y: без него dnf на первом обращении к репозиторию молча отказывает в
+        # неинтерактивном подтверждении ключа, список выходит пустым.
+        dnf -qy --showduplicates list clickhouse-server 2>/dev/null | clickhouse_version_from_dnf_list
+        return 0
+    fi
     apt-cache madison clickhouse-server 2>/dev/null \
         | awk -F'|' -v v="$CH_VERSION." '{gsub(/^[ \t]+|[ \t]+$/, "", $2)} $2 ~ ("^" v) {print $2; exit}'
 }
@@ -710,28 +1045,23 @@ clickhouse_package_version() {
 # пользователя gotcha и лимит файловых дескрипторов. Отказ любого шага — код 5.
 install_clickhouse() {
     local ram_mb="$1" tarball_root="$2" env_file="$3"
-    local tmp keyring
-    tmp=$(mktemp -d)
-    TMP_DIRS+=("$tmp")
-    curl -fsSL -o "$tmp/clickhouse.asc" https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key \
-        || fail "$EXIT_DATABASE" "failed to download the ClickHouse signing key"
-    verify_key_fingerprint "$tmp/clickhouse.asc" "$CLICKHOUSE_KEY_FINGERPRINT"
-    keyring=/usr/share/keyrings/gotcha-clickhouse.gpg
-    gpg --dearmor <"$tmp/clickhouse.asc" >"$keyring"
-    printf 'deb [signed-by=%s] https://packages.clickhouse.com/deb stable main\n' "$keyring" \
-        >/etc/apt/sources.list.d/gotcha-clickhouse.list
-    apt-get update -qq >/dev/null || fail "$EXIT_DATABASE" "apt-get update failed after adding the ClickHouse repository"
+    repo_add_clickhouse
 
     local version
     version=$(clickhouse_package_version)
     [ -n "$version" ] || fail "$EXIT_DATABASE" "no clickhouse-server package matches version $CH_VERSION"
 
-    # clickhouse-common-static нужен явной версией: без него apt подтягивает
-    # последний мажор из репозитория и ловит конфликт зависимостей.
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-        "clickhouse-server=$version" "clickhouse-client=$version" "clickhouse-common-static=$version" \
-        >/dev/null \
-        || fail "$EXIT_DATABASE" "failed to install clickhouse-server $version"
+    if [ "$HOST_FAMILY" = rhel ]; then
+        pkg_install \
+            "clickhouse-server-$version" "clickhouse-client-$version" "clickhouse-common-static-$version" \
+            || fail "$EXIT_DATABASE" "failed to install clickhouse-server $version"
+    else
+        # clickhouse-common-static нужен явной версией: без него apt подтягивает
+        # последний мажор из репозитория и ловит конфликт зависимостей.
+        pkg_install \
+            "clickhouse-server=$version" "clickhouse-client=$version" "clickhouse-common-static=$version" \
+            || fail "$EXIT_DATABASE" "failed to install clickhouse-server $version"
+    fi
 
     mkdir -p /etc/clickhouse-server/config.d
     cp "$tarball_root/clickhouse/00-common.xml" /etc/clickhouse-server/config.d/00-common.xml \
@@ -851,7 +1181,7 @@ backup_before_upgrade() {
     local dump
     dump="/var/lib/gotcha/backup/postgres-${from_version}-$(date -u +%Y%m%dT%H%M%SZ).sql.gz" \
         || fail "$EXIT_DATABASE" "failed to build backup file name"
-    sudo -u postgres pg_dump -d gotcha | gzip >"$dump" || fail "$EXIT_DATABASE" "pre-upgrade pg_dump failed"
+    sudo -u postgres "$PG_BIN_DIR/pg_dump" -d gotcha | gzip >"$dump" || fail "$EXIT_DATABASE" "pre-upgrade pg_dump failed"
     # Дамп несёт те же секреты (схема, данные), что и gotcha.env — не мирочитаем.
     chmod 600 "$dump" || fail "$EXIT_DATABASE" "failed to secure $dump"
     log_step "pre-upgrade backup: $dump"
@@ -927,11 +1257,15 @@ start_app() {
 # Снимает штатный дефолтный сайт (конфликтовал бы default_server'ом на 80). Копия
 # делается ДО перезаписи; при точном совпадении с прошлым рендером — не бэкапится вовсе.
 install_nginx() {
-    local domain="$1" site=/etc/nginx/sites-available/gotcha rendered
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nginx >/dev/null \
-        || fail "$EXIT_OTHER" "failed to install nginx"
+    local domain="$1" site="$NGINX_SITE" rendered disabled
+    pkg_install nginx || fail "$EXIT_OTHER" "failed to install nginx"
 
-    rm -f /etc/nginx/sites-enabled/default
+    # Восстановление ДО проверки "файла нет": на EL --uninstall переименовывает
+    # сайт в .disabled вместо удаления симлинка, как на Debian.
+    disabled=$(nginx_site_disabled_path)
+    if [ ! -e "$site" ] && [ -e "$disabled" ]; then
+        mv "$disabled" "$site" || fail "$EXIT_OTHER" "failed to restore $disabled as $site"
+    fi
 
     rendered=$(render_nginx_site "$domain")
     if [ ! -f "$site" ]; then
@@ -947,8 +1281,11 @@ install_nginx() {
             printf '%s\n' "$rendered" >"$site" || fail "$EXIT_OTHER" "failed to render $site"
         fi
     fi
-    ln -sf ../sites-available/gotcha /etc/nginx/sites-enabled/gotcha \
-        || fail "$EXIT_OTHER" "failed to enable $site"
+    if [ "$HOST_FAMILY" != rhel ]; then
+        rm -f /etc/nginx/sites-enabled/default
+        ln -sf ../sites-available/gotcha /etc/nginx/sites-enabled/gotcha \
+            || fail "$EXIT_OTHER" "failed to enable $site"
+    fi
 
     nginx -t || fail "$EXIT_OTHER" "nginx configuration test failed"
     systemctl enable --now nginx || fail "$EXIT_OTHER" "failed to start nginx"
@@ -957,12 +1294,30 @@ install_nginx() {
     log_step "nginx installed, proxying to gotcha for $domain"
 }
 
-# Отказ certbot не откатывает установку: HTTP-стенд остаётся рабочим, скрипт
-# лишь печатает команду для повтора и возвращается с кодом 0.
+# Отказ certbot, а на EL и отказ EPEL/пакета сами, не откатывают установку:
+# HTTP-стенд остаётся рабочим, скрипт печатает причину и команду для повтора.
 install_certificate() {
     local domain="$1" email="$2"
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot python3-certbot-nginx >/dev/null \
-        || fail "$EXIT_OTHER" "failed to install certbot"
+
+    if [ "$HOST_FAMILY" = rhel ]; then
+        if ! dnf -qy repolist enabled 2>/dev/null | grep -qi '^epel'; then
+            if ! dnf -qy install \
+                "https://dl.fedoraproject.org/pub/epel/epel-release-latest-$EL_MAJOR.noarch.rpm" >/dev/null 2>&1; then
+                printf 'install-bare-metal: could not enable EPEL, so certbot was not installed; HTTP on port 80 still works, retry later with:\n' >&2
+                printf '  dnf -y install epel-release && dnf -y install certbot python3-certbot-nginx && certbot --nginx -d %s -m %s --agree-tos --redirect\n' \
+                    "$domain" "$email" >&2
+                return 0
+            fi
+        fi
+        if ! pkg_install certbot python3-certbot-nginx; then
+            printf 'install-bare-metal: could not install certbot, so no TLS certificate was issued; HTTP on port 80 still works, retry later with:\n' >&2
+            printf '  dnf -y install certbot python3-certbot-nginx && certbot --nginx -d %s -m %s --agree-tos --redirect\n' \
+                "$domain" "$email" >&2
+            return 0
+        fi
+    else
+        pkg_install certbot python3-certbot-nginx || fail "$EXIT_OTHER" "failed to install certbot"
+    fi
 
     if certbot --nginx -d "$domain" -m "$email" --agree-tos --non-interactive --redirect >/dev/null 2>&1; then
         log_step "TLS certificate issued for $domain"
@@ -982,9 +1337,17 @@ uninstall_app() {
     rm -f /usr/local/bin/gotcha
     log_step "gotcha unit and binary removed"
 
-    # Включённый сайт без бэкенда — 502 на всё: sites-enabled/default скрипт снял при
-    # установке. Сам sites-available остаётся, в нём TLS-блок certbot.
-    if [ -L /etc/nginx/sites-enabled/gotcha ] || [ -e /etc/nginx/sites-enabled/gotcha ]; then
+    # Включённый сайт без бэкенда — 502 на всё. На EL сайт — единственный файл
+    # в conf.d: снятием служит переименование в .disabled, не симлинк.
+    if [ "$HOST_FAMILY" = rhel ]; then
+        if [ -e "$NGINX_SITE" ]; then
+            mv "$NGINX_SITE" "$(nginx_site_disabled_path)"
+            systemctl reload nginx >/dev/null 2>&1 || true
+            log_step "nginx site disabled (kept as $(nginx_site_disabled_path))"
+        fi
+        # Оба глобальные, на них может опираться другой сервис хоста — снятие их не трогает.
+        log_step "SELinux boolean httpd_can_network_connect and firewalld services http/https, if this install set them, are left as they are (revert: setsebool -P httpd_can_network_connect 0; firewall-cmd --permanent --remove-service=http --remove-service=https && firewall-cmd --reload)"
+    elif [ -L /etc/nginx/sites-enabled/gotcha ] || [ -e /etc/nginx/sites-enabled/gotcha ]; then
         rm -f /etc/nginx/sites-enabled/gotcha
         systemctl reload nginx >/dev/null 2>&1 || true
         log_step "nginx site disabled (the file in sites-available is kept)"
@@ -993,7 +1356,7 @@ uninstall_app() {
     [ -n "$purge" ] || return 0
 
     if id -u postgres >/dev/null 2>&1; then
-        sudo -u postgres psql -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL' || fail "$EXIT_DATABASE" "failed to drop the gotcha role/database in PostgreSQL"
+        sudo -u postgres "$PG_BIN_DIR/psql" -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL' || fail "$EXIT_DATABASE" "failed to drop the gotcha role/database in PostgreSQL"
 DROP DATABASE IF EXISTS gotcha;
 DROP ROLE IF EXISTS gotcha;
 SQL
@@ -1009,8 +1372,18 @@ SQL
     # Наши файлы в каталогах чужих пакетов: сами пакеты остаются, дропины уезжают.
     # Перезапуск СУБД не делается намеренно — это чужие сервисы, их время выбирает оператор.
     local pg_conf_dir
-    pg_conf_dir=$(find /etc/postgresql -mindepth 2 -maxdepth 2 -type d -name main 2>/dev/null | head -n1)
-    [ -z "$pg_conf_dir" ] || rm -f "$pg_conf_dir/conf.d/10-gotcha.conf"
+    pg_conf_dir=$(pg_conf_dir_resolve)
+    if [ -n "$pg_conf_dir" ]; then
+        rm -f "$pg_conf_dir/conf.d/10-gotcha.conf"
+        if [ "$HOST_FAMILY" = rhel ]; then
+            remove_marker_block "$PG_INCLUDE_MARKER" "$pg_conf_dir/postgresql.conf" \
+                || printf 'install-bare-metal: could not remove the gotcha include_dir marker from %s, clean it up by hand\n' \
+                    "$pg_conf_dir/postgresql.conf" >&2
+            remove_marker_block "$PG_INCLUDE_MARKER" "$pg_conf_dir/pg_hba.conf" \
+                || printf 'install-bare-metal: could not remove the gotcha include_dir marker from %s, clean it up by hand\n' \
+                    "$pg_conf_dir/pg_hba.conf" >&2
+        fi
+    fi
     rm -f /etc/clickhouse-server/config.d/00-common.xml /etc/clickhouse-server/config.d/10-small.xml
     rm -f /etc/systemd/system/clickhouse-server.service.d/override.conf
     rmdir /etc/systemd/system/clickhouse-server.service.d 2>/dev/null || true
@@ -1041,6 +1414,7 @@ main() {
     if [ -n "$ARG_HELP" ]; then
         exit "$EXIT_OK"
     fi
+    detect_platform
     if [ -n "$ARG_UNINSTALL" ]; then
         [ "$(id -u)" = 0 ] || fail "$EXIT_PREFLIGHT" "must run as root"
         if [ -n "$ARG_PURGE" ] && [ -z "$ARG_YES" ]; then
@@ -1092,11 +1466,11 @@ main() {
             "clickhouse://gotcha:<generated>@127.0.0.1:9000/gotcha" \
             "<generated>" "$base_url" "/opt/gotcha/agent-dist" "$gomemlimit" "127.0.0.1:8080"
         if [ -z "$ARG_NO_PROXY" ]; then
-            printf '[dry-run] would write nginx site (%s):\n' "${ARG_DOMAIN:-$host_ip}"
+            printf '[dry-run] would write %s:\n' "$NGINX_SITE"
             render_nginx_site "${ARG_DOMAIN:-$host_ip}"
         fi
         if [ -z "$ARG_SKIP_DATABASES" ]; then
-            printf '[dry-run] would write /etc/postgresql/*/main/conf.d/10-gotcha.conf:\n'
+            printf '[dry-run] would write %s/conf.d/10-gotcha.conf:\n' "$(pg_conf_dir_label)"
             render_pg_conf
         fi
         exit "$EXIT_OK"
@@ -1107,7 +1481,7 @@ main() {
     # пароль под уже работающим сервисом — останавливаем его первым, пока не поздно.
     [ -f "$env_file" ] || systemctl stop gotcha 2>/dev/null || true
     if [ -z "$ARG_SKIP_DATABASES" ]; then
-        ARG_PG_DSN=$(install_postgresql "$HOST_CODENAME" "$env_file")
+        ARG_PG_DSN=$(install_postgresql "$env_file")
         ARG_CH_DSN=$(install_clickhouse "$HOST_RAM_MB" "$tarball_root" "$env_file")
         verify_loopback_only 5432 8123 9000
     fi
@@ -1128,6 +1502,47 @@ main() {
 
     if [ -z "$ARG_NO_PROXY" ]; then
         install_nginx "${ARG_DOMAIN:-$host_ip}"
+        if [ "$HOST_FAMILY" = rhel ]; then
+            local selinux_state="" getenforce_present=""
+            if command -v getenforce >/dev/null 2>&1; then
+                getenforce_present=1
+                selinux_state=$(getenforce 2>/dev/null)
+            fi
+            if selinux_needs_boolean "$selinux_state" "$ARG_NO_PROXY"; then
+                setsebool -P httpd_can_network_connect 1 \
+                    || fail "$EXIT_OTHER" "failed to allow nginx to reach gotcha (setsebool httpd_can_network_connect)"
+                log_step "SELinux: httpd_can_network_connect set to 1 (revert with: setsebool -P httpd_can_network_connect 0)"
+            else
+                local kernel_enforcing="" sel_notice
+                [ -r /sys/fs/selinux/enforce ] \
+                    && [ "$(cat /sys/fs/selinux/enforce 2>/dev/null)" = 1 ] \
+                    && kernel_enforcing=1
+                sel_notice=$(selinux_tooling_missing_notice "$getenforce_present" "$kernel_enforcing") && log_step "$sel_notice"
+            fi
+
+            local fw_state="" fw_decision fw_declined=""
+            command -v firewall-cmd >/dev/null 2>&1 && fw_state=$(firewall-cmd --state 2>/dev/null)
+            fw_decision=$(firewall_decision "$fw_state" "$ARG_NO_FIREWALL" "$ARG_YES" "$ARG_NO_PROXY")
+            if [ "$fw_decision" = ask ]; then
+                local fw_answer=""
+                read -r -p "Open ports 80 and 443 in firewalld? [y/N] " fw_answer || true
+                case "$fw_answer" in
+                    y | Y | yes | YES) fw_decision=open ;;
+                    *) fw_decision=skip; fw_declined=1 ;;
+                esac
+            fi
+            if [ "$fw_decision" = open ]; then
+                if firewall-cmd --permanent --add-service=http --add-service=https >/dev/null \
+                    && firewall-cmd --reload >/dev/null; then
+                    log_step "firewalld: services http and https opened permanently (revert with: firewall-cmd --permanent --remove-service=http --remove-service=https && firewall-cmd --reload)"
+                else
+                    fail "$EXIT_OTHER" "failed to open ports 80/443 in firewalld"
+                fi
+            else
+                local fw_notice
+                fw_notice=$(firewall_skip_notice "$fw_state" "$ARG_NO_FIREWALL" "$fw_declined") && log_step "$fw_notice"
+            fi
+        fi
         if [ -n "$ARG_DOMAIN" ] && [ -n "$ARG_EMAIL" ]; then
             install_certificate "$ARG_DOMAIN" "$ARG_EMAIL"
         fi

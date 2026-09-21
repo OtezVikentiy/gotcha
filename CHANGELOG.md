@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Bare-metal (Docker-free) install now supports AlmaLinux, Rocky Linux, and
+  RHEL 9 and 10 on amd64 and arm64, alongside the existing Debian/Ubuntu
+  support. A new `--no-firewall` flag skips opening ports 80/443 in
+  firewalld on that family.
+
+### Changed
+- On AlmaLinux/Rocky/RHEL, the installer sets the `httpd_can_network_connect`
+  SELinux boolean and opens ports 80/443 in firewalld when nginx is
+  installed under an enforcing policy / a running firewalld — neither
+  change is reverted by `--uninstall`.
+- A failed certbot run no longer aborts the bare-metal install on either
+  distribution family; the HTTP setup on port 80 stays up and the
+  certificate can be obtained later with the same command.
+- On AlmaLinux/Rocky/RHEL, the installer now says so instead of staying
+  silent when it skips opening firewalld ports 80/443: a clear warning if
+  firewalld isn't installed or running, a different one (with the command
+  to run) if the operator declined the interactive prompt, and no message
+  at all with `--no-firewall`, since that's an explicit choice. The same
+  applies to the SELinux boolean: if the enforcement mode is `Enforcing`
+  but the SELinux tools aren't installed, the installer now warns that
+  nginx may fail to reach the app.
+
+### Fixed
+- A request landing right after a PostgreSQL restart could fail with a
+  `500` even though `/readyz` reported the database as ready: the
+  connection pool could hand out a connection the server had already
+  closed. The pool now checks each connection before handing it out and
+  transparently replaces a stale one.
+
 ## [1.7.1] - 2026-09-18
 
 ### Fixed

@@ -36,14 +36,126 @@ assert_contains() {
 
 # detect_distro
 
-detect_distro ubuntu ""
-assert_eq "detect_distro ID=ubuntu accepted" 0 $?
-detect_distro debian ""
-assert_eq "detect_distro ID=debian accepted" 0 $?
-detect_distro linuxmint ubuntu
-assert_eq "detect_distro ID=linuxmint ID_LIKE=ubuntu accepted" 0 $?
-detect_distro fedora ""
-assert_eq "detect_distro ID=fedora rejected" 1 $?
+out=$(detect_distro ubuntu "")
+assert_eq "detect_distro ID=ubuntu rc" 0 $?
+assert_eq "detect_distro ID=ubuntu family" debian "$out"
+out=$(detect_distro debian "")
+assert_eq "detect_distro ID=debian family" debian "$out"
+out=$(detect_distro linuxmint ubuntu)
+assert_eq "detect_distro ID=linuxmint ID_LIKE=ubuntu family" debian "$out"
+out=$(detect_distro almalinux "")
+assert_eq "detect_distro ID=almalinux family" rhel "$out"
+out=$(detect_distro rocky "")
+assert_eq "detect_distro ID=rocky family" rhel "$out"
+out=$(detect_distro rhel "")
+assert_eq "detect_distro ID=rhel family" rhel "$out"
+out=$(detect_distro centos "rhel fedora")
+assert_eq "detect_distro ID=centos ID_LIKE='rhel fedora' family" rhel "$out"
+out=$(detect_distro someel "rhel")
+assert_eq "detect_distro unknown ID with ID_LIKE=rhel family" rhel "$out"
+detect_distro arch "" >/dev/null
+assert_eq "detect_distro ID=arch rejected" 1 $?
+detect_distro "" "" >/dev/null
+assert_eq "detect_distro empty ID rejected" 1 $?
+
+# detect_el_major
+
+out=$(detect_el_major 9)
+assert_eq "detect_el_major 9 value" 9 "$out"
+out=$(detect_el_major "9.4")
+assert_eq "detect_el_major 9.4 value" 9 "$out"
+out=$(detect_el_major 10)
+assert_eq "detect_el_major 10 value" 10 "$out"
+detect_el_major 8 >/dev/null
+assert_eq "detect_el_major 8 rejected" 1 $?
+detect_el_major "8.10" >/dev/null
+assert_eq "detect_el_major 8.10 rejected" 1 $?
+detect_el_major "" >/dev/null
+assert_eq "detect_el_major empty rejected" 1 $?
+
+# платформенные пути
+
+# Real assignments, not a prefix: apply_platform_paths and the functions
+# below read HOST_FAMILY/EL_MAJOR directly, past this call's scope.
+HOST_FAMILY=debian
+EL_MAJOR=""
+apply_platform_paths
+assert_eq "debian PG_UNIT" "postgresql" "$PG_UNIT"
+# shellcheck disable=SC2153 # PG_MAJOR — константа из сорсимого файла, не опечатка EL_MAJOR
+assert_eq "debian PG_PACKAGE" "postgresql-$PG_MAJOR" "$PG_PACKAGE"
+assert_eq "debian PG_BIN_DIR" "/usr/bin" "$PG_BIN_DIR"
+assert_eq "debian NGINX_SITE" "/etc/nginx/sites-available/gotcha" "$NGINX_SITE"
+assert_eq "debian REPO_DIR" "/etc/apt/sources.list.d" "$REPO_DIR"
+assert_eq "debian pg_conf_dir_label" "/etc/postgresql/*/main" "$(pg_conf_dir_label)"
+assert_eq "debian gpg package hint" "gnupg" "${PKG_HINTS[gpg]}"
+
+# shellcheck disable=SC2034 # прочитаны apply_platform_paths/pg_conf_dir_resolve, определёнными в сорсимом файле
+HOST_FAMILY=rhel
+# shellcheck disable=SC2034 # прочитан apply_platform_paths, определённой в сорсимом файле
+EL_MAJOR=9
+apply_platform_paths
+assert_eq "rhel PG_UNIT" "postgresql-$PG_MAJOR" "$PG_UNIT"
+assert_eq "rhel PG_PACKAGE" "postgresql${PG_MAJOR}-server" "$PG_PACKAGE"
+assert_eq "rhel PG_BIN_DIR" "/usr/pgsql-$PG_MAJOR/bin" "$PG_BIN_DIR"
+assert_eq "rhel NGINX_SITE" "/etc/nginx/conf.d/gotcha.conf" "$NGINX_SITE"
+assert_eq "rhel REPO_DIR" "/etc/yum.repos.d" "$REPO_DIR"
+assert_eq "rhel pg_conf_dir_label" "/var/lib/pgsql/$PG_MAJOR/data" "$(pg_conf_dir_label)"
+assert_eq "rhel pg_conf_dir_resolve" "/var/lib/pgsql/$PG_MAJOR/data" "$(pg_conf_dir_resolve)"
+assert_eq "rhel gpg package hint" "gnupg2" "${PKG_HINTS[gpg]}"
+assert_eq "rhel ss package hint" "iproute" "${PKG_HINTS[ss]}"
+
+# port_owner_units
+
+HOST_FAMILY=rhel
+EL_MAJOR=9
+apply_platform_paths
+assert_eq "rhel port 5432 owner" "postgresql-$PG_MAJOR" "$(port_owner_units 5432)"
+assert_eq "rhel port 80 owners" "nginx
+angie" "$(port_owner_units 80)"
+assert_eq "rhel port 8080 owner" "gotcha" "$(port_owner_units 8080)"
+assert_eq "rhel port 9000 owner" "clickhouse-server" "$(port_owner_units 9000)"
+
+# shellcheck disable=SC2034 # прочитаны apply_platform_paths, определённой в сорсимом файле
+HOST_FAMILY=debian
+# shellcheck disable=SC2034 # прочитан apply_platform_paths, определённой в сорсимом файле
+EL_MAJOR=""
+apply_platform_paths
+assert_eq "debian port 5432 owner" "postgresql" "$(port_owner_units 5432)"
+assert_eq "debian port 80 owners" "nginx
+angie" "$(port_owner_units 80)"
+
+# required_commands
+
+assert_eq "debian required commands" "curl
+tar
+gpg
+openssl
+sha256sum
+ss
+sudo" "$(required_commands debian "")"
+assert_eq "debian required commands, --skip-databases" "curl
+tar
+gpg
+openssl
+sha256sum
+ss" "$(required_commands debian 1)"
+assert_eq "rhel required commands" "curl
+tar
+gpg
+openssl
+sha256sum
+ss
+rpm
+dnf
+sudo" "$(required_commands rhel "")"
+assert_eq "rhel required commands, --skip-databases" "curl
+tar
+gpg
+openssl
+sha256sum
+ss
+rpm
+dnf" "$(required_commands rhel 1)"
 
 # detect_arch
 
@@ -252,7 +364,7 @@ for directive in \
     "RestartSec=5" \
     "StateDirectory=gotcha" \
     "StateDirectoryMode=0700" \
-    "After=postgresql.service clickhouse-server.service network-online.target"; do
+    "After=postgresql.service postgresql-17.service clickhouse-server.service network-online.target"; do
     assert_contains "render_unit contains $directive" "$unit" "$directive"
 done
 
@@ -313,6 +425,7 @@ assert_contains "render_nginx_site marks the file as ours" "$site" "$NGINX_SITE_
 # verify_loopback_only — ветка отказа на живом хосте не воспроизводится, поэтому
 # ss подменяется функцией; фактический bind проверяет e2e.
 
+# shellcheck disable=SC2317 # вызывается сорсимым файлом как внешняя команда ss, а не отсюда
 ss() { printf '%s\n' "$SS_STUB_OUT"; }
 
 SS_STUB_OUT='LISTEN 0 244 127.0.0.1:5432 0.0.0.0:*'
@@ -353,6 +466,291 @@ pg_conf=$(render_pg_conf)
 assert_contains "render_pg_conf random_page_cost" "$pg_conf" "random_page_cost = 1.1"
 assert_contains "render_pg_conf effective_io_concurrency" "$pg_conf" "effective_io_concurrency = 200"
 
+# render_pgdg_repo
+
+# shellcheck disable=SC2034 # прочитана apply_platform_paths, определённой в сорсимом файле
+HOST_FAMILY=rhel
+# shellcheck disable=SC2034 # прочитана apply_platform_paths, определённой в сорсимом файле
+EL_MAJOR=9
+apply_platform_paths
+out=$(render_pgdg_repo 9)
+assert_contains "pgdg repo has pgdg-common section" "$out" "[pgdg-common]"
+assert_contains "pgdg repo has the major section" "$out" "[pgdg$PG_MAJOR]"
+assert_contains "pgdg repo common baseurl" "$out" \
+    "https://download.postgresql.org/pub/repos/yum/common/redhat/rhel-9-\$basearch"
+assert_contains "pgdg repo major baseurl" "$out" \
+    "https://download.postgresql.org/pub/repos/yum/$PG_MAJOR/redhat/rhel-9-\$basearch"
+assert_contains "pgdg repo verifies packages" "$out" "gpgcheck=1"
+assert_contains "pgdg repo verifies metadata" "$out" "repo_gpgcheck=1"
+assert_contains "pgdg repo trusts a local key file" "$out" "gpgkey=file:///etc/pki/rpm-gpg/gotcha-pgdg.asc"
+out=$(render_pgdg_repo 10)
+assert_contains "pgdg repo for EL10" "$out" "redhat/rhel-10-\$basearch"
+
+# render_clickhouse_repo
+
+# shellcheck disable=SC2034 # прочитана apply_platform_paths, определённой в сорсимом файле
+HOST_FAMILY=rhel
+# shellcheck disable=SC2034 # прочитана apply_platform_paths, определённой в сорсимом файле
+EL_MAJOR=9
+apply_platform_paths
+out=$(render_clickhouse_repo)
+assert_contains "clickhouse repo baseurl" "$out" "https://packages.clickhouse.com/rpm/stable/"
+# gpgcheck=0: пакеты ClickHouse не подписаны индивидуально, как и в их собственном
+# packages.clickhouse.com/rpm/clickhouse.repo — доверие даёт repo_gpgcheck ниже.
+assert_contains "clickhouse repo does not require per-package signatures" "$out" $'\ngpgcheck=0\n'
+assert_contains "clickhouse repo verifies metadata" "$out" "repo_gpgcheck=1"
+assert_contains "clickhouse repo trusts a local key file" "$out" \
+    "gpgkey=file:///etc/pki/rpm-gpg/gotcha-clickhouse.asc"
+
+# clickhouse_version_from_dnf_list
+
+out=$(printf '%s\n' \
+    'clickhouse-server.noarch    25.8.1.1-1    gotcha-clickhouse' \
+    'clickhouse-server.noarch    25.3.14.14-1    gotcha-clickhouse' \
+    'clickhouse-server.noarch    25.3.9.1-1    gotcha-clickhouse' \
+    'clickhouse-server.noarch    125.3.1.1-1    gotcha-clickhouse' \
+    'clickhouse-server.noarch    25.30.1.1-1    gotcha-clickhouse' \
+    | clickhouse_version_from_dnf_list)
+assert_eq "dnf list picks the newest 25.3 patch, not a decoy that merely contains 25.3." \
+    "25.3.14.14-1" "$out"
+
+# dnf переносит длинные строки: версия оказывается на следующей строке с отступом
+out=$(printf '%s\n' \
+    'clickhouse-server.noarch' \
+    '                            25.3.14.14-1    gotcha-clickhouse' \
+    | clickhouse_version_from_dnf_list)
+assert_eq "dnf list wrapped line parsed" "25.3.14.14-1" "$out"
+
+out=$(printf '%s\n' 'clickhouse-server.noarch    24.8.1.1-1    gotcha-clickhouse' \
+    | clickhouse_version_from_dnf_list)
+assert_eq "dnf list without a matching major returns empty" "" "$out"
+
+# 125.3.1.1-1 содержит "25.3." не с начала, 25.30.1.1-1 — с другим минором:
+# обе строки не версия 25.3.x, только похожи на неё как подстрока.
+out=$(printf '%s\n' \
+    'clickhouse-server.noarch    125.3.1.1-1    gotcha-clickhouse' \
+    'clickhouse-server.noarch    25.30.1.1-1    gotcha-clickhouse' \
+    | clickhouse_version_from_dnf_list)
+assert_eq "dnf list rejects versions that only contain 25.3. as a substring" "" "$out"
+
+# nginx_site_disabled_path
+
+# shellcheck disable=SC2034 # прочитана apply_platform_paths, определённой в сорсимом файле
+HOST_FAMILY=rhel
+# shellcheck disable=SC2034 # прочитана apply_platform_paths, определённой в сорсимом файле
+EL_MAJOR=9
+apply_platform_paths
+assert_eq "rhel nginx disabled-site path" "/etc/nginx/conf.d/gotcha.conf.disabled" \
+    "$(nginx_site_disabled_path)"
+# shellcheck disable=SC2034 # прочитана apply_platform_paths, определённой в сорсимом файле
+HOST_FAMILY=debian
+# shellcheck disable=SC2034 # прочитана apply_platform_paths, определённой в сорсимом файле
+EL_MAJOR=""
+apply_platform_paths
+assert_eq "debian nginx disabled-site path" "/etc/nginx/sites-available/gotcha.disabled" \
+    "$(nginx_site_disabled_path)"
+
+# pg_hba_host_method_is_password
+
+printf 'host all all 127.0.0.1/32 scram-sha-256\n' | pg_hba_host_method_is_password
+assert_eq "pg_hba scram is a password method" 0 $?
+printf 'host all all 127.0.0.1/32 md5\n' | pg_hba_host_method_is_password
+assert_eq "pg_hba md5 is a password method" 0 $?
+printf 'host all all 127.0.0.1/32 ident\n' | pg_hba_host_method_is_password
+assert_eq "pg_hba ident is not a password method" 1 $?
+printf 'host all all 127.0.0.1/32 reject\n' | pg_hba_host_method_is_password
+assert_eq "pg_hba reject is not a password method" 1 $?
+printf '# host all all 127.0.0.1/32 scram-sha-256\n' | pg_hba_host_method_is_password
+assert_eq "pg_hba commented line does not count" 1 $?
+printf 'host all all ::1/128 scram-sha-256\n' | pg_hba_host_method_is_password
+assert_eq "pg_hba ipv6-only line does not count for 127.0.0.1" 1 $?
+
+# ensure_include_dir — идемпотентная дописка
+
+tmpconf=$(mktemp)
+printf "#include_dir = 'conf.d'\n" >"$tmpconf"
+ensure_include_dir "$tmpconf"
+ensure_include_dir "$tmpconf"
+assert_eq "include_dir appended exactly once" 1 "$(grep -c "^include_dir = 'conf.d'" "$tmpconf")"
+assert_eq "include_dir marker present" 1 "$(grep -cF "$PG_INCLUDE_MARKER" "$tmpconf")"
+rm -f "$tmpconf"
+
+# remove_marker_block — снятие дописки по маркеру на реальных файлах RHEL PG17
+# (снятые копии /var/lib/pgsql/17/data/{postgresql,pg_hba}.conf после initdb)
+
+tmpconf=$(mktemp)
+cp "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample" "$tmpconf"
+ensure_include_dir "$tmpconf"
+remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
+assert_eq "remove_marker_block restores postgresql.conf byte-for-byte" "" \
+    "$(diff "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample" "$tmpconf")"
+remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
+assert_eq "remove_marker_block on an already-clean file is a no-op" "" \
+    "$(diff "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample" "$tmpconf")"
+rm -f "$tmpconf"
+
+tmphba=$(mktemp)
+cp "$SCRIPT_DIR/testdata/pg_hba.conf.rhel-sample" "$tmphba"
+printf '%s\nhost all all 127.0.0.1/32 scram-sha-256\n' "$PG_INCLUDE_MARKER" >>"$tmphba"
+remove_marker_block "$PG_INCLUDE_MARKER" "$tmphba"
+assert_eq "remove_marker_block restores pg_hba.conf byte-for-byte" "" \
+    "$(diff "$SCRIPT_DIR/testdata/pg_hba.conf.rhel-sample" "$tmphba")"
+rm -f "$tmphba"
+
+remove_marker_block "$PG_INCLUDE_MARKER" /nonexistent/gotcha-purge-test
+assert_eq "remove_marker_block on a missing file is a no-op, not an error" 0 $?
+
+# remove_marker_block — контент, дописанный ОПЕРАТОРОМ после нашей пары, обязан уцелеть
+
+tmpconf=$(mktemp)
+cp "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample" "$tmpconf"
+ensure_include_dir "$tmpconf"
+printf "shared_preload_libraries = 'pg_stat_statements'\n" >>"$tmpconf"
+remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
+assert_eq "remove_marker_block keeps operator content written after the marker pair (postgresql.conf)" \
+    "shared_preload_libraries = 'pg_stat_statements'" "$(tail -n1 "$tmpconf")"
+assert_eq "remove_marker_block touches nothing but the marker pair itself (postgresql.conf)" \
+    "$(cat "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample"; printf "shared_preload_libraries = 'pg_stat_statements'\n")" \
+    "$(cat "$tmpconf")"
+rm -f "$tmpconf"
+
+tmphba=$(mktemp)
+cp "$SCRIPT_DIR/testdata/pg_hba.conf.rhel-sample" "$tmphba"
+printf '%s\nhost all all 127.0.0.1/32 scram-sha-256\n' "$PG_INCLUDE_MARKER" >>"$tmphba"
+printf 'host all all 10.0.0.0/8 reject\n' >>"$tmphba"
+remove_marker_block "$PG_INCLUDE_MARKER" "$tmphba"
+assert_eq "remove_marker_block keeps operator content written after the marker pair (pg_hba.conf)" \
+    "host all all 10.0.0.0/8 reject" "$(tail -n1 "$tmphba")"
+rm -f "$tmphba"
+
+# remove_marker_block — маркер как ПОДСТРОКА чужой строки не считается маркерной строкой
+
+tmpconf=$(mktemp)
+printf '# note: mentions "%s" for reference\nkeep_this = on\n' "$PG_INCLUDE_MARKER" >"$tmpconf"
+remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
+assert_eq "remove_marker_block leaves a line where the marker is only a substring" 2 "$(wc -l <"$tmpconf")"
+assert_contains "remove_marker_block does not strip the substring-marker line itself" \
+    "$(cat "$tmpconf")" "$PG_INCLUDE_MARKER"
+rm -f "$tmpconf"
+
+# remove_marker_block — файл без маркера вообще не переписывается (инод и mtime,
+# не только содержимое: перезапись через одинаковый контент осталась бы незамеченной)
+
+tmpconf=$(mktemp)
+printf 'unrelated = 1\nmore = 2\n' >"$tmpconf"
+touch -d '2020-01-01 00:00:00' "$tmpconf"
+inode_before=$(stat -c '%i' "$tmpconf")
+mtime_before=$(stat -c '%Y' "$tmpconf")
+remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
+assert_eq "remove_marker_block without the marker does not rewrite the file (inode)" \
+    "$inode_before" "$(stat -c '%i' "$tmpconf")"
+assert_eq "remove_marker_block without the marker does not rewrite the file (mtime)" \
+    "$mtime_before" "$(stat -c '%Y' "$tmpconf")"
+rm -f "$tmpconf"
+
+# remove_marker_block — маркер встретился дважды: обе пары снимаются, остальное цело
+
+tmpconf=$(mktemp)
+printf 'before = 1\n%s\npayload1 = a\nmiddle = 2\n%s\npayload2 = b\nafter = 3\n' \
+    "$PG_INCLUDE_MARKER" "$PG_INCLUDE_MARKER" >"$tmpconf"
+remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
+assert_eq "remove_marker_block removes every marker+payload pair, not only the first" \
+    "before = 1
+middle = 2
+after = 3" "$(cat "$tmpconf")"
+rm -f "$tmpconf"
+
+# remove_marker_block — перезапись сохраняет режим файла; владелец/SELinux-контекст
+# проверяет e2e на EL (здесь нет root/postgres для достоверного chown).
+
+tmpconf=$(mktemp)
+cp "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample" "$tmpconf"
+chmod 0600 "$tmpconf"
+ensure_include_dir "$tmpconf"
+remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
+assert_eq "remove_marker_block preserves the file mode" "600" "$(stat -c '%a' "$tmpconf")"
+rm -f "$tmpconf"
+
+# remove_marker_block — $file симлинк на конфиг под системой конфигурации: симлинк
+# остаётся симлинком на тот же таргет, содержимое и права таргета — как в happy-path.
+
+tmpdir=$(mktemp -d)
+target="$tmpdir/real-postgresql.conf"
+link="$tmpdir/postgresql.conf"
+cp "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample" "$target"
+chmod 0640 "$target"
+ln -s "$target" "$link"
+ensure_include_dir "$link"
+printf "shared_preload_libraries = 'pg_stat_statements'\n" >>"$link"
+remove_marker_block "$PG_INCLUDE_MARKER" "$link"
+assert_eq "remove_marker_block leaves the symlink in place, pointing at its target" \
+    "symlink:$target" "$([ -L "$link" ] && printf 'symlink:%s' "$(readlink -f "$link")" || printf 'not-a-symlink')"
+assert_eq "remove_marker_block through a symlink keeps content written after the marker pair" \
+    "shared_preload_libraries = 'pg_stat_statements'" "$(tail -n1 "$target")"
+assert_eq "remove_marker_block through a symlink does not wipe the target" \
+    "$(cat "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample"; printf "shared_preload_libraries = 'pg_stat_statements'\n")" \
+    "$(cat "$target")"
+assert_eq "remove_marker_block through a symlink preserves the target's mode" "640" "$(stat -c '%a' "$target")"
+rm -rf "$tmpdir"
+
+# remove_marker_block — временный файл не создать (директория без прав на запись):
+# возвращает 1, ничего не оставляет за собой. Под root пропускается.
+
+if [ "$(id -u)" = 0 ]; then
+    printf 'note: running as root, skipping the remove_marker_block read-only-directory case\n'
+else
+    tmpdir=$(mktemp -d)
+    tmpconf="$tmpdir/postgresql.conf"
+    cp "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample" "$tmpconf"
+    ensure_include_dir "$tmpconf"
+    chmod 555 "$tmpdir"
+    remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
+    assert_eq "remove_marker_block returns 1 when the temp file cannot be created" 1 $?
+    chmod 755 "$tmpdir"
+    assert_eq "remove_marker_block leaves no temp file behind after a cp -a failure" "" \
+        "$(find "$tmpdir" -maxdepth 1 -name '*.gotcha-tmp')"
+    rm -rf "$tmpdir"
+fi
+
+# remove_marker_block — awk отказывает: возвращает 1, временный файл убран за собой
+
+stubdir=$(mktemp -d)
+printf '#!/bin/sh\nexit 1\n' >"$stubdir/awk"
+chmod +x "$stubdir/awk"
+tmpconf=$(mktemp)
+cp "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample" "$tmpconf"
+ensure_include_dir "$tmpconf"
+PATH="$stubdir:$PATH" remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
+assert_eq "remove_marker_block returns 1 when awk fails" 1 $?
+assert_eq "remove_marker_block removes its temp file when awk fails" "" \
+    "$(find "$(dirname "$tmpconf")" -maxdepth 1 -name "$(basename "$tmpconf").gotcha-tmp")"
+rm -f "$tmpconf"
+rm -rf "$stubdir"
+
+# remove_marker_block — cp -a падает ПОСЛЕ того, как содержимое уже скопировано
+# (сохранение прав/контекста не поддержано ФС) — без || return 1 awk и mv прошли бы молча.
+
+stubdir=$(mktemp -d)
+# shellcheck disable=SC2016 # literal $2/$3 for the stub script, not expanded here
+printf '#!/bin/sh\ncat "$2" >"$3" 2>/dev/null\nexit 1\n' >"$stubdir/cp"
+chmod +x "$stubdir/cp"
+tmpconf=$(mktemp)
+cp "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample" "$tmpconf"
+ensure_include_dir "$tmpconf"
+before=$(cat "$tmpconf")
+PATH="$stubdir:$PATH" remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
+assert_eq "remove_marker_block returns 1 when cp -a fails after creating the temp file" 1 $?
+assert_eq "remove_marker_block leaves the original file untouched when cp -a fails" "$before" "$(cat "$tmpconf")"
+assert_contains "remove_marker_block leaves the marker in place when cp -a fails" "$(cat "$tmpconf")" "$PG_INCLUDE_MARKER"
+rm -f "$tmpconf"
+rm -rf "$stubdir"
+
+# verify_key_fingerprint отвергает файл с двумя основными ключами
+
+out=$( (verify_key_fingerprint "$SCRIPT_DIR/testdata/two-pub-keys.asc" DEADBEEF) 2>&1 )
+assert_eq "two primary keys rejected" "$EXIT_DATABASE" $?
+assert_contains "two primary keys message" "$out" "exactly one primary key"
+
 # dist_url
 
 out=$(dist_url "https://github.com/OtezVikentiy/gotcha/releases/download" "1.6.1" "amd64")
@@ -364,6 +762,71 @@ assert_eq "dist_url arm64" \
 out=$(dist_url "https://mirror.example/base/" "2.0.0" "amd64")
 assert_eq "dist_url honors --download-base (trailing slash stripped)" \
     "https://mirror.example/base/v2.0.0/gotcha-2.0.0-linux-amd64.tar.gz" "$out"
+
+# selinux_needs_boolean
+
+selinux_needs_boolean Enforcing ""
+assert_eq "selinux enforcing without --no-proxy needs the boolean" 0 $?
+selinux_needs_boolean Enforcing 1
+assert_eq "selinux enforcing with --no-proxy skips the boolean" 1 $?
+selinux_needs_boolean Permissive ""
+assert_eq "selinux permissive skips the boolean" 1 $?
+selinux_needs_boolean Disabled ""
+assert_eq "selinux disabled skips the boolean" 1 $?
+selinux_needs_boolean "" ""
+assert_eq "selinux utilities missing skips the boolean" 1 $?
+
+# selinux_tooling_missing_notice
+
+out=$(selinux_tooling_missing_notice "" 1)
+assert_eq "tools missing, kernel enforcing prints a notice" \
+    "SELinux: kernel policy is Enforcing but SELinux userspace tools (getenforce/setsebool) are missing — httpd_can_network_connect was left untouched, nginx may not be able to reach gotcha (502); install policycoreutils and run: setsebool -P httpd_can_network_connect 1" \
+    "$out"
+out=$(selinux_tooling_missing_notice "" "")
+rc=$?
+assert_eq "tools missing, kernel not enforcing prints nothing" "" "$out"
+assert_eq "tools missing, kernel not enforcing reports failure" 1 "$rc"
+out=$(selinux_tooling_missing_notice 1 1)
+rc=$?
+assert_eq "tools present prints nothing even if kernel enforcing" "" "$out"
+assert_eq "tools present reports failure" 1 "$rc"
+
+# firewall_decision
+
+assert_eq "firewalld running, --yes opens" open "$(firewall_decision running "" 1 "")"
+assert_eq "firewalld running, interactive asks" ask "$(firewall_decision running "" "" "")"
+assert_eq "firewalld running, --no-firewall skips" skip "$(firewall_decision running 1 "" "")"
+assert_eq "--no-firewall beats --yes" skip "$(firewall_decision running 1 1 "")"
+assert_eq "firewalld running, --no-proxy skips" skip "$(firewall_decision running "" 1 1)"
+assert_eq "firewalld not running skips" skip "$(firewall_decision "not running" "" 1 "")"
+assert_eq "firewall-cmd missing skips" skip "$(firewall_decision "" "" 1 "")"
+
+# firewall_skip_notice
+
+out=$(firewall_skip_notice "not running" "" "")
+assert_eq "not-running state prints a not-detected notice" \
+    "firewalld: not detected or not running — ports 80 and 443 were left untouched, open them yourself if this host uses a firewall" \
+    "$out"
+out=$(firewall_skip_notice "" "" "")
+assert_eq "firewall-cmd missing (empty state) prints the same not-detected notice" \
+    "firewalld: not detected or not running — ports 80 and 443 were left untouched, open them yourself if this host uses a firewall" \
+    "$out"
+out=$(firewall_skip_notice running "" 1)
+assert_eq "running but operator declined prints a declined notice, not not-detected" \
+    "firewalld: left closed at your request — ports 80 and 443 were not opened, open them yourself: firewall-cmd --permanent --add-service=http --add-service=https && firewall-cmd --reload" \
+    "$out"
+out=$(firewall_skip_notice running "" "")
+rc=$?
+assert_eq "running and not declined prints nothing" "" "$out"
+assert_eq "running and not declined reports failure" 1 "$rc"
+out=$(firewall_skip_notice "not running" 1 "")
+rc=$?
+assert_eq "--no-firewall skip prints nothing regardless of state" "" "$out"
+assert_eq "--no-firewall skip reports failure" 1 "$rc"
+out=$(firewall_skip_notice running 1 1)
+rc=$?
+assert_eq "--no-firewall wins even over a declined answer" "" "$out"
+assert_eq "--no-firewall over declined reports failure" 1 "$rc"
 
 if [ "$FAILURES" -gt 0 ]; then
     printf '%d assertion(s) failed\n' "$FAILURES" >&2

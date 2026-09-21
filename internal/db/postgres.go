@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -15,6 +16,10 @@ const pgPoolMaxConns = 20
 // исчерпать весь пул в одиночку — значение GUC statement_timeout, мс.
 const pgStatementTimeout = "30000"
 
+// Дефолт pgxpool пингует только простоявшие в пуле ≥1с — здесь безусловно,
+// своим таймаутом (pgxpool берёт min(ctx, PingTimeout)), не контекстом вызывающего.
+const pgAcquirePingTimeout = 50 * time.Millisecond
+
 func NewPostgres(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -25,6 +30,8 @@ func NewPostgres(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 		cfg.ConnConfig.RuntimeParams = make(map[string]string, 1)
 	}
 	cfg.ConnConfig.RuntimeParams["statement_timeout"] = pgStatementTimeout
+	cfg.ShouldPing = func(context.Context, pgxpool.ShouldPingParams) bool { return true }
+	cfg.PingTimeout = pgAcquirePingTimeout
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

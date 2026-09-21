@@ -19,12 +19,26 @@ concurrency:
 
 jobs:
   matrix:
-    name: bare-metal установка (${{ matrix.image }})
+    name: bare-metal установка (${{ matrix.image }}, ${{ matrix.arch }})
     strategy:
       fail-fast: false
+      # covers — единственное место, где живёт решение «покрывает ещё и RHEL»;
+      # internal/guards/bare_metal_docs_test.go сверяет его с allowlist и докой.
       matrix:
-        image: [debian:12, debian:13, ubuntu:24.04, ubuntu:26.04]
-    runs-on: ubuntu-latest
+        include:
+          - { image: almalinux:9,              arch: amd64, runner: ubuntu-24.04,     covers: "AlmaLinux 9, RHEL 9" }
+          - { image: almalinux:9,              arch: arm64, runner: ubuntu-24.04-arm, covers: "AlmaLinux 9, RHEL 9" }
+          - { image: almalinux:10,             arch: amd64, runner: ubuntu-24.04,     covers: "AlmaLinux 10, RHEL 10" }
+          - { image: almalinux:10,             arch: arm64, runner: ubuntu-24.04-arm, covers: "AlmaLinux 10, RHEL 10" }
+          - { image: rockylinux/rockylinux:9,  arch: amd64, runner: ubuntu-24.04,     covers: "Rocky Linux 9" }
+          - { image: rockylinux/rockylinux:9,  arch: arm64, runner: ubuntu-24.04-arm, covers: "Rocky Linux 9" }
+          - { image: rockylinux/rockylinux:10, arch: amd64, runner: ubuntu-24.04,     covers: "Rocky Linux 10" }
+          - { image: rockylinux/rockylinux:10, arch: arm64, runner: ubuntu-24.04-arm, covers: "Rocky Linux 10" }
+          - { image: "debian:12",              arch: amd64, runner: ubuntu-24.04,     covers: "Debian 12" }
+          - { image: "debian:13",              arch: amd64, runner: ubuntu-24.04,     covers: "Debian 13" }
+          - { image: "ubuntu:24.04",           arch: amd64, runner: ubuntu-24.04,     covers: "Ubuntu 24.04" }
+          - { image: "ubuntu:26.04",           arch: amd64, runner: ubuntu-24.04,     covers: "Ubuntu 26.04" }
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
@@ -38,16 +52,30 @@ jobs:
       # старой версии, а не только свежую установку.
       - name: собрать тарболы поставки (старая + новая версия)
         run: |
-          bash scripts/build-dist.sh --version 0.0.0 --arch amd64 --out dist
-          bash scripts/build-dist.sh --version 0.0.1 --arch amd64 --out dist
+          bash scripts/build-dist.sh --version 0.0.0 --arch ${{ matrix.arch }} --out dist
+          bash scripts/build-dist.sh --version 0.0.1 --arch ${{ matrix.arch }} --out dist
 
+      # Выбор Dockerfile — по matrix.image. Образы *-minimal не используем:
+      # в них microdnf вместо dnf.
       - name: собрать образ с systemd поверх ${{ matrix.image }}
         run: |
+          case "${{ matrix.image }}" in
+            debian:*|ubuntu:*)
           cat >Dockerfile.bare-metal-systemd <<EOF
           FROM ${{ matrix.image }}
           RUN apt-get update && apt-get install -y systemd systemd-sysv dbus curl gpg iproute2 sudo procps \
               && apt-get clean
           EOF
+              ;;
+            *)
+          cat >Dockerfile.bare-metal-systemd <<EOF
+          FROM ${{ matrix.image }}
+          # curl-minimal уже даёт /usr/bin/curl и конфликтует с полным curl.
+          RUN dnf -y install systemd procps-ng iproute sudo gnupg2 tar openssl which \
+              && dnf clean all
+          EOF
+              ;;
+          esac
           docker build -t bare-metal-systemd -f Dockerfile.bare-metal-systemd .
 
       - name: запустить контейнер с /sbin/init
@@ -82,7 +110,7 @@ jobs:
       - name: install-bare-metal.sh в контейнере (${{ matrix.image }})
         run: |
           docker exec bm bash -lc \
-            'CI=true bash /scripts/bare-metal-e2e.sh --tarball /dist/gotcha-0.0.1-linux-amd64.tar.gz --upgrade-from /dist/gotcha-0.0.0-linux-amd64.tar.gz'
+            'CI=true bash /scripts/bare-metal-e2e.sh --tarball /dist/gotcha-0.0.1-linux-${{ matrix.arch }}.tar.gz --upgrade-from /dist/gotcha-0.0.0-linux-${{ matrix.arch }}.tar.gz'
 
       - name: логи сервисов при отказе
         if: failure()
@@ -100,10 +128,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-24.04
-            arch: amd64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
+          - { runner: ubuntu-24.04,     arch: amd64, covers: "Ubuntu 24.04" }
+          - { runner: ubuntu-24.04-arm, arch: arm64, covers: "Ubuntu 24.04" }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
