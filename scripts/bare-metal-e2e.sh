@@ -472,6 +472,22 @@ preflight_requires_command() {
         || { printf 'missing "%s is required" in output:\n%s\n' "$cmd" "$output" >&2; return 1; }
 }
 
+# --dry-run обязан печатать пути из платформенных констант, а не debian-литерал —
+# отдельная проверка без побочных эффектов, до самого запуска установки.
+dry_run_prints_platform_paths() {
+    local out
+    out=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" \
+        --yes --dry-run 2>&1)
+    case "$out" in
+        *"$(pg_conf_dir_label)/conf.d/10-gotcha.conf"*) ;;
+        *) printf 'dry-run did not print %s/conf.d/10-gotcha.conf:\n%s\n' "$(pg_conf_dir_label)" "$out" >&2; return 1 ;;
+    esac
+    case "$out" in
+        *"$NGINX_SITE"*) ;;
+        *) printf 'dry-run did not name the nginx site path (%s):\n%s\n' "$NGINX_SITE" "$out" >&2; return 1 ;;
+    esac
+}
+
 assert "a busy port 80 blocks preflight before anything is installed" port80_busy_blocks_preflight
 assert "preflight refuses without ss, which the port check needs" preflight_requires_command ss
 assert "preflight refuses without sudo, which the database steps need" preflight_requires_command sudo
@@ -480,6 +496,7 @@ if [ "$HOST_FAMILY" = rhel ]; then
     assert "preflight refuses without dnf, which package installs need" preflight_requires_command dnf
 fi
 assert "a mid-install failure reports the exit code, completed steps and a hint" policy_failure_reports_steps_and_hint
+assert "--dry-run prints paths from the platform layer, not a debian literal" dry_run_prints_platform_paths
 
 # Симулирует чужой конфиг сайта, уже лежащий на месте нашего: install_nginx
 # обязан унести его в *.bak-<метка времени>, а не переписать без следа.
@@ -833,6 +850,14 @@ uninstall_removes_unit_and_binary_keeps_data() {
     clickhouse_repo_file_present || { printf 'ClickHouse repository removed by --uninstall\n' >&2; return 1; }
 }
 
+# После --uninstall gotcha больше нет за проксёй — запрос по IP обязан попасть
+# на штатную страницу nginx, а не зависнуть в 502 (стек всё ещё висит на порту 80).
+ip_request_falls_back_to_default_nginx_page() {
+    local code
+    code=$(curl -s -o /dev/null -w '%{http_code}' "http://$(external_ip)/")
+    [ "$code" != 502 ] || { printf 'nginx answers 502 after --uninstall\n' >&2; return 1; }
+}
+
 certbot_site_survives_uninstall_reinstall() {
     grep -qF 'listen 443 ssl;' "$NGINX_SITE" \
         || { printf 'TLS block missing from %s after --uninstall + reinstall\n' "$NGINX_SITE" >&2; return 1; }
@@ -871,9 +896,16 @@ purge_removes_data_and_databases_keeps_packages() {
     ! id -u gotcha >/dev/null 2>&1 || { printf 'system user gotcha still exists after --purge\n' >&2; return 1; }
 
     # Наши дропины в каталогах чужих пакетов: пакеты остаются, конфиги уходят.
-    local pg_conf
-    pg_conf="$(pg_conf_dir_resolve)/conf.d/10-gotcha.conf"
+    local pg_conf pg_dir
+    pg_dir=$(pg_conf_dir_resolve)
+    pg_conf="$pg_dir/conf.d/10-gotcha.conf"
     [ ! -f "$pg_conf" ] || { printf '%s still present after --purge\n' "$pg_conf" >&2; return 1; }
+    if [ "$HOST_FAMILY" = rhel ]; then
+        ! grep -qF "$PG_INCLUDE_MARKER" "$pg_dir/postgresql.conf" \
+            || { printf '%s/postgresql.conf still carries %s after --purge\n' "$pg_dir" "$PG_INCLUDE_MARKER" >&2; return 1; }
+        ! grep -qF "$PG_INCLUDE_MARKER" "$pg_dir/pg_hba.conf" \
+            || { printf '%s/pg_hba.conf still carries %s after --purge\n' "$pg_dir" "$PG_INCLUDE_MARKER" >&2; return 1; }
+    fi
     [ ! -f /etc/clickhouse-server/config.d/00-common.xml ] \
         || { printf 'clickhouse config.d/00-common.xml still present after --purge\n' >&2; return 1; }
     [ ! -f /etc/clickhouse-server/config.d/10-small.xml ] \
@@ -953,6 +985,7 @@ run_assertions() {
     assert "EPEL and certbot are installed when --domain is given, without rolling back on a certbot failure" epel_enabled_with_domain
 
     assert "--uninstall removes the unit and binary, keeps data/databases/packages/repos" uninstall_removes_unit_and_binary_keeps_data
+    assert "a request by IP falls back to the default nginx page after --uninstall" ip_request_falls_back_to_default_nginx_page
     assert "--purge without confirmation and without --yes refuses" purge_without_confirmation_refuses
     assert "re-installing after --uninstall succeeds" reinstall_after_uninstall_succeeds
     assert "a certbot-edited nginx site survives --uninstall and a reinstall" certbot_site_survives_uninstall_reinstall

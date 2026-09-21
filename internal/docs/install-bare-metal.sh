@@ -852,6 +852,19 @@ ensure_include_dir() {
     printf '%s\ninclude_dir = %s\n' "$PG_INCLUDE_MARKER" "'conf.d'" >>"$1"
 }
 
+# Снимает ровно ту пару строк, которую дописали ensure_include_dir/install_postgresql
+# под $PG_INCLUDE_MARKER — по содержимому маркера, не по номеру строки.
+remove_marker_block() {
+    local marker="$1" file="$2"
+    [ -f "$file" ] || return 0
+    grep -qF "$marker" "$file" || return 0
+    awk -v m="$marker" '
+        $0 == m { skip = 2; next }
+        skip > 0 { skip--; next }
+        { print }
+    ' "$file" >"$file.gotcha-tmp" && mv "$file.gotcha-tmp" "$file"
+}
+
 # Возвращает через stdout DSN на 127.0.0.1; ставит пакет, роль и базу gotcha.
 # Код 3 — только для решения по мажору ниже, прочие отказы шага — код 5.
 install_postgresql() {
@@ -1331,7 +1344,13 @@ SQL
     # Перезапуск СУБД не делается намеренно — это чужие сервисы, их время выбирает оператор.
     local pg_conf_dir
     pg_conf_dir=$(pg_conf_dir_resolve)
-    [ -z "$pg_conf_dir" ] || rm -f "$pg_conf_dir/conf.d/10-gotcha.conf"
+    if [ -n "$pg_conf_dir" ]; then
+        rm -f "$pg_conf_dir/conf.d/10-gotcha.conf"
+        if [ "$HOST_FAMILY" = rhel ]; then
+            remove_marker_block "$PG_INCLUDE_MARKER" "$pg_conf_dir/postgresql.conf"
+            remove_marker_block "$PG_INCLUDE_MARKER" "$pg_conf_dir/pg_hba.conf"
+        fi
+    fi
     rm -f /etc/clickhouse-server/config.d/00-common.xml /etc/clickhouse-server/config.d/10-small.xml
     rm -f /etc/systemd/system/clickhouse-server.service.d/override.conf
     rmdir /etc/systemd/system/clickhouse-server.service.d 2>/dev/null || true
@@ -1414,11 +1433,11 @@ main() {
             "clickhouse://gotcha:<generated>@127.0.0.1:9000/gotcha" \
             "<generated>" "$base_url" "/opt/gotcha/agent-dist" "$gomemlimit" "127.0.0.1:8080"
         if [ -z "$ARG_NO_PROXY" ]; then
-            printf '[dry-run] would write nginx site (%s):\n' "${ARG_DOMAIN:-$host_ip}"
+            printf '[dry-run] would write %s:\n' "$NGINX_SITE"
             render_nginx_site "${ARG_DOMAIN:-$host_ip}"
         fi
         if [ -z "$ARG_SKIP_DATABASES" ]; then
-            printf '[dry-run] would write /etc/postgresql/*/main/conf.d/10-gotcha.conf:\n'
+            printf '[dry-run] would write %s/conf.d/10-gotcha.conf:\n' "$(pg_conf_dir_label)"
             render_pg_conf
         fi
         exit "$EXIT_OK"

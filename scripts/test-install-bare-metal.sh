@@ -576,6 +576,31 @@ assert_eq "include_dir appended exactly once" 1 "$(grep -c "^include_dir = 'conf
 assert_eq "include_dir marker present" 1 "$(grep -cF "$PG_INCLUDE_MARKER" "$tmpconf")"
 rm -f "$tmpconf"
 
+# remove_marker_block — снятие дописки по маркеру на реальных файлах RHEL PG17
+# (снятые копии /var/lib/pgsql/17/data/{postgresql,pg_hba}.conf после initdb)
+
+tmpconf=$(mktemp)
+cp "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample" "$tmpconf"
+ensure_include_dir "$tmpconf"
+remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
+assert_eq "remove_marker_block restores postgresql.conf byte-for-byte" "" \
+    "$(diff "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample" "$tmpconf")"
+remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
+assert_eq "remove_marker_block on an already-clean file is a no-op" "" \
+    "$(diff "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample" "$tmpconf")"
+rm -f "$tmpconf"
+
+tmphba=$(mktemp)
+cp "$SCRIPT_DIR/testdata/pg_hba.conf.rhel-sample" "$tmphba"
+printf '%s\nhost all all 127.0.0.1/32 scram-sha-256\n' "$PG_INCLUDE_MARKER" >>"$tmphba"
+remove_marker_block "$PG_INCLUDE_MARKER" "$tmphba"
+assert_eq "remove_marker_block restores pg_hba.conf byte-for-byte" "" \
+    "$(diff "$SCRIPT_DIR/testdata/pg_hba.conf.rhel-sample" "$tmphba")"
+rm -f "$tmphba"
+
+remove_marker_block "$PG_INCLUDE_MARKER" /nonexistent/gotcha-purge-test
+assert_eq "remove_marker_block on a missing file is a no-op, not an error" 0 $?
+
 # verify_key_fingerprint отвергает файл с двумя основными ключами
 
 out=$( (verify_key_fingerprint "$SCRIPT_DIR/testdata/two-pub-keys.asc" DEADBEEF) 2>&1 )
