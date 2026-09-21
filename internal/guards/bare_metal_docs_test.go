@@ -41,8 +41,8 @@ var imageDistroNames = map[string]string{
 	"ubuntu":     "Ubuntu",
 }
 
-// Шаг, где реально исполняется e2e-ассерт: continue-on-error/if здесь
-// маскировали бы упавшую установку (логи/снятие контейнера — не он).
+// Шаг, где реально исполняется e2e-ассерт: если здесь есть условие if,
+// ассерт может не выполниться и всё равно засчитаться (cleanup-шаги — законно).
 const assertingStepPrefix = "install-bare-metal.sh "
 
 func bareMetalDocPaths(root string) map[string]string {
@@ -251,13 +251,13 @@ func TestBareMetalDocClaimsOnlyTestedDistros(t *testing.T) {
 		}
 		assertingSeen := 0
 		for _, step := range job.Steps {
+			if step.ContinueOnError {
+				t.Errorf("bare-metal-nightly.yml: job %q шаг %q несёт continue-on-error: true — падение шага можно замаскировать", jobName, step.Name)
+			}
 			if !strings.HasPrefix(step.Name, assertingStepPrefix) {
 				continue
 			}
 			assertingSeen++
-			if step.ContinueOnError {
-				t.Errorf("bare-metal-nightly.yml: job %q шаг %q несёт continue-on-error: true — упавший e2e-ассерт засчитался бы подтверждающим", jobName, step.Name)
-			}
 			if step.If != "" {
 				t.Errorf("bare-metal-nightly.yml: job %q шаг %q несёт условие if: %q — ассерт может не выполниться и всё равно засчитаться", jobName, step.Name, step.If)
 			}
