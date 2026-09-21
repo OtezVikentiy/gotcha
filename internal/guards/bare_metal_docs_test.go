@@ -445,10 +445,13 @@ func TestBareMetalAptInstallsAreNonInteractive(t *testing.T) {
 		if aptSeen == 0 {
 			t.Errorf("%s: ни одной установки пакетов apt-get не найдено — сторож смотрит мимо файла", name)
 		}
-		// Дока ещё не несёт EL-ветку ручного пути (задача 9), dnf там пока нет;
-		// в инсталляторе dnf уже есть, и отсутствие строк там — сторож ослеп.
-		if name == "installer" && dnfSeen < 3 {
-			t.Errorf("%s: строк с dnf найдено %d (< 3) — сторож смотрит мимо файла", name, dnfSeen)
+		// Нулевой счётчик в любом источнике означает, что сторож смотрит мимо dnf.
+		threshold := 1
+		if name == "installer" {
+			threshold = 3
+		}
+		if dnfSeen < threshold {
+			t.Errorf("%s: строк с dnf найдено %d (< %d) — сторож смотрит мимо файла", name, dnfSeen, threshold)
 		}
 	}
 }

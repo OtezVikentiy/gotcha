@@ -2,13 +2,13 @@
 
 An alternative to the [Docker install](/docs/installation): Gotcha, PostgreSQL, and ClickHouse are installed as system packages directly on the host and run under systemd. This guide assumes the same level of preparation as the Docker path — a Linux server over SSH, no prior database administration experience.
 
-**Support boundary.** This path is supported on the same footing as Docker — as long as you haven't hand-edited the script or the configs it produces (the systemd unit, `/etc/gotcha/gotcha.env`, the PostgreSQL/ClickHouse configs). Flags that keep full support: `--domain`, `--email`, `--no-proxy`, `--mem-limit`, `--base-url`, `--download-base`, `--version`, `--from-tarball`. One exception is `--skip-databases` with your own PostgreSQL/ClickHouse: since those databases aren't ours, we can help diagnose an issue but can't guarantee a fix — their versions, configuration, and availability are on you.
+**Support boundary.** This path is supported on the same footing as Docker — as long as you haven't hand-edited the script or the configs it produces (the systemd unit, `/etc/gotcha/gotcha.env`, the PostgreSQL/ClickHouse configs). Flags that keep full support: `--domain`, `--email`, `--no-proxy`, `--no-firewall`, `--mem-limit`, `--base-url`, `--download-base`, `--version`, `--from-tarball`. One exception is `--skip-databases` with your own PostgreSQL/ClickHouse: since those databases aren't ours, we can help diagnose an issue but can't guarantee a fix — their versions, configuration, and availability are on you.
 
 Installed either by the `install-bare-metal.sh` script (see "Installing via the script" below) or by hand with the same commands (see "Manual installation") — the manual path is not an appendix, it's a full path in its own right; the script only automates it.
 
 ## What you need
 
-- **A Debian/Ubuntu-family Linux server.** The list claims exactly what CI installs on for every release: Ubuntu 24.04, Ubuntu 26.04, Debian 12, Debian 13 (Ubuntu 24.04 on amd64 and arm64, the rest on amd64). Distributions derived from them (`ID_LIKE` contains `debian` or `ubuntu`) are accepted by the script too and most likely work — but we don't run them, so we don't claim them. RedHat-family distributions (AlmaLinux, Rocky, RHEL) aren't supported on this path — for those, use the [Docker install](/docs/installation), which works on any distribution that has Docker.
+- **A Linux server.** The list claims exactly the distributions and architectures CI installs on for every release — table below. Distributions derived from the claimed ones (`ID_LIKE` contains `debian`, `ubuntu`, `rhel`, or `fedora`) are accepted by the script too and most likely work — but we don't run them, so we don't claim them. **AlmaLinux/Rocky/RHEL 8 isn't supported** — preflight stops with an explicit error, 9 or 10 is required.
 - **Architecture:** amd64 or arm64.
 - **systemd** — practically any current server already has it; check with `[ -d /run/systemd/system ] && echo ok`.
 - **Root access** over SSH — the installer writes to `/etc`, `/opt`, `/usr/local/bin`, `/var/lib` and installs system packages.
@@ -69,6 +69,11 @@ If something else is already listening on one of these ports, free it or drop it
 
 ### 2. Install PostgreSQL 17
 
+The commands below split by distribution family from here on — the repository,
+package manager, and data paths differ; the application's behavior doesn't.
+
+**On Debian/Ubuntu:**
+
 Find the distribution's codename and add the official PGDG repository:
 
 ```bash
@@ -83,7 +88,7 @@ apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql-17
 ```
 
-The PGDG signing key fingerprint is `B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8` — verify it before importing (`gpg --with-colons --import-options show-only --import /tmp/pgdg.asc`) rather than trusting the download blindly.
+The PGDG (apt) signing key fingerprint is `B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8` — verify it before importing (`gpg --with-colons --import-options show-only --import /tmp/pgdg.asc`) rather than trusting the download blindly.
 
 If PGDG hasn't published packages for your codename yet (this happens with very fresh distribution releases), check whether the distribution's own repository already ships major version 17 (`apt-cache policy postgresql`) and install plain `postgresql` in that case. If the native major is a different one, you'll either need to wait for PGDG or install PostgreSQL 17 from another source yourself.
 
@@ -106,9 +111,78 @@ sudo -u postgres psql -c "CREATE ROLE gotcha LOGIN PASSWORD 'choose-your-own-pas
 sudo -u postgres psql -c "CREATE DATABASE gotcha OWNER gotcha"
 ```
 
-DSN for step 6: `postgres://gotcha:<password>@127.0.0.1:5432/gotcha?sslmode=disable`.
+**On AlmaLinux/Rocky/RHEL 9 and 10:**
+
+Add the official PGDG repository (the rpm key is different from the apt one) and
+install the package together with `contrib`: the `citext` extension, which
+migrations need, lives in a separate package on EL instead of inside `-server`,
+as it does on Debian/Ubuntu.
+
+```bash
+EL_MAJOR=$(. /etc/os-release && printf '%s\n' "${VERSION_ID%%.*}")
+curl -fsSL -o /tmp/pgdg.asc https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL
+mkdir -p /etc/pki/rpm-gpg
+cp /tmp/pgdg.asc /etc/pki/rpm-gpg/gotcha-pgdg.asc
+rpm --import /etc/pki/rpm-gpg/gotcha-pgdg.asc
+cat >/etc/yum.repos.d/gotcha-pgdg.repo <<EOF
+[pgdg-common]
+name=PostgreSQL common RPMs for RHEL \$releasever - \$basearch
+baseurl=https://download.postgresql.org/pub/repos/yum/common/redhat/rhel-$EL_MAJOR-\$basearch
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/gotcha-pgdg.asc
+
+[pgdg17]
+name=PostgreSQL 17 for RHEL \$releasever - \$basearch
+baseurl=https://download.postgresql.org/pub/repos/yum/17/redhat/rhel-$EL_MAJOR-\$basearch
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/gotcha-pgdg.asc
+EOF
+[ "$EL_MAJOR" = 9 ] && dnf -y module disable postgresql
+dnf install -y postgresql17-server postgresql17-contrib
+```
+
+The PGDG (rpm) signing key fingerprint is `D4BF08AE67A0B4C7A1DBCCD240BCA2B408B40D20`,
+different from the apt key above; verify it the same way. On EL9, the distribution's
+own `postgresql` module conflicts with the PGDG package and is disabled first; on
+EL10 there's no such module, and the command is a no-op.
+
+Initialize the cluster and set the same parameters — `postgresql.conf.sample`, which
+`initdb` copies its config from, ships `include_dir` commented out, so the drop-in
+below won't be picked up without the explicit append:
+
+```bash
+/usr/pgsql-17/bin/postgresql-17-setup initdb
+mkdir -p /var/lib/pgsql/17/data/conf.d
+cat >/var/lib/pgsql/17/data/conf.d/10-gotcha.conf <<'EOF'
+random_page_cost = 1.1
+effective_io_concurrency = 200
+EOF
+printf '%s\ninclude_dir = %s\n' '# gotcha: conf.d include' "'conf.d'" \
+  >>/var/lib/pgsql/17/data/postgresql.conf
+grep -qE '^host +all +all +127\.0\.0\.1/32 +(scram-sha-256|md5)' \
+  /var/lib/pgsql/17/data/pg_hba.conf \
+  || printf '%s\nhost all all 127.0.0.1/32 scram-sha-256\n' '# gotcha: conf.d include' \
+       >>/var/lib/pgsql/17/data/pg_hba.conf
+systemctl enable --now postgresql-17
+```
+
+Create the role and database — the PGDG package's `psql` isn't on `PATH`:
+
+```bash
+sudo -u postgres /usr/pgsql-17/bin/psql \
+  -c "CREATE ROLE gotcha LOGIN PASSWORD 'choose-your-own-password'"
+sudo -u postgres /usr/pgsql-17/bin/psql -c "CREATE DATABASE gotcha OWNER gotcha"
+```
+
+DSN for step 6 — the same on both families: `postgres://gotcha:<password>@127.0.0.1:5432/gotcha?sslmode=disable`.
 
 ### 3. Install ClickHouse 25.3
+
+**On Debian/Ubuntu:**
 
 Add the ClickHouse repository:
 
@@ -196,6 +270,56 @@ Wait for it to become ready and create the database:
 until curl -fsS -o /dev/null http://127.0.0.1:8123/ping; do sleep 1; done
 clickhouse-client --query "CREATE DATABASE IF NOT EXISTS gotcha"
 ```
+
+**On AlmaLinux/Rocky/RHEL 9 and 10:**
+
+Add the repository the same way as for PGDG: download the key, verify its
+fingerprint, import it with `rpm`, render the `.repo` file.
+
+```bash
+curl -fsSL -o /tmp/clickhouse.asc https://packages.clickhouse.com/rpm/stable/repodata/repomd.xml.key
+mkdir -p /etc/pki/rpm-gpg
+cp /tmp/clickhouse.asc /etc/pki/rpm-gpg/gotcha-clickhouse.asc
+rpm --import /etc/pki/rpm-gpg/gotcha-clickhouse.asc
+cat >/etc/yum.repos.d/gotcha-clickhouse.repo <<EOF
+[gotcha-clickhouse]
+name=ClickHouse
+baseurl=https://packages.clickhouse.com/rpm/stable/
+enabled=1
+gpgcheck=0
+repo_gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/gotcha-clickhouse.asc
+EOF
+```
+
+The ClickHouse (rpm) signing key fingerprint is the same
+`3A9EA1193A97B548BE1457D48919F6BD2B48D754` as the apt repository's; verify it the
+same way. `gpgcheck=0` here isn't a weaker check: ClickHouse packages aren't
+individually signed, not by us and not in their own `clickhouse.repo` either —
+trust comes from `repo_gpgcheck=1` (the metadata is signed by the verified key and
+carries a SHA-256 for every package).
+
+ClickHouse doesn't publish a package without an exact patch number in it —
+`dnf`'s version listing wraps long lines, so the version can end up as a
+separate field on the next line:
+
+```bash
+CH_PKG_VERSION=$(dnf -qy --showduplicates list clickhouse-server 2>/dev/null | awk -v v=25.3. '
+  function is_arch(s) { return s ~ /\.(noarch|x86_64|aarch64)$/ }
+  function has_prefix(s) { return substr(s, 1, length(v)) == v }
+  NF >= 2 && is_arch($1) { if (has_prefix($2)) print $2; next }
+  NF >= 1 && !is_arch($1) { if (has_prefix($1)) print $1 }
+' | sort -V | tail -n1)
+dnf install -y \
+  "clickhouse-server-$CH_PKG_VERSION" \
+  "clickhouse-client-$CH_PKG_VERSION" \
+  "clickhouse-common-static-$CH_PKG_VERSION"
+```
+
+From here it's the same as Debian/Ubuntu above, starting with copying the tuning
+configs from the tarball: the `/etc/clickhouse-server/config.d`,
+`/etc/clickhouse-server/users.d` paths, the systemd override, and the `/ping`
+readiness check are identical on both families.
 
 DSN for step 6: `clickhouse://gotcha:<password>@127.0.0.1:9000/gotcha`.
 
@@ -329,6 +453,8 @@ journalctl -u gotcha -f
 
 Skip this step if you're publishing the instance behind an existing proxy, or only reaching it through an SSH tunnel on `127.0.0.1:8080`.
 
+**On Debian/Ubuntu:**
+
 ```bash
 DEBIAN_FRONTEND=noninteractive apt-get install -y nginx
 rm -f /etc/nginx/sites-enabled/default
@@ -363,27 +489,125 @@ systemctl enable --now nginx
 systemctl reload nginx
 ```
 
+**On AlmaLinux/Rocky/RHEL 9 and 10:** the site path and package manager differ, the
+config itself doesn't; EL has no separate `sites-enabled` directory or symlink —
+`nginx.conf` includes everything from `conf.d` by default.
+
+```bash
+dnf install -y nginx
+cat >/etc/nginx/conf.d/gotcha.conf <<'EOF'
+# gotcha site: install-bare-metal.sh keeps local edits below on re-run
+server {
+    listen 80;
+    server_name gotcha.example.com;
+    client_max_body_size 64m;
+
+    location ~ ^/(metrics|version)$ {
+        allow 127.0.0.1;
+        allow ::1;
+        deny all;
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+EOF
+nginx -t
+systemctl enable --now nginx
+systemctl reload nginx
+```
+
 The first line of the file is a marker for the script: seeing it, a re-run of
 `install-bare-metal.sh` leaves the site alone instead of re-rendering it, as long as the
-`server_name` is still the same. That is how the TLS block certbot adds in step 10
+`server_name` is still the same. That is how the TLS block certbot adds in step 11
 survives an upgrade. To get a freshly rendered site, delete or rename the file and run the
 script again; changing `--domain` re-renders it too (keeping a `gotcha.bak-<stamp>` copy
 next to it), and the certificate is issued again after that.
 
-### 10. Get a TLS certificate
+### 10. SELinux and firewalld (AlmaLinux/Rocky/RHEL only)
+
+Debian/Ubuntu doesn't have this step — SELinux and firewalld aren't part of the
+install path there. On EL it runs right after step 9, if nginx is installed (no
+`--no-proxy`), and before the certificate in step 11.
+
+**SELinux.** If the policy is `Enforcing` (check with `getenforce`), let nginx reach
+the app on `127.0.0.1:8080` — by default the `httpd_t` domain nginx runs under can't:
+
+```bash
+[ "$(getenforce 2>/dev/null)" = Enforcing ] && setsebool -P httpd_can_network_connect 1
+```
+
+**firewalld.** If it's running (`firewall-cmd --state` prints `running`), open
+ports 80 and 443:
+
+```bash
+firewall-cmd --permanent --add-service=http --add-service=https
+firewall-cmd --reload
+```
+
+Both changes are global host settings, not files that belong to this install:
+`--uninstall` doesn't revert either one, not on its own and not with `--purge`.
+Another service on the same host may depend on them, so revert deliberately rather
+than as one sweep with removing gotcha:
+
+```bash
+setsebool -P httpd_can_network_connect 0
+firewall-cmd --permanent --remove-service=http --remove-service=https
+firewall-cmd --reload
+```
+
+**EPEL for certbot.** The `python3-certbot-nginx` package step 11 needs lives in
+EPEL, not the stock repositories:
+
+```bash
+dnf -y repolist enabled 2>/dev/null | grep -qi '^epel' \
+  || dnf install -y "https://dl.fedoraproject.org/pub/epel/epel-release-latest-$EL_MAJOR.noarch.rpm"
+```
+
+That's enough on AlmaLinux and Rocky. On RHEL with an active subscription, some
+EPEL dependencies also need the CodeReady Builder repository enabled — without it,
+installing `certbot`/`python3-certbot-nginx` can fail on dependency resolution:
+
+```bash
+subscription-manager repos --enable "codeready-builder-for-rhel-$EL_MAJOR-$(arch)-rpms"
+```
+
+This path isn't exercised in CI (it needs an active RHEL subscription, not just an
+image) — treat it as expected to work, not as verified automatically.
+
+### 11. Get a TLS certificate
 
 This is a basic setup — nginx on port 80 plus a Let's Encrypt certificate. Fine-tuning TLS (protocols, ciphers), HSTS, and rate-limiting at the proxy are beyond this step; that's on the operator to configure for their own requirements.
+
+**On Debian/Ubuntu:**
 
 ```bash
 DEBIAN_FRONTEND=noninteractive apt-get install -y certbot python3-certbot-nginx
 certbot --nginx -d gotcha.example.com -m you@example.com --agree-tos --non-interactive --redirect
 ```
 
-A certbot failure doesn't break the HTTP setup already running on port 80 — the certificate can be obtained later with the same command.
+**On AlmaLinux/Rocky/RHEL 9 and 10:** EPEL from step 10 is already enabled, the rest
+is the same:
+
+```bash
+dnf install -y certbot python3-certbot-nginx
+certbot --nginx -d gotcha.example.com -m you@example.com --agree-tos --non-interactive --redirect
+```
+
+A certbot failure doesn't break the HTTP setup already running on port 80 on either
+family — the certificate can be obtained later with the same command.
 
 ## Installing via the script
 
-`install-bare-metal.sh` performs exactly steps 1–10 above by itself, including an idempotent re-run (safe to run again — existing passwords and the secret key aren't reissued) and upgrade detection (if an older version is already on the host — see [Upgrade](/docs/upgrade)).
+`install-bare-metal.sh` performs exactly steps 1–11 above by itself, including an idempotent re-run (safe to run again — existing passwords and the secret key aren't reissued) and upgrade detection (if an older version is already on the host — see [Upgrade](/docs/upgrade)).
 
 The script is attached to every release as a standalone file:
 
@@ -405,6 +629,7 @@ Without `--domain`/`--email` you get an HTTP-only setup with no TLS — a certif
 | `--domain D` | put nginx in front of this domain, `GOTCHA_BASE_URL` becomes `https://D` |
 | `--email E` | contact for certbot (requires `--domain`) |
 | `--no-proxy` | don't install or touch nginx at all |
+| `--no-firewall` | don't touch firewalld (EL family only) |
 | `--skip-databases` | don't install PostgreSQL/ClickHouse, use `--pg-dsn`/`--ch-dsn` — "diagnose, not guarantee" mode |
 | `--pg-dsn DSN` / `--ch-dsn DSN` | external DSNs, required together with `--skip-databases` |
 | `--mem-limit N` | `MemoryMax`/`GOMEMLIMIT` in MiB (default 1024, same as `mem_limit: 1g` in the Docker delivery) |
