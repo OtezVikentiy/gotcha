@@ -2,7 +2,6 @@ package db_test
 
 import (
 	"context"
-	"io"
 	"net"
 	"net/url"
 	"sync"
@@ -66,13 +65,20 @@ func TestPoolDropsDeadConnectionsOnAcquireEvenWhenRecentlyIdle(t *testing.T) {
 	}
 }
 
+// proxyConn.closed фиксирует факт, а не время: выставляется, только когда
+// сокет действительно закрылся — заморозка сама по себе его не трогает.
+type proxyConn struct {
+	frozen atomic.Bool
+	closed atomic.Bool
+}
+
 // freezeProxy передаёт байты в обе стороны, пока не заморожен — после freezeAll
 // уже установленные соединения перестают долетать до клиента, не закрываясь.
 type freezeProxy struct {
 	ln       net.Listener
 	upstream string
 	mu       sync.Mutex
-	conns    []*atomic.Bool
+	conns    []*proxyConn
 	sockets  []net.Conn
 }
 
@@ -98,23 +104,40 @@ func (p *freezeProxy) acceptLoop() {
 			_ = client.Close()
 			continue
 		}
-		frozen := &atomic.Bool{}
+		pc := &proxyConn{}
 		p.mu.Lock()
-		p.conns = append(p.conns, frozen)
+		p.conns = append(p.conns, pc)
 		p.sockets = append(p.sockets, client, upstream)
 		p.mu.Unlock()
 
-		go func() { _, _ = io.Copy(upstream, client) }()
+		// closed фиксируется только по СТОРОНЕ upstream: клиент (pgx) сам
+		// закрывается после честного таймаута пинга — это не сигнал.
+		go func() {
+			buf := make([]byte, 4096)
+			for {
+				n, rerr := client.Read(buf)
+				if n > 0 {
+					if _, werr := upstream.Write(buf[:n]); werr != nil {
+						pc.closed.Store(true)
+						return
+					}
+				}
+				if rerr != nil {
+					return
+				}
+			}
+		}()
 		go func() {
 			buf := make([]byte, 4096)
 			for {
 				n, err := upstream.Read(buf)
-				if n > 0 && !frozen.Load() {
+				if n > 0 && !pc.frozen.Load() {
 					if _, werr := client.Write(buf[:n]); werr != nil {
 						return
 					}
 				}
 				if err != nil {
+					pc.closed.Store(true)
 					return
 				}
 			}
@@ -125,9 +148,22 @@ func (p *freezeProxy) acceptLoop() {
 func (p *freezeProxy) freezeAll() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for _, f := range p.conns {
-		f.Store(true)
+	for _, c := range p.conns {
+		c.frozen.Store(true)
 	}
+}
+
+// anyClosed — факт, не измерение: заглушка, которая зависает как задумано,
+// не закрывает сокет сама, сколько бы под нагрузкой ни тянулось ожидание.
+func (p *freezeProxy) anyClosed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, c := range p.conns {
+		if c.frozen.Load() && c.closed.Load() {
+			return true
+		}
+	}
+	return false
 }
 
 // Пул согласует закрытие с недостижимым концом и виснет секундами — закрываем
@@ -194,6 +230,9 @@ func TestAcquireBoundedByOwnPingTimeoutNotCallerContext(t *testing.T) {
 	case <-done:
 		if acquireErr != nil {
 			t.Fatalf("acquire against a hung connection failed instead of replacing it: %v", acquireErr)
+		}
+		if proxy.anyClosed() {
+			t.Fatalf("stub closed a connection instead of leaving it hanging — ping timeout was not exercised")
 		}
 		if elapsed < lowerBound {
 			t.Fatalf("acquire against a hung connection took %v, under %v — stub closed instead of hanging", elapsed, lowerBound)
