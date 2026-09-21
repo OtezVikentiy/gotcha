@@ -695,8 +695,7 @@ assert_eq "remove_marker_block through a symlink preserves the target's mode" "6
 rm -rf "$tmpdir"
 
 # remove_marker_block — временный файл не создать (директория без прав на запись):
-# возвращает 1, ничего не оставляет за собой. Пропускается под root — permission
-# checks не применяются.
+# возвращает 1, ничего не оставляет за собой. Под root пропускается.
 
 if [ "$(id -u)" = 0 ]; then
     printf 'note: running as root, skipping the remove_marker_block read-only-directory case\n'
