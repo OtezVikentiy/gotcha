@@ -822,12 +822,17 @@ gpgkey=file://$PGDG_RPM_KEY_PATH
 EOF
 }
 
-# Ключ и отпечаток PGDG для rpm выбираются по архитектуре хоста, не по
-# дистрибутиву — так же, как URL самого репозитория ($basearch).
+# Ключ PGDG для rpm — по архитектуре хоста, как и $basearch репозитория.
+# Одно значение за вызов, без read: под IFS=$'\n\t' из main() read склеил бы пару полей.
 pgdg_rpm_key_for_arch() {
-    case "$1" in
-        arm64) printf '%s %s\n' "$PGDG_RPM_KEY_URL_ARM64" "$PGDG_RPM_KEY_FINGERPRINT_ARM64" ;;
-        *) printf '%s %s\n' "$PGDG_RPM_KEY_URL" "$PGDG_RPM_KEY_FINGERPRINT" ;;
+    local arch="$1" field="$2" url fpr
+    case "$arch" in
+        arm64) url="$PGDG_RPM_KEY_URL_ARM64"; fpr="$PGDG_RPM_KEY_FINGERPRINT_ARM64" ;;
+        *) url="$PGDG_RPM_KEY_URL"; fpr="$PGDG_RPM_KEY_FINGERPRINT" ;;
+    esac
+    case "$field" in
+        url) printf '%s\n' "$url" ;;
+        fingerprint) printf '%s\n' "$fpr" ;;
     esac
 }
 
@@ -839,7 +844,8 @@ repo_add_pgdg() {
         local tmp key_url key_fpr
         tmp=$(mktemp -d)
         TMP_DIRS+=("$tmp")
-        read -r key_url key_fpr < <(pgdg_rpm_key_for_arch "$HOST_ARCH")
+        key_url=$(pgdg_rpm_key_for_arch "$HOST_ARCH" url)
+        key_fpr=$(pgdg_rpm_key_for_arch "$HOST_ARCH" fingerprint)
         curl -fsSL -o "$tmp/pgdg.asc" "$key_url" \
             || fail "$EXIT_DATABASE" "failed to download the PGDG signing key from $key_url"
         verify_key_fingerprint "$tmp/pgdg.asc" "$key_fpr"
