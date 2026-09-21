@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-09-21
+
 ### Added
 - Bare-metal (Docker-free) install now supports AlmaLinux, Rocky Linux, and
   RHEL 9 and 10 on amd64 and arm64, alongside the existing Debian/Ubuntu
