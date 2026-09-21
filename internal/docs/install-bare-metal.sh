@@ -9,10 +9,8 @@ GOTCHA_INSTALL_DEFAULT_DOWNLOAD_BASE="https://github.com/OtezVikentiy/gotcha/rel
 PG_MAJOR="17"
 CH_VERSION="25.3"
 
-# Отпечатки подписывающих ключей вендоров, тот же принцип, что и digest баз в
-# Dockerfile: значение фиксируется руками, не берётся с сервера доверчиво.
-# PGDG_RPM_KEY_FINGERPRINT — другой ключ, чем PGDG_KEY_FINGERPRINT: rpm и apt
-# репозитории PGDG подписаны разными ключами.
+# Отпечатки фиксируются руками (как digest баз в Dockerfile), не с сервера.
+# PGDG_RPM_KEY_FINGERPRINT ≠ PGDG_KEY_FINGERPRINT: rpm и apt — разные ключи.
 PGDG_KEY_FINGERPRINT="B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
 PGDG_RPM_KEY_FINGERPRINT="D4BF08AE67A0B4C7A1DBCCD240BCA2B408B40D20"
 CLICKHOUSE_KEY_FINGERPRINT="3A9EA1193A97B548BE1457D48919F6BD2B48D754"
@@ -690,9 +688,8 @@ preflight() {
     HOST_ARCH=$(detect_arch "$(uname -m)") \
         || fail "$EXIT_PREFLIGHT" "unsupported architecture: $(uname -m) (amd64/arm64 only)"
 
-    # Пакеты в сообщении не украшение: на минимальном Debian нет ss, а на голом
-    # EL10 — runuser (util-linux туда не тянется по умолчанию), и без подсказки
-    # отказ выглядит как поломка скрипта.
+    # Пакеты в сообщении не украшение: на минимальном Debian нет ss, а на
+    # голом EL10 — runuser (util-linux туда не тянется по умолчанию).
     local cmd
     while IFS= read -r cmd; do
         command -v "$cmd" >/dev/null 2>&1 \
@@ -772,10 +769,8 @@ fetch_tarball() {
     printf '%s\n' "$root"
 }
 
-# gpg --with-colons: формат вывода стабилен для парсинга скриптом, в отличие
-# от --fingerprint, рассчитанного на человека. Подключи остаются принятыми по
-# самоподписи основного ключа намеренно: пин подключей ронял бы установку при
-# их штатной ротации вендором.
+# gpg --with-colons: формат стабилен для парсинга, не --fingerprint (для людей).
+# Подключи приняты по самоподписи умышленно — пин ронял бы установку при ротации.
 verify_key_fingerprint() {
     local keyfile="$1" expected="$2" got pubs
     local colons

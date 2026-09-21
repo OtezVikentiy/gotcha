@@ -499,9 +499,8 @@ assert_eq "pgdg url for arm64" "$PGDG_RPM_KEY_URL_ARM64" "$out"
 out=$(pgdg_rpm_key_for_arch arm64 fingerprint)
 assert_eq "pgdg fingerprint for arm64" "$PGDG_RPM_KEY_FINGERPRINT_ARM64" "$out"
 
-# repo_add_pgdg вызывает pgdg_rpm_key_for_arch дважды через $(...) под IFS,
-# суженным main() до "\n\t" — было бы это одним read по паре "URL отпечаток",
-# read склеил бы оба поля в key_url, а key_fpr остался бы пустым.
+# repo_add_pgdg вызывает pgdg_rpm_key_for_arch дважды через $(...), не read
+# по паре "URL отпечаток": IFS сужен main() до "\n\t", read склеил бы поля.
 out=$( (
     IFS=$'\n\t'
     key_url=$(pgdg_rpm_key_for_arch arm64 url)
