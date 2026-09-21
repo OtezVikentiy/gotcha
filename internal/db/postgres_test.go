@@ -73,6 +73,7 @@ type freezeProxy struct {
 	upstream string
 	mu       sync.Mutex
 	conns    []*atomic.Bool
+	sockets  []net.Conn
 }
 
 func newFreezeProxy(t *testing.T, upstream string) *freezeProxy {
@@ -83,7 +84,6 @@ func newFreezeProxy(t *testing.T, upstream string) *freezeProxy {
 	}
 	p := &freezeProxy{ln: ln, upstream: upstream}
 	go p.acceptLoop()
-	t.Cleanup(func() { _ = ln.Close() })
 	return p
 }
 
@@ -101,6 +101,7 @@ func (p *freezeProxy) acceptLoop() {
 		frozen := &atomic.Bool{}
 		p.mu.Lock()
 		p.conns = append(p.conns, frozen)
+		p.sockets = append(p.sockets, client, upstream)
 		p.mu.Unlock()
 
 		go func() { _, _ = io.Copy(upstream, client) }()
@@ -129,9 +130,19 @@ func (p *freezeProxy) freezeAll() {
 	}
 }
 
-// Соединение зависает, а не закрывается: сервер не шлёт ни FATAL, ни FIN/RST,
-// ответа не будет никогда. Acquire обязан уложиться в PingTimeout, а не в
-// дедлайн ctx вызывающего — здесь у ctx дедлайна нет вовсе.
+// Пул согласует закрытие с недостижимым концом и виснет секундами — закрываем
+// сокеты явно до pool.Close (Cleanup регистрируется после него: LIFO).
+func (p *freezeProxy) closeAll() {
+	_ = p.ln.Close()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, c := range p.sockets {
+		_ = c.Close()
+	}
+}
+
+// Соединение зависает, не закрывается — ответа не будет никогда. Acquire
+// обязан уложиться в PingTimeout, не в дедлайн ctx вызывающего (здесь его нет).
 func TestAcquireBoundedByOwnPingTimeoutNotCallerContext(t *testing.T) {
 	realDSN := testenv.PostgresDSN(t)
 	u, err := url.Parse(realDSN)
@@ -146,6 +157,7 @@ func TestAcquireBoundedByOwnPingTimeoutNotCallerContext(t *testing.T) {
 		t.Fatalf("connect through proxy: %v", err)
 	}
 	t.Cleanup(pool.Close)
+	t.Cleanup(proxy.closeAll)
 
 	ctx := context.Background()
 	c, err := pool.Acquire(ctx)
@@ -160,7 +172,10 @@ func TestAcquireBoundedByOwnPingTimeoutNotCallerContext(t *testing.T) {
 
 	proxy.freezeAll()
 
-	const bound = 2 * time.Second
+	// Ниже этого элапсед не мог дождаться PingTimeout=50мс — заглушка закрыла
+	// соединение вместо того чтобы зависнуть, тест проверял бы не тот сценарий.
+	const lowerBound = 30 * time.Millisecond
+	const upperBound = 2 * time.Second
 	done := make(chan struct{})
 	var acquireErr error
 	var elapsed time.Duration
@@ -180,8 +195,11 @@ func TestAcquireBoundedByOwnPingTimeoutNotCallerContext(t *testing.T) {
 		if acquireErr != nil {
 			t.Fatalf("acquire against a hung connection failed instead of replacing it: %v", acquireErr)
 		}
+		if elapsed < lowerBound {
+			t.Fatalf("acquire against a hung connection took %v, under %v — stub closed instead of hanging", elapsed, lowerBound)
+		}
 		t.Logf("acquire against a hung connection took %v", elapsed)
-	case <-time.After(bound):
-		t.Fatalf("acquire did not return within %v against a hung connection — ping is not bounded by its own timeout", bound)
+	case <-time.After(upperBound):
+		t.Fatalf("acquire did not return within %v against a hung connection — ping is not bounded by its own timeout", upperBound)
 	}
 }
