@@ -70,7 +70,8 @@ jobs:
             *)
           cat >Dockerfile.bare-metal-systemd <<EOF
           FROM ${{ matrix.image }}
-          RUN dnf -y install systemd procps-ng iproute sudo curl gnupg2 tar openssl which \
+          # curl-minimal уже даёт /usr/bin/curl и конфликтует с полным curl.
+          RUN dnf -y install systemd procps-ng iproute sudo gnupg2 tar openssl which \
               && dnf clean all
           EOF
               ;;

@@ -23,6 +23,7 @@ var (
 	shellSeparatorRe = regexp.MustCompile(`&&|\|\||;|\|`)
 	dnfInvocationRe  = regexp.MustCompile(`\bdnf\s+\S`)
 	quotedStringRe   = regexp.MustCompile(`'[^']*'|"[^"]*"`)
+	elDnfInstallRe   = regexp.MustCompile(`(?m)^\s*RUN dnf -y install (.+?) \\$`)
 )
 
 // Единственное место, где решение «этот образ бинарно совместим с RHEL» видно в
@@ -95,6 +96,7 @@ type nightlyStep struct {
 	Name            string `yaml:"name"`
 	ContinueOnError bool   `yaml:"continue-on-error"`
 	If              string `yaml:"if"`
+	Run             string `yaml:"run"`
 }
 
 type nightlyJob struct {
@@ -307,6 +309,37 @@ func TestBareMetalDocClaimsOnlyTestedDistros(t *testing.T) {
 		if !archSetsEqual(table, union) {
 			t.Errorf("%s: таблица ОС заявляет %v, ночная матрица гоняет %v",
 				locale, describeArchSets(table), describeArchSets(union))
+		}
+	}
+}
+
+// curl-minimal предустановлен на AlmaLinux/Rocky и конфликтует с полным curl —
+// сборка EL-образа падает раньше install-bare-metal.sh, curl-minimal уже даёт /usr/bin/curl.
+func TestBareMetalELImageDoesNotRequestCurl(t *testing.T) {
+	tree := Load(t)
+	wf := loadNightlyWorkflow(t, tree.Root)
+
+	job, ok := wf.Jobs["matrix"]
+	if !ok {
+		t.Fatalf("bare-metal-nightly.yml: job \"matrix\" не найден — сторож смотрит мимо файла")
+	}
+	var buildStep *nightlyStep
+	for i := range job.Steps {
+		if strings.HasPrefix(job.Steps[i].Name, "собрать образ с systemd") {
+			buildStep = &job.Steps[i]
+			break
+		}
+	}
+	if buildStep == nil {
+		t.Fatalf("bare-metal-nightly.yml: шаг сборки образа с systemd не найден — сторож смотрит мимо файла")
+	}
+	m := elDnfInstallRe.FindStringSubmatch(buildStep.Run)
+	if m == nil {
+		t.Fatalf("bare-metal-nightly.yml: строка \"RUN dnf -y install\" не найдена — сторож смотрит мимо шага")
+	}
+	for _, pkg := range strings.Fields(m[1]) {
+		if pkg == "curl" {
+			t.Errorf("bare-metal-nightly.yml: EL-образ ставит пакет curl явно — конфликтует с предустановленным curl-minimal, сборка образа падает")
 		}
 	}
 }
