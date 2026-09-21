@@ -601,6 +601,79 @@ rm -f "$tmphba"
 remove_marker_block "$PG_INCLUDE_MARKER" /nonexistent/gotcha-purge-test
 assert_eq "remove_marker_block on a missing file is a no-op, not an error" 0 $?
 
+# remove_marker_block — контент, дописанный ОПЕРАТОРОМ после нашей пары, обязан
+# уцелеть (off-by-one: snip забирал маркер+2 строки вместо маркер+1)
+
+tmpconf=$(mktemp)
+cp "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample" "$tmpconf"
+ensure_include_dir "$tmpconf"
+printf "shared_preload_libraries = 'pg_stat_statements'\n" >>"$tmpconf"
+remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
+assert_eq "remove_marker_block keeps operator content written after the marker pair (postgresql.conf)" \
+    "shared_preload_libraries = 'pg_stat_statements'" "$(tail -n1 "$tmpconf")"
+assert_eq "remove_marker_block touches nothing but the marker pair itself (postgresql.conf)" \
+    "$(cat "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample"; printf "shared_preload_libraries = 'pg_stat_statements'\n")" \
+    "$(cat "$tmpconf")"
+rm -f "$tmpconf"
+
+tmphba=$(mktemp)
+cp "$SCRIPT_DIR/testdata/pg_hba.conf.rhel-sample" "$tmphba"
+printf '%s\nhost all all 127.0.0.1/32 scram-sha-256\n' "$PG_INCLUDE_MARKER" >>"$tmphba"
+printf 'host all all 10.0.0.0/8 reject\n' >>"$tmphba"
+remove_marker_block "$PG_INCLUDE_MARKER" "$tmphba"
+assert_eq "remove_marker_block keeps operator content written after the marker pair (pg_hba.conf)" \
+    "host all all 10.0.0.0/8 reject" "$(tail -n1 "$tmphba")"
+rm -f "$tmphba"
+
+# remove_marker_block — маркер как ПОДСТРОКА чужой строки не считается маркерной строкой
+
+tmpconf=$(mktemp)
+printf '# note: mentions "%s" for reference\nkeep_this = on\n' "$PG_INCLUDE_MARKER" >"$tmpconf"
+remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
+assert_eq "remove_marker_block leaves a line where the marker is only a substring" 2 "$(wc -l <"$tmpconf")"
+assert_contains "remove_marker_block does not strip the substring-marker line itself" \
+    "$(cat "$tmpconf")" "$PG_INCLUDE_MARKER"
+rm -f "$tmpconf"
+
+# remove_marker_block — файл без маркера вообще не переписывается (инод и mtime,
+# не только содержимое: перезапись через одинаковый контент осталась бы незамеченной)
+
+tmpconf=$(mktemp)
+printf 'unrelated = 1\nmore = 2\n' >"$tmpconf"
+touch -d '2020-01-01 00:00:00' "$tmpconf"
+inode_before=$(stat -c '%i' "$tmpconf")
+mtime_before=$(stat -c '%Y' "$tmpconf")
+remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
+assert_eq "remove_marker_block without the marker does not rewrite the file (inode)" \
+    "$inode_before" "$(stat -c '%i' "$tmpconf")"
+assert_eq "remove_marker_block without the marker does not rewrite the file (mtime)" \
+    "$mtime_before" "$(stat -c '%Y' "$tmpconf")"
+rm -f "$tmpconf"
+
+# remove_marker_block — маркер встретился дважды: обе пары снимаются, остальное цело
+
+tmpconf=$(mktemp)
+printf 'before = 1\n%s\npayload1 = a\nmiddle = 2\n%s\npayload2 = b\nafter = 3\n' \
+    "$PG_INCLUDE_MARKER" "$PG_INCLUDE_MARKER" >"$tmpconf"
+remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
+assert_eq "remove_marker_block removes every marker+payload pair, not only the first" \
+    "before = 1
+middle = 2
+after = 3" "$(cat "$tmpconf")"
+rm -f "$tmpconf"
+
+# remove_marker_block — перезапись сохраняет режим файла (не сбрасывается до umask
+# свежесозданного временного файла); владелец/SELinux-контекст — e2e на EL, не здесь:
+# локально нет root/postgres, чтобы воспроизвести chown достоверно.
+
+tmpconf=$(mktemp)
+cp "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample" "$tmpconf"
+chmod 0600 "$tmpconf"
+ensure_include_dir "$tmpconf"
+remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
+assert_eq "remove_marker_block preserves the file mode" "600" "$(stat -c '%a' "$tmpconf")"
+rm -f "$tmpconf"
+
 # verify_key_fingerprint отвергает файл с двумя основными ключами
 
 out=$( (verify_key_fingerprint "$SCRIPT_DIR/testdata/two-pub-keys.asc" DEADBEEF) 2>&1 )

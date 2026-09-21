@@ -883,6 +883,15 @@ purge_without_confirmation_refuses() {
 }
 
 purge_removes_data_and_databases_keeps_packages() {
+    # До снятия: --purge правит postgresql.conf/pg_hba.conf на месте — владелец,
+    # права и SELinux-контекст файла СУБД обязаны пережить это нетронутыми.
+    local pg_dir_before pg_conf_attrs_before pg_hba_attrs_before
+    if [ "$HOST_FAMILY" = rhel ]; then
+        pg_dir_before=$(pg_conf_dir_resolve)
+        pg_conf_attrs_before=$(stat -c '%U:%G %a %C' "$pg_dir_before/postgresql.conf")
+        pg_hba_attrs_before=$(stat -c '%U:%G %a %C' "$pg_dir_before/pg_hba.conf")
+    fi
+
     bash "$INSTALLER" --uninstall --purge --yes
     local rc=$?
     [ "$rc" -eq 0 ] || { printf '--uninstall --purge exited %d\n' "$rc" >&2; return 1; }
@@ -905,6 +914,12 @@ purge_removes_data_and_databases_keeps_packages() {
             || { printf '%s/postgresql.conf still carries %s after --purge\n' "$pg_dir" "$PG_INCLUDE_MARKER" >&2; return 1; }
         ! grep -qF "$PG_INCLUDE_MARKER" "$pg_dir/pg_hba.conf" \
             || { printf '%s/pg_hba.conf still carries %s after --purge\n' "$pg_dir" "$PG_INCLUDE_MARKER" >&2; return 1; }
+        [ "$(stat -c '%U:%G %a %C' "$pg_dir/postgresql.conf")" = "$pg_conf_attrs_before" ] \
+            || { printf 'postgresql.conf owner/mode/SELinux context changed by --purge (%s -> %s)\n' \
+                "$pg_conf_attrs_before" "$(stat -c '%U:%G %a %C' "$pg_dir/postgresql.conf")" >&2; return 1; }
+        [ "$(stat -c '%U:%G %a %C' "$pg_dir/pg_hba.conf")" = "$pg_hba_attrs_before" ] \
+            || { printf 'pg_hba.conf owner/mode/SELinux context changed by --purge (%s -> %s)\n' \
+                "$pg_hba_attrs_before" "$(stat -c '%U:%G %a %C' "$pg_dir/pg_hba.conf")" >&2; return 1; }
     fi
     [ ! -f /etc/clickhouse-server/config.d/00-common.xml ] \
         || { printf 'clickhouse config.d/00-common.xml still present after --purge\n' >&2; return 1; }

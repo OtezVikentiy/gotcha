@@ -852,17 +852,24 @@ ensure_include_dir() {
     printf '%s\ninclude_dir = %s\n' "$PG_INCLUDE_MARKER" "'conf.d'" >>"$1"
 }
 
-# Снимает ровно ту пару строк, которую дописали ensure_include_dir/install_postgresql
-# под $PG_INCLUDE_MARKER — по содержимому маркера, не по номеру строки.
+# Снимает ровно marker+payload по содержимому маркера. cp -a перед awk — иначе mv
+# свежего временного файла стирает владельца/права/SELinux-контекст конфига СУБД.
 remove_marker_block() {
-    local marker="$1" file="$2"
+    local marker="$1" file="$2" tmp
     [ -f "$file" ] || return 0
     grep -qF "$marker" "$file" || return 0
-    awk -v m="$marker" '
-        $0 == m { skip = 2; next }
+    tmp="$file.gotcha-tmp"
+    cp -a "$file" "$tmp" || return 1
+    if awk -v m="$marker" '
+        $0 == m { skip = 1; next }
         skip > 0 { skip--; next }
         { print }
-    ' "$file" >"$file.gotcha-tmp" && mv "$file.gotcha-tmp" "$file"
+    ' "$file" >"$tmp"; then
+        mv "$tmp" "$file"
+    else
+        rm -f "$tmp"
+        return 1
+    fi
 }
 
 # Возвращает через stdout DSN на 127.0.0.1; ставит пакет, роль и базу gotcha.
