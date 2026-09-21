@@ -162,7 +162,7 @@ effective_io_concurrency = 200
 EOF
 printf '%s\ninclude_dir = %s\n' '# gotcha: conf.d include' "'conf.d'" \
   >>/var/lib/pgsql/17/data/postgresql.conf
-grep -qE '^host +all +all +127\.0\.0\.1/32 +(scram-sha-256|md5)' \
+awk '$1=="host" && $4=="127.0.0.1/32" && ($5=="scram-sha-256" || $5=="md5"){f=1} END{exit f?0:1}' \
   /var/lib/pgsql/17/data/pg_hba.conf \
   || printf '%s\nhost all all 127.0.0.1/32 scram-sha-256\n' '# gotcha: conf.d include' \
        >>/var/lib/pgsql/17/data/pg_hba.conf
