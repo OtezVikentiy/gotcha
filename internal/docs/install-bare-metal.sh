@@ -1279,7 +1279,7 @@ install_certificate() {
     local domain="$1" email="$2"
 
     if [ "$HOST_FAMILY" = rhel ]; then
-        if ! dnf -q repolist enabled 2>/dev/null | grep -qi '^epel'; then
+        if ! dnf -qy repolist enabled 2>/dev/null | grep -qi '^epel'; then
             if ! dnf -qy install \
                 "https://dl.fedoraproject.org/pub/epel/epel-release-latest-$EL_MAJOR.noarch.rpm" >/dev/null 2>&1; then
                 printf 'install-bare-metal: could not enable EPEL, so certbot was not installed; HTTP on port 80 still works, retry later with:\n' >&2

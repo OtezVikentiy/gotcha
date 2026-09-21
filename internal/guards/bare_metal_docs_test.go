@@ -22,6 +22,7 @@ var (
 	distURLRe        = regexp.MustCompile(`(?s)dist_url\(\) \{.*?printf '([^']*)\\n' (.*?)\n\}`)
 	shellSeparatorRe = regexp.MustCompile(`&&|\|\||;|\|`)
 	dnfInvocationRe  = regexp.MustCompile(`\bdnf\s+\S`)
+	singleQuotedRe   = regexp.MustCompile(`'[^']*'`)
 )
 
 // Единственное место, где решение «этот образ бинарно совместим с RHEL» видно в
@@ -40,11 +41,9 @@ var imageDistroNames = map[string]string{
 	"ubuntu":     "Ubuntu",
 }
 
-var readOnlyDnfSubcommands = map[string]bool{
-	"repolist":  true,
-	"list":      true,
-	"repoquery": true,
-}
+// Шаг, где реально исполняется e2e-ассерт: continue-on-error/if здесь
+// маскировали бы упавшую установку (логи/снятие контейнера — не он).
+const assertingStepPrefix = "install-bare-metal.sh "
 
 func bareMetalDocPaths(root string) map[string]string {
 	return map[string]string{
@@ -92,6 +91,12 @@ type nightlyMatrixEntry struct {
 	Covers string `yaml:"covers"`
 }
 
+type nightlyStep struct {
+	Name            string `yaml:"name"`
+	ContinueOnError bool   `yaml:"continue-on-error"`
+	If              string `yaml:"if"`
+}
+
 type nightlyJob struct {
 	ContinueOnError bool   `yaml:"continue-on-error"`
 	If              string `yaml:"if"`
@@ -100,6 +105,7 @@ type nightlyJob struct {
 			Include []nightlyMatrixEntry `yaml:"include"`
 		} `yaml:"matrix"`
 	} `yaml:"strategy"`
+	Steps []nightlyStep `yaml:"steps"`
 }
 
 type nightlyWorkflow struct {
@@ -243,6 +249,22 @@ func TestBareMetalDocClaimsOnlyTestedDistros(t *testing.T) {
 		if job.If != "" {
 			t.Errorf("bare-metal-nightly.yml: job %q несёт условие if: %q на уровне job — прогон может не выполниться и всё равно засчитаться", jobName, job.If)
 		}
+		assertingSeen := 0
+		for _, step := range job.Steps {
+			if !strings.HasPrefix(step.Name, assertingStepPrefix) {
+				continue
+			}
+			assertingSeen++
+			if step.ContinueOnError {
+				t.Errorf("bare-metal-nightly.yml: job %q шаг %q несёт continue-on-error: true — упавший e2e-ассерт засчитался бы подтверждающим", jobName, step.Name)
+			}
+			if step.If != "" {
+				t.Errorf("bare-metal-nightly.yml: job %q шаг %q несёт условие if: %q — ассерт может не выполниться и всё равно засчитаться", jobName, step.Name, step.If)
+			}
+		}
+		if assertingSeen == 0 {
+			t.Errorf("bare-metal-nightly.yml: job %q — ни одного шага %q* не найдено, сторож смотрит мимо файла", jobName, assertingStepPrefix)
+		}
 		entries := job.Strategy.Matrix.Include
 		if len(entries) == 0 {
 			t.Fatalf("bare-metal-nightly.yml: job %q — пустая матрица include, сторож смотрит мимо файла", jobName)
@@ -360,9 +382,8 @@ func sortedKeys(m map[string]bool) []string {
 	return out
 }
 
-// dnf -y install ловится по подкоманде install, но подтверждения спрашивают и
-// module disable, и remove, и upgrade, и makecache — сторож матчит любой вызов
-// dnf, кроме заведомо read-only подкоманд, а не только install.
+// -y — глобальный флаг, безвредный и на read-only подкомандах: repolist на EL
+// сам требует его при первом обращении к репозиторию, исключений нет.
 func hasShortYFlag(fields []string) bool {
 	for _, f := range fields {
 		if strings.HasPrefix(f, "--") {
@@ -385,19 +406,8 @@ func dnfSubcommand(fields []string) string {
 	return ""
 }
 
-func containsToken(fields []string, token string) bool {
-	for _, f := range fields {
-		if f == token {
-			return true
-		}
-	}
-	return false
-}
-
 // Постинстал clickhouse-server на живом терминале спрашивает пароль пользователя
-// default, и заданный там пароль ломает создание базы следующим шагом. Скрипт
-// ставит пакеты неинтерактивно — ручной путь в доке обязан делать то же, и на
-// EL это касается не только dnf install, но и module disable/remove/upgrade.
+// default — скрипт ставит пакеты неинтерактивно, ручной путь в доке обязан то же.
 func TestBareMetalAptInstallsAreNonInteractive(t *testing.T) {
 	tree := Load(t)
 
@@ -417,28 +427,26 @@ func TestBareMetalAptInstallsAreNonInteractive(t *testing.T) {
 			if strings.HasPrefix(strings.TrimSpace(line), "#") {
 				continue
 			}
-			for _, segment := range shellSeparatorRe.Split(line, -1) {
+			// printf-советы оператору в stderr кавычатся целиком — без вырезания
+			// их dnf-упоминания читались бы как настоящие вызовы.
+			unquoted := singleQuotedRe.ReplaceAllString(line, "")
+			for _, segment := range shellSeparatorRe.Split(unquoted, -1) {
 				loc := dnfInvocationRe.FindStringIndex(segment)
 				if loc == nil {
 					continue
 				}
 				dnfSeen++
 				fields := strings.Fields(segment[loc[0]:])
-				subcommand := dnfSubcommand(fields)
-				if readOnlyDnfSubcommands[subcommand] || containsToken(fields, "--showduplicates") {
-					continue
-				}
 				if !hasShortYFlag(fields) {
-					t.Errorf("%s: dnf %s без флага -y: %q", name, subcommand, strings.TrimSpace(segment))
+					t.Errorf("%s: dnf %s без флага -y: %q", name, dnfSubcommand(fields), strings.TrimSpace(segment))
 				}
 			}
 		}
 		if aptSeen == 0 {
 			t.Errorf("%s: ни одной установки пакетов apt-get не найдено — сторож смотрит мимо файла", name)
 		}
-		// Дока ещё не несёт EL-ветку ручного пути (задача 9) — там dnf пока
-		// не встречается. В инсталляторе dnf уже есть, отсутствие строк там
-		// означает, что сторож ослеп на переименованные или перенесённые вызовы.
+		// Дока ещё не несёт EL-ветку ручного пути (задача 9), dnf там пока нет;
+		// в инсталляторе dnf уже есть, и отсутствие строк там — сторож ослеп.
 		if name == "installer" && dnfSeen < 3 {
 			t.Errorf("%s: строк с dnf найдено %d (< 3) — сторож смотрит мимо файла", name, dnfSeen)
 		}

@@ -22,9 +22,8 @@ jobs:
     name: bare-metal установка (${{ matrix.image }}, ${{ matrix.arch }})
     strategy:
       fail-fast: false
-      # covers — единственное место, где живёт решение «этот прогон покрывает ещё и
-      # RHEL как бинарно совместимый»; internal/guards/bare_metal_docs_test.go сверяет
-      # его с allowlist-псевдонимами и с таблицей ОС в доке.
+      # covers — единственное место, где живёт решение «покрывает ещё и RHEL»;
+      # internal/guards/bare_metal_docs_test.go сверяет его с allowlist и докой.
       matrix:
         include:
           - { image: almalinux:9,              arch: amd64, runner: ubuntu-24.04,     covers: "AlmaLinux 9, RHEL 9" }
@@ -56,9 +55,8 @@ jobs:
           bash scripts/build-dist.sh --version 0.0.0 --arch ${{ matrix.arch }} --out dist
           bash scripts/build-dist.sh --version 0.0.1 --arch ${{ matrix.arch }} --out dist
 
-      # Выбор Dockerfile — по matrix.image: RHEL-семейство ставит слой через dnf,
-      # Debian/Ubuntu — через apt. Образы *-minimal не используем: в них microdnf
-      # вместо dnf.
+      # Выбор Dockerfile — по matrix.image. Образы *-minimal не используем:
+      # в них microdnf вместо dnf.
       - name: собрать образ с systemd поверх ${{ matrix.image }}
         run: |
           case "${{ matrix.image }}" in
