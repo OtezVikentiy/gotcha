@@ -14,6 +14,21 @@ Installed either by the `install-bare-metal.sh` script (see "Installing via the 
 - **Root access** over SSH — the installer writes to `/etc`, `/opt`, `/usr/local/bin`, `/var/lib` and installs system packages.
 - (Optional, but recommended for real use) a domain name pointing at the server's IP — needed for a TLS certificate.
 
+Distributions and architectures CI runs on every release:
+
+| OS | Architectures |
+|---|---|
+| AlmaLinux 9 | amd64, arm64 |
+| RHEL 9 | amd64, arm64 |
+| AlmaLinux 10 | amd64, arm64 |
+| RHEL 10 | amd64, arm64 |
+| Rocky Linux 9 | amd64, arm64 |
+| Rocky Linux 10 | amd64, arm64 |
+| Debian 12 | amd64 |
+| Debian 13 | amd64 |
+| Ubuntu 24.04 | amd64, arm64 |
+| Ubuntu 26.04 | amd64 |
+
 ## System requirements
 
 |      | Minimum | Recommended |

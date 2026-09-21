@@ -6,21 +6,45 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 var (
-	renderUnitRe    = regexp.MustCompile(`(?s)render_unit\(\) \{\n.*?cat <<EOF\n(.*?)\nEOF\n`)
-	docUnitBlockRe  = regexp.MustCompile(`(?s)cat >/etc/systemd/system/gotcha\.service <<'EOF'\n(.*?)\nEOF\n`)
-	nightlyImageRe  = regexp.MustCompile(`(?m)^\s*image: \[(.+)\]\s*$`)
-	distroClaimRe   = regexp.MustCompile(`(?m)^- \*\*(?:Linux-сервер|A Debian/Ubuntu-family Linux server)`)
-	ubuntuRe        = regexp.MustCompile(`Ubuntu (\d+\.\d+)`)
-	debianRe        = regexp.MustCompile(`Debian (\d+)\b`)
-	manualTarballRe = regexp.MustCompile(`(?m)^TARBALL="([^"]+)"$`)
-	manualFetchRe   = regexp.MustCompile(`(?m)^curl -fsSL -o "\$TARBALL" "\$URL/\$TARBALL"$`)
-	manualSumRe     = regexp.MustCompile(`(?m)^grep " ([^"\\]+)\\\$" SHA256SUMS\.txt \| sha256sum -c -$`)
-	manualExtractRe = regexp.MustCompile(`(?m)^tar xzf "\$TARBALL"$`)
-	distURLRe       = regexp.MustCompile(`(?s)dist_url\(\) \{.*?printf '([^']*)\\n' (.*?)\n\}`)
+	renderUnitRe     = regexp.MustCompile(`(?s)render_unit\(\) \{\n.*?cat <<EOF\n(.*?)\nEOF\n`)
+	docUnitBlockRe   = regexp.MustCompile(`(?s)cat >/etc/systemd/system/gotcha\.service <<'EOF'\n(.*?)\nEOF\n`)
+	osTableHeaderRe  = regexp.MustCompile(`(?m)^\|\s*(?:ОС|OS)\s*\|\s*(?:Архитектуры|Architectures)\s*\|\s*$`)
+	osTableRowRe     = regexp.MustCompile(`^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*$`)
+	manualTarballRe  = regexp.MustCompile(`(?m)^TARBALL="([^"]+)"$`)
+	manualFetchRe    = regexp.MustCompile(`(?m)^curl -fsSL -o "\$TARBALL" "\$URL/\$TARBALL"$`)
+	manualSumRe      = regexp.MustCompile(`(?m)^grep " ([^"\\]+)\\\$" SHA256SUMS\.txt \| sha256sum -c -$`)
+	manualExtractRe  = regexp.MustCompile(`(?m)^tar xzf "\$TARBALL"$`)
+	distURLRe        = regexp.MustCompile(`(?s)dist_url\(\) \{.*?printf '([^']*)\\n' (.*?)\n\}`)
+	shellSeparatorRe = regexp.MustCompile(`&&|\|\||;|\|`)
+	dnfInvocationRe  = regexp.MustCompile(`\bdnf\s+\S`)
 )
+
+// Единственное место, где решение «этот образ бинарно совместим с RHEL» видно в
+// коде, который его проверяет, а не только в covers workflow'а.
+var coversAliases = map[string][]string{
+	"AlmaLinux 9":    {"RHEL 9"},
+	"AlmaLinux 10":   {"RHEL 10"},
+	"Rocky Linux 9":  {"RHEL 9"},
+	"Rocky Linux 10": {"RHEL 10"},
+}
+
+var imageDistroNames = map[string]string{
+	"almalinux":  "AlmaLinux",
+	"rockylinux": "Rocky Linux",
+	"debian":     "Debian",
+	"ubuntu":     "Ubuntu",
+}
+
+var readOnlyDnfSubcommands = map[string]bool{
+	"repolist":  true,
+	"list":      true,
+	"repoquery": true,
+}
 
 func bareMetalDocPaths(root string) map[string]string {
 	return map[string]string{
@@ -61,49 +85,206 @@ func TestDocUnitMatchesRenderUnit(t *testing.T) {
 	}
 }
 
-// "Заявляем ровно то, что гоняем": список дистрибутивов на странице обязан совпадать
-// с матрицей ночного прогона, а не быть шире неё.
+type nightlyMatrixEntry struct {
+	Image  string `yaml:"image"`
+	Arch   string `yaml:"arch"`
+	Runner string `yaml:"runner"`
+	Covers string `yaml:"covers"`
+}
+
+type nightlyJob struct {
+	ContinueOnError bool   `yaml:"continue-on-error"`
+	If              string `yaml:"if"`
+	Strategy        struct {
+		Matrix struct {
+			Include []nightlyMatrixEntry `yaml:"include"`
+		} `yaml:"matrix"`
+	} `yaml:"strategy"`
+}
+
+type nightlyWorkflow struct {
+	Jobs map[string]nightlyJob `yaml:"jobs"`
+}
+
+func loadNightlyWorkflow(t *testing.T, root string) nightlyWorkflow {
+	t.Helper()
+	raw := readDocFile(t, filepath.Join(root, ".github", "workflows", "bare-metal-nightly.yml"))
+	var wf nightlyWorkflow
+	if err := yaml.Unmarshal([]byte(raw), &wf); err != nil {
+		t.Fatalf("bare-metal-nightly.yml: разбор YAML: %v", err)
+	}
+	if len(wf.Jobs) == 0 {
+		t.Fatalf("bare-metal-nightly.yml: job'ы не найдены — сторож смотрит мимо файла")
+	}
+	return wf
+}
+
+func sortedJobNames(jobs map[string]nightlyJob) []string {
+	names := make([]string, 0, len(jobs))
+	for name := range jobs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func splitCovers(raw string) map[string]bool {
+	out := map[string]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out[part] = true
+		}
+	}
+	return out
+}
+
+// Образ вида "rockylinux/rockylinux:10" или "almalinux:9" — путь до двоеточия
+// может нести неймспейс, значение после него — версия дистрибутива.
+func osFromImage(t *testing.T, image string) string {
+	t.Helper()
+	name, version, ok := strings.Cut(image, ":")
+	if !ok {
+		t.Fatalf("bare-metal-nightly.yml: образ %q не вида distro:version", image)
+	}
+	name = name[strings.LastIndex(name, "/")+1:]
+	distro, known := imageDistroNames[name]
+	if !known {
+		t.Fatalf("bare-metal-nightly.yml: образ %q — незнакомый дистрибутив %q, добавь его в imageDistroNames", image, name)
+	}
+	return distro + " " + version
+}
+
+func allowedCovers(self string) map[string]bool {
+	allowed := map[string]bool{self: true}
+	for _, alias := range coversAliases[self] {
+		allowed[alias] = true
+	}
+	return allowed
+}
+
+func archSetsEqual(a, b map[string]map[string]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for os, arches := range a {
+		other, ok := b[os]
+		if !ok || len(arches) != len(other) {
+			return false
+		}
+		for arch := range arches {
+			if !other[arch] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func describeArchSets(m map[string]map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for os, arches := range m {
+		out = append(out, os+": "+strings.Join(sortedKeys(arches), ", "))
+	}
+	sort.Strings(out)
+	return out
+}
+
+func parseOSTable(t *testing.T, locale, doc string) map[string]map[string]bool {
+	t.Helper()
+	loc := osTableHeaderRe.FindStringIndex(doc)
+	if loc == nil {
+		t.Fatalf("%s: таблица ОС (заголовок «ОС | Архитектуры») не найдена — сторож смотрит мимо страницы", locale)
+	}
+	lines := strings.Split(doc[loc[1]:], "\n")
+	if len(lines) < 3 {
+		t.Fatalf("%s: за заголовком таблицы ОС нет строки разделителя и данных", locale)
+	}
+	result := map[string]map[string]bool{}
+	for _, line := range lines[2:] {
+		if strings.TrimSpace(line) == "" {
+			break
+		}
+		m := osTableRowRe.FindStringSubmatch(line)
+		if m == nil {
+			t.Fatalf("%s: строка таблицы ОС не разобрана: %q", locale, line)
+		}
+		os := strings.TrimSpace(m[1])
+		arches := map[string]bool{}
+		for _, arch := range strings.Split(m[2], ",") {
+			arch = strings.TrimSpace(arch)
+			if arch != "" {
+				arches[arch] = true
+			}
+		}
+		if len(arches) == 0 {
+			t.Fatalf("%s: строка таблицы ОС %q — пустой список архитектур", locale, os)
+		}
+		result[os] = arches
+	}
+	if len(result) == 0 {
+		t.Fatalf("%s: таблица ОС не содержит ни одной строки — сторож смотрит мимо страницы", locale)
+	}
+	return result
+}
+
+// "Заявляем ровно то, что гоняем": таблица ОС на странице обязана совпадать с
+// объединением обоих job'ов ночной матрицы, а не быть шире или уже него.
 func TestBareMetalDocClaimsOnlyTestedDistros(t *testing.T) {
 	tree := Load(t)
+	wf := loadNightlyWorkflow(t, tree.Root)
 
-	workflow := readDocFile(t, filepath.Join(tree.Root, ".github", "workflows", "bare-metal-nightly.yml"))
-	m := nightlyImageRe.FindStringSubmatch(workflow)
-	if m == nil {
-		t.Fatalf("bare-metal-nightly.yml: матрица образов не найдена — сторож смотрит мимо файла")
-	}
-	want := map[string]bool{}
-	for _, image := range strings.Split(m[1], ",") {
-		parts := strings.SplitN(strings.TrimSpace(image), ":", 2)
-		if len(parts) != 2 {
-			t.Fatalf("bare-metal-nightly.yml: образ %q не вида distro:version", image)
+	union := map[string]map[string]bool{}
+	for _, jobName := range sortedJobNames(wf.Jobs) {
+		job := wf.Jobs[jobName]
+		if job.ContinueOnError {
+			t.Errorf("bare-metal-nightly.yml: job %q несёт continue-on-error: true — незавершившийся прогон засчитался бы подтверждающим", jobName)
 		}
-		want[titleWord(parts[0])+" "+parts[1]] = true
-	}
-	if len(want) == 0 {
-		t.Fatalf("bare-metal-nightly.yml: пустая матрица образов — сравнение ниже ничего бы не значило")
+		if job.If != "" {
+			t.Errorf("bare-metal-nightly.yml: job %q несёт условие if: %q на уровне job — прогон может не выполниться и всё равно засчитаться", jobName, job.If)
+		}
+		entries := job.Strategy.Matrix.Include
+		if len(entries) == 0 {
+			t.Fatalf("bare-metal-nightly.yml: job %q — пустая матрица include, сторож смотрит мимо файла", jobName)
+		}
+		for i, entry := range entries {
+			covers := splitCovers(entry.Covers)
+			if len(covers) == 0 {
+				t.Errorf("bare-metal-nightly.yml: job %q запись %d — пустой covers, неясно, что подтверждает прогон", jobName, i)
+				continue
+			}
+			if entry.Image != "" {
+				self := osFromImage(t, entry.Image)
+				allowed := allowedCovers(self)
+				if !covers[self] {
+					t.Errorf("bare-metal-nightly.yml: job %q запись %d (%s) — covers %v не содержит %q, выведенное из image",
+						jobName, i, entry.Image, sortedKeys(covers), self)
+				}
+				for name := range covers {
+					if !allowed[name] {
+						t.Errorf("bare-metal-nightly.yml: job %q запись %d (%s) — covers заявляет %q, это не сам образ и не разрешённый псевдоним из coversAliases",
+							jobName, i, entry.Image, name)
+					}
+				}
+			}
+			if entry.Arch == "" {
+				t.Errorf("bare-metal-nightly.yml: job %q запись %d — пустой arch", jobName, i)
+				continue
+			}
+			for name := range covers {
+				if union[name] == nil {
+					union[name] = map[string]bool{}
+				}
+				union[name][entry.Arch] = true
+			}
+		}
 	}
 
 	for locale, path := range bareMetalDocPaths(tree.Root) {
-		claim := ""
-		for _, line := range strings.Split(readDocFile(t, path), "\n") {
-			if distroClaimRe.MatchString(line) {
-				claim = line
-				break
-			}
-		}
-		if claim == "" {
-			t.Fatalf("%s: строка с перечнем дистрибутивов не найдена — сторож смотрит мимо страницы", locale)
-		}
-
-		got := map[string]bool{}
-		for _, v := range ubuntuRe.FindAllStringSubmatch(claim, -1) {
-			got["Ubuntu "+v[1]] = true
-		}
-		for _, v := range debianRe.FindAllStringSubmatch(claim, -1) {
-			got["Debian "+v[1]] = true
-		}
-		if !sameStringSet(got, want) {
-			t.Errorf("%s: страница заявляет %v, ночная матрица гоняет %v", locale, sortedKeys(got), sortedKeys(want))
+		table := parseOSTable(t, locale, readDocFile(t, path))
+		if !archSetsEqual(table, union) {
+			t.Errorf("%s: таблица ОС заявляет %v, ночная матрица гоняет %v",
+				locale, describeArchSets(table), describeArchSets(union))
 		}
 	}
 }
@@ -170,25 +351,6 @@ func TestManualInstallChecksumNamesMatch(t *testing.T) {
 	}
 }
 
-func titleWord(s string) string {
-	if s == "" {
-		return s
-	}
-	return strings.ToUpper(s[:1]) + s[1:]
-}
-
-func sameStringSet(a, b map[string]bool) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k := range a {
-		if !b[k] {
-			return false
-		}
-	}
-	return true
-}
-
 func sortedKeys(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
@@ -198,9 +360,44 @@ func sortedKeys(m map[string]bool) []string {
 	return out
 }
 
+// dnf -y install ловится по подкоманде install, но подтверждения спрашивают и
+// module disable, и remove, и upgrade, и makecache — сторож матчит любой вызов
+// dnf, кроме заведомо read-only подкоманд, а не только install.
+func hasShortYFlag(fields []string) bool {
+	for _, f := range fields {
+		if strings.HasPrefix(f, "--") {
+			continue
+		}
+		if strings.HasPrefix(f, "-") && strings.ContainsRune(f[1:], 'y') {
+			return true
+		}
+	}
+	return false
+}
+
+func dnfSubcommand(fields []string) string {
+	for _, f := range fields[1:] {
+		if strings.HasPrefix(f, "-") {
+			continue
+		}
+		return f
+	}
+	return ""
+}
+
+func containsToken(fields []string, token string) bool {
+	for _, f := range fields {
+		if f == token {
+			return true
+		}
+	}
+	return false
+}
+
 // Постинстал clickhouse-server на живом терминале спрашивает пароль пользователя
 // default, и заданный там пароль ломает создание базы следующим шагом. Скрипт
-// ставит пакеты неинтерактивно — ручной путь в доке обязан делать то же.
+// ставит пакеты неинтерактивно — ручной путь в доке обязан делать то же, и на
+// EL это касается не только dnf install, но и module disable/remove/upgrade.
 func TestBareMetalAptInstallsAreNonInteractive(t *testing.T) {
 	tree := Load(t)
 
@@ -208,18 +405,42 @@ func TestBareMetalAptInstallsAreNonInteractive(t *testing.T) {
 	sources["installer"] = filepath.Join(tree.Root, "internal", "docs", "install-bare-metal.sh")
 
 	for name, path := range sources {
-		seen := 0
+		aptSeen := 0
+		dnfSeen := 0
 		for _, line := range strings.Split(readDocFile(t, path), "\n") {
-			if !strings.Contains(line, "apt-get install") {
+			if strings.Contains(line, "apt-get install") {
+				aptSeen++
+				if !strings.HasPrefix(strings.TrimSpace(line), "DEBIAN_FRONTEND=noninteractive apt-get install") {
+					t.Errorf("%s: apt-get install без DEBIAN_FRONTEND=noninteractive: %q", name, strings.TrimSpace(line))
+				}
+			}
+			if strings.HasPrefix(strings.TrimSpace(line), "#") {
 				continue
 			}
-			seen++
-			if !strings.HasPrefix(strings.TrimSpace(line), "DEBIAN_FRONTEND=noninteractive apt-get install") {
-				t.Errorf("%s: apt-get install без DEBIAN_FRONTEND=noninteractive: %q", name, strings.TrimSpace(line))
+			for _, segment := range shellSeparatorRe.Split(line, -1) {
+				loc := dnfInvocationRe.FindStringIndex(segment)
+				if loc == nil {
+					continue
+				}
+				dnfSeen++
+				fields := strings.Fields(segment[loc[0]:])
+				subcommand := dnfSubcommand(fields)
+				if readOnlyDnfSubcommands[subcommand] || containsToken(fields, "--showduplicates") {
+					continue
+				}
+				if !hasShortYFlag(fields) {
+					t.Errorf("%s: dnf %s без флага -y: %q", name, subcommand, strings.TrimSpace(segment))
+				}
 			}
 		}
-		if seen == 0 {
-			t.Errorf("%s: ни одной установки пакетов не найдено — сторож смотрит мимо файла", name)
+		if aptSeen == 0 {
+			t.Errorf("%s: ни одной установки пакетов apt-get не найдено — сторож смотрит мимо файла", name)
+		}
+		// Дока ещё не несёт EL-ветку ручного пути (задача 9) — там dnf пока
+		// не встречается. В инсталляторе dnf уже есть, отсутствие строк там
+		// означает, что сторож ослеп на переименованные или перенесённые вызовы.
+		if name == "installer" && dnfSeen < 3 {
+			t.Errorf("%s: строк с dnf найдено %d (< 3) — сторож смотрит мимо файла", name, dnfSeen)
 		}
 	}
 }
