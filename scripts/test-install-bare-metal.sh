@@ -601,8 +601,7 @@ rm -f "$tmphba"
 remove_marker_block "$PG_INCLUDE_MARKER" /nonexistent/gotcha-purge-test
 assert_eq "remove_marker_block on a missing file is a no-op, not an error" 0 $?
 
-# remove_marker_block — контент, дописанный ОПЕРАТОРОМ после нашей пары, обязан
-# уцелеть (off-by-one: snip забирал маркер+2 строки вместо маркер+1)
+# remove_marker_block — контент, дописанный ОПЕРАТОРОМ после нашей пары, обязан уцелеть
 
 tmpconf=$(mktemp)
 cp "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample" "$tmpconf"
@@ -662,9 +661,8 @@ middle = 2
 after = 3" "$(cat "$tmpconf")"
 rm -f "$tmpconf"
 
-# remove_marker_block — перезапись сохраняет режим файла (не сбрасывается до umask
-# свежесозданного временного файла); владелец/SELinux-контекст — e2e на EL, не здесь:
-# локально нет root/postgres, чтобы воспроизвести chown достоверно.
+# remove_marker_block — перезапись сохраняет режим файла; владелец/SELinux-контекст
+# проверяет e2e на EL (здесь нет root/postgres для достоверного chown).
 
 tmpconf=$(mktemp)
 cp "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample" "$tmpconf"
@@ -673,6 +671,63 @@ ensure_include_dir "$tmpconf"
 remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
 assert_eq "remove_marker_block preserves the file mode" "600" "$(stat -c '%a' "$tmpconf")"
 rm -f "$tmpconf"
+
+# remove_marker_block — $file симлинк на конфиг под системой конфигурации: симлинк
+# остаётся симлинком на тот же таргет, содержимое и права таргета — как в happy-path.
+
+tmpdir=$(mktemp -d)
+target="$tmpdir/real-postgresql.conf"
+link="$tmpdir/postgresql.conf"
+cp "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample" "$target"
+chmod 0640 "$target"
+ln -s "$target" "$link"
+ensure_include_dir "$link"
+printf "shared_preload_libraries = 'pg_stat_statements'\n" >>"$link"
+remove_marker_block "$PG_INCLUDE_MARKER" "$link"
+assert_eq "remove_marker_block leaves the symlink in place, pointing at its target" \
+    "symlink:$target" "$([ -L "$link" ] && printf 'symlink:%s' "$(readlink -f "$link")" || printf 'not-a-symlink')"
+assert_eq "remove_marker_block through a symlink keeps content written after the marker pair" \
+    "shared_preload_libraries = 'pg_stat_statements'" "$(tail -n1 "$target")"
+assert_eq "remove_marker_block through a symlink does not wipe the target" \
+    "$(cat "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample"; printf "shared_preload_libraries = 'pg_stat_statements'\n")" \
+    "$(cat "$target")"
+assert_eq "remove_marker_block through a symlink preserves the target's mode" "640" "$(stat -c '%a' "$target")"
+rm -rf "$tmpdir"
+
+# remove_marker_block — временный файл не создать (директория без прав на запись):
+# возвращает 1, ничего не оставляет за собой. Пропускается под root — permission
+# checks не применяются.
+
+if [ "$(id -u)" = 0 ]; then
+    printf 'note: running as root, skipping the remove_marker_block read-only-directory case\n'
+else
+    tmpdir=$(mktemp -d)
+    tmpconf="$tmpdir/postgresql.conf"
+    cp "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample" "$tmpconf"
+    ensure_include_dir "$tmpconf"
+    chmod 555 "$tmpdir"
+    remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
+    assert_eq "remove_marker_block returns 1 when the temp file cannot be created" 1 $?
+    chmod 755 "$tmpdir"
+    assert_eq "remove_marker_block leaves no temp file behind after a cp -a failure" "" \
+        "$(find "$tmpdir" -maxdepth 1 -name '*.gotcha-tmp')"
+    rm -rf "$tmpdir"
+fi
+
+# remove_marker_block — awk отказывает: возвращает 1, временный файл убран за собой
+
+stubdir=$(mktemp -d)
+printf '#!/bin/sh\nexit 1\n' >"$stubdir/awk"
+chmod +x "$stubdir/awk"
+tmpconf=$(mktemp)
+cp "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample" "$tmpconf"
+ensure_include_dir "$tmpconf"
+PATH="$stubdir:$PATH" remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
+assert_eq "remove_marker_block returns 1 when awk fails" 1 $?
+assert_eq "remove_marker_block removes its temp file when awk fails" "" \
+    "$(find "$(dirname "$tmpconf")" -maxdepth 1 -name "$(basename "$tmpconf").gotcha-tmp")"
+rm -f "$tmpconf"
+rm -rf "$stubdir"
 
 # verify_key_fingerprint отвергает файл с двумя основными ключами
 

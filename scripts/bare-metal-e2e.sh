@@ -882,6 +882,24 @@ purge_without_confirmation_refuses() {
     pg_role_exists || { printf 'postgresql role gotcha gone after a refused --purge\n' >&2; return 1; }
 }
 
+# main() вызывается из-под if в конце скрипта — set -e внутри него инертен,
+# и без явного warning ниже --purge рапортовал бы успех, оставив маркер в конфиге.
+purge_marker_removal_failure_is_reported_not_silent() {
+    [ "$HOST_FAMILY" = rhel ] || return 0
+    local stub=/tmp/gotcha-awk-fail-stub output rc
+    mkdir -p "$stub"
+    printf '#!/bin/sh\nexit 1\n' >"$stub/awk"
+    chmod +x "$stub/awk"
+    output=$(PATH="$stub:$PATH" bash "$INSTALLER" --uninstall --purge --yes 2>&1)
+    rc=$?
+    rm -rf "$stub"
+
+    [ "$rc" -eq 0 ] \
+        || { printf '--purge with a failing marker removal exited %d, expected 0 (non-fatal continuation):\n%s\n' "$rc" "$output" >&2; return 1; }
+    grep -q 'could not remove the gotcha include_dir marker' <<<"$output" \
+        || { printf 'missing the marker-removal-failure warning in output:\n%s\n' "$output" >&2; return 1; }
+}
+
 purge_removes_data_and_databases_keeps_packages() {
     # До снятия: --purge правит postgresql.conf/pg_hba.conf на месте — владелец,
     # права и SELinux-контекст файла СУБД обязаны пережить это нетронутыми.
@@ -1004,6 +1022,7 @@ run_assertions() {
     assert "--purge without confirmation and without --yes refuses" purge_without_confirmation_refuses
     assert "re-installing after --uninstall succeeds" reinstall_after_uninstall_succeeds
     assert "a certbot-edited nginx site survives --uninstall and a reinstall" certbot_site_survives_uninstall_reinstall
+    assert "a failing marker removal is reported, not swallowed, and --purge still exits 0" purge_marker_removal_failure_is_reported_not_silent
     assert "--purge removes data/databases/system user, keeps packages/repos" purge_removes_data_and_databases_keeps_packages
 }
 

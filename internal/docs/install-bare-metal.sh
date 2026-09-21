@@ -852,20 +852,21 @@ ensure_include_dir() {
     printf '%s\ninclude_dir = %s\n' "$PG_INCLUDE_MARKER" "'conf.d'" >>"$1"
 }
 
-# Снимает ровно marker+payload по содержимому маркера. cp -a перед awk — иначе mv
-# свежего временного файла стирает владельца/права/SELinux-контекст конфига СУБД.
+# Снимает marker+payload по содержимому маркера. readlink -f обязателен: cp -a
+# на симлинк $file дал бы tmp-симлинк на тот же таргет, и запись в tmp усекла бы его раньше, чем awk успеет прочитать.
 remove_marker_block() {
-    local marker="$1" file="$2" tmp
+    local marker="$1" file="$2" real tmp
     [ -f "$file" ] || return 0
     grep -qF "$marker" "$file" || return 0
-    tmp="$file.gotcha-tmp"
-    cp -a "$file" "$tmp" || return 1
+    real=$(readlink -f "$file") || return 1
+    tmp="$real.gotcha-tmp"
+    cp -a "$real" "$tmp" || return 1
     if awk -v m="$marker" '
         $0 == m { skip = 1; next }
         skip > 0 { skip--; next }
         { print }
-    ' "$file" >"$tmp"; then
-        mv "$tmp" "$file"
+    ' "$real" >"$tmp"; then
+        mv "$tmp" "$real"
     else
         rm -f "$tmp"
         return 1
@@ -1354,8 +1355,12 @@ SQL
     if [ -n "$pg_conf_dir" ]; then
         rm -f "$pg_conf_dir/conf.d/10-gotcha.conf"
         if [ "$HOST_FAMILY" = rhel ]; then
-            remove_marker_block "$PG_INCLUDE_MARKER" "$pg_conf_dir/postgresql.conf"
-            remove_marker_block "$PG_INCLUDE_MARKER" "$pg_conf_dir/pg_hba.conf"
+            remove_marker_block "$PG_INCLUDE_MARKER" "$pg_conf_dir/postgresql.conf" \
+                || printf 'install-bare-metal: could not remove the gotcha include_dir marker from %s, clean it up by hand\n' \
+                    "$pg_conf_dir/postgresql.conf" >&2
+            remove_marker_block "$PG_INCLUDE_MARKER" "$pg_conf_dir/pg_hba.conf" \
+                || printf 'install-bare-metal: could not remove the gotcha include_dir marker from %s, clean it up by hand\n' \
+                    "$pg_conf_dir/pg_hba.conf" >&2
         fi
     fi
     rm -f /etc/clickhouse-server/config.d/00-common.xml /etc/clickhouse-server/config.d/10-small.xml
