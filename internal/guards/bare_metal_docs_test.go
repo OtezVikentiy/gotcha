@@ -22,7 +22,7 @@ var (
 	distURLRe        = regexp.MustCompile(`(?s)dist_url\(\) \{.*?printf '([^']*)\\n' (.*?)\n\}`)
 	shellSeparatorRe = regexp.MustCompile(`&&|\|\||;|\|`)
 	dnfInvocationRe  = regexp.MustCompile(`\bdnf\s+\S`)
-	singleQuotedRe   = regexp.MustCompile(`'[^']*'`)
+	quotedStringRe   = regexp.MustCompile(`'[^']*'|"[^"]*"`)
 )
 
 // Единственное место, где решение «этот образ бинарно совместим с RHEL» видно в
@@ -427,9 +427,9 @@ func TestBareMetalAptInstallsAreNonInteractive(t *testing.T) {
 			if strings.HasPrefix(strings.TrimSpace(line), "#") {
 				continue
 			}
-			// printf-советы оператору в stderr кавычатся целиком — без вырезания
-			// их dnf-упоминания читались бы как настоящие вызовы.
-			unquoted := singleQuotedRe.ReplaceAllString(line, "")
+			// Советы оператору (printf/echo) кавычатся целиком, одинарно или
+			// двойно — без вырезания их dnf-упоминания читались бы как вызовы.
+			unquoted := quotedStringRe.ReplaceAllString(line, "")
 			for _, segment := range shellSeparatorRe.Split(unquoted, -1) {
 				loc := dnfInvocationRe.FindStringIndex(segment)
 				if loc == nil {
