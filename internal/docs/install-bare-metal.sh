@@ -85,9 +85,8 @@ detect_arch() {
     esac
 }
 
-# Внутренняя часть detect_platform, выставляющая пути по уже известным
-# HOST_FAMILY/EL_MAJOR — тестируется отдельно, detect_platform целиком читает
-# /etc/os-release и на машине разработчика всегда дала бы debian.
+# Внутренняя часть detect_platform по уже известным HOST_FAMILY/EL_MAJOR —
+# тестируется отдельно, целиком detect_platform читает /etc/os-release.
 apply_platform_paths() {
     declare -gA PKG_HINTS=(
         [curl]=curl [tar]=tar [openssl]=openssl [sha256sum]=coreutils [sudo]=sudo

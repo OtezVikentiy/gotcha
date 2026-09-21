@@ -75,9 +75,8 @@ assert_eq "detect_el_major empty rejected" 1 $?
 
 # платформенные пути
 
-# Real assignments, not a command prefix: apply_platform_paths only reads
-# HOST_FAMILY/EL_MAJOR, so a prefix would not survive past this call, and
-# pg_conf_dir_label/pg_conf_dir_resolve below read them directly too.
+# Real assignments, not a prefix: apply_platform_paths and the functions
+# below read HOST_FAMILY/EL_MAJOR directly, past this call's scope.
 HOST_FAMILY=debian
 EL_MAJOR=""
 apply_platform_paths
