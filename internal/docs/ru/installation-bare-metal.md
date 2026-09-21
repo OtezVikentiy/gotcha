@@ -117,9 +117,16 @@ sudo -u postgres psql -c "CREATE DATABASE gotcha OWNER gotcha"
 поставьте пакет вместе с `contrib`: расширение `citext`, нужное миграциям, на EL
 живёт отдельным пакетом, а не внутри `-server`, как на Debian/Ubuntu.
 
+PGDG подписывает метаданные aarch64-репозитория отдельным ключом от x86_64 —
+общий ключ на обе архитектуры провалит проверку подписи на arm64.
+
 ```bash
 EL_MAJOR=$(. /etc/os-release && printf '%s\n' "${VERSION_ID%%.*}")
-curl -fsSL -o /tmp/pgdg.asc https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL
+PGDG_RPM_KEY_URL=https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL
+if [ "$(uname -m)" = aarch64 ]; then
+  PGDG_RPM_KEY_URL=https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-AARCH64-RHEL
+fi
+curl -fsSL -o /tmp/pgdg.asc "$PGDG_RPM_KEY_URL"
 mkdir -p /etc/pki/rpm-gpg
 cp /tmp/pgdg.asc /etc/pki/rpm-gpg/gotcha-pgdg.asc
 rpm --import /etc/pki/rpm-gpg/gotcha-pgdg.asc

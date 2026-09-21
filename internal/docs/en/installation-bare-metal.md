@@ -118,9 +118,16 @@ install the package together with `contrib`: the `citext` extension, which
 migrations need, lives in a separate package on EL instead of inside `-server`,
 as it does on Debian/Ubuntu.
 
+PGDG signs the aarch64 repository metadata with a separate key from x86_64 —
+a shared key for both architectures fails signature verification on arm64.
+
 ```bash
 EL_MAJOR=$(. /etc/os-release && printf '%s\n' "${VERSION_ID%%.*}")
-curl -fsSL -o /tmp/pgdg.asc https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL
+PGDG_RPM_KEY_URL=https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL
+if [ "$(uname -m)" = aarch64 ]; then
+  PGDG_RPM_KEY_URL=https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-AARCH64-RHEL
+fi
+curl -fsSL -o /tmp/pgdg.asc "$PGDG_RPM_KEY_URL"
 mkdir -p /etc/pki/rpm-gpg
 cp /tmp/pgdg.asc /etc/pki/rpm-gpg/gotcha-pgdg.asc
 rpm --import /etc/pki/rpm-gpg/gotcha-pgdg.asc

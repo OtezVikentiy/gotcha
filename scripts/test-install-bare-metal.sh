@@ -486,6 +486,13 @@ assert_contains "pgdg repo trusts a local key file" "$out" "gpgkey=file:///etc/p
 out=$(render_pgdg_repo 10)
 assert_contains "pgdg repo for EL10" "$out" "redhat/rhel-10-\$basearch"
 
+# pgdg_rpm_key_for_arch
+
+out=$(pgdg_rpm_key_for_arch amd64)
+assert_eq "pgdg key for amd64" "$PGDG_RPM_KEY_URL $PGDG_RPM_KEY_FINGERPRINT" "$out"
+out=$(pgdg_rpm_key_for_arch arm64)
+assert_eq "pgdg key for arm64" "$PGDG_RPM_KEY_URL_ARM64 $PGDG_RPM_KEY_FINGERPRINT_ARM64" "$out"
+
 # render_clickhouse_repo
 
 # shellcheck disable=SC2034 # прочитана apply_platform_paths, определённой в сорсимом файле

@@ -19,6 +19,11 @@ CLICKHOUSE_KEY_FINGERPRINT="3A9EA1193A97B548BE1457D48919F6BD2B48D754"
 
 PGDG_RPM_KEY_URL="https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL"
 PGDG_RPM_KEY_PATH=/etc/pki/rpm-gpg/gotcha-pgdg.asc
+
+# PGDG подписывает метаданные rpm-репозитория aarch64 отдельным ключом от
+# x86_64 — общий gpgkey= на оба провалит проверку подписи на arm64.
+PGDG_RPM_KEY_URL_ARM64="https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-AARCH64-RHEL"
+PGDG_RPM_KEY_FINGERPRINT_ARM64="B031F89FC983E98262906B6E177B343BB9738825"
 CLICKHOUSE_RPM_KEY_PATH=/etc/pki/rpm-gpg/gotcha-clickhouse.asc
 PG_INCLUDE_MARKER="# gotcha: conf.d include"
 
@@ -816,17 +821,27 @@ gpgkey=file://$PGDG_RPM_KEY_PATH
 EOF
 }
 
+# Ключ и отпечаток PGDG для rpm выбираются по архитектуре хоста, не по
+# дистрибутиву — так же, как URL самого репозитория ($basearch).
+pgdg_rpm_key_for_arch() {
+    case "$1" in
+        arm64) printf '%s %s\n' "$PGDG_RPM_KEY_URL_ARM64" "$PGDG_RPM_KEY_FINGERPRINT_ARM64" ;;
+        *) printf '%s %s\n' "$PGDG_RPM_KEY_URL" "$PGDG_RPM_KEY_FINGERPRINT" ;;
+    esac
+}
+
 # deb-ветка не подставляет нативный мажор молча: PGDG публикует EL9/EL10 всегда,
 # и штатный AppStream мажора 17 не содержит.
 repo_add_pgdg() {
     local codename="$1"
     if [ "$HOST_FAMILY" = rhel ]; then
-        local tmp
+        local tmp key_url key_fpr
         tmp=$(mktemp -d)
         TMP_DIRS+=("$tmp")
-        curl -fsSL -o "$tmp/pgdg.asc" "$PGDG_RPM_KEY_URL" \
-            || fail "$EXIT_DATABASE" "failed to download the PGDG signing key from $PGDG_RPM_KEY_URL"
-        verify_key_fingerprint "$tmp/pgdg.asc" "$PGDG_RPM_KEY_FINGERPRINT"
+        read -r key_url key_fpr < <(pgdg_rpm_key_for_arch "$HOST_ARCH")
+        curl -fsSL -o "$tmp/pgdg.asc" "$key_url" \
+            || fail "$EXIT_DATABASE" "failed to download the PGDG signing key from $key_url"
+        verify_key_fingerprint "$tmp/pgdg.asc" "$key_fpr"
         mkdir -p "$(dirname "$PGDG_RPM_KEY_PATH")"
         cp "$tmp/pgdg.asc" "$PGDG_RPM_KEY_PATH"
         rpm --import "$PGDG_RPM_KEY_PATH" >/dev/null
