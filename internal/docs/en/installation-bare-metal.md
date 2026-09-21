@@ -553,6 +553,12 @@ firewall-cmd --permanent --add-service=http --add-service=https
 firewall-cmd --reload
 ```
 
+If it's not installed or not running — the case on a stock AlmaLinux/Rocky
+GenericCloud image, which ships without firewalld — the installer prints a notice
+and leaves the host as it is; open the ports yourself if something else on the
+host filters them. `--no-firewall` skips this step silently instead, since that's
+an explicit request, not a surprise.
+
 Both changes are global host settings, not files that belong to this install:
 `--uninstall` doesn't revert either one, not on its own and not with `--purge`.
 Another service on the same host may depend on them, so revert deliberately rather

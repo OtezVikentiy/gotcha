@@ -655,6 +655,16 @@ firewall_decision() {
     printf 'ask\n'
 }
 
+# Сообщение только для пропуска «не обнаружен/не запущен» — при --no-firewall
+# firewalld мог бы прекрасно работать, оператор сам попросил его не трогать,
+# и формулировка «не обнаружен» там была бы неверной.
+firewall_skip_notice() {
+    local decision="$1" no_firewall="$2"
+    [ "$decision" = skip ] || return 1
+    [ -z "$no_firewall" ] || return 1
+    printf 'firewalld: not detected or not running — ports 80 and 443 were left untouched, open them yourself if this host uses a firewall\n'
+}
+
 # Читает реальное состояние хоста (uname, порты, RAM, диск) — платформа уже
 # определена detect_platform, остальные решения идут через чистые функции выше.
 preflight() {
@@ -1505,6 +1515,9 @@ main() {
                 else
                     fail "$EXIT_OTHER" "failed to open ports 80/443 in firewalld"
                 fi
+            else
+                local fw_notice
+                fw_notice=$(firewall_skip_notice "$fw_decision" "$ARG_NO_FIREWALL") && log_step "$fw_notice"
             fi
         fi
         if [ -n "$ARG_DOMAIN" ] && [ -n "$ARG_EMAIL" ]; then

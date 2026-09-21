@@ -787,6 +787,21 @@ assert_eq "firewalld running, --no-proxy skips" skip "$(firewall_decision runnin
 assert_eq "firewalld not running skips" skip "$(firewall_decision "not running" "" 1 "")"
 assert_eq "firewall-cmd missing skips" skip "$(firewall_decision "" "" 1 "")"
 
+# firewall_skip_notice
+
+out=$(firewall_skip_notice skip "")
+assert_eq "not-detected skip prints a notice" \
+    "firewalld: not detected or not running — ports 80 and 443 were left untouched, open them yourself if this host uses a firewall" \
+    "$out"
+out=$(firewall_skip_notice skip 1)
+rc=$?
+assert_eq "--no-firewall skip prints nothing" "" "$out"
+assert_eq "--no-firewall skip reports failure" 1 "$rc"
+out=$(firewall_skip_notice open "")
+rc=$?
+assert_eq "non-skip decision prints nothing" "" "$out"
+assert_eq "non-skip decision reports failure" 1 "$rc"
+
 if [ "$FAILURES" -gt 0 ]; then
     printf '%d assertion(s) failed\n' "$FAILURES" >&2
     exit 1
