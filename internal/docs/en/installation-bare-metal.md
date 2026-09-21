@@ -51,13 +51,14 @@ Each step here is exactly what the `install-bare-metal.sh` script does, run by h
 
 ```bash
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y curl tar gnupg openssl coreutils sudo iproute2
+DEBIAN_FRONTEND=noninteractive apt-get install -y curl tar gnupg openssl coreutils iproute2
 ```
 
-`sudo` and `iproute2` (the `ss` command) are needed by the steps below and by the script:
-without the first there's no way to create the PostgreSQL role as the `postgres` user,
-without the second no way to check the ports. A minimal Debian/Ubuntu image has neither —
-the script's preflight refuses with exit code 3 and names the missing package.
+`iproute2` (the `ss` command) is needed by the steps below and by the script: without it
+there's no way to check the ports. A minimal Debian/Ubuntu image may lack it — the script's
+preflight refuses with exit code 3 and names the missing package. The script creates the
+PostgreSQL role as the `postgres` user via `runuser` — that command is part of the
+mandatory `util-linux` package, no separate install needed.
 
 Check the ports you'll need: 8080 (the app), 80 (if you're installing nginx), 5432/8123/9000 (if you're installing PostgreSQL/ClickHouse this way).
 
@@ -107,8 +108,8 @@ systemctl restart postgresql
 Create the role and database:
 
 ```bash
-sudo -u postgres psql -c "CREATE ROLE gotcha LOGIN PASSWORD 'choose-your-own-password'"
-sudo -u postgres psql -c "CREATE DATABASE gotcha OWNER gotcha"
+runuser -u postgres -- psql -c "CREATE ROLE gotcha LOGIN PASSWORD 'choose-your-own-password'"
+runuser -u postgres -- psql -c "CREATE DATABASE gotcha OWNER gotcha"
 ```
 
 **On AlmaLinux/Rocky/RHEL 9 and 10:**
@@ -180,9 +181,9 @@ systemctl enable --now postgresql-17
 Create the role and database — the PGDG package's `psql` isn't on `PATH`:
 
 ```bash
-sudo -u postgres /usr/pgsql-17/bin/psql \
+runuser -u postgres -- /usr/pgsql-17/bin/psql \
   -c "CREATE ROLE gotcha LOGIN PASSWORD 'choose-your-own-password'"
-sudo -u postgres /usr/pgsql-17/bin/psql -c "CREATE DATABASE gotcha OWNER gotcha"
+runuser -u postgres -- /usr/pgsql-17/bin/psql -c "CREATE DATABASE gotcha OWNER gotcha"
 ```
 
 DSN for step 6 — the same on both families: `postgres://gotcha:<password>@127.0.0.1:5432/gotcha?sslmode=disable`.

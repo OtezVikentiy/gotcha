@@ -88,6 +88,7 @@ assert_eq "debian NGINX_SITE" "/etc/nginx/sites-available/gotcha" "$NGINX_SITE"
 assert_eq "debian REPO_DIR" "/etc/apt/sources.list.d" "$REPO_DIR"
 assert_eq "debian pg_conf_dir_label" "/etc/postgresql/*/main" "$(pg_conf_dir_label)"
 assert_eq "debian gpg package hint" "gnupg" "${PKG_HINTS[gpg]}"
+assert_eq "debian runuser package hint" "util-linux" "${PKG_HINTS[runuser]}"
 
 # shellcheck disable=SC2034 # прочитаны apply_platform_paths/pg_conf_dir_resolve, определёнными в сорсимом файле
 HOST_FAMILY=rhel
@@ -103,6 +104,7 @@ assert_eq "rhel pg_conf_dir_label" "/var/lib/pgsql/$PG_MAJOR/data" "$(pg_conf_di
 assert_eq "rhel pg_conf_dir_resolve" "/var/lib/pgsql/$PG_MAJOR/data" "$(pg_conf_dir_resolve)"
 assert_eq "rhel gpg package hint" "gnupg2" "${PKG_HINTS[gpg]}"
 assert_eq "rhel ss package hint" "iproute" "${PKG_HINTS[ss]}"
+assert_eq "rhel runuser package hint" "util-linux" "${PKG_HINTS[runuser]}"
 
 # port_owner_units
 
@@ -132,7 +134,7 @@ gpg
 openssl
 sha256sum
 ss
-sudo" "$(required_commands debian "")"
+runuser" "$(required_commands debian "")"
 assert_eq "debian required commands, --skip-databases" "curl
 tar
 gpg
@@ -147,7 +149,7 @@ sha256sum
 ss
 rpm
 dnf
-sudo" "$(required_commands rhel "")"
+runuser" "$(required_commands rhel "")"
 assert_eq "rhel required commands, --skip-databases" "curl
 tar
 gpg

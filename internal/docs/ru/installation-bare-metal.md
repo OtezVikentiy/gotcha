@@ -51,13 +51,14 @@
 
 ```bash
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y curl tar gnupg openssl coreutils sudo iproute2
+DEBIAN_FRONTEND=noninteractive apt-get install -y curl tar gnupg openssl coreutils iproute2
 ```
 
-`sudo` и `iproute2` (команда `ss`) нужны и дальше по шагам, и скрипту: без первого не
-создать роль в PostgreSQL от пользователя `postgres`, без второго нечем проверить порты.
-На минимальном образе Debian/Ubuntu ни того, ни другого нет — преflight скрипта
-отказывает с кодом 3 и называет недостающий пакет.
+`iproute2` (команда `ss`) нужен и дальше по шагам, и скрипту: без него нечем проверить
+порты. На минимальном образе Debian/Ubuntu его может не быть — преflight скрипта
+отказывает с кодом 3 и называет недостающий пакет. Роль в PostgreSQL скрипт создаёт от
+пользователя `postgres` через `runuser` — эта команда часть обязательного пакета
+`util-linux`, ставить отдельно не нужно.
 
 Проверьте порты, которые понадобятся: 8080 (приложение), 80 (если ставите nginx), 5432/8123/9000 (если ставите PostgreSQL/ClickHouse этим же способом).
 
@@ -107,8 +108,8 @@ systemctl restart postgresql
 Создайте роль и базу:
 
 ```bash
-sudo -u postgres psql -c "CREATE ROLE gotcha LOGIN PASSWORD 'придумайте-свой-пароль'"
-sudo -u postgres psql -c "CREATE DATABASE gotcha OWNER gotcha"
+runuser -u postgres -- psql -c "CREATE ROLE gotcha LOGIN PASSWORD 'придумайте-свой-пароль'"
+runuser -u postgres -- psql -c "CREATE DATABASE gotcha OWNER gotcha"
 ```
 
 **На AlmaLinux/Rocky/RHEL 9 и 10:**
@@ -179,9 +180,9 @@ systemctl enable --now postgresql-17
 Создайте роль и базу — `psql` из пакета PGDG не лежит в `PATH`:
 
 ```bash
-sudo -u postgres /usr/pgsql-17/bin/psql \
+runuser -u postgres -- /usr/pgsql-17/bin/psql \
   -c "CREATE ROLE gotcha LOGIN PASSWORD 'придумайте-свой-пароль'"
-sudo -u postgres /usr/pgsql-17/bin/psql -c "CREATE DATABASE gotcha OWNER gotcha"
+runuser -u postgres -- /usr/pgsql-17/bin/psql -c "CREATE DATABASE gotcha OWNER gotcha"
 ```
 
 DSN для шага 6 — один и тот же на обоих семействах: `postgres://gotcha:<пароль>@127.0.0.1:5432/gotcha?sslmode=disable`.

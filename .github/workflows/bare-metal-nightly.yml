@@ -63,7 +63,7 @@ jobs:
             debian:*|ubuntu:*)
           cat >Dockerfile.bare-metal-systemd <<EOF
           FROM ${{ matrix.image }}
-          RUN apt-get update && apt-get install -y systemd systemd-sysv dbus curl gpg iproute2 sudo procps \
+          RUN apt-get update && apt-get install -y systemd systemd-sysv dbus curl gpg iproute2 procps \
               && apt-get clean
           EOF
               ;;
@@ -71,7 +71,9 @@ jobs:
           cat >Dockerfile.bare-metal-systemd <<EOF
           FROM ${{ matrix.image }}
           # curl-minimal уже даёт /usr/bin/curl и конфликтует с полным curl.
-          RUN dnf -y install systemd procps-ng iproute sudo gnupg2 tar openssl which \
+          # util-linux даёт runuser (sudo больше не нужен): на EL9-минимале он и так
+          # стоит транзитивно, а на EL10 по умолчанию только util-linux-core без него.
+          RUN dnf -y install systemd procps-ng iproute util-linux gnupg2 tar openssl which \
               && dnf clean all
           EOF
               ;;

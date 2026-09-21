@@ -94,7 +94,7 @@ detect_arch() {
 # тестируется отдельно, целиком detect_platform читает /etc/os-release.
 apply_platform_paths() {
     declare -gA PKG_HINTS=(
-        [curl]=curl [tar]=tar [openssl]=openssl [sha256sum]=coreutils [sudo]=sudo
+        [curl]=curl [tar]=tar [openssl]=openssl [sha256sum]=coreutils [runuser]=util-linux
     )
     if [ "$HOST_FAMILY" = rhel ]; then
         PG_UNIT="postgresql-$PG_MAJOR"
@@ -628,8 +628,8 @@ required_commands() {
         printf 'rpm\n'
         printf 'dnf\n'
     fi
-    # sudo нужен только своим СУБД: psql от пользователя postgres и pg_dump перед обновлением.
-    [ -n "$skip_databases" ] || printf 'sudo\n'
+    # runuser нужен только своим СУБД: psql от пользователя postgres и pg_dump перед обновлением.
+    [ -n "$skip_databases" ] || printf 'runuser\n'
 }
 
 port_owner_units() {
@@ -690,8 +690,9 @@ preflight() {
     HOST_ARCH=$(detect_arch "$(uname -m)") \
         || fail "$EXIT_PREFLIGHT" "unsupported architecture: $(uname -m) (amd64/arm64 only)"
 
-    # Пакеты в сообщении не украшение: на минимальном Debian нет ни ss, ни sudo,
-    # и без подсказки отказ выглядит как поломка скрипта.
+    # Пакеты в сообщении не украшение: на минимальном Debian нет ss, а на голом
+    # EL10 — runuser (util-linux туда не тянется по умолчанию), и без подсказки
+    # отказ выглядит как поломка скрипта.
     local cmd
     while IFS= read -r cmd; do
         command -v "$cmd" >/dev/null 2>&1 \
@@ -959,14 +960,14 @@ install_postgresql() {
     # Пароль перевыпускается, только если роли ещё нет, либо она есть, а
     # gotcha.env — нет: тогда старый пароль всё равно потерян и никого не сломает.
     local password="" role_exists=""
-    role_exists=$(sudo -u postgres "$PG_BIN_DIR/psql" -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'gotcha'" 2>/dev/null)
+    role_exists=$(runuser -u postgres -- "$PG_BIN_DIR/psql" -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'gotcha'" 2>/dev/null)
     if [ "$role_exists" != "1" ]; then
         password=$(openssl rand -hex 24)
     elif [ ! -f "$env_file" ]; then
         password=$(openssl rand -hex 24)
         log_step "WARNING: gotcha role exists but $env_file is missing — regenerating its PostgreSQL password"
     fi
-    if [ -n "$password" ] && ! sudo -u postgres "$PG_BIN_DIR/psql" -v ON_ERROR_STOP=1 -q >/dev/null <<SQL
+    if [ -n "$password" ] && ! runuser -u postgres -- "$PG_BIN_DIR/psql" -v ON_ERROR_STOP=1 -q >/dev/null <<SQL
 DO \$\$ BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'gotcha') THEN
     CREATE ROLE gotcha LOGIN PASSWORD '$password';
@@ -978,7 +979,7 @@ SQL
     then
         fail "$EXIT_DATABASE" "failed to create/reset the gotcha role in PostgreSQL"
     fi
-    if ! sudo -u postgres "$PG_BIN_DIR/psql" -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL'
+    if ! runuser -u postgres -- "$PG_BIN_DIR/psql" -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL'
 SELECT 'CREATE DATABASE gotcha OWNER gotcha'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'gotcha')\gexec
 SQL
@@ -1196,7 +1197,7 @@ backup_before_upgrade() {
     local dump
     dump="/var/lib/gotcha/backup/postgres-${from_version}-$(date -u +%Y%m%dT%H%M%SZ).sql.gz" \
         || fail "$EXIT_DATABASE" "failed to build backup file name"
-    sudo -u postgres "$PG_BIN_DIR/pg_dump" -d gotcha | gzip >"$dump" || fail "$EXIT_DATABASE" "pre-upgrade pg_dump failed"
+    runuser -u postgres -- "$PG_BIN_DIR/pg_dump" -d gotcha | gzip >"$dump" || fail "$EXIT_DATABASE" "pre-upgrade pg_dump failed"
     # Дамп несёт те же секреты (схема, данные), что и gotcha.env — не мирочитаем.
     chmod 600 "$dump" || fail "$EXIT_DATABASE" "failed to secure $dump"
     log_step "pre-upgrade backup: $dump"
@@ -1371,7 +1372,7 @@ uninstall_app() {
     [ -n "$purge" ] || return 0
 
     if id -u postgres >/dev/null 2>&1; then
-        sudo -u postgres "$PG_BIN_DIR/psql" -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL' || fail "$EXIT_DATABASE" "failed to drop the gotcha role/database in PostgreSQL"
+        runuser -u postgres -- "$PG_BIN_DIR/psql" -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL' || fail "$EXIT_DATABASE" "failed to drop the gotcha role/database in PostgreSQL"
 DROP DATABASE IF EXISTS gotcha;
 DROP ROLE IF EXISTS gotcha;
 SQL
