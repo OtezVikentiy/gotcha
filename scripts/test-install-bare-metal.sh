@@ -729,6 +729,24 @@ assert_eq "remove_marker_block removes its temp file when awk fails" "" \
 rm -f "$tmpconf"
 rm -rf "$stubdir"
 
+# remove_marker_block — cp -a падает ПОСЛЕ того, как содержимое уже скопировано
+# (сохранение прав/контекста не поддержано ФС) — без || return 1 awk и mv прошли бы молча.
+
+stubdir=$(mktemp -d)
+# shellcheck disable=SC2016 # literal $2/$3 for the stub script, not expanded here
+printf '#!/bin/sh\ncat "$2" >"$3" 2>/dev/null\nexit 1\n' >"$stubdir/cp"
+chmod +x "$stubdir/cp"
+tmpconf=$(mktemp)
+cp "$SCRIPT_DIR/testdata/postgresql.conf.rhel-sample" "$tmpconf"
+ensure_include_dir "$tmpconf"
+before=$(cat "$tmpconf")
+PATH="$stubdir:$PATH" remove_marker_block "$PG_INCLUDE_MARKER" "$tmpconf"
+assert_eq "remove_marker_block returns 1 when cp -a fails after creating the temp file" 1 $?
+assert_eq "remove_marker_block leaves the original file untouched when cp -a fails" "$before" "$(cat "$tmpconf")"
+assert_contains "remove_marker_block leaves the marker in place when cp -a fails" "$(cat "$tmpconf")" "$PG_INCLUDE_MARKER"
+rm -f "$tmpconf"
+rm -rf "$stubdir"
+
 # verify_key_fingerprint отвергает файл с двумя основными ключами
 
 out=$( (verify_key_fingerprint "$SCRIPT_DIR/testdata/two-pub-keys.asc" DEADBEEF) 2>&1 )

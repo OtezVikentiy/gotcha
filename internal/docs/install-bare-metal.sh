@@ -852,8 +852,8 @@ ensure_include_dir() {
     printf '%s\ninclude_dir = %s\n' "$PG_INCLUDE_MARKER" "'conf.d'" >>"$1"
 }
 
-# Снимает marker+payload по содержимому маркера. readlink -f обязателен: cp -a
-# на симлинк $file дал бы tmp-симлинк на тот же таргет, и запись в tmp усекла бы его раньше, чем awk успеет прочитать.
+# Снимает marker+payload по содержимому маркера. readlink -f обязателен: cp -a на
+# симлинк $file дал бы tmp-симлинк на тот же таргет, усекаемый раньше, чем прочитает awk.
 remove_marker_block() {
     local marker="$1" file="$2" real tmp
     [ -f "$file" ] || return 0
