@@ -804,18 +804,30 @@ assert_eq "firewall-cmd missing skips" skip "$(firewall_decision "" "" 1 "")"
 
 # firewall_skip_notice
 
-out=$(firewall_skip_notice skip "")
-assert_eq "not-detected skip prints a notice" \
+out=$(firewall_skip_notice "not running" "" "")
+assert_eq "not-running state prints a not-detected notice" \
     "firewalld: not detected or not running — ports 80 and 443 were left untouched, open them yourself if this host uses a firewall" \
     "$out"
-out=$(firewall_skip_notice skip 1)
+out=$(firewall_skip_notice "" "" "")
+assert_eq "firewall-cmd missing (empty state) prints the same not-detected notice" \
+    "firewalld: not detected or not running — ports 80 and 443 were left untouched, open them yourself if this host uses a firewall" \
+    "$out"
+out=$(firewall_skip_notice running "" 1)
+assert_eq "running but operator declined prints a declined notice, not not-detected" \
+    "firewalld: left closed at your request — ports 80 and 443 were not opened, open them yourself: firewall-cmd --permanent --add-service=http --add-service=https && firewall-cmd --reload" \
+    "$out"
+out=$(firewall_skip_notice running "" "")
 rc=$?
-assert_eq "--no-firewall skip prints nothing" "" "$out"
+assert_eq "running and not declined prints nothing" "" "$out"
+assert_eq "running and not declined reports failure" 1 "$rc"
+out=$(firewall_skip_notice "not running" 1 "")
+rc=$?
+assert_eq "--no-firewall skip prints nothing regardless of state" "" "$out"
 assert_eq "--no-firewall skip reports failure" 1 "$rc"
-out=$(firewall_skip_notice open "")
+out=$(firewall_skip_notice running 1 1)
 rc=$?
-assert_eq "non-skip decision prints nothing" "" "$out"
-assert_eq "non-skip decision reports failure" 1 "$rc"
+assert_eq "--no-firewall wins even over a declined answer" "" "$out"
+assert_eq "--no-firewall over declined reports failure" 1 "$rc"
 
 if [ "$FAILURES" -gt 0 ]; then
     printf '%d assertion(s) failed\n' "$FAILURES" >&2

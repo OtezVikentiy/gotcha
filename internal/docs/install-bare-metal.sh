@@ -645,13 +645,8 @@ selinux_needs_boolean() {
     return 0
 }
 
-# Отдельно от firewall_skip_notice: тишина оправдана только когда SELinux
-# действительно не enforcing (Permissive/Disabled/утилит нет и в ядре тоже
-# выключен) — тогда пропуск булева безвреден. Но если утилит нет, а ядро
-# всё равно enforcing (/sys/fs/selinux/enforce = 1, встречается на хостах без
-# policycoreutils), пропуск молча оставит nginx получать 502 без единой
-# подсказки — это хуже, чем незакрытый порт firewalld, поэтому здесь нужно
-# явное предупреждение, а не то же по умолчанию.
+# Тишина оправдана, только если ядро тоже не enforcing — иначе setsebool
+# молча не вызывается, и nginx получает 502 без единой подсказки.
 selinux_tooling_missing_notice() {
     local getenforce_present="$1" kernel_enforcing="$2"
     [ -z "$getenforce_present" ] || return 1
@@ -669,13 +664,16 @@ firewall_decision() {
     printf 'ask\n'
 }
 
-# Сообщение только для пропуска «не обнаружен/не запущен» — при --no-firewall
-# firewalld мог бы прекрасно работать, оператор сам попросил его не трогать,
-# и формулировка «не обнаружен» там была бы неверной.
+# declined различает «не обнаружен» от «работает, но оператор отказался на
+# запросе» — иначе первое сообщение было бы прямой ложью во втором случае.
 firewall_skip_notice() {
-    local decision="$1" no_firewall="$2"
-    [ "$decision" = skip ] || return 1
+    local state="$1" no_firewall="$2" declined="$3"
     [ -z "$no_firewall" ] || return 1
+    if [ -n "$declined" ]; then
+        printf 'firewalld: left closed at your request — ports 80 and 443 were not opened, open them yourself: firewall-cmd --permanent --add-service=http --add-service=https && firewall-cmd --reload\n'
+        return 0
+    fi
+    [ "$state" != running ] || return 1
     printf 'firewalld: not detected or not running — ports 80 and 443 were left untouched, open them yourself if this host uses a firewall\n'
 }
 
@@ -1523,13 +1521,16 @@ main() {
                 sel_notice=$(selinux_tooling_missing_notice "$getenforce_present" "$kernel_enforcing") && log_step "$sel_notice"
             fi
 
-            local fw_state="" fw_decision
+            local fw_state="" fw_decision fw_declined=""
             command -v firewall-cmd >/dev/null 2>&1 && fw_state=$(firewall-cmd --state 2>/dev/null)
             fw_decision=$(firewall_decision "$fw_state" "$ARG_NO_FIREWALL" "$ARG_YES" "$ARG_NO_PROXY")
             if [ "$fw_decision" = ask ]; then
                 local fw_answer=""
                 read -r -p "Open ports 80 and 443 in firewalld? [y/N] " fw_answer || true
-                case "$fw_answer" in y | Y | yes | YES) fw_decision=open ;; *) fw_decision=skip ;; esac
+                case "$fw_answer" in
+                    y | Y | yes | YES) fw_decision=open ;;
+                    *) fw_decision=skip; fw_declined=1 ;;
+                esac
             fi
             if [ "$fw_decision" = open ]; then
                 if firewall-cmd --permanent --add-service=http --add-service=https >/dev/null \
@@ -1540,7 +1541,7 @@ main() {
                 fi
             else
                 local fw_notice
-                fw_notice=$(firewall_skip_notice "$fw_decision" "$ARG_NO_FIREWALL") && log_step "$fw_notice"
+                fw_notice=$(firewall_skip_notice "$fw_state" "$ARG_NO_FIREWALL" "$fw_declined") && log_step "$fw_notice"
             fi
         fi
         if [ -n "$ARG_DOMAIN" ] && [ -n "$ARG_EMAIL" ]; then

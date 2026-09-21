@@ -295,9 +295,8 @@ selinux_boolean_set_when_enforcing() {
         || { printf 'httpd_can_network_connect is not on although SELinux is Enforcing\n' >&2; return 1; }
 }
 
-# Образы ночной матрицы (almalinux:9/10, rockylinux:9/10) не ставят firewalld —
-# значит основной прогон install-bare-metal.sh каждую ночь реально идёт по ветке
-# "не обнаружен", а не только через стаб firewall_opened_without_flag выше.
+# Образы ночной матрицы не ставят firewalld — эта ветка исполняется каждую
+# ночь на живом отсутствии, не только через стаб выше.
 firewalld_skip_notice_shown_when_absent() {
     [ "$HOST_FAMILY" = rhel ] || return 0
     local state=""
