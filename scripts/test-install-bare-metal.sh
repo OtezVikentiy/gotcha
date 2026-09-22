@@ -88,6 +88,7 @@ assert_eq "debian NGINX_SITE" "/etc/nginx/sites-available/gotcha" "$NGINX_SITE"
 assert_eq "debian REPO_DIR" "/etc/apt/sources.list.d" "$REPO_DIR"
 assert_eq "debian pg_conf_dir_label" "/etc/postgresql/*/main" "$(pg_conf_dir_label)"
 assert_eq "debian gpg package hint" "gnupg" "${PKG_HINTS[gpg]}"
+assert_eq "debian runuser package hint" "util-linux" "${PKG_HINTS[runuser]}"
 
 # shellcheck disable=SC2034 # прочитаны apply_platform_paths/pg_conf_dir_resolve, определёнными в сорсимом файле
 HOST_FAMILY=rhel
@@ -103,6 +104,7 @@ assert_eq "rhel pg_conf_dir_label" "/var/lib/pgsql/$PG_MAJOR/data" "$(pg_conf_di
 assert_eq "rhel pg_conf_dir_resolve" "/var/lib/pgsql/$PG_MAJOR/data" "$(pg_conf_dir_resolve)"
 assert_eq "rhel gpg package hint" "gnupg2" "${PKG_HINTS[gpg]}"
 assert_eq "rhel ss package hint" "iproute" "${PKG_HINTS[ss]}"
+assert_eq "rhel runuser package hint" "util-linux" "${PKG_HINTS[runuser]}"
 
 # port_owner_units
 
@@ -132,7 +134,7 @@ gpg
 openssl
 sha256sum
 ss
-sudo" "$(required_commands debian "")"
+runuser" "$(required_commands debian "")"
 assert_eq "debian required commands, --skip-databases" "curl
 tar
 gpg
@@ -147,7 +149,7 @@ sha256sum
 ss
 rpm
 dnf
-sudo" "$(required_commands rhel "")"
+runuser" "$(required_commands rhel "")"
 assert_eq "rhel required commands, --skip-databases" "curl
 tar
 gpg
@@ -485,6 +487,28 @@ assert_contains "pgdg repo verifies metadata" "$out" "repo_gpgcheck=1"
 assert_contains "pgdg repo trusts a local key file" "$out" "gpgkey=file:///etc/pki/rpm-gpg/gotcha-pgdg.asc"
 out=$(render_pgdg_repo 10)
 assert_contains "pgdg repo for EL10" "$out" "redhat/rhel-10-\$basearch"
+
+# pgdg_rpm_key_for_arch
+
+out=$(pgdg_rpm_key_for_arch amd64 url)
+assert_eq "pgdg url for amd64" "$PGDG_RPM_KEY_URL" "$out"
+out=$(pgdg_rpm_key_for_arch amd64 fingerprint)
+assert_eq "pgdg fingerprint for amd64" "$PGDG_RPM_KEY_FINGERPRINT" "$out"
+out=$(pgdg_rpm_key_for_arch arm64 url)
+assert_eq "pgdg url for arm64" "$PGDG_RPM_KEY_URL_ARM64" "$out"
+out=$(pgdg_rpm_key_for_arch arm64 fingerprint)
+assert_eq "pgdg fingerprint for arm64" "$PGDG_RPM_KEY_FINGERPRINT_ARM64" "$out"
+
+# repo_add_pgdg вызывает pgdg_rpm_key_for_arch дважды через $(...), не read
+# по паре "URL отпечаток": IFS сужен main() до "\n\t", read склеил бы поля.
+out=$( (
+    IFS=$'\n\t'
+    key_url=$(pgdg_rpm_key_for_arch arm64 url)
+    key_fpr=$(pgdg_rpm_key_for_arch arm64 fingerprint)
+    printf '%s|%s\n' "$key_url" "$key_fpr"
+) )
+assert_eq "pgdg_rpm_key_for_arch call site survives main's narrowed IFS" \
+    "$PGDG_RPM_KEY_URL_ARM64|$PGDG_RPM_KEY_FINGERPRINT_ARM64" "$out"
 
 # render_clickhouse_repo
 

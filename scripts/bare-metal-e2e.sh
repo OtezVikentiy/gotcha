@@ -174,11 +174,11 @@ gotcha_env_pg_dsn_clean() {
 }
 
 pg_role_exists() {
-    [ "$(sudo -u postgres "$PG_BIN_DIR/psql" -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'gotcha'" 2>/dev/null)" = "1" ]
+    [ "$(runuser -u postgres -- "$PG_BIN_DIR/psql" -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'gotcha'" 2>/dev/null)" = "1" ]
 }
 
 pg_database_exists() {
-    [ "$(sudo -u postgres "$PG_BIN_DIR/psql" -tAc "SELECT 1 FROM pg_database WHERE datname = 'gotcha'" 2>/dev/null)" = "1" ]
+    [ "$(runuser -u postgres -- "$PG_BIN_DIR/psql" -tAc "SELECT 1 FROM pg_database WHERE datname = 'gotcha'" 2>/dev/null)" = "1" ]
 }
 
 ch_common_config_present() {
@@ -504,7 +504,7 @@ dry_run_prints_platform_paths() {
 
 assert "a busy port 80 blocks preflight before anything is installed" port80_busy_blocks_preflight
 assert "preflight refuses without ss, which the port check needs" preflight_requires_command ss
-assert "preflight refuses without sudo, which the database steps need" preflight_requires_command sudo
+assert "preflight refuses without runuser, which the database steps need" preflight_requires_command runuser
 if [ "$HOST_FAMILY" = rhel ]; then
     assert "preflight refuses without rpm, which package queries need" preflight_requires_command rpm
     assert "preflight refuses without dnf, which package installs need" preflight_requires_command dnf
@@ -655,8 +655,8 @@ e2e_ingest_roundtrip() {
         --data-urlencode "platform=go" \
         "$app/onboarding" || { printf 'POST /onboarding failed\n' >&2; return 1; }
 
-    key=$(sudo -u postgres "$PG_BIN_DIR/psql" -d gotcha -tAc "SELECT public_key FROM project_keys ORDER BY id LIMIT 1")
-    project_id=$(sudo -u postgres "$PG_BIN_DIR/psql" -d gotcha -tAc "SELECT project_id FROM project_keys ORDER BY id LIMIT 1")
+    key=$(runuser -u postgres -- "$PG_BIN_DIR/psql" -d gotcha -tAc "SELECT public_key FROM project_keys ORDER BY id LIMIT 1")
+    project_id=$(runuser -u postgres -- "$PG_BIN_DIR/psql" -d gotcha -tAc "SELECT project_id FROM project_keys ORDER BY id LIMIT 1")
     if [ -z "$key" ] || [ -z "$project_id" ]; then
         printf 'could not read a project key out of PostgreSQL\n' >&2
         return 1

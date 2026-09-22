@@ -9,16 +9,19 @@ GOTCHA_INSTALL_DEFAULT_DOWNLOAD_BASE="https://github.com/OtezVikentiy/gotcha/rel
 PG_MAJOR="17"
 CH_VERSION="25.3"
 
-# Отпечатки подписывающих ключей вендоров, тот же принцип, что и digest баз в
-# Dockerfile: значение фиксируется руками, не берётся с сервера доверчиво.
-# PGDG_RPM_KEY_FINGERPRINT — другой ключ, чем PGDG_KEY_FINGERPRINT: rpm и apt
-# репозитории PGDG подписаны разными ключами.
+# Отпечатки фиксируются руками (как digest баз в Dockerfile), не с сервера.
+# PGDG_RPM_KEY_FINGERPRINT ≠ PGDG_KEY_FINGERPRINT: rpm и apt — разные ключи.
 PGDG_KEY_FINGERPRINT="B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
 PGDG_RPM_KEY_FINGERPRINT="D4BF08AE67A0B4C7A1DBCCD240BCA2B408B40D20"
 CLICKHOUSE_KEY_FINGERPRINT="3A9EA1193A97B548BE1457D48919F6BD2B48D754"
 
 PGDG_RPM_KEY_URL="https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL"
 PGDG_RPM_KEY_PATH=/etc/pki/rpm-gpg/gotcha-pgdg.asc
+
+# PGDG подписывает метаданные rpm-репозитория aarch64 отдельным ключом от
+# x86_64 — общий gpgkey= на оба провалит проверку подписи на arm64.
+PGDG_RPM_KEY_URL_ARM64="https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-AARCH64-RHEL"
+PGDG_RPM_KEY_FINGERPRINT_ARM64="B031F89FC983E98262906B6E177B343BB9738825"
 CLICKHOUSE_RPM_KEY_PATH=/etc/pki/rpm-gpg/gotcha-clickhouse.asc
 PG_INCLUDE_MARKER="# gotcha: conf.d include"
 
@@ -89,7 +92,7 @@ detect_arch() {
 # тестируется отдельно, целиком detect_platform читает /etc/os-release.
 apply_platform_paths() {
     declare -gA PKG_HINTS=(
-        [curl]=curl [tar]=tar [openssl]=openssl [sha256sum]=coreutils [sudo]=sudo
+        [curl]=curl [tar]=tar [openssl]=openssl [sha256sum]=coreutils [runuser]=util-linux
     )
     if [ "$HOST_FAMILY" = rhel ]; then
         PG_UNIT="postgresql-$PG_MAJOR"
@@ -623,8 +626,8 @@ required_commands() {
         printf 'rpm\n'
         printf 'dnf\n'
     fi
-    # sudo нужен только своим СУБД: psql от пользователя postgres и pg_dump перед обновлением.
-    [ -n "$skip_databases" ] || printf 'sudo\n'
+    # runuser нужен только своим СУБД: psql от пользователя postgres и pg_dump перед обновлением.
+    [ -n "$skip_databases" ] || printf 'runuser\n'
 }
 
 port_owner_units() {
@@ -685,8 +688,8 @@ preflight() {
     HOST_ARCH=$(detect_arch "$(uname -m)") \
         || fail "$EXIT_PREFLIGHT" "unsupported architecture: $(uname -m) (amd64/arm64 only)"
 
-    # Пакеты в сообщении не украшение: на минимальном Debian нет ни ss, ни sudo,
-    # и без подсказки отказ выглядит как поломка скрипта.
+    # Пакеты в сообщении не украшение: на минимальном Debian нет ss, а на
+    # голом EL10 — runuser (util-linux туда не тянется по умолчанию).
     local cmd
     while IFS= read -r cmd; do
         command -v "$cmd" >/dev/null 2>&1 \
@@ -766,10 +769,8 @@ fetch_tarball() {
     printf '%s\n' "$root"
 }
 
-# gpg --with-colons: формат вывода стабилен для парсинга скриптом, в отличие
-# от --fingerprint, рассчитанного на человека. Подключи остаются принятыми по
-# самоподписи основного ключа намеренно: пин подключей ронял бы установку при
-# их штатной ротации вендором.
+# gpg --with-colons: формат стабилен для парсинга, не --fingerprint (для людей).
+# Подключи приняты по самоподписи умышленно — пин ронял бы установку при ротации.
 verify_key_fingerprint() {
     local keyfile="$1" expected="$2" got pubs
     local colons
@@ -816,17 +817,33 @@ gpgkey=file://$PGDG_RPM_KEY_PATH
 EOF
 }
 
+# Ключ PGDG для rpm — по архитектуре хоста, как и $basearch репозитория.
+# Одно значение за вызов, без read: под IFS=$'\n\t' из main() read склеил бы пару полей.
+pgdg_rpm_key_for_arch() {
+    local arch="$1" field="$2" url fpr
+    case "$arch" in
+        arm64) url="$PGDG_RPM_KEY_URL_ARM64"; fpr="$PGDG_RPM_KEY_FINGERPRINT_ARM64" ;;
+        *) url="$PGDG_RPM_KEY_URL"; fpr="$PGDG_RPM_KEY_FINGERPRINT" ;;
+    esac
+    case "$field" in
+        url) printf '%s\n' "$url" ;;
+        fingerprint) printf '%s\n' "$fpr" ;;
+    esac
+}
+
 # deb-ветка не подставляет нативный мажор молча: PGDG публикует EL9/EL10 всегда,
 # и штатный AppStream мажора 17 не содержит.
 repo_add_pgdg() {
     local codename="$1"
     if [ "$HOST_FAMILY" = rhel ]; then
-        local tmp
+        local tmp key_url key_fpr
         tmp=$(mktemp -d)
         TMP_DIRS+=("$tmp")
-        curl -fsSL -o "$tmp/pgdg.asc" "$PGDG_RPM_KEY_URL" \
-            || fail "$EXIT_DATABASE" "failed to download the PGDG signing key from $PGDG_RPM_KEY_URL"
-        verify_key_fingerprint "$tmp/pgdg.asc" "$PGDG_RPM_KEY_FINGERPRINT"
+        key_url=$(pgdg_rpm_key_for_arch "$HOST_ARCH" url)
+        key_fpr=$(pgdg_rpm_key_for_arch "$HOST_ARCH" fingerprint)
+        curl -fsSL -o "$tmp/pgdg.asc" "$key_url" \
+            || fail "$EXIT_DATABASE" "failed to download the PGDG signing key from $key_url"
+        verify_key_fingerprint "$tmp/pgdg.asc" "$key_fpr"
         mkdir -p "$(dirname "$PGDG_RPM_KEY_PATH")"
         cp "$tmp/pgdg.asc" "$PGDG_RPM_KEY_PATH"
         rpm --import "$PGDG_RPM_KEY_PATH" >/dev/null
@@ -944,14 +961,14 @@ install_postgresql() {
     # Пароль перевыпускается, только если роли ещё нет, либо она есть, а
     # gotcha.env — нет: тогда старый пароль всё равно потерян и никого не сломает.
     local password="" role_exists=""
-    role_exists=$(sudo -u postgres "$PG_BIN_DIR/psql" -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'gotcha'" 2>/dev/null)
+    role_exists=$(runuser -u postgres -- "$PG_BIN_DIR/psql" -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'gotcha'" 2>/dev/null)
     if [ "$role_exists" != "1" ]; then
         password=$(openssl rand -hex 24)
     elif [ ! -f "$env_file" ]; then
         password=$(openssl rand -hex 24)
         log_step "WARNING: gotcha role exists but $env_file is missing — regenerating its PostgreSQL password"
     fi
-    if [ -n "$password" ] && ! sudo -u postgres "$PG_BIN_DIR/psql" -v ON_ERROR_STOP=1 -q >/dev/null <<SQL
+    if [ -n "$password" ] && ! runuser -u postgres -- "$PG_BIN_DIR/psql" -v ON_ERROR_STOP=1 -q >/dev/null <<SQL
 DO \$\$ BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'gotcha') THEN
     CREATE ROLE gotcha LOGIN PASSWORD '$password';
@@ -963,7 +980,7 @@ SQL
     then
         fail "$EXIT_DATABASE" "failed to create/reset the gotcha role in PostgreSQL"
     fi
-    if ! sudo -u postgres "$PG_BIN_DIR/psql" -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL'
+    if ! runuser -u postgres -- "$PG_BIN_DIR/psql" -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL'
 SELECT 'CREATE DATABASE gotcha OWNER gotcha'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'gotcha')\gexec
 SQL
@@ -1181,7 +1198,7 @@ backup_before_upgrade() {
     local dump
     dump="/var/lib/gotcha/backup/postgres-${from_version}-$(date -u +%Y%m%dT%H%M%SZ).sql.gz" \
         || fail "$EXIT_DATABASE" "failed to build backup file name"
-    sudo -u postgres "$PG_BIN_DIR/pg_dump" -d gotcha | gzip >"$dump" || fail "$EXIT_DATABASE" "pre-upgrade pg_dump failed"
+    runuser -u postgres -- "$PG_BIN_DIR/pg_dump" -d gotcha | gzip >"$dump" || fail "$EXIT_DATABASE" "pre-upgrade pg_dump failed"
     # Дамп несёт те же секреты (схема, данные), что и gotcha.env — не мирочитаем.
     chmod 600 "$dump" || fail "$EXIT_DATABASE" "failed to secure $dump"
     log_step "pre-upgrade backup: $dump"
@@ -1356,7 +1373,7 @@ uninstall_app() {
     [ -n "$purge" ] || return 0
 
     if id -u postgres >/dev/null 2>&1; then
-        sudo -u postgres "$PG_BIN_DIR/psql" -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL' || fail "$EXIT_DATABASE" "failed to drop the gotcha role/database in PostgreSQL"
+        runuser -u postgres -- "$PG_BIN_DIR/psql" -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL' || fail "$EXIT_DATABASE" "failed to drop the gotcha role/database in PostgreSQL"
 DROP DATABASE IF EXISTS gotcha;
 DROP ROLE IF EXISTS gotcha;
 SQL
