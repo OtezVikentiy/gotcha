@@ -57,8 +57,16 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y curl tar gnupg openssl coreuti
 `iproute2` (the `ss` command) is needed by the steps below and by the script: without it
 there's no way to check the ports. A minimal Debian/Ubuntu image may lack it — the script's
 preflight refuses with exit code 3 and names the missing package. The script creates the
-PostgreSQL role as the `postgres` user via `runuser` — that command is part of the
-mandatory `util-linux` package, no separate install needed.
+PostgreSQL role as the `postgres` user via `runuser`, which ships in `util-linux`: it is
+there by default on Debian, Ubuntu and EL 9, but RHEL 10 and its rebuilds install only
+`util-linux-core`, so the full package has to be added. The preflight names a missing
+`runuser` like any other missing command.
+
+**On AlmaLinux/Rocky/RHEL 9 and 10:**
+
+```bash
+dnf install -y curl tar gnupg2 openssl coreutils iproute util-linux
+```
 
 Check the ports you'll need: 8080 (the app), 80 (if you're installing nginx), 5432/8123/9000 (if you're installing PostgreSQL/ClickHouse this way).
 
