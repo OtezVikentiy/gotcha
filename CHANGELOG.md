@@ -11,6 +11,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.8.1] - 2026-09-22
 
+### Changed
+- The bare-metal installer and the manual steps that mirror it now act as the
+  `postgres` user through `runuser` rather than `sudo`. `sudo` is no longer a
+  requirement for the install; `runuser` is, and it ships in `util-linux` —
+  present by default on Debian, Ubuntu and EL 9, but not on RHEL 10 and its
+  rebuilds, which install only `util-linux-core` and need the full package
+  added. The preflight names it like any other missing command.
+
+### Fixed
+- The bare-metal install on AlmaLinux/Rocky/RHEL 9 could abort at the first
+  contact with PostgreSQL with `sudo: PAM account management error` followed by
+  `failed to create/reset the gotcha role in PostgreSQL`. `sudo` runs the full
+  PAM stack, whose account phase can still be waiting on NSS right after the
+  system user is created; `runuser` does not go through that phase at all.
+- The bare-metal install on arm64 AlmaLinux/Rocky/RHEL failed while adding the
+  PGDG repository, because PostgreSQL signs the aarch64 metadata with a key of
+  its own and the installer imported the x86_64 one. The key and its
+  fingerprint are now chosen by host architecture, in both the script and the
+  manual steps.
+
 ## [1.8.0] - 2026-09-21
 
 ### Added
