@@ -734,7 +734,7 @@ and what's left to do.
 
 ## Changing the address
 
-Via the script — run it again with the new address: `sudo bash install-bare-metal.sh --base-url https://new.example.com`. The script rewrites `GOTCHA_BASE_URL` in `/etc/gotcha/gotcha.env`, without touching passwords or the secret key, and restarts the service. By hand — edit that same line and `systemctl restart gotcha`. Either way, update your own proxy (server name) and issue a certificate for the new address.
+Via the script — run it again with the new address: `sudo bash install-bare-metal.sh --base-url https://new.example.com` (and the same `--mem-limit` you used for the install, if any — otherwise the unit gets the default `MemoryMax` while `GOMEMLIMIT` in the env file stays at the old value, which risks an OOM-kill). The script rewrites `GOTCHA_BASE_URL` in `/etc/gotcha/gotcha.env`, without touching passwords or the secret key, and restarts the service; without `--version` it installs whatever version the downloaded script itself ships — if that one is newer than what's on the host, changing the address doubles as an upgrade. By hand — edit that same line and `systemctl restart gotcha`. Either way, update your own proxy (server name) and issue a certificate for the new address.
 
 ## Self-check
 
@@ -763,7 +763,7 @@ Expect `200 OK`. Log into the UI, create an organization and a project, and send
 
 **The proxy answers `502`.** The service isn't running (`systemctl status gotcha`), or on AlmaLinux/Rocky/RHEL the SELinux boolean `httpd_can_network_connect` isn't set (see "External access and TLS").
 
-**Everyone gets locked out at once after a few failed attempts.** `/etc/gotcha/gotcha.env` has no `GOTCHA_TRUSTED_PROXIES`, so the limiter sees every user as the proxy's address. Re-running the script adds the line by itself; by hand — `GOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128` and `systemctl restart gotcha`.
+**Everyone gets locked out at once after a few failed attempts.** `/etc/gotcha/gotcha.env` has no `GOTCHA_TRUSTED_PROXIES`, so the limiter sees every user as the proxy's address. Re-running the script adds the line by itself; by hand — `GOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128` and `systemctl restart gotcha` (`127.0.0.1/32,::1/128` is only correct for a proxy on this same host — if it's on another one, use its address instead, see "A proxy on another host").
 
 **The first user.** On a fresh instance, whoever registers first is automatically granted instance-admin rights, regardless of the self-registration mode. Every later signup is governed by `GOTCHA_REGISTRATION_MODE` (see [Configuration](/docs/configuration)).
 
@@ -807,7 +807,7 @@ If the installer fails, it prints the list of steps already completed and the ex
 ## Removing the install
 
 ```bash
-sudo ./install-bare-metal.sh --uninstall
+sudo bash install-bare-metal.sh --uninstall
 ```
 
 Removes the `gotcha` unit and binary. If the host was installed with version 1.7 or 1.8 and still has that version's nginx site (with the first-line marker `# gotcha site: …`), it's disabled the same way as before — on Debian/Ubuntu the symlink in `sites-enabled` is removed, on EL the file is renamed to `.disabled` — and nginx is reloaded. Sites you set up yourself, and the nginx package, are left alone. PostgreSQL, ClickHouse and their data are left as they are.

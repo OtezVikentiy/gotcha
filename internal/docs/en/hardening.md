@@ -77,8 +77,9 @@ your own network) — the default-open range is meaningless as a restriction.
 
 On bare metal, close `/metrics` and `/version` in your own proxy — the examples in
 "External access and TLS" in [Installation without Docker](/docs/installation-bare-metal)
-already do this: both endpoints answer 403 from the outside, open only to loopback
-(`127.0.0.1`/`::1`). `/healthz` and `/readyz` are deliberately left open — they're the only two endpoints that need
+already do this: both endpoints answer 403 from the outside (the nginx example leaves
+loopback open, `127.0.0.1`/`::1`; the Apache and Caddy examples deny them to everyone,
+loopback included). `/healthz` and `/readyz` are deliberately left open — they're the only two endpoints that need
 to answer from the outside, for external checks of the instance's own availability. The price
 is exactly the one named above: both probes hand out a `version` field anonymously, that is,
 the exact build version. If that's unacceptable for your install, add `healthz|readyz` to the

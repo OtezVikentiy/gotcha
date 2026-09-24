@@ -414,7 +414,9 @@ sudo bash install-bare-metal.sh --version X.Y.Z
 скрипт их не обновляет и не трогает. Если на AlmaLinux/Rocky/RHEL после `--uninstall`
 сайт лежит как `/etc/nginx/conf.d/gotcha.conf.disabled`, итог установки подскажет команду
 включения: `mv /etc/nginx/conf.d/gotcha.conf.disabled /etc/nginx/conf.d/gotcha.conf &&
-systemctl reload nginx`. Повторный запуск также допишет в env
+systemctl reload nginx`; на Debian/Ubuntu, где `--uninstall` вместо этого снял симлинк
+в `sites-enabled`, подсказка так же появится — `ln -s ... && systemctl reload nginx`.
+Повторный запуск также допишет в env
 `GOTCHA_TRUSTED_PROXIES` — это чинит лимитер входа за прокси.
 
 Ход обновления, как и первой установки, пишется в `/var/log/gotcha-install.log`; при

@@ -120,6 +120,40 @@ func extractBashBlocks(doc string) [][]string {
 	return blocks
 }
 
+// Любой shell-тег (или отсутствие тега вовсе) — команда вызова скрипта не обязана
+// жить именно в ```bash, переразметка блока не должна гасить проверку флагов.
+var invocationFenceTags = map[string]bool{
+	"```bash":    true,
+	"```sh":      true,
+	"```shell":   true,
+	"```console": true,
+	"```":        true,
+}
+
+func extractShellBlocks(doc string) [][]string {
+	var blocks [][]string
+	inFence, isShell := false, false
+	var cur []string
+	for _, line := range strings.Split(doc, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			if !inFence {
+				inFence, isShell, cur = true, invocationFenceTags[trimmed], nil
+				continue
+			}
+			inFence = false
+			if isShell {
+				blocks = append(blocks, cur)
+			}
+			continue
+		}
+		if inFence && isShell {
+			cur = append(cur, line)
+		}
+	}
+	return blocks
+}
+
 // Переводимые куски команд ручного пути — узкий явный список, а не «любое
 // слово в угловых скобках»: расширять его нужно осознанно, строка за строкой.
 type bashLinePlaceholder struct{ ru, en string }
@@ -238,10 +272,8 @@ func allDocsMDPaths(t *testing.T, root string) []string {
 	return files
 }
 
-// Снятый из usage() флаг, оставшийся в примере вызова, отказал бы оператору вместо
-// того, чтобы ему помочь — TestBareMetalFlagsTableMatchesUsage сверяет только таблицу
-// installation-bare-metal.md, не сами команды `install-bare-metal.sh ...` в
-// ```bash-блоках, а их пересказывают и другие страницы (upgrade, backup-restore...).
+// Снятый из usage() флаг, доживший до примера вызова, отказал бы оператору вместо
+// того, чтобы помочь, — проверяем сами команды на всех страницах, не только таблицу.
 func TestBareMetalInvocationFlagsAreInUsage(t *testing.T) {
 	tree := Load(t)
 	want := usageFlags(t, installerBody(t, tree.Root))
@@ -250,10 +282,12 @@ func TestBareMetalInvocationFlagsAreInUsage(t *testing.T) {
 	for _, path := range bareMetalDocPaths(tree.Root) {
 		mustHaveInvocation[path] = true
 	}
+	mustHaveInvocation[filepath.Join(tree.Root, "internal", "docs", "ru", "upgrade.md")] = true
+	mustHaveInvocation[filepath.Join(tree.Root, "internal", "docs", "en", "upgrade.md")] = true
 
 	flagsSeen := 0
 	for _, path := range allDocsMDPaths(t, tree.Root) {
-		lines := installInvocationLines(extractBashBlocks(readDocFile(t, path)))
+		lines := installInvocationLines(extractShellBlocks(readDocFile(t, path)))
 		if len(lines) == 0 {
 			if mustHaveInvocation[path] {
 				t.Fatalf("%s: ни одной команды вызова install-bare-metal.sh с флагами не найдено — сторож смотрит мимо страницы", path)

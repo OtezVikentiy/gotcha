@@ -418,7 +418,9 @@ stay yours to maintain: the script neither updates nor touches them. If on
 AlmaLinux/Rocky/RHEL the site sits as `/etc/nginx/conf.d/gotcha.conf.disabled` after an
 `--uninstall`, the install summary suggests the command to re-enable it: `mv
 /etc/nginx/conf.d/gotcha.conf.disabled /etc/nginx/conf.d/gotcha.conf && systemctl reload
-nginx`. A re-run also adds `GOTCHA_TRUSTED_PROXIES` to the env file — this fixes the
+nginx`; on Debian/Ubuntu, where `--uninstall` removed the `sites-enabled` symlink instead,
+the same kind of hint shows up — `ln -s ... && systemctl reload nginx`. A re-run also adds
+`GOTCHA_TRUSTED_PROXIES` to the env file — this fixes the
 login limiter behind a proxy.
 
 Like the initial install, the upgrade's progress is logged to
