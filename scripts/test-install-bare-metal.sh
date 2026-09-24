@@ -392,12 +392,78 @@ assert_eq "released copy runs without --version at all (its own version is the d
 assert_eq "released copy rejects a suffixed version with the usage code, not a bash error" 2 $?
 rm -f "$PATCHED"
 
-# choose_base_url
+# env_get
 
-out=$(choose_base_url "https://explicit.example" "10.0.0.1")
-assert_eq "choose_base_url prefers --base-url" "https://explicit.example" "$out"
-out=$(choose_base_url "" "10.0.0.1")
-assert_eq "choose_base_url falls back to host IP" "http://10.0.0.1" "$out"
+envdir=$(mktemp -d)
+envf="$envdir/gotcha.env"
+printf 'GOTCHA_BASE_URL=https://first.example\n#GOTCHA_BASE_URL=https://commented.example\nGOTCHA_BASE_URL=https://last.example\n' >"$envf"
+assert_eq "env_get takes the last occurrence and skips comments" "https://last.example" "$(env_get GOTCHA_BASE_URL "$envf")"
+printf 'GOTCHA_BASE_URL="https://dq.example"\n' >"$envf"
+assert_eq "env_get strips paired double quotes" "https://dq.example" "$(env_get GOTCHA_BASE_URL "$envf")"
+printf "GOTCHA_BASE_URL='https://sq.example'\n" >"$envf"
+assert_eq "env_get strips paired single quotes" "https://sq.example" "$(env_get GOTCHA_BASE_URL "$envf")"
+printf 'GOTCHA_BASE_URL=https://crlf.example\r\n' >"$envf"
+assert_eq "env_get drops a CRLF line ending (RF-1)" "https://crlf.example" "$(env_get GOTCHA_BASE_URL "$envf")"
+printf 'GOTCHA_BASE_URL=https://ws.example  \n' >"$envf"
+assert_eq "env_get drops trailing whitespace (RF-1)" "https://ws.example" "$(env_get GOTCHA_BASE_URL "$envf")"
+printf 'GOTCHA_BASE_URL=https://slash.example/\n' >"$envf"
+assert_eq "env_get returns the raw value, normalizing is the caller's job" "https://slash.example/" "$(env_get GOTCHA_BASE_URL "$envf")"
+printf 'GOTCHA_BASE_URL_EXTRA=x\n' >"$envf"
+env_get GOTCHA_BASE_URL "$envf" >/dev/null
+assert_eq "env_get does not match a longer key with the same prefix" 1 $?
+printf 'GOTCHA_TRUSTED_PROXIES=\n' >"$envf"
+out=$(env_get GOTCHA_TRUSTED_PROXIES "$envf")
+assert_eq "env_get reports an empty value as present" "0|" "$?|$out"
+env_get GOTCHA_BASE_URL "$envdir/missing.env" >/dev/null
+assert_eq "env_get on a missing file" 1 $?
+
+# resolve_base_url — stdin_is_tty подменяется, как ss выше
+
+# shellcheck disable=SC2317 # вызывается сорсимым файлом, а не отсюда
+stdin_is_tty() { [ -n "$STUB_TTY" ]; }
+missing="$envdir/none.env"
+
+printf 'GOTCHA_BASE_URL=https://env.example\n' >"$envf"
+out=$( (resolve_base_url "https://flag.example" "$envf" "") 2>/dev/null )
+assert_eq "resolve_base_url: the flag wins over env" "https://flag.example" "$out"
+printf 'GOTCHA_BASE_URL=https://env.example/\n' >"$envf"
+out=$( (resolve_base_url "" "$envf" "") 2>/dev/null )
+assert_eq "resolve_base_url: env is used and normalized when no flag" "https://env.example" "$out"
+
+printf 'GOTCHA_SECRET_KEY=x\n' >"$envf"
+out=$( (resolve_base_url "" "$envf" 1) 2>&1 )
+rc=$?
+assert_eq "resolve_base_url: env without GOTCHA_BASE_URL and no flag is refused (RF-2)" 2 "$rc"
+assert_contains "resolve_base_url: the refusal names --base-url (RF-2)" "$out" "--base-url"
+
+STUB_TTY=""
+out=$( (resolve_base_url "" "$missing" 1) 2>&1 )
+rc=$?
+assert_eq "resolve_base_url: --yes without an address on a clean host is refused" 2 "$rc"
+assert_contains "resolve_base_url: the refusal text" "$out" \
+    "install-bare-metal: --base-url is required for a new installation (the address users will type in the browser, e.g. https://gotcha.example.com)"
+out=$( (resolve_base_url "" "$missing" "") 2>&1 </dev/null )
+assert_eq "resolve_base_url: no terminal and no address is refused" 2 $?
+
+STUB_TTY=1
+out=$( (resolve_base_url "" "$missing" 1 <<<"https://ok.example") 2>/dev/null )
+assert_eq "resolve_base_url: --yes beats a terminal, nothing is read" "2|" "$?|$out"
+out=$( (resolve_base_url "" "$missing" "" <<<$'\nftp://x\nhttps://ok.example/') 2>"$envdir/err" )
+assert_eq "resolve_base_url: empty and invalid answers are asked again" "https://ok.example" "$out"
+assert_contains "resolve_base_url: an invalid answer explains why" "$(cat "$envdir/err")" "invalid address 'ftp://x'"
+out=$( (resolve_base_url "" "$missing" "" </dev/null) 2>&1 )
+assert_eq "resolve_base_url: EOF on the question is refused" 2 $?
+STUB_TTY=""
+unset -f stdin_is_tty
+
+# plain_http_warning
+
+out=$(plain_http_warning "http://10.0.0.5")
+assert_eq "plain_http_warning fires for http://" 0 $?
+assert_contains "plain_http_warning mentions session cookies" "$out" "session cookies"
+plain_http_warning "https://x.example" >/dev/null
+assert_eq "plain_http_warning is silent for https://" 1 $?
+rm -rf "$envdir"
 
 # compute_memlimit — константа, паритетная compose (mem_limit: 1g), одна и
 # та же независимо от RAM хоста (preflight и так отсекает хосты младше 2 ГБ).

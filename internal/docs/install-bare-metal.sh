@@ -256,6 +256,62 @@ validate_base_url() {
     normalize_base_url "$raw"
 }
 
+# Семантика systemd EnvironmentFile: последняя строка ключа побеждает, внешние кавычки
+# снимаются. rc 1 — ключа нет; пустое значение — это «есть».
+env_get() {
+    local key="$1" file="$2" line value
+    [ -r "$file" ] || return 1
+    line=$(grep -E "^${key}=" "$file" | tail -n1) || true
+    [ -n "$line" ] || return 1
+    value="${line#"$key"=}"
+    value="${value%"${value##*[![:space:]]}"}"
+    case "$value" in
+        \"*\") value="${value#\"}"; value="${value%\"}" ;;
+        \'*\') value="${value#\'}"; value="${value%\'}" ;;
+    esac
+    printf '%s\n' "$value"
+}
+
+stdin_is_tty() {
+    [ -t 0 ]
+}
+
+resolve_base_url() {
+    local flag="$1" env_file="$2" yes="$3" from_env answer url
+    if [ -n "$flag" ]; then
+        printf '%s\n' "$flag"
+        return 0
+    fi
+    if [ -f "$env_file" ]; then
+        from_env=$(env_get GOTCHA_BASE_URL "$env_file") \
+            || fail "$EXIT_USAGE" "$env_file has no GOTCHA_BASE_URL line; pass --base-url (the address users will type in the browser, e.g. $BASE_URL_EXAMPLE)"
+        normalize_base_url "$from_env"
+        return 0
+    fi
+    if [ -n "$yes" ] || ! stdin_is_tty; then
+        fail "$EXIT_USAGE" "--base-url is required for a new installation (the address users will type in the browser, e.g. $BASE_URL_EXAMPLE)"
+    fi
+    while :; do
+        read -r -p "Address users will open Gotcha at (e.g. $BASE_URL_EXAMPLE): " answer \
+            || fail "$EXIT_USAGE" "no address given; pass --base-url"
+        if [ -z "$answer" ]; then
+            printf 'install-bare-metal: an address is required\n' >&2
+            continue
+        fi
+        url=$(validate_base_url "$answer") && { printf '%s\n' "$url"; return 0; }
+    done
+}
+
+plain_http_warning() {
+    case "$1" in
+        http://*)
+            printf 'WARNING: %s is plain HTTP: session cookies and passwords travel unencrypted, use it only inside a closed network\n' "$1"
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 # Глобальные ARG_* вместо структуры — main/preflight читают их напрямую.
 # Каждый вызов сбрасывает их к дефолтам для повторных вызовов тест-раннера.
 parse_args() {
@@ -386,35 +442,6 @@ parse_args() {
     fi
 
     return "$EXIT_OK"
-}
-
-choose_base_url() {
-    local base_url_flag="$1" host_ip="$2"
-    if [ -n "$base_url_flag" ]; then
-        printf '%s\n' "$base_url_flag"
-    else
-        printf 'http://%s\n' "$host_ip"
-    fi
-}
-
-determine_base_url() {
-    local base_url_flag="$1" host_ip="$2" yes="$3"
-    if [ -n "$base_url_flag" ]; then
-        choose_base_url "$base_url_flag" "$host_ip"
-        return
-    fi
-    if [ -n "$yes" ]; then
-        printf 'install-bare-metal: WARNING: no --base-url given, defaulting to http://%s. GOTCHA_BASE_URL must match exactly what users type in their browser, or every POST (including the first registration) is rejected with 403. Change it later by editing /etc/gotcha/gotcha.env and restarting the service.\n' "$host_ip" >&2
-        choose_base_url "" "$host_ip"
-        return
-    fi
-    local answer
-    read -r -p "GOTCHA_BASE_URL [http://$host_ip]: " answer
-    if [ -n "$answer" ]; then
-        printf '%s\n' "$answer"
-    else
-        choose_base_url "" "$host_ip"
-    fi
 }
 
 # MemoryMax паритетно compose (mem_limit: 1g) независимо от RAM хоста —
@@ -648,7 +675,6 @@ port_owner_units() {
 # Читает реальное состояние хоста (uname, порты, RAM, диск) — платформа уже
 # определена detect_platform, остальные решения идут через чистые функции выше.
 preflight() {
-    [ "$(id -u)" = 0 ] || fail "$EXIT_PREFLIGHT" "must run as root"
     [ -d /run/systemd/system ] || fail "$EXIT_PREFLIGHT" "systemd is required (PID 1 is not systemd)"
 
     HOST_ARCH=$(detect_arch "$(uname -m)") \
@@ -1307,8 +1333,8 @@ main() {
         exit "$EXIT_OK"
     fi
     detect_platform
+    [ "$(id -u)" = 0 ] || fail "$EXIT_PREFLIGHT" "must run as root"
     if [ -n "$ARG_UNINSTALL" ]; then
-        [ "$(id -u)" = 0 ] || fail "$EXIT_PREFLIGHT" "must run as root"
         if [ -n "$ARG_PURGE" ] && [ -z "$ARG_YES" ]; then
             local purge_answer=""
             # read возвращает ненулевой статус на EOF (закрытый stdin) — под set -e
@@ -1321,6 +1347,12 @@ main() {
         fi
         uninstall_app "$ARG_PURGE"
         exit "$EXIT_OK"
+    fi
+
+    local env_file=/etc/gotcha/gotcha.env base_url warning
+    base_url=$(resolve_base_url "$ARG_BASE_URL" "$env_file" "$ARG_YES") || exit "$?"
+    if [ -n "$ARG_BASE_URL" ] || [ ! -f "$env_file" ]; then
+        warning=$(plain_http_warning "$base_url") && printf 'install-bare-metal: %s\n' "$warning" >&2
     fi
 
     preflight
@@ -1342,10 +1374,6 @@ main() {
     # больше не бьёт по пробелу, разбирая обе колонки в mem_max целиком.
     IFS=' ' read -r mem_max gomemlimit <<<"$(resolve_memlimit "$ARG_MEM_LIMIT")"
 
-    local host_ip base_url
-    host_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
-    base_url=$(determine_base_url "$ARG_BASE_URL" "$host_ip" "$ARG_YES")
-
     if [ -n "$ARG_DRY_RUN" ]; then
         printf '[dry-run] tarball ready at %s\n' "$tarball_root"
         printf '[dry-run] GOTCHA_BASE_URL=%s\n' "$base_url"
@@ -1364,7 +1392,6 @@ main() {
         exit "$EXIT_OK"
     fi
 
-    local env_file=/etc/gotcha/gotcha.env
     # Без env-файла install_postgresql/install_clickhouse ниже могут перевыпустить
     # пароль под уже работающим сервисом — останавливаем его первым, пока не поздно.
     [ -f "$env_file" ] || systemctl stop gotcha 2>/dev/null || true

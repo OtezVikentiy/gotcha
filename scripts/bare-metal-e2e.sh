@@ -217,6 +217,10 @@ if [ -n "$UPGRADE_FROM" ]; then
     (cd "$WORK_DIR" && sha256sum "$(basename "$WORK_UPGRADE_TARBALL")") >>"$WORK_DIR/SHA256SUMS.txt"
 fi
 
+# http, не https: с https-адресом cookie сессии Secure, и curl по
+# http://127.0.0.1:8080 не вернёт её обратно (e2e_ingest_roundtrip).
+E2E_BASE_URL=http://gotcha-e2e.test
+
 # Отдельный процесс, не подоболочка текущего: значение переживает его и
 # читается после завершения install-bare-metal.sh и всех проверок.
 RSS_PEAK_FILE="$WORK_DIR/rss_peak_kb"
@@ -254,7 +258,7 @@ fi
 policy_failure_reports_steps_and_hint() {
     rm -f /etc/gotcha/gotcha.env
     local output rc
-    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" \
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" \
         --skip-databases --pg-dsn 'postgres://nobody:nobody@127.0.0.1:1/nope?sslmode=disable' \
         --ch-dsn 'clickhouse://nobody:nobody@127.0.0.1:2/nope' --yes 2>&1)
     rc=$?
@@ -277,7 +281,7 @@ preflight_requires_command() {
     hidden="$path.hidden-by-e2e"
     mv "$path" "$hidden" || { printf 'failed to hide %s\n' "$path" >&2; return 1; }
 
-    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1)
     rc=$?
     mv "$hidden" "$path" || { printf 'FAILED TO RESTORE %s — the host is now missing %s\n' "$hidden" "$cmd" >&2; return 1; }
 
@@ -290,7 +294,7 @@ preflight_requires_command() {
 # отдельная проверка без побочных эффектов, до самого запуска установки.
 dry_run_prints_platform_paths() {
     local out
-    out=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" \
+    out=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" \
         --yes --dry-run 2>&1)
     case "$out" in
         *"$(pg_conf_dir_label)/conf.d/10-gotcha.conf"*) ;;
@@ -333,6 +337,22 @@ nginx_worker_pids() {
 
 WEB_SNAPSHOT_BEFORE=$(web_server_snapshot)
 
+new_install_without_base_url_refused() {
+    local db_before output rc
+    [ ! -e /etc/gotcha ] || { printf 'precondition: /etc/gotcha already exists, the host is not clean\n' >&2; return 1; }
+    db_before=$(for p in "$PG_PACKAGE" clickhouse-server; do pkg_installed "$p" && echo "$p"; done)
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
+    rc=$?
+    [ "$rc" -eq 2 ] || { printf 'expected exit 2 without --base-url on a clean host, got %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    grep -qF -- '--base-url is required for a new installation' <<<"$output" \
+        || { printf 'missing the --base-url refusal in output:\n%s\n' "$output" >&2; return 1; }
+    [ ! -e /etc/gotcha ] || { printf '/etc/gotcha appeared although the install was refused\n' >&2; return 1; }
+    [ "$(for p in "$PG_PACKAGE" clickhouse-server; do pkg_installed "$p" && echo "$p"; done)" = "$db_before" ] \
+        || { printf 'database packages changed although the install was refused\n' >&2; return 1; }
+}
+
+assert "a clean install without --base-url and with --yes is refused before touching the host" new_install_without_base_url_refused
+
 assert "preflight refuses without ss, which the port check needs" preflight_requires_command ss
 assert "preflight refuses without runuser, which the database steps need" preflight_requires_command runuser
 if [ "$HOST_FAMILY" = rhel ]; then
@@ -345,16 +365,16 @@ assert "--dry-run prints paths from the platform layer, not a debian literal" dr
 # Ставит более старую версию первой, чтобы запуск ниже был обновлением (§4.5), а не
 # свежей установкой — "старая" версия детектится только по уже установленному бинарю.
 if [ -n "$WORK_UPGRADE_TARBALL" ]; then
-    printf 'bare-metal-e2e: running install-bare-metal.sh --version %s --from-tarball %s --yes (upgrade baseline)\n' \
-        "$upgrade_from_version" "$WORK_UPGRADE_TARBALL"
-    bash "$INSTALLER" --version "$upgrade_from_version" --from-tarball "$WORK_UPGRADE_TARBALL" --yes
+    printf 'bare-metal-e2e: running install-bare-metal.sh --version %s --from-tarball %s --base-url %s --yes (upgrade baseline)\n' \
+        "$upgrade_from_version" "$WORK_UPGRADE_TARBALL" "$E2E_BASE_URL"
+    bash "$INSTALLER" --version "$upgrade_from_version" --from-tarball "$WORK_UPGRADE_TARBALL" --base-url "$E2E_BASE_URL" --yes
     baseline_rc=$?
     printf 'bare-metal-e2e: upgrade baseline install exited %d\n' "$baseline_rc"
 fi
 
-printf 'bare-metal-e2e: running install-bare-metal.sh --version %s --from-tarball %s --yes\n' \
-    "$tarball_version" "$WORK_TARBALL"
-bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes
+printf 'bare-metal-e2e: running install-bare-metal.sh --version %s --from-tarball %s --base-url %s --yes\n' \
+    "$tarball_version" "$WORK_TARBALL" "$E2E_BASE_URL"
+bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes
 installer_rc=$?
 printf 'bare-metal-e2e: install-bare-metal.sh exited %d\n' "$installer_rc"
 
@@ -548,7 +568,7 @@ failure_report_lists_database_steps() {
     rm -f "$unit"
     mkdir -p "$unit" || { printf 'failed to plant a directory at %s\n' "$unit" >&2; return 1; }
 
-    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1)
     rc=$?
     rmdir "$unit" || { printf 'FAILED TO REMOVE the planted directory %s\n' "$unit" >&2; return 1; }
 
@@ -573,7 +593,7 @@ survives_idempotent_rerun() {
     local env_before="$WORK_DIR/gotcha.env.before-rerun" output rc
     cp /etc/gotcha/gotcha.env "$env_before" || { printf 'failed to snapshot gotcha.env\n' >&2; return 1; }
 
-    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1)
     rc=$?
     [ "$rc" -eq 0 ] || { printf 'idempotent re-run exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
 
@@ -597,7 +617,7 @@ recovers_after_env_file_lost() {
     rm -f /etc/gotcha/gotcha.env
 
     local output rc
-    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1)
     rc=$?
     [ "$rc" -eq 0 ] || { printf 'recovering from a lost env file exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
     grep -qi 'regenerating' <<<"$output" \
@@ -644,7 +664,7 @@ uninstall_removes_unit_and_binary_keeps_data() {
 }
 
 reinstall_after_uninstall_succeeds() {
-    bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes
+    bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes
     local rc=$?
     [ "$rc" -eq 0 ] || { printf 're-install after --uninstall exited %d\n' "$rc" >&2; return 1; }
     unit_active gotcha || { printf 'gotcha unit not active after re-install\n' >&2; return 1; }
@@ -787,7 +807,7 @@ EOF
         workers_before=$(nginx_worker_pids)
     done
     LEGACY_INSTALL_OUT="$WORK_DIR/legacy-install.out"
-    bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes >"$LEGACY_INSTALL_OUT" 2>&1
+    bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes >"$LEGACY_INSTALL_OUT" 2>&1
     rc=$?
     [ "$rc" -eq 0 ] || { printf 'install over a legacy site exited %d:\n%s\n' "$rc" "$(tail -40 "$LEGACY_INSTALL_OUT")" >&2; return 1; }
     [ "$(sha256sum <"$NGINX_SITE")" = "$hash_before" ] \
