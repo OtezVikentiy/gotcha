@@ -950,10 +950,9 @@ EOF
     hash_before=$(sha256sum <"$NGINX_SITE")
     workers_before=$(nginx_worker_pids)
     tries=0
-    while [ "$(nginx_worker_pids)" != "$workers_before" ]; do
+    while sleep 1; [ "$(nginx_worker_pids)" != "$workers_before" ]; do
         tries=$((tries + 1))
         [ "$tries" -lt 15 ] || { printf 'nginx worker set never stabilized before the legacy fixture install\n' >&2; return 1; }
-        sleep 1
         workers_before=$(nginx_worker_pids)
     done
     LEGACY_INSTALL_OUT="$WORK_DIR/legacy-install.out"

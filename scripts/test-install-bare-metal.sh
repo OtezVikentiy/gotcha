@@ -1013,6 +1013,10 @@ ln -s "$legacy_dir/sites-available/own" "$NGINX_SITE_ENABLED_LINK"
 rm -f "$NGINX_SITE"
 find_legacy_site >/dev/null
 assert_eq "find_legacy_site ignores an operator's own unmarked Debian site" 1 $?
+
+printf '%s\nserver { listen 80; }\n' "$NGINX_SITE_MARKER" >"$NGINX_SITE"
+assert_eq "find_legacy_site finds the marked sites-available file behind an unrelated symlink" \
+    "$NGINX_SITE" "$(find_legacy_site)"
 : >"$legacy_dir/calls"
 journal_before=$(cat "$legacy_dir/journal" 2>/dev/null)
 (uninstall_legacy_site) 2>/dev/null
@@ -1020,6 +1024,31 @@ assert_eq "uninstall_legacy_site leaves an operator's own Debian symlink alone" 
     "$(path_state "$NGINX_SITE_ENABLED_LINK")|$(cat "$legacy_dir/calls")"
 assert_eq "uninstall_legacy_site logs nothing for an operator's own Debian site" \
     "$journal_before" "$(cat "$legacy_dir/journal" 2>/dev/null)"
+
+rm -f "$NGINX_SITE_ENABLED_LINK"
+printf 'server { listen 80; }\n' >"$NGINX_SITE_ENABLED_LINK"
+: >"$legacy_dir/calls"
+journal_before=$(cat "$legacy_dir/journal" 2>/dev/null)
+(uninstall_legacy_site) 2>/dev/null
+assert_eq "uninstall_legacy_site leaves a plain sites-enabled/gotcha file alone" "present|" \
+    "$(path_state "$NGINX_SITE_ENABLED_LINK")|$(cat "$legacy_dir/calls")"
+assert_eq "uninstall_legacy_site logs nothing for a plain sites-enabled/gotcha file" \
+    "$journal_before" "$(cat "$legacy_dir/journal" 2>/dev/null)"
+
+rm -f "$NGINX_SITE_ENABLED_LINK"
+ln -s "$NGINX_SITE" "$NGINX_SITE_ENABLED_LINK"
+: >"$legacy_dir/calls"
+(
+    # shellcheck disable=SC2317 # вызывается сорсимым файлом, а не отсюда
+    rm() { return 1; }
+    uninstall_legacy_site
+) 2>/dev/null
+rc=$?
+assert_eq "uninstall_legacy_site returns 0 even when rm fails" 0 "$rc"
+assert_contains "uninstall_legacy_site logs a WARNING when rm fails" "$(cat "$legacy_dir/journal")" \
+    "WARNING: could not remove"
+assert_eq "uninstall_legacy_site does not reload nginx when rm fails" "" "$(cat "$legacy_dir/calls")"
+assert_eq "uninstall_legacy_site leaves the symlink in place when rm fails" present "$(path_state "$NGINX_SITE_ENABLED_LINK")"
 
 unset -f systemctl path_state
 rm -rf "$legacy_dir"

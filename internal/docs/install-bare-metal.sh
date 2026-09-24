@@ -570,8 +570,11 @@ uninstall_legacy_site() {
         log_step "SELinux boolean httpd_can_network_connect and firewalld services http/https, if a previous version set them, are left as they are (revert: setsebool -P httpd_can_network_connect 0; firewall-cmd --permanent --remove-service=http --remove-service=https && firewall-cmd --reload)"
         return 0
     fi
-    [ -L "$NGINX_SITE_ENABLED_LINK" ] || [ -e "$NGINX_SITE_ENABLED_LINK" ] || return 0
-    rm -f "$NGINX_SITE_ENABLED_LINK"
+    # Снимаем только наш симлинк: обычный файл оператора или симлинк на чужой конфиг не трогаем.
+    [ -L "$NGINX_SITE_ENABLED_LINK" ] || return 0
+    [ "$(readlink -f "$NGINX_SITE_ENABLED_LINK")" = "$(readlink -f "$site")" ] || return 0
+    rm -f "$NGINX_SITE_ENABLED_LINK" \
+        || { log_step "WARNING: could not remove $NGINX_SITE_ENABLED_LINK, disable the nginx site by hand"; return 0; }
     systemctl reload nginx >/dev/null 2>&1 || true
     log_step "nginx site from a previous version disabled (the file in sites-available is kept)"
 }
