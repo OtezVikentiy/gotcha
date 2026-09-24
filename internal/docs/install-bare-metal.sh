@@ -579,14 +579,42 @@ uninstall_legacy_site() {
 legacy_site_enable_hint() {
     local site="$1"
     if [ "$site" = "$(nginx_site_disabled_path)" ]; then
-        printf 'mv %s %s && systemctl reload nginx\n' "$site" "$NGINX_SITE"
-        return 0
+        # Рабочий $NGINX_SITE уже занят (оператором или новой доступной доке) — mv затёр бы его.
+        [ ! -e "$NGINX_SITE" ] || return 1
+        if [ "$HOST_FAMILY" = rhel ]; then
+            printf 'mv %s %s && systemctl reload nginx\n' "$site" "$NGINX_SITE"
+            return 0
+        fi
+        if [ -n "$NGINX_SITE_ENABLED_LINK" ] && [ ! -e "$NGINX_SITE_ENABLED_LINK" ] && [ ! -L "$NGINX_SITE_ENABLED_LINK" ]; then
+            printf 'mv %s %s && ln -s %s %s && systemctl reload nginx\n' \
+                "$site" "$NGINX_SITE" "$NGINX_SITE" "$NGINX_SITE_ENABLED_LINK"
+            return 0
+        fi
+        return 1
     fi
     if [ -n "$NGINX_SITE_ENABLED_LINK" ] && [ ! -e "$NGINX_SITE_ENABLED_LINK" ] && [ ! -L "$NGINX_SITE_ENABLED_LINK" ]; then
         printf 'ln -s %s %s && systemctl reload nginx\n' "$site" "$NGINX_SITE_ENABLED_LINK"
         return 0
     fi
     return 1
+}
+
+# :PORT и 0.0.0.0:PORT слушают все интерфейсы — curl/proxy бьют по loopback того же хоста.
+readyz_probe_addr() {
+    local addr="$1"
+    case "$addr" in
+        :*) addr="127.0.0.1$addr" ;;
+        0.0.0.0:*) addr="127.0.0.1:${addr#*:}" ;;
+    esac
+    printf '%s\n' "$addr"
+}
+
+summary_effective_version() {
+    printf '%s\n' "${1:-$2}"
+}
+
+summary_is_fresh() {
+    [ -n "$1" ] || printf '1\n'
 }
 
 render_summary() {
@@ -606,7 +634,7 @@ render_summary() {
         printf '  1. Your nginx site from a previous version is kept as is and is yours to maintain: %s\n' "$legacy_site"
         [ -z "$enable_hint" ] || printf '     It is not enabled now; to enable it: %s\n' "$enable_hint"
     else
-        printf '  1. Put a reverse proxy (nginx, angie, Apache, Caddy...) in front of %s\n' "$listen_addr"
+        printf '  1. Put a reverse proxy (nginx, angie, Apache, Caddy...) in front of %s\n' "$(readyz_probe_addr "$listen_addr")"
         printf '     so that %s reaches it. Requirements and examples:\n' "$base_url"
         printf '     %s\n' "$GOTCHA_DOCS_BARE_METAL_URL"
     fi
@@ -1589,19 +1617,20 @@ main() {
 
     local readiness legacy_site enable_hint="" listen_addr version
     listen_addr=$(env_get GOTCHA_LISTEN_ADDR "$env_file") || listen_addr=127.0.0.1:8080
-    local probe="$listen_addr"
-    case "$probe" in
-        :*) probe="127.0.0.1$probe" ;;
-        0.0.0.0:*) probe="127.0.0.1:${probe#*:}" ;;
-    esac
-    readiness=$(curl -fsS --max-time 5 "http://$probe/readyz" 2>/dev/null) || readiness="no answer (see logs)"
-    version=$(installed_version /usr/local/bin/gotcha)
+    readiness=$(curl -fsS --max-time 5 "http://$(readyz_probe_addr "$listen_addr")/readyz" 2>/dev/null) \
+        || readiness="no answer (see logs)"
+    version=$(summary_effective_version "$(installed_version /usr/local/bin/gotcha)" "$ARG_VERSION")
     legacy_site=$(find_legacy_site) || legacy_site=""
+    # .disabled найден, но $NGINX_SITE уже занят чужим рабочим конфигом — это не наш
+    # сайт больше, итог не должен ни называть его «сохранённым», ни советовать mv.
+    if [ -n "$legacy_site" ] && [ "$legacy_site" = "$(nginx_site_disabled_path)" ] && [ -e "$NGINX_SITE" ]; then
+        legacy_site=""
+    fi
     if [ -n "$legacy_site" ]; then
         enable_hint=$(legacy_site_enable_hint "$legacy_site") || enable_hint=""
     fi
-    render_summary "${version:-$ARG_VERSION}" "$readiness" "$base_url" "$listen_addr" \
-        "$legacy_site" "$enable_hint" "$([ -n "$env_existed" ] || echo 1)"
+    render_summary "$version" "$readiness" "$base_url" "$listen_addr" \
+        "$legacy_site" "$enable_hint" "$(summary_is_fresh "$env_existed")"
 }
 
 # Guards main() from running on source — the test runner sources this file

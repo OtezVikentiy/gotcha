@@ -1127,11 +1127,17 @@ HOST_FAMILY=rhel
 EL_MAJOR=9
 apply_platform_paths
 NGINX_SITE="$sumdir/conf.d/gotcha.conf"
+mkdir -p "$sumdir/conf.d"
 assert_eq "EL .disabled site: the hint moves it back and reloads" \
     "mv $NGINX_SITE.disabled $NGINX_SITE && systemctl reload nginx" \
     "$(legacy_site_enable_hint "$NGINX_SITE.disabled")"
 legacy_site_enable_hint "$NGINX_SITE" >/dev/null
 assert_eq "EL active site: no hint" 1 $?
+
+printf 'server { listen 80; }\n' >"$NGINX_SITE"
+legacy_site_enable_hint "$NGINX_SITE.disabled" >/dev/null
+assert_eq "EL .disabled site with the operator's own config in place: no hint, no mv (I-1)" 1 $?
+rm -f "$NGINX_SITE"
 
 # shellcheck disable=SC2034
 HOST_FAMILY=debian
@@ -1148,8 +1154,38 @@ assert_eq "Debian site without a symlink: the hint links it (RF-5)" \
 ln -s "$NGINX_SITE" "$NGINX_SITE_ENABLED_LINK"
 legacy_site_enable_hint "$NGINX_SITE" >/dev/null
 assert_eq "Debian site with its symlink: no hint" 1 $?
+
+rm -f "$NGINX_SITE_ENABLED_LINK"
+ln -s "$sumdir/sites-available/does-not-exist" "$NGINX_SITE_ENABLED_LINK"
+legacy_site_enable_hint "$NGINX_SITE" >/dev/null
+assert_eq "Debian dangling symlink in sites-enabled: no hint, would collide with ln -s (I-4)" 1 $?
+rm -f "$NGINX_SITE" "$NGINX_SITE_ENABLED_LINK"
+
+: >"$NGINX_SITE.disabled"
+assert_eq "Debian .disabled site: the hint moves it back and links it (Minor-6)" \
+    "mv $NGINX_SITE.disabled $NGINX_SITE && ln -s $NGINX_SITE $NGINX_SITE_ENABLED_LINK && systemctl reload nginx" \
+    "$(legacy_site_enable_hint "$NGINX_SITE.disabled")"
+
+: >"$NGINX_SITE"
+legacy_site_enable_hint "$NGINX_SITE.disabled" >/dev/null
+assert_eq "Debian .disabled site with the operator's own config in place: no hint, no mv (I-1)" 1 $?
+rm -f "$NGINX_SITE" "$NGINX_SITE.disabled"
+
 rm -rf "$sumdir"
 apply_platform_paths
+
+assert_eq "readyz_probe_addr normalizes :PORT to loopback (I-2)" "127.0.0.1:8080" "$(readyz_probe_addr :8080)"
+assert_eq "readyz_probe_addr normalizes 0.0.0.0:PORT to loopback (I-2)" "127.0.0.1:8080" "$(readyz_probe_addr 0.0.0.0:8080)"
+assert_eq "readyz_probe_addr leaves a non-loopback address as is (I-2)" "10.0.0.5:8080" "$(readyz_probe_addr 10.0.0.5:8080)"
+assert_eq "readyz_probe_addr leaves an already-loopback address as is (I-2)" "127.0.0.1:8080" "$(readyz_probe_addr 127.0.0.1:8080)"
+
+assert_eq "summary_effective_version prefers the installed binary's version (I-2)" "1.9.0" \
+    "$(summary_effective_version 1.9.0 1.9.1)"
+assert_eq "summary_effective_version falls back to --version when nothing is installed (I-2)" "1.9.1" \
+    "$(summary_effective_version "" 1.9.1)"
+
+assert_eq "summary_is_fresh: no prior env means a fresh install (I-2)" 1 "$(summary_is_fresh "")"
+assert_eq "summary_is_fresh: an env that already existed is not fresh (I-2)" "" "$(summary_is_fresh 1)"
 
 out=$(render_summary 1.9.0 '{"status":"ready"}' https://gotcha.example.com 127.0.0.1:8080 "" "" 1)
 assert_eq "render_summary, fresh host" \
@@ -1172,6 +1208,16 @@ assert_contains "render_summary names the kept legacy site" "$out" \
 case "$out" in
     *"Put a reverse proxy"*) printf 'FAIL: render_summary asks for a new proxy on a legacy host\n' >&2; FAILURES=$((FAILURES + 1)) ;;
 esac
+assert_eq "render_summary, legacy site already enabled: whole output, no 'not enabled' line (I-3)" \
+"Gotcha 1.9.0 is installed and running.
+  readiness:  ok
+  listens on: 127.0.0.1:8080 (this host only)
+  address:    https://x.example (GOTCHA_BASE_URL)
+  config:     /etc/gotcha/gotcha.env
+  logs:       journalctl -u gotcha -f
+
+Next:
+  1. Your nginx site from a previous version is kept as is and is yours to maintain: /etc/nginx/conf.d/gotcha.conf" "$out"
 out=$(render_summary 1.9.0 ok https://x.example 127.0.0.1:8080 /etc/nginx/conf.d/gotcha.conf.disabled "mv a b && systemctl reload nginx" "")
 assert_contains "render_summary gives the enable command for a disabled legacy site" "$out" \
     "     It is not enabled now; to enable it: mv a b && systemctl reload nginx"
@@ -1188,6 +1234,20 @@ assert_contains "render_summary shows a non-loopback listen address from env" "$
 case "$out" in
     *"this host only"*) printf 'FAIL: render_summary claims loopback for 10.0.0.5:8080\n' >&2; FAILURES=$((FAILURES + 1)) ;;
 esac
+
+out=$(render_summary 1.9.0 ok https://x.example localhost:8080 "" "" "")
+assert_contains "render_summary treats localhost:PORT as loopback (I-4)" "$out" \
+    "  listens on: localhost:8080 (this host only)"
+out=$(render_summary 1.9.0 ok https://x.example '[::1]:8080' "" "" "")
+assert_contains "render_summary treats [::1]:PORT as loopback (I-4)" "$out" \
+    "  listens on: [::1]:8080 (this host only)"
+
+out=$(render_summary 1.9.0 ok https://x.example :8080 "" "" "")
+assert_contains "render_summary points the proxy hint at the loopback probe address for :PORT (Minor-5)" "$out" \
+    "  1. Put a reverse proxy (nginx, angie, Apache, Caddy...) in front of 127.0.0.1:8080"
+out=$(render_summary 1.9.0 ok https://x.example 0.0.0.0:8080 "" "" "")
+assert_contains "render_summary points the proxy hint at the loopback probe address for 0.0.0.0:PORT (Minor-5)" "$out" \
+    "  1. Put a reverse proxy (nginx, angie, Apache, Caddy...) in front of 127.0.0.1:8080"
 
 # preflight: порядок и доставка утилит
 
