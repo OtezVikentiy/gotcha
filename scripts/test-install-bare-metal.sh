@@ -864,9 +864,12 @@ printf 'server { listen 80; }\n' >"$NGINX_SITE"
 find_legacy_site >/dev/null
 assert_eq "find_legacy_site ignores an unmarked site" 1 $?
 : >"$legacy_dir/calls"
+journal_before=$(cat "$legacy_dir/journal" 2>/dev/null)
 (uninstall_legacy_site) 2>/dev/null
 assert_eq "uninstall_legacy_site leaves an unmarked EL site alone (no systemctl)" "" "$(cat "$legacy_dir/calls")"
 assert_eq "uninstall_legacy_site does not rename an unmarked EL site" present "$(path_state "$NGINX_SITE")"
+assert_eq "uninstall_legacy_site logs nothing for an unmarked EL site" \
+    "$journal_before" "$(cat "$legacy_dir/journal" 2>/dev/null)"
 
 printf '%s\nserver { listen 80; }\n' "$NGINX_SITE_MARKER" >"$NGINX_SITE"
 assert_eq "find_legacy_site finds a marked EL site" "$NGINX_SITE" "$(find_legacy_site)"
@@ -875,6 +878,10 @@ assert_eq "find_legacy_site finds a marked EL site" "$NGINX_SITE" "$(find_legacy
 assert_eq "uninstall_legacy_site renames a marked EL site to .disabled" "gone|present" \
     "$(path_state "$NGINX_SITE")|$(path_state "$NGINX_SITE.disabled")"
 assert_contains "uninstall_legacy_site reloads nginx after disabling" "$(cat "$legacy_dir/calls")" "systemctl reload nginx"
+assert_contains "uninstall_legacy_site logs the disabled-site step" "$(cat "$legacy_dir/journal")" \
+    "nginx site from a previous version disabled"
+assert_contains "uninstall_legacy_site logs the SELinux/firewalld disclaimer" "$(cat "$legacy_dir/journal")" \
+    "SELinux boolean httpd_can_network_connect"
 
 assert_eq "find_legacy_site finds a marked .disabled EL site" "$NGINX_SITE.disabled" "$(find_legacy_site)"
 : >"$legacy_dir/calls"
@@ -884,6 +891,19 @@ assert_eq "uninstall_legacy_site leaves an already disabled site alone (no syste
 assert_eq "uninstall_legacy_site keeps the .disabled file" present "$(path_state "$NGINX_SITE.disabled")"
 assert_eq "uninstall_legacy_site does not attempt to re-disable an already disabled site" \
     "$journal_before" "$(cat "$legacy_dir/journal" 2>/dev/null)"
+
+rm -f "$NGINX_SITE.disabled"
+printf '%s\nserver { listen 80; }\n' "$NGINX_SITE_MARKER" >"$NGINX_SITE"
+: >"$legacy_dir/calls"
+chmod 555 "$legacy_dir/conf.d"
+(uninstall_legacy_site) 2>/dev/null
+rc=$?
+chmod 755 "$legacy_dir/conf.d"
+assert_eq "uninstall_legacy_site returns 0 even when mv fails" 0 "$rc"
+assert_contains "uninstall_legacy_site logs a WARNING when mv fails" "$(cat "$legacy_dir/journal")" \
+    "WARNING: could not disable the nginx site"
+assert_eq "uninstall_legacy_site does not reload nginx when mv fails" "" "$(cat "$legacy_dir/calls")"
+assert_eq "uninstall_legacy_site leaves the site in place when mv fails" present "$(path_state "$NGINX_SITE")"
 
 # shellcheck disable=SC2034 # прочитаны apply_platform_paths, определённой в сорсимом файле
 HOST_FAMILY=debian
@@ -902,6 +922,20 @@ assert_eq "uninstall_legacy_site removes the Debian symlink, keeps the file" "go
     "$(path_state "$NGINX_SITE_ENABLED_LINK")|$(path_state "$NGINX_SITE")"
 assert_contains "uninstall_legacy_site reloads nginx on Debian" "$(cat "$legacy_dir/calls")" "systemctl reload nginx"
 
+# Симлинк на размеченный файл в ДРУГОМ месте, а не на сам $NGINX_SITE — без
+# readlink-кандидата find_legacy_site его не увидит вовсе (NGINX_SITE отсутствует).
+rm -f "$NGINX_SITE"
+mkdir -p "$legacy_dir/elsewhere"
+printf '%s\nserver { listen 80; }\n' "$NGINX_SITE_MARKER" >"$legacy_dir/elsewhere/gotcha.conf"
+ln -sf "$legacy_dir/elsewhere/gotcha.conf" "$NGINX_SITE_ENABLED_LINK"
+assert_eq "find_legacy_site follows a Debian symlink to a marked file elsewhere" \
+    "$legacy_dir/elsewhere/gotcha.conf" "$(find_legacy_site)"
+: >"$legacy_dir/calls"
+(uninstall_legacy_site) 2>/dev/null
+assert_eq "uninstall_legacy_site removes a Debian symlink pointing elsewhere, keeps its target" "gone|present" \
+    "$(path_state "$NGINX_SITE_ENABLED_LINK")|$(path_state "$legacy_dir/elsewhere/gotcha.conf")"
+assert_contains "uninstall_legacy_site reloads nginx for a symlink pointing elsewhere" "$(cat "$legacy_dir/calls")" "systemctl reload nginx"
+
 : >"$legacy_dir/calls"
 (uninstall_legacy_site) 2>/dev/null
 assert_eq "uninstall_legacy_site with no symlink left does nothing on Debian" "" "$(cat "$legacy_dir/calls")"
@@ -912,9 +946,12 @@ rm -f "$NGINX_SITE"
 find_legacy_site >/dev/null
 assert_eq "find_legacy_site ignores an operator's own unmarked Debian site" 1 $?
 : >"$legacy_dir/calls"
+journal_before=$(cat "$legacy_dir/journal" 2>/dev/null)
 (uninstall_legacy_site) 2>/dev/null
 assert_eq "uninstall_legacy_site leaves an operator's own Debian symlink alone" "present|" \
     "$(path_state "$NGINX_SITE_ENABLED_LINK")|$(cat "$legacy_dir/calls")"
+assert_eq "uninstall_legacy_site logs nothing for an operator's own Debian site" \
+    "$journal_before" "$(cat "$legacy_dir/journal" 2>/dev/null)"
 
 unset -f systemctl path_state
 rm -rf "$legacy_dir"

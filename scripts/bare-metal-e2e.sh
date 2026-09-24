@@ -735,7 +735,7 @@ purge_removes_data_and_databases_keeps_packages() {
 
 # 1.8.x ставил сайт с маркером и TLS-блоком certbot; фикстура кладёт его сама, без сети.
 legacy_nginx_site_untouched() {
-    local crt=/etc/ssl/gotcha-e2e.crt key=/etc/ssl/gotcha-e2e.key hash_before workers_before output rc code tries
+    local crt=/etc/ssl/gotcha-e2e.crt key=/etc/ssl/gotcha-e2e.key hash_before workers_before rc code tries
     [ "$HOST_FAMILY" = rhel ] || pkg_refresh
     pkg_install nginx || { printf 'failed to install nginx for the legacy fixture\n' >&2; return 1; }
     openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=gotcha-e2e.test' \
@@ -764,9 +764,8 @@ EOF
         rm -f /etc/nginx/sites-enabled/default
         ln -sf ../sites-available/gotcha "$NGINX_SITE_ENABLED_LINK"
     fi
-    # Reload only if nginx was already running: reloading right after a fresh
-    # enable --now races the first worker generation and leaves stale workers
-    # alive for a long time, poisoning the before/after worker comparison below.
+    # Reload only if already running: right after a fresh enable --now it
+    # races the first worker generation, leaving stale workers alive for a while.
     local was_active=""
     systemctl is-active --quiet nginx && was_active=1
     if ! nginx -t >/dev/null 2>&1 || ! systemctl enable --now nginx >/dev/null 2>&1; then
