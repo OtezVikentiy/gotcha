@@ -579,7 +579,7 @@ uninstall_legacy_site() {
 legacy_site_enable_hint() {
     local site="$1"
     if [ "$site" = "$(nginx_site_disabled_path)" ]; then
-        # Рабочий $NGINX_SITE уже занят (оператором или новой доступной доке) — mv затёр бы его.
+        # Рабочий $NGINX_SITE уже занят (оператор положил свой, например по новой доке) — mv затёр бы его.
         [ ! -e "$NGINX_SITE" ] || return 1
         if [ "$HOST_FAMILY" = rhel ]; then
             printf 'mv %s %s && systemctl reload nginx\n' "$site" "$NGINX_SITE"
@@ -615,6 +615,18 @@ summary_effective_version() {
 
 summary_is_fresh() {
     [ -n "$1" ] || printf '1\n'
+}
+
+# Единственный судья, можно ли назвать .disabled-сайт "сохранённым": если
+# legacy_site_enable_hint для него не даёт подсказки (место уже занято чужим
+# конфигом или симлинком), в итоге его быть не должно — иначе "kept as is"
+# врёт поверх рабочего конфига оператора (I-1, Minor: sites-enabled занят).
+summary_legacy_site() {
+    local legacy_site="$1"
+    if [ "$legacy_site" = "$(nginx_site_disabled_path)" ] && ! legacy_site_enable_hint "$legacy_site" >/dev/null; then
+        return 1
+    fi
+    printf '%s\n' "$legacy_site"
 }
 
 render_summary() {
@@ -1432,6 +1444,22 @@ start_app() {
     log_step "gotcha service started and healthy"
 }
 
+print_install_summary() {
+    local env_file="$1" base_url="$2" env_existed="$3"
+    local readiness legacy_site enable_hint="" listen_addr version
+    listen_addr=$(env_get GOTCHA_LISTEN_ADDR "$env_file") || listen_addr=127.0.0.1:8080
+    readiness=$(curl -fsS --max-time 5 "http://$(readyz_probe_addr "$listen_addr")/readyz" 2>/dev/null) \
+        || readiness="no answer (see logs)"
+    version=$(summary_effective_version "$(installed_version /usr/local/bin/gotcha)" "$ARG_VERSION")
+    legacy_site=$(find_legacy_site) || legacy_site=""
+    legacy_site=$(summary_legacy_site "$legacy_site") || legacy_site=""
+    if [ -n "$legacy_site" ]; then
+        enable_hint=$(legacy_site_enable_hint "$legacy_site") || enable_hint=""
+    fi
+    render_summary "$version" "$readiness" "$base_url" "$listen_addr" \
+        "$legacy_site" "$enable_hint" "$(summary_is_fresh "$env_existed")"
+}
+
 # Не трогает пакеты СУБД и apt-репозитории — на хосте ими может пользоваться
 # что-то ещё. --purge снимает только объекты, которые этот скрипт сам и создал.
 uninstall_app() {
@@ -1615,22 +1643,7 @@ main() {
     run_migrations "$env_file"
     start_app "$ENV_CHANGED"
 
-    local readiness legacy_site enable_hint="" listen_addr version
-    listen_addr=$(env_get GOTCHA_LISTEN_ADDR "$env_file") || listen_addr=127.0.0.1:8080
-    readiness=$(curl -fsS --max-time 5 "http://$(readyz_probe_addr "$listen_addr")/readyz" 2>/dev/null) \
-        || readiness="no answer (see logs)"
-    version=$(summary_effective_version "$(installed_version /usr/local/bin/gotcha)" "$ARG_VERSION")
-    legacy_site=$(find_legacy_site) || legacy_site=""
-    # .disabled найден, но $NGINX_SITE уже занят чужим рабочим конфигом — это не наш
-    # сайт больше, итог не должен ни называть его «сохранённым», ни советовать mv.
-    if [ -n "$legacy_site" ] && [ "$legacy_site" = "$(nginx_site_disabled_path)" ] && [ -e "$NGINX_SITE" ]; then
-        legacy_site=""
-    fi
-    if [ -n "$legacy_site" ]; then
-        enable_hint=$(legacy_site_enable_hint "$legacy_site") || enable_hint=""
-    fi
-    render_summary "$version" "$readiness" "$base_url" "$listen_addr" \
-        "$legacy_site" "$enable_hint" "$(summary_is_fresh "$env_existed")"
+    print_install_summary "$env_file" "$base_url" "$env_existed"
 }
 
 # Guards main() from running on source — the test runner sources this file

@@ -394,6 +394,13 @@ summary_printed() {
         || { printf 'the summary does not name the address\n' >&2; return 1; }
     grep -qF '  1. Put a reverse proxy' "$out" \
         || { printf 'the summary does not say what is left to do\n' >&2; return 1; }
+    if [ -z "$WORK_UPGRADE_TARBALL" ]; then
+        grep -qF 'create the first administrator' "$out" \
+            || { printf 'the summary does not invite creating the first administrator on a fresh install\n' >&2; return 1; }
+    else
+        ! grep -qF 'create the first administrator' "$out" \
+            || { printf 'the summary invites creating the first administrator on an upgrade\n' >&2; return 1; }
+    fi
 }
 
 baseline_install_succeeded() {
@@ -986,6 +993,8 @@ EOF
     fi
     grep -qF "to enable it: $want_hint" <<<"$reinstall_out" \
         || { printf 'the summary does not give the enable command (%s):\n%s\n' "$want_hint" "$(tail -15 <<<"$reinstall_out")" >&2; return 1; }
+    ! grep -qF 'create the first administrator' <<<"$reinstall_out" \
+        || { printf 'the summary invites creating the first administrator on a re-install over an existing env\n' >&2; return 1; }
 }
 
 run_assertions() {

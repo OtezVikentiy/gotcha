@@ -1171,6 +1171,18 @@ legacy_site_enable_hint "$NGINX_SITE.disabled" >/dev/null
 assert_eq "Debian .disabled site with the operator's own config in place: no hint, no mv (I-1)" 1 $?
 rm -f "$NGINX_SITE" "$NGINX_SITE.disabled"
 
+: >"$NGINX_SITE.disabled"
+printf 'server { listen 80; }\n' >"$NGINX_SITE_ENABLED_LINK"
+legacy_site_enable_hint "$NGINX_SITE.disabled" >/dev/null
+assert_eq "Debian .disabled site with sites-enabled/gotcha already a file: no hint, no mv (N-2)" 1 $?
+rm -f "$NGINX_SITE.disabled" "$NGINX_SITE_ENABLED_LINK"
+
+: >"$NGINX_SITE.disabled"
+ln -s "$sumdir/sites-available/does-not-exist" "$NGINX_SITE_ENABLED_LINK"
+legacy_site_enable_hint "$NGINX_SITE.disabled" >/dev/null
+assert_eq "Debian .disabled site with a dangling sites-enabled/gotcha symlink: no hint, no mv (N-2)" 1 $?
+rm -f "$NGINX_SITE.disabled" "$NGINX_SITE_ENABLED_LINK"
+
 rm -rf "$sumdir"
 apply_platform_paths
 
@@ -1248,6 +1260,81 @@ assert_contains "render_summary points the proxy hint at the loopback probe addr
 out=$(render_summary 1.9.0 ok https://x.example 0.0.0.0:8080 "" "" "")
 assert_contains "render_summary points the proxy hint at the loopback probe address for 0.0.0.0:PORT (Minor-5)" "$out" \
     "  1. Put a reverse proxy (nginx, angie, Apache, Caddy...) in front of 127.0.0.1:8080"
+
+# print_install_summary — main() выполняет только эту склейку, мутации ловятся
+# здесь же (I-2/N-1/Minor: kept-as-is не должен врать поверх чужого конфига)
+
+pisdir=$(mktemp -d)
+curl_calls="$pisdir/curl-calls"
+# shellcheck disable=SC2317 # вызывается print_install_summary из сорсимого файла
+curl() { printf '%s\n' "$*" >>"$curl_calls"; printf '{"status":"ready"}'; }
+# shellcheck disable=SC2317 # вызывается print_install_summary из сорсимого файла
+installed_version() { printf '1.9.0\n'; }
+# shellcheck disable=SC2034
+ARG_VERSION=1.9.1
+
+envf="$pisdir/gotcha.env"
+printf 'GOTCHA_LISTEN_ADDR=:8080\n' >"$envf"
+: >"$curl_calls"
+out=$(print_install_summary "$envf" https://x.example "")
+assert_contains "print_install_summary normalizes :PORT for the curl probe (I-2)" "$(cat "$curl_calls")" \
+    "http://127.0.0.1:8080/readyz"
+assert_contains "print_install_summary prefers the installed binary's version over --version (I-2)" "$out" \
+    "Gotcha 1.9.0 is installed and running."
+assert_contains "print_install_summary: no prior env invites creating the first administrator (I-2)" "$out" \
+    "create the first administrator"
+out=$(print_install_summary "$envf" https://x.example 1)
+case "$out" in
+    *"first administrator"*)
+        printf 'FAIL: print_install_summary invites creating the first administrator when the env already existed\n' >&2
+        FAILURES=$((FAILURES + 1))
+        ;;
+esac
+
+# shellcheck disable=SC2034
+HOST_FAMILY=rhel
+# shellcheck disable=SC2034
+EL_MAJOR=9
+apply_platform_paths
+NGINX_SITE="$pisdir/conf.d/gotcha.conf"
+mkdir -p "$pisdir/conf.d"
+printf '%s\nlisten 80;\n' "$NGINX_SITE_MARKER" >"$NGINX_SITE.disabled"
+printf 'server { listen 80; }\n' >"$NGINX_SITE"
+out=$(print_install_summary "$envf" https://x.example "")
+case "$out" in
+    *"kept as is"*)
+        printf 'FAIL: EL print_install_summary calls a .disabled site kept as is although NGINX_SITE is taken (N-1)\n' >&2
+        FAILURES=$((FAILURES + 1))
+        ;;
+esac
+assert_contains "EL print_install_summary falls back to the reverse-proxy hint when the legacy site cannot be enabled (N-1)" "$out" \
+    "  1. Put a reverse proxy"
+rm -f "$NGINX_SITE" "$NGINX_SITE.disabled"
+
+# shellcheck disable=SC2034
+HOST_FAMILY=debian
+# shellcheck disable=SC2034
+EL_MAJOR=""
+apply_platform_paths
+NGINX_SITE="$pisdir/sites-available/gotcha"
+NGINX_SITE_ENABLED_LINK="$pisdir/sites-enabled/gotcha"
+mkdir -p "$pisdir/sites-available" "$pisdir/sites-enabled"
+printf '%s\nlisten 80;\n' "$NGINX_SITE_MARKER" >"$NGINX_SITE.disabled"
+printf 'server { listen 80; }\n' >"$NGINX_SITE_ENABLED_LINK"
+out=$(print_install_summary "$envf" https://x.example "")
+case "$out" in
+    *"kept as is"*)
+        printf 'FAIL: Debian print_install_summary calls a .disabled site kept as is although sites-enabled/gotcha is taken (N-1/Minor)\n' >&2
+        FAILURES=$((FAILURES + 1))
+        ;;
+esac
+assert_contains "Debian print_install_summary falls back to the reverse-proxy hint when sites-enabled/gotcha is taken (N-1/Minor)" "$out" \
+    "  1. Put a reverse proxy"
+rm -f "$NGINX_SITE.disabled" "$NGINX_SITE_ENABLED_LINK"
+
+unset -f curl installed_version
+rm -rf "$pisdir"
+apply_platform_paths
 
 # preflight: порядок и доставка утилит
 
