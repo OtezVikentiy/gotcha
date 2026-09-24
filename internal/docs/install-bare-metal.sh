@@ -676,29 +676,79 @@ port_owner_units() {
     esac
 }
 
-# Читает реальное состояние хоста (uname, порты, RAM, диск) — платформа уже
-# определена detect_platform, остальные решения идут через чистые функции выше.
-preflight() {
-    [ -d /run/systemd/system ] || fail "$EXIT_PREFLIGHT" "systemd is required (PID 1 is not systemd)"
+have_command() {
+    command -v "$1" >/dev/null 2>&1
+}
 
+packages_for_commands() {
+    local cmd pkg seen=" "
+    for cmd in "$@"; do
+        pkg="${PKG_HINTS[$cmd]}"
+        case "$seen" in *" $pkg "*) continue ;; esac
+        seen+="$pkg "
+        printf '%s\n' "$pkg"
+    done
+}
+
+preflight_platform() {
+    [ -d /run/systemd/system ] || fail "$EXIT_PREFLIGHT" "systemd is required (PID 1 is not systemd)"
     HOST_ARCH=$(detect_arch "$(uname -m)") \
         || fail "$EXIT_PREFLIGHT" "unsupported architecture: $(uname -m) (amd64/arm64 only)"
+}
 
-    # Пакеты в сообщении не украшение: на минимальном Debian нет ss, а на
-    # голом EL10 — runuser (util-linux туда не тянется по умолчанию).
-    local cmd
+preflight_resources() {
+    # 1900, не 2048: облачные "2 ГБ" урезают MemTotal под firmware/hypervisor.
+    # Не local — install_clickhouse переиспользует значение для 10-small.xml.
+    HOST_RAM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
+    [ "$HOST_RAM_MB" -ge 1900 ] || fail "$EXIT_PREFLIGHT" "at least 2 GB RAM required (found ${HOST_RAM_MB} MB)"
+    local disk_gb
+    disk_gb=$(($(df --output=avail -k / | tail -n1) / 1024 / 1024))
+    [ "$disk_gb" -ge 20 ] || fail "$EXIT_PREFLIGHT" "at least 20 GB free disk required (found ${disk_gb} GB)"
+}
+
+# rpm/dnf не доставляются: без них доставлять нечем. Провал установки пакета не отдельный
+# отказ — повторная проверка ниже даёт тот же exit 3 с именем пакета.
+preflight_prerequisites() {
+    local cmd joined
+    local -a missing=() packages=()
     while IFS= read -r cmd; do
-        command -v "$cmd" >/dev/null 2>&1 \
-            || fail "$EXIT_PREFLIGHT" "$cmd is required ($PKG_HINT_LABEL: ${PKG_HINTS[$cmd]})"
+        have_command "$cmd" || missing+=("$cmd")
     done < <(required_commands "$HOST_FAMILY" "$ARG_SKIP_DATABASES")
+    [ "${#missing[@]}" -gt 0 ] || return 0
+    for cmd in "${missing[@]}"; do
+        case "$cmd" in
+            rpm | dnf) fail "$EXIT_PREFLIGHT" "$cmd is required ($PKG_HINT_LABEL: ${PKG_HINTS[$cmd]})" ;;
+        esac
+    done
+    mapfile -t packages < <(packages_for_commands "${missing[@]}")
+    printf -v joined '%s ' "${packages[@]}"
+    joined="${joined% }"
+    if [ -n "$ARG_DRY_RUN" ]; then
+        printf '[dry-run] would install: %s\n' "$joined"
+        return 0
+    fi
+    log_step "installing missing prerequisites: $joined"
+    if [ "$HOST_FAMILY" != rhel ]; then
+        pkg_refresh || log_step "WARNING: apt-get update failed before installing: $joined"
+    fi
+    pkg_install "${packages[@]}" || log_step "WARNING: could not install: $joined"
+    for cmd in "${missing[@]}"; do
+        have_command "$cmd" || fail "$EXIT_PREFLIGHT" "$cmd is required ($PKG_HINT_LABEL: ${PKG_HINTS[$cmd]})"
+    done
+}
 
+preflight_ports() {
+    if ! have_command ss; then
+        [ -z "$ARG_DRY_RUN" ] || printf '[dry-run] port checks skipped: ss is missing\n'
+        return 0
+    fi
     local -a ports=(8080)
     [ -n "$ARG_SKIP_DATABASES" ] || ports+=(5432 8123 9000)
     local port owner owned
     for port in "${ports[@]}"; do
         ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":${port}\$" || continue
         # Занятый порт — отказ, только если это не наш же юнит с прошлого запуска;
-        # иначе идемпотентный повторный запуск (§4.4) не проходил бы преflight.
+        # иначе идемпотентный повторный запуск не проходил бы preflight.
         owned=""
         while IFS= read -r owner; do
             systemctl is-active --quiet "$owner" && { owned=1; break; }
@@ -706,15 +756,15 @@ preflight() {
         [ -n "$owned" ] && continue
         fail "$EXIT_PREFLIGHT" "port $port is already in use"
     done
+}
 
-    # 1900, не 2048: облачные "2 ГБ" урезают MemTotal под firmware/hypervisor.
-    # Не local — install_clickhouse переиспользует значение для 10-small.xml.
-    HOST_RAM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
-    [ "$HOST_RAM_MB" -ge 1900 ] || fail "$EXIT_PREFLIGHT" "at least 2 GB RAM required (found ${HOST_RAM_MB} MB)"
-
-    local disk_gb
-    disk_gb=$(($(df --output=avail -k / | tail -n1) / 1024 / 1024))
-    [ "$disk_gb" -ge 20 ] || fail "$EXIT_PREFLIGHT" "at least 20 GB free disk required (found ${disk_gb} GB)"
+# Читает реальное состояние хоста (uname, порты, RAM, диск, утилиты) — платформа уже
+# определена detect_platform, остальные решения идут через чистые функции выше.
+preflight() {
+    preflight_platform
+    preflight_resources
+    preflight_prerequisites
+    preflight_ports
 }
 
 # Возвращает путь к распакованному каталогу через stdout; временные

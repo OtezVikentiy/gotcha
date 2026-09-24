@@ -707,6 +707,19 @@ trusted_proxies_written() {
     env_file_secured
 }
 
+# tar на Debian — Essential, снимать его на раннере нельзя; на EL — законный пакет.
+missing_tar_is_installed() {
+    [ "$HOST_FAMILY" = rhel ] || return 0
+    local output rc
+    rpm -e --nodeps tar >/dev/null 2>&1 || { printf 'could not remove tar for the check\n' >&2; return 1; }
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf 'install without tar exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    command -v tar >/dev/null 2>&1 || { printf 'tar is still missing after the install\n' >&2; return 1; }
+    grep -qF 'installing missing prerequisites: tar' <<<"$output" \
+        || { printf 'missing the delivery log line:\n%s\n' "$output" >&2; return 1; }
+}
+
 # Роль/пользователь — наши; потерянный gotcha.env не повод падать на аутентификации,
 # install_postgresql/install_clickhouse обязаны сами перевыпустить пароль.
 recovers_after_env_file_lost() {
@@ -974,6 +987,7 @@ run_assertions() {
     assert "--dry-run with a new --base-url leaves gotcha.env untouched" dry_run_leaves_env_untouched
     assert "a re-run with a new --base-url rewrites only the address and restarts the app" base_url_change_on_rerun
     assert "GOTCHA_TRUSTED_PROXIES is written once and added to a 1.8-style env" trusted_proxies_written
+    assert "a missing tar is installed by preflight instead of failing the install" missing_tar_is_installed
     if [ "$HOST_FAMILY" = rhel ]; then
         assert "include_dir 'conf.d' appears exactly once after two installer runs" pg_include_dir_set_once
     fi

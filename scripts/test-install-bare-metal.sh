@@ -1118,6 +1118,98 @@ ENV_FILE_OWNER="$(id -un):$(id -gn)"
 
 rm -rf "$envdir"
 
+# preflight: порядок и доставка утилит
+
+pfdir=$(mktemp -d)
+# shellcheck disable=SC2034 # читает log_step из сорсимого файла
+INSTALL_JOURNAL="$pfdir/journal"
+# shellcheck disable=SC2317 # подмены вызываются сорсимым файлом, а не отсюда
+have_command() { ! grep -qx "$1" "$pfdir/missing"; }
+# shellcheck disable=SC2317
+pkg_install() { printf '%s\n' "$@" >>"$pfdir/installed"; [ -z "$STUB_DELIVERY_FIXES" ] || : >"$pfdir/missing"; }
+# shellcheck disable=SC2317
+pkg_refresh() { printf 'refresh\n' >>"$pfdir/installed"; }
+
+# shellcheck disable=SC2034
+HOST_FAMILY=rhel
+# shellcheck disable=SC2034
+EL_MAJOR=9
+apply_platform_paths
+# shellcheck disable=SC2034 # читает preflight_prerequisites/preflight_ports из сорсимого файла
+ARG_SKIP_DATABASES=""
+ARG_DRY_RUN=""
+
+printf 'tar\nrunuser\n' >"$pfdir/missing"; : >"$pfdir/installed"
+STUB_DELIVERY_FIXES=1
+out=$( (preflight_prerequisites) 2>&1 )
+assert_eq "delivery succeeds on rhel" 0 $?
+assert_eq "rhel delivers the packages of the missing commands, one argument each" "tar
+util-linux" "$(cat "$pfdir/installed")"
+assert_contains "delivery is logged on one line" "$out" "install-bare-metal: installing missing prerequisites: tar util-linux"
+
+printf 'tar\nrunuser\n' >"$pfdir/missing"; : >"$pfdir/installed"
+out=$( (IFS=$'\n\t'; preflight_prerequisites) 2>&1 )
+assert_eq "under main's IFS pkg_install still gets separate arguments (RF-4)" "tar
+util-linux" "$(cat "$pfdir/installed")"
+assert_contains "under main's IFS the log line stays single-line (RF-4)" "$out" \
+    "install-bare-metal: installing missing prerequisites: tar util-linux"
+
+printf 'rpm\ntar\n' >"$pfdir/missing"; : >"$pfdir/installed"
+out=$( (preflight_prerequisites) 2>&1 )
+assert_eq "a missing rpm is a hard refusal" 3 $?
+assert_contains "the rpm refusal names the package" "$out" "rpm is required (RHEL-family package: rpm)"
+assert_eq "nothing is installed when rpm is missing" "" "$(cat "$pfdir/installed")"
+
+printf 'tar\n' >"$pfdir/missing"; : >"$pfdir/installed"
+STUB_DELIVERY_FIXES=""
+out=$( (preflight_prerequisites) 2>&1 )
+assert_eq "delivery that does not provide the command still refuses" 3 $?
+assert_contains "the post-delivery refusal keeps the old text" "$out" "tar is required (RHEL-family package: tar)"
+
+printf 'tar\n' >"$pfdir/missing"; : >"$pfdir/installed"
+ARG_DRY_RUN=1
+out=$( (preflight_prerequisites) 2>&1 )
+assert_eq "dry-run does not refuse over a missing command" 0 $?
+assert_contains "dry-run names what it would install" "$out" "[dry-run] would install: tar"
+assert_eq "dry-run installs nothing" "" "$(cat "$pfdir/installed")"
+ARG_DRY_RUN=""
+
+: >"$pfdir/missing"; : >"$pfdir/installed"
+out=$( (preflight_prerequisites) 2>&1 )
+assert_eq "nothing missing: nothing installed, nothing logged" "|" "$(cat "$pfdir/installed")|$out"
+
+# shellcheck disable=SC2034
+HOST_FAMILY=debian
+# shellcheck disable=SC2034
+EL_MAJOR=""
+apply_platform_paths
+printf 'ss\nsha256sum\nrunuser\n' >"$pfdir/missing"; : >"$pfdir/installed"
+STUB_DELIVERY_FIXES=1
+(preflight_prerequisites) >/dev/null 2>&1
+assert_eq "debian refreshes indexes first, then installs packages in required_commands order" "refresh
+coreutils
+iproute2
+util-linux" "$(cat "$pfdir/installed")"
+assert_eq "packages_for_commands dedupes" "coreutils" "$(packages_for_commands sha256sum sha256sum)"
+
+printf 'ss\n' >"$pfdir/missing"
+ARG_DRY_RUN=1
+out=$( (preflight_ports) 2>&1 )
+assert_contains "dry-run says the port check is skipped without ss" "$out" "[dry-run] port checks skipped: ss is missing"
+ARG_DRY_RUN=""
+unset -f have_command pkg_install pkg_refresh
+
+# shellcheck disable=SC2317
+preflight_platform() { printf 'platform '; }
+# shellcheck disable=SC2317
+preflight_resources() { printf 'resources '; }
+# shellcheck disable=SC2317
+preflight_prerequisites() { printf 'prerequisites '; }
+# shellcheck disable=SC2317
+preflight_ports() { printf 'ports'; }
+assert_eq "preflight checks resources before changing the host" "platform resources prerequisites ports" "$(preflight)"
+rm -rf "$pfdir"
+
 if [ "$FAILURES" -gt 0 ]; then
     printf '%d assertion(s) failed\n' "$FAILURES" >&2
     exit 1
