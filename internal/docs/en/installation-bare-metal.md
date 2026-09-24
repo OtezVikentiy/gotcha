@@ -647,11 +647,7 @@ Without `--domain`/`--email` you get an HTTP-only setup with no TLS — a certif
 | `--version X.Y.Z` | which release to install (required unless `--from-tarball` is given) |
 | `--from-tarball PATH` | use a local tarball instead of downloading one |
 | `--download-base URL` | a different download base than GitHub (mirror, closed network) |
-| `--base-url URL` | explicit `GOTCHA_BASE_URL`; without it and without `--domain`, the script asks interactively (or warns and falls back to the host's IP with `--yes`) |
-| `--domain D` | put nginx in front of this domain, `GOTCHA_BASE_URL` becomes `https://D` |
-| `--email E` | contact for certbot (requires `--domain`) |
-| `--no-proxy` | don't install or touch nginx at all |
-| `--no-firewall` | don't touch firewalld (EL family only) |
+| `--base-url URL` | explicit `GOTCHA_BASE_URL`; without it the script asks interactively (or warns and falls back to the host's IP with `--yes`) |
 | `--skip-databases` | don't install PostgreSQL/ClickHouse, use `--pg-dsn`/`--ch-dsn` — "diagnose, not guarantee" mode |
 | `--pg-dsn DSN` / `--ch-dsn DSN` | external DSNs, required together with `--skip-databases` |
 | `--mem-limit N` | `MemoryMax`/`GOMEMLIMIT` in MiB (default 1024, same as `mem_limit: 1g` in the Docker delivery) |

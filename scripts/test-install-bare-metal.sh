@@ -85,6 +85,7 @@ assert_eq "debian PG_UNIT" "postgresql" "$PG_UNIT"
 assert_eq "debian PG_PACKAGE" "postgresql-$PG_MAJOR" "$PG_PACKAGE"
 assert_eq "debian PG_BIN_DIR" "/usr/bin" "$PG_BIN_DIR"
 assert_eq "debian NGINX_SITE" "/etc/nginx/sites-available/gotcha" "$NGINX_SITE"
+assert_eq "debian NGINX_SITE_ENABLED_LINK" "/etc/nginx/sites-enabled/gotcha" "$NGINX_SITE_ENABLED_LINK"
 assert_eq "debian REPO_DIR" "/etc/apt/sources.list.d" "$REPO_DIR"
 assert_eq "debian pg_conf_dir_label" "/etc/postgresql/*/main" "$(pg_conf_dir_label)"
 assert_eq "debian gpg package hint" "gnupg" "${PKG_HINTS[gpg]}"
@@ -99,6 +100,7 @@ assert_eq "rhel PG_UNIT" "postgresql-$PG_MAJOR" "$PG_UNIT"
 assert_eq "rhel PG_PACKAGE" "postgresql${PG_MAJOR}-server" "$PG_PACKAGE"
 assert_eq "rhel PG_BIN_DIR" "/usr/pgsql-$PG_MAJOR/bin" "$PG_BIN_DIR"
 assert_eq "rhel NGINX_SITE" "/etc/nginx/conf.d/gotcha.conf" "$NGINX_SITE"
+assert_eq "rhel NGINX_SITE_ENABLED_LINK is empty" "" "$NGINX_SITE_ENABLED_LINK"
 assert_eq "rhel REPO_DIR" "/etc/yum.repos.d" "$REPO_DIR"
 assert_eq "rhel pg_conf_dir_label" "/var/lib/pgsql/$PG_MAJOR/data" "$(pg_conf_dir_label)"
 assert_eq "rhel pg_conf_dir_resolve" "/var/lib/pgsql/$PG_MAJOR/data" "$(pg_conf_dir_resolve)"
@@ -112,8 +114,6 @@ HOST_FAMILY=rhel
 EL_MAJOR=9
 apply_platform_paths
 assert_eq "rhel port 5432 owner" "postgresql-$PG_MAJOR" "$(port_owner_units 5432)"
-assert_eq "rhel port 80 owners" "nginx
-angie" "$(port_owner_units 80)"
 assert_eq "rhel port 8080 owner" "gotcha" "$(port_owner_units 8080)"
 assert_eq "rhel port 9000 owner" "clickhouse-server" "$(port_owner_units 9000)"
 
@@ -123,8 +123,6 @@ HOST_FAMILY=debian
 EL_MAJOR=""
 apply_platform_paths
 assert_eq "debian port 5432 owner" "postgresql" "$(port_owner_units 5432)"
-assert_eq "debian port 80 owners" "nginx
-angie" "$(port_owner_units 80)"
 
 # required_commands
 
@@ -243,9 +241,6 @@ assert_eq "version_ge true: v-prefixed previous version newer than the target" 0
 
 # parse_args
 
-parse_args --domain example.com --no-proxy >/dev/null 2>&1
-assert_eq "parse_args --domain with --no-proxy rejected" 2 $?
-
 parse_args --purge --from-tarball /tmp/x.tar.gz >/dev/null 2>&1
 assert_eq "parse_args --purge without --uninstall rejected" 2 $?
 
@@ -260,9 +255,6 @@ assert_eq "parse_args --from-tarball alone accepted" 0 $?
 
 parse_args --unknown-flag >/dev/null 2>&1
 assert_eq "parse_args unknown flag rejected" 2 $?
-
-parse_args --email a@b.example --from-tarball /tmp/x.tar.gz >/dev/null 2>&1
-assert_eq "parse_args --email without --domain rejected" 2 $?
 
 parse_args --skip-databases --from-tarball /tmp/x.tar.gz >/dev/null 2>&1
 assert_eq "parse_args --skip-databases without DSNs rejected" 2 $?
@@ -282,12 +274,45 @@ assert_eq "parse_args rejects a non-numeric --mem-limit" 2 $?
 parse_args --mem-limit 512 --from-tarball /tmp/x.tar.gz >/dev/null 2>&1
 assert_eq "parse_args accepts a numeric --mem-limit" 0 $?
 
-parse_args --domain example.com --email a@b.example --version 9.9.9 --dry-run >/dev/null 2>&1
+out=$(parse_args --domain example.com --from-tarball /tmp/x.tar.gz 2>&1)
+rc=$?
+assert_eq "parse_args --domain refused with the usage code" 2 "$rc"
+assert_contains "parse_args --domain explains the removal" "$out" \
+    "install-bare-metal: --domain/--email were removed in 1.9.0: the installer no longer sets up a web server or TLS."
+assert_contains "parse_args --domain points at --base-url and the guide" "$out" \
+    'Pass --base-url https://<domain> and put your own reverse proxy in front of 127.0.0.1:8080 — see "External access and TLS" in the installation guide.'
+out=$(parse_args --email a@b.example --from-tarball /tmp/x.tar.gz 2>&1)
+rc=$?
+assert_eq "parse_args --email refused with the usage code" 2 "$rc"
+assert_contains "parse_args --email explains the removal" "$out" "--domain/--email were removed in 1.9.0"
+out=$(parse_args --domain 2>&1)
+rc=$?
+assert_eq "parse_args bare --domain refused with the usage code" 2 "$rc"
+assert_contains "parse_args bare --domain gets the removal text, not 'requires a value'" "$out" \
+    "--domain/--email were removed in 1.9.0"
+
+for flag in --no-proxy --no-firewall; do
+    out=$(parse_args "$flag" --from-tarball /tmp/x.tar.gz 2>&1)
+    rc=$?
+    assert_eq "parse_args accepts deprecated $flag" 0 "$rc"
+    assert_contains "parse_args says $flag is deprecated" "$out" \
+        "install-bare-metal: $flag is deprecated and does nothing"
+done
+parse_args --no-proxy --no-firewall --from-tarball /tmp/x.tar.gz --yes 2>/dev/null
+assert_eq "parse_args keeps parsing after deprecated flags" "/tmp/x.tar.gz|1" "$ARG_FROM_TARBALL|$ARG_YES"
+
+parse_args --base-url https://x.example --version 9.9.9 --dry-run >/dev/null 2>&1
 assert_eq "parse_args accepts a full example" 0 $?
-assert_eq "parse_args sets ARG_DOMAIN" example.com "$ARG_DOMAIN"
-assert_eq "parse_args sets ARG_EMAIL" a@b.example "$ARG_EMAIL"
+assert_eq "parse_args sets ARG_BASE_URL" https://x.example "$ARG_BASE_URL"
 assert_eq "parse_args sets ARG_VERSION" 9.9.9 "$ARG_VERSION"
 assert_eq "parse_args sets ARG_DRY_RUN" 1 "$ARG_DRY_RUN"
+
+usage_text=$(usage)
+for gone in --domain --email --no-proxy --no-firewall; do
+    case "$usage_text" in
+        *"  $gone "*) printf 'FAIL: usage() still lists %s\n' "$gone" >&2; FAILURES=$((FAILURES + 1)) ;;
+    esac
+done
 
 # validate_base_url / normalize_base_url
 
@@ -369,11 +394,9 @@ rm -f "$PATCHED"
 
 # choose_base_url
 
-out=$(choose_base_url "https://explicit.example" "domain.example" "10.0.0.1")
+out=$(choose_base_url "https://explicit.example" "10.0.0.1")
 assert_eq "choose_base_url prefers --base-url" "https://explicit.example" "$out"
-out=$(choose_base_url "" "domain.example" "10.0.0.1")
-assert_eq "choose_base_url falls back to --domain" "https://domain.example" "$out"
-out=$(choose_base_url "" "" "10.0.0.1")
+out=$(choose_base_url "" "10.0.0.1")
 assert_eq "choose_base_url falls back to host IP" "http://10.0.0.1" "$out"
 
 # compute_memlimit — константа, паритетная compose (mem_limit: 1g), одна и
@@ -454,26 +477,6 @@ for var in GOTCHA_PG_DSN GOTCHA_CH_DSN GOTCHA_SECRET_KEY GOTCHA_BASE_URL \
     GOTCHA_DIST_DIR GOMEMLIMIT GOTCHA_LISTEN_ADDR; do
     assert_contains "render_env_file contains $var" "$env_file" "$var="
 done
-
-# render_nginx_site
-
-site=$(render_nginx_site example.com)
-assert_contains "render_nginx_site proxy_pass" "$site" "proxy_pass http://127.0.0.1:8080"
-# literal nginx variable in the single-quoted needle below, must not expand
-# shellcheck disable=SC2016
-assert_contains "render_nginx_site forwards Host" "$site" 'proxy_set_header Host $host'
-assert_contains "render_nginx_site forwards X-Forwarded-For" "$site" "X-Forwarded-For"
-assert_contains "render_nginx_site forwards X-Forwarded-Proto" "$site" "X-Forwarded-Proto"
-assert_contains "render_nginx_site sets client_max_body_size" "$site" "client_max_body_size"
-for directive in \
-    "location ~ ^/(metrics|version)$ {" \
-    "allow 127.0.0.1;" \
-    "allow ::1;" \
-    "deny all;"; do
-    assert_contains "render_nginx_site restricts /metrics and /version to loopback ($directive)" "$site" "$directive"
-done
-
-assert_contains "render_nginx_site marks the file as ours" "$site" "$NGINX_SITE_MARKER"
 
 # verify_loopback_only — ветка отказа на живом хосте не воспроизводится, поэтому
 # ss подменяется функцией; фактический bind проверяет e2e.
@@ -838,70 +841,84 @@ out=$(dist_url "https://mirror.example/base/" "2.0.0" "amd64")
 assert_eq "dist_url honors --download-base (trailing slash stripped)" \
     "https://mirror.example/base/v2.0.0/gotcha-2.0.0-linux-amd64.tar.gz" "$out"
 
-# selinux_needs_boolean
+# find_legacy_site / uninstall_legacy_site — на временных путях, systemctl подменён
 
-selinux_needs_boolean Enforcing ""
-assert_eq "selinux enforcing without --no-proxy needs the boolean" 0 $?
-selinux_needs_boolean Enforcing 1
-assert_eq "selinux enforcing with --no-proxy skips the boolean" 1 $?
-selinux_needs_boolean Permissive ""
-assert_eq "selinux permissive skips the boolean" 1 $?
-selinux_needs_boolean Disabled ""
-assert_eq "selinux disabled skips the boolean" 1 $?
-selinux_needs_boolean "" ""
-assert_eq "selinux utilities missing skips the boolean" 1 $?
+legacy_dir=$(mktemp -d)
+# shellcheck disable=SC2034 # читает log_step из сорсимого файла
+INSTALL_JOURNAL="$legacy_dir/journal"
+# shellcheck disable=SC2317 # вызывается сорсимым файлом, а не отсюда
+systemctl() { printf 'systemctl %s\n' "$*" >>"$legacy_dir/calls"; }
+path_state() {
+    if [ -e "$1" ] || [ -L "$1" ]; then echo present; else echo gone; fi
+}
 
-# selinux_tooling_missing_notice
+# shellcheck disable=SC2034 # прочитаны apply_platform_paths, определённой в сорсимом файле
+HOST_FAMILY=rhel
+# shellcheck disable=SC2034 # прочитан apply_platform_paths, определённой в сорсимом файле
+EL_MAJOR=9
+apply_platform_paths
+NGINX_SITE="$legacy_dir/conf.d/gotcha.conf"
+mkdir -p "$legacy_dir/conf.d"
 
-out=$(selinux_tooling_missing_notice "" 1)
-assert_eq "tools missing, kernel enforcing prints a notice" \
-    "SELinux: kernel policy is Enforcing but SELinux userspace tools (getenforce/setsebool) are missing — httpd_can_network_connect was left untouched, nginx may not be able to reach gotcha (502); install policycoreutils and run: setsebool -P httpd_can_network_connect 1" \
-    "$out"
-out=$(selinux_tooling_missing_notice "" "")
-rc=$?
-assert_eq "tools missing, kernel not enforcing prints nothing" "" "$out"
-assert_eq "tools missing, kernel not enforcing reports failure" 1 "$rc"
-out=$(selinux_tooling_missing_notice 1 1)
-rc=$?
-assert_eq "tools present prints nothing even if kernel enforcing" "" "$out"
-assert_eq "tools present reports failure" 1 "$rc"
+printf 'server { listen 80; }\n' >"$NGINX_SITE"
+find_legacy_site >/dev/null
+assert_eq "find_legacy_site ignores an unmarked site" 1 $?
+: >"$legacy_dir/calls"
+(uninstall_legacy_site) 2>/dev/null
+assert_eq "uninstall_legacy_site leaves an unmarked EL site alone (no systemctl)" "" "$(cat "$legacy_dir/calls")"
+assert_eq "uninstall_legacy_site does not rename an unmarked EL site" present "$(path_state "$NGINX_SITE")"
 
-# firewall_decision
+printf '%s\nserver { listen 80; }\n' "$NGINX_SITE_MARKER" >"$NGINX_SITE"
+assert_eq "find_legacy_site finds a marked EL site" "$NGINX_SITE" "$(find_legacy_site)"
+: >"$legacy_dir/calls"
+(uninstall_legacy_site) 2>/dev/null
+assert_eq "uninstall_legacy_site renames a marked EL site to .disabled" "gone|present" \
+    "$(path_state "$NGINX_SITE")|$(path_state "$NGINX_SITE.disabled")"
+assert_contains "uninstall_legacy_site reloads nginx after disabling" "$(cat "$legacy_dir/calls")" "systemctl reload nginx"
 
-assert_eq "firewalld running, --yes opens" open "$(firewall_decision running "" 1 "")"
-assert_eq "firewalld running, interactive asks" ask "$(firewall_decision running "" "" "")"
-assert_eq "firewalld running, --no-firewall skips" skip "$(firewall_decision running 1 "" "")"
-assert_eq "--no-firewall beats --yes" skip "$(firewall_decision running 1 1 "")"
-assert_eq "firewalld running, --no-proxy skips" skip "$(firewall_decision running "" 1 1)"
-assert_eq "firewalld not running skips" skip "$(firewall_decision "not running" "" 1 "")"
-assert_eq "firewall-cmd missing skips" skip "$(firewall_decision "" "" 1 "")"
+assert_eq "find_legacy_site finds a marked .disabled EL site" "$NGINX_SITE.disabled" "$(find_legacy_site)"
+: >"$legacy_dir/calls"
+journal_before=$(cat "$legacy_dir/journal" 2>/dev/null)
+(uninstall_legacy_site) 2>/dev/null
+assert_eq "uninstall_legacy_site leaves an already disabled site alone (no systemctl)" "" "$(cat "$legacy_dir/calls")"
+assert_eq "uninstall_legacy_site keeps the .disabled file" present "$(path_state "$NGINX_SITE.disabled")"
+assert_eq "uninstall_legacy_site does not attempt to re-disable an already disabled site" \
+    "$journal_before" "$(cat "$legacy_dir/journal" 2>/dev/null)"
 
-# firewall_skip_notice
+# shellcheck disable=SC2034 # прочитаны apply_platform_paths, определённой в сорсимом файле
+HOST_FAMILY=debian
+# shellcheck disable=SC2034 # прочитан apply_platform_paths, определённой в сорсимом файле
+EL_MAJOR=""
+apply_platform_paths
+NGINX_SITE="$legacy_dir/sites-available/gotcha"
+NGINX_SITE_ENABLED_LINK="$legacy_dir/sites-enabled/gotcha"
+mkdir -p "$legacy_dir/sites-available" "$legacy_dir/sites-enabled"
+printf '%s\nserver { listen 80; }\n' "$NGINX_SITE_MARKER" >"$NGINX_SITE"
+ln -s "$NGINX_SITE" "$NGINX_SITE_ENABLED_LINK"
+assert_eq "find_legacy_site follows the Debian symlink" "$(readlink -f "$NGINX_SITE")" "$(find_legacy_site)"
+: >"$legacy_dir/calls"
+(uninstall_legacy_site) 2>/dev/null
+assert_eq "uninstall_legacy_site removes the Debian symlink, keeps the file" "gone|present" \
+    "$(path_state "$NGINX_SITE_ENABLED_LINK")|$(path_state "$NGINX_SITE")"
+assert_contains "uninstall_legacy_site reloads nginx on Debian" "$(cat "$legacy_dir/calls")" "systemctl reload nginx"
 
-out=$(firewall_skip_notice "not running" "" "")
-assert_eq "not-running state prints a not-detected notice" \
-    "firewalld: not detected or not running — ports 80 and 443 were left untouched, open them yourself if this host uses a firewall" \
-    "$out"
-out=$(firewall_skip_notice "" "" "")
-assert_eq "firewall-cmd missing (empty state) prints the same not-detected notice" \
-    "firewalld: not detected or not running — ports 80 and 443 were left untouched, open them yourself if this host uses a firewall" \
-    "$out"
-out=$(firewall_skip_notice running "" 1)
-assert_eq "running but operator declined prints a declined notice, not not-detected" \
-    "firewalld: left closed at your request — ports 80 and 443 were not opened, open them yourself: firewall-cmd --permanent --add-service=http --add-service=https && firewall-cmd --reload" \
-    "$out"
-out=$(firewall_skip_notice running "" "")
-rc=$?
-assert_eq "running and not declined prints nothing" "" "$out"
-assert_eq "running and not declined reports failure" 1 "$rc"
-out=$(firewall_skip_notice "not running" 1 "")
-rc=$?
-assert_eq "--no-firewall skip prints nothing regardless of state" "" "$out"
-assert_eq "--no-firewall skip reports failure" 1 "$rc"
-out=$(firewall_skip_notice running 1 1)
-rc=$?
-assert_eq "--no-firewall wins even over a declined answer" "" "$out"
-assert_eq "--no-firewall over declined reports failure" 1 "$rc"
+: >"$legacy_dir/calls"
+(uninstall_legacy_site) 2>/dev/null
+assert_eq "uninstall_legacy_site with no symlink left does nothing on Debian" "" "$(cat "$legacy_dir/calls")"
+
+printf 'server { listen 80; }\n' >"$legacy_dir/sites-available/own"
+ln -s "$legacy_dir/sites-available/own" "$NGINX_SITE_ENABLED_LINK"
+rm -f "$NGINX_SITE"
+find_legacy_site >/dev/null
+assert_eq "find_legacy_site ignores an operator's own unmarked Debian site" 1 $?
+: >"$legacy_dir/calls"
+(uninstall_legacy_site) 2>/dev/null
+assert_eq "uninstall_legacy_site leaves an operator's own Debian symlink alone" "present|" \
+    "$(path_state "$NGINX_SITE_ENABLED_LINK")|$(cat "$legacy_dir/calls")"
+
+unset -f systemctl path_state
+rm -rf "$legacy_dir"
+apply_platform_paths
 
 if [ "$FAILURES" -gt 0 ]; then
     printf '%d assertion(s) failed\n' "$FAILURES" >&2

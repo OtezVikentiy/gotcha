@@ -646,11 +646,7 @@ sudo ./install-bare-metal.sh --version X.Y.Z --domain gotcha.example.com --email
 | `--version X.Y.Z` | какой релиз ставить (обязателен, если не указан `--from-tarball`) |
 | `--from-tarball PATH` | взять локальный тарбол вместо скачивания |
 | `--download-base URL` | другая база загрузки вместо GitHub (зеркало, закрытый контур) |
-| `--base-url URL` | явный `GOTCHA_BASE_URL`; без него и без `--domain` скрипт спросит интерактивно (или предупредит и подставит IP хоста с `--yes`) |
-| `--domain D` | поставить nginx перед этим доменом, `GOTCHA_BASE_URL` — `https://D` |
-| `--email E` | контакт для certbot (требует `--domain`) |
-| `--no-proxy` | не ставить и не трогать nginx вовсе |
-| `--no-firewall` | не трогать firewalld (только семейство EL) |
+| `--base-url URL` | явный `GOTCHA_BASE_URL`; без него скрипт спросит интерактивно (или предупредит и подставит IP хоста с `--yes`) |
 | `--skip-databases` | не ставить PostgreSQL/ClickHouse, использовать `--pg-dsn`/`--ch-dsn` — режим «диагностируем, не гарантируем» |
 | `--pg-dsn DSN` / `--ch-dsn DSN` | внешние DSN, обязательны вместе с `--skip-databases` |
 | `--mem-limit N` | `MemoryMax`/`GOMEMLIMIT` в МиБ (по умолчанию 1024, как `mem_limit: 1g` в Docker-поставке) |
