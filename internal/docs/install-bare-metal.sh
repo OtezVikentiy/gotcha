@@ -727,6 +727,7 @@ preflight_prerequisites() {
         printf '[dry-run] would install: %s\n' "$joined"
         return 0
     fi
+    printf 'install-bare-metal: installing missing prerequisites: %s\n' "$joined" >&2
     if [ "$HOST_FAMILY" != rhel ]; then
         pkg_refresh || log_step "WARNING: apt-get update failed before installing: $joined"
     fi
@@ -734,9 +735,8 @@ preflight_prerequisites() {
     for cmd in "${missing[@]}"; do
         have_command "$cmd" || fail "$EXIT_PREFLIGHT" "$cmd is required ($PKG_HINT_LABEL: ${PKG_HINTS[$cmd]})"
     done
-    # После retry-цикла выше: если бы этот шаг попал в журнал до pkg_install,
-    # провал доставки показал бы его в completed steps как выполненный.
-    log_step "installing missing prerequisites: $joined"
+    # Только после повторной проверки: провал доставки не должен попасть в completed steps.
+    log_step "installed missing prerequisites: $joined"
 }
 
 preflight_ports() {

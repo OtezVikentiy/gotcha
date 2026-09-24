@@ -716,11 +716,12 @@ missing_tar_is_installed() {
     [ "$rc" -eq 0 ] || { printf 'install without tar exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
     command -v tar >/dev/null 2>&1 || { printf 'tar is still missing after the install\n' >&2; return 1; }
     grep -qF 'installing missing prerequisites: tar' <<<"$output" \
-        || { printf 'missing the delivery log line:\n%s\n' "$output" >&2; return 1; }
+        || { printf 'missing the delivery progress line:\n%s\n' "$output" >&2; return 1; }
+    grep -qF 'installed missing prerequisites: tar' <<<"$output" \
+        || { printf 'missing the delivery completion log line:\n%s\n' "$output" >&2; return 1; }
 }
 
-# Без tar --dry-run звонил бы fetch_tarball и врал бы о повреждённой загрузке —
-# проверяем, что он молча пропускает тарбол-проверку и доходит до exit 0.
+# tar отсутствует: dry-run обязан молча пропустить тарбол-проверку, не звать fetch_tarball.
 dry_run_skips_tarball_check_without_tar() {
     local output rc
     rpm -e --nodeps tar >/dev/null 2>&1 || { printf 'could not remove tar for the check\n' >&2; return 1; }

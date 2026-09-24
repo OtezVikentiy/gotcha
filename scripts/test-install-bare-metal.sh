@@ -1161,20 +1161,28 @@ apply_platform_paths
 ARG_SKIP_DATABASES=""
 ARG_DRY_RUN=""
 
-printf 'tar\nrunuser\n' >"$pfdir/missing"; : >"$pfdir/installed"
+printf 'tar\nrunuser\n' >"$pfdir/missing"; : >"$pfdir/installed"; : >"$pfdir/journal"
 STUB_DELIVERY_FIXES=1
 out=$( (preflight_prerequisites) 2>&1 )
 assert_eq "delivery succeeds on rhel" 0 $?
 assert_eq "rhel delivers the packages of the missing commands, one argument each" "tar
 util-linux" "$(cat "$pfdir/installed")"
-assert_contains "delivery is logged on one line" "$out" "install-bare-metal: installing missing prerequisites: tar util-linux"
+assert_contains "delivery announces progress before installing (M-5)" "$out" "install-bare-metal: installing missing prerequisites: tar util-linux"
+assert_contains "delivery is logged as completed on one line" "$out" "install-bare-metal: installed missing prerequisites: tar util-linux"
+case "$out" in
+    *"installing missing prerequisites: tar util-linux"*"installed missing prerequisites: tar util-linux"*) order=ordered ;;
+    *) order=unordered ;;
+esac
+assert_eq "the progress notice comes before the completion log (M-5)" "ordered" "$order"
+assert_eq "a successful delivery reaches the journal as completed (I-5)" "logged" \
+    "$([ -r "$pfdir/journal" ] && grep -qF 'installed missing prerequisites: tar util-linux' "$pfdir/journal" && printf logged || printf not-logged)"
 
 printf 'tar\nrunuser\n' >"$pfdir/missing"; : >"$pfdir/installed"
 out=$( (IFS=$'\n\t'; preflight_prerequisites) 2>&1 )
 assert_eq "under main's IFS pkg_install still gets separate arguments (RF-4)" "tar
 util-linux" "$(cat "$pfdir/installed")"
 assert_contains "under main's IFS the log line stays single-line (RF-4)" "$out" \
-    "install-bare-metal: installing missing prerequisites: tar util-linux"
+    "install-bare-metal: installed missing prerequisites: tar util-linux"
 
 printf 'rpm\ntar\n' >"$pfdir/missing"; : >"$pfdir/installed"
 out=$( (preflight_prerequisites) 2>&1 )
@@ -1194,12 +1202,17 @@ out=$( (preflight_prerequisites) 2>&1 )
 assert_eq "delivery that does not provide the command still refuses" 3 $?
 assert_contains "the post-delivery refusal keeps the old text" "$out" "tar is required (RHEL-family package: tar)"
 
-printf 'tar\n' >"$pfdir/missing"; : >"$pfdir/installed"
+printf 'tar\n' >"$pfdir/missing"; : >"$pfdir/installed"; : >"$pfdir/journal"
 STUB_INSTALL_FAILS=1
 out=$( (set -e; preflight_prerequisites) 2>&1 )
 assert_eq "a failing package install still refuses through the intended exit code, not set -e's" 3 $?
 assert_contains "the install failure is logged as a warning" "$out" "WARNING: could not install: tar"
 assert_contains "the install failure still refuses with the missing-command message" "$out" "tar is required (RHEL-family package: tar)"
+assert_contains "a failing delivery still announces progress up front (M-5)" "$out" "install-bare-metal: installing missing prerequisites: tar"
+assert_eq "a failed delivery never reaches stdout/stderr as completed (I-5)" "not-logged" \
+    "$(case "$out" in *'installed missing prerequisites'*) printf logged ;; *) printf not-logged ;; esac)"
+assert_eq "a failed delivery never reaches the journal as completed (I-5)" "not-logged" \
+    "$([ -r "$pfdir/journal" ] && grep -qF 'installed missing prerequisites' "$pfdir/journal" && printf logged || printf not-logged)"
 STUB_INSTALL_FAILS=""
 
 printf 'tar\n' >"$pfdir/missing"; : >"$pfdir/installed"
@@ -1245,6 +1258,39 @@ ARG_DRY_RUN=1
 out=$( (preflight_ports) 2>&1 )
 assert_contains "dry-run says the port check is skipped without ss" "$out" "[dry-run] port checks skipped: ss is missing"
 ARG_DRY_RUN=""
+
+# tarball_prereqs_missing (I-4)
+
+: >"$pfdir/missing"
+assert_eq "tarball_prereqs_missing: nothing missing when tar/sha256sum/curl are all present" "" \
+    "$(tarball_prereqs_missing "")"
+
+printf 'tar\n' >"$pfdir/missing"
+assert_eq "tarball_prereqs_missing: a missing tar is reported" "tar" \
+    "$(tarball_prereqs_missing "")"
+
+printf 'sha256sum\n' >"$pfdir/missing"
+assert_eq "tarball_prereqs_missing: a missing sha256sum is reported" "sha256sum" \
+    "$(tarball_prereqs_missing "")"
+
+printf 'curl\n' >"$pfdir/missing"
+assert_eq "tarball_prereqs_missing: a missing curl is reported without --from-tarball" "curl" \
+    "$(tarball_prereqs_missing "")"
+
+printf 'curl\n' >"$pfdir/missing"
+assert_eq "tarball_prereqs_missing: curl is not required with --from-tarball" "" \
+    "$(tarball_prereqs_missing /tmp/whatever.tar.gz)"
+
+printf 'tar\nsha256sum\ncurl\n' >"$pfdir/missing"
+assert_eq "tarball_prereqs_missing: tar, sha256sum and curl reported in that order without --from-tarball" "tar
+sha256sum
+curl" "$(tarball_prereqs_missing "")"
+
+printf 'tar\nsha256sum\ncurl\n' >"$pfdir/missing"
+assert_eq "tarball_prereqs_missing: with --from-tarball only tar and sha256sum are reported" "tar
+sha256sum" "$(tarball_prereqs_missing /tmp/whatever.tar.gz)"
+
+: >"$pfdir/missing"
 unset -f have_command pkg_install pkg_refresh
 
 # shellcheck disable=SC2317
