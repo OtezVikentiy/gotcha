@@ -727,7 +727,6 @@ preflight_prerequisites() {
         printf '[dry-run] would install: %s\n' "$joined"
         return 0
     fi
-    log_step "installing missing prerequisites: $joined"
     if [ "$HOST_FAMILY" != rhel ]; then
         pkg_refresh || log_step "WARNING: apt-get update failed before installing: $joined"
     fi
@@ -735,6 +734,9 @@ preflight_prerequisites() {
     for cmd in "${missing[@]}"; do
         have_command "$cmd" || fail "$EXIT_PREFLIGHT" "$cmd is required ($PKG_HINT_LABEL: ${PKG_HINTS[$cmd]})"
     done
+    # После retry-цикла выше: если бы этот шаг попал в журнал до pkg_install,
+    # провал доставки показал бы его в completed steps как выполненный.
+    log_step "installing missing prerequisites: $joined"
 }
 
 preflight_ports() {
@@ -758,13 +760,21 @@ preflight_ports() {
     done
 }
 
-# Читает реальное состояние хоста (uname, порты, RAM, диск, утилиты) — платформа уже
-# определена detect_platform, остальные решения идут через чистые функции выше.
 preflight() {
     preflight_platform
     preflight_resources
     preflight_prerequisites
     preflight_ports
+}
+
+# --dry-run не доставляет пакеты (preflight_prerequisites пропускает установку) —
+# перед fetch_tarball нужно знать, есть ли чем его выполнить, а не звонить и падать.
+tarball_prereqs_missing() {
+    local from_tarball="$1" cmd
+    for cmd in tar sha256sum; do
+        have_command "$cmd" || printf '%s\n' "$cmd"
+    done
+    [ -n "$from_tarball" ] || have_command curl || printf 'curl\n'
 }
 
 # Возвращает путь к распакованному каталогу через stdout; временные
@@ -1455,8 +1465,18 @@ main() {
 
     preflight
 
-    local tarball_root
-    tarball_root=$(fetch_tarball "$ARG_VERSION" "$HOST_ARCH" "$ARG_DOWNLOAD_BASE" "$ARG_FROM_TARBALL")
+    local tarball_root="" tcmd
+    local -a tarball_missing=()
+    if [ -n "$ARG_DRY_RUN" ]; then
+        mapfile -t tarball_missing < <(tarball_prereqs_missing "$ARG_FROM_TARBALL")
+    fi
+    if [ "${#tarball_missing[@]}" -gt 0 ]; then
+        for tcmd in "${tarball_missing[@]}"; do
+            printf '[dry-run] tarball check skipped: %s is missing\n' "$tcmd"
+        done
+    else
+        tarball_root=$(fetch_tarball "$ARG_VERSION" "$HOST_ARCH" "$ARG_DOWNLOAD_BASE" "$ARG_FROM_TARBALL")
+    fi
 
     # Версия уже установленного бинаря, не версия этого скрипта (GOTCHA_INSTALL_DEFAULT_VERSION):
     # решает, идёт ли речь об обновлении (§4.5) или об идемпотентном повторе/первой установке.
@@ -1473,7 +1493,7 @@ main() {
     IFS=' ' read -r mem_max gomemlimit <<<"$(resolve_memlimit "$ARG_MEM_LIMIT")"
 
     if [ -n "$ARG_DRY_RUN" ]; then
-        printf '[dry-run] tarball ready at %s\n' "$tarball_root"
+        [ -z "$tarball_root" ] || printf '[dry-run] tarball ready at %s\n' "$tarball_root"
         printf '[dry-run] GOTCHA_BASE_URL=%s\n' "$base_url"
         printf '[dry-run] MemoryMax=%s GOMEMLIMIT=%s\n' "$mem_max" "$gomemlimit"
         printf '[dry-run] would write /etc/systemd/system/gotcha.service:\n'

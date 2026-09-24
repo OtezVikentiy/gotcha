@@ -709,7 +709,6 @@ trusted_proxies_written() {
 
 # tar на Debian — Essential, снимать его на раннере нельзя; на EL — законный пакет.
 missing_tar_is_installed() {
-    [ "$HOST_FAMILY" = rhel ] || return 0
     local output rc
     rpm -e --nodeps tar >/dev/null 2>&1 || { printf 'could not remove tar for the check\n' >&2; return 1; }
     output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1)
@@ -718,6 +717,27 @@ missing_tar_is_installed() {
     command -v tar >/dev/null 2>&1 || { printf 'tar is still missing after the install\n' >&2; return 1; }
     grep -qF 'installing missing prerequisites: tar' <<<"$output" \
         || { printf 'missing the delivery log line:\n%s\n' "$output" >&2; return 1; }
+}
+
+# Без tar --dry-run звонил бы fetch_tarball и врал бы о повреждённой загрузке —
+# проверяем, что он молча пропускает тарбол-проверку и доходит до exit 0.
+dry_run_skips_tarball_check_without_tar() {
+    local output rc
+    rpm -e --nodeps tar >/dev/null 2>&1 || { printf 'could not remove tar for the check\n' >&2; return 1; }
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes --dry-run 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf -- '--dry-run without tar exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    grep -qF '[dry-run] tarball check skipped: tar is missing' <<<"$output" \
+        || { printf 'missing the dry-run tarball-skip line:\n%s\n' "$output" >&2; return 1; }
+    ! grep -qi 'corrupted' <<<"$output" \
+        || { printf 'dry-run without tar still claims a corrupted download:\n%s\n' "$output" >&2; return 1; }
+    ! grep -qi 'failed to extract' <<<"$output" \
+        || { printf 'dry-run without tar still tried to extract a tarball:\n%s\n' "$output" >&2; return 1; }
+
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf 'restoring tar after the dry-run check exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    command -v tar >/dev/null 2>&1 || { printf 'tar is still missing after restoring it\n' >&2; return 1; }
 }
 
 # Роль/пользователь — наши; потерянный gotcha.env не повод падать на аутентификации,
@@ -987,8 +1007,9 @@ run_assertions() {
     assert "--dry-run with a new --base-url leaves gotcha.env untouched" dry_run_leaves_env_untouched
     assert "a re-run with a new --base-url rewrites only the address and restarts the app" base_url_change_on_rerun
     assert "GOTCHA_TRUSTED_PROXIES is written once and added to a 1.8-style env" trusted_proxies_written
-    assert "a missing tar is installed by preflight instead of failing the install" missing_tar_is_installed
     if [ "$HOST_FAMILY" = rhel ]; then
+        assert "a missing tar is installed by preflight instead of failing the install" missing_tar_is_installed
+        assert "--dry-run without tar skips the tarball check instead of failing on a corrupted download" dry_run_skips_tarball_check_without_tar
         assert "include_dir 'conf.d' appears exactly once after two installer runs" pg_include_dir_set_once
     fi
     assert "a lost gotcha.env is recovered by regenerating the PostgreSQL/ClickHouse passwords" recovers_after_env_file_lost

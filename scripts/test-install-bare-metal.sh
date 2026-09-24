@@ -1120,15 +1120,37 @@ rm -rf "$envdir"
 
 # preflight: порядок и доставка утилит
 
+for hint_family in debian rhel; do
+    # shellcheck disable=SC2034 # читает apply_platform_paths/required_commands из сорсимого файла
+    HOST_FAMILY="$hint_family"
+    # shellcheck disable=SC2034
+    EL_MAJOR=""
+    [ "$hint_family" = rhel ] && EL_MAJOR=9
+    apply_platform_paths
+    while IFS= read -r hint_cmd; do
+        assert_eq "PKG_HINTS has a hint for $hint_cmd on $hint_family" "has-hint" \
+            "$([ -n "${PKG_HINTS[$hint_cmd]:-}" ] && printf has-hint || printf missing-hint)"
+    done < <(required_commands "$hint_family" "")
+done
+
 pfdir=$(mktemp -d)
 # shellcheck disable=SC2034 # читает log_step из сорсимого файла
 INSTALL_JOURNAL="$pfdir/journal"
 # shellcheck disable=SC2317 # подмены вызываются сорсимым файлом, а не отсюда
 have_command() { ! grep -qx "$1" "$pfdir/missing"; }
 # shellcheck disable=SC2317
-pkg_install() { printf '%s\n' "$@" >>"$pfdir/installed"; [ -z "$STUB_DELIVERY_FIXES" ] || : >"$pfdir/missing"; }
+pkg_install() {
+    [ -z "$STUB_INSTALL_FAILS" ] || return 1
+    printf '%s\n' "$@" >>"$pfdir/installed"
+    [ -z "$STUB_DELIVERY_FIXES" ] || : >"$pfdir/missing"
+}
 # shellcheck disable=SC2317
-pkg_refresh() { printf 'refresh\n' >>"$pfdir/installed"; }
+pkg_refresh() {
+    [ -z "$STUB_REFRESH_FAILS" ] || return 1
+    printf 'refresh\n' >>"$pfdir/installed"
+}
+STUB_INSTALL_FAILS=""
+STUB_REFRESH_FAILS=""
 
 # shellcheck disable=SC2034
 HOST_FAMILY=rhel
@@ -1160,11 +1182,25 @@ assert_eq "a missing rpm is a hard refusal" 3 $?
 assert_contains "the rpm refusal names the package" "$out" "rpm is required (RHEL-family package: rpm)"
 assert_eq "nothing is installed when rpm is missing" "" "$(cat "$pfdir/installed")"
 
+printf 'dnf\ntar\n' >"$pfdir/missing"; : >"$pfdir/installed"
+out=$( (preflight_prerequisites) 2>&1 )
+assert_eq "a missing dnf is a hard refusal" 3 $?
+assert_contains "the dnf refusal names the package" "$out" "dnf is required (RHEL-family package: dnf)"
+assert_eq "nothing is installed when dnf is missing" "" "$(cat "$pfdir/installed")"
+
 printf 'tar\n' >"$pfdir/missing"; : >"$pfdir/installed"
 STUB_DELIVERY_FIXES=""
 out=$( (preflight_prerequisites) 2>&1 )
 assert_eq "delivery that does not provide the command still refuses" 3 $?
 assert_contains "the post-delivery refusal keeps the old text" "$out" "tar is required (RHEL-family package: tar)"
+
+printf 'tar\n' >"$pfdir/missing"; : >"$pfdir/installed"
+STUB_INSTALL_FAILS=1
+out=$( (set -e; preflight_prerequisites) 2>&1 )
+assert_eq "a failing package install still refuses through the intended exit code, not set -e's" 3 $?
+assert_contains "the install failure is logged as a warning" "$out" "WARNING: could not install: tar"
+assert_contains "the install failure still refuses with the missing-command message" "$out" "tar is required (RHEL-family package: tar)"
+STUB_INSTALL_FAILS=""
 
 printf 'tar\n' >"$pfdir/missing"; : >"$pfdir/installed"
 ARG_DRY_RUN=1
@@ -1190,6 +1226,18 @@ assert_eq "debian refreshes indexes first, then installs packages in required_co
 coreutils
 iproute2
 util-linux" "$(cat "$pfdir/installed")"
+
+printf 'ss\nsha256sum\nrunuser\n' >"$pfdir/missing"; : >"$pfdir/installed"
+STUB_DELIVERY_FIXES=1
+STUB_REFRESH_FAILS=1
+out=$( (set -e; preflight_prerequisites) 2>&1 )
+assert_eq "a failing apt-get update does not block delivery" 0 $?
+assert_contains "the refresh failure is logged as a warning" "$out" "WARNING: apt-get update failed before installing: coreutils iproute2 util-linux"
+assert_eq "delivery still runs after a failed refresh" "coreutils
+iproute2
+util-linux" "$(cat "$pfdir/installed")"
+STUB_REFRESH_FAILS=""
+
 assert_eq "packages_for_commands dedupes" "coreutils" "$(packages_for_commands sha256sum sha256sum)"
 
 printf 'ss\n' >"$pfdir/missing"
