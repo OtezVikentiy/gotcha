@@ -9,8 +9,7 @@ import (
 	"gitflic.ru/otezvikentiy/gotcha/internal/baseurl"
 )
 
-// Адрес, пропущенный скриптом и отвергнутый приложением, всплыл бы отказом старта уже
-// после установки обеих СУБД.
+// Набор строк дублирует scripts/test-install-bare-metal.sh: новый плохой кейс — в оба места.
 func TestBareMetalBaseURLValidatorIsSubsetOfNormalize(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash недоступен в PATH")
@@ -45,6 +44,10 @@ func TestBareMetalBaseURLValidatorIsSubsetOfNormalize(t *testing.T) {
 		{"https://a%zz", false},
 		{"https://user@x", false},
 		{"http://[::1", false},
+		{"https://x/a?a=1", false},
+		{"https://x/a#f", false},
+		{"https://x/a b", false},
+		{`https://x/a"`, false},
 	}
 	for _, c := range cases {
 		cmd := exec.Command("bash", "-c", `. "$1" && validate_base_url "$2"`, "validate", installer, c.in)

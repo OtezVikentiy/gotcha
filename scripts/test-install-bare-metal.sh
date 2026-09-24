@@ -321,7 +321,11 @@ for bad in \
     "https://x&y" \
     "https://a%zz" \
     "https://user@x" \
-    "http://[::1"; do
+    "http://[::1" \
+    "https://x/a?a=1" \
+    "https://x/a#f" \
+    "https://x/a b" \
+    'https://x/a"'; do
     out=$(validate_base_url "$bad" 2>&1)
     rc=$?
     assert_eq "validate_base_url rejects $(printf '%q' "$bad")" 1 "$rc"
