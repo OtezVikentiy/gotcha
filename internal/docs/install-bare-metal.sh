@@ -3,6 +3,7 @@
 
 GOTCHA_INSTALL_DEFAULT_VERSION="dev"
 GOTCHA_INSTALL_DEFAULT_DOWNLOAD_BASE="https://github.com/OtezVikentiy/gotcha/releases/download"
+GOTCHA_DOCS_BARE_METAL_URL="https://getgotcha.ru/docs/installation-bare-metal/"
 
 # Источник истины — docker-compose.yml (postgres:17-alpine,
 # clickhouse-server:25.3-alpine); сверяет internal/guards/docs_versions_test.go.
@@ -573,6 +574,43 @@ uninstall_legacy_site() {
     rm -f "$NGINX_SITE_ENABLED_LINK"
     systemctl reload nginx >/dev/null 2>&1 || true
     log_step "nginx site from a previous version disabled (the file in sites-available is kept)"
+}
+
+legacy_site_enable_hint() {
+    local site="$1"
+    if [ "$site" = "$(nginx_site_disabled_path)" ]; then
+        printf 'mv %s %s && systemctl reload nginx\n' "$site" "$NGINX_SITE"
+        return 0
+    fi
+    if [ -n "$NGINX_SITE_ENABLED_LINK" ] && [ ! -e "$NGINX_SITE_ENABLED_LINK" ] && [ ! -L "$NGINX_SITE_ENABLED_LINK" ]; then
+        printf 'ln -s %s %s && systemctl reload nginx\n' "$site" "$NGINX_SITE_ENABLED_LINK"
+        return 0
+    fi
+    return 1
+}
+
+render_summary() {
+    local version="$1" readiness="$2" base_url="$3" listen_addr="$4" legacy_site="$5" \
+        enable_hint="$6" fresh="$7"
+    printf 'Gotcha %s is installed and running.\n' "$version"
+    printf '  readiness:  %s\n' "$readiness"
+    case "$listen_addr" in
+        127.* | localhost:* | '[::1]':*) printf '  listens on: %s (this host only)\n' "$listen_addr" ;;
+        *) printf '  listens on: %s (reachable from other hosts: allow only your proxy)\n' "$listen_addr" ;;
+    esac
+    printf '  address:    %s (GOTCHA_BASE_URL)\n' "$base_url"
+    printf '  config:     /etc/gotcha/gotcha.env\n'
+    printf '  logs:       journalctl -u gotcha -f\n'
+    printf '\nNext:\n'
+    if [ -n "$legacy_site" ]; then
+        printf '  1. Your nginx site from a previous version is kept as is and is yours to maintain: %s\n' "$legacy_site"
+        [ -z "$enable_hint" ] || printf '     It is not enabled now; to enable it: %s\n' "$enable_hint"
+    else
+        printf '  1. Put a reverse proxy (nginx, angie, Apache, Caddy...) in front of %s\n' "$listen_addr"
+        printf '     so that %s reaches it. Requirements and examples:\n' "$base_url"
+        printf '     %s\n' "$GOTCHA_DOCS_BARE_METAL_URL"
+    fi
+    [ -z "$fresh" ] || printf '  2. Open %s and create the first administrator.\n' "$base_url"
 }
 
 render_pg_conf() {
@@ -1548,6 +1586,22 @@ main() {
     install_unit "$mem_max"
     run_migrations "$env_file"
     start_app "$ENV_CHANGED"
+
+    local readiness legacy_site enable_hint="" listen_addr version
+    listen_addr=$(env_get GOTCHA_LISTEN_ADDR "$env_file") || listen_addr=127.0.0.1:8080
+    local probe="$listen_addr"
+    case "$probe" in
+        :*) probe="127.0.0.1$probe" ;;
+        0.0.0.0:*) probe="127.0.0.1:${probe#*:}" ;;
+    esac
+    readiness=$(curl -fsS --max-time 5 "http://$probe/readyz" 2>/dev/null) || readiness="no answer (see logs)"
+    version=$(installed_version /usr/local/bin/gotcha)
+    legacy_site=$(find_legacy_site) || legacy_site=""
+    if [ -n "$legacy_site" ]; then
+        enable_hint=$(legacy_site_enable_hint "$legacy_site") || enable_hint=""
+    fi
+    render_summary "${version:-$ARG_VERSION}" "$readiness" "$base_url" "$listen_addr" \
+        "$legacy_site" "$enable_hint" "$([ -n "$env_existed" ] || echo 1)"
 }
 
 # Guards main() from running on source — the test runner sources this file

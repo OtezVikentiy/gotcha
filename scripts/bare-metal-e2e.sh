@@ -375,12 +375,25 @@ fi
 
 printf 'bare-metal-e2e: running install-bare-metal.sh --version %s --from-tarball %s --base-url %s --yes\n' \
     "$tarball_version" "$WORK_TARBALL" "$E2E_BASE_URL"
-bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes
-installer_rc=$?
+bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1 \
+    | tee "$WORK_DIR/main-install.out"
+installer_rc=${PIPESTATUS[0]}
 printf 'bare-metal-e2e: install-bare-metal.sh exited %d\n' "$installer_rc"
 
 installer_succeeded() {
     [ "$installer_rc" -eq 0 ]
+}
+
+summary_printed() {
+    local out="$WORK_DIR/main-install.out"
+    grep -qxF "Gotcha $tarball_version is installed and running." "$out" \
+        || { printf 'no summary header in the install output\n' >&2; return 1; }
+    grep -E '^  readiness:  ' "$out" | grep -qF '"status":"ready"' \
+        || { printf 'the summary does not carry the /readyz body\n' >&2; return 1; }
+    grep -qxF "  address:    $E2E_BASE_URL (GOTCHA_BASE_URL)" "$out" \
+        || { printf 'the summary does not name the address\n' >&2; return 1; }
+    grep -qF '  1. Put a reverse proxy' "$out" \
+        || { printf 'the summary does not say what is left to do\n' >&2; return 1; }
 }
 
 baseline_install_succeeded() {
@@ -951,6 +964,9 @@ EOF
         sleep 1
     done
 
+    grep -qF "Your nginx site from a previous version is kept as is and is yours to maintain: $(readlink -f "$NGINX_SITE")" "$LEGACY_INSTALL_OUT" \
+        || { printf 'the summary does not mention the kept legacy site:\n%s\n' "$(tail -15 "$LEGACY_INSTALL_OUT")" >&2; return 1; }
+
     bash "$INSTALLER" --uninstall >/dev/null 2>&1 || { printf '--uninstall over a legacy site failed\n' >&2; return 1; }
     if [ "$HOST_FAMILY" = rhel ]; then
         [ ! -e "$NGINX_SITE" ] || { printf 'legacy EL site still enabled after --uninstall\n' >&2; return 1; }
@@ -959,10 +975,22 @@ EOF
         [ ! -L "$NGINX_SITE_ENABLED_LINK" ] || { printf 'legacy Debian symlink not removed by --uninstall\n' >&2; return 1; }
         [ -f "$NGINX_SITE" ] || { printf 'legacy Debian site file lost by --uninstall\n' >&2; return 1; }
     fi
+
+    local reinstall_out want_hint
+    reinstall_out=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1) \
+        || { printf 're-install after the legacy --uninstall failed:\n%s\n' "$reinstall_out" >&2; return 1; }
+    if [ "$HOST_FAMILY" = rhel ]; then
+        want_hint="mv $(nginx_site_disabled_path) $NGINX_SITE && systemctl reload nginx"
+    else
+        want_hint="ln -s $(readlink -f "$NGINX_SITE") $NGINX_SITE_ENABLED_LINK && systemctl reload nginx"
+    fi
+    grep -qF "to enable it: $want_hint" <<<"$reinstall_out" \
+        || { printf 'the summary does not give the enable command (%s):\n%s\n' "$want_hint" "$(tail -15 <<<"$reinstall_out")" >&2; return 1; }
 }
 
 run_assertions() {
     assert "install-bare-metal.sh exited 0" installer_succeeded
+    assert "the install ends with a summary: version, readiness, address, next steps" summary_printed
 
     if [ -n "$WORK_UPGRADE_TARBALL" ]; then
         assert "upgrade baseline install (older version) exited 0" baseline_install_succeeded

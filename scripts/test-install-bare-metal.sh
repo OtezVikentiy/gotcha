@@ -1118,6 +1118,77 @@ ENV_FILE_OWNER="$(id -un):$(id -gn)"
 
 rm -rf "$envdir"
 
+# legacy_site_enable_hint / render_summary
+
+sumdir=$(mktemp -d)
+# shellcheck disable=SC2034
+HOST_FAMILY=rhel
+# shellcheck disable=SC2034
+EL_MAJOR=9
+apply_platform_paths
+NGINX_SITE="$sumdir/conf.d/gotcha.conf"
+assert_eq "EL .disabled site: the hint moves it back and reloads" \
+    "mv $NGINX_SITE.disabled $NGINX_SITE && systemctl reload nginx" \
+    "$(legacy_site_enable_hint "$NGINX_SITE.disabled")"
+legacy_site_enable_hint "$NGINX_SITE" >/dev/null
+assert_eq "EL active site: no hint" 1 $?
+
+# shellcheck disable=SC2034
+HOST_FAMILY=debian
+# shellcheck disable=SC2034
+EL_MAJOR=""
+apply_platform_paths
+NGINX_SITE="$sumdir/sites-available/gotcha"
+NGINX_SITE_ENABLED_LINK="$sumdir/sites-enabled/gotcha"
+mkdir -p "$sumdir/sites-available" "$sumdir/sites-enabled"
+: >"$NGINX_SITE"
+assert_eq "Debian site without a symlink: the hint links it (RF-5)" \
+    "ln -s $NGINX_SITE $NGINX_SITE_ENABLED_LINK && systemctl reload nginx" \
+    "$(legacy_site_enable_hint "$NGINX_SITE")"
+ln -s "$NGINX_SITE" "$NGINX_SITE_ENABLED_LINK"
+legacy_site_enable_hint "$NGINX_SITE" >/dev/null
+assert_eq "Debian site with its symlink: no hint" 1 $?
+rm -rf "$sumdir"
+apply_platform_paths
+
+out=$(render_summary 1.9.0 '{"status":"ready"}' https://gotcha.example.com 127.0.0.1:8080 "" "" 1)
+assert_eq "render_summary, fresh host" \
+"Gotcha 1.9.0 is installed and running.
+  readiness:  {\"status\":\"ready\"}
+  listens on: 127.0.0.1:8080 (this host only)
+  address:    https://gotcha.example.com (GOTCHA_BASE_URL)
+  config:     /etc/gotcha/gotcha.env
+  logs:       journalctl -u gotcha -f
+
+Next:
+  1. Put a reverse proxy (nginx, angie, Apache, Caddy...) in front of 127.0.0.1:8080
+     so that https://gotcha.example.com reaches it. Requirements and examples:
+     https://getgotcha.ru/docs/installation-bare-metal/
+  2. Open https://gotcha.example.com and create the first administrator." "$out"
+
+out=$(render_summary 1.9.0 ok https://x.example 127.0.0.1:8080 /etc/nginx/conf.d/gotcha.conf "" "")
+assert_contains "render_summary names the kept legacy site" "$out" \
+    "  1. Your nginx site from a previous version is kept as is and is yours to maintain: /etc/nginx/conf.d/gotcha.conf"
+case "$out" in
+    *"Put a reverse proxy"*) printf 'FAIL: render_summary asks for a new proxy on a legacy host\n' >&2; FAILURES=$((FAILURES + 1)) ;;
+esac
+out=$(render_summary 1.9.0 ok https://x.example 127.0.0.1:8080 /etc/nginx/conf.d/gotcha.conf.disabled "mv a b && systemctl reload nginx" "")
+assert_contains "render_summary gives the enable command for a disabled legacy site" "$out" \
+    "     It is not enabled now; to enable it: mv a b && systemctl reload nginx"
+out=$(render_summary 1.9.0 "no answer (see logs)" https://x.example 127.0.0.1:8080 "" "" 1)
+assert_contains "render_summary shows a failed readiness probe as is" "$out" "  readiness:  no answer (see logs)"
+
+out=$(render_summary 1.9.0 ok https://x.example 127.0.0.1:8080 "" "" "")
+case "$out" in
+    *"first administrator"*) printf 'FAIL: render_summary asks to create the first administrator on a re-run\n' >&2; FAILURES=$((FAILURES + 1)) ;;
+esac
+out=$(render_summary 1.9.0 ok https://x.example 10.0.0.5:8080 "" "" "")
+assert_contains "render_summary shows a non-loopback listen address from env" "$out" \
+    "  listens on: 10.0.0.5:8080 (reachable from other hosts: allow only your proxy)"
+case "$out" in
+    *"this host only"*) printf 'FAIL: render_summary claims loopback for 10.0.0.5:8080\n' >&2; FAILURES=$((FAILURES + 1)) ;;
+esac
+
 # preflight: порядок и доставка утилит
 
 for hint_family in debian rhel; do
