@@ -1174,8 +1174,9 @@ case "$out" in
     *) order=unordered ;;
 esac
 assert_eq "the progress notice comes before the completion log (M-5)" "ordered" "$order"
-assert_eq "a successful delivery reaches the journal as completed (I-5)" "logged" \
-    "$([ -r "$pfdir/journal" ] && grep -qF 'installed missing prerequisites: tar util-linux' "$pfdir/journal" && printf logged || printf not-logged)"
+assert_eq "a successful delivery adds exactly one journal line, the completion (I-5)" \
+    "installed missing prerequisites: tar util-linux" \
+    "$(sed -E 's/^[^ ]+ \[[^]]*\] //' "$pfdir/journal")"
 
 printf 'tar\nrunuser\n' >"$pfdir/missing"; : >"$pfdir/installed"
 out=$( (IFS=$'\n\t'; preflight_prerequisites) 2>&1 )
@@ -1211,8 +1212,9 @@ assert_contains "the install failure still refuses with the missing-command mess
 assert_contains "a failing delivery still announces progress up front (M-5)" "$out" "install-bare-metal: installing missing prerequisites: tar"
 assert_eq "a failed delivery never reaches stdout/stderr as completed (I-5)" "not-logged" \
     "$(case "$out" in *'installed missing prerequisites'*) printf logged ;; *) printf not-logged ;; esac)"
-assert_eq "a failed delivery never reaches the journal as completed (I-5)" "not-logged" \
-    "$([ -r "$pfdir/journal" ] && grep -qF 'installed missing prerequisites' "$pfdir/journal" && printf logged || printf not-logged)"
+assert_eq "a failed delivery adds only the warning to the journal, no delivery progress or completion line (I-5)" \
+    "WARNING: could not install: tar" \
+    "$(sed -E 's/^[^ ]+ \[[^]]*\] //' "$pfdir/journal")"
 STUB_INSTALL_FAILS=""
 
 printf 'tar\n' >"$pfdir/missing"; : >"$pfdir/installed"
