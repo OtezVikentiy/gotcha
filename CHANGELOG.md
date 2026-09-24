@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+- The Docker-free installer no longer installs or configures a web server or TLS: nginx,
+  certbot, EPEL, the SELinux boolean and firewalld are gone from it. Gotcha listens only
+  on `127.0.0.1:8080`; external access is your own reverse proxy, per the "External
+  access and TLS" section of the documentation, which has requirements and examples for
+  nginx, angie, Apache and Caddy.
+- `--domain` and `--email` refuse with exit code 2 and a hint. `--no-proxy` and
+  `--no-firewall` are accepted and do nothing.
+- `--base-url` is required for a fresh install: without it, the script asks for the
+  address on the terminal, and refuses before any host changes with `--yes` or without a
+  terminal. After that, the address is read from `/etc/gotcha/gotcha.env`.
+- Upgrading from 1.8.x: drop `--domain`/`--email` from the command; the nginx site and
+  certificate a previous version set up are left as they are and remain yours to
+  maintain.
+
+### Added
+- Re-running with a different `--base-url` rewrites the address in the env file, without
+  touching passwords or the secret key, and restarts the service.
+- Missing base utilities (`tar`, `curl`, `runuser` and others) are installed by the
+  script itself instead of aborting the install.
+- The install prints a summary at the end: version, the `/readyz` answer, the address and
+  what's left to do.
+
+### Fixed
+- Behind a reverse proxy on the same host, the login rate limiter was shared across all
+  users: the env had no `GOTCHA_TRUSTED_PROXIES`, so every request looked like it came
+  from `127.0.0.1`. The installer now writes `GOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128`
+  on install and adds it to an existing env on a re-run; a value already set by the
+  operator is left untouched.
+
+### Documentation
+- On RHEL 10 and its rebuilds, `runuser` needs the full `util-linux` package installed;
+  the EL host-prep step now says so.
+
 ## [1.8.1] - 2026-09-22
 
 ### Changed
