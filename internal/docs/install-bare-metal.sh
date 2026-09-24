@@ -235,6 +235,29 @@ version_ge() {
     return 0
 }
 
+BASE_URL_EXAMPLE="https://gotcha.example.com"
+
+normalize_base_url() {
+    local url="$1"
+    while [ "${url%/}" != "$url" ]; do
+        url="${url%/}"
+    done
+    printf '%s\n' "$url"
+}
+
+# Значение пишется в env без кавычек, поэтому белый список, а не «всё, что примет Go»:
+# сторож internal/guards держит его подмножеством baseurl.Normalize.
+validate_base_url() {
+    local raw="$1"
+    local re='^https?://([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?(/([A-Za-z0-9._~:/-]|%[0-9A-Fa-f]{2})*)?$'
+    if [[ ! "$raw" =~ $re ]]; then
+        printf "install-bare-metal: invalid address '%s': need http(s)://host[:port][/path] without query, fragment, spaces or quotes (e.g. %s)\n" \
+            "$raw" "$BASE_URL_EXAMPLE" >&2
+        return 1
+    fi
+    normalize_base_url "$raw"
+}
+
 # Глобальные ARG_* вместо структуры — main/preflight читают их напрямую.
 # Каждый вызов сбрасывает их к дефолтам для повторных вызовов тест-раннера.
 parse_args() {
@@ -343,6 +366,9 @@ parse_args() {
     if [ -n "$ARG_PURGE" ] && [ -z "$ARG_UNINSTALL" ]; then
         printf 'install-bare-metal: --purge requires --uninstall\n' >&2
         return "$EXIT_USAGE"
+    fi
+    if [ -n "$ARG_BASE_URL" ]; then
+        ARG_BASE_URL=$(validate_base_url "$ARG_BASE_URL") || return "$EXIT_USAGE"
     fi
     if [ -n "$ARG_EMAIL" ] && [ -z "$ARG_DOMAIN" ]; then
         printf 'install-bare-metal: --email requires --domain\n' >&2

@@ -289,6 +289,53 @@ assert_eq "parse_args sets ARG_EMAIL" a@b.example "$ARG_EMAIL"
 assert_eq "parse_args sets ARG_VERSION" 9.9.9 "$ARG_VERSION"
 assert_eq "parse_args sets ARG_DRY_RUN" 1 "$ARG_DRY_RUN"
 
+# validate_base_url / normalize_base_url
+
+assert_eq "normalize_base_url strips one trailing slash" "https://x" "$(normalize_base_url 'https://x/')"
+assert_eq "normalize_base_url strips every trailing slash" "https://x" "$(normalize_base_url 'https://x///')"
+assert_eq "normalize_base_url leaves a path alone" "https://x/app" "$(normalize_base_url 'https://x/app')"
+
+for good in \
+    "https://gotcha.example.com" \
+    "http://10.0.0.5:8080" \
+    "http://[::1]:8080" \
+    "https://gw.example.com/gotcha" \
+    "https://x/a%20b"; do
+    out=$(validate_base_url "$good" 2>/dev/null)
+    assert_eq "validate_base_url accepts $good" "$good" "$out"
+done
+out=$(validate_base_url "https://x/" 2>/dev/null)
+assert_eq "validate_base_url normalizes a trailing slash" "https://x" "$out"
+
+for bad in \
+    "ftp://x" \
+    "https://" \
+    "gotcha.example.com" \
+    "https://x?a=1" \
+    "https://x#f" \
+    "https://x y" \
+    'https://x"' \
+    "https://x'" \
+    "https://x\\" \
+    $'https://x\nhttps://y' \
+    "https://x&y" \
+    "https://a%zz" \
+    "https://user@x" \
+    "http://[::1"; do
+    out=$(validate_base_url "$bad" 2>&1)
+    rc=$?
+    assert_eq "validate_base_url rejects $(printf '%q' "$bad")" 1 "$rc"
+    assert_contains "validate_base_url names the value and an example for $(printf '%q' "$bad")" \
+        "$out" "e.g. https://gotcha.example.com"
+done
+
+parse_args --base-url "https://x/" --from-tarball /tmp/x.tar.gz >/dev/null 2>&1
+assert_eq "parse_args accepts a valid --base-url" 0 $?
+assert_eq "parse_args stores --base-url normalized" "https://x" "$ARG_BASE_URL"
+out=$(parse_args --base-url "gotcha.example.com" --from-tarball /tmp/x.tar.gz 2>&1)
+assert_eq "parse_args rejects a --base-url without a scheme" 2 $?
+assert_contains "parse_args shows an example of a valid --base-url" "$out" "e.g. https://gotcha.example.com"
+
 # В дереве GOTCHA_INSTALL_DEFAULT_VERSION="dev", и §4.7 не исполняется ни в одном
 # прогоне — проверяется на копии, какую кладёт в релиз джоба dist.
 
