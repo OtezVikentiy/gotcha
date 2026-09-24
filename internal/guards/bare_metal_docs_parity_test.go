@@ -171,15 +171,42 @@ func TestBareMetalManualBashBlocksMatchAcrossLocales(t *testing.T) {
 
 var invocationFlagRe = regexp.MustCompile(`--[a-zA-Z0-9-]+`)
 
+// bash сам склеивает строку с завершающим "\" со следующей — команда с флагом,
+// перенесённым через "\", физически лежит на второй строке отдельно от имени
+// скрипта, и построчный разбор мимо неё пройдёт молча.
+func joinLineContinuations(block []string) []string {
+	var out []string
+	var cur string
+	building := false
+	for _, line := range block {
+		trimmed := strings.TrimSpace(line)
+		if building {
+			cur = strings.TrimSpace(cur) + " " + trimmed
+		} else {
+			cur = trimmed
+		}
+		if strings.HasSuffix(cur, `\`) {
+			cur = strings.TrimSpace(strings.TrimSuffix(cur, `\`))
+			building = true
+			continue
+		}
+		out = append(out, cur)
+		building = false
+	}
+	if building {
+		out = append(out, cur)
+	}
+	return out
+}
+
 // Только строки, которые реально вызывают скрипт (а не скачивают или делают
 // исполняемым) — иначе "curl -o install-bare-metal.sh ..." читался бы как вызов.
 func installInvocationLines(blocks [][]string) []string {
 	var lines []string
 	for _, block := range blocks {
-		for _, line := range block {
-			trimmed := strings.TrimSpace(line)
-			if strings.Contains(trimmed, "install-bare-metal.sh") && invocationFlagRe.MatchString(trimmed) {
-				lines = append(lines, trimmed)
+		for _, line := range joinLineContinuations(block) {
+			if strings.Contains(line, "install-bare-metal.sh") && invocationFlagRe.MatchString(line) {
+				lines = append(lines, line)
 			}
 		}
 	}
@@ -198,12 +225,17 @@ func TestBareMetalInvocationFlagsAreInUsage(t *testing.T) {
 		if len(lines) == 0 {
 			t.Fatalf("%s: ни одной команды вызова install-bare-metal.sh с флагами не найдено — сторож смотрит мимо страницы", locale)
 		}
+		flagsSeen := 0
 		for _, line := range lines {
 			for _, flag := range invocationFlagRe.FindAllString(line, -1) {
+				flagsSeen++
 				if !want[flag] {
 					t.Errorf("%s: команда %q передаёт %q, которого нет в usage()", locale, line, flag)
 				}
 			}
+		}
+		if flagsSeen == 0 {
+			t.Fatalf("%s: команды вызова install-bare-metal.sh не отдали ни одного флага — сторож смотрит мимо разбора", locale)
 		}
 	}
 }
