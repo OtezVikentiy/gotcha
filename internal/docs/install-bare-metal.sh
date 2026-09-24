@@ -516,6 +516,9 @@ WantedBy=multi-user.target
 EOF
 }
 
+ENV_FILE_OWNER=root:gotcha
+TRUSTED_PROXIES_LOOPBACK="127.0.0.1/32,::1/128"
+
 render_env_file() {
     local pg_dsn="$1" ch_dsn="$2" secret_key="$3" base_url="$4" \
         dist_dir="$5" gomemlimit="$6" listen_addr="$7"
@@ -527,6 +530,7 @@ GOTCHA_BASE_URL=$base_url
 GOTCHA_DIST_DIR=$dist_dir
 GOMEMLIMIT=$gomemlimit
 GOTCHA_LISTEN_ADDR=$listen_addr
+GOTCHA_TRUSTED_PROXIES=$TRUSTED_PROXIES_LOOPBACK
 EOF
 }
 
@@ -1217,10 +1221,49 @@ write_env_file() {
     render_env_file "$pg_dsn" "$ch_dsn" "$secret_key" "$base_url" \
         /opt/gotcha/agent-dist "$gomemlimit" 127.0.0.1:8080 >"$tmp" \
         || { rm -f "$tmp"; fail "$EXIT_OTHER" "failed to render $env_file"; }
-    chown root:gotcha "$tmp" || { rm -f "$tmp"; fail "$EXIT_OTHER" "failed to set ownership/permissions on $env_file"; }
+    chown "$ENV_FILE_OWNER" "$tmp" || { rm -f "$tmp"; fail "$EXIT_OTHER" "failed to set ownership/permissions on $env_file"; }
     chmod 0640 "$tmp" || { rm -f "$tmp"; fail "$EXIT_OTHER" "failed to set ownership/permissions on $env_file"; }
     mv "$tmp" "$env_file" || fail "$EXIT_OTHER" "failed to install $env_file"
     log_step "config file created: $env_file"
+}
+
+# Значение через ENVIRON, не через sed/awk -v: & # \ в адресе ломали бы подстановку.
+env_set() {
+    local key="$1" value="$2" file="$3" tmp
+    tmp=$(mktemp "$(dirname "$file")/.gotcha.env.XXXXXX") || return 1
+    if ! ENV_SET_KEY="$key" ENV_SET_VALUE="$value" awk '
+        BEGIN { k = ENVIRON["ENV_SET_KEY"]; v = ENVIRON["ENV_SET_VALUE"]; p = k "=" }
+        substr($0, 1, length(p)) == p { if (!done) { print k "=" v; done = 1 } next }
+        { print }
+        END { if (!done) print k "=" v }
+    ' "$file" >"$tmp" \
+        || ! chown "$ENV_FILE_OWNER" "$tmp" \
+        || ! chmod 0640 "$tmp" \
+        || ! mv "$tmp" "$file"; then
+        rm -f "$tmp"
+        return 1
+    fi
+}
+
+reconcile_env_file() {
+    local env_file="$1" base_url_flag="$2" current
+    if [ -n "$base_url_flag" ]; then
+        current=$(env_get GOTCHA_BASE_URL "$env_file") || current=""
+        current=$(normalize_base_url "$current")
+        if [ "$current" != "$base_url_flag" ]; then
+            env_set GOTCHA_BASE_URL "$base_url_flag" "$env_file" \
+                || fail "$EXIT_OTHER" "failed to update GOTCHA_BASE_URL in $env_file"
+            log_step "GOTCHA_BASE_URL changed: ${current:-<unset>} -> $base_url_flag"
+            log_step "update your reverse proxy (server name, TLS certificate) for $base_url_flag"
+            ENV_CHANGED=1
+        fi
+    fi
+    if ! env_get GOTCHA_TRUSTED_PROXIES "$env_file" >/dev/null; then
+        env_set GOTCHA_TRUSTED_PROXIES "$TRUSTED_PROXIES_LOOPBACK" "$env_file" \
+            || fail "$EXIT_OTHER" "failed to add GOTCHA_TRUSTED_PROXIES to $env_file"
+        log_step "GOTCHA_TRUSTED_PROXIES=$TRUSTED_PROXIES_LOOPBACK added to $env_file (login rate limiting behind a reverse proxy on this host)"
+        ENV_CHANGED=1
+    fi
 }
 
 install_unit() {
@@ -1244,7 +1287,11 @@ run_migrations() {
 }
 
 start_app() {
+    local restart="$1"
     systemctl enable --now gotcha || fail "$EXIT_APP" "failed to enable/start the gotcha service"
+    if [ -n "$restart" ]; then
+        systemctl restart gotcha || fail "$EXIT_APP" "failed to restart the gotcha service after changing its environment"
+    fi
 
     local tries=0
     until /usr/local/bin/gotcha --healthcheck >/dev/null 2>&1; do
@@ -1323,6 +1370,7 @@ main() {
     # видимости раньше, чем сработает EXIT-трап, и он увидел бы их пустыми.
     INSTALL_LOG=()
     TMP_DIRS=()
+    ENV_CHANGED=""
     # Метка запуска: по ней on_exit отбирает из общего журнала шаги текущего
     # запуска, включая записанные подоболочками.
     INSTALL_RUN_ID="$$-$(date -u +%s)"
@@ -1380,11 +1428,21 @@ main() {
         printf '[dry-run] MemoryMax=%s GOMEMLIMIT=%s\n' "$mem_max" "$gomemlimit"
         printf '[dry-run] would write /etc/systemd/system/gotcha.service:\n'
         render_unit "$mem_max"
-        printf '[dry-run] would write /etc/gotcha/gotcha.env:\n'
-        render_env_file \
-            "postgres://gotcha:<generated>@127.0.0.1:5432/gotcha?sslmode=disable" \
-            "clickhouse://gotcha:<generated>@127.0.0.1:9000/gotcha" \
-            "<generated>" "$base_url" "/opt/gotcha/agent-dist" "$gomemlimit" "127.0.0.1:8080"
+        if [ -f "$env_file" ]; then
+            local current
+            current=$(env_get GOTCHA_BASE_URL "$env_file") || current=""
+            current=$(normalize_base_url "$current")
+            [ -z "$ARG_BASE_URL" ] || [ "$current" = "$ARG_BASE_URL" ] \
+                || printf '[dry-run] would change GOTCHA_BASE_URL in %s: %s -> %s\n' "$env_file" "${current:-<unset>}" "$ARG_BASE_URL"
+            env_get GOTCHA_TRUSTED_PROXIES "$env_file" >/dev/null \
+                || printf '[dry-run] would add GOTCHA_TRUSTED_PROXIES=%s to %s\n' "$TRUSTED_PROXIES_LOOPBACK" "$env_file"
+        else
+            printf '[dry-run] would write /etc/gotcha/gotcha.env:\n'
+            render_env_file \
+                "postgres://gotcha:<generated>@127.0.0.1:5432/gotcha?sslmode=disable" \
+                "clickhouse://gotcha:<generated>@127.0.0.1:9000/gotcha" \
+                "<generated>" "$base_url" "/opt/gotcha/agent-dist" "$gomemlimit" "127.0.0.1:8080"
+        fi
         if [ -z "$ARG_SKIP_DATABASES" ]; then
             printf '[dry-run] would write %s/conf.d/10-gotcha.conf:\n' "$(pg_conf_dir_label)"
             render_pg_conf
@@ -1394,7 +1452,12 @@ main() {
 
     # Без env-файла install_postgresql/install_clickhouse ниже могут перевыпустить
     # пароль под уже работающим сервисом — останавливаем его первым, пока не поздно.
-    [ -f "$env_file" ] || systemctl stop gotcha 2>/dev/null || true
+    local env_existed=""
+    if [ -f "$env_file" ]; then
+        env_existed=1
+    else
+        systemctl stop gotcha 2>/dev/null || true
+    fi
     if [ -z "$ARG_SKIP_DATABASES" ]; then
         ARG_PG_DSN=$(install_postgresql "$env_file")
         ARG_CH_DSN=$(install_clickhouse "$HOST_RAM_MB" "$tarball_root" "$env_file")
@@ -1411,9 +1474,10 @@ main() {
 
     install_app_files "$tarball_root"
     write_env_file "$ARG_PG_DSN" "$ARG_CH_DSN" "$base_url" "$gomemlimit" "$env_file"
+    [ -z "$env_existed" ] || reconcile_env_file "$env_file" "$ARG_BASE_URL"
     install_unit "$mem_max"
     run_migrations "$env_file"
-    start_app
+    start_app "$ENV_CHANGED"
 }
 
 # Guards main() from running on source — the test runner sources this file

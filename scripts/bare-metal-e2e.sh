@@ -220,6 +220,7 @@ fi
 # http, не https: с https-адресом cookie сессии Secure, и curl по
 # http://127.0.0.1:8080 не вернёт её обратно (e2e_ingest_roundtrip).
 E2E_BASE_URL=http://gotcha-e2e.test
+E2E_BASE_URL_NEW=http://gotcha-e2e-new.test
 
 # Отдельный процесс, не подоболочка текущего: значение переживает его и
 # читается после завершения install-bare-metal.sh и всех проверок.
@@ -611,6 +612,78 @@ survives_idempotent_rerun() {
     done
 }
 
+env_value() {
+    grep "^$1=" /etc/gotcha/gotcha.env
+}
+
+dry_run_leaves_env_untouched() {
+    local before output rc
+    before=$(sha256sum </etc/gotcha/gotcha.env)
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL_NEW" --yes --dry-run 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf -- '--dry-run with a new address exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    [ "$(sha256sum </etc/gotcha/gotcha.env)" = "$before" ] \
+        || { printf -- '--dry-run changed gotcha.env\n' >&2; return 1; }
+    grep -qF "would change GOTCHA_BASE_URL in /etc/gotcha/gotcha.env: $E2E_BASE_URL -> $E2E_BASE_URL_NEW" <<<"$output" \
+        || { printf 'missing the dry-run address-change line:\n%s\n' "$output" >&2; return 1; }
+}
+
+base_url_change_on_rerun() {
+    local env=/etc/gotcha/gotcha.env secret pg ch pid_before output rc code tries
+    secret=$(env_value GOTCHA_SECRET_KEY); pg=$(env_value GOTCHA_PG_DSN); ch=$(env_value GOTCHA_CH_DSN)
+    pid_before=$(systemctl show -p MainPID --value gotcha)
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL_NEW" --yes 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf 're-run with a new --base-url exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    [ "$(grep -c '^GOTCHA_BASE_URL=' "$env")" = 1 ] \
+        || { printf 'gotcha.env carries %s GOTCHA_BASE_URL lines, want 1\n' "$(grep -c '^GOTCHA_BASE_URL=' "$env")" >&2; return 1; }
+    grep -qx "GOTCHA_BASE_URL=$E2E_BASE_URL_NEW" "$env" \
+        || { printf 'gotcha.env does not carry the new address:\n%s\n' "$(grep '^GOTCHA_BASE_URL=' "$env")" >&2; return 1; }
+    [ "$(env_value GOTCHA_SECRET_KEY)" = "$secret" ] || { printf 'GOTCHA_SECRET_KEY changed on an address change\n' >&2; return 1; }
+    [ "$(env_value GOTCHA_PG_DSN)" = "$pg" ] || { printf 'GOTCHA_PG_DSN changed on an address change\n' >&2; return 1; }
+    [ "$(env_value GOTCHA_CH_DSN)" = "$ch" ] || { printf 'GOTCHA_CH_DSN changed on an address change\n' >&2; return 1; }
+    env_file_secured || return 1
+    grep -qF "GOTCHA_BASE_URL changed: $E2E_BASE_URL -> $E2E_BASE_URL_NEW" <<<"$output" \
+        || { printf 'missing the address-change log line:\n%s\n' "$output" >&2; return 1; }
+    [ "$(systemctl show -p MainPID --value gotcha)" != "$pid_before" ] \
+        || { printf 'gotcha was not restarted after its env changed\n' >&2; return 1; }
+    tries=0
+    until readyz_ok; do
+        tries=$((tries + 1)); [ "$tries" -lt 30 ] || { printf '/readyz did not recover after the address change\n' >&2; return 1; }
+        sleep 1
+    done
+    code=$(curl -s -o /dev/null -w '%{http_code}' -H "Origin: $E2E_BASE_URL_NEW" \
+        --data-urlencode 'email=nobody@example.invalid' --data-urlencode 'password=x' http://127.0.0.1:8080/login)
+    [ "$code" != 403 ] || { printf 'POST with the new Origin is rejected (403): the app still has the old address\n' >&2; return 1; }
+    code=$(curl -s -o /dev/null -w '%{http_code}' -H "Origin: $E2E_BASE_URL" \
+        --data-urlencode 'email=nobody@example.invalid' --data-urlencode 'password=x' http://127.0.0.1:8080/login)
+    [ "$code" = 403 ] || { printf 'POST with the old Origin answered %s, want 403\n' "$code" >&2; return 1; }
+
+    bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes >/dev/null 2>&1 \
+        || { printf 'switching the address back failed\n' >&2; return 1; }
+    grep -qx "GOTCHA_BASE_URL=$E2E_BASE_URL" "$env" \
+        || { printf 'the address was not switched back\n' >&2; return 1; }
+}
+
+trusted_proxies_written() {
+    local env=/etc/gotcha/gotcha.env output rc
+    [ "$(grep -c '^GOTCHA_TRUSTED_PROXIES=' "$env")" = 1 ] \
+        || { printf 'a fresh env does not carry exactly one GOTCHA_TRUSTED_PROXIES line\n' >&2; return 1; }
+    grep -qx 'GOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128' "$env" \
+        || { printf 'a fresh env carries a different GOTCHA_TRUSTED_PROXIES value\n' >&2; return 1; }
+    sed -i '/^GOTCHA_TRUSTED_PROXIES=/d' "$env" || return 1
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf 're-run over a 1.8-style env exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    [ "$(grep -c '^GOTCHA_TRUSTED_PROXIES=' "$env")" = 1 ] \
+        || { printf 'GOTCHA_TRUSTED_PROXIES was not added exactly once to a 1.8-style env\n' >&2; return 1; }
+    grep -qx 'GOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128' "$env" \
+        || { printf 'GOTCHA_TRUSTED_PROXIES added with a wrong value\n' >&2; return 1; }
+    grep -qF 'GOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128 added' <<<"$output" \
+        || { printf 'missing the log line about the added key:\n%s\n' "$output" >&2; return 1; }
+    env_file_secured
+}
+
 # Роль/пользователь — наши; потерянный gotcha.env не повод падать на аутентификации,
 # install_postgresql/install_clickhouse обязаны сами перевыпустить пароль.
 recovers_after_env_file_lost() {
@@ -875,6 +948,9 @@ run_assertions() {
 
     assert "a failure after the database steps lists them in the report" failure_report_lists_database_steps
     assert "re-running the installer with the same version is idempotent (unit alive, env untouched, /readyz ok)" survives_idempotent_rerun
+    assert "--dry-run with a new --base-url leaves gotcha.env untouched" dry_run_leaves_env_untouched
+    assert "a re-run with a new --base-url rewrites only the address and restarts the app" base_url_change_on_rerun
+    assert "GOTCHA_TRUSTED_PROXIES is written once and added to a 1.8-style env" trusted_proxies_written
     if [ "$HOST_FAMILY" = rhel ]; then
         assert "include_dir 'conf.d' appears exactly once after two installer runs" pg_include_dir_set_once
     fi

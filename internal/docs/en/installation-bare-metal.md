@@ -382,6 +382,7 @@ GOTCHA_BASE_URL=https://gotcha.example.com
 GOTCHA_DIST_DIR=/opt/gotcha/agent-dist
 GOMEMLIMIT=819MiB
 GOTCHA_LISTEN_ADDR=127.0.0.1:8080
+GOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128
 EOF
 chown root:gotcha /etc/gotcha/gotcha.env
 chmod 0640 /etc/gotcha/gotcha.env

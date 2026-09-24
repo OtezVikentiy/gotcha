@@ -540,9 +540,11 @@ done
 env_file=$(render_env_file "pg-dsn" "ch-dsn" "secret" "https://x.example" \
     "/opt/gotcha/agent-dist" "819MiB" "127.0.0.1:8080")
 for var in GOTCHA_PG_DSN GOTCHA_CH_DSN GOTCHA_SECRET_KEY GOTCHA_BASE_URL \
-    GOTCHA_DIST_DIR GOMEMLIMIT GOTCHA_LISTEN_ADDR; do
+    GOTCHA_DIST_DIR GOMEMLIMIT GOTCHA_LISTEN_ADDR GOTCHA_TRUSTED_PROXIES; do
     assert_contains "render_env_file contains $var" "$env_file" "$var="
 done
+assert_contains "render_env_file trusts the local reverse proxy" "$env_file" \
+    $'\nGOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128'
 
 # verify_loopback_only — ветка отказа на живом хосте не воспроизводится, поэтому
 # ss подменяется функцией; фактический bind проверяет e2e.
@@ -1022,6 +1024,76 @@ assert_eq "uninstall_legacy_site logs nothing for an operator's own Debian site"
 unset -f systemctl path_state
 rm -rf "$legacy_dir"
 apply_platform_paths
+
+# env_set / reconcile_env_file
+
+envdir=$(mktemp -d)
+envf="$envdir/gotcha.env"
+# shellcheck disable=SC2034 # читают env_set/reconcile_env_file из сорсимого файла
+ENV_FILE_OWNER="$(id -un):$(id -gn)"
+# shellcheck disable=SC2034 # читает log_step из сорсимого файла
+INSTALL_JOURNAL="$envdir/journal"
+
+printf 'A=1\nGOTCHA_BASE_URL=https://old.example\n# comment\nGOTCHA_BASE_URL=https://dup.example\nB=two words\n' >"$envf"
+env_set GOTCHA_BASE_URL https://new.example "$envf"
+assert_eq "env_set rc" 0 $?
+assert_eq "env_set collapses every occurrence into one line at the first one's place" \
+    "A=1
+GOTCHA_BASE_URL=https://new.example
+# comment
+B=two words" "$(cat "$envf")"
+assert_eq "env_set leaves the file 0640" 640 "$(stat -c '%a' "$envf")"
+env_set NEW_KEY v "$envf"
+assert_eq "env_set appends a missing key at the end" "NEW_KEY=v" "$(tail -n1 "$envf")"
+env_set GOTCHA_BASE_URL 'https://x/%7e~a:b,c' "$envf"
+assert_eq "env_set writes % ~ : / , literally" "https://x/%7e~a:b,c" "$(env_get GOTCHA_BASE_URL "$envf")"
+env_set GOTCHA_BASE_URL 'https://x/a&b\c#d' "$envf"
+assert_eq "env_set writes & \\ # literally (no sed substitution)" 'https://x/a&b\c#d' "$(env_get GOTCHA_BASE_URL "$envf")"
+before=$(cat "$envf")
+env_set GOTCHA_BASE_URL 'https://x/a&b\c#d' "$envf"
+assert_eq "env_set with the same value keeps the file byte-for-byte" "$before" "$(cat "$envf")"
+
+before=$(cat "$envf")
+ENV_FILE_OWNER="nosuchuser-gotcha:nosuchgroup-gotcha"
+env_set GOTCHA_BASE_URL https://fail.example "$envf" 2>/dev/null
+assert_eq "env_set reports a chown failure" 1 $?
+assert_eq "env_set leaves the original intact on failure" "$before" "$(cat "$envf")"
+assert_eq "env_set leaves no temp file on failure" "" "$(find "$envdir" -name '.gotcha.env.*')"
+# shellcheck disable=SC2034 # читает env_set из сорсимого файла
+ENV_FILE_OWNER="$(id -un):$(id -gn)"
+
+printf 'GOTCHA_SECRET_KEY=s3cret\nGOTCHA_BASE_URL=https://same.example/\nGOTCHA_TRUSTED_PROXIES=10.0.0.1\n' >"$envf"
+before=$(cat "$envf")
+ENV_CHANGED=""
+(reconcile_env_file "$envf" https://same.example) 2>/dev/null
+assert_eq "reconcile: same address modulo trailing slash changes nothing" "$before" "$(cat "$envf")"
+ENV_CHANGED=""
+reconcile_env_file "$envf" https://same.example 2>/dev/null
+assert_eq "reconcile: nothing changed, no restart" "" "$ENV_CHANGED"
+
+out=$(reconcile_env_file "$envf" https://new.example 2>&1; printf '|%s' "$ENV_CHANGED")
+assert_contains "reconcile logs the address change" "$out" \
+    "GOTCHA_BASE_URL changed: https://same.example -> https://new.example"
+assert_contains "reconcile asks for a restart after an address change" "$out" "|1"
+assert_eq "reconcile writes the new address once" 1 "$(grep -c '^GOTCHA_BASE_URL=' "$envf")"
+assert_eq "reconcile never touches the secret" "GOTCHA_SECRET_KEY=s3cret" "$(grep '^GOTCHA_SECRET_KEY=' "$envf")"
+assert_eq "reconcile keeps an operator's own GOTCHA_TRUSTED_PROXIES" "10.0.0.1" "$(env_get GOTCHA_TRUSTED_PROXIES "$envf")"
+
+printf 'GOTCHA_BASE_URL=https://a.example\nGOTCHA_TRUSTED_PROXIES=\n' >"$envf"
+before=$(cat "$envf")
+reconcile_env_file "$envf" "" 2>/dev/null
+assert_eq "reconcile keeps an empty GOTCHA_TRUSTED_PROXIES as the operator's choice (RF-3)" "$before" "$(cat "$envf")"
+
+printf 'GOTCHA_BASE_URL=https://a.example\n' >"$envf"
+out=$(reconcile_env_file "$envf" "" 2>&1; printf '|%s' "$ENV_CHANGED")
+assert_eq "reconcile adds GOTCHA_TRUSTED_PROXIES to a 1.8 env" "127.0.0.1/32,::1/128" "$(env_get GOTCHA_TRUSTED_PROXIES "$envf")"
+assert_contains "reconcile logs the added key" "$out" "GOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128 added"
+assert_contains "reconcile asks for a restart after adding the key" "$out" "|1"
+
+printf 'GOTCHA_SECRET_KEY=s3cret\n' >"$envf"
+reconcile_env_file "$envf" https://flag.example 2>/dev/null
+assert_eq "reconcile appends GOTCHA_BASE_URL to an env that lacks it (RF-2)" "https://flag.example" "$(env_get GOTCHA_BASE_URL "$envf")"
+rm -rf "$envdir"
 
 if [ "$FAILURES" -gt 0 ]; then
     printf '%d assertion(s) failed\n' "$FAILURES" >&2

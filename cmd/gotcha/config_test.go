@@ -2,6 +2,9 @@ package main
 
 import (
 	"log/slog"
+	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1636,6 +1639,32 @@ func TestLoadConfigTrustedProxiesRejectsInvalidEntry(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "GOTCHA_TRUSTED_PROXIES") || !strings.Contains(err.Error(), "not-an-ip") {
 		t.Errorf("error = %q, want it to name the variable and the bad entry", err)
+	}
+}
+
+// Значение, которое install-bare-metal.sh пишет в env, обязано разбираться парсером
+// приложения: иначе сервис не стартует после установки.
+func TestLoadConfigTrustedProxiesAcceptsInstallerValue(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "internal", "docs", "install-bare-metal.sh"))
+	if err != nil {
+		t.Fatalf("read installer: %v", err)
+	}
+	m := regexp.MustCompile(`(?m)^TRUSTED_PROXIES_LOOPBACK="([^"]+)"$`).FindSubmatch(raw)
+	if m == nil {
+		t.Fatal("TRUSTED_PROXIES_LOOPBACK не найдена в install-bare-metal.sh")
+	}
+	cfg, err := loadConfig(getenvFrom(map[string]string{"GOTCHA_TRUSTED_PROXIES": string(m[1])}), nil)
+	if err != nil {
+		t.Fatalf("loadConfig(%q): %v", m[1], err)
+	}
+	want := []string{"127.0.0.1/32", "::1/128"}
+	if len(cfg.TrustedProxies) != len(want) {
+		t.Fatalf("TrustedProxies = %v, want %v", cfg.TrustedProxies, want)
+	}
+	for i, w := range want {
+		if got := cfg.TrustedProxies[i].String(); got != w {
+			t.Errorf("TrustedProxies[%d] = %q, want %q", i, got, w)
+		}
 	}
 }
 
