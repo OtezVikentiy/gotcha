@@ -21,8 +21,7 @@ func envBlockKeys(block string) map[string]string {
 	return keys
 }
 
-// Ручной путь, записавший env без ключа, который пишет скрипт, расходится с ним молча:
-// так три версии подряд жили без GOTCHA_TRUSTED_PROXIES.
+// Ручной путь, записавший env без ключа, который пишет скрипт, расходится с ним молча.
 func TestBareMetalDocEnvFileMatchesRenderEnvFile(t *testing.T) {
 	tree := Load(t)
 	installer := installerBody(t, tree.Root)

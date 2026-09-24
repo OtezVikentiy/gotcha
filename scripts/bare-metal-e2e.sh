@@ -591,8 +591,9 @@ failure_report_lists_database_steps() {
 # Действие и проверка вместе, как survives_postgresql_restart выше: §4.4 требует
 # юнит/конфиги/права привести к целевому состоянию заново, но не трогать env/пароли/данные.
 survives_idempotent_rerun() {
-    local env_before="$WORK_DIR/gotcha.env.before-rerun" output rc
+    local env_before="$WORK_DIR/gotcha.env.before-rerun" output rc pid_before
     cp /etc/gotcha/gotcha.env "$env_before" || { printf 'failed to snapshot gotcha.env\n' >&2; return 1; }
+    pid_before=$(systemctl show -p MainPID --value gotcha)
 
     output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1)
     rc=$?
@@ -603,6 +604,8 @@ survives_idempotent_rerun() {
     # гарантирован на минимальном EL-хосте, sha256sum — гарантирован преflight'ом.
     [ "$(sha256sum <"$env_before")" = "$(sha256sum </etc/gotcha/gotcha.env)" ] \
         || { printf 'gotcha.env changed after an idempotent re-run\n' >&2; return 1; }
+    [ "$(systemctl show -p MainPID --value gotcha)" = "$pid_before" ] \
+        || { printf 'gotcha was restarted on an idempotent re-run with the same address\n' >&2; return 1; }
 
     local tries=0
     until readyz_ok; do
@@ -626,6 +629,15 @@ dry_run_leaves_env_untouched() {
         || { printf -- '--dry-run changed gotcha.env\n' >&2; return 1; }
     grep -qF "would change GOTCHA_BASE_URL in /etc/gotcha/gotcha.env: $E2E_BASE_URL -> $E2E_BASE_URL_NEW" <<<"$output" \
         || { printf 'missing the dry-run address-change line:\n%s\n' "$output" >&2; return 1; }
+
+    before=$(sha256sum </etc/gotcha/gotcha.env)
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes --dry-run 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf -- '--dry-run without --base-url exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    [ "$(sha256sum </etc/gotcha/gotcha.env)" = "$before" ] \
+        || { printf -- '--dry-run without --base-url changed gotcha.env\n' >&2; return 1; }
+    ! grep -qF 'would change GOTCHA_BASE_URL' <<<"$output" \
+        || { printf 'a dry-run without --base-url still claims it would change the address:\n%s\n' "$output" >&2; return 1; }
 }
 
 base_url_change_on_rerun() {
@@ -672,6 +684,17 @@ trusted_proxies_written() {
     grep -qx 'GOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128' "$env" \
         || { printf 'a fresh env carries a different GOTCHA_TRUSTED_PROXIES value\n' >&2; return 1; }
     sed -i '/^GOTCHA_TRUSTED_PROXIES=/d' "$env" || return 1
+
+    local before
+    before=$(sha256sum <"$env")
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes --dry-run 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf -- '--dry-run over a 1.8-style env exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    [ "$(sha256sum <"$env")" = "$before" ] \
+        || { printf -- '--dry-run over a 1.8-style env changed gotcha.env\n' >&2; return 1; }
+    grep -qF 'would add GOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128' <<<"$output" \
+        || { printf 'missing the dry-run trusted-proxies line:\n%s\n' "$output" >&2; return 1; }
+
     output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1)
     rc=$?
     [ "$rc" -eq 0 ] || { printf 're-run over a 1.8-style env exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
