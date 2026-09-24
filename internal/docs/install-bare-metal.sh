@@ -617,10 +617,8 @@ summary_is_fresh() {
     [ -n "$1" ] || printf '1\n'
 }
 
-# Единственный судья, можно ли назвать .disabled-сайт "сохранённым": если
-# legacy_site_enable_hint для него не даёт подсказки (место уже занято чужим
-# конфигом или симлинком), в итоге его быть не должно — иначе "kept as is"
-# врёт поверх рабочего конфига оператора (I-1, Minor: sites-enabled занят).
+# .disabled без команды включения (место занято чужим конфигом/симлинком) —
+# не наш сайт; "kept as is" соврал бы.
 summary_legacy_site() {
     local legacy_site="$1"
     if [ "$legacy_site" = "$(nginx_site_disabled_path)" ] && ! legacy_site_enable_hint "$legacy_site" >/dev/null; then

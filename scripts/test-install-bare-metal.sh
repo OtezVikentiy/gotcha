@@ -403,9 +403,9 @@ assert_eq "env_get strips paired double quotes" "https://dq.example" "$(env_get 
 printf "GOTCHA_BASE_URL='https://sq.example'\n" >"$envf"
 assert_eq "env_get strips paired single quotes" "https://sq.example" "$(env_get GOTCHA_BASE_URL "$envf")"
 printf 'GOTCHA_BASE_URL=https://crlf.example\r\n' >"$envf"
-assert_eq "env_get drops a CRLF line ending (RF-1)" "https://crlf.example" "$(env_get GOTCHA_BASE_URL "$envf")"
+assert_eq "env_get drops a CRLF line ending" "https://crlf.example" "$(env_get GOTCHA_BASE_URL "$envf")"
 printf 'GOTCHA_BASE_URL=https://ws.example  \n' >"$envf"
-assert_eq "env_get drops trailing whitespace (RF-1)" "https://ws.example" "$(env_get GOTCHA_BASE_URL "$envf")"
+assert_eq "env_get drops trailing whitespace" "https://ws.example" "$(env_get GOTCHA_BASE_URL "$envf")"
 printf 'GOTCHA_BASE_URL=https://slash.example/\n' >"$envf"
 assert_eq "env_get returns the raw value, normalizing is the caller's job" "https://slash.example/" "$(env_get GOTCHA_BASE_URL "$envf")"
 printf 'GOTCHA_BASE_URL_EXTRA=x\n' >"$envf"
@@ -433,8 +433,8 @@ assert_eq "resolve_base_url: env is used and normalized when no flag" "https://e
 printf 'GOTCHA_SECRET_KEY=x\n' >"$envf"
 out=$( (resolve_base_url "" "$envf" 1) 2>&1 )
 rc=$?
-assert_eq "resolve_base_url: env without GOTCHA_BASE_URL and no flag is refused (RF-2)" 2 "$rc"
-assert_contains "resolve_base_url: the refusal names --base-url (RF-2)" "$out" "--base-url"
+assert_eq "resolve_base_url: env without GOTCHA_BASE_URL and no flag is refused" 2 "$rc"
+assert_contains "resolve_base_url: the refusal names --base-url" "$out" "--base-url"
 
 STUB_TTY=""
 out=$( (resolve_base_url "" "$missing" 1) 2>&1 )
@@ -1084,7 +1084,7 @@ assert_eq "reconcile keeps an operator's own GOTCHA_TRUSTED_PROXIES" "10.0.0.1" 
 printf 'GOTCHA_BASE_URL=https://a.example\nGOTCHA_TRUSTED_PROXIES=\n' >"$envf"
 before=$(cat "$envf")
 reconcile_env_file "$envf" "" 2>/dev/null
-assert_eq "reconcile keeps an empty GOTCHA_TRUSTED_PROXIES as the operator's choice (RF-3)" "$before" "$(cat "$envf")"
+assert_eq "reconcile keeps an empty GOTCHA_TRUSTED_PROXIES as the operator's choice" "$before" "$(cat "$envf")"
 
 printf 'GOTCHA_BASE_URL=https://a.example\n' >"$envf"
 out=$(reconcile_env_file "$envf" "" 2>&1; printf '|%s' "$ENV_CHANGED")
@@ -1094,7 +1094,7 @@ assert_contains "reconcile asks for a restart after adding the key" "$out" "|1"
 
 printf 'GOTCHA_SECRET_KEY=s3cret\n' >"$envf"
 reconcile_env_file "$envf" https://flag.example 2>/dev/null
-assert_eq "reconcile appends GOTCHA_BASE_URL to an env that lacks it (RF-2)" "https://flag.example" "$(env_get GOTCHA_BASE_URL "$envf")"
+assert_eq "reconcile appends GOTCHA_BASE_URL to an env that lacks it" "https://flag.example" "$(env_get GOTCHA_BASE_URL "$envf")"
 
 printf 'GOTCHA_BASE_URL=https://old-b.example\nGOTCHA_TRUSTED_PROXIES=10.0.0.1\n' >"$envf"
 before=$(cat "$envf")
@@ -1136,7 +1136,7 @@ assert_eq "EL active site: no hint" 1 $?
 
 printf 'server { listen 80; }\n' >"$NGINX_SITE"
 legacy_site_enable_hint "$NGINX_SITE.disabled" >/dev/null
-assert_eq "EL .disabled site with the operator's own config in place: no hint, no mv (I-1)" 1 $?
+assert_eq "EL .disabled site with the operator's own config in place: no hint, no mv" 1 $?
 rm -f "$NGINX_SITE"
 
 # shellcheck disable=SC2034
@@ -1148,7 +1148,7 @@ NGINX_SITE="$sumdir/sites-available/gotcha"
 NGINX_SITE_ENABLED_LINK="$sumdir/sites-enabled/gotcha"
 mkdir -p "$sumdir/sites-available" "$sumdir/sites-enabled"
 : >"$NGINX_SITE"
-assert_eq "Debian site without a symlink: the hint links it (RF-5)" \
+assert_eq "Debian site without a symlink: the hint links it" \
     "ln -s $NGINX_SITE $NGINX_SITE_ENABLED_LINK && systemctl reload nginx" \
     "$(legacy_site_enable_hint "$NGINX_SITE")"
 ln -s "$NGINX_SITE" "$NGINX_SITE_ENABLED_LINK"
@@ -1158,46 +1158,46 @@ assert_eq "Debian site with its symlink: no hint" 1 $?
 rm -f "$NGINX_SITE_ENABLED_LINK"
 ln -s "$sumdir/sites-available/does-not-exist" "$NGINX_SITE_ENABLED_LINK"
 legacy_site_enable_hint "$NGINX_SITE" >/dev/null
-assert_eq "Debian dangling symlink in sites-enabled: no hint, would collide with ln -s (I-4)" 1 $?
+assert_eq "Debian dangling symlink in sites-enabled: no hint, would collide with ln -s" 1 $?
 rm -f "$NGINX_SITE" "$NGINX_SITE_ENABLED_LINK"
 
 : >"$NGINX_SITE.disabled"
-assert_eq "Debian .disabled site: the hint moves it back and links it (Minor-6)" \
+assert_eq "Debian .disabled site: the hint moves it back and links it" \
     "mv $NGINX_SITE.disabled $NGINX_SITE && ln -s $NGINX_SITE $NGINX_SITE_ENABLED_LINK && systemctl reload nginx" \
     "$(legacy_site_enable_hint "$NGINX_SITE.disabled")"
 
 : >"$NGINX_SITE"
 legacy_site_enable_hint "$NGINX_SITE.disabled" >/dev/null
-assert_eq "Debian .disabled site with the operator's own config in place: no hint, no mv (I-1)" 1 $?
+assert_eq "Debian .disabled site with the operator's own config in place: no hint, no mv" 1 $?
 rm -f "$NGINX_SITE" "$NGINX_SITE.disabled"
 
 : >"$NGINX_SITE.disabled"
 printf 'server { listen 80; }\n' >"$NGINX_SITE_ENABLED_LINK"
 legacy_site_enable_hint "$NGINX_SITE.disabled" >/dev/null
-assert_eq "Debian .disabled site with sites-enabled/gotcha already a file: no hint, no mv (N-2)" 1 $?
+assert_eq "Debian .disabled site with sites-enabled/gotcha already a file: no hint, no mv" 1 $?
 rm -f "$NGINX_SITE.disabled" "$NGINX_SITE_ENABLED_LINK"
 
 : >"$NGINX_SITE.disabled"
 ln -s "$sumdir/sites-available/does-not-exist" "$NGINX_SITE_ENABLED_LINK"
 legacy_site_enable_hint "$NGINX_SITE.disabled" >/dev/null
-assert_eq "Debian .disabled site with a dangling sites-enabled/gotcha symlink: no hint, no mv (N-2)" 1 $?
+assert_eq "Debian .disabled site with a dangling sites-enabled/gotcha symlink: no hint, no mv" 1 $?
 rm -f "$NGINX_SITE.disabled" "$NGINX_SITE_ENABLED_LINK"
 
 rm -rf "$sumdir"
 apply_platform_paths
 
-assert_eq "readyz_probe_addr normalizes :PORT to loopback (I-2)" "127.0.0.1:8080" "$(readyz_probe_addr :8080)"
-assert_eq "readyz_probe_addr normalizes 0.0.0.0:PORT to loopback (I-2)" "127.0.0.1:8080" "$(readyz_probe_addr 0.0.0.0:8080)"
-assert_eq "readyz_probe_addr leaves a non-loopback address as is (I-2)" "10.0.0.5:8080" "$(readyz_probe_addr 10.0.0.5:8080)"
-assert_eq "readyz_probe_addr leaves an already-loopback address as is (I-2)" "127.0.0.1:8080" "$(readyz_probe_addr 127.0.0.1:8080)"
+assert_eq "readyz_probe_addr normalizes :PORT to loopback" "127.0.0.1:8080" "$(readyz_probe_addr :8080)"
+assert_eq "readyz_probe_addr normalizes 0.0.0.0:PORT to loopback" "127.0.0.1:8080" "$(readyz_probe_addr 0.0.0.0:8080)"
+assert_eq "readyz_probe_addr leaves a non-loopback address as is" "10.0.0.5:8080" "$(readyz_probe_addr 10.0.0.5:8080)"
+assert_eq "readyz_probe_addr leaves an already-loopback address as is" "127.0.0.1:8080" "$(readyz_probe_addr 127.0.0.1:8080)"
 
-assert_eq "summary_effective_version prefers the installed binary's version (I-2)" "1.9.0" \
+assert_eq "summary_effective_version prefers the installed binary's version" "1.9.0" \
     "$(summary_effective_version 1.9.0 1.9.1)"
-assert_eq "summary_effective_version falls back to --version when nothing is installed (I-2)" "1.9.1" \
+assert_eq "summary_effective_version falls back to --version when nothing is installed" "1.9.1" \
     "$(summary_effective_version "" 1.9.1)"
 
-assert_eq "summary_is_fresh: no prior env means a fresh install (I-2)" 1 "$(summary_is_fresh "")"
-assert_eq "summary_is_fresh: an env that already existed is not fresh (I-2)" "" "$(summary_is_fresh 1)"
+assert_eq "summary_is_fresh: no prior env means a fresh install" 1 "$(summary_is_fresh "")"
+assert_eq "summary_is_fresh: an env that already existed is not fresh" "" "$(summary_is_fresh 1)"
 
 out=$(render_summary 1.9.0 '{"status":"ready"}' https://gotcha.example.com 127.0.0.1:8080 "" "" 1)
 assert_eq "render_summary, fresh host" \
@@ -1220,7 +1220,7 @@ assert_contains "render_summary names the kept legacy site" "$out" \
 case "$out" in
     *"Put a reverse proxy"*) printf 'FAIL: render_summary asks for a new proxy on a legacy host\n' >&2; FAILURES=$((FAILURES + 1)) ;;
 esac
-assert_eq "render_summary, legacy site already enabled: whole output, no 'not enabled' line (I-3)" \
+assert_eq "render_summary, legacy site already enabled: whole output, no 'not enabled' line" \
 "Gotcha 1.9.0 is installed and running.
   readiness:  ok
   listens on: 127.0.0.1:8080 (this host only)
@@ -1248,21 +1248,21 @@ case "$out" in
 esac
 
 out=$(render_summary 1.9.0 ok https://x.example localhost:8080 "" "" "")
-assert_contains "render_summary treats localhost:PORT as loopback (I-4)" "$out" \
+assert_contains "render_summary treats localhost:PORT as loopback" "$out" \
     "  listens on: localhost:8080 (this host only)"
 out=$(render_summary 1.9.0 ok https://x.example '[::1]:8080' "" "" "")
-assert_contains "render_summary treats [::1]:PORT as loopback (I-4)" "$out" \
+assert_contains "render_summary treats [::1]:PORT as loopback" "$out" \
     "  listens on: [::1]:8080 (this host only)"
 
 out=$(render_summary 1.9.0 ok https://x.example :8080 "" "" "")
-assert_contains "render_summary points the proxy hint at the loopback probe address for :PORT (Minor-5)" "$out" \
+assert_contains "render_summary points the proxy hint at the loopback probe address for :PORT" "$out" \
     "  1. Put a reverse proxy (nginx, angie, Apache, Caddy...) in front of 127.0.0.1:8080"
 out=$(render_summary 1.9.0 ok https://x.example 0.0.0.0:8080 "" "" "")
-assert_contains "render_summary points the proxy hint at the loopback probe address for 0.0.0.0:PORT (Minor-5)" "$out" \
+assert_contains "render_summary points the proxy hint at the loopback probe address for 0.0.0.0:PORT" "$out" \
     "  1. Put a reverse proxy (nginx, angie, Apache, Caddy...) in front of 127.0.0.1:8080"
 
 # print_install_summary — main() выполняет только эту склейку, мутации ловятся
-# здесь же (I-2/N-1/Minor: kept-as-is не должен врать поверх чужого конфига)
+# здесь же: kept-as-is не должен врать поверх чужого конфига.
 
 pisdir=$(mktemp -d)
 curl_calls="$pisdir/curl-calls"
@@ -1277,11 +1277,11 @@ envf="$pisdir/gotcha.env"
 printf 'GOTCHA_LISTEN_ADDR=:8080\n' >"$envf"
 : >"$curl_calls"
 out=$(print_install_summary "$envf" https://x.example "")
-assert_contains "print_install_summary normalizes :PORT for the curl probe (I-2)" "$(cat "$curl_calls")" \
+assert_contains "print_install_summary normalizes :PORT for the curl probe" "$(cat "$curl_calls")" \
     "http://127.0.0.1:8080/readyz"
-assert_contains "print_install_summary prefers the installed binary's version over --version (I-2)" "$out" \
+assert_contains "print_install_summary prefers the installed binary's version over --version" "$out" \
     "Gotcha 1.9.0 is installed and running."
-assert_contains "print_install_summary: no prior env invites creating the first administrator (I-2)" "$out" \
+assert_contains "print_install_summary: no prior env invites creating the first administrator" "$out" \
     "create the first administrator"
 out=$(print_install_summary "$envf" https://x.example 1)
 case "$out" in
@@ -1290,6 +1290,25 @@ case "$out" in
         FAILURES=$((FAILURES + 1))
         ;;
 esac
+
+# shellcheck disable=SC2317 # вызывается print_install_summary из сорсимого файла
+curl() { return 7; }
+out=$( set -euo pipefail; print_install_summary "$envf" https://x.example 1 )
+rc=$?
+assert_eq "print_install_summary keeps exit 0 when the readiness probe fails" 0 "$rc"
+assert_contains "print_install_summary reports no answer when the readiness probe fails" "$out" \
+    "  readiness:  no answer (see logs)"
+# shellcheck disable=SC2317 # вызывается print_install_summary из сорсимого файла
+curl() { printf '%s\n' "$*" >>"$curl_calls"; printf '{"status":"ready"}'; }
+
+envf_noaddr="$pisdir/gotcha-noaddr.env"
+: >"$envf_noaddr"
+: >"$curl_calls"
+out=$(print_install_summary "$envf_noaddr" https://x.example "")
+assert_contains "print_install_summary falls back to 127.0.0.1:8080 for the curl probe when GOTCHA_LISTEN_ADDR is unset" \
+    "$(cat "$curl_calls")" "http://127.0.0.1:8080/readyz"
+assert_contains "print_install_summary falls back to 127.0.0.1:8080 in the summary when GOTCHA_LISTEN_ADDR is unset" "$out" \
+    "  listens on: 127.0.0.1:8080 (this host only)"
 
 # shellcheck disable=SC2034
 HOST_FAMILY=rhel
@@ -1303,11 +1322,11 @@ printf 'server { listen 80; }\n' >"$NGINX_SITE"
 out=$(print_install_summary "$envf" https://x.example "")
 case "$out" in
     *"kept as is"*)
-        printf 'FAIL: EL print_install_summary calls a .disabled site kept as is although NGINX_SITE is taken (N-1)\n' >&2
+        printf 'FAIL: EL print_install_summary calls a .disabled site kept as is although NGINX_SITE is taken\n' >&2
         FAILURES=$((FAILURES + 1))
         ;;
 esac
-assert_contains "EL print_install_summary falls back to the reverse-proxy hint when the legacy site cannot be enabled (N-1)" "$out" \
+assert_contains "EL print_install_summary falls back to the reverse-proxy hint when the legacy site cannot be enabled" "$out" \
     "  1. Put a reverse proxy"
 rm -f "$NGINX_SITE" "$NGINX_SITE.disabled"
 
@@ -1324,11 +1343,11 @@ printf 'server { listen 80; }\n' >"$NGINX_SITE_ENABLED_LINK"
 out=$(print_install_summary "$envf" https://x.example "")
 case "$out" in
     *"kept as is"*)
-        printf 'FAIL: Debian print_install_summary calls a .disabled site kept as is although sites-enabled/gotcha is taken (N-1/Minor)\n' >&2
+        printf 'FAIL: Debian print_install_summary calls a .disabled site kept as is although sites-enabled/gotcha is taken\n' >&2
         FAILURES=$((FAILURES + 1))
         ;;
 esac
-assert_contains "Debian print_install_summary falls back to the reverse-proxy hint when sites-enabled/gotcha is taken (N-1/Minor)" "$out" \
+assert_contains "Debian print_install_summary falls back to the reverse-proxy hint when sites-enabled/gotcha is taken" "$out" \
     "  1. Put a reverse proxy"
 rm -f "$NGINX_SITE.disabled" "$NGINX_SITE_ENABLED_LINK"
 
@@ -1385,22 +1404,22 @@ out=$( (preflight_prerequisites) 2>&1 )
 assert_eq "delivery succeeds on rhel" 0 $?
 assert_eq "rhel delivers the packages of the missing commands, one argument each" "tar
 util-linux" "$(cat "$pfdir/installed")"
-assert_contains "delivery announces progress before installing (M-5)" "$out" "install-bare-metal: installing missing prerequisites: tar util-linux"
+assert_contains "delivery announces progress before installing" "$out" "install-bare-metal: installing missing prerequisites: tar util-linux"
 assert_contains "delivery is logged as completed on one line" "$out" "install-bare-metal: installed missing prerequisites: tar util-linux"
 case "$out" in
     *"installing missing prerequisites: tar util-linux"*"installed missing prerequisites: tar util-linux"*) order=ordered ;;
     *) order=unordered ;;
 esac
-assert_eq "the progress notice comes before the completion log (M-5)" "ordered" "$order"
-assert_eq "a successful delivery adds exactly one journal line, the completion (I-5)" \
+assert_eq "the progress notice comes before the completion log" "ordered" "$order"
+assert_eq "a successful delivery adds exactly one journal line, the completion" \
     "installed missing prerequisites: tar util-linux" \
     "$(sed -E 's/^[^ ]+ \[[^]]*\] //' "$pfdir/journal")"
 
 printf 'tar\nrunuser\n' >"$pfdir/missing"; : >"$pfdir/installed"
 out=$( (IFS=$'\n\t'; preflight_prerequisites) 2>&1 )
-assert_eq "under main's IFS pkg_install still gets separate arguments (RF-4)" "tar
+assert_eq "under main's IFS pkg_install still gets separate arguments" "tar
 util-linux" "$(cat "$pfdir/installed")"
-assert_contains "under main's IFS the log line stays single-line (RF-4)" "$out" \
+assert_contains "under main's IFS the log line stays single-line" "$out" \
     "install-bare-metal: installed missing prerequisites: tar util-linux"
 
 printf 'rpm\ntar\n' >"$pfdir/missing"; : >"$pfdir/installed"
@@ -1427,10 +1446,10 @@ out=$( (set -e; preflight_prerequisites) 2>&1 )
 assert_eq "a failing package install still refuses through the intended exit code, not set -e's" 3 $?
 assert_contains "the install failure is logged as a warning" "$out" "WARNING: could not install: tar"
 assert_contains "the install failure still refuses with the missing-command message" "$out" "tar is required (RHEL-family package: tar)"
-assert_contains "a failing delivery still announces progress up front (M-5)" "$out" "install-bare-metal: installing missing prerequisites: tar"
-assert_eq "a failed delivery never reaches stdout/stderr as completed (I-5)" "not-logged" \
+assert_contains "a failing delivery still announces progress up front" "$out" "install-bare-metal: installing missing prerequisites: tar"
+assert_eq "a failed delivery never reaches stdout/stderr as completed" "not-logged" \
     "$(case "$out" in *'installed missing prerequisites'*) printf logged ;; *) printf not-logged ;; esac)"
-assert_eq "a failed delivery adds only the warning to the journal, no delivery progress or completion line (I-5)" \
+assert_eq "a failed delivery adds only the warning to the journal, no delivery progress or completion line" \
     "WARNING: could not install: tar" \
     "$(sed -E 's/^[^ ]+ \[[^]]*\] //' "$pfdir/journal")"
 STUB_INSTALL_FAILS=""
@@ -1479,7 +1498,7 @@ out=$( (preflight_ports) 2>&1 )
 assert_contains "dry-run says the port check is skipped without ss" "$out" "[dry-run] port checks skipped: ss is missing"
 ARG_DRY_RUN=""
 
-# tarball_prereqs_missing (I-4)
+# tarball_prereqs_missing
 
 : >"$pfdir/missing"
 assert_eq "tarball_prereqs_missing: nothing missing when tar/sha256sum/curl are all present" "" \
