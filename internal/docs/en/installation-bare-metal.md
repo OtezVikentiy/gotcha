@@ -732,6 +732,10 @@ A specific version — the same file from
 At the end the script prints a summary: the version, the `/readyz` answer, the address,
 and what's left to do.
 
+## Changing the address
+
+Via the script — run it again with the new address: `sudo bash install-bare-metal.sh --base-url https://new.example.com`. The script rewrites `GOTCHA_BASE_URL` in `/etc/gotcha/gotcha.env`, without touching passwords or the secret key, and restarts the service. By hand — edit that same line and `systemctl restart gotcha`. Either way, update your own proxy (server name) and issue a certificate for the new address.
+
 ## Self-check
 
 After installing (via the script or by hand), verify everything came up:
@@ -741,9 +745,9 @@ After installing (via the script or by hand), verify everything came up:
 curl -sf http://127.0.0.1:8080/readyz
 ```
 
-A `/readyz` response like `{"clickhouse":"ok","postgres":"ok","status":"ready","version":"X.Y.Z"}` means the app can see both databases. If you installed nginx, do the same through the domain instead: `curl -sf https://gotcha.example.com/readyz`.
+A `/readyz` response like `{"clickhouse":"ok","postgres":"ok","status":"ready","version":"X.Y.Z"}` means the app can see both databases. Through your own proxy — the same thing, on the external address: `curl -sf https://gotcha.example.com/readyz`.
 
-The `version` field in that body is the exact build version, and both `/healthz` and `/readyz` hand it out without authentication. The nginx site the script installs leaves those two open on purpose: external availability checks of the instance itself use them. `/metrics` and `/version` are closed — both answer 403 from outside. If you would rather not expose the version, close the probes as well, see [Hardening](/docs/hardening).
+The `version` field in that body is the exact build version, and both `/healthz` and `/readyz` hand it out without authentication. The proxy examples from "External access and TLS" leave those two open on purpose: external availability checks of the instance itself use them. `/metrics` and `/version` are closed — both answer 403 from outside. If you would rather not expose the version, close the probes as well, see [Hardening](/docs/hardening).
 
 Check that agent binary serving works (without this, connecting hosts from the UI won't work, see [Hosts](/docs/hosts)):
 
@@ -756,6 +760,10 @@ Expect `200 OK`. Log into the UI, create an organization and a project, and send
 ## Common issues
 
 **Registration or any form returns `403`.** This is the origin-forgery check: `Origin`/`Referer` must match `GOTCHA_BASE_URL`. If `/etc/gotcha/gotcha.env` has an address that doesn't match how you actually open the UI (a missing scheme, `www` vs. no `www`, or reaching it by IP when `GOTCHA_BASE_URL` is a domain), the very first POST — including the first registration — is rejected with `403`. Fix `GOTCHA_BASE_URL` in the environment file and restart: `systemctl restart gotcha`.
+
+**The proxy answers `502`.** The service isn't running (`systemctl status gotcha`), or on AlmaLinux/Rocky/RHEL the SELinux boolean `httpd_can_network_connect` isn't set (see "External access and TLS").
+
+**Everyone gets locked out at once after a few failed attempts.** `/etc/gotcha/gotcha.env` has no `GOTCHA_TRUSTED_PROXIES`, so the limiter sees every user as the proxy's address. Re-running the script adds the line by itself; by hand — `GOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128` and `systemctl restart gotcha`.
 
 **The first user.** On a fresh instance, whoever registers first is automatically granted instance-admin rights, regardless of the self-registration mode. Every later signup is governed by `GOTCHA_REGISTRATION_MODE` (see [Configuration](/docs/configuration)).
 
@@ -802,11 +810,11 @@ If the installer fails, it prints the list of steps already completed and the ex
 sudo ./install-bare-metal.sh --uninstall
 ```
 
-Removes the `gotcha` unit and binary, and disables the nginx site (`/etc/nginx/sites-enabled/gotcha`) with a config reload: otherwise the host would answer 502 to everything, since the installer removed the default nginx site. The file itself, `/etc/nginx/sites-available/gotcha`, is kept — it holds the certbot TLS block, which is useful if you come back. PostgreSQL, ClickHouse and their data are left untouched.
+Removes the `gotcha` unit and binary. If the host was installed with version 1.7 or 1.8 and still has that version's nginx site (with the first-line marker `# gotcha site: …`), it's disabled the same way as before — on Debian/Ubuntu the symlink in `sites-enabled` is removed, on EL the file is renamed to `.disabled` — and nginx is reloaded. Sites you set up yourself, and the nginx package, are left alone. PostgreSQL, ClickHouse and their data are left as they are.
 
 To remove those too: `--uninstall --purge` — irreversibly drops the `gotcha` role and database in PostgreSQL, the `gotcha` database in ClickHouse, the `gotcha` system user, the `/var/lib/gotcha`, `/opt/gotcha`, `/etc/gotcha` directories, the install journal `/var/log/gotcha-install.log`, and the configs the script dropped into other packages' directories: `conf.d/10-gotcha.conf` for PostgreSQL, `config.d/00-common.xml` and `config.d/10-small.xml` for ClickHouse, and the `clickhouse-server.service.d/override.conf` systemd override. The databases are not restarted — that moment is the operator's to pick, and until they are, they keep running with the old settings.
 
-Kept on purpose: the database and nginx packages (something else on the host might be using them), the PGDG and ClickHouse apt repositories together with their keyrings (removing only a keyring would break `apt-get update`), the site file in `sites-available`, and the databases' own data directories.
+Kept on purpose: the database packages (something else on the host might be using them), the PGDG and ClickHouse apt repositories together with their keyrings (removing only a keyring would break `apt-get update`), and the databases' own data directories.
 
 ## What's next
 

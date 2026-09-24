@@ -1,7 +1,10 @@
 package guards
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -213,30 +216,61 @@ func installInvocationLines(blocks [][]string) []string {
 	return lines
 }
 
+// Все .md обеих локалей, а не жёстко перечисленные страницы — новый файл,
+// который вставит вызов с флагом, сторож подхватит сам, без правки списка.
+func allDocsMDPaths(t *testing.T, root string) []string {
+	t.Helper()
+	var files []string
+	for _, locale := range []string{"ru", "en"} {
+		dir := filepath.Join(root, "internal", "docs", locale)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("internal/docs/%s: каталог не читается: %v", locale, err)
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+			files = append(files, filepath.Join(dir, e.Name()))
+		}
+	}
+	sort.Strings(files)
+	return files
+}
+
 // Снятый из usage() флаг, оставшийся в примере вызова, отказал бы оператору вместо
-// того, чтобы ему помочь — TestBareMetalFlagsTableMatchesUsage сверяет только таблицу,
-// не сами команды `install-bare-metal.sh ...` в ```bash-блоках.
+// того, чтобы ему помочь — TestBareMetalFlagsTableMatchesUsage сверяет только таблицу
+// installation-bare-metal.md, не сами команды `install-bare-metal.sh ...` в
+// ```bash-блоках, а их пересказывают и другие страницы (upgrade, backup-restore...).
 func TestBareMetalInvocationFlagsAreInUsage(t *testing.T) {
 	tree := Load(t)
 	want := usageFlags(t, installerBody(t, tree.Root))
 
-	for locale, path := range bareMetalDocPaths(tree.Root) {
+	mustHaveInvocation := map[string]bool{}
+	for _, path := range bareMetalDocPaths(tree.Root) {
+		mustHaveInvocation[path] = true
+	}
+
+	flagsSeen := 0
+	for _, path := range allDocsMDPaths(t, tree.Root) {
 		lines := installInvocationLines(extractBashBlocks(readDocFile(t, path)))
 		if len(lines) == 0 {
-			t.Fatalf("%s: ни одной команды вызова install-bare-metal.sh с флагами не найдено — сторож смотрит мимо страницы", locale)
+			if mustHaveInvocation[path] {
+				t.Fatalf("%s: ни одной команды вызова install-bare-metal.sh с флагами не найдено — сторож смотрит мимо страницы", path)
+			}
+			continue
 		}
-		flagsSeen := 0
 		for _, line := range lines {
 			for _, flag := range invocationFlagRe.FindAllString(line, -1) {
 				flagsSeen++
 				if !want[flag] {
-					t.Errorf("%s: команда %q передаёт %q, которого нет в usage()", locale, line, flag)
+					t.Errorf("%s: команда %q передаёт %q, которого нет в usage()", path, line, flag)
 				}
 			}
 		}
-		if flagsSeen == 0 {
-			t.Fatalf("%s: команды вызова install-bare-metal.sh не отдали ни одного флага — сторож смотрит мимо разбора", locale)
-		}
+	}
+	if flagsSeen == 0 {
+		t.Fatalf("ни одна дока не отдала ни одного флага вызова install-bare-metal.sh — сторож смотрит мимо разбора")
 	}
 }
 

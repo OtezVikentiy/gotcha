@@ -75,18 +75,19 @@ handle @internal {
 Replace `10.0.0.0/8` with the range your probes actually come from (orchestrator, Prometheus,
 your own network) — the default-open range is meaningless as a restriction.
 
-On bare metal, the nginx site `install-bare-metal.sh` installs applies this same restriction
-to `/metrics` and `/version` by default: both answer 403 from the outside, open only to
-loopback (`127.0.0.1`/`::1`) — see [Installation without Docker](/docs/installation-bare-metal).
-`/healthz` and `/readyz` are deliberately left open — they're the only two endpoints that need
+On bare metal, close `/metrics` and `/version` in your own proxy — the examples in
+"External access and TLS" in [Installation without Docker](/docs/installation-bare-metal)
+already do this: both endpoints answer 403 from the outside, open only to loopback
+(`127.0.0.1`/`::1`). `/healthz` and `/readyz` are deliberately left open — they're the only two endpoints that need
 to answer from the outside, for external checks of the instance's own availability. The price
 is exactly the one named above: both probes hand out a `version` field anonymously, that is,
 the exact build version. If that's unacceptable for your install, add `healthz|readyz` to the
-same `location` block of the site (`location ~ ^/(metrics|version|healthz|readyz)$`) and point
-your external availability check at a regular page instead of a probe. To let
+same `location` block of your nginx site (`location ~ ^/(metrics|version|healthz|readyz)$`) and point
+your external availability check at a regular page instead of a probe (for Apache/Caddy —
+the equivalent rule in your proxy). To let
 your own metrics collector reach `/metrics`, add its subnet as an `allow ...;` line before
 `deny all;` in the `location ~ ^/(metrics|version)$` block of
-`/etc/nginx/sites-available/gotcha` and reload the config (`nginx -t && systemctl reload nginx`).
+your nginx site and reload the config (`nginx -t && systemctl reload nginx`).
 
 The same goes for the databases. The stock `docker-compose.yml` doesn't publish the PostgreSQL
 and ClickHouse ports on the host — only containers on the same docker network can reach them

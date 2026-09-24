@@ -386,12 +386,11 @@ make up-rebuild
 ```bash
 URL="https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z"
 curl -fsSL -o install-bare-metal.sh "$URL/install-bare-metal.sh"
-chmod +x install-bare-metal.sh
-sudo ./install-bare-metal.sh --version X.Y.Z --domain gotcha.example.com --email you@example.com
+sudo bash install-bare-metal.sh --version X.Y.Z
 ```
 
-Передавайте те же флаги, что и при первой установке (домен, `--no-proxy`, `--mem-limit` и
-так далее) — иначе скрипт применит для них дефолт вместо текущей настройки. Скрипт сам
+Адрес и прочие настройки берутся из `/etc/gotcha/gotcha.env`, `--base-url` не нужен;
+`--mem-limit` передавайте тот же, что при установке. Скрипт сам
 распознаёт обновление, сравнивая версию уже установленного бинаря
 (`/usr/local/bin/gotcha --version`) с `--version`, и делает — без дополнительных флагов —
 ровно то, о чём просит раздел «Перед началом» выше:
@@ -409,11 +408,14 @@ sudo ./install-bare-metal.sh --version X.Y.Z --domain gotcha.example.com --email
    через `systemd-run`, а не `docker compose run`;
 6. запускает сервис и ждёт, пока пройдёт `--healthcheck`.
 
-Конфиг nginx обновление не трогает: увидев в `/etc/nginx/sites-available/gotcha` свою
-метку и тот же `server_name`, скрипт оставляет файл как есть — вместе с TLS-блоком,
-который дописал туда certbot. Перерисовывается сайт только при смене `--domain` (со
-снимком старого рядом) или если файл удалить руками; сертификат при этом выпускается
-заново, для чего нужен `--email`.
+**Обновление с 1.8.x и раньше.** Уберите из команды `--domain` и `--email` — с 1.9.0 они
+отказывают. `--no-proxy` и `--no-firewall` принимаются и ничего не делают. Сайт nginx и
+сертификат, поставленные прошлой версией, остаются как есть и дальше принадлежат вам:
+скрипт их не обновляет и не трогает. Если на AlmaLinux/Rocky/RHEL после `--uninstall`
+сайт лежит как `/etc/nginx/conf.d/gotcha.conf.disabled`, итог установки подскажет команду
+включения: `mv /etc/nginx/conf.d/gotcha.conf.disabled /etc/nginx/conf.d/gotcha.conf &&
+systemctl reload nginx`. Повторный запуск также допишет в env
+`GOTCHA_TRUSTED_PROXIES` — это чинит лимитер входа за прокси.
 
 Ход обновления, как и первой установки, пишется в `/var/log/gotcha-install.log`; при
 отказе скрипт печатает список уже сделанных шагов (он берётся из того же журнала, а
