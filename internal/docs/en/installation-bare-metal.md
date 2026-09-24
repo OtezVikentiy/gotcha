@@ -55,13 +55,14 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y curl tar gnupg openssl coreuti
 ```
 
 `iproute2` (the `ss` command) is needed by the steps below and by the script: without it
-there's no way to check the ports. A minimal Debian/Ubuntu image may lack it — the script's
-preflight refuses with exit code 3 and names the missing package. The script creates the
-PostgreSQL role as the `postgres` user via `runuser`, which ships in `util-linux`: it is
-there by default on Debian, Ubuntu and EL 9, but RHEL 10 and its rebuilds install only
-`util-linux-core`, so the full package has to be added. The preflight names a missing
-`runuser` like any other missing command. The script installs whichever of these
-packages are missing by itself; you install them by hand only on the manual path.
+there's no way to check the ports. A minimal Debian/Ubuntu image may lack it — the script
+installs whichever of these packages are missing by itself; preflight exits with code 3
+and names the package only if the install failed. The script creates the PostgreSQL role
+as the `postgres` user via `runuser`, which ships in `util-linux`: it is there by default
+on Debian, Ubuntu and EL 9, but RHEL 10 and its rebuilds install only `util-linux-core`,
+so the full package has to be added. The preflight names a missing `runuser` like any
+other missing command. On the manual path, you install these packages yourself — the
+command above.
 
 **On AlmaLinux/Rocky/RHEL 9 and 10:**
 
@@ -607,9 +608,10 @@ apachectl configtest && systemctl enable --now httpd && systemctl reload httpd
 ```
 
 Apache adds `X-Forwarded-For` itself (`ProxyAddHeaders On` by default). Apache doesn't
-cap the body size of proxied requests with `LimitRequestBody` — that's a documented
-limitation of the directive under `mod_proxy`, not an oversight in this config; sizing
-stays the application's job (`GOTCHA_MAX_EVENT_BYTES`, 1 MiB by default, see
+cap the body size of proxied requests with `LimitRequestBody` — it simply doesn't take
+effect on proxied requests, not an oversight in this config; sizing stays the
+application's job: each handler enforces its own limit (for example,
+`GOTCHA_MAX_EVENT_BYTES` for events, 1 MiB by default, see
 [Configuration](/docs/configuration)).
 
 ### Caddy
@@ -627,7 +629,9 @@ gotcha.example.com {
 }
 ```
 
-Caddy obtains and renews the certificate itself, keeps `Host`, and sets
+A body over 64 MB makes Caddy abort with 502 (its log says `request body too large`),
+not 413 — that's how `request_body` behaves on 2.10.2, don't mistake it for a backend
+crash. Caddy obtains and renews the certificate itself, keeps `Host`, and sets
 `X-Forwarded-For`/`X-Forwarded-Proto`. Install the package per caddyserver.com's
 instructions for your distribution; then `caddy validate --config
 /etc/caddy/Caddyfile && systemctl reload caddy`.
@@ -651,10 +655,10 @@ certbot --nginx -d gotcha.example.com -m you@example.com --agree-tos --non-inter
 systemctl enable --now certbot-renew.timer
 ```
 
-On EL the EPEL package enables `certbot-renew.timer` itself (its own systemd preset);
-`systemctl enable --now certbot-renew.timer` above is a safety net for a different
-package version, not a required step. Check the state with `systemctl is-enabled
-certbot-renew.timer`.
+On EL the EPEL package enables `certbot-renew.timer` via its own systemd preset, but
+doesn't start it: until a reboot there are no renewals, and the certificate can expire
+(90 days, renewed 30 days before expiry). `systemctl enable --now certbot-renew.timer`
+above is required. Check the state with `systemctl is-active certbot-renew.timer`.
 
 On RHEL with an active subscription, some EPEL dependencies also need the CodeReady
 Builder repository enabled — without it, installing `certbot`/`python3-certbot-nginx`
@@ -706,7 +710,8 @@ sudo bash install-bare-metal.sh --base-url https://gotcha.example.com
 
 A specific version — the same file from
 `https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z/`, or the
-`--version X.Y.Z` flag.
+`--version X.Y.Z` flag (not older than the script itself; an older version needs
+`--force-version`).
 
 | Flag | Meaning |
 |---|---|

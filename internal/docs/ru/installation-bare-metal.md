@@ -55,13 +55,13 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y curl tar gnupg openssl coreuti
 ```
 
 `iproute2` (команда `ss`) нужен и дальше по шагам, и скрипту: без него нечем проверить
-порты. На минимальном образе Debian/Ubuntu его может не быть — preflight скрипта
-отказывает с кодом 3 и называет недостающий пакет. Роль в PostgreSQL скрипт создаёт от
-пользователя `postgres` через `runuser` из пакета `util-linux`: на Debian, Ubuntu и
-EL 9 он стоит по умолчанию, а на RHEL 10 и его пересборках ставится только
-`util-linux-core`, и полный пакет нужно доставить. Про нехватку `runuser` preflight
-сообщает так же, как про любую другую отсутствующую команду. Скрипт доставит
-недостающие из этих пакетов сам; руками их ставят только на ручном пути.
+порты. На минимальном образе Debian/Ubuntu его может не быть — недостающие из этих
+пакетов скрипт доставит сам; exit 3 с именем пакета preflight выдаёт, только если
+доставить не удалось. Роль в PostgreSQL скрипт создаёт от пользователя `postgres` через
+`runuser` из пакета `util-linux`: на Debian, Ubuntu и EL 9 он стоит по умолчанию, а на
+RHEL 10 и его пересборках ставится только `util-linux-core`, и полный пакет нужно
+доставить. Про нехватку `runuser` preflight сообщает так же, как про любую другую
+отсутствующую команду. На ручном пути эти пакеты ставит оператор — командой выше.
 
 **На AlmaLinux/Rocky/RHEL 9 и 10:**
 
@@ -603,9 +603,10 @@ apachectl configtest && systemctl enable --now httpd && systemctl reload httpd
 
 `X-Forwarded-For` Apache добавляет сам (`ProxyAddHeaders On` по умолчанию). Тело
 запроса Apache для проксируемых запросов директивой `LimitRequestBody` не ограничивает
-— это её задокументированное ограничение при работе с `mod_proxy`, а не недосмотр этой
-конфигурации; размер тела здесь остаётся заботой приложения (`GOTCHA_MAX_EVENT_BYTES`,
-1 МиБ по умолчанию, см. [Конфигурацию](/docs/configuration)).
+— на проксируемых запросах она не срабатывает, а не недосмотр этой конфигурации; размер
+тела остаётся заботой приложения: каждый обработчик ограничивает его сам (например,
+`GOTCHA_MAX_EVENT_BYTES` для событий, 1 МиБ по умолчанию, см.
+[Конфигурацию](/docs/configuration)).
 
 ### Caddy
 
@@ -622,6 +623,8 @@ gotcha.example.com {
 }
 ```
 
+Тело больше 64 МБ Caddy обрывает ответом 502 (в его логе — `request body too large`), а
+не 413 — так ведёт себя `request_body` в 2.10.2, не перепутайте это с падением бэкенда.
 Caddy сам получает и продлевает сертификат, сохраняет `Host` и ставит
 `X-Forwarded-For`/`X-Forwarded-Proto`. Пакет — по инструкции caddyserver.com для
 вашего дистрибутива; затем `caddy validate --config /etc/caddy/Caddyfile && systemctl
@@ -645,10 +648,10 @@ certbot --nginx -d gotcha.example.com -m you@example.com --agree-tos --non-inter
 systemctl enable --now certbot-renew.timer
 ```
 
-На EL пакет EPEL включает `certbot-renew.timer` сам (собственным systemd-пресетом);
-`systemctl enable --now certbot-renew.timer` в блоке выше — подстраховка на случай
-другой версии пакета, а не обязательный шаг. Проверить состояние: `systemctl
-is-enabled certbot-renew.timer`.
+На EL пакет EPEL включает `certbot-renew.timer` собственным systemd-пресетом, но не
+запускает его: до перезагрузки продлений не будет, и сертификат может истечь (90 дней,
+продление — за 30 до истечения). `systemctl enable --now certbot-renew.timer` в блоке
+выше обязателен. Проверить состояние: `systemctl is-active certbot-renew.timer`.
 
 На RHEL с активной подпиской часть зависимостей EPEL требует ещё и включённого
 репозитория CodeReady Builder — без него установка `certbot`/`python3-certbot-nginx`
@@ -699,7 +702,8 @@ sudo bash install-bare-metal.sh --base-url https://gotcha.example.com
 
 Конкретная версия — тот же файл из
 `https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z/` либо флаг
-`--version X.Y.Z`.
+`--version X.Y.Z` (не старше самого скрипта; версию старше он ставит только с
+`--force-version`).
 
 | Флаг | Значение |
 |---|---|

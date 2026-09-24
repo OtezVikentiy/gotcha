@@ -169,6 +169,45 @@ func TestBareMetalManualBashBlocksMatchAcrossLocales(t *testing.T) {
 	}
 }
 
+var invocationFlagRe = regexp.MustCompile(`--[a-zA-Z0-9-]+`)
+
+// Только строки, которые реально вызывают скрипт (а не скачивают или делают
+// исполняемым) — иначе "curl -o install-bare-metal.sh ..." читался бы как вызов.
+func installInvocationLines(blocks [][]string) []string {
+	var lines []string
+	for _, block := range blocks {
+		for _, line := range block {
+			trimmed := strings.TrimSpace(line)
+			if strings.Contains(trimmed, "install-bare-metal.sh") && invocationFlagRe.MatchString(trimmed) {
+				lines = append(lines, trimmed)
+			}
+		}
+	}
+	return lines
+}
+
+// Снятый из usage() флаг, оставшийся в примере вызова, отказал бы оператору вместо
+// того, чтобы ему помочь — TestBareMetalFlagsTableMatchesUsage сверяет только таблицу,
+// не сами команды `install-bare-metal.sh ...` в ```bash-блоках.
+func TestBareMetalInvocationFlagsAreInUsage(t *testing.T) {
+	tree := Load(t)
+	want := usageFlags(t, installerBody(t, tree.Root))
+
+	for locale, path := range bareMetalDocPaths(tree.Root) {
+		lines := installInvocationLines(extractBashBlocks(readDocFile(t, path)))
+		if len(lines) == 0 {
+			t.Fatalf("%s: ни одной команды вызова install-bare-metal.sh с флагами не найдено — сторож смотрит мимо страницы", locale)
+		}
+		for _, line := range lines {
+			for _, flag := range invocationFlagRe.FindAllString(line, -1) {
+				if !want[flag] {
+					t.Errorf("%s: команда %q передаёт %q, которого нет в usage()", locale, line, flag)
+				}
+			}
+		}
+	}
+}
+
 func scriptVersions(t *testing.T, installer string) (pgMajor, chVersion string) {
 	t.Helper()
 	m := pgMajorConstRe.FindStringSubmatch(installer)
