@@ -38,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from `127.0.0.1`. The installer now writes `GOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128`
   on install and adds it to an existing env on a re-run; a value already set by the
   operator is left untouched.
+- Under CPU load, requests to PostgreSQL could fail with an i/o timeout because the
+  connection pool's liveness check timed out too eagerly.
 
 ### Documentation
 - On RHEL 10 and its rebuilds, `runuser` needs the full `util-linux` package installed;
