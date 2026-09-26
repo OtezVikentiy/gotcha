@@ -2,7 +2,7 @@
 
 Альтернатива [Docker-установке](/docs/installation): Gotcha, PostgreSQL и ClickHouse ставятся системными пакетами прямо на хост и запускаются под systemd. Инструкция рассчитана на тот же уровень подготовки, что и Docker-путь — Linux-сервер по SSH, без опыта администрирования баз данных.
 
-**Граница поддержки.** Этот путь поддерживается наравне с Docker — при условии, что вы не правили руками ни сам скрипт, ни созданные им конфиги (юнит systemd, `/etc/gotcha/gotcha.env`, конфиги PostgreSQL/ClickHouse). Флаги, с которыми поддержка сохраняется в полном объёме: `--domain`, `--email`, `--no-proxy`, `--no-firewall`, `--mem-limit`, `--base-url`, `--download-base`, `--version`, `--from-tarball`. Отдельный случай — `--skip-databases` с собственными PostgreSQL/ClickHouse: раз базы не наши, мы можем помочь диагностировать проблему, но не гарантировать её решение — ответственность за версии, конфигурацию и доступность этих баз на вас.
+**Граница поддержки.** Этот путь поддерживается наравне с Docker — при условии, что вы не правили руками ни сам скрипт, ни созданные им конфиги (юнит systemd, `/etc/gotcha/gotcha.env`, конфиги PostgreSQL/ClickHouse). Флаги, с которыми поддержка сохраняется в полном объёме: `--base-url`, `--mem-limit`, `--download-base`, `--version`, `--from-tarball`. Отдельный случай — `--skip-databases` с собственными PostgreSQL/ClickHouse: раз базы не наши, мы можем помочь диагностировать проблему, но не гарантировать её решение — ответственность за версии, конфигурацию и доступность этих баз на вас.
 
 Ставится скриптом `install-bare-metal.sh` (раздел «Установка скриптом» ниже) либо теми же командами руками (раздел «Ручная установка») — это не приложение к инструкции, а полноценный путь: скрипт лишь автоматизирует его.
 
@@ -12,7 +12,7 @@
 - **Архитектура** amd64 или arm64.
 - **systemd** — практически любой современный сервер уже под ним; проверить: `[ -d /run/systemd/system ] && echo ok`.
 - **root-доступ** по SSH — установщик пишет в `/etc`, `/opt`, `/usr/local/bin`, `/var/lib` и ставит системные пакеты.
-- (Не обязательно, но желательно для реального использования) доменное имя, указывающее на IP сервера — понадобится для TLS-сертификата.
+- (Не обязательно, но желательно для реального использования) доменное имя, указывающее на IP сервера — понадобится вашему обратному прокси для TLS-сертификата.
 
 Дистрибутивы и архитектуры, которые прогоняются в CI на каждый релиз:
 
@@ -55,12 +55,13 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y curl tar gnupg openssl coreuti
 ```
 
 `iproute2` (команда `ss`) нужен и дальше по шагам, и скрипту: без него нечем проверить
-порты. На минимальном образе Debian/Ubuntu его может не быть — preflight скрипта
-отказывает с кодом 3 и называет недостающий пакет. Роль в PostgreSQL скрипт создаёт от
-пользователя `postgres` через `runuser` из пакета `util-linux`: на Debian, Ubuntu и
-EL 9 он стоит по умолчанию, а на RHEL 10 и его пересборках ставится только
-`util-linux-core`, и полный пакет нужно доставить. Про нехватку `runuser` preflight
-сообщает так же, как про любую другую отсутствующую команду.
+порты. На минимальном образе Debian/Ubuntu его может не быть — недостающие из этих
+пакетов скрипт доставит сам; exit 3 с именем пакета preflight выдаёт, только если
+доставить не удалось. Роль в PostgreSQL скрипт создаёт от пользователя `postgres` через
+`runuser` из пакета `util-linux`: на Debian, Ubuntu и EL 9 он стоит по умолчанию, а на
+RHEL 10 и его пересборках ставится только `util-linux-core`, и полный пакет нужно
+доставить. Про нехватку `runuser` preflight сообщает так же, как про любую другую
+отсутствующую команду. На ручном пути эти пакеты ставит оператор — командой выше.
 
 **На AlmaLinux/Rocky/RHEL 9 и 10:**
 
@@ -68,13 +69,13 @@ EL 9 он стоит по умолчанию, а на RHEL 10 и его пере
 dnf install -y curl tar gnupg2 openssl coreutils iproute util-linux
 ```
 
-Проверьте порты, которые понадобятся: 8080 (приложение), 80 (если ставите nginx), 5432/8123/9000 (если ставите PostgreSQL/ClickHouse этим же способом).
+Проверьте порты, которые понадобятся: 8080 (приложение), 5432/8123/9000 (если ставите PostgreSQL/ClickHouse этим же способом).
 
 ```bash
-ss -ltn | grep -E ':(8080|80|5432|8123|9000)\b'
+ss -ltn | grep -E ':(8080|5432|8123|9000)\b'
 ```
 
-Если что-то уже слушает эти порты и это не сама СУБД, которую вы устанавливаете, — освободите порт или уберите его из списка нужных (например, `--skip-databases`/`--no-proxy` у скрипта).
+Если что-то уже слушает эти порты и это не сама СУБД, которую вы устанавливаете, — освободите порт или уберите его из списка нужных (например, `--skip-databases` у скрипта).
 
 ### 2. Установите PostgreSQL 17
 
@@ -380,6 +381,7 @@ GOTCHA_BASE_URL=https://gotcha.example.com
 GOTCHA_DIST_DIR=/opt/gotcha/agent-dist
 GOMEMLIMIT=819MiB
 GOTCHA_LISTEN_ADDR=127.0.0.1:8080
+GOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128
 EOF
 chown root:gotcha /etc/gotcha/gotcha.env
 chmod 0640 /etc/gotcha/gotcha.env
@@ -388,6 +390,8 @@ chmod 0640 /etc/gotcha/gotcha.env
 Если шаг 3 выполнялся в этом же сеансе шелла, вместо `<пароль-из-шага-3>` можно подставить `$CH_PASSWORD` — переменная ещё жива, и heredoc её раскроет.
 
 Про `GOTCHA_BASE_URL` см. предупреждение о 403 в разделе «Типичные ошибки» ниже — задайте его сразу верным адресом, включая схему. Про `GOTCHA_LISTEN_ADDR=127.0.0.1:8080` — то же, что loopback-бинд у Docker-пути: без обратного прокси порт наружу не торчит. `GOMEMLIMIT=819MiB` — 80% от `MemoryMax=1024M` из юнита ниже; если меняете лимит памяти, пересчитайте оба значения синхронно (`--mem-limit` у скрипта делает это за вас).
+
+`GOTCHA_TRUSTED_PROXIES` — адреса, от которых приложение принимает `X-Forwarded-For`: обратный прокси на этом же хосте приходит с петли, и без этой строки лимитер входа видит у всех пользователей один адрес `127.0.0.1` — один перебор пароля блокирует вход всем. Удалённый клиент подделать заголовок не может: доверие проверяется по адресу соединения.
 
 Файл хранит секреты (мастер-ключ шифрования, пароли обеих баз) — права `0640` и владелец `root:gotcha` обязательны, как и для `.env` в Docker-пути (см. [Резервное копирование](/docs/backup-restore)).
 
@@ -463,17 +467,32 @@ systemctl enable --now gotcha
 journalctl -u gotcha -f
 ```
 
-### 9. Разверните nginx (если нужен внешний доступ)
+## Внешний доступ и TLS
 
-Пропустите этот шаг, если публикуете инстанс за уже существующим прокси или обращаетесь к нему только через SSH-туннель на `127.0.0.1:8080`.
+Этот раздел справочный: ни скрипт, ни шаги выше его не выполняют. Приложение слушает
+только `127.0.0.1:8080`; как вывести его наружу и каким веб-сервером — решаете вы.
+Ниже — требования к любому прокси и проверенные примеры для nginx, angie, Apache и
+Caddy.
 
-**На Debian/Ubuntu:**
+### Требования к прокси
+
+1. Проксировать на `http://127.0.0.1:8080`; прокси стоит на этом же хосте.
+2. Сохранять заголовок `Host` таким, каким его прислал браузер.
+3. Передавать `X-Forwarded-For` (адрес клиента — последним элементом) и
+   `X-Forwarded-Proto` (схема, по которой пришёл клиент).
+4. Пропускать тело запроса до 64 МБ.
+5. Закрыть снаружи `/metrics` и `/version` (403); `/healthz` и `/readyz` оставить
+   открытыми — ими пользуются внешние проверки доступности.
+6. Внешний адрес (схема, хост, порт) в точности совпадает с `GOTCHA_BASE_URL`: иначе
+   любой POST, включая первую регистрацию, получает 403.
+
+### nginx
+
+**Debian/Ubuntu:**
 
 ```bash
 DEBIAN_FRONTEND=noninteractive apt-get install -y nginx
-rm -f /etc/nginx/sites-enabled/default
 cat >/etc/nginx/sites-available/gotcha <<'EOF'
-# gotcha site: install-bare-metal.sh keeps local edits below on re-run
 server {
     listen 80;
     server_name gotcha.example.com;
@@ -498,19 +517,15 @@ server {
 }
 EOF
 ln -sf ../sites-available/gotcha /etc/nginx/sites-enabled/gotcha
-nginx -t
-systemctl enable --now nginx
-systemctl reload nginx
+nginx -t && systemctl enable --now nginx && systemctl reload nginx
 ```
 
-**На AlmaLinux/Rocky/RHEL 9 и 10:** путь к сайту и пакетный менеджер другие, сам
-конфиг — тот же; отдельного каталога `sites-enabled` и симлинка на EL нет —
-`nginx.conf` штатно подключает всё из `conf.d`.
+**AlmaLinux/Rocky/RHEL:** тот же конфиг, файл — `/etc/nginx/conf.d/gotcha.conf`, без
+симлинка:
 
 ```bash
 dnf install -y nginx
 cat >/etc/nginx/conf.d/gotcha.conf <<'EOF'
-# gotcha site: install-bare-metal.sh keeps local edits below on re-run
 server {
     listen 80;
     server_name gotcha.example.com;
@@ -534,123 +549,168 @@ server {
     }
 }
 EOF
-nginx -t
-systemctl enable --now nginx
-systemctl reload nginx
+nginx -t && systemctl enable --now nginx && systemctl reload nginx
 ```
 
-Первая строка файла — метка для скрипта: увидев её, повторный запуск
-`install-bare-metal.sh` не перерисовывает сайт, а оставляет как есть, пока в нём
-стоит тот же `server_name`. Именно так переживает обновление TLS-блок, который
-дописывает certbot на шаге 11. Если сайт нужно перерисовать с нуля — удалите или
-переименуйте файл и запустите скрипт снова; смена `--domain` тоже перерисовывает его
-(со снимком старого рядом, `gotcha.bak-<метка>`), и сертификат после неё выпускается заново.
+### angie
 
-### 10. SELinux и firewalld (только AlmaLinux/Rocky/RHEL)
+Конфиг тот же, что у nginx; файл — `/etc/angie/http.d/gotcha.conf`,
+проверка — `angie -t`, перезагрузка — `systemctl reload angie`. Сам пакет angie
+ставится из его репозитория по инструкции проекта angie.
 
-Этого шага нет на Debian/Ubuntu — SELinux и firewalld там штатно не участвуют в
-установке. На EL он идёт сразу за шагом 9, если nginx ставится (без `--no-proxy`),
-и до сертификата на шаге 11.
+### Apache
 
-**SELinux.** Если политика в режиме `Enforcing` (проверить: `getenforce`), разрешите
-nginx обращаться к приложению на `127.0.0.1:8080` — по умолчанию домен `httpd_t`,
-под которым работает nginx, этого не может:
+**Debian/Ubuntu:**
 
 ```bash
-[ "$(getenforce 2>/dev/null)" = Enforcing ] && setsebool -P httpd_can_network_connect 1
+DEBIAN_FRONTEND=noninteractive apt-get install -y apache2
+a2enmod proxy proxy_http headers
+cat >/etc/apache2/sites-available/gotcha.conf <<'EOF'
+<VirtualHost *:80>
+    ServerName gotcha.example.com
+    ProxyPreserveHost On
+    RequestHeader set X-Forwarded-Proto expr=%{REQUEST_SCHEME}
+    <LocationMatch "^/(metrics|version)$">
+        Require all denied
+    </LocationMatch>
+    ProxyPass / http://127.0.0.1:8080/
+    ProxyPassReverse / http://127.0.0.1:8080/
+</VirtualHost>
+EOF
+a2ensite gotcha
+apachectl configtest && systemctl enable --now apache2 && systemctl reload apache2
 ```
 
-**firewalld.** Если он запущен (`firewall-cmd --state` печатает `running`), откройте
-порты 80 и 443:
+**AlmaLinux/Rocky/RHEL** (модули `proxy`, `proxy_http`, `headers` в пакете `httpd`
+включены по умолчанию):
 
 ```bash
-firewall-cmd --permanent --add-service=http --add-service=https
-firewall-cmd --reload
+dnf install -y httpd
+cat >/etc/httpd/conf.d/gotcha.conf <<'EOF'
+<VirtualHost *:80>
+    ServerName gotcha.example.com
+    ProxyPreserveHost On
+    RequestHeader set X-Forwarded-Proto expr=%{REQUEST_SCHEME}
+    <LocationMatch "^/(metrics|version)$">
+        Require all denied
+    </LocationMatch>
+    ProxyPass / http://127.0.0.1:8080/
+    ProxyPassReverse / http://127.0.0.1:8080/
+</VirtualHost>
+EOF
+apachectl configtest && systemctl enable --now httpd && systemctl reload httpd
 ```
 
-Если он не установлен или не запущен — типичный случай для образа AlmaLinux/Rocky
-GenericCloud, где firewalld нет из коробки, — инсталлятор печатает предупреждение
-и оставляет хост как есть; порты придётся открыть самостоятельно, если их
-фильтрует что-то ещё на хосте. Флаг `--no-firewall` пропускает этот шаг молча —
-это явная просьба оператора, а не неожиданность.
+`X-Forwarded-For` Apache добавляет сам (`ProxyAddHeaders On` по умолчанию). Тело
+запроса Apache для проксируемых запросов директивой `LimitRequestBody` не ограничивает
+— на проксируемых запросах она не срабатывает, а не недосмотр этой конфигурации; размер
+тела остаётся заботой приложения: каждый обработчик ограничивает его сам (например,
+`GOTCHA_MAX_EVENT_BYTES` для событий, 1 МиБ по умолчанию, см.
+[Конфигурацию](/docs/configuration)).
 
-Оба изменения — глобальные настройки хоста, а не файлы самой установки: `--uninstall`
-их не отменяет, ни сам по себе, ни по флагу `--purge`. На них может опираться другой
-сервис того же хоста, поэтому откатывать их стоит осознанно, а не одним махом с
-удалением gotcha:
+### Caddy
 
-```bash
-setsebool -P httpd_can_network_connect 0
-firewall-cmd --permanent --remove-service=http --remove-service=https
-firewall-cmd --reload
+`/etc/caddy/Caddyfile` (одинаково на обоих семействах):
+
+```caddyfile
+gotcha.example.com {
+	request_body {
+		max_size 64MB
+	}
+	@internal path /metrics /version
+	respond @internal 403
+	reverse_proxy 127.0.0.1:8080
+}
 ```
 
-**EPEL для certbot.** Пакет `python3-certbot-nginx`, нужный на шаге 11, живёт в
-EPEL, а не в штатных репозиториях:
+Тело больше 64 МБ Caddy обрывает ответом 502 (в его логе — `request body too large`), а
+не 413 — так ведёт себя `request_body` в 2.10.2, не перепутайте это с падением бэкенда.
+Caddy сам получает и продлевает сертификат, сохраняет `Host` и ставит
+`X-Forwarded-For`/`X-Forwarded-Proto`. Пакет — по инструкции caddyserver.com для
+вашего дистрибутива; затем `caddy validate --config /etc/caddy/Caddyfile && systemctl
+reload caddy`.
 
-```bash
-dnf -y repolist enabled 2>/dev/null | grep -qi '^epel' \
-  || dnf install -y "https://dl.fedoraproject.org/pub/epel/epel-release-latest-$EL_MAJOR.noarch.rpm"
-```
-
-На AlmaLinux и Rocky этого достаточно. На RHEL с активной подпиской часть
-зависимостей EPEL требует ещё и включённого репозитория CodeReady Builder — без
-него установка `certbot`/`python3-certbot-nginx` может упасть на разрешении
-зависимостей:
-
-```bash
-subscription-manager repos --enable "codeready-builder-for-rhel-$EL_MAJOR-$(arch)-rpms"
-```
-
-Этот путь не прогоняется в CI (нужна активная подписка RHEL, а не только образ) —
-держите его в уме как рабочий, а не как проверенный автоматически.
-
-### 11. Получите TLS-сертификат
-
-Это базовая сборка — nginx на 80 плюс сертификат от Let's Encrypt. Тонкая настройка TLS (протоколы, шифры), HSTS и rate-limit на прокси — за пределами этого шага, их настраивает оператор под свои требования.
-
-**На Debian/Ubuntu:**
+### TLS-сертификат
 
 ```bash
 DEBIAN_FRONTEND=noninteractive apt-get install -y certbot python3-certbot-nginx
 certbot --nginx -d gotcha.example.com -m you@example.com --agree-tos --non-interactive --redirect
 ```
 
-**На AlmaLinux/Rocky/RHEL 9 и 10:** EPEL из шага 10 уже подключён, дальше так же:
+Для Apache — пакет `python3-certbot-apache` и команда `certbot --apache`; на
+Debian/Ubuntu пакет certbot сам включает таймер продления `certbot.timer`. На EL:
 
 ```bash
+dnf install -y \
+  "https://dl.fedoraproject.org/pub/epel/epel-release-latest-$(rpm -E %rhel).noarch.rpm"
 dnf install -y certbot python3-certbot-nginx
 certbot --nginx -d gotcha.example.com -m you@example.com --agree-tos --non-interactive --redirect
+systemctl enable --now certbot-renew.timer
 ```
 
-Отказ certbot не ломает уже поднятый HTTP-стенд на 80 ни на одном семействе —
-сертификат можно допровести позже той же командой.
+На EL пакет EPEL включает `certbot-renew.timer` собственным systemd-пресетом, но не
+запускает его: до перезагрузки продлений не будет, и сертификат может истечь (90 дней,
+продление — за 30 до истечения). `systemctl enable --now certbot-renew.timer` в блоке
+выше обязателен. Проверить состояние: `systemctl is-active certbot-renew.timer`.
+
+На RHEL с активной подпиской часть зависимостей EPEL требует ещё и включённого
+репозитория CodeReady Builder — без него установка `certbot`/`python3-certbot-nginx`
+может упасть на разрешении зависимостей:
+
+```bash
+subscription-manager repos --enable "codeready-builder-for-rhel-$(rpm -E %rhel)-$(arch)-rpms"
+```
+
+angie: встроенный ACME-модуль angie или `certbot certonly --webroot`; этот путь здесь
+не проверялся. Caddy — сертификат получает сам, ничего делать не нужно.
+
+### SELinux и firewalld (AlmaLinux/Rocky/RHEL)
+
+```bash
+setsebool -P httpd_can_network_connect 1
+firewall-cmd --permanent --add-service=http --add-service=https && firewall-cmd --reload
+```
+
+Булев нужен nginx, angie и Apache при `Enforcing` (проверить `getenforce`), иначе
+прокси получает 502; firewalld — если он запущен (`firewall-cmd --state`).
+
+### Прокси на другом хосте
+
+Установщик так не настраивает. Вручную: `GOTCHA_LISTEN_ADDR` в
+`/etc/gotcha/gotcha.env` — на адрес интерфейса, который видит прокси; адрес прокси —
+в `GOTCHA_TRUSTED_PROXIES` (через запятую к уже записанным); порт 8080 закрыть от
+всех, кроме прокси; затем `systemctl restart gotcha`. Повторный запуск скрипта эти
+правки не откатывает.
 
 ## Установка скриптом
 
-`install-bare-metal.sh` делает ровно шаги 1–11 выше сам, включая идемпотентный повтор (безопасно запускать ещё раз — существующие пароли и ключ не перевыпускаются) и распознавание обновления (если на хосте уже стоит более старая версия — см. [Обновление](/docs/upgrade)).
+`install-bare-metal.sh` делает ровно шаги 1–8 выше сам, включая идемпотентный повтор (безопасно запускать ещё раз — существующие пароли и ключ не перевыпускаются) и распознавание обновления (если на хосте уже стоит более старая версия — см. [Обновление](/docs/upgrade)).
+
+Скрипт не ставит и не настраивает веб-сервер, TLS-сертификат, firewalld и SELinux:
+приложение слушает только `127.0.0.1:8080`, а внешний доступ вы делаете сами — см.
+«Внешний доступ и TLS» выше. Адрес, по которому пользователи будут открывать Gotcha,
+при чистой установке обязателен: без `--base-url` скрипт спросит его на терминале, а
+с `--yes` или без терминала откажет до любых изменений хоста.
 
 Скрипт прикладывается к каждому релизу отдельным файлом:
 
 ```bash
-URL="https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z"
+URL="https://github.com/OtezVikentiy/gotcha/releases/latest/download"
 curl -fsSL -o install-bare-metal.sh "$URL/install-bare-metal.sh"
-chmod +x install-bare-metal.sh
-sudo ./install-bare-metal.sh --version X.Y.Z --domain gotcha.example.com --email you@example.com
+sudo bash install-bare-metal.sh --base-url https://gotcha.example.com
 ```
 
-Без `--domain`/`--email` установится HTTP-стенд без TLS — сертификат можно добавить отдельно позже той же командой `certbot --nginx`.
+Конкретная версия — тот же файл из
+`https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z/` либо флаг
+`--version X.Y.Z` (не старше самого скрипта; версию старше он ставит только с
+`--force-version`).
 
 | Флаг | Значение |
 |---|---|
-| `--version X.Y.Z` | какой релиз ставить (обязателен, если не указан `--from-tarball`) |
+| `--version X.Y.Z` | какой релиз ставить (по умолчанию — версия, с которой выпущен скрипт) |
 | `--from-tarball PATH` | взять локальный тарбол вместо скачивания |
 | `--download-base URL` | другая база загрузки вместо GitHub (зеркало, закрытый контур) |
-| `--base-url URL` | явный `GOTCHA_BASE_URL`; без него и без `--domain` скрипт спросит интерактивно (или предупредит и подставит IP хоста с `--yes`) |
-| `--domain D` | поставить nginx перед этим доменом, `GOTCHA_BASE_URL` — `https://D` |
-| `--email E` | контакт для certbot (требует `--domain`) |
-| `--no-proxy` | не ставить и не трогать nginx вовсе |
-| `--no-firewall` | не трогать firewalld (только семейство EL) |
+| `--base-url URL` | адрес, по которому пользователи открывают Gotcha (`GOTCHA_BASE_URL`, `http(s)://хост[:порт][/путь]`); обязателен при чистой установке, дальше берётся из `/etc/gotcha/gotcha.env`; другой адрес на повторном запуске переписывает его в env и перезапускает сервис |
 | `--skip-databases` | не ставить PostgreSQL/ClickHouse, использовать `--pg-dsn`/`--ch-dsn` — режим «диагностируем, не гарантируем» |
 | `--pg-dsn DSN` / `--ch-dsn DSN` | внешние DSN, обязательны вместе с `--skip-databases` |
 | `--mem-limit N` | `MemoryMax`/`GOMEMLIMIT` в МиБ (по умолчанию 1024, как `mem_limit: 1g` в Docker-поставке) |
@@ -661,6 +721,12 @@ sudo ./install-bare-metal.sh --version X.Y.Z --domain gotcha.example.com --email
 | `--uninstall` | снять установку (данные и базы остаются) |
 | `--purge` | вместе с `--uninstall` — снести и данные, и базы |
 
+В конце скрипт печатает итог: версию, ответ `/readyz`, адрес и что осталось сделать.
+
+## Смена адреса
+
+Скриптом — повторный запуск с новым адресом: `sudo bash install-bare-metal.sh --base-url https://new.example.com` (и тот же `--mem-limit`, если задавали его при установке — иначе юнит получит `MemoryMax` по умолчанию при прежнем `GOMEMLIMIT` в файле окружения, а это риск OOM-kill). Скрипт перепишет `GOTCHA_BASE_URL` в `/etc/gotcha/gotcha.env`, не трогая пароли и ключ, и перезапустит сервис; версию без `--version` берёт из самого скачанного скрипта — если он новее, чем на хосте, смена адреса заодно станет обновлением. Руками — поправить ту же строку и `systemctl restart gotcha`. В обоих случаях поправьте свой прокси (имя сервера) и выпустите сертификат на новый адрес.
+
 ## Самопроверка
 
 После установки (скриптом или руками) убедитесь, что всё поднялось:
@@ -670,9 +736,9 @@ sudo ./install-bare-metal.sh --version X.Y.Z --domain gotcha.example.com --email
 curl -sf http://127.0.0.1:8080/readyz
 ```
 
-Ответ `/readyz` вида `{"clickhouse":"ok","postgres":"ok","status":"ready","version":"X.Y.Z"}` означает, что приложение видит обе базы. Если ставили nginx — то же самое, но через домен: `curl -sf https://gotcha.example.com/readyz`.
+Ответ `/readyz` вида `{"clickhouse":"ok","postgres":"ok","status":"ready","version":"X.Y.Z"}` означает, что приложение видит обе базы. Через свой прокси — то же самое по внешнему адресу: `curl -sf https://gotcha.example.com/readyz`.
 
-Поле `version` в ответе — точная версия сборки, и `/healthz` с `/readyz` отдают её без аутентификации. Сайт nginx, который ставит скрипт, оставляет эти две ручки открытыми наружу намеренно: ими пользуются внешние проверки доступности самого инстанса. `/metrics` и `/version` закрыты, снаружи оба отвечают 403. Если раскрывать версию наружу не хотите — закройте и пробы, см. [Усиление установки](/docs/hardening).
+Поле `version` в ответе — точная версия сборки, и `/healthz` с `/readyz` отдают её без аутентификации. Примеры прокси из раздела «Внешний доступ и TLS» оставляют эти две ручки открытыми наружу намеренно: ими пользуются внешние проверки доступности самого инстанса. `/metrics` и `/version` закрыты, снаружи оба отвечают 403. Если раскрывать версию наружу не хотите — закройте и пробы, см. [Усиление установки](/docs/hardening).
 
 Проверьте, что раздача бинаря агента работает (без этого подключение хостов из UI не заработает, см. [Хосты](/docs/hosts)):
 
@@ -685,6 +751,10 @@ curl -fsSI http://127.0.0.1:8080/agent/gotcha-agent-linux-amd64
 ## Типичные ошибки
 
 **Регистрация или любая форма отвечает `403`.** Это защита от подделки происхождения запроса: `Origin`/`Referer` должен совпадать с `GOTCHA_BASE_URL`. Если в `/etc/gotcha/gotcha.env` указан не тот адрес, по которому вы на самом деле открываете интерфейс (например, забыли схему, домен без `www` вместо с `www`, или зашли по IP, когда `GOTCHA_BASE_URL` — домен), первый же POST — включая самую первую регистрацию — отклоняется `403`. Поправьте `GOTCHA_BASE_URL` в файле окружения и перезапустите: `systemctl restart gotcha`.
+
+**Прокси отвечает `502`.** Сервис не запущен (`systemctl status gotcha`) либо на AlmaLinux/Rocky/RHEL не выставлен SELinux-булев `httpd_can_network_connect` (см. «Внешний доступ и TLS»).
+
+**Вход заблокирован у всех сразу после нескольких неудачных попыток.** В `/etc/gotcha/gotcha.env` нет `GOTCHA_TRUSTED_PROXIES`, и лимитер видит всех пользователей как адрес прокси. Повторный запуск скрипта допишет строку сам; руками — `GOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128` и `systemctl restart gotcha` (`127.0.0.1/32,::1/128` верно только для прокси на этом же хосте — если он на другом, впишите его адрес, см. «Прокси на другом хосте»).
 
 **Первый пользователь.** На чистом инстансе первый, кто зарегистрируется, получает права инстанс-администратора автоматически — независимо от режима самостоятельной регистрации. Все следующие регистрации уже подчиняются `GOTCHA_REGISTRATION_MODE` (см. [Конфигурацию](/docs/configuration)).
 
@@ -728,14 +798,14 @@ journalctl -u clickhouse-server --no-pager -n 50
 ## Снятие установки
 
 ```bash
-sudo ./install-bare-metal.sh --uninstall
+sudo bash install-bare-metal.sh --uninstall
 ```
 
-Снимает юнит и бинарь `gotcha` и выключает сайт nginx (`/etc/nginx/sites-enabled/gotcha`), перезагружая конфиг: иначе хост отвечал бы 502 на всё, ведь дефолтный сайт nginx скрипт при установке снял. Сам файл `/etc/nginx/sites-available/gotcha` остаётся — в нём лежит TLS-блок certbot, который пригодится при возврате. PostgreSQL и ClickHouse и данные в них не трогаются.
+Снимает юнит и бинарь `gotcha`. Если хост ставился версией 1.7 или 1.8 и на нём остался её сайт nginx (с первой строкой-меткой `# gotcha site: …`), он выключается как раньше — на Debian/Ubuntu снимается симлинк в `sites-enabled`, на EL файл переименовывается в `.disabled` — и nginx перезагружается. Сайты, которые вы настроили сами, и пакет nginx не трогаются. PostgreSQL, ClickHouse и данные в них остаются.
 
 Чтобы снести и их: `--uninstall --purge` — необратимо удаляет роль и базу `gotcha` в PostgreSQL, базу `gotcha` в ClickHouse, системного пользователя `gotcha`, каталоги `/var/lib/gotcha`, `/opt/gotcha`, `/etc/gotcha`, журнал установки `/var/log/gotcha-install.log`, а также конфиги, которые скрипт положил в каталоги чужих пакетов: `conf.d/10-gotcha.conf` у PostgreSQL, `config.d/00-common.xml` и `config.d/10-small.xml` у ClickHouse, systemd-override `clickhouse-server.service.d/override.conf`. СУБД при этом не перезапускаются — выбор момента за оператором, и до перезапуска они продолжают работать со старыми настройками.
 
-Что остаётся намеренно: пакеты СУБД и nginx (на хосте ими может пользоваться что-то ещё), apt-репозитории PGDG и ClickHouse вместе со своими keyring-файлами (снять только keyring значило бы сломать `apt-get update`), файл сайта в `sites-available` и каталоги данных самих СУБД.
+Что остаётся намеренно: пакеты СУБД (на хосте ими может пользоваться что-то ещё), apt-репозитории PGDG и ClickHouse вместе со своими keyring-файлами (снять только keyring значило бы сломать `apt-get update`) и каталоги данных самих СУБД.
 
 ## Что дальше
 

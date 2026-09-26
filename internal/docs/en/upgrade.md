@@ -388,13 +388,12 @@ If Gotcha is installed with `install-bare-metal.sh` ([Installation without Docke
 ```bash
 URL="https://github.com/OtezVikentiy/gotcha/releases/download/vX.Y.Z"
 curl -fsSL -o install-bare-metal.sh "$URL/install-bare-metal.sh"
-chmod +x install-bare-metal.sh
-sudo ./install-bare-metal.sh --version X.Y.Z --domain gotcha.example.com --email you@example.com
+sudo bash install-bare-metal.sh --version X.Y.Z
 ```
 
-Pass the same flags you used for the original install (domain, `--no-proxy`,
-`--mem-limit`, and so on) — otherwise the script falls back to their defaults instead of
-your current setting. The script detects an upgrade itself by comparing the already
+The address and other settings are read back from `/etc/gotcha/gotcha.env`, so
+`--base-url` isn't needed; pass the same `--mem-limit` you used for the install. The
+script detects an upgrade itself by comparing the already
 installed binary's version (`/usr/local/bin/gotcha --version`) against `--version`, and
 then does, with no extra flags, exactly what "Before you start" above asks you to do by
 hand:
@@ -412,11 +411,17 @@ hand:
    just through `systemd-run` instead of `docker compose run`;
 6. starts the service and waits for `--healthcheck` to pass.
 
-An upgrade leaves the nginx config alone: seeing its own marker and the same
-`server_name` in `/etc/nginx/sites-available/gotcha`, the script keeps the file as it is
-— TLS block certbot added to it included. The site is re-rendered only when `--domain`
-changes (keeping a copy of the old one next to it) or when you delete the file by hand;
-the certificate is then issued again, which needs `--email`.
+**Upgrading from 1.8.x or earlier.** Drop `--domain` and `--email` from the command — as
+of 1.9.0 they refuse. `--no-proxy` and `--no-firewall` are accepted and do nothing. The
+nginx site and certificate a previous version set up are left exactly as they are and
+stay yours to maintain: the script neither updates nor touches them. If on
+AlmaLinux/Rocky/RHEL the site sits as `/etc/nginx/conf.d/gotcha.conf.disabled` after an
+`--uninstall`, the install summary suggests the command to re-enable it: `mv
+/etc/nginx/conf.d/gotcha.conf.disabled /etc/nginx/conf.d/gotcha.conf && systemctl reload
+nginx`; on Debian/Ubuntu, where `--uninstall` removed the `sites-enabled` symlink instead,
+the same kind of hint shows up — `ln -s ... && systemctl reload nginx`. A re-run also adds
+`GOTCHA_TRUSTED_PROXIES` to the env file — this fixes the
+login limiter behind a proxy.
 
 Like the initial install, the upgrade's progress is logged to
 `/var/log/gotcha-install.log`; on failure the script prints the steps already completed
