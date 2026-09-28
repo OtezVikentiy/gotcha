@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-09-28
+
 ### Breaking
 - The Docker-free installer no longer installs or configures a web server or TLS: nginx,
   certbot, EPEL, the SELinux boolean and firewalld are gone from it. Gotcha listens only
