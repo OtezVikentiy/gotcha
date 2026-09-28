@@ -1,7 +1,10 @@
 package guards
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -117,6 +120,40 @@ func extractBashBlocks(doc string) [][]string {
 	return blocks
 }
 
+// Любой shell-тег (или отсутствие тега вовсе) — команда вызова скрипта не обязана
+// жить именно в ```bash, переразметка блока не должна гасить проверку флагов.
+var invocationFenceTags = map[string]bool{
+	"```bash":    true,
+	"```sh":      true,
+	"```shell":   true,
+	"```console": true,
+	"```":        true,
+}
+
+func extractShellBlocks(doc string) [][]string {
+	var blocks [][]string
+	inFence, isShell := false, false
+	var cur []string
+	for _, line := range strings.Split(doc, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			if !inFence {
+				inFence, isShell, cur = true, invocationFenceTags[trimmed], nil
+				continue
+			}
+			inFence = false
+			if isShell {
+				blocks = append(blocks, cur)
+			}
+			continue
+		}
+		if inFence && isShell {
+			cur = append(cur, line)
+		}
+	}
+	return blocks
+}
+
 // Переводимые куски команд ручного пути — узкий явный список, а не «любое
 // слово в угловых скобках»: расширять его нужно осознанно, строка за строкой.
 type bashLinePlaceholder struct{ ru, en string }
@@ -166,6 +203,108 @@ func TestBareMetalManualBashBlocksMatchAcrossLocales(t *testing.T) {
 					i, j, ru[i][j], normRu, en[i][j], normEn)
 			}
 		}
+	}
+}
+
+var invocationFlagRe = regexp.MustCompile(`--[a-zA-Z0-9-]+`)
+
+// bash сам склеивает строку с завершающим "\" со следующей — команда с флагом,
+// перенесённым через "\", физически лежит на второй строке отдельно от имени
+// скрипта, и построчный разбор мимо неё пройдёт молча.
+func joinLineContinuations(block []string) []string {
+	var out []string
+	var cur string
+	building := false
+	for _, line := range block {
+		trimmed := strings.TrimSpace(line)
+		if building {
+			cur = strings.TrimSpace(cur) + " " + trimmed
+		} else {
+			cur = trimmed
+		}
+		if strings.HasSuffix(cur, `\`) {
+			cur = strings.TrimSpace(strings.TrimSuffix(cur, `\`))
+			building = true
+			continue
+		}
+		out = append(out, cur)
+		building = false
+	}
+	if building {
+		out = append(out, cur)
+	}
+	return out
+}
+
+// Только строки, которые реально вызывают скрипт (а не скачивают или делают
+// исполняемым) — иначе "curl -o install-bare-metal.sh ..." читался бы как вызов.
+func installInvocationLines(blocks [][]string) []string {
+	var lines []string
+	for _, block := range blocks {
+		for _, line := range joinLineContinuations(block) {
+			if strings.Contains(line, "install-bare-metal.sh") && invocationFlagRe.MatchString(line) {
+				lines = append(lines, line)
+			}
+		}
+	}
+	return lines
+}
+
+// Все .md обеих локалей, а не жёстко перечисленные страницы — новый файл,
+// который вставит вызов с флагом, сторож подхватит сам, без правки списка.
+func allDocsMDPaths(t *testing.T, root string) []string {
+	t.Helper()
+	var files []string
+	for _, locale := range []string{"ru", "en"} {
+		dir := filepath.Join(root, "internal", "docs", locale)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("internal/docs/%s: каталог не читается: %v", locale, err)
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+			files = append(files, filepath.Join(dir, e.Name()))
+		}
+	}
+	sort.Strings(files)
+	return files
+}
+
+// Снятый из usage() флаг, доживший до примера вызова, отказал бы оператору вместо
+// того, чтобы помочь, — проверяем сами команды на всех страницах, не только таблицу.
+func TestBareMetalInvocationFlagsAreInUsage(t *testing.T) {
+	tree := Load(t)
+	want := usageFlags(t, installerBody(t, tree.Root))
+
+	mustHaveInvocation := map[string]bool{}
+	for _, path := range bareMetalDocPaths(tree.Root) {
+		mustHaveInvocation[path] = true
+	}
+	mustHaveInvocation[filepath.Join(tree.Root, "internal", "docs", "ru", "upgrade.md")] = true
+	mustHaveInvocation[filepath.Join(tree.Root, "internal", "docs", "en", "upgrade.md")] = true
+
+	flagsSeen := 0
+	for _, path := range allDocsMDPaths(t, tree.Root) {
+		lines := installInvocationLines(extractShellBlocks(readDocFile(t, path)))
+		if len(lines) == 0 {
+			if mustHaveInvocation[path] {
+				t.Fatalf("%s: ни одной команды вызова install-bare-metal.sh с флагами не найдено — сторож смотрит мимо страницы", path)
+			}
+			continue
+		}
+		for _, line := range lines {
+			for _, flag := range invocationFlagRe.FindAllString(line, -1) {
+				flagsSeen++
+				if !want[flag] {
+					t.Errorf("%s: команда %q передаёт %q, которого нет в usage()", path, line, flag)
+				}
+			}
+		}
+	}
+	if flagsSeen == 0 {
+		t.Fatalf("ни одна дока не отдала ни одного флага вызова install-bare-metal.sh — сторож смотрит мимо разбора")
 	}
 }
 

@@ -199,206 +199,6 @@ ch_gotcha_database_exists() {
     [ "$(clickhouse-client --query "EXISTS DATABASE gotcha" 2>/dev/null)" = "1" ]
 }
 
-epel_absent_without_domain() {
-    [ "$HOST_FAMILY" = rhel ] || return 0
-    ! dnf -q repolist enabled 2>/dev/null | grep -qi '^epel' \
-        || { printf 'EPEL enabled although --domain was not given\n' >&2; return 1; }
-}
-
-# .invalid: certbot гарантированно не выпустит сертификат — тот же прогон
-# проверяет, что этот отказ не откатывает установку и не роняет юнит gotcha.
-epel_enabled_with_domain_run() {
-    local output rc
-    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" \
-        --domain gotcha-e2e.invalid --email admin@gotcha-e2e.invalid --yes 2>&1)
-    rc=$?
-    [ "$rc" -eq 0 ] || { printf 'install with --domain exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
-
-    dnf -q repolist enabled 2>/dev/null | grep -qi '^epel' \
-        || { printf 'EPEL not enabled although --domain was given\n' >&2; return 1; }
-    command -v certbot >/dev/null 2>&1 \
-        || { printf 'certbot not installed although --domain was given\n' >&2; return 1; }
-    unit_active gotcha \
-        || { printf 'gotcha unit is down after a certbot failure — the install must not roll back\n' >&2; return 1; }
-
-    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
-    rc=$?
-    [ "$rc" -eq 0 ] || { printf 'reverting the --domain install exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
-    readyz_via_nginx \
-        || { printf 'readyz via nginx did not recover after reverting the --domain install\n' >&2; return 1; }
-}
-
-# Restores $NGINX_SITE on every exit of the check above, success or not — an early
-# failure must not also leave the domain detour's TLS-wiping render for later asserts.
-epel_enabled_with_domain() {
-    [ "$HOST_FAMILY" = rhel ] || return 0
-    local site_before rc baks_before baks_new
-    site_before=$(cat "$NGINX_SITE" 2>/dev/null)
-    baks_before=$(find "$(dirname "$NGINX_SITE")" -maxdepth 1 -name 'gotcha*.bak-*' | sort)
-
-    epel_enabled_with_domain_run
-    rc=$?
-
-    if [ -n "$site_before" ]; then
-        if ! printf '%s\n' "$site_before" >"$NGINX_SITE" || ! nginx -t >/dev/null 2>&1 || ! systemctl reload nginx; then
-            printf 'failed to restore %s to its pre-detour content\n' "$NGINX_SITE" >&2
-            [ "$rc" -eq 0 ] && rc=1
-        fi
-    fi
-    # The domain detour's own re-renders back up $NGINX_SITE twice; those backups are
-    # noise certbot_edits_survive_a_rerun never asked for, so remove exactly the new ones.
-    baks_new=$(comm -13 <(printf '%s\n' "$baks_before") \
-        <(find "$(dirname "$NGINX_SITE")" -maxdepth 1 -name 'gotcha*.bak-*' | sort))
-    [ -z "$baks_new" ] || xargs -r rm -f <<<"$baks_new"
-    return "$rc"
-}
-
-firewall_untouched_with_flag() {
-    [ "$HOST_FAMILY" = rhel ] || return 0
-    local stub=/tmp/fwstub log=/tmp/fw-calls.log
-    mkdir -p "$stub"; : >"$log"
-    # shellcheck disable=SC2016 # literal $@ for the stub script, not expanded here
-    printf '#!/bin/sh\necho "$@" >>%s\n[ "$1" = --state ] && { echo running; exit 0; }\nexit 0\n' "$log" >"$stub/firewall-cmd"
-    chmod +x "$stub/firewall-cmd"
-    PATH="$stub:$PATH" bash "$INSTALLER" --version "$tarball_version" \
-        --from-tarball "$WORK_TARBALL" --yes --no-firewall >/dev/null 2>&1
-    ! grep -q -- '--add-service' "$log" \
-        || { printf 'firewall-cmd --add-service called although --no-firewall was given\n' >&2; return 1; }
-}
-
-firewall_opened_without_flag() {
-    [ "$HOST_FAMILY" = rhel ] || return 0
-    local stub=/tmp/fwstub log=/tmp/fw-calls-positive.log
-    mkdir -p "$stub"; : >"$log"
-    # shellcheck disable=SC2016 # literal $@ for the stub script, not expanded here
-    printf '#!/bin/sh\necho "$@" >>%s\n[ "$1" = --state ] && { echo running; exit 0; }\nexit 0\n' "$log" >"$stub/firewall-cmd"
-    chmod +x "$stub/firewall-cmd"
-    PATH="$stub:$PATH" bash "$INSTALLER" --version "$tarball_version" \
-        --from-tarball "$WORK_TARBALL" --yes >/dev/null 2>&1
-    grep -q -- '--add-service=http' "$log" \
-        || { printf 'firewall-cmd --add-service=http not called although firewalld reports running\n' >&2; return 1; }
-    grep -q -- '--reload' "$log" \
-        || { printf 'firewall-cmd --reload not called, the rules would not apply until reboot\n' >&2; return 1; }
-}
-
-# Enforcing только под ручным прогоном на VM (задача 10) — здесь фиксируется пропуск,
-# а не тишина, если SELinux в этом контейнере не enforcing.
-selinux_boolean_set_when_enforcing() {
-    [ "$HOST_FAMILY" = rhel ] || return 0
-    local state=""
-    command -v getenforce >/dev/null 2>&1 && state=$(getenforce 2>/dev/null)
-    if [ "$state" != Enforcing ]; then
-        printf 'note: SELinux is not enforcing here, the boolean branch was not exercised\n'
-        return 0
-    fi
-    getsebool httpd_can_network_connect 2>/dev/null | grep -q -- '--> on$' \
-        || { printf 'httpd_can_network_connect is not on although SELinux is Enforcing\n' >&2; return 1; }
-}
-
-# Образы ночной матрицы не ставят firewalld — эта ветка исполняется каждую
-# ночь на живом отсутствии, не только через стаб выше.
-firewalld_skip_notice_shown_when_absent() {
-    [ "$HOST_FAMILY" = rhel ] || return 0
-    local state=""
-    command -v firewall-cmd >/dev/null 2>&1 && state=$(firewall-cmd --state 2>/dev/null)
-    if [ "$state" = running ]; then
-        printf 'note: firewalld is running here, the not-detected branch was not exercised\n'
-        return 0
-    fi
-    grep -qF 'firewalld: not detected or not running' /var/log/gotcha-install.log \
-        || { printf 'firewalld skip notice missing from /var/log/gotcha-install.log although firewalld is not running\n' >&2; return 1; }
-}
-
-readyz_via_nginx() {
-    [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:80/readyz)" = "200" ]
-}
-
-# 127.0.0.1 is on nginx's own allowlist, so curling it can't tell an open path
-# from a blocked one; the host's own routable IP is treated as external.
-external_ip() {
-    hostname -I 2>/dev/null | awk '{print $1}'
-}
-
-metrics_blocked_via_nginx() {
-    [ "$(curl -s -o /dev/null -w '%{http_code}' "http://$(external_ip):80/metrics")" = "403" ]
-}
-
-version_blocked_via_nginx() {
-    [ "$(curl -s -o /dev/null -w '%{http_code}' "http://$(external_ip):80/version")" = "403" ]
-}
-
-# Запрос по IP попадает в gotcha, а не на приветственную страницу nginx — на EL
-# это следствие порядка include в штатном nginx.conf, а не нашей правки.
-ip_request_reaches_gotcha() {
-    local body
-    body=$(curl -fsS "http://$(external_ip)/readyz") || return 1
-    case "$body" in *ok*) return 0 ;; esac
-    printf 'GET / by IP did not reach gotcha: %s\n' "$body" >&2
-    return 1
-}
-
-nginx_site_config_ok() {
-    local conf="$NGINX_SITE"
-    [ -f "$conf" ] || { printf 'missing %s\n' "$conf" >&2; return 1; }
-    grep -qF 'proxy_pass http://127.0.0.1:8080' "$conf" || { printf 'proxy_pass missing in %s\n' "$conf" >&2; return 1; }
-    grep -qF 'proxy_set_header Host' "$conf" || { printf 'Host forwarding missing in %s\n' "$conf" >&2; return 1; }
-    grep -qF 'X-Forwarded-For' "$conf" || { printf 'X-Forwarded-For missing in %s\n' "$conf" >&2; return 1; }
-    grep -qF 'X-Forwarded-Proto' "$conf" || { printf 'X-Forwarded-Proto missing in %s\n' "$conf" >&2; return 1; }
-    grep -qF 'client_max_body_size' "$conf" || { printf 'client_max_body_size missing in %s\n' "$conf" >&2; return 1; }
-    for directive in 'location ~ ^/(metrics|version)$ {' 'allow 127.0.0.1;' 'allow ::1;' 'deny all;'; do
-        grep -qF "$directive" "$conf" || { printf '%s missing in %s\n' "$directive" "$conf" >&2; return 1; }
-    done
-}
-
-nginx_site_backed_up() {
-    local dir backup
-    dir=$(dirname "$NGINX_SITE")
-    backup=$(find "$dir" -maxdepth 1 -name 'gotcha*.bak-*' -print -quit 2>/dev/null)
-    [ -n "$backup" ] || { printf 'no gotcha*.bak-* found in %s\n' "$dir" >&2; return 1; }
-    grep -qF 'pre-existing site placed by someone else' "$backup" \
-        || { printf 'backup does not preserve the original foreign content: %s\n' "$backup" >&2; return 1; }
-}
-
-# Порт 80 проверяется в preflight до любых побочных эффектов (код 3, как и
-# весь preflight), поэтому installer можно звать реальными флагами безопасно.
-port80_busy_blocks_preflight() {
-    command -v python3 >/dev/null 2>&1 || {
-        pkg_refresh
-        pkg_install python3
-    }
-
-    python3 -c '
-import socket, time
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(("0.0.0.0", 80))
-s.listen(1)
-time.sleep(30)
-' &
-    local listener_pid=$!
-
-    local tries=0
-    until grep -q ':80$' <<<"$(ss -ltn 2>/dev/null | awk '{print $4}')"; do
-        tries=$((tries + 1))
-        if [ "$tries" -ge 10 ]; then
-            printf 'dummy listener on port 80 never came up\n' >&2
-            kill "$listener_pid" 2>/dev/null
-            return 1
-        fi
-        sleep 1
-    done
-
-    local output rc
-    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
-    rc=$?
-    kill "$listener_pid" 2>/dev/null
-    wait "$listener_pid" 2>/dev/null
-
-    [ "$rc" -eq 3 ] || { printf 'expected exit 3 with port 80 busy, got %d:\n%s\n' "$rc" "$output" >&2; return 1; }
-    grep -q 'port 80 is already in use' <<<"$output" \
-        || { printf 'missing "port 80 is already in use" in output:\n%s\n' "$output" >&2; return 1; }
-}
-
 # fetch_tarball требует SHA256SUMS.txt рядом с тарболом; release.sh её пока не
 # публикует, а каталог тарбола часто read-only — считаем сумму в своей копии.
 # /var/tmp, не /tmp: на свежезагруженном systemd-контейнере правила tmpfiles
@@ -416,6 +216,11 @@ if [ -n "$UPGRADE_FROM" ]; then
     WORK_UPGRADE_TARBALL="$WORK_DIR/$(basename "$UPGRADE_FROM")"
     (cd "$WORK_DIR" && sha256sum "$(basename "$WORK_UPGRADE_TARBALL")") >>"$WORK_DIR/SHA256SUMS.txt"
 fi
+
+# http, не https: с https-адресом cookie сессии Secure, и curl по
+# http://127.0.0.1:8080 не вернёт её обратно (e2e_ingest_roundtrip).
+E2E_BASE_URL=http://gotcha-e2e.test
+E2E_BASE_URL_NEW=http://gotcha-e2e-new.test
 
 # Отдельный процесс, не подоболочка текущего: значение переживает его и
 # читается после завершения install-bare-metal.sh и всех проверок.
@@ -454,7 +259,7 @@ fi
 policy_failure_reports_steps_and_hint() {
     rm -f /etc/gotcha/gotcha.env
     local output rc
-    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" \
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" \
         --skip-databases --pg-dsn 'postgres://nobody:nobody@127.0.0.1:1/nope?sslmode=disable' \
         --ch-dsn 'clickhouse://nobody:nobody@127.0.0.1:2/nope' --yes 2>&1)
     rc=$?
@@ -477,7 +282,7 @@ preflight_requires_command() {
     hidden="$path.hidden-by-e2e"
     mv "$path" "$hidden" || { printf 'failed to hide %s\n' "$path" >&2; return 1; }
 
-    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1)
     rc=$?
     mv "$hidden" "$path" || { printf 'FAILED TO RESTORE %s — the host is now missing %s\n' "$hidden" "$cmd" >&2; return 1; }
 
@@ -490,19 +295,65 @@ preflight_requires_command() {
 # отдельная проверка без побочных эффектов, до самого запуска установки.
 dry_run_prints_platform_paths() {
     local out
-    out=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" \
+    out=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" \
         --yes --dry-run 2>&1)
     case "$out" in
         *"$(pg_conf_dir_label)/conf.d/10-gotcha.conf"*) ;;
         *) printf 'dry-run did not print %s/conf.d/10-gotcha.conf:\n%s\n' "$(pg_conf_dir_label)" "$out" >&2; return 1 ;;
     esac
     case "$out" in
-        *"$NGINX_SITE"*) ;;
-        *) printf 'dry-run did not name the nginx site path (%s):\n%s\n' "$NGINX_SITE" "$out" >&2; return 1 ;;
+        *nginx*) printf 'dry-run mentions nginx, the installer no longer touches it:\n%s\n' "$out" >&2; return 1 ;;
     esac
 }
 
-assert "a busy port 80 blocks preflight before anything is installed" port80_busy_blocks_preflight
+# Не «пакета нет»: на раннере GitHub ubuntu-24.04 nginx предустановлен.
+web_server_snapshot() {
+    if [ "$HOST_FAMILY" = rhel ]; then
+        rpm -qa 'nginx*' 'certbot*' 'python3-certbot*' 'epel-release' 2>/dev/null | sort
+    else
+        # shellcheck disable=SC2016 # формат dpkg-query, не переменная bash
+        dpkg-query -W -f '${db:Status-Abbrev} ${Package}\n' 'nginx*' 'certbot*' 'python3-certbot*' 2>/dev/null \
+            | awk '$1 == "ii" {print $2}' | sort
+    fi
+    printf 'nginx-active=%s\n' "$(systemctl is-active nginx 2>/dev/null)"
+    if [ -d /etc/nginx ]; then echo 'etc-nginx=present'; else echo 'etc-nginx=absent'; fi
+}
+
+installer_did_not_touch_web_server() {
+    local now
+    now=$(web_server_snapshot)
+    [ "$now" = "$WEB_SNAPSHOT_BEFORE" ] \
+        || { printf 'web server state changed during the install:\nbefore:\n%s\nafter:\n%s\n' "$WEB_SNAPSHOT_BEFORE" "$now" >&2; return 1; }
+    port_loopback_only 8080
+}
+
+nginx_worker_pids() {
+    local master
+    master=$(systemctl show -p MainPID --value nginx 2>/dev/null)
+    if [ -z "$master" ] || [ "$master" = 0 ]; then
+        return 0
+    fi
+    pgrep -P "$master" | sort | tr '\n' ' '
+}
+
+WEB_SNAPSHOT_BEFORE=$(web_server_snapshot)
+
+new_install_without_base_url_refused() {
+    local db_before output rc
+    [ ! -e /etc/gotcha ] || { printf 'precondition: /etc/gotcha already exists, the host is not clean\n' >&2; return 1; }
+    db_before=$(for p in "$PG_PACKAGE" clickhouse-server; do pkg_installed "$p" && echo "$p"; done)
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
+    rc=$?
+    [ "$rc" -eq 2 ] || { printf 'expected exit 2 without --base-url on a clean host, got %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    grep -qF -- '--base-url is required for a new installation' <<<"$output" \
+        || { printf 'missing the --base-url refusal in output:\n%s\n' "$output" >&2; return 1; }
+    [ ! -e /etc/gotcha ] || { printf '/etc/gotcha appeared although the install was refused\n' >&2; return 1; }
+    [ "$(for p in "$PG_PACKAGE" clickhouse-server; do pkg_installed "$p" && echo "$p"; done)" = "$db_before" ] \
+        || { printf 'database packages changed although the install was refused\n' >&2; return 1; }
+}
+
+assert "a clean install without --base-url and with --yes is refused before touching the host" new_install_without_base_url_refused
+
 assert "preflight refuses without ss, which the port check needs" preflight_requires_command ss
 assert "preflight refuses without runuser, which the database steps need" preflight_requires_command runuser
 if [ "$HOST_FAMILY" = rhel ]; then
@@ -512,29 +363,44 @@ fi
 assert "a mid-install failure reports the exit code, completed steps and a hint" policy_failure_reports_steps_and_hint
 assert "--dry-run prints paths from the platform layer, not a debian literal" dry_run_prints_platform_paths
 
-# Симулирует чужой конфиг сайта, уже лежащий на месте нашего: install_nginx
-# обязан унести его в *.bak-<метка времени>, а не переписать без следа.
-mkdir -p "$(dirname "$NGINX_SITE")"
-printf '# pre-existing site placed by someone else\n' >"$NGINX_SITE"
-
 # Ставит более старую версию первой, чтобы запуск ниже был обновлением (§4.5), а не
 # свежей установкой — "старая" версия детектится только по уже установленному бинарю.
 if [ -n "$WORK_UPGRADE_TARBALL" ]; then
-    printf 'bare-metal-e2e: running install-bare-metal.sh --version %s --from-tarball %s --yes (upgrade baseline)\n' \
-        "$upgrade_from_version" "$WORK_UPGRADE_TARBALL"
-    bash "$INSTALLER" --version "$upgrade_from_version" --from-tarball "$WORK_UPGRADE_TARBALL" --yes
+    printf 'bare-metal-e2e: running install-bare-metal.sh --version %s --from-tarball %s --base-url %s --yes (upgrade baseline)\n' \
+        "$upgrade_from_version" "$WORK_UPGRADE_TARBALL" "$E2E_BASE_URL"
+    bash "$INSTALLER" --version "$upgrade_from_version" --from-tarball "$WORK_UPGRADE_TARBALL" --base-url "$E2E_BASE_URL" --yes
     baseline_rc=$?
     printf 'bare-metal-e2e: upgrade baseline install exited %d\n' "$baseline_rc"
 fi
 
-printf 'bare-metal-e2e: running install-bare-metal.sh --version %s --from-tarball %s --yes\n' \
-    "$tarball_version" "$WORK_TARBALL"
-bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes
-installer_rc=$?
+printf 'bare-metal-e2e: running install-bare-metal.sh --version %s --from-tarball %s --base-url %s --yes\n' \
+    "$tarball_version" "$WORK_TARBALL" "$E2E_BASE_URL"
+bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1 \
+    | tee "$WORK_DIR/main-install.out"
+installer_rc=${PIPESTATUS[0]}
 printf 'bare-metal-e2e: install-bare-metal.sh exited %d\n' "$installer_rc"
 
 installer_succeeded() {
     [ "$installer_rc" -eq 0 ]
+}
+
+summary_printed() {
+    local out="$WORK_DIR/main-install.out"
+    grep -qxF "Gotcha $tarball_version is installed and running." "$out" \
+        || { printf 'no summary header in the install output\n' >&2; return 1; }
+    grep -E '^  readiness:  ' "$out" | grep -qF '"status":"ready"' \
+        || { printf 'the summary does not carry the /readyz body\n' >&2; return 1; }
+    grep -qxF "  address:    $E2E_BASE_URL (GOTCHA_BASE_URL)" "$out" \
+        || { printf 'the summary does not name the address\n' >&2; return 1; }
+    grep -qF '  1. Put a reverse proxy' "$out" \
+        || { printf 'the summary does not say what is left to do\n' >&2; return 1; }
+    if [ -z "$WORK_UPGRADE_TARBALL" ]; then
+        grep -qF 'create the first administrator' "$out" \
+            || { printf 'the summary does not invite creating the first administrator on a fresh install\n' >&2; return 1; }
+    else
+        ! grep -qF 'create the first administrator' "$out" \
+            || { printf 'the summary invites creating the first administrator on an upgrade\n' >&2; return 1; }
+    fi
 }
 
 baseline_install_succeeded() {
@@ -716,35 +582,6 @@ documented_ch_password_change_works() {
     done
 }
 
-# certbot правит ровно тот файл, который рендерит install_nginx. В контейнере его не
-# выпустить, поэтому результат имитируется своим сертификатом.
-certbot_edits_survive_a_rerun() {
-    local site="$NGINX_SITE" crt=/etc/ssl/gotcha-e2e.crt key=/etc/ssl/gotcha-e2e.key
-    local bak_before bak_after output rc
-    openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=localhost' \
-        -keyout "$key" -out "$crt" >/dev/null 2>&1 \
-        || { printf 'failed to generate a self-signed certificate\n' >&2; return 1; }
-
-    sed -i "\$i\\    listen 443 ssl;" "$site"
-    sed -i "\$i\\    ssl_certificate $crt;" "$site"
-    sed -i "\$i\\    ssl_certificate_key $key;" "$site"
-    nginx -t >/dev/null 2>&1 || { printf 'the planted TLS block does not pass nginx -t\n' >&2; return 1; }
-    systemctl reload nginx || { printf 'nginx reload failed after planting the TLS block\n' >&2; return 1; }
-
-    bak_before=$(find "$(dirname "$NGINX_SITE")" -maxdepth 1 -name 'gotcha*.bak-*' | wc -l)
-    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
-    rc=$?
-    [ "$rc" -eq 0 ] || { printf 'a re-run over a certbot-edited site exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
-
-    grep -qF 'listen 443 ssl;' "$site" \
-        || { printf 'the TLS block is gone from %s after a re-run — the host fell back to plain HTTP\n' "$site" >&2; return 1; }
-    bak_after=$(find "$(dirname "$NGINX_SITE")" -maxdepth 1 -name 'gotcha*.bak-*' | wc -l)
-    [ "$bak_after" -eq "$bak_before" ] \
-        || { printf 'the site was backed up and re-rendered on a re-run (count %s -> %s)\n' "$bak_before" "$bak_after" >&2; return 1; }
-    [ "$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:443/readyz)" = "200" ] \
-        || { printf 'HTTPS stopped answering after the re-run\n' >&2; return 1; }
-}
-
 # Шаги СУБД возвращают DSN через $( ), их log_step наполняет INSTALL_LOG подоболочки.
 # Ломается install_unit уже после обеих СУБД: отчёт обязан назвать их шаги.
 failure_report_lists_database_steps() {
@@ -752,7 +589,7 @@ failure_report_lists_database_steps() {
     rm -f "$unit"
     mkdir -p "$unit" || { printf 'failed to plant a directory at %s\n' "$unit" >&2; return 1; }
 
-    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1)
     rc=$?
     rmdir "$unit" || { printf 'FAILED TO REMOVE the planted directory %s\n' "$unit" >&2; return 1; }
 
@@ -774,11 +611,11 @@ failure_report_lists_database_steps() {
 # Действие и проверка вместе, как survives_postgresql_restart выше: §4.4 требует
 # юнит/конфиги/права привести к целевому состоянию заново, но не трогать env/пароли/данные.
 survives_idempotent_rerun() {
-    local env_before="$WORK_DIR/gotcha.env.before-rerun" bak_before bak_after output rc
+    local env_before="$WORK_DIR/gotcha.env.before-rerun" output rc pid_before
     cp /etc/gotcha/gotcha.env "$env_before" || { printf 'failed to snapshot gotcha.env\n' >&2; return 1; }
-    bak_before=$(find "$(dirname "$NGINX_SITE")" -maxdepth 1 -name 'gotcha*.bak-*' | wc -l)
+    pid_before=$(systemctl show -p MainPID --value gotcha)
 
-    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1)
     rc=$?
     [ "$rc" -eq 0 ] || { printf 'idempotent re-run exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
 
@@ -787,10 +624,8 @@ survives_idempotent_rerun() {
     # гарантирован на минимальном EL-хосте, sha256sum — гарантирован преflight'ом.
     [ "$(sha256sum <"$env_before")" = "$(sha256sum </etc/gotcha/gotcha.env)" ] \
         || { printf 'gotcha.env changed after an idempotent re-run\n' >&2; return 1; }
-
-    bak_after=$(find "$(dirname "$NGINX_SITE")" -maxdepth 1 -name 'gotcha*.bak-*' | wc -l)
-    [ "$bak_after" -eq "$bak_before" ] \
-        || { printf 'nginx config re-backed-up on an idempotent re-run (count %s -> %s)\n' "$bak_before" "$bak_after" >&2; return 1; }
+    [ "$(systemctl show -p MainPID --value gotcha)" = "$pid_before" ] \
+        || { printf 'gotcha was restarted on an idempotent re-run with the same address\n' >&2; return 1; }
 
     local tries=0
     until readyz_ok; do
@@ -800,13 +635,139 @@ survives_idempotent_rerun() {
     done
 }
 
+env_value() {
+    grep "^$1=" /etc/gotcha/gotcha.env
+}
+
+dry_run_leaves_env_untouched() {
+    local before output rc
+    before=$(sha256sum </etc/gotcha/gotcha.env)
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL_NEW" --yes --dry-run 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf -- '--dry-run with a new address exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    [ "$(sha256sum </etc/gotcha/gotcha.env)" = "$before" ] \
+        || { printf -- '--dry-run changed gotcha.env\n' >&2; return 1; }
+    grep -qF "would change GOTCHA_BASE_URL in /etc/gotcha/gotcha.env: $E2E_BASE_URL -> $E2E_BASE_URL_NEW" <<<"$output" \
+        || { printf 'missing the dry-run address-change line:\n%s\n' "$output" >&2; return 1; }
+
+    before=$(sha256sum </etc/gotcha/gotcha.env)
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes --dry-run 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf -- '--dry-run without --base-url exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    [ "$(sha256sum </etc/gotcha/gotcha.env)" = "$before" ] \
+        || { printf -- '--dry-run without --base-url changed gotcha.env\n' >&2; return 1; }
+    ! grep -qF 'would change GOTCHA_BASE_URL' <<<"$output" \
+        || { printf 'a dry-run without --base-url still claims it would change the address:\n%s\n' "$output" >&2; return 1; }
+}
+
+base_url_change_on_rerun() {
+    local env=/etc/gotcha/gotcha.env secret pg ch pid_before output rc code tries
+    secret=$(env_value GOTCHA_SECRET_KEY); pg=$(env_value GOTCHA_PG_DSN); ch=$(env_value GOTCHA_CH_DSN)
+    pid_before=$(systemctl show -p MainPID --value gotcha)
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL_NEW" --yes 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf 're-run with a new --base-url exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    [ "$(grep -c '^GOTCHA_BASE_URL=' "$env")" = 1 ] \
+        || { printf 'gotcha.env carries %s GOTCHA_BASE_URL lines, want 1\n' "$(grep -c '^GOTCHA_BASE_URL=' "$env")" >&2; return 1; }
+    grep -qx "GOTCHA_BASE_URL=$E2E_BASE_URL_NEW" "$env" \
+        || { printf 'gotcha.env does not carry the new address:\n%s\n' "$(grep '^GOTCHA_BASE_URL=' "$env")" >&2; return 1; }
+    [ "$(env_value GOTCHA_SECRET_KEY)" = "$secret" ] || { printf 'GOTCHA_SECRET_KEY changed on an address change\n' >&2; return 1; }
+    [ "$(env_value GOTCHA_PG_DSN)" = "$pg" ] || { printf 'GOTCHA_PG_DSN changed on an address change\n' >&2; return 1; }
+    [ "$(env_value GOTCHA_CH_DSN)" = "$ch" ] || { printf 'GOTCHA_CH_DSN changed on an address change\n' >&2; return 1; }
+    env_file_secured || return 1
+    grep -qF "GOTCHA_BASE_URL changed: $E2E_BASE_URL -> $E2E_BASE_URL_NEW" <<<"$output" \
+        || { printf 'missing the address-change log line:\n%s\n' "$output" >&2; return 1; }
+    [ "$(systemctl show -p MainPID --value gotcha)" != "$pid_before" ] \
+        || { printf 'gotcha was not restarted after its env changed\n' >&2; return 1; }
+    tries=0
+    until readyz_ok; do
+        tries=$((tries + 1)); [ "$tries" -lt 30 ] || { printf '/readyz did not recover after the address change\n' >&2; return 1; }
+        sleep 1
+    done
+    code=$(curl -s -o /dev/null -w '%{http_code}' -H "Origin: $E2E_BASE_URL_NEW" \
+        --data-urlencode 'email=nobody@example.invalid' --data-urlencode 'password=x' http://127.0.0.1:8080/login)
+    [ "$code" != 403 ] || { printf 'POST with the new Origin is rejected (403): the app still has the old address\n' >&2; return 1; }
+    code=$(curl -s -o /dev/null -w '%{http_code}' -H "Origin: $E2E_BASE_URL" \
+        --data-urlencode 'email=nobody@example.invalid' --data-urlencode 'password=x' http://127.0.0.1:8080/login)
+    [ "$code" = 403 ] || { printf 'POST with the old Origin answered %s, want 403\n' "$code" >&2; return 1; }
+
+    bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes >/dev/null 2>&1 \
+        || { printf 'switching the address back failed\n' >&2; return 1; }
+    grep -qx "GOTCHA_BASE_URL=$E2E_BASE_URL" "$env" \
+        || { printf 'the address was not switched back\n' >&2; return 1; }
+}
+
+trusted_proxies_written() {
+    local env=/etc/gotcha/gotcha.env output rc
+    [ "$(grep -c '^GOTCHA_TRUSTED_PROXIES=' "$env")" = 1 ] \
+        || { printf 'a fresh env does not carry exactly one GOTCHA_TRUSTED_PROXIES line\n' >&2; return 1; }
+    grep -qx 'GOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128' "$env" \
+        || { printf 'a fresh env carries a different GOTCHA_TRUSTED_PROXIES value\n' >&2; return 1; }
+    sed -i '/^GOTCHA_TRUSTED_PROXIES=/d' "$env" || return 1
+
+    local before
+    before=$(sha256sum <"$env")
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes --dry-run 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf -- '--dry-run over a 1.8-style env exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    [ "$(sha256sum <"$env")" = "$before" ] \
+        || { printf -- '--dry-run over a 1.8-style env changed gotcha.env\n' >&2; return 1; }
+    grep -qF 'would add GOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128' <<<"$output" \
+        || { printf 'missing the dry-run trusted-proxies line:\n%s\n' "$output" >&2; return 1; }
+
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf 're-run over a 1.8-style env exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    [ "$(grep -c '^GOTCHA_TRUSTED_PROXIES=' "$env")" = 1 ] \
+        || { printf 'GOTCHA_TRUSTED_PROXIES was not added exactly once to a 1.8-style env\n' >&2; return 1; }
+    grep -qx 'GOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128' "$env" \
+        || { printf 'GOTCHA_TRUSTED_PROXIES added with a wrong value\n' >&2; return 1; }
+    grep -qF 'GOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128 added' <<<"$output" \
+        || { printf 'missing the log line about the added key:\n%s\n' "$output" >&2; return 1; }
+    env_file_secured
+}
+
+# tar на Debian — Essential, снимать его на раннере нельзя; на EL — законный пакет.
+missing_tar_is_installed() {
+    local output rc
+    rpm -e --nodeps tar >/dev/null 2>&1 || { printf 'could not remove tar for the check\n' >&2; return 1; }
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf 'install without tar exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    command -v tar >/dev/null 2>&1 || { printf 'tar is still missing after the install\n' >&2; return 1; }
+    grep -qF 'installing missing prerequisites: tar' <<<"$output" \
+        || { printf 'missing the delivery progress line:\n%s\n' "$output" >&2; return 1; }
+    grep -qF 'installed missing prerequisites: tar' <<<"$output" \
+        || { printf 'missing the delivery completion log line:\n%s\n' "$output" >&2; return 1; }
+}
+
+# tar отсутствует: dry-run обязан молча пропустить тарбол-проверку, не звать fetch_tarball.
+dry_run_skips_tarball_check_without_tar() {
+    local output rc
+    rpm -e --nodeps tar >/dev/null 2>&1 || { printf 'could not remove tar for the check\n' >&2; return 1; }
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes --dry-run 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf -- '--dry-run without tar exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    grep -qF '[dry-run] tarball check skipped: tar is missing' <<<"$output" \
+        || { printf 'missing the dry-run tarball-skip line:\n%s\n' "$output" >&2; return 1; }
+    ! grep -qi 'corrupted' <<<"$output" \
+        || { printf 'dry-run without tar still claims a corrupted download:\n%s\n' "$output" >&2; return 1; }
+    ! grep -qi 'failed to extract' <<<"$output" \
+        || { printf 'dry-run without tar still tried to extract a tarball:\n%s\n' "$output" >&2; return 1; }
+
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1)
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf 'restoring tar after the dry-run check exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
+    command -v tar >/dev/null 2>&1 || { printf 'tar is still missing after restoring it\n' >&2; return 1; }
+}
+
 # Роль/пользователь — наши; потерянный gotcha.env не повод падать на аутентификации,
 # install_postgresql/install_clickhouse обязаны сами перевыпустить пароль.
 recovers_after_env_file_lost() {
     rm -f /etc/gotcha/gotcha.env
 
     local output rc
-    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes 2>&1)
+    output=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1)
     rc=$?
     [ "$rc" -eq 0 ] || { printf 'recovering from a lost env file exited %d:\n%s\n' "$rc" "$output" >&2; return 1; }
     grep -qi 'regenerating' <<<"$output" \
@@ -824,61 +785,36 @@ recovers_after_env_file_lost() {
 # Действие и проверка вместе: --uninstall снимает только юнит и бинарь, данные,
 # базы, пакеты и apt-репозитории остаются (§4.5/§4.6 — на хосте ими может пользоваться что-то ещё).
 uninstall_removes_unit_and_binary_keeps_data() {
-    bash "$INSTALLER" --uninstall
+    local stub="$WORK_DIR/uninstall-stub" calls="$WORK_DIR/uninstall-calls.log" real_systemctl
+    real_systemctl=$(command -v systemctl)
+    mkdir -p "$stub"
+    : >"$calls"
+    # shellcheck disable=SC2016 # literal $* / $@ for the stub scripts, not expanded here
+    printf '#!/bin/sh\necho "systemctl $*" >>%s\nexec %s "$@"\n' "$calls" "$real_systemctl" >"$stub/systemctl"
+    # shellcheck disable=SC2016 # literal $* for the stub script, not expanded here
+    printf '#!/bin/sh\necho "nginx $*" >>%s\nexit 0\n' "$calls" >"$stub/nginx"
+    chmod +x "$stub/systemctl" "$stub/nginx"
+    PATH="$stub:$PATH" bash "$INSTALLER" --uninstall
     local rc=$?
     [ "$rc" -eq 0 ] || { printf '--uninstall exited %d\n' "$rc" >&2; return 1; }
 
     [ ! -f /etc/systemd/system/gotcha.service ] || { printf 'gotcha.service still present after --uninstall\n' >&2; return 1; }
     [ ! -f /usr/local/bin/gotcha ] || { printf '/usr/local/bin/gotcha still present after --uninstall\n' >&2; return 1; }
     [ -d /var/lib/gotcha ] || { printf '/var/lib/gotcha missing after --uninstall\n' >&2; return 1; }
-
-    # Оставленный включённым сайт — 502 на всё. На EL это переименование в .disabled,
-    # на Debian — снятие симлинка (файл в sites-available остаётся под своим именем).
-    if [ "$HOST_FAMILY" = rhel ]; then
-        [ ! -e "$NGINX_SITE" ] \
-            || { printf 'the nginx site is still enabled after --uninstall\n' >&2; return 1; }
-        [ -f "$(nginx_site_disabled_path)" ] \
-            || { printf '%s missing after --uninstall (the certbot TLS block lives there)\n' "$(nginx_site_disabled_path)" >&2; return 1; }
-    else
-        [ ! -e /etc/nginx/sites-enabled/gotcha ] \
-            || { printf 'the nginx site is still enabled after --uninstall\n' >&2; return 1; }
-        [ -f "$NGINX_SITE" ] \
-            || { printf '%s removed by --uninstall (the certbot TLS block lives there)\n' "$NGINX_SITE" >&2; return 1; }
-    fi
-    # Перезагрузка nginx асинхронна: старые воркеры доживают свои соединения, и первые
-    # доли секунды хост ещё отвечает 502 — ждём, а не меряем один раз.
-    local tries=0 code
-    until code=$(curl -s -o /dev/null -w '%{http_code}' "http://$(external_ip):80/readyz"); [ "$code" != "502" ]; do
-        tries=$((tries + 1))
-        [ "$tries" -lt 15 ] || { printf 'nginx still answers 502 %s s after --uninstall\n' "$tries" >&2; return 1; }
-        sleep 1
-    done
+    ! grep -q nginx "$calls" \
+        || { printf '--uninstall touched nginx on a host without a previous-version site:\n%s\n' "$(cat "$calls")" >&2; return 1; }
 
     pg_role_exists || { printf 'postgresql role gotcha missing after --uninstall\n' >&2; return 1; }
     pg_database_exists || { printf 'postgresql database gotcha missing after --uninstall\n' >&2; return 1; }
     ch_gotcha_database_exists || { printf 'clickhouse database gotcha missing after --uninstall\n' >&2; return 1; }
     pkg_installed "$PG_PACKAGE" || { printf 'postgresql package removed by --uninstall\n' >&2; return 1; }
     pkg_installed clickhouse-server || { printf 'clickhouse-server package removed by --uninstall\n' >&2; return 1; }
-    pkg_installed nginx || { printf 'nginx package removed by --uninstall\n' >&2; return 1; }
     pgdg_repo_file_present || { printf 'PGDG repository removed by --uninstall\n' >&2; return 1; }
     clickhouse_repo_file_present || { printf 'ClickHouse repository removed by --uninstall\n' >&2; return 1; }
 }
 
-# После --uninstall gotcha больше нет за проксёй — запрос по IP обязан попасть
-# на штатную страницу nginx, а не зависнуть в 502 (стек всё ещё висит на порту 80).
-ip_request_falls_back_to_default_nginx_page() {
-    local code
-    code=$(curl -s -o /dev/null -w '%{http_code}' "http://$(external_ip)/")
-    [ "$code" != 502 ] || { printf 'nginx answers 502 after --uninstall\n' >&2; return 1; }
-}
-
-certbot_site_survives_uninstall_reinstall() {
-    grep -qF 'listen 443 ssl;' "$NGINX_SITE" \
-        || { printf 'TLS block missing from %s after --uninstall + reinstall\n' "$NGINX_SITE" >&2; return 1; }
-}
-
 reinstall_after_uninstall_succeeds() {
-    bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --yes
+    bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes
     local rc=$?
     [ "$rc" -eq 0 ] || { printf 're-install after --uninstall exited %d\n' "$rc" >&2; return 1; }
     unit_active gotcha || { printf 'gotcha unit not active after re-install\n' >&2; return 1; }
@@ -963,13 +899,106 @@ purge_removes_data_and_databases_keeps_packages() {
         || { printf '/var/log/gotcha-install.log still present after --purge\n' >&2; return 1; }
     pkg_installed "$PG_PACKAGE" || { printf 'postgresql package removed by --purge\n' >&2; return 1; }
     pkg_installed clickhouse-server || { printf 'clickhouse-server package removed by --purge\n' >&2; return 1; }
-    pkg_installed nginx || { printf 'nginx package removed by --purge\n' >&2; return 1; }
     pgdg_repo_file_present || { printf 'PGDG repository removed by --purge\n' >&2; return 1; }
     clickhouse_repo_file_present || { printf 'ClickHouse repository removed by --purge\n' >&2; return 1; }
 }
 
+# 1.8.x ставил сайт с маркером и TLS-блоком certbot; фикстура кладёт его сама, без сети.
+legacy_nginx_site_untouched() {
+    local crt=/etc/ssl/gotcha-e2e.crt key=/etc/ssl/gotcha-e2e.key hash_before workers_before rc code tries
+    [ "$HOST_FAMILY" = rhel ] || pkg_refresh
+    pkg_install nginx || { printf 'failed to install nginx for the legacy fixture\n' >&2; return 1; }
+    openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=gotcha-e2e.test' \
+        -keyout "$key" -out "$crt" >/dev/null 2>&1 \
+        || { printf 'failed to generate a self-signed certificate\n' >&2; return 1; }
+    mkdir -p "$(dirname "$NGINX_SITE")"
+    cat >"$NGINX_SITE" <<EOF
+$NGINX_SITE_MARKER
+server {
+    listen 80;
+    server_name gotcha-e2e.test;
+    client_max_body_size 64m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+    listen 443 ssl;
+    ssl_certificate $crt;
+    ssl_certificate_key $key;
+}
+EOF
+    if [ "$HOST_FAMILY" != rhel ]; then
+        rm -f /etc/nginx/sites-enabled/default
+        ln -sf ../sites-available/gotcha "$NGINX_SITE_ENABLED_LINK"
+    fi
+    # Reload only if already running: right after a fresh enable --now it
+    # races the first worker generation, leaving stale workers alive for a while.
+    local was_active=""
+    systemctl is-active --quiet nginx && was_active=1
+    if ! nginx -t >/dev/null 2>&1 || ! systemctl enable --now nginx >/dev/null 2>&1; then
+        printf 'the legacy fixture site does not start under nginx\n' >&2
+        return 1
+    fi
+    if [ -n "$was_active" ] && ! systemctl reload nginx; then
+        printf 'the legacy fixture site does not start under nginx\n' >&2
+        return 1
+    fi
+
+    hash_before=$(sha256sum <"$NGINX_SITE")
+    workers_before=$(nginx_worker_pids)
+    tries=0
+    while sleep 1; [ "$(nginx_worker_pids)" != "$workers_before" ]; do
+        tries=$((tries + 1))
+        [ "$tries" -lt 15 ] || { printf 'nginx worker set never stabilized before the legacy fixture install\n' >&2; return 1; }
+        workers_before=$(nginx_worker_pids)
+    done
+    LEGACY_INSTALL_OUT="$WORK_DIR/legacy-install.out"
+    bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes >"$LEGACY_INSTALL_OUT" 2>&1
+    rc=$?
+    [ "$rc" -eq 0 ] || { printf 'install over a legacy site exited %d:\n%s\n' "$rc" "$(tail -40 "$LEGACY_INSTALL_OUT")" >&2; return 1; }
+    [ "$(sha256sum <"$NGINX_SITE")" = "$hash_before" ] \
+        || { printf 'the installer changed the legacy site %s\n' "$NGINX_SITE" >&2; return 1; }
+    [ "$(nginx_worker_pids)" = "$workers_before" ] \
+        || { printf 'nginx was reloaded or restarted by the installer (workers %s -> %s)\n' "$workers_before" "$(nginx_worker_pids)" >&2; return 1; }
+    tries=0
+    until code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: gotcha-e2e.test' http://127.0.0.1:80/readyz); [ "$code" = 200 ]; do
+        tries=$((tries + 1))
+        [ "$tries" -lt 15 ] || { printf '/readyz through the legacy nginx site answers %s\n' "$code" >&2; return 1; }
+        sleep 1
+    done
+
+    grep -qF "Your nginx site from a previous version is kept as is and is yours to maintain: $(readlink -f "$NGINX_SITE")" "$LEGACY_INSTALL_OUT" \
+        || { printf 'the summary does not mention the kept legacy site:\n%s\n' "$(tail -15 "$LEGACY_INSTALL_OUT")" >&2; return 1; }
+
+    bash "$INSTALLER" --uninstall >/dev/null 2>&1 || { printf '--uninstall over a legacy site failed\n' >&2; return 1; }
+    if [ "$HOST_FAMILY" = rhel ]; then
+        [ ! -e "$NGINX_SITE" ] || { printf 'legacy EL site still enabled after --uninstall\n' >&2; return 1; }
+        [ -f "$(nginx_site_disabled_path)" ] || { printf 'legacy EL site not kept as .disabled\n' >&2; return 1; }
+    else
+        [ ! -L "$NGINX_SITE_ENABLED_LINK" ] || { printf 'legacy Debian symlink not removed by --uninstall\n' >&2; return 1; }
+        [ -f "$NGINX_SITE" ] || { printf 'legacy Debian site file lost by --uninstall\n' >&2; return 1; }
+    fi
+
+    local reinstall_out want_hint
+    reinstall_out=$(bash "$INSTALLER" --version "$tarball_version" --from-tarball "$WORK_TARBALL" --base-url "$E2E_BASE_URL" --yes 2>&1) \
+        || { printf 're-install after the legacy --uninstall failed:\n%s\n' "$reinstall_out" >&2; return 1; }
+    if [ "$HOST_FAMILY" = rhel ]; then
+        want_hint="mv $(nginx_site_disabled_path) $NGINX_SITE && systemctl reload nginx"
+    else
+        want_hint="ln -s $(readlink -f "$NGINX_SITE") $NGINX_SITE_ENABLED_LINK && systemctl reload nginx"
+    fi
+    grep -qF "to enable it: $want_hint" <<<"$reinstall_out" \
+        || { printf 'the summary does not give the enable command (%s):\n%s\n' "$want_hint" "$(tail -15 <<<"$reinstall_out")" >&2; return 1; }
+    ! grep -qF 'create the first administrator' <<<"$reinstall_out" \
+        || { printf 'the summary invites creating the first administrator on a re-install over an existing env\n' >&2; return 1; }
+}
+
 run_assertions() {
     assert "install-bare-metal.sh exited 0" installer_succeeded
+    assert "the install ends with a summary: version, readiness, address, next steps" summary_printed
 
     if [ -n "$WORK_UPGRADE_TARBALL" ]; then
         assert "upgrade baseline install (older version) exited 0" baseline_install_succeeded
@@ -997,9 +1026,9 @@ run_assertions() {
     assert "clickhouse-server LimitNOFILE=262144" ch_limit_nofile
     assert "clickhouse user gotcha configured" ch_gotcha_user_configured
     assert "clickhouse database gotcha exists" ch_gotcha_database_exists
-    assert "EPEL is not enabled when --domain was not given" epel_absent_without_domain
 
     assert "gotcha /readyz responds 200" readyz_ok
+    assert "the installer did not install, start or configure a web server" installer_did_not_touch_web_server
     assert "state directory is 0700 and owned by gotcha" state_dir_secured
     assert "exports directory is 0700 and owned by gotcha" exports_dir_secured
     assert "gotcha.env is root:gotcha 640" env_file_secured
@@ -1010,35 +1039,24 @@ run_assertions() {
     assert "the ClickHouse password from gotcha.env authenticates (the documented backup path)" ch_password_from_env_file_works
     assert "the documented ClickHouse password change (users.d + restart) works" documented_ch_password_change_works
 
-    assert "nginx package installed" pkg_installed nginx
-    assert "nginx unit active" unit_active nginx
-    assert "nginx site config proxies to gotcha with required headers" nginx_site_config_ok
-    assert "pre-existing nginx site config was backed up, not clobbered" nginx_site_backed_up
-    assert "gotcha /readyz responds 200 via nginx on :80" readyz_via_nginx
-    assert "gotcha /metrics responds 403 via nginx on :80" metrics_blocked_via_nginx
-    assert "gotcha /version responds 403 via nginx on :80" version_blocked_via_nginx
-    assert "a request by IP reaches gotcha, not the nginx welcome page" ip_request_reaches_gotcha
-
-    assert "a certbot-edited nginx site survives a re-run, TLS included" certbot_edits_survive_a_rerun
     assert "a failure after the database steps lists them in the report" failure_report_lists_database_steps
     assert "re-running the installer with the same version is idempotent (unit alive, env untouched, /readyz ok)" survives_idempotent_rerun
+    assert "--dry-run with a new --base-url leaves gotcha.env untouched" dry_run_leaves_env_untouched
+    assert "a re-run with a new --base-url rewrites only the address and restarts the app" base_url_change_on_rerun
+    assert "GOTCHA_TRUSTED_PROXIES is written once and added to a 1.8-style env" trusted_proxies_written
     if [ "$HOST_FAMILY" = rhel ]; then
+        assert "a missing tar is installed by preflight instead of failing the install" missing_tar_is_installed
+        assert "--dry-run without tar skips the tarball check instead of failing on a corrupted download" dry_run_skips_tarball_check_without_tar
         assert "include_dir 'conf.d' appears exactly once after two installer runs" pg_include_dir_set_once
     fi
     assert "a lost gotcha.env is recovered by regenerating the PostgreSQL/ClickHouse passwords" recovers_after_env_file_lost
-    assert "firewall-cmd is not called to open ports when --no-firewall is given" firewall_untouched_with_flag
-    assert "firewall-cmd opens http/https and reloads when firewalld reports running" firewall_opened_without_flag
-    assert "SELinux httpd_can_network_connect is on when SELinux is Enforcing" selinux_boolean_set_when_enforcing
-    assert "the primary install run notes the firewalld skip when it is not running here" firewalld_skip_notice_shown_when_absent
-    assert "EPEL and certbot are installed when --domain is given, without rolling back on a certbot failure" epel_enabled_with_domain
 
     assert "--uninstall removes the unit and binary, keeps data/databases/packages/repos" uninstall_removes_unit_and_binary_keeps_data
-    assert "a request by IP falls back to the default nginx page after --uninstall" ip_request_falls_back_to_default_nginx_page
     assert "--purge without confirmation and without --yes refuses" purge_without_confirmation_refuses
     assert "re-installing after --uninstall succeeds" reinstall_after_uninstall_succeeds
-    assert "a certbot-edited nginx site survives --uninstall and a reinstall" certbot_site_survives_uninstall_reinstall
     assert "a failing marker removal is reported, not swallowed, and --purge still exits 0" purge_marker_removal_failure_is_reported_not_silent
     assert "--purge removes data/databases/system user, keeps packages/repos" purge_removes_data_and_databases_keeps_packages
+    assert "a previous-version nginx site survives a 1.9 install untouched and is disabled by --uninstall the old way" legacy_nginx_site_untouched
 }
 
 run_assertions

@@ -85,6 +85,7 @@ assert_eq "debian PG_UNIT" "postgresql" "$PG_UNIT"
 assert_eq "debian PG_PACKAGE" "postgresql-$PG_MAJOR" "$PG_PACKAGE"
 assert_eq "debian PG_BIN_DIR" "/usr/bin" "$PG_BIN_DIR"
 assert_eq "debian NGINX_SITE" "/etc/nginx/sites-available/gotcha" "$NGINX_SITE"
+assert_eq "debian NGINX_SITE_ENABLED_LINK" "/etc/nginx/sites-enabled/gotcha" "$NGINX_SITE_ENABLED_LINK"
 assert_eq "debian REPO_DIR" "/etc/apt/sources.list.d" "$REPO_DIR"
 assert_eq "debian pg_conf_dir_label" "/etc/postgresql/*/main" "$(pg_conf_dir_label)"
 assert_eq "debian gpg package hint" "gnupg" "${PKG_HINTS[gpg]}"
@@ -99,6 +100,7 @@ assert_eq "rhel PG_UNIT" "postgresql-$PG_MAJOR" "$PG_UNIT"
 assert_eq "rhel PG_PACKAGE" "postgresql${PG_MAJOR}-server" "$PG_PACKAGE"
 assert_eq "rhel PG_BIN_DIR" "/usr/pgsql-$PG_MAJOR/bin" "$PG_BIN_DIR"
 assert_eq "rhel NGINX_SITE" "/etc/nginx/conf.d/gotcha.conf" "$NGINX_SITE"
+assert_eq "rhel NGINX_SITE_ENABLED_LINK is empty" "" "$NGINX_SITE_ENABLED_LINK"
 assert_eq "rhel REPO_DIR" "/etc/yum.repos.d" "$REPO_DIR"
 assert_eq "rhel pg_conf_dir_label" "/var/lib/pgsql/$PG_MAJOR/data" "$(pg_conf_dir_label)"
 assert_eq "rhel pg_conf_dir_resolve" "/var/lib/pgsql/$PG_MAJOR/data" "$(pg_conf_dir_resolve)"
@@ -112,8 +114,6 @@ HOST_FAMILY=rhel
 EL_MAJOR=9
 apply_platform_paths
 assert_eq "rhel port 5432 owner" "postgresql-$PG_MAJOR" "$(port_owner_units 5432)"
-assert_eq "rhel port 80 owners" "nginx
-angie" "$(port_owner_units 80)"
 assert_eq "rhel port 8080 owner" "gotcha" "$(port_owner_units 8080)"
 assert_eq "rhel port 9000 owner" "clickhouse-server" "$(port_owner_units 9000)"
 
@@ -123,8 +123,6 @@ HOST_FAMILY=debian
 EL_MAJOR=""
 apply_platform_paths
 assert_eq "debian port 5432 owner" "postgresql" "$(port_owner_units 5432)"
-assert_eq "debian port 80 owners" "nginx
-angie" "$(port_owner_units 80)"
 
 # required_commands
 
@@ -243,9 +241,6 @@ assert_eq "version_ge true: v-prefixed previous version newer than the target" 0
 
 # parse_args
 
-parse_args --domain example.com --no-proxy >/dev/null 2>&1
-assert_eq "parse_args --domain with --no-proxy rejected" 2 $?
-
 parse_args --purge --from-tarball /tmp/x.tar.gz >/dev/null 2>&1
 assert_eq "parse_args --purge without --uninstall rejected" 2 $?
 
@@ -260,9 +255,6 @@ assert_eq "parse_args --from-tarball alone accepted" 0 $?
 
 parse_args --unknown-flag >/dev/null 2>&1
 assert_eq "parse_args unknown flag rejected" 2 $?
-
-parse_args --email a@b.example --from-tarball /tmp/x.tar.gz >/dev/null 2>&1
-assert_eq "parse_args --email without --domain rejected" 2 $?
 
 parse_args --skip-databases --from-tarball /tmp/x.tar.gz >/dev/null 2>&1
 assert_eq "parse_args --skip-databases without DSNs rejected" 2 $?
@@ -282,12 +274,96 @@ assert_eq "parse_args rejects a non-numeric --mem-limit" 2 $?
 parse_args --mem-limit 512 --from-tarball /tmp/x.tar.gz >/dev/null 2>&1
 assert_eq "parse_args accepts a numeric --mem-limit" 0 $?
 
-parse_args --domain example.com --email a@b.example --version 9.9.9 --dry-run >/dev/null 2>&1
+out=$(parse_args --domain example.com --from-tarball /tmp/x.tar.gz 2>&1)
+rc=$?
+assert_eq "parse_args --domain refused with the usage code" 2 "$rc"
+assert_contains "parse_args --domain explains the removal" "$out" \
+    "install-bare-metal: --domain/--email were removed in 1.9.0: the installer no longer sets up a web server or TLS."
+assert_contains "parse_args --domain points at --base-url and the guide" "$out" \
+    'Pass --base-url https://<domain> and put your own reverse proxy in front of 127.0.0.1:8080 — see "External access and TLS" in the installation guide.'
+out=$(parse_args --email a@b.example --from-tarball /tmp/x.tar.gz 2>&1)
+rc=$?
+assert_eq "parse_args --email refused with the usage code" 2 "$rc"
+assert_contains "parse_args --email explains the removal" "$out" "--domain/--email were removed in 1.9.0"
+out=$(parse_args --domain 2>&1)
+rc=$?
+assert_eq "parse_args bare --domain refused with the usage code" 2 "$rc"
+assert_contains "parse_args bare --domain gets the removal text, not 'requires a value'" "$out" \
+    "--domain/--email were removed in 1.9.0"
+
+for flag in --no-proxy --no-firewall; do
+    out=$(parse_args "$flag" --from-tarball /tmp/x.tar.gz 2>&1)
+    rc=$?
+    assert_eq "parse_args accepts deprecated $flag" 0 "$rc"
+    assert_contains "parse_args says $flag is deprecated" "$out" \
+        "install-bare-metal: $flag is deprecated and does nothing"
+done
+parse_args --no-proxy --no-firewall --from-tarball /tmp/x.tar.gz --yes 2>/dev/null
+assert_eq "parse_args keeps parsing after deprecated flags" "/tmp/x.tar.gz|1" "$ARG_FROM_TARBALL|$ARG_YES"
+
+parse_args --base-url https://x.example --version 9.9.9 --dry-run >/dev/null 2>&1
 assert_eq "parse_args accepts a full example" 0 $?
-assert_eq "parse_args sets ARG_DOMAIN" example.com "$ARG_DOMAIN"
-assert_eq "parse_args sets ARG_EMAIL" a@b.example "$ARG_EMAIL"
+assert_eq "parse_args sets ARG_BASE_URL" https://x.example "$ARG_BASE_URL"
 assert_eq "parse_args sets ARG_VERSION" 9.9.9 "$ARG_VERSION"
 assert_eq "parse_args sets ARG_DRY_RUN" 1 "$ARG_DRY_RUN"
+
+usage_text=$(usage)
+for gone in --domain --email --no-proxy --no-firewall; do
+    case "$usage_text" in
+        *"  $gone "*) printf 'FAIL: usage() still lists %s\n' "$gone" >&2; FAILURES=$((FAILURES + 1)) ;;
+    esac
+done
+
+# validate_base_url / normalize_base_url
+
+assert_eq "normalize_base_url strips one trailing slash" "https://x" "$(normalize_base_url 'https://x/')"
+assert_eq "normalize_base_url strips every trailing slash" "https://x" "$(normalize_base_url 'https://x///')"
+assert_eq "normalize_base_url leaves a path alone" "https://x/app" "$(normalize_base_url 'https://x/app')"
+
+for good in \
+    "https://gotcha.example.com" \
+    "http://10.0.0.5:8080" \
+    "http://[::1]:8080" \
+    "https://gw.example.com/gotcha" \
+    "https://x/a%20b"; do
+    out=$(validate_base_url "$good" 2>/dev/null)
+    assert_eq "validate_base_url accepts $good" "$good" "$out"
+done
+out=$(validate_base_url "https://x/" 2>/dev/null)
+assert_eq "validate_base_url normalizes a trailing slash" "https://x" "$out"
+
+for bad in \
+    "ftp://x" \
+    "https://" \
+    "gotcha.example.com" \
+    "https://x?a=1" \
+    "https://x#f" \
+    "https://x y" \
+    'https://x"' \
+    "https://x'" \
+    "https://x\\" \
+    $'https://x\nhttps://y' \
+    "https://x&y" \
+    "https://a%zz" \
+    "https://user@x" \
+    "http://[::1" \
+    "https://x/a?a=1" \
+    "https://x/a#f" \
+    "https://x/a b" \
+    'https://x/a"'; do
+    out=$(validate_base_url "$bad" 2>&1)
+    rc=$?
+    assert_eq "validate_base_url rejects $(printf '%q' "$bad")" 1 "$rc"
+    assert_contains "validate_base_url names the value and an example for $(printf '%q' "$bad")" \
+        "$out" "e.g. https://gotcha.example.com"
+done
+
+parse_args --base-url "https://x/" --from-tarball /tmp/x.tar.gz >/dev/null 2>&1
+assert_eq "parse_args accepts a valid --base-url" 0 $?
+assert_eq "parse_args stores --base-url normalized" "https://x" "$ARG_BASE_URL"
+out=$(parse_args --base-url "gotcha.example.com" --from-tarball /tmp/x.tar.gz 2>&1)
+assert_eq "parse_args rejects a --base-url without a scheme" 2 $?
+assert_contains "parse_args shows an example of a valid --base-url" "$out" "e.g. https://gotcha.example.com"
 
 # В дереве GOTCHA_INSTALL_DEFAULT_VERSION="dev", и §4.7 не исполняется ни в одном
 # прогоне — проверяется на копии, какую кладёт в релиз джоба dist.
@@ -316,14 +392,78 @@ assert_eq "released copy runs without --version at all (its own version is the d
 assert_eq "released copy rejects a suffixed version with the usage code, not a bash error" 2 $?
 rm -f "$PATCHED"
 
-# choose_base_url
+# env_get
 
-out=$(choose_base_url "https://explicit.example" "domain.example" "10.0.0.1")
-assert_eq "choose_base_url prefers --base-url" "https://explicit.example" "$out"
-out=$(choose_base_url "" "domain.example" "10.0.0.1")
-assert_eq "choose_base_url falls back to --domain" "https://domain.example" "$out"
-out=$(choose_base_url "" "" "10.0.0.1")
-assert_eq "choose_base_url falls back to host IP" "http://10.0.0.1" "$out"
+envdir=$(mktemp -d)
+envf="$envdir/gotcha.env"
+printf 'GOTCHA_BASE_URL=https://first.example\n#GOTCHA_BASE_URL=https://commented.example\nGOTCHA_BASE_URL=https://last.example\n' >"$envf"
+assert_eq "env_get takes the last occurrence and skips comments" "https://last.example" "$(env_get GOTCHA_BASE_URL "$envf")"
+printf 'GOTCHA_BASE_URL="https://dq.example"\n' >"$envf"
+assert_eq "env_get strips paired double quotes" "https://dq.example" "$(env_get GOTCHA_BASE_URL "$envf")"
+printf "GOTCHA_BASE_URL='https://sq.example'\n" >"$envf"
+assert_eq "env_get strips paired single quotes" "https://sq.example" "$(env_get GOTCHA_BASE_URL "$envf")"
+printf 'GOTCHA_BASE_URL=https://crlf.example\r\n' >"$envf"
+assert_eq "env_get drops a CRLF line ending" "https://crlf.example" "$(env_get GOTCHA_BASE_URL "$envf")"
+printf 'GOTCHA_BASE_URL=https://ws.example  \n' >"$envf"
+assert_eq "env_get drops trailing whitespace" "https://ws.example" "$(env_get GOTCHA_BASE_URL "$envf")"
+printf 'GOTCHA_BASE_URL=https://slash.example/\n' >"$envf"
+assert_eq "env_get returns the raw value, normalizing is the caller's job" "https://slash.example/" "$(env_get GOTCHA_BASE_URL "$envf")"
+printf 'GOTCHA_BASE_URL_EXTRA=x\n' >"$envf"
+env_get GOTCHA_BASE_URL "$envf" >/dev/null
+assert_eq "env_get does not match a longer key with the same prefix" 1 $?
+printf 'GOTCHA_TRUSTED_PROXIES=\n' >"$envf"
+out=$(env_get GOTCHA_TRUSTED_PROXIES "$envf")
+assert_eq "env_get reports an empty value as present" "0|" "$?|$out"
+env_get GOTCHA_BASE_URL "$envdir/missing.env" >/dev/null
+assert_eq "env_get on a missing file" 1 $?
+
+# resolve_base_url — stdin_is_tty подменяется, как ss выше
+
+# shellcheck disable=SC2317 # вызывается сорсимым файлом, а не отсюда
+stdin_is_tty() { [ -n "$STUB_TTY" ]; }
+missing="$envdir/none.env"
+
+printf 'GOTCHA_BASE_URL=https://env.example\n' >"$envf"
+out=$( (resolve_base_url "https://flag.example" "$envf" "") 2>/dev/null )
+assert_eq "resolve_base_url: the flag wins over env" "https://flag.example" "$out"
+printf 'GOTCHA_BASE_URL=https://env.example/\n' >"$envf"
+out=$( (resolve_base_url "" "$envf" "") 2>/dev/null )
+assert_eq "resolve_base_url: env is used and normalized when no flag" "https://env.example" "$out"
+
+printf 'GOTCHA_SECRET_KEY=x\n' >"$envf"
+out=$( (resolve_base_url "" "$envf" 1) 2>&1 )
+rc=$?
+assert_eq "resolve_base_url: env without GOTCHA_BASE_URL and no flag is refused" 2 "$rc"
+assert_contains "resolve_base_url: the refusal names --base-url" "$out" "--base-url"
+
+STUB_TTY=""
+out=$( (resolve_base_url "" "$missing" 1) 2>&1 )
+rc=$?
+assert_eq "resolve_base_url: --yes without an address on a clean host is refused" 2 "$rc"
+assert_contains "resolve_base_url: the refusal text" "$out" \
+    "install-bare-metal: --base-url is required for a new installation (the address users will type in the browser, e.g. https://gotcha.example.com)"
+out=$( (resolve_base_url "" "$missing" "") 2>&1 </dev/null )
+assert_eq "resolve_base_url: no terminal and no address is refused" 2 $?
+
+STUB_TTY=1
+out=$( (resolve_base_url "" "$missing" 1 <<<"https://ok.example") 2>/dev/null )
+assert_eq "resolve_base_url: --yes beats a terminal, nothing is read" "2|" "$?|$out"
+out=$( (resolve_base_url "" "$missing" "" <<<$'\nftp://x\nhttps://ok.example/') 2>"$envdir/err" )
+assert_eq "resolve_base_url: empty and invalid answers are asked again" "https://ok.example" "$out"
+assert_contains "resolve_base_url: an invalid answer explains why" "$(cat "$envdir/err")" "invalid address 'ftp://x'"
+out=$( (resolve_base_url "" "$missing" "" </dev/null) 2>&1 )
+assert_eq "resolve_base_url: EOF on the question is refused" 2 $?
+STUB_TTY=""
+unset -f stdin_is_tty
+
+# plain_http_warning
+
+out=$(plain_http_warning "http://10.0.0.5")
+assert_eq "plain_http_warning fires for http://" 0 $?
+assert_contains "plain_http_warning mentions session cookies" "$out" "session cookies"
+plain_http_warning "https://x.example" >/dev/null
+assert_eq "plain_http_warning is silent for https://" 1 $?
+rm -rf "$envdir"
 
 # compute_memlimit — константа, паритетная compose (mem_limit: 1g), одна и
 # та же независимо от RAM хоста (preflight и так отсекает хосты младше 2 ГБ).
@@ -400,29 +540,11 @@ done
 env_file=$(render_env_file "pg-dsn" "ch-dsn" "secret" "https://x.example" \
     "/opt/gotcha/agent-dist" "819MiB" "127.0.0.1:8080")
 for var in GOTCHA_PG_DSN GOTCHA_CH_DSN GOTCHA_SECRET_KEY GOTCHA_BASE_URL \
-    GOTCHA_DIST_DIR GOMEMLIMIT GOTCHA_LISTEN_ADDR; do
+    GOTCHA_DIST_DIR GOMEMLIMIT GOTCHA_LISTEN_ADDR GOTCHA_TRUSTED_PROXIES; do
     assert_contains "render_env_file contains $var" "$env_file" "$var="
 done
-
-# render_nginx_site
-
-site=$(render_nginx_site example.com)
-assert_contains "render_nginx_site proxy_pass" "$site" "proxy_pass http://127.0.0.1:8080"
-# literal nginx variable in the single-quoted needle below, must not expand
-# shellcheck disable=SC2016
-assert_contains "render_nginx_site forwards Host" "$site" 'proxy_set_header Host $host'
-assert_contains "render_nginx_site forwards X-Forwarded-For" "$site" "X-Forwarded-For"
-assert_contains "render_nginx_site forwards X-Forwarded-Proto" "$site" "X-Forwarded-Proto"
-assert_contains "render_nginx_site sets client_max_body_size" "$site" "client_max_body_size"
-for directive in \
-    "location ~ ^/(metrics|version)$ {" \
-    "allow 127.0.0.1;" \
-    "allow ::1;" \
-    "deny all;"; do
-    assert_contains "render_nginx_site restricts /metrics and /version to loopback ($directive)" "$site" "$directive"
-done
-
-assert_contains "render_nginx_site marks the file as ours" "$site" "$NGINX_SITE_MARKER"
+assert_contains "render_env_file trusts the local reverse proxy" "$env_file" \
+    $'\nGOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128'
 
 # verify_loopback_only — ветка отказа на живом хосте не воспроизводится, поэтому
 # ss подменяется функцией; фактический bind проверяет e2e.
@@ -787,70 +909,668 @@ out=$(dist_url "https://mirror.example/base/" "2.0.0" "amd64")
 assert_eq "dist_url honors --download-base (trailing slash stripped)" \
     "https://mirror.example/base/v2.0.0/gotcha-2.0.0-linux-amd64.tar.gz" "$out"
 
-# selinux_needs_boolean
+# find_legacy_site / uninstall_legacy_site — на временных путях, systemctl подменён
 
-selinux_needs_boolean Enforcing ""
-assert_eq "selinux enforcing without --no-proxy needs the boolean" 0 $?
-selinux_needs_boolean Enforcing 1
-assert_eq "selinux enforcing with --no-proxy skips the boolean" 1 $?
-selinux_needs_boolean Permissive ""
-assert_eq "selinux permissive skips the boolean" 1 $?
-selinux_needs_boolean Disabled ""
-assert_eq "selinux disabled skips the boolean" 1 $?
-selinux_needs_boolean "" ""
-assert_eq "selinux utilities missing skips the boolean" 1 $?
+legacy_dir=$(mktemp -d)
+# shellcheck disable=SC2034 # читает log_step из сорсимого файла
+INSTALL_JOURNAL="$legacy_dir/journal"
+# shellcheck disable=SC2317 # вызывается сорсимым файлом, а не отсюда
+systemctl() { printf 'systemctl %s\n' "$*" >>"$legacy_dir/calls"; }
+path_state() {
+    if [ -e "$1" ] || [ -L "$1" ]; then echo present; else echo gone; fi
+}
 
-# selinux_tooling_missing_notice
+# shellcheck disable=SC2034 # прочитаны apply_platform_paths, определённой в сорсимом файле
+HOST_FAMILY=rhel
+# shellcheck disable=SC2034 # прочитан apply_platform_paths, определённой в сорсимом файле
+EL_MAJOR=9
+apply_platform_paths
+NGINX_SITE="$legacy_dir/conf.d/gotcha.conf"
+mkdir -p "$legacy_dir/conf.d"
 
-out=$(selinux_tooling_missing_notice "" 1)
-assert_eq "tools missing, kernel enforcing prints a notice" \
-    "SELinux: kernel policy is Enforcing but SELinux userspace tools (getenforce/setsebool) are missing — httpd_can_network_connect was left untouched, nginx may not be able to reach gotcha (502); install policycoreutils and run: setsebool -P httpd_can_network_connect 1" \
-    "$out"
-out=$(selinux_tooling_missing_notice "" "")
+printf 'server { listen 80; }\n' >"$NGINX_SITE"
+find_legacy_site >/dev/null
+assert_eq "find_legacy_site ignores an unmarked site" 1 $?
+: >"$legacy_dir/calls"
+journal_before=$(cat "$legacy_dir/journal" 2>/dev/null)
+(uninstall_legacy_site) 2>/dev/null
+assert_eq "uninstall_legacy_site leaves an unmarked EL site alone (no systemctl)" "" "$(cat "$legacy_dir/calls")"
+assert_eq "uninstall_legacy_site does not rename an unmarked EL site" present "$(path_state "$NGINX_SITE")"
+assert_eq "uninstall_legacy_site logs nothing for an unmarked EL site" \
+    "$journal_before" "$(cat "$legacy_dir/journal" 2>/dev/null)"
+
+printf '%s\nserver { listen 80; }\n' "$NGINX_SITE_MARKER" >"$NGINX_SITE"
+assert_eq "find_legacy_site finds a marked EL site" "$NGINX_SITE" "$(find_legacy_site)"
+: >"$legacy_dir/calls"
+(uninstall_legacy_site) 2>/dev/null
+assert_eq "uninstall_legacy_site renames a marked EL site to .disabled" "gone|present" \
+    "$(path_state "$NGINX_SITE")|$(path_state "$NGINX_SITE.disabled")"
+assert_contains "uninstall_legacy_site reloads nginx after disabling" "$(cat "$legacy_dir/calls")" "systemctl reload nginx"
+assert_contains "uninstall_legacy_site logs the disabled-site step" "$(cat "$legacy_dir/journal")" \
+    "nginx site from a previous version disabled"
+assert_contains "uninstall_legacy_site logs the SELinux/firewalld disclaimer" "$(cat "$legacy_dir/journal")" \
+    "SELinux boolean httpd_can_network_connect"
+
+assert_eq "find_legacy_site finds a marked .disabled EL site" "$NGINX_SITE.disabled" "$(find_legacy_site)"
+: >"$legacy_dir/calls"
+journal_before=$(cat "$legacy_dir/journal" 2>/dev/null)
+(uninstall_legacy_site) 2>/dev/null
+assert_eq "uninstall_legacy_site leaves an already disabled site alone (no systemctl)" "" "$(cat "$legacy_dir/calls")"
+assert_eq "uninstall_legacy_site keeps the .disabled file" present "$(path_state "$NGINX_SITE.disabled")"
+assert_eq "uninstall_legacy_site does not attempt to re-disable an already disabled site" \
+    "$journal_before" "$(cat "$legacy_dir/journal" 2>/dev/null)"
+
+rm -f "$NGINX_SITE.disabled"
+printf '%s\nserver { listen 80; }\n' "$NGINX_SITE_MARKER" >"$NGINX_SITE"
+: >"$legacy_dir/calls"
+chmod 555 "$legacy_dir/conf.d"
+(uninstall_legacy_site) 2>/dev/null
 rc=$?
-assert_eq "tools missing, kernel not enforcing prints nothing" "" "$out"
-assert_eq "tools missing, kernel not enforcing reports failure" 1 "$rc"
-out=$(selinux_tooling_missing_notice 1 1)
-rc=$?
-assert_eq "tools present prints nothing even if kernel enforcing" "" "$out"
-assert_eq "tools present reports failure" 1 "$rc"
+chmod 755 "$legacy_dir/conf.d"
+assert_eq "uninstall_legacy_site returns 0 even when mv fails" 0 "$rc"
+assert_contains "uninstall_legacy_site logs a WARNING when mv fails" "$(cat "$legacy_dir/journal")" \
+    "WARNING: could not disable the nginx site"
+assert_eq "uninstall_legacy_site does not reload nginx when mv fails" "" "$(cat "$legacy_dir/calls")"
+assert_eq "uninstall_legacy_site leaves the site in place when mv fails" present "$(path_state "$NGINX_SITE")"
 
-# firewall_decision
+# shellcheck disable=SC2034 # прочитаны apply_platform_paths, определённой в сорсимом файле
+HOST_FAMILY=debian
+# shellcheck disable=SC2034 # прочитан apply_platform_paths, определённой в сорсимом файле
+EL_MAJOR=""
+apply_platform_paths
+NGINX_SITE="$legacy_dir/sites-available/gotcha"
+NGINX_SITE_ENABLED_LINK="$legacy_dir/sites-enabled/gotcha"
+mkdir -p "$legacy_dir/sites-available" "$legacy_dir/sites-enabled"
+printf '%s\nserver { listen 80; }\n' "$NGINX_SITE_MARKER" >"$NGINX_SITE"
+ln -s "$NGINX_SITE" "$NGINX_SITE_ENABLED_LINK"
+assert_eq "find_legacy_site follows the Debian symlink" "$(readlink -f "$NGINX_SITE")" "$(find_legacy_site)"
+: >"$legacy_dir/calls"
+(uninstall_legacy_site) 2>/dev/null
+assert_eq "uninstall_legacy_site removes the Debian symlink, keeps the file" "gone|present" \
+    "$(path_state "$NGINX_SITE_ENABLED_LINK")|$(path_state "$NGINX_SITE")"
+assert_contains "uninstall_legacy_site reloads nginx on Debian" "$(cat "$legacy_dir/calls")" "systemctl reload nginx"
 
-assert_eq "firewalld running, --yes opens" open "$(firewall_decision running "" 1 "")"
-assert_eq "firewalld running, interactive asks" ask "$(firewall_decision running "" "" "")"
-assert_eq "firewalld running, --no-firewall skips" skip "$(firewall_decision running 1 "" "")"
-assert_eq "--no-firewall beats --yes" skip "$(firewall_decision running 1 1 "")"
-assert_eq "firewalld running, --no-proxy skips" skip "$(firewall_decision running "" 1 1)"
-assert_eq "firewalld not running skips" skip "$(firewall_decision "not running" "" 1 "")"
-assert_eq "firewall-cmd missing skips" skip "$(firewall_decision "" "" 1 "")"
+# Симлинк на размеченный файл в ДРУГОМ месте, а не на сам $NGINX_SITE — без
+# readlink-кандидата find_legacy_site его не увидит вовсе (NGINX_SITE отсутствует).
+rm -f "$NGINX_SITE"
+mkdir -p "$legacy_dir/elsewhere"
+printf '%s\nserver { listen 80; }\n' "$NGINX_SITE_MARKER" >"$legacy_dir/elsewhere/gotcha.conf"
+ln -sf "$legacy_dir/elsewhere/gotcha.conf" "$NGINX_SITE_ENABLED_LINK"
+assert_eq "find_legacy_site follows a Debian symlink to a marked file elsewhere" \
+    "$legacy_dir/elsewhere/gotcha.conf" "$(find_legacy_site)"
+: >"$legacy_dir/calls"
+(uninstall_legacy_site) 2>/dev/null
+assert_eq "uninstall_legacy_site removes a Debian symlink pointing elsewhere, keeps its target" "gone|present" \
+    "$(path_state "$NGINX_SITE_ENABLED_LINK")|$(path_state "$legacy_dir/elsewhere/gotcha.conf")"
+assert_contains "uninstall_legacy_site reloads nginx for a symlink pointing elsewhere" "$(cat "$legacy_dir/calls")" "systemctl reload nginx"
 
-# firewall_skip_notice
+: >"$legacy_dir/calls"
+(uninstall_legacy_site) 2>/dev/null
+assert_eq "uninstall_legacy_site with no symlink left does nothing on Debian" "" "$(cat "$legacy_dir/calls")"
 
-out=$(firewall_skip_notice "not running" "" "")
-assert_eq "not-running state prints a not-detected notice" \
-    "firewalld: not detected or not running — ports 80 and 443 were left untouched, open them yourself if this host uses a firewall" \
-    "$out"
-out=$(firewall_skip_notice "" "" "")
-assert_eq "firewall-cmd missing (empty state) prints the same not-detected notice" \
-    "firewalld: not detected or not running — ports 80 and 443 were left untouched, open them yourself if this host uses a firewall" \
-    "$out"
-out=$(firewall_skip_notice running "" 1)
-assert_eq "running but operator declined prints a declined notice, not not-detected" \
-    "firewalld: left closed at your request — ports 80 and 443 were not opened, open them yourself: firewall-cmd --permanent --add-service=http --add-service=https && firewall-cmd --reload" \
-    "$out"
-out=$(firewall_skip_notice running "" "")
+printf 'server { listen 80; }\n' >"$legacy_dir/sites-available/own"
+ln -s "$legacy_dir/sites-available/own" "$NGINX_SITE_ENABLED_LINK"
+rm -f "$NGINX_SITE"
+find_legacy_site >/dev/null
+assert_eq "find_legacy_site ignores an operator's own unmarked Debian site" 1 $?
+
+printf '%s\nserver { listen 80; }\n' "$NGINX_SITE_MARKER" >"$NGINX_SITE"
+assert_eq "find_legacy_site finds the marked sites-available file behind an unrelated symlink" \
+    "$NGINX_SITE" "$(find_legacy_site)"
+: >"$legacy_dir/calls"
+journal_before=$(cat "$legacy_dir/journal" 2>/dev/null)
+(uninstall_legacy_site) 2>/dev/null
+assert_eq "uninstall_legacy_site leaves an operator's own Debian symlink alone" "present|" \
+    "$(path_state "$NGINX_SITE_ENABLED_LINK")|$(cat "$legacy_dir/calls")"
+assert_eq "uninstall_legacy_site logs nothing for an operator's own Debian site" \
+    "$journal_before" "$(cat "$legacy_dir/journal" 2>/dev/null)"
+
+rm -f "$NGINX_SITE_ENABLED_LINK"
+printf 'server { listen 80; }\n' >"$NGINX_SITE_ENABLED_LINK"
+: >"$legacy_dir/calls"
+journal_before=$(cat "$legacy_dir/journal" 2>/dev/null)
+(uninstall_legacy_site) 2>/dev/null
+assert_eq "uninstall_legacy_site leaves a plain sites-enabled/gotcha file alone" "present|" \
+    "$(path_state "$NGINX_SITE_ENABLED_LINK")|$(cat "$legacy_dir/calls")"
+assert_eq "uninstall_legacy_site logs nothing for a plain sites-enabled/gotcha file" \
+    "$journal_before" "$(cat "$legacy_dir/journal" 2>/dev/null)"
+
+rm -f "$NGINX_SITE_ENABLED_LINK"
+ln -s "$NGINX_SITE" "$NGINX_SITE_ENABLED_LINK"
+: >"$legacy_dir/calls"
+(
+    # shellcheck disable=SC2317 # вызывается сорсимым файлом, а не отсюда
+    rm() { return 1; }
+    uninstall_legacy_site
+) 2>/dev/null
 rc=$?
-assert_eq "running and not declined prints nothing" "" "$out"
-assert_eq "running and not declined reports failure" 1 "$rc"
-out=$(firewall_skip_notice "not running" 1 "")
+assert_eq "uninstall_legacy_site returns 0 even when rm fails" 0 "$rc"
+assert_contains "uninstall_legacy_site logs a WARNING when rm fails" "$(cat "$legacy_dir/journal")" \
+    "WARNING: could not remove"
+assert_eq "uninstall_legacy_site does not reload nginx when rm fails" "" "$(cat "$legacy_dir/calls")"
+assert_eq "uninstall_legacy_site leaves the symlink in place when rm fails" present "$(path_state "$NGINX_SITE_ENABLED_LINK")"
+
+unset -f systemctl path_state
+rm -rf "$legacy_dir"
+apply_platform_paths
+
+# env_set / reconcile_env_file
+
+envdir=$(mktemp -d)
+envf="$envdir/gotcha.env"
+# shellcheck disable=SC2034 # читают env_set/reconcile_env_file из сорсимого файла
+ENV_FILE_OWNER="$(id -un):$(id -gn)"
+# shellcheck disable=SC2034 # читает log_step из сорсимого файла
+INSTALL_JOURNAL="$envdir/journal"
+
+printf 'A=1\nGOTCHA_BASE_URL=https://old.example\n# comment\n#GOTCHA_BASE_URL=https://commented\nGOTCHA_BASE_URL=https://dup.example\nB=two words\n' >"$envf"
+env_set GOTCHA_BASE_URL https://new.example "$envf"
+assert_eq "env_set rc" 0 $?
+assert_eq "env_set collapses every occurrence into one line at the first one's place, leaving a commented-out key as-is" \
+    "A=1
+GOTCHA_BASE_URL=https://new.example
+# comment
+#GOTCHA_BASE_URL=https://commented
+B=two words" "$(cat "$envf")"
+assert_eq "env_set leaves the file 0640" 640 "$(stat -c '%a' "$envf")"
+env_set NEW_KEY v "$envf"
+assert_eq "env_set appends a missing key at the end" "NEW_KEY=v" "$(tail -n1 "$envf")"
+env_set GOTCHA_BASE_URL 'https://x/%7e~a:b,c' "$envf"
+assert_eq "env_set writes % ~ : / , literally" "https://x/%7e~a:b,c" "$(env_get GOTCHA_BASE_URL "$envf")"
+env_set GOTCHA_BASE_URL 'https://x/a&b\c#d' "$envf"
+assert_eq "env_set writes & \\ # literally (no sed substitution)" 'https://x/a&b\c#d' "$(env_get GOTCHA_BASE_URL "$envf")"
+before=$(cat "$envf")
+env_set GOTCHA_BASE_URL 'https://x/a&b\c#d' "$envf"
+assert_eq "env_set with the same value keeps the file byte-for-byte" "$before" "$(cat "$envf")"
+
+before=$(cat "$envf")
+ENV_FILE_OWNER="nosuchuser-gotcha:nosuchgroup-gotcha"
+env_set GOTCHA_BASE_URL https://fail.example "$envf" 2>/dev/null
+assert_eq "env_set reports a chown failure" 1 $?
+assert_eq "env_set leaves the original intact on failure" "$before" "$(cat "$envf")"
+assert_eq "env_set leaves no temp file on failure" "" "$(find "$envdir" -name '.gotcha.env.*')"
+# shellcheck disable=SC2034 # читает env_set из сорсимого файла
+ENV_FILE_OWNER="$(id -un):$(id -gn)"
+
+printf 'GOTCHA_SECRET_KEY=s3cret\nGOTCHA_BASE_URL=https://same.example/\nGOTCHA_TRUSTED_PROXIES=10.0.0.1\n' >"$envf"
+before=$(cat "$envf")
+ENV_CHANGED=""
+(reconcile_env_file "$envf" https://same.example) 2>/dev/null
+assert_eq "reconcile: same address modulo trailing slash changes nothing" "$before" "$(cat "$envf")"
+ENV_CHANGED=""
+reconcile_env_file "$envf" https://same.example 2>/dev/null
+assert_eq "reconcile: nothing changed, no restart" "" "$ENV_CHANGED"
+
+out=$(reconcile_env_file "$envf" https://new.example 2>&1; printf '|%s' "$ENV_CHANGED")
+assert_contains "reconcile logs the address change" "$out" \
+    "GOTCHA_BASE_URL changed: https://same.example -> https://new.example"
+assert_contains "reconcile reminds to update the reverse proxy" "$out" "update your reverse proxy"
+assert_contains "reconcile asks for a restart after an address change" "$out" "|1"
+assert_eq "reconcile writes the new address once" 1 "$(grep -c '^GOTCHA_BASE_URL=' "$envf")"
+assert_eq "reconcile never touches the secret" "GOTCHA_SECRET_KEY=s3cret" "$(grep '^GOTCHA_SECRET_KEY=' "$envf")"
+assert_eq "reconcile keeps an operator's own GOTCHA_TRUSTED_PROXIES" "10.0.0.1" "$(env_get GOTCHA_TRUSTED_PROXIES "$envf")"
+
+printf 'GOTCHA_BASE_URL=https://a.example\nGOTCHA_TRUSTED_PROXIES=\n' >"$envf"
+before=$(cat "$envf")
+reconcile_env_file "$envf" "" 2>/dev/null
+assert_eq "reconcile keeps an empty GOTCHA_TRUSTED_PROXIES as the operator's choice" "$before" "$(cat "$envf")"
+
+printf 'GOTCHA_BASE_URL=https://a.example\n' >"$envf"
+out=$(reconcile_env_file "$envf" "" 2>&1; printf '|%s' "$ENV_CHANGED")
+assert_eq "reconcile adds GOTCHA_TRUSTED_PROXIES to a 1.8 env" "127.0.0.1/32,::1/128" "$(env_get GOTCHA_TRUSTED_PROXIES "$envf")"
+assert_contains "reconcile logs the added key" "$out" "GOTCHA_TRUSTED_PROXIES=127.0.0.1/32,::1/128 added"
+assert_contains "reconcile asks for a restart after adding the key" "$out" "|1"
+
+printf 'GOTCHA_SECRET_KEY=s3cret\n' >"$envf"
+reconcile_env_file "$envf" https://flag.example 2>/dev/null
+assert_eq "reconcile appends GOTCHA_BASE_URL to an env that lacks it" "https://flag.example" "$(env_get GOTCHA_BASE_URL "$envf")"
+
+printf 'GOTCHA_BASE_URL=https://old-b.example\nGOTCHA_TRUSTED_PROXIES=10.0.0.1\n' >"$envf"
+before=$(cat "$envf")
+ENV_FILE_OWNER="nosuchuser-gotcha:nosuchgroup-gotcha"
+out=$(reconcile_env_file "$envf" https://fail-b.example 2>&1)
+assert_eq "reconcile: failure to update GOTCHA_BASE_URL exits 1" 1 $?
+assert_contains "reconcile: failure to update GOTCHA_BASE_URL reports it" "$out" "failed to update GOTCHA_BASE_URL"
+assert_eq "reconcile: failure to update GOTCHA_BASE_URL leaves the file untouched" "$before" "$(cat "$envf")"
+# shellcheck disable=SC2034 # читает env_set из сорсимого файла
+ENV_FILE_OWNER="$(id -un):$(id -gn)"
+
+printf 'GOTCHA_BASE_URL=https://c.example\n' >"$envf"
+before=$(cat "$envf")
+ENV_FILE_OWNER="nosuchuser-gotcha:nosuchgroup-gotcha"
+out=$(reconcile_env_file "$envf" "" 2>&1)
+assert_eq "reconcile: failure to add GOTCHA_TRUSTED_PROXIES exits 1" 1 $?
+assert_contains "reconcile: failure to add GOTCHA_TRUSTED_PROXIES reports it" "$out" "failed to add GOTCHA_TRUSTED_PROXIES"
+assert_eq "reconcile: failure to add GOTCHA_TRUSTED_PROXIES leaves the file untouched" "$before" "$(cat "$envf")"
+# shellcheck disable=SC2034 # читает env_set из сорсимого файла
+ENV_FILE_OWNER="$(id -un):$(id -gn)"
+
+rm -rf "$envdir"
+
+# legacy_site_enable_hint / render_summary
+
+sumdir=$(mktemp -d)
+# shellcheck disable=SC2034
+HOST_FAMILY=rhel
+# shellcheck disable=SC2034
+EL_MAJOR=9
+apply_platform_paths
+NGINX_SITE="$sumdir/conf.d/gotcha.conf"
+mkdir -p "$sumdir/conf.d"
+assert_eq "EL .disabled site: the hint moves it back and reloads" \
+    "mv $NGINX_SITE.disabled $NGINX_SITE && systemctl reload nginx" \
+    "$(legacy_site_enable_hint "$NGINX_SITE.disabled")"
+legacy_site_enable_hint "$NGINX_SITE" >/dev/null
+assert_eq "EL active site: no hint" 1 $?
+
+printf 'server { listen 80; }\n' >"$NGINX_SITE"
+legacy_site_enable_hint "$NGINX_SITE.disabled" >/dev/null
+assert_eq "EL .disabled site with the operator's own config in place: no hint, no mv" 1 $?
+rm -f "$NGINX_SITE"
+
+# shellcheck disable=SC2034
+HOST_FAMILY=debian
+# shellcheck disable=SC2034
+EL_MAJOR=""
+apply_platform_paths
+NGINX_SITE="$sumdir/sites-available/gotcha"
+NGINX_SITE_ENABLED_LINK="$sumdir/sites-enabled/gotcha"
+mkdir -p "$sumdir/sites-available" "$sumdir/sites-enabled"
+: >"$NGINX_SITE"
+assert_eq "Debian site without a symlink: the hint links it" \
+    "ln -s $NGINX_SITE $NGINX_SITE_ENABLED_LINK && systemctl reload nginx" \
+    "$(legacy_site_enable_hint "$NGINX_SITE")"
+ln -s "$NGINX_SITE" "$NGINX_SITE_ENABLED_LINK"
+legacy_site_enable_hint "$NGINX_SITE" >/dev/null
+assert_eq "Debian site with its symlink: no hint" 1 $?
+
+rm -f "$NGINX_SITE_ENABLED_LINK"
+ln -s "$sumdir/sites-available/does-not-exist" "$NGINX_SITE_ENABLED_LINK"
+legacy_site_enable_hint "$NGINX_SITE" >/dev/null
+assert_eq "Debian dangling symlink in sites-enabled: no hint, would collide with ln -s" 1 $?
+rm -f "$NGINX_SITE" "$NGINX_SITE_ENABLED_LINK"
+
+: >"$NGINX_SITE.disabled"
+assert_eq "Debian .disabled site: the hint moves it back and links it" \
+    "mv $NGINX_SITE.disabled $NGINX_SITE && ln -s $NGINX_SITE $NGINX_SITE_ENABLED_LINK && systemctl reload nginx" \
+    "$(legacy_site_enable_hint "$NGINX_SITE.disabled")"
+
+: >"$NGINX_SITE"
+legacy_site_enable_hint "$NGINX_SITE.disabled" >/dev/null
+assert_eq "Debian .disabled site with the operator's own config in place: no hint, no mv" 1 $?
+rm -f "$NGINX_SITE" "$NGINX_SITE.disabled"
+
+: >"$NGINX_SITE.disabled"
+printf 'server { listen 80; }\n' >"$NGINX_SITE_ENABLED_LINK"
+legacy_site_enable_hint "$NGINX_SITE.disabled" >/dev/null
+assert_eq "Debian .disabled site with sites-enabled/gotcha already a file: no hint, no mv" 1 $?
+rm -f "$NGINX_SITE.disabled" "$NGINX_SITE_ENABLED_LINK"
+
+: >"$NGINX_SITE.disabled"
+ln -s "$sumdir/sites-available/does-not-exist" "$NGINX_SITE_ENABLED_LINK"
+legacy_site_enable_hint "$NGINX_SITE.disabled" >/dev/null
+assert_eq "Debian .disabled site with a dangling sites-enabled/gotcha symlink: no hint, no mv" 1 $?
+rm -f "$NGINX_SITE.disabled" "$NGINX_SITE_ENABLED_LINK"
+
+rm -rf "$sumdir"
+apply_platform_paths
+
+assert_eq "readyz_probe_addr normalizes :PORT to loopback" "127.0.0.1:8080" "$(readyz_probe_addr :8080)"
+assert_eq "readyz_probe_addr normalizes 0.0.0.0:PORT to loopback" "127.0.0.1:8080" "$(readyz_probe_addr 0.0.0.0:8080)"
+assert_eq "readyz_probe_addr leaves a non-loopback address as is" "10.0.0.5:8080" "$(readyz_probe_addr 10.0.0.5:8080)"
+assert_eq "readyz_probe_addr leaves an already-loopback address as is" "127.0.0.1:8080" "$(readyz_probe_addr 127.0.0.1:8080)"
+
+assert_eq "summary_effective_version prefers the installed binary's version" "1.9.0" \
+    "$(summary_effective_version 1.9.0 1.9.1)"
+assert_eq "summary_effective_version falls back to --version when nothing is installed" "1.9.1" \
+    "$(summary_effective_version "" 1.9.1)"
+
+assert_eq "summary_is_fresh: no prior env means a fresh install" 1 "$(summary_is_fresh "")"
+assert_eq "summary_is_fresh: an env that already existed is not fresh" "" "$(summary_is_fresh 1)"
+
+out=$(render_summary 1.9.0 '{"status":"ready"}' https://gotcha.example.com 127.0.0.1:8080 "" "" 1)
+assert_eq "render_summary, fresh host" \
+"Gotcha 1.9.0 is installed and running.
+  readiness:  {\"status\":\"ready\"}
+  listens on: 127.0.0.1:8080 (this host only)
+  address:    https://gotcha.example.com (GOTCHA_BASE_URL)
+  config:     /etc/gotcha/gotcha.env
+  logs:       journalctl -u gotcha -f
+
+Next:
+  1. Put a reverse proxy (nginx, angie, Apache, Caddy...) in front of 127.0.0.1:8080
+     so that https://gotcha.example.com reaches it. Requirements and examples:
+     https://getgotcha.ru/docs/installation-bare-metal/
+  2. Open https://gotcha.example.com and create the first administrator." "$out"
+
+out=$(render_summary 1.9.0 ok https://x.example 127.0.0.1:8080 /etc/nginx/conf.d/gotcha.conf "" "")
+assert_contains "render_summary names the kept legacy site" "$out" \
+    "  1. Your nginx site from a previous version is kept as is and is yours to maintain: /etc/nginx/conf.d/gotcha.conf"
+case "$out" in
+    *"Put a reverse proxy"*) printf 'FAIL: render_summary asks for a new proxy on a legacy host\n' >&2; FAILURES=$((FAILURES + 1)) ;;
+esac
+assert_eq "render_summary, legacy site already enabled: whole output, no 'not enabled' line" \
+"Gotcha 1.9.0 is installed and running.
+  readiness:  ok
+  listens on: 127.0.0.1:8080 (this host only)
+  address:    https://x.example (GOTCHA_BASE_URL)
+  config:     /etc/gotcha/gotcha.env
+  logs:       journalctl -u gotcha -f
+
+Next:
+  1. Your nginx site from a previous version is kept as is and is yours to maintain: /etc/nginx/conf.d/gotcha.conf" "$out"
+out=$(render_summary 1.9.0 ok https://x.example 127.0.0.1:8080 /etc/nginx/conf.d/gotcha.conf.disabled "mv a b && systemctl reload nginx" "")
+assert_contains "render_summary gives the enable command for a disabled legacy site" "$out" \
+    "     It is not enabled now; to enable it: mv a b && systemctl reload nginx"
+out=$(render_summary 1.9.0 "no answer (see logs)" https://x.example 127.0.0.1:8080 "" "" 1)
+assert_contains "render_summary shows a failed readiness probe as is" "$out" "  readiness:  no answer (see logs)"
+
+out=$(render_summary 1.9.0 ok https://x.example 127.0.0.1:8080 "" "" "")
+case "$out" in
+    *"first administrator"*) printf 'FAIL: render_summary asks to create the first administrator on a re-run\n' >&2; FAILURES=$((FAILURES + 1)) ;;
+esac
+out=$(render_summary 1.9.0 ok https://x.example 10.0.0.5:8080 "" "" "")
+assert_contains "render_summary shows a non-loopback listen address from env" "$out" \
+    "  listens on: 10.0.0.5:8080 (reachable from other hosts: allow only your proxy)"
+case "$out" in
+    *"this host only"*) printf 'FAIL: render_summary claims loopback for 10.0.0.5:8080\n' >&2; FAILURES=$((FAILURES + 1)) ;;
+esac
+
+out=$(render_summary 1.9.0 ok https://x.example localhost:8080 "" "" "")
+assert_contains "render_summary treats localhost:PORT as loopback" "$out" \
+    "  listens on: localhost:8080 (this host only)"
+out=$(render_summary 1.9.0 ok https://x.example '[::1]:8080' "" "" "")
+assert_contains "render_summary treats [::1]:PORT as loopback" "$out" \
+    "  listens on: [::1]:8080 (this host only)"
+
+out=$(render_summary 1.9.0 ok https://x.example :8080 "" "" "")
+assert_contains "render_summary points the proxy hint at the loopback probe address for :PORT" "$out" \
+    "  1. Put a reverse proxy (nginx, angie, Apache, Caddy...) in front of 127.0.0.1:8080"
+out=$(render_summary 1.9.0 ok https://x.example 0.0.0.0:8080 "" "" "")
+assert_contains "render_summary points the proxy hint at the loopback probe address for 0.0.0.0:PORT" "$out" \
+    "  1. Put a reverse proxy (nginx, angie, Apache, Caddy...) in front of 127.0.0.1:8080"
+
+# print_install_summary — main() выполняет только эту склейку, мутации ловятся
+# здесь же: kept-as-is не должен врать поверх чужого конфига.
+
+pisdir=$(mktemp -d)
+curl_calls="$pisdir/curl-calls"
+# shellcheck disable=SC2317 # вызывается print_install_summary из сорсимого файла
+curl() { printf '%s\n' "$*" >>"$curl_calls"; printf '{"status":"ready"}'; }
+# shellcheck disable=SC2317 # вызывается print_install_summary из сорсимого файла
+installed_version() { printf '1.9.0\n'; }
+# shellcheck disable=SC2034
+ARG_VERSION=1.9.1
+
+envf="$pisdir/gotcha.env"
+printf 'GOTCHA_LISTEN_ADDR=:8080\n' >"$envf"
+: >"$curl_calls"
+out=$(print_install_summary "$envf" https://x.example "")
+assert_contains "print_install_summary normalizes :PORT for the curl probe" "$(cat "$curl_calls")" \
+    "http://127.0.0.1:8080/readyz"
+assert_contains "print_install_summary prefers the installed binary's version over --version" "$out" \
+    "Gotcha 1.9.0 is installed and running."
+assert_contains "print_install_summary: no prior env invites creating the first administrator" "$out" \
+    "create the first administrator"
+out=$(print_install_summary "$envf" https://x.example 1)
+case "$out" in
+    *"first administrator"*)
+        printf 'FAIL: print_install_summary invites creating the first administrator when the env already existed\n' >&2
+        FAILURES=$((FAILURES + 1))
+        ;;
+esac
+
+# shellcheck disable=SC2317 # вызывается print_install_summary из сорсимого файла
+curl() { return 7; }
+out=$( set -euo pipefail; print_install_summary "$envf" https://x.example 1 )
 rc=$?
-assert_eq "--no-firewall skip prints nothing regardless of state" "" "$out"
-assert_eq "--no-firewall skip reports failure" 1 "$rc"
-out=$(firewall_skip_notice running 1 1)
-rc=$?
-assert_eq "--no-firewall wins even over a declined answer" "" "$out"
-assert_eq "--no-firewall over declined reports failure" 1 "$rc"
+assert_eq "print_install_summary keeps exit 0 when the readiness probe fails" 0 "$rc"
+assert_contains "print_install_summary reports no answer when the readiness probe fails" "$out" \
+    "  readiness:  no answer (see logs)"
+# shellcheck disable=SC2317 # вызывается print_install_summary из сорсимого файла
+curl() { printf '%s\n' "$*" >>"$curl_calls"; printf '{"status":"ready"}'; }
+
+envf_noaddr="$pisdir/gotcha-noaddr.env"
+: >"$envf_noaddr"
+: >"$curl_calls"
+out=$(print_install_summary "$envf_noaddr" https://x.example "")
+assert_contains "print_install_summary falls back to 127.0.0.1:8080 for the curl probe when GOTCHA_LISTEN_ADDR is unset" \
+    "$(cat "$curl_calls")" "http://127.0.0.1:8080/readyz"
+assert_contains "print_install_summary falls back to 127.0.0.1:8080 in the summary when GOTCHA_LISTEN_ADDR is unset" "$out" \
+    "  listens on: 127.0.0.1:8080 (this host only)"
+
+# shellcheck disable=SC2034
+HOST_FAMILY=rhel
+# shellcheck disable=SC2034
+EL_MAJOR=9
+apply_platform_paths
+NGINX_SITE="$pisdir/conf.d/gotcha.conf"
+mkdir -p "$pisdir/conf.d"
+printf '%s\nlisten 80;\n' "$NGINX_SITE_MARKER" >"$NGINX_SITE.disabled"
+printf 'server { listen 80; }\n' >"$NGINX_SITE"
+out=$(print_install_summary "$envf" https://x.example "")
+case "$out" in
+    *"kept as is"*)
+        printf 'FAIL: EL print_install_summary calls a .disabled site kept as is although NGINX_SITE is taken\n' >&2
+        FAILURES=$((FAILURES + 1))
+        ;;
+esac
+assert_contains "EL print_install_summary falls back to the reverse-proxy hint when the legacy site cannot be enabled" "$out" \
+    "  1. Put a reverse proxy"
+rm -f "$NGINX_SITE" "$NGINX_SITE.disabled"
+
+# shellcheck disable=SC2034
+HOST_FAMILY=debian
+# shellcheck disable=SC2034
+EL_MAJOR=""
+apply_platform_paths
+NGINX_SITE="$pisdir/sites-available/gotcha"
+NGINX_SITE_ENABLED_LINK="$pisdir/sites-enabled/gotcha"
+mkdir -p "$pisdir/sites-available" "$pisdir/sites-enabled"
+printf '%s\nlisten 80;\n' "$NGINX_SITE_MARKER" >"$NGINX_SITE.disabled"
+printf 'server { listen 80; }\n' >"$NGINX_SITE_ENABLED_LINK"
+out=$(print_install_summary "$envf" https://x.example "")
+case "$out" in
+    *"kept as is"*)
+        printf 'FAIL: Debian print_install_summary calls a .disabled site kept as is although sites-enabled/gotcha is taken\n' >&2
+        FAILURES=$((FAILURES + 1))
+        ;;
+esac
+assert_contains "Debian print_install_summary falls back to the reverse-proxy hint when sites-enabled/gotcha is taken" "$out" \
+    "  1. Put a reverse proxy"
+rm -f "$NGINX_SITE.disabled" "$NGINX_SITE_ENABLED_LINK"
+
+unset -f curl installed_version
+rm -rf "$pisdir"
+apply_platform_paths
+
+# preflight: порядок и доставка утилит
+
+for hint_family in debian rhel; do
+    # shellcheck disable=SC2034 # читает apply_platform_paths/required_commands из сорсимого файла
+    HOST_FAMILY="$hint_family"
+    # shellcheck disable=SC2034
+    EL_MAJOR=""
+    [ "$hint_family" = rhel ] && EL_MAJOR=9
+    apply_platform_paths
+    while IFS= read -r hint_cmd; do
+        assert_eq "PKG_HINTS has a hint for $hint_cmd on $hint_family" "has-hint" \
+            "$([ -n "${PKG_HINTS[$hint_cmd]:-}" ] && printf has-hint || printf missing-hint)"
+    done < <(required_commands "$hint_family" "")
+done
+
+pfdir=$(mktemp -d)
+# shellcheck disable=SC2034 # читает log_step из сорсимого файла
+INSTALL_JOURNAL="$pfdir/journal"
+# shellcheck disable=SC2317 # подмены вызываются сорсимым файлом, а не отсюда
+have_command() { ! grep -qx "$1" "$pfdir/missing"; }
+# shellcheck disable=SC2317
+pkg_install() {
+    [ -z "$STUB_INSTALL_FAILS" ] || return 1
+    printf '%s\n' "$@" >>"$pfdir/installed"
+    [ -z "$STUB_DELIVERY_FIXES" ] || : >"$pfdir/missing"
+}
+# shellcheck disable=SC2317
+pkg_refresh() {
+    [ -z "$STUB_REFRESH_FAILS" ] || return 1
+    printf 'refresh\n' >>"$pfdir/installed"
+}
+STUB_INSTALL_FAILS=""
+STUB_REFRESH_FAILS=""
+
+# shellcheck disable=SC2034
+HOST_FAMILY=rhel
+# shellcheck disable=SC2034
+EL_MAJOR=9
+apply_platform_paths
+# shellcheck disable=SC2034 # читает preflight_prerequisites/preflight_ports из сорсимого файла
+ARG_SKIP_DATABASES=""
+ARG_DRY_RUN=""
+
+printf 'tar\nrunuser\n' >"$pfdir/missing"; : >"$pfdir/installed"; : >"$pfdir/journal"
+STUB_DELIVERY_FIXES=1
+out=$( (preflight_prerequisites) 2>&1 )
+assert_eq "delivery succeeds on rhel" 0 $?
+assert_eq "rhel delivers the packages of the missing commands, one argument each" "tar
+util-linux" "$(cat "$pfdir/installed")"
+assert_contains "delivery announces progress before installing" "$out" "install-bare-metal: installing missing prerequisites: tar util-linux"
+assert_contains "delivery is logged as completed on one line" "$out" "install-bare-metal: installed missing prerequisites: tar util-linux"
+case "$out" in
+    *"installing missing prerequisites: tar util-linux"*"installed missing prerequisites: tar util-linux"*) order=ordered ;;
+    *) order=unordered ;;
+esac
+assert_eq "the progress notice comes before the completion log" "ordered" "$order"
+assert_eq "a successful delivery adds exactly one journal line, the completion" \
+    "installed missing prerequisites: tar util-linux" \
+    "$(sed -E 's/^[^ ]+ \[[^]]*\] //' "$pfdir/journal")"
+
+printf 'tar\nrunuser\n' >"$pfdir/missing"; : >"$pfdir/installed"
+out=$( (IFS=$'\n\t'; preflight_prerequisites) 2>&1 )
+assert_eq "under main's IFS pkg_install still gets separate arguments" "tar
+util-linux" "$(cat "$pfdir/installed")"
+assert_contains "under main's IFS the log line stays single-line" "$out" \
+    "install-bare-metal: installed missing prerequisites: tar util-linux"
+
+printf 'rpm\ntar\n' >"$pfdir/missing"; : >"$pfdir/installed"
+out=$( (preflight_prerequisites) 2>&1 )
+assert_eq "a missing rpm is a hard refusal" 3 $?
+assert_contains "the rpm refusal names the package" "$out" "rpm is required (RHEL-family package: rpm)"
+assert_eq "nothing is installed when rpm is missing" "" "$(cat "$pfdir/installed")"
+
+printf 'dnf\ntar\n' >"$pfdir/missing"; : >"$pfdir/installed"
+out=$( (preflight_prerequisites) 2>&1 )
+assert_eq "a missing dnf is a hard refusal" 3 $?
+assert_contains "the dnf refusal names the package" "$out" "dnf is required (RHEL-family package: dnf)"
+assert_eq "nothing is installed when dnf is missing" "" "$(cat "$pfdir/installed")"
+
+printf 'tar\n' >"$pfdir/missing"; : >"$pfdir/installed"
+STUB_DELIVERY_FIXES=""
+out=$( (preflight_prerequisites) 2>&1 )
+assert_eq "delivery that does not provide the command still refuses" 3 $?
+assert_contains "the post-delivery refusal keeps the old text" "$out" "tar is required (RHEL-family package: tar)"
+
+printf 'tar\n' >"$pfdir/missing"; : >"$pfdir/installed"; : >"$pfdir/journal"
+STUB_INSTALL_FAILS=1
+out=$( (set -e; preflight_prerequisites) 2>&1 )
+assert_eq "a failing package install still refuses through the intended exit code, not set -e's" 3 $?
+assert_contains "the install failure is logged as a warning" "$out" "WARNING: could not install: tar"
+assert_contains "the install failure still refuses with the missing-command message" "$out" "tar is required (RHEL-family package: tar)"
+assert_contains "a failing delivery still announces progress up front" "$out" "install-bare-metal: installing missing prerequisites: tar"
+assert_eq "a failed delivery never reaches stdout/stderr as completed" "not-logged" \
+    "$(case "$out" in *'installed missing prerequisites'*) printf logged ;; *) printf not-logged ;; esac)"
+assert_eq "a failed delivery adds only the warning to the journal, no delivery progress or completion line" \
+    "WARNING: could not install: tar" \
+    "$(sed -E 's/^[^ ]+ \[[^]]*\] //' "$pfdir/journal")"
+STUB_INSTALL_FAILS=""
+
+printf 'tar\n' >"$pfdir/missing"; : >"$pfdir/installed"
+ARG_DRY_RUN=1
+out=$( (preflight_prerequisites) 2>&1 )
+assert_eq "dry-run does not refuse over a missing command" 0 $?
+assert_contains "dry-run names what it would install" "$out" "[dry-run] would install: tar"
+assert_eq "dry-run installs nothing" "" "$(cat "$pfdir/installed")"
+ARG_DRY_RUN=""
+
+: >"$pfdir/missing"; : >"$pfdir/installed"
+out=$( (preflight_prerequisites) 2>&1 )
+assert_eq "nothing missing: nothing installed, nothing logged" "|" "$(cat "$pfdir/installed")|$out"
+
+# shellcheck disable=SC2034
+HOST_FAMILY=debian
+# shellcheck disable=SC2034
+EL_MAJOR=""
+apply_platform_paths
+printf 'ss\nsha256sum\nrunuser\n' >"$pfdir/missing"; : >"$pfdir/installed"
+STUB_DELIVERY_FIXES=1
+(preflight_prerequisites) >/dev/null 2>&1
+assert_eq "debian refreshes indexes first, then installs packages in required_commands order" "refresh
+coreutils
+iproute2
+util-linux" "$(cat "$pfdir/installed")"
+
+printf 'ss\nsha256sum\nrunuser\n' >"$pfdir/missing"; : >"$pfdir/installed"
+STUB_DELIVERY_FIXES=1
+STUB_REFRESH_FAILS=1
+out=$( (set -e; preflight_prerequisites) 2>&1 )
+assert_eq "a failing apt-get update does not block delivery" 0 $?
+assert_contains "the refresh failure is logged as a warning" "$out" "WARNING: apt-get update failed before installing: coreutils iproute2 util-linux"
+assert_eq "delivery still runs after a failed refresh" "coreutils
+iproute2
+util-linux" "$(cat "$pfdir/installed")"
+STUB_REFRESH_FAILS=""
+
+assert_eq "packages_for_commands dedupes" "coreutils" "$(packages_for_commands sha256sum sha256sum)"
+
+printf 'ss\n' >"$pfdir/missing"
+ARG_DRY_RUN=1
+out=$( (preflight_ports) 2>&1 )
+assert_contains "dry-run says the port check is skipped without ss" "$out" "[dry-run] port checks skipped: ss is missing"
+ARG_DRY_RUN=""
+
+# tarball_prereqs_missing
+
+: >"$pfdir/missing"
+assert_eq "tarball_prereqs_missing: nothing missing when tar/sha256sum/curl are all present" "" \
+    "$(tarball_prereqs_missing "")"
+
+printf 'tar\n' >"$pfdir/missing"
+assert_eq "tarball_prereqs_missing: a missing tar is reported" "tar" \
+    "$(tarball_prereqs_missing "")"
+
+printf 'sha256sum\n' >"$pfdir/missing"
+assert_eq "tarball_prereqs_missing: a missing sha256sum is reported" "sha256sum" \
+    "$(tarball_prereqs_missing "")"
+
+printf 'curl\n' >"$pfdir/missing"
+assert_eq "tarball_prereqs_missing: a missing curl is reported without --from-tarball" "curl" \
+    "$(tarball_prereqs_missing "")"
+
+printf 'curl\n' >"$pfdir/missing"
+assert_eq "tarball_prereqs_missing: curl is not required with --from-tarball" "" \
+    "$(tarball_prereqs_missing /tmp/whatever.tar.gz)"
+
+printf 'tar\nsha256sum\ncurl\n' >"$pfdir/missing"
+assert_eq "tarball_prereqs_missing: tar, sha256sum and curl reported in that order without --from-tarball" "tar
+sha256sum
+curl" "$(tarball_prereqs_missing "")"
+
+printf 'tar\nsha256sum\ncurl\n' >"$pfdir/missing"
+assert_eq "tarball_prereqs_missing: with --from-tarball only tar and sha256sum are reported" "tar
+sha256sum" "$(tarball_prereqs_missing /tmp/whatever.tar.gz)"
+
+: >"$pfdir/missing"
+unset -f have_command pkg_install pkg_refresh
+
+# shellcheck disable=SC2317
+preflight_platform() { printf 'platform '; }
+# shellcheck disable=SC2317
+preflight_resources() { printf 'resources '; }
+# shellcheck disable=SC2317
+preflight_prerequisites() { printf 'prerequisites '; }
+# shellcheck disable=SC2317
+preflight_ports() { printf 'ports'; }
+assert_eq "preflight checks resources before changing the host" "platform resources prerequisites ports" "$(preflight)"
+rm -rf "$pfdir"
 
 if [ "$FAILURES" -gt 0 ]; then
     printf '%d assertion(s) failed\n' "$FAILURES" >&2

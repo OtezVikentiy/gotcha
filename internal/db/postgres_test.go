@@ -208,10 +208,10 @@ func TestAcquireBoundedByOwnPingTimeoutNotCallerContext(t *testing.T) {
 
 	proxy.freezeAll()
 
-	// Ниже этого элапсед не мог дождаться PingTimeout=50мс — заглушка закрыла
+	// Ниже этого элапсед не мог дождаться PingTimeout=1с — заглушка закрыла
 	// соединение вместо того чтобы зависнуть, тест проверял бы не тот сценарий.
-	const lowerBound = 30 * time.Millisecond
-	const upperBound = 2 * time.Second
+	const lowerBound = 900 * time.Millisecond
+	const upperBound = 5 * time.Second
 	done := make(chan struct{})
 	var acquireErr error
 	var elapsed time.Duration

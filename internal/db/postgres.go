@@ -16,9 +16,9 @@ const pgPoolMaxConns = 20
 // исчерпать весь пул в одиночку — значение GUC statement_timeout, мс.
 const pgStatementTimeout = "30000"
 
-// Дефолт pgxpool пингует только простоявшие в пуле ≥1с — здесь безусловно,
-// своим таймаутом (pgxpool берёт min(ctx, PingTimeout)), не контекстом вызывающего.
-const pgAcquirePingTimeout = 50 * time.Millisecond
+// Не меньше: под нагрузкой CPU короткий таймаут протекает i/o timeout в
+// следующие запросы уже живого соединения — ограничивает он только зависшее.
+const pgAcquirePingTimeout = 1 * time.Second
 
 func NewPostgres(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
@@ -30,6 +30,8 @@ func NewPostgres(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 		cfg.ConnConfig.RuntimeParams = make(map[string]string, 1)
 	}
 	cfg.ConnConfig.RuntimeParams["statement_timeout"] = pgStatementTimeout
+	// Дефолт pgxpool пингует только простоявшие в пуле ≥1с — здесь безусловно,
+	// своим таймаутом (pgxpool берёт min(ctx, PingTimeout)), не контекстом вызывающего.
 	cfg.ShouldPing = func(context.Context, pgxpool.ShouldPingParams) bool { return true }
 	cfg.PingTimeout = pgAcquirePingTimeout
 

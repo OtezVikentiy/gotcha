@@ -3,6 +3,7 @@
 
 GOTCHA_INSTALL_DEFAULT_VERSION="dev"
 GOTCHA_INSTALL_DEFAULT_DOWNLOAD_BASE="https://github.com/OtezVikentiy/gotcha/releases/download"
+GOTCHA_DOCS_BARE_METAL_URL="https://getgotcha.ru/docs/installation-bare-metal/"
 
 # Источник истины — docker-compose.yml (postgres:17-alpine,
 # clickhouse-server:25.3-alpine); сверяет internal/guards/docs_versions_test.go.
@@ -41,10 +42,6 @@ Usage: install-bare-metal.sh [flags]
   --from-tarball PATH    use a local tarball instead of downloading one
   --download-base URL    base URL to download from instead of GitHub
   --base-url URL         GOTCHA_BASE_URL
-  --domain D              put nginx in front of this domain
-  --email E                contact for certbot (requires --domain)
-  --no-proxy               do not install or touch nginx
-  --no-firewall            do not touch firewalld (EL family)
   --skip-databases         do not install PostgreSQL/ClickHouse, use --pg-dsn/--ch-dsn
   --pg-dsn DSN            external PostgreSQL DSN
   --ch-dsn DSN            external ClickHouse DSN
@@ -99,6 +96,7 @@ apply_platform_paths() {
         PG_PACKAGE="postgresql${PG_MAJOR}-server"
         PG_BIN_DIR="/usr/pgsql-$PG_MAJOR/bin"
         NGINX_SITE=/etc/nginx/conf.d/gotcha.conf
+        NGINX_SITE_ENABLED_LINK=""
         REPO_DIR=/etc/yum.repos.d
         PKG_HINT_LABEL="RHEL-family package"
         PKG_HINTS[gpg]=gnupg2
@@ -111,6 +109,7 @@ apply_platform_paths() {
     PG_PACKAGE="postgresql-$PG_MAJOR"
     PG_BIN_DIR=/usr/bin
     NGINX_SITE=/etc/nginx/sites-available/gotcha
+    NGINX_SITE_ENABLED_LINK=/etc/nginx/sites-enabled/gotcha
     REPO_DIR=/etc/apt/sources.list.d
     PKG_HINT_LABEL="Debian/Ubuntu package"
     PKG_HINTS[gpg]=gnupg
@@ -235,6 +234,85 @@ version_ge() {
     return 0
 }
 
+BASE_URL_EXAMPLE="https://gotcha.example.com"
+
+normalize_base_url() {
+    local url="$1"
+    while [ "${url%/}" != "$url" ]; do
+        url="${url%/}"
+    done
+    printf '%s\n' "$url"
+}
+
+# Значение пишется в env без кавычек, поэтому белый список, а не «всё, что примет Go»:
+# сторож internal/guards держит его подмножеством baseurl.Normalize.
+validate_base_url() {
+    local raw="$1"
+    local re='^https?://([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?(/([A-Za-z0-9._~:/-]|%[0-9A-Fa-f]{2})*)?$'
+    if [[ ! "$raw" =~ $re ]]; then
+        printf "install-bare-metal: invalid address '%s': need http(s)://host[:port][/path] without query, fragment, spaces or quotes (e.g. %s)\n" \
+            "$raw" "$BASE_URL_EXAMPLE" >&2
+        return 1
+    fi
+    normalize_base_url "$raw"
+}
+
+# Семантика systemd EnvironmentFile: последняя строка ключа побеждает, внешние кавычки
+# снимаются. rc 1 — ключа нет; пустое значение — это «есть».
+env_get() {
+    local key="$1" file="$2" line value
+    [ -r "$file" ] || return 1
+    line=$(grep -E "^${key}=" "$file" | tail -n1) || true
+    [ -n "$line" ] || return 1
+    value="${line#"$key"=}"
+    value="${value%"${value##*[![:space:]]}"}"
+    case "$value" in
+        \"*\") value="${value#\"}"; value="${value%\"}" ;;
+        \'*\') value="${value#\'}"; value="${value%\'}" ;;
+    esac
+    printf '%s\n' "$value"
+}
+
+stdin_is_tty() {
+    [ -t 0 ]
+}
+
+resolve_base_url() {
+    local flag="$1" env_file="$2" yes="$3" from_env answer url
+    if [ -n "$flag" ]; then
+        printf '%s\n' "$flag"
+        return 0
+    fi
+    if [ -f "$env_file" ]; then
+        from_env=$(env_get GOTCHA_BASE_URL "$env_file") \
+            || fail "$EXIT_USAGE" "$env_file has no GOTCHA_BASE_URL line; pass --base-url (the address users will type in the browser, e.g. $BASE_URL_EXAMPLE)"
+        normalize_base_url "$from_env"
+        return 0
+    fi
+    if [ -n "$yes" ] || ! stdin_is_tty; then
+        fail "$EXIT_USAGE" "--base-url is required for a new installation (the address users will type in the browser, e.g. $BASE_URL_EXAMPLE)"
+    fi
+    while :; do
+        read -r -p "Address users will open Gotcha at (e.g. $BASE_URL_EXAMPLE): " answer \
+            || fail "$EXIT_USAGE" "no address given; pass --base-url"
+        if [ -z "$answer" ]; then
+            printf 'install-bare-metal: an address is required\n' >&2
+            continue
+        fi
+        url=$(validate_base_url "$answer") && { printf '%s\n' "$url"; return 0; }
+    done
+}
+
+plain_http_warning() {
+    case "$1" in
+        http://*)
+            printf 'WARNING: %s is plain HTTP: session cookies and passwords travel unencrypted, use it only inside a closed network\n' "$1"
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 # Глобальные ARG_* вместо структуры — main/preflight читают их напрямую.
 # Каждый вызов сбрасывает их к дефолтам для повторных вызовов тест-раннера.
 parse_args() {
@@ -242,10 +320,6 @@ parse_args() {
     ARG_FROM_TARBALL=""
     ARG_DOWNLOAD_BASE="$GOTCHA_INSTALL_DEFAULT_DOWNLOAD_BASE"
     ARG_BASE_URL=""
-    ARG_DOMAIN=""
-    ARG_EMAIL=""
-    ARG_NO_PROXY=""
-    ARG_NO_FIREWALL=""
     ARG_SKIP_DATABASES=""
     ARG_PG_DSN=""
     ARG_CH_DSN=""
@@ -262,15 +336,14 @@ parse_args() {
     while [ $# -gt 0 ]; do
         key="$1"
         case "$key" in
-            --no-proxy)
-                ARG_NO_PROXY=1
+            --no-proxy | --no-firewall)
+                printf 'install-bare-metal: %s is deprecated and does nothing: the installer no longer touches a web server or firewalld\n' "$key" >&2
                 shift
                 continue
                 ;;
-            --no-firewall)
-                ARG_NO_FIREWALL=1
-                shift
-                continue
+            --domain | --email)
+                printf '%s\n' 'install-bare-metal: --domain/--email were removed in 1.9.0: the installer no longer sets up a web server or TLS. Pass --base-url https://<domain> and put your own reverse proxy in front of 127.0.0.1:8080 — see "External access and TLS" in the installation guide.' >&2
+                return "$EXIT_USAGE"
                 ;;
             --skip-databases)
                 ARG_SKIP_DATABASES=1
@@ -323,8 +396,6 @@ parse_args() {
             --from-tarball) ARG_FROM_TARBALL="$val" ;;
             --download-base) ARG_DOWNLOAD_BASE="$val" ;;
             --base-url) ARG_BASE_URL="$val" ;;
-            --domain) ARG_DOMAIN="$val" ;;
-            --email) ARG_EMAIL="$val" ;;
             --pg-dsn) ARG_PG_DSN="$val" ;;
             --ch-dsn) ARG_CH_DSN="$val" ;;
             --mem-limit) ARG_MEM_LIMIT="$val" ;;
@@ -336,17 +407,12 @@ parse_args() {
         shift 2
     done
 
-    if [ -n "$ARG_DOMAIN" ] && [ -n "$ARG_NO_PROXY" ]; then
-        printf 'install-bare-metal: --domain and --no-proxy are mutually exclusive\n' >&2
-        return "$EXIT_USAGE"
-    fi
     if [ -n "$ARG_PURGE" ] && [ -z "$ARG_UNINSTALL" ]; then
         printf 'install-bare-metal: --purge requires --uninstall\n' >&2
         return "$EXIT_USAGE"
     fi
-    if [ -n "$ARG_EMAIL" ] && [ -z "$ARG_DOMAIN" ]; then
-        printf 'install-bare-metal: --email requires --domain\n' >&2
-        return "$EXIT_USAGE"
+    if [ -n "$ARG_BASE_URL" ]; then
+        ARG_BASE_URL=$(validate_base_url "$ARG_BASE_URL") || return "$EXIT_USAGE"
     fi
     if [ -n "$ARG_SKIP_DATABASES" ] && { [ -z "$ARG_PG_DSN" ] || [ -z "$ARG_CH_DSN" ]; }; then
         printf 'install-bare-metal: --skip-databases requires --pg-dsn and --ch-dsn\n' >&2
@@ -377,41 +443,6 @@ parse_args() {
     fi
 
     return "$EXIT_OK"
-}
-
-# Порядок приоритета §4.3: --base-url, иначе --domain (HTTPS), иначе IP хоста
-# (HTTP). Интерактивный вопрос и --yes-предупреждение — в determine_base_url.
-choose_base_url() {
-    local base_url_flag="$1" domain_flag="$2" host_ip="$3"
-    if [ -n "$base_url_flag" ]; then
-        printf '%s\n' "$base_url_flag"
-    elif [ -n "$domain_flag" ]; then
-        printf 'https://%s\n' "$domain_flag"
-    else
-        printf 'http://%s\n' "$host_ip"
-    fi
-}
-
-# §4.3 шаг 2 без --base-url/--domain: интерактивный вопрос, либо (--yes)
-# громкое предупреждение. Побочные эффекты — вне чистых функций теста.
-determine_base_url() {
-    local base_url_flag="$1" domain_flag="$2" host_ip="$3" yes="$4"
-    if [ -n "$base_url_flag" ] || [ -n "$domain_flag" ]; then
-        choose_base_url "$base_url_flag" "$domain_flag" "$host_ip"
-        return
-    fi
-    if [ -n "$yes" ]; then
-        printf 'install-bare-metal: WARNING: no --base-url/--domain given, defaulting to http://%s. GOTCHA_BASE_URL must match exactly what users type in their browser, or every POST (including the first registration) is rejected with 403. Change it later by editing /etc/gotcha/gotcha.env and restarting the service.\n' "$host_ip" >&2
-        choose_base_url "" "" "$host_ip"
-        return
-    fi
-    local answer
-    read -r -p "GOTCHA_BASE_URL [http://$host_ip]: " answer
-    if [ -n "$answer" ]; then
-        printf '%s\n' "$answer"
-    else
-        choose_base_url "" "" "$host_ip"
-    fi
 }
 
 # MemoryMax паритетно compose (mem_limit: 1g) независимо от RAM хоста —
@@ -486,6 +517,9 @@ WantedBy=multi-user.target
 EOF
 }
 
+ENV_FILE_OWNER=root:gotcha
+TRUSTED_PROXIES_LOOPBACK="127.0.0.1/32,::1/128"
+
 render_env_file() {
     local pg_dsn="$1" ch_dsn="$2" secret_key="$3" base_url="$4" \
         dist_dir="$5" gomemlimit="$6" listen_addr="$7"
@@ -497,6 +531,7 @@ GOTCHA_BASE_URL=$base_url
 GOTCHA_DIST_DIR=$dist_dir
 GOMEMLIMIT=$gomemlimit
 GOTCHA_LISTEN_ADDR=$listen_addr
+GOTCHA_TRUSTED_PROXIES=$TRUSTED_PROXIES_LOOPBACK
 EOF
 }
 
@@ -506,35 +541,117 @@ nginx_site_disabled_path() {
     printf '%s.disabled\n' "$NGINX_SITE"
 }
 
-render_nginx_site() {
-    local domain="$1"
-    cat <<EOF
-$NGINX_SITE_MARKER
-server {
-    listen 80;
-    server_name $domain;
-    client_max_body_size 64m;
-
-    # /healthz, /readyz stay open below for external uptime checks;
-    # /metrics and /version leak internal/build detail, loopback-only.
-    location ~ ^/(metrics|version)$ {
-        allow 127.0.0.1;
-        allow ::1;
-        deny all;
-        proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
+find_legacy_site() {
+    local candidate
+    local -a candidates=()
+    if [ -n "$NGINX_SITE_ENABLED_LINK" ] && [ -L "$NGINX_SITE_ENABLED_LINK" ]; then
+        candidates+=("$(readlink -f "$NGINX_SITE_ENABLED_LINK")")
+    fi
+    candidates+=("$NGINX_SITE" "$(nginx_site_disabled_path)")
+    for candidate in "${candidates[@]}"; do
+        if [ -f "$candidate" ] && grep -qF "$NGINX_SITE_MARKER" "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
 }
-EOF
+
+# Без маркера сайт настроен оператором сам (в том числе по нашей доке) — не наш.
+uninstall_legacy_site() {
+    local site
+    site=$(find_legacy_site) || return 0
+    [ "$site" != "$(nginx_site_disabled_path)" ] || return 0
+    if [ "$HOST_FAMILY" = rhel ]; then
+        mv "$NGINX_SITE" "$(nginx_site_disabled_path)" \
+            || { log_step "WARNING: could not disable the nginx site $NGINX_SITE, disable it by hand"; return 0; }
+        systemctl reload nginx >/dev/null 2>&1 || true
+        log_step "nginx site from a previous version disabled (kept as $(nginx_site_disabled_path))"
+        log_step "SELinux boolean httpd_can_network_connect and firewalld services http/https, if a previous version set them, are left as they are (revert: setsebool -P httpd_can_network_connect 0; firewall-cmd --permanent --remove-service=http --remove-service=https && firewall-cmd --reload)"
+        return 0
+    fi
+    # Снимаем только наш симлинк: обычный файл оператора или симлинк на чужой конфиг не трогаем.
+    [ -L "$NGINX_SITE_ENABLED_LINK" ] || return 0
+    [ "$(readlink -f "$NGINX_SITE_ENABLED_LINK")" = "$(readlink -f "$site")" ] || return 0
+    rm -f "$NGINX_SITE_ENABLED_LINK" \
+        || { log_step "WARNING: could not remove $NGINX_SITE_ENABLED_LINK, disable the nginx site by hand"; return 0; }
+    systemctl reload nginx >/dev/null 2>&1 || true
+    log_step "nginx site from a previous version disabled (the file in sites-available is kept)"
+}
+
+legacy_site_enable_hint() {
+    local site="$1"
+    if [ "$site" = "$(nginx_site_disabled_path)" ]; then
+        # Рабочий $NGINX_SITE уже занят (оператор положил свой, например по новой доке) — mv затёр бы его.
+        [ ! -e "$NGINX_SITE" ] || return 1
+        if [ "$HOST_FAMILY" = rhel ]; then
+            printf 'mv %s %s && systemctl reload nginx\n' "$site" "$NGINX_SITE"
+            return 0
+        fi
+        if [ -n "$NGINX_SITE_ENABLED_LINK" ] && [ ! -e "$NGINX_SITE_ENABLED_LINK" ] && [ ! -L "$NGINX_SITE_ENABLED_LINK" ]; then
+            printf 'mv %s %s && ln -s %s %s && systemctl reload nginx\n' \
+                "$site" "$NGINX_SITE" "$NGINX_SITE" "$NGINX_SITE_ENABLED_LINK"
+            return 0
+        fi
+        return 1
+    fi
+    if [ -n "$NGINX_SITE_ENABLED_LINK" ] && [ ! -e "$NGINX_SITE_ENABLED_LINK" ] && [ ! -L "$NGINX_SITE_ENABLED_LINK" ]; then
+        printf 'ln -s %s %s && systemctl reload nginx\n' "$site" "$NGINX_SITE_ENABLED_LINK"
+        return 0
+    fi
+    return 1
+}
+
+# :PORT и 0.0.0.0:PORT слушают все интерфейсы — curl/proxy бьют по loopback того же хоста.
+readyz_probe_addr() {
+    local addr="$1"
+    case "$addr" in
+        :*) addr="127.0.0.1$addr" ;;
+        0.0.0.0:*) addr="127.0.0.1:${addr#*:}" ;;
+    esac
+    printf '%s\n' "$addr"
+}
+
+summary_effective_version() {
+    printf '%s\n' "${1:-$2}"
+}
+
+summary_is_fresh() {
+    [ -n "$1" ] || printf '1\n'
+}
+
+# .disabled без команды включения (место занято чужим конфигом/симлинком) —
+# не наш сайт; "kept as is" соврал бы.
+summary_legacy_site() {
+    local legacy_site="$1"
+    if [ "$legacy_site" = "$(nginx_site_disabled_path)" ] && ! legacy_site_enable_hint "$legacy_site" >/dev/null; then
+        return 1
+    fi
+    printf '%s\n' "$legacy_site"
+}
+
+render_summary() {
+    local version="$1" readiness="$2" base_url="$3" listen_addr="$4" legacy_site="$5" \
+        enable_hint="$6" fresh="$7"
+    printf 'Gotcha %s is installed and running.\n' "$version"
+    printf '  readiness:  %s\n' "$readiness"
+    case "$listen_addr" in
+        127.* | localhost:* | '[::1]':*) printf '  listens on: %s (this host only)\n' "$listen_addr" ;;
+        *) printf '  listens on: %s (reachable from other hosts: allow only your proxy)\n' "$listen_addr" ;;
+    esac
+    printf '  address:    %s (GOTCHA_BASE_URL)\n' "$base_url"
+    printf '  config:     /etc/gotcha/gotcha.env\n'
+    printf '  logs:       journalctl -u gotcha -f\n'
+    printf '\nNext:\n'
+    if [ -n "$legacy_site" ]; then
+        printf '  1. Your nginx site from a previous version is kept as is and is yours to maintain: %s\n' "$legacy_site"
+        [ -z "$enable_hint" ] || printf '     It is not enabled now; to enable it: %s\n' "$enable_hint"
+    else
+        printf '  1. Put a reverse proxy (nginx, angie, Apache, Caddy...) in front of %s\n' "$(readyz_probe_addr "$listen_addr")"
+        printf '     so that %s reaches it. Requirements and examples:\n' "$base_url"
+        printf '     %s\n' "$GOTCHA_DOCS_BARE_METAL_URL"
+    fi
+    [ -z "$fresh" ] || printf '  2. Open %s and create the first administrator.\n' "$base_url"
 }
 
 render_pg_conf() {
@@ -633,96 +750,110 @@ required_commands() {
 port_owner_units() {
     case "$1" in
         8080) printf 'gotcha\n' ;;
-        # angie: на части хостов штатный веб-сервер — он, и отказ по занятому
-        # 80 порту там был бы отказом установке на исправном хосте.
-        80) printf 'nginx\nangie\n' ;;
         5432) printf '%s\n' "$PG_UNIT" ;;
         *) printf 'clickhouse-server\n' ;;
     esac
 }
 
-selinux_needs_boolean() {
-    [ -z "$2" ] || return 1
-    [ "$1" = Enforcing ] || return 1
-    return 0
+have_command() {
+    command -v "$1" >/dev/null 2>&1
 }
 
-# Тишина оправдана, только если ядро тоже не enforcing — иначе setsebool
-# молча не вызывается, и nginx получает 502 без единой подсказки.
-selinux_tooling_missing_notice() {
-    local getenforce_present="$1" kernel_enforcing="$2"
-    [ -z "$getenforce_present" ] || return 1
-    [ "$kernel_enforcing" = 1 ] || return 1
-    printf 'SELinux: kernel policy is Enforcing but SELinux userspace tools (getenforce/setsebool) are missing — httpd_can_network_connect was left untouched, nginx may not be able to reach gotcha (502); install policycoreutils and run: setsebool -P httpd_can_network_connect 1\n'
+packages_for_commands() {
+    local cmd pkg seen=" "
+    for cmd in "$@"; do
+        pkg="${PKG_HINTS[$cmd]}"
+        case "$seen" in *" $pkg "*) continue ;; esac
+        seen+="$pkg "
+        printf '%s\n' "$pkg"
+    done
 }
 
-firewall_decision() {
-    local state="$1" no_firewall="$2" yes="$3" no_proxy="$4"
-    if [ -n "$no_firewall" ] || [ -n "$no_proxy" ] || [ "$state" != running ]; then
-        printf 'skip\n'
-        return 0
-    fi
-    [ -n "$yes" ] && { printf 'open\n'; return 0; }
-    printf 'ask\n'
-}
-
-# declined различает «не обнаружен» от «работает, но оператор отказался на
-# запросе» — иначе первое сообщение было бы прямой ложью во втором случае.
-firewall_skip_notice() {
-    local state="$1" no_firewall="$2" declined="$3"
-    [ -z "$no_firewall" ] || return 1
-    if [ -n "$declined" ]; then
-        printf 'firewalld: left closed at your request — ports 80 and 443 were not opened, open them yourself: firewall-cmd --permanent --add-service=http --add-service=https && firewall-cmd --reload\n'
-        return 0
-    fi
-    [ "$state" != running ] || return 1
-    printf 'firewalld: not detected or not running — ports 80 and 443 were left untouched, open them yourself if this host uses a firewall\n'
-}
-
-# Читает реальное состояние хоста (uname, порты, RAM, диск) — платформа уже
-# определена detect_platform, остальные решения идут через чистые функции выше.
-preflight() {
-    [ "$(id -u)" = 0 ] || fail "$EXIT_PREFLIGHT" "must run as root"
+preflight_platform() {
     [ -d /run/systemd/system ] || fail "$EXIT_PREFLIGHT" "systemd is required (PID 1 is not systemd)"
-
     HOST_ARCH=$(detect_arch "$(uname -m)") \
         || fail "$EXIT_PREFLIGHT" "unsupported architecture: $(uname -m) (amd64/arm64 only)"
+}
 
-    # Пакеты в сообщении не украшение: на минимальном Debian нет ss, а на
-    # голом EL10 — runuser (util-linux туда не тянется по умолчанию).
-    local cmd
+preflight_resources() {
+    # 1900, не 2048: облачные "2 ГБ" урезают MemTotal под firmware/hypervisor.
+    # Не local — install_clickhouse переиспользует значение для 10-small.xml.
+    HOST_RAM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
+    [ "$HOST_RAM_MB" -ge 1900 ] || fail "$EXIT_PREFLIGHT" "at least 2 GB RAM required (found ${HOST_RAM_MB} MB)"
+    local disk_gb
+    disk_gb=$(($(df --output=avail -k / | tail -n1) / 1024 / 1024))
+    [ "$disk_gb" -ge 20 ] || fail "$EXIT_PREFLIGHT" "at least 20 GB free disk required (found ${disk_gb} GB)"
+}
+
+# rpm/dnf не доставляются: без них доставлять нечем. Провал установки пакета не отдельный
+# отказ — повторная проверка ниже даёт тот же exit 3 с именем пакета.
+preflight_prerequisites() {
+    local cmd joined
+    local -a missing=() packages=()
     while IFS= read -r cmd; do
-        command -v "$cmd" >/dev/null 2>&1 \
-            || fail "$EXIT_PREFLIGHT" "$cmd is required ($PKG_HINT_LABEL: ${PKG_HINTS[$cmd]})"
+        have_command "$cmd" || missing+=("$cmd")
     done < <(required_commands "$HOST_FAMILY" "$ARG_SKIP_DATABASES")
+    [ "${#missing[@]}" -gt 0 ] || return 0
+    for cmd in "${missing[@]}"; do
+        case "$cmd" in
+            rpm | dnf) fail "$EXIT_PREFLIGHT" "$cmd is required ($PKG_HINT_LABEL: ${PKG_HINTS[$cmd]})" ;;
+        esac
+    done
+    mapfile -t packages < <(packages_for_commands "${missing[@]}")
+    printf -v joined '%s ' "${packages[@]}"
+    joined="${joined% }"
+    if [ -n "$ARG_DRY_RUN" ]; then
+        printf '[dry-run] would install: %s\n' "$joined"
+        return 0
+    fi
+    printf 'install-bare-metal: installing missing prerequisites: %s\n' "$joined" >&2
+    if [ "$HOST_FAMILY" != rhel ]; then
+        pkg_refresh || log_step "WARNING: apt-get update failed before installing: $joined"
+    fi
+    pkg_install "${packages[@]}" || log_step "WARNING: could not install: $joined"
+    for cmd in "${missing[@]}"; do
+        have_command "$cmd" || fail "$EXIT_PREFLIGHT" "$cmd is required ($PKG_HINT_LABEL: ${PKG_HINTS[$cmd]})"
+    done
+    # Только после повторной проверки: провал доставки не должен попасть в completed steps.
+    log_step "installed missing prerequisites: $joined"
+}
 
+preflight_ports() {
+    if ! have_command ss; then
+        [ -z "$ARG_DRY_RUN" ] || printf '[dry-run] port checks skipped: ss is missing\n'
+        return 0
+    fi
     local -a ports=(8080)
-    [ -n "$ARG_NO_PROXY" ] || ports+=(80)
     [ -n "$ARG_SKIP_DATABASES" ] || ports+=(5432 8123 9000)
     local port owner owned
     for port in "${ports[@]}"; do
         ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":${port}\$" || continue
         # Занятый порт — отказ, только если это не наш же юнит с прошлого запуска;
-        # иначе идемпотентный повторный запуск (§4.4) не проходил бы преflight.
+        # иначе идемпотентный повторный запуск не проходил бы preflight.
         owned=""
         while IFS= read -r owner; do
             systemctl is-active --quiet "$owner" && { owned=1; break; }
         done < <(port_owner_units "$port")
         [ -n "$owned" ] && continue
-        if [ "$port" = 80 ]; then
-            fail "$EXIT_PREFLIGHT" "port 80 is already in use by something that is not nginx or angie (pass --no-proxy to keep your own web server)"
-        fi
         fail "$EXIT_PREFLIGHT" "port $port is already in use"
     done
+}
 
-    # 1900, не 2048: облачные "2 ГБ" урезают MemTotal под firmware/hypervisor.
-    # Не local — install_clickhouse переиспользует значение для 10-small.xml.
-    HOST_RAM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
-    [ "$HOST_RAM_MB" -ge 1900 ] || fail "$EXIT_PREFLIGHT" "at least 2 GB RAM required (found ${HOST_RAM_MB} MB)"
+preflight() {
+    preflight_platform
+    preflight_resources
+    preflight_prerequisites
+    preflight_ports
+}
 
-    local disk_gb
-    disk_gb=$(($(df --output=avail -k / | tail -n1) / 1024 / 1024))
-    [ "$disk_gb" -ge 20 ] || fail "$EXIT_PREFLIGHT" "at least 20 GB free disk required (found ${disk_gb} GB)"
+# --dry-run не доставляет пакеты (preflight_prerequisites пропускает установку) —
+# перед fetch_tarball нужно знать, есть ли чем его выполнить, а не звонить и падать.
+tarball_prereqs_missing() {
+    local from_tarball="$1" cmd
+    for cmd in tar sha256sum; do
+        have_command "$cmd" || printf '%s\n' "$cmd"
+    done
+    [ -n "$from_tarball" ] || have_command curl || printf 'curl\n'
 }
 
 # Возвращает путь к распакованному каталогу через stdout; временные
@@ -1229,10 +1360,49 @@ write_env_file() {
     render_env_file "$pg_dsn" "$ch_dsn" "$secret_key" "$base_url" \
         /opt/gotcha/agent-dist "$gomemlimit" 127.0.0.1:8080 >"$tmp" \
         || { rm -f "$tmp"; fail "$EXIT_OTHER" "failed to render $env_file"; }
-    chown root:gotcha "$tmp" || { rm -f "$tmp"; fail "$EXIT_OTHER" "failed to set ownership/permissions on $env_file"; }
+    chown "$ENV_FILE_OWNER" "$tmp" || { rm -f "$tmp"; fail "$EXIT_OTHER" "failed to set ownership/permissions on $env_file"; }
     chmod 0640 "$tmp" || { rm -f "$tmp"; fail "$EXIT_OTHER" "failed to set ownership/permissions on $env_file"; }
     mv "$tmp" "$env_file" || fail "$EXIT_OTHER" "failed to install $env_file"
     log_step "config file created: $env_file"
+}
+
+# Значение через ENVIRON, не через sed/awk -v: & # \ в адресе ломали бы подстановку.
+env_set() {
+    local key="$1" value="$2" file="$3" tmp
+    tmp=$(mktemp "$(dirname "$file")/.gotcha.env.XXXXXX") || return 1
+    if ! ENV_SET_KEY="$key" ENV_SET_VALUE="$value" awk '
+        BEGIN { k = ENVIRON["ENV_SET_KEY"]; v = ENVIRON["ENV_SET_VALUE"]; p = k "=" }
+        substr($0, 1, length(p)) == p { if (!done) { print k "=" v; done = 1 } next }
+        { print }
+        END { if (!done) print k "=" v }
+    ' "$file" >"$tmp" \
+        || ! chown "$ENV_FILE_OWNER" "$tmp" \
+        || ! chmod 0640 "$tmp" \
+        || ! mv "$tmp" "$file"; then
+        rm -f "$tmp"
+        return 1
+    fi
+}
+
+reconcile_env_file() {
+    local env_file="$1" base_url_flag="$2" current
+    if [ -n "$base_url_flag" ]; then
+        current=$(env_get GOTCHA_BASE_URL "$env_file") || current=""
+        current=$(normalize_base_url "$current")
+        if [ "$current" != "$base_url_flag" ]; then
+            env_set GOTCHA_BASE_URL "$base_url_flag" "$env_file" \
+                || fail "$EXIT_OTHER" "failed to update GOTCHA_BASE_URL in $env_file"
+            log_step "GOTCHA_BASE_URL changed: ${current:-<unset>} -> $base_url_flag"
+            log_step "update your reverse proxy (server name, TLS certificate) for $base_url_flag"
+            ENV_CHANGED=1
+        fi
+    fi
+    if ! env_get GOTCHA_TRUSTED_PROXIES "$env_file" >/dev/null; then
+        env_set GOTCHA_TRUSTED_PROXIES "$TRUSTED_PROXIES_LOOPBACK" "$env_file" \
+            || fail "$EXIT_OTHER" "failed to add GOTCHA_TRUSTED_PROXIES to $env_file"
+        log_step "GOTCHA_TRUSTED_PROXIES=$TRUSTED_PROXIES_LOOPBACK added to $env_file (login rate limiting behind a reverse proxy on this host)"
+        ENV_CHANGED=1
+    fi
 }
 
 install_unit() {
@@ -1256,7 +1426,11 @@ run_migrations() {
 }
 
 start_app() {
+    local restart="$1"
     systemctl enable --now gotcha || fail "$EXIT_APP" "failed to enable/start the gotcha service"
+    if [ -n "$restart" ]; then
+        systemctl restart gotcha || fail "$EXIT_APP" "failed to restart the gotcha service after changing its environment"
+    fi
 
     local tries=0
     until /usr/local/bin/gotcha --healthcheck >/dev/null 2>&1; do
@@ -1271,80 +1445,23 @@ start_app() {
     log_step "gotcha service started and healthy"
 }
 
-# Снимает штатный дефолтный сайт (конфликтовал бы default_server'ом на 80). Копия
-# делается ДО перезаписи; при точном совпадении с прошлым рендером — не бэкапится вовсе.
-install_nginx() {
-    local domain="$1" site="$NGINX_SITE" rendered disabled
-    pkg_install nginx || fail "$EXIT_OTHER" "failed to install nginx"
-
-    # Восстановление ДО проверки "файла нет": на EL --uninstall переименовывает
-    # сайт в .disabled вместо удаления симлинка, как на Debian.
-    disabled=$(nginx_site_disabled_path)
-    if [ ! -e "$site" ] && [ -e "$disabled" ]; then
-        mv "$disabled" "$site" || fail "$EXIT_OTHER" "failed to restore $disabled as $site"
+print_install_summary() {
+    local env_file="$1" base_url="$2" env_existed="$3"
+    local readiness legacy_site enable_hint="" listen_addr version
+    listen_addr=$(env_get GOTCHA_LISTEN_ADDR "$env_file") || listen_addr=127.0.0.1:8080
+    readiness=$(curl -fsS --max-time 5 "http://$(readyz_probe_addr "$listen_addr")/readyz" 2>/dev/null) \
+        || readiness="no answer (see logs)"
+    version=$(summary_effective_version "$(installed_version /usr/local/bin/gotcha)" "$ARG_VERSION")
+    legacy_site=$(find_legacy_site) || legacy_site=""
+    legacy_site=$(summary_legacy_site "$legacy_site") || legacy_site=""
+    if [ -n "$legacy_site" ]; then
+        enable_hint=$(legacy_site_enable_hint "$legacy_site") || enable_hint=""
     fi
-
-    rendered=$(render_nginx_site "$domain")
-    if [ ! -f "$site" ]; then
-        printf '%s\n' "$rendered" >"$site" || fail "$EXIT_OTHER" "failed to render $site"
-    elif [ "$(cat "$site")" != "$rendered" ]; then
-        # Местные правки нашего файла — это TLS-блок certbot, перезапись вернула бы
-        # хост на голый HTTP. Сменившийся домен — другое дело, сайт рендерится заново.
-        if grep -qF "$NGINX_SITE_MARKER" "$site" \
-            && grep -qE "^[[:space:]]*server_name[[:space:]]+$domain;" "$site"; then
-            log_step "nginx site kept as it is — it is ours and has local edits (certbot TLS, most likely): $site"
-        else
-            cp "$site" "$site.bak-$(date +%s)" || fail "$EXIT_OTHER" "failed to back up existing $site"
-            printf '%s\n' "$rendered" >"$site" || fail "$EXIT_OTHER" "failed to render $site"
-        fi
-    fi
-    if [ "$HOST_FAMILY" != rhel ]; then
-        rm -f /etc/nginx/sites-enabled/default
-        ln -sf ../sites-available/gotcha /etc/nginx/sites-enabled/gotcha \
-            || fail "$EXIT_OTHER" "failed to enable $site"
-    fi
-
-    nginx -t || fail "$EXIT_OTHER" "nginx configuration test failed"
-    systemctl enable --now nginx || fail "$EXIT_OTHER" "failed to start nginx"
-    systemctl reload nginx || fail "$EXIT_OTHER" "failed to reload nginx"
-
-    log_step "nginx installed, proxying to gotcha for $domain"
+    render_summary "$version" "$readiness" "$base_url" "$listen_addr" \
+        "$legacy_site" "$enable_hint" "$(summary_is_fresh "$env_existed")"
 }
 
-# Отказ certbot, а на EL и отказ EPEL/пакета сами, не откатывают установку:
-# HTTP-стенд остаётся рабочим, скрипт печатает причину и команду для повтора.
-install_certificate() {
-    local domain="$1" email="$2"
-
-    if [ "$HOST_FAMILY" = rhel ]; then
-        if ! dnf -qy repolist enabled 2>/dev/null | grep -qi '^epel'; then
-            if ! dnf -qy install \
-                "https://dl.fedoraproject.org/pub/epel/epel-release-latest-$EL_MAJOR.noarch.rpm" >/dev/null 2>&1; then
-                printf 'install-bare-metal: could not enable EPEL, so certbot was not installed; HTTP on port 80 still works, retry later with:\n' >&2
-                printf '  dnf -y install epel-release && dnf -y install certbot python3-certbot-nginx && certbot --nginx -d %s -m %s --agree-tos --redirect\n' \
-                    "$domain" "$email" >&2
-                return 0
-            fi
-        fi
-        if ! pkg_install certbot python3-certbot-nginx; then
-            printf 'install-bare-metal: could not install certbot, so no TLS certificate was issued; HTTP on port 80 still works, retry later with:\n' >&2
-            printf '  dnf -y install certbot python3-certbot-nginx && certbot --nginx -d %s -m %s --agree-tos --redirect\n' \
-                "$domain" "$email" >&2
-            return 0
-        fi
-    else
-        pkg_install certbot python3-certbot-nginx || fail "$EXIT_OTHER" "failed to install certbot"
-    fi
-
-    if certbot --nginx -d "$domain" -m "$email" --agree-tos --non-interactive --redirect >/dev/null 2>&1; then
-        log_step "TLS certificate issued for $domain"
-    else
-        printf 'install-bare-metal: certbot failed to obtain a certificate for %s; HTTP on port 80 still works, retry later with:\n' "$domain" >&2
-        printf '  certbot --nginx -d %s -m %s --agree-tos --redirect\n' "$domain" "$email" >&2
-    fi
-}
-
-# Не трогает пакеты СУБД/nginx и apt-репозитории — на хосте ими может пользоваться
+# Не трогает пакеты СУБД и apt-репозитории — на хосте ими может пользоваться
 # что-то ещё. --purge снимает только объекты, которые этот скрипт сам и создал.
 uninstall_app() {
     local purge="$1"
@@ -1354,21 +1471,7 @@ uninstall_app() {
     rm -f /usr/local/bin/gotcha
     log_step "gotcha unit and binary removed"
 
-    # Включённый сайт без бэкенда — 502 на всё. На EL сайт — единственный файл
-    # в conf.d: снятием служит переименование в .disabled, не симлинк.
-    if [ "$HOST_FAMILY" = rhel ]; then
-        if [ -e "$NGINX_SITE" ]; then
-            mv "$NGINX_SITE" "$(nginx_site_disabled_path)"
-            systemctl reload nginx >/dev/null 2>&1 || true
-            log_step "nginx site disabled (kept as $(nginx_site_disabled_path))"
-        fi
-        # Оба глобальные, на них может опираться другой сервис хоста — снятие их не трогает.
-        log_step "SELinux boolean httpd_can_network_connect and firewalld services http/https, if this install set them, are left as they are (revert: setsebool -P httpd_can_network_connect 0; firewall-cmd --permanent --remove-service=http --remove-service=https && firewall-cmd --reload)"
-    elif [ -L /etc/nginx/sites-enabled/gotcha ] || [ -e /etc/nginx/sites-enabled/gotcha ]; then
-        rm -f /etc/nginx/sites-enabled/gotcha
-        systemctl reload nginx >/dev/null 2>&1 || true
-        log_step "nginx site disabled (the file in sites-available is kept)"
-    fi
+    uninstall_legacy_site
 
     [ -n "$purge" ] || return 0
 
@@ -1422,6 +1525,7 @@ main() {
     # видимости раньше, чем сработает EXIT-трап, и он увидел бы их пустыми.
     INSTALL_LOG=()
     TMP_DIRS=()
+    ENV_CHANGED=""
     # Метка запуска: по ней on_exit отбирает из общего журнала шаги текущего
     # запуска, включая записанные подоболочками.
     INSTALL_RUN_ID="$$-$(date -u +%s)"
@@ -1432,8 +1536,8 @@ main() {
         exit "$EXIT_OK"
     fi
     detect_platform
+    [ "$(id -u)" = 0 ] || fail "$EXIT_PREFLIGHT" "must run as root"
     if [ -n "$ARG_UNINSTALL" ]; then
-        [ "$(id -u)" = 0 ] || fail "$EXIT_PREFLIGHT" "must run as root"
         if [ -n "$ARG_PURGE" ] && [ -z "$ARG_YES" ]; then
             local purge_answer=""
             # read возвращает ненулевой статус на EOF (закрытый stdin) — под set -e
@@ -1448,10 +1552,26 @@ main() {
         exit "$EXIT_OK"
     fi
 
+    local env_file=/etc/gotcha/gotcha.env base_url warning
+    base_url=$(resolve_base_url "$ARG_BASE_URL" "$env_file" "$ARG_YES") || exit "$?"
+    if [ -n "$ARG_BASE_URL" ] || [ ! -f "$env_file" ]; then
+        warning=$(plain_http_warning "$base_url") && printf 'install-bare-metal: %s\n' "$warning" >&2
+    fi
+
     preflight
 
-    local tarball_root
-    tarball_root=$(fetch_tarball "$ARG_VERSION" "$HOST_ARCH" "$ARG_DOWNLOAD_BASE" "$ARG_FROM_TARBALL")
+    local tarball_root="" tcmd
+    local -a tarball_missing=()
+    if [ -n "$ARG_DRY_RUN" ]; then
+        mapfile -t tarball_missing < <(tarball_prereqs_missing "$ARG_FROM_TARBALL")
+    fi
+    if [ "${#tarball_missing[@]}" -gt 0 ]; then
+        for tcmd in "${tarball_missing[@]}"; do
+            printf '[dry-run] tarball check skipped: %s is missing\n' "$tcmd"
+        done
+    else
+        tarball_root=$(fetch_tarball "$ARG_VERSION" "$HOST_ARCH" "$ARG_DOWNLOAD_BASE" "$ARG_FROM_TARBALL")
+    fi
 
     # Версия уже установленного бинаря, не версия этого скрипта (GOTCHA_INSTALL_DEFAULT_VERSION):
     # решает, идёт ли речь об обновлении (§4.5) или об идемпотентном повторе/первой установке.
@@ -1467,24 +1587,26 @@ main() {
     # больше не бьёт по пробелу, разбирая обе колонки в mem_max целиком.
     IFS=' ' read -r mem_max gomemlimit <<<"$(resolve_memlimit "$ARG_MEM_LIMIT")"
 
-    local host_ip base_url
-    host_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
-    base_url=$(determine_base_url "$ARG_BASE_URL" "$ARG_DOMAIN" "$host_ip" "$ARG_YES")
-
     if [ -n "$ARG_DRY_RUN" ]; then
-        printf '[dry-run] tarball ready at %s\n' "$tarball_root"
+        [ -z "$tarball_root" ] || printf '[dry-run] tarball ready at %s\n' "$tarball_root"
         printf '[dry-run] GOTCHA_BASE_URL=%s\n' "$base_url"
         printf '[dry-run] MemoryMax=%s GOMEMLIMIT=%s\n' "$mem_max" "$gomemlimit"
         printf '[dry-run] would write /etc/systemd/system/gotcha.service:\n'
         render_unit "$mem_max"
-        printf '[dry-run] would write /etc/gotcha/gotcha.env:\n'
-        render_env_file \
-            "postgres://gotcha:<generated>@127.0.0.1:5432/gotcha?sslmode=disable" \
-            "clickhouse://gotcha:<generated>@127.0.0.1:9000/gotcha" \
-            "<generated>" "$base_url" "/opt/gotcha/agent-dist" "$gomemlimit" "127.0.0.1:8080"
-        if [ -z "$ARG_NO_PROXY" ]; then
-            printf '[dry-run] would write %s:\n' "$NGINX_SITE"
-            render_nginx_site "${ARG_DOMAIN:-$host_ip}"
+        if [ -f "$env_file" ]; then
+            local current
+            current=$(env_get GOTCHA_BASE_URL "$env_file") || current=""
+            current=$(normalize_base_url "$current")
+            [ -z "$ARG_BASE_URL" ] || [ "$current" = "$ARG_BASE_URL" ] \
+                || printf '[dry-run] would change GOTCHA_BASE_URL in %s: %s -> %s\n' "$env_file" "${current:-<unset>}" "$ARG_BASE_URL"
+            env_get GOTCHA_TRUSTED_PROXIES "$env_file" >/dev/null \
+                || printf '[dry-run] would add GOTCHA_TRUSTED_PROXIES=%s to %s\n' "$TRUSTED_PROXIES_LOOPBACK" "$env_file"
+        else
+            printf '[dry-run] would write /etc/gotcha/gotcha.env:\n'
+            render_env_file \
+                "postgres://gotcha:<generated>@127.0.0.1:5432/gotcha?sslmode=disable" \
+                "clickhouse://gotcha:<generated>@127.0.0.1:9000/gotcha" \
+                "<generated>" "$base_url" "/opt/gotcha/agent-dist" "$gomemlimit" "127.0.0.1:8080"
         fi
         if [ -z "$ARG_SKIP_DATABASES" ]; then
             printf '[dry-run] would write %s/conf.d/10-gotcha.conf:\n' "$(pg_conf_dir_label)"
@@ -1493,10 +1615,14 @@ main() {
         exit "$EXIT_OK"
     fi
 
-    local env_file=/etc/gotcha/gotcha.env
     # Без env-файла install_postgresql/install_clickhouse ниже могут перевыпустить
     # пароль под уже работающим сервисом — останавливаем его первым, пока не поздно.
-    [ -f "$env_file" ] || systemctl stop gotcha 2>/dev/null || true
+    local env_existed=""
+    if [ -f "$env_file" ]; then
+        env_existed=1
+    else
+        systemctl stop gotcha 2>/dev/null || true
+    fi
     if [ -z "$ARG_SKIP_DATABASES" ]; then
         ARG_PG_DSN=$(install_postgresql "$env_file")
         ARG_CH_DSN=$(install_clickhouse "$HOST_RAM_MB" "$tarball_root" "$env_file")
@@ -1513,57 +1639,12 @@ main() {
 
     install_app_files "$tarball_root"
     write_env_file "$ARG_PG_DSN" "$ARG_CH_DSN" "$base_url" "$gomemlimit" "$env_file"
+    [ -z "$env_existed" ] || reconcile_env_file "$env_file" "$ARG_BASE_URL"
     install_unit "$mem_max"
     run_migrations "$env_file"
-    start_app
+    start_app "$ENV_CHANGED"
 
-    if [ -z "$ARG_NO_PROXY" ]; then
-        install_nginx "${ARG_DOMAIN:-$host_ip}"
-        if [ "$HOST_FAMILY" = rhel ]; then
-            local selinux_state="" getenforce_present=""
-            if command -v getenforce >/dev/null 2>&1; then
-                getenforce_present=1
-                selinux_state=$(getenforce 2>/dev/null)
-            fi
-            if selinux_needs_boolean "$selinux_state" "$ARG_NO_PROXY"; then
-                setsebool -P httpd_can_network_connect 1 \
-                    || fail "$EXIT_OTHER" "failed to allow nginx to reach gotcha (setsebool httpd_can_network_connect)"
-                log_step "SELinux: httpd_can_network_connect set to 1 (revert with: setsebool -P httpd_can_network_connect 0)"
-            else
-                local kernel_enforcing="" sel_notice
-                [ -r /sys/fs/selinux/enforce ] \
-                    && [ "$(cat /sys/fs/selinux/enforce 2>/dev/null)" = 1 ] \
-                    && kernel_enforcing=1
-                sel_notice=$(selinux_tooling_missing_notice "$getenforce_present" "$kernel_enforcing") && log_step "$sel_notice"
-            fi
-
-            local fw_state="" fw_decision fw_declined=""
-            command -v firewall-cmd >/dev/null 2>&1 && fw_state=$(firewall-cmd --state 2>/dev/null)
-            fw_decision=$(firewall_decision "$fw_state" "$ARG_NO_FIREWALL" "$ARG_YES" "$ARG_NO_PROXY")
-            if [ "$fw_decision" = ask ]; then
-                local fw_answer=""
-                read -r -p "Open ports 80 and 443 in firewalld? [y/N] " fw_answer || true
-                case "$fw_answer" in
-                    y | Y | yes | YES) fw_decision=open ;;
-                    *) fw_decision=skip; fw_declined=1 ;;
-                esac
-            fi
-            if [ "$fw_decision" = open ]; then
-                if firewall-cmd --permanent --add-service=http --add-service=https >/dev/null \
-                    && firewall-cmd --reload >/dev/null; then
-                    log_step "firewalld: services http and https opened permanently (revert with: firewall-cmd --permanent --remove-service=http --remove-service=https && firewall-cmd --reload)"
-                else
-                    fail "$EXIT_OTHER" "failed to open ports 80/443 in firewalld"
-                fi
-            else
-                local fw_notice
-                fw_notice=$(firewall_skip_notice "$fw_state" "$ARG_NO_FIREWALL" "$fw_declined") && log_step "$fw_notice"
-            fi
-        fi
-        if [ -n "$ARG_DOMAIN" ] && [ -n "$ARG_EMAIL" ]; then
-            install_certificate "$ARG_DOMAIN" "$ARG_EMAIL"
-        fi
-    fi
+    print_install_summary "$env_file" "$base_url" "$env_existed"
 }
 
 # Guards main() from running on source — the test runner sources this file
