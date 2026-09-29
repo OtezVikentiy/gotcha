@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- The startup error for a schema stuck dirty now offers both valid `--migrate-force`
+  numbers instead of a ready command with the stuck version only. For PostgreSQL it
+  puts N-1 first: a migration file runs as one implicit transaction, so a migration
+  that failed with an SQL error is rolled back entirely, and forcing N would mark as
+  applied a migration that is not in the database. For ClickHouse both options come
+  with "compare the schema"; at version 1 the hint says to recreate the volume
+  instead of suggesting 0, which `--migrate-force` rejects.
+
 ### Documentation
 - The Debian/Ubuntu host-prep step now lists `util-linux` explicitly instead of relying
   on it being present by default: the installer requires `runuser` on both families. A

@@ -213,10 +213,8 @@ func forceFlagSuffix(label string) string {
 // без этой ветки даунгрейд шёл бы молча, а падал бы на первой вставке в новую колонку.
 func schemaGateErr(label string, got uint, dirty bool, want uint, compat map[uint]bool) (warning string, err error) {
 	if dirty {
-		return "", fmt.Errorf("schema check: %s-база в состоянии dirty на версии %d — "+
-			"снимите флаг перед стартом: docker compose run --rm gotcha --migrate-force%s=%d "+
-			"(подробности: /docs/upgrade, раздел про dirty)",
-			label, got, forceFlagSuffix(label), got)
+		return "", fmt.Errorf("schema check: %s-база в состоянии dirty на версии %d — до старта %s",
+			label, got, dirtyForceHint("--migrate-force"+forceFlagSuffix(label), got, label != "ClickHouse"))
 	}
 	if got < want {
 		return "", fmt.Errorf("schema check: версия %s-схемы %d отстаёт от встроенной %d — "+
@@ -355,12 +353,31 @@ func explainMigrateErr(dir string, err error) error {
 		if strings.HasSuffix(dir, "/ch") {
 			flag = "--migrate-force-ch"
 		}
-		return fmt.Errorf("migrate up %s: база в состоянии dirty на версии %d — "+
-			"предыдущая миграция оборвалась; проверьте схему и снимите флаг: "+
-			"docker compose run --rm gotcha %s=%d (подробности: /docs/upgrade, "+
-			"раздел про dirty): %w", dir, derr.Version, flag, derr.Version, err)
+		return fmt.Errorf("migrate up %s: база в состоянии dirty на версии %d — предыдущая миграция оборвалась; %s: %w",
+			dir, derr.Version, dirtyForceHint(flag, uint(derr.Version), flag == "--migrate-force"), err)
 	}
 	return fmt.Errorf("migrate up %s: %w", dir, err)
+}
+
+// Оба допустимых номера --migrate-force для схемы, застрявшей dirty на версии v.
+// PostgreSQL выполняет файл миграции одной неявной транзакцией (golang-migrate шлёт
+// его одним Exec без параметров), поэтому упавшая с ошибкой SQL миграция там
+// откатывается целиком и обычный случай — v-1: подсказка ставит его первым.
+// У ClickHouse транзакций для DDL нет, решает только сверка со схемой.
+// На v=1 шага назад нет (force требует target ≥ 1): нетронутая миграция 1 — пустая база.
+func dirtyForceHint(flag string, v uint, pg bool) string {
+	cmd := "docker compose run --rm gotcha " + flag
+	applied := fmt.Sprintf("миграция %d применилась целиком или доделана руками — %s=%d", v, cmd, v)
+	notApplied := fmt.Sprintf("миграция %d не применилась или откачена руками — %s=%d", v, cmd, v-1)
+	if v <= 1 {
+		notApplied = "миграция 1 не применилась — база пуста, пересоздайте том"
+	}
+	first, second := applied, notApplied
+	if pg {
+		first, second = notApplied+" (обычный случай: PostgreSQL откатывает упавшую миграцию целиком)", applied
+	}
+	return fmt.Sprintf("сверьте схему с миграцией %d и снимите флаг: %s; %s (подробности: /docs/upgrade, раздел про dirty)",
+		v, first, second)
 }
 
 // Вызывается на каждом старте — ретеншн задаётся инсталляцией, а не миграцией.

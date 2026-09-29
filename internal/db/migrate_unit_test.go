@@ -267,3 +267,55 @@ func TestNeedsRetention(t *testing.T) {
 		t.Error("different TTL: want change")
 	}
 }
+
+// Подсказка при dirty называет оба допустимых номера. В PostgreSQL файл миграции
+// идёт одной неявной транзакцией (golang-migrate шлёт его одним Exec без
+// параметров), поэтому упавшая с ошибкой SQL миграция откатывается целиком и
+// верный номер там обычно N-1 - его подсказка ставит первым. Готовая команда
+// только с N пометила бы применённой миграцию, которой в базе нет.
+func TestDirtyHintOffersBothVersions(t *testing.T) {
+	pg := explainMigrateErr("migrations/pg", migrate.ErrDirty{Version: 5}).Error()
+	ch := explainMigrateErr("migrations/ch", migrate.ErrDirty{Version: 7}).Error()
+	_, gatePGErr := schemaGateErr("PG", 5, true, 5, nil)
+	_, gateCHErr := schemaGateErr("ClickHouse", 20, true, 20, nil)
+
+	for name, c := range map[string]struct {
+		msg        string
+		prev, curr string
+		pgRollback bool
+	}{
+		"migrate up pg":  {pg, "--migrate-force=4", "--migrate-force=5", true},
+		"migrate up ch":  {ch, "--migrate-force-ch=6", "--migrate-force-ch=7", false},
+		"schema gate pg": {gatePGErr.Error(), "--migrate-force=4", "--migrate-force=5", true},
+		"schema gate ch": {gateCHErr.Error(), "--migrate-force-ch=19", "--migrate-force-ch=20", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ip, ic := strings.Index(c.msg, c.prev), strings.Index(c.msg, c.curr)
+			if ip < 0 || ic < 0 {
+				t.Fatalf("подсказка должна называть оба номера %q и %q: %q", c.prev, c.curr, c.msg)
+			}
+			if got := strings.Contains(c.msg, "PostgreSQL"); got != c.pgRollback {
+				t.Errorf("оговорка про откат PostgreSQL: есть=%v, ожидали %v: %q", got, c.pgRollback, c.msg)
+			}
+			if c.pgRollback && ip > ic {
+				t.Errorf("в PostgreSQL обычный случай - N-1, он должен идти первым: %q", c.msg)
+			}
+		})
+	}
+}
+
+// На версии 1 шага назад нет: force принимает target >= 1, а нетронутая
+// миграция 1 означает пустую базу - честнее пересоздать том.
+func TestDirtyHintVersionOneHasNoZero(t *testing.T) {
+	for _, msg := range []string{
+		explainMigrateErr("migrations/pg", migrate.ErrDirty{Version: 1}).Error(),
+		func() string { _, err := schemaGateErr("PG", 1, true, 1, nil); return err.Error() }(),
+	} {
+		if strings.Contains(msg, "--migrate-force=0") {
+			t.Errorf("подсказка предлагает --migrate-force=0, который force отвергнет: %q", msg)
+		}
+		if !strings.Contains(msg, "--migrate-force=1") || !strings.Contains(msg, "пересоздайте") {
+			t.Errorf("на версии 1 нужны --migrate-force=1 и совет пересоздать том: %q", msg)
+		}
+	}
+}
