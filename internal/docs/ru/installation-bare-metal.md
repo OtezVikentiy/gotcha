@@ -51,7 +51,8 @@
 
 ```bash
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y curl tar gnupg openssl coreutils iproute2
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    curl tar gnupg openssl coreutils iproute2 util-linux
 ```
 
 `iproute2` (команда `ss`) нужен и дальше по шагам, и скрипту: без него нечем проверить

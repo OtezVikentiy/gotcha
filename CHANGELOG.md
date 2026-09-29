@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- The Debian/Ubuntu host-prep step now lists `util-linux` explicitly instead of relying
+  on it being present by default: the installer requires `runuser` on both families. A
+  new guard fails the build when a package the installer's preflight maps a required
+  command to is missing from the docs' host-prep line, in either locale.
+
 ## [1.9.0] - 2026-09-28
 
 ### Breaking
