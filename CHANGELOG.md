@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- The Go toolchain requirement is raised to 1.26.11 (go.mod, CI, and the build
+  image digest), which closes ten vulnerabilities in the Go standard library —
+  seven in net/http, one each in crypto/tls, crypto/x509, and net/textproto —
+  fixed across 1.26.9–1.26.11. Two compression dependencies are updated
+  alongside: `klauspost/compress` to 1.20.2 (zstd in ingest and the ClickHouse
+  driver) and `andybalholm/brotli` to 1.2.7 (pulled in by the ClickHouse
+  driver). Together these clear every finding the CI govulncheck gate was
+  failing on.
+- The `go.opentelemetry.io/otel` modules are bumped from 1.44.0 to 1.47.0,
+  which fixes CVE-2026-128085: an attribute value consisting entirely of valid
+  U+FFFD runes bypassed `AttributeValueLengthLimit` completely, letting a span
+  attribute grow past the configured cap. Gotcha binaries link only the otel
+  API (through the ClickHouse driver and the OTLP protos); the SDK, which is
+  where attribute length limits are enforced, is not in the dependency graph at
+  all, and no limit is configured anywhere — the flaw was unreachable in a
+  Gotcha deployment. The bump removes the vulnerable versions from the graph
+  and closes the Dependabot alert.
+- `golang.org/x/crypto` is updated to 0.59.0 (`x/sys`, `x/text`, and `x/sync`
+  follow the module graph). The last remaining graph-level finding,
+  GO-2026-5932, pointed at the deprecated `openpgp` package that Gotcha never
+  imported; 0.59.0 removes it from the module, and no dependency in the graph
+  carries a known vulnerable version anymore.
+
 ### Fixed
 - The startup error for a schema stuck dirty now offers both valid `--migrate-force`
   numbers instead of a ready command with the stuck version only. For PostgreSQL it
