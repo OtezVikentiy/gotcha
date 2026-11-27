@@ -1,7 +1,7 @@
 # Base images are pinned by digest for reproducible builds. The tag stays for
 # readability; the @sha256 is authoritative. To refresh after a base bump:
 #   docker buildx imagetools inspect golang:1.26-alpine   (copy the Digest)
-FROM golang:1.26-alpine@sha256:70b46548e42db77e0966aaf3619fd068734dc6c77584d526b91126504fd95816 AS build
+FROM golang:1.26-alpine@sha256:ecb67f987aa1a57794c91d19ade7ae0209f2f0f5496aaef9e6ae85ddf92d02ab AS build
 WORKDIR /src
 # Зависимости завендорены — сборка не ходит в сеть за модулями, образ собирается в
 # закрытых сетях. -mod=vendor явно: при рассинхроне с go.mod сборка падает, не уходит в сеть.
