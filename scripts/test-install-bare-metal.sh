@@ -1054,6 +1054,136 @@ unset -f systemctl path_state
 rm -rf "$legacy_dir"
 apply_platform_paths
 
+# await_systemd / pkg_install — шина управления после пакетной транзакции
+
+busdir=$(mktemp -d)
+: >"$busdir/calls"
+(
+    # shellcheck disable=SC2317 # вызывается сорсимым файлом, а не отсюда
+    systemctl() {
+        printf 'call\n' >>"$busdir/calls"
+        if [ "$(grep -c call "$busdir/calls")" -le 2 ]; then
+            printf 'unknown\n'
+            printf 'Failed to connect to system scope bus via local transport: Connection refused\n' >&2
+            return 1
+        fi
+        printf 'running\n'
+    }
+    await_systemd 5
+)
+rc=$?
+assert_eq "await_systemd survives the PID 1 re-exec window: bus refused twice, then answered" 0 "$rc"
+assert_eq "await_systemd polls until the bus answers" 3 "$(grep -c call "$busdir/calls")"
+
+: >"$busdir/calls"
+(
+    # shellcheck disable=SC2317 # вызывается сорсимым файлом, а не отсюда
+    systemctl() { printf 'call\n' >>"$busdir/calls"; printf 'degraded\n'; return 1; }
+    await_systemd 5
+)
+rc=$?
+assert_eq "await_systemd accepts degraded — the bus answers, that is all it needs" 0 "$rc"
+assert_eq "await_systemd does not poll a bus that answers" 1 "$(grep -c call "$busdir/calls")"
+
+: >"$busdir/calls"
+(
+    # shellcheck disable=SC2317 # вызывается сорсимым файлом, а не отсюда
+    systemctl() { printf 'call\n' >>"$busdir/calls"; printf 'starting\n'; return 1; }
+    await_systemd 5
+)
+rc=$?
+assert_eq "await_systemd treats starting as reachable and never blocks a booting host" 0 "$rc"
+
+: >"$busdir/calls"
+bus_start=$SECONDS
+(
+    # shellcheck disable=SC2317 # вызывается сорсимым файлом, а не отсюда
+    systemctl() { printf 'call\n' >>"$busdir/calls"; printf 'unknown\n'; return 1; }
+    await_systemd 1
+)
+rc=$?
+bus_elapsed=$((SECONDS - bus_start))
+assert_eq "await_systemd gives up with a failure when the bus stays unreachable past the deadline" 1 "$rc"
+assert_eq "await_systemd waits out the deadline before giving up" ok \
+    "$([ "$bus_elapsed" -ge 1 ] && [ "$bus_elapsed" -le 4 ] && printf ok || printf 'slept-%ss' "$bus_elapsed")"
+
+pkgstub=$(mktemp -d)
+printf '#!/bin/sh\nexit 0\n' >"$pkgstub/apt-get"
+printf '#!/bin/sh\nexit 0\n' >"$pkgstub/dnf"
+chmod +x "$pkgstub/apt-get" "$pkgstub/dnf"
+: >"$busdir/calls"
+(
+    # shellcheck disable=SC2030,SC2031 # подмена PATH задумана локальной для подоболочки
+    PATH="$pkgstub:$PATH"
+    HOST_FAMILY=debian
+    # shellcheck disable=SC2317 # вызывается сорсимым файлом, а не отсюда
+    systemctl() { printf 'call\n' >>"$busdir/calls"; printf 'running\n'; }
+    pkg_install postgresql-17
+)
+rc=$?
+assert_eq "pkg_install returns the package manager's success" 0 "$rc"
+assert_eq "pkg_install waits for the bus after a successful transaction" 1 "$(grep -c call "$busdir/calls")"
+
+printf '#!/bin/sh\nexit 1\n' >"$pkgstub/apt-get"
+: >"$busdir/calls"
+(
+    # shellcheck disable=SC2030,SC2031 # подмена PATH задумана локальной для подоболочки
+    PATH="$pkgstub:$PATH"
+    HOST_FAMILY=debian
+    # shellcheck disable=SC2317 # вызывается сорсимым файлом, а не отсюда
+    systemctl() { printf 'call\n' >>"$busdir/calls"; printf 'running\n'; }
+    pkg_install postgresql-17
+)
+rc=$?
+assert_eq "pkg_install propagates the package manager's failure" 1 "$rc"
+assert_eq "pkg_install does not wait for the bus after a failed transaction" 0 "$(grep -c call "$busdir/calls")"
+
+rm -rf "$busdir" "$pkgstub"
+
+# pkg_refresh — ретраи против зеркала в середине синхронизации
+
+refreshstub=$(mktemp -d)
+printf '#!/bin/sh\nexit 0\n' >"$refreshstub/sleep"
+chmod +x "$refreshstub/sleep"
+: >"$refreshstub/calls"
+# shellcheck disable=SC2016 # \$n — литерал для стаба, пути раскрываются сейчас
+cat >"$refreshstub/apt-get" <<EOF
+#!/bin/sh
+echo call >>"$refreshstub/calls"
+n=\$(grep -c call "$refreshstub/calls")
+[ "\$n" -ge 2 ] || exit 100
+exit 0
+EOF
+chmod +x "$refreshstub/apt-get"
+(
+    # shellcheck disable=SC2030,SC2031 # подмена PATH задумана локальной для подоболочки
+    PATH="$refreshstub:$PATH"
+    HOST_FAMILY=debian
+    pkg_refresh
+)
+rc=$?
+assert_eq "pkg_refresh retries a transient index failure and succeeds" 0 "$rc"
+assert_eq "pkg_refresh succeeds on the second attempt without surfacing the first failure" 2 "$(grep -c call "$refreshstub/calls")"
+
+cat >"$refreshstub/apt-get" <<EOF
+#!/bin/sh
+echo call >>"$refreshstub/calls"
+exit 100
+EOF
+chmod +x "$refreshstub/apt-get"
+: >"$refreshstub/calls"
+(
+    # shellcheck disable=SC2030,SC2031 # подмена PATH задумана локальной для подоболочки
+    PATH="$refreshstub:$PATH"
+    HOST_FAMILY=debian
+    pkg_refresh
+)
+rc=$?
+assert_eq "pkg_refresh gives up with the package manager's status when the failure persists" 100 "$rc"
+assert_eq "pkg_refresh makes exactly three attempts before giving up" 3 "$(grep -c call "$refreshstub/calls")"
+
+rm -rf "$refreshstub"
+
 # env_set / reconcile_env_file
 
 envdir=$(mktemp -d)

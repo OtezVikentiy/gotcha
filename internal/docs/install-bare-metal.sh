@@ -167,22 +167,54 @@ pg_conf_dir_label() {
     printf '%s\n' '/etc/postgresql/*/main'
 }
 
+# Зеркало в середине синхронизации отдаёт битый индекс ("Mirror sync in
+# progress?") — это проходит за секунды, поэтому ретраи с растущей паузой.
 pkg_refresh() {
-    if [ "$HOST_FAMILY" = rhel ]; then
-        dnf -qy makecache >/dev/null
-        return $?
-    fi
-    apt-get update -qq >/dev/null
+    local attempt rc
+    for attempt in 1 2 3; do
+        if [ "$attempt" -gt 1 ]; then
+            sleep $((attempt * 5))
+        fi
+        rc=0
+        if [ "$HOST_FAMILY" = rhel ]; then
+            dnf -qy makecache >/dev/null || rc=$?
+        else
+            apt-get update -qq >/dev/null || rc=$?
+        fi
+        if [ "$rc" -eq 0 ]; then
+            return 0
+        fi
+    done
+    return "$rc"
+}
+
+# postinst libc6/glibc/systemd делает daemon-reexec: PID 1 пересоздаётся, и
+# systemctl какое-то время получает отказ шины. Ждём, пока она снова ответит.
+await_systemd() {
+    local deadline=$((SECONDS + ${1:-60})) state
+    while :; do
+        state=$(systemctl is-system-running 2>/dev/null || :)
+        case "$state" in
+            "" | unknown) ;;
+            *) return 0 ;;
+        esac
+        [ "$SECONDS" -lt "$deadline" ] || return 1
+        sleep 0.2
+    done
 }
 
 # >/dev/null обязателен в обеих функциях: install_postgresql возвращает DSN
 # через stdout, и болтливость dnf/dpkg подставилась бы в GOTCHA_PG_DSN.
 pkg_install() {
+    local rc=0
     if [ "$HOST_FAMILY" = rhel ]; then
-        dnf -qy install "$@" >/dev/null
-        return $?
+        dnf -qy install "$@" >/dev/null || rc=$?
+    else
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@" >/dev/null || rc=$?
     fi
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@" >/dev/null
+    [ "$rc" -eq 0 ] || return "$rc"
+    await_systemd 60 || :
+    return 0
 }
 
 # "v0.2.0-5-gabcdef-dirty" от локально собранного бинаря — такой же законный вход,

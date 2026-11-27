@@ -17,6 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   applied a migration that is not in the database. For ClickHouse both options come
   with "compare the schema"; at version 1 the hint says to recreate the volume
   instead of suggesting 0, which `--migrate-force` rejects.
+- The bare-metal installer survives package transactions that re-execute PID 1:
+  the postinst scripts of `libc6`/`glibc`/`systemd` call `systemctl daemon-reexec`,
+  and right after that the system bus refuses connections for a moment; the next
+  `systemctl` (the PostgreSQL start) used to fail the install with exit 5. Every
+  successful package install is now followed by a wait for the bus to answer again
+  (up to 60 s).
+- `apt-get update` / `dnf makecache` in the installer are retried three times with
+  growing pauses: a repository mirror in the middle of a sync serves a torn index
+  ("File has unexpected size... Mirror sync in progress?"), which used to fail the
+  install outright.
 
 ### Documentation
 - The Debian/Ubuntu host-prep step now lists `util-linux` explicitly instead of relying
