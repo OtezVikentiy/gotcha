@@ -42,6 +42,12 @@ func seedEvent(t *testing.T, b *event.Batcher, ev event.Event) {
 	b.Add(ev)
 }
 
+// Якорь относителен текущему моменту: у таблицы events TTL 90 дней, и фиксированные
+// даты в прошлом однажды истекают — ClickHouse удаляет строки ещё при вставке.
+func ttlSafeAnchor() time.Time {
+	return time.Now().UTC().Add(-time.Hour).Truncate(time.Minute)
+}
+
 func TestEventSourcePipelineThroughWriter(t *testing.T) {
 	ctx := context.Background()
 	pool := testenv.MigratedPG(t)
@@ -49,7 +55,7 @@ func TestEventSourcePipelineThroughWriter(t *testing.T) {
 	svc := issue.NewService(pool)
 	projectID, _ := seedProjectAndUser(t, pool)
 
-	seenAt := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	seenAt := ttlSafeAnchor()
 	res, err := svc.Upsert(ctx, projectID, "fp-events", "boom", "app.worker", issue.LevelError, "prod", seenAt)
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -149,7 +155,7 @@ func TestEventSourceMasksPIICarriedInTags(t *testing.T) {
 	svc := issue.NewService(pool)
 	projectID, _ := seedProjectAndUser(t, pool)
 
-	seenAt := time.Date(2026, 8, 25, 10, 0, 0, 0, time.UTC)
+	seenAt := ttlSafeAnchor()
 	res, err := svc.Upsert(ctx, projectID, "fp-tags-pii", "boom", "app.worker", issue.LevelError, "prod", seenAt)
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -425,7 +431,7 @@ func TestEventSourceMasksStacktraceAndBreadcrumbs(t *testing.T) {
 	svc := issue.NewService(pool)
 	projectID, _ := seedProjectAndUser(t, pool)
 
-	seenAt := time.Date(2026, 8, 26, 10, 0, 0, 0, time.UTC)
+	seenAt := ttlSafeAnchor()
 	res, err := svc.Upsert(ctx, projectID, "fp-stack-pii", "boom", "app.worker", issue.LevelError, "prod", seenAt)
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -489,7 +495,7 @@ func TestEventSourceMasksMessageAndExceptionValue(t *testing.T) {
 	svc := issue.NewService(pool)
 	projectID, _ := seedProjectAndUser(t, pool)
 
-	seenAt := time.Date(2026, 8, 26, 11, 0, 0, 0, time.UTC)
+	seenAt := ttlSafeAnchor()
 	res, err := svc.Upsert(ctx, projectID, "fp-msg-pii", "boom", "app.worker", issue.LevelError, "prod", seenAt)
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -553,7 +559,7 @@ func TestEventSourceUserIDPseudonym(t *testing.T) {
 	svc := issue.NewService(pool)
 	projectID, _ := seedProjectAndUser(t, pool)
 
-	seenAt := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	seenAt := ttlSafeAnchor()
 	res, err := svc.Upsert(ctx, projectID, "fp-uid-pii", "boom", "app.worker", issue.LevelError, "prod", seenAt)
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -625,7 +631,7 @@ func TestEventSourceUserIDPseudonymDiffersAcrossExports(t *testing.T) {
 	svc := issue.NewService(pool)
 	projectID, _ := seedProjectAndUser(t, pool)
 
-	seenAt := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	seenAt := ttlSafeAnchor()
 	res, err := svc.Upsert(ctx, projectID, "fp-uid-cross-export", "boom", "app.worker", issue.LevelError, "prod", seenAt)
 	if err != nil {
 		t.Fatalf("upsert: %v", err)

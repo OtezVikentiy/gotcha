@@ -290,6 +290,12 @@ func TestQueryReadsFromClickHouse(t *testing.T) {
 	})
 }
 
+// Якорь относителен текущему моменту: у таблицы events TTL 90 дней, и фиксированные
+// даты в прошлом однажды истекают — ClickHouse удаляет строки ещё при вставке.
+func ttlSafeAnchor() time.Time {
+	return time.Now().UTC().Add(-time.Hour).Truncate(time.Minute)
+}
+
 func TestStreamForExportOrdersByIssueThenTime(t *testing.T) {
 	ctx := context.Background()
 	conn := testenv.MigratedCH(t)
@@ -297,7 +303,7 @@ func TestStreamForExportOrdersByIssueThenTime(t *testing.T) {
 	const issue1 = int64(910001)
 	const issue2 = int64(910002)
 
-	t0 := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	t0 := ttlSafeAnchor()
 	t1 := t0.Add(1 * time.Minute)
 	t2 := t0.Add(2 * time.Minute)
 	t3 := t0.Add(3 * time.Minute)
@@ -340,7 +346,7 @@ func TestStreamForExportFollowsGivenIssueOrder(t *testing.T) {
 	const issueB = int64(930002)
 	const issueC = int64(930003)
 
-	t0 := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	t0 := ttlSafeAnchor()
 
 	b := event.NewBatcher(conn)
 	go b.Run()
@@ -375,7 +381,7 @@ func TestStreamForExportTruncationKeepsFirstListedIssues(t *testing.T) {
 	const issueC = int64(930013)
 	const cEvents = 4
 
-	t0 := time.Date(2026, 8, 22, 11, 0, 0, 0, time.UTC)
+	t0 := ttlSafeAnchor()
 
 	b := event.NewBatcher(conn)
 	go b.Run()
@@ -417,7 +423,7 @@ func TestStreamForExportRespectsLimit(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	const projectID = int64(51002)
 	const issueID = int64(920001)
-	t0 := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
+	t0 := ttlSafeAnchor()
 
 	b := event.NewBatcher(conn)
 	go b.Run()
@@ -448,7 +454,7 @@ func TestStreamForExportTiedTimestampsNoLossOrDuplication(t *testing.T) {
 	conn := testenv.MigratedCH(t)
 	const projectID = int64(51003)
 	const issueID = int64(930001)
-	tied := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	tied := ttlSafeAnchor()
 
 	ids := []string{uuid.NewString(), uuid.NewString(), uuid.NewString()}
 	b := event.NewBatcher(conn)
@@ -507,7 +513,7 @@ func TestStreamForExportQueriesExactlyOncePerGroup(t *testing.T) {
 	real := testenv.MigratedCH(t)
 	const projectID = int64(51006)
 	const issueWithEvents = int64(940201)
-	t0 := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	t0 := ttlSafeAnchor()
 
 	b := event.NewBatcher(real)
 	go b.Run()

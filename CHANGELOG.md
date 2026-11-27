@@ -58,6 +58,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new guard fails the build when a package the installer's preflight maps a required
   command to is missing from the docs' host-prep line, in either locale.
 
+### Testing
+- The event and export tests no longer pin fixtures to fixed past dates: the events
+  table has a 90-day TTL, and the hardcoded August 2026 timestamps expired on
+  November 18 — ClickHouse drops expired rows on insert (TTL applies per data part),
+  so those tests had been failing deterministically on main regardless of code
+  changes. Anchors are now derived from the current time; assertions already derived
+  from the anchors, so what the tests prove is unchanged.
+
 ## [1.9.0] - 2026-09-28
 
 ### Breaking
