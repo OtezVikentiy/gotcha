@@ -157,13 +157,15 @@ jobs:
 
       # pandoc/latex не несёт fvextra/hyphen-russian/DejaVu/poppler-utils.
       # Пакеты из CTAN не пиновать: tlmgr отдаёт только актуальные версии.
+      # tlmgr в образе устаревает относительно tlnet: без update --self установка
+      # падает «tlmgr itself needs to be updated» (exit 255).
       - name: Build the PDF bundle (pandoc/xelatex in a container)
         run: |
           set -euo pipefail
           version="${TAG#v}"
           docker run --rm -v "$PWD":/work -w /work --entrypoint sh \
             pandoc/latex@sha256:cdbf139f607237498b412b3aa051008311d69b88006ab47550efba357af3b277 \
-            -c "apk add --no-cache font-dejavu poppler-utils fontconfig bash python3 grep && tlmgr install fvextra hyphen-russian && bash scripts/docs-pdf.sh --version $version --out dist"
+            -c "apk add --no-cache font-dejavu poppler-utils fontconfig bash python3 grep && tlmgr update --self && tlmgr install fvextra hyphen-russian && bash scripts/docs-pdf.sh --version $version --out dist"
 
       - name: SHA256SUMS.txt over every uploaded asset
         run: |
