@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-11-27
+
 ### Security
 - The Go toolchain requirement is raised to 1.26.11 (go.mod, CI, and the build
   image digest), which closes ten vulnerabilities in the Go standard library —
